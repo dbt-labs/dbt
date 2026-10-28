@@ -25,6 +25,13 @@ fn test_normalize_for_cast() {
         (Bigquery, "NUMERIC(10, 2)", "NUMERIC"),
         (Bigquery, "BIGNUMERIC(30, 20)", "BIGNUMERIC"),
         (Bigquery, "ARRAY<NUMERIC(10, 2)>", "ARRAY<NUMERIC>"),
+        (Bigquery, "ARRAY<STRING(10)>", "ARRAY<STRING>"),
+        (Bigquery, "ARRAY<RANGE<DATETIME>>", "ARRAY<RANGE<DATETIME>>"),
+        (
+            Bigquery,
+            "STRUCT<period RANGE<DATE>, labels ARRAY<STRING(10)>, amount BIGNUMERIC(10, 2)>",
+            "STRUCT<period RANGE<DATE>, labels ARRAY<STRING>, amount BIGNUMERIC>",
+        ),
         (
             Bigquery,
             "STRUCT<`odd name` BIGNUMERIC(30, 20), items ARRAY<STRUCT<n NUMERIC(10, 2), ts TIMESTAMP>>>",
@@ -35,6 +42,40 @@ fn test_normalize_for_cast() {
         let (mut sql_type, _) = SqlType::parse(backend, input).unwrap();
         sql_type.normalize_for_cast(backend);
         assert_eq!(sql_type.to_string(backend), expected, "{input}");
+    }
+}
+
+#[test]
+fn test_bigquery_range_arrow_roundtrip() {
+    for input in ["RANGE<DATE>", "RANGE<DATETIME>", "RANGE<TIMESTAMP>"] {
+        let (sql_type, _) = SqlType::parse(Bigquery, input).unwrap();
+        assert!(matches!(sql_type, Range(_)));
+        let arrow_type = sql_type.pick_best_arrow_type(Bigquery);
+        assert!(
+            matches!(&arrow_type, DataType::FixedSizeList(field, 1) if field.name() == "range")
+        );
+        assert_eq!(
+            SqlType::from_arrow_type(Bigquery, &arrow_type).to_string(Bigquery),
+            input
+        );
+    }
+}
+
+#[test]
+fn test_sql_type_completeness() {
+    for (input, complete) in [
+        ("RANGE", false),
+        ("ARRAY", false),
+        ("RECORD", false),
+        ("STRUCT<x SOME_OPAQUE_TYPE>", false),
+        ("ARRAY<RANGE<DATE>>", true),
+        ("STRUCT<period RANGE<DATE>, amount BIGNUMERIC(10, 2)>", true),
+    ] {
+        // The opaque-type fallback may consume nested delimiters.
+        let complete_type = SqlType::parse(Bigquery, input)
+            .ok()
+            .is_some_and(|(ty, _)| ty.is_complete());
+        assert_eq!(complete_type, complete, "{input}");
     }
 }
 

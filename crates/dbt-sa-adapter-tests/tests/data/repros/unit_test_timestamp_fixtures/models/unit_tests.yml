@@ -1,0 +1,62 @@
+version: 2
+
+unit_tests:
+  - name: dict_timezone_matches
+    model: event_projection
+    given:
+      - input: ref('events')
+        rows:
+          - id: 7
+            event_timestamp: '2026-01-01 03:04:05.123456+03:00'
+            local_datetime: '2026-01-01 03:04:05.654321'
+    expect:
+      rows:
+        - id: 7
+          event_timestamp: '2026-01-01 00:04:05.123456+00:00'
+          local_datetime: '2026-01-01 03:04:05.654321'
+          utc_us: 1767225845123456
+          wall_hour: 3
+
+  - name: csv_timezone_matches
+    model: event_projection
+    given:
+      - input: ref('events')
+        format: csv
+        fixture: timezone_events
+    expect:
+      rows:
+        - id: 7
+          event_timestamp: '2026-01-01 00:04:05.123456+00:00'
+          local_datetime: '2026-01-01 03:04:05.654321'
+          utc_us: 1767225845123456
+          wall_hour: 3
+
+  - name: dict_wrong_id
+    model: event_projection
+    given:
+      - input: ref('events')
+        rows:
+          - id: 7
+            event_timestamp: '2026-01-01 03:04:05.123456+03:00'
+            local_datetime: '2026-01-01 03:04:05.654321'
+    expect:
+      rows:
+        - id: 8
+          event_timestamp: '2026-01-01 00:04:05.123456+00:00'
+          local_datetime: '2026-01-01 03:04:05.654321'
+          utc_us: 1767225845123456
+          wall_hour: 3
+
+  - name: csv_wrong_id
+    model: event_projection
+    given:
+      - input: ref('events')
+        format: csv
+        fixture: timezone_events
+    expect:
+      rows:
+        - id: 8
+          event_timestamp: '2026-01-01 00:04:05.123456+00:00'
+          local_datetime: '2026-01-01 03:04:05.654321'
+          utc_us: 1767225845123456
+          wall_hour: 3

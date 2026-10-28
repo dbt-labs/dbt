@@ -1,0 +1,37 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/unit_tests.yml
+   Parsing models/event_projection.sql
+   Parsing models/events.sql
+ Rendering models/event_projection.sql
+ Rendering models/unit_tests.yml:34:11 (dict_wrong_id)
+   Running ../scratch/target/run/unit_test_timestamp_fixtures/models/dict_wrong_id.sql
+    Failed unit_test bigquery_unit_test_existing_parent_timestamp_fixtures_dbt_test__audit.dict_wrong_id (models/unit_tests.yml:34:11) [1 of 4 in duration]
+ Rendering models/unit_tests.yml:4:11 (dict_timezone_matches)
+   Running ../scratch/target/run/unit_test_timestamp_fixtures/models/dict_timezone_matches.sql
+    Passed unit_test bigquery_unit_test_existing_parent_timestamp_fixtures_dbt_test__audit.dict_timezone_matches [2 of 4 in duration]
+ Rendering models/unit_tests.yml:50:11 (csv_wrong_id)
+   Running ../scratch/target/run/unit_test_timestamp_fixtures/models/csv_wrong_id.sql
+    Failed unit_test bigquery_unit_test_existing_parent_timestamp_fixtures_dbt_test__audit.csv_wrong_id (models/unit_tests.yml:50:11) [3 of 4 in duration]
+ Rendering models/unit_tests.yml:20:11 (csv_timezone_matches)
+   Running ../scratch/target/run/unit_test_timestamp_fixtures/models/csv_timezone_matches.sql
+    Passed unit_test bigquery_unit_test_existing_parent_timestamp_fixtures_dbt_test__audit.csv_timezone_matches [4 of 4 in duration]
+====================== Test Failures =======================
+Test failed: dict_wrong_id
++--------+-----------------+----------------+------------------+-----------+
+| id     | event_timestamp | local_datetime | utc_us           | wall_hour |
++--------+-----------------+----------------+------------------+-----------+
+| 8 -> 7 | [unsupported]   | [unsupported]  | 1767225845123456 | 3         |
++--------+-----------------+----------------+------------------+-----------+
+1 row(s) differ.
+Test failed: csv_wrong_id
++--------+-----------------+----------------+------------------+-----------+
+| id     | event_timestamp | local_datetime | utc_us           | wall_hour |
++--------+-----------------+----------------+------------------+-----------+
+| 8 -> 7 | [unsupported]   | [unsupported]  | 1767225845123456 | 3         |
++--------+-----------------+----------------+------------------+-----------+
+1 row(s) differ.
+==================== Execution Summary =====================
+Finished 'test' with 2 errors for target 'bigquery' [duration]
+Processed: 4 unit tests
+Summary: 4 total | 2 success | 2 error

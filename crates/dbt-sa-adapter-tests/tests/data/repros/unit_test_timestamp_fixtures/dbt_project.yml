@@ -1,0 +1,7 @@
+name: unit_test_timestamp_fixtures
+profile: fusion_tests
+flags:
+  send_anonymous_usage_stats: false
+models:
+  unit_test_timestamp_fixtures:
+    +materialized: table

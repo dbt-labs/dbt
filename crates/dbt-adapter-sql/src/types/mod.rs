@@ -446,6 +446,8 @@ pub enum SqlType {
     Geography(Option<String>),
     /// ARRAY
     Array(Option<Box<SqlType>>),
+    /// RANGE<element_type> (BigQuery)
+    Range(Box<SqlType>),
     /// STRUCT, STRUCT<>, STRUCT<...>
     Struct(Option<Vec<StructField>>),
     /// MAP <key type, value type>
@@ -543,7 +545,7 @@ impl SqlType {
             (AdapterType::Bigquery, Self::Numeric(parameters) | Self::BigNumeric(parameters)) => {
                 *parameters = None;
             }
-            (AdapterType::Bigquery, Self::Array(Some(element))) => {
+            (AdapterType::Bigquery, Self::Array(Some(element)) | Self::Range(element)) => {
                 element.normalize_for_cast(backend)
             }
             (AdapterType::Bigquery, Self::Struct(Some(fields))) => {
@@ -552,6 +554,17 @@ impl SqlType {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Whether all nested types are known and have their required type arguments.
+    pub fn is_complete(&self) -> bool {
+        match self {
+            Self::Other(_) | Self::Array(None) | Self::Struct(None) | Self::Map(None) => false,
+            Self::Range(element) | Self::Array(Some(element)) => element.is_complete(),
+            Self::Struct(Some(fields)) => fields.iter().all(|field| field.sql_type.is_complete()),
+            Self::Map(Some((key, value))) => key.is_complete() && value.is_complete(),
+            _ => true,
         }
     }
 
@@ -989,6 +1002,11 @@ impl SqlType {
                 }
                 Ok(())
             }
+            (_, Range(element)) => {
+                write!(out, "RANGE<")?;
+                element.write(backend, out)?;
+                write!(out, ">")
+            }
             (_, Array(None)) => write!(out, "ARRAY"),
             (backend, Array(Some(inner))) => {
                 match backend {
@@ -1252,6 +1270,15 @@ impl SqlType {
             | DataType::LargeList(_)
             | DataType::ListView(_)
             | DataType::LargeListView(_) => SqlType::Array(None), // XXX
+            DataType::FixedSizeList(field, 1)
+                if backend == AdapterType::Bigquery && field.name() == "range" =>
+            {
+                let element = match field.data_type() {
+                    DataType::Timestamp(_, None) => SqlType::DateTime,
+                    data_type => Self::from_arrow_type(backend, data_type),
+                };
+                SqlType::Range(Box::new(element))
+            }
             DataType::FixedSizeList(_, _) => SqlType::Other("ARRAY".to_string()),
             DataType::Struct(fields) => {
                 let mut sql_fields = Vec::with_capacity(fields.len());
@@ -1837,6 +1864,14 @@ impl SqlType {
                 let inner_field = Field::new("item", inner_ty, true).with_metadata(inner_metadata);
                 DataType::List(Arc::new(inner_field))
             }
+            (_, Range(element)) => DataType::FixedSizeList(
+                Arc::new(Field::new(
+                    "range",
+                    element.pick_best_arrow_type(backend),
+                    true,
+                )),
+                1,
+            ),
             (_, Array(None)) => DataType::List(Arc::new(Field::new("item", DataType::Utf8, true))),
             (_, Struct(fields)) => {
                 let arrow_fields = match fields {
@@ -2759,8 +2794,9 @@ impl<'source> Parser<'source> {
                     }
                 } else if eqi(w, "STRING") {
                     // Bigquery uses STRING as an alias for VARCHAR
+                    let len = self.precision()?;
                     let attrs = self.string_attrs(backend)?;
-                    SqlType::Varchar(None, attrs)
+                    SqlType::Varchar(len, attrs)
                 } else if eqi(w, "FIXEDSTRING") {
                     // ClickHouse: FixedString(N) - fixed-length string
                     let len = self.precision()?;
@@ -2996,6 +3032,10 @@ impl<'source> Parser<'source> {
                 } else if eqi(w, "GEOGRAPHY") {
                     let srid = self.srid()?;
                     SqlType::Geography(srid.map(str::to_string))
+                } else if backend == Bigquery && eqi(w, "RANGE") && self.match_(Token::LAngle) {
+                    let element = self.parse_unconstrained_type(backend)?;
+                    self.expect(Token::RAngle)?;
+                    SqlType::Range(Box::new(element))
                 } else if eqi(w, "ARRAY") {
                     let (left, right) = match backend {
                         Snowflake | ClickHouse => (Token::LParen, Token::RParen),

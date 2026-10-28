@@ -1956,6 +1956,7 @@ fn is_supported_type(adapter_type: AdapterType, ref_type: &DataType) -> bool {
                 matches!(ref_type, DataType::List(_) | DataType::Struct(_))
                     || BigqueryTyping::is_json(ref_type)
                     || BigqueryTyping::is_geography(ref_type)
+                    || BigqueryTyping::is_range(ref_type)
             }
             AdapterType::Databricks => DatabricksTyping::is_timestamp_ntz(ref_type),
             AdapterType::DuckDB => {
@@ -2185,19 +2186,18 @@ fn columns_to_formatted_types<'a>(
     ref_schema: &'a SchemaRef,
     type_ops: &dyn TypeOps,
 ) -> FsResult<Vec<(&'a String, &'a DataType, String)>> {
-    // Arrow cannot distinguish every BigQuery type (for example TIMESTAMP and
-    // DATETIME), so prefer the retained SQL metadata for that adapter only.
-    let prefer_original_sql_type = type_ops.adapter_type() == AdapterType::Bigquery;
-
     ref_schema
         .fields()
         .iter()
         .map(|f| {
             let mut formatted = String::new();
-            if prefer_original_sql_type {
-                type_ops.format_field_as_cast_type(f, &mut formatted)
-            } else {
-                type_ops.format_arrow_type_as_sql(f.data_type(), f.is_nullable(), &mut formatted)
+            match type_ops.adapter_type() {
+                AdapterType::Bigquery => type_ops.format_field_as_cast_type(f, &mut formatted),
+                _ => type_ops.format_arrow_type_as_sql(
+                    f.data_type(),
+                    f.is_nullable(),
+                    &mut formatted,
+                ),
             }
             .map_err(|e| {
                 fs_err!(
@@ -3383,6 +3383,34 @@ mod tests {
             result,
             "CAST(STRUCT(CAST(7 AS INT64) AS id, CAST('alice' AS STRING) AS name) AS STRUCT<id INT64, name STRING>) AS actor"
         );
+    }
+
+    #[test]
+    fn test_create_values_bigquery_range_literals() {
+        let ops = DefaultTypeOps::new(AdapterType::Bigquery);
+        let schema = Arc::new(Schema::new(vec![
+            make_arrow_field(&ops, "period".to_string(), "RANGE<DATE>", None, None).unwrap(),
+        ]));
+        for (value, literal) in [
+            (YmlValue::null(), "NULL"),
+            (
+                YmlValue::string("[2026-01-01, 2026-02-01)".to_string()),
+                "'[2026-01-01, 2026-02-01)'",
+            ),
+        ] {
+            let rows = vec![BTreeMap::from([("period".to_string(), value)])];
+            let result = create_values(
+                &schema,
+                &rows,
+                AdapterType::Bigquery,
+                &ops,
+                None,
+                "fixture_input",
+                false,
+            )
+            .unwrap();
+            assert_contains!(result, &format!("CAST({literal} AS RANGE<DATE>) AS period"));
+        }
     }
 
     /// The original-SQL-type preference is BigQuery-only: other adapters keep

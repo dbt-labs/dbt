@@ -133,6 +133,10 @@ impl BigqueryTyping {
     pub fn is_json(data_type: &DataType) -> bool {
         matches!(data_type, DataType::FixedSizeList(field, 1) if field.name() == "json")
     }
+
+    pub fn is_range(data_type: &DataType) -> bool {
+        matches!(data_type, DataType::FixedSizeList(field, 1) if field.name() == "range")
+    }
 }
 
 // --- SnowflakeTyping ---
