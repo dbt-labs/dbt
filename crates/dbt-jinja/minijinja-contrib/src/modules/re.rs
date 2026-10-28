@@ -992,8 +992,8 @@ impl Object for Capture {
                 Some(Value::from_object(Pattern::new(&self.pattern, compiled)))
             }
             "string" => Some(Value::from(self.input_string.clone())),
-            // Match objects also accept a group name (`m['name']`); the attribute
-            // names above take precedence.
+            // `m.name` falls back to a group, as Jinja's getattr does; subscripts
+            // check the groups first in `get_item`.
             name if !self.is_findall => self
                 .named_groups
                 .get(name)
@@ -1001,6 +1001,17 @@ impl Object for Capture {
                 .map(|(v, _)| v.clone()),
             _ => None,
         }
+    }
+
+    // Like `Match.__getitem__`, a subscript prefers a group over an attribute of the
+    // same name: `m['pos']` is a group named `pos`, `m.pos` stays the attribute.
+    fn get_item(self: &Arc<Self>, key: &Value) -> Option<Value> {
+        if !self.is_findall {
+            if let Some(&idx) = key.as_str().and_then(|name| self.named_groups.get(name)) {
+                return self.groups.get(idx).map(|(v, _)| v.clone());
+            }
+        }
+        self.get_value(key)
     }
 
     fn repr(self: &Arc<Self>) -> ObjectRepr {
@@ -1373,9 +1384,9 @@ mod tests {
     fn test_re_match_capture_attributes_still_resolve() {
         assert_eq!(
             run_re_template(
-                r#"{% set m = re.search('(?P<name>[a-z]+)-(?P<num>[0-9]+)', 'order-42') %}{{ m.pos }},{{ m.string }},{{ m.lastgroup }}"#
+                r#"{% set m = re.search('(?P<name>[a-z]+)-(?P<num>[0-9]+)', 'order-42') %}{{ m.pos }},{{ m.string }},{{ m.lastgroup }},{{ m['pos'] }}"#
             ),
-            "0,order-42,num"
+            "0,order-42,num,0"
         );
     }
 

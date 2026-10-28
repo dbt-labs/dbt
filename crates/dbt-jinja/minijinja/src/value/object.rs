@@ -182,6 +182,15 @@ pub trait Object: fmt::Debug + Send + Sync {
         None
     }
 
+    /// Looks up the value for a subscript (`obj[key]`).
+    ///
+    /// The default implementation forwards to [`get_value`](Self::get_value).
+    /// Override it when an item and an attribute can share a name, as with
+    /// Python's `re.Match`, where `m['pos']` is a group and `m.pos` an attribute.
+    fn get_item(self: &Arc<Self>, key: &Value) -> Option<Value> {
+        self.get_value(key)
+    }
+
     /// Enumerates the object.
     ///
     /// The engine uses the returned enumerator to implement iteration and
@@ -695,6 +704,8 @@ type_erase! {
         fn repr(&self) -> ObjectRepr;
 
         fn get_value(&self, key: &Value) -> Option<Value>;
+
+        fn get_item(&self, key: &Value) -> Option<Value>;
 
         fn enumerate(&self) -> Enumerator;
 
