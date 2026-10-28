@@ -1,0 +1,7 @@
+kind: Under the Hood
+body: Drop the no-op create_indexes and adapter.commit() calls from the Databricks snapshot materialization, matching dbt-databricks.
+time: 2026-09-30T18:15:32.171360+05:30
+custom:
+    author: sd-db
+    issue: "16532"
+    project: dbt-core
