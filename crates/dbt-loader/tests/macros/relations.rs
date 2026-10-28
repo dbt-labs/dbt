@@ -805,6 +805,255 @@ __additional_properties__: {}
             "enforced contract must apply constraints, got: {rendered}"
         );
     }
+
+    const INFERRED_QUERY_COLUMNS_STUB: &str = r#"
+{% macro get_columns_in_query(select_sql) -%}
+  {{ return(inferred_query_columns()) }}
+{%- endmacro %}
+"#;
+
+    #[test]
+    fn inferred_query_columns_keep_nested_fields_at_the_top_level() {
+        use std::sync::Arc;
+
+        use arrow_array::RecordBatch;
+        use arrow_schema::{DataType, Field, Schema};
+        use dbt_agate::AgateTable;
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new(
+                "contact",
+                DataType::Struct(vec![Field::new("name", DataType::Utf8, true)].into()),
+                true,
+            ),
+        ]));
+        let table = AgateTable::from_record_batch(Arc::new(RecordBatch::new_empty(schema)));
+        let mut harness = MacroTestHarness::for_adapter(AdapterType::Databricks)
+            .with_macro_at_path(
+                "dbt",
+                "get_columns_in_query",
+                include_str!(
+                    "../../src/dbt_macro_assets/dbt-adapters/macros/adapters/columns.sql"
+                ),
+                "dbt-adapters/macros/adapters/columns.sql",
+            )
+            .with_macro_at_path(
+                "dbt",
+                "default__get_columns_in_query",
+                include_str!(
+                    "../../src/dbt_macro_assets/dbt-adapters/macros/adapters/columns.sql"
+                ),
+                "dbt-adapters/macros/adapters/columns.sql",
+            )
+            .with_macro(
+                "dbt",
+                "statement",
+                "{% macro statement(name, fetch_result=false, auto_begin=true, caller=none) %}{% endmacro %}",
+            )
+            .with_stub_functions()
+            .build()
+            .expect("query-column harness should build");
+        let table = table.into_value();
+        harness
+            .env_mut()
+            .env
+            .add_function("load_result", move |_name: Value| {
+                Ok(Value::from_serialize(BTreeMap::from([(
+                    "table",
+                    table.clone(),
+                )])))
+            });
+
+        let names = harness
+            .render(
+                "{{ get_columns_in_query('select id, contact from upstream') | join(',') }}",
+                BTreeMap::<String, Value>::new(),
+            )
+            .expect("query-column names should render");
+        assert_eq!(names.trim(), "id,contact");
+    }
+
+    #[test]
+    fn materialized_view_tag_alter_renders_the_relation_keyword() {
+        let harness = MacroTestHarness::for_adapter(AdapterType::Databricks)
+            .with_macro_at_path(
+                "dbt_databricks",
+                "alter_set_tags",
+                include_str!("../../src/dbt_macro_assets/dbt-databricks/macros/relations/tags.sql"),
+                "dbt-databricks/macros/relations/tags.sql",
+            )
+            .with_macro_at_path(
+                "dbt_databricks",
+                "render_type",
+                include_str!(
+                    "../../src/dbt_macro_assets/dbt-databricks/macros/relations/render_type.sql"
+                ),
+                "dbt-databricks/macros/relations/render_type.sql",
+            )
+            .with_stub_functions()
+            .build()
+            .expect("tag ALTER harness should build");
+        let relation = RelationObject::new(harness.relation(
+            "TEST_DB",
+            "TEST_SCHEMA",
+            "my_mv",
+            Some(RelationType::MaterializedView),
+        ))
+        .into_value();
+        let rendered = harness
+            .render(
+                "{{ alter_set_tags(relation, {'stage': 'two'}) }}",
+                BTreeMap::from([("relation".to_string(), relation)]),
+            )
+            .expect("tag ALTER should render");
+        assert_eq!(
+            rendered.split_whitespace().collect::<Vec<_>>().join(" "),
+            "ALTER MATERIALIZED VIEW `test_db`.`test_schema`.`my_mv` SET TAGS ( 'stage' = 'two' )"
+        );
+    }
+
+    #[test]
+    fn materialized_view_columns_preserve_comments_and_reject_masks() {
+        use dbt_adapter::column::Column;
+
+        let harness = MacroTestHarness::for_adapter(AdapterType::Databricks)
+            .with_macro_at_path(
+                "dbt_databricks",
+                "get_column_and_constraints_sql",
+                include_str!("../../src/dbt_macro_assets/dbt-databricks/macros/adapters/relation.sql"),
+                "dbt-databricks/macros/adapters/relation.sql",
+            )
+            .with_macro_at_path(
+                "dbt_databricks",
+                "column_mask_exists",
+                include_str!("../../src/dbt_macro_assets/dbt-databricks/macros/relations/components/column_mask.sql"),
+                "dbt-databricks/macros/relations/components/column_mask.sql",
+            )
+            .with_macro_at_path(
+                "dbt_databricks",
+                "databricks__get_create_materialized_view_as_sql",
+                include_str!("../../src/dbt_macro_assets/dbt-databricks/macros/relations/materialized_view/create.sql"),
+                "dbt-databricks/macros/relations/materialized_view/create.sql",
+            )
+            .with_global("dbt_version", Value::from("2.0.5"))
+            .build()
+            .expect("MV column harness should build");
+        let relation = RelationObject::new(harness.relation(
+            "TEST_DB",
+            "TEST_SCHEMA",
+            "my_mv",
+            Some(RelationType::MaterializedView),
+        ))
+        .into_value();
+        let column = Column::new(
+            AdapterType::Databricks,
+            "id".to_string(),
+            "int".to_string(),
+            None,
+            None,
+            None,
+        )
+        .with_comment(Some("documented".to_string()));
+        let mut ctx = BTreeMap::from([
+            ("relation".to_string(), relation),
+            (
+                "columns".to_string(),
+                Value::from(vec![Value::from_object(column)]),
+            ),
+            (
+                "model".to_string(),
+                Value::from_serialize(serde_json::json!({"columns": {}})),
+            ),
+        ]);
+        let rendered = harness
+            .render(
+                "{{ get_column_and_constraints_sql(relation, columns) }}",
+                &ctx,
+            )
+            .expect("MV column comment should render");
+        assert_eq!(
+            rendered.split_whitespace().collect::<Vec<_>>().join(" "),
+            "( `id` int COMMENT 'documented' )"
+        );
+
+        ctx.insert(
+            "model".to_string(),
+            Value::from_serialize(serde_json::json!({
+                "columns": {"id": {"column_mask": {"function": "mask_id"}}}
+            })),
+        );
+        let error = harness
+            .render("{{ databricks__get_create_materialized_view_as_sql(relation, 'select id from upstream') }}", ctx)
+            .expect_err("MV creation must reject configured masks");
+        assert!(
+            error
+                .to_string()
+                .contains("Column masks are not yet supported for materialized views."),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn query_schema_drift_compares_ordered_lowercased_column_names() {
+        let cases: [(&[&str], &[&str], &str); 7] = [
+            (&["id", "name"], &["id", "name"], "False"),
+            (&["ID", "Name"], &["id", "name"], "False"),
+            (&["id", "name"], &["id", "name", "new_column"], "True"),
+            (&["id", "name", "gone"], &["id", "name"], "True"),
+            (&["id", "name"], &["name", "id"], "True"),
+            (&["id"], &[], "True"),
+            (&[], &[], "False"),
+        ];
+        for (existing, inferred, expected) in cases {
+            let mut harness = MacroTestHarness::for_adapter(AdapterType::Databricks)
+                .with_macro_at_path(
+                    "dbt_databricks",
+                    "dlt_inferred_query_schema_changed",
+                    include_str!(
+                        "../../src/dbt_macro_assets/dbt-databricks/macros/relations/schema_drift.sql"
+                    ),
+                    "dbt-databricks/macros/relations/schema_drift.sql",
+                )
+                .with_stub_functions()
+                .with_macro("dbt", "get_columns_in_query", INFERRED_QUERY_COLUMNS_STUB)
+                .build()
+                .expect("schema drift harness should build");
+            let existing_columns: Vec<Value> = existing
+                .iter()
+                .map(|name| Value::from_serialize(BTreeMap::from([("name", *name)])))
+                .collect();
+            harness.mock().on("get_columns_in_relation", move |_| {
+                Ok(Value::from(existing_columns.clone()))
+            });
+            let inferred_columns: Vec<Value> = inferred.iter().copied().map(Value::from).collect();
+            harness
+                .env_mut()
+                .env
+                .add_function("inferred_query_columns", move || {
+                    Ok(Value::from(inferred_columns.clone()))
+                });
+
+            let relation = RelationObject::new(harness.relation(
+                "TEST_DB",
+                "TEST_SCHEMA",
+                "my_mv",
+                Some(RelationType::MaterializedView),
+            ))
+            .into_value();
+            let drifted = harness
+                .render(
+                    "{{ dlt_inferred_query_schema_changed(relation, 'select * from upstream') }}",
+                    BTreeMap::from([("relation".to_string(), relation)]),
+                )
+                .expect("schema drift check should render");
+            assert_eq!(
+                drifted.trim(),
+                expected,
+                "existing {existing:?} vs inferred {inferred:?}"
+            );
+        }
+    }
 }
 
 /// Isolated tests for `relations/interactive_table/*.sql`.

@@ -21,6 +21,7 @@
 //!    adapters.
 
 use crate::errors::AdapterResult;
+use crate::relation::databricks::config::databricks_changeset;
 use crate::value::none_value;
 
 use dbt_adapter_core::AdapterType;
@@ -390,14 +391,13 @@ impl Object for RelationConfig {
                 {
                     let change_set = RelationConfig::diff(self.as_ref(), existing.as_ref());
                     if !change_set.is_empty() {
-                        let intermediate_map = Value::from(ValueMap::from([
+                        databricks_changeset(ValueMap::from([
                             (
                                 Value::from("requires_full_refresh"),
                                 Value::from(change_set.requires_full_refresh()),
                             ),
                             (Value::from("changes"), Value::from_object(change_set)),
-                        ]));
-                        Value::from_serialize(intermediate_map)
+                        ]))
                     } else {
                         none_value()
                     }
@@ -1301,6 +1301,39 @@ mod tests {
                 has_changeset: True
                 requires_full_refresh: True
                 desired_state: 200
+                ";
+                jinja_assert(wrapper, template, expect);
+            }
+
+            #[test]
+            fn relation_config_get_changeset_model_copy_overrides_fields() {
+                let mock = |value| {
+                    RelationConfig::new(
+                        AdapterType::Databricks,
+                        [Box::new(MockComponent {
+                            type_name: "mock1",
+                            diff_fn: diff::desired_state,
+                            to_jinja_fn: to_jinja,
+                            value,
+                        }) as Box<dyn ComponentConfig>],
+                        |_| false,
+                    )
+                };
+
+                let wrapper = RelationConfigTestWrapper::new(mock(200), mock(100));
+                let template = "
+                {% set changeset = obj.desired.get_changeset(obj.existing) %}
+                {% set copied = changeset.model_copy(update={'requires_full_refresh': true}) %}
+                original: {{ changeset.requires_full_refresh }}
+                copied: {{ copied.requires_full_refresh }}
+                copied_changes: {{ copied.changes['mock1'] }}
+                copied_again: {{ copied.model_copy().requires_full_refresh }}
+                ";
+                let expect = "
+                original: False
+                copied: True
+                copied_changes: 200
+                copied_again: True
                 ";
                 jinja_assert(wrapper, template, expect);
             }
