@@ -1,0 +1,14 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/schema.yml
+   Parsing models/filtered_st.sql
+   Parsing models/governed_mv.sql
+   Parsing models/masked_st.sql
+   Running ../scratch/target/run/databricks_clone_governed_views/seeds/row_filter_seed.sql
+ Succeeded seed  adapters_databricks_clone_governed_views.row_filter_seed (table) [1 of 2 in duration]
+   Running ../scratch/target/run/databricks_clone_governed_views/seeds/column_mask_seed.sql
+ Succeeded seed  adapters_databricks_clone_governed_views.column_mask_seed (table) [2 of 2 in duration]
+==================== Execution Summary =====================
+Finished 'seed' successfully for target 'databricks' [duration]
+Processed: 2 seeds
+Summary: 2 total | 2 success

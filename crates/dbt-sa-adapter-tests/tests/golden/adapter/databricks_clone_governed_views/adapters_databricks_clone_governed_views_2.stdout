@@ -1,0 +1,19 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/schema.yml
+   Parsing models/filtered_st.sql
+   Parsing models/governed_mv.sql
+   Parsing models/masked_st.sql
+ Rendering models/masked_st.sql
+   Running models/masked_st.sql
+ Succeeded model adapters_databricks_clone_governed_views.masked_st_prod (streaming) [1 of 3 in duration]
+ Rendering models/governed_mv.sql
+   Running models/governed_mv.sql
+ Succeeded model adapters_databricks_clone_governed_views.governed_mv_prod (mat_view) [2 of 3 in duration]
+ Rendering models/filtered_st.sql
+   Running models/filtered_st.sql
+ Succeeded model adapters_databricks_clone_governed_views.filtered_st_prod (streaming) [3 of 3 in duration]
+==================== Execution Summary =====================
+Finished 'run' successfully for target 'databricks' [duration]
+Processed: 3 models
+Summary: 3 total | 3 success

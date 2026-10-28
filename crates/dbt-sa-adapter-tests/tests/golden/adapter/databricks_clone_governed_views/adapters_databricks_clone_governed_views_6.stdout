@@ -1,0 +1,16 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/schema.yml
+   Parsing models/filtered_st.sql
+   Parsing models/governed_mv.sql
+   Parsing models/masked_st.sql
+   Started downloading deferred relations (1 items)
+  Finished [duration] downloading deferred relations (1 items)
+   Cloning models/masked_st.sql
+ Succeeded model adapters_databricks_clone_governed_views.masked_st (streaming) [1 of 3 in duration]
+   Cloning models/governed_mv.sql
+ Succeeded model adapters_databricks_clone_governed_views.governed_mv (mat_view) [2 of 3 in duration]
+   Cloning models/filtered_st.sql
+ Succeeded model adapters_databricks_clone_governed_views.filtered_st (streaming) [3 of 3 in duration]
+==================== Execution Summary =====================
+Finished 'clone' successfully for target 'databricks' [duration]

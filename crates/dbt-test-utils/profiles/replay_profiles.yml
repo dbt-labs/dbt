@@ -30,7 +30,7 @@ fusion_tests:
       host: 'dummy_hostname'
       http_path: 'dummy_path'
       token: 'dummy_token'
-      database: 'e2e'
+      database: 'main'
       schema: "fusion_tests_schema"
     redshift:
       type: redshift

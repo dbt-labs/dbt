@@ -1,0 +1,6 @@
+name: databricks_clone_governed_views
+version: '1.0'
+config-version: 2
+profile: fusion_tests
+flags:
+  use_materialization_v2: true

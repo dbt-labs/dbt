@@ -1,0 +1,12 @@
+2a8845fd:
+- sequence: 0
+  type: execute
+  sql: create or replace view `main`.`adapters_databricks_clone_governed_views`.`governed_mv` as select 'sentinel' as id
+4be5a78b:
+- sequence: 0
+  type: execute
+  sql: create or replace view `main`.`adapters_databricks_clone_governed_views`.`masked_st` as select 'sentinel' as id
+fa914d11:
+- sequence: 0
+  type: execute
+  sql: create or replace view `main`.`adapters_databricks_clone_governed_views`.`filtered_st` as select 'sentinel' as id

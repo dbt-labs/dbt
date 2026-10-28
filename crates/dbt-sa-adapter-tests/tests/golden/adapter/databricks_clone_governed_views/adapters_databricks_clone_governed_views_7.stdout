@@ -1,0 +1,8 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/schema.yml
+   Parsing models/filtered_st.sql
+   Parsing models/governed_mv.sql
+   Parsing models/masked_st.sql
+==================== Execution Summary =====================
+Finished 'run-operation' successfully for target 'databricks' [duration]

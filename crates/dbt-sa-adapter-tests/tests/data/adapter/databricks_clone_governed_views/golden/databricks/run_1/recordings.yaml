@@ -1,0 +1,53 @@
+1d6788ac:
+- sequence: 0
+  type: execute
+  sql: SHOW SCHEMAS IN `main`
+seed.databricks_clone_governed_views.column_mask_seed:
+- sequence: 0
+  type: execute
+  sql: |-
+    create  table `main`.`adapters_databricks_clone_governed_views`.`column_mask_seed` (`id` string ,`password` string )
+    
+    
+    using delta
+- sequence: 1
+  type: execute
+  sql: |-
+    insert overwrite `main`.`adapters_databricks_clone_governed_views`.`column_mask_seed` values
+    ('abc123','secret')
+seed.databricks_clone_governed_views.row_filter_seed:
+- sequence: 0
+  type: execute
+  sql: |-
+    SELECT
+    table_name,
+    if(table_type IN ('EXTERNAL', 'MANAGED', 'MANAGED_SHALLOW_CLONE', 'EXTERNAL_SHALLOW_CLONE'), 'table', lower(table_type)) AS table_type,
+    lower(data_source_format) AS file_format,
+    table_schema,
+    table_owner,
+    table_catalog,
+    if(
+    table_type IN (
+    'EXTERNAL',
+    'MANAGED',
+    'MANAGED_SHALLOW_CLONE',
+    'EXTERNAL_SHALLOW_CLONE'
+    ),
+    lower(table_type),
+    NULL
+    ) AS databricks_table_type
+    FROM `system`.`information_schema`.`tables`
+    WHERE table_catalog = 'main'
+    AND table_schema = 'adapters_databricks_clone_governed_views'
+- sequence: 1
+  type: execute
+  sql: |-
+    create  table `main`.`adapters_databricks_clone_governed_views`.`row_filter_seed` (`region` string ,`id` bigint )
+    
+    
+    using delta
+- sequence: 2
+  type: execute
+  sql: |-
+    insert overwrite `main`.`adapters_databricks_clone_governed_views`.`row_filter_seed` values
+    ('a',1),('b',2)

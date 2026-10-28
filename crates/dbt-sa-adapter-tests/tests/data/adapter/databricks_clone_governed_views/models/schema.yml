@@ -1,0 +1,20 @@
+version: 2
+models:
+  - name: governed_mv
+    config:
+      row_filter:
+        function: region_a_filter
+        columns: [region]
+  - name: filtered_st
+    config:
+      row_filter:
+        function: region_a_filter
+        columns: [region]
+  - name: masked_st
+    columns:
+      - name: id
+        data_type: string
+      - name: password
+        data_type: string
+        column_mask:
+          function: password_mask

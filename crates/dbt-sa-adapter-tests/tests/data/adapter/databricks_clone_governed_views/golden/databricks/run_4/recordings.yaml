@@ -1,0 +1,48 @@
+'13499082':
+- sequence: 0
+  type: execute
+  sql: select cast(id as string), region from `main`.`adapters_databricks_clone_governed_views`.`governed_mv` order by id
+33ecadc4:
+- sequence: 0
+  type: execute
+  sql: |-
+    SELECT
+    table_name,
+    if(table_type IN ('EXTERNAL', 'MANAGED', 'MANAGED_SHALLOW_CLONE', 'EXTERNAL_SHALLOW_CLONE'), 'table', lower(table_type)) AS table_type,
+    lower(data_source_format) AS file_format,
+    table_schema,
+    table_owner,
+    table_catalog,
+    if(
+    table_type IN (
+    'EXTERNAL',
+    'MANAGED',
+    'MANAGED_SHALLOW_CLONE',
+    'EXTERNAL_SHALLOW_CLONE'
+    ),
+    lower(table_type),
+    NULL
+    ) AS databricks_table_type
+    FROM `system`.`information_schema`.`tables`
+    WHERE table_catalog = 'main'
+    AND table_schema = 'adapters_databricks_clone_governed_views'
+5e744fc1:
+- sequence: 0
+  type: execute
+  sql: select cast(id as string), region from `main`.`adapters_databricks_clone_governed_views`.`filtered_st_prod` order by id
+62dfc40d:
+- sequence: 0
+  type: execute
+  sql: select id, password from `main`.`adapters_databricks_clone_governed_views`.`masked_st` order by id
+a298933e:
+- sequence: 0
+  type: execute
+  sql: select id, password from `main`.`adapters_databricks_clone_governed_views`.`masked_st_prod` order by id
+c986ce77:
+- sequence: 0
+  type: execute
+  sql: select cast(id as string), region from `main`.`adapters_databricks_clone_governed_views`.`filtered_st` order by id
+ce0c6b0a:
+- sequence: 0
+  type: execute
+  sql: select cast(id as string), region from `main`.`adapters_databricks_clone_governed_views`.`governed_mv_prod` order by id

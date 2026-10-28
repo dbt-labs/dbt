@@ -1,0 +1,12 @@
+9c4214d6:
+- sequence: 0
+  type: execute
+  sql: create or replace function main.adapters_databricks_clone_governed_views.region_a_filter(region string) returns boolean return region = 'a'
+b2bf8e59:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists main.adapters_databricks_clone_governed_views
+b8716206:
+- sequence: 0
+  type: execute
+  sql: create or replace function main.adapters_databricks_clone_governed_views.password_mask(password string) returns string return '*****'

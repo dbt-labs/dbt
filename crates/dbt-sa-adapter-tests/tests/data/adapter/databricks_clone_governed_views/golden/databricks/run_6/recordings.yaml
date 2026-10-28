@@ -1,0 +1,67 @@
+1d6788ac:
+- sequence: 0
+  type: execute
+  sql: SHOW SCHEMAS IN `main`
+33ecadc4:
+- sequence: 0
+  type: execute
+  sql: |-
+    SELECT
+    table_name,
+    if(table_type IN ('EXTERNAL', 'MANAGED', 'MANAGED_SHALLOW_CLONE', 'EXTERNAL_SHALLOW_CLONE'), 'table', lower(table_type)) AS table_type,
+    lower(data_source_format) AS file_format,
+    table_schema,
+    table_owner,
+    table_catalog,
+    if(
+    table_type IN (
+    'EXTERNAL',
+    'MANAGED',
+    'MANAGED_SHALLOW_CLONE',
+    'EXTERNAL_SHALLOW_CLONE'
+    ),
+    lower(table_type),
+    NULL
+    ) AS databricks_table_type
+    FROM `system`.`information_schema`.`tables`
+    WHERE table_catalog = 'main'
+    AND table_schema = 'adapters_databricks_clone_governed_views'
+model.databricks_clone_governed_views.filtered_st:
+- sequence: 0
+  type: execute
+  sql: DESCRIBE TABLE EXTENDED `main`.`adapters_databricks_clone_governed_views`.`filtered_st` AS JSON
+- sequence: 1
+  type: execute
+  sql: |-
+    create or replace view `main`.`adapters_databricks_clone_governed_views`.`filtered_st`
+    
+    
+    as (
+    SELECT * FROM `main`.`adapters_databricks_clone_governed_views`.`filtered_st_prod`
+    )
+model.databricks_clone_governed_views.governed_mv:
+- sequence: 0
+  type: execute
+  sql: DESCRIBE TABLE EXTENDED `main`.`adapters_databricks_clone_governed_views`.`governed_mv` AS JSON
+- sequence: 1
+  type: execute
+  sql: |-
+    create or replace view `main`.`adapters_databricks_clone_governed_views`.`governed_mv`
+    
+    
+    as (
+    SELECT * FROM `main`.`adapters_databricks_clone_governed_views`.`governed_mv_prod`
+    )
+model.databricks_clone_governed_views.masked_st:
+- sequence: 0
+  type: execute
+  sql: DESCRIBE TABLE EXTENDED `main`.`adapters_databricks_clone_governed_views`.`masked_st` AS JSON
+- sequence: 1
+  type: execute
+  sql: |-
+    create or replace view `main`.`adapters_databricks_clone_governed_views`.`masked_st`
+    
+    
+    as (
+    SELECT * FROM `main`.`adapters_databricks_clone_governed_views`.`masked_st_prod`
+    )

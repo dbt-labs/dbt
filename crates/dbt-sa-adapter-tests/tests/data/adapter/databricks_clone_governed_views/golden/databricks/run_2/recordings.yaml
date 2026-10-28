@@ -1,0 +1,171 @@
+1d6788ac:
+- sequence: 0
+  type: execute
+  sql: SHOW SCHEMAS IN `main`
+model.databricks_clone_governed_views.filtered_st:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace temporary view `filtered_st_prod__dbt_tmp` as
+    select * from `main`.`adapters_databricks_clone_governed_views`.`row_filter_seed`
+- sequence: 1
+  type: execute
+  sql: DESCRIBE TABLE EXTENDED `filtered_st_prod__dbt_tmp` AS JSON
+- sequence: 2
+  type: execute
+  sql: |-
+    CREATE STREAMING TABLE `main`.`adapters_databricks_clone_governed_views`.`filtered_st_prod`
+    
+    (
+    
+    
+    
+    
+    `region` STRING,
+    
+    
+    
+    
+    `id` bigint
+    
+    
+    
+    )
+    
+    WITH ROW FILTER `main`.`adapters_databricks_clone_governed_views`.`region_a_filter` ON (`region`)
+    
+    
+    
+    
+    
+    
+    
+    AS select * from stream `main`.`adapters_databricks_clone_governed_views`.`row_filter_seed`
+model.databricks_clone_governed_views.governed_mv:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace temporary view `governed_mv_prod__dbt_tmp` as
+    select 'a' as region, 1 as id
+    union all
+    select 'b' as region, 2 as id LIMIT 10
+- sequence: 1
+  type: execute
+  sql: DESCRIBE TABLE EXTENDED `governed_mv_prod__dbt_tmp` AS JSON
+- sequence: 2
+  type: execute
+  sql: |-
+    create or replace materialized view `main`.`adapters_databricks_clone_governed_views`.`governed_mv_prod`
+    
+    (
+    
+    
+    
+    
+    `region` STRING,
+    
+    
+    
+    
+    `id` int
+    
+    
+    
+    )
+    
+    WITH ROW FILTER `main`.`adapters_databricks_clone_governed_views`.`region_a_filter` ON (`region`)
+    
+    
+    
+    
+    
+    
+    
+    as
+    select 'a' as region, 1 as id
+    union all
+    select 'b' as region, 2 as id
+model.databricks_clone_governed_views.masked_st:
+- sequence: 0
+  type: execute
+  sql: |-
+    SELECT
+    table_name,
+    if(table_type IN ('EXTERNAL', 'MANAGED', 'MANAGED_SHALLOW_CLONE', 'EXTERNAL_SHALLOW_CLONE'), 'table', lower(table_type)) AS table_type,
+    lower(data_source_format) AS file_format,
+    table_schema,
+    table_owner,
+    table_catalog,
+    if(
+    table_type IN (
+    'EXTERNAL',
+    'MANAGED',
+    'MANAGED_SHALLOW_CLONE',
+    'EXTERNAL_SHALLOW_CLONE'
+    ),
+    lower(table_type),
+    NULL
+    ) AS databricks_table_type
+    FROM `system`.`information_schema`.`tables`
+    WHERE table_catalog = 'main'
+    AND table_schema = 'adapters_databricks_clone_governed_views'
+- sequence: 1
+  type: execute
+  sql: |-
+    create or replace temporary view `masked_st_prod__dbt_tmp` as
+    select * from `main`.`adapters_databricks_clone_governed_views`.`column_mask_seed`
+- sequence: 2
+  type: execute
+  sql: DESCRIBE TABLE EXTENDED `masked_st_prod__dbt_tmp` AS JSON
+- sequence: 3
+  type: execute
+  sql: |-
+    SELECT
+    table_catalog,
+    table_schema,
+    table_name,
+    filter_name,
+    target_columns
+    FROM `main`.`information_schema`.`row_filters`
+    WHERE table_catalog = 'main'
+    AND table_schema = 'adapters_databricks_clone_governed_views'
+    AND table_name = 'masked_st_prod'
+- sequence: 4
+  type: execute
+  sql: |-
+    CREATE STREAMING TABLE `main`.`adapters_databricks_clone_governed_views`.`masked_st_prod`
+    
+    (
+    
+    
+    
+    
+    
+    
+    
+    `id` string,
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    `password` string MASK password_mask
+    
+    
+    
+    )
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    AS select * from stream `main`.`adapters_databricks_clone_governed_views`.`column_mask_seed`
