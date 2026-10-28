@@ -172,6 +172,7 @@ class TestSourceBigQueryAliases:
 class TestDatabricksConfigKeys:
     DATABRICKS_CONFIG_KEYS = {
         "query_tags": '{"team": "finance"}',
+        "row_filter": "col_a > 0",
         "view_update_via_alter": True,
         "zorder": ["col_a", "col_b"],
         "incremental_apply_config_changes": True,
