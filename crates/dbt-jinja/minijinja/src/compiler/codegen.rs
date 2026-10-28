@@ -925,19 +925,7 @@ impl<'source> CodeGenerator<'source> {
         if !if_cond.false_body.is_empty()
             || matches!(self.profile, CodeGenerationProfile::TypeCheck(_, _))
         {
-            if let Some(else_tag_span) = if_cond.else_tag_span {
-                self.add(Instruction::JinjaLayoutEvent(
-                    JinjaLayoutEventKind::BlockMid,
-                    else_tag_span,
-                ));
-            } else if let Some(ast::Stmt::IfCond(nested_if_cond)) = if_cond.false_body.first() {
-                if nested_if_cond.start_tag_kind == JinjaLayoutEventKind::BlockMid {
-                    self.add(Instruction::JinjaLayoutEvent(
-                        JinjaLayoutEventKind::BlockMid,
-                        nested_if_cond.start_tag_span,
-                    ));
-                }
-            }
+            self.emit_if_false_branch_boundary(if_cond);
             self.start_else(span);
             if let Some(else_tag_span) = if_cond.else_tag_span {
                 self.add(Instruction::JinjaLayoutEvent(
@@ -973,6 +961,25 @@ impl<'source> CodeGenerator<'source> {
             span.end_offset,
         ));
         Ok(())
+    }
+
+    fn emit_if_false_branch_boundary(&mut self, if_cond: &ast::Spanned<ast::IfCond<'source>>) {
+        let boundary = if_cond
+            .else_tag_span
+            .or_else(|| match if_cond.false_body.first() {
+                Some(ast::Stmt::IfCond(nested))
+                    if nested.start_tag_kind == JinjaLayoutEventKind::BlockMid =>
+                {
+                    Some(nested.start_tag_span)
+                }
+                _ => None,
+            });
+        if let Some(span) = boundary {
+            self.add(Instruction::JinjaLayoutEvent(
+                JinjaLayoutEventKind::BlockMid,
+                span,
+            ));
+        }
     }
 
     fn compile_emit_expr(
