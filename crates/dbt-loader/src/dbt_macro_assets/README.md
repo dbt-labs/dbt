@@ -8,6 +8,9 @@ All adapter macros are currently maintained in:
 ### [2026-10-06]
   - dbt-databricks: emit constraint ALTER statements in a stable order from PR #1698
 
+### [2026-09-30]
+  - dbt-databricks: seed single materialization path from databricks/dbt-databricks#1690 (commit a9e368fa88d5fda1ee0e3eeb34732737ff57162c)
+
 ### [2026-09-24]
   - dbt-databricks: gate view/metric_view ALTER on matching relation type from PR #1687
 
