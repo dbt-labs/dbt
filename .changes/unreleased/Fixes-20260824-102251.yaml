@@ -1,0 +1,7 @@
+kind: Fixes
+body: Fix Fusion Jinja str.count() hanging when called with an empty substring
+time: 2026-08-24T10:22:51+02:00
+custom:
+    author: fallintoplace
+    issue: "16062"
+    project: dbt-core
