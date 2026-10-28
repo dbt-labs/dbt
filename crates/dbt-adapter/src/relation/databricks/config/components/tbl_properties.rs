@@ -109,7 +109,7 @@ fn from_local_config(
     if let Some(databricks_attr) = &model.__adapter_attr__.databricks_attr
         && let Some(props_map) = &databricks_attr.tblproperties
     {
-        for (key, value) in &props_map.0 {
+        for (key, value) in props_map {
             let value_str = match value {
                 YmlValue::String(s, _) => s.clone(),
                 // A bare date/datetime scalar resolves to a Timestamp; render its

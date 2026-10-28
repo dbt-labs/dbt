@@ -2924,7 +2924,7 @@ impl Adapter {
                         .__warehouse_specific_config__
                         .tblproperties
                         .iter()
-                        .flat_map(|tp| tp.0.iter())
+                        .flat_map(|tp| tp.iter())
                         .map(|(k, v)| (k.to_string(), yml_value_to_minijinja(v)))
                         .collect(),
                 };
