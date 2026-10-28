@@ -1,6 +1,5 @@
 use dbt_adapter::Adapter;
 use dbt_adapter::relation::render_effective_relation;
-use dbt_adapter_core::AdapterType;
 use dbt_common::{ErrorCode, FsError, fs_err};
 use dbt_common::{FsResult, constants::DBT_CTE_PREFIX, error::MacroSpan, stdfs};
 use dbt_frontend_common::{error::CodeLocation, span::Span};
@@ -241,7 +240,7 @@ pub fn inject_and_persist_ephemeral_models(
     } else {
         // Preserve the wrapper fallback for statements without a leading WITH clause.
         final_sql = format!(
-            "with {ctes}\n--EPHEMERAL-SELECT-WRAPPER-START\nselect * from (\n{final_sql}\n--EPHEMERAL-SELECT-WRAPPER-END\n)"
+            "with {ctes}\n--EPHEMERAL-SELECT-WRAPPER-START\nselect * from (\n{final_sql}\n--EPHEMERAL-SELECT-WRAPPER-END\n) as {model_name}"
         );
         let added_lines = ctes.lines().count() + 2;
         let added_offset = ctes.len() + 23;
@@ -739,32 +738,13 @@ pub fn generate_relation_name(
     identifier: &str,
     quote_config: ResolvedQuoting,
 ) -> FsResult<String> {
-    generate_relation_name_with_target(
-        parse_adapter,
-        database,
-        schema,
-        identifier,
-        quote_config,
-        None,
-    )
-}
-
-/// Generate a relation name using a node's resolved destination.
-pub fn generate_relation_name_with_target(
-    parse_adapter: Arc<Adapter>,
-    database: &str,
-    schema: &str,
-    identifier: &str,
-    quote_config: ResolvedQuoting,
-    target: Option<AdapterType>,
-) -> FsResult<String> {
     render_effective_relation(
         parse_adapter.adapter_type(),
         database,
         schema,
         identifier,
         quote_config,
-        target,
+        None,
     )
 }
 

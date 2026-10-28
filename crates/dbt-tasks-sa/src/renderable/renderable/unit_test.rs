@@ -1,5 +1,3 @@
-extern crate num_cpus;
-
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashSet};
@@ -18,7 +16,7 @@ use dbt_adapter::sql_types::{TypeOps, make_arrow_field};
 use dbt_adapter::{Adapter, Column};
 use dbt_adapter_core::{AdapterType, ExecutionPhase, quote_char};
 use dbt_common::cancellation::Cancellable;
-use dbt_common::collections::DashMap;
+use dbt_common::collections::SccHashMap;
 use dbt_common::constants::DBT_CTE_PREFIX;
 use dbt_common::io_args::{ReplayMode, TimeMachineMode};
 use dbt_common::static_analysis::is_static_analysis_off_or_baseline;
@@ -524,13 +522,13 @@ fn column_sql_type(column: &Column) -> Cow<'_, str> {
 
 fn columns_to_schema(
     type_ops: &dyn TypeOps,
-    columns: Vec<Column>,
+    columns: &[Arc<Column>],
     unique_id: &str,
 ) -> FsResult<SchemaRef> {
     let mut fields = Vec::with_capacity(columns.len());
 
     for column in columns {
-        let sql_type_str = column_sql_type(&column);
+        let sql_type_str = column_sql_type(column.as_ref());
 
         let field = make_arrow_field(
             type_ops,
@@ -824,7 +822,7 @@ fn infer_unit_test_expected_schema(
             )
         })?;
 
-        let columns = Column::vec_from_jinja_value(unit_test.node_adapter(), columns_as_value)
+        let columns = Column::vec_from_jinja_value(unit_test.node_adapter(), &columns_as_value)
             .map_err(|e| {
                 fs_err!(
                     ErrorCode::Generic,
@@ -836,7 +834,7 @@ fn infer_unit_test_expected_schema(
 
         columns_to_schema(
             adapter.engine().type_ops().as_ref(),
-            columns,
+            &columns,
             &unit_test.__common_attr__.unique_id,
         )
     };
@@ -1179,7 +1177,11 @@ fn extract_expect_values<'a>(
             "Unit test {} is invalid. Format `sql` only supports inline string rows or fixture files",
             unit_test.__common_attr__.name
         )),
-        // sql (raw fixture, or inline string)
+        // sql: the parser already read a resolved `fixture:` into `rows`, so
+        // `rows` is the normalized value and is matched first. The `fixture`
+        // arm below is a fallback for a node that reached here without that
+        // eager read; it is not where fixture-vs-rows precedence is decided.
+        // That rule lives once, in `resolve_unit_tests` (dbt-labs/fs#15487).
         (schemas::common::Formats::Sql, _, Some(Rows::String(sql))) => {
             Ok((sql.to_string(), column_names))
         }
@@ -1390,7 +1392,7 @@ fn render_unit_test(
     ctx: &mut TaskRunnerCtx,
     given_relations: DiscoveredGivenRelations,
     task_hooks: &dyn RenderTaskHooks,
-) -> FsResult<(SqlInstruction, Arc<DashMap<String, MinijinjaValue>>)> {
+) -> FsResult<(SqlInstruction, Arc<SccHashMap<String, MinijinjaValue>>)> {
     let node = unit_test
         .as_any()
         .downcast_ref::<DbtUnitTest>()
@@ -1494,13 +1496,22 @@ fn render_unit_test(
         .enumerate()
     {
         let (given_values, fixture_shape_values) = match given.format {
-            // SQL uses the string value verbatim
+            // SQL uses the string value verbatim.
+            //
+            // `rows` is consulted before `fixture` on purpose. `resolve_unit_tests`
+            // resolves a `fixture:` name to a path, reads its content into
+            // `rows` as raw text, and applies dbt-core's fixture-always-wins
+            // rule while doing so, so `rows` is already the normalized value.
+            // Reading `fixture` first re-read the same file from disk on every
+            // `dbt test`/`dbt build` and discarded what the parser had computed
+            // (dbt-labs/fs#15487). The `fixture` branch stays as a fallback for
+            // a node that reached here without the parser's eager read.
             schemas::common::Formats::Sql => {
-                let sql = if let Some(fixture) = &given.fixture {
+                let sql = if let Some(Rows::String(sql)) = &given.rows {
+                    sql.clone()
+                } else if let Some(fixture) = &given.fixture {
                     let filename = ctx.inner.arg.io.in_dir.join(fixture.clone());
                     stdfs::read_to_string(filename)?
-                } else if let Some(Rows::String(sql)) = &given.rows {
-                    sql.clone()
                 } else {
                     return Err(fs_err!(
                         ErrorCode::InvalidConfig,
@@ -4456,11 +4467,11 @@ mod tests {
         for (precision, scale) in [(11, 4), (38, 0), (38, 37), (4, 4)] {
             let data_type = DataType::Decimal128(precision, scale);
             let field = Arc::new(Field::new("AMOUNT", data_type.clone(), true));
-            let column = builder.build(&field, &type_ops).unwrap();
+            let column = Arc::new(builder.build(&field, &type_ops).unwrap());
             assert_eq!(column.original_sql_str(), Some("NUMBER"));
             assert_eq!(column.data_type(), format!("NUMBER({precision},{scale})"));
 
-            let schema = columns_to_schema(&type_ops, vec![column], "unit_test.decimal").unwrap();
+            let schema = columns_to_schema(&type_ops, &[column], "unit_test.decimal").unwrap();
             assert_eq!(schema.field(0).data_type(), &data_type);
             assert_eq!(
                 type_ops

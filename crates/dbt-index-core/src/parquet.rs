@@ -1108,6 +1108,12 @@ impl IndexWriter {
                     &mut changed,
                 );
                 set_if_changed(r, "grain_tested", str_array(&c.grain_tested), &mut changed);
+                set_if_changed(
+                    r,
+                    "grain_inferred",
+                    str_array(&c.grain_inferred),
+                    &mut changed,
+                );
                 set_if_changed(r, "classifiers", str_array(&c.classifiers), &mut changed);
                 set_if_changed(r, "table_role", opt_str(&c.table_role), &mut changed);
                 if changed {

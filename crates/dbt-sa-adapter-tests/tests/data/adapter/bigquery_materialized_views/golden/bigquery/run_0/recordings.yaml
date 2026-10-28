@@ -1,0 +1,62 @@
+4b9216cc:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists `dbt-test-env`.`adapters_bigquery_materialized_views`
+model.test.mat_view:
+- sequence: 0
+  type: execute
+  sql: |-
+    create materialized view if not exists `dbt-test-env`.`adapters_bigquery_materialized_views`.`mat_view`
+    
+    
+    OPTIONS(
+    labels=[('my_labels', 'label_value')],
+    
+    enable_refresh=True,
+    
+    refresh_interval_minutes=60.0
+    )
+    as 
+    
+    SELECT * FROM `dbt-test-env`.`adapters_bigquery_materialized_views`.`orders`
+- sequence: 1
+  type: execute
+  sql: |-
+    drop materialized view if exists `dbt-test-env`.`adapters_bigquery_materialized_views`.`mat_view__dbt_backup`
+- sequence: 2
+  type: execute
+  sql: |-
+    drop materialized view if exists `dbt-test-env`.`adapters_bigquery_materialized_views`.`mat_view__dbt_tmp`
+model.test.orders:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace table `dbt-test-env`.`adapters_bigquery_materialized_views`.`orders`
+    
+    
+    
+    
+    
+    OPTIONS()
+    as (
+    
+    
+    SELECT
+    1 AS id,
+    'milkshake' AS product,
+    4.99 AS price,
+    TIMESTAMP('2025-01-01') AS ordered_at,
+    UNION ALL
+    SELECT
+    2 AS id,
+    'ice cream' AS product,
+    2.99 AS price,
+    TIMESTAMP('2025-01-02') AS ordered_at,
+    UNION ALL
+    SELECT
+    3 AS id,
+    'latte' AS product,
+    3.99 AS price,
+    TIMESTAMP('2025-01-03') AS ordered_at
+    
+    );

@@ -89,6 +89,15 @@ impl RunCacheLifecycle {
         self.service.client.clone()
     }
 
+    /// The service-wide default for `compare_unrendered_code` (false when the service is not
+    /// configured).
+    pub fn compare_unrendered_code_default(&self) -> bool {
+        self.service
+            .config
+            .as_ref()
+            .is_some_and(|c| c.compare_unrendered_code)
+    }
+
     pub fn defer_to_target(&self, active_profile: &DbtProfile) -> Option<String> {
         self.service
             .config

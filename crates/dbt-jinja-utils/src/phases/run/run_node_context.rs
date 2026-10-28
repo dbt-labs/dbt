@@ -80,7 +80,7 @@ fn normalize_column_data_types(columns: &mut YmlValue, adapter_type: AdapterType
 
         let translated = column_static.translate_type(&data_type_str);
         if translated != data_type_str {
-            *data_type = YmlValue::string(translated);
+            *data_type = YmlValue::string(translated.into_owned());
         }
     }
 }

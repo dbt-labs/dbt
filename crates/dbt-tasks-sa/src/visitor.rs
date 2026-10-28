@@ -323,7 +323,7 @@ fn record_skipped_stats(
             ),
         };
         // Insert stats for skipped nodes so they appear in run_results.json
-        ctx.inner.run_stats.insert(
+        ctx.inner.run_stats.upsert_sync(
             unique_id.clone(),
             Stat::new(
                 unique_id,

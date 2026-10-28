@@ -1,0 +1,14 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/source.sql
+   Parsing models/target.sql
+ Rendering models/source.sql
+   Running models/source.sql
+ Succeeded model adapters_redshift_incremental_merge_schema_change.source (table) [1 of 2 in duration]
+ Rendering models/target.sql
+   Running models/target.sql
+ Succeeded model adapters_redshift_incremental_merge_schema_change.target (incremental) [2 of 2 in duration]
+==================== Execution Summary =====================
+Finished 'run' successfully for target 'redshift' [duration]
+Processed: 2 models
+Summary: 2 total | 2 success

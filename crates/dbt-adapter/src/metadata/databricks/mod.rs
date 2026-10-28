@@ -12,6 +12,7 @@ use arrow_schema::{Field, Schema};
 use dbt_adapter_core::AdapterType;
 use dbt_adapter_core::ExecutionPhase;
 use dbt_adapter_engine::MapReduce;
+use dbt_adapter_engine::cow::uppercase;
 use dbt_adbc::QueryCtx;
 use dbt_agate::AgateTable;
 use dbt_common::ErrorCode;
@@ -27,8 +28,8 @@ use dbt_schemas::schemas::relations::base::{BaseRelation, RelationPattern};
 use indexmap::IndexMap;
 use minijinja::value::Object;
 use minijinja::{State, Value};
-use once_cell::sync::Lazy;
 use regex::Regex;
+use std::sync::LazyLock;
 
 use crate::adapter::adapter_impl::AdapterImpl;
 use crate::engine::databricks_statement_options;
@@ -125,7 +126,7 @@ WHERE table_catalog = '{}'
         let name = names.value(i);
         let schema = schemas.value(i);
         let catalog = catalogs.value(i);
-        let table_type = table_types.value(i).to_uppercase();
+        let table_type = uppercase(table_types.value(i).into());
         let is_delta = file_formats.value(i) == "delta";
         let table_format = table_format_from_provider(Some(file_formats.value(i)));
         let is_shallow_clone = !databricks_table_types.is_null(i)
@@ -140,7 +141,7 @@ WHERE table_catalog = '{}'
             )
             .with_relation_type(RelationType::from_adapter_type(
                 AdapterType::Databricks,
-                table_type.as_str(),
+                table_type.as_ref(),
             ))
             .with_quoting(engine.quoting())
             .with_is_delta(is_delta)
@@ -1927,8 +1928,8 @@ fn build_schema_from_basic_describe_table(
     Ok(Arc::new(Schema::new(fields)))
 }
 
-static DBR_VERSION_REGEX: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"([1-9][0-9]*)\.(x|0|[1-9][0-9]*)").unwrap());
+static DBR_VERSION_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"([1-9][0-9]*)\.(x|0|[1-9][0-9]*)").unwrap());
 
 /// Extract DBR version from a spark version string using regex.
 ///

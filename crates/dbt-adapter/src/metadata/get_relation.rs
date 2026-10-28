@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use arrow::array::{Array as _, StringArray};
 use dbt_adapter_core::AdapterType;
+use dbt_adapter_engine::cow::uppercase;
 use dbt_adbc::QueryCtx;
 use dbt_common::{AdapterError, AdapterErrorKind, AdapterResult};
 use dbt_schemas::dbt_types::RelationType;
@@ -106,9 +107,9 @@ pub(crate) fn relation_from_routines_batch(
 
     let column = batch.column_by_name("table_type").unwrap();
     let string_array = column.as_any().downcast_ref::<StringArray>().unwrap();
-    let relation_type_name = string_array.value(0).to_uppercase();
+    let relation_type_name = uppercase(string_array.value(0).into());
     let relation_type =
-        RelationType::from_adapter_type(adapter.adapter_type(), &relation_type_name);
+        RelationType::from_adapter_type(adapter.adapter_type(), relation_type_name.as_ref());
 
     Ok(Some(
         Relation::new(
@@ -387,7 +388,7 @@ fn bigquery_get_relation(
 
     let string_array = batch.column_values::<StringArray>("table_type")?;
 
-    let relation_type_name = string_array.value(0).to_uppercase();
+    let relation_type_name = uppercase(string_array.value(0).into());
     let relation_type = RelationType::from_adapter_type(AdapterType::Bigquery, &relation_type_name);
 
     let mut relation = Box::new(

@@ -3,6 +3,7 @@
 pub mod command;
 pub mod confirm;
 pub mod dist;
+pub mod packages;
 mod proc;
 pub mod python;
 pub mod upgrade;
@@ -866,7 +867,10 @@ fn is_prerelease_version(version: &str) -> bool {
 }
 
 fn get_current(command_name: &str) -> FsResult<DistInfo> {
-    const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+    const CURRENT_VERSION: &str = match option_env!("DBT_VERSION") {
+        Some(version) => version,
+        None => env!("CARGO_PKG_VERSION"),
+    };
 
     let exe_path = env::current_exe().map_err(|e| {
         fs_err!(ErrorCode::IoError, "Failed to get current executable")

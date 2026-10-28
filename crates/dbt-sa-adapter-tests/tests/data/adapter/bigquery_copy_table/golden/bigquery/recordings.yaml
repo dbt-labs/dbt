@@ -1,0 +1,28 @@
+model.test.a:
+- sequence: 0
+  type: execute
+  sql: CREATE SCHEMA IF NOT EXISTS adapters_bigquery_copy_table
+- sequence: 1
+  type: execute
+  sql: CREATE OR REPLACE TABLE adapters_bigquery_copy_table.source_non_empty (id int64)
+- sequence: 2
+  type: execute
+  sql: INSERT INTO adapters_bigquery_copy_table.source_non_empty VALUES (1)
+- sequence: 3
+  type: execute
+  sql: CREATE OR REPLACE TABLE adapters_bigquery_copy_table.existing_dest (id int64)
+- sequence: 4
+  type: execute
+  sql: INSERT INTO adapters_bigquery_copy_table.existing_dest VALUES (2)
+- sequence: 5
+  type: execute
+  sql: ''
+- sequence: 6
+  type: execute
+  sql: SELECT * FROM `dbt-test-env`.`adapters_bigquery_copy_table`.`non_existing_dest`
+- sequence: 7
+  type: execute
+  sql: ''
+- sequence: 8
+  type: execute
+  sql: SELECT * FROM `dbt-test-env`.`adapters_bigquery_copy_table`.`existing_dest` ORDER BY id

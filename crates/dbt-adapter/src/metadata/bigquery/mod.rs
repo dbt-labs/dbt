@@ -20,6 +20,7 @@ use arrow_schema::*;
 use dbt_adapter_core::AdapterType;
 use dbt_adapter_core::ExecutionPhase;
 use dbt_adapter_engine::MapReduce;
+use dbt_adapter_engine::cow::uppercase;
 use dbt_adbc::*;
 use dbt_common::cancellation::Cancellable;
 use dbt_common::cancellation::CancellationToken;
@@ -680,7 +681,7 @@ pub(crate) fn generate_system_table_fqn(
     view_name: &str,
     user_preferred_region: Option<&str>,
 ) -> String {
-    let sys_identifier = view_name.to_uppercase();
+    let sys_identifier = uppercase(view_name.into());
 
     match qualifier_options_for_info_schema_view(&sys_identifier) {
         Some(qualifier_option) => match qualifier_option.requirement {
@@ -1504,9 +1505,10 @@ impl MetadataAdapter for BigqueryMetadataAdapter {
             return Box::pin(async { Ok(ViewDefinitionFetchResult::default()) });
         }
 
-        let mut by_triple: HashMap<(String, String, String), Arc<dyn BaseRelation>> =
-            HashMap::new();
-        let mut by_dataset: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
+        type Triple = (String, String, String);
+        type Dataset = (String, String);
+        let mut by_triple: HashMap<Triple, Arc<dyn BaseRelation>> = HashMap::new();
+        let mut by_dataset: BTreeMap<Dataset, Vec<String>> = BTreeMap::new();
 
         for rel in relations {
             let project = match rel.database_as_resolved_str() {
@@ -1537,12 +1539,12 @@ impl MetadataAdapter for BigqueryMetadataAdapter {
                     dataset.to_lowercase(),
                     table.to_lowercase(),
                 ),
-                rel.clone(),
+                Arc::clone(rel),
             );
             by_dataset
-                .entry((project, dataset))
+                .entry((project.into_owned(), dataset.into_owned()))
                 .or_default()
-                .push(table);
+                .push(table.into());
         }
 
         let factory = Box::new(AdapterConnectionFactory::new(self.adapter.engine().clone()));
@@ -2510,7 +2512,7 @@ mod tests {
 
         let column = batch.column_by_name("table_type").unwrap();
         let string_array = column.as_any().downcast_ref::<StringArray>().unwrap();
-        let relation_type_name = string_array.value(0).to_uppercase();
+        let relation_type_name = uppercase(string_array.value(0).into());
         let relation_type =
             RelationType::from_adapter_type(AdapterType::Bigquery, &relation_type_name);
 

@@ -1,0 +1,23 @@
+       dbt 
+   Loading profiles.yml
+   Loading packages.yml
+Installing packages
+   Loading dbt_project.yml
+   Loading dbt_packages/simple/dbt_project.yml
+   Loading dbt_internal_packages/dbt-adapters/dbt_project.yml
+   Loading dbt_internal_packages/dbt-snowflake/dbt_project.yml
+   Parsing dbt_packages/simple/models/package_table.sql
+   Parsing models/hello_table.sql
+   Parsing models/hello_view.sql
+   Parsing models/hello_view_implicit.sql
+ Compiling dbt_packages/simple/models/package_table.sql
+ Compiling models/hello_view_implicit.sql
+    Failed model.hello_world.hello_view_implicit
+ Compiling models/hello_view.sql
+    Failed model.hello_world.hello_view
+ Compiling models/hello_table.sql
+   Running dbt_packages/simple/models/package_table.sql
+   Success dbt_packages/simple/models/package_table.sql
+   Running models/hello_table.sql
+   Success models/hello_table.sql
+  Finished 'run' target 'snowflake' with 2 errors

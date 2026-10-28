@@ -1,7 +1,7 @@
 //! Utility functions for the resolver
 use crate::args::ResolveArgs;
 use crate::dbt_namespace::DbtNamespace;
-use crate::dbt_project_config::ProjectConfigResolver;
+use crate::dbt_project_config::{NodeLayers, ProjectConfigResolver};
 use crate::resolve::resolve_properties::MinimalPropertiesEntry;
 use crate::sql_file_info::SqlFileInfo;
 use crate::utils::{
@@ -72,6 +72,11 @@ pub struct SqlFileRenderResult<T: ResolvableConfig<T>, S> {
     pub sql_file_info: SqlFileInfo<T>,
     /// Fully resolved config for this node (project + properties + inline + root overlay).
     pub config: T::Resolved,
+    /// `--adapter`, else the layers' `+adapter`, else the inherited one; `None` means the default.
+    /// Always `None` for analyses and checks.
+    pub adapter: Option<AdapterType>,
+    /// The adapter whose alias table read `config`.
+    pub alias_adapter: AdapterType,
     /// The verbatim, unrendered source contents (raw bytes from disk for SQL/Python,
     /// or the synthesized `select * from {{ ... }}` for YAML-defined snapshots).
     /// Used to populate `raw_code` in the manifest — see dbt-core/core/dbt/parser/base.py:249.
@@ -339,6 +344,7 @@ where
         database,
         schema,
         config_resolver,
+        adapter_hint,
         resource_paths,
         package_quoting,
         uses_snapshot_fqn,
@@ -400,7 +406,16 @@ where
 
     let model_properties_config = maybe_model.as_ref().and_then(|m| m.get_config());
     let properties_configs: &[Option<&T>] = &[model_properties_config];
-    let properties_config = config_resolver.with_configs(&original_fqn, properties_configs);
+    let inherited_adapter = adapter_hint
+        .as_ref()
+        .and_then(|hint| hint.get(&dbt_asset.path).copied());
+    let pre_render_layers = NodeLayers {
+        original_fqn: &original_fqn,
+        fqn: &fqn,
+        configs: properties_configs,
+        inherited_adapter,
+    };
+    let properties_config = config_resolver.with_node_configs(&pre_render_layers).config;
 
     // Early exit: the root overlay has the highest precedence for dependency packages, so if it
     // explicitly disables this node no inline `{{ config(...) }}` call can re-enable it.
@@ -411,10 +426,13 @@ where
             .await
             .ok()
             .and_then(|sql| parse_unrendered_config(&sql, *uses_snapshot_fqn));
+        let resolved = config_resolver.resolve_node(&pre_render_layers);
         return Ok(Some(SqlFileRenderResult {
             asset: dbt_asset.clone(),
             sql_file_info: SqlFileInfo::default(),
-            config: config_resolver.resolve_with_configs(&original_fqn, &fqn, properties_configs),
+            config: resolved.config,
+            adapter: resolved.adapter,
+            alias_adapter: resolved.alias_adapter,
             raw_code: String::new(),
             rendered_sql: String::new(),
             macro_spans: MacroSpans::default(),
@@ -451,6 +469,7 @@ where
         *adapter_type,
         database,
         schema,
+        config_resolver.inline_config_aliasing(&pre_render_layers),
         &model_name,
         fqn.clone(),
         package_name,
@@ -521,7 +540,17 @@ where
         *static_source_calls_cell.borrow_mut() = find_string_arg_calls(ast, &["source"]);
     };
 
-    let (sql_file_info, resolved_config, status, rendered_sql, macro_spans, macro_dependencies) =
+    // With the inline `config()` layer known, the node's adapter is picked again.
+    let resolve_with_inline = |config_calls: &[Box<T>]| {
+        let calls: Vec<&T> = config_calls.iter().map(|call| call.as_ref()).collect();
+        let inline_config = config_resolver.fold_inline_calls(&pre_render_layers, &calls);
+        let configs = [model_properties_config, inline_config.as_ref()];
+        config_resolver.resolve_node(&NodeLayers {
+            configs: &configs,
+            ..pre_render_layers
+        })
+    };
+    let (sql_file_info, resolved, status, rendered_sql, macro_spans, macro_dependencies) =
         match render_sql_with_listeners(
             &sql,
             jinja_env.as_ref(),
@@ -546,14 +575,7 @@ where
                         DbtChecksum::hash(normalized_sql.as_bytes()),
                         execute_exists.load(atomic::Ordering::Relaxed),
                     );
-                    config_resolver.resolve_with_configs(
-                        &original_fqn,
-                        &fqn,
-                        &[
-                            model_properties_config,
-                            temp_info.explicit_config.as_deref(),
-                        ],
-                    )
+                    resolve_with_inline(&temp_info.config_calls).config
                 };
 
                 // Collect dependencies from pre and post hooks (adds to same sql_resources)
@@ -573,22 +595,18 @@ where
                 // and case differences. See https://github.com/dbt-labs/dbt-fusion/issues/768
                 let normalized_sql = normalize_sql(&sql);
 
-                let (sql_file_info, resolved_config) = {
+                let (sql_file_info, resolved) = {
                     let sql_resources_locked = sql_resources.lock().unwrap().clone();
                     let info = SqlFileInfo::from_sql_resources(
                         sql_resources_locked,
                         DbtChecksum::hash(normalized_sql.as_bytes()),
                         execute_exists.load(atomic::Ordering::Relaxed),
                     );
-                    let cfg = config_resolver.resolve_with_configs(
-                        &original_fqn,
-                        &fqn,
-                        &[model_properties_config, info.explicit_config.as_deref()],
-                    );
+                    let cfg = resolve_with_inline(&info.config_calls);
                     (info, cfg)
                 };
 
-                let status = if resolved_config.enabled() {
+                let status = if resolved.config.enabled() {
                     ModelStatus::Enabled
                 } else {
                     ModelStatus::Disabled
@@ -611,7 +629,8 @@ where
 
                 // Emit mangled ref warnings based on the final config's static_analysis setting
                 // This allows {{ config(static_analysis='off') }} to suppress warnings
-                if resolved_config
+                if resolved
+                    .config
                     .get_static_analysis()
                     .map(|s| s.into_inner())
                     != Some(StaticAnalysisKind::Off)
@@ -630,7 +649,7 @@ where
                 let macro_dependencies = macro_dep_listener.drain_macro_unique_ids();
                 (
                     sql_file_info,
-                    resolved_config,
+                    resolved,
                     (status, false),
                     rendered_sql,
                     macro_spans,
@@ -641,7 +660,7 @@ where
                 // Keep the partially resolved node available to selection. Executable
                 // commands render selected nodes again during compilation, so a render
                 // failure in an unselected node must not abort the parse phase.
-                let (sql_file_info, resolved_config) = {
+                let (sql_file_info, resolved) = {
                     let sql_resources_locked = sql_resources.lock().unwrap().clone();
                     let normalized_sql = normalize_sql(&sql);
                     let info = SqlFileInfo::from_sql_resources(
@@ -649,11 +668,7 @@ where
                         DbtChecksum::hash(normalized_sql.as_bytes()),
                         execute_exists.load(atomic::Ordering::Relaxed),
                     );
-                    let cfg = config_resolver.resolve_with_configs(
-                        &original_fqn,
-                        &fqn,
-                        &[model_properties_config, info.explicit_config.as_deref()],
-                    );
+                    let cfg = resolve_with_inline(&info.config_calls);
                     (info, cfg)
                 };
 
@@ -665,7 +680,7 @@ where
                         (ModelStatus::ParsingFailed, false)
                     }
                     _ => {
-                        if resolved_config.enabled() {
+                        if resolved.config.enabled() {
                             let err_with_loc = err.with_location(display_path.clone());
                             if *defer_render_errors_to_compile
                                 && command_defers_render_errors(args.command)
@@ -684,7 +699,7 @@ where
 
                 (
                     sql_file_info,
-                    resolved_config,
+                    resolved,
                     (status, render_error_deferred),
                     String::new(),
                     MacroSpans::default(),
@@ -713,7 +728,9 @@ where
     Ok(Some(SqlFileRenderResult {
         asset: dbt_asset.clone(),
         sql_file_info,
-        config: resolved_config,
+        config: resolved.config,
+        adapter: resolved.adapter,
+        alias_adapter: resolved.alias_adapter,
         // Match dbt-core: file contents are loaded via `load_file_contents(strip=True)`,
         // which trims leading/trailing whitespace before storing as raw_code.
         raw_code: sql.trim().to_owned(),
@@ -749,6 +766,8 @@ pub struct RenderCtxInner<T: ResolvableConfig<T>> {
     pub schema: String,
     /// The config resolver for this package
     pub config_resolver: ProjectConfigResolver<T>,
+    /// The adapter each node file inherits when none of its config layers sets one.
+    pub adapter_hint: Option<HashMap<PathBuf, AdapterType>>,
     /// The resource paths
     pub resource_paths: Vec<String>,
     /// The quoting for the package
@@ -883,7 +902,6 @@ pub async fn collect_adapter_identifiers_detect_unsafe<
     node_map: HashMap<String, T>,
     node_resolver: &NodeResolver,
     jinja_env: Arc<JinjaEnv>,
-    adapter_type: AdapterType,
     package_name: &str,
     root_project_name: &str,
     runtime_config: Arc<DbtRuntimeConfig>,
@@ -925,7 +943,6 @@ pub async fn collect_adapter_identifiers_detect_unsafe<
                     arg,
                     node_resolver,
                     &jinja_env,
-                    adapter_type,
                     package_name,
                     root_project_name,
                     runtime_config,
@@ -957,7 +974,6 @@ async fn process_model_chunk_for_unsafe_detection<
     arg: Arc<ResolveArgs>,
     node_resolver: Arc<NodeResolver>,
     jinja_env: &JinjaEnv,
-    adapter_type: AdapterType,
     package_name: String,
     root_project_name: String,
     runtime_config: Arc<DbtRuntimeConfig>,
@@ -1004,7 +1020,7 @@ async fn process_model_chunk_for_unsafe_detection<
         let model = Arc::new(model);
         let (mut render_resolved_context, _) = build_compile_node_context_inner(
             model.clone(),
-            adapter_type,
+            model.node_adapter(),
             &render_base_context,
             &root_project_name,
             node_resolver.clone(),
@@ -1041,7 +1057,7 @@ async fn process_model_chunk_for_unsafe_detection<
             .parse_adapter_state()
             .expect("Adapter must be configured for the parse phase")
             .unsafe_nodes()
-            .contains(&model.common().unique_id);
+            .contains_sync(&model.common().unique_id);
         // The node context holds the other reference; drop it so the node is moved out, not cloned.
         drop(render_resolved_context);
         nodes.push((Arc::unwrap_or_clone(model), is_unsafe));

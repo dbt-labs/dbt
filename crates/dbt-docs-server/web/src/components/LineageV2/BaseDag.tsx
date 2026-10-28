@@ -8,6 +8,7 @@ import { fqnFromUniqueId } from '../../hooks/useLineageData';
 import { useTheme } from '../../hooks/useTheme';
 import { Spinner } from '../../shared';
 import { UNSUPPORTED_SURFACE_MESSAGE } from '../../shared/hooks/unsupportedSurface';
+import { isProjectLineageRoot } from '../../shared/util/projectLineage';
 import {
   useLineageFlow,
   useLineageStatus,
@@ -21,6 +22,9 @@ import { DAG_NODE_TYPES } from './DagNode';
 
 interface BaseDagProps {
   rootUniqueId: string;
+  /** Shown in the hop bar's path box for the whole-project view, which has no root
+   *  node to print. */
+  projectName?: string | null;
   /** Rendered on the far left of the hop bar's own holder -- see DagHopBar. */
   topBarLeft?: ReactNode;
   /** Clicking a resource pill in the Groups view bubbles here -- the caller is
@@ -40,6 +44,19 @@ interface BaseDagProps {
 
 // Default hop depth, both directions -- matches the Figma states' "1+ / +1" default.
 const DEFAULT_HOPS = 1;
+// Whole-project view: upstream is already "max" (it starts at the top), downstream
+// opens on 3 so a large project doesn't render in full until asked.
+const PROJECT_DEFAULT_UPSTREAM_HOPS = Infinity;
+const PROJECT_DEFAULT_DOWNSTREAM_HOPS = 3;
+
+function defaultHops(rootUniqueId: string) {
+  return isProjectLineageRoot(rootUniqueId)
+    ? {
+        upstream: PROJECT_DEFAULT_UPSTREAM_HOPS,
+        downstream: PROJECT_DEFAULT_DOWNSTREAM_HOPS,
+      }
+    : { upstream: DEFAULT_HOPS, downstream: DEFAULT_HOPS };
+}
 
 // Hoisted: an object literal here would be a new prop identity on every render, which
 // React Flow treats as a changed edge default.
@@ -71,6 +88,7 @@ interface BaseDagCanvasProps {
   topBarLeft?: ReactNode;
   onRecenter?: (uniqueId: string) => void;
   onNodeClick?: (uniqueId: string) => void;
+  projectName?: string | null;
 }
 
 function BaseDagCanvas({
@@ -81,6 +99,7 @@ function BaseDagCanvas({
   topBarLeft,
   onRecenter,
   onNodeClick,
+  projectName,
 }: BaseDagCanvasProps) {
   const { nodes, edges, onNodesChange, onEdgesChange, onConnect } = useLineageFlow();
   const { status, error, rootUniqueId } = useLineageStatus();
@@ -181,7 +200,9 @@ function BaseDagCanvas({
           nodeTypes={DAG_NODE_TYPES}
           colorMode={resolved}
           nodesConnectable={false}
-          nodesDraggable={false}
+          // Drag to untangle a busy graph. Positions live in view state only, so a
+          // re-layout (new root, depth or selector change) puts nodes back.
+          nodesDraggable
           elementsSelectable={true}
           ref={ref}
         >
@@ -200,7 +221,14 @@ function BaseDagCanvas({
        *  there's no separate overlay to collide with. */}
       <div className="absolute inset-x-4 top-4 z-10">
         <DagHopBar
-          path={rootUniqueId ? fqnFromUniqueId(rootUniqueId) : ''}
+          path={
+            isProjectLineageRoot(rootUniqueId)
+              ? (projectName ?? '')
+              : rootUniqueId
+                ? fqnFromUniqueId(rootUniqueId)
+                : ''
+          }
+          upstreamDisabled={isProjectLineageRoot(rootUniqueId)}
           upstreamHops={upstreamHops}
           downstreamHops={downstreamHops}
           onUpstreamChange={onUpstreamChange}
@@ -224,6 +252,7 @@ function BaseDagCanvas({
         <DagBottomBar
           view={view}
           onViewChange={setView}
+          groupsDisabled={isProjectLineageRoot(rootUniqueId)}
           onRefresh={() => fitView({ padding: 0.2, duration: 200 })}
           fullscreenTarget={fullscreenTarget}
         />
@@ -238,12 +267,15 @@ function BaseDagCanvas({
  *  state, since both directions ultimately feed the one fetch below. */
 export function BaseDag({
   rootUniqueId,
+  projectName,
   topBarLeft,
   onRecenter,
   onNodeClick,
 }: BaseDagProps) {
-  const [upstreamHops, setUpstreamHops] = useState(DEFAULT_HOPS);
-  const [downstreamHops, setDownstreamHops] = useState(DEFAULT_HOPS);
+  const [upstreamHops, setUpstreamHops] = useState(defaultHops(rootUniqueId).upstream);
+  const [downstreamHops, setDownstreamHops] = useState(
+    defaultHops(rootUniqueId).downstream,
+  );
   // Recentering (from a Groups pill, or any other future "make this the root"
   // action) always lands on a fresh 1+/+1 -- without this, hops from the
   // previous root would silently carry over, since BaseDag doesn't remount
@@ -260,8 +292,8 @@ export function BaseDag({
   const [hopsRoot, setHopsRoot] = useState(rootUniqueId);
   if (hopsRoot !== rootUniqueId) {
     setHopsRoot(rootUniqueId);
-    setUpstreamHops(DEFAULT_HOPS);
-    setDownstreamHops(DEFAULT_HOPS);
+    setUpstreamHops(defaultHops(rootUniqueId).upstream);
+    setDownstreamHops(defaultHops(rootUniqueId).downstream);
   }
   useHydrateLineageStore(rootUniqueId, upstreamHops, downstreamHops);
   return (
@@ -273,6 +305,7 @@ export function BaseDag({
       topBarLeft={topBarLeft}
       onRecenter={onRecenter}
       onNodeClick={onNodeClick}
+      projectName={projectName}
     />
   );
 }

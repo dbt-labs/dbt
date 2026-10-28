@@ -428,12 +428,7 @@ fn update_run_cache_defer_nodes(
     db_config: &DbConfig,
     exclude_unique_ids: Option<&BTreeSet<String>>,
 ) -> FsResult<()> {
-    let default_database = db_config.get_database_or_default();
-    let default_schema = db_config
-        .get_schema()
-        .map(String::as_str)
-        .unwrap_or("public")
-        .to_string();
+    let (default_database, default_schema) = db_config.profile_database_and_schema();
 
     update_defer_nodes_of(&mut defer_nodes.models, exclude_unique_ids, |node| {
         update_run_cache_defer_model(
@@ -548,7 +543,7 @@ fn update_run_cache_defer_model(
         &package_name,
         base_context,
         &components,
-        resolved_state.adapter_type,
+        None,
     )
 }
 
@@ -575,7 +570,7 @@ fn update_run_cache_defer_seed(
         &package_name,
         base_context,
         &components,
-        resolved_state.adapter_type,
+        None,
     )
 }
 
@@ -610,7 +605,7 @@ fn update_run_cache_defer_snapshot(
         &package_name,
         base_context,
         &components,
-        resolved_state.adapter_type,
+        None,
     )
 }
 
@@ -647,7 +642,7 @@ fn update_run_cache_defer_function(
         &package_name,
         base_context,
         &components,
-        resolved_state.adapter_type,
+        None,
     )
 }
 

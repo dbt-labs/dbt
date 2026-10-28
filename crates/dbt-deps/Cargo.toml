@@ -27,7 +27,6 @@ async-compression = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
 normalize-path = { workspace = true }
-percent-encoding = "2.3.1"
 regex = { workspace = true }
 reqwest = { workspace = true, features = ['json', 'stream'] }
 reqwest-middleware = { workspace = true, features = ['json'] }

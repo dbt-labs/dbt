@@ -13,6 +13,7 @@ use arrow_array::{Array, Int32Array, RecordBatch, StringArray};
 use arrow_schema::Schema;
 use dbt_adapter_core::ExecutionPhase;
 use dbt_adapter_engine::MapReduce;
+use dbt_adapter_engine::cow::uppercase;
 use dbt_adbc::QueryCtx;
 use dbt_common::cancellation::CancellationToken;
 use dbt_common::{AdapterError, Cancellable};
@@ -333,7 +334,7 @@ fn build_schema_from_sp_columns(
     let mut fields = vec![];
     for i in 0..sp_columns_result.num_rows() {
         let name = column_names.value(i);
-        let nullable = nullability.value(i).to_uppercase() == "YES";
+        let nullable = uppercase(nullability.value(i).into()) == "YES";
         let text_data_type = data_types.value(i);
         let comment = match comments.value(i) {
             "" => None,

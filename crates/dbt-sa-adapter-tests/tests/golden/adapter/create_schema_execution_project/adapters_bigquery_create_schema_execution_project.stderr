@@ -1,0 +1,3 @@
+[error] [DbDriverFailed (dbt1308)]: InvalidArguments: [bq] Could not run query: 400 Bad Request: ProjectId must be non-empty (sqlstate: 00000, vendor_code: -2147483648)
+(in models/b.sql:4:19)
+  --> models/b.sql:4:19

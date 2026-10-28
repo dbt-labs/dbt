@@ -161,9 +161,10 @@ impl DbConfig {
             // DuckDB `path` is optional — attach-only profiles default to `:memory:`.
             DbConfig::DuckDB(config) => Some(config.path.as_deref().unwrap_or(":memory:")),
             DbConfig::LakeCompute(config) => config.base_url.as_deref(),
-            // Fabric Lakehouse targets may omit `host` (defaulted from the
-            // endpoint); the lakehouse GUID is the connection identity then.
-            DbConfig::Spark(config) => config.host.as_deref().or(config.lakehouseid.as_deref()),
+            DbConfig::Spark(config) if config.is_fabric_lakehouse() => {
+                config.lakehouseid.as_deref()
+            }
+            DbConfig::Spark(config) => config.host.as_deref(),
             DbConfig::Fabric(config) => config.host.as_deref(),
             DbConfig::Exasol(config) => config.host.as_deref(),
             DbConfig::ClickHouse(config) => config.host.as_deref(),
@@ -502,6 +503,18 @@ impl DbConfig {
             DbConfig::Exasol(config) => config.schema.as_ref(),
             DbConfig::ClickHouse(config) => config.schema.as_ref(),
         }
+    }
+
+    /// The database and schema a profile reports for this connection
+    /// (`DbtProfile.database` / `DbtProfile.schema`).
+    pub fn profile_database_and_schema(&self) -> (String, String) {
+        let database = self.get_database_or_default();
+        let schema = self
+            .get_schema()
+            .map(String::as_str)
+            .unwrap_or("public")
+            .to_string();
+        (database, schema)
     }
 
     pub fn get_threads(&self) -> Option<&StringOrInteger> {
@@ -1082,6 +1095,8 @@ pub struct DatabricksDbConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auth_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub oidc_token_filepath: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[merge(strategy = merge_strategies_extend::overwrite_always)]
     pub compute: Option<HashMap<String, YmlValue>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1287,6 +1302,16 @@ pub enum SparkMethod {
     // TODO: EMR StartJob (?)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, DbtSchema)]
+pub enum SparkPlatformHint {
+    #[serde(rename = "aws_emr_serverless")]
+    AwsEmrServerless,
+    #[serde(rename = "aws_emr_eks")]
+    AwsEmrEks,
+    #[serde(rename = "fabric_lakehouse")]
+    FabricLakehouse,
+}
+
 #[derive(Default, Debug, Clone, Copy, PartialEq, Serialize, Deserialize, DbtSchema)]
 pub enum SparkAuth {
     #[serde(rename = "NOSASL")]
@@ -1368,16 +1393,13 @@ pub struct SparkDbConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kerberos_service_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub platform_hint: Option<String>,
+    pub platform_hint: Option<SparkPlatformHint>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[merge(strategy = merge_strategies_extend::overwrite_always)]
     pub server_side_parameters: Option<HashMap<String, YmlValue>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub threads: Option<StringOrInteger>,
 
-    // Microsoft Fabric Lakehouse ("fabric" platform flavor: Spark via the
-    // Fabric Livy API). Field names follow the v1 `dbt-fabricspark` adapter's
-    // profile shape; the GUID fields identify a target as Fabric.
     /// Fabric API base endpoint. Defaults to `https://api.fabric.microsoft.com/v1`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
@@ -1422,10 +1444,9 @@ pub struct SparkDbConfig {
 }
 
 impl SparkDbConfig {
-    /// True when the target is a Microsoft Fabric Lakehouse (the "fabric"
-    /// platform flavor), identified by its GUID fields.
-    pub fn is_fabric(&self) -> bool {
-        self.workspaceid.is_some() || self.lakehouseid.is_some()
+    pub fn is_fabric_lakehouse(&self) -> bool {
+        self.method == Some(SparkMethod::Livy)
+            && self.platform_hint == Some(SparkPlatformHint::FabricLakehouse)
     }
 
     /// Schema-enabled lakehouses put the lakehouse in the database slot
@@ -1934,10 +1955,9 @@ pub struct SparkTargetEnv {
     pub auth: SparkAuth,
     pub use_ssl: bool,
     pub kerberos_service_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub platform_hint: Option<SparkPlatformHint>,
 
-    // Microsoft Fabric Lakehouse fields (the "fabric" platform flavor);
-    // absent for plain Spark targets. Exposed so macros can branch on
-    // `target.lakehouseid` and for parity with the v1 dbt-fabricspark target.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2078,23 +2098,18 @@ impl<'a> DuckDBPathInfo<'a> {
 }
 
 /// Builds the target context for a `spark` profile. Microsoft Fabric Lakehouse
-/// targets (the "fabric" platform flavor, identified by their GUID fields)
-/// default the method to Livy and the host to the Fabric API endpoint, and a
+/// targets default the host to the Fabric API endpoint, and a
 /// schema-enabled lakehouse occupies the database slot.
 fn spark_target_context(
     config: SparkDbConfig,
     adapter_type: String,
 ) -> Result<TargetContext, String> {
-    let is_fabric = config.is_fabric();
+    let is_fabric_lakehouse = config.is_fabric_lakehouse();
     let database = config.database().cloned().unwrap_or_default();
-    let method = match config.method {
-        Some(method) => method,
-        None if is_fabric => SparkMethod::Livy,
-        None => return Err(missing("method")),
-    };
+    let method = config.method.ok_or_else(|| missing("method"))?;
     let host = match config.host {
         Some(host) => host,
-        None if is_fabric => "api.fabric.microsoft.com".to_string(),
+        None if is_fabric_lakehouse => "api.fabric.microsoft.com".to_string(),
         None => return Err(missing("host")),
     };
     Ok(TargetContext::Spark(SparkTargetEnv {
@@ -2107,6 +2122,7 @@ fn spark_target_context(
         kerberos_service_name: config.kerberos_service_name.unwrap_or_default(),
         use_ssl: config.use_ssl.unwrap_or(false),
         auth: config.auth.unwrap_or_default(),
+        platform_hint: config.platform_hint,
 
         endpoint: config.endpoint,
         workspaceid: config.workspaceid,
@@ -3329,5 +3345,40 @@ threads: 8
 
         assert_eq!(config.get_database(), None);
         assert_eq!(config.get_database_or_default(), "");
+    }
+
+    #[test]
+    fn test_profile_database_and_schema() {
+        let pair = |database: &str, schema: &str| (database.to_string(), schema.to_string());
+        let snowflake: DbConfig = SnowflakeDbConfig {
+            database: Some("ANALYTICS".to_string()),
+            schema: Some("DBT_X".to_string()),
+            ..Default::default()
+        }
+        .into();
+        assert_eq!(
+            snowflake.profile_database_and_schema(),
+            pair("ANALYTICS", "DBT_X")
+        );
+
+        let no_schema: DbConfig = PostgresDbConfig {
+            database: Some("pg".to_string()),
+            ..Default::default()
+        }
+        .into();
+        assert_eq!(
+            no_schema.profile_database_and_schema(),
+            pair("pg", "public")
+        );
+
+        let duckdb_path_only: DbConfig = DuckDbConfig {
+            path: Some("/data/jaffle_shop.duckdb".to_string()),
+            ..Default::default()
+        }
+        .into();
+        assert_eq!(
+            duckdb_path_only.profile_database_and_schema(),
+            pair("jaffle_shop", "public")
+        );
     }
 }

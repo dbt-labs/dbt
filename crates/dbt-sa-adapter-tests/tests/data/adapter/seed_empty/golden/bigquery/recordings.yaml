@@ -1,0 +1,8 @@
+a57003fb:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists `dbt-test-env`.`adapters_bigquery_seed_empty`
+seed.seed_empty.users:
+- sequence: 0
+  type: execute
+  sql: "\n    create table `dbt-test-env`.`adapters_bigquery_seed_empty`.`users` (`id` int64,`first_name` string,`last_name` string,`salary` float64,`is_teacher` bool)\n  "

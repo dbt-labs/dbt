@@ -87,7 +87,10 @@ use dbt_schemas::{
     state::{CacheState, DbtPackage, DbtState, Macros, ModelStatus, ResolverState},
     stats::Stats,
 };
+use dbt_tasks_core::task::TP;
 use dbt_tasks_core::task_runner_hooks::TaskRunnerHooksFactory;
+use dbt_tasks_sa::graph::command_phases;
+use dbt_tasks_sa::plugin::PluginRuns;
 use dbt_tasks_sa::utils::{
     update_columns_from_schemas, update_resolved_states_manifest_with_schemas_and_compiled_sql,
 };
@@ -131,6 +134,7 @@ use std::{sync::Arc, time::SystemTime};
 
 use crate::utils::update_manifest_with_macro_depends_on;
 use dbt_common::io_args::LocalExecutionBackendKind;
+use dbt_common::telemetry_command::TelemetryCommand;
 use dbt_schemas::state::NodeResolverTracker;
 use serde_json::to_string_pretty;
 
@@ -391,6 +395,7 @@ impl<'a> CompilationPhasesExecutor<'a> {
             use_resolver_state_deps: false,
             no_version_check: self.cli.common_args.no_version_check,
             use_full_schema_store: false,
+            release_free_heap_after_parse: true,
         };
         match try_load_prev_compilation(
             &self.arg,
@@ -547,11 +552,15 @@ impl<'a> CompilationPhasesExecutor<'a> {
                 None,
                 None,
                 None,
+                None,
                 &empty_targets,
                 &empty_grain_infos,
                 &empty_node_classifiers,
                 &empty_column_classifiers,
             );
+            if let Some(catalog) = &self.catalog_artifact {
+                crate::metadata::write_catalog_epochs(catalog, self.arg.as_ref()).await;
+            }
 
             write_parse_artifacts(&self.arg);
         }
@@ -610,6 +619,7 @@ impl<'a> CompilationPhasesExecutor<'a> {
                                     status: NodeStatus::Errored,
                                     thread_id: "main".to_string(),
                                     message: Some("Compilation Error".to_string()),
+                                    assertion: false,
                                 })
                                 .collect(),
                             nodes: Some(resolved_state.nodes.clone()),
@@ -1058,6 +1068,7 @@ impl DbtProjectCompilation {
             use_resolver_state_deps: false,
             no_version_check: cli.common_args.no_version_check,
             use_full_schema_store: false,
+            release_free_heap_after_parse: true,
         };
         DbtProjectCompilation::initialize(
             feature_stack,
@@ -1108,6 +1119,7 @@ impl DbtProjectCompilation {
             use_resolver_state_deps: false,
             no_version_check: cli.common_args.no_version_check,
             use_full_schema_store: false,
+            release_free_heap_after_parse: true,
         };
 
         let (mut maybe_prev, use_lazy_filter) = if cli.common_args.effective_partial_parse() {
@@ -1157,7 +1169,8 @@ impl DbtProjectCompilation {
         // early here never reaches — so `dbt parse --generate-info-schema` on a project with a
         // warm parse cache exited 0 having written nothing at all, no artifact and no warning.
         // Every other command escapes this because it writes from the post-run site in
-        // `dbt_lib`, which the fast path does not bypass.
+        // `dbt_lib`, which the fast path does not bypass. The catalog is the exception:
+        // `parse`/`compile --write-catalog` fetch it there too.
         //
         // Scoped to `parse` deliberately: `write_metadata` is defaulted on for build/run/check,
         // so testing it alone would disable the fast path for them too.
@@ -1170,16 +1183,11 @@ impl DbtProjectCompilation {
             }
             _ => false,
         };
-        // For `parse`, `write_metadata` is only true when an artifact was actually requested
-        // (`--generate-info-schema` and `--write-index` both imply it); a plain `dbt parse`
-        // leaves it false and keeps the fast path.
-        let parse_artifacts_requested =
-            arg.command == FsCommand::Parse && (arg.write_metadata || arg.generate_info_schema);
         // --dirty sets use_lazy_filter on its own, so --no-partial-load is checked here too.
         if use_lazy_filter
             && !cli.common_args.no_partial_load
             && !has_inline
-            && !parse_artifacts_requested
+            && !writes_artifacts_on_load(arg)
         {
             // Skip the fast path when the --static-analysis level has changed since the
             // previous compilation. The fast path reuses nodes whose `base().static_analysis`
@@ -1270,12 +1278,10 @@ impl DbtProjectCompilation {
                     }
                     // Same reasoning as the partial-load fast path above: reusing the
                     // previous compilation returns before `maybe_write_json_and_exit`, which
-                    // is where `parse` writes its metadata epochs and information schema. A
-                    // `parse` that was asked for them has to take the full path, exactly as
-                    // it does when the static-analysis level changed.
-                    if arg.command == FsCommand::Parse
-                        && (arg.write_metadata || arg.generate_info_schema)
-                    {
+                    // is where `parse` writes its metadata epochs and information schema,
+                    // and where `--write-catalog` fetches the catalog. Those have to take the
+                    // full path, exactly as when the static-analysis level changed.
+                    if writes_artifacts_on_load(arg) {
                         tracing::debug!(
                             "Partial parse: no files changed, but parse artifacts were requested"
                         );
@@ -1388,6 +1394,8 @@ impl DbtProjectCompilation {
             use_resolver_state_deps: true,
             no_version_check: true,
             use_full_schema_store: true,
+            // Incremental recompiles run on every edit and free little.
+            release_free_heap_after_parse: prev_compilation.is_none(),
         };
 
         DbtProjectCompilation::initialize(
@@ -1468,10 +1476,16 @@ impl DbtProjectCompilation {
                     token,
                     jinja_type_checking_event_listener_factory.clone(),
                     feature_stack.resolver.hooks.clone(),
+                    feature_stack.plugins.plugins.resolve_plugins(),
                 )
                 .await?
         };
         token.check_cancellation()?;
+
+        // Parsing is done. Release its freed memory before the artifacts and tasks allocate.
+        if loaded_project.config().release_free_heap_after_parse {
+            crate::utils::release_free_heap_memory();
+        }
 
         feature_stack
             .cli
@@ -2372,11 +2386,25 @@ impl DbtProjectCompilation {
         let tasks_for_node_factory = Arc::clone(&feature_stack.task_runner.tasks_for_node_factory);
         let compare_task_graph_builder =
             feature_stack.task_runner.compare_task_graph_builder.clone();
+        // Start the plugins with selected nodes before the graph is built, so one that can't run
+        // stops the invocation before any node runs.
+        let plugins = feature_stack.plugins.plugins.clone();
+        let runs_nodes = command_phases(run_task_args.command, &plugins)
+            .is_some_and(|phases| phases.contains(&TP::Run));
+        let plugin_runs = PluginRuns::start(
+            &plugins,
+            &run_task_args,
+            &resolved_state.nodes,
+            &schedule,
+            runs_nodes,
+        )?;
         let graph_builder = GraphBuilder::new(
             Arc::clone(&run_task_args),
             Arc::clone(&static_analysis_buckets),
             tasks_for_node_factory,
             compare_task_graph_builder,
+            plugins,
+            plugin_runs.clone(),
         );
 
         // Increment counters used in final run reporting.
@@ -2388,13 +2416,20 @@ impl DbtProjectCompilation {
         let count_checks = !arg.skip_checks
             && dbt_tasks_sa::check::metadata_unavailable_reason(&arg.metadata_dir()).is_none();
         schedule.selected_nodes.iter().for_each(|unique_id| {
-            let node_type = self
+            let node = self
                 .resolved_state
                 .nodes
                 .get_node(unique_id)
-                .expect("Node must exist")
-                .resource_type();
+                .expect("Node must exist");
+            let node_type = node.resource_type();
             if node_type == NodeType::Check && !count_checks {
+                return;
+            }
+            // A plugin node is graph work only while its plugin runs.
+            if node
+                .plugin_type()
+                .is_some_and(|plugin_type| !plugin_runs.is_running(plugin_type))
+            {
                 return;
             }
             increment_metric(FusionMetricKey::NodeCounts(node_type), 1);
@@ -2488,6 +2523,9 @@ impl DbtProjectCompilation {
                         token.clone(),
                     )
                     .await;
+                // Plugin runs finish whatever the graph's outcome. A run that fails to finish is
+                // reported without discarding the results.
+                plugin_runs.finish();
                 if run_result.is_err() {
                     run_cache_service_after_run_failed(
                         &run_cache_ctx_on_error,
@@ -2774,7 +2812,7 @@ fn send_vortex_telemetry_if_possible(
                 &arg.io.invocation_id,
                 root_project_name,
                 Some(&dbt_state.dbt_profile.relative_profile_path),
-                arg.command.as_str().to_string(),
+                TelemetryCommand::bare(arg.command),
             );
         }
         adapter_info_event(
@@ -2784,11 +2822,18 @@ fn send_vortex_telemetry_if_possible(
                 .default_db_config()
                 .adapter_type()
                 .to_string(),
+            // `get_adapter_unique_id` hashes an adapter-specific field that
+            // identifies the warehouse (`base_url` on lake compute, `account` on
+            // Snowflake, ...). That field is optional in every profile schema, so
+            // a target that omits it -- legal for commands that never connect,
+            // such as `compile --static-analysis off` -- yields `None`. Reporting
+            // it as unknown keeps anonymous telemetry from taking the whole
+            // invocation down with it.
             dbt_state
                 .dbt_profile
                 .default_db_config()
                 .get_adapter_unique_id()
-                .unwrap(),
+                .unwrap_or_default(),
         );
     }
 }
@@ -2885,6 +2930,15 @@ async fn write_catalog(
         20,
     )
     .await
+}
+
+/// True when the invocation writes artifacts from `maybe_write_json_and_exit`, which reusing
+/// the previous compilation skips: `parse`'s metadata epochs and information schema, and the
+/// catalog `parse`/`compile --write-catalog` fetch. For `parse`, `write_metadata` is only true
+/// when an artifact was requested, so a plain `dbt parse` keeps the fast path.
+fn writes_artifacts_on_load(arg: &EvalArgs) -> bool {
+    (arg.command == FsCommand::Parse && (arg.write_metadata || arg.generate_info_schema))
+        || (matches!(arg.command, FsCommand::Parse | FsCommand::Compile) && arg.write_catalog)
 }
 
 /// True when `expr` can match no node regardless of the project (e.g. an empty `Or`).
@@ -3076,6 +3130,8 @@ async fn create_run_cache_state_selector_args(
         project_id,
         macros: resolved_state.macros.macros.clone(),
         project_root: DbtPath::from(project_root),
+        compare_unrendered_code: lifecycle.compare_unrendered_code_default(),
+        runtime_config: resolved_state.runtime_config.clone(),
         shared_event_order: SharedEventOrder::new(),
     }))
 }

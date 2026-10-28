@@ -95,6 +95,19 @@ impl InvocationContext {
     }
 }
 
+/// Returns free heap memory to the OS.
+///
+/// glibc keeps freed memory resident, so the process keeps the footprint of a
+/// finished phase. Call this after a phase drops its working state and before
+/// the next phase allocates.
+pub(crate) fn release_free_heap_memory() {
+    // SAFETY: `malloc_trim` only releases memory that no allocation uses.
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    unsafe {
+        libc::malloc_trim(0);
+    }
+}
+
 /// Write runtime result rows to the metadata/runtime/results parquet directory.
 /// Called alongside `write_run_results_json` at end of run/test/build.
 pub(crate) fn write_runtime_results_parquet(

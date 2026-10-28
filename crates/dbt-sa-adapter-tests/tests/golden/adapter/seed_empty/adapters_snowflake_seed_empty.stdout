@@ -1,0 +1,8 @@
+   dbt-oss 
+   Loading profiles.yml
+   Running ../scratch/target/run/seed_empty/seeds/users.sql
+ Succeeded seed  adapters_snowflake_seed_empty.users (table) [1 of 1 in duration]
+==================== Execution Summary =====================
+Finished 'seed' successfully for target 'snowflake' [duration]
+Processed: 1 seed
+Summary: 1 total | 1 success

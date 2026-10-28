@@ -1,0 +1,16 @@
+81af13f5:
+- sequence: 0
+  type: execute
+  sql: create or replace table `e2e`.`adapters_databricks_use_materialization_v2_configs`.`t_incremental` as ( select 1 as id )
+8d70099e:
+- sequence: 0
+  type: execute
+  sql: create or replace table `e2e`.`adapters_databricks_use_materialization_v2_configs`.`t_table` as ( select 1 as id )
+e988d8d8:
+- sequence: 0
+  type: execute
+  sql: CREATE SCHEMA IF NOT EXISTS `e2e`.`adapters_databricks_use_materialization_v2_configs`
+f9a0048a:
+- sequence: 0
+  type: execute
+  sql: create or replace view `e2e`.`adapters_databricks_use_materialization_v2_configs`.`v_view` as ( select 1 as id, 'a' as val)

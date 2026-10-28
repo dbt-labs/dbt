@@ -1,9 +1,7 @@
 -- funcsign: () -> string
 {% macro spark__target_platform() -%}
-  {#-- The Spark platform flavor this target runs on. Platform-specific
-      behavior should branch on this rather than on individual target keys. --#}
-  {%- if target.get('lakehouseid') -%}
-    {{ return('fabric') }}
+  {%- if target.get('method') == 'livy' and target.get('platform_hint') == 'fabric_lakehouse' -%}
+    {{ return('fabric_lakehouse') }}
   {%- else -%}
     {{ return('vanilla') }}
   {%- endif -%}
@@ -34,7 +32,7 @@
 -- funcsign: () -> string
 {% macro spark__file_format_clause() %}
   {%- set file_format = config.get('file_format', validator=validation.any[basestring]) -%}
-  {%- if file_format is none and spark__target_platform() == 'fabric' -%}
+  {%- if file_format is none and spark__target_platform() == 'fabric_lakehouse' -%}
     {#-- Fabric Lakehouse tables are Delta by default (v1 dbt-fabricspark parity). --#}
     {%- set file_format = 'delta' -%}
   {%- endif -%}
@@ -173,7 +171,7 @@
       {{ create_temporary_view(relation, compiled_code) }}
     {%- else -%}
       {%- set file_format = config.get('file_format', validator=validation.any[basestring]) -%}
-      {%- if file_format is none and spark__target_platform() == 'fabric' -%}
+      {%- if file_format is none and spark__target_platform() == 'fabric_lakehouse' -%}
         {#-- Fabric Lakehouse tables are Delta by default (v1 dbt-fabricspark parity). --#}
         {%- set file_format = 'delta' -%}
       {%- endif -%}
@@ -294,7 +292,7 @@
 
 {% macro spark__create_schema(relation) -%}
   {%- call statement('create_schema') -%}
-    {%- if spark__target_platform() == 'fabric' and not relation.database -%}
+    {%- if spark__target_platform() == 'fabric_lakehouse' and not relation.database -%}
       {#-- Classic Fabric lakehouses have no schemas: the lakehouse itself is
           the namespace, so schema creation is a no-op. --#}
       select 1
@@ -306,7 +304,7 @@
 
 {% macro spark__drop_schema(relation) -%}
   {%- call statement('drop_schema') -%}
-    {%- if spark__target_platform() == 'fabric' and not relation.database -%}
+    {%- if spark__target_platform() == 'fabric_lakehouse' and not relation.database -%}
       select 1
     {%- else -%}
       drop schema if exists {{ relation }} cascade

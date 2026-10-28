@@ -1,0 +1,46 @@
+model.test.a:
+- sequence: 0
+  type: execute
+  sql: USE DATABASE development
+- sequence: 1
+  type: execute
+  sql: ' CREATE OR REPLACE SCHEMA adapters_snowflake_get_relations_by_pattern'
+- sequence: 2
+  type: execute
+  sql: CREATE OR REPLACE TABLE adapters_snowflake_get_relations_by_pattern.c_1 (number_col int, text_col varchar(100))
+- sequence: 3
+  type: execute
+  sql: |-
+    select distinct
+    table_schema as "table_schema",
+    table_name as "table_name",
+    
+    case table_type
+    when 'BASE TABLE' then 'table'
+    when 'EXTERNAL TABLE' then 'external'
+    when 'MATERIALIZED VIEW' then 'materializedview'
+    else lower(table_type)
+    end as "table_type"
+    
+    from development.information_schema.tables
+    where table_schema ilike 'adapters_snowflake_get_relations_by_pattern%'
+    and table_name ilike '%c%'
+    and table_name not ilike ''
+- sequence: 4
+  type: execute
+  sql: |-
+    select distinct
+    table_schema as "table_schema",
+    table_name as "table_name",
+    
+    case table_type
+    when 'BASE TABLE' then 'table'
+    when 'EXTERNAL TABLE' then 'external'
+    when 'MATERIALIZED VIEW' then 'materializedview'
+    else lower(table_type)
+    end as "table_type"
+    
+    from development.information_schema.tables
+    where table_schema ilike 'adapters_snowflake_get_relations_by_pattern%'
+    and table_name ilike '%c%'
+    and table_name not ilike ''

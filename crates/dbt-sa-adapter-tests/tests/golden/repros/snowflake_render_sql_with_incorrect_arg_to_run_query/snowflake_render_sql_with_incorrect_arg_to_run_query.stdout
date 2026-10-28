@@ -1,0 +1,9 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/hello.sql
+ Rendering models/hello.sql
+    Failed model snowflake_render_sql_with_incorrect_arg_to_run_query.hello (table) [1 of 1 in duration]
+==================== Execution Summary =====================
+Finished 'compile' with 1 error for target 'snowflake' [duration]
+Processed: 1 model
+Summary: 1 total | 1 error

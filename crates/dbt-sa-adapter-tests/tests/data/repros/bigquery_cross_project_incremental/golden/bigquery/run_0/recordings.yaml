@@ -1,0 +1,34 @@
+1835fda4:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists `dbt-test-env`.`bigquery_cross_project_incremental_preserves_existing_rows`
+ffc471a5:
+- sequence: 0
+  type: execute
+  sql: |-
+    SELECT
+    table_catalog,
+    table_schema,
+    table_name,
+    table_type
+    FROM 
+    `dbt-test-env`.`bigquery_cross_project_incremental_preserves_existing_rows`.INFORMATION_SCHEMA.TABLES
+  error: 'NotFound: [bq] Could not complete job: notFound: Not found: Dataset dbt-test-env:bigquery_cross_project_incremental_preserves_existing_rows was not found in location US () (sqlstate: 00000, vendor_code: -2147483648)'
+model.bigquery_cross_project_incremental.incremental_model:
+- sequence: 0
+  type: execute
+  sql: |-
+    create table `dbt-test-env`.`bigquery_cross_project_incremental_preserves_existing_rows`.`incremental_model`
+    
+    
+    
+    
+    
+    OPTIONS()
+    as (
+    
+    
+    
+    select 1 as id
+    
+    );

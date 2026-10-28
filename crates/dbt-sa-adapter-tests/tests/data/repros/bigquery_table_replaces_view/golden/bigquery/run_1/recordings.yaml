@@ -1,0 +1,24 @@
+model.bigquery_table_replaces_view.m:
+- sequence: 0
+  type: execute
+  sql: |-
+    drop view if exists `dbt-test-env`.`bigquery_table_replaces_view`.`m`
+- sequence: 1
+  type: execute
+  sql: |-
+    create or replace table `dbt-test-env`.`bigquery_table_replaces_view`.`m`
+    
+    
+    
+    
+    
+    OPTIONS()
+    as (
+    
+    select 1 as id
+    );
+model.bigquery_table_replaces_view.m.get_table_schema.9a8d5fba:
+- sequence: 0
+  type: get_table_schema
+  table_name: 9a8d5fba
+  error: 'Unknown: [BigQuery] googleapi: Error 404: Not found: Table dbt-test-env:bigquery_table_replaces_view.m, notFound (sqlstate: 00000, vendor_code: -2147483648)'

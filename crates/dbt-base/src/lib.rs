@@ -7,8 +7,8 @@
 //!  - MUST NOT have any external dependencies on third-party crates, as any
 //!    dependencies here would bloat up everything.
 //!
-//! As such, type aliases for the [MaybeStableHasher] variants of `DashMap` and
-//! `scc::HashMap` are in the `dbt-common` crate instead.
+//! As such, type aliases for the [MaybeStableHasher] variants of `scc::HashMap` and
+//! `scc::HashSet` are in the `dbt-common` crate instead.
 
 pub mod hasher;
 

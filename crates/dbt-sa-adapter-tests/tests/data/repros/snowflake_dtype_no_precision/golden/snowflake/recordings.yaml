@@ -1,0 +1,66 @@
+2a792e10:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists development.snowflake_dtype_no_precision
+dbbbff64:
+- sequence: 0
+  type: execute
+  sql: |-
+    show terse schemas in database development
+    limit 10000
+model.hello_world.example:
+- sequence: 0
+  type: execute
+  sql: SHOW OBJECTS IN SCHEMA "DEVELOPMENT"."SNOWFLAKE_DTYPE_NO_PRECISION" LIMIT 10000
+- sequence: 1
+  type: execute
+  sql: |-
+    create or replace   view development.snowflake_dtype_no_precision.example
+    
+    
+    
+    
+    as (
+    select 1::integer as my_numeric_column
+    )
+test.hello_world.dbt_expectations_expect_column_values_to_be_of_type_example_my_numeric_column__number.0e0604f0a8:
+- sequence: 0
+  type: execute
+  sql: describe table development.snowflake_dtype_no_precision.example
+- sequence: 1
+  type: execute
+  sql: |-
+    select
+    count(*) as failures,
+    count(*) != 0 as should_warn,
+    count(*) != 0 as should_error
+    from (
+    
+    
+    with relation_columns as (
+    
+    
+    select
+    cast('MY_NUMERIC_COLUMN' as TEXT) as relation_column,
+    cast('NUMBER' as TEXT) as relation_column_type
+    
+    
+    ),
+    test_data as (
+    
+    select
+    *
+    from
+    relation_columns
+    where
+    relation_column = 'MY_NUMERIC_COLUMN'
+    and
+    relation_column_type not in ('NUMBER')
+    
+    )
+    select *
+    from test_data
+    
+    
+    
+    ) dbt_internal_test

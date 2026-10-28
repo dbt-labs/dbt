@@ -1,0 +1,10 @@
+version: 2
+models:
+  - name: row_filter_table
+    config: &region_filter
+      row_filter:
+        function: region_filter
+        columns: [region]
+
+  - name: row_filter_incremental
+    config: *region_filter

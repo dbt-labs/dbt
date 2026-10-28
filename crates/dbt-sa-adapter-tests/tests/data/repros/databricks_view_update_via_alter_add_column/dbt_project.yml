@@ -1,0 +1,19 @@
+name: 'databricks_view_update_via_alter_add_column'
+version: '1.0.0'
+config-version: 2
+
+profile: 'fusion_tests'
+
+model-paths: ['models']
+
+flags:
+  send_anonymous_usage_stats: false
+  use_materialization_v2: true
+
+models:
+  databricks_view_update_via_alter_add_column:
+    +materialized: view
+    +view_update_via_alter: true
+    +persist_docs:
+      relation: true
+      columns: true

@@ -25,8 +25,8 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use anyhow::{Context, Result};
-use once_cell::sync::Lazy;
 use serde::Deserialize;
+use std::sync::LazyLock;
 
 /// Assert the golden file matches.
 #[macro_export]
@@ -210,8 +210,8 @@ fn relative_to_git_root(path: &Path) -> Option<PathBuf> {
 /// Not public API.
 #[doc(hidden)]
 pub fn cargo_workspace_dir(manifest_dir: &str) -> PathBuf {
-    static DIRS: Lazy<Mutex<BTreeMap<String, Arc<Path>>>> =
-        Lazy::new(|| Mutex::new(BTreeMap::new()));
+    static DIRS: LazyLock<Mutex<BTreeMap<String, Arc<Path>>>> =
+        LazyLock::new(|| Mutex::new(BTreeMap::new()));
 
     let mut dirs = DIRS.lock().unwrap();
 

@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use std::collections::btree_map::Iter;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt::Debug;
 
 use indexmap::IndexMap;
@@ -152,6 +152,10 @@ pub struct DbtProject {
     pub docs_paths: Option<Vec<String>>,
     #[serde(rename = "skill-paths")]
     pub skill_paths: Option<Vec<String>>,
+    /// Directories whose files belong to a plugin, by plugin type. There is no default: a plugin
+    /// reads only the paths a project names for it.
+    #[serde(rename = "plugin-paths")]
+    pub plugin_paths: Option<BTreeMap<String, Vec<String>>>,
     #[serde(rename = "target-path")]
     pub target_path: Option<TargetPath>,
     #[serde(rename = "log-path")]
@@ -191,7 +195,7 @@ pub struct DbtProject {
     /// `AdapterType` has no `JsonSchema` impl -- it lives in `dbt-adapter-core`,
     /// which has no `schemars` dependency and must not gain one -- so the schema
     /// describes the key as the string it is in YAML.
-    #[schemars(with = "Option<std::collections::BTreeMap<String, AdapterProjectConfig>>")]
+    #[schemars(with = "Option<BTreeMap<String, AdapterProjectConfig>>")]
     pub adapters: Option<IndexMap<AdapterType, AdapterProjectConfig>>,
     pub dispatch: Option<Vec<_Dispatch>>,
     pub flags: Option<YmlValue>,
@@ -227,6 +231,7 @@ impl Default for DbtProject {
             check_paths: None,
             docs_paths: None,
             skill_paths: None,
+            plugin_paths: None,
             target_path: None,
             log_path: None,
             packages_install_path: None,
@@ -296,11 +301,34 @@ impl DbtProject {
         .collect()
     }
 
+    /// Every directory dbt itself reads files from: the resource paths, `check-paths`,
+    /// `docs-paths`, `asset-paths` and `skill-paths`.
+    pub fn all_dbt_paths(&self) -> Vec<String> {
+        let mut paths = self.all_source_paths();
+        for configured in [&self.check_paths, &self.docs_paths, &self.asset_paths] {
+            paths.extend(configured.iter().flatten().cloned());
+        }
+        paths.extend(self.skill_paths_or_default());
+        paths
+    }
+
     /// `skill-paths`, falling back to the default of `skills/`.
     pub fn skill_paths_or_default(&self) -> Vec<String> {
         self.skill_paths
             .clone()
             .unwrap_or_else(|| vec![DEFAULT_SKILL_PATH.to_string()])
+    }
+
+    /// The project's `tests:` or `data_tests:` block.
+    pub fn data_tests_config(&self) -> Option<&ProjectDataTestConfig> {
+        match (&self.tests, &self.data_tests) {
+            (Some(_), Some(_)) => {
+                unimplemented!("Merge logic for tests and data tests is unimplemented")
+            }
+            (Some(tests), None) => Some(tests),
+            (None, Some(data_tests)) => Some(data_tests),
+            (None, None) => None,
+        }
     }
 }
 
@@ -415,6 +443,11 @@ pub trait ResolvableConfig<T>:
         None
     }
 
+    /// This layer's own `+adapter`, or `None` when unset or for a type without one.
+    fn get_adapter(&self) -> Option<AdapterType> {
+        None
+    }
+
     fn apply_package_defaults(&mut self, defaults: Self::PackageDefaults);
 
     /// Canonicalizes adapter config aliases for this layer, mirroring dbt-core's
@@ -429,22 +462,24 @@ pub trait ResolvableConfig<T>:
     /// none of its own (e.g. Databricks' `target_catalog`, or postgres/redshift's `dbname`).
     /// Those resolve only where a *raw* config-key rename is still possible before typing --
     /// currently just the inline `{{ config(...) }}` layer
-    /// (`dbt_adapter_core::config_aliases::canonicalize_config_keys` in
+    /// (`dbt_adapter_core::config_aliases::canonicalize_config_keys_except` in
     /// `ParseConfig::apply_config`) -- so the same alias authored in `dbt_project.yml` or a
     /// schema.yml `config:` block remains an unrecognized key. See
     /// `test_snapshot_target_catalog_in_project_yml_is_unrecognized_key` and
     /// `test_dbname_in_project_yml_is_unrecognized_key` (`dbt-parser/src/dbt_project_config.rs`)
     /// for the pinned, `#[ignore]`d gap.
     ///
-    /// `default_adapter` is the *target's default* adapter, not the adapter this node runs on: a
-    /// node's own `+adapter:` override is a mergeable field, so it is only readable once every
-    /// layer has merged -- which is after this hook, by construction. `apply_resolve_defaults`
-    /// below is the seam that can read it (`ModelConfig` does exactly that, as
-    /// `self.adapter.or(default_adapter)`), but canonicalizing there would destroy the per-layer
-    /// precedence this hook exists for. Pinned by
-    /// `test_databricks_catalog_alias_not_canonicalized_for_adapter_overridden_node`
-    /// (`dbt-parser/src/tests.rs`, `#[ignore]`d).
-    fn canonicalize_adapter_aliases(&mut self, _default_adapter: AdapterType) {}
+    /// `alias_adapter` is the node's adapter (the `--adapter` override, else its untranslated
+    /// `+adapter:`, else the adapter it inherits) when the target declares it, else the target's
+    /// default.
+    ///
+    /// The aliases this hook translates are listed by [`Self::typed_alias_keys`].
+    fn canonicalize_adapter_aliases(&mut self, _alias_adapter: AdapterType) {}
+
+    /// The raw aliases `canonicalize_adapter_aliases` translates, which a raw rename must keep.
+    fn typed_alias_keys() -> &'static [&'static str] {
+        &[]
+    }
 
     /// Called after all config layers (project, properties, inline) are merged and the root
     /// overlay is applied, but before `finalize()`. Use this to fill in fields that must always
@@ -495,6 +530,7 @@ mod tests {
             check_paths: Some(vec![]),
             docs_paths: Some(vec![]),
             skill_paths: Some(vec![]),
+            plugin_paths: None,
             target_path: Some(TargetPath::Target),
             log_path: Some(LogPath::Logs),
             packages_install_path: Some("packages".to_string()),

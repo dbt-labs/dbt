@@ -1,0 +1,1 @@
+SHOW COLUMNS IN TABLE development.adapters_snowflake_rename_relation.a

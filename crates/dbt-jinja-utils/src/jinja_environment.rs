@@ -54,7 +54,7 @@ impl<'env: 'source, 'source> JinjaExpression<'env, 'source> {
     pub fn typecheck(
         &self,
         funcsigns: Arc<minijinja::compiler::typecheck::FunctionRegistry>,
-        builtins: Arc<dashmap::DashMap<String, minijinja::Type>>,
+        builtins: Arc<minijinja::TypeRegistry>,
         warning_printer: Rc<dyn minijinja::TypecheckingEventListener>,
         typecheck_resolved_context: BTreeMap<String, Value>,
     ) -> FsResult<()> {
@@ -98,7 +98,7 @@ impl<'env: 'source, 'source> JinjaTemplate<'env, 'source> {
     pub fn typecheck(
         &self,
         funcsigns: Arc<minijinja::compiler::typecheck::FunctionRegistry>,
-        builtins: Arc<dashmap::DashMap<String, minijinja::Type>>,
+        builtins: Arc<minijinja::TypeRegistry>,
         warning_printer: Rc<dyn minijinja::TypecheckingEventListener>,
         typecheck_resolved_context: BTreeMap<String, Value>,
     ) -> FsResult<()> {

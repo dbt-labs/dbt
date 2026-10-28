@@ -161,7 +161,8 @@ async fn finish_dev_clone(
     ctx.inner
         .run_cache_ctx
         .run_cache_dev_cloned_nodes
-        .insert(node.unique_id(), explain_dev_clone);
+        .upsert_async(node.unique_id(), explain_dev_clone)
+        .await;
     confirm_run_cache_service_execution(ctx, node, clone.success_confirmation(), None).await;
 }
 

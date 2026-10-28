@@ -1,0 +1,13 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/a.sql
+   Parsing models/b.sql
+`dbt-test-env`.`adapters_bigquery_create_schema_execution_project`.`a`
+ Rendering models/b.sql
+`dbt-test-env`.`adapters_bigquery_create_schema_execution_project`.`a`
+    Failed model adapters_bigquery_create_schema_execution_project.b (view) [1 of 2 in duration]
+ Rendering models/a.sql
+==================== Execution Summary =====================
+Finished 'compile' with 1 error for target 'bigquery' [duration]
+Processed: 2 models
+Summary: 2 total | 1 success | 1 error

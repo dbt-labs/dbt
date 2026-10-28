@@ -1,0 +1,1 @@
+ CREATE OR REPLACE SCHEMA adapters_snowflake_get_columns_in_relation_local

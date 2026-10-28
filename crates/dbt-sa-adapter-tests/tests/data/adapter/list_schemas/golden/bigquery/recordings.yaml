@@ -1,0 +1,7 @@
+model.test.a:
+- sequence: 0
+  type: execute
+  sql: CREATE SCHEMA IF NOT EXISTS adapters_bigquery_list_schemas1
+- sequence: 1
+  type: execute
+  sql: CREATE SCHEMA IF NOT EXISTS adapters_bigquery_list_schemas2

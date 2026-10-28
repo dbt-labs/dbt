@@ -38,6 +38,20 @@ pub fn render_all_model_constraint_refs_in_place(
     base_context: &BTreeMap<String, MinijinjaValue>,
 ) -> FsResult<()> {
     for (_, model_arc) in resolver_state.nodes.models.iter_mut() {
+        // Skip models without constraint refs so make_mut doesn't copy them.
+        if !model_arc
+            .__model_attr__
+            .constraints
+            .iter()
+            .any(|c| c.to.is_some())
+            && !model_arc
+                .__base_attr__
+                .columns
+                .iter()
+                .any(|column| column.constraints.iter().any(|c| c.to.is_some()))
+        {
+            continue;
+        }
         let model = Arc::make_mut(model_arc);
 
         // Render model-level constraint 'to' fields
@@ -50,6 +64,9 @@ pub fn render_all_model_constraint_refs_in_place(
 
         // Render column-level constraint 'to' fields
         for column_arc in model.__base_attr__.columns.iter_mut() {
+            if !column_arc.constraints.iter().any(|c| c.to.is_some()) {
+                continue;
+            }
             let column = Arc::make_mut(column_arc);
             for constraint in column.constraints.iter_mut() {
                 if let Some(to_spanned) = constraint.to.take() {

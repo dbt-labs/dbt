@@ -55,9 +55,19 @@ fn render_target_platform(target: BTreeMap<&str, &str>) -> String {
 
 #[test]
 fn target_platform_is_fabric_for_lakehouse_target() {
-    let target = BTreeMap::from([("lakehouseid", "lh-guid")]);
+    let target = BTreeMap::from([("method", "livy"), ("platform_hint", "fabric_lakehouse")]);
 
-    assert_eq!(render_target_platform(target), "fabric");
+    assert_eq!(render_target_platform(target), "fabric_lakehouse");
+}
+
+#[test]
+fn target_platform_is_vanilla_for_fabric_hint_on_other_method() {
+    let target = BTreeMap::from([
+        ("method", "spark-connect"),
+        ("platform_hint", "fabric_lakehouse"),
+    ]);
+
+    assert_eq!(render_target_platform(target), "vanilla");
 }
 
 #[test]

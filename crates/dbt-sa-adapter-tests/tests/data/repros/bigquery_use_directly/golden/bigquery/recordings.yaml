@@ -1,0 +1,7 @@
+operation.bigquery_use_directly.bigquery_use_directly-on-run-start-0:
+- sequence: 0
+  type: execute
+  sql: "\n    CREATE SCHEMA IF NOT EXISTS `dbt-test-env`.`bigquery_use_directly`\n  "
+- sequence: 1
+  type: execute
+  sql: "\n    CREATE OR REPLACE TABLE `dbt-test-env`.`bigquery_use_directly`.`BigQueryUseDirectlyTest` (id INT64)\n  "

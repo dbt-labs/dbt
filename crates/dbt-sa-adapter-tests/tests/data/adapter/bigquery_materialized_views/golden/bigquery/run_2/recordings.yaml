@@ -1,0 +1,9 @@
+a4765c8a:
+- sequence: 0
+  type: execute
+  sql: |-
+    ALTER MATERIALIZED VIEW `dbt-test-env`.`adapters_bigquery_materialized_views`.`mat_view`
+    SET OPTIONS(
+    enable_refresh=false,
+    refresh_interval_minutes=1234.0
+    )

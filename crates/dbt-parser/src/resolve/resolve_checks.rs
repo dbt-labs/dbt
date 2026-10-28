@@ -86,6 +86,7 @@ pub async fn resolve_checks(
             args: arg.clone(),
             root_project_name: root_package.dbt_project.name.clone(),
             config_resolver,
+            adapter_hint: None,
             package_quoting,
             uses_snapshot_fqn: false,
             base_ctx: base_ctx.clone(),

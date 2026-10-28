@@ -211,6 +211,8 @@ pub struct ProjectUnitTestConfig {
     pub not_matched_condition: Option<String>,
     #[serde(rename = "+not_matched_by_source_condition")]
     pub not_matched_by_source_condition: Option<String>,
+    #[serde(rename = "+merge_actions_explicit")]
+    pub merge_actions_explicit: Option<String>,
     #[serde(rename = "+not_matched_by_source_action")]
     pub not_matched_by_source_action: Option<String>,
     #[serde(
@@ -354,6 +356,7 @@ impl TypedRecursiveConfig for ProjectUnitTestConfig {
             || self.matched_condition.is_some()
             || self.not_matched_condition.is_some()
             || self.not_matched_by_source_condition.is_some()
+            || self.merge_actions_explicit.is_some()
             || self.not_matched_by_source_action.is_some()
             || self.merge_with_schema_evolution.is_some()
             || self.skip_matched_step.is_some()
@@ -483,6 +486,7 @@ impl From<ProjectUnitTestConfig> for UnitTestConfig {
                 matched_condition: config.matched_condition,
                 not_matched_condition: config.not_matched_condition,
                 not_matched_by_source_condition: config.not_matched_by_source_condition,
+                merge_actions_explicit: config.merge_actions_explicit,
                 not_matched_by_source_action: config.not_matched_by_source_action,
                 merge_with_schema_evolution: config.merge_with_schema_evolution,
                 skip_matched_step: config.skip_matched_step,
@@ -624,6 +628,7 @@ impl From<UnitTestConfig> for ProjectUnitTestConfig {
             not_matched_by_source_condition: config
                 .__warehouse_specific_config__
                 .not_matched_by_source_condition,
+            merge_actions_explicit: config.__warehouse_specific_config__.merge_actions_explicit,
             not_matched_by_source_action: config
                 .__warehouse_specific_config__
                 .not_matched_by_source_action,
@@ -684,7 +689,7 @@ impl ResolvableConfig<UnitTestConfig> for UnitTestConfig {
 
     // Unit tests have no `database`/`schema` field of their own -- they run against the model
     // under test's relation, so there is nothing to canonicalize a `catalog`-style alias into.
-    fn canonicalize_adapter_aliases(&mut self, _default_adapter: AdapterType) {}
+    fn canonicalize_adapter_aliases(&mut self, _alias_adapter: AdapterType) {}
 }
 
 impl ConfigKeys for UnitTestConfig {

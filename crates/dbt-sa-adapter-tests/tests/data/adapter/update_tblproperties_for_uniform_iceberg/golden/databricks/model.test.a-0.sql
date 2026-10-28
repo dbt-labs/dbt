@@ -1,0 +1,1 @@
+select current_version().dbr_version as dbr_version

@@ -315,6 +315,92 @@ fn python_table_preserves_transient_config() {
     assert!(!rendered.contains("table_type='temporary'"));
 }
 
+/// Render `snowflake__create_table_as` for a SQL table whose (INFO_SCHEMA) catalog
+/// relation reports the given `change_tracking`, mirroring `render_python_table`.
+fn render_sql_table(change_tracking: Option<bool>) -> String {
+    let harness = MacroTestHarness::for_adapter(AdapterType::Snowflake)
+        .load_all_macros()
+        .build()
+        .expect("harness should build");
+
+    let catalog_relation = Arc::new(MockJinjaObject::new());
+    catalog_relation.set_attr("catalog_type", Value::from("INFO_SCHEMA"));
+    catalog_relation.set_attr("is_transient", Value::from(false));
+    catalog_relation.set_attr(
+        "change_tracking",
+        change_tracking.map_or_else(|| Value::from(()), Value::from),
+    );
+    harness.mock().on("build_catalog_relation", move |_| {
+        Ok(Value::from_dyn_object(catalog_relation.clone()))
+    });
+
+    let ctx = harness
+        .materialization_context("orders", "select 1 as id")
+        .relation_type(RelationType::Table)
+        .with("temporary", Value::from(false))
+        .build();
+
+    harness
+        .render(
+            "{{ snowflake__create_table_as(temporary, this, compiled_code) }}",
+            ctx,
+        )
+        .expect("SQL table macro should render")
+}
+
+/// Position of `needle` in the whitespace-normalized, lowercased SQL.
+fn position_in(normalized: &str, needle: &str) -> usize {
+    normalized
+        .find(needle)
+        .unwrap_or_else(|| panic!("expected `{needle}` in:\n{normalized}"))
+}
+
+#[test]
+fn sql_table_emits_change_tracking_true() {
+    let rendered = render_sql_table(Some(true));
+    let normalized = rendered
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+
+    // Table properties come before copy grants, and all of them before the `as (` select.
+    let change_tracking = position_in(&normalized, "change_tracking = true");
+    assert!(
+        change_tracking < position_in(&normalized, "copy grants"),
+        "change_tracking should precede copy grants, got:\n{rendered}"
+    );
+    assert!(
+        change_tracking < position_in(&normalized, "as ("),
+        "change_tracking should precede the CTAS body, got:\n{rendered}"
+    );
+}
+
+#[test]
+fn sql_table_emits_change_tracking_false() {
+    let rendered = render_sql_table(Some(false));
+    let normalized = rendered
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+
+    assert!(
+        normalized.contains("change_tracking = false"),
+        "an explicit change_tracking = false should still be emitted, got:\n{rendered}"
+    );
+}
+
+#[test]
+fn sql_table_omits_change_tracking_when_unset() {
+    let rendered = render_sql_table(None);
+
+    assert!(
+        !rendered.to_lowercase().contains("change_tracking"),
+        "change_tracking should not appear when unset, got:\n{rendered}"
+    );
+}
+
 /// Render `snowflake__create_csv_table` for a seed whose catalog relation
 /// reports `is_transient`, mirroring `render_python_table`.
 fn render_seed_create_csv_table(is_transient: bool) -> String {

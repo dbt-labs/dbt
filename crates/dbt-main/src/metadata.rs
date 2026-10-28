@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 
+use dbt_adapter::sql_types::TypeOpsFactory;
 use dbt_common::{
     ErrorCode, FsResult,
     artifact_io::write_artifact_to_file,
@@ -30,11 +31,13 @@ use dbt_telemetry::ArtifactType;
 use crate::utils::write_catalog_stats_parquet;
 
 /// Writes the metadata artifacts produced after task execution.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn write_metadata(
     arg: &EvalArgs,
     manifest: &DbtManifest,
     resolved_state: &ResolverState,
     schema_store: &dyn SchemaStoreTrait,
+    type_ops_factory: &dyn TypeOpsFactory,
     run_task_results: &RunTaskResults,
     catalog_data: Option<&DbtCatalog>,
     index_hooks: &dyn IndexHooks,
@@ -44,6 +47,7 @@ pub(crate) async fn write_metadata(
         manifest,
         resolved_state,
         schema_store,
+        type_ops_factory,
         run_task_results,
         catalog_data,
         index_hooks,
@@ -58,6 +62,7 @@ pub(crate) async fn write_metadata_with_report(
     manifest: &DbtManifest,
     resolved_state: &ResolverState,
     schema_store: &dyn SchemaStoreTrait,
+    type_ops_factory: &dyn TypeOpsFactory,
     run_task_results: &RunTaskResults,
     catalog_data: Option<&DbtCatalog>,
     index_hooks: &dyn IndexHooks,
@@ -68,6 +73,7 @@ pub(crate) async fn write_metadata_with_report(
         manifest,
         resolved_state,
         schema_store,
+        type_ops_factory,
         run_task_results,
         catalog_data,
         index_hooks,
@@ -82,16 +88,17 @@ async fn write_metadata_impl(
     manifest: &DbtManifest,
     resolved_state: &ResolverState,
     schema_store: &dyn SchemaStoreTrait,
+    type_ops_factory: &dyn TypeOpsFactory,
     run_task_results: &RunTaskResults,
     catalog_data: Option<&DbtCatalog>,
     index_hooks: &dyn IndexHooks,
     mut report: Option<&mut MetadataWriteReport>,
 ) -> FsResult<()> {
     if let Some(catalog) = catalog_data {
-        write_catalog_stats_parquet(catalog, arg).await;
-        write_catalog_columns_epoch(catalog, arg);
+        write_catalog_epochs(catalog, arg).await;
     }
 
+    let type_ops = type_ops_factory.create(resolved_state.adapter_type);
     let grain_infos = index_hooks.lineage_grain_infos(run_task_results).await?;
     let (node_classifiers, column_classifiers) =
         index_hooks.classifier_results(run_task_results).await?;
@@ -114,6 +121,7 @@ async fn write_metadata_impl(
             manifest,
             Some(resolved_state),
             Some(schema_store),
+            Some(type_ops.as_ref()),
             None,
             &recomputed_targets,
             &grain_infos,
@@ -127,6 +135,7 @@ async fn write_metadata_impl(
             manifest,
             Some(resolved_state),
             Some(schema_store),
+            Some(type_ops.as_ref()),
             Some(&[]),
             &recomputed_targets,
             &grain_infos,
@@ -151,6 +160,7 @@ async fn write_metadata_impl(
                     manifest,
                     Some(resolved_state),
                     Some(schema_store),
+                    Some(type_ops.as_ref()),
                     Some(&column_lineage),
                     &recomputed_targets,
                     &grain_infos,
@@ -170,6 +180,7 @@ async fn write_metadata_impl(
                     manifest,
                     Some(resolved_state),
                     Some(schema_store),
+                    Some(type_ops.as_ref()),
                     Some(&[]),
                     &empty_targets,
                     &grain_infos,
@@ -300,6 +311,12 @@ fn record_metadata_errors(
             errors.join("; "),
         );
     }
+}
+
+/// Writes the `catalog/columns` and `run/catalog_stats` epochs from a fetched catalog.
+pub(crate) async fn write_catalog_epochs(catalog: &DbtCatalog, arg: &EvalArgs) {
+    write_catalog_stats_parquet(catalog, arg).await;
+    write_catalog_columns_epoch(catalog, arg);
 }
 
 fn write_catalog_columns_epoch(catalog: &DbtCatalog, arg: &EvalArgs) {

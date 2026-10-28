@@ -1,3 +1,6 @@
+use std::borrow::Cow;
+
+use dbt_adapter_engine::cow::uppercase;
 use dbt_common::{AdapterError, AdapterResult};
 use dbt_schemas::schemas::{DbtModel, InternalDbtNodeAttributes};
 use minijinja::Value;
@@ -66,10 +69,10 @@ fn from_local_config(
             )
         })?;
     let refresh_mode = match &snowflake_config.refresh_mode {
-        None => "AUTO".to_string(),
-        Some(s) => s.to_uppercase(),
+        None => Cow::Borrowed("AUTO"),
+        Some(s) => uppercase(s.into()),
     };
-    Ok(new_component(refresh_mode))
+    Ok(new_component(refresh_mode.into()))
 }
 
 impl_loader!(RefreshMode, SnowflakeDescribeResults);

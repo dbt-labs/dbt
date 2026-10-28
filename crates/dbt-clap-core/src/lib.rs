@@ -22,7 +22,7 @@ use strum_macros::Display;
 use uuid::Uuid;
 
 use clap::{
-    ArgAction, Parser, ValueEnum,
+    ArgAction, Parser, ValueEnum, ValueHint,
     builder::{BoolishValueParser, TypedValueParser},
 };
 use clap_complete::Shell;
@@ -1254,6 +1254,9 @@ impl BuildArgs {
                 ClapResourceType::UnitTest,
                 ClapResourceType::Function,
                 ClapResourceType::Check,
+                // Plugin nodes are never selected by default, so this only keeps the ones
+                // selected directly.
+                ClapResourceType::Plugin,
             ];
             if eval_args.export_saved_queries {
                 eval_args.resource_types.push(ClapResourceType::SavedQuery);
@@ -2161,6 +2164,7 @@ pub struct CommonArgs {
         global = true,
         long = "otel-file-name",
         env = "DBT_OTEL_FILE_NAME",
+        value_hint = ValueHint::FilePath,
         help_heading = help_headings::LOGGING,
         hide_short_help = true
     )]
@@ -2172,6 +2176,7 @@ pub struct CommonArgs {
         global = true,
         long = "otel-parquet-file-name",
         env = "DBT_OTEL_PARQUET_FILE_NAME",
+        value_hint = ValueHint::FilePath,
         help_heading = help_headings::LOGGING,
         hide_short_help = true
     )]
@@ -2382,7 +2387,13 @@ pub struct CommonArgs {
     // - `redis://<host>` for shared Redis coordination
     //
     /// Task cache coordination URL. Use `redis://<host>` for shared Redis coordination
-    #[clap(long, env = "DBT_TASK_CACHE_URL", default_value = "noop", hide = true)]
+    #[clap(
+        long,
+        env = "DBT_TASK_CACHE_URL",
+        default_value = "noop",
+        value_hint = ValueHint::Url,
+        hide = true
+    )]
     pub task_cache_url: String,
 
     /// Enable service-backed dbt State without legacy task-cache coordination
@@ -2487,6 +2498,10 @@ pub struct CommonArgs {
     /// Skip installation of private dependencies (useful for build conformance testing)
     #[arg(global = true, long, default_value = "false", action = ArgAction::SetTrue, hide = true)]
     pub skip_private_deps: bool,
+
+    /// Skip dependency resolution and linting files as-is (`dbt lint` only; unresolved package macros are tolerated in symbolic mode)
+    #[arg(global = true, long, default_value = "false", action = ArgAction::SetTrue, hide = true)]
+    pub no_deps: bool,
 
     /// If specified, the end datetime dbt uses to filter microbatch model inputs (exclusive).
     #[arg(
@@ -2974,6 +2989,7 @@ impl CommonArgs {
             local_execution_backend: self.compute.into(),
             skip_checkpoints: false,
             skip_private_deps: self.skip_private_deps,
+            no_deps: self.no_deps,
             event_time_end: self.event_time_end.clone(),
             event_time_start: self.event_time_start.clone(),
             internal_package_mode: self.internal_package_mode.clone(),

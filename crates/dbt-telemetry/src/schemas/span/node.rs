@@ -107,6 +107,8 @@ struct NodeProcessedJsonPayload {
     pub node_count_total: Option<u32>,
     /// Adapter type the node runs on.
     pub adapter: Option<String>,
+    /// Kind of node, for nodes a plugin adds.
+    pub plugin_type: Option<String>,
 }
 
 fn deserialize_node_evaluated_json_payload(
@@ -491,6 +493,7 @@ impl ArrowSerializableTelemetryEvent for NodeProcessed {
                 node_index: self.node_index,
                 node_count_total: self.node_count_total,
                 adapter: self.adapter.clone(),
+                plugin_type: self.plugin_type.clone(),
             })
             .unwrap_or_else(|_| {
                 panic!(
@@ -603,6 +606,7 @@ impl ArrowSerializableTelemetryEvent for NodeProcessed {
             node_index: json_payload.node_index,
             node_count_total: json_payload.node_count_total,
             adapter: json_payload.adapter,
+            plugin_type: json_payload.plugin_type,
         })
     }
 }

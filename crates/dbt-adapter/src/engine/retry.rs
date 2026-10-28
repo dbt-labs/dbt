@@ -1,6 +1,8 @@
+use std::borrow::Cow;
 use std::time::Duration;
 
 use dbt_adapter_core::AdapterType;
+use dbt_adapter_engine::cow::lowercase;
 use dbt_adbc::Connection;
 use dbt_adbc::duration::parse_duration;
 use dbt_auth::AdapterConfig;
@@ -257,7 +259,7 @@ fn is_retryable_redshift_query_error(retry_all: bool, message: &str) -> bool {
         return true;
     }
 
-    let msg = message.to_lowercase();
+    let msg = lowercase(Cow::Borrowed(message));
     // Catalog race after a concurrent DROP/CREATE.
     msg.contains("could not open relation with oid")
         // MVCC serialization conflict.
@@ -299,7 +301,7 @@ fn is_retryable_snowflake_login_error(
         return false;
     }
 
-    let msg = err.message.to_lowercase();
+    let msg = lowercase(Cow::Borrowed(&err.message));
     if matches_go_net_transient(&msg) {
         return true;
     }
@@ -347,7 +349,7 @@ fn is_retryable_databricks_error(config: &AdapterConfig, err: &adbc_core::error:
         return true;
     }
 
-    err.message.to_lowercase().contains("retryableerror")
+    lowercase(Cow::Borrowed(&err.message)).contains("retryableerror")
 }
 
 /// Mirrors the Python dbt-redshift retryable exception list:

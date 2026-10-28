@@ -73,6 +73,7 @@ pub fn extend_microbatch_node_context(
             .allow_dependencies(allowed_deps.iter()),
         microbatch_ctx.clone(),
         model.common().unique_id.clone(),
+        adapter_type,
     ));
 
     // Insert the microbatch-aware ref into context

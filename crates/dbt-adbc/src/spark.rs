@@ -33,6 +33,11 @@ pub const USERNAME: &str = "username";
 pub const PASSWORD: &str = "password";
 
 pub const SESSION_CONFIG_PREFIX: &str = "spark.opt.";
+pub mod session_config {
+    pub const LIVY_SESSION_TTL: &str = "livy.server.session.ttl";
+    pub const EMR_SERVERLESS_EXECUTION_ROLE_ARN: &str = "emr-serverless.session.executionRoleArn";
+    pub const KUBERNETES_NAMESPACE: &str = "spark.kubernetes.namespace";
+}
 
 pub const KERBEROS_SERVICE_NAME: &str = "spark.kerberos.service_name";
 
@@ -46,19 +51,15 @@ pub mod livy {
 
     pub const SESSION_TTL: &str = "spark.livy.session_ttl";
 
-    /// Path appended to the host to form the Livy endpoint base URL
-    /// (e.g. Microsoft Fabric's `/v1/workspaces/{id}/lakehouses/{id}/livyapi/versions/2023-12-01`).
+    /// Path appended to the host to form the Livy endpoint base URL.
     pub const BASE_URL: &str = "spark.livy.base_url";
 
     /// Microsoft Entra ID options for [`super::auth_type::AZURE_TOKEN`].
-    /// Credential parameters ride in the standard username/password options,
-    /// following the MSSQL driver's fedauth conventions: a service principal
-    /// is `username = "<client id>@<tenant id>"` with the client secret as
-    /// the password; a user-assigned managed identity's client ID is the
-    /// username.
+    /// Credentials ride in the username/password options: a service principal
+    /// is `username = "<client id>@<tenant id>"` with the client secret as the
+    /// password; a user-assigned managed identity's client ID is the username.
     pub mod azure {
         pub const CREDENTIAL: &str = "spark.livy.azure.credential";
-        /// Credential kind names match the MSSQL driver's `fedauth` values.
         pub mod credential {
             pub const DEFAULT: &str = "ActiveDirectoryDefault";
             pub const AZ_CLI: &str = "ActiveDirectoryAzCli";

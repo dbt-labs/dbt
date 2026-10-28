@@ -1,0 +1,40 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/cat1.sql
+   Parsing models/cat1_incremental.sql
+   Parsing models/cat2_bogus_connection.sql
+   Parsing models/cat2_override_base_location_adapter.sql
+   Parsing models/cat2_override_base_location_legacy.sql
+   Parsing models/cat2_override_storage_uri.sql
+   Parsing models/cat2_remove_base_location_root.sql
+   Parsing models/standard_table.sql
+   Started downloading referenced relations (1 items)
+  Finished [duration] downloading referenced relations (1 items)
+ Rendering models/cat2_remove_base_location_root.sql
+   Running models/cat2_remove_base_location_root.sql
+ Succeeded model adapters_bigquery_catalogs.cat2_remove_base_location_root (table) [1 of 8 in duration]
+ Rendering models/cat2_override_storage_uri.sql
+   Running models/cat2_override_storage_uri.sql
+ Succeeded model adapters_bigquery_catalogs.cat2_override_storage_uri (table) [2 of 8 in duration]
+ Rendering models/cat2_override_base_location_legacy.sql
+   Running models/cat2_override_base_location_legacy.sql
+ Succeeded model adapters_bigquery_catalogs.cat2_override_base_location_legacy (table) [3 of 8 in duration]
+ Rendering models/cat2_override_base_location_adapter.sql
+   Running models/cat2_override_base_location_adapter.sql
+ Succeeded model adapters_bigquery_catalogs.cat2_override_base_location_adapter (table) [4 of 8 in duration]
+ Rendering models/cat2_bogus_connection.sql
+   Running models/cat2_bogus_connection.sql
+ Succeeded model adapters_bigquery_catalogs.cat2_bogus_connection (table) [5 of 8 in duration]
+ Rendering models/standard_table.sql
+   Running models/standard_table.sql
+ Succeeded model adapters_bigquery_catalogs.standard_table (table) [6 of 8 in duration]
+ Rendering models/cat1_incremental.sql
+   Running models/cat1_incremental.sql
+ Succeeded model adapters_bigquery_catalogs.cat1_incremental (incremental) [7 of 8 in duration]
+ Rendering models/cat1.sql
+   Running models/cat1.sql
+ Succeeded model adapters_bigquery_catalogs.cat1 (table) [8 of 8 in duration]
+==================== Execution Summary =====================
+Finished 'run' with 1 warning for target 'bigquery' [duration]
+Processed: 8 models
+Summary: 8 total | 8 success

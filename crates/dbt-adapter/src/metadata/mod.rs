@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     collections::{BTreeMap, BTreeSet, HashMap},
     fmt,
     sync::Arc,
@@ -225,8 +226,8 @@ impl From<&dyn BaseRelation> for CatalogAndSchema {
         Self {
             rendered_catalog,
             rendered_schema,
-            resolved_catalog,
-            resolved_schema,
+            resolved_catalog: resolved_catalog.into_owned(),
+            resolved_schema: resolved_schema.into_owned(),
         }
     }
 }
@@ -403,9 +404,9 @@ pub fn new_arrow_field_with_metadata(
     field.with_metadata(metadata)
 }
 
-pub fn get_input_schema_database_and_table(
-    relation: &Arc<dyn BaseRelation>,
-) -> AdapterResult<(String, String, String)> {
+pub fn get_input_schema_database_and_table<'a>(
+    relation: &'a Arc<dyn BaseRelation>,
+) -> AdapterResult<(Cow<'a, str>, Cow<'a, str>, Cow<'a, str>)> {
     let table_name = relation.semantic_fqn();
 
     let parts: Vec<&str> = table_name.split('.').collect();
@@ -437,7 +438,7 @@ pub fn get_input_schema_database_and_table(
         )
     })?;
 
-    Ok((input_schema, database.to_owned(), input_table))
+    Ok((input_schema, Cow::Owned(database.to_owned()), input_table))
 }
 
 /// Builds and returns ([WhereClausesByDb], [RelationsByDb]) from a list of [BaseRelation]
@@ -454,13 +455,13 @@ pub fn build_relation_clauses(
         let (input_schema, database, input_table) = get_input_schema_database_and_table(relation)?;
 
         where_clauses_by_database
-            .entry(database.to_owned())
+            .entry(database.as_ref().to_owned())
             .or_insert_with(Vec::new)
             .push(format!(
                 "table_schema = '{input_schema}' and table_name = '{input_table}'"
             ));
         relations_by_database
-            .entry(database.to_owned())
+            .entry(database.into_owned())
             .or_insert_with(Vec::new)
             .push(relation.clone());
     }

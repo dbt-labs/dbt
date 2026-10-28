@@ -1,0 +1,13 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing seeds/seeds.yml
+   Parsing tests/backslash_seed_round_trip.sql
+   Running ../scratch/target/run/snowflake_seed_escape_backslashes/seeds/backslash_seed.sql
+ Succeeded seed  snowflake_seed_escape_backslashes.backslash_seed (table) [1 of 2 in duration]
+ Rendering tests/backslash_seed_round_trip.sql
+   Running ../scratch/target/run/snowflake_seed_escape_backslashes/tests/backslash_seed_round_trip.sql
+    Passed test  backslash_seed_round_trip [2 of 2 in duration]
+==================== Execution Summary =====================
+Finished 'build' successfully for target 'snowflake' [duration]
+Processed: 1 test | 1 seed
+Summary: 2 total | 2 success

@@ -15,6 +15,7 @@ pub mod lake_compute;
 pub mod loader;
 pub mod login;
 pub mod metricflow;
+pub mod plugin;
 pub mod resolver;
 pub mod sidecar;
 pub mod task_runner;

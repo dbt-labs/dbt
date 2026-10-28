@@ -9,7 +9,7 @@
 //!   `NodeResolverHandle` + `RuntimeConfigHandle`.
 //! * `LazyFlatGraph` → needs `FlatGraphSource` (`Nodes` lives in
 //!   `dbt-schemas`).
-//! * `CompileConfig` → uses `dbt_common::DashMap`.
+//! * `CompileConfig` → uses `dbt_common::collections::SccHashMap`.
 //! * `MicrobatchRefContext` → carried by `RefFunction`, moves with it.
 
 use std::rc::Rc;

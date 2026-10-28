@@ -12,6 +12,7 @@ use arrow::datatypes::GenericStringType;
 use arrow_schema::{DataType, Field, Schema};
 use dbt_adapter_core::{AdapterType, ExecutionPhase};
 use dbt_adapter_engine::MapReduce;
+use dbt_adapter_engine::cow::uppercase;
 use dbt_adbc::*;
 use dbt_common::cancellation::Cancellable;
 use dbt_common::cancellation::CancellationToken;
@@ -255,9 +256,9 @@ fn parse_show_tables_batch(
 
     let mut relations = Vec::with_capacity(batch.num_rows());
     for i in 0..batch.num_rows() {
-        let kind = table_type.value(i).trim().to_uppercase();
-        let subtype = table_subtype.map(|arr| arr.value(i).trim().to_uppercase());
-        let relation_type = match (kind.as_str(), subtype.as_deref()) {
+        let kind = uppercase(table_type.value(i).trim().into());
+        let subtype = table_subtype.map(|arr| uppercase(arr.value(i).trim().into()));
+        let relation_type = match (kind.as_ref(), subtype.as_deref()) {
             ("VIEW", Some("MATERIALIZED VIEW")) => RelationType::MaterializedView,
             ("VIEW", _) => RelationType::View,
             _ => RelationType::Table,

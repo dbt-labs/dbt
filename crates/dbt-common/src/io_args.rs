@@ -666,6 +666,8 @@ pub struct EvalArgs {
     pub skip_checkpoints: bool,
     /// Skip installation of private dependencies (useful for build conformance testing)
     pub skip_private_deps: bool,
+    /// Skip dependency resolution entirely (`dbt lint --no-deps`)
+    pub no_deps: bool,
     /// Override end datetime when generating microbatches
     pub event_time_end: Option<String>,
     /// Override start datetime when generating microbatches
@@ -958,6 +960,8 @@ pub enum ClapResourceType {
     SavedQuery,
     Check,
     Exposure,
+    /// Nodes added by plugins.
+    Plugin,
 }
 
 impl Display for ClapResourceType {
@@ -976,6 +980,7 @@ impl Display for ClapResourceType {
             ClapResourceType::SavedQuery => "saved_query",
             ClapResourceType::Check => "check",
             ClapResourceType::Exposure => "exposure",
+            ClapResourceType::Plugin => "plugin",
         };
         write!(f, "{s}")
     }
@@ -997,6 +1002,7 @@ impl From<&ClapResourceType> for NodeType {
             ClapResourceType::SavedQuery => NodeType::SavedQuery,
             ClapResourceType::Check => NodeType::Check,
             ClapResourceType::Exposure => NodeType::Exposure,
+            ClapResourceType::Plugin => NodeType::Plugin,
         }
     }
 }

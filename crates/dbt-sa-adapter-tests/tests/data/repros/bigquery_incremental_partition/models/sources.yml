@@ -1,0 +1,13 @@
+
+version: 2
+sources:
+  - name: raw
+    schema: "{{ target.schema }}"
+    tables:
+      - name: animal
+        columns:
+          - name: id
+          - name: name
+          - name: species
+          - name: age
+          - name: created_at

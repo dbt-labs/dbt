@@ -14,6 +14,7 @@ use crate::time_machine::{
     with_time_machine_metadata_wrapper,
 };
 use crate::{AdapterEngine, AdapterResult, AdapterType};
+use dbt_adapter_engine::cow::uppercase;
 use dbt_adapter_sql::ident::{escape_string_literal, quote_identifier};
 
 use arrow_array::{
@@ -36,7 +37,7 @@ use dbt_schemas::schemas::legacy_catalog::*;
 use dbt_schemas::schemas::relations::base::*;
 use indexmap::IndexMap;
 use minijinja::State;
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Display;
@@ -263,7 +264,7 @@ fn snowflake_freshness_sql(database: &str, where_clauses: &[String]) -> AdapterR
 }
 
 fn is_table_ddl(ddl: &str) -> bool {
-    static TABLE_REGEX: Lazy<fancy_regex::Regex> = Lazy::new(|| {
+    static TABLE_REGEX: LazyLock<fancy_regex::Regex> = LazyLock::new(|| {
         fancy_regex::Regex::new(
             r"(?ix)
                 ^\s*create\b
@@ -1319,10 +1320,10 @@ impl MetadataAdapter for SnowflakeMetadataAdapter {
             let arguments = batch.column_values::<StringArray>("arguments")?;
 
             // possible values are either "Y" or "N"
-            let is_true = |s: &str| s.to_uppercase() == "Y";
+            let is_true = |s: &str| uppercase(s.into()) == "Y";
             for i in 0..batch.num_rows() {
-                let language = language.value(i).to_string();
-                if language.to_uppercase() != "SQL" {
+                let language: &str = language.value(i);
+                if uppercase(language.into()) != "SQL" {
                     continue;
                 }
 
@@ -1791,9 +1792,9 @@ ORDER BY TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION"
                     let database = relation.database_as_resolved_str().unwrap_or_default();
                     let schema = relation.schema_as_resolved_str().unwrap_or_default();
                     by_database
-                        .entry(database)
+                        .entry(database.into_owned())
                         .or_default()
-                        .entry(schema)
+                        .entry(schema.into_owned())
                         .or_default()
                         .push(Arc::clone(relation));
                 }
@@ -2098,7 +2099,7 @@ fn build_schema_from_desc_table(
     let mut fields = vec![];
     for i in 0..show_columns_result.num_rows() {
         let name = column_names.value(i);
-        let nullable = nullability.value(i).to_uppercase() == "Y";
+        let nullable = uppercase(nullability.value(i).into()) == "Y";
         let text_data_type = data_types.value(i);
         let comment = match comments.value(i) {
             "" => None,
@@ -2183,7 +2184,7 @@ fn build_schemas_from_information_schema(
 
         let name = column_names.value(i);
         let data_type = data_types.value(i);
-        let nullable = is_nullable.value(i).to_uppercase() == "YES";
+        let nullable = uppercase(is_nullable.value(i).into()) == "YES";
         let comment = match comments.value(i) {
             "" => None,
             c => Some(c.to_string()),

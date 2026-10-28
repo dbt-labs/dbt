@@ -1,0 +1,10 @@
+name: 'hello_world'
+
+config-version: 2
+version: '0.1'
+profile: 'fusion_tests'
+
+
+# Uncomment this to test bigquery_noop_alter_relation_comment behavior override
+# flags:
+#   bigquery_noop_alter_relation_comment: True

@@ -1,0 +1,4 @@
+name: 'snowflake_sql_header_set'
+config-version: 2
+version: '0.1'
+profile: 'fusion_tests'

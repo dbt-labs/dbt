@@ -1,0 +1,84 @@
+test.store_failures.not_null_one_id.fe01050880:
+- sequence: 0
+  type: execute
+  sql: |-
+    select
+    count(*) as failures,
+    count(*) != 0 as should_warn,
+    count(*) != 0 as should_error
+    from (
+    
+    
+    
+    
+    
+    
+    
+    
+    select id
+    from `dbt-test-env`.`adapters_bigquery_store_failures`.`one`
+    where id is null
+    
+    
+    
+    
+    
+    
+    ) dbt_internal_test
+test.store_failures.unique_one_id.7d693d05ef:
+- sequence: 0
+  type: execute
+  sql: |-
+    drop table if exists `dbt-test-env`.`adapters_bigquery_store_failures_dbt_test__audit`.`unique_one_id`
+- sequence: 1
+  type: execute
+  sql: |-
+    create or replace table `dbt-test-env`.`adapters_bigquery_store_failures_dbt_test__audit`.`unique_one_id`
+    
+    
+    
+    
+    
+    OPTIONS()
+    as (
+    
+    
+    
+    
+    
+    
+    with dbt_test__target as (
+    
+    select id as unique_field
+    from `dbt-test-env`.`adapters_bigquery_store_failures`.`one`
+    where id is not null
+    
+    )
+    
+    select
+    unique_field,
+    count(*) as n_records
+    
+    from dbt_test__target
+    group by unique_field
+    having count(*) > 1
+    
+    
+    
+    
+    
+    );
+- sequence: 2
+  type: execute
+  sql: |-
+    select
+    count(*) as failures,
+    count(*) != 0 as should_warn,
+    count(*) != 0 as should_error
+    from (
+    
+    select *
+    from `dbt-test-env`.`adapters_bigquery_store_failures_dbt_test__audit`.`unique_one_id`
+    
+    
+    ) dbt_internal_test

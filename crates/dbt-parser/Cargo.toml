@@ -17,6 +17,7 @@ dbt-adapter = { workspace = true }
 dbt-adapter-core = { workspace = true }
 dbt-common = { workspace = true }
 dbt-dag = { workspace = true }
+dbt-flags = { workspace = true }
 dbt-frontend-common = { workspace = true }
 dbt-jinja-utils = { workspace = true }
 dbt-runtime = { workspace = true }
@@ -33,7 +34,6 @@ indexmap = { workspace = true }
 itertools = { workspace = true }
 md5 = { workspace = true }
 minijinja = { workspace = true }
-num_cpus = { workspace = true }
 regex = { workspace = true }
 ruff_python_ast = { git = "https://github.com/astral-sh/ruff", tag = "0.8.4" }
 ruff_python_parser = { git = "https://github.com/astral-sh/ruff", tag = "0.8.4" }

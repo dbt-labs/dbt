@@ -11,6 +11,7 @@
 //! adapter relation rendering, warehouse metadata lookups, and skip policy.
 //! Stable service DTO construction lives in `dbt-state::request_builder`.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -63,6 +64,7 @@ use dbt_state::explain::{
 use dbt_state::materialization;
 use dbt_state::metadata_cache::{MetadataPrefetchGuard, RunCacheMetadataCache};
 use dbt_state::node_session::ExecutionGuard;
+use dbt_state::node_state_config::resolve_compare_unrendered_code;
 use dbt_state::proto::query_cache::{
     ClientTelemetryEvent, ConfirmExecutionRequest, ExplainedDecision, NodeFuncMapping,
     QueryDependency, RecordExecutionsRequest, SkipExecutionResponse, Struct,
@@ -94,8 +96,8 @@ pub fn collect_upstream_hashes(ctx: &TaskRunnerCtx, unique_id: &str) -> HashMap<
                 .filter_map(|dep| {
                     ctx.inner
                         .node_hashes
-                        .get(dep)
-                        .map(|hash| (dep.clone(), hash.value().clone()))
+                        .read_sync(dep, |_, hash| hash.clone())
+                        .map(|hash| (dep.clone(), hash))
                 })
                 .collect()
         })
@@ -1188,16 +1190,14 @@ pub async fn run_cache_service_start_telemetry(ctx: &TaskRunnerCtx) {
 pub async fn run_cache_service_after_run(ctx: &TaskRunnerCtx, cancelled: bool) {
     let result = if cancelled {
         SessionEndResult::Cancelled
-    } else if ctx
+    } else if !ctx
         .inner
         .run_stats
-        .iter()
-        .any(|stat| stat.status == NodeStatus::Errored)
-        || ctx
+        .iter_sync(|_, stat| stat.status != NodeStatus::Errored)
+        || !ctx
             .inner
             .analyze_stats
-            .iter()
-            .any(|stat| stat.status == NodeStatus::Errored)
+            .iter_sync(|_, stat| stat.status != NodeStatus::Errored)
     {
         SessionEndResult::Failure
     } else {
@@ -1568,7 +1568,7 @@ pub async fn run_cache_service_before_execution(
                 .inner
                 .run_cache_ctx
                 .run_cache_dev_cloned_nodes
-                .contains_key(node.unique_id().as_str());
+                .contains_sync(node.unique_id().as_str());
             let decision = relabel_skip_for_dev_cloned_node(is_dev_cloned, decision);
             let execution_decision_id =
                 state_explain_execution_decision_id(Some(&outcome.response), &decision);
@@ -1697,8 +1697,7 @@ fn state_explain_node_info(
         .inner
         .run_cache_ctx
         .run_cache_dev_cloned_nodes
-        .get(node.unique_id().as_str())
-        .map(|entry| entry.value().clone());
+        .read_sync(node.unique_id().as_str(), |_, dev_clone| dev_clone.clone());
     node_info.deferrals = state_explain_deferrals(ctx, node);
     node_info
 }
@@ -3035,6 +3034,14 @@ async fn prepare_write_only_execution_record(
                 allow_clones: Some(ctx.dbt_profile().allow_clones),
                 is_defer_to_profile,
                 defer_enabled,
+                compare_unrendered_code: resolve_compare_unrendered_code(
+                    seed,
+                    ctx.inner
+                        .run_cache_ctx
+                        .run_cache_service_config
+                        .as_ref()
+                        .is_some_and(|config| config.compare_unrendered_code),
+                ),
                 dbt_project_info: DbtProjectInfo::from(ctx),
             },
             create_macro_resolver(ctx),
@@ -3130,6 +3137,14 @@ async fn submit_seed(
             allow_clones: Some(ctx.dbt_profile().allow_clones),
             is_defer_to_profile,
             defer_enabled,
+            compare_unrendered_code: resolve_compare_unrendered_code(
+                seed,
+                ctx.inner
+                    .run_cache_ctx
+                    .run_cache_service_config
+                    .as_ref()
+                    .is_some_and(|config| config.compare_unrendered_code),
+            ),
             dbt_project_info: DbtProjectInfo::from(ctx),
         },
         create_macro_resolver(ctx),
@@ -3351,44 +3366,6 @@ fn evaluate_volatile_sql_for_node(node: &dyn InternalDbtNodeAttributes) -> Optio
         .downcast_ref::<DbtTest>()
         .and_then(|test| test.__test_attr__.state.as_ref())
         .and_then(|state| state.evaluate_volatile_sql)
-}
-
-/// `compare_unrendered_code`, honored by models and snapshots (via `ModelState`) and data tests
-/// (via `DataTestState`).
-fn compare_unrendered_code_for_node(node: &dyn InternalDbtNodeAttributes) -> Option<bool> {
-    if let Some(state) = model_state_for_node(node) {
-        return state.compare_unrendered_code;
-    }
-    node.as_any()
-        .downcast_ref::<DbtTest>()
-        .and_then(|test| test.__test_attr__.state.as_ref())
-        .and_then(|state| state.compare_unrendered_code)
-}
-
-/// Per-node override for the service's `compare_unrendered_code` wire flag. Unlike
-/// `tolerate_nondeterminism` there is no inversion and no legacy `meta` form: the node config
-/// wins over the service default, otherwise the default stands.
-fn resolve_compare_unrendered_code(
-    node: &dyn InternalDbtNodeAttributes,
-    service_default: bool,
-) -> bool {
-    let node_override = compare_unrendered_code_for_node(node);
-    let resolved = node_override.unwrap_or(service_default);
-
-    // Logs the override separately from the result so a surprising `false` distinguishes
-    // "the node never set it" from "the service default lost to an explicit node value".
-    emit_trace_log_message(|| {
-        format!(
-            "dbt State compare_unrendered_code={resolved} for node {} (node config {}, service default {service_default})",
-            node.unique_id(),
-            match node_override {
-                Some(v) => v.to_string(),
-                None => "unset".to_owned(),
-            },
-        )
-    });
-
-    resolved
 }
 
 /// Per-model override for ignoring external / out of band changes.
@@ -4566,8 +4543,11 @@ fn group_relations_by_database_and_schema(
     for (name, relation) in relations {
         grouped
             .entry((
-                relation.database_as_resolved_str().ok(),
-                relation.schema_as_resolved_str().ok(),
+                relation
+                    .database_as_resolved_str()
+                    .ok()
+                    .map(Cow::into_owned),
+                relation.schema_as_resolved_str().ok().map(Cow::into_owned),
             ))
             .or_insert_with(BTreeMap::new)
             .insert(name.clone(), Arc::clone(relation));
@@ -5291,7 +5271,7 @@ mod tests {
         EventReplayer, args_freshness_with_overrides, get_or_init_recording, get_or_init_replayer,
         reset_time_machine_globals, with_time_machine_metadata_wrapper,
     };
-    use dbt_adapter::{Adapter, AdapterBuilder, AdapterImpl, AdapterStore};
+    use dbt_adapter::{Adapter, AdapterStore};
     use dbt_common::path::DbtPath;
     use dbt_schemas::schemas::common::FreshnessDefinition;
     use dbt_schemas::state::ProfileAdapter;
@@ -5312,11 +5292,10 @@ mod tests {
 
     static TIME_MACHINE_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     use dbt_adapter::sql_types::DefaultTypeOps;
-    use dbt_adapter::stmt_splitter::DefaultStmtSplitter;
     use dbt_adapter_core::ExecutionPhase;
     use dbt_common::AsyncAdapterResult;
     use dbt_common::cancellation::never_cancels;
-    use dbt_common::collections::DashMap;
+    use dbt_common::collections::SccHashMap;
     use dbt_common::io_args::RunCacheMode;
     use dbt_common::sources_extractor::SourcesExtractor;
     use dbt_common::{CompiledSpans, MacroSpan};
@@ -8418,7 +8397,7 @@ mod tests {
                 sql: sql.to_string(),
                 ..Default::default()
             },
-            config_map: Arc::new(DashMap::default()),
+            config_map: Arc::new(SccHashMap::default()),
             lp_instruction: None,
         }
     }
@@ -8500,7 +8479,7 @@ mod tests {
             "worker-0".to_string(),
             schedule,
             BTreeMap::new(),
-            DashMap::default(),
+            SccHashMap::default(),
             Box::new(TestExtendedCtx),
             Arc::new(TestCompiledSqlCache),
             Arc::new(TestAdhocRunner),
@@ -8512,7 +8491,7 @@ mod tests {
             sources_extractor,
             RunCacheCtx {
                 run_cache_metadata: Arc::new(RunCacheMetadataCache::new()),
-                run_cache_dev_cloned_nodes: DashMap::default(),
+                run_cache_dev_cloned_nodes: SccHashMap::default(),
                 run_cache_deferred_fqns: BTreeSet::new(),
                 run_cache_service_requested: true,
                 run_cache_service_config: Some(RunCacheServiceConfig::disabled()),
@@ -8553,21 +8532,7 @@ mod tests {
     }
 
     fn test_adapter_store_for(adapter_type: AdapterType) -> Arc<AdapterStore> {
-        let build: AdapterBuilder = Box::new(|adapter_type| {
-            let adapter = AdapterImpl::new_mock(
-                adapter_type,
-                BTreeMap::new(),
-                DEFAULT_RESOLVED_QUOTING,
-                Arc::new(DefaultTypeOps::new(adapter_type)),
-                Arc::new(DefaultStmtSplitter),
-            );
-            Ok(Arc::new(Adapter::new(
-                Arc::new(adapter),
-                None,
-                never_cancels(),
-            )))
-        });
-        Arc::new(AdapterStore::new(vec![adapter_type], adapter_type, build).expect("valid store"))
+        Arc::new(AdapterStore::new_mock(vec![adapter_type], adapter_type).expect("valid store"))
     }
 
     #[dbt_runtime::test]
@@ -8888,7 +8853,7 @@ mod tests {
                 }
             },
             cloud_config: None,
-            render_results: RenderResults::default(),
+            render_results: Arc::new(RenderResults::default()),
             node_resolver: Arc::new(DummyNodeResolverTracker),
             get_relation_calls: Default::default(),
             get_columns_in_relation_calls: Default::default(),

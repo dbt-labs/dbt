@@ -7,6 +7,7 @@ use dbt_telemetry::{
     ThreadPoolWait, UserLogMessage,
 };
 use std::{
+    fmt,
     sync::atomic::{AtomicBool, Ordering},
     time::SystemTime,
 };
@@ -24,32 +25,27 @@ use dbt_tracing::{
 use super::super::{
     event_classifiers::is_exit_with_status_log,
     formatters::{
-        asset::format_asset_parsed_end,
+        asset::AssetParsedEnd,
         constants::SELECTED_NODES_TITLE,
         deps::{
-            format_package_add_end, format_package_add_start, format_package_install_end,
-            format_package_install_start, format_package_installed_end,
-            format_package_installed_start,
+            PackageAddEnd, PackageAddStart, PackageInstallEnd, PackageInstallStart,
+            PackageInstalledEnd, PackageInstalledStart,
         },
-        duration::{format_timestamp_time_only, format_timestamp_utc_zulu},
-        generic::{
-            format_generic_op_end, format_generic_op_item_end, format_generic_op_item_start,
-            format_generic_op_start,
-        },
-        invocation::format_invocation_summary,
-        layout::format_delimiter,
-        log_message::format_log_message,
-        meta::format_severity_fixed_width,
+        duration::{TimeOnlyTimestamp, UtcZuluTimestamp},
+        generic::{GenericOpEnd, GenericOpItemEnd, GenericOpItemStart, GenericOpStart},
+        invocation::InvocationSummary,
+        layout::Delimiter,
+        log_message::LogMessageLine,
+        meta::severity_fixed_width,
         node::{
-            format_compiled_code, format_compiled_inline_code, format_microbatch_evaluated_end,
-            format_microbatch_evaluated_start, format_node_evaluated_end,
-            format_node_evaluated_start, format_node_processed_end, format_node_processed_start,
+            CompiledCodeLine, CompiledInlineCode, MicrobatchEvaluatedEnd, MicrobatchEvaluatedStart,
+            NodeEvaluatedEnd, NodeEvaluatedStart, NodeProcessedEnd, NodeProcessedStart,
         },
-        phase::{format_phase_executed_end, format_phase_executed_start},
-        progress::format_progress_message,
-        state_mod_diff::format_state_modified_diff_lines,
-        test_result::format_test_failure,
-        thread_pool_wait::{format_thread_pool_wait_end, format_thread_pool_wait_start},
+        phase::{PhaseExecutedEnd, PhaseExecutedStart},
+        progress::ProgressMessageLine,
+        state_mod_diff::StateModifiedDiffLines,
+        test_result::TestFailure,
+        thread_pool_wait::{THREAD_POOL_WAIT_START, ThreadPoolWaitEnd},
     },
     fs_error_log::get_log_message,
 };
@@ -84,30 +80,19 @@ impl FileLogLayer {
         }
     }
 
-    /// Write log lines with timestamp and severity level prefix.
-    /// Each string in the slice represents one distinct log line.
-    fn write_log_lines(
+    /// Write a log line with timestamp and severity level prefix.
+    fn write_log_line(
         &self,
         timestamp: SystemTime,
         severity: SeverityNumber,
-        lines: &[impl AsRef<str>],
+        line: &dyn fmt::Display,
     ) {
-        let timestamp_str = format_timestamp_time_only(timestamp);
-        let level_str = format_severity_fixed_width(severity);
-
-        let mut line_iter = lines.iter();
-
-        // First line with timestamp and level
-        if let Some(first_line) = line_iter.next() {
-            let formatted_line =
-                format!("{} {}: {}", timestamp_str, level_str, first_line.as_ref());
-            self.writer.writeln(&formatted_line);
-        }
-
-        // Subsequent lines are printed as is, without timestamp/level prefix
-        for line in line_iter {
-            self.writer.writeln(line.as_ref());
-        }
+        self.writer.writeln(&format_args!(
+            "{} {}: {}",
+            TimeOnlyTimestamp(timestamp),
+            severity_fixed_width(severity),
+            line
+        ));
     }
 }
 
@@ -328,108 +313,118 @@ impl TelemetryConsumer for FileLogLayer {
 
 impl FileLogLayer {
     fn handle_invocation_start(&self, span: &SpanStartInfo, invocation: &Invocation) {
-        let timestamp = format_timestamp_utc_zulu(span.start_time_unix_nano);
-        let invocation_id = &invocation.invocation_id;
-        let header = format!(
+        self.writer.writeln(&format_args!(
             "{} {} | {} {}",
-            HEADER_SEPARATOR, timestamp, invocation_id, HEADER_SEPARATOR
-        );
-        self.writer.writeln(&header);
+            HEADER_SEPARATOR,
+            UtcZuluTimestamp(span.start_time_unix_nano),
+            invocation.invocation_id,
+            HEADER_SEPARATOR
+        ));
     }
 
     fn handle_query_executed(&self, span: &SpanEndInfo, query_data: &QueryExecuted) {
         let node_id = query_data.unique_id.as_deref().unwrap_or("unknown");
-        let formatted_query = format!("Query executed on node {}:\n{}", node_id, query_data.sql);
-        self.write_log_lines(
+        self.write_log_line(
             span.end_time_unix_nano,
             span.severity_number,
-            &[formatted_query],
+            &format_args!("Query executed on node {}:\n{}", node_id, query_data.sql),
         );
     }
 
     fn handle_thread_pool_wait_start(&self, span: &SpanStartInfo) {
-        let formatted = format_thread_pool_wait_start();
-        self.write_log_lines(
+        self.write_log_line(
             span.start_time_unix_nano,
             span.severity_number,
-            &[formatted],
+            &THREAD_POOL_WAIT_START,
         );
     }
 
     fn handle_thread_pool_wait_end(&self, span: &SpanEndInfo) {
-        let duration = span
-            .end_time_unix_nano
-            .duration_since(span.start_time_unix_nano)
-            .unwrap_or_default();
-        let formatted = format_thread_pool_wait_end(duration);
-        self.write_log_lines(span.end_time_unix_nano, span.severity_number, &[formatted]);
+        self.write_log_line(
+            span.end_time_unix_nano,
+            span.severity_number,
+            &ThreadPoolWaitEnd(span_duration(span)),
+        );
     }
 
     fn handle_phase_executed_start(&self, span: &SpanStartInfo, phase: &PhaseExecuted) {
-        let formatted = format_phase_executed_start(phase);
-        self.write_log_lines(
+        self.write_log_line(
             span.start_time_unix_nano,
             span.severity_number,
-            &[formatted],
+            &PhaseExecutedStart(phase),
         );
     }
 
     fn handle_phase_executed_end(&self, span: &SpanEndInfo, phase: &PhaseExecuted) {
-        let duration = span
-            .end_time_unix_nano
-            .duration_since(span.start_time_unix_nano)
-            .unwrap_or_default();
-        let formatted = format_phase_executed_end(phase, duration);
-        self.write_log_lines(span.end_time_unix_nano, span.severity_number, &[formatted]);
+        self.write_log_line(
+            span.end_time_unix_nano,
+            span.severity_number,
+            &PhaseExecutedEnd {
+                phase,
+                duration: span_duration(span),
+            },
+        );
     }
 
     fn handle_node_evaluated_start(&self, span: &SpanStartInfo, ne: &NodeEvaluated) {
-        let formatted = format_node_evaluated_start(ne, false);
-        self.write_log_lines(
+        self.write_log_line(
             span.start_time_unix_nano,
             span.severity_number,
-            &[formatted],
+            &NodeEvaluatedStart {
+                node: ne,
+                colorize: false,
+            },
         );
     }
 
     fn handle_node_evaluated(&self, span: &SpanEndInfo, ne: &NodeEvaluated) {
-        let duration = span
-            .end_time_unix_nano
-            .duration_since(span.start_time_unix_nano)
-            .unwrap_or_default();
-        let formatted = format_node_evaluated_end(ne, duration, false);
-        self.write_log_lines(span.end_time_unix_nano, span.severity_number, &[formatted]);
+        self.write_log_line(
+            span.end_time_unix_nano,
+            span.severity_number,
+            &NodeEvaluatedEnd {
+                node: ne,
+                duration: span_duration(span),
+                colorize: false,
+            },
+        );
     }
 
     fn handle_microbatch_evaluated_start(&self, span: &SpanStartInfo, batch: &MicrobatchEvaluated) {
-        let formatted = format_microbatch_evaluated_start(batch, false);
-        self.write_log_lines(
+        self.write_log_line(
             span.start_time_unix_nano,
             span.severity_number,
-            &[formatted],
+            &MicrobatchEvaluatedStart {
+                batch,
+                colorize: false,
+            },
         );
     }
 
     fn handle_microbatch_evaluated(&self, span: &SpanEndInfo, batch: &MicrobatchEvaluated) {
-        let duration = span
-            .end_time_unix_nano
-            .duration_since(span.start_time_unix_nano)
-            .unwrap_or_default();
         let severity = if batch.node_outcome() == NodeOutcome::Error {
             SeverityNumber::Error
         } else {
             span.severity_number
         };
-        let formatted = format_microbatch_evaluated_end(batch, duration, false);
-        self.write_log_lines(span.end_time_unix_nano, severity, &[formatted]);
+        self.write_log_line(
+            span.end_time_unix_nano,
+            severity,
+            &MicrobatchEvaluatedEnd {
+                batch,
+                duration: span_duration(span),
+                colorize: false,
+            },
+        );
     }
 
     fn handle_node_processed_start(&self, span: &SpanStartInfo, node: &NodeProcessed) {
-        let formatted = format_node_processed_start(node, false);
-        self.write_log_lines(
+        self.write_log_line(
             span.start_time_unix_nano,
             span.severity_number,
-            &[formatted],
+            &NodeProcessedStart {
+                node,
+                colorize: false,
+            },
         );
     }
 
@@ -440,26 +435,25 @@ impl FileLogLayer {
         let duration = node
             .duration_ms
             .map(std::time::Duration::from_millis)
-            .unwrap_or_else(|| {
-                span.end_time_unix_nano
-                    .duration_since(span.start_time_unix_nano)
-                    .unwrap_or_default()
-            });
+            .unwrap_or_else(|| span_duration(span));
 
-        // Format and emit the node processed end line
-        let formatted = format_node_processed_end(node, duration, false);
-        self.write_log_lines(span.end_time_unix_nano, span.severity_number, &[formatted]);
+        // Emit the node processed end line
+        self.write_log_line(
+            span.end_time_unix_nano,
+            span.severity_number,
+            &NodeProcessedEnd {
+                node,
+                duration,
+                colorize: false,
+            },
+        );
 
         // Print unit test summary messages
         if (node.node_type() == NodeType::Test || node.node_type() == NodeType::UnitTest)
             && node.node_outcome() == NodeOutcome::Success
-            && let Some(test_failure_message) = format_test_failure(node, false)
+            && let Some(test_failure) = TestFailure::new(node, false)
         {
-            self.write_log_lines(
-                span.end_time_unix_nano,
-                span.severity_number,
-                &[test_failure_message],
-            );
+            self.write_log_line(span.end_time_unix_nano, span.severity_number, &test_failure);
         }
     }
 
@@ -469,84 +463,85 @@ impl FileLogLayer {
         invocation: &Invocation,
         data_provider: &mut DataProvider<'_>,
     ) {
-        let formatted = format_invocation_summary(span, invocation, data_provider, false, None);
+        let summary = InvocationSummary::new(span, invocation, data_provider, false, None);
 
         // Per pre-migration logic, autofix line were always printed ignoring show options
-        if let Some(line) = formatted.autofix_line() {
-            self.write_log_lines(span.end_time_unix_nano, span.severity_number, &[line]);
+        if let Some(line) = summary.autofix_line() {
+            self.write_log_line(span.end_time_unix_nano, span.severity_number, &line);
         }
 
-        if let Some(summary_lines) = formatted.summary_lines() {
-            self.write_log_lines(span.end_time_unix_nano, span.severity_number, summary_lines);
+        if let Some(summary_lines) = summary.summary_lines() {
+            self.write_log_line(
+                span.end_time_unix_nano,
+                span.severity_number,
+                &summary_lines,
+            );
         }
     }
 
     fn handle_log_message(&self, log_msg: &LogMessage, log_record: &LogRecordInfo) {
-        // Format the message without level prefix (we add it via write_log_lines)
-        let formatted_message = format_log_message(
-            log_msg
-                .code
-                .and_then(|c| u16::try_from(c).ok())
-                .and_then(|c| ErrorCode::try_from(c).ok()),
-            // Unfortunately, we do not currently enforce log body to not contain ANSI codes,
-            // so we need to make sure to strip them
-            console::strip_ansi_codes(log_record.body.as_str()),
-            log_record.severity_number,
-            false,
-            false, // Don't include level prefix, we add it via write_log_lines
-        );
+        // Unfortunately, we do not currently enforce log body to not contain ANSI codes,
+        // so we need to make sure to strip them
+        let body = console::strip_ansi_codes(log_record.body.as_str());
 
-        self.write_log_lines(
+        self.write_log_line(
             log_record.time_unix_nano,
             log_record.severity_number,
-            &[formatted_message],
+            &LogMessageLine {
+                error_code: log_msg
+                    .code
+                    .and_then(|c| u16::try_from(c).ok())
+                    .and_then(|c| ErrorCode::try_from(c).ok()),
+                message: &body,
+                severity: log_record.severity_number,
+                colorize: false,
+                include_level_prefix: false, // the level prefix is added by write_log_line
+            },
         );
     }
 
     fn handle_user_log_message(&self, log_record: &LogRecordInfo) {
         // Write user log messages to file log
-        self.write_log_lines(
+        self.write_log_line(
             log_record.time_unix_nano,
             log_record.severity_number,
-            std::slice::from_ref(&log_record.body),
+            &log_record.body,
         );
     }
 
     fn handle_list_item_output(&self, log_record: &LogRecordInfo, list_item: &ListItemOutput) {
         // Emit header once before first list item
         if !self.list_header_emitted.swap(true, Ordering::Relaxed) {
-            let header = format_delimiter(SELECTED_NODES_TITLE, None, false);
-            self.writer.writeln(&header);
+            self.writer
+                .writeln(&Delimiter::new(SELECTED_NODES_TITLE, None, false));
         }
 
         // Write list item content to file log
-        self.write_log_lines(
+        self.write_log_line(
             log_record.time_unix_nano,
             log_record.severity_number,
-            std::slice::from_ref(&list_item.content),
+            &list_item.content,
         );
     }
 
     fn handle_show_data_output(&self, log_record: &LogRecordInfo, show_data: &ShowDataOutput) {
         // Write preview to file log
-        self.write_log_lines(
+        self.write_log_line(
             log_record.time_unix_nano,
             log_record.severity_number,
-            std::slice::from_ref(&show_data.content),
+            &show_data.content,
         );
     }
 
     fn handle_show_result(&self, log_record: &LogRecordInfo, show_result: &ShowResult) {
         // Write title and content to file log (without color codes for file output)
-        let lines = vec![
-            show_result.title.clone(),
-            console::strip_ansi_codes(show_result.content.as_str()).to_string(),
-        ];
-        self.write_log_lines(
+        self.write_log_line(
             log_record.time_unix_nano,
             log_record.severity_number,
-            &lines,
+            &show_result.title,
         );
+        self.writer
+            .writeln(&console::strip_ansi_codes(show_result.content.as_str()));
     }
 
     fn handle_compiled_code_inline(
@@ -554,41 +549,50 @@ impl FileLogLayer {
         log_record: &LogRecordInfo,
         compiled_code: &CompiledCodeInline,
     ) {
-        // Write formatted compiled code to file log using the shared formatter
-        let formatted = format_compiled_inline_code(compiled_code, false);
-        self.write_log_lines(
+        self.write_log_line(
             log_record.time_unix_nano,
             log_record.severity_number,
-            &[formatted],
+            &CompiledInlineCode {
+                compiled_code,
+                colorize: false,
+            },
         );
     }
 
     fn handle_compiled_code(&self, log_record: &LogRecordInfo, compiled_code: &CompiledCode) {
-        let formatted = format_compiled_code(compiled_code, false);
-        self.write_log_lines(
+        self.write_log_line(
             log_record.time_unix_nano,
             log_record.severity_number,
-            &[formatted],
+            &CompiledCodeLine {
+                compiled_code,
+                colorize: false,
+            },
         );
     }
 
     fn handle_progress_message(&self, log_record: &LogRecordInfo, progress_msg: &ProgressMessage) {
-        let formatted =
-            format_progress_message(progress_msg, log_record.severity_number, false, false);
-        self.write_log_lines(
+        self.write_log_line(
             log_record.time_unix_nano,
             log_record.severity_number,
-            &[formatted],
+            &ProgressMessageLine {
+                progress: progress_msg,
+                severity: log_record.severity_number,
+                pad_action: false,
+                colorize: false,
+            },
         );
     }
 
     fn handle_asset_parsed_end(&self, span: &SpanEndInfo, asset: &AssetParsed) {
-        let duration = span
-            .end_time_unix_nano
-            .duration_since(span.start_time_unix_nano)
-            .unwrap_or_default();
-        let formatted = format_asset_parsed_end(asset, duration, false);
-        self.write_log_lines(span.end_time_unix_nano, span.severity_number, &[formatted]);
+        self.write_log_line(
+            span.end_time_unix_nano,
+            span.severity_number,
+            &AssetParsedEnd {
+                asset,
+                duration: span_duration(span),
+                colorize: false,
+            },
+        );
     }
 
     fn handle_state_modified_diff(
@@ -596,11 +600,10 @@ impl FileLogLayer {
         log_record: &LogRecordInfo,
         state_mod_diff: &StateModifiedDiff,
     ) {
-        let lines = format_state_modified_diff_lines(state_mod_diff);
-        self.write_log_lines(
+        self.write_log_line(
             log_record.time_unix_nano,
             log_record.severity_number,
-            &lines,
+            &StateModifiedDiffLines(state_mod_diff),
         );
     }
 
@@ -609,13 +612,13 @@ impl FileLogLayer {
         span: &SpanStartInfo,
         ev: &DepsAllPackagesInstalled,
     ) {
-        // Format with shared formatter
-        let formatted_message = format_package_install_start(ev, false);
-
-        self.write_log_lines(
+        self.write_log_line(
             span.start_time_unix_nano,
             span.severity_number,
-            &[formatted_message],
+            &PackageInstallStart {
+                event: ev,
+                colorize: false,
+            },
         );
     }
 
@@ -624,101 +627,111 @@ impl FileLogLayer {
         span: &SpanEndInfo,
         ev: &DepsAllPackagesInstalled,
     ) {
-        // Format with shared formatter
-        let formatted_message = format_package_install_end(ev, false);
-
-        self.write_log_lines(
+        self.write_log_line(
             span.end_time_unix_nano,
             span.severity_number,
-            &[formatted_message],
+            &PackageInstallEnd {
+                event: ev,
+                colorize: false,
+            },
         );
     }
 
     fn handle_dep_installed_start(&self, span: &SpanStartInfo, pkg: &DepsPackageInstalled) {
-        // Format with shared formatter
-        let formatted_message = format_package_installed_start(pkg, false);
-
-        self.write_log_lines(
+        self.write_log_line(
             span.start_time_unix_nano,
             span.severity_number,
-            &[formatted_message],
+            &PackageInstalledStart {
+                pkg,
+                colorize: false,
+            },
         );
     }
 
     fn handle_dep_installed_end(&self, span: &SpanEndInfo, pkg: &DepsPackageInstalled) {
-        // Format with shared formatter
-        let formatted_message = format_package_installed_end(
-            pkg,
-            span.status.as_ref().map_or(StatusCode::Unset, |s| s.code),
-            false,
-        );
-
-        self.write_log_lines(
+        self.write_log_line(
             span.end_time_unix_nano,
             span.severity_number,
-            &[formatted_message],
+            &PackageInstalledEnd {
+                pkg,
+                status: span.status.as_ref().map_or(StatusCode::Unset, |s| s.code),
+                colorize: false,
+            },
         );
     }
 
     fn handle_package_add_start(&self, span: &SpanStartInfo, pkg: &DepsAddPackage) {
-        // Format with shared formatter
-        let formatted_message = format_package_add_start(pkg, false);
-
-        self.write_log_lines(
+        self.write_log_line(
             span.start_time_unix_nano,
             span.severity_number,
-            &[formatted_message],
+            &PackageAddStart {
+                pkg,
+                colorize: false,
+            },
         );
     }
 
     fn handle_package_add_end(&self, span: &SpanEndInfo, pkg: &DepsAddPackage) {
-        // Format with shared formatter
-        let formatted_message = format_package_add_end(
-            pkg,
-            span.status.as_ref().map_or(StatusCode::Unset, |s| s.code),
-            false,
-        );
-
-        self.write_log_lines(
+        self.write_log_line(
             span.end_time_unix_nano,
             span.severity_number,
-            &[formatted_message],
+            &PackageAddEnd {
+                pkg,
+                status: span.status.as_ref().map_or(StatusCode::Unset, |s| s.code),
+                colorize: false,
+            },
         );
     }
 
     fn handle_generic_op_start(&self, span: &SpanStartInfo, op: &GenericOpExecuted) {
-        let formatted = format_generic_op_start(op, false);
-        self.write_log_lines(
+        self.write_log_line(
             span.start_time_unix_nano,
             span.severity_number,
-            &[formatted],
+            &GenericOpStart {
+                op,
+                colorize: false,
+            },
         );
     }
 
     fn handle_generic_op_end(&self, span: &SpanEndInfo, op: &GenericOpExecuted) {
-        let duration = span
-            .end_time_unix_nano
-            .duration_since(span.start_time_unix_nano)
-            .unwrap_or_default();
-        let formatted = format_generic_op_end(op, duration, span.status.as_ref(), false);
-        self.write_log_lines(span.end_time_unix_nano, span.severity_number, &[formatted]);
+        self.write_log_line(
+            span.end_time_unix_nano,
+            span.severity_number,
+            &GenericOpEnd {
+                op,
+                duration: span_duration(span),
+                status: span.status.as_ref(),
+                colorize: false,
+            },
+        );
     }
 
     fn handle_generic_op_item_start(&self, span: &SpanStartInfo, item: &GenericOpItemProcessed) {
-        let formatted = format_generic_op_item_start(item);
-        self.write_log_lines(
+        self.write_log_line(
             span.start_time_unix_nano,
             span.severity_number,
-            &[formatted],
+            &GenericOpItemStart(item),
         );
     }
 
     fn handle_generic_op_item_end(&self, span: &SpanEndInfo, item: &GenericOpItemProcessed) {
-        let duration = span
-            .end_time_unix_nano
-            .duration_since(span.start_time_unix_nano)
-            .unwrap_or_default();
-        let formatted = format_generic_op_item_end(item, duration, span.status.as_ref(), false);
-        self.write_log_lines(span.end_time_unix_nano, span.severity_number, &[formatted]);
+        self.write_log_line(
+            span.end_time_unix_nano,
+            span.severity_number,
+            &GenericOpItemEnd {
+                item,
+                duration: span_duration(span),
+                status: span.status.as_ref(),
+                colorize: false,
+            },
+        );
     }
+}
+
+/// Wall time of a span.
+fn span_duration(span: &SpanEndInfo) -> std::time::Duration {
+    span.end_time_unix_nano
+        .duration_since(span.start_time_unix_nano)
+        .unwrap_or_default()
 }

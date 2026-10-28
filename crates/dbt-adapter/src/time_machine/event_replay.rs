@@ -12,6 +12,7 @@ use std::path::Path;
 use std::str::FromStr;
 use std::sync::LazyLock;
 
+use dbt_adapter_engine::cow::uppercase;
 use flate2::read::GzDecoder;
 use parking_lot::RwLock;
 use regex::Regex;
@@ -92,13 +93,13 @@ pub(crate) fn is_read_only_execute_call(method: &str, args: &serde_json::Value) 
 /// recorded event when replaying.
 fn metadata_args_match(recorded: &MetadataCallArgs, actual: &MetadataCallArgs) -> bool {
     fn relations_match(recorded_relations: &[String], actual_relations: &[String]) -> bool {
-        let recorded_set: HashSet<String> = recorded_relations
+        let recorded_set: HashSet<Cow<'_, str>> = recorded_relations
             .iter()
-            .map(|r| r.to_ascii_uppercase())
+            .map(|r| uppercase(Cow::Borrowed(r.as_str())))
             .collect();
         actual_relations
             .iter()
-            .all(|rel| recorded_set.contains(&rel.to_ascii_uppercase()))
+            .all(|rel| recorded_set.contains(&uppercase(rel.into())))
     }
 
     match (recorded, actual) {
@@ -1007,6 +1008,29 @@ impl Recording {
         }
 
         None
+    }
+
+    /// Find a read-only `execute` event in the current segment for diagnostics.
+    ///
+    /// This does not consume the event or look beyond the next write barrier.
+    pub(crate) fn read_only_execute_candidate(
+        &self,
+        node_id: &str,
+        method: &str,
+    ) -> Option<&AdapterCallEvent> {
+        let events = self.adapter_events_by_node.get(node_id)?;
+        let state = self.semantic_adapter_state.read();
+        let search_start = state.get(node_id).map_or(0, |state| state.segment_start);
+        let search_end = events[search_start..]
+            .iter()
+            .position(|event| {
+                event.semantic_category.is_mutating() && !is_read_only_execute_event(event)
+            })
+            .map_or(events.len(), |pos| search_start + pos);
+
+        events[search_start..search_end]
+            .iter()
+            .find(|event| event.method == method && is_read_only_execute_event(event))
     }
 
     /// Find a matching read operation within the current segment (untracked).

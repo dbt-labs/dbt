@@ -42,6 +42,11 @@ import type {
 } from '../../typings/domain/search';
 import type { Page } from '../../typings/page';
 import {
+  isProjectLineageRoot,
+  PROJECT_LINEAGE_MAX_WALK,
+  PROJECT_LINEAGE_UNBOUNDED_FROM,
+} from '../../util/projectLineage';
+import {
   fromCapabilities,
   fromColumnLineageResponse,
   fromDistribution,
@@ -100,6 +105,8 @@ import {
   normalizeLineageKind,
   OVERVIEW_TABLES,
   overviewSql,
+  projectLineageEdgesSql,
+  projectLineageNodesSql,
   SAVED_QUERY_TABLES,
   savedQueryDependsOnSql,
 } from './sql';
@@ -339,6 +346,30 @@ export function createDuckDbDataSource(
    * types there are inferred from the id prefix, which is all the list gives us.
    */
   async function fetchLineage(args: LineageArgs): Promise<LineageGraph> {
+    // The whole-project view is not bound by the per-node cap: it starts at the
+    // entry points, so the graph only grows as far as the user asks.
+    if (isProjectLineageRoot(args.uniqueId)) {
+      const depth = args.depth ?? LINEAGE_MAX_DEPTH;
+      const projectDepth =
+        depth >= PROJECT_LINEAGE_UNBOUNDED_FROM ? PROJECT_LINEAGE_MAX_WALK : depth;
+      const [nodes, edges] = await Promise.all([
+        engine.query<RestLineageNode>(
+          projectLineageNodesSql(projectDepth),
+          LINEAGE_TABLES,
+        ),
+        engine.query<RestLineageEdge>(
+          projectLineageEdgesSql(projectDepth),
+          LINEAGE_TABLES,
+        ),
+      ]);
+      return fromLineageResponse({
+        root: args.uniqueId,
+        max_depth: projectDepth,
+        nodes,
+        edges,
+      });
+    }
+
     const maxDepth = Math.min(args.depth ?? LINEAGE_MAX_DEPTH, LINEAGE_MAX_DEPTH);
 
     if (args.uniqueId.startsWith('saved_query.')) {
@@ -505,6 +536,8 @@ export function createDuckDbDataSource(
         resourceTypes: args.filter?.resourceTypes,
         packages: args.filter?.packages,
         tags: args.filter?.tags,
+        modelingLayers: args.filter?.modelingLayers,
+        materializations: args.filter?.materializations,
       },
       args.limit ?? SEARCH_PAGE_SIZE,
       decodeCursor(args.cursor),

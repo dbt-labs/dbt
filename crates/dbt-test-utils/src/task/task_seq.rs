@@ -13,18 +13,18 @@ use dbt_common::tracing::{
     TracingConfigProvider, dbt_data_layer_config, init_tracing_with_data_layer,
 };
 use dbt_features::feature_stack::FeatureStack;
-use once_cell::sync::OnceCell;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::{fs, iter};
 
 pub type FeatureStackFactory =
     dyn Fn(Arc<dyn TracingConfigProvider>) -> Arc<FeatureStack> + Send + Sync;
 
 /// Global [Arc] of a [FeatureStackFactory] to be shared across tests.
-pub static G_DBT_TEST_UTILS_FEATURE_STACK: OnceCell<Arc<FeatureStackFactory>> = OnceCell::new();
+pub static G_DBT_TEST_UTILS_FEATURE_STACK: OnceLock<Arc<FeatureStackFactory>> = OnceLock::new();
 
 pub type BoxedSendFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 pub type CommandFn = dyn Fn(

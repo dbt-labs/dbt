@@ -2,10 +2,10 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use dbt_common::collections::DashMap;
+use dbt_common::collections::SccHashMap;
 use dbt_common::constants::DBT_EPHEMERAL_DIR_NAME;
 use dbt_common::constants::RENDERING;
-use dbt_common::serde_utils::convert_yml_to_dash_map;
+use dbt_common::serde_utils::convert_yml_to_scc_map;
 use dbt_common::stats::NodeStatus;
 use dbt_common::tracing::emit::emit_debug_event;
 use dbt_common::{FsResult, MacroSpansOnly, stdfs};
@@ -53,7 +53,7 @@ fn render_default(
     node: &Arc<dyn InternalDbtNodeAttributes>,
     ctx: &mut TaskRunnerCtx,
     local_exec_unit_test_overrides: &Option<UnitTestOverrides>,
-) -> FsResult<(SqlInstruction, Arc<DashMap<String, MinijinjaValue>>)> {
+) -> FsResult<(SqlInstruction, Arc<SccHashMap<String, MinijinjaValue>>)> {
     report_rendering_progress(node, ctx);
 
     if let Some((rendered_sql_maybe_with_cte, macro_spans, reclassify_spans)) = ctx
@@ -61,7 +61,7 @@ fn render_default(
         .compiled_sql_cache
         .try_get_compiled_sql(&ctx.inner.arg.io, node.common())
     {
-        let config_map = Arc::new(convert_yml_to_dash_map(node.serialized_config()));
+        let config_map = Arc::new(convert_yml_to_scc_map(node.serialized_config()));
         emit_compiled_code(node, ctx, &rendered_sql_maybe_with_cte);
         // The cache returns the raw span components; the rendering listener
         // factory rebuilds the `CompiledSpans`.
@@ -223,7 +223,7 @@ fn render_python_model(
     ctx: &mut TaskRunnerCtx,
     raw_python: &str,
     base_context: &BTreeMap<String, MinijinjaValue>,
-) -> FsResult<(SqlInstruction, Arc<DashMap<String, MinijinjaValue>>)> {
+) -> FsResult<(SqlInstruction, Arc<SccHashMap<String, MinijinjaValue>>)> {
     let (compile_context, config_map) = ctx.build_compile_node_context(
         node.clone(),
         base_context,

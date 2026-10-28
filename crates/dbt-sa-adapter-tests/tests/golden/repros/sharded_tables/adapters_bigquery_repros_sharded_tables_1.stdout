@@ -1,0 +1,8 @@
+       dbt 
+   Loading profiles.yml
+   Parsing models/sources.yml
+   Parsing models/favorite_animals.sql
+ Rendering models/favorite_animals.sql
+   Running models/favorite_animals.sql
+ Succeeded [000.00s] model adapters_bigquery_repros_sharded_tables.favorite_animals (view)
+  Finished 'run' target 'bigquery'

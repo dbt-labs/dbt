@@ -251,9 +251,11 @@ impl Statement for ReplayStatement {
 
                 let record_sql = entry.sql.as_deref().unwrap_or("none");
                 if self.config.normalize_sql(record_sql) != self.config.normalize_sql(replay_sql) {
-                    panic!(
-                        "Recorded query ({record_sql}) and actual query ({replay_sql}) do not match (unique_id: {unique_id})"
-                    );
+                    return Err(sql_mismatch_error(
+                        record_sql,
+                        replay_sql,
+                        &format!("unique_id: {unique_id}"),
+                    ));
                 }
 
                 if let Some(msg) = entry.error {
@@ -312,9 +314,11 @@ impl Statement for ReplayStatement {
 
                 let record_sql = entry.sql.as_deref().unwrap_or("none");
                 if self.config.normalize_sql(record_sql) != self.config.normalize_sql(replay_sql) {
-                    panic!(
-                        "Recorded query ({record_sql}) and actual query ({replay_sql}) do not match (unique_id: {unique_id})"
-                    );
+                    return Err(sql_mismatch_error(
+                        record_sql,
+                        replay_sql,
+                        &format!("unique_id: {unique_id}"),
+                    ));
                 }
 
                 if let Some(msg) = entry.error {
@@ -416,6 +420,16 @@ fn replay_file_schema(
     Ok(schema)
 }
 
+/// The query issued during replay differs from the one in the recording.
+fn sql_mismatch_error(record_sql: &str, replay_sql: &str, location: &str) -> AdbcError {
+    AdbcError::with_message_and_status(
+        format!(
+            "Recorded query ({record_sql}) and actual query ({replay_sql}) do not match ({location})"
+        ),
+        AdbcStatus::InvalidData,
+    )
+}
+
 #[allow(deprecated)]
 fn replay_file_execute<'a>(
     path: &Path,
@@ -441,19 +455,21 @@ fn replay_file_execute<'a>(
     let sql_path = path.join(format!("{unique_id}.sql"));
 
     if !sql_path.exists() {
-        panic!(
-            "Missing query file ({:?}) during replay. Query: {}",
-            &sql_path, replay_sql,
-        );
+        return Err(AdbcError::with_message_and_status(
+            format!("Missing query file ({sql_path:?}) during replay. Query: {replay_sql}"),
+            AdbcStatus::NotFound,
+        ));
     }
 
     let record_sql = handler
         .read_sql(path, unique_id)
         .map_err(|e| to_adbc_error(e, Some(path)))?;
     if config.normalize_sql(&record_sql) != config.normalize_sql(replay_sql) {
-        panic!(
-            "Recorded query ({record_sql}) and actual query ({replay_sql}) do not match ({sql_path:?})"
-        );
+        return Err(sql_mismatch_error(
+            &record_sql,
+            replay_sql,
+            &format!("{sql_path:?}"),
+        ));
     }
 
     if let Some(msg) = handler

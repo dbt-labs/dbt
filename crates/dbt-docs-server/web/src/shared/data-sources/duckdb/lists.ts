@@ -39,6 +39,7 @@ import {
   fromSourceSummary,
   fromTestSummary,
 } from '../mappers/fromWire';
+import { LAYER_NAMES, modelingLayerCase, modelingLayerPredicate } from './layers';
 import { sqlStr } from './sql';
 
 /**
@@ -56,38 +57,7 @@ function asRow<T>(row: Record<string, unknown>): T {
 /** Page size when the caller omits one. Matches the REST default. */
 const DEFAULT_LIMIT = 50;
 
-/**
- * Modeling-layer classification, from `LAYER_CONDITIONS` in `handlers/models.rs`.
- *
- * One source of truth for both the projected `CASE` and the `WHERE` filter, so the
- * two cannot drift — the same reason the Rust side kept them in one table.
- */
-const LAYER_CONDITIONS: [string, string][] = [
-  [
-    'Staging',
-    `lower(n.original_file_path) LIKE '%/staging/%'
-     OR lower(n.original_file_path) LIKE '%/stg_%'
-     OR lower(n.original_file_path) LIKE 'staging/%'`,
-  ],
-  [
-    'Intermediate',
-    `lower(n.original_file_path) LIKE '%/intermediate/%'
-     OR lower(n.original_file_path) LIKE '%/int_%'
-     OR lower(n.original_file_path) LIKE 'intermediate/%'`,
-  ],
-  [
-    'Marts',
-    `lower(n.original_file_path) LIKE '%/marts/%'
-     OR lower(n.original_file_path) LIKE '%/dim_%'
-     OR lower(n.original_file_path) LIKE '%/fct_%'
-     OR lower(n.original_file_path) LIKE 'marts/%'`,
-  ],
-];
-
-const MODELING_LAYER_CASE = `CASE
-${LAYER_CONDITIONS.map(([layer, cond]) => `  WHEN ${cond} THEN '${layer}'`).join('\n')}
-  ELSE NULL
-END`;
+const MODELING_LAYER_CASE = modelingLayerCase('n.original_file_path');
 
 /**
  * Latest run per node, for `executed_at` and test statuses.
@@ -221,12 +191,11 @@ export const LIST_REGISTRY: Partial<Record<ResourceType, ListSpec>> = {
     where: (filter) => {
       const parts: string[] = [];
       if (filter.modelingLayers?.length) {
-        // Built from the same table as the projected CASE, so a filtered layer
-        // always matches the layer the row displays.
-        const conds = LAYER_CONDITIONS.filter(([layer]) =>
-          filter.modelingLayers!.includes(layer),
-        ).map(([, cond]) => `(${cond})`);
-        if (conds.length) parts.push(`\n  AND (${conds.join(' OR ')})`);
+        const pred = modelingLayerPredicate(
+          'n.original_file_path',
+          filter.modelingLayers,
+        );
+        if (pred) parts.push(`\n  AND ${pred}`);
       }
       parts.push(inList('n."group"', filter.owners));
       parts.push(inList('n.package_name', filter.packages));
@@ -627,7 +596,7 @@ export function constantFacets(resourceType: ResourceType): Facets {
   switch (resourceType) {
     case 'model':
       return {
-        modelingLayers: values(LAYER_CONDITIONS.map(([layer]) => layer)),
+        modelingLayers: values([...LAYER_NAMES]),
         accesses: values(['private', 'protected', 'public']),
       };
     case 'test':

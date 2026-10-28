@@ -2,8 +2,7 @@
 use std::{collections::HashMap, fmt::Display};
 
 use dbt_proc_macros::include_frontend_error_codes;
-use int_enum::IntEnum;
-use strum_macros::{EnumString, IntoStaticStr};
+use strum_macros::{EnumString, FromRepr, IntoStaticStr};
 
 /// Error codes for the SDF CLI.
 ///
@@ -12,7 +11,7 @@ use strum_macros::{EnumString, IntoStaticStr};
 #[include_frontend_error_codes]
 #[repr(u16)]
 #[non_exhaustive]
-#[derive(Debug, Copy, Clone, Eq, PartialEq, IntEnum, EnumString, IntoStaticStr, Default)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, FromRepr, EnumString, IntoStaticStr, Default)]
 pub enum ErrorCode {
     // ----------------- Frontend errors [0, 999] -----------------------------
     //
@@ -179,6 +178,7 @@ pub enum ErrorCode {
     SemanticModelDeprecated = 1157,
     PackageMissingProjectFile = 1158,
     DbtYamlValidationError = 1159,
+    CleanTargetOutsideProject = 1160,
 
     // Network/HTTP [1200–1249]
     NetworkError = 1200,
@@ -331,6 +331,12 @@ pub enum ErrorCode {
     IndexWriteFailed = 1659,
 
     // --------------------------------------------------------------------------------------------
+    // Schema cache
+    /// A schema cache row read from `target/` holds IPC bytes that do not deserialize. The row
+    /// is skipped, so its schema is fetched or computed again, as with a cold cache.
+    SchemaCacheEntryCorrupt = 1660,
+
+    // --------------------------------------------------------------------------------------------
     // CLI errors
     NoLongerSupportedOption = 1700,
     NotYetSupportedOption = 1701,
@@ -364,6 +370,22 @@ pub enum ErrorCode {
     SkillPathEscapesProject = 1806,
 
     // --------------------------------------------------------------------------------------------
+    // Plugins
+    /// An error a plugin reported. Plugins never report under any other code.
+    PluginError = 1900,
+    /// A warning a plugin reported. Plugins never report under any other code.
+    PluginWarning = 1901,
+    /// A project gives entries or paths to a reserved plugin type whose plugin is off, or that
+    /// this dbt doesn't have. dbt ignores them.
+    PluginNotEnabled = 1902,
+    /// A project gives entries or paths to a plugin type no one reserved. dbt ignores them.
+    UnknownPlugin = 1903,
+    /// A `plugin-paths` entry overlaps a directory dbt reads, or another plugin's.
+    PluginPathOverlap = 1904,
+    /// A `plugin-paths` entry resolves outside the project that declared it. dbt skips it.
+    PluginPathEscapesProject = 1905,
+
+    // --------------------------------------------------------------------------------------------
     // Local execution
     SessionError = 2000,
     UnsupportedLocalExecutionDialect = 2001,
@@ -378,6 +400,12 @@ pub enum ErrorCode {
     // --------------------------------------------------------------------------------------------
     // Lineage
     InvalidLineageSchema = 3500,
+
+    // --------------------------------------------------------------------------------------------
+    // SQL frontend library
+    /// The SQL frontend library could not be loaded, or does not speak a
+    /// protocol this dbt does.
+    FrontendLibraryUnavailable = 3600,
 
     InvalidDialect = 8998,
     RuntimeError = 8999,
@@ -415,6 +443,14 @@ pub enum ErrorCode {
 impl std::hash::Hash for ErrorCode {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         (*self as u16).hash(state)
+    }
+}
+
+impl TryFrom<u16> for ErrorCode {
+    type Error = u16;
+
+    fn try_from(value: u16) -> Result<Self, Self::Error> {
+        Self::from_repr(value).ok_or(value)
     }
 }
 

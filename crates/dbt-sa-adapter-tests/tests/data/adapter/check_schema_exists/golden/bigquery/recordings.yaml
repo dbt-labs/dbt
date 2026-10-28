@@ -1,0 +1,18 @@
+model.test.b:
+- sequence: 0
+  type: execute
+  sql: CREATE SCHEMA IF NOT EXISTS adapters_bigquery_check_schema_exists
+- sequence: 1
+  type: execute
+  sql: |-
+    select count(*)
+    \tfrom `dbt-test-env`.INFORMATION_SCHEMA.SCHEMATA
+    where upper(schema_name) = upper('adapters_bigquery_check_schema_exists')
+    and upper(catalog_name) = upper('dbt-test-env')
+- sequence: 2
+  type: execute
+  sql: |-
+    select count(*)
+    \tfrom `dbt-test-env`.INFORMATION_SCHEMA.SCHEMATA
+    where upper(schema_name) = upper('nonexistent_schema')
+    and upper(catalog_name) = upper('dbt-test-env')
