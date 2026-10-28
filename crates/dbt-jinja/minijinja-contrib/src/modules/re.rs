@@ -1384,9 +1384,9 @@ mod tests {
     fn test_re_match_capture_attributes_still_resolve() {
         assert_eq!(
             run_re_template(
-                r#"{% set m = re.search('(?P<name>[a-z]+)-(?P<num>[0-9]+)', 'order-42') %}{{ m.pos }},{{ m.string }},{{ m.lastgroup }},{{ m['pos'] }}"#
+                r#"{% set m = re.search('(?P<name>[a-z]+)-(?P<num>[0-9]+)', 'order-42') %}{{ m.pos }},{{ m.string }},{{ m.lastgroup }},{{ m['pos'] }},{{ m.num }}"#
             ),
-            "0,order-42,num,0"
+            "0,order-42,num,0,42"
         );
     }
 
