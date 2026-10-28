@@ -1379,6 +1379,17 @@ mod tests {
         );
     }
 
+    // A group named like a Match attribute: m['pos'] is the group, m.pos the attribute.
+    #[test]
+    fn test_re_match_capture_group_named_like_attribute() {
+        assert_eq!(
+            run_re_template(
+                r#"{% set p = re.search('(?P<pos>[a-z]+)-(?P<string>[0-9]+)', 'order-42') %}{{ p['pos'] }}|{{ p.pos }}|{{ p['string'] }}|{{ p.string }}"#
+            ),
+            "order|0|42|order-42"
+        );
+    }
+
     fn re_env() -> minijinja::Environment<'static> {
         use minijinja::Environment;
         let mut env = Environment::new();
