@@ -2611,6 +2611,20 @@ impl<'source> Parser<'source> {
         Ok(sql_type)
     }
 
+    fn array_type(&mut self, backend: AdapterType) -> Result<SqlType, ParseError<'source>> {
+        let (left, right) = match backend {
+            AdapterType::Snowflake | AdapterType::ClickHouse => (Token::LParen, Token::RParen),
+            _ => (Token::LAngle, Token::RAngle),
+        };
+        if self.match_(left) {
+            let inner_type = self.parse_unconstrained_type(backend)?;
+            self.expect(right)?;
+            Ok(SqlType::Array(Some(Box::new(inner_type))))
+        } else {
+            Ok(SqlType::Array(None))
+        }
+    }
+
     /// Parse the SQL type string without consuming the entire string.
     ///
     /// The goal of this function is to create the `SqlType` instance that better represents
@@ -3037,17 +3051,7 @@ impl<'source> Parser<'source> {
                     self.expect(Token::RAngle)?;
                     SqlType::Range(Box::new(element))
                 } else if eqi(w, "ARRAY") {
-                    let (left, right) = match backend {
-                        Snowflake | ClickHouse => (Token::LParen, Token::RParen),
-                        _ => (Token::LAngle, Token::RAngle),
-                    };
-                    if self.match_(left) {
-                        let inner_type = self.parse_unconstrained_type(backend)?;
-                        self.expect(right)?;
-                        SqlType::Array(Some(Box::new(inner_type)))
-                    } else {
-                        SqlType::Array(None)
-                    }
+                    self.array_type(backend)?
                 } else if eqi(w, "RECORD") {
                     // In some scenarios, we get "RECORD" as a type from Bigquery.
                     // That just means a generic struct.

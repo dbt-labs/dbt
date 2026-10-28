@@ -1954,9 +1954,7 @@ fn is_supported_type(adapter_type: AdapterType, ref_type: &DataType) -> bool {
             AdapterType::Bigquery => {
                 // Support Arrays and Structs for BigQuery
                 matches!(ref_type, DataType::List(_) | DataType::Struct(_))
-                    || BigqueryTyping::is_json(ref_type)
-                    || BigqueryTyping::is_geography(ref_type)
-                    || BigqueryTyping::is_range(ref_type)
+                    || BigqueryTyping::is_distinct_type(ref_type)
             }
             AdapterType::Databricks => DatabricksTyping::is_timestamp_ntz(ref_type),
             AdapterType::DuckDB => {
@@ -3279,79 +3277,33 @@ mod tests {
     #[test]
     fn test_create_values_bigquery_preserves_original_relation_types() {
         let type_ops = DefaultTypeOps::new(AdapterType::Bigquery);
-        let schema = Arc::new(Schema::new(vec![
-            make_arrow_field(
-                &type_ops,
-                "event_timestamp".to_string(),
-                "TIMESTAMP",
-                None,
-                None,
-            )
-            .unwrap(),
-            make_arrow_field(
-                &type_ops,
-                "local_datetime".to_string(),
-                "DATETIME",
-                None,
-                None,
-            )
-            .unwrap(),
-            make_arrow_field(&type_ops, "event_id".to_string(), "INT64", None, None).unwrap(),
-            make_arrow_field(&type_ops, "event_name".to_string(), "STRING", None, None).unwrap(),
-            make_arrow_field(
-                &type_ops,
-                "amount".to_string(),
-                "NUMERIC(10, 2)",
-                None,
-                None,
-            )
-            .unwrap(),
-            make_arrow_field(&type_ops, "tag_ids".to_string(), "ARRAY<INT64>", None, None).unwrap(),
-            make_arrow_field(
-                &type_ops,
-                "actor".to_string(),
-                "STRUCT<id INT64, name STRING>",
-                None,
-                None,
-            )
-            .unwrap(),
-        ]));
-        let mut actor = dbt_yaml::mapping::Mapping::new();
-        actor.insert(
-            YmlValue::string("id".to_string()),
-            YmlValue::number(7.into()),
-        );
-        actor.insert(
-            YmlValue::string("name".to_string()),
-            YmlValue::string("alice".to_string()),
-        );
-        let rows = vec![BTreeMap::from([
-            (
-                "event_timestamp".to_string(),
-                YmlValue::string("2026-01-01 00:00:00+00:00".to_string()),
-            ),
-            (
-                "local_datetime".to_string(),
-                YmlValue::string("2026-01-01 00:00:00".to_string()),
-            ),
-            ("event_id".to_string(), YmlValue::number(42.into())),
-            (
-                "event_name".to_string(),
-                YmlValue::string("created".to_string()),
-            ),
-            ("amount".to_string(), YmlValue::string("12.34".to_string())),
-            (
-                "tag_ids".to_string(),
-                YmlValue::Sequence(
-                    vec![YmlValue::number(1.into()), YmlValue::number(2.into())],
-                    Default::default(),
-                ),
-            ),
-            (
-                "actor".to_string(),
-                YmlValue::Mapping(actor, Default::default()),
-            ),
-        ])];
+        let fields = [
+            ("event_timestamp", "TIMESTAMP"),
+            ("local_datetime", "DATETIME"),
+            ("event_id", "INT64"),
+            ("event_name", "STRING"),
+            ("amount", "NUMERIC(10, 2)"),
+            ("tag_ids", "ARRAY<INT64>"),
+            ("actor", "STRUCT<id INT64, name STRING>"),
+        ]
+        .into_iter()
+        .map(|(name, sql_type)| {
+            make_arrow_field(&type_ops, name.to_string(), sql_type, None, None).unwrap()
+        })
+        .collect::<Vec<_>>();
+        let schema = Arc::new(Schema::new(fields));
+        let rows: Vec<BTreeMap<String, YmlValue>> = dbt_yaml::from_str(
+            r#"
+- event_timestamp: '2026-01-01 00:00:00+00:00'
+  local_datetime: '2026-01-01 00:00:00'
+  event_id: 42
+  event_name: created
+  amount: '12.34'
+  tag_ids: [1, 2]
+  actor: {id: 7, name: alice}
+"#,
+        )
+        .unwrap();
 
         let result = create_values(
             &schema,
@@ -3364,25 +3316,17 @@ mod tests {
         )
         .unwrap();
 
-        assert_contains!(
-            result,
-            "CAST('2026-01-01 00:00:00+00:00' AS TIMESTAMP) AS event_timestamp"
-        );
-        assert_contains!(
-            result,
-            "CAST('2026-01-01 00:00:00' AS DATETIME) AS local_datetime"
-        );
-        assert_contains!(result, "CAST(42 AS INT64) AS event_id");
-        assert_contains!(result, "CAST('created' AS STRING) AS event_name");
-        assert_contains!(result, "CAST('12.34' AS NUMERIC) AS amount");
-        assert_contains!(
-            result,
-            "CAST([CAST(1 AS INT64), CAST(2 AS INT64)] AS ARRAY<INT64>) AS tag_ids"
-        );
-        assert_contains!(
-            result,
-            "CAST(STRUCT(CAST(7 AS INT64) AS id, CAST('alice' AS STRING) AS name) AS STRUCT<id INT64, name STRING>) AS actor"
-        );
+        for expected in [
+            "CAST('2026-01-01 00:00:00+00:00' AS TIMESTAMP) AS event_timestamp",
+            "CAST('2026-01-01 00:00:00' AS DATETIME) AS local_datetime",
+            "CAST(42 AS INT64) AS event_id",
+            "CAST('created' AS STRING) AS event_name",
+            "CAST('12.34' AS NUMERIC) AS amount",
+            "CAST([CAST(1 AS INT64), CAST(2 AS INT64)] AS ARRAY<INT64>) AS tag_ids",
+            "CAST(STRUCT(CAST(7 AS INT64) AS id, CAST('alice' AS STRING) AS name) AS STRUCT<id INT64, name STRING>) AS actor",
+        ] {
+            assert_contains!(result, expected);
+        }
     }
 
     #[test]

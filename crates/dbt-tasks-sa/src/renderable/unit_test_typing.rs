@@ -134,8 +134,8 @@ impl BigqueryTyping {
         matches!(data_type, DataType::FixedSizeList(field, 1) if field.name() == "json")
     }
 
-    pub fn is_range(data_type: &DataType) -> bool {
-        matches!(data_type, DataType::FixedSizeList(field, 1) if field.name() == "range")
+    pub fn is_distinct_type(data_type: &DataType) -> bool {
+        matches!(data_type, DataType::FixedSizeList(field, 1) if matches!(field.name().as_str(), "json" | "geography" | "range"))
     }
 }
 
