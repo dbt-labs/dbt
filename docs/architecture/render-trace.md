@@ -59,8 +59,18 @@ existing listeners.
 Consumers should only use traces from a successful invocation, check the
 invocation/model identity, and compare the source with the file being linted.
 Old sidecars can remain in a reused target directory when tracing is disabled;
-the existence of a file alone does not establish freshness. A future cache
-integration can persist provenance with the corresponding compilation result.
+the existence of a file alone does not establish freshness.
+
+Disabled nodes are not rendered and emit no trace or stub. After a successful
+compile, consumers can find them in the same invocation's manifest.disabled
+mapping: each value is a list of node definitions with original_file_path and
+config.enabled set to false. Match the full source path, not just a basename.
+Only that explicit disabled status justifies skipping an absent trace; missing
+output for enabled or unknown nodes remains an error. A failed invocation is
+not evidence that a model is disabled.
+
+A future cache integration can persist provenance with the corresponding
+compilation result.
 
 The observer's unit tests compare normal/traced SQL and existing macro spans,
 and exercise ambiguous branches, repeated/empty loops, captures, macros,

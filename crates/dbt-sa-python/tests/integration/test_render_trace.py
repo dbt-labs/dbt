@@ -72,3 +72,25 @@ def test_failed_render_does_not_export_successful_trace(tmp_project, invoke):
     result = invoke(project, "compile", "--select", "probe", "--feature", "write_render_trace")
     assert not result.success
     assert not list((project / "target").rglob("probe.render_trace.json"))
+
+
+def test_disabled_model_is_identified_in_manifest_without_trace(tmp_project, invoke):
+    project = tmp_project("render_trace")
+    (project / "models/disabled_model.sql").write_text("{{ config(enabled=false) }}\nselect 1\n")
+    result = invoke(
+        project,
+        "compile",
+        "--select",
+        "probe",
+        "disabled_model",
+        "--feature",
+        "write_render_trace",
+    )
+    assert result.success, result.exception
+    manifest = json.loads((project / "target/manifest.json").read_text())
+    disabled = manifest["disabled"]["model.render_trace.disabled_model"]
+    assert len(disabled) == 1
+    assert disabled[0]["config"]["enabled"] is False
+    assert disabled[0]["original_file_path"].replace("\\", "/") == "models/disabled_model.sql"
+    assert not list((project / "target").rglob("disabled_model.render_trace.json"))
+    assert list((project / "target").rglob("probe.render_trace.json"))
