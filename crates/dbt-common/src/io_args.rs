@@ -939,18 +939,7 @@ impl EvalArgs {
 // Enums
 
 #[derive(
-    Debug,
-    Copy,
-    Clone,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    Default,
-    ValueEnum,
-    Serialize,
-    Deserialize,
-    EnumIter,
+    Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Default, ValueEnum, Serialize, Deserialize,
 )]
 #[serde(rename_all = "snake_case")]
 #[clap(rename_all = "snake_case")]
@@ -971,31 +960,42 @@ pub enum ClapResourceType {
     Exposure,
     /// Nodes added by plugins.
     Plugin,
-    /// CLI-only sentinels (see `resolve`).
+    /// Selects every resource type, as if each one had been listed.
     All,
+    /// Selects the resource types a command uses when no filter is given.
     Default,
 }
 
 impl ClapResourceType {
-    /// Every concrete resource type (excludes the All/Default sentinels).
-    pub fn all_concrete() -> Vec<ClapResourceType> {
-        use strum::IntoEnumIterator;
-        Self::iter()
-            .filter(|t| !matches!(t, ClapResourceType::All | ClapResourceType::Default))
-            .collect()
-    }
-
-    /// Resolve user-supplied values (`All`/`Default` expand to `all_concrete()`/`defaults`).
+    /// Expand the `all` and `default` shorthands into resource types.
+    ///
+    /// `defaults` is the calling command's own default set and is only used
+    /// when `default` was requested.
     pub fn resolve(requested: &[ClapResourceType], defaults: &[ClapResourceType]) -> Vec<Self> {
-        let mut out = Vec::new();
-        for t in requested {
-            match t {
-                ClapResourceType::All => out.extend(Self::all_concrete()),
-                ClapResourceType::Default => out.extend_from_slice(defaults),
-                other => out.push(*other),
+        let mut resolved = Vec::new();
+        for resource_type in requested {
+            match resource_type {
+                ClapResourceType::All => resolved.extend([
+                    ClapResourceType::Model,
+                    ClapResourceType::Source,
+                    ClapResourceType::Seed,
+                    ClapResourceType::Snapshot,
+                    ClapResourceType::Test,
+                    ClapResourceType::UnitTest,
+                    ClapResourceType::Analysis,
+                    ClapResourceType::Function,
+                    ClapResourceType::SemanticModel,
+                    ClapResourceType::Metric,
+                    ClapResourceType::SavedQuery,
+                    ClapResourceType::Check,
+                    ClapResourceType::Exposure,
+                    ClapResourceType::Plugin,
+                ]),
+                ClapResourceType::Default => resolved.extend_from_slice(defaults),
+                resource_type => resolved.push(*resource_type),
             }
         }
-        out
+        resolved
     }
 }
 
@@ -1040,8 +1040,8 @@ impl From<&ClapResourceType> for NodeType {
             ClapResourceType::Check => NodeType::Check,
             ClapResourceType::Exposure => NodeType::Exposure,
             ClapResourceType::Plugin => NodeType::Plugin,
-            // Sentinels are expanded by `resolve` first; this arm is defensive
-            // only (`Unspecified` matches no real node).
+            // `all` and `default` are expanded by `resolve` before any conversion;
+            // if one reaches here it maps to `Unspecified`, which matches no node.
             ClapResourceType::All | ClapResourceType::Default => NodeType::Unspecified,
         }
     }
