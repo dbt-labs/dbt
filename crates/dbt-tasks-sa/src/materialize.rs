@@ -2004,11 +2004,11 @@ fn value_as_string(array: &ArrayRef, index: usize, data_type: &DataType) -> Stri
                 .as_any()
                 .downcast_ref::<TimestampNanosecondArray>()
                 .unwrap();
-            null_or!(arr, index, {
-                DateTime::from_timestamp(arr.value(index) / 1_000_000_000, 0)
-                    .unwrap()
-                    .to_string()
-            })
+            null_or!(
+                arr,
+                index,
+                DateTime::from_timestamp_nanos(arr.value(index)).to_string()
+            )
         }
         DataType::Date32 => {
             let arr = array.as_any().downcast_ref::<Date32Array>().unwrap();
@@ -2025,8 +2025,10 @@ fn value_as_string(array: &ArrayRef, index: usize, data_type: &DataType) -> Stri
 #[cfg(test)]
 mod compare_record_batches_tests {
     use super::{compare_record_batches, compare_record_batches_with_json_columns};
-    use arrow::array::{BinaryArray, Int32Array, Int64Array, StringViewArray};
-    use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::array::{
+        BinaryArray, Int32Array, Int64Array, StringArray, StringViewArray, TimestampNanosecondArray,
+    };
+    use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
     use std::sync::Arc;
 
     fn json_batch(expected: Option<&str>, actual: Option<&str>) -> arrow::array::RecordBatch {
@@ -2259,6 +2261,72 @@ mod compare_record_batches_tests {
         .unwrap();
 
         let result = compare_record_batches(&batch).unwrap();
+        assert!(!result.has_differences);
+    }
+
+    fn compare_nanosecond_timestamps(
+        expected: i64,
+        actual: i64,
+    ) -> super::CompareRecordBatchResult {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("actual_or_expected", DataType::Utf8, false),
+            Field::new("ts", DataType::Timestamp(TimeUnit::Nanosecond, None), false),
+        ]));
+        let batch = arrow::array::RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec!["expected", "actual"])),
+                Arc::new(TimestampNanosecondArray::from(vec![expected, actual])),
+            ],
+        )
+        .unwrap();
+        compare_record_batches(&batch).unwrap()
+    }
+
+    fn ts_diff(result: &super::CompareRecordBatchResult) -> String {
+        result
+            .diff_batch
+            .column_by_name("ts")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap()
+            .value(0)
+            .to_string()
+    }
+
+    // 2024-01-01 00:00:00 UTC
+    const JAN_1_2024_NANOS: i64 = 1_704_067_200_000_000_000;
+
+    // Nanosecond timestamps were divided down to whole seconds before
+    // rendering, so values in the same second compared equal.
+    #[test]
+    fn detects_sub_second_mismatch_in_nanosecond_timestamp() {
+        let result =
+            compare_nanosecond_timestamps(JAN_1_2024_NANOS + 500_000_000, JAN_1_2024_NANOS);
+        assert!(result.has_differences);
+        assert_eq!(
+            ts_diff(&result),
+            "2024-01-01 00:00:00.500 UTC -> 2024-01-01 00:00:00 UTC"
+        );
+    }
+
+    // Integer division truncated toward zero, so a pre-1970 timestamp with a
+    // fractional second rendered one second late.
+    #[test]
+    fn renders_pre_epoch_nanosecond_timestamp() {
+        let result = compare_nanosecond_timestamps(-500_000_000, 0);
+        assert!(result.has_differences);
+        assert_eq!(
+            ts_diff(&result),
+            "1969-12-31 23:59:59.500 UTC -> 1970-01-01 00:00:00 UTC"
+        );
+    }
+
+    #[test]
+    fn no_differences_when_nanosecond_timestamps_match() {
+        let ts = JAN_1_2024_NANOS + 123_456_789;
+        let result = compare_nanosecond_timestamps(ts, ts);
         assert!(!result.has_differences);
     }
 }
