@@ -1,0 +1,8 @@
+kind: Fixes
+body: Terminate git option parsing before the repository URL in `dbt deps` so a
+    package declaring a git URL that starts with `-` (e.g. `--upload-pack=...`)
+    is treated as a repository argument instead of a shell-executed git option.
+time: 2026-08-05T00:00:00.000000+00:00
+custom:
+    author: sunliqiang
+    project: dbt-core
