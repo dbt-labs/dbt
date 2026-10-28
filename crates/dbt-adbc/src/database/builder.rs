@@ -343,7 +343,7 @@ impl IntoIterator for Builder {
 
     fn into_iter(self) -> Self::IntoIter {
         let fixed = match self.backend {
-            Backend::Redshift | Backend::Postgres | Backend::MotherDuck => {
+            Backend::Redshift | Backend::Postgres => {
                 // take username/password options and put them in the URI sent to the driver
                 // https://www.postgresql.org/docs/current/libpq-connect.html#LIBPQ-CONNSTRING
                 let mut uri = self
@@ -445,7 +445,7 @@ mod tests {
 
     #[test]
     fn postgres_like_backends_fold_credentials_into_uri_options() {
-        for backend in [Backend::Postgres, Backend::MotherDuck, Backend::Redshift] {
+        for backend in [Backend::Postgres, Backend::Redshift] {
             let mut builder = Builder::new(backend);
             builder
                 .with_parse_uri("postgres://db.example/app")
@@ -463,6 +463,29 @@ mod tests {
             assert!(uri.contains("user=alice"), "{backend}");
             assert!(uri.contains("password=secret"), "{backend}");
         }
+    }
+
+    #[test]
+    fn motherduck_keeps_username_and_password_as_database_options() {
+        let mut builder = Builder::new(Backend::MotherDuck);
+        builder
+            .with_parse_uri("postgresql://db.example/app")
+            .unwrap()
+            .with_username("alice")
+            .with_password("secret");
+
+        let options = builder.into_iter().collect::<Vec<_>>();
+        assert_eq!(options.len(), 3);
+
+        assert_eq!(options[0].0, OptionDatabase::Uri);
+        let uri = option_string(&options[0].1);
+        assert_eq!(uri, "postgresql://db.example/app");
+        assert!(!uri.contains("user="));
+        assert!(!uri.contains("password="));
+        assert_eq!(options[1].0, OptionDatabase::Username);
+        assert_eq!(option_string(&options[1].1), "alice");
+        assert_eq!(options[2].0, OptionDatabase::Password);
+        assert_eq!(option_string(&options[2].1), "secret");
     }
 
     #[test]
