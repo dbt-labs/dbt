@@ -152,9 +152,12 @@ impl fmt::Debug for Builder {
                         first = false;
                     }
                 }
-                let safe_uri = Url::parse(&s);
-                debug_assert!(safe_uri.is_ok(), "failed to parse safe URI: {s}");
-                safe_uri.unwrap_or(uri)
+                // `s` already replaced user and password query values. If it does not
+                // parse, keep that string. Falling back to `uri` would print the secret.
+                match Url::parse(&s) {
+                    Ok(safe_uri) => safe_uri.to_string(),
+                    Err(_) => s,
+                }
             }),
         )
         .field("username", &self.username)
@@ -441,6 +444,18 @@ mod tests {
         assert!(!debug.contains("p/ss"));
         assert!(!debug.contains("query_secret"));
         assert!(!debug.contains("token_secret"));
+    }
+
+    #[test]
+    fn debug_keeps_query_password_redacted_when_rebuilt_uri_is_invalid() {
+        let mut builder = Builder::new(Backend::MotherDuck);
+        builder
+            .with_parse_uri("postgresql://db.example/app?user=a%20b&password=secret-token")
+            .unwrap();
+
+        let debug = format!("{builder:?}");
+        assert!(!debug.contains("secret-token"));
+        assert!(debug.contains("password=password"));
     }
 
     #[test]
