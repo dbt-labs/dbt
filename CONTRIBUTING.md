@@ -57,24 +57,6 @@ your consumer. Rust is required to build this wheel, not to install it.
 Build times depend on the machine and profile. LTO can be disabled for a
 development release build with --config profile.release.lto=false.
 
-#### Experimental render-trace previews
-
-The Render-trace preview wheel workflow builds a Linux x86_64 ABI3 wheel
-and runs the trace integration suite against the installed result. Fork pushes
-that change the exporter, renderer, Python distribution or workflow trigger it
-without upstream secrets. In this repository it is available through manual
-workflow_dispatch after the workflow has landed on the default branch.
-
-Download the artifact from the matching Actions run and check producer.json
-for its exact source revision and experimental status. Verify SHA256SUMS before
-installing the wheel. Previews require CPython 3.10+ and Linux x86_64 with
-glibc 2.35 or newer; they expire after 14 days and are not PyPI releases.
-
-A fork owner may need to enable Actions in their fork. This workflow does not
-approve upstream fork CI or bypass its separate maintainer approval process.
-The debug-log workaround in the render-trace prototype notes is a runtime
-observation from Windows debug validation, not a build prerequisite.
-
 ## Making a Change to dbt
 After you're done making your code change, make sure:
 - your code is formatted: `cargo fmt`
