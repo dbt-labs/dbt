@@ -568,6 +568,22 @@ impl SqlType {
         }
     }
 
+    fn write_array(backend: AdapterType, inner: Option<&SqlType>, out: &mut String) -> fmt::Result {
+        use fmt::Write as _;
+
+        let Some(inner) = inner else {
+            return write!(out, "ARRAY");
+        };
+        let (open, close) = match backend {
+            AdapterType::Snowflake => ("ARRAY(", ")"),
+            AdapterType::ClickHouse => ("Array(", ")"),
+            _ => ("ARRAY<", ">"),
+        };
+        write!(out, "{open}")?;
+        inner.write(backend, out)?;
+        write!(out, "{close}")
+    }
+
     /// Render a SQL type string in the preferred syntax for a given backend.
     pub fn write(&self, backend: AdapterType, out: &mut String) -> fmt::Result {
         use AdapterType::*;
@@ -1007,19 +1023,7 @@ impl SqlType {
                 element.write(backend, out)?;
                 write!(out, ">")
             }
-            (_, Array(None)) => write!(out, "ARRAY"),
-            (backend, Array(Some(inner))) => {
-                match backend {
-                    Snowflake => write!(out, "ARRAY(")?,
-                    ClickHouse => write!(out, "Array(")?,
-                    _ => write!(out, "ARRAY<")?,
-                }
-                inner.write(backend, out)?;
-                match backend {
-                    Snowflake | ClickHouse => write!(out, ")"),
-                    _ => write!(out, ">"),
-                }
-            }
+            (_, Array(inner)) => Self::write_array(backend, inner.as_deref(), out),
             (_, Struct(None)) => write!(out, "STRUCT"),
             (_, Struct(Some(fields))) => {
                 match backend {
