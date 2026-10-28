@@ -1,5 +1,7 @@
 use super::*;
 
+mod clone;
+
 fn view_config(overrides: impl IntoIterator<Item = (&'static str, Value)>) -> Arc<MockJinjaObject> {
     let mut settings = BTreeMap::from([(
         "contract",
