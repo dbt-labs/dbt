@@ -46,7 +46,7 @@ fn model_with_masked_column() -> Value {
 }
 
 #[test]
-fn v2_update_via_alter_rejects_unsupported_configs_without_changes() {
+fn update_via_alter_rejects_unsupported_configs_without_changes() {
     let cases = [
         (
             "row filter",
@@ -61,20 +61,22 @@ fn v2_update_via_alter_rejects_unsupported_configs_without_changes() {
             "Column masks are not supported for views.",
         ),
     ];
-    for (case, config, model, expected) in cases {
-        let harness = existing_view_alter_harness(true);
-        let mut builder = harness
-            .materialization_context("my_view", "SELECT id, msg FROM source_table")
-            .config(config);
-        if let Some(model) = model {
-            builder = builder.with("model", model);
+    for project_flag in [false, true] {
+        for (case, config, model, expected) in cases.clone() {
+            let harness = existing_view_alter_harness(project_flag);
+            let mut builder = harness
+                .materialization_context("my_view", "SELECT id, msg FROM source_table")
+                .config(config);
+            if let Some(model) = model {
+                builder = builder.with("model", model);
+            }
+            let error = render_view(&harness, ADAPTER, builder.build())
+                .expect_err("an existing view with no changes must still be validated");
+            assert!(
+                error.to_string().contains(expected),
+                "{case} (project flag {project_flag}): unexpected error {error}"
+            );
         }
-        let error = render_view(&harness, ADAPTER, builder.build())
-            .expect_err("an existing view with no changes must still be validated");
-        assert!(
-            error.to_string().contains(expected),
-            "{case}: unexpected error {error}"
-        );
     }
 }
 
