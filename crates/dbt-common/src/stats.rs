@@ -156,11 +156,7 @@ impl Stat {
         self.end_time
             .duration_since(self.start_time)
             .unwrap_or_default()
-    }
-
-    pub fn get_execution_duration(&self) -> Duration {
-        let idle = Duration::from_millis(self.idle_time_ms.unwrap_or_default());
-        self.get_duration().saturating_sub(idle)
+            .saturating_sub(Duration::from_millis(self.idle_time_ms.unwrap_or_default()))
     }
 
     pub fn format_time(system_time: SystemTime) -> String {
@@ -404,22 +400,22 @@ mod tests {
     }
 
     #[test]
-    fn test_get_execution_duration_subtracts_idle() {
+    fn test_get_duration_subtracts_idle() {
         let stat = stat_with_idle(3000);
         assert_eq!(
-            stat.get_execution_duration(),
+            stat.get_duration(),
             Duration::from_secs(7),
-            "execution duration should subtract connection-limit idle time"
+            "duration should subtract idle time"
         );
     }
 
     #[test]
-    fn test_get_execution_duration_clamps_to_zero() {
+    fn test_get_duration_clamps_to_zero() {
         let stat = stat_with_idle(20000);
         assert_eq!(
-            stat.get_execution_duration(),
+            stat.get_duration(),
             Duration::ZERO,
-            "execution duration should clamp to zero when idle time exceeds duration"
+            "duration should clamp to zero when idle time exceeds duration"
         );
     }
 }
