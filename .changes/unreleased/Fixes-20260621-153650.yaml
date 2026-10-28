@@ -1,0 +1,11 @@
+kind: Fixes
+body: >-
+  `this` in unit test context is now a `UnitTestRelationProxy` (a `str`
+  subclass) that renders as the ephemeral CTE name in compiled SQL but also
+  exposes Relation attributes (`.database`, `.schema`, `.identifier`).
+  Previously `this` was a plain string, so macros that accessed those
+  attributes raised `AttributeError: 'str' object has no attribute 'database'`.
+time: 2026-06-21T00:00:00.000000Z
+custom:
+  Author: kalluripradeep
+  Issue: "12313"
