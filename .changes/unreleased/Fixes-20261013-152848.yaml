@@ -1,0 +1,7 @@
+kind: Fixes
+body: Report a mismatch in unit tests when DECIMAL values between -1 and 0 differ only in sign, and show decimal values with their leading fractional zeros
+time: 2026-10-13T15:28:48.000000-05:00
+custom:
+    author: raams95
+    issue: "16726"
+    project: dbt-core

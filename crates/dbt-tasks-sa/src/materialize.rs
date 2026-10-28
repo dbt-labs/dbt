@@ -1978,15 +1978,9 @@ fn value_as_string(array: &ArrayRef, index: usize, data_type: &DataType) -> Stri
             let arr = array.as_any().downcast_ref::<BooleanArray>().unwrap();
             null_or!(arr, index, arr.value(index).to_string())
         }
-        DataType::Decimal128(_, scale) => {
+        DataType::Decimal128(_, _) => {
             let arr = array.as_any().downcast_ref::<Decimal128Array>().unwrap();
-            null_or!(arr, index, {
-                let raw_value = arr.value(index);
-                let scale_factor = 10i128.pow(*scale as u32);
-                let integer_part = raw_value / scale_factor;
-                let fractional_part = (raw_value % scale_factor).abs();
-                format!("{integer_part}.{fractional_part}")
-            })
+            null_or!(arr, index, arr.value_as_string(index))
         }
         DataType::Timestamp(TimeUnit::Second, _) => {
             let arr = array
@@ -2025,7 +2019,9 @@ fn value_as_string(array: &ArrayRef, index: usize, data_type: &DataType) -> Stri
 #[cfg(test)]
 mod compare_record_batches_tests {
     use super::{compare_record_batches, compare_record_batches_with_json_columns};
-    use arrow::array::{BinaryArray, Int32Array, Int64Array, StringViewArray};
+    use arrow::array::{
+        BinaryArray, Decimal128Array, Int32Array, Int64Array, StringArray, StringViewArray,
+    };
     use arrow::datatypes::{DataType, Field, Schema};
     use std::sync::Arc;
 
@@ -2259,6 +2255,61 @@ mod compare_record_batches_tests {
         .unwrap();
 
         let result = compare_record_batches(&batch).unwrap();
+        assert!(!result.has_differences);
+    }
+
+    fn compare_decimals(expected: i128, actual: i128) -> super::CompareRecordBatchResult {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("actual_or_expected", DataType::Utf8, false),
+            Field::new("amount", DataType::Decimal128(10, 2), false),
+        ]));
+        let amounts = Decimal128Array::from(vec![expected, actual])
+            .with_precision_and_scale(10, 2)
+            .unwrap();
+        let batch = arrow::array::RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec!["expected", "actual"])),
+                Arc::new(amounts),
+            ],
+        )
+        .unwrap();
+        compare_record_batches(&batch).unwrap()
+    }
+
+    fn amount_diff(result: &super::CompareRecordBatchResult) -> String {
+        result
+            .diff_batch
+            .column_by_name("amount")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap()
+            .value(0)
+            .to_string()
+    }
+
+    // The integer part of a value between -1 and 0 is 0, so its sign was dropped
+    // and -0.50 rendered the same as 0.50.
+    #[test]
+    fn detects_sign_mismatch_in_decimal_between_minus_one_and_zero() {
+        let result = compare_decimals(-50, 50);
+        assert!(result.has_differences);
+        assert_eq!(amount_diff(&result), "-0.50 -> 0.50");
+    }
+
+    // The fractional part was printed without its leading zeros, so 1.05
+    // rendered as "1.5".
+    #[test]
+    fn decimal_keeps_leading_zeros_in_fractional_part() {
+        let result = compare_decimals(105, 150);
+        assert!(result.has_differences);
+        assert_eq!(amount_diff(&result), "1.05 -> 1.50");
+    }
+
+    #[test]
+    fn no_differences_when_negative_decimals_match() {
+        let result = compare_decimals(-1205, -1205);
         assert!(!result.has_differences);
     }
 }
