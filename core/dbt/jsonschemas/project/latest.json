@@ -2304,6 +2304,12 @@
             "null"
           ]
         },
+        "+merge_actions_explicit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "+merge_with_schema_evolution": {
           "anyOf": [
             {
@@ -4084,6 +4090,12 @@
             "null"
           ]
         },
+        "+merge_actions_explicit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "+merge_exclude_columns": {
           "anyOf": [
             {
@@ -5390,6 +5402,20 @@
             "null"
           ]
         },
+        "+fast": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "+file_format": {
           "type": [
             "string",
@@ -5541,6 +5567,12 @@
           ]
         },
         "+max_staleness": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "+merge_actions_explicit": {
           "type": [
             "string",
             "null"
@@ -6591,6 +6623,12 @@
             "null"
           ]
         },
+        "+merge_actions_explicit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "+merge_with_schema_evolution": {
           "anyOf": [
             {
@@ -7464,6 +7502,12 @@
             "null"
           ]
         },
+        "+merge_actions_explicit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "+merge_with_schema_evolution": {
           "anyOf": [
             {
@@ -8125,6 +8169,12 @@
           ]
         },
         "+max_staleness": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "+merge_actions_explicit": {
           "type": [
             "string",
             "null"
