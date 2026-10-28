@@ -87,6 +87,17 @@ pub trait TypeOps: Send + Sync {
             })
     }
 
+    /// Format a CAST target from retained SQL metadata when available.
+    fn format_field_as_cast_type(&self, field: &Field, out: &mut String) -> AdapterResult<()> {
+        let Some(original) = original_type_string(self.adapter_type(), field) else {
+            return self.format_arrow_type_as_sql(field.data_type(), field.is_nullable(), out);
+        };
+        let (mut sql_type, _) = SqlType::parse(self.adapter_type(), original.as_ref())
+            .map_err(|error| AdapterError::new(AdapterErrorKind::NotSupported, error))?;
+        sql_type.normalize_for_cast(self.adapter_type());
+        self.format_sql_type(sql_type, out)
+    }
+
     /// Return internal type representation for the given source type inferred from seed data.
     /// The correct mapping is not necessarily the same, or logically the same, as the source type.
     /// The mapping is defined for compatibility with DBT seed files and is determined as follows:
@@ -1324,6 +1335,41 @@ pub fn numeric_precision_scale(
 mod tests {
     use super::*;
     use dbt_adapter_core::AdapterType::*;
+
+    #[test]
+    fn test_format_field_as_cast_type_preserves_bigquery_metadata() {
+        let ops = DefaultTypeOps::new(Bigquery);
+        for (original, data_type, expected) in [
+            (
+                "TIMESTAMP",
+                DataType::Timestamp(TimeUnit::Microsecond, None),
+                "TIMESTAMP",
+            ),
+            (
+                "DATETIME",
+                DataType::Timestamp(TimeUnit::Microsecond, None),
+                "DATETIME",
+            ),
+            ("NUMERIC(10, 2)", DataType::Decimal128(10, 2), "NUMERIC"),
+            (
+                "BIGNUMERIC(30, 20)",
+                DataType::Decimal128(30, 20),
+                "BIGNUMERIC",
+            ),
+        ] {
+            let field = Field::new("value", data_type, true).with_metadata(HashMap::from([(
+                BIGQUERY_METADATA_SQL_TYPE_KEY.to_string(),
+                original.to_string(),
+            )]));
+            let mut out = String::new();
+            ops.format_field_as_cast_type(&field, &mut out).unwrap();
+            assert_eq!(out, expected);
+        }
+        let mut out = String::new();
+        ops.format_field_as_cast_type(&Field::new("value", DataType::Int64, true), &mut out)
+            .unwrap();
+        assert_eq!(out, "int64");
+    }
 
     fn convert_type(data_type: &DataType, adapter_type: AdapterType) -> String {
         let ops = DefaultTypeOps::new(adapter_type);

@@ -19,6 +19,25 @@ fn assert_parses_to(line: u32, input: &str, expected: &SqlType, backend: Adapter
     );
 }
 
+#[test]
+fn test_normalize_for_cast() {
+    for (backend, input, expected) in [
+        (Bigquery, "NUMERIC(10, 2)", "NUMERIC"),
+        (Bigquery, "BIGNUMERIC(30, 20)", "BIGNUMERIC"),
+        (Bigquery, "ARRAY<NUMERIC(10, 2)>", "ARRAY<NUMERIC>"),
+        (
+            Bigquery,
+            "STRUCT<`odd name` BIGNUMERIC(30, 20), items ARRAY<STRUCT<n NUMERIC(10, 2), ts TIMESTAMP>>>",
+            "STRUCT<`odd name` BIGNUMERIC, items ARRAY<STRUCT<n NUMERIC, ts TIMESTAMP>>>",
+        ),
+        (Snowflake, "NUMBER(10, 2)", "NUMBER(10, 2)"),
+    ] {
+        let (mut sql_type, _) = SqlType::parse(backend, input).unwrap();
+        sql_type.normalize_for_cast(backend);
+        assert_eq!(sql_type.to_string(backend), expected, "{input}");
+    }
+}
+
 /// Test that parsing leads to the expected SqlType on every backend.
 ///
 /// Uses [assert_parses_to] for every pair.

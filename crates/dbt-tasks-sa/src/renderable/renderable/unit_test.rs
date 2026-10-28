@@ -2105,8 +2105,9 @@ mod bigquery {
             return Ok(literal);
         }
 
-        let formatted_type = type_ops
-            .get_original_sql_type_from_field(field)
+        let mut formatted_type = String::new();
+        type_ops
+            .format_field_as_cast_type(field, &mut formatted_type)
             .map_err(|e| {
                 fs_err!(
                     ErrorCode::InvalidConfig,
@@ -2192,15 +2193,11 @@ fn columns_to_formatted_types<'a>(
         .fields()
         .iter()
         .map(|f| {
-            let formatted = if prefer_original_sql_type {
-                type_ops
-                    .get_original_sql_type_from_field(f)
-                    .map(|formatted| formatted.into_owned())
+            let mut formatted = String::new();
+            if prefer_original_sql_type {
+                type_ops.format_field_as_cast_type(f, &mut formatted)
             } else {
-                let mut formatted = String::new();
-                type_ops
-                    .format_arrow_type_as_sql(f.data_type(), f.is_nullable(), &mut formatted)
-                    .map(|()| formatted)
+                type_ops.format_arrow_type_as_sql(f.data_type(), f.is_nullable(), &mut formatted)
             }
             .map_err(|e| {
                 fs_err!(
@@ -3377,14 +3374,14 @@ mod tests {
         );
         assert_contains!(result, "CAST(42 AS INT64) AS event_id");
         assert_contains!(result, "CAST('created' AS STRING) AS event_name");
-        assert_contains!(result, "CAST('12.34' AS NUMERIC(10, 2)) AS amount");
+        assert_contains!(result, "CAST('12.34' AS NUMERIC) AS amount");
         assert_contains!(
             result,
-            "CAST([CAST(1 AS int64), CAST(2 AS int64)] AS ARRAY<INT64>) AS tag_ids"
+            "CAST([CAST(1 AS INT64), CAST(2 AS INT64)] AS ARRAY<INT64>) AS tag_ids"
         );
         assert_contains!(
             result,
-            "CAST(STRUCT(7 AS id, 'alice' AS name) AS STRUCT<id INT64, name STRING>) AS actor"
+            "CAST(STRUCT(CAST(7 AS INT64) AS id, CAST('alice' AS STRING) AS name) AS STRUCT<id INT64, name STRING>) AS actor"
         );
     }
 
@@ -3545,7 +3542,7 @@ mod tests {
             );
             assert_contains!(
                 result,
-                "CAST('2.12345678901234567890' AS BIGNUMERIC(30, 20)) AS amount"
+                "CAST('2.12345678901234567890' AS BIGNUMERIC) AS amount"
             );
             assert_contains!(
                 result,

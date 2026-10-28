@@ -535,6 +535,26 @@ impl SqlType {
         out
     }
 
+    /// Remove parameters that the backend does not allow in CAST targets.
+    pub fn normalize_for_cast(&mut self, backend: AdapterType) {
+        match (backend, self) {
+            // BigQuery permits decimal parameters in schemas, but not in CASTs:
+            // https://cloud.google.com/bigquery/docs/reference/standard-sql/data-types#parameterized_data_types
+            (AdapterType::Bigquery, Self::Numeric(parameters) | Self::BigNumeric(parameters)) => {
+                *parameters = None;
+            }
+            (AdapterType::Bigquery, Self::Array(Some(element))) => {
+                element.normalize_for_cast(backend)
+            }
+            (AdapterType::Bigquery, Self::Struct(Some(fields))) => {
+                for field in fields {
+                    field.sql_type.normalize_for_cast(backend);
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// Render a SQL type string in the preferred syntax for a given backend.
     pub fn write(&self, backend: AdapterType, out: &mut String) -> fmt::Result {
         use AdapterType::*;
