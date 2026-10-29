@@ -33,8 +33,8 @@ use crate::schemas::common::{Hooks, OnSchemaChange, hooks_equal};
 use crate::schemas::manifest::GrantAccessToTarget;
 use crate::schemas::project::configs::common::log_state_mod_diff;
 use crate::schemas::project::configs::common::{
-    WarehouseSpecificNodeConfig, access_eq, docs_eq, grants_equal, meta_eq, omissible_option_eq,
-    same_warehouse_config, take_databricks_catalog_alias,
+    TYPED_ALIAS_KEYS, WarehouseSpecificNodeConfig, access_eq, docs_eq, grants_equal, meta_eq,
+    omissible_option_eq, same_warehouse_config, take_databricks_catalog_alias,
 };
 use crate::schemas::project::configs::config_merge::{Classifiers, Packages, Tags, TblProperties};
 use crate::schemas::project::dbt_project::ResolvableConfig;
@@ -1453,6 +1453,10 @@ impl ResolvableConfig<ModelConfig> for ModelConfig {
         self.enabled
     }
 
+    fn get_adapter(&self) -> Option<AdapterType> {
+        self.adapter
+    }
+
     fn disable(&mut self) {
         self.enabled = Some(false);
     }
@@ -1496,9 +1500,13 @@ impl ResolvableConfig<ModelConfig> for ModelConfig {
         self.finalize_resolved()
     }
 
-    fn canonicalize_adapter_aliases(&mut self, default_adapter: AdapterType) {
+    fn typed_alias_keys() -> &'static [&'static str] {
+        TYPED_ALIAS_KEYS
+    }
+
+    fn canonicalize_adapter_aliases(&mut self, alias_adapter: AdapterType) {
         if let Some(catalog) = take_databricks_catalog_alias(
-            default_adapter,
+            alias_adapter,
             &mut self.__warehouse_specific_config__,
             !self.database.is_omitted(),
         ) {

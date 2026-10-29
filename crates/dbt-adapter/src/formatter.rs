@@ -62,6 +62,7 @@ impl SqlLiteralFormatter {
     pub fn format_unit_test_str(&self, value: &str) -> String {
         match self.adapter_type {
             AdapterType::Snowflake => format!("'{}'", value.replace('\'', "\\'")),
+            AdapterType::Databricks => self.format_str(&value.replace('\\', "\\\\")),
             _ => self.format_str(value),
         }
     }
@@ -291,6 +292,18 @@ mod tests {
         assert_eq!(f.format_str("hello"), "'hello'");
         assert_eq!(f.format_str("Mom\\Baby"), "'Mom\\\\Baby'");
         assert_eq!(f.format_str("it's"), "'it''s'");
+    }
+
+    #[test]
+    fn test_databricks_format_unit_test_str() {
+        let f = SqlLiteralFormatter::new(AdapterType::Databricks);
+        for (value, expected) in [
+            (r"a\", r"'a\\'"),
+            (r"a\nb", r"'a\\nb'"),
+            (r"a\'b", r"'a\\\'b'"),
+        ] {
+            assert_eq!(f.format_unit_test_str(value), expected);
+        }
     }
 
     #[test]

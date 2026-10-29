@@ -226,42 +226,36 @@ pub(crate) async fn write_catalog_stats_parquet(
 pub(crate) fn update_manifest_with_macro_depends_on(
     dbt_manifest: &mut DbtManifest,
     macro_depends_on: &BTreeMap<String, BTreeSet<String>>,
+    resolved_state: &dbt_schemas::state::ResolverState,
 ) {
     if macro_depends_on.is_empty() {
         return;
     }
 
     for (unique_id, node) in dbt_manifest.nodes.iter_mut() {
-        if let DbtNode::Model(model_node) = node
-            && let Some(macros) = macro_depends_on.get(unique_id)
+        let Some(macros) = macro_depends_on.get(unique_id) else {
+            continue;
+        };
+        let base = match node {
+            DbtNode::Model(node) => &mut node.__base_attr__,
+            DbtNode::Test(node) => &mut node.__base_attr__,
+            DbtNode::Snapshot(node) => &mut node.__base_attr__,
+            DbtNode::Seed(node) => &mut node.__base_attr__,
+            DbtNode::Analysis(node) => &mut node.__base_attr__,
+            DbtNode::Operation(node) => &mut node.__base_attr__,
+            DbtNode::Function(node) => &mut node.__base_attr__,
+            DbtNode::Check(_) => continue,
+        };
+        let mut dependencies = macros.clone();
+        if resolved_state
+            .nodes
+            .get_node(unique_id)
+            .is_some_and(|node| node.node_adapter() != resolved_state.adapter_type)
         {
-            model_node.__base_attr__.depends_on.macros = macros.iter().cloned().collect();
+            // Shared macro typechecking cannot describe each caller's dispatch.
+            dependencies.extend(base.depends_on.macros.iter().cloned());
         }
-        if let DbtNode::Test(test_node) = node
-            && let Some(macros) = macro_depends_on.get(unique_id)
-        {
-            test_node.__base_attr__.depends_on.macros = macros.iter().cloned().collect();
-        }
-        if let DbtNode::Snapshot(snapshot_node) = node
-            && let Some(macros) = macro_depends_on.get(unique_id)
-        {
-            snapshot_node.__base_attr__.depends_on.macros = macros.iter().cloned().collect();
-        }
-        if let DbtNode::Seed(seed_node) = node
-            && let Some(macros) = macro_depends_on.get(unique_id)
-        {
-            seed_node.__base_attr__.depends_on.macros = macros.iter().cloned().collect();
-        }
-        if let DbtNode::Analysis(analysis_node) = node
-            && let Some(macros) = macro_depends_on.get(unique_id)
-        {
-            analysis_node.__base_attr__.depends_on.macros = macros.iter().cloned().collect();
-        }
-        if let DbtNode::Operation(operation_node) = node
-            && let Some(macros) = macro_depends_on.get(unique_id)
-        {
-            operation_node.__base_attr__.depends_on.macros = macros.iter().cloned().collect();
-        }
+        base.depends_on.macros = dependencies.into_iter().collect();
     }
     for (unique_id, macro_node) in dbt_manifest.macros.iter_mut() {
         if let Some(macros) = macro_depends_on.get(unique_id) {

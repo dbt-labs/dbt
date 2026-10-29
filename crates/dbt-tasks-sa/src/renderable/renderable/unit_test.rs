@@ -13,6 +13,7 @@ use dbt_adapter::metadata::BIGQUERY_PSEUDOCOLUMNS;
 use dbt_adapter::relation::{RelationObject, create_relation_from_node};
 use dbt_adapter::sql_types::DefaultTypeOps;
 use dbt_adapter::sql_types::{TypeOps, make_arrow_field};
+use dbt_adapter::stmt_splitter::{DefaultStmtSplitter, StmtSplitter};
 use dbt_adapter::{Adapter, Column};
 use dbt_adapter_core::{AdapterType, ExecutionPhase, quote_char};
 use dbt_common::cancellation::Cancellable;
@@ -63,6 +64,13 @@ use sqlparser::tokenizer::{Token, Tokenizer, Whitespace};
 type YmlValue = dbt_yaml::Value;
 
 const COMPILED_INCREMENTAL_SCHEMA_MARKER: &str = ".compiled_incremental_unit_test_schema_v1";
+const UNIT_TEST_SCHEMA_PROBE_MARKER: &str = ".unit_test_schema_probe_v2";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct UnitTestSchemaPolicy {
+    use_compiled_incremental: bool,
+    preserve_recorded_probe_sql: bool,
+}
 
 /// Identifies which unit test relation schema is being resolved for error reporting.
 #[derive(Clone, Copy)]
@@ -91,11 +99,14 @@ struct UnitTestSchemaProbe {
     query_sql: String,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct ExpectedSchemaInferenceOptions {
     use_query_schema_fallback: bool,
     try_structural_inference: bool,
     cache_result: bool,
+    preserve_recorded_probe_sql: bool,
+    /// Match the relation resolved for `this`, including its version and quoting.
+    mock_self_relation: Option<String>,
 }
 
 fn should_use_query_schema_fallback(
@@ -108,7 +119,7 @@ fn should_use_query_schema_fallback(
     is_tested_model_ephemeral || (!effective_execute.is_default() && !replay_active)
 }
 
-fn has_is_incremental_false_override(unit_test: &DbtUnitTest) -> bool {
+fn is_incremental_override(unit_test: &DbtUnitTest) -> Option<bool> {
     unit_test
         .__unit_test_attr__
         .overrides
@@ -116,11 +127,14 @@ fn has_is_incremental_false_override(unit_test: &DbtUnitTest) -> bool {
         .and_then(|overrides| overrides.macros.as_ref().as_ref())
         .and_then(|macros| macros.get("is_incremental"))
         .and_then(YmlValue::as_bool)
-        == Some(false)
 }
 
-fn recording_uses_compiled_incremental_schema(ctx: &TaskRunnerCtx) -> FsResult<bool> {
-    let marker_path = match ctx.inner.arg.replay.as_ref() {
+fn unit_test_schema_policy(
+    ctx: &TaskRunnerCtx,
+    unit_test: &DbtUnitTest,
+) -> FsResult<UnitTestSchemaPolicy> {
+    let override_value = is_incremental_override(unit_test);
+    let recording = match ctx.inner.arg.replay.as_ref() {
         Some(ReplayMode::FsRecord(path)) => Some((path.clone(), true)),
         Some(ReplayMode::FsReplay(path)) => Some((path.clone(), false)),
         Some(ReplayMode::FsTimeMachine(TimeMachineMode::Record(config))) => Some((
@@ -130,31 +144,52 @@ fn recording_uses_compiled_incremental_schema(ctx: &TaskRunnerCtx) -> FsResult<b
         Some(ReplayMode::FsTimeMachine(TimeMachineMode::Replay(config))) => {
             Some((config.artifact_path.clone(), false))
         }
-        Some(ReplayMode::MantleReplay(_)) => None,
-        None => return Ok(true),
+        Some(ReplayMode::MantleReplay(_)) => {
+            return Ok(UnitTestSchemaPolicy {
+                use_compiled_incremental: false,
+                preserve_recorded_probe_sql: true,
+            });
+        }
+        None => None,
     };
-
-    let Some((recording_path, is_recording)) = marker_path else {
-        return Ok(false);
-    };
-    let marker = recording_path.join(COMPILED_INCREMENTAL_SCHEMA_MARKER);
-    if is_recording {
-        stdfs::create_dir_all(&recording_path)?;
-        stdfs::write(marker, b"1\n")?;
-        Ok(true)
-    } else {
-        Ok(marker.is_file())
-    }
+    schema_policy_for_recording(
+        override_value,
+        recording
+            .as_ref()
+            .map(|(path, record)| (path.as_path(), *record)),
+    )
 }
 
-fn use_compiled_schema_for_incremental(
-    ctx: &TaskRunnerCtx,
-    unit_test: &DbtUnitTest,
-) -> FsResult<bool> {
-    if !has_is_incremental_false_override(unit_test) {
-        return Ok(false);
+fn schema_policy_for_recording(
+    override_value: Option<bool>,
+    recording: Option<(&Path, bool)>,
+) -> FsResult<UnitTestSchemaPolicy> {
+    let Some((path, is_recording)) = recording else {
+        return Ok(UnitTestSchemaPolicy {
+            use_compiled_incremental: override_value.is_some(),
+            preserve_recorded_probe_sql: false,
+        });
+    };
+    let marker = path.join(UNIT_TEST_SCHEMA_PROBE_MARKER);
+    if is_recording {
+        stdfs::create_dir_all(path)?;
+        stdfs::write(marker, b"1\n")?;
+        Ok(UnitTestSchemaPolicy {
+            use_compiled_incremental: override_value.is_some(),
+            preserve_recorded_probe_sql: false,
+        })
+    } else {
+        let current = marker.is_file();
+        Ok(UnitTestSchemaPolicy {
+            // v1 enabled compiled inference only for false overrides. A mixed
+            // recording can carry its marker while true still used DESCRIBE.
+            use_compiled_incremental: override_value.is_some()
+                && (current
+                    || (override_value == Some(false)
+                        && path.join(COMPILED_INCREMENTAL_SCHEMA_MARKER).is_file())),
+            preserve_recorded_probe_sql: !current,
+        })
     }
-    recording_uses_compiled_incremental_schema(ctx)
 }
 
 fn is_replay_active(ctx: &TaskRunnerCtx) -> bool {
@@ -557,6 +592,7 @@ fn build_unit_test_schema_probe(
     type_ops: &dyn TypeOps,
     compiled_model_sql: &str,
     rewrite_targets: &[(String, String)],
+    preserve_recorded_sql: bool,
 ) -> UnitTestSchemaProbe {
     let schema_sql = replace_subquery_refs_with_cte_names(
         adapter_type,
@@ -568,16 +604,26 @@ fn build_unit_test_schema_probe(
         .iter()
         .filter_map(|(id, query)| {
             let cte_name = create_cte_name_from_fqn(adapter_type, type_ops, id);
-            schema_sql
-                .contains(&cte_name)
-                .then(|| format!("{cte_name} as ({query})"))
+            schema_sql.contains(&cte_name).then(|| {
+                if preserve_recorded_sql {
+                    format!("{cte_name} as ({query})")
+                } else {
+                    format_unit_test_subquery(adapter_type, &cte_name, query)
+                }
+            })
         })
         .collect::<Vec<_>>()
         .join(",");
     let query_sql = if ctes.is_empty() {
         schema_sql.clone()
-    } else {
+    } else if preserve_recorded_sql {
         format!("WITH {ctes} {schema_sql}")
+    } else {
+        let body =
+            DefaultStmtSplitter.strip_trailing_statement_terminator(&schema_sql, adapter_type);
+        // A nested query keeps the model's WITH clause in its own scope.
+        // Newlines keep trailing comments from consuming generated delimiters.
+        format!("WITH {ctes} SELECT * FROM (\n{body}\n) AS __dbt_schema_probe")
     };
     UnitTestSchemaProbe {
         schema_sql,
@@ -680,12 +726,15 @@ fn infer_unit_test_expected_schema(
     // query. When it runs against the real warehouse, only rewrite ephemerals —
     // non-ephemeral upstreams must remain real relation refs so the warehouse
     // provides their schemas (e.g. for type-checking expect-row literals).
+    let rewrite_as_cte = |id: &str| {
+        id.starts_with(DBT_CTE_PREFIX) || options.mock_self_relation.as_deref() == Some(id)
+    };
     let fallback_rewrite_targets: Vec<(String, String)> = if options.use_query_schema_fallback {
         subqueries.to_vec()
     } else {
         subqueries
             .iter()
-            .filter(|(id, _)| id.starts_with(DBT_CTE_PREFIX))
+            .filter(|(id, _)| rewrite_as_cte(id))
             .cloned()
             .collect()
     };
@@ -695,6 +744,7 @@ fn infer_unit_test_expected_schema(
         type_ops.as_ref(),
         compiled_model_sql,
         &fallback_rewrite_targets,
+        options.preserve_recorded_probe_sql,
     );
     let local_probe_sql = if options.try_structural_inference {
         if options.use_query_schema_fallback {
@@ -706,6 +756,7 @@ fn infer_unit_test_expected_schema(
                     type_ops.as_ref(),
                     compiled_model_sql,
                     subqueries,
+                    options.preserve_recorded_probe_sql,
                 )
                 .query_sql,
             )
@@ -721,7 +772,7 @@ fn infer_unit_test_expected_schema(
             } else {
                 fixture_shape_subqueries
                     .iter()
-                    .filter(|(id, _)| id.starts_with(DBT_CTE_PREFIX))
+                    .filter(|(id, _)| rewrite_as_cte(id))
                     .cloned()
                     .collect()
             };
@@ -730,6 +781,7 @@ fn infer_unit_test_expected_schema(
             type_ops.as_ref(),
             compiled_model_sql,
             &fallback_shape_rewrite_targets,
+            options.preserve_recorded_probe_sql,
         )
         .query_sql;
         let distinct_local_probe_shape_sql =
@@ -739,6 +791,7 @@ fn infer_unit_test_expected_schema(
                     type_ops.as_ref(),
                     compiled_model_sql,
                     fixture_shape_subqueries,
+                    options.preserve_recorded_probe_sql,
                 )
                 .query_sql
             });
@@ -1293,7 +1346,7 @@ fn discover_given_relations(
     }
 
     // Incremental tests read the existing model relation's schema; fetch it if uncached.
-    // An `is_incremental: false` override instead uses compiled SQL.
+    // An `is_incremental` override instead uses compiled SQL, either value.
     let model_unique_id = get_unique_id(
         &ut.__unit_test_attr__.model,
         &ut.__common_attr__.package_name,
@@ -1304,7 +1357,8 @@ fn discover_given_relations(
         "model",
     );
     let resolver_state = ctx.resolver_state();
-    let use_compiled_schema_for_incremental = use_compiled_schema_for_incremental(ctx, ut)?;
+    let use_compiled_schema_for_incremental =
+        unit_test_schema_policy(ctx, ut)?.use_compiled_incremental;
     let tested_model = resolver_state.nodes.get_node(&model_unique_id);
     let should_fetch_expected_schema = tested_model.is_some_and(|node| {
         node.materialized() == DbtMaterialization::Incremental
@@ -1647,7 +1701,8 @@ fn render_unit_test(
     });
     let model_materialization = tested_model.map(|node| node.materialized());
     let is_incremental = model_materialization == Some(DbtMaterialization::Incremental);
-    let use_compiled_schema_for_incremental = use_compiled_schema_for_incremental(ctx, node)?;
+    let schema_policy = unit_test_schema_policy(ctx, node)?;
+    let use_compiled_schema_for_incremental = schema_policy.use_compiled_incremental;
 
     // Ephemeral models have no registered dataset, so the temp-table fallback in
     // `infer_unit_test_expected_schema` fails with "Dataset not found".
@@ -1663,6 +1718,19 @@ fn render_unit_test(
         use_query_schema_fallback,
         try_structural_inference: use_query_schema_fallback,
         cache_result: cache_expected_schema,
+        preserve_recorded_probe_sql: schema_policy.preserve_recorded_probe_sql,
+        // Use the same identity as fixture discovery and model rendering.
+        // A model-config FQN can differ for versioned or deferred relations.
+        mock_self_relation: (use_compiled_schema_for_incremental
+            && !schema_policy.preserve_recorded_probe_sql)
+            .then(|| {
+                compile_context
+                    .get("this")
+                    .and_then(Value::as_object)
+                    .and_then(|object| object.downcast_ref::<RelationObject>())
+                    .map(|relation| relation.render_self_as_str())
+            })
+            .flatten(),
     };
     let infer_compiled_schema = || {
         infer_schema_from_compiled_sql(
@@ -1673,13 +1741,13 @@ fn render_unit_test(
             original_file_path,
             &subqueries,
             &fixture_shape_subqueries,
-            schema_inference_options,
+            schema_inference_options.clone(),
             task_hooks,
         )
     };
 
-    // Keep the existing analyzed/hydrated schema paths unless an explicit
-    // override changes an incremental model into its full-refresh SQL branch.
+    // An explicit override selects the model branch used to type expect rows.
+    // Historical recordings retain the schema source they recorded.
     let fetched_expect_schema = match (model_static_analysis_off, is_incremental) {
         (_, true) if use_compiled_schema_for_incremental => infer_compiled_schema()?,
         // (static analysis is off) + (incremental model): use prod relation from defer
@@ -1921,6 +1989,7 @@ fn is_orderable_type(adapter_type: AdapterType, data_type: &DataType) -> bool {
                 && !BigqueryTyping::is_json(data_type)
                 && !BigqueryTyping::is_geography(data_type)
         }
+        AdapterType::Databricks if databricks::contains_map(data_type) => false,
         // TODO(jason): Update this as more complex types are supported
         _ => is_supported_type(adapter_type, data_type),
     }
@@ -1952,10 +2021,12 @@ fn is_supported_type(adapter_type: AdapterType, ref_type: &DataType) -> bool {
             AdapterType::Bigquery => {
                 // Support Arrays and Structs for BigQuery
                 matches!(ref_type, DataType::List(_) | DataType::Struct(_))
-                    || BigqueryTyping::is_json(ref_type)
-                    || BigqueryTyping::is_geography(ref_type)
+                    || BigqueryTyping::is_distinct_type(ref_type)
             }
-            AdapterType::Databricks => DatabricksTyping::is_timestamp_ntz(ref_type),
+            AdapterType::Databricks => {
+                DatabricksTyping::is_timestamp_ntz(ref_type)
+                    || dbt_adapter::sql_types::databricks::is_complex_type(ref_type)
+            }
             AdapterType::DuckDB => {
                 // DuckDB distinct types are wrapped as FixedSizeList(Field(name, ..), 1)
                 matches!(ref_type, DataType::FixedSizeList(_, 1))
@@ -1983,21 +2054,34 @@ fn yml_sequence_to_sql_literal(
             parent_data_type
         ));
     };
-    let mut element_type_literal = String::new();
-    type_ops
-        .format_arrow_type_as_sql(element_field.data_type(), true, &mut element_type_literal)
-        .map_err(|e| {
-            fs_err!(
-                ErrorCode::InvalidConfig,
-                "Failed to format element type {:?}: {}",
-                element_field.data_type(),
-                e
-            )
-        })?;
+    let element_type_literal = match adapter_type {
+        AdapterType::Databricks => {
+            databricks::format_type(type_ops, element_field.data_type(), true)?
+        }
+        _ => {
+            let mut out = String::new();
+            type_ops
+                .format_arrow_type_as_sql(element_field.data_type(), true, &mut out)
+                .map_err(|e| {
+                    fs_err!(
+                        ErrorCode::InvalidConfig,
+                        "Failed to format element type {:?}: {}",
+                        element_field.data_type(),
+                        e
+                    )
+                })?;
+            out
+        }
+    };
 
     // Snowflake's containers are 'untyped' and can be heterogeneous, e.g.
     // SELECT ARRAY_CONSTRUCT(1, 'two')
     let supports_hlist = adapter_type == AdapterType::Snowflake;
+
+    let (open, close) = match adapter_type {
+        AdapterType::Databricks => ("array(", ")"),
+        _ => ("[", "]"),
+    };
 
     let child_literals = value
         .into_iter()
@@ -2016,7 +2100,7 @@ fn yml_sequence_to_sql_literal(
         })
         .collect::<FsResult<Vec<_>>>()?;
 
-    Ok(format!("[{}]", child_literals.join(", ")))
+    Ok(format!("{open}{}{close}", child_literals.join(", ")))
 }
 
 /// Renders a `dbt_yaml::value::Mapping` to a SQL literal expression. All dialects
@@ -2045,6 +2129,9 @@ fn yml_mapping_to_sql_literal(
             ))
         }
         // We have type information for individual struct fields
+        AdapterType::Databricks if matches!(parent_data_type, DataType::Map(_, _)) => {
+            databricks::map_literal(type_ops, mapping, parent_data_type)
+        }
         _ => {
             let DataType::Struct(fields) = parent_data_type else {
                 return Err(fs_err!(
@@ -2073,12 +2160,151 @@ fn yml_mapping_to_sql_literal(
                             field.data_type(),
                         )?,
                     };
-                    let name_literal = type_ops.format_ident(field_name);
+                    let name_literal = match adapter_type {
+                        AdapterType::Databricks => databricks::quote_field_name(field_name),
+                        _ => type_ops.format_ident(field_name),
+                    };
                     Ok(format!("{value_literal} AS {name_literal}"))
                 })
                 .collect::<FsResult<Vec<_>>>()?;
             Ok(format!("STRUCT({})", struct_fields.join(", ")))
         }
+    }
+}
+
+mod databricks {
+    use super::*;
+
+    /// "MAP is not a comparable data type", so ORDER BY also fails on a STRUCT or ARRAY containing one.
+    /// https://docs.databricks.com/aws/en/sql/language-manual/data-types/map-type
+    pub(super) fn contains_map(data_type: &DataType) -> bool {
+        match data_type {
+            DataType::Map(_, _) => true,
+            DataType::List(f) => contains_map(f.data_type()),
+            DataType::Struct(fields) => fields.iter().any(|f| contains_map(f.data_type())),
+            _ => false,
+        }
+    }
+
+    /// Struct field names may be reserved words or contain spaces, and `format_ident` knows no
+    /// Databricks keywords, so always quote them.
+    pub(super) fn quote_field_name(name: &str) -> String {
+        format!("`{}`", name.replace('`', "``"))
+    }
+
+    /// Format cast types without seed-style numeric coercions. Quote struct field names.
+    pub(super) fn format_type(
+        type_ops: &dyn TypeOps,
+        data_type: &DataType,
+        nullable: bool,
+    ) -> FsResult<String> {
+        Ok(match data_type {
+            DataType::Null => "VOID".to_string(),
+            DataType::Decimal128(precision, scale) | DataType::Decimal256(precision, scale) => {
+                format!("DECIMAL({precision}, {scale})")
+            }
+            DataType::List(f) => format!(
+                "ARRAY<{}>",
+                format_type(type_ops, f.data_type(), f.is_nullable())?
+            ),
+            DataType::Struct(fields) => {
+                let fields = fields
+                    .iter()
+                    .map(|f| {
+                        Ok(format!(
+                            "{} {}",
+                            quote_field_name(f.name()),
+                            format_type(type_ops, f.data_type(), f.is_nullable())?
+                        ))
+                    })
+                    .collect::<FsResult<Vec<_>>>()?;
+                format!("STRUCT<{}>", fields.join(", "))
+            }
+            DataType::Map(entries, _) => match entries.data_type() {
+                DataType::Struct(kv) if kv.len() == 2 => format!(
+                    "MAP<{}, {}>",
+                    format_type(type_ops, kv[0].data_type(), kv[0].is_nullable())?,
+                    format_type(type_ops, kv[1].data_type(), kv[1].is_nullable())?
+                ),
+                other => {
+                    return Err(fs_err!(
+                        ErrorCode::InvalidConfig,
+                        "Unexpected MAP entry type: {other:?}"
+                    ));
+                }
+            },
+            _ => {
+                let mut out = String::new();
+                type_ops
+                    .format_arrow_type_as_sql(data_type, nullable, &mut out)
+                    .map_err(|e| {
+                        fs_err!(
+                            ErrorCode::InvalidConfig,
+                            "Failed to format type {data_type:?}: {e}"
+                        )
+                    })?;
+                out
+            }
+        })
+    }
+
+    fn typed_literal(type_ops: &dyn TypeOps, value: YmlValue, field: &Field) -> FsResult<String> {
+        let data_type = field.data_type();
+        let literal =
+            yml_value_to_sql_literal(AdapterType::Databricks, type_ops, value, data_type)?;
+        if dbt_adapter::sql_types::databricks::is_complex_type(data_type) {
+            return Ok(literal);
+        }
+        let formatted_type =
+            format_type(type_ops, data_type, field.is_nullable()).map_err(|e| {
+                fs_err!(
+                    ErrorCode::InvalidConfig,
+                    "Failed to format MAP key/value type {data_type:?}: {e}"
+                )
+            })?;
+        Ok(format!("CAST({literal} AS {formatted_type})"))
+    }
+
+    /// Renders a YAML mapping for a MAP column as `map(k1, v1, k2, v2)`.
+    pub(super) fn map_literal(
+        type_ops: &dyn TypeOps,
+        mapping: dbt_yaml::mapping::Mapping,
+        map_type: &DataType,
+    ) -> FsResult<String> {
+        let DataType::Map(entries, _) = map_type else {
+            unreachable!("map_literal is only called for MAP types");
+        };
+        let DataType::Struct(kv) = entries.data_type() else {
+            return Err(fs_err!(
+                ErrorCode::InvalidConfig,
+                "Unexpected MAP entry type: {:?}",
+                entries.data_type()
+            ));
+        };
+        let [key_field, value_field] = &kv[..] else {
+            return Err(fs_err!(
+                ErrorCode::InvalidConfig,
+                "Unexpected MAP entry type: {:?}",
+                entries.data_type()
+            ));
+        };
+        let args = mapping
+            .into_iter()
+            .map(|(k, v)| {
+                if k.is_null() {
+                    return Err(fs_err!(
+                        ErrorCode::InvalidConfig,
+                        "MAP fixture keys cannot be null"
+                    ));
+                }
+                Ok(format!(
+                    "{}, {}",
+                    typed_literal(type_ops, k, key_field)?,
+                    typed_literal(type_ops, v, value_field)?
+                ))
+            })
+            .collect::<FsResult<Vec<_>>>()?;
+        Ok(format!("map({})", args.join(", ")))
     }
 }
 
@@ -2103,8 +2329,9 @@ mod bigquery {
             return Ok(literal);
         }
 
-        let formatted_type = type_ops
-            .get_original_sql_type_from_field(field)
+        let mut formatted_type = String::new();
+        type_ops
+            .format_field_as_cast_type(field, &mut formatted_type)
             .map_err(|e| {
                 fs_err!(
                     ErrorCode::InvalidConfig,
@@ -2187,16 +2414,29 @@ fn columns_to_formatted_types<'a>(
         .iter()
         .map(|f| {
             let mut formatted = String::new();
-            type_ops
-                .format_arrow_type_as_sql(f.data_type(), f.is_nullable(), &mut formatted)
-                .map_err(|e| {
-                    fs_err!(
-                        ErrorCode::InvalidConfig,
-                        "Failed to format type {:?}: {}",
+            match type_ops.adapter_type() {
+                AdapterType::Bigquery => type_ops.format_field_as_cast_type(f, &mut formatted),
+                AdapterType::Databricks => {
+                    return Ok((
+                        f.name(),
                         f.data_type(),
-                        e
-                    )
-                })?;
+                        databricks::format_type(type_ops, f.data_type(), f.is_nullable())?,
+                    ));
+                }
+                _ => type_ops.format_arrow_type_as_sql(
+                    f.data_type(),
+                    f.is_nullable(),
+                    &mut formatted,
+                ),
+            }
+            .map_err(|e| {
+                fs_err!(
+                    ErrorCode::InvalidConfig,
+                    "Failed to format type {:?}: {}",
+                    f.data_type(),
+                    e
+                )
+            })?;
             Ok((f.name(), f.data_type(), formatted))
         })
         .collect::<FsResult<Vec<_>>>()
@@ -2396,6 +2636,8 @@ fn create_values(
                     ref_type.to_string(),
                     match adapter_type {
                         AdapterType::Bigquery => ", plus ARRAY and STRUCT types for BigQuery",
+                        AdapterType::Databricks =>
+                            ", plus ARRAY, STRUCT and MAP types for Databricks",
                         _ => "",
                     }
                 );
@@ -2786,6 +3028,126 @@ mod tests {
     type YmlValue = dbt_yaml::Value;
 
     #[test]
+    fn schema_policy_preserves_old_mixed_recordings() {
+        let dir = tempfile::tempdir().unwrap();
+        for (legacy, current, override_value, compiled, preserve) in [
+            (false, false, None, false, true),
+            (false, false, Some(false), false, true),
+            (false, false, Some(true), false, true),
+            (true, false, None, false, true),
+            (true, false, Some(false), true, true),
+            (true, false, Some(true), false, true),
+            (false, true, None, false, false),
+            (false, true, Some(false), true, false),
+            (false, true, Some(true), true, false),
+            (true, true, Some(true), true, false),
+        ] {
+            let path = dir
+                .path()
+                .join(format!("{legacy}-{current}-{override_value:?}"));
+            stdfs::create_dir_all(&path).unwrap();
+            if legacy {
+                stdfs::write(path.join(COMPILED_INCREMENTAL_SCHEMA_MARKER), b"1\n").unwrap();
+            }
+            if current {
+                stdfs::write(path.join(UNIT_TEST_SCHEMA_PROBE_MARKER), b"1\n").unwrap();
+            }
+            assert_eq!(
+                schema_policy_for_recording(override_value, Some((&path, false))).unwrap(),
+                UnitTestSchemaPolicy {
+                    use_compiled_incremental: compiled,
+                    preserve_recorded_probe_sql: preserve,
+                },
+            );
+        }
+    }
+
+    #[test]
+    fn schema_policy_versions_all_new_recordings() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("recording");
+        let policy = schema_policy_for_recording(None, Some((&path, true))).unwrap();
+        assert!(!policy.preserve_recorded_probe_sql);
+        assert!(path.join(UNIT_TEST_SCHEMA_PROBE_MARKER).is_file());
+        assert!(!path.join(COMPILED_INCREMENTAL_SCHEMA_MARKER).exists());
+        for override_value in [None, Some(false), Some(true)] {
+            let recorded =
+                schema_policy_for_recording(override_value, Some((&path, true))).unwrap();
+            let replayed =
+                schema_policy_for_recording(override_value, Some((&path, false))).unwrap();
+            assert_eq!(recorded, replayed);
+            assert_eq!(
+                recorded,
+                schema_policy_for_recording(override_value, None).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn schema_probe_preserves_model_cte_scope_and_comments() {
+        for adapter in [
+            AdapterType::Snowflake,
+            AdapterType::Bigquery,
+            AdapterType::DuckDB,
+        ] {
+            let type_ops = DefaultTypeOps::new(adapter);
+            for suffix in ["", ";", ";;", " -- model comment", "; -- model comment"] {
+                let sql = format!(
+                    "WITH staged AS (SELECT * FROM raw.events) SELECT id FROM staged{suffix}"
+                );
+                let probe = build_unit_test_schema_probe(
+                    adapter,
+                    &type_ops,
+                    &sql,
+                    &[(
+                        "raw.events".to_string(),
+                        "SELECT 1 AS id -- fixture comment".to_string(),
+                    )],
+                    false,
+                );
+                sqlparser::parser::Parser::parse_sql(
+                    sqlparser_dialect_for(adapter),
+                    &probe.query_sql,
+                )
+                .unwrap_or_else(|error| panic!("{adapter:?}: {error}: {}", probe.query_sql));
+                let wrapped = format!(
+                    "WITH {} SELECT * FROM (\n{}\n) AS probe WHERE false",
+                    probe.ctes,
+                    DefaultStmtSplitter
+                        .strip_trailing_statement_terminator(&probe.schema_sql, adapter)
+                );
+                sqlparser::parser::Parser::parse_sql(sqlparser_dialect_for(adapter), &wrapped)
+                    .expect("the warehouse header and wrapped model must remain valid SQL");
+            }
+        }
+    }
+
+    #[test]
+    fn schema_probe_keeps_historical_sql_exactly() {
+        let adapter = AdapterType::Snowflake;
+        let type_ops = DefaultTypeOps::new(adapter);
+        let model = "WITH staged AS (SELECT * FROM raw.events) SELECT id FROM staged; -- trailing";
+        let fixture = "SELECT 1 AS id -- fixture comment";
+        let probe = build_unit_test_schema_probe(
+            adapter,
+            &type_ops,
+            model,
+            &[("raw.events".to_string(), fixture.to_string())],
+            true,
+        );
+        let name = create_cte_name_from_fqn(adapter, &type_ops, "raw.events");
+        assert_eq!(probe.ctes, format!("{name} as ({fixture})"));
+        assert_eq!(
+            probe.schema_sql,
+            format!("WITH staged AS (SELECT * FROM {name}) SELECT id FROM staged; -- trailing")
+        );
+        assert_eq!(
+            probe.query_sql,
+            format!("WITH {} {}", probe.ctes, probe.schema_sql)
+        );
+    }
+
+    #[test]
     fn configured_local_unit_test_uses_query_schema_fallback() {
         let mut unit_test = DbtUnitTest::default();
         unit_test.deprecated_config.compute = Some(ComputeArg::Sidecar);
@@ -3103,6 +3465,306 @@ mod tests {
         assert!(is_supported_type(AdapterType::Snowflake, &time_type));
     }
 
+    fn map_type(value: DataType) -> DataType {
+        DataType::Map(
+            Arc::new(Field::new(
+                "entries",
+                DataType::Struct(
+                    vec![
+                        Field::new("key", DataType::Utf8, false),
+                        Field::new("value", value, true),
+                    ]
+                    .into(),
+                ),
+                false,
+            )),
+            false,
+        )
+    }
+
+    fn list_of(item: DataType) -> DataType {
+        DataType::List(Arc::new(Field::new("item", item, true)))
+    }
+
+    fn struct_of(fields: Vec<Field>) -> DataType {
+        DataType::Struct(fields.into())
+    }
+
+    #[test]
+    fn test_databricks_complex_types_are_supported_and_orderable_unless_they_contain_a_map() {
+        let map = map_type(DataType::Int32);
+        let orderable = [
+            list_of(DataType::Int32),
+            struct_of(vec![Field::new("a", DataType::Int32, true)]),
+            list_of(struct_of(vec![Field::new("a", DataType::Int32, true)])),
+        ];
+        let unorderable = [
+            map.clone(),
+            struct_of(vec![Field::new("m", map.clone(), true)]),
+            list_of(map.clone()),
+            list_of(struct_of(vec![Field::new("m", map, true)])),
+        ];
+        for ty in orderable.iter().chain(&unorderable) {
+            assert!(is_supported_type(AdapterType::Databricks, ty), "{ty}");
+        }
+        for ty in &orderable {
+            assert!(is_orderable_type(AdapterType::Databricks, ty), "{ty}");
+        }
+        for ty in &unorderable {
+            assert!(!is_orderable_type(AdapterType::Databricks, ty), "{ty}");
+        }
+        // other adapters keep rejecting complex types
+        assert!(!is_supported_type(
+            AdapterType::Snowflake,
+            &list_of(DataType::Int32)
+        ));
+    }
+
+    fn render_databricks(fields: Vec<Field>, row: Vec<YmlValue>) -> String {
+        let type_ops = DefaultTypeOps::new(AdapterType::Databricks);
+        let schema = Arc::new(Schema::new(fields));
+        let columns = columns_to_formatted_types(&schema, &type_ops).unwrap();
+        create_select_with_union_all(
+            AdapterType::Databricks,
+            &type_ops,
+            vec![row],
+            &schema,
+            &columns,
+            "",
+        )
+        .unwrap()
+    }
+
+    fn yml_seq(v: Vec<YmlValue>) -> YmlValue {
+        YmlValue::Sequence(v, Default::default())
+    }
+
+    fn yml_map(entries: Vec<(&str, YmlValue)>) -> YmlValue {
+        let mut m = dbt_yaml::mapping::Mapping::new();
+        for (k, v) in entries {
+            m.insert(YmlValue::string(k.to_string()), v);
+        }
+        YmlValue::Mapping(m, Default::default())
+    }
+
+    #[test]
+    fn test_databricks_string_fixtures_for_complex_columns_are_sql_expressions() {
+        let sql = render_databricks(
+            vec![
+                Field::new("m", map_type(DataType::Int32), true),
+                Field::new(
+                    "s",
+                    struct_of(vec![Field::new("a", DataType::Int32, true)]),
+                    true,
+                ),
+            ],
+            vec![
+                YmlValue::string("map('k', 1)".to_string()),
+                YmlValue::string("named_struct('a', 1)".to_string()),
+            ],
+        );
+        assert_contains!(sql, "CAST(map('k', 1) AS ");
+        assert_contains!(sql, "CAST(named_struct('a', 1) AS STRUCT<`a` ");
+    }
+
+    #[test]
+    fn test_databricks_timestamp_ntz_string_fixture_stays_a_quoted_cast() {
+        let ntz = DataType::FixedSizeList(
+            Arc::new(Field::new("timestamp_ntz", DataType::Int64, true)),
+            1,
+        );
+        assert!(
+            !DefaultTypeOps::new(AdapterType::Databricks)
+                .cast_from_quoted_string_literal_unsupported_for(&ntz)
+        );
+        assert!(is_orderable_type(AdapterType::Databricks, &ntz));
+        let sql = render_databricks(
+            vec![Field::new("ts", ntz, true)],
+            vec![YmlValue::string("2024-01-01 10:00:00".to_string())],
+        );
+        assert_contains!(sql, "CAST('2024-01-01 10:00:00' AS TIMESTAMP_NTZ)");
+    }
+
+    #[test]
+    fn test_databricks_nested_string_fixtures_escape_backslashes() {
+        let sql = render_databricks(
+            vec![
+                Field::new("m", map_type(DataType::Utf8), true),
+                Field::new(
+                    "s",
+                    struct_of(vec![Field::new("txt", DataType::Utf8, true)]),
+                    true,
+                ),
+                Field::new("a", list_of(DataType::Utf8), true),
+            ],
+            vec![
+                yml_map(vec![(r"k\", YmlValue::string(r"a\".to_string()))]),
+                yml_map(vec![("txt", YmlValue::string(r"a\nb".to_string()))]),
+                yml_seq(vec![YmlValue::string(r"a\'b".to_string())]),
+            ],
+        );
+        assert_contains!(sql, r"CAST('k\\' AS");
+        assert_contains!(sql, r"CAST('a\\' AS");
+        assert_contains!(sql, r"STRUCT('a\\nb' AS `txt`)");
+        assert_contains!(sql, r"array(CAST('a\\\'b' AS");
+    }
+
+    #[test]
+    fn test_databricks_null_only_complex_fixtures_use_void() {
+        let sql = render_databricks(
+            vec![
+                Field::new("m", map_type(DataType::Null), true),
+                Field::new(
+                    "s",
+                    struct_of(vec![Field::new("n", DataType::Null, true)]),
+                    true,
+                ),
+                Field::new("a", list_of(DataType::Null), true),
+            ],
+            vec![
+                yml_map(vec![("k", YmlValue::null())]),
+                yml_map(vec![("n", YmlValue::null())]),
+                yml_seq(vec![YmlValue::null()]),
+            ],
+        );
+        assert_contains!(sql, "AS MAP<string, VOID>");
+        assert_contains!(sql, "AS STRUCT<`n` VOID>");
+        assert_contains!(sql, "array(CAST(NULL AS VOID))");
+        assert_contains!(sql, "AS ARRAY<VOID>");
+    }
+
+    #[test]
+    fn test_databricks_complex_fixtures_preserve_decimal_precision() {
+        for (data_type, value, formatted_type) in [
+            (
+                DataType::Decimal128(38, 10),
+                "12345678901234567890.1234567891",
+                "DECIMAL(38, 10)",
+            ),
+            (
+                DataType::Decimal128(38, 0),
+                "100000000000000000000",
+                "DECIMAL(38, 0)",
+            ),
+        ] {
+            let sql = render_databricks(
+                vec![
+                    Field::new("m", map_type(data_type.clone()), true),
+                    Field::new(
+                        "s",
+                        struct_of(vec![Field::new("n", data_type.clone(), true)]),
+                        true,
+                    ),
+                    Field::new("a", list_of(data_type.clone()), true),
+                    Field::new("ma", map_type(list_of(data_type)), true),
+                ],
+                vec![
+                    yml_map(vec![("k", YmlValue::string(value.to_string()))]),
+                    yml_map(vec![("n", YmlValue::string(value.to_string()))]),
+                    yml_seq(vec![YmlValue::string(value.to_string())]),
+                    yml_map(vec![(
+                        "k",
+                        yml_seq(vec![YmlValue::string(value.to_string())]),
+                    )]),
+                ],
+            );
+            assert_contains!(sql, &format!("AS MAP<string, {formatted_type}>"));
+            assert_contains!(sql, &format!("AS STRUCT<`n` {formatted_type}>"));
+            assert_contains!(sql, &format!("AS ARRAY<{formatted_type}>"));
+            assert_contains!(sql, &format!("array(CAST('{value}' AS {formatted_type}))"));
+            assert!(!sql.contains("double"), "{sql}");
+            assert!(!sql.contains("bigint"), "{sql}");
+        }
+    }
+
+    #[test]
+    fn test_databricks_map_fixture_rejects_null_key() {
+        let type_ops = DefaultTypeOps::new(AdapterType::Databricks);
+        let mut m = dbt_yaml::mapping::Mapping::new();
+        m.insert(YmlValue::null(), YmlValue::number(1.into()));
+        let err = yml_value_to_sql_literal(
+            AdapterType::Databricks,
+            &type_ops,
+            YmlValue::Mapping(m, Default::default()),
+            &map_type(DataType::Int32),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("keys cannot be null"), "{err}");
+    }
+
+    #[test]
+    fn test_databricks_yaml_list_fixture_renders_array_constructor() {
+        let sql = render_databricks(
+            vec![
+                Field::new("ints", list_of(DataType::Int32), true),
+                Field::new("strs", list_of(DataType::Utf8), true),
+            ],
+            vec![
+                yml_seq(vec![YmlValue::number(1.into()), YmlValue::number(2.into())]),
+                yml_seq(vec![YmlValue::string("x".to_string())]),
+            ],
+        );
+        assert_contains!(sql, "array(CAST(1 AS ");
+        assert_contains!(sql, "AS ARRAY<");
+        assert_contains!(sql, "array(CAST('x' AS ");
+        assert!(!sql.contains('['), "{sql}");
+    }
+
+    #[test]
+    fn test_databricks_yaml_list_of_structs_fixture() {
+        let sql = render_databricks(
+            vec![Field::new(
+                "items",
+                list_of(struct_of(vec![
+                    Field::new("a", DataType::Int32, true),
+                    Field::new("b", DataType::Utf8, true),
+                ])),
+                true,
+            )],
+            vec![yml_seq(vec![yml_map(vec![
+                ("a", YmlValue::number(1.into())),
+                ("b", YmlValue::string("x".to_string())),
+            ])])],
+        );
+        assert_contains!(sql, "array(STRUCT(1 AS `a`, 'x' AS `b`))");
+        assert_contains!(sql, "AS ARRAY<STRUCT<`a` ");
+    }
+
+    #[test]
+    fn test_databricks_yaml_mapping_fixture_for_map_column() {
+        let sql = render_databricks(
+            vec![Field::new("m", map_type(DataType::Int32), true)],
+            vec![yml_map(vec![
+                ("k1", YmlValue::number(1.into())),
+                ("k2", YmlValue::number(2.into())),
+            ])],
+        );
+        assert_contains!(sql, "map(CAST('k1' AS ");
+        assert_contains!(sql, ", CAST(1 AS ");
+        assert_contains!(sql, "CAST('k2' AS ");
+    }
+
+    #[test]
+    fn test_databricks_yaml_mapping_fixture_for_struct_column_with_odd_field_names() {
+        let sql = render_databricks(
+            vec![Field::new(
+                "s",
+                struct_of(vec![
+                    Field::new("order", DataType::Int32, true),
+                    Field::new("my field", DataType::Utf8, true),
+                ]),
+                true,
+            )],
+            vec![yml_map(vec![
+                ("order", YmlValue::number(1.into())),
+                ("my field", YmlValue::string("x".to_string())),
+            ])],
+        );
+        assert_contains!(sql, "STRUCT(1 AS `order`, 'x' AS `my field`)");
+        assert_contains!(sql, "STRUCT<`order` ");
+        assert_contains!(sql, ", `my field` ");
+    }
+
     #[test]
     fn test_create_bigquery_relation_with_simple_data() {
         let fields = vec![
@@ -3267,6 +3929,112 @@ mod tests {
     }
 
     #[test]
+    fn test_create_values_bigquery_preserves_original_relation_types() {
+        let type_ops = DefaultTypeOps::new(AdapterType::Bigquery);
+        let fields = [
+            ("event_timestamp", "TIMESTAMP"),
+            ("local_datetime", "DATETIME"),
+            ("event_id", "INT64"),
+            ("event_name", "STRING"),
+            ("amount", "NUMERIC(10, 2)"),
+            ("tag_ids", "ARRAY<INT64>"),
+            ("actor", "STRUCT<id INT64, name STRING>"),
+        ]
+        .into_iter()
+        .map(|(name, sql_type)| {
+            make_arrow_field(&type_ops, name.to_string(), sql_type, None, None).unwrap()
+        })
+        .collect::<Vec<_>>();
+        let schema = Arc::new(Schema::new(fields));
+        let rows: Vec<BTreeMap<String, YmlValue>> = dbt_yaml::from_str(
+            r#"
+- event_timestamp: '2026-01-01 00:00:00+00:00'
+  local_datetime: '2026-01-01 00:00:00'
+  event_id: 42
+  event_name: created
+  amount: '12.34'
+  tag_ids: [1, 2]
+  actor: {id: 7, name: alice}
+"#,
+        )
+        .unwrap();
+
+        let result = create_values(
+            &schema,
+            &rows,
+            AdapterType::Bigquery,
+            &type_ops,
+            None,
+            "events",
+            true,
+        )
+        .unwrap();
+
+        for expected in [
+            "CAST('2026-01-01 00:00:00+00:00' AS TIMESTAMP) AS event_timestamp",
+            "CAST('2026-01-01 00:00:00' AS DATETIME) AS local_datetime",
+            "CAST(42 AS INT64) AS event_id",
+            "CAST('created' AS STRING) AS event_name",
+            "CAST('12.34' AS NUMERIC) AS amount",
+            "CAST([CAST(1 AS INT64), CAST(2 AS INT64)] AS ARRAY<INT64>) AS tag_ids",
+            "CAST(STRUCT(CAST(7 AS INT64) AS id, CAST('alice' AS STRING) AS name) AS STRUCT<id INT64, name STRING>) AS actor",
+        ] {
+            assert_contains!(result, expected);
+        }
+    }
+
+    #[test]
+    fn test_create_values_bigquery_range_literals() {
+        let ops = DefaultTypeOps::new(AdapterType::Bigquery);
+        let schema = Arc::new(Schema::new(vec![
+            make_arrow_field(&ops, "period".to_string(), "RANGE<DATE>", None, None).unwrap(),
+        ]));
+        for (value, literal) in [
+            (YmlValue::null(), "NULL"),
+            (
+                YmlValue::string("[2026-01-01, 2026-02-01)".to_string()),
+                "'[2026-01-01, 2026-02-01)'",
+            ),
+        ] {
+            let rows = vec![BTreeMap::from([("period".to_string(), value)])];
+            let result = create_values(
+                &schema,
+                &rows,
+                AdapterType::Bigquery,
+                &ops,
+                None,
+                "fixture_input",
+                false,
+            )
+            .unwrap();
+            assert_contains!(result, &format!("CAST({literal} AS RANGE<DATE>) AS period"));
+        }
+    }
+
+    /// The original-SQL-type preference is BigQuery-only: other adapters keep
+    /// formatting from the Arrow type even when the metadata is present.
+    #[test]
+    fn test_columns_to_formatted_types_non_bigquery_uses_arrow_type() {
+        let type_ops = DefaultTypeOps::new(AdapterType::Snowflake);
+        let schema = Arc::new(Schema::new(vec![
+            make_arrow_field(&type_ops, "amount".to_string(), "NUMBER(10,2)", None, None).unwrap(),
+            make_arrow_field(&type_ops, "name".to_string(), "VARCHAR(16)", None, None).unwrap(),
+            make_arrow_field(&type_ops, "ts".to_string(), "TIMESTAMP_NTZ(9)", None, None).unwrap(),
+        ]));
+
+        let formatted: Vec<String> = columns_to_formatted_types(&schema, &type_ops)
+            .unwrap()
+            .into_iter()
+            .map(|(_, _, formatted)| formatted)
+            .collect();
+
+        assert_eq!(
+            formatted,
+            vec!["float8", "text", "timestamp without time zone"]
+        );
+    }
+
+    #[test]
     fn test_create_values_bigquery_preserves_inferred_logical_types() {
         let type_ops = DefaultTypeOps::new(AdapterType::Bigquery);
         let fields = [
@@ -3400,7 +4168,7 @@ mod tests {
             );
             assert_contains!(
                 result,
-                "CAST('2.12345678901234567890' AS BIGNUMERIC(30, 20)) AS amount"
+                "CAST('2.12345678901234567890' AS BIGNUMERIC) AS amount"
             );
             assert_contains!(
                 result,

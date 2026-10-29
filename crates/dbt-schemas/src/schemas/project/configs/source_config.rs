@@ -638,7 +638,7 @@ impl ResolvableConfig<SourceConfig> for SourceConfig {
     // are per-table, authored as top-level `SourceProperties`/`Tables` keys in schema.yml
     // (`resolve_sources.rs`), not through this project-config pipeline. Canonicalized there
     // instead of here.
-    fn canonicalize_adapter_aliases(&mut self, _default_adapter: AdapterType) {}
+    fn canonicalize_adapter_aliases(&mut self, _alias_adapter: AdapterType) {}
 }
 
 impl ConfigKeys for SourceConfig {

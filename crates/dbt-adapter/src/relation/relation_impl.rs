@@ -1181,7 +1181,7 @@ impl BaseRelation for Relation {
                 // TODO(serramatutu): minijinja_value_to_typed_struct does not work with references, so we
                 // have to clone the value here...
                 let local_config = minijinja_value_to_typed_struct::<InternalDbtNodeWrapper>(
-                    relation_config_value.clone(),
+                    relation_config_value,
                 )
                 .map_err(|e| {
                     minijinja::Error::new(
@@ -1220,14 +1220,15 @@ impl BaseRelation for Relation {
             AdapterType::Snowflake => {
                 // TODO(serramatutu): minijinja_value_to_typed_struct does not work with references, so we
                 // have to clone the value here...
-                let local_config =
-                    minijinja_value_to_typed_struct::<InternalDbtNodeWrapper>(config.clone())
-                        .map_err(|e| {
-                            minijinja::Error::new(
-                                minijinja::ErrorKind::SerdeDeserializeError,
-                                format!("Failed to deserialize InternalDbtNodeWrapper: {e}"),
-                            )
-                        })?;
+                let local_config = minijinja_value_to_typed_struct::<InternalDbtNodeWrapper>(
+                    config,
+                )
+                .map_err(|e| {
+                    minijinja::Error::new(
+                        minijinja::ErrorKind::SerdeDeserializeError,
+                        format!("Failed to deserialize InternalDbtNodeWrapper: {e}"),
+                    )
+                })?;
                 let local_config = match local_config {
                     InternalDbtNodeWrapper::Model(model) => model,
                     _ => {
@@ -1468,15 +1469,14 @@ impl BaseRelation for Relation {
 
                 // TODO(serramatutu): minijinja_value_to_typed_struct does not work with
                 // references, so we have to clone the value here...
-                let local_config = minijinja_value_to_typed_struct::<InternalDbtNodeWrapper>(
-                    local_config_value.clone(),
-                )
-                .map_err(|e| {
-                    minijinja::Error::new(
-                        minijinja::ErrorKind::SerdeDeserializeError,
-                        format!("Failed to deserialize InternalDbtNodeWrapper: {e}"),
-                    )
-                })?;
+                let local_config =
+                    minijinja_value_to_typed_struct::<InternalDbtNodeWrapper>(local_config_value)
+                        .map_err(|e| {
+                        minijinja::Error::new(
+                            minijinja::ErrorKind::SerdeDeserializeError,
+                            format!("Failed to deserialize InternalDbtNodeWrapper: {e}"),
+                        )
+                    })?;
                 let local_config = match local_config {
                     InternalDbtNodeWrapper::Model(model) => model,
                     _ => {

@@ -219,8 +219,13 @@ async fn resolve_batch_window(
         .deprecated_config
         .full_refresh
         .unwrap_or(ctx.inner.arg.full_refresh);
-    let is_incremental =
-        is_incremental(model, full_refresh, model.node_adapter(), ctx.env.clone()).await;
+    let is_incremental = is_incremental(
+        model,
+        full_refresh,
+        ctx.adapter_for(model)?,
+        ctx.env.clone(),
+    )
+    .await;
 
     let end_time = batch_builder.build_end_time(ctx.inner.arg.event_time_end.clone())?;
     let start_time = batch_builder.build_start_time(
@@ -359,6 +364,7 @@ fn materialize_microbatch_batch(mb_unit: MicrobatchExecUnit, ctx: &TaskRunnerCtx
         );
     }
 
+    let adapter = ctx.adapter_for(model)?;
     match materialize_microbatch_model(
         &mb_unit.raw_sql,
         model,
@@ -367,7 +373,7 @@ fn materialize_microbatch_batch(mb_unit: MicrobatchExecUnit, ctx: &TaskRunnerCtx
         &ctx.inner.materialization_resolver,
         ctx.env.clone(),
         &mb_unit.batch_ctx,
-        model.node_adapter(),
+        &adapter,
         ctx_for_batch,
         mb_unit.event_time_mapping,
         &ctx.inner.arg.io,
@@ -384,7 +390,7 @@ fn materialize_microbatch_batch(mb_unit: MicrobatchExecUnit, ctx: &TaskRunnerCtx
                     .main_adapter_responses
                     .upsert_sync(model.__common_attr__.unique_id.clone(), main_response);
             }
-            let _ = cache_materialization_return_value(ctx.env.clone(), &relations_map);
+            let _ = cache_materialization_return_value(&adapter, ctx.env.clone(), &relations_map);
             Ok(())
         }
         Err(e) => Err(e),
@@ -409,13 +415,14 @@ pub fn execute_model_remote(
         .config_map
         .read_sync("sql_header", |_, v| v.clone());
 
+    let adapter = ctx.adapter_for(model)?;
     // Traditional warehouse execution via Jinja materialization macros
     match materialize_model(
         &task_result.sql_instruction.sql,
         ctx.nodes()
             .get_node_owned(&model.common().unique_id)
             .expect("model must be present in the node graph"),
-        model.node_adapter(),
+        &adapter,
         ctx.runtime_config(),
         &ctx.inner.materialization_resolver,
         ctx.env.clone(),
@@ -429,7 +436,7 @@ pub fn execute_model_remote(
                     .main_adapter_responses
                     .upsert_sync(model.__common_attr__.unique_id.clone(), main_response);
             }
-            let _ = cache_materialization_return_value(ctx.env.clone(), &relations_map);
+            let _ = cache_materialization_return_value(&adapter, ctx.env.clone(), &relations_map);
         }
         Err(e) => {
             return Err(e);
@@ -447,7 +454,7 @@ pub fn execute_model_remote(
             &base_context,
             &ctx.inner.arg.io,
         )?;
-        let _ = cache_materialization_return_value(ctx.env.clone(), &relations_map);
+        let _ = cache_materialization_return_value(&adapter, ctx.env.clone(), &relations_map);
     }
 
     let mut had_warning = false;

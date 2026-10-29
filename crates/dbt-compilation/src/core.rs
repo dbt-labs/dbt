@@ -616,7 +616,7 @@ impl DbtLoadedProject {
         sidecar_client: Option<Arc<dyn SidecarClient>>,
         execute: Execute,
         connection_mode: AdapterConnectionMode,
-    ) -> FsResult<Arc<AdapterStore>> {
+    ) -> FsResult<AdapterStore> {
         // Each declared adapter's `DbConfig`, cloned because the builder closure has
         // to be `'static` and so cannot hold `resolved_state`. Cloned rather than
         // *rendered* to a mapping here: rendering is fallible, and doing it up front
@@ -634,14 +634,16 @@ impl DbtLoadedProject {
 
         let project = self.clone();
         let flags = Self::flags_from_env(jinja_env)?;
-        // The *authored* `quoting:` block, not `resolved_state.root_project_quoting`.
-        // The latter has already had its unset fields filled from the default
-        // adapter's policy, so handing it to a non-default adapter of another type
-        // silently applies the wrong one -- quote-everything to an adapter that
-        // does not quote renders identifiers it then cannot find. Each adapter
-        // resolves the same authored block against its own defaults instead, which
-        // is what `resolve_package_quoting` is field-wise for.
-        let authored_quoting = *self.dbt_state.root_project().quoting;
+        // Match relation naming and parse-time API factories for each declared adapter.
+        let root_project = self.dbt_state.root_project();
+        let mut authored_quoting = dbt_schemas::schemas::project::authored_quoting_per_adapter(
+            root_project.adapters.as_ref(),
+            &resolved_state.dbt_profile.adapters,
+            default_adapter,
+            *root_project.quoting,
+        );
+        // Default-adapter API factories retain the parse environment's top-level policy.
+        authored_quoting.insert(default_adapter, root_project.quoting.unwrap_or_default());
         let query_comment = resolved_state.runtime_config.inner.query_comment.clone();
         let cloud_config = self.dbt_cloud_config().cloned();
         // One budget for every adapter for now; per-adapter threads is a follow-up.
@@ -676,7 +678,9 @@ impl DbtLoadedProject {
                     "could not read the '{adapter_type}' connection: {e}"
                 )
             })?;
-            let quoting = resolve_package_quoting(authored_quoting, adapter_type).try_into()?;
+            let quoting =
+                resolve_package_quoting(authored_quoting.get(&adapter_type).copied(), adapter_type)
+                    .try_into()?;
             project.build_adapter(
                 adapter_type,
                 db_config,
@@ -694,11 +698,7 @@ impl DbtLoadedProject {
             )
         });
 
-        Ok(Arc::new(AdapterStore::new(
-            declared,
-            default_adapter,
-            build,
-        )?))
+        AdapterStore::new(declared, default_adapter, build)
     }
 
     /// The target's default adapter.

@@ -203,6 +203,18 @@ export const NODE_EDGES_TABLES = ['dbt.edges'];
  */
 export const LINEAGE_MAX_DEPTH = 3;
 
+/** Resolves every unique_id that can appear in `dbt.edges` to a name and type. */
+const LINEAGE_METADATA_CTE = `metadata AS (
+  SELECT unique_id, name, resource_type, materialized, original_file_path
+  FROM dbt_internal.resources
+  UNION ALL
+  SELECT unique_id, name, 'metric', NULL, NULL FROM dbt.metrics
+  UNION ALL
+  SELECT unique_id, name, 'semantic_model', NULL, NULL FROM dbt.semantic_models
+  UNION ALL
+  SELECT unique_id, name, 'exposure', NULL, NULL FROM dbt.exposures
+)`;
+
 /** The two recursive walks both lineage queries share. */
 function lineageWalks(uniqueId: string, maxDepth: number): string {
   const id = sqlStr(uniqueId);
@@ -247,16 +259,7 @@ all_ids AS (
   UNION ALL
   SELECT unique_id, MAX(depth) FROM downstream GROUP BY unique_id
 ),
-metadata AS (
-  SELECT unique_id, name, resource_type, materialized, original_file_path
-  FROM dbt_internal.resources
-  UNION ALL
-  SELECT unique_id, name, 'metric', NULL, NULL FROM dbt.metrics
-  UNION ALL
-  SELECT unique_id, name, 'semantic_model', NULL, NULL FROM dbt.semantic_models
-  UNION ALL
-  SELECT unique_id, name, 'exposure', NULL, NULL FROM dbt.exposures
-)
+${LINEAGE_METADATA_CTE}
 SELECT m.unique_id, m.name, m.resource_type, m.materialized, m.original_file_path, MIN(a.depth) AS depth
 FROM all_ids a JOIN metadata m ON m.unique_id = a.unique_id
 GROUP BY m.unique_id, m.name, m.resource_type, m.materialized, m.original_file_path
@@ -281,6 +284,45 @@ SELECT e.parent_unique_id AS from_id, e.child_unique_id AS to_id, 'ref' AS edge_
 FROM dbt.edges e
 WHERE e.parent_unique_id IN (SELECT unique_id FROM all_ids)
   AND e.child_unique_id IN (SELECT unique_id FROM all_ids)
+ORDER BY e.parent_unique_id, e.child_unique_id`;
+}
+
+/**
+ * Whole-project walk: every entry point (a node that is a parent but never a child --
+ * sources, seeds, parentless models) at depth 0, then downstream to `maxDepth`.
+ * `UNION` rather than `UNION ALL` so a diamond reconverging does not multiply rows.
+ */
+function projectLineageWalk(maxDepth: number): string {
+  return `
+WITH RECURSIVE
+walk AS (
+  SELECT DISTINCT parent_unique_id AS unique_id, 0 AS depth
+  FROM dbt.edges
+  WHERE parent_unique_id NOT IN (SELECT child_unique_id FROM dbt.edges)
+  UNION
+  SELECT e.child_unique_id, w.depth + 1
+  FROM dbt.edges e JOIN walk w ON e.parent_unique_id = w.unique_id
+  WHERE w.depth < ${Math.floor(maxDepth)}
+)`;
+}
+
+/** Every node within `maxDepth` of a project entry point, depth counted from it. */
+export function projectLineageNodesSql(maxDepth: number): string {
+  return `${projectLineageWalk(maxDepth)},
+${LINEAGE_METADATA_CTE}
+SELECT m.unique_id, m.name, m.resource_type, m.materialized, m.original_file_path, MIN(w.depth) AS depth
+FROM walk w JOIN metadata m ON m.unique_id = w.unique_id
+GROUP BY m.unique_id, m.name, m.resource_type, m.materialized, m.original_file_path
+ORDER BY depth, m.resource_type, m.name`;
+}
+
+/** Every edge whose both endpoints fall inside the project subgraph. */
+export function projectLineageEdgesSql(maxDepth: number): string {
+  return `${projectLineageWalk(maxDepth)}
+SELECT e.parent_unique_id AS from_id, e.child_unique_id AS to_id, 'ref' AS edge_type
+FROM dbt.edges e
+WHERE e.parent_unique_id IN (SELECT unique_id FROM walk)
+  AND e.child_unique_id IN (SELECT unique_id FROM walk)
 ORDER BY e.parent_unique_id, e.child_unique_id`;
 }
 

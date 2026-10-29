@@ -19,6 +19,9 @@ export interface DagBottomBarProps {
   onViewChange: (view: 'groups' | 'dag') => void;
   onRefresh: () => void;
   fullscreenTarget?: RefObject<HTMLElement | null>;
+  /** Greys out Groups -- it partitions the graph around a root, and the
+   *  whole-project view has none. */
+  groupsDisabled?: boolean;
 }
 
 export function DagBottomBar({
@@ -26,6 +29,7 @@ export function DagBottomBar({
   onViewChange,
   onRefresh,
   fullscreenTarget,
+  groupsDisabled,
 }: DagBottomBarProps) {
   return (
     <div
@@ -41,7 +45,11 @@ export function DagBottomBar({
 
       <div className="flex flex-none items-center gap-3">
         <SegmentedButton
-          segments={VIEW_SEGMENTS}
+          segments={VIEW_SEGMENTS.map((segment) =>
+            segment.value === 'groups'
+              ? { ...segment, disabled: groupsDisabled }
+              : segment,
+          )}
           selectedValue={view}
           onSelect={(value) => onViewChange(value as 'groups' | 'dag')}
           itemClassName="h-9 font-normal"

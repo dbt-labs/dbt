@@ -24,6 +24,9 @@ export interface DagHopControlProps {
   direction: 'upstream' | 'downstream';
   hops: number;
   onChange: (hops: number) => void;
+  /** Greyed out and not openable -- e.g. upstream of the whole-project view, where
+   *  nothing sits above the entry points. */
+  disabled?: boolean;
   className?: string;
 }
 
@@ -34,6 +37,7 @@ export function DagHopControl({
   direction,
   hops,
   onChange,
+  disabled,
   className,
 }: DagHopControlProps) {
   const navigate = useNavigate();
@@ -43,8 +47,9 @@ export function DagHopControl({
       <DropdownMenuTrigger asChild>
         <button
           type="button"
+          disabled={disabled}
           className={cn(
-            'flex h-9 items-center gap-1 rounded-md border border-borderMain bg-bgMain px-3 text-sm text-fgMain hover:bg-bgMainHover',
+            'flex h-9 items-center gap-1 rounded-md border border-borderMain bg-bgMain px-3 text-sm text-fgMain hover:bg-bgMainHover disabled:pointer-events-none disabled:opacity-50',
             className,
           )}
         >

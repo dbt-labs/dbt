@@ -21,11 +21,11 @@ pub struct SqlFileInfo<T: ResolvableConfig<T>> {
     pub this: bool,
     /// e.g. metric('a', 'b')
     pub metrics: Vec<(String, Option<String>)>,
-    /// Merged config values from explicit SQL `{{ config(...) }}` calls only.
+    /// Explicit SQL `{{ config(...) }}` calls only, in source order and unmerged; see
+    /// `ProjectConfigResolver::fold_inline_calls`.
     ///
     /// This intentionally excludes the initial project/properties config.
-    /// Used to detect which values were explicitly overridden inline in SQL.
-    pub explicit_config: Option<Box<T>>,
+    pub config_calls: Vec<Box<T>>,
     /// e.g. tests
     pub tests: Vec<(String, Span)>,
     /// e.g. macros
@@ -52,7 +52,7 @@ impl<T: ResolvableConfig<T>> Default for SqlFileInfo<T> {
             refs: Vec::new(),
             this: false,
             metrics: Vec::new(),
-            explicit_config: None,
+            config_calls: Vec::new(),
             tests: Vec::new(),
             macros: Vec::new(),
             materializations: Vec::new(),
@@ -68,9 +68,9 @@ impl<T: ResolvableConfig<T>> Default for SqlFileInfo<T> {
 impl<T: ResolvableConfig<T>> SqlFileInfo<T> {
     /// Collects rendering artifacts from a list of SqlResources.
     ///
-    /// `ConfigCall` items (from inline `{{ config(...) }}` calls) are merged into
-    /// `explicit_config`. No project/properties config merging or `finalize()` happens here;
-    /// call `ProjectConfigResolver::resolve_with_configs` after this to obtain the final config.
+    /// `ConfigCall` items (from inline `{{ config(...) }}` calls) are kept in `config_calls`,
+    /// unmerged. No project/properties config merging or `finalize()` happens here; fold the
+    /// calls with `ProjectConfigResolver::fold_inline_calls` and resolve the node after this.
     pub fn from_sql_resources(
         resources: Vec<SqlResource<T>>,
         checksum: DbtChecksum,
@@ -81,7 +81,7 @@ impl<T: ResolvableConfig<T>> SqlFileInfo<T> {
         let mut refs = Vec::new();
         let mut this = false;
         let mut metrics = Vec::new();
-        let mut explicit_config: Option<Box<T>> = None;
+        let mut config_calls = Vec::new();
         let mut tests = Vec::new();
         let mut macros = Vec::new();
         let mut materializations = Vec::new();
@@ -97,15 +97,7 @@ impl<T: ResolvableConfig<T>> SqlFileInfo<T> {
                 SqlResource::This => this = true,
                 SqlResource::Function(function) => functions.push(function),
                 SqlResource::Metric(metric) => metrics.push(metric),
-                SqlResource::ConfigCall(mut resource_config) => {
-                    // Merge explicit SQL config calls together, excluding any project/properties
-                    // base. This preserves dbt's precedence across multiple `config()` calls
-                    // while avoiding falsely treating inherited/defaulted values as explicit.
-                    if let Some(prev) = explicit_config.as_deref() {
-                        resource_config.default_to(prev);
-                    }
-                    explicit_config = Some(resource_config);
-                }
+                SqlResource::ConfigCall(resource_config) => config_calls.push(resource_config),
                 SqlResource::Test(name, span, _, _) => tests.push((name, span)),
                 SqlResource::Macro(name, span, func_sign, args, _) => {
                     macros.push((name, span, func_sign, args))
@@ -124,7 +116,7 @@ impl<T: ResolvableConfig<T>> SqlFileInfo<T> {
             refs,
             this,
             metrics,
-            explicit_config,
+            config_calls,
             tests,
             macros,
             materializations,
@@ -145,24 +137,21 @@ mod tests {
     use dbt_schemas::schemas::project::ModelConfig;
 
     #[test]
-    fn explicit_config_is_only_from_config_calls_and_last_call_wins() {
-        // No config calls => explicit_config must remain None.
+    fn config_calls_are_kept_unmerged_in_source_order() {
+        // No config calls => none recorded.
         let info =
             SqlFileInfo::<ModelConfig>::from_sql_resources(vec![], DbtChecksum::default(), false);
-        assert!(info.explicit_config.is_none());
+        assert!(info.config_calls.is_empty());
 
-        // Multiple config calls => explicit_config should merge, with later calls taking precedence.
         let call1 = ModelConfig {
             alias: Some("a1".to_string()),
             schema: dbt_common::serde_utils::Omissible::Present(Some("s1".to_string())),
             ..Default::default()
         };
-
         let call2 = ModelConfig {
-            alias: Some("a2".to_string()), // overrides call1 alias
+            alias: Some("a2".to_string()),
             ..Default::default()
         };
-        // schema omitted here => should be inherited from call1 in explicit_config
 
         let info = SqlFileInfo::from_sql_resources(
             vec![
@@ -173,18 +162,13 @@ mod tests {
             false,
         );
 
-        let explicit = info
-            .explicit_config
-            .expect("expected explicit_config to be set");
-        assert_eq!(explicit.alias.as_deref(), Some("a2"));
-        assert_eq!(
-            explicit
-                .schema
-                .clone()
-                .into_inner()
-                .unwrap_or(None)
-                .as_deref(),
-            Some("s1")
-        );
+        let aliases: Vec<_> = info
+            .config_calls
+            .iter()
+            .map(|call| call.alias.as_deref())
+            .collect();
+        assert_eq!(aliases, [Some("a1"), Some("a2")]);
+        // The later call does not inherit the earlier call's schema.
+        assert!(info.config_calls[1].schema.is_omitted());
     }
 }

@@ -446,6 +446,8 @@ pub enum SqlType {
     Geography(Option<String>),
     /// ARRAY
     Array(Option<Box<SqlType>>),
+    /// RANGE<element_type> (BigQuery)
+    Range(Box<SqlType>),
     /// STRUCT, STRUCT<>, STRUCT<...>
     Struct(Option<Vec<StructField>>),
     /// MAP <key type, value type>
@@ -533,6 +535,53 @@ impl SqlType {
         let mut out = String::new();
         self.write(backend, &mut out).unwrap();
         out
+    }
+
+    /// Remove parameters that the backend does not allow in CAST targets.
+    pub fn normalize_for_cast(&mut self, backend: AdapterType) {
+        match (backend, self) {
+            // BigQuery permits decimal parameters in schemas, but not in CASTs:
+            // https://cloud.google.com/bigquery/docs/reference/standard-sql/data-types#parameterized_data_types
+            (AdapterType::Bigquery, Self::Numeric(parameters) | Self::BigNumeric(parameters)) => {
+                *parameters = None;
+            }
+            (AdapterType::Bigquery, Self::Array(Some(element)) | Self::Range(element)) => {
+                element.normalize_for_cast(backend)
+            }
+            (AdapterType::Bigquery, Self::Struct(Some(fields))) => {
+                for field in fields {
+                    field.sql_type.normalize_for_cast(backend);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Whether all nested types are known and have their required type arguments.
+    pub fn is_complete(&self) -> bool {
+        match self {
+            Self::Other(_) | Self::Array(None) | Self::Struct(None) | Self::Map(None) => false,
+            Self::Range(element) | Self::Array(Some(element)) => element.is_complete(),
+            Self::Struct(Some(fields)) => fields.iter().all(|field| field.sql_type.is_complete()),
+            Self::Map(Some((key, value))) => key.is_complete() && value.is_complete(),
+            _ => true,
+        }
+    }
+
+    fn write_array(backend: AdapterType, inner: Option<&SqlType>, out: &mut String) -> fmt::Result {
+        use fmt::Write as _;
+
+        let Some(inner) = inner else {
+            return write!(out, "ARRAY");
+        };
+        let (open, close) = match backend {
+            AdapterType::Snowflake => ("ARRAY(", ")"),
+            AdapterType::ClickHouse => ("Array(", ")"),
+            _ => ("ARRAY<", ">"),
+        };
+        write!(out, "{open}")?;
+        inner.write(backend, out)?;
+        write!(out, "{close}")
     }
 
     /// Render a SQL type string in the preferred syntax for a given backend.
@@ -969,19 +1018,12 @@ impl SqlType {
                 }
                 Ok(())
             }
-            (_, Array(None)) => write!(out, "ARRAY"),
-            (backend, Array(Some(inner))) => {
-                match backend {
-                    Snowflake => write!(out, "ARRAY(")?,
-                    ClickHouse => write!(out, "Array(")?,
-                    _ => write!(out, "ARRAY<")?,
-                }
-                inner.write(backend, out)?;
-                match backend {
-                    Snowflake | ClickHouse => write!(out, ")"),
-                    _ => write!(out, ">"),
-                }
+            (_, Range(element)) => {
+                write!(out, "RANGE<")?;
+                element.write(backend, out)?;
+                write!(out, ">")
             }
+            (_, Array(inner)) => Self::write_array(backend, inner.as_deref(), out),
             (_, Struct(None)) => write!(out, "STRUCT"),
             (_, Struct(Some(fields))) => {
                 match backend {
@@ -1232,6 +1274,15 @@ impl SqlType {
             | DataType::LargeList(_)
             | DataType::ListView(_)
             | DataType::LargeListView(_) => SqlType::Array(None), // XXX
+            DataType::FixedSizeList(field, 1)
+                if backend == AdapterType::Bigquery && field.name() == "range" =>
+            {
+                let element = match field.data_type() {
+                    DataType::Timestamp(_, None) => SqlType::DateTime,
+                    data_type => Self::from_arrow_type(backend, data_type),
+                };
+                SqlType::Range(Box::new(element))
+            }
             DataType::FixedSizeList(_, _) => SqlType::Other("ARRAY".to_string()),
             DataType::Struct(fields) => {
                 let mut sql_fields = Vec::with_capacity(fields.len());
@@ -1817,6 +1868,14 @@ impl SqlType {
                 let inner_field = Field::new("item", inner_ty, true).with_metadata(inner_metadata);
                 DataType::List(Arc::new(inner_field))
             }
+            (_, Range(element)) => DataType::FixedSizeList(
+                Arc::new(Field::new(
+                    "range",
+                    element.pick_best_arrow_type(backend),
+                    true,
+                )),
+                1,
+            ),
             (_, Array(None)) => DataType::List(Arc::new(Field::new("item", DataType::Utf8, true))),
             (_, Struct(fields)) => {
                 let arrow_fields = match fields {
@@ -2556,6 +2615,50 @@ impl<'source> Parser<'source> {
         Ok(sql_type)
     }
 
+    fn array_type(&mut self, backend: AdapterType) -> Result<SqlType, ParseError<'source>> {
+        let (left, right) = match backend {
+            AdapterType::Snowflake | AdapterType::ClickHouse => (Token::LParen, Token::RParen),
+            _ => (Token::LAngle, Token::RAngle),
+        };
+        if self.match_(left) {
+            let inner_type = self.parse_unconstrained_type(backend)?;
+            self.expect(right)?;
+            Ok(SqlType::Array(Some(Box::new(inner_type))))
+        } else {
+            Ok(SqlType::Array(None))
+        }
+    }
+
+    fn range_type(
+        &mut self,
+        backend: AdapterType,
+        word: &str,
+    ) -> Result<SqlType, ParseError<'source>> {
+        match backend {
+            AdapterType::Bigquery if self.match_(Token::LAngle) => {
+                let element = self.parse_unconstrained_type(backend)?;
+                self.expect(Token::RAngle)?;
+                Ok(SqlType::Range(Box::new(element)))
+            }
+            _ => Ok(self.other_type(word)),
+        }
+    }
+
+    fn other_type(&mut self, word: &str) -> SqlType {
+        let mut other = word.to_string();
+        while let Some(tok) = self.tokenizer.peek_and_then(|t| {
+            if t == Token::Word("NOT") || t == Token::Word("NULL") {
+                None
+            } else {
+                Some(t)
+            }
+        }) {
+            use fmt::Write as _;
+            write!(&mut other, " {tok}").unwrap();
+        }
+        SqlType::Other(other)
+    }
+
     /// Parse the SQL type string without consuming the entire string.
     ///
     /// The goal of this function is to create the `SqlType` instance that better represents
@@ -2739,8 +2842,9 @@ impl<'source> Parser<'source> {
                     }
                 } else if eqi(w, "STRING") {
                     // Bigquery uses STRING as an alias for VARCHAR
+                    let len = self.precision()?;
                     let attrs = self.string_attrs(backend)?;
-                    SqlType::Varchar(None, attrs)
+                    SqlType::Varchar(len, attrs)
                 } else if eqi(w, "FIXEDSTRING") {
                     // ClickHouse: FixedString(N) - fixed-length string
                     let len = self.precision()?;
@@ -2976,18 +3080,10 @@ impl<'source> Parser<'source> {
                 } else if eqi(w, "GEOGRAPHY") {
                     let srid = self.srid()?;
                     SqlType::Geography(srid.map(str::to_string))
+                } else if eqi(w, "RANGE") {
+                    self.range_type(backend, w)?
                 } else if eqi(w, "ARRAY") {
-                    let (left, right) = match backend {
-                        Snowflake | ClickHouse => (Token::LParen, Token::RParen),
-                        _ => (Token::LAngle, Token::RAngle),
-                    };
-                    if self.match_(left) {
-                        let inner_type = self.parse_unconstrained_type(backend)?;
-                        self.expect(right)?;
-                        SqlType::Array(Some(Box::new(inner_type)))
-                    } else {
-                        SqlType::Array(None)
-                    }
+                    self.array_type(backend)?
                 } else if eqi(w, "RECORD") {
                     // In some scenarios, we get "RECORD" as a type from Bigquery.
                     // That just means a generic struct.
@@ -3057,21 +3153,7 @@ impl<'source> Parser<'source> {
                 } else if eqi(w, "VOID") {
                     SqlType::Void
                 } else {
-                    // gather all tokens before "[NOT] NULL" and return Other(..)
-                    let mut other = w.to_string();
-                    while let Some(tok) = {
-                        self.tokenizer.peek_and_then(|t| {
-                            if t == Token::Word("NOT") || t == Token::Word("NULL") {
-                                None
-                            } else {
-                                Some(t)
-                            }
-                        })
-                    } {
-                        use fmt::Write as _;
-                        write!(&mut other, " {tok}").unwrap();
-                    }
-                    SqlType::Other(other)
+                    self.other_type(w)
                 }
             }
         };

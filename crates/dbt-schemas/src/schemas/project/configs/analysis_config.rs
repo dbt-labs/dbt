@@ -128,6 +128,10 @@ impl ResolvableConfig<AnalysesConfig> for AnalysesConfig {
         self.enabled
     }
 
+    fn get_adapter(&self) -> Option<AdapterType> {
+        self.adapter
+    }
+
     fn disable(&mut self) {
         self.enabled = Some(false);
     }

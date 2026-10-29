@@ -453,7 +453,9 @@ async fn adapters_bigquery_unit_test_issue_15561() -> FsResult<()> {
         current_function_name!(),
         "tests/data/adapter/unit_test_issue_15561",
         AdapterType::Bigquery.as_ref(),
-        Some("adapters_bigquery_unit_test".to_string()),
+        Some(dbt_test_utils::record_or_replay_schema(
+            "adapters_bigquery_unit_test",
+        )),
         // build executes tests
         &["build"],
         None,
@@ -479,7 +481,9 @@ async fn adapters_bigquery_unit_test_issue_15708() -> FsResult<()> {
         current_function_name!(),
         "tests/data/adapter/unit_test_issue_15708",
         AdapterType::Bigquery.as_ref(),
-        Some("adapters_bigquery_unit_test".to_string()),
+        Some(dbt_test_utils::record_or_replay_schema(
+            "adapters_bigquery_unit_test",
+        )),
         // build executes tests
         &["build"],
         None,

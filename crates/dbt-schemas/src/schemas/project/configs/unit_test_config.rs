@@ -689,7 +689,7 @@ impl ResolvableConfig<UnitTestConfig> for UnitTestConfig {
 
     // Unit tests have no `database`/`schema` field of their own -- they run against the model
     // under test's relation, so there is nothing to canonicalize a `catalog`-style alias into.
-    fn canonicalize_adapter_aliases(&mut self, _default_adapter: AdapterType) {}
+    fn canonicalize_adapter_aliases(&mut self, _alias_adapter: AdapterType) {}
 }
 
 impl ConfigKeys for UnitTestConfig {

@@ -103,12 +103,13 @@ impl Object for ColumnStatic {
                 let mut args: ArgParser = ArgParser::new(args, None);
                 let column = args.get::<Value>("column")?;
                 // FIXME: why is this DbtColumn and not Column?
-                let column = minijinja_value_to_typed_struct::<DbtColumn>(column).map_err(|e| {
-                    minijinja::Error::new(
-                        minijinja::ErrorKind::SerdeDeserializeError,
-                        e.to_string(),
-                    )
-                })?;
+                let column =
+                    minijinja_value_to_typed_struct::<DbtColumn>(&column).map_err(|e| {
+                        minijinja::Error::new(
+                            minijinja::ErrorKind::SerdeDeserializeError,
+                            e.to_string(),
+                        )
+                    })?;
 
                 Ok(Value::from(self.dbx_get_name(&column)))
             }
@@ -630,7 +631,7 @@ impl Column {
 
     pub fn from_jinja_value(
         adapter_type: AdapterType,
-        value: Value,
+        value: &Value,
     ) -> Result<Self, minijinja::Error> {
         let core_col =
             minijinja_value_to_typed_struct::<DbtCoreBaseColumn>(value).map_err(|e| {
@@ -1238,7 +1239,7 @@ impl Object for Column {
                 let mut parser = ArgParser::new(args, None);
                 check_num_args(current_function_name!(), &parser, 1, 1)?;
                 let other_raw = parser.get::<Value>("other_column")?;
-                let other = Column::from_jinja_value(self._adapter_type, other_raw)?;
+                let other = Column::from_jinja_value(self._adapter_type, &other_raw)?;
                 Ok(Value::from(self.can_expand_to(&other)?))
             }
             // Bigquery only

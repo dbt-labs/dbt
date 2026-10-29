@@ -222,6 +222,9 @@ pub enum ErrorCode {
     /// dbt State service degraded into fail-open: config/init/decision/cache
     /// errors that don't abort the command but indicate degraded behavior.
     StateServiceWarn = 1410,
+    /// The per-node Redis lock behind `lock_with_state` could not be created,
+    /// taken, or released; the run continues without it.
+    StateLockUnavailable = 1411,
 
     // Serialization [1450–1460]
     JsonInvalid = 1450,
@@ -576,6 +579,14 @@ mod tests {
         assert_eq!(
             ErrorCode::StateServiceWarn.name_and_code(),
             "StateServiceWarn (dbt1410)"
+        );
+    }
+
+    #[test]
+    fn state_lock_unavailable_renders_name_and_code() {
+        assert_eq!(
+            ErrorCode::StateLockUnavailable.name_and_code(),
+            "StateLockUnavailable (dbt1411)"
         );
     }
 }

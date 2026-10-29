@@ -50,8 +50,8 @@ unit_test.test.json_downstream.json_object_mock:
   sql: |-
     -- Build actual result given inputs
     WITH
-    \t`dbt-test-env_adapters_bigquery_unit_test_json_source` as (SELECT *  FROM UNNEST([STRUCT(CAST('1' AS string) AS id, PARSE_JSON('{"segmentCode":"HORECA"}') AS payload_json)])),
-    \t`dbt-test-env_adapters_bigquery_unit_test_json_downstream_expect` as (SELECT *  FROM UNNEST([STRUCT(CAST('1' AS string) AS id, CAST('HORECA' AS string) AS segment_code)])),
+    \t`dbt-test-env_adapters_bigquery_unit_test_json_source` as (SELECT *  FROM UNNEST([STRUCT(CAST('1' AS STRING) AS id, PARSE_JSON('{"segmentCode":"HORECA"}') AS payload_json)])),
+    \t`dbt-test-env_adapters_bigquery_unit_test_json_downstream_expect` as (SELECT *  FROM UNNEST([STRUCT(CAST('1' AS STRING) AS id, CAST('HORECA' AS STRING) AS segment_code)])),
     \t`dbt-test-env_adapters_bigquery_unit_test_json_downstream_actual` as (SELECT id, JSON_VALUE(payload_json, '$.segmentCode') AS segment_code
     FROM `dbt-test-env_adapters_bigquery_unit_test_json_source`
     )
@@ -96,8 +96,8 @@ unit_test.test.json_downstream.json_string_mock:
   sql: |-
     -- Build actual result given inputs
     WITH
-    \t`dbt-test-env_adapters_bigquery_unit_test_json_source` as (SELECT *  FROM UNNEST([STRUCT(CAST('1' AS string) AS id, PARSE_JSON('{"segmentCode":"HORECA"}') AS payload_json)])),
-    \t`dbt-test-env_adapters_bigquery_unit_test_json_downstream_expect` as (SELECT *  FROM UNNEST([STRUCT(CAST('1' AS string) AS id, CAST('HORECA' AS string) AS segment_code)])),
+    \t`dbt-test-env_adapters_bigquery_unit_test_json_source` as (SELECT *  FROM UNNEST([STRUCT(CAST('1' AS STRING) AS id, PARSE_JSON('{"segmentCode":"HORECA"}') AS payload_json)])),
+    \t`dbt-test-env_adapters_bigquery_unit_test_json_downstream_expect` as (SELECT *  FROM UNNEST([STRUCT(CAST('1' AS STRING) AS id, CAST('HORECA' AS STRING) AS segment_code)])),
     \t`dbt-test-env_adapters_bigquery_unit_test_json_downstream_actual` as (SELECT id, JSON_VALUE(payload_json, '$.segmentCode') AS segment_code
     FROM `dbt-test-env_adapters_bigquery_unit_test_json_source`
     )
