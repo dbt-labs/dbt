@@ -4116,21 +4116,7 @@ mod tests {
 
         // v1 parity: `list` selects everything except analyses unless told otherwise,
         // and `default` selects that same set.
-        let default = vec![
-            ClapResourceType::Model,
-            ClapResourceType::Source,
-            ClapResourceType::Seed,
-            ClapResourceType::Snapshot,
-            ClapResourceType::Test,
-            ClapResourceType::UnitTest,
-            ClapResourceType::Function,
-            ClapResourceType::SemanticModel,
-            ClapResourceType::Metric,
-            ClapResourceType::SavedQuery,
-            ClapResourceType::Check,
-            ClapResourceType::Exposure,
-            ClapResourceType::Plugin,
-        ];
+        let default = list_default_resource_types();
         assert_eq!(eval(None), default);
         assert_eq!(eval(Some("default")), default);
 
@@ -4218,9 +4204,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn omitted_resource_type_applies_documented_defaults() {
-        let list_default = vec![
+    fn list_default_resource_types() -> Vec<ClapResourceType> {
+        vec![
             ClapResourceType::Model,
             ClapResourceType::Source,
             ClapResourceType::Seed,
@@ -4234,14 +4219,22 @@ mod tests {
             ClapResourceType::Check,
             ClapResourceType::Exposure,
             ClapResourceType::Plugin,
-        ];
-        assert_eq!(command_eval_resource_types(&["list"]), list_default);
+        ]
+    }
+
+    #[test]
+    fn list_omitted_resource_type_matches_v1_default() {
+        let default = list_default_resource_types();
+        assert_eq!(command_eval_resource_types(&["list"]), default);
         assert_eq!(
             command_eval_resource_types(&["list", "--resource-type", "default"]),
-            list_default
+            default
         );
+    }
 
-        let show_default = vec![
+    #[test]
+    fn show_omitted_resource_type_uses_show_defaults() {
+        let default = vec![
             ClapResourceType::Model,
             ClapResourceType::Snapshot,
             ClapResourceType::Seed,
@@ -4249,20 +4242,26 @@ mod tests {
             ClapResourceType::Analysis,
             ClapResourceType::Test,
         ];
-        assert_eq!(command_eval_resource_types(&["show"]), show_default);
+        assert_eq!(command_eval_resource_types(&["show"]), default);
         assert_eq!(
             command_eval_resource_types(&["show", "--resource-type", "default"]),
-            show_default
+            default
         );
+    }
 
-        let test_default = vec![ClapResourceType::Test, ClapResourceType::UnitTest];
-        assert_eq!(command_eval_resource_types(&["test"]), test_default);
+    #[test]
+    fn test_omitted_resource_type_uses_test_defaults() {
+        let default = vec![ClapResourceType::Test, ClapResourceType::UnitTest];
+        assert_eq!(command_eval_resource_types(&["test"]), default);
         assert_eq!(
             command_eval_resource_types(&["test", "--resource-type", "default"]),
-            test_default
+            default
         );
+    }
 
-        let build_default = vec![
+    #[test]
+    fn build_omitted_resource_type_uses_build_defaults() {
+        let default = vec![
             ClapResourceType::Model,
             ClapResourceType::Seed,
             ClapResourceType::Snapshot,
@@ -4272,13 +4271,15 @@ mod tests {
             ClapResourceType::Check,
             ClapResourceType::Plugin,
         ];
-        assert_eq!(command_eval_resource_types(&["build"]), build_default);
+        assert_eq!(command_eval_resource_types(&["build"]), default);
         assert_eq!(
             command_eval_resource_types(&["build", "--resource-type", "default"]),
-            build_default
+            default
         );
+    }
 
-        // compile/freshness: empty means no type filter.
+    #[test]
+    fn compile_and_freshness_omitted_resource_type_is_unfiltered() {
         assert!(command_eval_resource_types(&["compile"]).is_empty());
         assert!(command_eval_resource_types(&["freshness"]).is_empty());
     }
