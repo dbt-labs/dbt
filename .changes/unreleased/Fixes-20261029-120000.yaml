@@ -1,0 +1,6 @@
+kind: Fixes
+body: Pass git package URLs, revisions, and subdirectories to git after `--` in `dbt deps`
+time: 2026-10-29T12:00:00.000000-06:00
+custom:
+    Author: ash2shukla
+    Issue: ""
