@@ -68,12 +68,7 @@ pub const DEFAULT_FORMAT: DisplayFormat = DisplayFormat::Table;
 fn exclude_resource_type_parser() -> impl TypedValueParser<Value = ClapResourceType> {
     let values = ClapResourceType::value_variants()
         .iter()
-        .filter(|resource_type| {
-            !matches!(
-                resource_type,
-                ClapResourceType::All | ClapResourceType::Default
-            )
-        })
+        .filter(|resource_type| !resource_type.is_unsupported_exclude())
         .filter_map(|resource_type| resource_type.to_possible_value());
     clap::builder::PossibleValuesParser::new(values).map(|value| {
         <ClapResourceType as ValueEnum>::from_str(&value, true)
@@ -3964,6 +3959,51 @@ mod tests {
         }
     }
 
+    fn command_eval_resource_types(args: &[&str]) -> Vec<ClapResourceType> {
+        let cmd = parse_core_command(args);
+        let in_dir = Path::new("/tmp/in");
+        let out_dir = Path::new("/tmp/out");
+        match cmd {
+            CoreCommand::List(args) => {
+                args.to_eval_args(test_system_args(FsCommand::List), in_dir, out_dir)
+                    .resource_types
+            }
+            CoreCommand::Compile(args) => {
+                args.to_eval_args(test_system_args(FsCommand::Compile), in_dir, out_dir)
+                    .resource_types
+            }
+            CoreCommand::Freshness(args) => {
+                args.to_eval_args(test_system_args(FsCommand::Freshness), in_dir, out_dir)
+                    .resource_types
+            }
+            CoreCommand::Show(args) => {
+                args.to_eval_args(test_system_args(FsCommand::Show), in_dir, out_dir)
+                    .resource_types
+            }
+            CoreCommand::Test(args) => {
+                args.to_eval_args(test_system_args(FsCommand::Test), in_dir, out_dir)
+                    .resource_types
+            }
+            CoreCommand::Build(args) => {
+                args.to_eval_args(test_system_args(FsCommand::Build), in_dir, out_dir)
+                    .resource_types
+            }
+            other => panic!("expected a command with --resource-type, got {other:?}"),
+        }
+    }
+
+    fn exclude_resource_type_error(command: &str, flag: &str) -> String {
+        match CliParser::new("dbt", "2.0.0", Box::new(NoopParser)).try_parse_from([
+            "dbt",
+            command,
+            "--exclude-resource-type",
+            flag,
+        ]) {
+            Ok(_) => panic!("`{command}` accepted `--exclude-resource-type {flag}`"),
+            Err(error) => error.to_string(),
+        }
+    }
+
     #[test]
     #[allow(clippy::disallowed_methods)]
     fn user_static_analysis_env_wins_over_default_static_analysis_env() {
@@ -4107,16 +4147,39 @@ mod tests {
     }
 
     #[test]
+    fn exclude_resource_type_rejects_all() {
+        let error = exclude_resource_type_error("list", "all");
+        assert!(
+            error.contains("invalid value 'all'"),
+            "should fail on the value: {error}"
+        );
+        assert!(error.contains("--exclude-resource-type"), "{error}");
+    }
+
+    #[test]
+    fn exclude_resource_type_rejects_default() {
+        let error = exclude_resource_type_error("list", "default");
+        assert!(
+            error.contains("invalid value 'default'"),
+            "should fail on the value: {error}"
+        );
+        assert!(error.contains("--exclude-resource-type"), "{error}");
+    }
+
+    #[test]
+    fn exclude_resource_type_all_and_default_share_error() {
+        let all = exclude_resource_type_error("list", "all").replace("'all'", "'<shorthand>'");
+        let default =
+            exclude_resource_type_error("list", "default").replace("'default'", "'<shorthand>'");
+        assert_eq!(all, default);
+    }
+
+    #[test]
     fn exclude_resource_type_rejects_all_and_default() {
-        for command in ["list", "build", "compile", "show", "test"] {
+        for command in ["list", "build", "compile", "show", "test", "freshness"] {
             let mut messages = Vec::new();
             for flag in ["all", "default"] {
-                let error = match CliParser::new("dbt", "2.0.0", Box::new(NoopParser))
-                    .try_parse_from(["dbt", command, "--exclude-resource-type", flag])
-                {
-                    Ok(_) => panic!("`{command}` accepted `--exclude-resource-type {flag}`"),
-                    Err(error) => error.to_string(),
-                };
+                let error = exclude_resource_type_error(command, flag);
                 assert!(
                     error.contains(&format!("invalid value '{flag}'")),
                     "`{command} --exclude-resource-type {flag}` should fail on the value: {error}"
@@ -4141,6 +4204,83 @@ mod tests {
                 "`{command}` errors differ between all and default"
             );
         }
+    }
+
+    #[test]
+    fn v2_commands_accept_resource_type_all() {
+        let all = ClapResourceType::resolve(&[ClapResourceType::All], &[]);
+        for command in ["list", "build", "compile", "show", "test", "freshness"] {
+            assert_eq!(
+                command_eval_resource_types(&[command, "--resource-type", "all"]),
+                all,
+                "{command} --resource-type all"
+            );
+        }
+    }
+
+    #[test]
+    fn omitted_resource_type_applies_documented_defaults() {
+        let list_default = vec![
+            ClapResourceType::Model,
+            ClapResourceType::Source,
+            ClapResourceType::Seed,
+            ClapResourceType::Snapshot,
+            ClapResourceType::Test,
+            ClapResourceType::UnitTest,
+            ClapResourceType::Function,
+            ClapResourceType::SemanticModel,
+            ClapResourceType::Metric,
+            ClapResourceType::SavedQuery,
+            ClapResourceType::Check,
+            ClapResourceType::Exposure,
+            ClapResourceType::Plugin,
+        ];
+        assert_eq!(command_eval_resource_types(&["list"]), list_default);
+        assert_eq!(
+            command_eval_resource_types(&["list", "--resource-type", "default"]),
+            list_default
+        );
+
+        let show_default = vec![
+            ClapResourceType::Model,
+            ClapResourceType::Snapshot,
+            ClapResourceType::Seed,
+            ClapResourceType::Source,
+            ClapResourceType::Analysis,
+            ClapResourceType::Test,
+        ];
+        assert_eq!(command_eval_resource_types(&["show"]), show_default);
+        assert_eq!(
+            command_eval_resource_types(&["show", "--resource-type", "default"]),
+            show_default
+        );
+
+        let test_default = vec![ClapResourceType::Test, ClapResourceType::UnitTest];
+        assert_eq!(command_eval_resource_types(&["test"]), test_default);
+        assert_eq!(
+            command_eval_resource_types(&["test", "--resource-type", "default"]),
+            test_default
+        );
+
+        let build_default = vec![
+            ClapResourceType::Model,
+            ClapResourceType::Seed,
+            ClapResourceType::Snapshot,
+            ClapResourceType::Test,
+            ClapResourceType::UnitTest,
+            ClapResourceType::Function,
+            ClapResourceType::Check,
+            ClapResourceType::Plugin,
+        ];
+        assert_eq!(command_eval_resource_types(&["build"]), build_default);
+        assert_eq!(
+            command_eval_resource_types(&["build", "--resource-type", "default"]),
+            build_default
+        );
+
+        // compile/freshness: empty means no type filter.
+        assert!(command_eval_resource_types(&["compile"]).is_empty());
+        assert!(command_eval_resource_types(&["freshness"]).is_empty());
     }
 
     #[test]

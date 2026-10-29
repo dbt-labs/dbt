@@ -969,6 +969,13 @@ pub enum ClapResourceType {
 }
 
 impl ClapResourceType {
+    /// `all` and `default` describe a selection set, so they are not valid
+    /// `--exclude-resource-type` values. Defined once so every command's
+    /// exclude parser rejects both with the same clap error.
+    pub fn is_unsupported_exclude(self) -> bool {
+        matches!(self, Self::All | Self::Default)
+    }
+
     /// Expand the `all` and `default` shorthands into resource types.
     ///
     /// `defaults` is the calling command's own default set and is only used
@@ -1042,9 +1049,14 @@ impl From<&ClapResourceType> for NodeType {
             ClapResourceType::Check => NodeType::Check,
             ClapResourceType::Exposure => NodeType::Exposure,
             ClapResourceType::Plugin => NodeType::Plugin,
-            // `all` and `default` are expanded by `resolve` before any conversion;
-            // if one reaches here it maps to `Unspecified`, which matches no node.
-            ClapResourceType::All | ClapResourceType::Default => NodeType::Unspecified,
+            // `all` and `default` are expanded by `resolve` before conversion.
+            // Mapping them to Unspecified would silently match no nodes, which
+            // is how `--exclude-resource-type all|default` used to be ignored.
+            ClapResourceType::All | ClapResourceType::Default => {
+                panic!(
+                    "{value} is not a NodeType; expand `all`/`default` with ClapResourceType::resolve first"
+                )
+            }
         }
     }
 }
@@ -2045,6 +2057,59 @@ mod tests {
             NodeType::from(&ClapResourceType::Exposure),
             NodeType::Exposure
         );
+    }
+
+    #[test]
+    fn resolve_all_expands_every_resource_type() {
+        let all = ClapResourceType::resolve(&[ClapResourceType::All], &[]);
+        for resource_type in [
+            ClapResourceType::Model,
+            ClapResourceType::Source,
+            ClapResourceType::Seed,
+            ClapResourceType::Snapshot,
+            ClapResourceType::Test,
+            ClapResourceType::UnitTest,
+            ClapResourceType::Analysis,
+            ClapResourceType::Function,
+            ClapResourceType::SemanticModel,
+            ClapResourceType::Metric,
+            ClapResourceType::SavedQuery,
+            ClapResourceType::Check,
+            ClapResourceType::Exposure,
+            ClapResourceType::Plugin,
+        ] {
+            assert!(all.contains(&resource_type), "{resource_type} missing");
+        }
+        assert!(!all.contains(&ClapResourceType::All));
+        assert!(!all.contains(&ClapResourceType::Default));
+    }
+
+    #[test]
+    fn resolve_default_uses_caller_defaults() {
+        let defaults = [ClapResourceType::Model, ClapResourceType::Seed];
+        assert_eq!(
+            ClapResourceType::resolve(&[ClapResourceType::Default], &defaults),
+            defaults
+        );
+    }
+
+    #[test]
+    fn all_and_default_are_unsupported_exclude_values() {
+        assert!(ClapResourceType::All.is_unsupported_exclude());
+        assert!(ClapResourceType::Default.is_unsupported_exclude());
+        assert!(!ClapResourceType::Model.is_unsupported_exclude());
+    }
+
+    #[test]
+    #[should_panic(expected = "not a NodeType")]
+    fn converting_all_to_node_type_is_a_programming_error() {
+        let _ = NodeType::from(&ClapResourceType::All);
+    }
+
+    #[test]
+    #[should_panic(expected = "not a NodeType")]
+    fn converting_default_to_node_type_is_a_programming_error() {
+        let _ = NodeType::from(&ClapResourceType::Default);
     }
 
     #[test]
