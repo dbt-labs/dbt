@@ -408,6 +408,14 @@ def try_get_max_rss_kb() -> Optional[int]:
     return None
 
 
+def _resolve_path(path: str) -> str:
+    resolved = os.path.realpath(path)
+    # Windows may return the extended-length prefix for some paths but not others
+    if resolved.startswith("\\\\?\\") and not resolved.startswith("\\\\?\\UNC\\"):
+        resolved = resolved[4:]
+    return os.path.normcase(resolved)
+
+
 def resolve_path_within_base(
     path: str,
     base_dir: str,
@@ -417,8 +425,8 @@ def resolve_path_within_base(
 ) -> str:
     """Join `path` onto `base_dir`; raise `error_cls` if the result resolves outside it."""
     candidate = path if os.path.isabs(path) else os.path.join(base_dir, path)
-    base_resolved = os.path.realpath(base_dir)
-    candidate_resolved = os.path.realpath(candidate)
+    base_resolved = _resolve_path(base_dir)
+    candidate_resolved = _resolve_path(candidate)
     try:
         common = os.path.commonpath([base_resolved, candidate_resolved])
     except ValueError:

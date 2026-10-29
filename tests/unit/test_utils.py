@@ -110,3 +110,17 @@ class TestResolvePathWithinBase:
             dbt.utils.resolve_path_within_base(
                 "escape_link/payload", str(base), "some-field", error_cls=CustomError
             )
+
+    def test_extended_length_prefix_is_ignored(self, tmp_path, monkeypatch):
+        base = str(tmp_path)
+        real = os.path.realpath
+
+        def fake_realpath(p):
+            resolved = real(p)
+            return "\\\\?\\" + resolved if p != base else resolved
+
+        monkeypatch.setattr(os.path, "realpath", fake_realpath)
+        result = dbt.utils.resolve_path_within_base(
+            "sub/file.sql", base, "some-field", error_cls=CustomError
+        )
+        assert result == os.path.join(base, "sub/file.sql")
