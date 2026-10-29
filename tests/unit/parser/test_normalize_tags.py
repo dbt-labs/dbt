@@ -48,3 +48,11 @@ def test_normalize_tags_multiple_sources_with_string_and_none():
 
 def test_normalize_tags_multiple_sources_dedup_across():
     assert normalize_tags(["shared"], "shared") == ["shared"]
+
+
+def test_normalize_tags_sort():
+    assert normalize_tags(["b", "a"], "c", ["a"], sort=True) == ["a", "b", "c"]
+
+
+def test_normalize_tags_sort_empty():
+    assert normalize_tags(None, sort=True) == []

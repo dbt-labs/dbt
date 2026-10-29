@@ -143,7 +143,9 @@ class ExposureParser(YamlReader):
                 f"Calculated a {type(config)} for an exposure, but expected an ExposureConfig"
             )
 
-        tags = normalize_tags(self.project.exposures.get("tags"), unparsed.tags, config.tags)
+        tags = normalize_tags(
+            self.project.exposures.get("tags"), unparsed.tags, config.tags, sort=True
+        )
         meta = {**self.project.exposures.get("meta", {}), **unparsed.meta, **config.meta}
 
         config.tags = tags
@@ -1305,7 +1307,7 @@ class SavedQueryParser(YamlReader):
             rendered=False,
         )
 
-        tags = normalize_tags(unparsed.tags, config.get("tags"))
+        tags = normalize_tags(unparsed.tags, config.get("tags"), sort=True)
 
         parsed = SavedQuery(
             description=unparsed.description,
