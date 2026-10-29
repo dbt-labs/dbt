@@ -68,8 +68,6 @@ describe('<Markdown />', () => {
   });
 
   it('renders raw HTML rather than escaping it', () => {
-    // A deliberate divergence from dbt Docs v1, which used `marked` at
-    // `sanitize: true`. Pinned so that adding a sanitizer is a deliberate choice.
     const { container } = render(<Markdown>{'<em>raw</em>'}</Markdown>);
     expect(container.querySelector('em')?.textContent).toBe('raw');
   });
