@@ -1,0 +1,7 @@
+kind: Fixes
+body: Recreate Databricks materialized views instead of refreshing them when the query's inferred columns drift from the existing view
+time: 2026-10-28T17:11:55.153692+05:30
+custom:
+    author: sd-db
+    issue: "16940"
+    project: dbt-core
