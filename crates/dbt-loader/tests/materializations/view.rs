@@ -37,6 +37,7 @@ fn build_view_harness(adapter_type: AdapterType) -> MacroTestHarness {
     let mock = harness.mock();
     mock.on("rename_relation", |_| Ok(Value::UNDEFINED));
     mock.on("drop_relation", |_| Ok(Value::UNDEFINED));
+    mock.on("cache_dropped", |_| Ok(Value::UNDEFINED));
     mock.on("commit", |_| Ok(Value::UNDEFINED));
     mock.on("clean_sql", |args| {
         Ok(args.first().cloned().unwrap_or(Value::UNDEFINED))
@@ -142,9 +143,24 @@ fn run_existing_view(adapter_type: AdapterType) -> MacroTestHarness {
 /// Shorthand: build harness, mock get_relation → existing table, render with
 /// full_refresh config, assert success.
 fn run_existing_table(adapter_type: AdapterType) -> MacroTestHarness {
+    render_over_existing_table(build_view_harness(adapter_type), adapter_type, "TEST_DB")
+}
+
+/// Shorthand: existing Hive metastore table replaced by a view on the selected
+/// materialization version.
+fn run_existing_hive_metastore_table(adapter_type: AdapterType, v2: bool) -> MacroTestHarness {
     let harness = build_view_harness(adapter_type);
+    harness.set_behavior_flags([("use_materialization_v2", v2)]);
+    render_over_existing_table(harness, adapter_type, "hive_metastore")
+}
+
+fn render_over_existing_table(
+    harness: MacroTestHarness,
+    adapter_type: AdapterType,
+    database: &str,
+) -> MacroTestHarness {
     let existing = harness.relation(
-        "TEST_DB",
+        database,
         "TEST_SCHEMA",
         "my_view",
         Some(RelationType::Table),
@@ -160,6 +176,36 @@ fn run_existing_table(adapter_type: AdapterType) -> MacroTestHarness {
     render_view(&harness, adapter_type, ctx)
         .unwrap_or_else(|e| panic!("{adapter_type:?} view materialization failed: {e:?}"));
     harness
+}
+
+/// Databricks rejects renaming a Hive metastore managed Delta table on S3, so the
+/// table is dropped and only the staged view is renamed into place.
+fn assert_hive_metastore_table_not_renamed(harness: &MacroTestHarness) {
+    harness
+        .mock()
+        .observed_calls()
+        .assert_not_called("rename_relation");
+    harness
+        .mock()
+        .observed_calls()
+        .assert_called("cache_dropped");
+    let executed = executed_sql(harness.mock()).join("\n").to_lowercase();
+    let position = |needle: &str| {
+        executed
+            .find(needle)
+            .unwrap_or_else(|| panic!("expected SQL containing {needle:?}: {executed}"))
+    };
+    let stage = position("create or replace view");
+    let drop = position("drop table if exists `hive_metastore`");
+    let swap = position("alter view");
+    assert!(
+        stage < drop && drop < swap && executed[stage..drop].contains("my_view__dbt_stg"),
+        "view must be staged, then the table dropped, then the view renamed: {executed}"
+    );
+    assert!(
+        !executed.contains("alter table"),
+        "the Hive metastore table must not be renamed: {executed}"
+    );
 }
 
 mod snowflake {
@@ -221,6 +267,18 @@ mod databricks {
         );
         h.mock().observed_calls().assert_called("rename_relation");
         assert_executed_contains(h.mock(), "rename to");
+    }
+
+    #[test]
+    fn existing_hive_metastore_table_dropped_before_staged_view_is_renamed() {
+        let h = run_existing_hive_metastore_table(ADAPTER, false);
+        assert_hive_metastore_table_not_renamed(&h);
+    }
+
+    #[test]
+    fn v2_existing_hive_metastore_table_dropped_before_staged_view_is_renamed() {
+        let h = run_existing_hive_metastore_table(ADAPTER, true);
+        assert_hive_metastore_table_not_renamed(&h);
     }
 
     // -- use_materialization_v2 = true ----------------------------------

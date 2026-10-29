@@ -1,0 +1,7 @@
+kind: Fixes
+body: Replace a Databricks Hive metastore table with a view without renaming the table, which fails for managed Delta tables on S3.
+time: 2026-10-15T12:00:00.000000+00:00
+custom:
+    author: sd-db
+    issue: "16760"
+    project: dbt-core
