@@ -1,0 +1,7 @@
+kind: Features
+body: Add a `session_parameters` mapping to Snowflake profiles to set arbitrary Snowflake session parameters at login
+time: 2026-10-05T20:13:07.929836+09:00
+custom:
+    author: HyunWooZZ
+    issue: "16599"
+    project: dbt-core
