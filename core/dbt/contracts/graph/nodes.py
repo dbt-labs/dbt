@@ -95,7 +95,12 @@ from dbt.events.types import (
     SeedIncreased,
     UnversionedBreakingChange,
 )
-from dbt.exceptions import ContractBreakingChangeError, ParsingError, ValidationError
+from dbt.exceptions import (
+    CompilationError,
+    ContractBreakingChangeError,
+    ParsingError,
+    ValidationError,
+)
 from dbt.flags import get_flags
 from dbt.node_types import (
     REFABLE_NODE_TYPES,
@@ -103,6 +108,7 @@ from dbt.node_types import (
     AccessType,
     NodeType,
 )
+from dbt.utils import resolve_path_within_base
 from dbt_common.clients.system import write_file
 from dbt_common.contracts.constraints import (
     ColumnLevelConstraint,
@@ -288,8 +294,10 @@ class ParsedNode(ParsedResource, NodeInfoMixin, ParsedNodeMandatory, Serializabl
                 / (pathlib_path.stem + f"_{split_suffix}" + pathlib_path.suffix)
             )
 
-        target_write_path = os.path.join(target_path, subdirectory, self.package_name, path)
-        return target_write_path
+        base = os.path.join(target_path, subdirectory, self.package_name)
+        return resolve_path_within_base(
+            path, base, "compiled output path", error_cls=CompilationError
+        )
 
     def write_node(self, project_root: str, compiled_path: str, compiled_code: str) -> None:
         if os.path.isabs(compiled_path):
@@ -1272,7 +1280,10 @@ class SnapshotNode(SnapshotResource, CompiledNode):
                 / (pathlib_path.stem + f"_{split_suffix}" + pathlib_path.suffix)
             )
 
-        return os.path.join(target_path, subdirectory, self.package_name, path)
+        base = os.path.join(target_path, subdirectory, self.package_name)
+        return resolve_path_within_base(
+            path, base, "compiled output path", error_cls=CompilationError
+        )
 
 
 # ====================================
