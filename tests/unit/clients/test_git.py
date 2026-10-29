@@ -165,6 +165,48 @@ class TestCredentialsDoNotReachCommandLine:
         assert sparse[0].kwargs["env"]["DBT_GIT_CREDENTIAL_USERNAME"] == "ghp_abc123"
 
 
+class TestUserValuesAreNotGitOptions:
+    OPTION = "--upload-pack=touch /tmp/marker"
+
+    @staticmethod
+    def _assert_after_separator(cmd, value):
+        assert "--" in cmd
+        assert cmd.index("--") < cmd.index(value)
+
+    @mock.patch("dbt.clients.git.run_cmd")
+    def test_clone_url_and_dirname(self, run_cmd):
+        run_cmd.return_value = (b"", b"")
+
+        git.clone(self.OPTION, "/cwd", dirname=self.OPTION)
+
+        cmd = run_cmd.call_args.args[1]
+        self._assert_after_separator(cmd, self.OPTION)
+
+    @mock.patch("dbt.clients.git.run_cmd")
+    def test_sparse_checkout_subdirectory(self, run_cmd):
+        run_cmd.return_value = (b"git version 2.55.0", b"")
+
+        git.clone(
+            "https://github.com/dbt-labs/repo.git", "/cwd", dirname="r", subdirectory=self.OPTION
+        )
+
+        sparse = [c for c in run_cmd.call_args_list if c.args[1][:2] == ["git", "sparse-checkout"]]
+        self._assert_after_separator(sparse[0].args[1], self.OPTION)
+
+    @mock.patch("dbt.clients.git.list_tags", return_value=[])
+    @mock.patch("dbt.clients.git.run_cmd")
+    def test_checkout_revision(self, run_cmd, _list_tags):
+        run_cmd.return_value = (b"", b"")
+
+        git._checkout("/cwd", "https://github.com/dbt-labs/repo.git", self.OPTION)
+
+        for sub in ("fetch", "remote"):
+            cmds = [c.args[1] for c in run_cmd.call_args_list if c.args[1][1] == sub]
+            assert cmds
+            for cmd in cmds:
+                self._assert_after_separator(cmd, self.OPTION)
+
+
 class TestCredentialsNotInErrors:
     REPO = "https://ghp_abc123@github.com/dbt-labs/repo.git"
 
