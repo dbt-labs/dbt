@@ -1,0 +1,7 @@
+kind: Fixes
+body: List Databricks Hive metastore relations with SHOW TABLES and SHOW VIEWS, so Fusion finds existing Hive metastore tables and views as dbt-databricks does.
+time: 2026-10-15T14:00:00.000000+00:00
+custom:
+    author: sd-db
+    issue: "16760"
+    project: dbt-core

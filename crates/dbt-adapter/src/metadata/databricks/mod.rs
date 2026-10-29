@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::future;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -21,6 +21,7 @@ use dbt_common::cancellation::CancellationToken;
 use dbt_common::tracing::dbt_emit::emit_warn_log_message;
 use dbt_frontend_common::{Dialect, FullyQualifiedName};
 use dbt_schemas::dbt_types::RelationType;
+use dbt_schemas::schemas::common::ResolvedQuoting;
 use dbt_schemas::schemas::legacy_catalog::{
     CatalogNodeStats, CatalogTable, ColumnMetadata, TableMetadata,
 };
@@ -55,7 +56,7 @@ use crate::relation::config_v2::RelationConfig;
 use crate::relation::databricks::config::{
     DatabricksRelationMetadata, DatabricksRelationMetadataKey, components,
 };
-use crate::relation::databricks::is_shallow_clone_type;
+use crate::relation::databricks::{DEFAULT_DATABRICKS_DATABASE, is_shallow_clone_type};
 use crate::sql_types::{TypeOps, make_arrow_field_v2};
 use crate::{AdapterEngine, AdapterResponse};
 
@@ -74,6 +75,10 @@ pub fn list_relations(
     db_schema: &CatalogAndSchema,
     token: CancellationToken,
 ) -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
+    if is_hive_metastore_catalog(&db_schema.resolved_catalog) {
+        return list_hive_metastore_relations(engine, state, ctx, conn, db_schema, token);
+    }
+
     let sql = format!("
 SELECT
     table_name,
@@ -149,6 +154,104 @@ WHERE table_catalog = '{}'
             .with_is_shallow_clone(is_shallow_clone),
         ) as Arc<dyn BaseRelation>;
         relations.push(relation);
+    }
+
+    Ok(relations)
+}
+
+fn is_hive_metastore_catalog(catalog: &str) -> bool {
+    catalog.is_empty() || catalog.eq_ignore_ascii_case(DEFAULT_DATABRICKS_DATABASE)
+}
+
+// `system.information_schema` has no Hive metastore rows, so list them the way
+// dbt-databricks `_get_hive_relations` does: SHOW TABLES, typed by SHOW VIEWS.
+fn list_hive_metastore_relations(
+    engine: &dyn AdapterEngine,
+    state: Option<&State>,
+    ctx: &QueryCtx,
+    conn: &'_ mut dyn Connection,
+    db_schema: &CatalogAndSchema,
+    token: CancellationToken,
+) -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
+    let catalog = db_schema.resolved_catalog.as_str();
+    let schema = db_schema.resolved_schema.as_str();
+    let quote = |name: &str| format!("`{}`", name.replace('`', "``"));
+    let namespace = if catalog.is_empty() {
+        quote(schema)
+    } else {
+        format!("{}.{}", quote(catalog), quote(schema))
+    };
+
+    let options = databricks_statement_options(engine.adapter_type(), state)?;
+    let tables = engine
+        .execute_with_options(
+            None,
+            ctx,
+            conn,
+            &format!("SHOW TABLES IN {namespace}"),
+            options.clone(),
+            true,
+            token.clone(),
+        )?
+        .lowercase_column_names();
+    if tables.num_rows() == 0 {
+        return Ok(Vec::new());
+    }
+    let views = engine
+        .execute_with_options(
+            None,
+            ctx,
+            conn,
+            &format!("SHOW VIEWS IN {namespace}"),
+            options,
+            true,
+            token,
+        )?
+        .lowercase_column_names();
+
+    hive_metastore_relations_from_listing(
+        engine.adapter_type(),
+        engine.quoting(),
+        db_schema,
+        &tables,
+        &views,
+    )
+}
+
+fn hive_metastore_relations_from_listing(
+    adapter_type: AdapterType,
+    quoting: ResolvedQuoting,
+    db_schema: &CatalogAndSchema,
+    tables: &RecordBatch,
+    views: &RecordBatch,
+) -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
+    let view_names = views.column_values::<StringArray>("viewname")?;
+    let view_names: HashSet<&str> = view_names.iter().flatten().collect();
+    let table_names = tables.column_values::<StringArray>("tablename")?;
+    let temporary = tables.column_values::<BooleanArray>("istemporary")?;
+
+    let mut relations = Vec::new();
+    for i in 0..tables.num_rows() {
+        // Session temporary views are listed in every schema.
+        if temporary.value(i) {
+            continue;
+        }
+        let name = table_names.value(i);
+        let relation_type = if view_names.contains(name) {
+            RelationType::View
+        } else {
+            RelationType::Table
+        };
+        relations.push(Arc::new(
+            Relation::new(
+                adapter_type,
+                db_schema.resolved_catalog.clone(),
+                db_schema.resolved_schema.clone(),
+                name.to_string(),
+            )
+            .with_relation_type(relation_type)
+            .with_quoting(quoting),
+        ) as Arc<dyn BaseRelation>);
     }
 
     Ok(relations)
@@ -1623,7 +1726,7 @@ impl MetadataAdapter for DatabricksMetadataAdapter {
 
         // Dedupe FQNs while preserving insertion order.
         let fqns: Vec<String> = {
-            let mut seen = std::collections::HashSet::new();
+            let mut seen = HashSet::new();
             let mut out = Vec::with_capacity(relations.len());
             for r in relations {
                 let f = r.semantic_fqn();
@@ -2572,5 +2675,74 @@ mod tests {
         // bulk order is preserved
         assert_eq!(bulk[0].semantic_fqn(), r_bulk1.semantic_fqn());
         assert_eq!(bulk[1].semantic_fqn(), r_bulk2.semantic_fqn());
+    }
+
+    #[test]
+    fn hive_metastore_catalog_detection() {
+        assert!(is_hive_metastore_catalog("hive_metastore"));
+        assert!(is_hive_metastore_catalog("HIVE_METASTORE"));
+        assert!(is_hive_metastore_catalog(""));
+        assert!(!is_hive_metastore_catalog("main"));
+    }
+
+    #[test]
+    fn hive_metastore_listing_types_views_and_skips_temporary_views() {
+        let tables = RecordBatch::try_from_iter([
+            (
+                "tablename",
+                Arc::new(StringArray::from(vec!["my_table", "my_view", "tmp_view"])) as ArrayRef,
+            ),
+            (
+                "istemporary",
+                Arc::new(BooleanArray::from(vec![false, false, true])) as ArrayRef,
+            ),
+        ])
+        .unwrap();
+        let views = RecordBatch::try_from_iter([(
+            "viewname",
+            Arc::new(StringArray::from(vec!["my_view", "tmp_view"])) as ArrayRef,
+        )])
+        .unwrap();
+        let db_schema = CatalogAndSchema {
+            rendered_catalog: "hive_metastore".to_string(),
+            rendered_schema: "my_schema".to_string(),
+            resolved_catalog: "hive_metastore".to_string(),
+            resolved_schema: "my_schema".to_string(),
+        };
+
+        let relations = hive_metastore_relations_from_listing(
+            AdapterType::Databricks,
+            dbt_schemas::schemas::relations::DEFAULT_RESOLVED_QUOTING,
+            &db_schema,
+            &tables,
+            &views,
+        )
+        .unwrap();
+
+        let listed: Vec<(String, String, Option<RelationType>)> = relations
+            .iter()
+            .map(|r| {
+                (
+                    r.database_as_str().unwrap(),
+                    r.identifier_as_str().unwrap(),
+                    r.relation_type(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            listed,
+            vec![
+                (
+                    "hive_metastore".to_string(),
+                    "my_table".to_string(),
+                    Some(RelationType::Table)
+                ),
+                (
+                    "hive_metastore".to_string(),
+                    "my_view".to_string(),
+                    Some(RelationType::View)
+                ),
+            ]
+        );
     }
 }
