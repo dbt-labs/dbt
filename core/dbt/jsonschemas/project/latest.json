@@ -6941,6 +6941,21 @@
             }
           ]
         },
+        "+skip_optimize": {
+          "anyOf": [
+            {
+              "default": null,
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "+snapshot_meta_column_names": {
           "anyOf": [
             {
@@ -7149,6 +7164,16 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "+zorder": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrArrayOfStrings"
+            },
+            {
+              "type": "null"
+            }
           ]
         }
       },
