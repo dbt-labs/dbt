@@ -3195,6 +3195,12 @@
             "null"
           ]
         },
+        "database": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "export_as": {
           "anyOf": [
             {
@@ -8680,6 +8686,12 @@
             {
               "type": "null"
             }
+          ]
+        },
+        "database": {
+          "type": [
+            "string",
+            "null"
           ]
         },
         "enabled": {
