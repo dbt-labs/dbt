@@ -63,10 +63,15 @@
     ukcu.table_name AS to_table,
     ukcu.column_name AS to_column
   FROM `{{ relation.database|lower }}`.information_schema.key_column_usage kcu
+  {#- Constraint names are unique only within a schema. #}
   JOIN `{{ relation.database|lower }}`.information_schema.referential_constraints rc
-    ON kcu.constraint_name = rc.constraint_name
+    ON kcu.constraint_catalog = rc.constraint_catalog
+    AND kcu.constraint_schema = rc.constraint_schema
+    AND kcu.constraint_name = rc.constraint_name
   JOIN `{{ relation.database|lower }}`.information_schema.key_column_usage ukcu
-    ON rc.unique_constraint_name = ukcu.constraint_name
+    ON rc.unique_constraint_catalog = ukcu.constraint_catalog
+    AND rc.unique_constraint_schema = ukcu.constraint_schema
+    AND rc.unique_constraint_name = ukcu.constraint_name
     AND kcu.ordinal_position = ukcu.ordinal_position
   WHERE kcu.table_catalog = '{{ relation.database|lower }}'
     AND kcu.table_schema = '{{ relation.schema|lower }}'
