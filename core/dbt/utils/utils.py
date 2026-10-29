@@ -406,3 +406,27 @@ def try_get_max_rss_kb() -> Optional[int]:
             pass
 
     return None
+
+
+def resolve_path_within_base(
+    path: str,
+    base_dir: str,
+    field_name: str,
+    *,
+    error_cls: Type[Exception],
+) -> str:
+    """Join `path` onto `base_dir`; raise `error_cls` if the result resolves outside it."""
+    candidate = path if os.path.isabs(path) else os.path.join(base_dir, path)
+    base_resolved = os.path.realpath(base_dir)
+    candidate_resolved = os.path.realpath(candidate)
+    try:
+        common = os.path.commonpath([base_resolved, candidate_resolved])
+    except ValueError:
+        # e.g. paths on different drives on Windows -- definitely not contained
+        common = None
+    if common != base_resolved:
+        raise error_cls(
+            f"'{field_name}' must resolve to a path inside '{base_resolved}', "
+            f"but '{path}' resolves to '{candidate_resolved}'."
+        )
+    return candidate
