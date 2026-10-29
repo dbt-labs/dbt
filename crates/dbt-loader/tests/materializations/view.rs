@@ -8,7 +8,8 @@ use dbt_schemas::dbt_types::RelationType;
 use minijinja::Value;
 
 use crate::macro_test_harness::{
-    MacroTestHarness, assert_executed_contains, default_mock_config, executed_sql,
+    MacroTestHarness, MacroTestHarnessBuilder, assert_executed_contains, default_mock_config,
+    executed_sql,
 };
 
 // ---------------------------------------------------------------------------
@@ -26,13 +27,19 @@ fn view_macro_name(adapter_type: AdapterType) -> &'static str {
     }
 }
 
-fn build_view_harness(adapter_type: AdapterType) -> MacroTestHarness {
-    let harness = MacroTestHarness::for_adapter(adapter_type)
+fn view_harness_builder(adapter_type: AdapterType) -> MacroTestHarnessBuilder {
+    MacroTestHarness::for_adapter(adapter_type)
         .load_all_macros()
         .with_stub_functions()
         .with_behavior_flag("use_materialization_v2", false)
-        .build()
-        .expect("harness should build");
+}
+
+fn build_view_harness(adapter_type: AdapterType) -> MacroTestHarness {
+    build_view_harness_from(view_harness_builder(adapter_type))
+}
+
+fn build_view_harness_from(builder: MacroTestHarnessBuilder) -> MacroTestHarness {
+    let harness = builder.build().expect("harness should build");
 
     let mock = harness.mock();
     mock.on("rename_relation", |_| Ok(Value::UNDEFINED));
@@ -190,9 +197,10 @@ mod snowflake {
 
 mod databricks {
     use super::*;
-    const ADAPTER: AdapterType = AdapterType::Databricks;
 
-    // -- use_materialization_v2 = false, default --------------------
+    mod column_comments;
+    mod validation;
+    const ADAPTER: AdapterType = AdapterType::Databricks;
 
     #[test]
     fn no_existing_relation() {
@@ -223,30 +231,64 @@ mod databricks {
         assert_executed_contains(h.mock(), "rename to");
     }
 
-    // -- use_materialization_v2 = true ----------------------------------
-
     #[test]
-    fn v2_no_existing_relation() {
-        let harness = build_view_harness(ADAPTER);
-        harness.set_behavior_flags([("use_materialization_v2", true)]);
-        harness.mock().on("get_relation", |_| Ok(Value::from(())));
+    fn existing_view_replaced_in_place_in_safer_mode_and_for_non_delta_formats() {
+        for (safer, file_format) in [(true, "delta"), (false, "parquet"), (true, "parquet")] {
+            let harness = build_view_harness(ADAPTER);
+            harness
+                .mock()
+                .on("resolve_file_format", move |_| Ok(Value::from(file_format)));
+            let existing = harness.relation(
+                "TEST_DB",
+                "TEST_SCHEMA",
+                "my_view",
+                Some(RelationType::View),
+            );
+            harness.mock().on("get_relation", move |_| {
+                Ok(RelationObject::new(Arc::clone(&existing)).into_value())
+            });
+            let config = default_mock_config();
+            config.on("get", move |args| {
+                let key = args.first().and_then(|v| v.as_str());
+                let default = args.get(1).cloned().unwrap_or(Value::UNDEFINED);
+                match key {
+                    Some("contract") => Ok(Value::from_serialize(BTreeMap::from([(
+                        "enforced".to_string(),
+                        Value::from(false),
+                    )]))),
+                    Some("use_safer_relation_operations") => Ok(Value::from(safer)),
+                    _ => Ok(default),
+                }
+            });
+            let ctx = harness
+                .materialization_context("my_view", "SELECT id, name FROM source_table")
+                .config(Value::from_dyn_object(config))
+                .build();
+            render_view(&harness, ADAPTER, ctx).expect("view replacement should succeed");
 
-        let ctx = harness
-            .materialization_context("my_view", "SELECT id, name FROM source_table")
-            .build();
-        render_view(&harness, ADAPTER, ctx).expect("v2 materialization should succeed");
-
-        harness
-            .mock()
-            .observed_calls()
-            .assert_not_called("drop_relation");
-        assert_executed_contains(harness.mock(), "create or replace");
+            let executed = executed_sql(harness.mock());
+            assert!(
+                executed
+                    .iter()
+                    .any(|sql| sql.contains("create or replace view") && !sql.contains("__dbt_stg")),
+                "safer {safer}, {file_format}: the view must be replaced in place: {executed:?}"
+            );
+            harness
+                .mock()
+                .observed_calls()
+                .assert_not_called("rename_relation");
+        }
     }
 
     #[test]
-    fn v2_existing_view_replaced() {
-        let harness = build_view_harness(ADAPTER);
-        harness.set_behavior_flags([("use_materialization_v2", true)]);
+    fn existing_view_replacement_uses_create_view_as_sql_override() {
+        let harness = build_view_harness_from(view_harness_builder(ADAPTER).with_macro(
+            "test_project",
+            "databricks__get_create_view_as_sql",
+            "{% macro databricks__get_create_view_as_sql(relation, sql) %}\
+             create or replace view {{ relation }} /* project override */ as ({{ sql }})\
+             {% endmacro %}",
+        ));
         let existing = harness.relation(
             "TEST_DB",
             "TEST_SCHEMA",
@@ -256,17 +298,12 @@ mod databricks {
         harness.mock().on("get_relation", move |_| {
             Ok(RelationObject::new(Arc::clone(&existing)).into_value())
         });
-
         let ctx = harness
             .materialization_context("my_view", "SELECT id, name FROM source_table")
             .build();
-        render_view(&harness, ADAPTER, ctx).expect("v2 materialization should succeed");
+        render_view(&harness, ADAPTER, ctx).expect("view replacement should succeed");
 
-        harness
-            .mock()
-            .observed_calls()
-            .assert_not_called("drop_relation");
-        assert_executed_contains(harness.mock(), "create");
+        assert_executed_contains(harness.mock(), "/* project override */");
     }
 
     fn existing_view_alter_harness(project_flag: bool) -> MacroTestHarness {
@@ -299,22 +336,55 @@ mod databricks {
     }
 
     #[test]
-    fn v2_full_refresh_replaces_view_when_update_via_alter_is_enabled() {
-        let harness = existing_view_alter_harness(true);
+    fn update_via_alter_ignores_use_materialization_v2() {
+        let cases = [
+            (false, None),
+            (false, Some(true)),
+            (true, None),
+            (true, Some(false)),
+        ];
+        for (project_flag, model_setting) in cases {
+            let harness = existing_view_alter_harness(project_flag);
+            let ctx = harness
+                .materialization_context("my_view", "SELECT id, name FROM source_table")
+                .config(Value::from_dyn_object(update_via_alter_config(
+                    false,
+                    model_setting,
+                )))
+                .build();
+            render_view(&harness, ADAPTER, ctx).unwrap_or_else(|e| {
+                panic!("project flag {project_flag}, model {model_setting:?}: {e:?}")
+            });
 
-        let ctx = harness
-            .materialization_context("my_view", "SELECT id, name FROM source_table")
-            .config(Value::from_dyn_object(update_via_alter_config(true, None)))
-            .build();
-        render_view(&harness, ADAPTER, ctx).expect("v2 full refresh should replace the view");
-
-        assert_executed_contains(harness.mock(), "create or replace");
+            harness
+                .mock()
+                .observed_calls()
+                .assert_called("get_config_from_model");
+            assert!(
+                executed_sql(harness.mock()).is_empty(),
+                "project flag {project_flag}, model {model_setting:?}: an unchanged view must be a no-op"
+            );
+        }
     }
 
     #[test]
-    fn v2_update_via_alter_rejects_hive_metastore_views() {
+    fn full_refresh_replaces_view_when_update_via_alter_is_enabled() {
+        for project_flag in [false, true] {
+            let harness = existing_view_alter_harness(project_flag);
+
+            let ctx = harness
+                .materialization_context("my_view", "SELECT id, name FROM source_table")
+                .config(Value::from_dyn_object(update_via_alter_config(true, None)))
+                .build();
+            render_view(&harness, ADAPTER, ctx).expect("full refresh should replace the view");
+
+            assert_executed_contains(harness.mock(), "create or replace");
+        }
+    }
+
+    #[test]
+    fn update_via_alter_rejects_hive_metastore_views() {
         let harness = build_view_harness(ADAPTER);
-        harness.set_behavior_flags([("use_materialization_v2", true)]);
         let existing = harness.relation(
             "hive_metastore",
             "TEST_SCHEMA",
@@ -340,12 +410,11 @@ mod databricks {
     }
 
     #[test]
-    fn v2_update_via_alter_replaces_metric_view_with_view() {
+    fn update_via_alter_replaces_metric_view_with_view() {
         // Converting a metric view into an ordinary view must replace it, never
         // take the in-place ALTER path, even with view_update_via_alter enabled:
         // the relation types differ, so the type gate short-circuits ALTER.
         let harness = build_view_harness(ADAPTER);
-        harness.set_behavior_flags([("use_materialization_v2", true)]);
         let existing = harness.relation(
             "TEST_DB",
             "TEST_SCHEMA",
@@ -365,42 +434,6 @@ mod databricks {
 
         // A recreate proves replacement; a broken gate would ALTER and skip it.
         assert_executed_contains(harness.mock(), "create or replace view");
-    }
-
-    // -- model-level use_materialization_v2 overrides the project flag ------
-
-    fn render_existing_view_with_model_setting(
-        project_flag: bool,
-        model_setting: bool,
-    ) -> MacroTestHarness {
-        let harness = existing_view_alter_harness(project_flag);
-        let ctx = harness
-            .materialization_context("my_view", "SELECT id, name FROM source_table")
-            .config(Value::from_dyn_object(update_via_alter_config(
-                false,
-                Some(model_setting),
-            )))
-            .build();
-        render_view(&harness, ADAPTER, ctx).expect("view materialization should succeed");
-        harness
-    }
-
-    #[test]
-    fn model_setting_opts_into_v2_when_project_flag_is_off() {
-        let h = render_existing_view_with_model_setting(false, true);
-        // Only the v2 path diffs model config against the existing view.
-        h.mock()
-            .observed_calls()
-            .assert_called("get_config_from_model");
-    }
-
-    #[test]
-    fn model_setting_opts_out_of_v2_when_project_flag_is_on() {
-        let h = render_existing_view_with_model_setting(true, false);
-        h.mock()
-            .observed_calls()
-            .assert_not_called("get_config_from_model");
-        assert_executed_contains(h.mock(), "create or replace view");
     }
 }
 
