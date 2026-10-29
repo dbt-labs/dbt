@@ -87,6 +87,39 @@ impl QueryLoader {
     }
 }
 
+pub(crate) struct ViewQueryLoader;
+
+impl ComponentConfigLoader<DatabricksRelationMetadata> for ViewQueryLoader {
+    #[cfg(test)]
+    fn type_name(&self) -> &'static str {
+        TYPE_NAME
+    }
+
+    fn from_remote_state(
+        &self,
+        remote_state: &DatabricksRelationMetadata,
+    ) -> AdapterResult<Box<dyn ComponentConfig>> {
+        QueryLoader.from_remote_state(remote_state)
+    }
+
+    fn from_local_config(
+        &self,
+        relation_config: &dyn InternalDbtNodeAttributes,
+    ) -> AdapterResult<Box<dyn ComponentConfig>> {
+        let mut component = from_local_config(relation_config)?;
+        // Wildcard results can change without a change to the SQL text.
+        // https://github.com/databricks/dbt-databricks/blob/61bebe11220190550c7613d8ed02f140e574d262/dbt/adapters/databricks/relation_configs/view.py#L32
+        component.diff_fn = |desired, current| {
+            if desired.contains('*') {
+                Some(desired.clone())
+            } else {
+                diff::desired_state(desired, current)
+            }
+        };
+        Ok(Box::new(component))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -179,6 +212,17 @@ mod tests {
         let config = from_local_config(&model).unwrap();
 
         assert_eq!(config.value, "select 1 as id");
+    }
+
+    #[test]
+    fn unchanged_wildcard_query_in_other_relations_has_no_diff() {
+        let model = test_helpers::create_mock_dbt_model(test_helpers::TestModelConfig {
+            query: Some("select * from foo".to_string()),
+            ..Default::default()
+        });
+        let config = QueryLoader.from_local_config(&model).unwrap();
+
+        assert!(config.diff_from(Some(config.as_ref())).is_none());
     }
 
     #[test]
