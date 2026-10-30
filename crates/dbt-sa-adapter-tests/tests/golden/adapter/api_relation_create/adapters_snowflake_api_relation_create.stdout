@@ -1,0 +1,14 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/a.sql
+relation_with_partial_explicit_quoting: "db_name"."schema".a
+relation_with_full_explicit_quoting: "db_name"."schema"."a"
+relation_with_config_quoting: db_name."schema".a
+ Rendering models/a.sql
+relation_with_partial_explicit_quoting: "db_name"."schema".a
+relation_with_full_explicit_quoting: "db_name"."schema"."a"
+relation_with_config_quoting: db_name."schema".a
+==================== Execution Summary =====================
+Finished 'compile' successfully for target 'snowflake' [duration]
+Processed: 1 model
+Summary: 1 total | 1 success

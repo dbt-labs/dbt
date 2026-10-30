@@ -1,9 +1,6 @@
 -- funcsign: (optional[string], optional[node]) -> string
 {% macro bigquery__generate_schema_name(custom_schema_name=none, node=none) -%}
     {%- set namespace = default__generate_schema_name(custom_schema_name, node) -%}
-    {%- if not flags.get('use_catalogs_v2') -%}
-        {{ return(namespace) }}
-    {%- endif -%}
     {%- set catalog_name = node.config.get('catalog_name') if (node is not none and node.config is defined) else none -%}
     {%- if catalog_name -%}
         {%- set catalog_relation = adapter.build_catalog_relation(node) -%}

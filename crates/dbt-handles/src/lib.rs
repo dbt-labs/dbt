@@ -3,7 +3,7 @@
 //! `dbt-schemas`, …).
 //!
 //! The crate exists so the typed Jinja context layer doesn't have to drag
-//! `dbt-common` (with its `arrow` / `parquet` / `dashmap` / `schemars` /
+//! `dbt-common` (with its `arrow` / `parquet` / `scc` / `schemars` /
 //! full `minijinja` dep tree) through every consumer just to share a 5-line
 //! interface declaration. Each handle here is a tight `Send + Sync + Debug`
 //! trait with the minimum method surface its consumers actually invoke

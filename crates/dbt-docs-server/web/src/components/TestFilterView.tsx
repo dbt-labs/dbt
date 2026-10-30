@@ -15,7 +15,7 @@ import {
 } from '../shared';
 import { GenericFilterView } from './GenericFilterView';
 
-interface Props {
+interface TestFilterViewProps {
   project: Project;
   onPeek(uniqueId: string): void;
 }
@@ -37,7 +37,7 @@ function toTestStatus(status: string | null | undefined): TestStatusValue {
   return 'unknown';
 }
 
-export function TestFilterView({ project, onPeek }: Props) {
+export function TestFilterView({ project, onPeek }: TestFilterViewProps) {
   const [result, setResult] = useState('');
   const [testType, setTestType] = useState('');
   const { data: facets } = useFacets('test');

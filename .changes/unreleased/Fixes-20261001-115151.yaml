@@ -1,0 +1,7 @@
+kind: Fixes
+body: Require matching existing and target relation types for Databricks view_update_via_alter updates
+time: 2026-10-01T11:51:51.555722+05:30
+custom:
+    author: sd-db
+    issue: "16538"
+    project: dbt-core

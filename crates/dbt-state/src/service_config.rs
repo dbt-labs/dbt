@@ -23,7 +23,6 @@ pub const DEFAULT_LOG_FILE_LIMIT: i64 = 20;
 pub const DEFAULT_LOG_PREFIX: &str = "responses_";
 pub const DEFAULT_METADATA_CACHE_TTL_SECONDS: i64 = 0;
 const STATE_MANAGE_ENV: &str = "DBT_ENGINE_MANAGE_STATE";
-const STATE_EMIT_REUSED_STATUS_ENV: &str = "DBT_ENGINE_STATE_EMIT_REUSED_STATUS";
 const STATE_OAUTH_CLIENT_ID_ENV: &str = "DBT_ENGINE_STATE_OAUTH_CLIENT_ID";
 const STATE_OAUTH_CLIENT_SECRET_ENV: &str = "DBT_ENV_SECRET_STATE_OAUTH_CLIENT_SECRET";
 
@@ -67,7 +66,6 @@ pub struct RunCacheServiceConfig {
     pub defer_log_level: String,
     pub enable_response_logging: bool,
     pub enable_data_tests: bool,
-    pub emit_reused_status: bool,
     pub log_file_limit: i64,
     pub log_dir_override: Option<String>,
     pub log_prefix: String,
@@ -79,6 +77,7 @@ pub struct RunCacheServiceConfig {
     pub metadata_cache_ttl_seconds: i64,
     pub run_hooks_on_no_op: bool,
     pub compare_unrendered_code: bool,
+    pub ignore_external_modifications: bool,
     pub snowflake_get_view_ddl_override: Option<String>,
     pub snowflake_metadata_warehouse: Option<String>,
 }
@@ -171,14 +170,6 @@ impl RunCacheServiceConfig {
             Some(value) => parse_bool("ENABLE_DATA_TESTS", &value)?,
             None => true,
         };
-        let emit_reused_status = match state_config_value(
-            &mut get_env,
-            STATE_EMIT_REUSED_STATUS_ENV,
-            "EMIT_REUSED_STATUS",
-        ) {
-            Some(value) => parse_bool(STATE_EMIT_REUSED_STATUS_ENV, &value)?,
-            None => false,
-        };
         let log_file_limit = match config_value(&mut get_env, "LOG_FILE_LIMIT") {
             Some(value) => parse_i64("LOG_FILE_LIMIT", &value)?,
             None => DEFAULT_LOG_FILE_LIMIT,
@@ -220,6 +211,11 @@ impl RunCacheServiceConfig {
             Some(value) => parse_bool("COMPARE_UNRENDERED_CODE", &value)?,
             None => false,
         };
+        let ignore_external_modifications =
+            match config_value(&mut get_env, "IGNORE_EXTERNAL_MODIFICATIONS") {
+                Some(value) => parse_bool("ignore_external_modifications", &value)?,
+                None => false,
+            };
 
         Ok(Self {
             enabled,
@@ -248,7 +244,6 @@ impl RunCacheServiceConfig {
             defer_log_level,
             enable_response_logging,
             enable_data_tests,
-            emit_reused_status,
             log_file_limit,
             log_dir_override: config_value(&mut get_env, "LOG_DIR_OVERRIDE"),
             log_prefix,
@@ -260,6 +255,7 @@ impl RunCacheServiceConfig {
             metadata_cache_ttl_seconds,
             run_hooks_on_no_op,
             compare_unrendered_code,
+            ignore_external_modifications,
             snowflake_get_view_ddl_override: config_value(
                 &mut get_env,
                 "SNOWFLAKE_GET_VIEW_DDL_OVERRIDE",
@@ -298,7 +294,6 @@ impl RunCacheServiceConfig {
             defer_log_level: DEFAULT_DEFER_LOG_LEVEL.to_string(),
             enable_response_logging: true,
             enable_data_tests: true,
-            emit_reused_status: false,
             log_file_limit: DEFAULT_LOG_FILE_LIMIT,
             log_dir_override: None,
             log_prefix: DEFAULT_LOG_PREFIX.to_string(),
@@ -310,6 +305,7 @@ impl RunCacheServiceConfig {
             metadata_cache_ttl_seconds: DEFAULT_METADATA_CACHE_TTL_SECONDS,
             run_hooks_on_no_op: false,
             compare_unrendered_code: false,
+            ignore_external_modifications: false,
             snowflake_get_view_ddl_override: None,
             snowflake_metadata_warehouse: None,
         }
@@ -354,7 +350,7 @@ impl RunCacheServiceConfig {
         self.defer_to_target(active_profile) == active_profile.target
     }
 
-    pub fn telemetry_config(&self) -> Struct {
+    pub fn telemetry_config(&self, active_profile: &DbtProfile) -> Struct {
         let mut fields = HashMap::new();
         insert_string(&mut fields, "api_url", &self.api_url);
         insert_bool(&mut fields, "secure", self.secure);
@@ -374,7 +370,11 @@ impl RunCacheServiceConfig {
             "api_client_max_attempts",
             i64::from(self.max_attempts),
         );
-        insert_string(&mut fields, "defer_to", &self.defer_to);
+        insert_string(
+            &mut fields,
+            "defer_to",
+            &self.defer_to_target(active_profile),
+        );
         insert_string(&mut fields, "defer_log_level", &self.defer_log_level);
         insert_bool(
             &mut fields,
@@ -695,9 +695,9 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::cognitive_complexity)]
     fn defaults_match_python_client_surface() {
         let config = config_from_pairs(&[]).unwrap();
-
         assert_eq!(config.api_url, DEFAULT_API_URL);
         assert_eq!(config.oauth_token_url, DEFAULT_OAUTH_TOKEN_URL);
         assert!(config.enabled);
@@ -708,7 +708,6 @@ mod tests {
         assert_eq!(config.defer_log_level, "off");
         assert!(config.enable_response_logging);
         assert!(config.enable_data_tests);
-        assert!(!config.emit_reused_status);
         assert_eq!(config.log_file_limit, 20);
         assert_eq!(config.log_dir_override, None);
         assert_eq!(config.log_prefix, "responses_");
@@ -723,6 +722,7 @@ mod tests {
         assert_eq!(config.metadata_cache_ttl_seconds, 0);
         assert!(!config.run_hooks_on_no_op);
         assert!(!config.compare_unrendered_code);
+        assert!(!config.ignore_external_modifications);
         assert_eq!(config.snowflake_get_view_ddl_override, None);
         assert_eq!(config.snowflake_metadata_warehouse, None);
     }
@@ -952,9 +952,9 @@ mod tests {
             ("RUN_CACHE_ENABLE_LENIENT_DEPENDENCIES", "off"),
             ("RUN_CACHE_ENABLE_RESPONSE_LOGGING", "false"),
             ("RUN_CACHE_ENABLE_DATA_TESTS", "0"),
-            ("DBT_ENGINE_STATE_EMIT_REUSED_STATUS", "true"),
             ("RUN_CACHE_RUN_HOOKS_ON_NO_OP", "true"),
             ("RUN_CACHE_COMPARE_UNRENDERED_CODE", "true"),
+            ("RUN_CACHE_IGNORE_EXTERNAL_MODIFICATIONS", "true"),
         ])
         .unwrap();
 
@@ -966,16 +966,9 @@ mod tests {
         assert!(!config.enable_lenient_dependencies);
         assert!(!config.enable_response_logging);
         assert!(!config.enable_data_tests);
-        assert!(config.emit_reused_status);
         assert!(config.run_hooks_on_no_op);
         assert!(config.compare_unrendered_code);
-    }
-
-    #[test]
-    fn reused_status_legacy_env_is_supported() {
-        let config = config_from_pairs(&[("RUN_CACHE_EMIT_REUSED_STATUS", "true")]).unwrap();
-
-        assert!(config.emit_reused_status);
+        assert!(config.ignore_external_modifications);
     }
 
     #[test]
@@ -1058,12 +1051,31 @@ mod tests {
         config.oauth_client_secret = Some("secret".to_string());
         config.org_id = Some("org-1".to_string());
 
-        let telemetry = config.telemetry_config();
+        let telemetry = config.telemetry_config(&test_profile("dev", None));
 
         assert!(telemetry.fields.contains_key("api_url"));
         assert!(telemetry.fields.contains_key("org_id"));
         assert!(!telemetry.fields.contains_key("oauth_client_id"));
         assert!(!telemetry.fields.contains_key("oauth_client_secret"));
+    }
+
+    #[test]
+    fn telemetry_config_reports_profile_defer_to_target() {
+        let mut config = RunCacheServiceConfig::disabled();
+        config.defer_to = "prod".to_string();
+
+        let telemetry = config.telemetry_config(&test_profile("dev", Some("staging")));
+
+        assert_eq!(
+            telemetry
+                .fields
+                .get("defer_to")
+                .and_then(|value| match &value.kind {
+                    Some(value::Kind::StringValue(value)) => Some(value.as_str()),
+                    _ => None,
+                }),
+            Some("staging")
+        );
     }
 
     #[test]

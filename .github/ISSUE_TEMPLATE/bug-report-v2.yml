@@ -1,17 +1,17 @@
 name: 🐞 Bug (dbt v2.x)
-description: Report a bug or issue you've found in dbt v2.x (Core or Fusion distributions)
+description: Report a bug or issue you've found in dbt v2.x
 title: "[v2 Bug] <title>"
-labels: ["bug", "triage", "v2", "type:bug", "status:triage", "engine:v2"]
+labels: ["v2", "type:bug", "status:triage", "engine:v2"]
 body:
   - type: markdown
     attributes:
       value: |
         Thanks for taking the time to fill out this bug report!
 
-        This template is for bugs in dbt v2.x (either the Core or Fusion distribution). For bugs in dbt Core 1.x, use the "🐞 Bug" template instead.
+        This template is for bugs in dbt v2.x. For bugs in dbt v1.x, use the "🐞 Bug (dbt v1.x)" template instead.
   - type: checkboxes
     attributes:
-      label: Is this a new bug in dbt v2.x compared to the latest version of dbt 1.x?
+      label: Is this a new bug in dbt v2.x compared to the latest version of dbt v1.x?
       description: >
         In other words, is this an error, flaw, failure, or fault in our software?
 
@@ -86,10 +86,10 @@ body:
       required: false
   - type: checkboxes
     attributes:
-      label: Is this a discrepancy vs. dbt 1.x?
-      description: Does this behavior work correctly in dbt 1.x but not in dbt v2.x?
+      label: Is this a discrepancy vs. dbt v1.x?
+      description: Does this behavior work correctly in dbt v1.x but not in dbt v2.x?
       options:
-        - label: "Yes — this works in dbt 1.x but not in dbt v2.x"
+        - label: "Yes — this works in dbt v1.x but not in dbt v2.x"
   - type: textarea
     attributes:
       label: Additional Context

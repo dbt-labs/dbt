@@ -2,8 +2,7 @@ use crate::materialize::materialize_function;
 use dbt_common::constants::DBT_COMPILED_DIR_NAME;
 use dbt_common::path::get_target_write_path;
 use dbt_common::{FsResult, io_args::FsCommand, stats::NodeStatus, stdfs};
-use dbt_jinja_utils::utils::add_task_context;
-use dbt_schemas::schemas::{BatchResults, DbtFunction, InternalDbtNode, InternalDbtNodeAttributes};
+use dbt_schemas::schemas::{BatchResults, DbtFunction, InternalDbtNodeAttributes};
 use dbt_tasks_core::context::TaskRunnerCtx;
 use dbt_tasks_core::task::TaskResult;
 
@@ -16,8 +15,7 @@ pub fn execute_function_remote(
         return Ok(NodeStatus::NoOp);
     }
 
-    let mut base_context = ctx.inner.base_context.clone();
-    add_task_context(&mut base_context, function.common(), &ctx.thread_id);
+    let base_context = ctx.run_base_context(function)?;
 
     let sql_instruction = &task_result.sql_instruction;
 
@@ -43,11 +41,12 @@ pub fn execute_function_remote(
     let already_successful: std::collections::HashSet<String> = ctx
         .inner
         .batch_results_map
-        .get(unique_id)
-        .map(|br| br.successful.iter().map(|(name, _)| name.clone()).collect())
+        .read_sync(unique_id, |_, br| {
+            br.successful.iter().map(|(name, _)| name.clone()).collect()
+        })
         .unwrap_or_default();
 
-    // LazyModelWrapper reads model.compiled_code from disk. All overloads share
+    // The run-phase model reads model.compiled_code from disk. All overloads share
     // the root's compiled file path, so we pre-write each overload's SQL before
     // its materialization and restore the root's SQL after the loop.
     let compiled_path = get_target_write_path(
@@ -85,7 +84,7 @@ pub fn execute_function_remote(
         }
         overload_function.__common_attr__.raw_code = Some(overload_sql.to_string());
 
-        // LazyModelWrapper reads the compiled SQL from disk, so this pre-write is
+        // The run-phase model reads the compiled SQL from disk, so this pre-write is
         // load-bearing for the materialization below. A failure here means the
         // overload can't be created correctly — record it as a failed overload
         // and continue with the rest (continue-on-failure semantics).
@@ -124,7 +123,7 @@ pub fn execute_function_remote(
 
     ctx.inner
         .batch_results_map
-        .insert(unique_id.clone(), BatchResults { successful, failed });
+        .upsert_sync(unique_id.clone(), BatchResults { successful, failed });
 
     if has_failures {
         Ok(NodeStatus::Errored)

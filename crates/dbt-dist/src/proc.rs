@@ -47,6 +47,7 @@ fn run_with_timeouts(
     let mut command = Command::new(program);
     command
         .args(args)
+        .env(crate::DELEGATED_PROBE_ENV, "1")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

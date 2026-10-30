@@ -1,0 +1,6 @@
+name: "bigquery_snapshot_new_record"
+
+profile: "fusion_tests"
+
+vars:
+  dbt_test_name: "bigquery_snapshot_new_record"

@@ -1,0 +1,21 @@
+catalogs:
+  # This catalog doesn't explicitly set any adapter properties
+  - name: cat1
+    active_write_integration: biglake_metastore
+    write_integrations:
+      - name: biglake_metastore
+        external_volume: "gs://dbt-ci-iceberg-test"
+        table_format: iceberg
+        file_format: parquet
+        catalog_type: biglake_metastore
+  # This catalog explicitly sets the base_location_root
+  - name: cat2
+    active_write_integration: biglake_metastore
+    write_integrations:
+      - name: biglake_metastore
+        external_volume: "gs://dbt-ci-iceberg-test"
+        table_format: iceberg
+        file_format: parquet
+        catalog_type: biglake_metastore
+        adapter_properties:
+          base_location_root: root1

@@ -1,19 +1,21 @@
 use std::collections::HashMap;
 use std::{collections::BTreeMap, sync::Arc};
 
-use crate::resolve::resolve_utils::{err_resource_name_has_spaces, validate_node_adapter};
+use crate::resolve::resolve_utils::{err_resource_name_has_spaces, select_node_adapter};
 
 use dbt_adapter_core::AdapterType;
 use dbt_common::cancellation::CancellationToken;
-use dbt_common::path::DbtPath;
+use dbt_common::path::{DbtPath, node_name_from_path};
 use dbt_common::tracing::dbt_emit::emit_warn_log_from_fs_error;
 use dbt_common::{ErrorCode, FsResult, error::AbstractLocation, fs_err};
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::listener::DefaultJinjaTypeCheckEventListenerFactory;
+use dbt_jinja_utils::phases::parse::ParseAdapterScopes;
 use dbt_jinja_utils::utils::dependency_package_name_from_ctx;
 use dbt_schemas::schemas::common::{DbtMaterialization, DbtQuoting, ResolvedQuoting};
 use dbt_schemas::schemas::dbt_column::process_columns;
 use dbt_schemas::schemas::project::AnalysesConfig;
+use dbt_schemas::schemas::telemetry::NodeType;
 use dbt_schemas::state::ModelStatus;
 use dbt_schemas::{
     schemas::{
@@ -31,7 +33,9 @@ use crate::dbt_project_config::{
     ProjectConfigResolver, RootProjectConfigs, disallow_plus_prefix_from_flags, init_project_config,
 };
 use crate::renderer::{RenderCtx, RenderCtxInner};
-use crate::utils::{RelationComponents, update_node_relation_components};
+use crate::utils::{
+    RelationComponents, node_starting_database_and_schema, update_node_relation_components,
+};
 use crate::{
     args::ResolveArgs,
     renderer::{SqlFileRenderResult, render_unresolved_sql_files},
@@ -49,6 +53,7 @@ pub async fn resolve_analyses(
     analysis_properties: &mut BTreeMap<String, MinimalPropertiesEntry>,
     database: &str,
     schema: &str,
+    parse_adapter_scopes: &Arc<ParseAdapterScopes>,
     // The target's default adapter.
     default_adapter: AdapterType,
     package_name: &str,
@@ -81,13 +86,17 @@ pub async fn resolve_analyses(
             )
         },
         default_adapter,
-    )?;
+    )?
+    .with_adapter_override(arg.adapter_override);
 
     let render_ctx = RenderCtx {
         inner: Arc::new(RenderCtxInner {
             args: arg.clone(),
             root_project_name: root_package.dbt_project.name.clone(),
             config_resolver,
+            adapter_hint: None,
+            parse_adapter_scopes: Some(parse_adapter_scopes.clone()),
+            adapter_quoting: root_project_configs.adapter_quoting.clone(),
             package_quoting,
             uses_snapshot_fqn: false,
             defer_render_errors_to_compile: true,
@@ -102,6 +111,7 @@ pub async fn resolve_analyses(
                 .as_ref()
                 .unwrap_or(&vec![])
                 .clone(),
+            resource_type: Some(NodeType::Analysis),
         }),
         jinja_env: env.clone(),
         runtime_config: runtime_config.clone(),
@@ -134,7 +144,9 @@ pub async fn resolve_analyses(
         asset: dbt_asset,
         sql_file_info,
         config: analysis_config,
+        adapter,
         raw_code,
+        macro_dependencies,
         rendered_sql,
         macro_spans,
         properties: maybe_properties,
@@ -144,7 +156,7 @@ pub async fn resolve_analyses(
         ..
     } in analysis_sql_resources_map.into_iter()
     {
-        let analysis_name = dbt_asset.path.file_stem().unwrap().to_str().unwrap();
+        let analysis_name = node_name_from_path(&dbt_asset.path).unwrap();
 
         if analysis_name.contains(' ') {
             return Err(err_resource_name_has_spaces(analysis_name, &dbt_asset.path));
@@ -160,12 +172,13 @@ pub async fn resolve_analyses(
         let unique_id = get_unique_id(analysis_name, package_name, None, "analysis");
         // An analysis is compiled rather than materialized, but it still renders
         // refs and dispatches macros, so which adapter it renders *as* is a real
-        // choice. Resolved the same way every other node type resolves it.
-        validate_node_adapter(analysis_config.adapter, &dbt_asset.path)?;
-        let selected_adapter = arg
-            .adapter_override
-            .or(analysis_config.adapter)
-            .unwrap_or(default_adapter);
+        // choice.
+        let selected_adapter = select_node_adapter(
+            analysis_config.adapter,
+            adapter,
+            default_adapter,
+            &dbt_asset.path,
+        )?;
         // unique_id.push_str(&format!(".{statement_index}"));
 
         let fqn = get_node_fqn(
@@ -200,12 +213,22 @@ pub async fn resolve_analyses(
         )?;
 
         let is_enabled = status != ModelStatus::Disabled;
-        let macro_depends_on = all_depends_on
+        let mut macro_depends_on = all_depends_on
             .get(&format!("{package_name}.{analysis_name}"))
             .cloned()
-            .unwrap_or_default()
-            .into_iter()
-            .collect();
+            .unwrap_or_default();
+        if selected_adapter != default_adapter {
+            macro_depends_on.extend(macro_dependencies);
+        }
+        let macro_depends_on = macro_depends_on.into_iter().collect();
+
+        let (node_database, node_schema) = node_starting_database_and_schema(
+            Some(parse_adapter_scopes),
+            selected_adapter,
+            database,
+            schema,
+            &dbt_asset.path,
+        )?;
 
         let mut dbt_analysis = DbtAnalysis {
             __common_attr__: CommonAttributes {
@@ -235,10 +258,11 @@ pub async fn resolve_analyses(
                 // An analysis materializes nothing, so there is no relation to publish:
                 // no `+propagate` config exists for this node type.
                 propagate: Vec::new(),
-                database: database.to_string(), // will be updated below
-                schema: schema.to_string(),     // will be updated below
-                alias: "".to_owned(),           // will be updated below
-                relation_name: None,            // will be updated below
+                effective_propagation_target: None,
+                database: node_database.to_owned(), // will be updated below
+                schema: node_schema.to_owned(),     // will be updated below
+                alias: "".to_owned(),               // will be updated below
+                relation_name: None,                // will be updated below
                 enabled: is_enabled,
                 extended_model: false,
                 persist_docs: None,
@@ -302,14 +326,14 @@ pub async fn resolve_analyses(
         };
 
         // update model components using the generate_relation_components function
-        update_node_relation_components(
-            &mut dbt_analysis,
+        dbt_analysis = update_node_relation_components(
+            dbt_analysis,
             &env,
             &root_package.dbt_project.name,
             package_name,
             base_ctx,
             &components,
-            default_adapter,
+            Some(parse_adapter_scopes),
         )?;
 
         if status == ModelStatus::Enabled || render_error_deferred {

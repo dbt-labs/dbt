@@ -18,6 +18,7 @@ use dbt_schemas::schemas::DbtCommandExecutionArtifacts;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use std::cell::Cell;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use tracing::level_filters::LevelFilter;
 
@@ -82,8 +83,33 @@ fn distribution() -> &'static Distribution {
         .expect("register() sets this at module import, before Python can call anything")
 }
 
+/// Deep enough for `<prefix>/lib/python3.X/site-packages/dbt`.
+const WHEEL_LIBS_SEARCH_DEPTH: usize = 5;
+
+/// Not `sysconfig.get_path("data")`: beyond the CDN and cache, dbt supports a single
+/// library loading strategy.
+fn find_wheel_libs_directory(package_file: &Path, max_depth: usize) -> Option<PathBuf> {
+    package_file
+        .ancestors()
+        .skip(1)
+        .take(max_depth)
+        .map(|ancestor| ancestor.join("lib").join("dbt"))
+        .find(|dir| dir.is_dir())
+}
+
 /// Adds this crate's classes and functions to a distribution's `_core` module.
 pub fn register(m: &Bound<'_, PyModule>, distribution: Distribution) -> PyResult<()> {
+    // The executable is the interpreter. Best effort: the CDN still works without it.
+    let package_file = m
+        .py()
+        .import("dbt")
+        .and_then(|package| package.getattr("__file__"))
+        .and_then(|file| file.extract::<PathBuf>());
+    dbt_adbc::driver::set_libs_directory(
+        package_file
+            .ok()
+            .and_then(|file| find_wheel_libs_directory(&file, WHEEL_LIBS_SEARCH_DEPTH)),
+    );
     DISTRIBUTION
         .set(distribution)
         .map_err(|_| pyo3::exceptions::PyRuntimeError::new_err("`_core` initialized twice"))?;
@@ -352,7 +378,7 @@ where
         .apply_configuration(&cli.common_args());
 
     // Ctrl+C is Python's job; the engine gets a never-cancel token.
-    let token = dbt_base::cancel::never_cancels();
+    let token = dbt_cancel::never_cancels();
 
     let dbt_rt = dbt_runtime::builder::Builder::new()
         .max_blocking_threads(48)

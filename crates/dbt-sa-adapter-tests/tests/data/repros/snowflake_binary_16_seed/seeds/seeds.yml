@@ -1,0 +1,6 @@
+seeds:
+  - name: binseed
+    config:
+      column_types:
+        CUSTOMER_PK: BINARY(16)
+        CUSTOMER_ID: varchar

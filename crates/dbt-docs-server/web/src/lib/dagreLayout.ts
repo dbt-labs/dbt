@@ -1,4 +1,4 @@
-import Dagre from '@dagrejs/dagre';
+import Dagre, { type Edge as DagreEdge, type graphlib } from '@dagrejs/dagre';
 import { type Edge, type Node as ReactFlowNode, Position } from '@xyflow/react';
 
 // these correspond to GraphLabel options in dagre
@@ -138,6 +138,86 @@ function alignRanksTowardRoot(
   }
 }
 
+/**
+ * Hops from the root to every node it reaches: negative upstream, positive downstream,
+ * and the shortest way round when there is more than one -- the same count the hop bar
+ * selects on, so a `1+ / +1` graph is exactly the depths -1, 0 and 1. Walks every node
+ * and edge, hidden ones included: a card's depth is its place in the lineage, not in
+ * whatever the filter leaves on screen. `null` when the root is not in the graph.
+ */
+function depthsFromRoot(
+  nodes: ReactFlowNode[],
+  edges: Edge[],
+  rootId: string | null | undefined,
+): Map<string, number> | null {
+  if (!rootId || !nodes.some((node) => node.id === rootId)) return null;
+  const parents = new Map<string, string[]>();
+  const children = new Map<string, string[]>();
+  const link = (lists: Map<string, string[]>, from: string, to: string) => {
+    const list = lists.get(from);
+    if (list) list.push(to);
+    else lists.set(from, [to]);
+  };
+  for (const { source, target } of edges) {
+    link(children, source, target);
+    link(parents, target, source);
+  }
+  const depths = new Map([[rootId, 0]]);
+  for (const [next, step] of [
+    [parents, -1],
+    [children, 1],
+  ] as const) {
+    let frontier = [rootId];
+    for (let depth = step; frontier.length > 0; depth += step) {
+      const reached: string[] = [];
+      for (const id of frontier) {
+        for (const neighbour of next.get(id) ?? []) {
+          if (depths.has(neighbour)) continue;
+          depths.set(neighbour, depth);
+          reached.push(neighbour);
+        }
+      }
+      frontier = reached;
+    }
+  }
+  return depths;
+}
+
+/**
+ * A dagre ranker that puts every card in the column for its depth from the root.
+ *
+ * Dagre hands a ranker its own working copy of the graph, and a ranker's one job is to
+ * give every node in it a `rank` so that each edge spans at least its `minlen` ranks.
+ * That copy is not quite the graph we built: dagre has already stretched every
+ * `minlen` (it doubles them, leaving a rank between columns for edge labels) and added
+ * a bookkeeping root that points at every node. So the depths are scaled by the most
+ * rank any edge asks for per column, and a node that isn't a card goes before
+ * everything it points at.
+ */
+function rankByDepth(depths: Map<string, number>) {
+  return (g: graphlib.Graph): void => {
+    let scale = 1;
+    for (const e of g.edges()) {
+      const span = (depths.get(e.w) ?? NaN) - (depths.get(e.v) ?? NaN);
+      if (span > 0) scale = Math.max(scale, Math.ceil(g.edge(e).minlen / span));
+    }
+    let first = Infinity;
+    for (const v of g.nodes()) {
+      const depth = depths.get(v);
+      if (depth === undefined) continue;
+      g.node(v).rank = depth * scale;
+      first = Math.min(first, depth * scale);
+    }
+    for (const v of g.nodes()) {
+      if (depths.has(v)) continue;
+      const before = (g.outEdges(v) ?? []).map(
+        (e: DagreEdge) => (g.node(e.w).rank ?? first) - g.edge(e).minlen,
+      );
+      g.node(v).rank = Math.min(first, ...before);
+    }
+  };
+}
+
 export function applyDagreLayout<T extends ReactFlowNode>(
   nodes: T[],
   edges: Edge[],
@@ -153,6 +233,17 @@ export function applyDagreLayout<T extends ReactFlowNode>(
 
   const opts = { ...DEFAULT_LAYOUT_OPTIONS, ...options };
 
+  // With a root, every card goes in the column for its depth from it, so cards the
+  // same number of hops away line up. Dagre's own rankers can't promise that: they
+  // rank by the edges between the cards, and a parent of the root that also feeds
+  // another of its parents gets pushed a column further out, and hiding cards splits
+  // the graph into pieces they rank on their own. So rank by depth instead. Every
+  // visible card needs one, which it always has in a graph fetched around the root; if
+  // one ever doesn't, dagre ranks as before.
+  const depths = depthsFromRoot(nodes, edges, rootId);
+  const pinned =
+    depths != null && nodes.every((node) => node.hidden || depths.has(node.id));
+
   const g = new Dagre.graphlib.Graph({ directed: true, compound: false })
     .setGraph({
       rankdir: opts.rankdir,
@@ -161,22 +252,29 @@ export function applyDagreLayout<T extends ReactFlowNode>(
       edgesep: opts.edgesep,
       // marginx: opts.marginx,
       // marginy: opts.marginy,
-      ranker: opts.ranker,
+      // Dagre's types only admit the built-in ranker names, but its rank step calls a
+      // function ranker directly (`lib/rank/index.ts`).
+      ranker: pinned ? (rankByDepth(depths) as unknown as string) : opts.ranker,
       acyclicer: opts.acyclicer,
     })
     .setDefaultEdgeLabel(() => ({}));
 
   // Lay the graph out on the size each card actually renders to, not on one assumed
   // box. That is the whole point of measuring first: a card is as wide as its name.
+  // A `hidden` node takes no room, so the rest close up over it; the edges below skip
+  // it too, and it keeps its old position until it is shown and laid out again.
   nodes.forEach((node) => {
-    g.setNode(node.id, boxOf(node, opts));
+    if (!node.hidden) g.setNode(node.id, boxOf(node, opts));
   });
 
-  // Add edges to dagre graph
+  // Add edges to dagre graph. With the columns pinned, only the edges that run out to
+  // a deeper column: dagre expects every edge to point down the ranks, and one inside
+  // a column (a parent of the root feeding another) has no order to add. React Flow
+  // still draws it.
   edges.forEach((edge) => {
-    if (g.hasNode(edge.source) && g.hasNode(edge.target)) {
-      g.setEdge(edge.source, edge.target);
-    }
+    if (!g.hasNode(edge.source) || !g.hasNode(edge.target)) return;
+    if (pinned && depths.get(edge.target)! <= depths.get(edge.source)!) return;
+    g.setEdge(edge.source, edge.target);
   });
 
   try {

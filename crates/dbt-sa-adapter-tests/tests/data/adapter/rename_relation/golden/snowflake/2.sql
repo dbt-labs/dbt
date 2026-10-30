@@ -1,0 +1,1 @@
+CREATE OR REPLACE SCHEMA adapters_snowflake_rename_relation

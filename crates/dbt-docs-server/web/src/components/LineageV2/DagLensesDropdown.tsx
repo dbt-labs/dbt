@@ -38,7 +38,8 @@ export function DagLensesDropdown() {
       <DropdownMenuTrigger asChild>
         <button
           type="button"
-          className="flex h-9 items-center gap-1.5 rounded-md border border-borderMain bg-bgMain px-3 text-sm text-fgMain hover:bg-bgMainHover"
+          aria-label="Lenses"
+          className="flex h-9 items-center gap-1 rounded-md border border-borderMain bg-bgMain px-2.5 text-sm text-fgMain hover:bg-bgMainHover"
         >
           <Filter className="size-3.5" />
           Lenses

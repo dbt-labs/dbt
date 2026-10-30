@@ -18,7 +18,11 @@ pub enum SerializationMode {
 /// so None values are serialized as null by default.
 pub fn serialize_with_mode<T: Serialize>(value: &T, mode: SerializationMode) -> YmlValue {
     let yml_value = dbt_yaml::to_value(value).expect("Failed to serialize to YAML");
+    apply_mode(yml_value, mode)
+}
 
+/// Applies `mode` to an already serialized value.
+pub fn apply_mode(yml_value: YmlValue, mode: SerializationMode) -> YmlValue {
     match mode {
         SerializationMode::KeepNone => yml_value, // Keep everything including nulls
         SerializationMode::OmitNone => strip_null_fields(yml_value), // Remove nulls to save space

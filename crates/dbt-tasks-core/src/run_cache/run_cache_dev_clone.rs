@@ -8,7 +8,7 @@ use crate::run_cache::run_cache_request::{
 use crate::run_cache::run_cache_service::{
     RunCacheCloneDecision, clone_chain_depth_limit_for_adapter,
     confirm_run_cache_service_execution, execute_run_cache_service_clone, has_metadata_address,
-    legacy_freshness, run_cache_metadata_query_options,
+    legacy_freshness, run_cache_dialect, run_cache_metadata_query_options,
 };
 use crate::run_cache::run_cache_service::{record_dev_clone_decision, replay_dev_clone_decision};
 use dbt_adapter::errors::{AdapterErrorKind, Cancellable};
@@ -161,7 +161,8 @@ async fn finish_dev_clone(
     ctx.inner
         .run_cache_ctx
         .run_cache_dev_cloned_nodes
-        .insert(node.unique_id(), explain_dev_clone);
+        .upsert_async(node.unique_id(), explain_dev_clone)
+        .await;
     confirm_run_cache_service_execution(ctx, node, clone.success_confirmation(), None).await;
 }
 
@@ -441,7 +442,7 @@ async fn prepare_dev_clone_request(
 
     let request = CloneRequestInput {
         target_table: target_table.clone(),
-        dialect: ctx.default_adapter_type().to_string(),
+        dialect: run_cache_dialect(ctx),
         default_catalog: candidate.local().database(),
         execution_type: candidate.execution_type(&ctx.inner.materialization_resolver)?,
         clone_source_table: clone_source_table.clone(),
@@ -451,7 +452,8 @@ async fn prepare_dev_clone_request(
         table_properties: candidate.table_properties(),
         clone_chain_depth_limit: clone_chain_depth_limit_for_adapter(
             ctx.default_adapter_type(),
-            false,
+            false, // dev clone target is never the prod/defer target
+            ctx.inner.arg.defer,
             ctx.dbt_profile().allow_clones,
         ),
         table_namespace: project_info.table_namespace,
@@ -678,6 +680,7 @@ mod tests {
             pre_clone: Some(StatePreClone::Always),
             execute_hooks_on_any_reuse: None,
             compare_unrendered_code: None,
+            ignore_external_modifications: None,
         });
         let candidate = DevCloneCandidate::Model {
             local: Arc::new(local),
@@ -748,6 +751,7 @@ mod tests {
             pre_clone: Some(StatePreClone::IfMissing),
             execute_hooks_on_any_reuse: None,
             compare_unrendered_code: None,
+            ignore_external_modifications: None,
         });
         let candidate = DevCloneCandidate::Snapshot {
             local: Arc::new(local),

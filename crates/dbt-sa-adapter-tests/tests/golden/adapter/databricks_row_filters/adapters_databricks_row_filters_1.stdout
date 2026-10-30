@@ -1,0 +1,39 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/properties.yml
+   Parsing models/row_filter_lifecycle.yml
+   Parsing functions/properties.yml
+   Parsing models/row_filter_incremental.sql
+   Parsing models/row_filter_materialized_view.sql
+   Parsing models/row_filter_safe_replace.sql
+   Parsing models/row_filter_table.sql
+   Parsing models/test_cool_and_finance.sql
+   Parsing models/test_evens.sql
+   Parsing functions/hide_cool_and_finance.sql
+   Running ../scratch/target/run/test/seeds/base_model_seed.sql
+ Succeeded seed  adapters_databricks_row_filters.base_model_seed (table) [1 of 8 in duration]
+ Rendering models/test_evens.sql
+   Running models/test_evens.sql
+ Succeeded model adapters_databricks_row_filters.test_evens (mat_view) [2 of 8 in duration]
+ Rendering models/row_filter_table.sql
+   Running models/row_filter_table.sql
+ Succeeded model adapters_databricks_row_filters.row_filter_table (table) [3 of 8 in duration]
+ Rendering models/row_filter_safe_replace.sql
+   Running models/row_filter_safe_replace.sql
+ Succeeded model adapters_databricks_row_filters.row_filter_safe_replace (table) [4 of 8 in duration]
+ Rendering models/row_filter_materialized_view.sql
+   Running models/row_filter_materialized_view.sql
+ Succeeded model adapters_databricks_row_filters.row_filter_materialized_view (mat_view) [5 of 8 in duration]
+ Rendering models/row_filter_incremental.sql
+   Running models/row_filter_incremental.sql
+ Succeeded model adapters_databricks_row_filters.row_filter_incremental (incremental) [6 of 8 in duration]
+ Rendering functions/hide_cool_and_finance.sql
+   Running ../scratch/target/run/test/functions/hide_cool_and_finance.sql
+ Succeeded function adapters_databricks_row_filters.hide_cool_and_finance (function) [7 of 8 in duration]
+ Rendering models/test_cool_and_finance.sql
+   Running models/test_cool_and_finance.sql
+ Succeeded model adapters_databricks_row_filters.test_cool_and_finance (table) [8 of 8 in duration]
+==================== Execution Summary =====================
+Finished 'build' successfully for target 'databricks' [duration]
+Processed: 6 models | 1 seed | 1 function
+Summary: 8 total | 8 success

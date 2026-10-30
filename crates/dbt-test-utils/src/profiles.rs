@@ -10,6 +10,10 @@ use std::path::{Path, PathBuf};
 
 const TEST_PROFILE: &str = "fusion_tests";
 
+/// Placeholder `fusion_tests` profile, used when ~/.dbt/profiles.yml has none, so that
+/// replaying recordings needs no credentials.
+const REPLAY_PROFILES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/profiles/replay_profiles.yml");
+
 /// Load the db config from a 'test' profiles.yml at the default profile path (~/.dbt)
 /// and set schema and database values
 pub fn load_db_config_from_test_profile_with_database(
@@ -46,10 +50,27 @@ pub fn load_db_config_from_test_profile_with_database(
 /// Load the db config from a 'test' profiles.yml at the default profile path (~/.dbt)
 /// and set schema value
 pub fn load_db_config_from_test_profile(target: &str, schema: &str) -> FsResult<DbConfig> {
+    load_db_config(target, schema, test_profile_path())
+}
+
+/// The profiles.yml the test profile is read from: ~/.dbt/profiles.yml when it defines
+/// `fusion_tests`, otherwise the placeholder [`REPLAY_PROFILES`].
+pub fn test_profile_path() -> PathBuf {
     let home_dir = dirs::home_dir().expect("home dir exists");
     // ! This must be consistent with what's written out from the init_creds.rs (from xtask crate)
     let profile_path = home_dir.join(".dbt").join("profiles.yml");
-    load_db_config(target, schema, &profile_path)
+    if defines_test_profile(&profile_path) {
+        profile_path
+    } else {
+        PathBuf::from(REPLAY_PROFILES)
+    }
+}
+
+fn defines_test_profile(profile_path: &Path) -> bool {
+    std::fs::read_to_string(profile_path)
+        .ok()
+        .and_then(|content| dbt_yaml::from_str::<BTreeMap<String, dbt_yaml::Value>>(&content).ok())
+        .is_some_and(|profiles| profiles.contains_key(TEST_PROFILE))
 }
 
 /// Load the target db config from a profiles.yml at a give directory
@@ -162,5 +183,34 @@ mod tests {
         temp_dir.close()?;
 
         Ok(())
+    }
+
+    #[test]
+    fn replay_profile_outputs_load() {
+        for target in [
+            "snowflake",
+            "bigquery",
+            "databricks",
+            "redshift",
+            "clickhouse",
+        ] {
+            let db_config = load_db_config(target, "s", REPLAY_PROFILES)
+                .unwrap_or_else(|e| panic!("{target}: {e}"));
+            assert!(
+                db_config.get_database().is_some(),
+                "{target} has no database"
+            );
+        }
+    }
+
+    #[test]
+    fn only_a_profiles_yml_with_fusion_tests_defines_the_test_profile() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("profiles.yml");
+        assert!(!defines_test_profile(&path));
+        fs::write(&path, "my_project:\n  outputs: {}\n").unwrap();
+        assert!(!defines_test_profile(&path));
+        fs::write(&path, "fusion_tests:\n  outputs: {}\n").unwrap();
+        assert!(defines_test_profile(&path));
     }
 }

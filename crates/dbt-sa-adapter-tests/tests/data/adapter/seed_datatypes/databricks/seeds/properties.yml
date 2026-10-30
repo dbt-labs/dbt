@@ -1,0 +1,20 @@
+version: 2
+
+seeds:
+  - name: mixed_dtypes
+    description: Mixed data types test with an implicit schema
+  - name: mixed_dtypes_w_schema
+    config:
+      column_types:
+        id: INT
+        first_name: STRING
+        last_name: STRING
+        created_at: TIMESTAMP
+        birth_date: DATE
+        is_cool: BOOLEAN
+        net_worth: DECIMAL(38,9)
+  - name: timestamps
+    config:
+      column_types:
+        timestamp_without_timezone: TIMESTAMP
+        timestamp_text: TIMESTAMP

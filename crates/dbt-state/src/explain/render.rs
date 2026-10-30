@@ -35,6 +35,15 @@ pub fn render_merged_explain_records(
     service_response: Option<&GetExplainMessagesResponse>,
     options: &StateExplainOptions,
 ) -> String {
+    render_merged_explain_records_with_upstream(records, service_response, &HashMap::new(), options)
+}
+
+fn render_merged_explain_records_with_upstream(
+    records: &[StateExplainRecord],
+    service_response: Option<&GetExplainMessagesResponse>,
+    upstream_changes: &HashMap<String, Vec<ExplainLine>>,
+    options: &StateExplainOptions,
+) -> String {
     if records.is_empty() {
         return render_explain_records(records, options);
     }
@@ -53,7 +62,20 @@ pub fn render_merged_explain_records(
                 .as_deref()
                 .and_then(|id| messages_by_id.get(id).copied())
                 .map(|message| {
-                    render_service_explain_message(&record.node_unique_id, message, options.verbose)
+                    let mut output = render_service_explain_message(
+                        &record.node_unique_id,
+                        message,
+                        options.verbose,
+                    );
+                    if let Some(lines) = record
+                        .execution_id
+                        .as_deref()
+                        .and_then(|id| upstream_changes.get(id))
+                    {
+                        output.push('\n');
+                        output.push_str(&render_upstream_dependency_changes(lines));
+                    }
+                    output
                 })
                 .unwrap_or_else(|| record.render(options.verbose))
         })
@@ -64,10 +86,16 @@ pub fn render_merged_explain_records(
 pub(super) fn render_explain_output(
     records: &[StateExplainRecord],
     service_response: Option<&GetExplainMessagesResponse>,
+    upstream_changes: &HashMap<String, Vec<ExplainLine>>,
     run_start: Option<&StateExplainRunStart>,
     options: &StateExplainOptions,
 ) -> String {
-    let output = render_merged_explain_records(records, service_response, options);
+    let output = render_merged_explain_records_with_upstream(
+        records,
+        service_response,
+        upstream_changes,
+        options,
+    );
     if !options.verbose {
         return output;
     }
@@ -154,6 +182,14 @@ fn render_service_explain_message(
         }
     }
     lines.join("\n")
+}
+
+fn render_upstream_dependency_changes(lines: &[ExplainLine]) -> String {
+    let mut output = vec!["  - all upstream dependency changes".to_string()];
+    for line in lines {
+        render_service_explain_line(line, 2, &mut output);
+    }
+    output.join("\n")
 }
 
 fn render_service_explain_line(line: &ExplainLine, depth: usize, lines: &mut Vec<String>) {

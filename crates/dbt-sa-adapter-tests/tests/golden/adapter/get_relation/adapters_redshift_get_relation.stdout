@@ -1,0 +1,22 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/a.sql
+   Parsing models/c.sql
+redshift
+ci
+adapters_redshift_get_relation
+relation
+None
+   Started downloading referenced relations (1 items)
+  Finished [duration] downloading referenced relations (1 items)
+ Rendering models/c.sql
+redshift
+ci
+adapters_redshift_get_relation
+relation
+"ci"."adapters_redshift_get_relation"."a"
+ Rendering models/a.sql
+==================== Execution Summary =====================
+Finished 'compile' successfully for target 'redshift' [duration]
+Processed: 2 models
+Summary: 2 total | 2 success

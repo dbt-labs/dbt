@@ -208,8 +208,8 @@
 
     {%- set inserting_relation = new_data_relation -%}
 
-    {%- set local_suffix = get_clickhouse_local_suffix() -%}
-    {%- set local_db_prefix = get_clickhouse_local_db_prefix() -%}
+    {%- set local_suffix = adapter.get_clickhouse_local_suffix() -%}
+    {%- set local_db_prefix = adapter.get_clickhouse_local_db_prefix() -%}
 
     {% if is_distributed %}
       -- Need to use distributed table to have data on all shards
@@ -257,8 +257,8 @@
     {%- set distributed_new_data_relation = existing_relation.incorporate(path={"identifier": existing_relation.identifier + '__dbt_distributed_new_data'}) -%}
 
 
-    {%- set local_suffix = get_clickhouse_local_suffix() -%}
-    {%- set local_db_prefix = get_clickhouse_local_db_prefix() -%}
+    {%- set local_suffix = adapter.get_clickhouse_local_suffix() -%}
+    {%- set local_db_prefix = adapter.get_clickhouse_local_db_prefix() -%}
     {% set existing_local = existing_relation.incorporate(path={"identifier": this.identifier + local_suffix, "schema": local_db_prefix + this.schema}) if existing_relation is not none else none %}
 
     {% if is_distributed %}
@@ -274,7 +274,7 @@
       {% set select_changed_partitions %}
           SELECT DISTINCT partition_id
           {% if is_distributed %}
-            FROM cluster({{ get_clickhouse_cluster_name() }}, system.parts)
+            FROM cluster({{ adapter.get_clickhouse_cluster_name() }}, system.parts)
           {% else %}
             FROM system.parts
           {% endif %}

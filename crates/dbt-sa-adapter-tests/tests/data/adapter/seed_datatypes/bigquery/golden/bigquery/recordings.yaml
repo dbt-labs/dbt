@@ -1,0 +1,25 @@
+267e96a3:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists `dbt-test-env`.`adapters_bigquery_seed_datatypes`
+seed.test.mixed_dtypes:
+- sequence: 0
+  type: execute
+  sql: ''
+- sequence: 1
+  type: execute
+  sql: "\n    alter table `dbt-test-env`.`adapters_bigquery_seed_datatypes`.`mixed_dtypes` set OPTIONS()\n  "
+seed.test.mixed_dtypes_w_schema:
+- sequence: 0
+  type: execute
+  sql: ''
+- sequence: 1
+  type: execute
+  sql: "\n    alter table `dbt-test-env`.`adapters_bigquery_seed_datatypes`.`mixed_dtypes_w_schema` set OPTIONS()\n  "
+seed.test.timestamps:
+- sequence: 0
+  type: execute
+  sql: ''
+- sequence: 1
+  type: execute
+  sql: "\n    alter table `dbt-test-env`.`adapters_bigquery_seed_datatypes`.`timestamps` set OPTIONS()\n  "

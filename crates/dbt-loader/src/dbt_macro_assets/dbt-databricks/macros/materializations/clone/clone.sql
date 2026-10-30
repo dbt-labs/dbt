@@ -9,6 +9,11 @@
 
   {%- if not defer_relation -%}
       -- nothing to do
+      {#- DIVERGENCE: This is a QOL improvement that needs to be back-ported
+        to dbt-databricks, added in https://github.com/dbt-labs/fs/pull/12153.
+        Tracked in https://github.com/databricks/dbt-databricks/pull/1663.
+        dbt-databricks will catch up to us in 1.13.
+      -#}
       {%- if model.config.materialized == 'ephemeral' -%}
           {{ log("Skipping clone for ephemeral model " ~ model.unique_id, info=True) }}
       {%- else -%}
@@ -41,6 +46,8 @@
 
       {%- set target_relation = this.incorporate(type='table') -%}
       {% if clone_requires_drop(existing_relation) %}
+        {#- DIVERGENCE: v2 does not expose databricks_table_type, so we
+            output the relation type instead. -#}
         {{ log("Dropping relation " ~ existing_relation ~ " because it cannot be replaced by a shallow clone in place (type " ~ existing_relation.type ~ ")") }}
         {{ drop_relation_if_exists(existing_relation) }}
       {% endif %}

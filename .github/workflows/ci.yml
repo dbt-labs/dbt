@@ -105,6 +105,9 @@ jobs:
       # `parse::parse_hello_world` abort with SIGABRT without this. Matches the
       # release gate. 8 MiB.
       RUST_MIN_STACK: "8388608"
+      # Stderr goldens are recorded without backtraces; rerun locally with
+      # RUST_BACKTRACE=1 when debugging a failure.
+      RUST_BACKTRACE: "0"
     steps:
       - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # actions/checkout@v4
 

@@ -91,9 +91,11 @@ mod tests {
             sample_config: RunFilter::default(),
             sample_renaming: BTreeMap::new(),
             static_analysis: Some(dbt_common::io_args::StaticAnalysisKind::Strict),
+            default_static_analysis: None,
             store_failures: false,
             skip_creating_generic_tests: false,
             adapter_override: None,
+            profile_adapter_types: None,
             maximum_seed_size_mib: 1,
         };
 
@@ -119,6 +121,9 @@ mod tests {
                     root_config,
                     AdapterType::Postgres,
                 ),
+                adapter_hint: None,
+                parse_adapter_scopes: None,
+                adapter_quoting: Default::default(),
                 resource_paths: vec!["models".to_string()],
                 package_quoting: DbtQuoting {
                     database: Some(true),
@@ -128,6 +133,7 @@ mod tests {
                 },
                 uses_snapshot_fqn: false,
                 defer_render_errors_to_compile: false,
+                resource_type: None,
             }),
             jinja_env: jinja_env.clone(),
             runtime_config: Arc::new(DbtRuntimeConfig::default()),
@@ -269,9 +275,11 @@ mod tests {
             sample_config: RunFilter::default(),
             sample_renaming: BTreeMap::new(),
             static_analysis: Some(dbt_common::io_args::StaticAnalysisKind::Strict),
+            default_static_analysis: None,
             store_failures: false,
             skip_creating_generic_tests: false,
             adapter_override: None,
+            profile_adapter_types: None,
             maximum_seed_size_mib: 1,
         };
 
@@ -294,6 +302,9 @@ mod tests {
                     root_config,
                     AdapterType::Postgres,
                 ),
+                adapter_hint: None,
+                parse_adapter_scopes: None,
+                adapter_quoting: Default::default(),
                 resource_paths: vec!["models".to_string()],
                 package_quoting: DbtQuoting {
                     database: Some(true),
@@ -303,6 +314,7 @@ mod tests {
                 },
                 uses_snapshot_fqn: false,
                 defer_render_errors_to_compile: false,
+                resource_type: None,
             }),
             jinja_env: jinja_env.clone(),
             runtime_config: Arc::new(DbtRuntimeConfig::default()),

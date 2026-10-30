@@ -78,6 +78,28 @@ impl From<NodeStatus> for NodeOutcome {
     }
 }
 
+/// The summable work counters an adapter response reports. `None` means the
+/// adapter did not report that counter.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ExecutionMetrics {
+    pub rows_affected: Option<i64>,
+    pub bytes_processed: Option<i64>,
+    pub bytes_billed: Option<i64>,
+    pub slot_ms: Option<i64>,
+}
+
+impl ExecutionMetrics {
+    pub fn accumulate(&mut self, other: ExecutionMetrics) {
+        fn add(total: Option<i64>, value: Option<i64>) -> Option<i64> {
+            Some(total?.saturating_add(value?))
+        }
+        self.rows_affected = add(self.rows_affected, other.rows_affected);
+        self.bytes_processed = add(self.bytes_processed, other.bytes_processed);
+        self.bytes_billed = add(self.bytes_billed, other.bytes_billed);
+        self.slot_ms = add(self.slot_ms, other.slot_ms);
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Stat {
     pub unique_id: String,
@@ -90,6 +112,9 @@ pub struct Stat {
     pub status: NodeStatus,
     pub thread_id: String,
     pub message: Option<String>,
+    /// Whether the node's result is an assertion, reported as `pass`/`fail` by its row count.
+    /// Tests, unit tests and checks always are; see [`Stat::is_assertion_node`].
+    pub assertion: bool,
 }
 
 impl Stat {
@@ -113,7 +138,14 @@ impl Stat {
             status,
             thread_id: format!("Thread-{} (worker)", thread_id),
             message,
+            assertion: false,
         }
+    }
+
+    /// Reports this result as an assertion: `pass` with no rows, `fail` with some.
+    pub fn as_assertion(mut self) -> Self {
+        self.assertion = true;
+        self
     }
 
     pub fn get_duration(&self) -> Duration {
@@ -147,7 +179,8 @@ impl Stat {
     /// of `success`/`error`, and the row count decides which. Checks belong here for the same reason
     /// tests do — "3 rows came back" is a failed assertion, not a failed build.
     fn is_assertion_node(&self) -> bool {
-        self.unique_id.starts_with("test.")
+        self.assertion
+            || self.unique_id.starts_with("test.")
             || self.unique_id.starts_with("unit_test.")
             || self.unique_id.starts_with("check.")
     }
@@ -186,6 +219,23 @@ impl Stat {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn assertions_report_pass_or_fail_by_row_count() {
+        let stat = |rows| {
+            Stat::new(
+                "widget.p.w".to_string(),
+                SystemTime::now(),
+                Some(rows),
+                NodeStatus::Succeeded,
+                None,
+                1,
+            )
+        };
+        assert_eq!(stat(0).result_status_string(), "success");
+        assert_eq!(stat(0).as_assertion().result_status_string(), "pass");
+        assert_eq!(stat(2).as_assertion().result_status_string(), "fail");
+    }
 
     #[test]
     fn test_thread_id_format() {
@@ -300,5 +350,30 @@ mod tests {
         );
         assert_eq!(stat.status_string(), "Warn");
         assert_eq!(stat.result_status_string(), "warn");
+    }
+
+    #[test]
+    fn accumulate_sums_counters_every_response_reported() {
+        let mut total = ExecutionMetrics {
+            rows_affected: Some(10),
+            bytes_processed: Some(1024),
+            bytes_billed: None,
+            slot_ms: Some(5),
+        };
+        total.accumulate(ExecutionMetrics {
+            rows_affected: Some(20),
+            bytes_processed: Some(2048),
+            bytes_billed: Some(4096),
+            slot_ms: None,
+        });
+        assert_eq!(
+            total,
+            ExecutionMetrics {
+                rows_affected: Some(30),
+                bytes_processed: Some(3072),
+                bytes_billed: None,
+                slot_ms: None,
+            }
+        );
     }
 }

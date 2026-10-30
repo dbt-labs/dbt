@@ -15,11 +15,11 @@
 
 use crate::AdapterEngine;
 use crate::adapter::adapter_impl::AdapterImpl;
-use crate::connection::AdapterConnectionFactory;
+use crate::connection::{AdapterConnectionFactory, ConnectionGuard};
 use crate::errors::{AdapterError, AdapterErrorKind, AsyncAdapterResult, Cancellable};
 use crate::{AdapterResult, metadata::*, record_batch::RecordBatchExt};
 use arrow_schema::Schema;
-use dbt_adbc::{Connection, QueryCtx};
+use dbt_adbc::QueryCtx;
 use dbt_common::cancellation::CancellationToken;
 
 use arrow_array::{Array, Decimal128Array, RecordBatch, StringArray};
@@ -194,7 +194,7 @@ impl MetadataAdapter for ExasolMetadataAdapter {
 
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
-        let map_f = move |conn: &'_ mut dyn Connection,
+        let map_f = move |conn: &mut ConnectionGuard<'_>,
                           key: &(String, String)|
               -> AdapterResult<Arc<Schema>> {
             let (_semantic_fqn, sql_name) = key;

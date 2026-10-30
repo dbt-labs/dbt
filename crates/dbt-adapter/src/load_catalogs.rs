@@ -4,7 +4,8 @@ use dbt_common::tracing::dbt_emit::emit_warn_log_message;
 use dbt_common::warn_error_options::project_flags_get_value;
 use dbt_common::{ErrorCode, FsResult, fs_err};
 use dbt_schemas::schemas::{
-    dbt_catalogs::DbtCatalogs, dbt_catalogs_v2::validate_catalogs_v2, validate_catalogs,
+    dbt_catalogs::validate_catalogs,
+    dbt_catalogs_deprecated::{DbtCatalogs, deprecated_validate_catalogs},
 };
 use dbt_yaml as yml;
 use std::path::Path;
@@ -79,8 +80,8 @@ pub fn do_load_catalogs(
     let catalogs = DbtCatalogs::new(repr, span);
     set_use_catalogs_v2_from_flags(project_flags);
     if fetch_use_catalogs_v2() {
-        let view = catalogs.view_v2()?;
-        validate_catalogs_v2(&view, path)?;
+        let view = catalogs.view()?;
+        validate_catalogs(&view, path)?;
     } else {
         emit_warn_log_message(
             ErrorCode::DeprecatedOption,
@@ -90,8 +91,8 @@ pub fn do_load_catalogs(
                  `flags:` in dbt_project.yml. See {CATALOGS_V2_DISCUSSION_URL}"
             ),
         );
-        let view = catalogs.view()?;
-        validate_catalogs(&view, path)?;
+        let view = catalogs.deprecated_view()?;
+        deprecated_validate_catalogs(&view, path)?;
     }
     Ok(catalogs)
 }

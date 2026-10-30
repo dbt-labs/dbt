@@ -1,0 +1,6 @@
+# Test adapter.is_cluster() method
+flags:
+  send_anonymous_usage_stats: false
+name: test
+profile: fusion_tests
+

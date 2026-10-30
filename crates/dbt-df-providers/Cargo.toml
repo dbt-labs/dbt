@@ -10,12 +10,11 @@ repository.workspace = true
 version.workspace = true
 
 [dependencies]
-dbt-adapter-core = { workspace = true }
 dbt-csv = { workspace = true }
 dbt-frontend-common = { workspace = true }
 dbt-schema-store = { workspace = true }
 
-arrow = { workspace = true, features = ["json"] }
+arrow = { workspace = true }
 arrow-schema = { workspace = true }
 async-trait = { workspace = true }
 datafusion = { workspace = true, features = ["parquet"] }
@@ -24,13 +23,12 @@ datafusion-common = { workspace = true }
 datafusion-expr = { workspace = true }
 dbt-fusion-workspace-hack = { version = "0.1" }
 futures = { workspace = true }
-parquet = { workspace = true, features = ["async"] }
 scc = { workspace = true }
 tempfile = { workspace = true }
-tokio = { workspace = true }
 
 [lints]
 workspace = true
 
 [dev-dependencies]
 dbt-runtime = { workspace = true }
+tokio = { workspace = true }

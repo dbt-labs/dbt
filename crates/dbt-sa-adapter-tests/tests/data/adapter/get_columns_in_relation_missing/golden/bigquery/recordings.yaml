@@ -1,0 +1,5 @@
+model.test.b.get_table_schema.ff0bc214:
+- sequence: 0
+  type: get_table_schema
+  table_name: ff0bc214
+  error: 'NotFound: [bq] Could not get metadata for table `dbt-test-env`.`adapters_bigquery_get_columns_in_relation_missing`.`a`: 404 Not Found: Not found: Dataset dbt-test-env:adapters_bigquery_get_columns_in_relation_missing (sqlstate: 00000, vendor_code: -2147483648)'

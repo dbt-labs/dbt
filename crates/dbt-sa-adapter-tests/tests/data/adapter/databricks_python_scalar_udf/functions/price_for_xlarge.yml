@@ -1,0 +1,10 @@
+functions:
+  - name: price_for_xlarge
+    config:
+      entry_point: price_for_xlarge
+      runtime_version: '3.11'
+    arguments:
+      - name: price
+        data_type: float
+    returns:
+      data_type: float

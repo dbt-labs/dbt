@@ -17,7 +17,7 @@ mod tests {
     use dbt_jinja_utils::utils::render_sql;
     use dbt_schemas::schemas::profiles::PostgresDbConfig;
     use dbt_schemas::schemas::project::ProjectModelConfig;
-    use dbt_schemas::schemas::project::{ModelConfig, ResolvableConfig};
+    use dbt_schemas::schemas::project::{InlineConfigAliasing, ModelConfig, ResolvableConfig};
     use dbt_schemas::schemas::relations::DEFAULT_DBT_QUOTING;
     use dbt_schemas::schemas::serde::StringOrInteger;
     use dbt_schemas::state::DbtRuntimeConfig;
@@ -49,6 +49,8 @@ mod tests {
             AdapterType::Postgres,
             "db",
             "schema",
+            None,
+            InlineConfigAliasing::fixed(AdapterType::Postgres),
             "my_model",
             get_node_fqn(
                 "common",
@@ -66,6 +68,7 @@ mod tests {
             &PathBuf::from("test"),
             &PathBuf::from("test"),
             Some(StaticAnalysisKind::Strict),
+            None,
         );
         context.insert(TARGET_PACKAGE_NAME.to_string(), Value::from("common"));
         context
@@ -1630,51 +1633,284 @@ mod tests {
         );
     }
 
-    /// Residual (fs#13424 phase 2): `canonicalize_adapter_aliases` runs with the *target's
-    /// default* adapter, threaded once per `resolve_*.rs` call, before a node's own `+adapter:`
-    /// override (a real, mergeable `ModelConfig.adapter` field -- Fusion's multi-adapter/mesh
-    /// dispatch, `resolve_utils.rs::validate_node_adapter`) is known. That override can only be
-    /// read *from* the merged config, so canonicalizing per-layer before merging (required for
-    /// D3's mixed-spelling precedence above) and keying it to the node's own resolved adapter
-    /// are in tension -- resolving both needs a two-pass merge (discover `.adapter`, then
-    /// re-merge with the right alias table), which this phase does not attempt. Pre-existing:
-    /// the five deleted `RelationComponents.database` special cases and phase 1's
-    /// `build_unrendered_config` gate on the exact same target-default `adapter_type`, so a
-    /// `+adapter:`-overridden node was never correctly handled either; this residual just
-    /// documents it rather than fixing it. `#[ignore]`d because it pins the gap, not the
-    /// desired behavior.
-    #[test]
-    #[ignore = "fs#13424 phase 2 residual: canonicalize_adapter_aliases is keyed to the \
-                target's default adapter, not a node's own +adapter: override (see \
-                ResolvableConfig::canonicalize_adapter_aliases)"]
-    fn test_databricks_catalog_alias_not_canonicalized_for_adapter_overridden_node() {
+    /// `sql`'s `config()` calls under `aliasing`, in source order.
+    fn inline_config_calls(sql: &str, aliasing: InlineConfigAliasing) -> Vec<Box<ModelConfig>> {
+        let (env, sql_resources, init_config) = setup_test_env();
+        let mut context = build_resolve_model_context(
+            &init_config,
+            false,
+            AdapterType::Snowflake,
+            "db",
+            "schema",
+            None,
+            aliasing,
+            "my_model",
+            vec!["common".to_string(), "my_model".to_string()],
+            "common",
+            "test",
+            DEFAULT_DBT_QUOTING,
+            Arc::new(DbtRuntimeConfig::default()),
+            Arc::new(DbtRuntimeConfig::default()),
+            sql_resources.clone(),
+            Arc::new(AtomicBool::new(false)),
+            &PathBuf::from("test"),
+            &PathBuf::from("test"),
+            Some(StaticAnalysisKind::Strict),
+            None,
+        );
+        context.insert(TARGET_PACKAGE_NAME.to_string(), Value::from("common"));
+        render_sql(
+            sql,
+            &env,
+            &context,
+            &DefaultRenderingEventListenerFactory::default(),
+            &PathBuf::from("test"),
+        )
+        .unwrap();
+        let resources = sql_resources.lock().unwrap().clone();
+        crate::sql_file_info::SqlFileInfo::from_sql_resources(resources, Default::default(), false)
+            .config_calls
+    }
+
+    /// A Snowflake default that also declares BigQuery.
+    fn bigquery_declared() -> crate::dbt_project_config::RootProjectConfigs {
+        use crate::dbt_project_config_tests::per_adapter_config_resolver_tests::root_configs_declaring;
+        use dbt_schemas::schemas::profiles::DbConfig;
+
+        let bigquery: DbConfig =
+            dbt_yaml::from_str("type: bigquery\nmethod: oauth\nproject: bq-proj\ndataset: bq_ds\n")
+                .unwrap();
+        root_configs_declaring(bigquery, "{}")
+    }
+
+    /// `sql`'s inline calls folded and merged by `resolver`, with the aliasing it gives the node.
+    fn resolve_inline(
+        resolver: &crate::dbt_project_config::ProjectConfigResolver<ModelConfig>,
+        sql: &str,
+    ) -> ModelConfig {
+        let fqn = vec!["my_model".to_string()];
+        let layers = crate::dbt_project_config::NodeLayers::new(&fqn, &[]);
+        let calls = inline_config_calls(sql, resolver.inline_config_aliasing(&layers));
+        let calls: Vec<&ModelConfig> = calls.iter().map(|call| call.as_ref()).collect();
+        let inline = resolver.fold_inline_calls(&layers, &calls);
+        resolver.with_configs(&fqn, &[inline.as_ref()])
+    }
+
+    /// A call's own `adapter=` picks the alias table for its raw-only aliases.
+    #[dbt_runtime::test]
+    async fn test_inline_raw_only_alias_translated_with_same_call_adapter() {
+        use crate::dbt_project_config_tests::per_adapter_config_resolver_tests::root_package_resolver;
+
+        let resolver = root_package_resolver(&bigquery_declared());
+        let resolved = resolve_inline(
+            &resolver,
+            "{{ config(adapter='bigquery', timeout_seconds=300) }}",
+        );
+        assert_eq!(
+            resolved
+                .__warehouse_specific_config__
+                .job_execution_timeout_seconds,
+            Some(300)
+        );
+    }
+
+    /// An undeclared call adapter reads with the default's table, so Postgres' `dbname` alias
+    /// is not applied on a Snowflake default.
+    #[dbt_runtime::test]
+    async fn test_inline_undeclared_call_adapter_uses_the_default_table() {
+        use crate::dbt_project_config_tests::per_adapter_config_resolver_tests::root_package_resolver;
+
+        let resolver = root_package_resolver(&bigquery_declared());
+        let resolved = resolve_inline(&resolver, "{{ config(adapter='postgres', dbname='x') }}");
+        assert_eq!(resolved.database.into_inner().flatten(), None);
+    }
+
+    /// `--adapter` fixes the alias table above the inline layer, whatever the call says.
+    #[dbt_runtime::test]
+    async fn test_inline_call_adapter_cannot_beat_adapter_override() {
+        use crate::dbt_project_config_tests::per_adapter_config_resolver_tests::root_package_resolver_with_override;
+
+        let resolver =
+            root_package_resolver_with_override(&bigquery_declared(), Some(AdapterType::Snowflake));
+        let resolved = resolve_inline(
+            &resolver,
+            "{{ config(adapter='bigquery', timeout_seconds=300) }}",
+        );
+        assert_eq!(
+            resolved
+                .__warehouse_specific_config__
+                .job_execution_timeout_seconds,
+            None
+        );
+    }
+
+    /// A single-adapter Databricks project renames each call's `catalog` raw, so a later call's
+    /// `catalog` beats an earlier `database`.
+    #[dbt_runtime::test]
+    async fn test_inline_later_catalog_beats_database_on_single_adapter_databricks() {
         use crate::dbt_project_config::{DbtProjectConfig, ProjectConfigResolver};
 
         let root = DbtProjectConfig::<ModelConfig> {
             config: ModelConfig::default(),
             children: indexmap::IndexMap::new(),
         };
-        // The package/target default is Snowflake; this node overrides to Databricks via
-        // `+adapter:`, which is only readable *after* this same merge produces it.
-        let resolver = ProjectConfigResolver::for_root(root, AdapterType::Snowflake);
-        let mut model_level_databricks_override = ModelConfig {
-            adapter: Some(AdapterType::Databricks),
-            ..Default::default()
-        };
-        model_level_databricks_override
-            .__warehouse_specific_config__
-            .catalog = Some("my_catalog".to_string());
-
-        let fqn = vec!["my_model".to_string()];
-        let resolved = resolver.with_configs(&fqn, &[Some(&model_level_databricks_override)]);
-
-        // Desired (not delivered): `database == Some("my_catalog")`, since the node actually
-        // runs on Databricks. Actual: canonicalization ran keyed to Snowflake (a no-op), so
-        // `database` stays unset and `catalog` stays an un-canonicalized extra key.
-        assert_eq!(resolved.database.into_inner().flatten(), None);
+        let resolver = ProjectConfigResolver::for_root(root, AdapterType::Databricks);
+        let resolved = resolve_inline(
+            &resolver,
+            "{{ config(database='b') }}{{ config(catalog='a') }}",
+        );
         assert_eq!(
-            resolved.__warehouse_specific_config__.catalog,
-            Some("my_catalog".to_string())
+            resolved.database.into_inner().flatten(),
+            Some("a".to_string())
+        );
+        assert_eq!(resolved.__warehouse_specific_config__.catalog, None);
+    }
+
+    /// `--adapter` fixes the table, so each call's `catalog` is renamed raw there too.
+    #[dbt_runtime::test]
+    async fn test_inline_later_catalog_beats_database_under_adapter_override() {
+        use crate::dbt_project_config_tests::per_adapter_config_resolver_tests::{
+            root_configs_declaring, root_package_resolver_with_override,
+        };
+        use dbt_schemas::schemas::profiles::DbConfig;
+
+        let root = root_configs_declaring(DbConfig::Databricks(Box::default()), "{}");
+        let resolver = root_package_resolver_with_override(&root, Some(AdapterType::Databricks));
+        let resolved = resolve_inline(
+            &resolver,
+            "{{ config(database='b') }}{{ config(catalog='a') }}",
+        );
+        assert_eq!(
+            resolved.database.into_inner().flatten(),
+            Some("a".to_string())
+        );
+        assert_eq!(resolved.__warehouse_specific_config__.catalog, None);
+    }
+
+    /// With per-adapter trees and no fixed table, each call's `catalog` is left to the typed hook,
+    /// which renames it per call, so a later `catalog` still beats an earlier `database`.
+    #[dbt_runtime::test]
+    async fn test_inline_later_catalog_beats_database_with_deferred_catalog() {
+        use crate::dbt_project_config_tests::per_adapter_config_resolver_tests::{
+            root_configs_declaring, root_package_resolver,
+        };
+        use dbt_schemas::schemas::profiles::DbConfig;
+
+        let root = root_configs_declaring(
+            DbConfig::Databricks(Box::default()),
+            "+adapter: databricks\n",
+        );
+        let resolver = root_package_resolver(&root);
+        let resolved = resolve_inline(
+            &resolver,
+            "{{ config(database='b') }}{{ config(catalog='a') }}",
+        );
+        assert_eq!(
+            resolved.database.into_inner().flatten(),
+            Some("a".to_string())
+        );
+        assert_eq!(resolved.__warehouse_specific_config__.catalog, None);
+    }
+
+    /// The reverse order: a later `database` beats an earlier deferred `catalog`.
+    #[dbt_runtime::test]
+    async fn test_inline_later_database_beats_catalog_with_deferred_catalog() {
+        use crate::dbt_project_config_tests::per_adapter_config_resolver_tests::{
+            root_configs_declaring, root_package_resolver,
+        };
+        use dbt_schemas::schemas::profiles::DbConfig;
+
+        let root = root_configs_declaring(
+            DbConfig::Databricks(Box::default()),
+            "+adapter: databricks\n",
+        );
+        let resolver = root_package_resolver(&root);
+        let resolved = resolve_inline(
+            &resolver,
+            "{{ config(catalog='a') }}{{ config(database='b') }}",
+        );
+        assert_eq!(
+            resolved.database.into_inner().flatten(),
+            Some("b".to_string())
+        );
+        assert_eq!(resolved.__warehouse_specific_config__.catalog, None);
+    }
+
+    /// Residual: a later deferred `catalog=none` does not clear an earlier `database`, as the
+    /// typed `catalog` cannot hold an explicit null. `#[ignore]`d: asserts the desired result.
+    #[dbt_runtime::test]
+    #[ignore = "residual: a deferred catalog=none does not clear an earlier database"]
+    async fn test_inline_later_null_catalog_clears_database_with_deferred_catalog() {
+        use crate::dbt_project_config_tests::per_adapter_config_resolver_tests::{
+            root_configs_declaring, root_package_resolver,
+        };
+        use dbt_schemas::schemas::profiles::DbConfig;
+
+        let root = root_configs_declaring(
+            DbConfig::Databricks(Box::default()),
+            "+adapter: databricks\n",
+        );
+        let resolver = root_package_resolver(&root);
+        let resolved = resolve_inline(
+            &resolver,
+            "{{ config(database='b') }}{{ config(catalog=none) }}",
+        );
+        assert_eq!(resolved.database.into_inner().flatten(), None);
+    }
+
+    /// Pins the existing fold, not dbt Core's call-by-call merge: the calls merge first, so the
+    /// later `+select` replaces the earlier one and then the project's `select`.
+    #[dbt_runtime::test]
+    async fn test_inline_grants_fold_across_calls_before_the_project_layer() {
+        use crate::dbt_project_config::{ProjectConfigResolver, init_project_config};
+
+        let models: ProjectModelConfig = dbt_jinja_utils::serde::from_yaml_raw(
+            "+grants:\n  select: [base]\n",
+            None,
+            false,
+            None,
+        )
+        .unwrap();
+        let root = init_project_config(
+            &Some(models),
+            Default::default(),
+            None,
+            false,
+            AdapterType::DuckDB,
+        )
+        .unwrap();
+        let resolver = ProjectConfigResolver::for_root(root, AdapterType::DuckDB);
+        let resolved = resolve_inline(
+            &resolver,
+            "{{ config(grants={'+select': ['a']}) }}{{ config(grants={'+select': ['b']}) }}",
+        );
+        let select: Option<Vec<String>> = resolved
+            .grants
+            .as_ref()
+            .and_then(|grants| grants.0.get("select").cloned())
+            .map(Into::into);
+        assert_eq!(select, Some(vec!["b".to_string()]));
+    }
+
+    /// Residual: an adapter set in an earlier `config()` call does not reach a later call's
+    /// raw-only aliases. `#[ignore]`d: pins it.
+    #[dbt_runtime::test]
+    #[ignore = "residual: an adapter set in an earlier config() call does not pick a later \
+                call's alias table"]
+    async fn test_inline_raw_only_alias_not_translated_for_adapter_set_in_earlier_call() {
+        use crate::dbt_project_config_tests::per_adapter_config_resolver_tests::root_package_resolver;
+
+        let resolver = root_package_resolver(&bigquery_declared());
+        let resolved = resolve_inline(
+            &resolver,
+            "{{ config(adapter='bigquery') }}{{ config(timeout_seconds=300) }}",
+        );
+        // Desired (not delivered): `Some(300)`, as BigQuery's table maps `timeout_seconds`.
+        assert_eq!(
+            resolved
+                .__warehouse_specific_config__
+                .job_execution_timeout_seconds,
+            None
         );
     }
 
@@ -2339,5 +2575,288 @@ mod tests {
         assert_eq!(source.name, "declared_source");
         assert_eq!(source.schema.as_deref(), Some("raw\n"));
         assert_eq!(source.database.as_deref(), Some("analytics\n"));
+    }
+
+    /// Resolves `children:` on a YAML selector atom through the real parse-time Jinja pass,
+    /// with `walk` bound in the render context, and reports the flag serde ends up with.
+    fn selector_children_flag(children_yaml: &str, walk: Value) -> Result<bool, String> {
+        use dbt_schemas::schemas::selectors::{
+            AtomExpr, SelectorDefinitionValue, SelectorExpr, SelectorFile,
+        };
+        let yaml = format!(
+            r#"
+            selectors:
+              - name: s
+                definition:
+                  method: fqn
+                  value: a
+                  children: {children_yaml}
+            "#
+        );
+        let val: dbt_yaml::Value = dbt_yaml::from_str(&yaml).unwrap();
+        let (env, _sql_resources, _init_cfg) = setup_test_env();
+        let mut ctx: BTreeMap<String, Value> = BTreeMap::new();
+        ctx.insert("walk".to_string(), walk);
+        let listeners: Vec<Rc<dyn minijinja::listener::RenderingEventListener>> = Vec::new();
+
+        let file: SelectorFile = dbt_jinja_utils::serde::into_typed_with_jinja(
+            val, false, &env, &ctx, &listeners, None, false,
+        )
+        .map_err(|e| e.to_string())?;
+
+        match &file.selectors[0].definition {
+            SelectorDefinitionValue::Full(SelectorExpr::Atom(AtomExpr::Method(m))) => {
+                Ok(m.children)
+            }
+            other => Err(format!("selector atom took an unexpected shape: {other:?}")),
+        }
+    }
+
+    /// A graph-walk flag authored as Jinja must end up with the boolean the expression means,
+    /// whichever of the two rendering paths it takes.
+    ///
+    /// `render_jinja_str` splits on the shape of the source: a lone `{{ ... }}` is compiled as
+    /// an expression and yields a *typed* value, so `"{{ true }}"` arrives at serde as a real
+    /// `Bool`. Anything else — a `{% if %}` block, or `{{ x }}` where `x` is itself a string —
+    /// is rendered as text and arrives as a `String`. Both paths have to resolve, which is why
+    /// the flags read through `yaml_11_bool_null_as_false` rather than a type that can only
+    /// hold the first: the string forms used to land in an enum variant answering `false` no
+    /// matter what the template said, silently skipping the walk.
+    ///
+    /// dbt-core, verified 2026-09-17 with `cargo mantle ls --selector ...` against
+    /// `dbt_conformance_regressions/selector_graph_flag_jinja`, agrees on every row here except
+    /// the two that render to the string `"false"`, where it walks the children anyway. Core
+    /// renders with `native=True` and then coerces with `bool(...)`
+    /// (`core/dbt/config/renderer.py:38-48`, `core/dbt/graph/selector_spec.py:131-134`), and
+    /// `bool("false")` is `True` in Python. Its treatment of a literal `"{{ false }}"` is
+    /// stranger still, and is why that row is *not* asserted here: Jinja constant-folds a
+    /// wholly-literal template into a string at compile time, so `quoted_native_concat` sees a
+    /// plain `str` rather than a `NativeMarker`, skips `literal_eval`, and hands `bool()` the
+    /// truthy string `"False"`. Route the same `false` through a variable and the fold cannot
+    /// happen, so core answers `false` — `"{{ false }}"` and `"{{ var('walk') }}"` with
+    /// `walk: false` disagree in core. Fusion answers `false` for both, which is consistent and
+    /// is plainly what the author wrote.
+    #[test]
+    fn test_jinja_authored_graph_walk_flag_resolves() {
+        // Single-expression path: a typed bool reaches serde. Works today.
+        assert_eq!(
+            selector_children_flag(r#""{{ true }}""#, Value::from(true)),
+            Ok(true)
+        );
+        assert_eq!(
+            selector_children_flag(r#""{{ false }}""#, Value::from(true)),
+            Ok(false)
+        );
+        assert_eq!(
+            selector_children_flag(r#""{{ walk }}""#, Value::from(true)),
+            Ok(true)
+        );
+        assert_eq!(
+            selector_children_flag(r#""{{ walk }}""#, Value::from(false)),
+            Ok(false)
+        );
+
+        // Mixed-template path: renders to the *string* "true"/"false".
+        assert_eq!(
+            selector_children_flag(r#""{% if true %}true{% endif %}""#, Value::from(true)),
+            Ok(true)
+        );
+        // Core walks the children here (`bool("false")`); deliberately not reproduced.
+        assert_eq!(
+            selector_children_flag(
+                r#""{% if false %}true{% else %}false{% endif %}""#,
+                Value::from(true)
+            ),
+            Ok(false)
+        );
+        // Text around the word survives the render, as it does in any block laid out over
+        // several lines. Core walks here too: `bool(" true ")` is `True`.
+        assert_eq!(
+            selector_children_flag(r#""{% if walk %} true {% endif %}""#, Value::from(true)),
+            Ok(true)
+        );
+
+        // Single-expression path, but the expression evaluates to a string — e.g. a var set on
+        // the CLI, which arrives as text. Also the string path.
+        assert_eq!(
+            selector_children_flag(r#""{{ walk }}""#, Value::from("true")),
+            Ok(true)
+        );
+        // Core walks the children here too, for the same reason.
+        assert_eq!(
+            selector_children_flag(r#""{{ walk }}""#, Value::from("false")),
+            Ok(false)
+        );
+
+        // No Jinja at all, but YAML 1.1: PyYAML resolves this to `True` before dbt-core ever
+        // renders it, so core walks the children; dbt-yaml's `yaml_11` feature does the same.
+        assert_eq!(selector_children_flag("yes", Value::from(true)), Ok(true));
+    }
+
+    /// A `children:` value that is neither a bool nor a bool-ish string does not fail here at
+    /// all, and this is a *separate* defect from the coercion covered above — tightening the
+    /// coercion cannot fix it.
+    ///
+    /// When `MethodAtomExpr` rejects the value, the untagged `AtomExpr` falls through to its
+    /// `MethodKey(BTreeMap<String, SelectorMethodValue>)` variant, which accepts *any* keys. So
+    /// the atom silently changes shape and the flag disappears rather than the parse failing.
+    /// The failure surfaces only if the selector is actually used, and then as `MethodKey must
+    /// have exactly one key-value pair` (`dbt-selector-parser/src/parser.rs:178-183`) — an
+    /// error naming neither `children` nor the offending value.
+    ///
+    /// Asserted as-is so that whoever tightens the fallback sees this test go red and updates
+    /// it deliberately.
+    #[test]
+    fn test_non_boolean_graph_walk_flag_falls_through_to_method_key() {
+        let err = selector_children_flag(r#""{{ 1 }}""#, Value::from(true))
+            .expect_err("a numeric `children` must not resolve to a graph-walk flag");
+        assert_contains!(&err, "MethodKey");
+    }
+
+    /// What a selector's `default:` resolves to by the time the parse-time Jinja pass is done.
+    #[derive(Debug, PartialEq)]
+    enum ResolvedDefault {
+        /// A boolean, or `None` for an absent or explicitly-null key.
+        Resolved(Option<bool>),
+        /// The value was rejected — either by the render or by the reader.
+        Rejected,
+    }
+
+    /// Resolves `default:` on a YAML selector through the real parse-time Jinja pass, with `d`
+    /// bound in the render context, and reports what the field ends up holding.
+    fn selector_default(default_yaml: &str, d: Value) -> ResolvedDefault {
+        use dbt_schemas::schemas::selectors::SelectorFile;
+        let yaml = format!(
+            r#"
+            selectors:
+              - name: s
+                default: {default_yaml}
+                definition: 'fqn:a'
+            "#
+        );
+        let val: dbt_yaml::Value = dbt_yaml::from_str(&yaml).unwrap();
+        let (env, _sql_resources, _init_cfg) = setup_test_env();
+        let mut ctx: BTreeMap<String, Value> = BTreeMap::new();
+        ctx.insert("d".to_string(), d);
+        let listeners: Vec<Rc<dyn minijinja::listener::RenderingEventListener>> = Vec::new();
+
+        let file: SelectorFile = match dbt_jinja_utils::serde::into_typed_with_jinja(
+            val, false, &env, &ctx, &listeners, None, false,
+        ) {
+            Err(_) => return ResolvedDefault::Rejected,
+            Ok(file) => file,
+        };
+
+        ResolvedDefault::Resolved(file.selectors[0].default)
+    }
+
+    /// A selector `default:` authored as Jinja must resolve, at parse time, to the boolean the
+    /// expression means — whichever of the two rendering paths the template takes, and
+    /// including failing the parse when it does not denote a boolean at all.
+    ///
+    /// This is the `default` half of what `test_jinja_authored_graph_walk_flag_resolves` covers
+    /// for the graph-walk flags, and the split between the paths is the same: a lone
+    /// `{{ ... }}` is compiled as an expression and yields a typed value, anything else renders
+    /// as text. `default` used to differ, being [`dbt_yaml::Verbatim`]: the render did not
+    /// happen here at all, the template was carried to `resolve_selector_definitions`, rendered
+    /// only if no CLI selection was given, and then coerced by a truthiness map that treated
+    /// any non-empty string as true.
+    ///
+    /// dbt-core resolves all of this while it loads selectors.yml, before it knows which
+    /// selector the run will use, so its answers are the eager ones. Verified 2026-09-17
+    /// (dbt-state v2.47.0) with `cargo mantle ls`. Core rejects the four rows below that render
+    /// to a *string* — it validates `default` against a JSON-schema boolean, and a rendered
+    /// template is a string even when it spells a boolean. Fusion resolves them instead,
+    /// deliberately: core's strictness there is an artifact of Jinja constant-folding a
+    /// wholly-literal template into a `str`, which is why core rejects even `"{{ true }}"`, and
+    /// rejecting it here would break selectors that work today for no gain.
+    #[test]
+    fn test_jinja_authored_selector_default_resolves() {
+        use ResolvedDefault::*;
+
+        // Single-expression path: a typed bool reaches serde.
+        assert_eq!(
+            selector_default(r#""{{ true }}""#, Value::from(true)),
+            Resolved(Some(true))
+        );
+        assert_eq!(
+            selector_default(r#""{{ false }}""#, Value::from(true)),
+            Resolved(Some(false))
+        );
+        assert_eq!(
+            selector_default(r#""{{ d }}""#, Value::from(true)),
+            Resolved(Some(true))
+        );
+        assert_eq!(
+            selector_default(r#""{{ d }}""#, Value::from(false)),
+            Resolved(Some(false))
+        );
+
+        // Single-expression path where the expression is itself a string — e.g. a var set on
+        // the CLI, which arrives as text — and the mixed-template path. Both yield strings.
+        assert_eq!(
+            selector_default(r#""{{ d }}""#, Value::from("true")),
+            Resolved(Some(true))
+        );
+        assert_eq!(
+            selector_default(r#""{{ d }}""#, Value::from("false")),
+            Resolved(Some(false))
+        );
+        assert_eq!(
+            selector_default(r#""{{ 'yes' }}""#, Value::from(true)),
+            Resolved(Some(true))
+        );
+        assert_eq!(
+            selector_default(r#""{% if true %}true{% endif %}""#, Value::from(true)),
+            Resolved(Some(true))
+        );
+        assert_eq!(
+            selector_default(r#""{% if d %} no {% endif %}""#, Value::from(true)),
+            Resolved(Some(false))
+        );
+
+        // No Jinja at all, but YAML 1.1. The render pass leaves it alone, and dbt-yaml's
+        // `yaml_11` feature resolves it, as it does for the graph-walk flags.
+        assert_eq!(
+            selector_default("yes", Value::from(true)),
+            Resolved(Some(true))
+        );
+        assert_eq!(
+            selector_default("no", Value::from(true)),
+            Resolved(Some(false))
+        );
+
+        // Renders to something that is not a boolean in any spelling: an error, not a value
+        // whose meaning is settled later by string truthiness.
+        assert_eq!(
+            selector_default(r#""{{ 0 }}""#, Value::from(true)),
+            Rejected
+        );
+        assert_eq!(
+            selector_default(r#""{{ 1 }}""#, Value::from(true)),
+            Rejected
+        );
+        assert_eq!(
+            selector_default(r#""{{ 'maybe' }}""#, Value::from(true)),
+            Rejected
+        );
+    }
+
+    /// Jinja in `default:` that cannot render must fail the parse, even when the selector is
+    /// never used — the same eager treatment every other field in selectors.yml gets.
+    ///
+    /// dbt-core renders `default` while loading selectors.yml, so it errors here too; verified
+    /// 2026-09-17 with `cargo mantle ls --select fqn:model_a` on
+    /// `dbt_conformance_regressions/selector_default_jinja_unrenderable`, which failed with
+    /// `Could not render {{ 1 + 'a' }}: unsupported operand type(s) for +: 'int' and 'str'`
+    /// despite the explicit `--select`. Fusion used to defer the render and reach it only when
+    /// no CLI selection was given, so the same project parsed clean under `--select` and the
+    /// broken expression was never reported.
+    #[test]
+    fn test_unrenderable_selector_default_fails_the_parse() {
+        assert_eq!(
+            selector_default(r#""{{ 1 + 'a' }}""#, Value::from(true)),
+            ResolvedDefault::Rejected
+        );
     }
 }

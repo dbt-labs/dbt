@@ -1,0 +1,4 @@
+model.test.c:
+- sequence: 0
+  type: execute
+  sql: DESCRIBE TABLE EXTENDED `e2e`.`adapters_databricks_column_datatypes`.`source` AS JSON

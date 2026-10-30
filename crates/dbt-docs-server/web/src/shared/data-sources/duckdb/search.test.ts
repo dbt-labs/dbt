@@ -69,6 +69,49 @@ describe('building the query', () => {
     expect(built!.sql).toContain("b.package_name IN ('jaffle_shop')");
   });
 
+  it('lists by materialization alone, with no search text', () => {
+    const built = buildSearchQuery('', { materializations: ['dynamic_table'] }, 50, 0);
+    expect(built).not.toBeNull();
+    expect(built!.sql).toContain("b.materialized IN ('dynamic_table')");
+    expect(built!.countSql).toContain("b.materialized IN ('dynamic_table')");
+  });
+
+  it('lists by modeling layer alone, restricted to models', () => {
+    const built = buildSearchQuery('', { modelingLayers: ['Marts'] }, 50, 0);
+    expect(built).not.toBeNull();
+    // Only models carry a layer, and the path is the union's own column.
+    expect(built!.sql).toContain("b.resource_type = 'model'");
+    expect(built!.sql).toContain("lower(b.original_file_path) LIKE '%/marts/%'");
+    // The count query has no ranking CASE, so its WHERE is only the filter.
+    expect(built!.countSql).not.toContain("'%/staging/%'");
+  });
+
+  it('applies layer and materialization filters alongside search text', () => {
+    const sql = sqlFor('orders', {
+      modelingLayers: ['Staging'],
+      materializations: ['view'],
+    }).sql;
+    expect(sql).toContain("lower(b.original_file_path) LIKE '%/staging/%'");
+    expect(sql).toContain("b.materialized IN ('view')");
+  });
+
+  it('keeps other selected types alongside a layer filter', () => {
+    const built = buildSearchQuery(
+      '',
+      { resourceTypes: ['source'], modelingLayers: ['Marts'] },
+      50,
+      0,
+    );
+    // Sources pass through; models are pulled into the union and narrowed to Marts.
+    expect(built!.countSql).toContain("b.resource_type IN ('source') OR");
+    expect(built!.countSql).toContain("b.resource_type = 'model' AND");
+    expect(built!.sql).toContain("'source', 'model'");
+  });
+
+  it('matches nothing for an unknown modeling layer', () => {
+    expect(sqlFor('', { modelingLayers: ['Nope'] }).sql).toContain('AND FALSE');
+  });
+
   it('ANDs multiple tokens by intersecting on unique_id', () => {
     // Every token must match, though not necessarily in the same field — which is
     // why the intersect is on the id rather than the whole match row.

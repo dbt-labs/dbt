@@ -1,0 +1,15 @@
+version: 2
+
+models:
+  - name: a
+    description: "Test model for persist_docs"
+    config:
+      persist_docs:
+        relation: true
+        columns: true
+      materialized: table
+    columns:
+      - name: id
+        description: "The primary key"
+      - name: name
+        description: "The user's name"

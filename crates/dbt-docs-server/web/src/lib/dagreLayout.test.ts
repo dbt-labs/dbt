@@ -136,3 +136,69 @@ describe('applyDagreLayout rank alignment', () => {
     expect(box.get('down_narrow')!.top).toBe(box.get('down_wide')!.top);
   });
 });
+
+describe('applyDagreLayout depth columns', () => {
+  /** The rank-axis centre of a card, i.e. which column it is in under LR. */
+  const columnOf = (box: ReturnType<typeof byId>, id: string) =>
+    (box.get(id)!.left + box.get(id)!.right) / 2;
+
+  it('puts every card the same number of hops from the root in one column', () => {
+    // `1+ / +1` around the root, but with edges among the cards on each side: a parent
+    // that also feeds the other parent, and a child that also feeds the other child.
+    // Ranked by those edges, `up_a` and `down_b` would each land a column further out.
+    const nodes = [
+      card('up_a', 245),
+      card('up_b', 245),
+      card(ROOT, 245),
+      card('down_a', 245),
+      card('down_b', 245),
+    ];
+    const edges: Edge[] = [
+      { id: 'e1', source: 'up_a', target: ROOT },
+      { id: 'e2', source: 'up_b', target: ROOT },
+      { id: 'e3', source: 'up_a', target: 'up_b' },
+      { id: 'e4', source: ROOT, target: 'down_a' },
+      { id: 'e5', source: ROOT, target: 'down_b' },
+      { id: 'e6', source: 'down_a', target: 'down_b' },
+    ];
+    const box = byId(applyDagreLayout(nodes, edges, { rankdir: 'LR' }, ROOT));
+
+    // Three columns: upstream, the root, downstream.
+    expect(columnOf(box, 'up_b')).toBe(columnOf(box, 'up_a'));
+    expect(columnOf(box, 'down_b')).toBe(columnOf(box, 'down_a'));
+    expect(box.get('up_a')!.right).toBeLessThan(box.get(ROOT)!.left);
+    expect(box.get('down_a')!.left).toBeGreaterThan(box.get(ROOT)!.right);
+    // Sharing a column, the cards stack rather than overlap.
+    const [upper, lower] = [box.get('up_a')!, box.get('up_b')!].sort(
+      (a, b) => a.top - b.top,
+    );
+    expect(upper.bottom).toBeLessThanOrEqual(lower.top);
+  });
+
+  it('keeps each card at its depth when the cards between it and the root are hidden', () => {
+    // The root and the snapshot between it and `model` are hidden. Laid out on the
+    // visible cards alone, the two parents and the two downstream cards are four
+    // disconnected pieces that dagre would rank on their own.
+    const nodes = [
+      card('up_a', 245),
+      card('up_b', 245),
+      { ...card(ROOT, 245), hidden: true },
+      card('down_a', 245),
+      { ...card('snapshot', 245), hidden: true },
+      card('model', 245),
+    ];
+    const edges: Edge[] = [
+      { id: 'e1', source: 'up_a', target: ROOT },
+      { id: 'e2', source: 'up_b', target: ROOT },
+      { id: 'e3', source: ROOT, target: 'down_a' },
+      { id: 'e4', source: ROOT, target: 'snapshot' },
+      { id: 'e5', source: 'snapshot', target: 'model' },
+    ];
+    const box = byId(applyDagreLayout(nodes, edges, { rankdir: 'LR' }, ROOT));
+
+    expect(columnOf(box, 'up_b')).toBe(columnOf(box, 'up_a'));
+    // One hop down, then two.
+    expect(columnOf(box, 'down_a')).toBeGreaterThan(columnOf(box, 'up_a'));
+    expect(columnOf(box, 'model')).toBeGreaterThan(columnOf(box, 'down_a'));
+  });
+});

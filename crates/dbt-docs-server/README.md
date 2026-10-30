@@ -243,9 +243,25 @@ React or component knowledge:
   [`web/index.html`](./web/index.html).
 - **Favicon** — none is set by default. Add an icon file under `web/public/`
   and a `<link rel="icon" href="/your-icon.ico">` tag in `web/index.html`.
+- **Landing page content** — the home page renders a built-in dashboard by
+  default. To replace it, author a `{% docs __overview__ %}` block anywhere
+  in your project — conventionally `docs/overview.md`:
+  ```markdown
+  {% docs __overview__ %}
+  # Welcome to our data platform
+  Whatever you want the landing page to say.
+  {% enddocs %}
+  ```
+  Then `dbt docs generate` (or `dbt docs serve`) as usual. Same `__overview__`
+  convention dbt Docs v1 used — no `web/` code changes needed, but it does
+  read from a dbt version that writes the newer information-schema format
+  (`dbt.docs_blocks`); older dbt versions wrote this under a different table
+  name and won't surface it here.
 
-Rebuild (`pnpm build`) and commit `web/dist/` after any of these, same as any
-other `web/` change.
+The first three (accent color, title, favicon) are `web/` source edits —
+rebuild (`pnpm build`) and commit `web/dist/` after any of those, same as any
+other `web/` change. Landing page content is a project-level change and
+needs neither.
 
 ## 🤝 Contributing
 

@@ -1,3 +1,5 @@
+use std::fmt;
+
 pub use crate::pretty_string::{BLUE, CYAN, DIM, GREEN, MAGENTA, PLAIN, RED, WHITE, YELLOW};
 use console::Style;
 use dbt_tracing::SeverityNumber;
@@ -13,10 +15,35 @@ pub fn severity_to_color_style(severity_number: SeverityNumber) -> &'static Styl
     }
 }
 
-pub fn maybe_apply_color(style: &Style, value: &str, colorize: bool) -> String {
-    if colorize {
-        style.apply_to(value).to_string()
-    } else {
-        value.to_string()
+/// Displays `value`, styled with `style` when `colorize` is set, irrespective of the
+/// global auto-detected `console` setting.
+#[derive(Clone, Copy)]
+pub struct MaybeColored<'a, D> {
+    pub style: &'a Style,
+    pub value: D,
+    pub colorize: bool,
+}
+
+impl<'a, D: fmt::Display> MaybeColored<'a, D> {
+    pub fn new(style: &'a Style, value: D, colorize: bool) -> Self {
+        Self {
+            style,
+            value,
+            colorize,
+        }
+    }
+}
+
+impl<D: fmt::Display> fmt::Display for MaybeColored<'_, D> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.colorize {
+            write!(
+                f,
+                "{}",
+                self.style.apply_to(&self.value).force_styling(true)
+            )
+        } else {
+            write!(f, "{}", self.value)
+        }
     }
 }

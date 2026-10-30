@@ -1,0 +1,7 @@
+kind: Fixes
+body: Honor Snowflake catalog-linked database identifier case sensitivity during static analysis.
+time: 2026-09-22T07:54:01.317603421-07:00
+custom:
+    author: mach-kernel
+    issue: "16389"
+    project: dbt-core

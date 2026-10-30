@@ -1,0 +1,154 @@
+flags:
+  send_anonymous_usage_stats: false
+name: test
+profile: fusion_tests
+
+macro-paths: ["macros"]
+
+models:
+  test:
+    +static_analysis: off
+
+    initialization_warehouse:
+      # test create with init warehouse set (different from warehouse)
+      init_wh:
+        +materialized: dynamic_table
+        +snowflake_warehouse: FUSION_SLT_WAREHOUSE
+        +target_lag: 1 hour
+        +snowflake_initialization_warehouse: FUSION_SLT_WAREHOUSE
+
+      # test create without init warehouse
+      no_init_wh:
+        +materialized: dynamic_table
+        +snowflake_warehouse: FUSION_SLT_WAREHOUSE
+        +target_lag: 1 hour
+
+      # test create with init warehouse set (to be unset in run_2)
+      same_wh:
+        +materialized: dynamic_table
+        +snowflake_warehouse: FUSION_SLT_WAREHOUSE
+        +target_lag: 1 hour
+        +snowflake_initialization_warehouse: FUSION_SLT_WAREHOUSE
+
+    initialize:
+      # test create with ON_CREATE (default)
+      init_default:
+        +materialized: dynamic_table
+        +snowflake_warehouse: FUSION_SLT_WAREHOUSE
+        +target_lag: 1 hour
+
+      # test create with ON_SCHEDULE
+      init_on_schedule:
+        +materialized: dynamic_table
+        +snowflake_warehouse: FUSION_SLT_WAREHOUSE
+        +target_lag: 1 hour
+        +initialize: ON_SCHEDULE
+
+    target_lag:
+      # test create with specific lag
+      lag:
+        +materialized: dynamic_table
+        +snowflake_warehouse: FUSION_SLT_WAREHOUSE
+        +target_lag: 1 hour
+
+    refresh_mode:
+      # test create with AUTO refresh mode (default)
+      refresh_auto:
+        +materialized: dynamic_table
+        +snowflake_warehouse: FUSION_SLT_WAREHOUSE
+        +target_lag: 1 hour
+
+      # test create with FULL refresh mode
+      refresh_full:
+        +materialized: dynamic_table
+        +snowflake_warehouse: FUSION_SLT_WAREHOUSE
+        +target_lag: 1 hour
+        +refresh_mode: FULL
+
+    cluster_by:
+      # test create with cluster_by, then alter to different key
+      dt_cluster_alter:
+        +materialized: dynamic_table
+        +snowflake_warehouse: FUSION_SLT_WAREHOUSE
+        +target_lag: 1 hour
+        +cluster_by: [id]
+
+      # test create with cluster_by, then drop clustering key
+      dt_cluster_drop:
+        +materialized: dynamic_table
+        +snowflake_warehouse: FUSION_SLT_WAREHOUSE
+        +target_lag: 1 hour
+        +cluster_by: [id]
+
+    transient:
+      # test create as transient dynamic table
+      dt_transient1:
+        +materialized: dynamic_table
+        +snowflake_warehouse: FUSION_SLT_WAREHOUSE
+        +target_lag: 1 hour
+        +transient: true
+
+    copy_grants:
+      # test create with copy_grants
+      dt_copy_grants1:
+        +materialized: dynamic_table
+        +snowflake_warehouse: FUSION_SLT_WAREHOUSE
+        +target_lag: 1 hour
+        +copy_grants: true
+
+    immutable_where:
+      # test create with immutable_where clause
+      dt_imw1:
+        +materialized: dynamic_table
+        +snowflake_warehouse: FUSION_SLT_WAREHOUSE
+        +target_lag: 1 hour
+        +refresh_mode: INCREMENTAL
+        +immutable_where: "id < 100"
+
+    scheduler:
+      # test create with scheduler=DISABLE (no target_lag)
+      scheduler_disable:
+        +materialized: dynamic_table
+        +snowflake_warehouse: FUSION_SLT_WAREHOUSE
+        +scheduler: disable
+
+      # test create with scheduler=ENABLE (with target_lag)
+      scheduler_enable:
+        +materialized: dynamic_table
+        +snowflake_warehouse: FUSION_SLT_WAREHOUSE
+        +target_lag: 5 minutes
+        +scheduler: enable
+
+    iceberg:
+      # managed storage: no external_volume configured. Snowflake's built-in
+      # SNOWFLAKE catalog rejects BASE_LOCATION on these tables, so the
+      # generated DDL must omit the clause entirely (dbt-core #15659).
+      dt_iceberg_managed:
+        +materialized: dynamic_table
+        +snowflake_warehouse: FUSION_SLT_WAREHOUSE
+        +target_lag: 1 hour
+        +table_format: iceberg
+
+      # control case: external_volume configured, so BASE_LOCATION must still
+      # be synthesized and included, on both CREATE and CREATE OR REPLACE.
+      dt_iceberg_external_volume:
+        +materialized: dynamic_table
+        +snowflake_warehouse: FUSION_SLT_WAREHOUSE
+        +target_lag: 1 hour
+        +table_format: iceberg
+        +external_volume: s3_iceberg_snow
+        +base_location_root: fs_test_user
+        +base_location_subpath: ci
+
+      # explicit external_volume = SNOWFLAKE_MANAGED (Snowflake's reserved
+      # value requesting managed storage). BASE_LOCATION is just as invalid
+      # here as when external_volume is unset entirely, so it must still be
+      # omitted from the DDL, even with base_location_root/subpath set.
+      dt_iceberg_explicit_snowflake_managed:
+        +materialized: dynamic_table
+        +snowflake_warehouse: FUSION_SLT_WAREHOUSE
+        +target_lag: 1 hour
+        +table_format: iceberg
+        +external_volume: SNOWFLAKE_MANAGED
+        +base_location_root: fs_test_user
+        +base_location_subpath: ci

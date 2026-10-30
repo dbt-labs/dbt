@@ -255,14 +255,14 @@ impl Format {
             headers
         };
 
-        // Build a boolean mask for forced text columns (case-insensitive match using dbt-ident)
+        // Build a boolean mask for forced text columns (case-insensitive match using dbt-sql-base)
         // This handles dialect-specific normalization (e.g., Snowflake uppercases column_types keys)
         // Also track which text_columns weren't found for warning
         let mut is_force_text_col: Vec<bool> = vec![false; headers.len()];
         let mut missing_columns: Vec<String> = Vec::new();
 
         for text_col in text_columns {
-            let text_col_ident = dbt_ident::Ident::new(text_col);
+            let text_col_ident = dbt_sql_base::Ident::new(text_col);
             if let Some(idx) = headers.iter().position(|h| text_col_ident.matches(h)) {
                 is_force_text_col[idx] = true;
             } else {

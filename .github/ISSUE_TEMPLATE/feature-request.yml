@@ -1,7 +1,7 @@
 name: ✨ Feature
 description: Propose a straightforward extension of dbt functionality
 title: "[Feature] <title>"
-labels: ["enhancement", "triage", "type:feature", "status:triage"]
+labels: ["enhancement", "type:feature", "status:triage"]
 body:
   - type: markdown
     attributes:
@@ -29,12 +29,11 @@ body:
     attributes:
       label: Which version of dbt is this feature for?
       description: >
-        This helps us route the request. dbt v2.x covers the Core and Fusion distributions.
-        A maintainer will apply the corresponding label after triage.
+        This helps us route the request. A maintainer will apply the corresponding label after triage.
       options:
-        - dbt v2.x (Core or Fusion)
-        - dbt 1.x
-        - Not sure / both
+        - dbt v2.x
+        - dbt v1.x
+        - Not sure
     validations:
       required: true
   - type: textarea

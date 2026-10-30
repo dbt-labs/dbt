@@ -3,10 +3,10 @@ use crate::cast_util::downcast_value_to_dyn_base_relation;
 use crate::relation::{RelationObject, do_create_relation};
 use crate::value::empty_mutable_vec_value;
 
-use dashmap::{DashMap, DashSet};
 use dbt_adapter_core::AdapterType;
 use dbt_common::FsError;
-use dbt_schemas::schemas::dbt_catalogs::DbtCatalogs;
+use dbt_common::collections::{SccHashMap, SccHashSet};
+use dbt_schemas::schemas::dbt_catalogs_deprecated::DbtCatalogs;
 use dbt_schemas::schemas::relations::base::{BaseRelation, RelationPattern};
 use minijinja::constants::TARGET_UNIQUE_ID;
 use minijinja::{State, Value};
@@ -22,6 +22,34 @@ type RelationsToFetch = (
     BTreeMap<String, Vec<RelationPattern>>,
 );
 
+/// Downcast every recorded relation value, stopping at the first failure.
+fn collect_relations(
+    calls: &SccHashMap<String, Vec<Value>>,
+) -> Result<BTreeMap<String, Vec<Arc<dyn BaseRelation>>>, minijinja::Error> {
+    let mut relations = BTreeMap::new();
+    let mut error = None;
+    calls.iter_sync(|unique_id, values| {
+        match values
+            .iter()
+            .map(downcast_value_to_dyn_base_relation)
+            .collect::<Result<Vec<Arc<dyn BaseRelation>>, minijinja::Error>>()
+        {
+            Ok(downcast) => {
+                relations.insert(unique_id.to_owned(), downcast);
+                true
+            }
+            Err(e) => {
+                error = Some(e);
+                false
+            }
+        }
+    });
+    match error {
+        Some(e) => Err(e),
+        None => Ok(relations),
+    }
+}
+
 #[derive(Clone)]
 pub struct ParseAdapterState {
     pub adapter_type: AdapterType,
@@ -31,15 +59,15 @@ pub struct ParseAdapterState {
     /// this object carries useful dependencies.
     pub engine: Arc<dyn AdapterEngine>,
     /// The call_get_relation method calls found during parse
-    pub call_get_relation: DashMap<String, Vec<Value>>,
+    pub call_get_relation: SccHashMap<String, Vec<Value>>,
     /// The call_get_columns_in_relation method calls found during parse
-    call_get_columns_in_relation: DashMap<String, Vec<Value>>,
+    call_get_columns_in_relation: SccHashMap<String, Vec<Value>>,
     /// A patterned relation may turn to many dangling sources
-    patterned_dangling_sources: DashMap<String, Vec<RelationPattern>>,
+    patterned_dangling_sources: SccHashMap<String, Vec<RelationPattern>>,
     /// A list of unsafe nodes detected during parse (unsafe nodes are nodes that have introspection qualities that make them non-deterministic / stateful)
-    pub unsafe_nodes: DashSet<String>,
+    pub unsafe_nodes: SccHashSet<String>,
     /// SQLs that are found passed in to adapter.execute in the hidden Parse phase
-    pub execute_sqls: DashSet<String>,
+    pub execute_sqls: SccHashSet<String>,
     /// catalogs.yml stored when found and loaded
     pub catalogs: Option<Arc<DbtCatalogs>>,
 }
@@ -53,11 +81,11 @@ impl ParseAdapterState {
         ParseAdapterState {
             adapter_type,
             engine,
-            call_get_relation: DashMap::new(),
-            call_get_columns_in_relation: DashMap::new(),
-            patterned_dangling_sources: DashMap::new(),
-            unsafe_nodes: DashSet::new(),
-            execute_sqls: DashSet::new(),
+            call_get_relation: SccHashMap::default(),
+            call_get_columns_in_relation: SccHashMap::default(),
+            patterned_dangling_sources: SccHashMap::default(),
+            unsafe_nodes: SccHashSet::default(),
+            execute_sqls: SccHashSet::default(),
             catalogs,
         }
     }
@@ -100,7 +128,7 @@ impl ParseAdapterState {
         if state.is_execute() {
             if let Some(unique_id) = state.lookup(TARGET_UNIQUE_ID, &[]) {
                 self.call_get_relation
-                    .entry(unique_id.to_string())
+                    .entry_sync(unique_id.to_string())
                     .or_default()
                     .push(relation);
             } else {
@@ -122,7 +150,7 @@ impl ParseAdapterState {
             if let Some(unique_id) = state.lookup(TARGET_UNIQUE_ID, &[]) {
                 let relation_value = RelationObject::new(relation.to_owned()).into_value();
                 self.call_get_columns_in_relation
-                    .entry(unique_id.to_string())
+                    .entry_sync(unique_id.to_string())
                     .or_default()
                     .push(relation_value);
             } else {
@@ -137,41 +165,18 @@ impl ParseAdapterState {
     /// patterned_dangling_sources is a vector of patterned dangling source relations
     #[allow(clippy::type_complexity)]
     pub fn relations_to_fetch(&self) -> RelationsToFetch {
-        let relations_to_fetch = self
-            .call_get_relation
-            .iter()
-            .map(|v| {
-                Ok((
-                    v.key().to_owned(),
-                    v.value()
-                        .iter()
-                        .map(|v| downcast_value_to_dyn_base_relation(v))
-                        .collect::<Result<Vec<Arc<dyn BaseRelation>>, minijinja::Error>>()?,
-                ))
-            })
-            .collect::<Result<BTreeMap<String, Vec<Arc<dyn BaseRelation>>>, minijinja::Error>>()
+        let relations_to_fetch = collect_relations(&self.call_get_relation)
             .map_err(|e| FsError::from_jinja_err(e, "Failed to collect get_relation"));
 
-        let relations_to_fetch_columns = self
-            .call_get_columns_in_relation
-            .iter()
-            .map(|v| {
-                Ok((
-                    v.key().to_owned(),
-                    v.value()
-                        .iter()
-                        .map(|v| downcast_value_to_dyn_base_relation(v))
-                        .collect::<Result<Vec<Arc<dyn BaseRelation>>, minijinja::Error>>()?,
-                ))
-            })
-            .collect::<Result<BTreeMap<String, Vec<Arc<dyn BaseRelation>>>, minijinja::Error>>()
+        let relations_to_fetch_columns = collect_relations(&self.call_get_columns_in_relation)
             .map_err(|e| FsError::from_jinja_err(e, "Failed to collect get_columns_in_relation"));
 
-        let patterned_dangling_sources: BTreeMap<String, Vec<RelationPattern>> = self
-            .patterned_dangling_sources
-            .iter()
-            .map(|r| (r.key().to_owned(), r.value().to_owned()))
-            .collect();
+        let mut patterned_dangling_sources: BTreeMap<String, Vec<RelationPattern>> =
+            BTreeMap::new();
+        self.patterned_dangling_sources.iter_sync(|k, v| {
+            patterned_dangling_sources.insert(k.to_owned(), v.to_owned());
+            true
+        });
         (
             relations_to_fetch,
             relations_to_fetch_columns,
@@ -214,7 +219,7 @@ impl ParseAdapterState {
         if state.is_execute() {
             if let Some(unique_id) = state.lookup(TARGET_UNIQUE_ID, &[]) {
                 self.patterned_dangling_sources
-                    .entry(unique_id.to_string())
+                    .entry_sync(unique_id.to_string())
                     .or_default()
                     .push(patterned_relation);
             } else {
@@ -226,7 +231,7 @@ impl ParseAdapterState {
         Ok(empty_mutable_vec_value())
     }
 
-    pub fn unsafe_nodes(&self) -> &DashSet<String> {
+    pub fn unsafe_nodes(&self) -> &SccHashSet<String> {
         &self.unsafe_nodes
     }
 }

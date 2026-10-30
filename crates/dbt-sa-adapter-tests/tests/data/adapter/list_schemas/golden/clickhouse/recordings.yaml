@@ -1,0 +1,16 @@
+model.test.a:
+- sequence: 0
+  type: execute
+  sql: DROP DATABASE IF EXISTS `adapters_clickhouse_list_schemas_1`
+- sequence: 1
+  type: execute
+  sql: DROP DATABASE IF EXISTS `adapters_clickhouse_list_schemas_2`
+- sequence: 2
+  type: execute
+  sql: CREATE DATABASE `adapters_clickhouse_list_schemas_1`
+- sequence: 3
+  type: execute
+  sql: CREATE DATABASE `adapters_clickhouse_list_schemas_2`
+- sequence: 4
+  type: execute
+  sql: select name from system.databases

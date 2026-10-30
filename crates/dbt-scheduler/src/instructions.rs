@@ -1,11 +1,15 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     fmt,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
-use datafusion_expr::LogicalPlan;
+use arrow_schema::SchemaRef;
+use dbt_adapter_core::AdapterType;
 use dbt_common::CompiledSpans;
+use dbt_frontend_common::result::LocalResultQuery;
+
 #[derive(Debug, Default, Clone)]
 pub struct Instructions {
     pub sql_instructions: BTreeMap<String, SqlInstruction>,
@@ -66,8 +70,40 @@ pub struct SqlInstruction {
 #[derive(Debug, Clone)]
 pub struct LpInstruction {
     pub fqn: Vec<String>,
-    pub plan: LogicalPlan,
+    pub plan: LpPlan,
     pub original_path: PathBuf,
+}
+
+/// The bound plan of an `Lp` instruction: what the frontend that bound it
+/// emitted for executors. The plan itself stays in the frontend.
+#[derive(Debug, Clone)]
+pub struct LpPlan(pub Arc<RemotePlan>);
+
+/// What executors read from a bound plan, emitted by the frontend.
+#[derive(Debug)]
+pub struct RemotePlan {
+    /// The plan's output schema; `None` for statements that return no rows.
+    pub output_schema: Option<SchemaRef>,
+    /// The plan as text, for logs.
+    pub display: String,
+    /// The plan emitted as SQL for the local engine, by the source adapter
+    /// whose dialect it was emitted from. `Err` holds the emitter's message.
+    pub emitted_sql: HashMap<AdapterType, Result<String, String>>,
+    /// Terminal queries and the metadata needed to collect their results.
+    pub result_queries: HashMap<AdapterType, Result<LocalResultQuery, String>>,
+}
+
+impl LpPlan {
+    /// The plan's output schema; `None` for statements that return no rows
+    /// (DDL, DML, COPY, EXPLAIN, ...).
+    pub fn output_schema(&self) -> Option<SchemaRef> {
+        self.0.output_schema.clone()
+    }
+
+    /// The plan as text, for logs.
+    pub fn display(&self) -> String {
+        self.0.display.clone()
+    }
 }
 
 impl Instruction {

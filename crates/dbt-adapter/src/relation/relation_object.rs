@@ -3,7 +3,7 @@ use dbt_common::{ErrorCode, FsError, FsResult, fs_err};
 use dbt_schemas::dbt_types::RelationType;
 use dbt_schemas::filter::RunFilter;
 use dbt_schemas::schemas::common::{DbtQuoting, ResolvedQuoting};
-use dbt_schemas::schemas::dbt_catalogs_v2::CatalogType;
+use dbt_schemas::schemas::dbt_catalogs::CatalogType;
 use dbt_schemas::schemas::relations::base::BaseRelation;
 use dbt_schemas::schemas::serde::minijinja_value_to_typed_struct;
 use dbt_schemas::schemas::{DbtSource, InternalDbtNodeAttributes, InternalDbtNodeWrapper};
@@ -80,6 +80,36 @@ impl RelationObject {
             }),
             event_time,
         }
+    }
+
+    /// Wraps a relation derived from this one, keeping this relation's run filter.
+    fn with_relation(&self, relation: Arc<dyn BaseRelation>) -> Self {
+        Self {
+            relation,
+            run_filter: self.run_filter.clone(),
+            event_time: self.event_time.clone(),
+        }
+    }
+
+    /// This relation for `adapter_type`: its components (in the case its own adapter renders),
+    /// type, quote policy and run filter, with that adapter's quote character and include policy.
+    pub fn for_adapter(&self, adapter_type: AdapterType) -> Result<Self, minijinja::Error> {
+        let relation = &self.relation;
+        let (database, schema, identifier) = canonical_relation_parts(
+            Some(relation.adapter_type()),
+            relation.database().unwrap_or_default(),
+            relation.schema().unwrap_or_default(),
+            relation.identifier().unwrap_or_default(),
+        );
+        let rebuilt = do_create_relation(
+            adapter_type,
+            database,
+            schema,
+            Some(identifier),
+            relation.relation_type(),
+            relation.quote_policy(),
+        )?;
+        Ok(self.with_relation(rebuilt.into()))
     }
 
     pub fn has_filter(&self) -> bool {
@@ -202,7 +232,7 @@ impl Object for RelationObject {
                 let identifier: Option<String> =
                     args.consume_optional_only_from_kwargs("identifier");
                 self.replace_path(database, schema, identifier)
-                    .map(|r| Value::from_object(RelationObject::new(r)))
+                    .map(|r| Value::from_object(self.with_relation(r)))
             }
             "get" => {
                 let mut args = ArgParser::new(args, None);
@@ -227,14 +257,14 @@ impl Object for RelationObject {
             }
             "without_identifier" => self
                 .without_identifier()
-                .map(|r| Value::from_object(RelationObject::new(r))),
+                .map(|r| Value::from_object(self.with_relation(r))),
             "include" => {
                 let mut args = ArgParser::new(args, None);
                 let database: Option<bool> = args.consume_optional_only_from_kwargs("database");
                 let schema: Option<bool> = args.consume_optional_only_from_kwargs("schema");
                 let identifier: Option<bool> = args.consume_optional_only_from_kwargs("identifier");
                 self.include(database, schema, identifier)
-                    .map(|r| Value::from_object(RelationObject::new(r)))
+                    .map(|r| Value::from_object(self.with_relation(r)))
             }
             "quote" => {
                 let mut args = ArgParser::new(args, None);
@@ -242,7 +272,7 @@ impl Object for RelationObject {
                 let schema: Option<bool> = args.consume_optional_only_from_kwargs("schema");
                 let identifier: Option<bool> = args.consume_optional_only_from_kwargs("identifier");
                 self.quote(database, schema, identifier)
-                    .map(|r| Value::from_object(RelationObject::new(r)))
+                    .map(|r| Value::from_object(self.with_relation(r)))
             }
             "incorporate" => {
                 let mut args = ArgParser::new(args, None);
@@ -258,7 +288,7 @@ impl Object for RelationObject {
                     }
                 });
                 self.incorporate(path, relation_type, location)
-                    .map(|r| Value::from_object(RelationObject::new(r)))
+                    .map(|r| Value::from_object(self.with_relation(r)))
             }
             "information_schema" => {
                 let iter = ArgsIter::new("information_schema", &["view_name"], args);
@@ -349,6 +379,7 @@ impl Object for RelationObject {
             Some("identifier") | Some("name") | Some("table") => {
                 Some(Value::from(self.identifier()))
             }
+            Some("quote_policy") => Some(Value::from_serialize(self.quote_policy())),
 
             Some("is_table") => Some(Value::from(self.is_table())),
             Some("is_delta") => Some(Value::from(self.is_delta())),
@@ -408,6 +439,15 @@ impl Object for RelationObject {
 
             // ClickHouse
             Some("can_exchange") => Some(Value::from(self.can_exchange())),
+            Some("can_on_cluster") => Some(Value::from(self.can_on_cluster())),
+            // No adapter at hand in an attribute getter, so an unstamped relation reads `false`
+            // here; `on_cluster_clause` asks `adapter.should_on_cluster(relation=…)` instead.
+            Some("should_on_cluster") => Some(Value::from(
+                crate::metadata::clickhouse::relation_should_on_cluster(
+                    self.relation.as_ref(),
+                    false,
+                ),
+            )),
             Some("mvs_pointing_to_it") => Some(Value::from_serialize(self.mvs_pointing_to_it())),
             Some("is_refreshable") => Some(Value::from(self.is_refreshable())),
             Some("refreshable_append") => Some(Value::from(self.refreshable_append())),
@@ -455,11 +495,62 @@ impl Object for RelationObject {
     }
 }
 
+/// Return relation components normalized for the effective target.
+pub fn canonical_relation_parts(
+    target: Option<AdapterType>,
+    database: &str,
+    schema: &str,
+    identifier: &str,
+) -> (String, String, String) {
+    if target == Some(AdapterType::Databricks) {
+        (
+            database.to_lowercase(),
+            schema.to_lowercase(),
+            identifier.to_lowercase(),
+        )
+    } else {
+        (
+            database.to_string(),
+            schema.to_string(),
+            identifier.to_string(),
+        )
+    }
+}
+
 /// Whether a Jinja value contains a parse-time relation placeholder.
 pub fn is_parse_time_relation(value: &Value) -> bool {
     value
         .downcast_object_ref::<RelationObject>()
         .is_some_and(RelationObject::is_parse_time)
+}
+
+/// Render a relation using the effective destination when one is present.
+/// Databricks-targeted rendering uses canonical, unquoted lower-case components; all
+/// other targets retain the adapter's normal relation rendering.
+pub fn render_effective_relation(
+    adapter_type: AdapterType,
+    database: &str,
+    schema: &str,
+    identifier: &str,
+    custom_quoting: ResolvedQuoting,
+    target: Option<AdapterType>,
+) -> FsResult<String> {
+    match target {
+        Some(AdapterType::Databricks) => {
+            let (database, schema, identifier) =
+                canonical_relation_parts(target, database, schema, identifier);
+            Ok(format!("{database}.{schema}.{identifier}"))
+        }
+        _ => create_relation(
+            adapter_type,
+            database.to_owned(),
+            schema.to_owned(),
+            Some(identifier.to_owned()),
+            None,
+            custom_quoting,
+        )
+        .map(|relation| relation.render_self_as_str()),
+    }
 }
 
 /// Creates a relation based on the adapter type
@@ -548,14 +639,52 @@ pub fn create_relation_from_node(
     node: &dyn InternalDbtNodeAttributes,
     _sample_config: Option<RunFilter>,
 ) -> FsResult<Box<dyn BaseRelation>> {
-    create_relation(
+    // Build sources like Jinja's `source()`: untyped (as in dbt Core, so no length check).
+    if let Some(source) = node.as_any().downcast_ref::<DbtSource>() {
+        return create_relation_from_source(
+            adapter_type,
+            node.database(),
+            node.schema(),
+            node.base().alias.clone(), // all identifiers are consolidated to alias in InternalDbtNode
+            node.quoting(),
+            source,
+        );
+    }
+
+    let mut relation = create_relation(
         adapter_type,
         node.database(),
         node.schema(),
         Some(node.base().alias.clone()), // all identifiers are consolidated to alias in InternalDbtNode
         Some(RelationType::from(node.materialized())),
         node.quoting(),
-    )
+    )?;
+    if adapter_type == AdapterType::ClickHouse {
+        apply_clickhouse_node_config(&mut relation, &node.serialized_config());
+    }
+    Ok(relation)
+}
+
+/// relation.py `ClickHouseRelation.create_from`: the per-model `disable_on_cluster` opt-out.
+pub fn apply_clickhouse_node_config(
+    relation: &mut Box<dyn BaseRelation>,
+    config: &dbt_yaml::Value,
+) {
+    let disable = config
+        .get("disable_on_cluster")
+        .or_else(|| {
+            config
+                .get("__warehouse_specific_config__")
+                .and_then(|wh| wh.get("disable_on_cluster"))
+        })
+        .is_some_and(|v| match v {
+            dbt_yaml::Value::Bool(b, _) => *b,
+            dbt_yaml::Value::String(s, _) => s.eq_ignore_ascii_case("true"),
+            _ => false,
+        });
+    if disable && let Some(inner) = relation.as_any().downcast_ref::<Relation>() {
+        *relation = Box::new(inner.clone().with_can_on_cluster(Some(false)));
+    }
 }
 
 fn duckdb_external_location_for_source(source: &DbtSource) -> FsResult<Option<String>> {
@@ -666,7 +795,7 @@ fn duckdb_local_filesystem_root(source: &DbtSource) -> Option<String> {
         .catalog_name
         .as_deref()?;
     let catalogs = crate::load_catalogs::fetch_catalogs()?;
-    let view = catalogs.view_v2().ok()?;
+    let view = catalogs.view().ok()?;
     let catalog = view
         .catalogs
         .iter()
@@ -786,7 +915,7 @@ impl Object for StaticBaseRelationObject {
                 iter.finish()?;
 
                 let local_config = minijinja_value_to_typed_struct::<InternalDbtNodeWrapper>(
-                    local_config_value.clone(),
+                    local_config_value,
                 )
                 .map_err(|e| {
                     minijinja::Error::new(
@@ -912,6 +1041,7 @@ mod tests {
     use crate::relation::factory::create_static_relation;
 
     use super::*;
+    use dbt_schemas::schemas::common::DbtMaterialization;
     use dbt_schemas::schemas::relations::DEFAULT_RESOLVED_QUOTING;
     use minijinja_contrib::testing::jinja_assert;
 
@@ -929,6 +1059,104 @@ mod tests {
         source.__source_attr__.identifier = "orders".to_string();
         source.__source_attr__.source_name = "raw".to_string();
         source
+    }
+
+    /// Sources over the adapter's identifier length limit must not be rejected.
+    /// dbt-redshift/dbt-postgres only check relations with a `type`, and Core
+    /// builds source relations without one.
+    #[test]
+    fn redshift_source_with_long_identifier_is_not_length_validated() {
+        let long_identifier = "x".repeat(130);
+        let mut source = source_with_meta_location("ignored");
+        source.__base_attr__.alias = long_identifier.clone();
+        source.__source_attr__.identifier = long_identifier.clone();
+        // Mirrors what resolve_sources assigns to every source
+        source.__base_attr__.materialized = DbtMaterialization::External;
+
+        assert!(
+            create_relation_from_source(
+                AdapterType::Redshift,
+                "main".to_string(),
+                "raw".to_string(),
+                long_identifier,
+                DEFAULT_RESOLVED_QUOTING,
+                &source,
+            )
+            .is_ok()
+        );
+
+        // Used for sources by e.g. local_schema_builder, source freshness, and
+        // try_get_relation_from_node
+        let from_node = create_relation_from_node(AdapterType::Redshift, &source, None);
+        assert!(from_node.is_ok(), "{:?}", from_node.err());
+        assert_eq!(from_node.unwrap().relation_type(), None);
+    }
+
+    /// Non-source nodes still carry a `type`, so the length check must stay
+    /// enforced for them -- this isn't an excuse to drop it for models too.
+    #[test]
+    fn redshift_model_with_long_identifier_is_still_length_validated() {
+        let long_identifier = "x".repeat(130);
+        let mut model = dbt_schemas::schemas::DbtModel::default();
+        model.__base_attr__.database = "main".to_string();
+        model.__base_attr__.schema = "raw".to_string();
+        model.__base_attr__.alias = long_identifier;
+        model.__base_attr__.quoting = DEFAULT_RESOLVED_QUOTING;
+        model.__base_attr__.materialized = DbtMaterialization::Table;
+
+        let err = create_relation_from_node(AdapterType::Redshift, &model, None).unwrap_err();
+        assert!(
+            err.to_string().contains("is longer than 127 characters"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn databricks_relation_policy_tests() {
+        assert_eq!(
+            canonical_relation_parts(Some(AdapterType::Databricks), "Cat", "Sch", "Tbl"),
+            ("cat".to_string(), "sch".to_string(), "tbl".to_string())
+        );
+        assert_eq!(
+            render_effective_relation(
+                AdapterType::LakeCompute,
+                "Cat",
+                "Sch",
+                "Tbl",
+                ResolvedQuoting::trues(),
+                Some(AdapterType::Databricks),
+            )
+            .unwrap(),
+            "cat.sch.tbl"
+        );
+        assert_eq!(
+            render_effective_relation(
+                AdapterType::Snowflake,
+                "Cat",
+                "Sch",
+                "Tbl",
+                ResolvedQuoting::falses(),
+                None,
+            )
+            .unwrap(),
+            "Cat.Sch.Tbl"
+        );
+    }
+
+    // Takes the target's include policy: DuckDB drops a `main` database.
+    #[test]
+    fn for_adapter_respells_with_the_target_adapter() {
+        let databricks = RelationObject::new(Arc::new(
+            Relation::new(
+                AdapterType::Databricks,
+                "main".to_string(),
+                "sch".to_string(),
+                "up".to_string(),
+            )
+            .with_quoting(ResolvedQuoting::trues()),
+        ));
+        let duckdb = databricks.for_adapter(AdapterType::DuckDB).unwrap();
+        assert_eq!(duckdb.render_self_as_str(), r#""sch"."up""#);
     }
 
     #[test]
@@ -984,6 +1212,34 @@ mod tests {
         assert_eq!(
             relation.render_self_as_str(),
             "\"GLUE_SOURCE\".\"raw\".\"orders\""
+        );
+    }
+
+    /// `create_relation_from_node` must honor `catalog_name` for sources, so
+    /// freshness, defer, and the run cache use the same FQN that `source()` renders.
+    #[test]
+    fn source_catalog_name_overrides_database_via_node() {
+        let mut source = source_with_meta_location("ignored/{name}.csv");
+        source.__source_attr__.catalog_name = Some("GLUE_SOURCE".to_string());
+
+        let from_source = create_relation_from_source(
+            AdapterType::Snowflake,
+            "main".to_string(),
+            "raw".to_string(),
+            "orders".to_string(),
+            DEFAULT_RESOLVED_QUOTING,
+            &source,
+        )
+        .unwrap();
+        let from_node = create_relation_from_node(AdapterType::Snowflake, &source, None).unwrap();
+
+        assert_eq!(
+            from_node.render_self_as_str(),
+            "\"GLUE_SOURCE\".\"raw\".\"orders\""
+        );
+        assert_eq!(
+            from_node.render_self_as_str(),
+            from_source.render_self_as_str()
         );
     }
 
@@ -1059,6 +1315,29 @@ mod tests {
             RelationObject::new(Arc::new(relation)),
             "{{ obj.is_metric_view }} | {{ obj.type }}",
             "True | metric_view",
+        );
+    }
+
+    #[test]
+    fn clickhouse_identifier_less_relation_should_go_on_cluster() {
+        let relation = Relation::new(
+            AdapterType::ClickHouse,
+            String::new(),
+            "analytics".to_string(),
+            "events".to_string(),
+        )
+        .with_can_on_cluster(Some(false));
+        let database = relation.without_identifier().unwrap();
+
+        jinja_assert(
+            RelationObject::new(Arc::new(relation)),
+            "{{ obj.should_on_cluster }}",
+            "False",
+        );
+        jinja_assert(
+            RelationObject::new(database),
+            "{{ obj.should_on_cluster }}",
+            "True",
         );
     }
 
@@ -1140,6 +1419,57 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(err.kind(), minijinja::ErrorKind::MissingArgument, "{err}");
+    }
+
+    #[test]
+    fn derived_relations_keep_microbatch_filter() {
+        use chrono::{TimeZone, Utc};
+        use dbt_schemas::filter::Sample;
+
+        let relation = do_create_relation(
+            AdapterType::Snowflake,
+            "d".to_string(),
+            "s".to_string(),
+            Some("i".to_string()),
+            Some(RelationType::Table),
+            DEFAULT_RESOLVED_QUOTING,
+        )
+        .unwrap();
+        let relation = RelationObject::new_with_filter(
+            relation.into(),
+            RunFilter {
+                empty: false,
+                sample: Some(Sample {
+                    start: Some(Utc.with_ymd_and_hms(2026, 7, 13, 0, 0, 0).unwrap()),
+                    end: Some(Utc.with_ymd_and_hms(2026, 7, 14, 0, 0, 0).unwrap()),
+                }),
+            },
+            Some("event_date".to_string()),
+        );
+        let lakecompute = relation.for_adapter(AdapterType::LakeCompute).unwrap();
+
+        jinja_assert(
+            relation,
+            r#"
+            {{ obj.include(database=false) }}
+            {{ obj.quote(identifier=false) }}
+            {{ obj.replace_path(identifier='j') }}
+            {{ obj.incorporate(path={'identifier': 'k'}) }}
+            {{ obj.without_identifier() }}
+            "#,
+            r#"
+            (select * from "s"."i" where event_date >= to_timestamp_tz('2026-07-13T00:00:00+00:00') and event_date < to_timestamp_tz('2026-07-14T00:00:00+00:00'))
+            (select * from "d"."s".i where event_date >= to_timestamp_tz('2026-07-13T00:00:00+00:00') and event_date < to_timestamp_tz('2026-07-14T00:00:00+00:00'))
+            (select * from "d"."s"."j" where event_date >= to_timestamp_tz('2026-07-13T00:00:00+00:00') and event_date < to_timestamp_tz('2026-07-14T00:00:00+00:00'))
+            (select * from "d"."s"."k" where event_date >= to_timestamp_tz('2026-07-13T00:00:00+00:00') and event_date < to_timestamp_tz('2026-07-14T00:00:00+00:00'))
+            (select * from "d"."s" where event_date >= to_timestamp_tz('2026-07-13T00:00:00+00:00') and event_date < to_timestamp_tz('2026-07-14T00:00:00+00:00'))
+            "#,
+        );
+        jinja_assert(
+            lakecompute,
+            "{{ obj }}",
+            r#"(select * from "d"."s"."i" where event_date >= '2026-07-13T00:00:00+00:00' and event_date < '2026-07-14T00:00:00+00:00')"#,
+        );
     }
 
     #[test]

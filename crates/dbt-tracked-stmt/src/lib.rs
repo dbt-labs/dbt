@@ -10,7 +10,7 @@ use arrow_schema::Schema;
 use crossbeam_skiplist::SkipMap;
 use dbt_adbc::Statement;
 use dbt_adbc::semaphore::AcquireAllSemaphore;
-use dbt_base::cancel::CancellationToken;
+use dbt_cancel::CancellationToken;
 
 /// Generate a unique statement ID for each [TrackedStatement]
 /// by incrementing this global atomic counter.
@@ -293,7 +293,7 @@ mod tests {
     use std::sync::atomic::AtomicBool;
 
     use adbc_core::error::{Error, Status};
-    use dbt_base::cancel::CancellationTokenSource;
+    use dbt_cancel::CancellationTokenSource;
 
     use super::*;
 

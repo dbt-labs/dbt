@@ -5,6 +5,9 @@ workspace `.cargo/config.toml` alias.
 
 ## Subcommands
 
+- `cargo ci packages --target TRIPLE --version VERSION --staging-dir DIR [--wheel-data-dir DIR] [--out-dir DIR] [--cdn-url URL]` — fetches checksum-pinned optional packages declared in `dbt-dist/optional-packages.toml`, stages CLI (`lib/dbt/`) and wheel (`<dir>/data/lib/dbt/`) libraries, and emits resource archives and per-target JSON manifests.
+- `cargo ci homebrew render --sidecar-manifest FILE [--sidecar-manifest FILE] --sidecar-base-url URL ...` — adds platform-scoped optional resources and installs them under `lib/dbt`.
+
 - `cargo ci bump-cargo-version <version> [--dry-run] [--no-lockfile]` — writes `version` into `[workspace.package].version` and refreshes `Cargo.lock`.
 - `cargo ci pypi pack --binaries-dir DIR --version X.Y.Z [--out DIR] [--bin-name NAME]` — writes one `py3-none-{platform}` wheel per pre-built binary in `--binaries-dir` (files named by cargo target triple, `.exe` for Windows).
 - `cargo ci pypi publish --environment {staging|prod|test-pypi} [--version V] [--dist DIR]` — **wheel-upload mode**: publishes wheels in `--dist` (default `target/wheels`) matching the workspace pyproject's `[project].name`. `--version` filters to that PEP 440 version.
@@ -67,7 +70,7 @@ cargo ci pypi publish --environment prod --version X.Y.Z      # uploads wheels
 
 # Publish the download-at-install sdist pointing at the release's wheel host
 # (one --target per published wheel). For dbt-core / dbt-oss add
-# `--python-tag cp311 --abi-tag abi3 --runtime-metadata-from crates/dbt-python`,
+# `--python-tag cp310 --abi-tag abi3 --runtime-metadata-from crates/dbt-python`,
 # since those reference the maturin extension wheels:
 cargo ci pypi publish --environment prod --version X.Y.Z \
   --download-base-url https://github.com/dbt-labs/dbt-core/releases/download/vX.Y.Z \

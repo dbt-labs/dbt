@@ -1,0 +1,3 @@
+id,first_name,last_name,salary,is_teacher
+1,Ada,Lovelace,21.494,true
+2,Alan,Turing,22,false

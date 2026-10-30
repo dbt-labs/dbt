@@ -1,0 +1,52 @@
+c7797954:
+- sequence: 0
+  type: execute
+  sql: select name from system.databases
+model.store_failures.one:
+- sequence: 0
+  type: execute
+  sql: SELECT value, toString(readonly) AS readonly FROM system.settings WHERE name = 'allow_nondeterministic_mutations'
+- sequence: 1
+  type: execute
+  sql: SELECT 1 SETTINGS allow_nondeterministic_mutations = 1
+- sequence: 2
+  type: execute
+  sql: SELECT version() AS v
+- sequence: 3
+  type: execute
+  sql: SELECT engine AS v FROM system.databases WHERE name = database()
+- sequence: 4
+  type: execute
+  sql: CREATE TABLE IF NOT EXISTS `__dbt_exchange_test_0_3481463_1792435240778388737` (test String) ENGINE MergeTree() ORDER BY tuple()
+- sequence: 5
+  type: execute
+  sql: CREATE TABLE IF NOT EXISTS `__dbt_exchange_test_1_3481463_1792435240778388737` (test String) ENGINE MergeTree() ORDER BY tuple()
+- sequence: 6
+  type: execute
+  sql: EXCHANGE TABLES `__dbt_exchange_test_0_3481463_1792435240778388737` AND `__dbt_exchange_test_1_3481463_1792435240778388737`
+- sequence: 7
+  type: execute
+  sql: DROP TABLE IF EXISTS `__dbt_exchange_test_0_3481463_1792435240778388737`
+- sequence: 8
+  type: execute
+  sql: DROP TABLE IF EXISTS `__dbt_exchange_test_1_3481463_1792435240778388737`
+- sequence: 9
+  type: execute
+  sql: WITH mv_sources AS ( SELECT name AS mv_name, database AS mv_database, any(as_select) AS mv_sql, any(replaceRegexpOne(create_table_query, '.*TO\\s+`\x3F([^`\\s(]+)`\x3F\\.`\x3F([^`\\s(]+)`\x3F.*', '\\1.\\2')) AS target_fqn FROM system.tables WHERE engine = 'MaterializedView' AND create_table_query LIKE '%TO %' GROUP BY mv_name, mv_database ) SELECT t.database AS table_database, t.name AS table_name, t.engine AS table_type, db.engine AS database_engine, toJSONString(arrayDistinct(groupArrayIf( map('schema', mv_sources.mv_database, 'name', mv_sources.mv_name, 'sql', mv_sources.mv_sql), mv_sources.mv_name != '' ))) AS mvs_pointing_to_it, if(max(position(substring(t.create_table_query, 1, position(t.create_table_query, ' TO ')), ' REFRESH ')) > 0, 'true', 'false') AS is_refreshable, if(max(position(substring(t.create_table_query, 1, position(t.create_table_query, ' TO ')), ' APPEND')) > 0, 'true', 'false') AS refreshable_append, 'false' AS is_on_cluster FROM system.tables AS t JOIN system.databases AS db ON t.database = db.name LEFT JOIN mv_sources ON mv_sources.target_fqn = concat(t.database, '.', t.name) WHERE t.database = 'adapters_clickhouse_store_failures' GROUP BY table_database, table_name, table_type, database_engine
+- sequence: 10
+  type: execute
+  sql: |-
+    create or replace view `adapters_clickhouse_store_failures`.`one` 
+    
+    
+    
+    
+    
+    
+    as (
+    select 1 as id
+    
+    )
+    
+    
+    -- end_of_sql

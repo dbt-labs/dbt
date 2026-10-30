@@ -78,6 +78,16 @@ pub fn canonicalize_config_keys<V>(
     adapter_type: AdapterType,
     map: BTreeMap<String, V>,
 ) -> Result<BTreeMap<String, V>, DuplicateAliasKey<V>> {
+    canonicalize_config_keys_except(adapter_type, map, &[])
+}
+
+/// Like [`canonicalize_config_keys`], but leaves the aliases in `keep` unrenamed, for a caller
+/// that translates them later. Duplicates are still detected over the full alias map.
+pub fn canonicalize_config_keys_except<V>(
+    adapter_type: AdapterType,
+    map: BTreeMap<String, V>,
+    keep: &[&str],
+) -> Result<BTreeMap<String, V>, DuplicateAliasKey<V>> {
     let mut result = BTreeMap::new();
     let mut original_for_canonical: BTreeMap<String, String> = BTreeMap::new();
     for (key, value) in map {
@@ -90,8 +100,13 @@ pub fn canonicalize_config_keys<V>(
                 value_b: value,
             });
         }
-        original_for_canonical.insert(canonical.clone(), key);
-        result.insert(canonical, value);
+        let stored = if keep.contains(&key.as_str()) {
+            key.clone()
+        } else {
+            canonical.clone()
+        };
+        original_for_canonical.insert(canonical, key);
+        result.insert(stored, value);
     }
     Ok(result)
 }
@@ -188,6 +203,41 @@ mod tests {
         assert_eq!(err.key_b, "database");
         assert_eq!(err.canonical, "database");
         assert_eq!(err.value_b, 2);
+    }
+
+    #[test]
+    fn canonicalize_config_keys_except_keeps_a_kept_alias() {
+        let result = canonicalize_config_keys_except(
+            AdapterType::Databricks,
+            map(&[("catalog", 1)]),
+            &["catalog"],
+        )
+        .unwrap();
+        assert_eq!(result, map(&[("catalog", 1)]));
+    }
+
+    #[test]
+    fn canonicalize_config_keys_except_renames_other_aliases() {
+        let result = canonicalize_config_keys_except(
+            AdapterType::Databricks,
+            map(&[("target_catalog", 1)]),
+            &["catalog"],
+        )
+        .unwrap();
+        assert_eq!(result, map(&[("target_database", 1)]));
+    }
+
+    #[test]
+    fn canonicalize_config_keys_except_still_errors_on_duplicate_canonical_key() {
+        let err = canonicalize_config_keys_except(
+            AdapterType::Databricks,
+            map(&[("catalog", 1), ("database", 2)]),
+            &["catalog"],
+        )
+        .unwrap_err();
+        assert_eq!(err.key_a, "catalog");
+        assert_eq!(err.key_b, "database");
+        assert_eq!(err.canonical, "database");
     }
 
     #[test]

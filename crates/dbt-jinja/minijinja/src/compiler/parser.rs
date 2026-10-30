@@ -984,15 +984,32 @@ impl<'a> Parser<'a> {
                 let node = ok!(self.parse_if_cond(span, JinjaLayoutEventKind::BlockStart));
                 ast::Stmt::IfCond(Spanned::new(node, self.stream.expand_span(span)))
             }
-            "with" => ast::Stmt::WithBlock(respan!(ok!(self.parse_with_block()))),
+            "with" => {
+                let node = ok!(self.parse_with_block(span));
+                ast::Stmt::WithBlock(Spanned::new(node, self.stream.expand_span(span)))
+            }
             "set" => match ok!(self.parse_set(span)) {
                 SetParseResult::Set(rv) => ast::Stmt::Set(respan!(rv)),
-                SetParseResult::SetBlock(rv) => ast::Stmt::SetBlock(respan!(rv)),
+                // `parse_set`'s `SetBlock` branch already consumes the
+                // trailing `%}` itself (to compute its own `end_tag_span`),
+                // so (unlike `Set`) `respan!` must not be used here.
+                SetParseResult::SetBlock(rv) => {
+                    ast::Stmt::SetBlock(Spanned::new(rv, self.stream.expand_span(span)))
+                }
             },
-            "autoescape" => ast::Stmt::AutoEscape(respan!(ok!(self.parse_auto_escape()))),
-            "filter" => ast::Stmt::FilterBlock(respan!(ok!(self.parse_filter_block()))),
+            "autoescape" => {
+                let node = ok!(self.parse_auto_escape(span));
+                ast::Stmt::AutoEscape(Spanned::new(node, self.stream.expand_span(span)))
+            }
+            "filter" => {
+                let node = ok!(self.parse_filter_block(span));
+                ast::Stmt::FilterBlock(Spanned::new(node, self.stream.expand_span(span)))
+            }
             #[cfg(feature = "multi_template")]
-            "block" => ast::Stmt::Block(respan!(ok!(self.parse_block()))),
+            "block" => {
+                let node = ok!(self.parse_block(span));
+                ast::Stmt::Block(Spanned::new(node, self.stream.expand_span(span)))
+            }
             #[cfg(feature = "multi_template")]
             "extends" => ast::Stmt::Extends(respan!(ok!(self.parse_extends()))),
             #[cfg(feature = "multi_template")]
@@ -1002,28 +1019,37 @@ impl<'a> Parser<'a> {
             #[cfg(feature = "multi_template")]
             "from" => ast::Stmt::FromImport(respan!(ok!(self.parse_from_import()))),
             #[cfg(feature = "macros")]
-            "macro" => ast::Stmt::Macro((
-                respan!(ok!(self.parse_macro())),
-                MacroKind::Macro,
-                BTreeMap::new(),
-            )),
+            "macro" => {
+                let node = ok!(self.parse_macro(span));
+                ast::Stmt::Macro((
+                    Spanned::new(node, self.stream.expand_span(span)),
+                    MacroKind::Macro,
+                    BTreeMap::new(),
+                ))
+            }
             #[cfg(feature = "macros")]
-            "test" => ast::Stmt::Macro((
-                respan!(ok!(self.parse_test())),
-                MacroKind::Test,
-                BTreeMap::new(),
-            )),
+            "test" => {
+                let node = ok!(self.parse_test(span));
+                ast::Stmt::Macro((
+                    Spanned::new(node, self.stream.expand_span(span)),
+                    MacroKind::Test,
+                    BTreeMap::new(),
+                ))
+            }
             #[cfg(feature = "macros")]
-            "snapshot" => ast::Stmt::Macro((
-                respan!(ok!(self.parse_snapshot())),
-                MacroKind::Snapshot,
-                BTreeMap::new(),
-            )),
+            "snapshot" => {
+                let node = ok!(self.parse_snapshot(span));
+                ast::Stmt::Macro((
+                    Spanned::new(node, self.stream.expand_span(span)),
+                    MacroKind::Snapshot,
+                    BTreeMap::new(),
+                ))
+            }
             #[cfg(feature = "macros")]
             // `parse_doc` consumes the closing `%}` itself, so `respan!` (which
             // insists on `BlockEnd` next) must not be used here.
             "docs" => {
-                let node = ok!(self.parse_doc());
+                let node = ok!(self.parse_doc(span));
                 let doc_span = self.stream.expand_span(span);
                 match node {
                     Some(node) => ast::Stmt::Macro((
@@ -1037,15 +1063,22 @@ impl<'a> Parser<'a> {
             }
             #[cfg(feature = "macros")]
             "materialization" => {
-                let (macro_, adapter, supported_languages) = ok!(self.parse_materialization());
+                let (macro_, adapter, supported_languages) = ok!(self.parse_materialization(span));
                 let mut meta = BTreeMap::from([("adapter".to_string(), Value::from(adapter))]);
                 if let Some(supported_languages) = supported_languages {
                     meta.insert("supported_languages".to_string(), supported_languages);
                 }
-                ast::Stmt::Macro((respan!(macro_), MacroKind::Materialization, meta))
+                ast::Stmt::Macro((
+                    Spanned::new(macro_, self.stream.expand_span(span)),
+                    MacroKind::Materialization,
+                    meta,
+                ))
             }
             #[cfg(feature = "macros")]
-            "call" => ast::Stmt::CallBlock(respan!(ok!(self.parse_call_block()))),
+            "call" => {
+                let node = ok!(self.parse_call_block(span));
+                ast::Stmt::CallBlock(Spanned::new(node, self.stream.expand_span(span)))
+            }
             #[cfg(feature = "loop_controls")]
             "continue" => {
                 if !self.in_loop {
@@ -1072,11 +1105,26 @@ impl<'a> Parser<'a> {
             "print" => {
                 // remark, this is an error in Jinja2, but dbt swallows it...
                 let ignore = ast::Stmt::Do(respan!(ok!(self.parse_do())));
-                // ... so we translate it in a semantic skip!
+                // ... so we translate it in a semantic skip! This `WithBlock`
+                // is entirely synthetic — there's no real `{% with %}`/
+                // `{% endwith %}` tag pair in the source, just the one
+                // `{% print %}` tag standing in for it — so there's no tag
+                // text to type; give both a zero-width span at the tag's
+                // start so any consumer treating them as real tag ranges
+                // skips them as empty rather than double-typing real bytes
+                // that already belong to `ignore`'s own span.
+                let zero_width_span = Span {
+                    end_line: span.start_line,
+                    end_col: span.start_col,
+                    end_offset: span.start_offset,
+                    ..span
+                };
                 ast::Stmt::WithBlock(Spanned::new(
                     ast::WithBlock {
                         assignments: vec![],
                         body: vec![ignore],
+                        start_tag_span: zero_width_span,
+                        end_tag_span: zero_width_span,
                     },
                     self.stream.expand_span(span),
                 ))
@@ -1305,7 +1353,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn parse_with_block(&mut self) -> Result<ast::WithBlock<'a>, Error> {
+    fn parse_with_block(&mut self, start_open_span: Span) -> Result<ast::WithBlock<'a>, Error> {
         let mut assignments = Vec::new();
 
         while !matches_token!(self, Token::BlockEnd) {
@@ -1325,12 +1373,21 @@ impl<'a> Parser<'a> {
         }
 
         expect_token!(self, Token::BlockEnd, "end of block");
+        let start_tag_span = self.stream.expand_span(start_open_span);
         let body = ok!(self.subparse(
             &|tok| matches!(tok, Token::Ident("endwith")),
             Some(("with", &["endwith"])),
         ));
+        let end_open_span = self.stream.last_span();
         ok!(self.stream.next());
-        Ok(ast::WithBlock { assignments, body })
+        expect_token!(self, Token::BlockEnd, "end of block");
+        let end_tag_span = self.stream.expand_span(end_open_span);
+        Ok(ast::WithBlock {
+            assignments,
+            body,
+            start_tag_span,
+            end_tag_span,
+        })
     }
 
     // both the left hand side and right hand side can be a list
@@ -1363,12 +1420,15 @@ impl<'a> Parser<'a> {
                 None
             };
             expect_token!(self, Token::BlockEnd, "end of block");
+            let start_tag_span = self.stream.expand_span(start_tag_span);
             let body = ok!(self.subparse(
                 &|tok| matches!(tok, Token::Ident("endset")),
                 Some(("set", &["endset"])),
             ));
-            let end_tag_span = self.stream.last_span();
+            let end_open_span = self.stream.last_span();
             ok!(self.stream.next());
+            expect_token!(self, Token::BlockEnd, "end of block");
+            let end_tag_span = self.stream.expand_span(end_open_span);
             Ok(SetParseResult::SetBlock(ast::SetBlock {
                 target: targets.into_iter().next().unwrap(),
                 filter,
@@ -1415,7 +1475,7 @@ impl<'a> Parser<'a> {
     }
 
     #[cfg(feature = "multi_template")]
-    fn parse_block(&mut self) -> Result<ast::Block<'a>, Error> {
+    fn parse_block(&mut self, start_open_span: Span) -> Result<ast::Block<'a>, Error> {
         if self.in_macro {
             syntax_error!(
                 "block tags in macros are not allowed",
@@ -1435,10 +1495,12 @@ impl<'a> Parser<'a> {
         }
 
         expect_token!(self, Token::BlockEnd, "end of block");
+        let start_tag_span = self.stream.expand_span(start_open_span);
         let body = ok!(self.subparse(
             &|tok| matches!(tok, Token::Ident("endblock")),
             Some(("block", &["endblock"])),
         ));
+        let end_open_span = self.stream.last_span();
         ok!(self.stream.next());
 
         if let Some((Token::Ident(trailing_name), _)) = ok!(self.stream.current()) {
@@ -1455,17 +1517,34 @@ impl<'a> Parser<'a> {
         }
         self.in_loop = old_in_loop;
 
-        Ok(ast::Block { name, body })
+        expect_token!(self, Token::BlockEnd, "end of block");
+        let end_tag_span = self.stream.expand_span(end_open_span);
+
+        Ok(ast::Block {
+            name,
+            body,
+            start_tag_span,
+            end_tag_span,
+        })
     }
-    fn parse_auto_escape(&mut self) -> Result<ast::AutoEscape<'a>, Error> {
+    fn parse_auto_escape(&mut self, start_open_span: Span) -> Result<ast::AutoEscape<'a>, Error> {
         let enabled = ok!(self.parse_expr());
         expect_token!(self, Token::BlockEnd, "end of block");
+        let start_tag_span = self.stream.expand_span(start_open_span);
         let body = ok!(self.subparse(
             &|tok| matches!(tok, Token::Ident("endautoescape")),
             Some(("autoescape", &["endautoescape"])),
         ));
+        let end_open_span = self.stream.last_span();
         ok!(self.stream.next());
-        Ok(ast::AutoEscape { enabled, body })
+        expect_token!(self, Token::BlockEnd, "end of block");
+        let end_tag_span = self.stream.expand_span(end_open_span);
+        Ok(ast::AutoEscape {
+            enabled,
+            body,
+            start_tag_span,
+            end_tag_span,
+        })
     }
 
     fn parse_filter_chain(&mut self) -> Result<ast::Expr<'a>, Error> {
@@ -1494,15 +1573,24 @@ impl<'a> Parser<'a> {
         filter.ok_or_else(|| syntax_error(Cow::Borrowed("expected a filter")))
     }
 
-    fn parse_filter_block(&mut self) -> Result<ast::FilterBlock<'a>, Error> {
+    fn parse_filter_block(&mut self, start_open_span: Span) -> Result<ast::FilterBlock<'a>, Error> {
         let filter = ok!(self.parse_filter_chain());
         expect_token!(self, Token::BlockEnd, "end of block");
+        let start_tag_span = self.stream.expand_span(start_open_span);
         let body = ok!(self.subparse(
             &|tok| matches!(tok, Token::Ident("endfilter")),
             Some(("filter", &["endfilter"])),
         ));
+        let end_open_span = self.stream.last_span();
         ok!(self.stream.next());
-        Ok(ast::FilterBlock { filter, body })
+        expect_token!(self, Token::BlockEnd, "end of block");
+        let end_tag_span = self.stream.expand_span(end_open_span);
+        Ok(ast::FilterBlock {
+            filter,
+            body,
+            start_tag_span,
+            end_tag_span,
+        })
     }
 
     #[cfg(feature = "multi_template")]
@@ -1645,8 +1733,10 @@ impl<'a> Parser<'a> {
         defaults: Vec<ast::Expr<'a>>,
         name: Option<&'a str>,
         name_span: Span,
+        start_open_span: Span,
     ) -> Result<ast::Macro<'a>, Error> {
         expect_token!(self, Token::BlockEnd, "end of block");
+        let start_tag_span = self.stream.expand_span(start_open_span);
         let old_in_loop = std::mem::replace(&mut self.in_loop, false);
         let old_in_macro = std::mem::replace(&mut self.in_macro, true);
         let ctx = if name.is_some() {
@@ -1664,13 +1754,18 @@ impl<'a> Parser<'a> {
         ));
         self.in_macro = old_in_macro;
         self.in_loop = old_in_loop;
+        let end_open_span = self.stream.last_span();
         ok!(self.stream.next());
+        expect_token!(self, Token::BlockEnd, "end of block");
+        let end_tag_span = self.stream.expand_span(end_open_span);
         Ok(ast::Macro {
             name: name.unwrap_or("caller"),
             args,
             defaults,
             body,
             name_span,
+            start_tag_span: Some(start_tag_span),
+            end_tag_span: Some(end_tag_span),
         })
     }
 
@@ -1681,8 +1776,10 @@ impl<'a> Parser<'a> {
         defaults: Vec<ast::Expr<'a>>,
         name: Option<&'a str>,
         name_span: Span,
+        start_open_span: Span,
     ) -> Result<ast::Macro<'a>, Error> {
         expect_token!(self, Token::BlockEnd, "end of block");
+        let start_tag_span = self.stream.expand_span(start_open_span);
         let old_in_loop = std::mem::replace(&mut self.in_loop, false);
         let old_in_macro = std::mem::replace(&mut self.in_macro, true);
         let ctx = if name.is_some() {
@@ -1700,13 +1797,18 @@ impl<'a> Parser<'a> {
         ));
         self.in_macro = old_in_macro;
         self.in_loop = old_in_loop;
+        let end_open_span = self.stream.last_span();
         ok!(self.stream.next());
+        expect_token!(self, Token::BlockEnd, "end of block");
+        let end_tag_span = self.stream.expand_span(end_open_span);
         Ok(ast::Macro {
             name: name.unwrap_or("caller"),
             args,
             defaults,
             body,
             name_span,
+            start_tag_span: Some(start_tag_span),
+            end_tag_span: Some(end_tag_span),
         })
     }
 
@@ -1715,8 +1817,10 @@ impl<'a> Parser<'a> {
         &mut self,
         name: Option<&'a str>,
         name_span: Span,
+        start_open_span: Span,
     ) -> Result<ast::Macro<'a>, Error> {
         expect_token!(self, Token::BlockEnd, "end of block");
+        let start_tag_span = self.stream.expand_span(start_open_span);
         let old_in_loop = std::mem::replace(&mut self.in_loop, false);
         let old_in_macro = std::mem::replace(&mut self.in_macro, true);
         let ctx = if name.is_some() {
@@ -1734,13 +1838,18 @@ impl<'a> Parser<'a> {
         ));
         self.in_macro = old_in_macro;
         self.in_loop = old_in_loop;
+        let end_open_span = self.stream.last_span();
         ok!(self.stream.next());
+        expect_token!(self, Token::BlockEnd, "end of block");
+        let end_tag_span = self.stream.expand_span(end_open_span);
         Ok(ast::Macro {
             name: name.unwrap_or("caller"),
             args: Vec::new(),
             defaults: Vec::new(),
             body,
             name_span,
+            start_tag_span: Some(start_tag_span),
+            end_tag_span: Some(end_tag_span),
         })
     }
 
@@ -1751,7 +1860,13 @@ impl<'a> Parser<'a> {
         defaults: Vec<ast::Expr<'a>>,
         name: Option<&'a str>,
         name_span: Span,
+        start_open_span: Span,
     ) -> Result<ast::Macro<'a>, Error> {
+        // Unlike its siblings, this function doesn't consume the opening
+        // tag's `%}` itself — `parse_doc()` already did, via its own
+        // stray-content-tolerant drain loop — so we're already positioned
+        // right after it; `expand_span` still gives the exact full range.
+        let start_tag_span = self.stream.expand_span(start_open_span);
         let old_in_loop = std::mem::replace(&mut self.in_loop, false);
         let old_in_macro = std::mem::replace(&mut self.in_macro, true);
         let ctx = if name.is_some() {
@@ -1769,13 +1884,23 @@ impl<'a> Parser<'a> {
         ));
         self.in_macro = old_in_macro;
         self.in_loop = old_in_loop;
+        let end_open_span = self.stream.last_span();
         ok!(self.stream.next());
+        // Only the `enddocs`/`endcall` token itself, not the full closing
+        // tag: unlike its siblings, this function can't consume through the
+        // real trailing `%}` here — dbt-core tolerates a stray name after
+        // `enddocs` (e.g. `{% enddocs my_doc %}`), and draining that is
+        // `parse_doc()`'s job, after this function returns. `parse_doc()`
+        // widens this span itself once it knows where the real `%}` is.
+        let end_tag_span = self.stream.expand_span(end_open_span);
         Ok(ast::Macro {
             name: name.unwrap_or("caller"),
             args,
             defaults,
             body,
             name_span,
+            start_tag_span: Some(start_tag_span),
+            end_tag_span: Some(end_tag_span),
         })
     }
 
@@ -1784,8 +1909,10 @@ impl<'a> Parser<'a> {
         &mut self,
         name: Option<&'a str>,
         name_span: Span,
+        start_open_span: Span,
     ) -> Result<ast::Macro<'a>, Error> {
         expect_token!(self, Token::BlockEnd, "end of block");
+        let start_tag_span = self.stream.expand_span(start_open_span);
         let old_in_loop = std::mem::replace(&mut self.in_loop, false);
         let old_in_macro = std::mem::replace(&mut self.in_macro, true);
         let ctx = if name.is_some() {
@@ -1803,28 +1930,33 @@ impl<'a> Parser<'a> {
         ));
         self.in_macro = old_in_macro;
         self.in_loop = old_in_loop;
+        let end_open_span = self.stream.last_span();
         ok!(self.stream.next());
+        expect_token!(self, Token::BlockEnd, "end of block");
+        let end_tag_span = self.stream.expand_span(end_open_span);
         Ok(ast::Macro {
             name: name.unwrap_or("caller"),
             args: Vec::new(),
             defaults: Vec::new(),
             body,
             name_span,
+            start_tag_span: Some(start_tag_span),
+            end_tag_span: Some(end_tag_span),
         })
     }
 
     #[cfg(feature = "macros")]
-    fn parse_macro(&mut self) -> Result<ast::Macro<'a>, Error> {
+    fn parse_macro(&mut self, start_open_span: Span) -> Result<ast::Macro<'a>, Error> {
         let (name, span) = expect_token!(self, Token::Ident(name) => name, "identifier");
         expect_token!(self, Token::ParenOpen, "`(`");
         let mut args = Vec::new();
         let mut defaults = Vec::new();
         ok!(self.parse_macro_args_and_defaults(&mut args, &mut defaults));
-        self.parse_macro_or_call_block_body(args, defaults, Some(name), span)
+        self.parse_macro_or_call_block_body(args, defaults, Some(name), span, start_open_span)
     }
 
     #[cfg(feature = "macros")]
-    fn parse_test(&mut self) -> Result<ast::Macro<'a>, Error> {
+    fn parse_test(&mut self, start_open_span: Span) -> Result<ast::Macro<'a>, Error> {
         let (name, span) = expect_token!(self, Token::Ident(name) => name, "identifier");
         // Assuming self has access to an arena or string interner
         let macro_name = self.intern_string(&format!("test_{name}"));
@@ -1832,11 +1964,11 @@ impl<'a> Parser<'a> {
         let mut args = Vec::new();
         let mut defaults = Vec::new();
         ok!(self.parse_macro_args_and_defaults(&mut args, &mut defaults));
-        self.parse_test_or_call_block_body(args, defaults, Some(macro_name), span)
+        self.parse_test_or_call_block_body(args, defaults, Some(macro_name), span, start_open_span)
     }
 
     #[cfg(feature = "macros")]
-    fn parse_snapshot(&mut self) -> Result<ast::Macro<'a>, Error> {
+    fn parse_snapshot(&mut self, start_open_span: Span) -> Result<ast::Macro<'a>, Error> {
         let (name, span) = expect_token!(self, Token::Ident(name) => name, "identifier");
         let macro_name = self.intern_string(&format!("snapshot_{name}"));
         // dbt-core's regex extractor stops at the first non-identifier character and
@@ -1861,13 +1993,13 @@ impl<'a> Parser<'a> {
                 .tokenizer
                 .notify_malformed_block_name(BlockNameKind::Snapshot, name, &span);
         }
-        self.parse_snapshot_or_call_block_body(Some(macro_name), span)
+        self.parse_snapshot_or_call_block_body(Some(macro_name), span, start_open_span)
     }
 
     /// Returns `Ok(None)` for a doc block whose name is not a valid identifier —
     /// the block is consumed and skipped, but the rest of the file still parses.
     #[cfg(feature = "macros")]
-    fn parse_doc(&mut self) -> Result<Option<ast::Macro<'a>>, Error> {
+    fn parse_doc(&mut self, start_open_span: Span) -> Result<Option<ast::Macro<'a>>, Error> {
         // Doc names may start with a digit (e.g., `3_months_prior_date`).
         // dbt-core allows this; see https://github.com/dbt-labs/dbt-fusion/issues/998
         let (name, span) = match ok!(self.stream.next()) {
@@ -1928,11 +2060,12 @@ impl<'a> Parser<'a> {
 
         // Always consume the body up to `{% enddocs %}`, even for a skipped block:
         // leaving the closing tag in the stream would fail the whole file instead.
-        let body = ok!(self.parse_doc_or_call_block_body(
+        let mut body = ok!(self.parse_doc_or_call_block_body(
             Vec::new(),
             Vec::new(),
             Some(name.unwrap_or_default()),
-            span
+            span,
+            start_open_span
         ));
 
         // Drain the closing tag rather than requiring `%}` right after `enddocs`.
@@ -1949,12 +2082,22 @@ impl<'a> Parser<'a> {
                 }
             }
         }
+        // `body.end_tag_span` currently covers only the `enddocs` token
+        // itself (that's as far as `parse_doc_or_call_block_body` could see);
+        // widen it from that same start point through the real closing `%}`
+        // we just found, including any stray name in between.
+        if let Some(end_tag_span) = body.end_tag_span {
+            body.end_tag_span = Some(self.stream.expand_span(end_tag_span));
+        }
 
         Ok(name.map(|_| body))
     }
 
     #[cfg(feature = "macros")]
-    fn parse_materialization(&mut self) -> Result<(ast::Macro<'a>, String, Option<Value>), Error> {
+    fn parse_materialization(
+        &mut self,
+        start_open_span: Span,
+    ) -> Result<(ast::Macro<'a>, String, Option<Value>), Error> {
         let (name, span) = expect_token!(self, Token::Ident(name) => name, "identifier");
         let mut supported_languages = None;
         let adapter = ok!(self.parse_materialization_adapter_languages(&mut supported_languages));
@@ -1965,14 +2108,18 @@ impl<'a> Parser<'a> {
         // TODO: This can be cleaned up to add better error messages for miss-formatted materialization macros
         let macro_name = self.intern_string(&materialization_macro_name(name, &adapter));
         Ok((
-            ok!(self.parse_materialization_or_call_block_body(Some(macro_name), span)),
+            ok!(self.parse_materialization_or_call_block_body(
+                Some(macro_name),
+                span,
+                start_open_span
+            )),
             adapter,
             supported_languages,
         ))
     }
 
     #[cfg(feature = "macros")]
-    fn parse_call_block(&mut self) -> Result<ast::CallBlock<'a>, Error> {
+    fn parse_call_block(&mut self, start_open_span: Span) -> Result<ast::CallBlock<'a>, Error> {
         let span = self.stream.last_span();
         let mut args = Vec::new();
         let mut defaults = Vec::new();
@@ -1988,8 +2135,13 @@ impl<'a> Parser<'a> {
                 expr.description()
             ),
         };
-        let macro_decl =
-            ok!(self.parse_macro_or_call_block_body(args, defaults, None, call.span()));
+        let macro_decl = ok!(self.parse_macro_or_call_block_body(
+            args,
+            defaults,
+            None,
+            call.span(),
+            start_open_span
+        ));
         Ok(ast::CallBlock {
             call,
             macro_decl: Spanned::new(macro_decl, self.stream.expand_span(span)),

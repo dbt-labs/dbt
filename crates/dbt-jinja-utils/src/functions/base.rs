@@ -15,10 +15,10 @@ use dbt_common::{
     tracing::emit::{emit_debug_event, emit_info_event},
     warn_error_options::{WarnErrorDecision, WarnErrorOptions},
 };
+use dbt_schemas::schemas::Nodes;
 use dbt_schemas::schemas::manifest::{
     defer_relation_for_model, defer_relation_for_seed, defer_relation_for_snapshot,
 };
-use dbt_schemas::schemas::{InternalDbtNode, Nodes};
 use dbt_telemetry::UserLogMessage;
 use minijinja::{
     arg_utils::ArgsIter,
@@ -1333,262 +1333,145 @@ impl Object for Exceptions {
     }
 }
 
-/// Insert `defer_relation` into a serialized graph node's mapping. When
-/// `defer_nodes` has a matching entry the value is the dbt-core-shaped
-/// `DeferRelation` dict; otherwise it's null. The key is always present so
-/// users can write `node.defer_relation is not none` without hitting an
-/// "undefined value" error. (#1366)
-///
-/// `to_value` is a closure that builds a serializable `DeferRelation` from
-/// the deferred node, allowing this helper to be reused across the three
-/// deferrable resource types without making the helper itself generic.
-fn inject_defer_relation<L>(
-    map: &mut dbt_yaml::Mapping,
-    unique_id: &str,
-    defer_nodes: Option<&Nodes>,
-    to_value: L,
-) where
-    L: FnOnce(&Nodes, &str) -> Option<YmlValue>,
-{
-    let defer_value = defer_nodes
-        .and_then(|dn| to_value(dn, unique_id))
-        .unwrap_or_else(YmlValue::null);
-    map.insert(YmlValue::string("defer_relation".to_string()), defer_value);
+/// Build the graph with node-backed entries; field values are serialized on access.
+/// Graph entries keyed by unique id, each a lazy context over its node.
+fn lazy_graph_entries<T: dbt_schemas::schemas::InternalDbtNode>(
+    nodes: &BTreeMap<String, Arc<T>>,
+    mode: dbt_schemas::schemas::serialization_utils::SerializationMode,
+) -> Value {
+    Value::from_serialize(
+        nodes
+            .iter()
+            .map(|(uid, node)| {
+                let context =
+                    dbt_schemas::jinja_node::LazyNodeContext::from_node(node.clone(), mode);
+                (uid.clone(), Value::from_object(context))
+            })
+            .collect::<BTreeMap<String, Value>>(),
+    )
 }
 
-/// Builds a flat graph for use in a compile context, using
-/// a serialized manifest and restricting to particular keys
 pub fn build_flat_graph(nodes: &Nodes, defer_nodes: Option<&Nodes>) -> MutableMap {
+    use dbt_schemas::jinja_node::LazyNodeContext;
+    use dbt_schemas::schemas::serialization_utils::SerializationMode::{KeepNone, OmitNone};
+
     let mut graph = ValueMap::new();
-    let nodes_insert: BTreeMap<String, Value> = nodes
-        .models
-        .iter()
-        .map(|(unique_id, model)| {
-            let mut serialized = (Arc::as_ref(model) as &dyn InternalDbtNode).serialize_keep_none();
-            if let YmlValue::Mapping(ref mut map, _) = serialized {
-                // Set description to empty string if null
-                let desc_key = YmlValue::string("description".to_string());
-                if let Some(desc_value) = map.get_mut(&desc_key) {
-                    if desc_value.as_str().is_none() {
-                        *desc_value = YmlValue::string("".to_string());
-                    }
-                }
-                // Strip "models/" prefix from path if present.
-                // dbt-core's manifest stores paths relative to the models folder (e.g., "3-data_vault/...")
-                // not including "models/" prefix. Customer macros like bfs_find_all_downstream_nodes
-                // rely on path.startswith() checks that assume this format.
-                // Normalize to forward slashes first so Windows paths (backslash separators) are handled
-                // consistently with Mac/Linux.
-                let path_key = YmlValue::string("path".to_string());
-                if let Some(path_value) = map.get(&path_key) {
-                    if let Some(path_str) = path_value.as_str() {
-                        let normalized = path_str.replace('\\', "/");
-                        let stripped = normalized.strip_prefix("models/").unwrap_or(&normalized);
-                        map.insert(path_key, YmlValue::string(stripped.to_string()));
-                    }
-                }
-                inject_defer_relation(map, unique_id, defer_nodes, |dn, uid| {
-                    dn.models
-                        .get(uid)
-                        .and_then(|m| dbt_yaml::to_value(defer_relation_for_model(m.as_ref())).ok())
-                });
+    let mut graph_nodes = BTreeMap::new();
+    let strip_path = |context: &mut LazyNodeContext, prefix: &'static str| {
+        context.transform("path", move |value| {
+            if let Some(path) = value.as_str() {
+                let normalized = path.replace('\\', "/");
+                let stripped = normalized.strip_prefix(prefix).unwrap_or(&normalized);
+                YmlValue::string(stripped.to_string())
+            } else {
+                value
             }
-            (unique_id.clone(), Value::from_serialize(serialized))
-        })
-        .chain(nodes.snapshots.iter().map(|(unique_id, snapshot)| {
-            let mut serialized =
-                (Arc::as_ref(snapshot) as &dyn InternalDbtNode).serialize_keep_none();
-            // Strip resource folder prefix from path for consistency with dbt-core manifest format
-            if let YmlValue::Mapping(ref mut map, _) = serialized {
-                let path_key = YmlValue::string("path".to_string());
-                if let Some(path_value) = map.get(&path_key) {
-                    if let Some(path_str) = path_value.as_str() {
-                        let normalized = path_str.replace('\\', "/");
-                        let stripped = normalized.strip_prefix("snapshots/").unwrap_or(&normalized);
-                        map.insert(path_key, YmlValue::string(stripped.to_string()));
-                    }
-                }
-                inject_defer_relation(map, unique_id, defer_nodes, |dn, uid| {
-                    dn.snapshots.get(uid).and_then(|s| {
-                        dbt_yaml::to_value(defer_relation_for_snapshot(s.as_ref())).ok()
-                    })
-                });
+        });
+    };
+    for (uid, model) in &nodes.models {
+        let mut context = LazyNodeContext::from_node(model.clone(), KeepNone);
+        context.transform("description", |value| {
+            if value.as_str().is_some() {
+                value
+            } else {
+                YmlValue::string(String::new())
             }
-            (unique_id.clone(), Value::from_serialize(serialized))
-        }))
-        .chain(nodes.tests.iter().map(|(unique_id, test)| {
-            // For tests, override original_file_path with manifest_original_file_path to match
-            // what the manifest serializes: schema.yml path for generic tests, generated SQL
-            // path for singular tests.
-            let mut serialized = (Arc::as_ref(test) as &dyn InternalDbtNode).serialize_keep_none();
-            if let YmlValue::Mapping(ref mut map, _) = serialized {
-                map.insert(
-                    YmlValue::string("original_file_path".to_string()),
-                    YmlValue::string(test.manifest_original_file_path.display().to_string()),
-                );
-                // For tests, use just the file name (not the full path) for consistency with dbt-core manifest format
-                // Generic tests have paths like "tests/generic_tests/not_null_foo_id.sql" but manifest expects "not_null_foo_id.sql"
-                let path_key = YmlValue::string("path".to_string());
-                if let Some(path_value) = map.get(&path_key) {
-                    if let Some(path_str) = path_value.as_str() {
-                        let file_name = std::path::Path::new(path_str)
-                            .file_name()
-                            .and_then(|s| s.to_str())
-                            .unwrap_or(path_str);
-                        map.insert(path_key.clone(), YmlValue::string(file_name.to_string()));
-                    }
-                }
-                // Set severity to ERROR in config if not already set
-                let config_key = YmlValue::string("config".to_string());
-                if let Some(YmlValue::Mapping(config_map, _)) = map.get_mut(&config_key) {
-                    let severity_key = YmlValue::string("severity".to_string());
-                    let needs_default = match config_map.get(&severity_key) {
-                        None => true,
-                        Some(v) => v.as_str().is_none(),
-                    };
-                    if needs_default {
-                        config_map.insert(severity_key, YmlValue::string("ERROR".to_string()));
-                    }
+        });
+        strip_path(&mut context, "models/");
+        let relation = defer_nodes
+            .and_then(|nodes| nodes.models.get(uid))
+            .and_then(|node| dbt_yaml::to_value(defer_relation_for_model(node.as_ref())).ok())
+            .unwrap_or_else(YmlValue::null);
+        context.insert(
+            Value::from("defer_relation"),
+            Value::from_serialize(relation),
+        );
+        graph_nodes.insert(uid.clone(), Value::from_object(context));
+    }
+    for (uid, snapshot) in &nodes.snapshots {
+        let mut context = LazyNodeContext::from_node(snapshot.clone(), KeepNone);
+        strip_path(&mut context, "snapshots/");
+        let relation = defer_nodes
+            .and_then(|nodes| nodes.snapshots.get(uid))
+            .and_then(|node| dbt_yaml::to_value(defer_relation_for_snapshot(node.as_ref())).ok())
+            .unwrap_or_else(YmlValue::null);
+        context.insert(
+            Value::from("defer_relation"),
+            Value::from_serialize(relation),
+        );
+        graph_nodes.insert(uid.clone(), Value::from_object(context));
+    }
+    for (uid, test) in &nodes.tests {
+        let mut context = LazyNodeContext::from_node(test.clone(), KeepNone);
+        context.insert(
+            Value::from("original_file_path"),
+            Value::from(test.manifest_original_file_path.display().to_string()),
+        );
+        context.transform("path", |value| {
+            if let Some(path) = value.as_str() {
+                let name = std::path::Path::new(path)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or(path);
+                YmlValue::string(name.to_string())
+            } else {
+                value
+            }
+        });
+        context.transform("config", |mut config| {
+            if let YmlValue::Mapping(ref mut map, _) = config {
+                let key = YmlValue::string("severity".to_string());
+                if map.get(&key).and_then(YmlValue::as_str).is_none() {
+                    map.insert(key, YmlValue::string("ERROR".to_string()));
                 }
             }
-            (unique_id.clone(), Value::from_serialize(serialized))
-        }))
-        .chain(nodes.seeds.iter().map(|(unique_id, seed)| {
-            let mut serialized = (Arc::as_ref(seed) as &dyn InternalDbtNode).serialize_keep_none();
-            // Strip resource folder prefix from path for consistency with dbt-core manifest format
-            if let YmlValue::Mapping(ref mut map, _) = serialized {
-                let path_key = YmlValue::string("path".to_string());
-                if let Some(path_value) = map.get(&path_key) {
-                    if let Some(path_str) = path_value.as_str() {
-                        let normalized = path_str.replace('\\', "/");
-                        let stripped = normalized.strip_prefix("seeds/").unwrap_or(&normalized);
-                        map.insert(path_key, YmlValue::string(stripped.to_string()));
-                    }
-                }
-                inject_defer_relation(map, unique_id, defer_nodes, |dn, uid| {
-                    dn.seeds
-                        .get(uid)
-                        .and_then(|s| dbt_yaml::to_value(defer_relation_for_seed(s.as_ref())).ok())
-                });
-            }
-            (unique_id.clone(), Value::from_serialize(serialized))
-        }))
-        .collect();
-    graph.insert(Value::from("nodes"), Value::from_serialize(nodes_insert));
-
-    let sources_insert: BTreeMap<String, Value> = nodes
-        .sources
-        .iter()
-        .map(|(unique_id, source)| {
-            (
-                unique_id.clone(),
-                Value::from_serialize(
-                    (Arc::as_ref(source) as &dyn InternalDbtNode).serialize_keep_none(),
-                ),
-            )
-        })
-        .collect();
-
-    graph.insert(
-        Value::from("sources"),
-        Value::from_serialize(sources_insert),
-    );
-    let unit_tests_insert: BTreeMap<String, Value> = nodes
-        .unit_tests
-        .iter()
-        .map(|(unique_id, unit_test)| {
-            (
-                unique_id.clone(),
-                Value::from_serialize(
-                    (Arc::as_ref(unit_test) as &dyn InternalDbtNode).serialize_keep_none(),
-                ),
-            )
-        })
-        .collect();
-    graph.insert(
-        Value::from("unit_tests"),
-        Value::from_serialize(unit_tests_insert),
-    );
-    let exposures_insert: BTreeMap<String, Value> = nodes
-        .exposures
-        .iter()
-        .map(|(unique_id, exposure)| {
-            (
-                unique_id.clone(),
-                Value::from_serialize((Arc::as_ref(exposure) as &dyn InternalDbtNode).serialize()),
-            )
-        })
-        .collect();
-    graph.insert(
-        Value::from("exposures"),
-        Value::from_serialize(exposures_insert),
-    );
+            config
+        });
+        graph_nodes.insert(uid.clone(), Value::from_object(context));
+    }
+    for (uid, seed) in &nodes.seeds {
+        let mut context = LazyNodeContext::from_node(seed.clone(), KeepNone);
+        strip_path(&mut context, "seeds/");
+        let relation = defer_nodes
+            .and_then(|nodes| nodes.seeds.get(uid))
+            .and_then(|node| dbt_yaml::to_value(defer_relation_for_seed(node.as_ref())).ok())
+            .unwrap_or_else(YmlValue::null);
+        context.insert(
+            Value::from("defer_relation"),
+            Value::from_serialize(relation),
+        );
+        graph_nodes.insert(uid.clone(), Value::from_object(context));
+    }
+    graph.insert(Value::from("nodes"), Value::from_serialize(graph_nodes));
+    for (key, entries) in [
+        ("sources", lazy_graph_entries(&nodes.sources, KeepNone)),
+        (
+            "unit_tests",
+            lazy_graph_entries(&nodes.unit_tests, KeepNone),
+        ),
+        ("exposures", lazy_graph_entries(&nodes.exposures, OmitNone)),
+        ("metrics", lazy_graph_entries(&nodes.metrics, OmitNone)),
+        (
+            "semantic_models",
+            lazy_graph_entries(&nodes.semantic_models, OmitNone),
+        ),
+        (
+            "saved_queries",
+            lazy_graph_entries(&nodes.saved_queries, OmitNone),
+        ),
+        ("functions", lazy_graph_entries(&nodes.functions, OmitNone)),
+    ] {
+        graph.insert(Value::from(key), entries);
+    }
+    // TODO(LazyNodeContext): This serializes the struct directly, so a group entry has the keys
+    // `__common_attr__`, `__base_attr__` and `__group_attr__`, which are read-only maps. In
+    // dbt-core it is a flat dict (`name`, `owner`, `unique_id`, ...), like other graph entries.
     let groups_insert: BTreeMap<String, Value> = nodes
         .groups
         .iter()
         .map(|(unique_id, group)| (unique_id.clone(), Value::from_serialize(Arc::as_ref(group))))
         .collect();
     graph.insert(Value::from("groups"), Value::from_serialize(groups_insert));
-    let metrics_insert: BTreeMap<String, Value> = nodes
-        .metrics
-        .iter()
-        .map(|(unique_id, metric)| {
-            (
-                unique_id.clone(),
-                Value::from_serialize((Arc::as_ref(metric) as &dyn InternalDbtNode).serialize()),
-            )
-        })
-        .collect();
-    graph.insert(
-        Value::from("metrics"),
-        Value::from_serialize(metrics_insert),
-    );
-    let semantic_models_insert: BTreeMap<String, Value> = nodes
-        .semantic_models
-        .iter()
-        .map(|(unique_id, semantic_model)| {
-            (
-                unique_id.clone(),
-                Value::from_serialize(
-                    (Arc::as_ref(semantic_model) as &dyn InternalDbtNode).serialize(),
-                ),
-            )
-        })
-        .collect();
-    graph.insert(
-        Value::from("semantic_models"),
-        Value::from_serialize(semantic_models_insert),
-    );
-    let saved_queries_insert: BTreeMap<String, Value> = nodes
-        .saved_queries
-        .iter()
-        .map(|(unique_id, saved_query)| {
-            (
-                unique_id.clone(),
-                Value::from_serialize(
-                    (Arc::as_ref(saved_query) as &dyn InternalDbtNode).serialize(),
-                ),
-            )
-        })
-        .collect();
-    graph.insert(
-        Value::from("saved_queries"),
-        Value::from_serialize(saved_queries_insert),
-    );
-    let functions_insert: BTreeMap<String, Value> = nodes
-        .functions
-        .iter()
-        .map(|(unique_id, function)| {
-            (
-                unique_id.clone(),
-                Value::from_serialize((Arc::as_ref(function) as &dyn InternalDbtNode).serialize()),
-            )
-        })
-        .collect();
-    graph.insert(
-        Value::from("functions"),
-        Value::from_serialize(functions_insert),
-    );
     MutableMap::from(graph)
 }
 

@@ -1,10 +1,14 @@
 use adbc_core::options::OptionValue;
 use dbt_common::{AdapterError, AdapterErrorKind, AdapterResult};
+use dbt_schemas::schemas::common::DbtMaterialization;
 use dbt_schemas::schemas::{DbtModel, DbtSeed, DbtSnapshot, DbtTest, DbtUnitTest};
 use indexmap::IndexMap;
 use minijinja::State;
 use serde::Deserialize;
 use serde_json::Value;
+
+use super::Options;
+use crate::AdapterType;
 
 const QUERY_TAG_OPTION_PREFIX: &str = "databricks.query_tag.";
 const DBT_CORE_VERSION: &str = "@@dbt_core_version";
@@ -60,6 +64,18 @@ pub(super) fn query_tags_from_state(state: Option<&State>) -> AdapterResult<Data
     query_tags_from_yaml_node(&yaml_node)
 }
 
+pub(crate) fn databricks_statement_options(
+    adapter_type: AdapterType,
+    state: Option<&State>,
+) -> AdapterResult<Options> {
+    match (adapter_type, state) {
+        (AdapterType::Databricks, Some(state)) => {
+            Ok(query_tags_from_state(Some(state))?.into_statement_options())
+        }
+        _ => Ok(Options::new()),
+    }
+}
+
 fn query_tags_from_yaml_node(yaml_node: &dbt_yaml::Value) -> AdapterResult<DatabricksQueryTags> {
     macro_rules! tags_for_node {
         ($node_type:ty, $node:ident) => {
@@ -104,7 +120,13 @@ fn query_tags_from_yaml_node(yaml_node: &dbt_yaml::Value) -> AdapterResult<Datab
     tags_for_node_deprecated!(
         DbtSeed,
         seed,
-        Some(seed.__base_attr__.materialized.to_string())
+        Some(
+            seed.deprecated_config
+                .materialized
+                .as_ref()
+                .unwrap_or(&DbtMaterialization::Seed)
+                .to_string()
+        )
     );
 
     Ok(DatabricksQueryTags::default())
@@ -173,14 +195,16 @@ fn truncate_default(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        DatabricksQueryTags, QUERY_TAG_OPTION_PREFIX, query_tags_from_state,
-        query_tags_from_yaml_node,
+        DatabricksQueryTags, QUERY_TAG_OPTION_PREFIX, databricks_statement_options,
+        query_tags_from_state, query_tags_from_yaml_node,
     };
+    use crate::AdapterType;
     use adbc_core::options::OptionValue;
     use dbt_schemas::schemas::{
         AdapterAttr, DbtModel, DbtSeed, DbtSnapshot, DbtTest, DbtUnitTest,
         common::DbtMaterialization, manifest::DbtOperation, nodes::DatabricksAttr,
     };
+    use minijinja::{Environment, State, Value as MinijinjaValue};
 
     fn string_option<'a>(options: &'a [(String, OptionValue)], name: &str) -> Option<&'a str> {
         options.iter().find_map(|(option_name, value)| {
@@ -286,6 +310,65 @@ mod tests {
         );
     }
 
+    fn tagged_seed() -> DbtSeed {
+        let mut seed = DbtSeed::default();
+        seed.__common_attr__.name = "orders_seed".to_string();
+        seed.__base_attr__.materialized = DbtMaterialization::Table;
+        seed.deprecated_config.materialized = Some(DbtMaterialization::Seed);
+        seed.deprecated_config
+            .__warehouse_specific_config__
+            .query_tags = Some(r#"{"team":"resource"}"#.to_string());
+        seed
+    }
+
+    fn model_global(seed: DbtSeed) -> MinijinjaValue {
+        MinijinjaValue::from_serialize(dbt_yaml::to_value(seed).unwrap())
+    }
+
+    #[test]
+    fn databricks_statement_options_tag_the_node_in_state() {
+        let mut env = Environment::new();
+        env.add_global("model", model_global(tagged_seed()));
+        let state = State::new_for_env(&env);
+
+        let options = databricks_statement_options(AdapterType::Databricks, Some(&state)).unwrap();
+
+        assert_eq!(
+            string_option(&options, "databricks.query_tag.@@dbt_model_name"),
+            Some("orders_seed")
+        );
+        assert_eq!(
+            string_option(&options, "databricks.query_tag.@@dbt_materialized"),
+            Some("seed")
+        );
+        assert_eq!(
+            string_option(&options, "databricks.query_tag.team"),
+            Some("resource")
+        );
+    }
+
+    #[test]
+    fn databricks_statement_options_are_empty_without_databricks_or_without_a_node() {
+        let mut env = Environment::new();
+        env.add_global("model", model_global(tagged_seed()));
+        let state = State::new_for_env(&env);
+
+        for adapter_type in [AdapterType::Spark, AdapterType::Snowflake] {
+            assert!(
+                databricks_statement_options(adapter_type, Some(&state))
+                    .unwrap()
+                    .is_empty(),
+                "{adapter_type} must not receive Databricks query tags"
+            );
+        }
+
+        assert!(
+            databricks_statement_options(AdapterType::Databricks, None)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
     fn databricks_attr(query_tags: &str) -> AdapterAttr {
         AdapterAttr::default().with_databricks_attr(Some(Box::new(DatabricksAttr {
             query_tags: Some(query_tags.to_string()),
@@ -345,14 +428,8 @@ mod tests {
             Some("snapshot"),
         );
 
-        let mut seed = DbtSeed::default();
-        seed.__common_attr__.name = "orders_seed".to_string();
-        seed.__base_attr__.materialized = DbtMaterialization::Seed;
-        seed.deprecated_config
-            .__warehouse_specific_config__
-            .query_tags = Some(r#"{"team":"resource"}"#.to_string());
         assert_resource_tags(
-            dbt_yaml::to_value(seed).unwrap(),
+            dbt_yaml::to_value(tagged_seed()).unwrap(),
             "orders_seed",
             Some("seed"),
         );

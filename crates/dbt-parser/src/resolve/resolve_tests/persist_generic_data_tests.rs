@@ -1785,11 +1785,13 @@ impl TestableNodeTrait for TestableTable<'_> {
     }
 }
 
+static TEST_NAME_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^([a-zA-Z_][0-9a-zA-Z_]*)+").expect("Valid test name pattern"));
+
 /// Normalizes a test name following the existing dbt behavior
 /// https://github.com/dbt-labs/dbt-core/blob/main/core/dbt/parser/generic_test_builders.py#L121-L122
 fn normalize_test_name(input: &str) -> FsResult<String> {
-    let name_pattern = Regex::new(r"^([a-zA-Z_][0-9a-zA-Z_]*)+").expect("Valid test name pattern");
-    name_pattern
+    TEST_NAME_REGEX
         .captures(input)
         .and_then(|caps| caps.get(1))
         .map(|m| m.as_str().to_string())

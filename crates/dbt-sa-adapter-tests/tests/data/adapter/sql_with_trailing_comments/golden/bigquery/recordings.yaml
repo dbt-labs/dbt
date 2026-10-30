@@ -1,0 +1,107 @@
+a31ed848:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists `dbt-test-env`.`adapters_bigquery_sql_with_trailing_comments`
+model.sql_with_trailing_comments.simple_test:
+- sequence: 0
+  type: execute
+  sql: "\n    select 1 as test_value; /* trailing comment */\n  "
+- sequence: 1
+  type: execute
+  sql: "\n    select 2 as test_value; -- line comment\n  "
+- sequence: 2
+  type: execute
+  sql: "\n    select 3 as test_value; /* block comment */ -- line comment\n  "
+- sequence: 3
+  type: execute
+  sql: "\n    select 1; /* end comment */\n  "
+- sequence: 4
+  type: execute
+  sql: "\n    /* initial comment */ select 5 as test_value\n  "
+- sequence: 5
+  type: execute
+  sql: "\n    /* before */ select 6 as test_value /* after */\n  "
+- sequence: 6
+  type: execute
+  sql: "\n    /* start */ select 7 as first; select 8 as second /* end */\n  "
+- sequence: 7
+  type: execute
+  sql: |-
+    select 1;
+    /* end comment */
+- sequence: 8
+  type: execute
+  sql: |-
+    create or replace table `dbt-test-env`.`adapters_bigquery_sql_with_trailing_comments`.`simple_test`
+    
+    
+    
+    
+    
+    OPTIONS()
+    as (
+    
+    
+    -- First, investigate how this dialect handles comment-only statements
+    
+    
+    -- Then reproduce the exact issue from GitHub #468
+    
+    
+    
+    
+    select 'dialect investigation completed' as status
+    );
+model.sql_with_trailing_comments.test_model:
+- sequence: 0
+  type: execute
+  sql: "\n    select 1 as num; /* trailing block comment */\n  "
+- sequence: 1
+  type: execute
+  sql: "\n    select 2 as num; -- trailing line comment\n  "
+- sequence: 2
+  type: execute
+  sql: |-
+    select 3 as num;
+    /* block comment */
+    -- line comment
+- sequence: 3
+  type: execute
+  sql: |-
+    select 4 as num;
+    /* first comment */ /* second comment */
+- sequence: 4
+  type: execute
+  sql: |-
+    select 5 as num
+    /* no semicolon, just comment */
+- sequence: 5
+  type: execute
+  sql: "\n    /* leading comment */ select 6 as num\n  "
+- sequence: 6
+  type: execute
+  sql: "\n    /* before */ select 7 as num /* after */\n  "
+- sequence: 7
+  type: execute
+  sql: "\n    select 8 as first; /* middle comment */ select 88 as second\n  "
+- sequence: 8
+  type: execute
+  sql: |-
+    create or replace table `dbt-test-env`.`adapters_bigquery_sql_with_trailing_comments`.`test_model`
+    
+    
+    
+    
+    
+    OPTIONS()
+    as (
+    
+    
+    -- This model tests that SQL with trailing comments compiles and runs correctly
+    
+    
+    select 
+    1 as test_id,
+    'sql_with_trailing_comments' as test_name
+    /* End of query with trailing comment */
+    );

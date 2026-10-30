@@ -1,0 +1,134 @@
+85f3743c:
+- sequence: 0
+  type: execute
+  sql: SHOW SCHEMAS IN `e2e`
+model.test.scheduled_mv:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace temporary view `scheduled_mv__dbt_tmp` as
+    select id from `e2e`.`adapters_databricks_refresh_schedule_lifecycle`.`refresh_source` LIMIT 10
+- sequence: 1
+  type: execute
+  sql: DESCRIBE TABLE EXTENDED `scheduled_mv__dbt_tmp` AS JSON
+- sequence: 2
+  type: execute
+  sql: |-
+    SELECT
+    table_catalog,
+    table_schema,
+    table_name,
+    filter_name,
+    target_columns
+    FROM `e2e`.`information_schema`.`row_filters`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'adapters_databricks_refresh_schedule_lifecycle'
+    AND table_name = 'scheduled_mv'
+- sequence: 3
+  type: execute
+  sql: |-
+    create or replace materialized view `e2e`.`adapters_databricks_refresh_schedule_lifecycle`.`scheduled_mv`
+    
+    (
+    
+    
+    
+    
+    `id` int
+    
+    
+    
+    )
+    
+    
+    
+    
+    
+    
+    
+    
+    SCHEDULE EVERY 1 DAY
+    as
+    select id from `e2e`.`adapters_databricks_refresh_schedule_lifecycle`.`refresh_source`
+model.test.scheduled_st:
+- sequence: 0
+  type: execute
+  sql: |-
+    SELECT
+    table_name,
+    if(table_type IN ('EXTERNAL', 'MANAGED', 'MANAGED_SHALLOW_CLONE', 'EXTERNAL_SHALLOW_CLONE'), 'table', lower(table_type)) AS table_type,
+    lower(data_source_format) AS file_format,
+    table_schema,
+    table_owner,
+    table_catalog,
+    if(
+    table_type IN (
+    'EXTERNAL',
+    'MANAGED',
+    'MANAGED_SHALLOW_CLONE',
+    'EXTERNAL_SHALLOW_CLONE'
+    ),
+    lower(table_type),
+    NULL
+    ) AS databricks_table_type
+    FROM `system`.`information_schema`.`tables`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'adapters_databricks_refresh_schedule_lifecycle'
+- sequence: 1
+  type: execute
+  sql: |-
+    create or replace temporary view `scheduled_st__dbt_tmp` as
+    select id from STREAM(`e2e`.`adapters_databricks_refresh_schedule_lifecycle`.`refresh_source`)
+- sequence: 2
+  type: execute
+  sql: DESCRIBE TABLE EXTENDED `scheduled_st__dbt_tmp` AS JSON
+- sequence: 3
+  type: execute
+  sql: |-
+    SELECT
+    table_catalog,
+    table_schema,
+    table_name,
+    filter_name,
+    target_columns
+    FROM `e2e`.`information_schema`.`row_filters`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'adapters_databricks_refresh_schedule_lifecycle'
+    AND table_name = 'scheduled_st'
+- sequence: 4
+  type: execute
+  sql: |-
+    CREATE STREAMING TABLE `e2e`.`adapters_databricks_refresh_schedule_lifecycle`.`scheduled_st`
+    
+    (
+    
+    
+    
+    
+    `id` int
+    
+    
+    
+    )
+    
+    
+    
+    
+    
+    
+    
+    tblproperties ('refresh_test_marker' = 'baseline' 
+    )
+    
+    TRIGGER ON UPDATE AT MOST EVERY INTERVAL 15 MINUTES
+    AS select id from STREAM(`e2e`.`adapters_databricks_refresh_schedule_lifecycle`.`refresh_source`)
+operation.test.test-on-run-end-0:
+- sequence: 0
+  type: execute
+  sql: DESCRIBE EXTENDED `e2e`.`adapters_databricks_refresh_schedule_lifecycle`.`scheduled_mv`
+- sequence: 1
+  type: execute
+  sql: DESCRIBE EXTENDED `e2e`.`adapters_databricks_refresh_schedule_lifecycle`.`scheduled_st`
+- sequence: 2
+  type: execute
+  sql: SHOW TBLPROPERTIES `e2e`.`adapters_databricks_refresh_schedule_lifecycle`.`scheduled_st`

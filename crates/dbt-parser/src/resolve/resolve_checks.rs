@@ -14,6 +14,7 @@ use dbt_jinja_utils::utils::dependency_package_name_from_ctx;
 use dbt_schemas::schemas::common::{DbtMaterialization, DbtQuoting, ResolvedQuoting};
 use dbt_schemas::schemas::project::{CheckConfig, SUPPORTED_INFO_SCHEMA_VERSIONS};
 use dbt_schemas::schemas::properties::CheckProperties;
+use dbt_schemas::schemas::telemetry::NodeType;
 use dbt_schemas::state::ModelStatus;
 use dbt_schemas::{
     schemas::{
@@ -85,6 +86,10 @@ pub async fn resolve_checks(
             args: arg.clone(),
             root_project_name: root_package.dbt_project.name.clone(),
             config_resolver,
+            adapter_hint: None,
+            // A check's adapter is always the default (`adapter` below), even under `--adapter`.
+            parse_adapter_scopes: None,
+            adapter_quoting: root_project_configs.adapter_quoting.clone(),
             package_quoting,
             uses_snapshot_fqn: false,
             base_ctx: base_ctx.clone(),
@@ -103,6 +108,7 @@ pub async fn resolve_checks(
             // (matches resolve_functions.rs, the other resource type with no compile-time
             // re-render).
             defer_render_errors_to_compile: false,
+            resource_type: Some(NodeType::Check),
         }),
         jinja_env: env.clone(),
         runtime_config: runtime_config.clone(),
@@ -212,6 +218,7 @@ pub async fn resolve_checks(
                 adapter: adapter_type,
                 // This node type has no `+propagate` config; nothing is published.
                 propagate: Vec::new(),
+                effective_propagation_target: None,
                 // A check is never materialized, so it has no relation of its own. These stay
                 // empty rather than being run through `update_node_relation_components`, which
                 // would invent a database/schema/alias for something that is never written.

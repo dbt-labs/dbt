@@ -1,0 +1,13 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/a.sql
+snowflake
+excluded_schemas: ADAPTERS_SNOWFLAKE_GET_RELATIONS_BY_PATTERN
+ Rendering models/a.sql
+snowflake
+development.ADAPTERS_SNOWFLAKE_GET_RELATIONS_BY_PATTERN.C_1
+excluded_schemas: ADAPTERS_SNOWFLAKE_GET_RELATIONS_BY_PATTERN
+==================== Execution Summary =====================
+Finished 'compile' successfully for target 'snowflake' [duration]
+Processed: 1 model
+Summary: 1 total | 1 success

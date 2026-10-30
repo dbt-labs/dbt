@@ -86,6 +86,12 @@ pub struct BumpCargoVersionArgs {
 
 #[derive(Args, Debug)]
 pub struct HomebrewRenderArgs {
+    /// Per-target release package JSON manifests (repeatable).
+    #[arg(long)]
+    pub sidecar_manifest: Vec<PathBuf>,
+    /// Base URL for the sidecar resource archives.
+    #[arg(long, requires = "sidecar_manifest")]
+    pub sidecar_base_url: Option<String>,
     /// Directory of release tarballs, one per cargo target triple.
     /// Filename pattern: `{tarball-prefix}{version}-{target}.tar.gz`.
     /// SHA256 of each tarball is computed in-process.

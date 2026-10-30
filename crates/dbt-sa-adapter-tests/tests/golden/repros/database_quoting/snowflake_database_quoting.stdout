@@ -1,0 +1,6 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/example/my_first_model.sql
+==================== Execution Summary =====================
+Finished 'run' with 1 error for target 'snowflake' [duration]
+Processed: 1 model

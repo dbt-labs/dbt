@@ -282,7 +282,7 @@ classifiers = ["Programming Language :: Rust"]
             r#"
 [project]
 name = "dbt-core"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 dependencies = ["mashumaro[msgpack]>=3.14"]
 "#,
         )
@@ -291,7 +291,7 @@ dependencies = ["mashumaro[msgpack]>=3.14"]
         let mut spec = parse(root.path().to_path_buf()).unwrap();
         spec.overlay_runtime_metadata(wheel.path()).unwrap();
 
-        assert_eq!(spec.requires_python.as_deref(), Some(">=3.11"));
+        assert_eq!(spec.requires_python.as_deref(), Some(">=3.10"));
         assert_eq!(spec.dependencies, vec!["mashumaro[msgpack]>=3.14"]);
         assert_eq!(spec.wheel_name, "dbt-oss");
         assert_eq!(

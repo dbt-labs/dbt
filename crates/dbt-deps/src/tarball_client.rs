@@ -6,14 +6,13 @@
 //! Supports selective extraction with root directory stripping and subdirectory filtering.
 //! A supplied sha1 is verified against the buffered body before extraction.
 
+use crate::network_client::LazyHttpClient;
 use crate::utils::ensure_dir;
 use async_compression::tokio::bufread::GzipDecoder;
 use dbt_common::cancellation::CancellationToken;
 use dbt_common::tracing::dbt_emit::emit_info_log_message;
 use dbt_common::{ErrorCode, FsResult, err, fs_err};
 use futures::StreamExt;
-use reqwest::StatusCode;
-use reqwest_middleware::ClientWithMiddleware;
 use sha1::Digest;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -25,12 +24,12 @@ use tokio_util::io::StreamReader;
 /// Client for downloading and extracting tarball archives.
 #[derive(Clone)]
 pub struct TarballClient {
-    pub client: ClientWithMiddleware,
+    pub client: LazyHttpClient,
     cancellation: CancellationToken,
 }
 
 impl TarballClient {
-    pub fn from_client(client: ClientWithMiddleware, cancellation: CancellationToken) -> Self {
+    pub fn from_client(client: LazyHttpClient, cancellation: CancellationToken) -> Self {
         Self {
             client,
             cancellation,
@@ -65,15 +64,14 @@ impl TarballClient {
     ) -> FsResult<PathBuf> {
         self.cancellation.check_cancellation()?;
 
-        let mut req = self.client.get(download_url);
+        let mut req = self.client.get(download_url).await;
         for (name, value) in headers {
             req = req.header(*name, *value);
         }
         let res = req.send().await.map_err(|e| {
             fs_err!(
                 ErrorCode::RuntimeError,
-                "Failed to get tarball from {download_url}; status: {}",
-                e.status().unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)
+                "Failed to get tarball from {download_url}: {e:#}"
             )
         })?;
 
@@ -354,7 +352,7 @@ mod tests {
     /// Extract with root stripping, as package installs do.
     async fn extract(archive_bytes: &[u8], target: &Path) -> FsResult<PathBuf> {
         let http_client = reqwest_middleware::ClientBuilder::new(reqwest::Client::new()).build();
-        TarballClient::from_client(http_client, never_cancels())
+        TarballClient::from_client(LazyHttpClient::from_existing(http_client), never_cancels())
             .extract_archive(Archive::new(archive_bytes), TEST_URL, target, true, None)
             .await
     }
@@ -596,7 +594,7 @@ mod tests {
             .await;
 
         let http_client = reqwest_middleware::ClientBuilder::new(reqwest::Client::new()).build();
-        TarballClient::from_client(http_client, never_cancels())
+        TarballClient::from_client(LazyHttpClient::from_existing(http_client), never_cancels())
             .download_and_extract_tarball(&server.uri(), target, true, None, &[], expected_sha1)
             .await
     }

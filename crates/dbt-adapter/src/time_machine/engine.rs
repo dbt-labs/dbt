@@ -20,7 +20,9 @@ use super::event_recorder::EventRecorder;
 use super::event_replay::{Recording, ReplayError, ReplayMode, is_read_only_execute_call};
 use super::semantic::SemanticCategory;
 use super::serde::{ReplayCallContext, ReplayContext, json_to_value_with_context};
-use super::validation::{IncomingEvent, TimeMachineEventValidationEngine, ValidationResult};
+use super::validation::{
+    IncomingEvent, MismatchKind, TimeMachineEventValidationEngine, ValidationResult,
+};
 
 /// Unified time machine for recording or replaying adapter calls.
 #[derive(Clone)]
@@ -85,6 +87,11 @@ impl TimeMachine {
 pub struct ReplayCallError {
     pub message: String,
     pub recorded_error: Option<String>,
+    /// True when this error is specifically a recorded-vs-requested method name
+    /// mismatch (strict-mode metadata replay), as opposed to any other replay
+    /// failure. Callers use this to identify recordings made before an event was
+    /// split or renamed, without depending on `message`'s wording.
+    pub is_method_mismatch: bool,
 }
 
 impl std::fmt::Display for ReplayCallError {
@@ -136,6 +143,11 @@ impl EventReplayer {
     pub fn load(path: impl AsRef<std::path::Path>) -> Result<Self, ReplayError> {
         let recording = Recording::load(path)?;
         Ok(Self::new(recording))
+    }
+
+    /// Adapter type parsed from the recording header.
+    pub(crate) fn adapter_type(&self) -> AdapterType {
+        self.replay_ctx.adapter_type
     }
 
     /// Set the replay ordering mode.
@@ -198,6 +210,7 @@ impl EventReplayer {
                                 call_category, method, node_id
                             ),
                             recorded_error: None,
+                            is_method_mismatch: false,
                         })?
                 } else {
                     self.get_result_strict(node_id, method, &serialized_args, call_category)?
@@ -255,6 +268,7 @@ impl EventReplayer {
                     method, node_id, event.seq, mismatch,
                 ),
                 recorded_error: None,
+                is_method_mismatch: false,
             }),
         }
     }
@@ -275,6 +289,7 @@ impl EventReplayer {
                     call_category, node_id
                 ),
                 recorded_error: None,
+                is_method_mismatch: false,
             });
         }
 
@@ -299,20 +314,105 @@ impl EventReplayer {
         self.recording
             .take_semantic_match(node_id, method, args, call_category)
             .ok_or_else(|| {
-                let context = if call_category.is_mutating() {
-                    "Write operations must match the next write barrier in sequence."
+                let sql_detail = if is_read_only_execute_call(method, args) {
+                    self.recording
+                        .read_only_execute_candidate(node_id, method)
+                        .and_then(|recorded| {
+                            let incoming = IncomingEvent::new(node_id, method, args);
+                            match self.validation_engine.validate(&incoming, recorded) {
+                                ValidationResult::Mismatch(mismatch)
+                                    if mismatch.kind == MismatchKind::Sql =>
+                                {
+                                    Some(format!(
+                                        "\nRecorded read candidate is event seq {}. SQL differs:\n{}",
+                                        recorded.seq,
+                                        Self::format_sql_diff(
+                                            &mismatch.expected,
+                                            &mismatch.actual,
+                                        ),
+                                    ))
+                                }
+                                _ => None,
+                            }
+                        })
+                        .unwrap_or_default()
                 } else {
-                    "No matching read found in current segment. \
-                     The same read can be matched multiple times, but at least one must exist."
+                    String::new()
+                };
+
+                // Read-only SQL run through `execute` is matched as a read (see
+                // `take_semantic_match`), so a miss there is not a write-barrier miss.
+                let (kind, context) = if is_read_only_execute_call(method, args) {
+                    (
+                        "read-only".to_string(),
+                        "No recorded read with identical SQL in the current segment. \
+                         The same read can be matched multiple times, but at least one must exist.",
+                    )
+                } else if call_category.is_mutating() {
+                    (
+                        call_category.to_string(),
+                        "Write operations must match the next write barrier in sequence.",
+                    )
+                } else {
+                    (
+                        call_category.to_string(),
+                        "No matching read found in current segment. \
+                         The same read can be matched multiple times, but at least one must exist.",
+                    )
                 };
                 ReplayCallError {
                     message: format!(
-                        "No recorded event for {} call '{}' on node '{}'. {}",
-                        call_category, method, node_id, context
+                        "No recorded event for {} call '{}' on node '{}'. {}{}",
+                        kind, method, node_id, context, sql_detail
                     ),
                     recorded_error: None,
+                    is_method_mismatch: false,
                 }
             })
+    }
+
+    /// Show a small window around the first SQL difference.
+    fn format_sql_diff(expected: &str, actual: &str) -> String {
+        const CONTEXT_CHARS: usize = 120;
+
+        let expected: Vec<char> = expected.chars().collect();
+        let actual: Vec<char> = actual.chars().collect();
+        let prefix = expected
+            .iter()
+            .zip(&actual)
+            .take_while(|(expected, actual)| expected == actual)
+            .count();
+        let max_suffix = expected.len().min(actual.len()).saturating_sub(prefix);
+        let suffix = expected
+            .iter()
+            .rev()
+            .zip(actual.iter().rev())
+            .take(max_suffix)
+            .take_while(|(expected, actual)| expected == actual)
+            .count();
+
+        let expected_start = prefix.saturating_sub(CONTEXT_CHARS);
+        let actual_start = expected_start.min(actual.len());
+        let expected_end = (expected.len() - suffix + CONTEXT_CHARS).min(expected.len());
+        let actual_end = (actual.len() - suffix + CONTEXT_CHARS).min(actual.len());
+
+        format!(
+            "Recorded SQL: {}\nReplay SQL: {}",
+            Self::sql_excerpt(&expected, expected_start, expected_end),
+            Self::sql_excerpt(&actual, actual_start, actual_end),
+        )
+    }
+
+    fn sql_excerpt(sql: &[char], start: usize, end: usize) -> String {
+        let mut excerpt = String::new();
+        if start > 0 {
+            excerpt.push_str("...");
+        }
+        excerpt.extend(sql[start..end].iter());
+        if end < sql.len() {
+            excerpt.push_str("...");
+        }
+        excerpt
     }
 
     /// Convert a matched event to a replay result.
@@ -321,6 +421,7 @@ impl EventReplayer {
             return Err(ReplayCallError {
                 message: "Recorded call failed".to_string(),
                 recorded_error: event.error.clone(),
+                is_method_mismatch: false,
             });
         }
 
@@ -411,6 +512,7 @@ impl EventReplayer {
                     caller_id, event.method, method, event.seq
                 ),
                 recorded_error: None,
+                is_method_mismatch: true,
             }));
         }
 
@@ -458,6 +560,7 @@ impl EventReplayer {
                         category, method, caller_id, context
                     ),
                     recorded_error: None,
+                    is_method_mismatch: false,
                 }))
             }
         }
@@ -472,6 +575,7 @@ impl EventReplayer {
             return Some(Err(ReplayCallError {
                 message: "Recorded metadata call failed".to_string(),
                 recorded_error: event.error.clone(),
+                is_method_mismatch: false,
             }));
         }
 
@@ -534,6 +638,7 @@ impl EventReplayer {
                     event.error.as_deref().unwrap_or("unknown error")
                 ),
                 recorded_error: event.error.clone(),
+                is_method_mismatch: false,
             }));
         }
 
@@ -543,6 +648,7 @@ impl EventReplayer {
                 message: "Failed to decode recorded Arrow IPC data for run_remote_adhoc"
                     .to_string(),
                 recorded_error: None,
+                is_method_mismatch: false,
             })),
         }
     }
@@ -620,4 +726,95 @@ pub struct ReplayerStats {
     pub sao_events: usize,
     pub node_count: usize,
     pub metadata_caller_count: usize,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Load a semantic-mode replayer over one recorded `execute` call on node `n`.
+    fn replayer_with_recorded_execute(sql: &str) -> (tempfile::TempDir, EventReplayer) {
+        let dir = tempfile::tempdir().unwrap();
+        let header = serde_json::json!({
+            "format_version": 1,
+            "fusion_version": "test",
+            "adapter_type": "databricks",
+            "recorded_at": "2026-10-09T00:00:24Z",
+            "invocation_id": "test-123",
+        });
+        std::fs::write(dir.path().join("header.json"), header.to_string()).unwrap();
+        let event = serde_json::json!({
+            "source": "AdapterCall",
+            "node_id": "n",
+            "seq": 0,
+            "method": "execute",
+            "semantic_category": "write",
+            "args": [sql],
+            "result": null,
+            "success": true,
+            "timestamp_ns": 0,
+        });
+        std::fs::write(dir.path().join("events.ndjson"), format!("{event}\n")).unwrap();
+        let replayer = EventReplayer::load(dir.path())
+            .unwrap()
+            .with_replay_mode(ReplayMode::Semantic);
+        (dir, replayer)
+    }
+
+    #[test]
+    fn test_semantic_read_only_sql_miss_is_not_reported_as_write_barrier() {
+        let (_dir, replayer) = replayer_with_recorded_execute("select count(*) from t");
+
+        let err = replayer
+            .get_result("n", "execute", &[Value::from("select count(*) from other")])
+            .unwrap_err();
+
+        assert!(err.message.contains("read-only call 'execute'"), "{err}");
+        assert!(
+            err.message
+                .contains("Recorded read candidate is event seq 0"),
+            "{err}"
+        );
+        assert!(
+            err.message.contains("Recorded SQL:") && err.message.contains("from t"),
+            "{err}"
+        );
+        assert!(
+            err.message.contains("Replay SQL:") && err.message.contains("from other"),
+            "{err}"
+        );
+        assert!(!err.message.contains("write barrier"), "{err}");
+    }
+
+    #[test]
+    fn test_semantic_write_miss_does_not_include_read_sql_hint() {
+        let (_dir, replayer) = replayer_with_recorded_execute("select count(*) from t");
+
+        let err = replayer
+            .get_result(
+                "n",
+                "execute",
+                &[Value::from("create table other (id int)")],
+            )
+            .unwrap_err();
+
+        assert!(err.message.contains("write call 'execute'"), "{err}");
+        assert!(!err.message.contains("Recorded read candidate"), "{err}");
+    }
+
+    #[test]
+    fn test_semantic_write_miss_is_still_reported_as_write_barrier() {
+        let (_dir, replayer) = replayer_with_recorded_execute("create table t (id int)");
+
+        let err = replayer
+            .get_result("n", "execute", &[Value::from("create table t (id int)")])
+            .and_then(|_| {
+                // The only recorded write is consumed; a second write has no event left.
+                replayer.get_result("n", "execute", &[Value::from("drop table t")])
+            })
+            .unwrap_err();
+
+        assert!(err.message.contains("write call 'execute'"), "{err}");
+        assert!(err.message.contains("next write barrier"), "{err}");
+    }
 }

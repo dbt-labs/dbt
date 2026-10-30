@@ -39,8 +39,10 @@
 {%- endmacro %}
 
 {% macro get_persist_docs_column_list(relation, model_columns, query_columns) -%}
+  {#- DIVERGENCE BEGIN: fs retains the `relation` arg and calls validate_doc_columns to warn about model columns absent from the view query. -#}
   {#- Warns about any model_columns absent from the view's own query output.  -#}
   {%- do validate_doc_columns(relation, model_columns, query_columns, case_insensitive=true) -%}
+  {#- DIVERGENCE END #}
   {%- for column_name in query_columns -%}
     {{ get_column_comment_sql(column_name, model_columns) }}{{",\n\t" if not loop.last else "" }}
   {%- endfor -%}

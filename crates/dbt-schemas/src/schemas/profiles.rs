@@ -12,10 +12,11 @@ use merge::Merge;
 use serde_derive::Deserialize;
 use serde_derive::Serialize;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::convert::TryFrom;
 use std::fmt::{self, Debug, Display};
 use std::path::PathBuf;
+use std::sync::LazyLock;
 
 type YmlValue = dbt_yaml::Value;
 
@@ -160,6 +161,9 @@ impl DbConfig {
             // DuckDB `path` is optional — attach-only profiles default to `:memory:`.
             DbConfig::DuckDB(config) => Some(config.path.as_deref().unwrap_or(":memory:")),
             DbConfig::LakeCompute(config) => config.base_url.as_deref(),
+            DbConfig::Spark(config) if config.is_fabric_lakehouse() => {
+                config.lakehouseid.as_deref()
+            }
             DbConfig::Spark(config) => config.host.as_deref(),
             DbConfig::Fabric(config) => config.host.as_deref(),
             DbConfig::Exasol(config) => config.host.as_deref(),
@@ -311,8 +315,20 @@ impl DbConfig {
             | AdapterType::Starburst
             | AdapterType::Dremio
             | AdapterType::Oracle => &[],
-            // TODO(serramatutu): Spark connection keys
-            AdapterType::Spark => &[],
+            AdapterType::Spark => &[
+                "method",
+                "host",
+                "port",
+                "schema",
+                "endpoint",
+                "workspaceid",
+                "lakehouse",
+                "lakehouseid",
+                "lakehouse_schemas",
+                "authentication",
+                "tenant_id",
+                "client_id",
+            ],
             // TODO: Trino and Datafusion connection keys
             AdapterType::Trino => &[],
             AdapterType::Datafusion => &[],
@@ -441,7 +457,7 @@ impl DbConfig {
             DbConfig::Databricks(config) => config.database.as_ref(),
             DbConfig::Salesforce(config) => config.database.as_ref(),
             DbConfig::DuckDB(config) => config.database.as_ref(),
-            DbConfig::Spark(_) => None,
+            DbConfig::Spark(config) => config.database(),
             DbConfig::Fabric(config) => config.database.as_ref(),
             DbConfig::Exasol(config) => config.database.as_ref(),
             DbConfig::ClickHouse(config) => config.database.as_ref(),
@@ -489,6 +505,18 @@ impl DbConfig {
         }
     }
 
+    /// The database and schema a profile reports for this connection
+    /// (`DbtProfile.database` / `DbtProfile.schema`).
+    pub fn profile_database_and_schema(&self) -> (String, String) {
+        let database = self.get_database_or_default();
+        let schema = self
+            .get_schema()
+            .map(String::as_str)
+            .unwrap_or("public")
+            .to_string();
+        (database, schema)
+    }
+
     pub fn get_threads(&self) -> Option<&StringOrInteger> {
         match self {
             DbConfig::Snowflake(config) => config.threads.as_ref(),
@@ -500,7 +528,7 @@ impl DbConfig {
             DbConfig::DuckDB(config) => config.threads.as_ref(),
             DbConfig::Datafusion(_) => None,
             DbConfig::Salesforce(_) => None,
-            DbConfig::Spark(_) => None,
+            DbConfig::Spark(config) => config.threads.as_ref(),
             DbConfig::Fabric(_) => None,
             DbConfig::Exasol(config) => config.threads.as_ref(),
             DbConfig::ClickHouse(config) => config.threads.as_ref(),
@@ -519,11 +547,83 @@ impl DbConfig {
             DbConfig::DuckDB(config) => config.threads = threads,
             DbConfig::Datafusion(_) => (),
             DbConfig::Salesforce(_) => (),
-            DbConfig::Spark(_) => (),
+            DbConfig::Spark(config) => config.threads = threads,
             DbConfig::Fabric(_) => (),
             DbConfig::Exasol(config) => config.threads = threads,
             DbConfig::ClickHouse(config) => config.threads = threads,
             DbConfig::LakeCompute(config) => config.threads = threads,
+        }
+    }
+
+    /// Redacts credentials nested inside a connection value, in place.
+    ///
+    /// Top-level secret keys never get here: `connection_keys_for` omits them.
+    /// This handles secrets inside keys at any depth, including
+    /// credential-looking query parameters from strings (e.g. DuckDB's
+    /// `md:my_db?motherduck_token=...`).
+    fn redact_nested_credentials(root: &mut dbt_yaml::Value) {
+        /// Key segments (split on `_`) marking a key as a credential, so
+        /// `motherduck_token` and `client_secret` are caught as well as bare `token` /
+        /// `secret`. `secrets` is DuckDB's credential block. `key` catches `private_key`,
+        /// `api_key` and the like.
+        static CREDENTIAL_SEGMENTS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
+            HashSet::from([
+                "password",
+                "token",
+                "secret",
+                "secrets",
+                "passphrase",
+                "key",
+                "keyfile",
+                "credential",
+                "credentials",
+            ])
+        });
+
+        static NON_CREDENTIAL_KEYS: LazyLock<HashSet<&'static str>> =
+            LazyLock::new(|| HashSet::from(["token_uri", "access_key_id", "client_cert_key"]));
+
+        let mut stack = vec![root];
+        while let Some(value) = stack.pop() {
+            match value {
+                dbt_yaml::Value::Mapping(map, _) => {
+                    map.retain(|key, _| {
+                        let Some(key) = key.as_str() else {
+                            return true;
+                        };
+                        let key = key.to_ascii_lowercase();
+                        NON_CREDENTIAL_KEYS.contains(key.as_str())
+                            || !(key.split('_').any(|seg| CREDENTIAL_SEGMENTS.contains(seg)))
+                    });
+                    stack.extend(map.iter_mut().map(|(_, nested)| nested));
+                }
+                dbt_yaml::Value::Sequence(items, _) => stack.extend(items.iter_mut()),
+                dbt_yaml::Value::String(s, _) => {
+                    let redacted = s.split_once('?').and_then(|(base, query)| {
+                        let kept = query.split('&').filter(|param| {
+                            let name = param
+                                .split_once('=')
+                                .map_or(*param, |(name, _)| name)
+                                .to_ascii_lowercase();
+                            NON_CREDENTIAL_KEYS.contains(name.as_str())
+                                || !name.split('_').any(|seg| CREDENTIAL_SEGMENTS.contains(seg))
+                        });
+                        // Only collect and join when something was dropped.
+                        (kept.clone().count() != query.split('&').count()).then(|| {
+                            let kept: Vec<&str> = kept.collect();
+                            if kept.is_empty() {
+                                base.to_string()
+                            } else {
+                                format!("{base}?{}", kept.join("&"))
+                            }
+                        })
+                    });
+                    if let Some(redacted) = redacted {
+                        *s = redacted;
+                    }
+                }
+                _ => {}
+            }
         }
     }
 
@@ -536,6 +636,12 @@ impl DbConfig {
                 key.as_str()
                     .map(|s| connection_keys.contains(&s))
                     .unwrap_or(false)
+            })
+            .map(|(key, mut value)| {
+                // A displayable key can still nest a credential, e.g. DuckDB's
+                // `settings: {motherduck_token: ...}` or `path: md:db?motherduck_token=...`.
+                Self::redact_nested_credentials(&mut value);
+                (key, value)
             })
             .collect();
         Ok(filtered)
@@ -989,6 +1095,8 @@ pub struct DatabricksDbConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auth_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub oidc_token_filepath: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[merge(strategy = merge_strategies_extend::overwrite_always)]
     pub compute: Option<HashMap<String, YmlValue>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1194,6 +1302,16 @@ pub enum SparkMethod {
     // TODO: EMR StartJob (?)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, DbtSchema)]
+pub enum SparkPlatformHint {
+    #[serde(rename = "aws_emr_serverless")]
+    AwsEmrServerless,
+    #[serde(rename = "aws_emr_eks")]
+    AwsEmrEks,
+    #[serde(rename = "fabric_lakehouse")]
+    FabricLakehouse,
+}
+
 #[derive(Default, Debug, Clone, Copy, PartialEq, Serialize, Deserialize, DbtSchema)]
 pub enum SparkAuth {
     #[serde(rename = "NOSASL")]
@@ -1275,10 +1393,41 @@ pub struct SparkDbConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kerberos_service_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub platform_hint: Option<String>,
+    pub platform_hint: Option<SparkPlatformHint>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[merge(strategy = merge_strategies_extend::overwrite_always)]
     pub server_side_parameters: Option<HashMap<String, YmlValue>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub threads: Option<StringOrInteger>,
+
+    /// Fabric API base endpoint. Defaults to `https://api.fabric.microsoft.com/v1`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    /// GUID of the Fabric workspace.
+    #[serde(skip_serializing_if = "Option::is_none", alias = "workspace_id")]
+    pub workspaceid: Option<String>,
+    /// Display name of the lakehouse.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lakehouse: Option<String>,
+    /// GUID of the lakehouse.
+    #[serde(skip_serializing_if = "Option::is_none", alias = "lakehouse_id")]
+    pub lakehouseid: Option<String>,
+    /// Schema-enabled lakehouse: the lakehouse becomes the database and
+    /// relations are 3-part `lakehouse.schema.table`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lakehouse_schemas: Option<bool>,
+    /// Entra ID credential selection: `CLI` (default) | `SPN` | `default` |
+    /// `environment` | `managed_identity`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub authentication: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tenant_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_secret: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token_scope: Option<String>,
     // TODO: python supports some extra properties:
     // - cluster
     // - connect_retries
@@ -1286,13 +1435,29 @@ pub struct SparkDbConfig {
     // - connection_string_suffix
     // - database (same as schema)
     // - driver
-    // - endpoint
     // - organization
     // - poll_interval
     // - query_retries
     // - query_timeout
     // - retry_all
     // - token
+}
+
+impl SparkDbConfig {
+    pub fn is_fabric_lakehouse(&self) -> bool {
+        self.method == Some(SparkMethod::Livy)
+            && self.platform_hint == Some(SparkPlatformHint::FabricLakehouse)
+    }
+
+    /// Schema-enabled lakehouses put the lakehouse in the database slot
+    /// (3-part naming); classic lakehouses and plain Spark have no database.
+    pub fn database(&self) -> Option<&String> {
+        if self.lakehouse_schemas == Some(true) {
+            self.lakehouse.as_ref()
+        } else {
+            None
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, DbtSchema, Merge)]
@@ -1790,6 +1955,21 @@ pub struct SparkTargetEnv {
     pub auth: SparkAuth,
     pub use_ssl: bool,
     pub kerberos_service_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub platform_hint: Option<SparkPlatformHint>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspaceid: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lakehouse: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lakehouseid: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lakehouse_schemas: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub authentication: Option<String>,
 }
 
 #[derive(Serialize, DbtSchema)]
@@ -1915,6 +2095,49 @@ impl<'a> DuckDBPathInfo<'a> {
             is_ducklake,
         }
     }
+}
+
+/// Builds the target context for a `spark` profile. Microsoft Fabric Lakehouse
+/// targets default the host to the Fabric API endpoint, and a
+/// schema-enabled lakehouse occupies the database slot.
+fn spark_target_context(
+    config: SparkDbConfig,
+    adapter_type: String,
+) -> Result<TargetContext, String> {
+    let is_fabric_lakehouse = config.is_fabric_lakehouse();
+    let database = config.database().cloned().unwrap_or_default();
+    let method = config.method.ok_or_else(|| missing("method"))?;
+    let host = match config.host {
+        Some(host) => host,
+        None if is_fabric_lakehouse => "api.fabric.microsoft.com".to_string(),
+        None => return Err(missing("host")),
+    };
+    Ok(TargetContext::Spark(SparkTargetEnv {
+        method,
+        host,
+        port: config.port.unwrap_or(10000),
+        user: config.user.unwrap_or_default(),
+        password: config.password.unwrap_or_default(),
+
+        kerberos_service_name: config.kerberos_service_name.unwrap_or_default(),
+        use_ssl: config.use_ssl.unwrap_or(false),
+        auth: config.auth.unwrap_or_default(),
+        platform_hint: config.platform_hint,
+
+        endpoint: config.endpoint,
+        workspaceid: config.workspaceid,
+        lakehouse: config.lakehouse,
+        lakehouseid: config.lakehouseid,
+        lakehouse_schemas: config.lakehouse_schemas,
+        authentication: config.authentication,
+
+        __common__: CommonTargetContext {
+            database,
+            schema: config.schema.ok_or_else(|| missing("schema"))?,
+            type_: adapter_type,
+            threads: None,
+        },
+    }))
 }
 
 fn missing(field: &str) -> String {
@@ -2186,24 +2409,7 @@ impl TryFrom<DbConfig> for TargetContext {
                 }))
             }
 
-            DbConfig::Spark(config) => Ok(TargetContext::Spark(SparkTargetEnv {
-                method: config.method.ok_or_else(|| missing("method"))?,
-                host: config.host.ok_or_else(|| missing("host"))?,
-                port: config.port.unwrap_or(10000),
-                user: config.user.unwrap_or_default(),
-                password: config.password.unwrap_or_default(),
-
-                kerberos_service_name: config.kerberos_service_name.unwrap_or_default(),
-                use_ssl: config.use_ssl.unwrap_or(false),
-                auth: config.auth.unwrap_or_default(),
-
-                __common__: CommonTargetContext {
-                    database: "".to_string(),
-                    schema: config.schema.ok_or_else(|| missing("schema"))?,
-                    type_: adapter_type,
-                    threads: None,
-                },
-            })),
+            DbConfig::Spark(config) => spark_target_context(*config, adapter_type),
             DbConfig::Fabric(config) => {
                 let common = CommonTargetContext {
                     database: config.database.ok_or_else(|| missing("database"))?,
@@ -2752,44 +2958,119 @@ extensions:
 
     /// `get_connection_keys` decides what `dbt debug` prints as a connection's
     /// details. Since `dbt debug` checks every declared adapter, a credential named
-    /// here leaks for every adapter in a multi-adapter target, not just the default.
-    /// This walks every variant so a newly added adapter cannot reintroduce one.
+    /// here leaks for every adapter in a multi-adapter target.
     #[test]
     fn connection_keys_never_expose_a_credential() {
-        // Substrings, so `motherduck_token` and `client_secret` are caught as well
-        // as bare `token` / `secret`. `token_uri` is an OAuth endpoint URL rather
-        // than a credential, and `secrets` is DuckDB's credential block.
-        const CREDENTIAL_MARKERS: &[&str] = &[
-            "password",
-            "token",
-            "secret",
-            "private_key",
-            "passphrase",
-            "keyfile",
-            "api_key",
-            "credential",
-        ];
-        const ALLOWED: &[&str] = &["token_uri"];
-
         // Driven off `AdapterType::iter()` so a newly supported adapter is audited
         // the moment it exists, without this test needing a constructible config.
         use strum::IntoEnumIterator;
 
         for adapter_type in AdapterType::iter() {
             for key in DbConfig::connection_keys_for(adapter_type) {
-                if ALLOWED.contains(key) {
-                    continue;
-                }
-                for marker in CREDENTIAL_MARKERS {
-                    assert!(
-                        !key.contains(marker),
-                        "`{adapter_type}` lists connection key `{key}`, which looks like a \
-                         credential (matched `{marker}`). `dbt debug` prints these, so remove \
-                         it or add it to ALLOWED if it is genuinely not secret."
-                    );
-                }
+                let mut value = dbt_yaml::Value::from(dbt_yaml::Mapping::from_iter([(
+                    dbt_yaml::Value::from(*key),
+                    dbt_yaml::Value::from("x"),
+                )]));
+                DbConfig::redact_nested_credentials(&mut value);
+                assert!(
+                    value.as_mapping().is_some_and(|m| m.len() == 1),
+                    "`{adapter_type}` lists connection key `{key}`, which looks like a \
+                     credential. `dbt debug` prints these, so remove it or add it to \
+                     NON_CREDENTIAL_KEYS if it is genuinely not secret."
+                );
             }
         }
+    }
+
+    /// A displayable key can nest a credential: DuckDB's `settings` carries
+    /// `motherduck_token`. Only the credential is dropped.
+    #[test]
+    fn connection_mapping_strips_nested_credentials() {
+        let config: DbConfig = dbt_yaml::from_str(
+            "type: duckdb\n\
+             path: md:my_db\n\
+             settings:\n  \
+               motherduck_token: super-secret\n  \
+               MOTHERDUCK_TOKEN: super-secret\n  \
+               s3_secret_access_key: super-secret\n  \
+               threads: 4\n\
+             attach:\n  \
+               - path: md:other_db\n    \
+                 alias: other",
+        )
+        .unwrap();
+        let mapping = config.to_connection_mapping().unwrap();
+
+        let rendered = dbt_yaml::to_string(&mapping).unwrap();
+        assert!(
+            !rendered.contains("super-secret"),
+            "nested credential leaked into connection mapping:\n{rendered}"
+        );
+
+        let settings = mapping
+            .get(dbt_yaml::Value::from("settings"))
+            .and_then(|v| v.as_mapping())
+            .expect("settings should survive with its non-secret keys");
+        assert_eq!(settings.len(), 1);
+        assert!(settings.contains_key(dbt_yaml::Value::from("threads")));
+        assert!(mapping.contains_key(dbt_yaml::Value::from("attach")));
+    }
+
+    /// A token can also ride in a path's query string, e.g. a MotherDuck
+    /// `md:` path. Only that parameter should be dropped.
+    #[test]
+    fn connection_mapping_strips_credential_query_params() {
+        let config: DbConfig = dbt_yaml::from_str(
+            "type: duckdb\n\
+             path: md:my_db?motherduck_token=super-secret&saas_mode=true\n\
+             attach:\n  \
+               - path: md:other_db?MOTHERDUCK_TOKEN=super-secret\n    \
+                 alias: other",
+        )
+        .unwrap();
+        let mapping = config.to_connection_mapping().unwrap();
+
+        let rendered = dbt_yaml::to_string(&mapping).unwrap();
+        assert!(
+            !rendered.contains("super-secret"),
+            "credential query param leaked into connection mapping:\n{rendered}"
+        );
+        assert_eq!(
+            mapping
+                .get(dbt_yaml::Value::from("path"))
+                .and_then(|v| v.as_str()),
+            Some("md:my_db?saas_mode=true")
+        );
+        assert!(rendered.contains("md:other_db"));
+        assert!(!rendered.contains("md:other_db?"));
+    }
+
+    /// The DFS must reach credentials at any depth, through both mappings and
+    /// sequences, and only drop the credential itself.
+    #[test]
+    fn redact_nested_credentials_reaches_three_levels_deep() {
+        let mut value: dbt_yaml::Value = dbt_yaml::from_str(
+            "level1:\n  \
+               level2:\n    \
+                 level3:\n      \
+                   api_key: super-secret\n      \
+                   keep: ok\n      \
+                   url: md:db?motherduck_token=super-secret&saas_mode=true\n  \
+               list:\n    \
+                 - inner:\n        \
+                     - client_secret: super-secret\n          \
+                       keep: ok\n",
+        )
+        .unwrap();
+        DbConfig::redact_nested_credentials(&mut value);
+
+        let rendered = dbt_yaml::to_string(&value).unwrap();
+        assert!(
+            !rendered.contains("super-secret"),
+            "nested credential leaked:\n{rendered}"
+        );
+        assert_eq!(rendered.matches("keep: ok").count(), 2, "{rendered}");
+        assert!(rendered.contains("md:db?saas_mode=true"), "{rendered}");
     }
 
     #[test]
@@ -3064,5 +3345,40 @@ threads: 8
 
         assert_eq!(config.get_database(), None);
         assert_eq!(config.get_database_or_default(), "");
+    }
+
+    #[test]
+    fn test_profile_database_and_schema() {
+        let pair = |database: &str, schema: &str| (database.to_string(), schema.to_string());
+        let snowflake: DbConfig = SnowflakeDbConfig {
+            database: Some("ANALYTICS".to_string()),
+            schema: Some("DBT_X".to_string()),
+            ..Default::default()
+        }
+        .into();
+        assert_eq!(
+            snowflake.profile_database_and_schema(),
+            pair("ANALYTICS", "DBT_X")
+        );
+
+        let no_schema: DbConfig = PostgresDbConfig {
+            database: Some("pg".to_string()),
+            ..Default::default()
+        }
+        .into();
+        assert_eq!(
+            no_schema.profile_database_and_schema(),
+            pair("pg", "public")
+        );
+
+        let duckdb_path_only: DbConfig = DuckDbConfig {
+            path: Some("/data/jaffle_shop.duckdb".to_string()),
+            ..Default::default()
+        }
+        .into();
+        assert_eq!(
+            duckdb_path_only.profile_database_and_schema(),
+            pair("jaffle_shop", "public")
+        );
     }
 }

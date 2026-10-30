@@ -185,6 +185,10 @@ pub struct EpochRelation {
     /// True when `dir` names one file rather than an epoch directory.
     pub single_file: bool,
     pub supersede: Supersede,
+    /// Columns added after files without them may already be on disk, as
+    /// `(name, SQL type)`. They read as NULL from those files, rather than being
+    /// a binder error when no file has them yet.
+    pub backfill: &'static [(&'static str, &'static str)],
 }
 
 /// Every epoch relation the view layer reads, in the order the generated file
@@ -196,6 +200,7 @@ pub const EPOCH_RELATIONS: &[EpochRelation] = &[
         dir: PARSE_NODES_SUBDIR,
         single_file: false,
         supersede: Supersede::LatestBy("unique_id"),
+        backfill: &[],
     },
     EpochRelation {
         view: "epoch_parse_columns",
@@ -204,42 +209,49 @@ pub const EPOCH_RELATIONS: &[EpochRelation] = &[
         // A node's column set is republished whole, so the newest epoch that
         // mentions a node replaces every column row it had.
         supersede: Supersede::LatestGroup("unique_id"),
+        backfill: &[],
     },
     EpochRelation {
         view: "epoch_parse_alive",
         dir: PARSE_ALIVE,
         single_file: true,
         supersede: Supersede::KeepAll,
+        backfill: &[],
     },
     EpochRelation {
         view: "epoch_parse_project",
         dir: PARSE_PROJECT,
         single_file: true,
         supersede: Supersede::KeepAll,
+        backfill: &[],
     },
     EpochRelation {
         view: "epoch_parse_resolver_state",
         dir: PARSE_RESOLVER_STATE,
         single_file: true,
         supersede: Supersede::KeepAll,
+        backfill: &[("pkg_lock_json", "VARCHAR")],
     },
     EpochRelation {
         view: "epoch_parse_generation",
         dir: PARSE_GENERATION,
         single_file: true,
         supersede: Supersede::KeepAll,
+        backfill: &[],
     },
     EpochRelation {
         view: "epoch_compile_nodes",
         dir: COMPILE_NODES_SUBDIR,
         single_file: false,
         supersede: Supersede::LatestBy("unique_id"),
+        backfill: &[("grain_inferred", "VARCHAR")],
     },
     EpochRelation {
         view: "epoch_compile_columns",
         dir: COMPILE_COLUMNS_SUBDIR,
         single_file: false,
         supersede: Supersede::LatestGroup("unique_id"),
+        backfill: &[],
     },
     EpochRelation {
         view: "epoch_compile_cll",
@@ -249,30 +261,35 @@ pub const EPOCH_RELATIONS: &[EpochRelation] = &[
         // deletes every edge into a recomputed target before inserting — so the
         // whole edge set of the newest epoch that mentions a target wins.
         supersede: Supersede::LatestGroup("to_node_unique_id"),
+        backfill: &[],
     },
     EpochRelation {
         view: "epoch_catalog_columns",
         dir: CATALOG_COLUMNS_SUBDIR,
         single_file: false,
         supersede: Supersede::LatestGroup("unique_id"),
+        backfill: &[],
     },
     EpochRelation {
         view: "epoch_run_invocations",
         dir: RUN_INVOCATIONS_SUBDIR,
         single_file: false,
         supersede: Supersede::KeepAll,
+        backfill: &[],
     },
     EpochRelation {
         view: "epoch_run_results",
         dir: RUN_RESULTS_SUBDIR,
         single_file: false,
         supersede: Supersede::KeepAll,
+        backfill: &[],
     },
     EpochRelation {
         view: "epoch_run_freshness",
         dir: RUN_FRESHNESS_SUBDIR,
         single_file: false,
         supersede: Supersede::KeepAll,
+        backfill: &[],
     },
     EpochRelation {
         view: "epoch_run_catalog_stats",
@@ -283,6 +300,7 @@ pub const EPOCH_RELATIONS: &[EpochRelation] = &[
         // replaces its old row rather than appending to it, so the newest
         // epoch's row per `unique_id` wins.
         supersede: Supersede::LatestGroup("unique_id"),
+        backfill: &[],
     },
 ];
 
@@ -303,9 +321,21 @@ impl EpochRelation {
                 .display()
                 .to_string()
         };
-        format!(
+        let read = format!(
             "read_parquet('{}', union_by_name = true, filename = true)",
             pattern.replace('\'', "''")
+        );
+        if self.backfill.is_empty() {
+            return read;
+        }
+        let cols: Vec<String> = self
+            .backfill
+            .iter()
+            .map(|(name, ty)| format!("CAST(NULL AS {ty}) AS {name}"))
+            .collect();
+        format!(
+            "(SELECT * FROM {read} UNION ALL BY NAME SELECT {} WHERE FALSE)",
+            cols.join(", ")
         )
     }
 
@@ -798,6 +828,13 @@ const NODES: &[(&str, EpochExpr)] = &[
         ),
     ),
     (
+        "node_constraints",
+        EpochExpr::SqlJson(
+            "COALESCE(json_extract(t.payload, '$.__model_attr__.constraints'), \
+             json_extract(t.payload, '$.constraints'))",
+        ),
+    ),
+    (
         "version",
         EpochExpr::SqlJson(
             "COALESCE(json_extract(t.payload, '$.__model_attr__.version'), \
@@ -811,19 +848,9 @@ const NODES: &[(&str, EpochExpr)] = &[
              json_extract(t.payload, '$.latest_version'))",
         ),
     ),
-    // `config` survives the model trim, but as a *raw JSON string* rather than
-    // a parsed object, and the builder then serialises whatever it holds — so a
-    // model's `config` is the JSON encoding of a string containing JSON, one
-    // level deeper than every other node's. `to_json` of the text reproduces
-    // that; the `ELSE` branch is the ordinary parsed-object form.
-    (
-        "config",
-        EpochExpr::SqlJson(
-            "CASE WHEN t.resource_type = 'model' \
-             THEN to_json(CAST(json_extract(t.payload, '$.config') AS VARCHAR)) \
-             ELSE json_extract(t.payload, '$.config') END",
-        ),
-    ),
+    // The payload holds `config` as an object for every node type, and the ingest writer
+    // stores it as that object's JSON text, so this is the same form for all of them.
+    ("config", EpochExpr::JsonRaw("config")),
     // Three payload shapes in `or_else` order, the first two of which survive
     // the model trim. `unwrap_or(false)`, so absent is false rather than null.
     //
@@ -877,7 +904,7 @@ const NODES: &[(&str, EpochExpr)] = &[
     // ── hardcoded by the conversion ──────────────────────────────────────
     // Non-nullable and always `true` / `vec![]` in `NodeRow`.
     ("docs_show", EpochExpr::True),
-    ("grain_inferred", EpochExpr::EmptyList),
+    ("grain_inferred", EpochExpr::JoinJsonList("grain_inferred")),
     // Declared in the staging schema, never populated: the payload has the data
     // for most of these, but nothing reads it into `OwnedNodeRow`.
     ("node_language", EpochExpr::Json("__common_attr__.language")),
@@ -889,7 +916,6 @@ const NODES: &[(&str, EpochExpr)] = &[
     ("pre_hook", EpochExpr::Null),
     ("post_hook", EpochExpr::Null),
     ("grants", EpochExpr::Null),
-    ("node_constraints", EpochExpr::Null),
     ("time_spine", EpochExpr::Null),
     ("ai_context", EpochExpr::Null),
     ("loaded_at_query", EpochExpr::Null),
@@ -933,7 +959,10 @@ const SEMANTIC_ENTITIES: &[(&str, EpochExpr)] = &[
     ("label", EpochExpr::ElemJson("label")),
     ("entity_role", EpochExpr::ElemJson("role")),
     ("expr", EpochExpr::ElemJson("expr")),
-    ("config", EpochExpr::Null),
+    (
+        "config",
+        EpochExpr::SqlJson("NULLIF(json_extract(u.e, '$.config'), 'null'::JSON)"),
+    ),
     ("ingested_at", EpochExpr::Same),
 ];
 
@@ -962,7 +991,10 @@ const SEMANTIC_MEASURES: &[(&str, EpochExpr)] = &[
         "non_additive_dimension",
         EpochExpr::ElemJsonRaw("non_additive_dimension"),
     ),
-    ("config", EpochExpr::Null),
+    (
+        "config",
+        EpochExpr::SqlJson("NULLIF(json_extract(u.e, '$.config'), 'null'::JSON)"),
+    ),
     ("ingested_at", EpochExpr::Same),
 ];
 
@@ -990,7 +1022,10 @@ const SEMANTIC_DIMENSIONS: &[(&str, EpochExpr)] = &[
         EpochExpr::ElemJson("type_params.time_granularity"),
     ),
     ("validity_params", EpochExpr::ElemJsonRaw("validity_params")),
-    ("config", EpochExpr::Null),
+    (
+        "config",
+        EpochExpr::SqlJson("NULLIF(json_extract(u.e, '$.config'), 'null'::JSON)"),
+    ),
     ("ingested_at", EpochExpr::Same),
 ];
 
@@ -1098,14 +1133,12 @@ const TEST_METADATA: &[(&str, EpochExpr)] = &[
         )),
     ),
     ("column_name", EpochExpr::Json("__test_attr__.column_name")),
-    // `file_key_name` is the last fallback the Rust path tries, so it is the last
-    // branch here too.
     (
         "attached_node",
         EpochExpr::Sql(
-            "COALESCE(json_extract_string(t.payload, '$.__test_attr__.attached_node'), \
-             json_extract_string(t.payload, '$.attached_node'), \
-             json_extract_string(t.payload, '$.file_key_name'))",
+            "COALESCE(json_extract_string(t.payload, '$.__test_attr__.test_subject_unique_id'), \
+             json_extract_string(t.payload, '$.__test_attr__.attached_node'), \
+             json_extract_string(t.payload, '$.attached_node'))",
         ),
     ),
     (
@@ -1162,8 +1195,8 @@ const UNIT_TESTS: &[(&str, EpochExpr)] = &[
         "versions",
         EpochExpr::JsonRaw("__unit_test_attr__.versions"),
     ),
-    // `unit_test_rows` sets neither, though the staging schema has both.
-    ("config", EpochExpr::Null),
+    ("config", EpochExpr::JsonRaw("config")),
+    // `unit_test_rows` does not set it, though the staging schema has it.
     ("created_at", EpochExpr::Null),
     ("ingested_at", EpochExpr::Same),
 ];
@@ -1252,9 +1285,14 @@ const EXPOSURES: &[(&str, EpochExpr)] = &[
         "created_at",
         EpochExpr::Json("__exposure_attr__.created_at"),
     ),
-    // `exposure_rows` sets neither, though the staging schema has both.
-    ("config", EpochExpr::Null),
-    ("meta", EpochExpr::Null),
+    ("config", EpochExpr::JsonRaw("config")),
+    (
+        "meta",
+        EpochExpr::SqlJson(
+            "COALESCE(json_extract(t.payload, '$.__common_attr__.meta'), \
+             json_extract(t.payload, '$.meta'))",
+        ),
+    ),
     ("ingested_at", EpochExpr::Same),
 ];
 
@@ -1302,7 +1340,13 @@ const SAVED_QUERIES: &[(&str, EpochExpr)] = &[
         "created_at",
         EpochExpr::Json("__saved_query_attr__.created_at"),
     ),
-    ("config", EpochExpr::Null),
+    (
+        "config",
+        EpochExpr::SqlJson(
+            "NULLIF(COALESCE(NULLIF(json_extract(t.payload, '$.config'), 'null'::JSON), \
+             json_extract(t.payload, '$.deprecated_config')), 'null'::JSON)",
+        ),
+    ),
     ("ingested_at", EpochExpr::Same),
 ];
 
@@ -1346,10 +1390,16 @@ const SEMANTIC_MODELS: &[(&str, EpochExpr)] = &[
         "created_at",
         EpochExpr::Json("__semantic_model_attr__.created_at"),
     ),
-    // `sm_rows` sets none of the three, though the staging schema has them.
+    // `sm_rows` sets neither of these, though the staging schema has them.
     ("package_name", EpochExpr::Null),
     ("original_file_path", EpochExpr::Null),
-    ("config", EpochExpr::Null),
+    (
+        "config",
+        EpochExpr::SqlJson(
+            "NULLIF(COALESCE(NULLIF(json_extract(t.payload, '$.config'), 'null'::JSON), \
+             json_extract(t.payload, '$.deprecated_config')), 'null'::JSON)",
+        ),
+    ),
     ("ingested_at", EpochExpr::Same),
 ];
 
@@ -1418,8 +1468,8 @@ const METRICS: &[(&str, EpochExpr)] = &[
             "COALESCE(list_filter(list_transform(json_extract(COALESCE(\
              json_extract(t.payload, '$.__metric_attr__.type_params.input_measures'), \
              json_extract(t.payload, '$.__metric_attr__.type_params.input_metrics')), '$[*]'), \
-             e -> COALESCE(json_extract_string(e, '$.name'), json_extract_string(e, '$'))), \
-             x -> x IS NOT NULL), [])",
+             lambda e: COALESCE(json_extract_string(e, '$.name'), json_extract_string(e, '$'))), \
+             lambda x: x IS NOT NULL), [])",
         ),
     ),
     ("group_name", EpochExpr::Json("__metric_attr__.group")),
@@ -1572,6 +1622,22 @@ mod tests {
             "the epoch mapping does not cover every staging column the \
              information schema reads:\n{report}"
         );
+    }
+
+    #[test]
+    fn test_subject_precedes_legacy_attachment_without_file_key_fallback() {
+        let Some(EpochExpr::Sql(sql)) = epoch_expr("test_metadata", "attached_node") else {
+            panic!("test metadata attachment must use a SQL expression");
+        };
+        let subject = sql
+            .find("test_subject_unique_id")
+            .expect("explicit test subject");
+        let legacy = sql
+            .find("attached_node")
+            .expect("legacy attachment fallback");
+
+        assert!(subject < legacy);
+        assert!(!sql.contains("file_key_name"));
     }
 
     /// The enumeration the map has to cover, grouped by staging table. Kept as

@@ -1,7 +1,7 @@
 name: ☣️ Regression
 description: Report a regression you've observed in a newer version of dbt
 title: "[Regression] <title>"
-labels: ["bug", "regression", "triage", "type:bug", "status:triage"]
+labels: ["regression", "type:bug", "status:triage"]
 body:
   - type: markdown
     attributes:
@@ -23,11 +23,10 @@ body:
     attributes:
       label: Which versions does this regression span?
       description: >
-        Where did the behavior break? dbt v2.x covers the Core and Fusion distributions.
-        A maintainer will apply the corresponding label after triage.
+        Where did the behavior break? A maintainer will apply the corresponding label after triage.
       options:
-        - Within dbt 1.x (worked in an older 1.x, broke in a newer 1.x)
-        - dbt 1.x → dbt v2.x (worked in 1.x, broke after upgrading to v2.x)
+        - Within dbt v1.x (worked in an older v1.x, broke in a newer v1.x)
+        - dbt v1.x → dbt v2.x (worked in v1.x, broke after upgrading to v2.x)
         - Within dbt v2.x (worked in an older v2.x, broke in a newer v2.x)
         - Not sure
     validations:

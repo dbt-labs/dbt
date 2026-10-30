@@ -1,5 +1,3 @@
-use dashmap::DashMap;
-
 use crate::compiler::cfg::CFG;
 use crate::compiler::codegen::{TypeConstraintOperation, Variable};
 use crate::compiler::instructions::Instruction;
@@ -9,6 +7,8 @@ use crate::constants::{
     DBT_AND_ADAPTERS_NAMESPACE, DIALECT, ROOT_PACKAGE_NAME, TARGET_PACKAGE_NAME,
 };
 use crate::dispatch_object::dbt_and_adapters_namespace_for;
+use crate::types::adapter::AdapterDispatchFunction;
+use crate::types::builtins::{Reference, TypeRegistry};
 use crate::types::function::{LambdaType, UserDefinedFunctionType};
 use crate::types::list::ListType;
 use crate::types::struct_::StructType;
@@ -141,7 +141,7 @@ impl TypeWithConstraint {
         &self,
         other: &TypeWithConstraint,
         op: &'static str,
-        registry: Arc<DashMap<String, Type>>,
+        registry: Arc<TypeRegistry>,
     ) -> Option<TypeWithConstraint> {
         self.inner
             .can_binary_op_with(&other.inner, op, registry)
@@ -259,13 +259,13 @@ impl TypeWithConstraint {
 /// symbol table mapping local variable names to their types
 #[derive(Clone, Debug, Default)]
 struct SymbolTable {
-    builtins: Arc<DashMap<String, Type>>,
+    builtins: Arc<TypeRegistry>,
     locals: BTreeMap<String, TypeWithConstraint>,
     locals_definitions_location: BTreeMap<String, Vec<Span>>,
 }
 
 impl SymbolTable {
-    fn new(builtins: Arc<DashMap<String, Type>>) -> Self {
+    fn new(builtins: Arc<TypeRegistry>) -> Self {
         Self {
             builtins,
             locals: BTreeMap::new(),
@@ -286,8 +286,8 @@ impl SymbolTable {
                 .cloned()
                 .or_else(|| {
                     self.builtins
-                        .get(&name)
-                        .map(|type_| type_.value().clone().into())
+                        .read_sync(&name, |_, type_| type_.clone())
+                        .map(Into::into)
                 })
                 .ok_or_else(|| {
                     crate::Error::new(
@@ -312,8 +312,8 @@ impl SymbolTable {
                     .cloned()
                     .or_else(|| {
                         self.builtins
-                            .get(base_name)
-                            .map(|type_| type_.value().clone().into())
+                            .read_sync(base_name, |_, type_| type_.clone())
+                            .map(Into::into)
                     })
                     .ok_or_else(|| {
                         crate::Error::new(
@@ -361,16 +361,19 @@ impl SymbolTable {
                     _ => unreachable!(),
                 }) {
                     Some(type_) => type_,
-                    None => if let Some(type_) = self.builtins.get(match &path[0] {
-                        Part::String(s) => s,
-                        _ => unreachable!(),
-                    }) {
+                    None => if let Some(type_) = self.builtins.read_sync(
+                        match &path[0] {
+                            Part::String(s) => s,
+                            _ => unreachable!(),
+                        },
+                        |_, type_| type_.clone(),
+                    ) {
                         self.locals.insert(
                             match &path[0] {
                                 Part::String(s) => s.clone(),
                                 _ => unreachable!(),
                             },
-                            type_.value().clone().into(),
+                            type_.into(),
                         );
                         if let Some(span_location) = span_location {
                             self.locals_definitions_location.insert(
@@ -471,7 +474,7 @@ struct TypecheckState {
 }
 
 impl TypecheckState {
-    fn new(builtins: Arc<DashMap<String, Type>>) -> Self {
+    fn new(builtins: Arc<TypeRegistry>) -> Self {
         TypecheckState {
             stack: TypecheckStack::default(),
             locals: SymbolTable::new(builtins),
@@ -530,16 +533,39 @@ pub struct TypeChecker<'src> {
     cfg: CFG,
     in_states: Vec<TypecheckState>,
     function_registry: Arc<FunctionRegistry>,
-    builtins: Arc<DashMap<String, Type>>,
+    builtins: Arc<TypeRegistry>,
 }
 
 /// Typecheck logic implementation
 impl<'src> TypeChecker<'src> {
+    fn bind_dispatch(
+        &self,
+        mut function: TypeWithConstraint,
+        context: &BTreeMap<String, Value>,
+    ) -> TypeWithConstraint {
+        let resolved = match &function.inner {
+            Type::Object(object) => object
+                .downcast_ref::<Reference>()
+                .and_then(|reference| reference.get_type().ok())
+                .unwrap_or_else(|| function.inner.clone()),
+            _ => function.inner.clone(),
+        };
+        if let Type::Object(object) = &resolved {
+            if object.downcast_ref::<AdapterDispatchFunction>().is_some() {
+                // Builtins are shared. Dispatch state belongs to this template.
+                function.inner = Type::Object(DynObject::new(Arc::new(
+                    AdapterDispatchFunction::new(context.clone(), self.function_registry.clone()),
+                )));
+            }
+        }
+        function
+    }
+
     pub fn new(
         instr: &'src [Instruction<'src>],
         cfg: CFG,
         funcsigns: Arc<FunctionRegistry>,
-        builtins: Arc<DashMap<String, Type>>,
+        builtins: Arc<TypeRegistry>,
     ) -> Self {
         let in_states = vec![TypecheckState::new(builtins.clone()); cfg.blocks.len()];
         Self {
@@ -799,9 +825,10 @@ impl<'src> TypeChecker<'src> {
                             ))
                         }
                     };
+                    let attribute = value_type.get_attribute(name, listener.clone())?;
                     typestate
                         .stack
-                        .push(value_type.get_attribute(name, listener.clone())?);
+                        .push(self.bind_dispatch(attribute, &typecheck_resolved_context));
                 }
 
                 Instruction::SetAttr(_name, _span) => {
@@ -1539,13 +1566,17 @@ impl<'src> TypeChecker<'src> {
                                 if let Some(arg_cnt) = arg_count {
                                     let (args, kwargs) = typestate.get_call_args(*arg_cnt);
 
-                                    typestate.stack.push(
-                                        self.builtins.get("caller").unwrap().call(
-                                            &args,
-                                            &kwargs,
-                                            listener.clone(),
-                                        )?,
-                                    );
+                                    // Clone out of the registry before calling: the
+                                    // callee may look up the same registry.
+                                    let caller = self
+                                        .builtins
+                                        .read_sync("caller", |_, type_| type_.clone())
+                                        .unwrap();
+                                    typestate.stack.push(caller.call(
+                                        &args,
+                                        &kwargs,
+                                        listener.clone(),
+                                    )?);
                                 } else {
                                     return Err(crate::Error::new(
                                         crate::error::ErrorKind::InvalidOperation,
@@ -1563,8 +1594,14 @@ impl<'src> TypeChecker<'src> {
                         if let Some(arg_cnt) = arg_count {
                             let (args, kwargs) = typestate.get_call_args(*arg_cnt);
                             let function_type = match *name {
-                                "source" => self.builtins.get("source").unwrap(),
-                                "ref" => self.builtins.get("ref").unwrap(),
+                                "source" => self
+                                    .builtins
+                                    .read_sync("source", |_, type_| type_.clone())
+                                    .unwrap(),
+                                "ref" => self
+                                    .builtins
+                                    .read_sync("ref", |_, type_| type_.clone())
+                                    .unwrap(),
                                 _ => unreachable!(),
                             };
                             typestate.stack.push(function_type.call(
@@ -1779,6 +1816,7 @@ impl<'src> TypeChecker<'src> {
                         }
 
                         let function = self_type.get_attribute(name, listener.clone())?;
+                        let function = self.bind_dispatch(function, &typecheck_resolved_context);
 
                         if function.is_any() {
                             typestate.stack.push(function);
@@ -1952,9 +1990,11 @@ impl<'src> TypeChecker<'src> {
                     } else if let Some(function) = self.function_registry.get(*name) {
                         typestate.stack.push(Type::Object(function.clone()));
                     } else if *name == "caller" {
-                        typestate
-                            .stack
-                            .push(self.builtins.get("caller").unwrap().clone());
+                        typestate.stack.push(
+                            self.builtins
+                                .read_sync("caller", |_, type_| type_.clone())
+                                .unwrap(),
+                        );
                     } else {
                         listener.warn(&format!(
                             "Function '{name}' is not defined in the function registry."

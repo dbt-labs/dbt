@@ -24,8 +24,8 @@ use crate::schemas::common::{Access, DbtQuoting, Hooks, hooks_equal, serialize_h
 use crate::schemas::project::configs::common::log_state_mod_diff;
 // Import comparison helpers from common
 use super::common::{
-    access_eq, array_of_strings_eq, docs_eq, grants_equal, meta_eq, omissible_option_eq,
-    same_warehouse_config, take_databricks_catalog_alias,
+    TYPED_ALIAS_KEYS, access_eq, array_of_strings_eq, docs_eq, grants_equal, meta_eq,
+    omissible_option_eq, same_warehouse_config, take_databricks_catalog_alias,
 };
 use crate::schemas::project::configs::common::WarehouseSpecificNodeConfig;
 use crate::schemas::project::configs::config_merge::{Packages, Tags};
@@ -275,6 +275,10 @@ impl ResolvableConfig<FunctionConfig> for FunctionConfig {
         self.enabled
     }
 
+    fn get_adapter(&self) -> Option<AdapterType> {
+        self.adapter
+    }
+
     fn disable(&mut self) {
         self.enabled = Some(false);
     }
@@ -299,9 +303,13 @@ impl ResolvableConfig<FunctionConfig> for FunctionConfig {
         self.default_to_fields(parent);
     }
 
-    fn canonicalize_adapter_aliases(&mut self, default_adapter: AdapterType) {
+    fn typed_alias_keys() -> &'static [&'static str] {
+        TYPED_ALIAS_KEYS
+    }
+
+    fn canonicalize_adapter_aliases(&mut self, alias_adapter: AdapterType) {
         if let Some(catalog) = take_databricks_catalog_alias(
-            default_adapter,
+            alias_adapter,
             &mut self.__warehouse_specific_config__,
             !self.database.is_omitted(),
         ) {
@@ -544,6 +552,10 @@ impl ConfigKeys for FunctionConfig {
 
         field_names
     }
+}
+
+impl crate::schemas::project::configs::warehouse_scope::WarehouseConfigResource for FunctionConfig {
+    const NODE_TYPE: dbt_telemetry::NodeType = dbt_telemetry::NodeType::Function;
 }
 
 #[cfg(test)]

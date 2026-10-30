@@ -1,0 +1,1 @@
+create schema if not exists `dbt-test-env`.`bigquery_execute_project_profile_config`

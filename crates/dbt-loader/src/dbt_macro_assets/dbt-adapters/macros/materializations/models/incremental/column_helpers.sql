@@ -20,6 +20,10 @@
 
 -- funcsign: (list[base_column], list[base_column]) -> list[base_column]
 {% macro diff_columns(source_columns, target_columns) %}
+  {{ return(adapter.dispatch('diff_columns', 'dbt')(source_columns, target_columns)) }}
+{% endmacro %}
+
+{% macro default__diff_columns(source_columns, target_columns) %}
 
   {% set result = [] %}
   {% set source_names = source_columns | map(attribute = 'column') | list %}

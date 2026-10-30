@@ -134,7 +134,7 @@ impl InteractiveSetup for PostgresDbConfig {
     }
 }
 
-pub fn setup_postgres_profile(
+pub(crate) fn setup_postgres_profile(
     existing_config: Option<&PostgresDbConfig>,
 ) -> FsResult<Box<PostgresDbConfig>> {
     let default_config = PostgresDbConfig::default();

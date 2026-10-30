@@ -1,11 +1,19 @@
 use crate::hash::{NodeHashError, node_state_hashes};
-use crate::proto::query_cache::{DbtNodeData, SelectorCriteria, SelectorRequest};
+use crate::node_state_config::resolve_compare_unrendered_code;
+use crate::proto::query_cache::{
+    ClientSelectorEvent, ClientTelemetryEvent, DbtNodeData, SelectorCriteria, SelectorRequest,
+    SubmitTelemetryBatchRequest, client_telemetry_event,
+};
 use crate::service_client::{RunCacheServiceError, SharedRunCacheServiceClient};
 use crate::service_config::RunCacheServiceConfigError;
+use crate::telemetry::SharedEventOrder;
 use dbt_common::path::DbtPath;
 use dbt_schemas::schemas::{Nodes, macros::DbtMacro};
+use dbt_schemas::state::DbtRuntimeConfig;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
+use std::time::{Duration, Instant};
+use uuid::Uuid;
 
 /// Inputs shared by requests to the run-cache state selector service.
 ///
@@ -19,6 +27,14 @@ pub struct RunCacheStateSelectorArgs {
     pub project_id: Option<String>,
     pub macros: BTreeMap<String, DbtMacro>,
     pub project_root: DbtPath,
+    /// The service-wide default for `compare_unrendered_code`; nodes may override it.
+    pub compare_unrendered_code: bool,
+    /// Source of the `var()` values folded into the configs hash when a node resolves
+    /// `compare_unrendered_code=true`.
+    pub runtime_config: Arc<DbtRuntimeConfig>,
+    /// Shared telemetry event order counter for monotonic ordering across
+    /// state selector (compilation phase) and task execution (run phase).
+    pub shared_event_order: SharedEventOrder,
 }
 
 static SELECTOR_CRITERIA_BY_SELECTOR: LazyLock<HashMap<&str, SelectorCriteria>> =
@@ -64,10 +80,19 @@ pub async fn evaluate_state_selector(
         .as_deref()
         .ok_or(RunCacheServiceConfigError::ProjectIdRequired)?;
 
+    let total = Instant::now();
+
+    let hash_calc_start = Instant::now();
     let macro_resolver = |macro_id: &str| args.macros.get(macro_id);
     let mut node_data_list = Vec::new();
     for (unique_id, node) in nodes.iter() {
-        let hashes = node_state_hashes(node, &args.project_root, macro_resolver)?;
+        // Plugin nodes are not in the manifest, and `state:` never selects them.
+        if nodes.plugins.contains_key(unique_id) {
+            continue;
+        }
+        let runtime_vars = resolve_compare_unrendered_code(node, args.compare_unrendered_code)
+            .then_some(args.runtime_config.as_ref());
+        let hashes = node_state_hashes(node, &args.project_root, macro_resolver, runtime_vars)?;
 
         let database = node.database();
         let schema = node.schema();
@@ -89,6 +114,7 @@ pub async fn evaluate_state_selector(
             node_database_representation,
         });
     }
+    let hash_calc_duration = hash_calc_start.elapsed();
 
     let criteria = parse_selector_criteria(selector)?;
 
@@ -104,7 +130,51 @@ pub async fn evaluate_state_selector(
         result.extend(response.node_unique_ids);
     }
 
+    let total_duration = total.elapsed();
+
+    emit_state_selector_telemetry(
+        args,
+        criteria,
+        result.len() as i64,
+        total_duration,
+        hash_calc_duration,
+    );
+
     Ok(result)
+}
+
+fn emit_state_selector_telemetry(
+    args: &RunCacheStateSelectorArgs,
+    criteria: SelectorCriteria,
+    num_nodes: i64,
+    total_duration: Duration,
+    hash_calc_duration: Duration,
+) {
+    let event_order = args.shared_event_order.next();
+    let event = ClientTelemetryEvent {
+        request: Some(client_telemetry_event::Request::ClientSelectorEvent(
+            ClientSelectorEvent {
+                request_id: Uuid::new_v4().simple().to_string(),
+                project_id: args.project_id.clone().unwrap_or_default(),
+                dbt_target: args.defer_to.clone(),
+                selector_criteria: criteria as i32,
+                num_nodes,
+                processing_time_ms: total_duration.as_millis() as i64,
+                hash_calculation_time_ms: hash_calc_duration.as_millis() as i64,
+            },
+        )),
+        event_order: Some(event_order),
+    };
+
+    let request = SubmitTelemetryBatchRequest {
+        events: vec![event],
+    };
+    let client = args.client.clone();
+    tokio::spawn(async move {
+        if let Err(e) = client.submit_telemetry_batch(request).await {
+            tracing::debug!("Failed to submit state selector telemetry: {e}");
+        }
+    });
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -187,6 +257,7 @@ mod tests {
     #[derive(Default)]
     struct MockSelectorState {
         request_batch_sizes: Vec<usize>,
+        configs_hashes: Vec<Option<String>>,
     }
 
     struct MockSelectorClient {
@@ -246,6 +317,11 @@ mod tests {
                 .unwrap()
                 .request_batch_sizes
                 .push(request.nodes.len());
+            self.state
+                .lock()
+                .unwrap()
+                .configs_hashes
+                .extend(request.nodes.iter().map(|n| n.node_configs_hash.clone()));
 
             let response = self
                 .responses
@@ -266,7 +342,54 @@ mod tests {
             project_id: Some("project-123".to_string()),
             macros: BTreeMap::new(),
             project_root: DbtPath::from("test-project"),
+            compare_unrendered_code: false,
+            runtime_config: Arc::new(dbt_schemas::state::DbtRuntimeConfig::default()),
+            shared_event_order: crate::telemetry::SharedEventOrder::new(),
         }
+    }
+
+    #[tokio::test]
+    async fn evaluate_state_selector_folds_vars_into_configs_hash_when_comparing_unrendered_code() {
+        use dbt_schemas::schemas::DbtPluginNode;
+        use dbt_schemas::state::DbtVars;
+
+        let mut model = model_node("model.pkg.model_0");
+        model.__common_attr__.package_name = "pkg".to_string();
+        model.__common_attr__.raw_code = Some("select {{ var('dry_run', false) }}".to_string());
+        let mut plugin = DbtPluginNode::default();
+        plugin.__common_attr__.unique_id = "widget.pkg.widget_0".to_string();
+        plugin.__plugin_attr__.plugin_type = "widget".to_string();
+        let nodes = Nodes {
+            models: BTreeMap::from([("model.pkg.model_0".to_string(), Arc::new(model))]),
+            plugins: BTreeMap::from([("widget.pkg.widget_0".to_string(), Arc::new(plugin))]),
+            ..Default::default()
+        };
+
+        let mut pkg_cfg = dbt_schemas::state::DbtRuntimeConfig::default();
+        pkg_cfg.inner.vars.insert(
+            "dry_run".to_string(),
+            DbtVars::Value(dbt_yaml::Value::bool(true)),
+        );
+        let mut cfg = dbt_schemas::state::DbtRuntimeConfig::default();
+        cfg.dependencies
+            .insert("pkg".to_string(), Arc::new(pkg_cfg));
+
+        let mut sent = Vec::new();
+        for compare in [false, true] {
+            let (client, state) = MockSelectorClient::new(vec![]);
+            let mut args = selector_args(client);
+            args.compare_unrendered_code = compare;
+            args.runtime_config = Arc::new(cfg.clone());
+            evaluate_state_selector(&nodes, &args, "modified")
+                .await
+                .unwrap();
+            sent.push(state.lock().unwrap().configs_hashes.clone());
+        }
+
+        // The default model has no unrendered config, so only the folded vars can produce a hash.
+        assert_eq!(sent[0], vec![None]);
+        assert_eq!(sent[1].len(), 1);
+        assert!(sent[1][0].is_some());
     }
 
     #[tokio::test]

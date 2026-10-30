@@ -12,12 +12,12 @@ import { NoLineageFallback } from './../NoLineageFallback';
 import { Button } from './../ui/Button';
 import { BaseDag } from './BaseDag';
 
-interface Props {
+interface LineageViewProps {
   rootUniqueId: string;
   modelName: string;
 }
 
-export function LineageView({ rootUniqueId, modelName }: Props) {
+export function LineageView({ rootUniqueId, modelName }: LineageViewProps) {
   const navigate = useNavigate();
   const { data, error, dagNodes, isSupported } = useLineageData(rootUniqueId, 1);
 

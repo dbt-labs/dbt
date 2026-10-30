@@ -1,0 +1,7 @@
+kind: Fixes
+body: Stop dropping and re-adding unchanged Databricks primary and foreign keys on incremental runs by comparing keys on name and columns
+time: 2026-10-05T15:00:01.000000+05:30
+custom:
+    author: sd-db
+    issue: "16612"
+    project: dbt-core

@@ -1,0 +1,5 @@
+name: test
+profile: fusion_tests
+
+flags:
+  send_anonymous_usage_stats: false

@@ -1,0 +1,76 @@
+4b6cfb39:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists `dbt-test-env`.`bigquery_nested_datatypes`
+model.hello_world.model:
+- sequence: 0
+  type: execute
+  sql: |-
+    select * from (
+    
+    SELECT
+    1 AS id,
+    [
+    STRUCT(7 AS d, 21 AS e, 5 AS b_id, "color" AS a_color),
+    STRUCT(11 AS d, 13 AS e, 3 AS b_id, "different color" AS a_color)
+    ] AS array_of_structs,
+    STRUCT(1 as b, 2 as a, [STRUCT(1 as d, 2 as c)] AS array_of_structs) AS just_struct,
+    STRUCT(STRUCT(1 as b, 2 as a) as b, STRUCT(3 as d, 4 as c) as a) AS nested_struct
+    ) as __dbt_sbq
+    where false and current_timestamp() = current_timestamp()
+    limit 0
+- sequence: 1
+  type: execute
+  sql: |-
+    select * from (
+    select
+    
+    
+    cast(null as int64)
+    as id, 
+    
+    cast(null as array<struct<d int64, e int64, b_id int64, a_color string>>)
+    as array_of_structs, 
+    
+    cast(null as struct<b int64, a int64, array_of_structs array<struct<d int64, c int64>>>)
+    as just_struct, 
+    
+    cast(null as struct<b struct<b int64, a int64>, a struct<d int64, c int64>>)
+    as nested_struct
+    ) as __dbt_sbq
+    where false and current_timestamp() = current_timestamp()
+    limit 0
+- sequence: 2
+  type: execute
+  sql: |-
+    create or replace table `dbt-test-env`.`bigquery_nested_datatypes`.`model`
+    
+    (
+    id int64 not null,
+    array_of_structs array<struct<d int64, e int64, b_id int64 not null, a_color string>>,
+    just_struct struct<b int64, a int64 not null, array_of_structs array<struct<d int64 not null, c int64>>>,
+    nested_struct struct<b struct<b int64, a int64 not null>, a struct<d int64, c int64>>
+    
+    )
+    
+    
+    
+    
+    
+    
+    OPTIONS()
+    as (
+    
+    select id, IF(array_of_structs IS NULL, NULL, ARRAY(SELECT IF(elem_0 IS NULL, NULL, STRUCT(elem_0.d AS d, elem_0.e AS e, elem_0.b_id AS b_id, elem_0.a_color AS a_color)) FROM UNNEST(array_of_structs) AS elem_0)) AS array_of_structs, IF(just_struct IS NULL, NULL, STRUCT(just_struct.b AS b, just_struct.a AS a, IF(just_struct.array_of_structs IS NULL, NULL, ARRAY(SELECT IF(elem_0 IS NULL, NULL, STRUCT(elem_0.d AS d, elem_0.c AS c)) FROM UNNEST(just_struct.array_of_structs) AS elem_0)) AS array_of_structs)) AS just_struct, IF(nested_struct IS NULL, NULL, STRUCT(IF(nested_struct.b IS NULL, NULL, STRUCT(nested_struct.b.b AS b, nested_struct.b.a AS a)) AS b, IF(nested_struct.a IS NULL, NULL, STRUCT(nested_struct.a.d AS d, nested_struct.a.c AS c)) AS a)) AS nested_struct
+    from (
+    
+    SELECT
+    1 AS id,
+    [
+    STRUCT(7 AS d, 21 AS e, 5 AS b_id, "color" AS a_color),
+    STRUCT(11 AS d, 13 AS e, 3 AS b_id, "different color" AS a_color)
+    ] AS array_of_structs,
+    STRUCT(1 as b, 2 as a, [STRUCT(1 as d, 2 as c)] AS array_of_structs) AS just_struct,
+    STRUCT(STRUCT(1 as b, 2 as a) as b, STRUCT(3 as d, 4 as c) as a) AS nested_struct
+    ) as model_subq
+    );

@@ -1,9 +1,9 @@
 //! A mini-framework for running parallel Key-to-Value tasks over a bounded
 //! number of workers in dbt-runtime and reducing the results.
 
-use dbt_adbc::Connection;
-use dbt_base::cancel::{Cancellable, CancellationToken, CancelledError};
+use dbt_cancel::{Cancellable, CancellationToken, CancelledError};
 use dbt_runtime::{Handle, JoinHandle};
+use futures::FutureExt;
 use futures::stream::{FuturesUnordered, StreamExt};
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::SendError;
@@ -21,38 +21,41 @@ use std::time::Duration;
 /// Encapsulates connection creation and recycling.
 pub trait ConnectionFactory: Send + Sync {
     type Error;
+    /// The connection handle a worker owns and lends to `map_f`.
+    type Connection: Send + 'static;
 
     /// Create or recycle a connection. `node_id` identifies the node
     /// requesting the connection (used by some adapters for recycling affinity).
     ///
     /// This is always called from a blocking context (a worker thread of the
     /// `dbt_runtime` blocking pool), so implementations may block.
-    fn new_connection(&self, node_id: Option<&str>) -> Result<Box<dyn Connection>, Self::Error>;
+    fn new_connection(&self, node_id: Option<&str>) -> Result<Self::Connection, Self::Error>;
 
     /// Return a connection for potential reuse.
-    fn recycle_connection(&self, conn: Box<dyn Connection>);
+    fn recycle_connection(&self, conn: Self::Connection);
 }
 
-/// A function that maps a key to a computed value using a [Connection].
-type MapF<Key, Value> = Box<dyn Fn(&'_ mut dyn Connection, &Key) -> Value + Send + Sync>;
+/// A function that maps a key to a computed value using a connection.
+type MapF<Conn, Key, Value> = Box<dyn Fn(&mut Conn, &Key) -> Value + Send + Sync>;
 
 /// A function that reduces a computed value into an accumulator.
 type ReduceF<Acc, Key, Value, Error> =
     Box<dyn Fn(&mut Acc, Key, Value) -> Result<(), Error> + Send + Sync>;
 
-struct MapReduceInner<Key, Value, Acc, Error>
+struct MapReduceInner<Conn, Key, Value, Acc, Error>
 where
+    Conn: Send + 'static,
     Key: Sized + Send,
     Value: Sized + Send + 'static,
     Acc: Sized + Default + Send + 'static,
     Error: Send,
 {
     /// Connection factory for creating and recycling connections.
-    connection_factory: Arc<dyn ConnectionFactory<Error = Cancellable<Error>>>,
+    connection_factory: Arc<dyn ConnectionFactory<Error = Cancellable<Error>, Connection = Conn>>,
     /// Node ID forwarded to the connection factory on each new_connection call.
     node_id: Option<String>,
-    /// Function to map a key to a computed value using a [Connection].
-    map_f: MapF<Key, Value>,
+    /// Function to map a key to a computed value using a connection.
+    map_f: MapF<Conn, Key, Value>,
     /// Function to reduce a computed value into the accumulator.
     reduce_f: ReduceF<Acc, Key, Value, Cancellable<Error>>,
 
@@ -66,14 +69,15 @@ where
     conn_count: AtomicU64,
 }
 
-impl<K, V, Acc, E> MapReduceInner<K, V, Acc, E>
+impl<C, K, V, Acc, E> MapReduceInner<C, K, V, Acc, E>
 where
+    C: Send + 'static,
     K: Sized + Send,
     V: Sized + Send + 'static,
     Acc: Sized + Default + Send + 'static,
     E: Send + 'static,
 {
-    fn new_connection(&self) -> Result<Box<dyn Connection>, Cancellable<E>> {
+    fn new_connection(&self) -> Result<C, Cancellable<E>> {
         // dbt_runtime worker threads create a connection (blocking) and then loop.
         // `ConnectionFactory` implementations may reuse thread-local connections
         // and since the number of workers is bounded by the runtime's max_parallelism,
@@ -87,7 +91,7 @@ where
             .new_connection(self.node_id.as_deref())
     }
 
-    fn recycle_connection(&self, conn: Box<dyn Connection>) {
+    fn recycle_connection(&self, conn: C) {
         self.connection_factory.recycle_connection(conn);
     }
 
@@ -100,7 +104,7 @@ where
         }
     }
 
-    fn map(&self, conn: &'_ mut dyn Connection, key: &K) -> V {
+    fn map(&self, conn: &mut C, key: &K) -> V {
         let _span = span!("MapReduceInner::map");
         let start = std::time::Instant::now();
         let res = (self.map_f)(conn, key);
@@ -135,14 +139,15 @@ where
 /// The number of workers is bounded by the number of keys and the parallelism
 /// of the `dbt_runtime` pool. Connection creation and recycling are managed by
 /// a [`ConnectionFactory`] implementation passed at construction time.
-pub struct MapReduce<Key, Value, Acc, Error>
+pub struct MapReduce<Conn, Key, Value, Acc, Error>
 where
+    Conn: Send + 'static,
     Key: Sized + Clone + Send + Sync + 'static,
     Value: Sized + Send + 'static,
     Acc: Sized + Default + Send + 'static,
     Error: Send + 'static,
 {
-    inner: Arc<MapReduceInner<Key, Value, Acc, Error>>,
+    inner: Arc<MapReduceInner<Conn, Key, Value, Acc, Error>>,
 }
 
 /// A worker running in the blocking pool, and the cost of the connection it
@@ -164,16 +169,17 @@ impl Future for WorkerHandle {
     }
 }
 
-impl<K, V, Acc, E> MapReduce<K, V, Acc, E>
+impl<C, K, V, Acc, E> MapReduce<C, K, V, Acc, E>
 where
+    C: Send + 'static,
     K: Sized + Clone + Send + Sync + 'static,
     V: Sized + Send + 'static,
     Acc: Sized + Default + Send + 'static,
     E: Send + 'static,
 {
     pub fn new(
-        connection_factory: Box<dyn ConnectionFactory<Error = Cancellable<E>>>,
-        map_f: MapF<K, V>,
+        connection_factory: Box<dyn ConnectionFactory<Error = Cancellable<E>, Connection = C>>,
+        map_f: MapF<C, K, V>,
         reduce_f: ReduceF<Acc, K, V, Cancellable<E>>,
         node_id: Option<String>,
     ) -> Self {
@@ -247,7 +253,7 @@ where
                     return Ok(());
                 }
                 let key = keys[i].clone();
-                let value = inner.map(&mut *conn, &key);
+                let value = inner.map(&mut conn, &key);
                 match tx.send((key, value)) {
                     Ok(()) => (),
                     Err(SendError(_)) => {
@@ -300,6 +306,23 @@ where
     /// Reduce a computed value into an accumulator.
     fn reduce(&self, acc: &mut Acc, key: K, value: V) -> Result<(), Cancellable<E>> {
         (self.inner.reduce_f)(acc, key, value)
+    }
+
+    /// Move every worker whose connection report is already available into
+    /// `running`, without waiting on the ones still opening a connection.
+    fn drain_connected_workers<F>(
+        &self,
+        connecting: &mut FuturesUnordered<F>,
+        running: &mut FuturesUnordered<WorkerHandle>,
+    ) where
+        F: Future<Output = Result<WorkerHandle, Cancellable<E>>>,
+    {
+        while let Some(Some(res)) = connecting.next().now_or_never() {
+            if let Ok(worker) = res {
+                self.inner.observe_conn_time(&worker);
+                running.push(worker);
+            }
+        }
     }
 
     async fn wait_for_all_keys_claimed(
@@ -407,11 +430,13 @@ where
         }
         drop(tx);
 
-        // All keys are claimed by now, and a worker always reports its connection
-        // before claiming a key, so a worker that hasn't reported yet cannot produce
-        // any value anymore. Dropping the still pending to connect drops those workers'
-        // handles with them, detaching them instead of waiting on a connection that
-        // may take arbitrarily long to open: the blocking task finishes on its own.
+        // A worker reports its connection before claiming a key, but the driver
+        // may not have observed that report yet: such a worker may already hold
+        // a key. Move every worker that already connected into `running` so its
+        // in-flight value is still reduced -- see
+        // `map_reduce_does_not_drop_a_key_claimed_by_an_unobserved_worker` test
+        // case below.
+        self.drain_connected_workers(&mut connecting, &mut running);
         drop(connecting);
 
         // Wait for all the workers that own a connection to finish...
@@ -469,6 +494,7 @@ fn cancelled_from_join_error(err: dbt_runtime::JoinError) -> CancelledError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dbt_adbc::Connection;
     use dbt_adbc::Statement;
     use std::sync::atomic::AtomicUsize;
     use std::sync::{Arc, Mutex};
@@ -501,11 +527,9 @@ mod tests {
 
     impl ConnectionFactory for BlockingSecondConnectionFactory {
         type Error = Cancellable<()>;
+        type Connection = Box<dyn Connection>;
 
-        fn new_connection(
-            &self,
-            _node_id: Option<&str>,
-        ) -> Result<Box<dyn Connection>, Self::Error> {
+        fn new_connection(&self, _node_id: Option<&str>) -> Result<Self::Connection, Self::Error> {
             if self.calls.fetch_add(1, Ordering::SeqCst) == 1 {
                 if let Some(tx) = self.second_requested.lock().unwrap().take() {
                     let _ = tx.send(());
@@ -521,7 +545,7 @@ mod tests {
             Ok(Box::new(DummyConnection))
         }
 
-        fn recycle_connection(&self, _conn: Box<dyn Connection>) {}
+        fn recycle_connection(&self, _conn: Self::Connection) {}
     }
 
     /// A worker that panics on the way to a connection never reports one, so its
@@ -534,20 +558,21 @@ mod tests {
 
         impl ConnectionFactory for PanickingConnectionFactory {
             type Error = Cancellable<()>;
+            type Connection = Box<dyn Connection>;
 
             fn new_connection(
                 &self,
                 _node_id: Option<&str>,
-            ) -> Result<Box<dyn Connection>, Self::Error> {
+            ) -> Result<Self::Connection, Self::Error> {
                 panic!("connection creation blew up")
             }
 
-            fn recycle_connection(&self, _conn: Box<dyn Connection>) {}
+            fn recycle_connection(&self, _conn: Self::Connection) {}
         }
 
         let map_reduce = MapReduce::new(
             Box::new(PanickingConnectionFactory),
-            Box::new(|_conn: &mut dyn Connection, key: &u32| *key),
+            Box::new(|_conn: &mut Box<dyn Connection>, key: &u32| *key),
             Box::new(|acc: &mut u32, _key: u32, value: u32| {
                 *acc += value;
                 Ok(())
@@ -587,7 +612,7 @@ mod tests {
         let map_f = {
             let mapped_last_tx = Arc::clone(&mapped_last_tx);
             let second_requested_rx = Arc::clone(&second_requested_rx);
-            Box::new(move |_conn: &mut dyn Connection, key: &u32| {
+            Box::new(move |_conn: &mut Box<dyn Connection>, key: &u32| {
                 if *key == 1 {
                     let rx = second_requested_rx
                         .lock()
@@ -627,5 +652,63 @@ mod tests {
             .expect("MapReduce task panicked")
             .expect("MapReduce should succeed");
         assert_eq!(acc, 3);
+    }
+
+    #[dbt_runtime::test]
+    async fn map_reduce_does_not_drop_a_key_claimed_by_an_unobserved_worker() {
+        struct ImmediateConnectionFactory;
+
+        impl ConnectionFactory for ImmediateConnectionFactory {
+            type Error = Cancellable<()>;
+            type Connection = Box<dyn Connection>;
+
+            fn new_connection(
+                &self,
+                _node_id: Option<&str>,
+            ) -> Result<Self::Connection, Self::Error> {
+                Ok(Box::new(DummyConnection))
+            }
+
+            fn recycle_connection(&self, _conn: Self::Connection) {}
+        }
+
+        // The repro needs two ingredients:
+        //
+        // 1. the driver has to observe the second worker's report, governed by
+        // a random `select!` coin flip -- hence a loop to make the occurance
+        // near certain in a single test run:
+        for _ in 0..10 {
+            let map_reduce = MapReduce::new(
+                Box::new(ImmediateConnectionFactory),
+                Box::new(|_conn: &mut Box<dyn Connection>, key: &u32| {
+                    // 2. the second worker's send must land after the driver
+                    // has awaited every observed worker and closed the
+                    // receiver, so the key it's likely to hold (the last claim)
+                    // must be a much slower task than the other:
+                    let delay_ms = if *key == 1 { 250 } else { 5 };
+                    std::thread::sleep(Duration::from_millis(delay_ms));
+                    *key
+                }),
+                Box::new(|acc: &mut Vec<u32>, key: u32, _value: u32| {
+                    acc.push(key);
+                    Ok(())
+                }),
+                None,
+            );
+
+            let mut reduced = map_reduce
+                .run(
+                    Arc::new(vec![0u32, 1u32]),
+                    CancellationToken::never_cancels(),
+                )
+                .await
+                .expect("MapReduce should succeed");
+            reduced.sort_unstable();
+            assert_eq!(
+                reduced,
+                vec![0, 1],
+                "MapReduce dropped a key that a worker had claimed"
+            );
+        }
     }
 }

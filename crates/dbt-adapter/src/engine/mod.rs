@@ -16,6 +16,7 @@ mod adapter_engine;
 mod databricks_query_tags;
 pub use adapter_engine::AdapterEngine;
 pub use adapter_engine::Options;
+pub(crate) use databricks_query_tags::databricks_statement_options;
 
 mod concat_batches;
 
@@ -26,6 +27,7 @@ mod adbc;
 pub(crate) mod clickhouse;
 mod databricks;
 pub mod duckdb_attach;
+pub(crate) mod duckdb_seed;
 pub use adbc::AdbcEngine;
 pub(crate) use adbc::resolve_connection_config;
 

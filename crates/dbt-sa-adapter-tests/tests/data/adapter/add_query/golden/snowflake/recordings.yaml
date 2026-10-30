@@ -1,0 +1,22 @@
+model.test.c:
+- sequence: 0
+  type: execute
+  sql: USE DATABASE development
+- sequence: 1
+  type: execute
+  sql: ' CREATE OR REPLACE SCHEMA adapters_snowflake_add_query'
+- sequence: 2
+  type: execute
+  sql: CREATE OR REPLACE TABLE adapters_snowflake_add_query.a (val int)
+- sequence: 3
+  type: execute
+  sql: begin
+- sequence: 4
+  type: execute
+  sql: select 42 as id
+- sequence: 5
+  type: execute
+  sql: select '42' as message
+- sequence: 6
+  type: execute
+  sql: commit

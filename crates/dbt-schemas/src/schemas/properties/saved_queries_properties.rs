@@ -37,6 +37,7 @@ pub struct Export {
 #[derive(Default, Deserialize, Serialize, Debug, Clone, DbtSchema)]
 pub struct ExportConfig {
     pub alias: Option<String>,
+    pub database: Option<String>,
     pub export_as: Option<ExportConfigExportAs>,
     pub schema: Option<String>,
 }

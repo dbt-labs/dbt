@@ -1,3 +1,6 @@
+use std::borrow::Cow;
+
+use dbt_adapter_engine::cow::uppercase;
 use dbt_common::{AdapterError, AdapterResult};
 use dbt_schemas::schemas::{DbtModel, InternalDbtNodeAttributes};
 use minijinja::Value;
@@ -52,10 +55,10 @@ fn from_local_config(relation_config: &dyn InternalDbtNodeAttributes) -> Adapter
             )
         })?;
     let initialize = match snowflake_config.initialize.as_deref() {
-        Some(value) => value.to_uppercase(),
-        None => DEFAULT_INITIALIZE.to_string(),
+        Some(value) => uppercase(value.into()),
+        None => Cow::Borrowed(DEFAULT_INITIALIZE),
     };
-    Ok(new_component(initialize))
+    Ok(new_component(initialize.into()))
 }
 
 impl_loader!(Initialize, SnowflakeDescribeResults);

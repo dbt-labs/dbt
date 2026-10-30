@@ -23,15 +23,13 @@ fn set_only_diff(
     desired_state: &IndexMap<String, String>,
     current_state: &IndexMap<String, String>,
 ) -> Option<IndexMap<String, String>> {
-    let has_diff = desired_state
+    let diff: IndexMap<String, String> = desired_state
         .iter()
-        .any(|(name, value)| current_state.get(name) != Some(value));
+        .filter(|(name, value)| current_state.get(*name) != Some(*value))
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect();
 
-    if has_diff {
-        Some(desired_state.clone())
-    } else {
-        None
-    }
+    if diff.is_empty() { None } else { Some(diff) }
 }
 
 fn to_jinja(v: &IndexMap<String, String>) -> Value {
@@ -84,9 +82,15 @@ fn from_local_config(
         && let Some(tags_map) = &databricks_attr.databricks_tags
     {
         for (key, value) in tags_map {
-            if let YmlValue::String(value_str, _) = value {
-                tags.insert(key.clone(), value_str.clone());
-            }
+            let value_str = match value {
+                YmlValue::String(s, _) => s.clone(),
+                // A bare date/datetime scalar resolves to a Timestamp; render its
+                // canonical form, as it was a plain string before YAML 1.1
+                // timestamp resolution.
+                YmlValue::Timestamp(t, _) => t.to_string(),
+                _ => continue,
+            };
+            tags.insert(key.clone(), value_str);
         }
     }
 
@@ -132,6 +136,28 @@ mod tests {
 
         assert_eq!(diff.value.get("b"), Some(&"3".to_string()));
         assert_eq!(diff.value.get("c"), Some(&"4".to_string()));
+        assert!(!diff.value.contains_key("a"));
+    }
+
+    #[test]
+    fn test_get_diff_omits_unchanged_desired_keys() {
+        let old_config = new_component(IndexMap::from([
+            ("stable".to_string(), "1".to_string()),
+            ("moved".to_string(), "old".to_string()),
+            ("remote_only".to_string(), "x".to_string()),
+        ]));
+        let new_config = new_component(IndexMap::from([
+            ("stable".to_string(), "1".to_string()),
+            ("moved".to_string(), "new".to_string()),
+        ]));
+
+        let diff = RelationTags::diff_from(&new_config, Some(&old_config)).unwrap();
+        let diff = diff.as_any().downcast_ref::<RelationTags>().unwrap();
+
+        assert_eq!(
+            diff.value,
+            IndexMap::from([("moved".to_string(), "new".to_string())])
+        );
     }
 
     #[test]
@@ -144,6 +170,14 @@ mod tests {
         let diff = RelationTags::diff_from(&config, Some(&config));
 
         assert!(diff.is_none());
+    }
+
+    #[test]
+    fn test_get_diff_empty_desired_does_not_unset_remote_tags() {
+        let desired = new_component(IndexMap::new());
+        let existing = new_component(IndexMap::from([("tag".to_string(), "value".to_string())]));
+
+        assert!(RelationTags::diff_from(&desired, Some(&existing)).is_none());
     }
 
     #[test]

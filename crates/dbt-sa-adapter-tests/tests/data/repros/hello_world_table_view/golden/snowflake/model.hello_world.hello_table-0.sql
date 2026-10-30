@@ -1,0 +1,1 @@
+show objects like 'HELLO_TABLE' in schema development.adapters_snowflake_repros_hello_world_table_view

@@ -1,6 +1,5 @@
 use std::{path::PathBuf, rc::Rc, sync::Arc};
 
-use dashmap::DashMap;
 use indexmap::IndexMap;
 
 use crate::{
@@ -17,16 +16,20 @@ use crate::{
     TypecheckingEventListener, Value,
 };
 
+/// Registry of type name to [`Type`].
+///
+/// `minijinja` cannot depend on `dbt-common`, so this names the stable hasher
+/// from `dbt-base` directly (same hasher as `dbt_common::collections::SccHashMap`).
+pub type TypeRegistry = scc::HashMap<String, Type, dbt_base::MaybeStableHasherBuilder>;
+
 // Singleton for builtins registry
-static BUILTINS_REGISTRY: std::sync::OnceLock<Arc<DashMap<String, Type>>> =
-    std::sync::OnceLock::new();
-static JINJA_BUILTINS_REGISTRY: std::sync::OnceLock<Arc<DashMap<String, Type>>> =
-    std::sync::OnceLock::new();
+static BUILTINS_REGISTRY: std::sync::OnceLock<Arc<TypeRegistry>> = std::sync::OnceLock::new();
+static JINJA_BUILTINS_REGISTRY: std::sync::OnceLock<Arc<TypeRegistry>> = std::sync::OnceLock::new();
 
 /// Initialize built-in types registry (internal function)
-fn init_jinja_builtins() -> Arc<DashMap<String, Type>> {
+fn init_jinja_builtins() -> Arc<TypeRegistry> {
     let definitions = minijinja_typecheck_builtins::get_definitions();
-    let registry = Arc::new(DashMap::new()); // key is object id, value is Type
+    let registry = Arc::new(TypeRegistry::default()); // key is object id, value is Type
 
     for definition in definitions.iter() {
         let definition: Definition = definition.clone().into();
@@ -35,45 +38,45 @@ fn init_jinja_builtins() -> Arc<DashMap<String, Type>> {
             &definition,
             registry.clone(),
         )));
-        registry.insert(id, Type::Object(dyn_object));
+        registry.upsert_sync(id, Type::Object(dyn_object));
     }
-    registry.insert(
+    registry.upsert_sync(
         "adapter.dispatch".to_string(),
         Type::Object(DynObject::new(Arc::new(
-            crate::types::adapter::AdapterDispatchFunction::instance(),
+            crate::types::adapter::AdapterDispatchFunction::default(),
         ))),
     );
-    registry.insert(
+    registry.upsert_sync(
         "map".to_string(),
         Type::Object(DynObject::new(Arc::new(MapFunctionType::default()))),
     );
-    registry.insert(
+    registry.upsert_sync(
         "list".to_string(),
         Type::Object(DynObject::new(Arc::new(ListFunctionType::default()))),
     );
-    registry.insert(
+    registry.upsert_sync(
         "try_or_compiler_error".to_string(),
         Type::Object(DynObject::new(Arc::new(
             TryOrCompilerErrorFunctionType::default(),
         ))),
     );
-    registry.insert(
+    registry.upsert_sync(
         "selectattr".to_string(),
         Type::Object(DynObject::new(Arc::new(SelectAttrFunctionType::default()))),
     );
-    registry.insert(
+    registry.upsert_sync(
         "rejectattr".to_string(),
         Type::Object(DynObject::new(Arc::new(RejectAttrFunctionType::default()))),
     );
-    registry.insert(
+    registry.upsert_sync(
         "print".to_string(),
         Type::Object(DynObject::new(Arc::new(PrintFunctionType::default()))),
     );
-    registry.insert(
+    registry.upsert_sync(
         "first".to_string(),
         Type::Object(DynObject::new(Arc::new(FirstFunctionType::default()))),
     );
-    registry.insert(
+    registry.upsert_sync(
         "batch".to_string(),
         Type::Object(DynObject::new(Arc::new(BatchFunctionType::default()))),
     );
@@ -104,7 +107,7 @@ fn init_jinja_builtins() -> Arc<DashMap<String, Type>> {
 /// Returns a `crate::Error` if there are issues during type initialization.
 pub fn load_builtins_with_namespace(
     namespace_registry: Option<Arc<IndexMap<Value, Value>>>,
-) -> Result<Arc<DashMap<String, Type>>, crate::Error> {
+) -> Result<Arc<TypeRegistry>, crate::Error> {
     if let Some(namespace_registry) = namespace_registry {
         Ok(BUILTINS_REGISTRY
             .get_or_init(|| {
@@ -117,7 +120,7 @@ pub fn load_builtins_with_namespace(
                     .collect::<Vec<_>>();
                 let builtins = load_jinja_builtins();
                 for name in namespace_registry {
-                    builtins.insert(name.clone(), Type::Namespace(name));
+                    builtins.upsert_sync(name.clone(), Type::Namespace(name));
                 }
                 builtins
             })
@@ -135,7 +138,7 @@ pub fn load_builtins_with_namespace(
 ///
 /// # Returns
 /// A shared reference to the cached map of object id to Type.
-pub fn load_jinja_builtins() -> Arc<DashMap<String, Type>> {
+pub fn load_jinja_builtins() -> Arc<TypeRegistry> {
     JINJA_BUILTINS_REGISTRY
         .get_or_init(init_jinja_builtins)
         .clone()
@@ -171,7 +174,7 @@ impl Definition {
 #[derive(Clone)]
 pub(crate) struct BuiltinDefinition {
     pub(crate) definition: Definition,
-    registry: Arc<DashMap<String, Type>>,
+    registry: Arc<TypeRegistry>,
 }
 
 impl std::fmt::Debug for BuiltinDefinition {
@@ -181,7 +184,7 @@ impl std::fmt::Debug for BuiltinDefinition {
 }
 
 impl BuiltinDefinition {
-    pub(crate) fn new(definition: &Definition, registry: Arc<DashMap<String, Type>>) -> Self {
+    pub(crate) fn new(definition: &Definition, registry: Arc<TypeRegistry>) -> Self {
         Self {
             definition: definition.clone(),
             registry,
@@ -368,7 +371,7 @@ impl Object for BuiltinDefinition {
 
 pub(crate) struct Reference {
     id: String,
-    registry: Arc<DashMap<String, Type>>,
+    registry: Arc<TypeRegistry>,
 }
 
 impl std::fmt::Debug for Reference {
@@ -378,14 +381,13 @@ impl std::fmt::Debug for Reference {
 }
 
 impl Reference {
-    pub(crate) fn new(id: String, registry: Arc<DashMap<String, Type>>) -> Self {
+    pub(crate) fn new(id: String, registry: Arc<TypeRegistry>) -> Self {
         Self { id, registry }
     }
 
     pub(crate) fn get_type(&self) -> Result<Type, crate::Error> {
-        let type_ = self.registry.get(&self.id);
-        if let Some(type_) = type_ {
-            Ok(type_.value().clone())
+        if let Some(type_) = self.registry.read_sync(&self.id, |_, type_| type_.clone()) {
+            Ok(type_)
         } else {
             Err(crate::Error::new(
                 crate::error::ErrorKind::InvalidOperation,
@@ -401,9 +403,9 @@ impl Object for Reference {
         name: &str,
         listener: Rc<dyn TypecheckingEventListener>,
     ) -> Result<super::Type, crate::Error> {
-        let type_ = self.registry.get(&self.id);
-        if let Some(type_) = type_ {
-            type_.value().get_attribute(name, listener)
+        // Clone out first: the resolved type may itself look up this registry.
+        if let Some(type_) = self.registry.read_sync(&self.id, |_, type_| type_.clone()) {
+            type_.get_attribute(name, listener)
         } else {
             Err(crate::Error::new(
                 crate::error::ErrorKind::InvalidOperation,
@@ -418,9 +420,9 @@ impl Object for Reference {
         kwargs: &std::collections::BTreeMap<String, super::Type>,
         listener: Rc<dyn TypecheckingEventListener>,
     ) -> Result<super::Type, crate::Error> {
-        let type_ = self.registry.get(&self.id);
-        if let Some(type_) = type_ {
-            type_.value().call(positional_args, kwargs, listener)
+        // Clone out first: the resolved type may itself look up this registry.
+        if let Some(type_) = self.registry.read_sync(&self.id, |_, type_| type_.clone()) {
+            type_.call(positional_args, kwargs, listener)
         } else {
             Err(crate::Error::new(
                 crate::error::ErrorKind::InvalidOperation,
@@ -434,9 +436,9 @@ impl Object for Reference {
         index: &super::Type,
         listener: Rc<dyn TypecheckingEventListener>,
     ) -> Result<super::Type, crate::Error> {
-        let type_ = self.registry.get(&self.id);
-        if let Some(type_) = type_ {
-            type_.value().subscript(index, listener)
+        // Clone out first: the resolved type may itself look up this registry.
+        if let Some(type_) = self.registry.read_sync(&self.id, |_, type_| type_.clone()) {
+            type_.subscript(index, listener)
         } else {
             Err(crate::Error::new(
                 crate::error::ErrorKind::InvalidOperation,

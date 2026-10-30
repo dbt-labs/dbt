@@ -9,7 +9,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 fn main() -> ExitCode {
-    let version = env!("CARGO_PKG_VERSION");
+    let version = option_env!("DBT_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"));
     let cli_parser = DefaultCliParserFactory.create("dbt-oss", version);
     let cli = dbt_main::prepare_cli_or_exit(&cli_parser);
 

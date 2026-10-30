@@ -31,3 +31,37 @@ impl ::prost::Name for Process {
         "/v1.public.events.fusion.process.Process".into()
     }
 }
+/// Time some work spent queued for a worker of a bounded thread pool, e.g. a
+/// node evaluation waiting to run. The work makes no progress during this time.
+/// It may occur multiple times for the same work, and short waits below an
+/// internal threshold are not reported.
+///
+/// Each span is a single pool wait of the operation it is nested under. Waits
+/// of the same operation never overlap, so how the operation accounts them,
+/// e.g. as idle time, is defined by the operation's own event.
+#[cfg_attr(any(test, feature = "test-utils"), derive(::fake::Dummy))]
+#[derive(crate::macros::ProtoNew)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ThreadPoolWait {
+    /// Unique id of the node whose work is waiting, if attributable to one.
+    #[prost(string, optional, tag = "1")]
+    pub unique_id: ::core::option::Option<::prost::alloc::string::String>,
+    /// Id of the microbatch whose work is waiting. Unset for waits of a node
+    /// evaluation as a whole.
+    #[prost(string, optional, tag = "2")]
+    pub batch_id: ::core::option::Option<::prost::alloc::string::String>,
+}
+impl ::dbt_tracing::StaticName for ThreadPoolWait {
+    const FULL_NAME: &'static str = "v1.public.events.fusion.process.ThreadPoolWait";
+    const TYPE_URL: &'static str = "/v1.public.events.fusion.process.ThreadPoolWait";
+}
+impl ::prost::Name for ThreadPoolWait {
+    const NAME: &'static str = "ThreadPoolWait";
+    const PACKAGE: &'static str = "v1.public.events.fusion.process";
+    fn full_name() -> ::prost::alloc::string::String {
+        "v1.public.events.fusion.process.ThreadPoolWait".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "/v1.public.events.fusion.process.ThreadPoolWait".into()
+    }
+}

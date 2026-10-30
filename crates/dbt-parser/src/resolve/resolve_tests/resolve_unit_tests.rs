@@ -3,9 +3,11 @@ use crate::dbt_project_config::ProjectConfigResolver;
 use crate::dbt_project_config::RootProjectConfigs;
 use crate::dbt_project_config::disallow_plus_prefix_from_flags;
 use crate::dbt_project_config::init_project_config;
+use crate::renderer::strip_warehouse_keys_in_config_block;
 use crate::resolve::resolve_properties::MinimalPropertiesEntry;
 use crate::resolve::resolve_utils::validate_unit_test_compute;
 use crate::utils::get_node_fqn;
+use crate::utils::get_original_file_path;
 use crate::utils::get_unique_id;
 use crate::validation::check_node_static_analysis;
 use dbt_adapter_core::AdapterType;
@@ -18,6 +20,7 @@ use dbt_common::fs_err;
 use dbt_common::io_args::ComputeArg;
 use dbt_common::io_args::StaticAnalysisKind;
 use dbt_common::io_args::StaticAnalysisOffReason;
+use dbt_common::stdfs;
 
 use dbt_common::path::DbtPath;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
@@ -39,12 +42,15 @@ use dbt_schemas::schemas::common::NodeDependsOn;
 use dbt_schemas::schemas::common::Rows;
 use dbt_schemas::schemas::packages::DeprecatedDbtPackageLock;
 use dbt_schemas::schemas::project::DbtProject;
+use dbt_schemas::schemas::project::InlineConfigAliasing;
 use dbt_schemas::schemas::project::ResolvableConfig;
 use dbt_schemas::schemas::project::ResolvedConfig;
 use dbt_schemas::schemas::project::UnitTestConfig;
+use dbt_schemas::schemas::project::WarningEmission;
 use dbt_schemas::schemas::properties::UnitTestProperties;
 use dbt_schemas::schemas::ref_and_source::DbtRef;
 use dbt_schemas::schemas::ref_and_source::DbtSourceWrapper;
+use dbt_schemas::schemas::telemetry::NodeType;
 use dbt_schemas::schemas::{CommonAttributes, DbtUnitTest, NodeBaseAttributes};
 use dbt_schemas::state::DbtPackage;
 use dbt_schemas::state::DbtRuntimeConfig;
@@ -60,8 +66,21 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 
+pub(crate) fn unit_test_jinja_join_error(
+    error: dbt_runtime::JoinError,
+) -> Box<dbt_common::FsError> {
+    fs_err!(
+        if error.is_cancelled() {
+            ErrorCode::TaskCancelled
+        } else {
+            ErrorCode::Unexpected
+        },
+        "Unit test Jinja task failed: {error}"
+    )
+}
+
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
-pub fn resolve_unit_tests(
+pub async fn resolve_unit_tests(
     arg: &ResolveArgs,
     unit_test_properties: BTreeMap<String, MinimalPropertiesEntry>,
     package: &DbtPackage,
@@ -69,7 +88,7 @@ pub fn resolve_unit_tests(
     package_quoting: DbtQuoting,
     root_project_configs: &RootProjectConfigs,
     package_name: &str,
-    jinja_env: &JinjaEnv,
+    jinja_env: &Arc<JinjaEnv>,
     base_ctx: &BTreeMap<String, minijinja::Value>,
     model_properties: &BTreeMap<String, MinimalPropertiesEntry>,
     models: &BTreeMap<String, Arc<DbtModel>>,
@@ -97,9 +116,9 @@ pub fn resolve_unit_tests(
         },
         adapter_type,
     )?
-    .with_resolve_defaults(arg.static_analysis.unwrap_or_default());
+    .with_resolve_defaults(arg.unconfigured_static_analysis());
 
-    for (unit_test_name, mpe) in unit_test_properties.into_iter() {
+    for (unit_test_name, mut mpe) in unit_test_properties.into_iter() {
         // Capture YAML span of the unit-test `name:` declaration for error reporting.
         // The analyzer uses this as `start_location` so messages anchor at the unit
         // test's entry in the source YAML rather than at line 1 col 1.
@@ -112,15 +131,30 @@ pub fn resolve_unit_tests(
             )
         });
 
-        let unit_test = into_typed_with_jinja::<UnitTestProperties, _>(
-            mpe.schema_value,
-            false,
-            jinja_env,
-            base_ctx,
-            &[],
+        strip_warehouse_keys_in_config_block(
+            &mut mpe.schema_value,
+            &unit_test_name,
+            NodeType::UnitTest,
             dependency_package_name,
-            true,
-        )?;
+            WarningEmission::Emit,
+        );
+
+        let env = Arc::clone(jinja_env);
+        let context = base_ctx.clone();
+        let render_dependency_package = dependency_package_name.map(str::to_owned);
+        let unit_test = dbt_runtime::spawn_blocking(move || {
+            into_typed_with_jinja::<UnitTestProperties, _>(
+                mpe.schema_value,
+                false,
+                &env,
+                &context,
+                &[],
+                render_dependency_package.as_deref(),
+                true,
+            )
+        })
+        .await
+        .map_err(unit_test_jinja_join_error)??;
         // todo: Unit test should have a database and schema,
         //    derived from the underlying model, correct?
         // - if so, we should get it and still store it so that it is available,
@@ -189,9 +223,15 @@ pub fn resolve_unit_tests(
         );
         validate_unit_test_compute(properties_config.compute, &mpe.relative_path)?;
         // Sidecar needs a bound LP. Upgrade baseline to strict like the CLI
-        // does for non-remote --compute. Can disable via explicit off.
+        // does for non-remote --compute. Can disable via explicit off, which
+        // an off from `--default-static-analysis` is not.
         if properties_config.compute == Some(ComputeArg::Sidecar)
-            && *properties_config.static_analysis != StaticAnalysisKind::Off
+            && (*properties_config.static_analysis != StaticAnalysisKind::Off
+                || (arg.static_analysis.is_none()
+                    && config_resolver
+                        .with_configs_and_root_overlay(&fqn, &[unit_test.config.as_ref()])
+                        .static_analysis
+                        .is_none()))
         {
             properties_config.static_analysis = StaticAnalysisKind::Strict.into();
         }
@@ -229,7 +269,15 @@ pub fn resolve_unit_tests(
             asset.path.file_name().map(|file_name| {
                 file_map.insert(
                     file_name.to_string_lossy().to_string(),
-                    asset.path.to_string_lossy().to_string(),
+                    // `asset.path` is relative to *this* package's own root (e.g. a
+                    // dependency installed under `dbt_packages/<pkg>/`), but every
+                    // downstream reader of the resolved `fixture` path -- both the
+                    // eager read below and the lazy reads in the task executor --
+                    // joins it against the project root (`arg.io.in_dir`). Rebase it
+                    // onto the project root now so both root-package and
+                    // dependency-package fixtures resolve to the right file on disk.
+                    get_original_file_path(&asset.base_path, &arg.io.in_dir, &asset.path)
+                        .to_string(),
                 )
             });
         }
@@ -246,6 +294,13 @@ pub fn resolve_unit_tests(
                     }
                     _ => given_entry.fixture.clone(),
                 };
+                check_fixture_resolved(
+                    &unit_test_name,
+                    &format!("given input '{}'", given_entry.input.as_str()),
+                    &given_entry.fixture,
+                    &given_entry.format,
+                    &full_path,
+                )?;
 
                 let rows = if given_entry.format == Formats::Dict
                     && given_entry.rows.is_none()
@@ -266,7 +321,8 @@ pub fn resolve_unit_tests(
                         &mpe.relative_path,
                         arg.static_analysis,
                         node_resolver,
-                    )?;
+                    )
+                    .await?;
                     Some(Rows::List(load_implicit_seed_rows(
                         packages,
                         &seed_unique_id,
@@ -275,6 +331,7 @@ pub fn resolve_unit_tests(
                 } else {
                     given_entry.rows.clone()
                 };
+                let rows = read_fixture_rows(arg, &full_path, &given_entry.format, rows)?;
 
                 given.push(Given {
                     fixture: full_path,
@@ -295,10 +352,23 @@ pub fn resolve_unit_tests(
                 }
                 _ => unit_test.expect.fixture.clone(),
             };
+            check_fixture_resolved(
+                &unit_test_name,
+                "expect",
+                &unit_test.expect.fixture,
+                &unit_test.expect.format,
+                &full_path,
+            )?;
+            let rows = read_fixture_rows(
+                arg,
+                &full_path,
+                &unit_test.expect.format,
+                unit_test.expect.rows.clone(),
+            )?;
 
             Expect {
                 fixture: full_path,
-                rows: unit_test.expect.rows.clone(),
+                rows,
                 format: unit_test.expect.format.clone(),
             }
         };
@@ -333,6 +403,7 @@ pub fn resolve_unit_tests(
                 adapter: model_adapter.unwrap_or(adapter_type),
                 // This node type has no `+propagate` config; nothing is published.
                 propagate: Vec::new(),
+                effective_propagation_target: None,
                 database: database.to_owned(),
                 schema: schema.to_owned(),
                 // match dbt-core semantics for unit test alias
@@ -467,9 +538,81 @@ pub fn resolve_unit_tests(
     Ok((unit_tests, disabled_unit_tests))
 }
 
+/// A `fixture:` name that didn't resolve to a real file must be a hard parse
+/// error, not a silent `None` deferred to the warehouse (dbt-labs/dbt#16354).
+fn check_fixture_resolved(
+    unit_test_name: &str,
+    context_label: &str,
+    fixture: &Option<String>,
+    format: &Formats,
+    full_path: &Option<String>,
+) -> FsResult<()> {
+    if let Some(fixture) = fixture
+        && matches!(format, Formats::Csv | Formats::Sql)
+        && full_path.is_none()
+    {
+        return err!(
+            ErrorCode::InvalidConfig,
+            "Unit test '{}' {} references fixture '{}', but no matching {} fixture file was found",
+            unit_test_name,
+            context_label,
+            fixture,
+            format,
+        );
+    }
+    Ok(())
+}
+
+/// `format: sql`/`format: csv` fixtures are resolved to a path above but not read:
+/// the file is only ever read lazily, at task-execution time, by Fusion's own
+/// unit-test renderable (`dbt-tasks-sa`). A consumer of the parsed manifest that
+/// never reaches that renderer -- e.g. the embedded v2 parser used by dbt-core's
+/// own compiler, which expects the fixture *content* in `rows` the same way the
+/// 1.x Python parser's `FixtureParser.parse_file`/`get_fixture_file_rows`
+/// populates it -- sees `rows: None` and either inlines the literal string
+/// "None" as the unit test's CTE body (sql), or a jinja/python syntax error
+/// building the `get_fixture_sql(...)` macro call (csv) (dbt-labs/dbt#16354).
+/// Read it eagerly here so `rows` is always populated for sql/csv fixtures.
+///
+/// Note this deliberately reads csv fixtures as raw text (`Rows::String`), the
+/// same as sql, rather than eagerly parsing them into `Rows::List` to fully
+/// match dbt-core's `List[Dict]` shape for csv: parsing (and thus validating)
+/// the csv content here would move a currently execution-time-only failure
+/// (e.g. a ragged csv fixture) to parse time, aborting the whole run instead of
+/// failing just that one unit test -- a much bigger, unrelated behavior change.
+///
+/// Also deliberately reads the file verbatim (no `strip=True`-style trim to
+/// match dbt-core's `load_file_contents`): Fusion's own task executor already
+/// reads sql fixtures byte-for-byte via `stdfs::read_to_string`/`in_dir.join`
+/// with no trim, and at least one snowflake record/replay test pins the exact
+/// (untrimmed) assembled CTE text, so trimming here would just move that same
+/// whitespace divergence from "always" to "only when dbt-core's compiler reads
+/// this manifest" without fixing it, while breaking that replay test.
+///
+/// A resolved `fixture:` always overrides an inline `rows:` when both are given,
+/// matching dbt-core's own `_validate_and_normalize_rows`, which unconditionally
+/// does `ut_fixture.rows = <fixture file content>` whenever `ut_fixture.fixture`
+/// is set.
+fn read_fixture_rows(
+    arg: &ResolveArgs,
+    full_path: &Option<String>,
+    format: &Formats,
+    rows: Option<Rows>,
+) -> FsResult<Option<Rows>> {
+    let Some(path) = full_path else {
+        return Ok(rows);
+    };
+    match format {
+        Formats::Sql | Formats::Csv => Ok(Some(Rows::String(stdfs::read_to_string(
+            arg.io.in_dir.join(path),
+        )?))),
+        Formats::Dict => Ok(rows),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
-fn resolve_given_seed(
-    jinja_env: &JinjaEnv,
+async fn resolve_given_seed(
+    jinja_env: &Arc<JinjaEnv>,
     base_ctx: &BTreeMap<String, minijinja::Value>,
     input: &Spanned<String>,
     adapter_type: AdapterType,
@@ -493,6 +636,8 @@ fn resolve_given_seed(
         adapter_type,
         database,
         schema,
+        None,
+        InlineConfigAliasing::fixed(adapter_type),
         model_name,
         fqn.to_vec(),
         package_name,
@@ -505,14 +650,22 @@ fn resolve_given_seed(
         relative_path,
         &PathBuf::new(),
         global_static_analysis,
+        None,
     ));
 
-    match render_extract_ref_or_source_expr(
-        jinja_env,
-        &resolve_model_context,
-        sql_resources,
-        input,
-    )? {
+    let env = Arc::clone(jinja_env);
+    let render_input = input.clone();
+    let resource = dbt_runtime::spawn_blocking(move || {
+        render_extract_ref_or_source_expr(
+            &env,
+            &resolve_model_context,
+            sql_resources,
+            &render_input,
+        )
+    })
+    .await
+    .map_err(unit_test_jinja_join_error)??;
+    match resource {
         SqlResource::Ref((name, package, version, _)) => {
             let (unique_id, _, _, _) = node_resolver.lookup_ref(
                 &package,
@@ -683,6 +836,118 @@ fn should_include_version_for_unit_test(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dbt_jinja_utils::node_resolver::NodeResolver;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
+
+    fn runtime_probe_env() -> (Arc<JinjaEnv>, Arc<AtomicUsize>) {
+        let runtime_id = tokio::runtime::Handle::current().id();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let probe_calls = Arc::clone(&calls);
+        let mut env = minijinja::Environment::new();
+        env.add_function("runtime_probe", move || {
+            assert!(
+                dbt_runtime::is_pool_worker(),
+                "unit test Jinja ran off the dbt-runtime pool"
+            );
+            assert_eq!(tokio::runtime::Handle::current().id(), runtime_id);
+            probe_calls.fetch_add(1, Ordering::SeqCst);
+            true
+        });
+        (Arc::new(JinjaEnv::new(env)), calls)
+    }
+
+    #[dbt_runtime::test]
+    async fn unit_test_properties_jinja_uses_runtime_worker() -> FsResult<()> {
+        assert!(!dbt_runtime::is_pool_worker());
+        let (env, calls) = runtime_probe_env();
+        let properties = dbt_yaml::from_str(
+            "name: runtime_test\nmodel: my_model\nconfig:\n  enabled: '{{ runtime_probe() }}'\ngiven: []\nexpect:\n  rows: []\n",
+        )?;
+        let package = DbtPackage::default();
+        let root_configs = crate::dbt_project_config::build_root_project_configs(
+            &package.dbt_project,
+            &Default::default(),
+            AdapterType::DuckDB,
+            true,
+        )?;
+        let entry = MinimalPropertiesEntry {
+            name: "runtime_test".to_string(),
+            name_span: Default::default(),
+            relative_path: "models/unit_tests.yml".into(),
+            schema_value: properties,
+            table_value: None,
+            version_info: None,
+            duplicate_paths: vec![],
+        };
+        let (enabled, disabled) = resolve_unit_tests(
+            &ResolveArgs::default(),
+            BTreeMap::from([("runtime_test".to_string(), entry)]),
+            &package,
+            &package,
+            dbt_schemas::schemas::relations::DEFAULT_DBT_QUOTING,
+            &root_configs,
+            "root",
+            &env,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &[],
+            AdapterType::DuckDB,
+            &NodeResolver::default(),
+        )
+        .await?;
+        assert!(enabled.is_empty());
+        assert_eq!(disabled.len(), 1, "the tested model is deliberately absent");
+        assert!(calls.load(Ordering::SeqCst) > 0);
+        Ok(())
+    }
+
+    #[dbt_runtime::test]
+    async fn unit_test_discovery_jinja_uses_runtime_worker() -> FsResult<()> {
+        let (env, calls) = runtime_probe_env();
+        let properties = dbt_yaml::from_str(
+            "unit_tests:\n  - name: 'runtime_{{ runtime_probe() }}'\n    model: my_model\n    given: []\n    expect:\n      rows: []\n",
+        )?;
+        let mut minimal = crate::resolve::resolve_properties::MinimalProperties::default();
+        minimal
+            .extend_from_minimal_properties_file(
+                properties,
+                &env,
+                std::path::Path::new("models/unit_tests.yml"),
+                &BTreeMap::new(),
+            )
+            .await?;
+        assert_eq!(minimal.unit_tests.len(), 1);
+        assert!(calls.load(Ordering::SeqCst) > 0);
+        Ok(())
+    }
+
+    #[dbt_runtime::test]
+    async fn unit_test_seed_input_jinja_uses_runtime_worker() {
+        assert!(!dbt_runtime::is_pool_worker());
+        let (env, calls) = runtime_probe_env();
+        let input = Spanned::new("ref('seed_input' if runtime_probe() else 'wrong')".to_string());
+        let error = resolve_given_seed(
+            &env,
+            &BTreeMap::new(),
+            &input,
+            AdapterType::DuckDB,
+            "db",
+            "schema",
+            "model",
+            &["root".to_string(), "model".to_string()],
+            "root",
+            "root",
+            dbt_schemas::schemas::relations::DEFAULT_DBT_QUOTING,
+            std::path::Path::new("models/unit_tests.yml"),
+            None,
+            &NodeResolver::default(),
+        )
+        .await
+        .expect_err("the probe seed is deliberately absent");
+        assert!(calls.load(Ordering::SeqCst) > 0, "{error}");
+    }
 
     #[test]
     fn test_parse_implicit_seed_rows_preserves_strings_and_trailing_nulls() {

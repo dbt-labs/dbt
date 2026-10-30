@@ -1,0 +1,7 @@
+model.test.b:
+- sequence: 0
+  type: execute
+  sql: describe table development.adapters_snowflake_get_columns_in_relation_missing.a
+  error: |-
+    Internal: [Snowflake] 002003 (02000): SQL compilation error:
+    Schema 'DEVELOPMENT.ADAPTERS_SNOWFLAKE_GET_COLUMNS_IN_RELATION_MISSING' does not exist or not authorized. Your primary role TESTER or one of your secondary roles must have USAGE or any other privilege granted on SCHEMA DEVELOPMENT.ADAPTERS_SNOWFLAKE_GET_COLUMNS_IN_RELATION_MISSING. (sqlstate: 02000, vendor_code: 2003)

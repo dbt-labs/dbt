@@ -2,16 +2,13 @@ use std::sync::Arc;
 
 use crate::materialize::materialize_seed;
 use crate::runnable::cache::cache_materialization_return_value;
-use dbt_adapter::AdapterType;
+use crate::seed_io::read_parquet_seed_physical;
 use dbt_adapter::relation::create_relation_from_node;
+use dbt_adapter::{Adapter, AdapterType};
 use dbt_agate::AgateTable;
 use dbt_common::stats::NodeStatus;
 use dbt_common::{ErrorCode, FsError, FsResult, fs_err};
-use dbt_df_providers::seed_io::read_parquet_seed_physical;
-use dbt_jinja_utils::jinja_environment::JinjaEnv;
-use dbt_jinja_utils::utils::add_task_context;
 use dbt_schema_store::read_cached_schema_from_parquet;
-use dbt_schemas::schemas::InternalDbtNode;
 use dbt_schemas::schemas::relations::base::BaseRelation;
 use dbt_schemas::schemas::{DbtSeed, InternalDbtNodeAttributes};
 use dbt_tasks_core::context::TaskRunnerCtx;
@@ -54,9 +51,8 @@ pub fn check_and_warn_missing_column_types(
 async fn maybe_seed_column_change_hint(
     seed: &DbtSeed,
     new_cols_sorted: &[String],
-    env: &JinjaEnv,
+    adapter: &Adapter,
 ) -> Option<String> {
-    let adapter = env.get_base_adapter()?;
     // TODO (harry): Consider whether this logic should apply to other adapters.
     // Adapters that do not require this handling:
     // - DuckDB: The `seed` command ignores local header changes, but overrides the data in the CSV for an existing seed.
@@ -148,7 +144,9 @@ pub async fn maybe_resolve_remote_seed_column_hint(
     let Ok(cols) = serde_json::from_str::<Vec<String>>(json) else {
         return Err(Box::new((*err).with_chained_errors(marker)));
     };
-    enrich_seed_error_with_column_hint(err.as_mut(), seed, &cols, &ctx.env).await;
+    if let Ok(adapter) = ctx.adapter_for(seed) {
+        enrich_seed_error_with_column_hint(err.as_mut(), seed, &cols, &adapter).await;
+    }
     Err(err)
 }
 
@@ -156,9 +154,9 @@ async fn enrich_seed_error_with_column_hint(
     err: &mut FsError,
     seed: &DbtSeed,
     new_cols_sorted: &[String],
-    env: &JinjaEnv,
+    adapter: &Adapter,
 ) {
-    if let Some(hint) = maybe_seed_column_change_hint(seed, new_cols_sorted, env).await {
+    if let Some(hint) = maybe_seed_column_change_hint(seed, new_cols_sorted, adapter).await {
         if !err.context.is_empty() {
             err.context.push_str("\n\n");
         }
@@ -180,9 +178,7 @@ fn sorted_lowercase_columns(agate_table: &AgateTable) -> Vec<String> {
 }
 
 pub fn execute_seed_remote(seed: &DbtSeed, ctx: &TaskRunnerCtx) -> FsResult<NodeStatus> {
-    let mut base_context = ctx.inner.base_context.clone();
-
-    add_task_context(&mut base_context, seed.common(), &ctx.thread_id);
+    let base_context = ctx.run_base_context(seed)?;
 
     let relation = create_relation_from_node(seed.node_adapter(), seed, None)?;
     let canonical_fqn = relation.get_canonical_fqn()?;
@@ -214,9 +210,10 @@ pub fn execute_seed_remote(seed: &DbtSeed, ctx: &TaskRunnerCtx) -> FsResult<Node
     // takes ownership of `agate_table`, in case we need to enrich a downstream error.
     let new_cols_sorted = sorted_lowercase_columns(&agate_table);
 
+    let adapter = ctx.adapter_for(seed)?;
     let (relations_map, main_response) = match materialize_seed(
         seed,
-        seed.node_adapter(),
+        &adapter,
         ctx.runtime_config(),
         &ctx.inner.materialization_resolver,
         ctx.env.clone(),
@@ -236,9 +233,9 @@ pub fn execute_seed_remote(seed: &DbtSeed, ctx: &TaskRunnerCtx) -> FsResult<Node
     if let Some(main_response) = main_response {
         ctx.inner
             .main_adapter_responses
-            .insert(seed.__common_attr__.unique_id.clone(), main_response);
+            .upsert_sync(seed.__common_attr__.unique_id.clone(), main_response);
     }
-    let _ = cache_materialization_return_value(ctx.env.clone(), &relations_map);
+    let _ = cache_materialization_return_value(&adapter, ctx.env.clone(), &relations_map);
 
     if had_warning {
         Ok(NodeStatus::SucceededWithWarning)

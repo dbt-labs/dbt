@@ -5,6 +5,12 @@ All adapter macros are currently maintained in:
 
 ## Changelog
 
+### [2026-10-06]
+  - dbt-databricks: emit constraint ALTER statements in a stable order from PR #1698
+
+### [2026-09-24]
+  - dbt-databricks: gate view/metric_view ALTER on matching relation type from PR #1687
+
 ### [2026-09-16]
   - dbt-athena: v1.11.0, vendored from the `dbt-athena` wheel's
     `dbt/include/athena/` (42 files, 2212 SQL LOC). Note the macros ship in the

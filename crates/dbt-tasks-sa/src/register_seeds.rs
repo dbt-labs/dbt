@@ -4,7 +4,12 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 
+use crate::seed_io::{
+    TableFormat, adapt_schema, infer_seed_column_name_strategy, read_json_seed,
+    read_parquet_seed_view,
+};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
+use dbt_adapter::AdapterStore;
 use dbt_adapter::column::ColumnStatic;
 use dbt_adapter::relation::create_relation_from_node;
 use dbt_adapter::sql_types::TypeOps;
@@ -12,10 +17,6 @@ use dbt_adapter_core::AdapterType;
 use dbt_common::tracing::{dbt_emit::emit_warn_log_message, spawn_traced};
 use dbt_common::{ErrorCode, FsResult, fs_err};
 use dbt_csv::{CustomCsvOptions, read_to_arrow_records};
-use dbt_df_providers::seed_io::{
-    TableFormat, adapt_schema, infer_seed_column_name_strategy, read_json_seed,
-    read_parquet_seed_view,
-};
 
 use dbt_frontend_common::Dialect;
 use dbt_schema_store::{CanonicalFqn, DataStoreTrait, SchemaStoreTrait};
@@ -39,10 +40,7 @@ struct SeedRegistrationCtx {
 }
 
 pub fn resolve_seed_path(in_dir: &Path, seed: &DbtSeed) -> PathBuf {
-    seed.__seed_attr__
-        .root_path
-        .as_ref()
-        .map(|root| root.join(&seed.__common_attr__.path))
+    seed.file_path_from_root()
         .unwrap_or_else(|| in_dir.join(&seed.__common_attr__.original_file_path))
 }
 
@@ -54,6 +52,7 @@ fn register_seed_csv(
     seed: Arc<DbtSeed>,
     ctx: Arc<SeedRegistrationCtx>,
     type_ops: Arc<dyn TypeOps>,
+    reader_ops: Option<Arc<dyn TypeOps>>,
 ) -> FsResult<RegisteredSeed> {
     let adapter_type = seed.node_adapter();
     let relation = create_relation_from_node(adapter_type, seed.as_ref(), None)?;
@@ -94,8 +93,12 @@ fn register_seed_csv(
         None
     };
     let target_schema = adapt_schema(result.schema, infer_column_name_strategy);
-    let schema =
-        dialect_adapted_schema(&target_schema, logical_fields.as_ref(), type_ops.as_ref())?;
+    let schema = dialect_adapted_schema(
+        &target_schema,
+        logical_fields.as_ref(),
+        type_ops.as_ref(),
+        reader_ops.as_deref(),
+    )?;
     ctx.schema_cache
         .register_schema(&canonical_fqn, None, schema.clone(), true)?;
     ctx.data_store
@@ -115,6 +118,7 @@ fn register_seed_json(
     seed: Arc<DbtSeed>,
     ctx: Arc<SeedRegistrationCtx>,
     type_ops: Arc<dyn TypeOps>,
+    reader_ops: Option<Arc<dyn TypeOps>>,
 ) -> FsResult<RegisteredSeed> {
     let adapter_type = seed.node_adapter();
     let relation = create_relation_from_node(adapter_type, seed.as_ref(), None)?;
@@ -130,8 +134,12 @@ fn register_seed_json(
         None
     };
     let target_schema = adapt_schema(source_schema, infer_column_name_strategy);
-    let schema =
-        dialect_adapted_schema(&target_schema, logical_fields.as_ref(), type_ops.as_ref())?;
+    let schema = dialect_adapted_schema(
+        &target_schema,
+        logical_fields.as_ref(),
+        type_ops.as_ref(),
+        reader_ops.as_deref(),
+    )?;
     ctx.schema_cache
         .register_schema(&canonical_fqn, None, schema.clone(), true)?;
 
@@ -153,6 +161,7 @@ async fn register_seed_parquet_async(
     seed: Arc<DbtSeed>,
     ctx: Arc<SeedRegistrationCtx>,
     type_ops: Arc<dyn TypeOps>,
+    reader_ops: Option<Arc<dyn TypeOps>>,
 ) -> FsResult<RegisteredSeed> {
     let adapter_type = seed.node_adapter();
     let relation = create_relation_from_node(adapter_type, seed.as_ref(), None)?;
@@ -168,8 +177,12 @@ async fn register_seed_parquet_async(
         None
     };
     let target_schema = adapt_schema(source_schema, infer_column_name_strategy);
-    let schema =
-        dialect_adapted_schema(&target_schema, logical_fields.as_ref(), type_ops.as_ref())?;
+    let schema = dialect_adapted_schema(
+        &target_schema,
+        logical_fields.as_ref(),
+        type_ops.as_ref(),
+        reader_ops.as_deref(),
+    )?;
     ctx.schema_cache
         .register_schema(&canonical_fqn, None, schema.clone(), true)?;
 
@@ -200,6 +213,7 @@ async fn register_seed_parquet_async(
 
 /// Pre-register scheduled seeds before the task graph runs.
 /// (CSV, JSON are on blocking workers; parquet is async)
+/// Each seed's schema is typed with its own adapter's type ops.
 ///
 /// Errors are logged immediately but do not abort the run. Failed seeds will
 /// be detected during the render phase when the schema store check fails.
@@ -209,7 +223,8 @@ pub async fn pre_register_seeds(
     seeds: &BTreeMap<String, Arc<DbtSeed>>,
     schema_cache: Arc<dyn SchemaStoreTrait>,
     data_store: Arc<dyn DataStoreTrait>,
-    type_ops: Arc<dyn TypeOps>,
+    adapter_store: &AdapterStore,
+    run_type_ops: Arc<dyn TypeOps>,
     in_dir: &Path,
 ) -> Vec<RegisteredSeed> {
     let ctx = Arc::new(SeedRegistrationCtx {
@@ -244,28 +259,40 @@ pub async fn pre_register_seeds(
             }
         };
 
+        // A lookup error fails only this seed, like a registration error.
+        let type_ops = match adapter_store.get(seed.node_adapter()) {
+            Ok(adapter) => Arc::clone(adapter.engine().type_ops()),
+            Err(err) => {
+                handles.push(Box::pin(async move { Err(err) }));
+                continue;
+            }
+        };
+        // LakeCompute has no static analysis; the run adapter's models read it, so adapt for them.
+        let reader_ops =
+            (seed.node_adapter() == AdapterType::LakeCompute).then(|| Arc::clone(&run_type_ops));
+
         let ctx = Arc::clone(&ctx);
         match format {
             None => {
-                let type_ops = Arc::clone(&type_ops);
-                let h = dbt_runtime::spawn_blocking(move || register_seed_csv(seed, ctx, type_ops));
+                let h = dbt_runtime::spawn_blocking(move || {
+                    register_seed_csv(seed, ctx, type_ops, reader_ops)
+                });
                 handles.push(Box::pin(async move {
                     h.await
                         .map_err(|e| fs_err!(ErrorCode::Generic, "seed task panicked: {e}"))?
                 }));
             }
             Some(TableFormat::Json) => {
-                let type_ops = Arc::clone(&type_ops);
-                let h =
-                    dbt_runtime::spawn_blocking(move || register_seed_json(seed, ctx, type_ops));
+                let h = dbt_runtime::spawn_blocking(move || {
+                    register_seed_json(seed, ctx, type_ops, reader_ops)
+                });
                 handles.push(Box::pin(async move {
                     h.await
                         .map_err(|e| fs_err!(ErrorCode::Generic, "seed task panicked: {e}"))?
                 }));
             }
             Some(TableFormat::Parquet) => {
-                let type_ops = Arc::clone(&type_ops);
-                let h = spawn_traced(register_seed_parquet_async(seed, ctx, type_ops));
+                let h = spawn_traced(register_seed_parquet_async(seed, ctx, type_ops, reader_ops));
                 handles.push(Box::pin(async move {
                     h.await
                         .map_err(|e| fs_err!(ErrorCode::Generic, "seed task panicked: {e}"))?
@@ -334,6 +361,7 @@ pub fn dialect_adapted_schema(
     source_schema: &SchemaRef,
     logical_types: Option<&LogicalTypeMap>,
     type_ops: &dyn TypeOps,
+    reader_ops: Option<&dyn TypeOps>,
 ) -> FsResult<SchemaRef> {
     let adapter_type = type_ops.adapter_type();
     let adapted_fields: Vec<Arc<Field>> = source_schema
@@ -362,6 +390,12 @@ pub fn dialect_adapted_schema(
                 type_ops
                     .adapt_seed_type(f.data_type())
                     .unwrap_or_else(|| f.data_type().clone())
+            };
+            let final_type = match reader_ops {
+                Some(reader_ops) => reader_ops
+                    .adapt_seed_type(&final_type)
+                    .unwrap_or(final_type),
+                None => final_type,
             };
 
             // Create new field with the determined type

@@ -4,8 +4,8 @@
      {% do exceptions.raise_compiler_error('To use distributed materialization setting insert_distributed_sync should be set to 1') %}
   {% endif %}
 
-  {%- set local_suffix = get_clickhouse_local_suffix() -%}
-  {%- set local_db_prefix = get_clickhouse_local_db_prefix() -%}
+  {%- set local_suffix = adapter.get_clickhouse_local_suffix() -%}
+  {%- set local_db_prefix = adapter.get_clickhouse_local_db_prefix() -%}
 
   {%- set existing_relation = load_cached_relation(this) -%}
   {%- set target_relation = this.incorporate(type='table') -%}
@@ -14,6 +14,10 @@
   {% if on_cluster.strip() == '' %}
      {% do exceptions.raise_compiler_error('To use distributed materializations cluster setting in dbt profile must be set') %}
   {% endif %}
+
+  {# Distributed materializations drop relations before recreating them, so surface
+     projection config errors here rather than mid-rebuild #}
+  {% do validate_projections() %}
 
   {% set existing_relation_local = load_cached_relation(this.incorporate(path={"identifier": this.identifier + local_suffix, "schema": local_db_prefix + this.schema})) %}
   {% set target_relation_local = target_relation.incorporate(path={"identifier": this.identifier + local_suffix, "schema": local_db_prefix + this.schema}) if target_relation is not none else none %}

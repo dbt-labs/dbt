@@ -1,0 +1,15 @@
+models:
+  - name: hello
+    description: "The table description"
+    columns:
+      - name: id
+        description: "The table ID"
+      - name: name
+        description: "The table name"
+  - name: hello_view
+    description: "The view description"
+    columns:
+      - name: id
+        description: "The view ID"
+      - name: name
+        description: "The view name"

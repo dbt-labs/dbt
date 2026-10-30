@@ -21,26 +21,34 @@ const RESERVED_QUERY_TAG_KEYS: [&str; 3] = [DBT_CORE_VERSION, DBT_MODEL_NAME, DB
 
 /// Supported Databricks authentication types.
 /// When `auth_type` is absent, defaults to token-based (PAT) authentication.
-/// When `auth_type` is present, only `oauth` is a valid value.
+/// When `auth_type` is present, only `oauth`, `env-oidc` and `file-oidc` are valid values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DatabricksAuthType {
     /// OAuth authentication
     OAuth,
     /// Personal Access Token
     Token,
+    /// OIDC via environment variable
+    EnvOIDC,
+    /// OIDC via token file
+    FileOIDC,
 }
 
 impl DatabricksAuthType {
     /// Parse auth_type from config.
     /// - Absent or "token": defaults to token-based authentication
     /// - "oauth": OAuth authentication
+    /// - "env-oidc": OIDC authentication via ID token in environment variable
+    /// - "file-oidc": OIDC authentication via ID token in file
     /// - Any other value: error
     fn from_config(config: &AdapterConfig) -> Result<Self, AuthError> {
         match config.get_string("auth_type") {
             Some(s) if s.eq_ignore_ascii_case("oauth") => Ok(DatabricksAuthType::OAuth),
             Some(s) if s.eq_ignore_ascii_case("token") => Ok(DatabricksAuthType::Token),
+            Some(s) if s.eq_ignore_ascii_case("env-oidc") => Ok(DatabricksAuthType::EnvOIDC),
+            Some(s) if s.eq_ignore_ascii_case("file-oidc") => Ok(DatabricksAuthType::FileOIDC),
             Some(invalid) => Err(AuthError::config(format!(
-                "Invalid auth_type '{}'. Valid values are: 'oauth', 'token'.",
+                "Invalid auth_type '{}'. Valid values are: 'oauth', 'env-oidc', 'file-oidc', 'token'.",
                 invalid
             ))),
             None => Ok(DatabricksAuthType::Token),
@@ -64,6 +72,13 @@ enum DatabricksAuthIR<'a> {
     },
     Token {
         token: &'a str,
+    },
+    EnvOIDC {
+        client_id: &'a str,
+    },
+    FileOIDC {
+        client_id: &'a str,
+        oidc_token_filepath: Option<&'a str>,
     },
 }
 
@@ -107,6 +122,23 @@ impl<'a> DatabricksAuthIR<'a> {
                 builder.with_named_option(databricks::TOKEN, token)?;
                 builder.with_named_option(databricks::AUTH_TYPE, databricks::auth_type::PAT)?;
             }
+            Self::EnvOIDC { client_id } => {
+                builder
+                    .with_named_option(databricks::AUTH_TYPE, databricks::auth_type::ENV_OIDC)?;
+                builder.with_named_option(databricks::OIDC_CLIENT_ID, client_id)?;
+            }
+            Self::FileOIDC {
+                client_id,
+                oidc_token_filepath,
+            } => {
+                builder
+                    .with_named_option(databricks::AUTH_TYPE, databricks::auth_type::FILE_OIDC)?;
+                builder.with_named_option(databricks::OIDC_CLIENT_ID, client_id)?;
+                if let Some(oidc_token_filepath) = oidc_token_filepath {
+                    builder
+                        .with_named_option(databricks::OIDC_TOKEN_FILEPATH, oidc_token_filepath)?;
+                }
+            }
         }
 
         Ok(builder)
@@ -144,7 +176,7 @@ fn parse_auth<'a>(
             // `databricks.access_token` to the ADBC driver, which rejects it
             // with "access token is required when using auth type 'pat'".
             // https://app.notion.com/p/dbtlabs/Databricks-OAuth-for-Deployment-Environments-22bbb38ebda780dc9608ef05cfd757ff?source=copy_link
-            if let Some(token) = config.get_str("token").filter(|s| !s.is_empty()) {
+            if let Some(token) = config.get_str_non_empty("token") {
                 Ok(DatabricksAuthIR::Token { token })
             } else if config.contains_key("azure_client_secret") {
                 Ok(DatabricksAuthIR::AzureClientSecret {
@@ -160,6 +192,33 @@ fn parse_auth<'a>(
                 Ok(DatabricksAuthIR::ExternalBrowserOAuth {
                     client_id: if config.contains_key("client_id") {
                         Some(config.require_str("client_id")?)
+                    } else {
+                        None
+                    },
+                })
+            }
+        }
+        Ok(DatabricksAuthType::EnvOIDC) => {
+            if let Some(token) = config.get_str_non_empty("token") {
+                Ok(DatabricksAuthIR::Token { token })
+            } else {
+                Ok(DatabricksAuthIR::EnvOIDC {
+                    client_id: config.require_str("client_id")?,
+                })
+            }
+        }
+        Ok(DatabricksAuthType::FileOIDC) => {
+            if let Some(token) = config.get_str_non_empty("token") {
+                Ok(DatabricksAuthIR::Token { token })
+            } else {
+                Ok(DatabricksAuthIR::FileOIDC {
+                    client_id: config.require_str("client_id")?,
+                    // It's possible, though not recommended for this field to be provided
+                    // as the environment variable DATABRICKS_OIDC_TOKEN_FILEPATH, or
+                    // as its alias DATABRICKS_OIDC_TOKEN_FILE.
+                    // See: https://databricks-sdk-py.readthedocs.io/en/stable/auth-types-reference.html
+                    oidc_token_filepath: if config.contains_key("oidc_token_filepath") {
+                        Some(config.require_str("oidc_token_filepath")?)
                     } else {
                         None
                     },
@@ -293,6 +352,7 @@ fn discover_azure_tenant_id(host: &str) -> Result<String, AuthError> {
     // The tenant is in the 3xx Location header; do not follow the redirect, and
     // treat a 3xx as a normal response rather than an error.
     let config = ureq::Agent::config_builder()
+        .tls_config(dbt_adbc::install::build_tls_config())
         .http_status_as_error(false)
         .max_redirects(0)
         .max_redirects_will_error(false)
@@ -1020,7 +1080,7 @@ mod tests {
 
     #[test]
     fn test_unknown_auth_type_defaults_to_token() {
-        for auth_type in ["external_browser", "pat"] {
+        for auth_type in ["external_browser", "pat", "env_oidc", "file_oidc"] {
             let mut config = base_config();
             config.insert(
                 "http_path".into(),
@@ -1386,5 +1446,176 @@ mod tests {
         assert!(parse_azure_tenant_from_location("https://login.microsoftonline.com/").is_err());
         // unparseable
         assert!(parse_azure_tenant_from_location("not a url").is_err());
+    }
+
+    #[test]
+    fn test_env_oidc_with_preminted_token_routes_to_pat() {
+        let mut config = base_config();
+        config.insert("client_id".into(), "CLIENT_ID".into());
+        config.insert("auth_type".into(), "env-oidc".into());
+        config.insert("token".into(), "PREMINTED_TOKEN".into());
+
+        let expected = vec![
+            (databricks::TOKEN, "PREMINTED_TOKEN"),
+            (databricks::SCHEMA, "S"),
+            (databricks::HOST, "H"),
+            (databricks::HTTP_PATH, "/sql/1.0/warehouses/warehouse-id"),
+            (databricks::CATALOG, "C"),
+            (databricks::USER_AGENT, USER_AGENT_NAME),
+            (databricks::AUTH_TYPE, databricks::auth_type::PAT),
+        ];
+        run_config_test(config, &expected).unwrap();
+    }
+
+    #[test]
+    fn test_env_oidc_with_empty_token_placeholder_routes_to_env_oidc() {
+        let mut config = base_config();
+        config.insert("client_id".into(), "CLIENT_ID".into());
+        config.insert("auth_type".into(), "env-oidc".into());
+        config.insert("token".into(), "".into());
+
+        let expected = vec![
+            (databricks::SCHEMA, "S"),
+            (databricks::HOST, "H"),
+            (databricks::HTTP_PATH, "/sql/1.0/warehouses/warehouse-id"),
+            (databricks::CATALOG, "C"),
+            (databricks::OIDC_CLIENT_ID, "CLIENT_ID"),
+            (databricks::USER_AGENT, USER_AGENT_NAME),
+            (databricks::AUTH_TYPE, databricks::auth_type::ENV_OIDC),
+        ];
+        run_config_test(config, &expected).unwrap();
+    }
+
+    #[test]
+    fn test_file_oidc_with_preminted_token_routes_to_pat() {
+        let mut config = base_config();
+        config.insert("client_id".into(), "CLIENT_ID".into());
+        config.insert("auth_type".into(), "file-oidc".into());
+        config.insert("oidc_token_filepath".into(), "token.file".into());
+        config.insert("token".into(), "PREMINTED_TOKEN".into());
+
+        let expected = vec![
+            (databricks::TOKEN, "PREMINTED_TOKEN"),
+            (databricks::SCHEMA, "S"),
+            (databricks::HOST, "H"),
+            (databricks::HTTP_PATH, "/sql/1.0/warehouses/warehouse-id"),
+            (databricks::CATALOG, "C"),
+            (databricks::USER_AGENT, USER_AGENT_NAME),
+            (databricks::AUTH_TYPE, databricks::auth_type::PAT),
+        ];
+        run_config_test(config, &expected).unwrap();
+    }
+
+    #[test]
+    fn test_file_oidc_with_empty_token_placeholder_routes_to_file_oidc() {
+        let mut config = base_config();
+        config.insert("client_id".into(), "CLIENT_ID".into());
+        config.insert("auth_type".into(), "file-oidc".into());
+        config.insert("oidc_token_filepath".into(), "token.file".into());
+        config.insert("token".into(), "".into());
+
+        let expected = vec![
+            (databricks::SCHEMA, "S"),
+            (databricks::HOST, "H"),
+            (databricks::HTTP_PATH, "/sql/1.0/warehouses/warehouse-id"),
+            (databricks::CATALOG, "C"),
+            (databricks::OIDC_CLIENT_ID, "CLIENT_ID"),
+            (databricks::USER_AGENT, USER_AGENT_NAME),
+            (databricks::AUTH_TYPE, databricks::auth_type::FILE_OIDC),
+            (databricks::OIDC_TOKEN_FILEPATH, "token.file"),
+        ];
+        run_config_test(config, &expected).unwrap();
+    }
+
+    #[test]
+    fn test_env_oidc() {
+        let mut config = base_config();
+        config.insert("client_id".into(), "CLIENT_ID".into());
+        config.insert("auth_type".into(), "env-oidc".into());
+
+        let expected = vec![
+            (databricks::SCHEMA, "S"),
+            (databricks::HOST, "H"),
+            (databricks::HTTP_PATH, "/sql/1.0/warehouses/warehouse-id"),
+            (databricks::CATALOG, "C"),
+            (databricks::OIDC_CLIENT_ID, "CLIENT_ID"),
+            (databricks::USER_AGENT, USER_AGENT_NAME),
+            (databricks::AUTH_TYPE, databricks::auth_type::ENV_OIDC),
+        ];
+        run_config_test(config, &expected).unwrap();
+    }
+
+    #[test]
+    fn test_file_oidc_with_token_filepath() {
+        let mut config = base_config();
+        config.insert("client_id".into(), "CLIENT_ID".into());
+        config.insert("auth_type".into(), "file-oidc".into());
+        config.insert("oidc_token_filepath".into(), "token.file".into());
+
+        let expected = vec![
+            (databricks::SCHEMA, "S"),
+            (databricks::HOST, "H"),
+            (databricks::HTTP_PATH, "/sql/1.0/warehouses/warehouse-id"),
+            (databricks::CATALOG, "C"),
+            (databricks::OIDC_CLIENT_ID, "CLIENT_ID"),
+            (databricks::OIDC_TOKEN_FILEPATH, "token.file"),
+            (databricks::USER_AGENT, USER_AGENT_NAME),
+            (databricks::AUTH_TYPE, databricks::auth_type::FILE_OIDC),
+        ];
+        run_config_test(config, &expected).unwrap();
+    }
+
+    /// The token file path is optional. The SDK falls back to the
+    /// `DATABRICKS_OIDC_TOKEN_FILEPATH` environment variable, so no path option
+    /// may be sent when the profile has none.
+    #[test]
+    fn test_file_oidc_without_token_filepath() {
+        let mut config = base_config();
+        config.insert("client_id".into(), "CLIENT_ID".into());
+        config.insert("auth_type".into(), "file-oidc".into());
+
+        let expected = vec![
+            (databricks::SCHEMA, "S"),
+            (databricks::HOST, "H"),
+            (databricks::HTTP_PATH, "/sql/1.0/warehouses/warehouse-id"),
+            (databricks::CATALOG, "C"),
+            (databricks::OIDC_CLIENT_ID, "CLIENT_ID"),
+            (databricks::USER_AGENT, USER_AGENT_NAME),
+            (databricks::AUTH_TYPE, databricks::auth_type::FILE_OIDC),
+        ];
+        run_config_test(config, &expected).unwrap();
+    }
+
+    #[test]
+    fn test_parse_auth_oidc_missing_client_id_is_yaml_error() {
+        for auth_type in ["env-oidc", "file-oidc"] {
+            let config = Mapping::from_iter([("auth_type".into(), auth_type.into())]);
+
+            let err = parse_auth(&AdapterConfig::new(config), &crate::NoopAuthWarningPrinter)
+                .expect_err("expected parse_auth error");
+            match err {
+                AuthError::YAML(e) => assert!(e.to_string().contains("missing field `client_id`")),
+                other => panic!("expected YAML missing-field error, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_parse_auth_file_oidc_token_filepath_non_string_is_yaml_error() {
+        let config = Mapping::from_iter([
+            ("auth_type".into(), "file-oidc".into()),
+            ("client_id".into(), "CID".into()),
+            ("oidc_token_filepath".into(), YmlValue::bool(true)),
+        ]);
+
+        let err = parse_auth(&AdapterConfig::new(config), &crate::NoopAuthWarningPrinter)
+            .expect_err("expected parse_auth error");
+        match err {
+            AuthError::YAML(e) => assert!(
+                e.to_string()
+                    .contains("missing field `oidc_token_filepath`")
+            ),
+            other => panic!("expected YAML missing-field error, got {other:?}"),
+        }
     }
 }

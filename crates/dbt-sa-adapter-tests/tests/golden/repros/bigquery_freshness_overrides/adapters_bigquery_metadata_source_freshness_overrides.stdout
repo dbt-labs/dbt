@@ -1,0 +1,6 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/schema.yml
+   Parsing models/c.sql
+==================== Execution Summary =====================
+Finished 'run-operation' successfully for target 'bigquery' [duration]

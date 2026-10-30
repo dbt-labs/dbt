@@ -1,5 +1,4 @@
 use std::collections::{BTreeMap, HashSet};
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use dbt_adapter::relation::RelationObject;
@@ -12,7 +11,6 @@ use dbt_schemas::{
     schemas::project::{ModelConfig, ProjectModelConfig, ResolvableConfig},
 };
 use minijinja::Value;
-use minijinja::value::mutable_map::MutableMap;
 
 use crate::macro_test_harness::MacroTestHarness;
 
@@ -55,8 +53,10 @@ fn omitted_policy_runtime_config() -> RunConfig {
 
     RunConfig {
         model_config,
-        model: Arc::new(MutableMap::new()),
-        model_compiled_path: PathBuf::new(),
+        model: Arc::new(dbt_schemas::jinja_node::LazyNodeContext::from_node(
+            Arc::new(dbt_schemas::schemas::DbtModel::default()),
+            dbt_schemas::schemas::serialization_utils::SerializationMode::OmitNone,
+        )),
         valid_keys: HashSet::new(),
     }
 }

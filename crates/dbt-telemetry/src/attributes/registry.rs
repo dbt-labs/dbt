@@ -17,9 +17,10 @@ use crate::{
         AdapterConnectionClose, AdapterConnectionOpen, ArtifactWritten, AssetParsed, CallTrace,
         CompiledCode, CompiledCodeInline, ConnectionLimitWait, DepsAddPackage,
         DepsAllPackagesInstalled, DepsPackageInstalled, GenericOpExecuted, GenericOpItemProcessed,
-        HookProcessed, Invocation, ListItemOutput, LogMessage, NodeEvaluated, NodeProcessed,
-        OnboardingScreenShown, PackageUpdate, PhaseExecuted, Process, ProgressMessage,
-        QueryExecuted, ShowDataOutput, ShowResult, StateModifiedDiff, Unknown, UserLogMessage,
+        HookProcessed, Invocation, ListItemOutput, LogMessage, MicrobatchEvaluated, NodeEvaluated,
+        NodeProcessed, OnboardingScreenShown, PackageUpdate, PhaseExecuted, Process,
+        ProgressMessage, QueryExecuted, ShowDataOutput, ShowResult, StateModifiedDiff,
+        ThreadPoolWait, Unknown, UserLogMessage,
     },
     serialize::arrow::ArrowAttributes as DbtTelemetryArrowAttributes,
 };
@@ -201,6 +202,13 @@ static PUBLIC_TELEMETRY_EVENT_REGISTRY: LazyLock<TelemetryEventTypeRegistry> = L
             faker_for_type::<Process>,
         );
         registry.register(
+            ThreadPoolWait::FULL_NAME,
+            arrow_deserialize_for_type::<ThreadPoolWait>,
+            json_deserialize_for_type::<ThreadPoolWait>,
+            #[cfg(any(test, feature = "test-utils"))]
+            faker_for_type::<ThreadPoolWait>,
+        );
+        registry.register(
             PhaseExecuted::FULL_NAME,
             arrow_deserialize_for_type::<PhaseExecuted>,
             json_deserialize_for_type::<PhaseExecuted>,
@@ -277,6 +285,13 @@ static PUBLIC_TELEMETRY_EVENT_REGISTRY: LazyLock<TelemetryEventTypeRegistry> = L
             json_deserialize_for_type::<NodeEvaluated>,
             #[cfg(any(test, feature = "test-utils"))]
             faker_for_node_evaluated,
+        );
+        registry.register(
+            MicrobatchEvaluated::FULL_NAME,
+            arrow_deserialize_for_type::<MicrobatchEvaluated>,
+            json_deserialize_for_type::<MicrobatchEvaluated>,
+            #[cfg(any(test, feature = "test-utils"))]
+            faker_for_type::<MicrobatchEvaluated>,
         );
         // Needs a custom faker due to oneof fields
         #[cfg(any(test, feature = "test-utils"))]
@@ -603,6 +618,7 @@ mod tests {
                     // invocation helpers
                     "v1.public.events.fusion.invocation.InvocationEvalArgs",
                     "v1.public.events.fusion.invocation.InvocationMetrics",
+                    "v1.public.events.fusion.invocation.InvocationWarnErrorOptions",
                     // node
                     "v1.public.events.fusion.node.NodeCacheDetail",
                     "v1.public.events.fusion.node.NodeEvaluationDetail",

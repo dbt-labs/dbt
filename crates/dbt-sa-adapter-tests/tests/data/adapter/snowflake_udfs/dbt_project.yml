@@ -1,0 +1,14 @@
+name: 'hello_world'
+
+config-version: 2
+version: '0.1'
+profile: 'fusion_tests'
+
+
+on-run-start:
+# https://docs.snowflake.com/en/developer-guide/udf/sql/udf-sql-tabular-functions
+  - "CREATE OR REPLACE FUNCTION {{ target.database }}.{{ target.schema }}.split_string(input STRING) RETURNS TABLE (part STRING) LANGUAGE SQL AS $$ SELECT TRIM(value) AS part FROM TABLE(SPLIT_TO_TABLE(input, ',')) $$ "
+# https://docs.snowflake.com/en/developer-guide/udf/sql/udf-sql-scalar-functions
+  - "CREATE OR REPLACE FUNCTION {{ target.database }}.{{ target.schema }}.is_even(n INT) RETURNS BOOLEAN AS $$ MOD(n, 2) = 0 $$ "
+# `show user` functions returns function signature as `SAMPLE_TABLE_FUNCTION() RETURN TABLE (COL1 NUMBER, COL2 TIMESTAMP_TZ)`
+  - "CREATE OR REPLACE FUNCTION {{ target.database }}.{{ target.schema }}.sample_table_function() RETURNS TABLE ( COL1 DECIMAL(10,2), COL2 TIMESTAMP_TZ ) AS 'SELECT 1234.56::DECIMAL(10,2) AS COL1, CURRENT_TIMESTAMP()::TIMESTAMP_TZ AS COL2' "

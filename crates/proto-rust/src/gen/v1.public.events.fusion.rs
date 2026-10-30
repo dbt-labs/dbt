@@ -333,6 +333,9 @@ pub struct ResourceCounts {
     pub common_context: ::core::option::Option<
         super::super::common::vortex_telemetry_contexts::VortexTelemetryCommonContext,
     >,
+    /// total count of checks (project quality checks under `checks/`) in the project.
+    #[prost(int32, tag = "20")]
+    pub checks: i32,
 }
 impl ::prost::Name for ResourceCounts {
     const NAME: &'static str = "ResourceCounts";
@@ -444,6 +447,23 @@ pub struct RunModel {
     /// where the node was executed. one of "remote", "local", or "lake_compute".
     #[prost(string, tag = "25")]
     pub compute_mode: ::prost::alloc::string::String,
+    /// number of rows affected by the model's main statement. Unset when unknown
+    /// (distinct from 0).
+    #[prost(int64, optional, tag = "26")]
+    pub rows_affected: ::core::option::Option<i64>,
+    /// the snapshot config strategy (ex. "timestamp", "check"). empty string for
+    /// non-snapshot nodes.
+    #[prost(string, tag = "27")]
+    pub snapshot_strategy: ::prost::alloc::string::String,
+    /// bytes processed, per the BigQuery adapter response. Unset for other adapters.
+    #[prost(int64, optional, tag = "28")]
+    pub bytes_processed: ::core::option::Option<i64>,
+    /// bytes billed, per the BigQuery adapter response. Unset for other adapters.
+    #[prost(int64, optional, tag = "29")]
+    pub bytes_billed: ::core::option::Option<i64>,
+    /// slot milliseconds used, per the BigQuery adapter response. Unset for other adapters.
+    #[prost(int64, optional, tag = "30")]
+    pub slot_ms: ::core::option::Option<i64>,
 }
 impl ::prost::Name for RunModel {
     const NAME: &'static str = "RunModel";
@@ -614,6 +634,84 @@ impl ::prost::Name for StaticAnalysisInvocation {
     }
     fn type_url() -> ::prost::alloc::string::String {
         "/v1.public.events.fusion.StaticAnalysisInvocation".into()
+    }
+}
+/// RunCheck is emitted once per project quality check on `dbt check`, `dbt build` and
+/// `dbt retry`, including checks that did not run (`--skip-checks`, or no project
+/// metadata to read), which report status "skipped". Checks run before the task graph
+/// is built, so they do not produce a RunModel event. The command, Account Identifier
+/// and Project Identifier can be found by joining this message on the Invocation
+/// message specified in the invocation_id field.
+#[derive(::serde::Serialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RunCheck {
+    /// This field is a toggle to enable enrichment of the message by the Vortex service.
+    #[prost(message, optional, tag = "1")]
+    pub enrichment: ::core::option::Option<
+        super::super::super::events::vortex::VortexMessageEnrichment,
+    >,
+    /// Unique identifier for this event (UUID). Required.
+    #[prost(string, tag = "2")]
+    pub event_id: ::prost::alloc::string::String,
+    /// A foreign key to the Invocation message that was emitted at the
+    /// start of the fusion process. Required.
+    #[prost(string, tag = "3")]
+    pub invocation_id: ::prost::alloc::string::String,
+    /// MD5 hash of the check's unique_id. Required.
+    #[prost(string, tag = "4")]
+    pub check_id: ::prost::alloc::string::String,
+    /// The check's verdict: "pass", "fail", "warn", "error" or "skipped". Required.
+    #[prost(string, tag = "5")]
+    pub status: ::prost::alloc::string::String,
+    /// The check's configured severity: "error" or "warn".
+    #[prost(string, tag = "6")]
+    pub severity: ::prost::alloc::string::String,
+    /// Number of violation rows the check returned. Unset when the check was not
+    /// evaluated (status "error" or "skipped").
+    #[prost(int64, optional, tag = "7")]
+    pub violations: ::core::option::Option<i64>,
+    /// Wall time for the check's query and evaluation, in seconds. Zero when the
+    /// check never ran.
+    #[prost(double, tag = "8")]
+    pub execution_time: f64,
+    /// Why the check was skipped or could not be evaluated. Empty for "pass", "fail"
+    /// and "warn". The valid values for this are:
+    ///
+    ///   skip_checks_flag          skipped: run with --skip-checks
+    ///   metadata_unavailable      skipped or error: no project metadata to read
+    ///   empty_selection           skipped: the selection held no nodes the check reports on
+    ///   adapter_failed            error: the project metadata could not be opened
+    ///   no_compiled_sql           error: the check has no rendered SQL
+    ///   query_failed              error: the check's SQL failed
+    ///   selection_filter_invalid  error: a selection_filter_on column is not in the check's output
+    ///   evaluation_failed         error: the check's rows could not be evaluated
+    ///
+    #[prost(string, tag = "9")]
+    pub reason: ::prost::alloc::string::String,
+    /// How a node selection (--select / --exclude) bore on the check's rows. The valid
+    /// values for this are:
+    ///
+    ///   none     no selection, or a retry (which never scopes checks)
+    ///   applied  the selection scoped the check's rows
+    ///   ignored  a selection was given, but the check reports on the whole project: it
+    ///            sets selection_filter_on: none, or outputs no unique_id column
+    ///   unknown  a selection was given, but the check never produced rows to scope
+    ///
+    #[prost(string, tag = "10")]
+    pub selection: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "11")]
+    pub common_context: ::core::option::Option<
+        super::super::common::vortex_telemetry_contexts::VortexTelemetryCommonContext,
+    >,
+}
+impl ::prost::Name for RunCheck {
+    const NAME: &'static str = "RunCheck";
+    const PACKAGE: &'static str = "v1.public.events.fusion";
+    fn full_name() -> ::prost::alloc::string::String {
+        "v1.public.events.fusion.RunCheck".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "/v1.public.events.fusion.RunCheck".into()
     }
 }
 #[derive(::serde::Serialize, ::serde::Deserialize)]

@@ -44,12 +44,11 @@ impl RenderTask {
             task_hooks,
         }
     }
-}
 
-impl Task for RenderTask {
-    fn run_task<'a>(
+    pub(super) fn run_with_wait_parents<'a>(
         &'a self,
         ctx: &'a mut TaskRunnerCtx,
+        wait_parents: Option<Vec<tracing::span::Id>>,
     ) -> Pin<Box<dyn Future<Output = FsResult<NodeStatus>> + Send + 'a>> {
         Box::pin(async move {
             // Per-node dev-clone: clone the deferred prod relation into the dev
@@ -80,10 +79,20 @@ impl Task for RenderTask {
                     ctx.clone(),
                     self.result_sender.clone(),
                     self.local_exec_unit_test_overrides.clone(),
+                    wait_parents,
                 )
                 .await
             }
         })
+    }
+}
+
+impl Task for RenderTask {
+    fn run_task<'a>(
+        &'a self,
+        ctx: &'a mut TaskRunnerCtx,
+    ) -> Pin<Box<dyn Future<Output = FsResult<NodeStatus>> + Send + 'a>> {
+        self.run_with_wait_parents(ctx, None)
     }
 
     fn task_type(&self) -> &str {

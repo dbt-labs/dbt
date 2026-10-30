@@ -1,0 +1,11 @@
+e39efc2e:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists `dbt-test-env`.`adapters_bigquery_store_failures`
+model.store_failures.one:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace view `dbt-test-env`.`adapters_bigquery_store_failures`.`one`
+    OPTIONS()
+    as select 1 as id;

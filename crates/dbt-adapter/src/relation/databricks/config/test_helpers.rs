@@ -60,6 +60,7 @@ pub(crate) fn create_mock_dbt_model(cfg: TestModelConfig) -> DbtModel {
     let base_attrs = NodeBaseAttributes {
         adapter: AdapterType::Snowflake,
         propagate: Vec::new(),
+        effective_propagation_target: None,
         unrendered_config: Default::default(),
         database: "test_db".to_string(),
         schema: "test_schema".to_string(),

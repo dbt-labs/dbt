@@ -1,0 +1,11 @@
+model.test.a:
+- sequence: 0
+  type: execute
+  sql: |-
+    select * from (
+    
+    select 42 as number_col, 'snowflake text' as text_col, true as boolean_col
+    
+    ) as __dbt_sbq
+    where false
+    limit 0

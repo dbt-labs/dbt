@@ -19,6 +19,78 @@ fn assert_parses_to(line: u32, input: &str, expected: &SqlType, backend: Adapter
     );
 }
 
+#[test]
+fn test_normalize_for_cast() {
+    for (backend, input, expected) in [
+        (Bigquery, "NUMERIC(10, 2)", "NUMERIC"),
+        (Bigquery, "BIGNUMERIC(30, 20)", "BIGNUMERIC"),
+        (Bigquery, "ARRAY<NUMERIC(10, 2)>", "ARRAY<NUMERIC>"),
+        (Bigquery, "ARRAY<STRING(10)>", "ARRAY<STRING>"),
+        (Bigquery, "ARRAY<RANGE<DATETIME>>", "ARRAY<RANGE<DATETIME>>"),
+        (
+            Bigquery,
+            "STRUCT<period RANGE<DATE>, labels ARRAY<STRING(10)>, amount BIGNUMERIC(10, 2)>",
+            "STRUCT<period RANGE<DATE>, labels ARRAY<STRING>, amount BIGNUMERIC>",
+        ),
+        (
+            Bigquery,
+            "STRUCT<`odd name` BIGNUMERIC(30, 20), items ARRAY<STRUCT<n NUMERIC(10, 2), ts TIMESTAMP>>>",
+            "STRUCT<`odd name` BIGNUMERIC, items ARRAY<STRUCT<n NUMERIC, ts TIMESTAMP>>>",
+        ),
+        (Snowflake, "NUMBER(10, 2)", "NUMBER(10, 2)"),
+    ] {
+        let (mut sql_type, _) = SqlType::parse(backend, input).unwrap();
+        sql_type.normalize_for_cast(backend);
+        assert_eq!(sql_type.to_string(backend), expected, "{input}");
+    }
+}
+
+#[test]
+fn test_bigquery_range_arrow_roundtrip() {
+    for input in ["RANGE<DATE>", "RANGE<DATETIME>", "RANGE<TIMESTAMP>"] {
+        let (sql_type, _) = SqlType::parse(Bigquery, input).unwrap();
+        assert!(matches!(sql_type, Range(_)));
+        let arrow_type = sql_type.pick_best_arrow_type(Bigquery);
+        assert!(
+            matches!(&arrow_type, DataType::FixedSizeList(field, 1) if field.name() == "range")
+        );
+        assert_eq!(
+            SqlType::from_arrow_type(Bigquery, &arrow_type).to_string(Bigquery),
+            input
+        );
+    }
+}
+
+#[test]
+fn test_range_type_is_bigquery_only() {
+    for backend in [Bigquery, Snowflake, DuckDB, Postgres] {
+        let (sql_type, nullable) = SqlType::parse(backend, "RANGE<DATE> NOT NULL").unwrap();
+        assert!(!nullable);
+        assert_eq!(matches!(sql_type, Range(_)), backend == Bigquery);
+        if backend != Bigquery {
+            assert_eq!(sql_type.to_string(backend), "RANGE < DATE >");
+        }
+    }
+}
+
+#[test]
+fn test_sql_type_completeness() {
+    for (input, complete) in [
+        ("RANGE", false),
+        ("ARRAY", false),
+        ("RECORD", false),
+        ("STRUCT<x SOME_OPAQUE_TYPE>", false),
+        ("ARRAY<RANGE<DATE>>", true),
+        ("STRUCT<period RANGE<DATE>, amount BIGNUMERIC(10, 2)>", true),
+    ] {
+        // The opaque-type fallback may consume nested delimiters.
+        let complete_type = SqlType::parse(Bigquery, input)
+            .ok()
+            .is_some_and(|(ty, _)| ty.is_complete());
+        assert_eq!(complete_type, complete, "{input}");
+    }
+}
+
 /// Test that parsing leads to the expected SqlType on every backend.
 ///
 /// Uses [assert_parses_to] for every pair.
@@ -1397,6 +1469,40 @@ fn test_struct_on_databricks() {
     }
 }
 
+#[test]
+fn test_bigquery_logical_types_preserve_identity() {
+    for (sql_type, expected_name) in [(Json, "json"), (Geography(None), "geography")] {
+        assert_eq!(
+            sql_type.pick_best_arrow_type(Bigquery),
+            DataType::FixedSizeList(Arc::new(Field::new(expected_name, DataType::Utf8, true)), 1,),
+        );
+    }
+
+    let nested = Struct(Some(vec![
+        StructField::new(Ident::plain("payload"), Json, true),
+        StructField::new(Ident::plain("location"), Geography(None), true),
+    ]))
+    .pick_best_arrow_type(Bigquery);
+    let logical_type =
+        |name| DataType::FixedSizeList(Arc::new(Field::new(name, DataType::Utf8, true)), 1);
+    let field = |name: &str, data_type: DataType, sql_type: &str| {
+        Field::new(name, data_type, true).with_metadata(HashMap::from([(
+            metadata_sql_type_key(Bigquery).to_string(),
+            sql_type.to_string(),
+        )]))
+    };
+    assert_eq!(
+        nested,
+        DataType::Struct(
+            vec![
+                field("payload", logical_type("json"), "JSON"),
+                field("location", logical_type("geography"), "GEOGRAPHY"),
+            ]
+            .into(),
+        ),
+    );
+}
+
 // Athena-specific type behavior tests
 // Athena is Presto/Trino-based; see https://docs.aws.amazon.com/athena/latest/ug/data-types.html
 
@@ -1737,4 +1843,35 @@ fn test_parse_column_description() {
     let col = SqlType::parse_column_description(Snowflake, "price NUMBER(10,2)", true).unwrap();
     assert_eq!(col.name.unwrap().as_ref(), "price");
     assert!(matches!(col.sql_type, Numeric(Some((10, Some(2))))));
+}
+
+#[test]
+fn duckdb_renders_arrow_timestamp_units_as_its_own_types() {
+    use arrow_schema::{DataType, TimeUnit};
+
+    let render =
+        |data_type: DataType| SqlType::from_arrow_type(DuckDB, &data_type).to_string(DuckDB);
+    assert_eq!(
+        render(DataType::Timestamp(TimeUnit::Second, None)),
+        "TIMESTAMP_S"
+    );
+    assert_eq!(
+        render(DataType::Timestamp(TimeUnit::Millisecond, None)),
+        "TIMESTAMP_MS"
+    );
+    assert_eq!(
+        render(DataType::Timestamp(TimeUnit::Microsecond, None)),
+        "TIMESTAMP"
+    );
+    assert_eq!(
+        render(DataType::Timestamp(TimeUnit::Nanosecond, None)),
+        "TIMESTAMP_NS"
+    );
+    assert_eq!(
+        render(DataType::Timestamp(
+            TimeUnit::Microsecond,
+            Some("UTC".into())
+        )),
+        "TIMESTAMP WITH TIME ZONE"
+    );
 }

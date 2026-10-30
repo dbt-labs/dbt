@@ -1,0 +1,7 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/schema.yml
+   Parsing models/c.sql
+Successfully wrote sources.json
+==================== Execution Summary =====================
+Finished 'freshness' with 1 warning for target 'redshift' [duration]

@@ -8,8 +8,8 @@ use arrow::compute::{CastOptions, cast_with_options};
 use arrow::datatypes::*;
 use arrow::util::display::FormatOptions;
 use arrow_array::{
-    Array, ArrowPrimitiveType, BooleanArray, GenericByteArray, GenericByteViewArray,
-    GenericListArray, MapArray, OffsetSizeTrait, StructArray,
+    Array, ArrowPrimitiveType, BooleanArray, FixedSizeListArray, GenericByteArray,
+    GenericByteViewArray, GenericListArray, MapArray, OffsetSizeTrait, StructArray,
 };
 use arrow_buffer::i256;
 use arrow_schema::ArrowError;
@@ -573,6 +573,55 @@ type ListArrayConverter = GenericListArrayConverter<i32>;
 type LargeListArrayConverter = GenericListArrayConverter<i64>;
 // }}}
 
+// FixedSizeList {{{
+/// Arrow `FixedSizeList` (e.g. Snowflake `VECTOR(FLOAT, n)`) as a Jinja sequence .
+struct FixedSizeListArrayConverter {
+    value_length: usize,
+    child: Box<dyn ArrayConverter>,
+    nulls: Option<NullBuffer>,
+}
+
+impl FixedSizeListArrayConverter {
+    pub fn new(list_array: &FixedSizeListArray) -> Result<Self, ArrowError> {
+        // `values()` is already sliced to this array's window, so child positions are
+        // relative to it and need no further offset adjustment.
+        let child = make_array_converter(list_array.values().as_ref())?;
+        Ok(Self {
+            value_length: list_array.value_length() as usize,
+            child,
+            nulls: list_array.nulls().cloned(),
+        })
+    }
+
+    #[inline(always)]
+    pub fn is_valid(&self, idx: usize) -> bool {
+        self.nulls.as_ref().is_none_or(|nulls| nulls.is_valid(idx))
+    }
+
+    #[inline(always)]
+    fn range_for(&self, idx: usize) -> std::ops::Range<usize> {
+        let start = idx * self.value_length;
+        start..start + self.value_length
+    }
+}
+
+impl ArrayConverter for FixedSizeListArrayConverter {
+    fn to_value(&self, idx: usize) -> Value {
+        if self.is_valid(idx) {
+            let range = self.range_for(idx);
+            let mut elems = Vec::with_capacity(range.len());
+
+            for child_idx in range {
+                elems.push(self.child.to_value(child_idx));
+            }
+            Value::from(elems)
+        } else {
+            Value::from(())
+        }
+    }
+}
+// }}}
+
 // Map {{{
 struct MapConverter {
     keys: Box<dyn ArrayConverter>,
@@ -775,6 +824,9 @@ pub fn make_array_converter(array: &dyn Array) -> Result<Box<dyn ArrayConverter>
         DataType::LargeList(_field) => {
             Box::new(LargeListArrayConverter::new(array.as_list::<i64>())?)
         }
+        DataType::FixedSizeList(_field, _size) => Box::new(FixedSizeListArrayConverter::new(
+            array.as_fixed_size_list(),
+        )?),
         DataType::Map(_field, _is_sorted) => Box::new(MapConverter::new(array.as_map())?),
         DataType::Struct(_fields) => Box::new(StructConverter::new(array.as_struct())?),
         _ => {
@@ -797,11 +849,15 @@ mod tests {
     use arrow::compute::kernels::cast_utils::Parser as _;
     use arrow_array::{
         ArrayRef, BinaryViewArray, Date32Array, Date64Array, Decimal128Array, Decimal256Array,
-        Float64Array, Int32Array, Int64Array, LargeBinaryArray, LargeListArray, LargeStringArray,
-        ListArray, StringArray, StringViewArray, Time32MillisecondArray, Time32SecondArray,
-        Time64MicrosecondArray, Time64NanosecondArray, TimestampMicrosecondArray,
-        TimestampMillisecondArray, TimestampNanosecondArray, TimestampSecondArray, UInt64Array,
-        builder::{Int32Builder, ListBuilder, MapBuilder, StringBuilder, StructBuilder},
+        FixedSizeListArray, Float32Array, Float64Array, Int32Array, Int64Array, LargeBinaryArray,
+        LargeListArray, LargeStringArray, ListArray, StringArray, StringViewArray,
+        Time32MillisecondArray, Time32SecondArray, Time64MicrosecondArray, Time64NanosecondArray,
+        TimestampMicrosecondArray, TimestampMillisecondArray, TimestampNanosecondArray,
+        TimestampSecondArray, UInt64Array,
+        builder::{
+            FixedSizeListBuilder, Float32Builder, Int32Builder, ListBuilder, MapBuilder,
+            StringBuilder, StructBuilder,
+        },
     };
 
     use arrow_buffer::Buffer;
@@ -1262,6 +1318,86 @@ mod tests {
                 Value::from(vec![Value::from(1), Value::from(2)]),
                 Value::from(vec![Value::from(3)]),
                 Value::from(()), // null row
+            ]
+        );
+    }
+
+    /// Regression test for dbt-labs/fs#15412.
+    ///
+    /// Snowflake `VECTOR(FLOAT, n)` arrives from the driver as Arrow
+    /// `FixedSizeList(Float32, n)`. The flattener forwards it as a flat column
+    /// (see `flat_record_batch.rs`), so it reaches conversion. Before the fix there was
+    /// no `FixedSizeList` arm here, so it hit the `_ =>` cast-to-`Utf8` fallback and
+    /// returned `CastError`, which `AgateTable::new` unwrapped into a panic.
+    #[test]
+    fn test_fixed_size_list_values_snowflake_vector() {
+        // select [1.0, 2.0, 3.0]::vector(float, 3)
+        let mut builder = FixedSizeListBuilder::new(Float32Builder::new(), 3);
+        builder.values().append_slice(&[1.0, 2.0, 3.0]);
+        builder.append(true);
+        builder.values().append_slice(&[4.0, 5.0, 6.0]);
+        builder.append(true);
+        // a NULL vector row
+        builder.values().append_slice(&[0.0, 0.0, 0.0]);
+        builder.append(false);
+
+        let array: ArrayRef = Arc::new(builder.finish());
+        assert!(matches!(array.data_type(), DataType::FixedSizeList(_, 3)));
+
+        let result = arrow_to_values(&array).unwrap();
+
+        assert_eq!(
+            result,
+            vec![
+                Value::from(vec![
+                    Value::from(1.0f32),
+                    Value::from(2.0f32),
+                    Value::from(3.0f32)
+                ]),
+                Value::from(vec![
+                    Value::from(4.0f32),
+                    Value::from(5.0f32),
+                    Value::from(6.0f32)
+                ]),
+                Value::from(()), // null row
+            ]
+        );
+    }
+
+    /// Nulls *inside* a fixed-size list must survive as `None`, not be dropped.
+    #[test]
+    fn test_fixed_size_list_with_null_elements() {
+        let mut builder = FixedSizeListBuilder::new(Int32Builder::new(), 2);
+        builder.values().append_value(1);
+        builder.values().append_null();
+        builder.append(true);
+
+        let array: ArrayRef = Arc::new(builder.finish());
+        let result = arrow_to_values(&array).unwrap();
+
+        assert_eq!(
+            result,
+            vec![Value::from(vec![Value::from(1), Value::from(())])]
+        );
+    }
+
+    /// A sliced `FixedSizeListArray` carries a non-zero offset; element lookup must
+    /// account for it, otherwise rows silently shift.
+    #[test]
+    fn test_fixed_size_list_with_offset() {
+        let values = Float32Array::from(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let field = Arc::new(Field::new("element", DataType::Float32, false));
+        let array = FixedSizeListArray::new(field, 2, Arc::new(values), None);
+
+        // drop the first list, keeping [3.0, 4.0] and [5.0, 6.0]
+        let sliced: ArrayRef = Arc::new(array.slice(1, 2));
+        let result = arrow_to_values(&sliced).unwrap();
+
+        assert_eq!(
+            result,
+            vec![
+                Value::from(vec![Value::from(3.0f32), Value::from(4.0f32)]),
+                Value::from(vec![Value::from(5.0f32), Value::from(6.0f32)]),
             ]
         );
     }

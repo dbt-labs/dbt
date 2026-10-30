@@ -2,6 +2,7 @@ use dbt_adapter::relation::RelationObject;
 use dbt_adapter_core::AdapterType;
 use dbt_schemas::dbt_types::RelationType;
 use minijinja::Value;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::macro_test_harness::{MacroTestHarness, assert_executed_contains, default_mock_config};
@@ -41,9 +42,6 @@ fn assert_incompatible_relation_uses_safe_replacement(existing_type: RelationTyp
         .expect("harness should build");
 
     harness.mock().on("clean_sql", |args| {
-        Ok(args.first().cloned().unwrap_or(Value::UNDEFINED))
-    });
-    harness.mock().on("yaml_quote_backtick_values", |args| {
         Ok(args.first().cloned().unwrap_or(Value::UNDEFINED))
     });
     harness
@@ -86,6 +84,11 @@ fn assert_incompatible_relation_uses_safe_replacement(existing_type: RelationTyp
         .observed_calls()
         .assert_called("rename_relation");
     assert_executed_contains(harness.mock(), "with metrics");
+    // The `databricks__yaml_quote_backtick_values` helper quotes the backticked `source:` value.
+    assert_executed_contains(
+        harness.mock(),
+        "source: \"`main`.`default`.`source_orders`\"",
+    );
 }
 
 #[test]
@@ -96,4 +99,47 @@ fn databricks_metric_view_replaces_an_existing_table() {
 #[test]
 fn databricks_metric_view_replaces_an_existing_view() {
     assert_incompatible_relation_uses_safe_replacement(RelationType::View);
+}
+
+#[test]
+fn databricks_yaml_quote_backtick_values_only_quotes_bare_source_identifiers() {
+    let harness = MacroTestHarness::for_adapter(AdapterType::Databricks)
+        .load_all_macros()
+        .with_stub_functions()
+        .build()
+        .expect("harness should build");
+
+    let quote = |yaml_body: &str| {
+        harness
+            .render(
+                "{{ databricks__yaml_quote_backtick_values(yaml_body) }}",
+                BTreeMap::from([("yaml_body".to_string(), Value::from(yaml_body))]),
+            )
+            .expect("helper should render")
+    };
+
+    let yaml = concat!(
+        "source: `catalog`.`schema`.`orders`\n",
+        "joins:\n",
+        "  - name: customers\n",
+        "    source :   `catalog`.`schema`.`customers` # customer source\n",
+        "    on: `orders`.`customer_id` = `customers`.`id`\n",
+        "data_source: `catalog`.`schema`.`ignored`\n",
+    );
+    let expected = concat!(
+        "source: \"`catalog`.`schema`.`orders`\"\n",
+        "joins:\n",
+        "  - name: customers\n",
+        "    source :   \"`catalog`.`schema`.`customers`\" # customer source\n",
+        "    on: `orders`.`customer_id` = `customers`.`id`\n",
+        "data_source: `catalog`.`schema`.`ignored`\n",
+    );
+    assert_eq!(quote(yaml), expected);
+
+    // Already-quoted values and bodies without backticks are left alone.
+    assert_eq!(
+        quote("source: \"`catalog`.`schema`.`orders`\"\n"),
+        "source: \"`catalog`.`schema`.`orders`\"\n"
+    );
+    assert_eq!(quote("source: orders\n"), "source: orders\n");
 }
