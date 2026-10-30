@@ -1,11 +1,12 @@
 use crate::Tuple;
 use crate::table::TableRepr;
 use crate::{MappedSequence, TupleRepr};
+use arrow_schema::ArrowError;
 use core::fmt;
 use minijinja::arg_utils::ArgsIter;
 use minijinja::listener::RenderingEventListener;
 use minijinja::value::{Enumerator, Object, ObjectRepr};
-use minijinja::{State, Value, assert_nullary_args};
+use minijinja::{ErrorKind, State, Value, assert_nullary_args};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -54,6 +55,10 @@ impl TupleRepr for ColumnAsTuple {
     }
 }
 
+fn invalid_operation(method: &str, e: ArrowError) -> minijinja::Error {
+    minijinja::Error::new(ErrorKind::InvalidOperation, format!("{method}: {e}"))
+}
+
 /// A column from an Agate table.
 ///
 /// https://agate.readthedocs.io/en/latest/api/columns_and_rows.html#agate.Column
@@ -73,36 +78,37 @@ impl Column {
 
     /// Get the distinct values in this column, as a tuple.
     ///
-    /// Equivalent to `tuple(set(self.values()))`.
-    pub fn values_distinct(&self) -> Tuple {
-        let table = self.of_table.column_distinct(self.index as isize);
-        ColumnAsTuple::from_single_column_table(table)
+    /// Python agate returns `tuple(set(self.values()))`, whose order is not defined.
+    /// The values here are sorted in ascending order with a null first.
+    pub fn values_distinct(&self) -> Result<Tuple, ArrowError> {
+        let table = self.of_table.column_distinct(self.index as isize)?;
+        Ok(ColumnAsTuple::from_single_column_table(table))
     }
 
     /// Get the values in this column with any null values removed.
     ///
     /// Equivalent to `tuple(d for d in self.values() if d is not None)`
-    pub fn values_without_nulls(&self) -> Tuple {
-        let table = self.of_table.column_without_nulls(self.index as isize);
-        ColumnAsTuple::from_single_column_table(table)
+    pub fn values_without_nulls(&self) -> Result<Tuple, ArrowError> {
+        let table = self.of_table.column_without_nulls(self.index as isize)?;
+        Ok(ColumnAsTuple::from_single_column_table(table))
     }
 
     /// Get the values in this column sorted.
     ///
     /// Equivalent to `sorted(self.values(), key=null_handler)`
-    pub fn values_sorted(&self) -> Tuple {
-        let table = self.of_table.column_sorted(self.index as isize);
-        ColumnAsTuple::from_single_column_table(table)
+    pub fn values_sorted(&self) -> Result<Tuple, ArrowError> {
+        let table = self.of_table.column_sorted(self.index as isize)?;
+        Ok(ColumnAsTuple::from_single_column_table(table))
     }
 
     /// Get the values in this column with any null values removed and sorted.
     ///
     /// Equivalent to `sorted(self.values_without_nulls(), key=null_handler)`
-    pub fn values_without_nulls_sorted(&self) -> Tuple {
+    pub fn values_without_nulls_sorted(&self) -> Result<Tuple, ArrowError> {
         let table = self
             .of_table
-            .column_without_nulls_sorted(self.index as isize);
-        ColumnAsTuple::from_single_column_table(table)
+            .column_without_nulls_sorted(self.index as isize)?;
+        Ok(ColumnAsTuple::from_single_column_table(table))
     }
 
     pub fn data_type(&self) -> Option<&crate::DataType> {
@@ -175,22 +181,30 @@ impl Object for Column {
             // Column methods
             "values_distinct" => {
                 assert_nullary_args!("Column.values_distinct", args)?;
-                let distinct = self.values_distinct();
+                let distinct = self
+                    .values_distinct()
+                    .map_err(|e| invalid_operation("Column.values_distinct", e))?;
                 Ok(Value::from_object(distinct))
             }
             "values_without_nulls" => {
                 assert_nullary_args!("Column.values_without_nulls", args)?;
-                let without_nulls = self.values_without_nulls();
+                let without_nulls = self
+                    .values_without_nulls()
+                    .map_err(|e| invalid_operation("Column.values_without_nulls", e))?;
                 Ok(Value::from_object(without_nulls))
             }
             "values_sorted" => {
                 assert_nullary_args!("Column.values_sorted", args)?;
-                let sorted = self.values_sorted();
+                let sorted = self
+                    .values_sorted()
+                    .map_err(|e| invalid_operation("Column.values_sorted", e))?;
                 Ok(Value::from_object(sorted))
             }
             "values_without_nulls_sorted" => {
                 assert_nullary_args!("Column.values_without_nulls_sorted", args)?;
-                let without_nulls_sorted = self.values_without_nulls_sorted();
+                let without_nulls_sorted = self
+                    .values_without_nulls_sorted()
+                    .map_err(|e| invalid_operation("Column.values_without_nulls_sorted", e))?;
                 Ok(Value::from_object(without_nulls_sorted))
             }
             // MappedSequence methods

@@ -9,9 +9,9 @@ pub use record::RecordConnection;
 pub use replay::ReplayConnection;
 
 use adbc_core::options::OptionValue;
-use once_cell::sync::Lazy;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::LazyLock;
 
 // This crate cannot depend on `dbt-common`, so it names the stable hasher from
 // `dbt-base` directly (same hasher as `dbt_common::collections::SccHashMap`).
@@ -22,12 +22,12 @@ type SccHashSet<K> = scc::HashSet<K, dbt_base::MaybeStableHasherBuilder>;
 ///
 /// Keyed by recordings directory path so that multiple adapters and
 /// sequential invocations each get their own counter namespace.
-static COUNTERS: Lazy<SccHashMap<PathBuf, SccHashMap<String, usize>>> =
-    Lazy::new(SccHashMap::default);
+static COUNTERS: LazyLock<SccHashMap<PathBuf, SccHashMap<String, usize>>> =
+    LazyLock::new(SccHashMap::default);
 
 /// Paths that should NOT have their counters reset between sequential
 /// invocations.
-static SKIP_RESET_PATHS: Lazy<SccHashSet<PathBuf>> = Lazy::new(SccHashSet::default);
+static SKIP_RESET_PATHS: LazyLock<SccHashSet<PathBuf>> = LazyLock::new(SccHashSet::default);
 
 /// Mark a recording path to skip counter resets between sequential
 /// invocations. Useful for multi-command tests where the same model

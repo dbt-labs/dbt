@@ -1,0 +1,7 @@
+kind: Fixes
+body: Add support for Databricks GEOGRAPHY and GEOMETRY metadata
+time: 2026-10-18T14:30:54.31405207+02:00
+custom:
+    author: ikhudur
+    issue: "14601"
+    project: dbt-core

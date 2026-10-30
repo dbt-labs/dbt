@@ -15,6 +15,7 @@ use dbt_common::tracing::dbt_emit::emit_error_log_from_fs_error;
 use dbt_common::tracing::span_info::{SpanStatusRecorder, record_span_status_with_attrs};
 use dbt_dag::schedule::Schedule;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
+use dbt_jinja_utils::phases::insert_adapter_overlay;
 use dbt_jinja_utils::phases::run::reset_result_store;
 use dbt_scheduler::schedule::summarize_stats;
 use dbt_schema_store::DataStoreTrait;
@@ -46,7 +47,7 @@ use crate::register_seeds;
 use crate::run_operation::run_operation_on_run_with_ctx;
 use crate::task::effective_unit_test_execute;
 use crate::utils::filter_missing_schemas;
-use crate::utils::get_catalog_schemas_and_ids;
+use crate::utils::get_catalog_schemas_and_ids_by_adapter;
 use crate::utils::register_catalog_schemas_remote;
 use crate::visitor::visit_parallel;
 use crate::visitor::visit_sequential;
@@ -176,6 +177,7 @@ impl TaskRunner {
             &self.resolved_state.nodes.seeds,
             Arc::clone(&self.schema_store) as Arc<dyn SchemaStoreTrait>,
             Arc::clone(&self.data_store),
+            &self.adapter_store,
             Arc::clone(self.adapter.engine().type_ops()),
             &run_task_args.io.in_dir,
         )
@@ -263,21 +265,40 @@ impl TaskRunner {
     ) -> FsResult<()> {
         // Walking the schedule is pure in-memory work; only the adapter calls
         // below talk to the warehouse and need the blocking pool.
-        let selected_catalog_schemas =
-            get_catalog_schemas_and_ids(&self.resolved_state.nodes, schedule);
+        let groups = get_catalog_schemas_and_ids_by_adapter(
+            &self.resolved_state.nodes,
+            schedule,
+            self.adapter.adapter_type(),
+        );
+        // One adapter at a time, so a recorded run keeps its order.
+        for (adapter_type, selected_catalog_schemas) in groups {
+            let adapter = self.adapter_store.get(adapter_type)?;
+            let mut group_context = base_context.clone();
+            insert_adapter_overlay(&mut group_context, adapter_type, &self.adapter_store)?;
+            self.register_adapter_schemas(adapter, selected_catalog_schemas, group_context)
+                .await?;
+        }
+        Ok(())
+    }
 
+    async fn register_adapter_schemas(
+        &self,
+        adapter: Arc<Adapter>,
+        selected_catalog_schemas: BTreeMap<String, BTreeMap<String, String>>,
+        base_context: BTreeMap<String, minijinja::Value>,
+    ) -> FsResult<()> {
         let jinja_env = Arc::clone(&self.jinja_env);
-        let adapter = Arc::clone(&self.adapter);
+        let filter_adapter = Arc::clone(&adapter);
         let filter_context = base_context.clone();
         let missing_catalog_schemas = dbt_runtime::spawn_blocking(move || {
             let state = jinja_env.new_state_with_context(filter_context);
-            filter_missing_schemas(&adapter, &state, &selected_catalog_schemas)
+            filter_missing_schemas(&filter_adapter, &state, &selected_catalog_schemas)
         })
         .await??;
 
         // Keep schema creation sequential during recording and replay because
         // Time Machine requires writes to occur in recorded order.
-        let schema_batches = if self.adapter.time_machine().is_some() {
+        let schema_batches = if adapter.time_machine().is_some() {
             vec![missing_catalog_schemas]
         } else {
             missing_catalog_schemas
@@ -290,7 +311,7 @@ impl TaskRunner {
             .into_iter()
             .map(|catalog_schemas| {
                 let jinja_env = Arc::clone(&self.jinja_env);
-                let adapter = Arc::clone(&self.adapter);
+                let adapter = Arc::clone(&adapter);
                 let mut base_context = base_context.clone();
                 // Cloning the context shares the result store, so concurrent creates could
                 // overwrite or consume each other's statement results.

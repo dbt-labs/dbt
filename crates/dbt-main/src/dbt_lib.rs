@@ -3,12 +3,13 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
+use dbt_adapter::AdapterType;
 use dbt_common::tracing::formatters::duration::FixedWidthDuration;
 use dbt_common::tracing::formatters::node::{NodeAction, NodeTypeFixedWidth};
 
 use dbt_adapter::load_store::ResultStore;
 use dbt_adapter::{
-    Adapter, AdapterType, convert_macro_result_to_record_batch,
+    Adapter, convert_macro_result_to_record_batch,
     relation::{RelationObject, create_relation},
 };
 use dbt_clap_core::{

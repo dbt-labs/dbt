@@ -657,7 +657,7 @@ pub fn yml_value_to_minijinja_map(value: YmlValue) -> BTreeMap<String, Minijinja
     }
 }
 
-pub fn minijinja_value_to_typed_struct<T: DeserializeOwned>(value: MinijinjaValue) -> FsResult<T> {
+pub fn minijinja_value_to_typed_struct<T: DeserializeOwned>(value: &MinijinjaValue) -> FsResult<T> {
     let yml_val = dbt_yaml::to_value(value).map_err(|e| {
         FsError::new(
             ErrorCode::SerializationError,

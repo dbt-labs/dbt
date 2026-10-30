@@ -623,6 +623,21 @@ fn adapter_type_falls_back_on_an_unknown_dialect() {
 }
 
 #[test]
+fn adapter_quote_follows_the_nodes_selected_dialect() {
+    let adapter = make_duckdb_parse_adapter();
+    for (dialect, expected) in [
+        ("bigquery", "`x`"),
+        ("databricks", "`x`"),
+        ("snowflake", "\"x\""),
+        ("not_an_adapter", "\"x\""),
+    ] {
+        let quoted =
+            dispatch_test_with_dialect(&adapter, dialect, "quote", &[Value::from("x")]).unwrap();
+        assert_eq!(quoted.as_str(), Some(expected), "{dialect}");
+    }
+}
+
+#[test]
 fn test_statement_macro_does_not_crash_in_symbolic_lint_mode() {
     // Regression test: `JinjaRenderMode::Symbolic` forces `execute = true` so
     // macros guarded by `{% if not execute %}`/`{% if execute %}` take their

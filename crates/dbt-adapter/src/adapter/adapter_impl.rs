@@ -246,7 +246,7 @@ fn debug_compare_column_types(
     state: &State,
     relation: &dyn BaseRelation,
     adapter_impl: &AdapterImpl,
-    mut from_local: Vec<Column>,
+    mut from_local: Vec<Arc<Column>>,
 ) {
     if std::env::var("DEBUG_COMPARE_LOCAL_REMOTE_COLUMNS_TYPES").is_ok() {
         match adapter_impl.get_columns_in_relation_uncached(state, relation) {
@@ -912,13 +912,15 @@ impl AdapterImpl {
             }
         };
 
-        // Flatten nested struct fields as JSON-strings (some Core adapters do that)
-        let last_batch = match self.adapter_type() {
-            Databricks => last_batch.jsonify_nested_columns(),
-            _ => last_batch,
+        // Keep native query values when the display uses JSON strings.
+        let table = match self.adapter_type() {
+            Databricks => {
+                let original = Arc::new(last_batch);
+                let display = original.as_ref().clone().jsonify_nested_columns();
+                AgateTable::from_record_batch_with_original(Arc::new(display), original)
+            }
+            _ => AgateTable::from_record_batch(Arc::new(last_batch)),
         };
-
-        let table = AgateTable::from_record_batch(Arc::new(last_batch));
 
         Ok((response, table))
     }
@@ -1819,13 +1821,9 @@ impl AdapterImpl {
     ) -> Result<Value, minijinja::Error> {
         // Validate excluded_schemas if provided
         if let Some(ref schemas) = excluded_schemas {
-            let _ =
-                minijinja_value_to_typed_struct::<Vec<String>>(schemas.clone()).map_err(|e| {
-                    minijinja::Error::new(
-                        minijinja::ErrorKind::SerdeDeserializeError,
-                        e.to_string(),
-                    )
-                })?;
+            let _ = minijinja_value_to_typed_struct::<Vec<String>>(schemas).map_err(|e| {
+                minijinja::Error::new(minijinja::ErrorKind::SerdeDeserializeError, e.to_string())
+            })?;
         }
 
         // Get default database from state if not provided
@@ -2047,7 +2045,7 @@ impl AdapterImpl {
         state: &State,
         source_relation: &Arc<dyn BaseRelation>,
         target_relation: &Arc<dyn BaseRelation>,
-    ) -> AdapterResult<Vec<Column>> {
+    ) -> AdapterResult<Vec<Arc<Column>>> {
         match self.inner_adapter() {
             Replay(_, replay) => {
                 replay.replay_get_missing_columns(state, source_relation, target_relation)
@@ -2057,20 +2055,18 @@ impl AdapterImpl {
                 let source_cols = self.get_columns_in_relation(state, source_relation.as_ref())?;
                 let target_cols = self.get_columns_in_relation(state, target_relation.as_ref())?;
 
-                let source_cols_map: BTreeMap<_, _> = source_cols
-                    .into_iter()
-                    .map(|col| (col.name().to_string(), col))
-                    .collect();
-                let target_cols_set: HashSet<_> =
-                    target_cols.into_iter().map(|col| col.into_name()).collect();
+                let source_cols_map: BTreeMap<&'_ str, _> =
+                    source_cols.iter().map(|col| (col.name(), col)).collect();
+                let target_cols_set: HashSet<&'_ str> =
+                    target_cols.iter().map(|col| col.name()).collect();
 
                 Ok(source_cols_map
                     .into_iter()
                     .filter_map(|(name, col)| {
-                        if target_cols_set.contains(&name) {
+                        if target_cols_set.contains(name) {
                             None
                         } else {
-                            Some(col)
+                            Some(Arc::clone(col))
                         }
                     })
                     .collect())
@@ -2083,7 +2079,7 @@ impl AdapterImpl {
         &self,
         state: &State,
         relation: &dyn BaseRelation,
-    ) -> AdapterResult<Vec<Column>> {
+    ) -> AdapterResult<Vec<Arc<Column>>> {
         let conn = self.borrow_tlocal_connection(Some(state), node_id_from_state(state))?;
         let schema = match conn.get_table_schema(
             relation.database(),
@@ -2117,7 +2113,7 @@ impl AdapterImpl {
         &self,
         state: &State,
         relation: &dyn BaseRelation,
-    ) -> AdapterResult<Vec<Column>> {
+    ) -> AdapterResult<Vec<Arc<Column>>> {
         // Run a Jinja macro to fetch columns
         let macro_result: AdapterResult<Value> = match self.adapter_type() {
             Bigquery => unreachable!(),
@@ -2246,7 +2242,7 @@ impl AdapterImpl {
                                     }
                                 });
 
-                                Column::new(
+                                let column = Column::new(
                                     Databricks,
                                     name_string_array.value(i).to_string(),
                                     dtype_string_array.value(i).to_string(),
@@ -2254,16 +2250,17 @@ impl AdapterImpl {
                                     None, // numeric_precision
                                     None, // numeric_scale
                                 )
-                                .with_comment(comment)
+                                .with_comment(comment);
+                                Arc::new(column)
                             })
                             .collect::<Vec<_>>();
                         Ok(columns)
                     }
                     Spark => Ok(metadata::spark::truncate_at_describe_extended_separator(
-                        Column::vec_from_jinja_value(Spark, macro_columns)
+                        Column::vec_from_jinja_value(Spark, &macro_columns)
                             .map_err(to_adapter_err)?,
                     )),
-                    adapter_type => Column::vec_from_jinja_value(adapter_type, macro_columns)
+                    adapter_type => Column::vec_from_jinja_value(adapter_type, &macro_columns)
                         .map_err(to_adapter_err),
                 }
             })
@@ -2276,7 +2273,7 @@ impl AdapterImpl {
         &self,
         state: &State,
         relation: &dyn BaseRelation,
-    ) -> AdapterResult<Option<Vec<Column>>> {
+    ) -> AdapterResult<Option<Vec<Arc<Column>>>> {
         // NOTE: We have to check if the relation being queried is the same as the one currently
         // being rendered and skip local compilation results for the current relation since the
         // compiled sql may represent a schema that the model will have when the run is done,
@@ -2300,7 +2297,7 @@ impl AdapterImpl {
         &self,
         state: &State,
         relation: &dyn BaseRelation,
-    ) -> AdapterResult<Vec<Column>> {
+    ) -> AdapterResult<Vec<Arc<Column>>> {
         match self.adapter_type() {
             // TODO: Should we add the schema that was fetched here to the schema cache
             // to avoid further remote lookups?
@@ -2319,17 +2316,18 @@ impl AdapterImpl {
         &self,
         state: &State,
         relation: &dyn BaseRelation,
-    ) -> AdapterResult<Vec<Column>> {
+    ) -> AdapterResult<Vec<Arc<Column>>> {
         // Mock adapter: return fake column without executing jinja macro
         if self.engine().is_mock() {
-            return Ok(vec![Column::new(
+            let column = Column::new(
                 self.adapter_type(),
                 "one".to_string(),
                 "text".to_string(),
                 Some(256),
                 None,
                 None,
-            )]);
+            );
+            return Ok(vec![Arc::new(column)]);
         }
 
         // Sidecar adapter: delegate to sidecar client
@@ -2342,14 +2340,15 @@ impl AdapterImpl {
             let columns = column_infos
                 .into_iter()
                 .map(|info| {
-                    Column::new(
+                    let column = Column::new(
                         self.adapter_type(),
                         info.name,
                         info.data_type,
                         None,
                         None,
                         None,
-                    )
+                    );
+                    Arc::new(column)
                 })
                 .collect();
             return Ok(columns);
@@ -2388,7 +2387,10 @@ impl AdapterImpl {
     /// Returns `Some(Ok(columns))` on success, `Some(Err(...))` on hard failure,
     /// or `None` if the result couldn't be parsed as JSON metadata (caller should
     /// fall back to plain DESCRIBE TABLE).
-    fn try_columns_from_json_describe(&self, result: &Value) -> Option<AdapterResult<Vec<Column>>> {
+    fn try_columns_from_json_describe(
+        &self,
+        result: &Value,
+    ) -> Option<AdapterResult<Vec<Arc<Column>>>> {
         use crate::metadata::MetadataProcessor as _;
         use crate::metadata::databricks::describe_table::DatabricksTableMetadata;
 
@@ -2396,25 +2398,22 @@ impl AdapterImpl {
             Ok(b) => b,
             Err(_) => return None,
         };
-        let metadata = match DatabricksTableMetadata::from_record_batch(batch) {
-            Ok(m) => m,
-            Err(_) => return None,
+        let metadata_columns = {
+            let metadata = match DatabricksTableMetadata::from_record_batch(batch) {
+                Ok(m) => m,
+                Err(_) => return None,
+            };
+            metadata.0.columns
         };
 
-        let columns = metadata
-            .columns
-            .iter()
+        let columns = metadata_columns
+            .into_iter()
             .map(|col| {
-                let comment = col.comment.clone().filter(|s| !s.is_empty());
-                Column::new(
-                    Databricks,
-                    col.name.clone(),
-                    col.type_.sql_type(),
-                    None,
-                    None,
-                    None,
-                )
-                .with_comment(comment)
+                let comment = col.comment.filter(|s| !s.is_empty());
+                let column =
+                    Column::new(Databricks, col.name, col.type_.sql_type(), None, None, None)
+                        .with_comment(comment);
+                Arc::new(column)
             })
             .collect();
         Some(Ok(columns))
@@ -3050,7 +3049,7 @@ impl AdapterImpl {
     /// we determine which columns to update and persist docs for
     pub fn do_get_persist_doc_columns(
         &self,
-        existing_columns: Vec<Column>,
+        existing_columns: Vec<Arc<Column>>,
         model_columns: IndexMap<String, DbtColumnRef>,
     ) -> AdapterResult<IndexMap<String, DbtColumnRef>> {
         if self.adapter_type() != Databricks {
@@ -3106,16 +3105,18 @@ impl AdapterImpl {
         existing_columns: &Value,
         model_columns: &Value,
     ) -> Result<Value, minijinja::Error> {
-        let existing_columns = Column::vec_from_jinja_value(Databricks, existing_columns.clone())
-            .map_err(|e| {
-            minijinja::Error::new(minijinja::ErrorKind::SerdeDeserializeError, e.to_string())
-        })?;
-        let model_columns = minijinja_value_to_typed_struct::<IndexMap<String, DbtColumnRef>>(
-            model_columns.clone(),
-        )
-        .map_err(|e| {
-            minijinja::Error::new(minijinja::ErrorKind::SerdeDeserializeError, e.to_string())
-        })?;
+        let existing_columns =
+            Column::vec_from_jinja_value(Databricks, existing_columns).map_err(|e| {
+                minijinja::Error::new(minijinja::ErrorKind::SerdeDeserializeError, e.to_string())
+            })?;
+        let model_columns =
+            minijinja_value_to_typed_struct::<IndexMap<String, DbtColumnRef>>(model_columns)
+                .map_err(|e| {
+                    minijinja::Error::new(
+                        minijinja::ErrorKind::SerdeDeserializeError,
+                        e.to_string(),
+                    )
+                })?;
 
         let persist_doc_columns =
             self.do_get_persist_doc_columns(existing_columns, model_columns)?;
@@ -3405,14 +3406,10 @@ impl AdapterImpl {
     /// BigQueryAdapter https://github.com/dbt-labs/dbt-adapters/blob/0efd8d3d1081e1ab43e38797d5104f7b424a6284/dbt-bigquery/src/dbt/adapters/bigquery/impl.py#L323
     pub fn nest_column_data_types(&self, columns: &Value) -> Result<Value, minijinja::Error> {
         // TODO: 'constraints' arg are ignored; didn't find an usage example, implement later
-        let columns =
-            minijinja_value_to_typed_struct::<IndexMap<String, DbtColumn>>(columns.clone())
-                .map_err(|e| {
-                    minijinja::Error::new(
-                        minijinja::ErrorKind::SerdeDeserializeError,
-                        e.to_string(),
-                    )
-                })?;
+        let columns = minijinja_value_to_typed_struct::<IndexMap<String, DbtColumn>>(columns)
+            .map_err(|e| {
+                minijinja::Error::new(minijinja::ErrorKind::SerdeDeserializeError, e.to_string())
+            })?;
 
         let nested_columns = self.do_nest_column_data_types(columns, None)?;
         let result = IndexMap::<String, Value>::from_iter(
@@ -3808,7 +3805,7 @@ impl AdapterImpl {
         state: &State,
         conn: &'_ mut dyn Connection,
         relation: &Arc<dyn BaseRelation>,
-        columns: Value,
+        columns: &Value,
         token: CancellationToken,
     ) -> AdapterResult<Value> {
         match self.adapter_type() {
@@ -3867,15 +3864,16 @@ impl AdapterImpl {
         &self,
         _original: Option<&Arc<Schema>>,
         schema: &Arc<Schema>,
-    ) -> AdapterResult<Vec<Column>> {
+    ) -> AdapterResult<Vec<Arc<Column>>> {
         let type_formatter = self.engine().type_ops();
         let builder = ColumnBuilder::new(self.adapter_type());
 
         let fields = schema.fields();
-        let mut columns = Vec::<Column>::with_capacity(fields.len());
+        let mut columns = Vec::<Arc<Column>>::with_capacity(fields.len());
         for field in fields {
+            // XXX: consider changing build() to return a Box<Column>
             let column = builder.build(field, type_formatter.as_ref())?;
-            columns.push(column);
+            columns.push(Arc::new(column));
         }
         Ok(columns)
     }
@@ -3890,7 +3888,7 @@ impl AdapterImpl {
         // ClickHouse only: see metadata::clickhouse::describe_query_columns.
         query_settings: Option<&Value>,
         token: CancellationToken,
-    ) -> AdapterResult<Vec<Column>> {
+    ) -> AdapterResult<Vec<Arc<Column>>> {
         match self.inner_adapter() {
             Replay(_, replay) => {
                 replay.replay_get_column_schema_from_query(state, conn.as_mut(), ctx, sql)
@@ -3905,14 +3903,16 @@ impl AdapterImpl {
 
                 let fields = schema.fields();
 
-                let mut columns = Vec::<Column>::with_capacity(fields.len());
+                let mut columns = Vec::<Arc<Column>>::with_capacity(fields.len());
                 for field in fields {
                     let column = builder.build(field, type_ops)?;
-                    columns.push(column);
+                    columns.push(Arc::new(column));
                 }
 
-                let flattened_columns =
-                    columns.iter().flat_map(|column| column.flatten()).collect();
+                let flattened_columns = columns
+                    .into_iter()
+                    .flat_map(|column| column.flatten())
+                    .collect();
                 Ok(flattened_columns)
             }
             Impl(ClickHouse, engine) => {
@@ -3931,7 +3931,9 @@ impl AdapterImpl {
                 Ok(pairs
                     .into_iter()
                     .map(|(name, type_text)| {
-                        Column::new(self.adapter_type(), name, type_text, None, None, None)
+                        let column =
+                            Column::new(self.adapter_type(), name, type_text, None, None, None);
+                        Arc::new(column)
                     })
                     .collect())
             }
@@ -3962,7 +3964,7 @@ impl AdapterImpl {
         ctx: &QueryCtx,
         sql: &str,
         token: CancellationToken,
-    ) -> AdapterResult<Vec<Column>> {
+    ) -> AdapterResult<Vec<Arc<Column>>> {
         match self.inner_adapter() {
             Replay(_, replay) => replay.replay_get_columns_in_select_sql(state),
             Impl(Bigquery, _) => {
@@ -4136,9 +4138,8 @@ impl AdapterImpl {
 
                 // Lowercase all string values to match dbt-core behavior
                 let normalized = if let Ok(partition_by_map) =
-                    minijinja_value_to_typed_struct::<IndexMap<String, Value>>(
-                        raw_partition_by.clone(),
-                    ) {
+                    minijinja_value_to_typed_struct::<IndexMap<String, Value>>(&raw_partition_by)
+                {
                     let new_map: IndexMap<String, Value> = partition_by_map
                         .into_iter()
                         .map(|(key, value)| {
@@ -4155,13 +4156,15 @@ impl AdapterImpl {
                     raw_partition_by.clone()
                 };
 
-                let partition_by = minijinja_value_to_typed_struct::<PartitionConfig>(normalized)
+                let partition_by = minijinja_value_to_typed_struct::<PartitionConfig>(&normalized)
                     .map_err(|e| {
-                    minijinja::Error::new(
-                        minijinja::ErrorKind::SerdeDeserializeError,
-                        format!("adapter.parse_partition_by failed on {raw_partition_by:?}: {e}"),
-                    )
-                })?;
+                        minijinja::Error::new(
+                            minijinja::ErrorKind::SerdeDeserializeError,
+                            format!(
+                                "adapter.parse_partition_by failed on {raw_partition_by:?}: {e}"
+                            ),
+                        )
+                    })?;
 
                 let validated_config = partition_by.into_bigquery().ok_or_else(|| {
                     minijinja::Error::new(
@@ -4278,7 +4281,7 @@ impl AdapterImpl {
     ) -> AdapterResult<Value> {
         match self.adapter_type() {
             Bigquery => {
-                let mut result = Column::vec_from_jinja_value(Bigquery, columns.clone())?;
+                let result = Column::vec_from_jinja_value(Bigquery, &columns)?;
 
                 if result
                     .iter()
@@ -4287,17 +4290,22 @@ impl AdapterImpl {
                     return Ok(columns);
                 }
 
-                result.push(Column::new_bigquery(
+                let mut result = result
+                    .into_iter()
+                    .map(Arc::unwrap_or_clone)
+                    .collect::<Vec<Column>>();
+                let column = Column::new_bigquery(
                     partition_config
                         .insertable_time_partitioning_field()?
                         .as_str()
                         .expect("must be a str")
                         .to_owned(),
                     partition_config.data_type,
-                    &[],
+                    [],
                     // TODO(serramatutu): proper mode
                     BigqueryColumnMode::Nullable,
-                ));
+                );
+                result.push(column);
 
                 Ok(Value::from(result))
             }
@@ -5005,7 +5013,7 @@ impl AdapterImpl {
             .collect::<Result<Vec<_>, _>>()?;
 
         let model_columns_map: BTreeMap<String, DbtColumn> =
-            minijinja_value_to_typed_struct(model_columns.clone()).map_err(|e| {
+            minijinja_value_to_typed_struct(model_columns).map_err(|e| {
                 minijinja::Error::new(
                     minijinja::ErrorKind::SerdeDeserializeError,
                     format!("model_columns: {e}"),
@@ -5013,7 +5021,7 @@ impl AdapterImpl {
             })?;
 
         let model_constraints_vec: Vec<ModelConstraint> =
-            minijinja_value_to_typed_struct(model_constraints.clone()).map_err(|e| {
+            minijinja_value_to_typed_struct(model_constraints).map_err(|e| {
                 minijinja::Error::new(
                     minijinja::ErrorKind::SerdeDeserializeError,
                     format!("model_constraints: {e}"),
@@ -6225,15 +6233,15 @@ pub trait Replayer: fmt::Debug + Send + Sync {
         _conn: &mut dyn Connection,
         _query_ctx: &QueryCtx,
         sql: &str,
-    ) -> AdapterResult<Vec<Column>>;
+    ) -> AdapterResult<Vec<Arc<Column>>>;
 
-    fn replay_get_columns_in_select_sql(&self, state: &State) -> AdapterResult<Vec<Column>>;
+    fn replay_get_columns_in_select_sql(&self, state: &State) -> AdapterResult<Vec<Arc<Column>>>;
 
     fn replay_get_columns_in_relation(
         &self,
         state: &State,
         relation: &Arc<dyn BaseRelation>,
-        cache_result: Option<Vec<Column>>,
+        cache_result: Option<Vec<Arc<Column>>>,
     ) -> Result<Value, minijinja::Error>;
 
     fn replay_submit_python_job(
@@ -6307,7 +6315,7 @@ pub trait Replayer: fmt::Debug + Send + Sync {
         &self,
         state: &State,
         relation: &Arc<dyn BaseRelation>,
-        columns: &[Column],
+        columns: &[Arc<Column>],
     ) -> AdapterResult<Value>;
 
     fn replay_grant_access_to(
@@ -6333,7 +6341,7 @@ pub trait Replayer: fmt::Debug + Send + Sync {
         state: &State,
         _source_relation: &Arc<dyn BaseRelation>,
         _target_relation: &Arc<dyn BaseRelation>,
-    ) -> AdapterResult<Vec<Column>>;
+    ) -> AdapterResult<Vec<Arc<Column>>>;
 
     fn replay_drop_relation(
         &self,
@@ -7018,7 +7026,7 @@ mod tests {
             }),
         );
 
-        let existing_columns = vec![
+        let existing_columns = vec![Arc::new(
             Column::new(
                 Databricks,
                 "col1".to_string(),
@@ -7028,7 +7036,7 @@ mod tests {
                 None,
             )
             .with_comment(Some("old comment".to_string())),
-        ];
+        )];
 
         let result = adapter
             .do_get_persist_doc_columns(existing_columns, model_columns)

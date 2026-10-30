@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 
 use crate::AdapterResult;
 use crate::column::{BigqueryColumnMode, Column};
@@ -85,7 +85,7 @@ impl ColumnBuilder {
                 numeric_scale,
             ),
             // TODO: BigQuery fields
-            Bigquery => Column::new_bigquery(name, dtype, &[], mode.unwrap_or_default()),
+            Bigquery => Column::new_bigquery(name, dtype, [], mode.unwrap_or_default()),
             Redshift => Column::new(
                 Redshift,
                 name,
@@ -427,7 +427,7 @@ impl ColumnBuilder {
                     // only structs can have named fields
                     DataType::Struct(inner) => inner
                         .into_iter()
-                        .map(|f| Self::build_bigquery(f, type_ops))
+                        .map(|f| Arc::new(Self::build_bigquery(f, type_ops)))
                         .collect(),
                     // we don't need to worry about nested lists because that is not supported by
                     // BigQuery
@@ -436,7 +436,7 @@ impl ColumnBuilder {
             }
             DataType::Struct(fields) => fields
                 .into_iter()
-                .map(|f| Self::build_bigquery(f, type_ops))
+                .map(|f| Arc::new(Self::build_bigquery(f, type_ops)))
                 .collect(),
             _ => Vec::new(),
         };

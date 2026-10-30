@@ -691,21 +691,6 @@ pub fn generate_component_name<T: InternalDbtNode + Clone>(
     custom_name: Option<String>,
     node: T,
 ) -> FsResult<(String, T)> {
-    let macro_name = format!("generate_{component}_name");
-    // find the macro template - this is now cached for performance
-    let template_name =
-        find_macro_template(env, &macro_name, root_project_name, current_project_name)?;
-
-    // Create a state object for rendering
-    let template = env.get_template(&template_name)?;
-
-    // Create a new state
-    let new_state = template.eval_to_state(base_ctx, &[])?;
-
-    // Build the args
-    let mut args = custom_name
-        .map(|name| vec![Value::from(name)])
-        .unwrap_or_else(|| vec![Value::from(())]); // If no custom name, pass in none so the macro reads from the target context
     // The macro only reads the node, but Jinja objects must be 'static, so the
     // context can't borrow it. We lend the owned node through an `Arc` instead
     // and take it back once the call is done.
@@ -734,16 +719,37 @@ pub fn generate_component_name<T: InternalDbtNode + Clone>(
             }
         });
     }
-    args.push(Value::from_object(context));
-
-    // Call the macro
-    let result = new_state.call_macro_raw(macro_name.as_str(), &args, &[]);
-    // Dropping the macro state and its args releases the context's handle on
-    // the node. Unwrapping copies the node only if a macro kept a reference.
-    drop(args);
-    drop(new_state);
+    let result = generate_component_name_value(
+        env,
+        component,
+        root_project_name,
+        current_project_name,
+        base_ctx,
+        custom_name,
+        Value::from_object(context),
+    );
     let node = Arc::unwrap_or_clone(node);
-    let result = result
+    result.map(|name| (name, node))
+}
+
+/// Invokes a naming macro with an existing Jinja node value.
+#[allow(clippy::too_many_arguments)]
+pub fn generate_component_name_value(
+    env: &JinjaEnv,
+    component: &str,
+    root_project_name: &str,
+    current_project_name: &str,
+    base_ctx: &BTreeMap<String, Value>,
+    custom_name: Option<String>,
+    node: Value,
+) -> FsResult<String> {
+    let macro_name = format!("generate_{component}_name");
+    let template_name =
+        find_macro_template(env, &macro_name, root_project_name, current_project_name)?;
+    let template = env.get_template(&template_name)?;
+    let state = template.eval_to_state(base_ctx, &[])?;
+    state
+        .call_macro_raw(&macro_name, &[Value::from(custom_name), node], &[])
         .map(|v| match v.kind() {
             ValueKind::None => "".to_string(),
             _ => v.to_string().trim().to_string(),
@@ -753,9 +759,7 @@ pub fn generate_component_name<T: InternalDbtNode + Clone>(
                 err,
                 format!("Failed to run macro {macro_name} for component {component}"),
             ))
-        })?;
-    // Return the result
-    Ok((result, node))
+        })
 }
 
 /// Clear template cache (primarily for testing purposes)

@@ -11,9 +11,9 @@ use crate::run_cache::run_cache_service::{
 };
 use arrow::array::RecordBatch;
 use arrow_schema::SchemaRef;
-use dbt_adapter::AdapterStore;
 use dbt_adapter::relation::create_relation_from_node;
 use dbt_adapter::response::AdapterResponse;
+use dbt_adapter::{Adapter, AdapterStore};
 use dbt_adapter_core::AdapterType;
 use dbt_common::FsResult;
 use dbt_common::collections::SccHashMap;
@@ -480,6 +480,20 @@ impl TaskRunnerCtx {
         &self.inner.adapter_store
     }
 
+    /// The adapter that executes `node` outside compute_platform (a lakecompute node gets the run
+    /// adapter).
+    pub fn adapter_for(&self, node: &dyn InternalDbtNodeAttributes) -> FsResult<Arc<Adapter>> {
+        self.adapter_store().get(self.adapter_type_for(node))
+    }
+
+    /// [`Self::adapter_for`]'s type; the run adapter is [`AdapterStore::run_adapter_type`].
+    pub fn adapter_type_for(&self, node: &dyn InternalDbtNodeAttributes) -> AdapterType {
+        adapter_type_outside_compute_platform(
+            node.node_adapter(),
+            self.adapter_store().run_adapter_type(),
+        )
+    }
+
     /// [`dbt_jinja_utils::phases::insert_adapter_overlay`] with this run's store.
     pub fn insert_adapter_overlay(
         &self,
@@ -489,13 +503,15 @@ impl TaskRunnerCtx {
         dbt_jinja_utils::phases::insert_adapter_overlay(ctx, adapter_type, self.adapter_store())
     }
 
-    /// One node's run-phase base context: the run's base context plus the node's task keys.
+    /// One node's run-phase base context: the run's base context, the node's task keys and its
+    /// adapter overlay.
     pub fn run_base_context(
         &self,
         node: &dyn InternalDbtNodeAttributes,
     ) -> FsResult<BTreeMap<String, Value>> {
         let mut ctx = self.inner.base_context.clone();
         add_task_context(&mut ctx, node.common(), &self.thread_id);
+        self.insert_adapter_overlay(&mut ctx, self.adapter_type_for(node))?;
         Ok(ctx)
     }
 

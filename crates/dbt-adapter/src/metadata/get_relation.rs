@@ -6,7 +6,8 @@ use arrow::array::{Array as _, StringArray};
 use dbt_adapter_core::AdapterType;
 use dbt_adapter_engine::cow::uppercase;
 use dbt_adbc::QueryCtx;
-use dbt_common::{AdapterError, AdapterErrorKind, AdapterResult};
+use dbt_common::tracing::dbt_emit::emit_warn_log_message;
+use dbt_common::{AdapterError, AdapterErrorKind, AdapterResult, ErrorCode};
 use dbt_schemas::dbt_types::RelationType;
 use dbt_schemas::schemas::common::normalize_quote;
 use dbt_schemas::schemas::relations::base::{BaseRelation, Policy, TableFormat};
@@ -615,7 +616,7 @@ fn databricks_get_relation(
 
     let batch = adapter
         .engine()
-        .execute(Some(state), conn.as_mut(), ctx, &sql, token);
+        .execute(Some(state), conn.as_mut(), ctx, &sql, token.clone());
     if let Err(e) = &batch
         && (e.to_string().contains("cannot be found")
             || e.to_string().contains("TABLE_OR_VIEW_NOT_FOUND"))
@@ -627,14 +628,12 @@ fn databricks_get_relation(
         return Ok(None);
     }
 
-    let (relation_type, is_delta, is_shallow_clone, table_format, metadata) = if as_json_unsupported
-    {
-        let (relation_type, is_delta, is_shallow_clone, table_format, metadata_map) =
+    let (relation_type, is_delta, table_format, metadata) = if as_json_unsupported {
+        let (relation_type, is_delta, _, table_format, metadata_map) =
             parse_describe_table_extended(adapter.adapter_type(), &batch)?;
         (
             Some(relation_type),
             is_delta,
-            is_shallow_clone,
             table_format,
             Some(metadata_map),
         )
@@ -643,7 +642,6 @@ fn databricks_get_relation(
         let json_metadata = DatabricksTableMetadata::from_record_batch(Arc::new(batch))?;
         let is_delta = json_metadata.provider.as_deref() == Some("delta");
         let table_format = table_format_from_provider(json_metadata.provider.as_deref());
-        let is_shallow_clone = is_shallow_clone_type(&json_metadata.type_);
         let relation_type = Some(RelationType::from_adapter_type(
             adapter.adapter_type(),
             &json_metadata.type_,
@@ -651,10 +649,31 @@ fn databricks_get_relation(
         (
             relation_type,
             is_delta,
-            is_shallow_clone,
             table_format,
             Some(json_metadata.into_metadata()),
         )
+    };
+
+    // DESCRIBE reports `Type = MANAGED` for a shallow clone, so the flag comes from
+    // `information_schema` instead. Only UC delta tables can be shallow clones.
+    let is_shallow_clone = if adapter.adapter_type() == AdapterType::Databricks
+        && !database.is_empty()
+        && relation_type == Some(RelationType::Table)
+        && is_delta
+    {
+        databricks_is_shallow_clone(
+            adapter,
+            state,
+            ctx,
+            conn,
+            database,
+            schema,
+            identifier,
+            &query_catalog,
+            token,
+        )
+    } else {
+        false
     };
 
     let db = if database.is_empty() {
@@ -677,6 +696,84 @@ fn databricks_get_relation(
         .with_table_format(table_format)
         .with_is_shallow_clone(is_shallow_clone),
     )))
+}
+
+/// Returns whether the table is a shallow clone, from `information_schema.tables.table_type`.
+/// Uses the relation cache when it has the table. Warns and returns `false` if the lookup fails.
+#[allow(clippy::too_many_arguments)]
+fn databricks_is_shallow_clone(
+    adapter: &AdapterImpl,
+    state: &State,
+    ctx: &QueryCtx,
+    conn: &mut ConnectionGuard<'_>,
+    database: &str,
+    schema: &str,
+    identifier: &str,
+    query_catalog: &str,
+    token: CancellationToken,
+) -> bool {
+    let lookup = match do_create_relation(
+        adapter.adapter_type(),
+        database.to_string(),
+        schema.to_string(),
+        Some(identifier.to_string()),
+        None,
+        adapter.quoting(),
+    ) {
+        Ok(relation) => relation,
+        Err(e) => {
+            emit_warn_log_message(
+                ErrorCode::ShallowCloneCheckFailed,
+                format!(
+                    "Could not check whether {database}.{schema}.{identifier} is a shallow clone: {e}"
+                ),
+            );
+            return false;
+        }
+    };
+    if let Some(entry) = adapter
+        .engine()
+        .relation_cache()
+        .get_relation(lookup.as_ref())
+    {
+        return entry.relation().is_shallow_clone();
+    }
+
+    // Unity Catalog stores identifiers in lowercase in information_schema.
+    let sql = format!(
+        "SELECT table_type FROM {query_catalog}.information_schema.tables \
+         WHERE table_schema = '{}' AND table_name = '{}'",
+        schema.to_lowercase(),
+        identifier.to_lowercase()
+    );
+    let result = adapter
+        .engine()
+        .execute(Some(state), conn.as_mut(), ctx, &sql, token)
+        .and_then(|batch| shallow_clone_from_information_schema(&batch));
+    match result {
+        Ok(is_shallow_clone) => is_shallow_clone,
+        Err(e) => {
+            emit_warn_log_message(
+                ErrorCode::ShallowCloneCheckFailed,
+                format!(
+                    "Could not check whether {database}.{schema}.{identifier} is a shallow clone in information_schema: {e}"
+                ),
+            );
+            false
+        }
+    }
+}
+
+/// Reads `information_schema.tables.table_type` from a one-relation lookup; no row means
+/// the relation is not visible there, which is not a shallow clone.
+fn shallow_clone_from_information_schema(
+    batch: &arrow::record_batch::RecordBatch,
+) -> AdapterResult<bool> {
+    if batch.num_rows() == 0 {
+        return Ok(false);
+    }
+    let table_types = batch.column_values::<StringArray>("table_type")?;
+    Ok(!table_types.is_null(0) && is_shallow_clone_type(table_types.value(0)))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1251,15 +1348,43 @@ mod tests {
         let batch = describe_batch(&[
             ("id", "int"),
             ("", ""),
-            ("Type", "MANAGED_SHALLOW_CLONE"),
+            ("Type", "MANAGED"),
             ("Provider", "delta"),
         ]);
         let (relation_type, is_delta, is_shallow_clone, table_format, _) =
             parse_describe_table_extended(AdapterType::Databricks, &batch).unwrap();
         assert_eq!(relation_type, RelationType::Table);
         assert!(is_delta);
-        assert!(is_shallow_clone);
+        // DESCRIBE reports `MANAGED` for a shallow clone; only information_schema says otherwise.
+        assert!(!is_shallow_clone);
         assert_eq!(table_format, TableFormat::Default);
+    }
+
+    fn information_schema_batch(table_types: &[&str]) -> RecordBatch {
+        let schema = Schema::new(vec![Field::new("table_type", DataType::Utf8, false)]);
+        RecordBatch::try_new(
+            Arc::new(schema),
+            vec![Arc::new(StringArray::from(table_types.to_vec()))],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn databricks_information_schema_classifies_shallow_clone() {
+        let batch = information_schema_batch(&["MANAGED_SHALLOW_CLONE"]);
+        assert!(shallow_clone_from_information_schema(&batch).unwrap());
+    }
+
+    #[test]
+    fn databricks_information_schema_classifies_managed_table() {
+        let batch = information_schema_batch(&["MANAGED"]);
+        assert!(!shallow_clone_from_information_schema(&batch).unwrap());
+    }
+
+    #[test]
+    fn databricks_information_schema_without_row_is_not_shallow_clone() {
+        let batch = information_schema_batch(&[]);
+        assert!(!shallow_clone_from_information_schema(&batch).unwrap());
     }
 
     #[test]

@@ -5,8 +5,7 @@ use dbt_common::{
     warn_error_options::WarnErrorOptions,
 };
 use minijinja::{
-    AdapterDispatchFunction, Argument, DynTypeObject, Environment, UndefinedFunctionType,
-    UserDefinedFunctionType, Value,
+    Argument, DynTypeObject, Environment, UndefinedFunctionType, UserDefinedFunctionType, Value,
     compiler::typecheck::FunctionRegistry,
     constants::{
         DBT_AND_ADAPTERS_NAMESPACE, MACRO_NAMESPACE_REGISTRY, MACRO_TEMPLATE_REGISTRY,
@@ -369,7 +368,6 @@ impl JinjaEnvBuilder {
         self.env
             .set_loader(move |name| Ok(macro_sources.get(name).cloned()));
         self.function_registry = Arc::new(function_registry);
-        AdapterDispatchFunction::instance().set_function_registry(self.function_registry.clone());
 
         // One `macro_name -> package` namespace per dialect, keyed by dialect.
         // Within a dialect the packages are walked in reverse order, so a more

@@ -183,12 +183,18 @@ pub async fn resolve_saved_queries(
                 nodes_with_ref_location: vec![],
             };
 
-            // schema can be overriden from either Export config or Saved Query config
-            // TODO: we should also allow overriding the database in the same manner
+            // Both schema and database can be overridden from either the Export
+            // config or the Saved Query config, with the environment default as
+            // the fallback. Per-export wins over per-saved-query, which wins
+            // over the environment.
             let saved_query_schema = saved_query_config
                 .schema
                 .clone()
                 .unwrap_or_else(|| schema.to_string());
+            let saved_query_database = saved_query_config
+                .database
+                .clone()
+                .unwrap_or_else(|| database.to_string());
 
             let exports = saved_query_props
                 .exports
@@ -207,7 +213,11 @@ pub async fn resolve_saved_queries(
                                     .unwrap_or_else(|| saved_query_schema.to_string()),
                             ),
                             alias: Some(config.alias.unwrap_or_else(|| export.name.clone())),
-                            database: Some(database.to_string()),
+                            database: Some(
+                                config
+                                    .database
+                                    .unwrap_or_else(|| saved_query_database.to_string()),
+                            ),
                         },
                         unrendered_config: raw_export_configs
                             .get(&export.name)

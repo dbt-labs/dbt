@@ -29,6 +29,13 @@ pub struct ParseAdapterScope {
     overlay: BTreeMap<String, MinijinjaValue>,
 }
 
+impl ParseAdapterScope {
+    /// The overlay's dialect: `None` for the default, undeclared and LakeCompute adapters.
+    pub fn dialect(&self) -> Option<&MinijinjaValue> {
+        self.overlay.get(DIALECT)
+    }
+}
+
 /// The env globals a declared non-default adapter replaces, in `ResolveCore`'s shape.
 #[derive(Serialize)]
 struct ScopeOverlay {
@@ -79,7 +86,7 @@ impl ParseAdapterScopes {
     }
 
     /// The scope of a declared non-default adapter; `None` for the default and undeclared ones.
-    fn declared(&self, adapter_type: AdapterType) -> FsResult<Option<&ParseAdapterScope>> {
+    pub fn declared(&self, adapter_type: AdapterType) -> FsResult<Option<&ParseAdapterScope>> {
         match self.by_type.get(&adapter_type) {
             None => Ok(None),
             Some(Ok(scope)) => Ok(Some(scope)),

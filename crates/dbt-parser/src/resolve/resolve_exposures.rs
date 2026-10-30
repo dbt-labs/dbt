@@ -20,7 +20,7 @@ use dbt_schemas::schemas::common::NodeDependsOn;
 use dbt_schemas::schemas::nodes::{
     CommonAttributes, DbtExposure, DbtExposureAttr, NodeBaseAttributes,
 };
-use dbt_schemas::schemas::project::{ExposureConfig, ResolvableConfig};
+use dbt_schemas::schemas::project::{ExposureConfig, InlineConfigAliasing, ResolvableConfig};
 use dbt_schemas::schemas::properties::ExposureProperties;
 use dbt_schemas::schemas::ref_and_source::{DbtRef, DbtSourceWrapper};
 use dbt_schemas::schemas::relations::DEFAULT_DBT_QUOTING;
@@ -276,6 +276,8 @@ pub fn resolve_yaml_depends_on<T: ResolvableConfig<T> + Serialize + 'static>(
             adapter_type,
             database,
             schema,
+            None,
+            InlineConfigAliasing::fixed(adapter_type),
             &fqn.join("."),
             fqn.clone(),
             package_name,

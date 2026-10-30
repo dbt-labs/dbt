@@ -2,8 +2,7 @@
 use std::{collections::HashMap, fmt::Display};
 
 use dbt_proc_macros::include_frontend_error_codes;
-use int_enum::IntEnum;
-use strum_macros::{EnumString, IntoStaticStr};
+use strum_macros::{EnumString, FromRepr, IntoStaticStr};
 
 /// Error codes for the SDF CLI.
 ///
@@ -12,7 +11,7 @@ use strum_macros::{EnumString, IntoStaticStr};
 #[include_frontend_error_codes]
 #[repr(u16)]
 #[non_exhaustive]
-#[derive(Debug, Copy, Clone, Eq, PartialEq, IntEnum, EnumString, IntoStaticStr, Default)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, FromRepr, EnumString, IntoStaticStr, Default)]
 pub enum ErrorCode {
     // ----------------- Frontend errors [0, 999] -----------------------------
     //
@@ -209,6 +208,7 @@ pub enum ErrorCode {
     DbDriverFailed = 1308,
     ReplayDataInvalid = 1309,
     ReplayDataMissing = 1310,
+    ShallowCloneCheckFailed = 1311,
 
     // Execution/runtime [1400–1449]
     PlannerFailed = 1400,
@@ -223,6 +223,9 @@ pub enum ErrorCode {
     /// dbt State service degraded into fail-open: config/init/decision/cache
     /// errors that don't abort the command but indicate degraded behavior.
     StateServiceWarn = 1410,
+    /// The per-node Redis lock behind `lock_with_state` could not be created,
+    /// taken, or released; the run continues without it.
+    StateLockUnavailable = 1411,
 
     // Serialization [1450–1460]
     JsonInvalid = 1450,
@@ -447,6 +450,14 @@ impl std::hash::Hash for ErrorCode {
     }
 }
 
+impl TryFrom<u16> for ErrorCode {
+    type Error = u16;
+
+    fn try_from(value: u16) -> Result<Self, Self::Error> {
+        Self::from_repr(value).ok_or(value)
+    }
+}
+
 impl Display for ErrorCode {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "{:04}", *self as u16)
@@ -569,6 +580,14 @@ mod tests {
         assert_eq!(
             ErrorCode::StateServiceWarn.name_and_code(),
             "StateServiceWarn (dbt1410)"
+        );
+    }
+
+    #[test]
+    fn state_lock_unavailable_renders_name_and_code() {
+        assert_eq!(
+            ErrorCode::StateLockUnavailable.name_and_code(),
+            "StateLockUnavailable (dbt1411)"
         );
     }
 }

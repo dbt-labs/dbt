@@ -3,7 +3,7 @@ use std::pin::Pin;
 
 use dbt_common::FsResult;
 use dbt_common::stats::NodeStatus;
-use dbt_schemas::schemas::{DbtModel, InternalDbtNodeAttributes};
+use dbt_schemas::schemas::DbtModel;
 use dbt_tasks_core::context::TaskRunnerCtx;
 use dbt_tasks_core::task::run_blocking_task_operation;
 
@@ -19,7 +19,8 @@ impl Cloneable for DbtModel {
         Box::pin(async move {
             let base_context = ctx.run_base_context(self)?;
 
-            let adapter_type = self.node_adapter();
+            let adapter = ctx.adapter_for(self)?;
+            let clone_adapter = adapter.clone();
             let node = self.clone();
             let ctx_inner = ctx.clone();
 
@@ -27,7 +28,7 @@ impl Cloneable for DbtModel {
                 materialize_clone(
                     &node,
                     &node.deprecated_config,
-                    adapter_type,
+                    &clone_adapter,
                     ctx_inner.runtime_config(),
                     ctx_inner.defer_nodes(),
                     &ctx_inner.inner.materialization_resolver,
@@ -39,7 +40,7 @@ impl Cloneable for DbtModel {
             })
             .await??;
 
-            let _ = cache_materialization_return_value(ctx.env.clone(), &result);
+            let _ = cache_materialization_return_value(&adapter, ctx.env.clone(), &result);
 
             Ok(NodeStatus::Succeeded)
         })

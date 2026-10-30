@@ -22,6 +22,8 @@ use dbt_proc_macros::DefaultTo;
 pub struct ProjectSavedQueryConfig {
     #[serde(rename = "+cache")]
     pub cache: Option<SavedQueryCache>,
+    #[serde(rename = "+database")]
+    pub database: Option<String>,
     #[serde(default, rename = "+enabled", deserialize_with = "bool_or_string_bool")]
     pub enabled: Option<bool>,
     #[serde(rename = "+export_as")]
@@ -49,6 +51,7 @@ impl TypedRecursiveConfig for ProjectSavedQueryConfig {
 
     fn has_set_fields(&self) -> bool {
         self.cache.is_some()
+            || self.database.is_some()
             || self.enabled.is_some()
             || self.export_as.is_some()
             || self.schema.is_some()
@@ -61,6 +64,7 @@ impl TypedRecursiveConfig for ProjectSavedQueryConfig {
 #[derive(Resolvable, DefaultTo, Deserialize, Serialize, Debug, Clone, PartialEq, DbtSchema)]
 pub struct SavedQueryConfig {
     pub cache: Option<SavedQueryCache>,
+    pub database: Option<String>,
     #[resolved(promote, method = get_enabled_with_default)]
     #[serde(default, deserialize_with = "bool_or_string_bool")]
     pub enabled: Option<bool>,
@@ -94,6 +98,7 @@ impl Default for SavedQueryConfig {
             cache: Some(SavedQueryCache {
                 enabled: Some(false),
             }),
+            database: None,
             enabled: Some(true),
             export_as: None,
             schema: None,
@@ -108,6 +113,7 @@ impl From<ProjectSavedQueryConfig> for SavedQueryConfig {
     fn from(config: ProjectSavedQueryConfig) -> Self {
         Self {
             cache: config.cache,
+            database: config.database,
             enabled: config.enabled,
             export_as: config.export_as,
             schema: config.schema,
@@ -122,6 +128,7 @@ impl From<SavedQueryConfig> for ProjectSavedQueryConfig {
     fn from(config: SavedQueryConfig) -> Self {
         Self {
             cache: config.cache,
+            database: config.database,
             enabled: config.enabled,
             export_as: config.export_as,
             schema: config.schema,

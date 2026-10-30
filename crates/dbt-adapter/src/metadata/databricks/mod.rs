@@ -28,8 +28,8 @@ use dbt_schemas::schemas::relations::base::{BaseRelation, RelationPattern};
 use indexmap::IndexMap;
 use minijinja::value::Object;
 use minijinja::{State, Value};
-use once_cell::sync::Lazy;
 use regex::Regex;
+use std::sync::LazyLock;
 
 use crate::adapter::adapter_impl::AdapterImpl;
 use crate::engine::databricks_statement_options;
@@ -1928,8 +1928,8 @@ fn build_schema_from_basic_describe_table(
     Ok(Arc::new(Schema::new(fields)))
 }
 
-static DBR_VERSION_REGEX: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"([1-9][0-9]*)\.(x|0|[1-9][0-9]*)").unwrap());
+static DBR_VERSION_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"([1-9][0-9]*)\.(x|0|[1-9][0-9]*)").unwrap());
 
 /// Extract DBR version from a spark version string using regex.
 ///

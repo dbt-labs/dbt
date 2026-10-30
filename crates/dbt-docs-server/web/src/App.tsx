@@ -1,7 +1,7 @@
 import type { ComponentType } from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
-import { Search as SearchIcon } from 'lucide-react';
+import { Search as SearchIcon, Share2 } from 'lucide-react';
 
 import { AnalysisFilterView } from './components/AnalysisFilterView';
 import { FullLineagePageV2 } from './components/LineageV2/FullLineagePage';
@@ -21,6 +21,7 @@ import {
 import { SourceCollectionPage } from './components/SourceCollectionPage';
 import { SourceFilterView } from './components/SourceFilterView';
 import { TestFilterView } from './components/TestFilterView';
+import { Button } from './components/ui/Button';
 import { Input } from './components/ui/Input';
 import { useAllNodes } from './hooks/useAllNodes';
 import { deriveUpgradeCapabilities } from './hooks/useCapabilities';
@@ -597,6 +598,7 @@ function Topbar({
   onResetHome?: () => void;
   onSubmitSearch?: () => void;
 }) {
+  const navigate = useNavigate();
   return (
     <header className="topbar-v2">
       <div className="topbar-v2__left">
@@ -635,6 +637,18 @@ function Topbar({
         aria-label={project ? `Search ${project.name}` : 'Search project'}
         className="w-full"
       />
+      <div className="flex items-center justify-end">
+        {project && (
+          <Button
+            variant="outline"
+            size="sm"
+            icon={<Share2 className="size-4" />}
+            text="Global Lineage"
+            tooltip="Open full project lineage"
+            onClick={() => navigate(paths.projectLineage())}
+          />
+        )}
+      </div>
     </header>
   );
 }

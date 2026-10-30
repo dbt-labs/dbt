@@ -428,6 +428,7 @@ impl Task for RunTask {
                                     )
                                 {
                                     let base_context = ctx.run_base_context(model)?;
+                                    let adapter = ctx.adapter_for(model)?;
                                     let model_clone = model.clone();
                                     let ctx_clone = ctx.clone();
                                     run_blocking_task_operation(move || {
@@ -441,6 +442,7 @@ impl Task for RunTask {
                                             &ctx_clone.inner.arg.io,
                                         )?;
                                         let _ = cache_materialization_return_value(
+                                            &adapter,
                                             ctx_clone.env,
                                             &relations_map,
                                         );

@@ -2054,21 +2054,21 @@ impl DbtProjectCompilation {
                 AdapterConnectionMode::AllowRemote
             },
         )?;
-        let adapter = if let Some(adapter_override) = arg
+        let run_adapter_override = arg
             .adapter_override
             .as_deref()
             .filter(|_| matches!(arg.command, FsCommand::RunOperation | FsCommand::Show))
-        {
-            let adapter_type: AdapterType = adapter_override.parse().map_err(|_| {
-                fs_err!(
-                    ErrorCode::InvalidArgument,
-                    "--adapter '{adapter_override}' is not a recognized adapter type"
-                )
-            })?;
-            adapter_store.get(adapter_type)?
-        } else {
-            adapter_store.default_adapter()?
-        };
+            .map(|adapter_override| {
+                adapter_override.parse::<AdapterType>().map_err(|_| {
+                    fs_err!(
+                        ErrorCode::InvalidArgument,
+                        "--adapter '{adapter_override}' is not a recognized adapter type"
+                    )
+                })
+            })
+            .transpose()?;
+        let adapter_store = Arc::new(adapter_store.with_run_adapter_override(run_adapter_override));
+        let adapter = adapter_store.run_adapter()?;
         token.check_cancellation()?;
 
         if adapter.engine().has_query_cache() {
@@ -2680,7 +2680,7 @@ pub(crate) fn update_manifest(
     macro_depends_on: &BTreeMap<String, BTreeSet<String>>,
     dbt_manifest: &mut DbtManifestV12,
 ) -> FsResult<ResolverState> {
-    update_manifest_with_macro_depends_on(dbt_manifest, macro_depends_on);
+    update_manifest_with_macro_depends_on(dbt_manifest, macro_depends_on, &arc_resolved_state);
 
     // TODO: Cloning resolved state here is inefficient, but we have some
     // non-deterministic behavior with regards to Arc references that means

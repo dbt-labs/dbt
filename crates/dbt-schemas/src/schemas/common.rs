@@ -2865,12 +2865,12 @@ period: hour
     fn test_bigquery_partition_config_legacy_deserialize_from_jinja_values() {
         // Test String variant
         let string_value = MinijinjaValue::from("partition_field");
-        let result = minijinja_value_to_typed_struct::<PartitionConfig>(string_value).unwrap();
+        let result = minijinja_value_to_typed_struct::<PartitionConfig>(&string_value).unwrap();
         assert!(matches!(result, PartitionConfig::String(s) if s == "partition_field"));
 
         // Test List variant
         let list_value = MinijinjaValue::from(vec!["field1", "field2"]);
-        let result = minijinja_value_to_typed_struct::<PartitionConfig>(list_value).unwrap();
+        let result = minijinja_value_to_typed_struct::<PartitionConfig>(&list_value).unwrap();
         assert!(
             matches!(result, PartitionConfig::List(ref list) if list == &vec!["field1".to_string(), "field2".to_string()])
         );
@@ -2886,7 +2886,7 @@ period: hour
         )
         .unwrap();
         let config_value = MinijinjaValue::from_serialize(&config_json);
-        let result = minijinja_value_to_typed_struct::<PartitionConfig>(config_value).unwrap();
+        let result = minijinja_value_to_typed_struct::<PartitionConfig>(&config_value).unwrap();
         if let PartitionConfig::BigqueryPartitionConfig(config) = result {
             assert_eq!(config.field, "partition_date");
             assert_eq!(config.data_type, "date");

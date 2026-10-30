@@ -15,8 +15,8 @@ pub struct PythonFileInfo<T: ResolvableConfig<T>> {
     /// e.g. dbt.ref('a', 'b', 'c')
     pub refs: Vec<(String, Option<String>, Option<NodeVersion>, CodeLocation)>,
 
-    /// e.g. dbt.config(materialized='table')
-    pub config: Box<T>,
+    /// e.g. dbt.config(materialized='table'), each call in source order and unmerged
+    pub config_calls: Vec<T>,
 
     /// Python packages imported in the file (for telemetry)
     pub packages: Vec<String>,
@@ -49,7 +49,7 @@ impl<T: ResolvableConfig<T>> Default for PythonFileInfo<T> {
         Self {
             sources: Vec::new(),
             refs: Vec::new(),
-            config: Box::new(T::default()),
+            config_calls: Vec::new(),
             packages: Vec::new(),
             config_keys_used: Vec::new(),
             config_keys_defaults: Vec::new(),
@@ -70,10 +70,8 @@ impl<T: ResolvableConfig<T>> PythonFileInfo<T> {
         }
     }
 
-    /// Update config with new values
+    /// Records one `dbt.config(...)` call, unmerged.
     pub fn update_config(&mut self, new_config: T) {
-        let mut updated = Box::new(new_config);
-        updated.default_to(&*self.config);
-        self.config = updated;
+        self.config_calls.push(new_config);
     }
 }

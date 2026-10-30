@@ -747,7 +747,8 @@ pub struct Capture {
     endpos: usize,
     /// True when created by re.findall (groups already skip group 0).
     /// Only findall captures expose sequence semantics; match/search captures
-    /// behave like Python Match objects and do not support index access.
+    /// behave like Python Match objects: `m[g]` returns the same as `m.group(g)`,
+    /// but they cannot be sliced, iterated or measured with `len()`.
     is_findall: bool,
 }
 
@@ -941,10 +942,10 @@ impl Object for Capture {
     }
 
     fn get_value(self: &Arc<Self>, key: &Value) -> Option<Value> {
-        if self.is_findall {
-            if let Some(idx) = key.as_usize() {
-                return self.groups.get(idx).map(|(v, _)| v.clone());
-            }
+        // An integer indexes the findall groups, or the match groups as Python's
+        // `Match.__getitem__` does (`m[0]` is the whole match).
+        if let Some(idx) = key.as_usize() {
+            return self.groups.get(idx).map(|(v, _)| v.clone());
         }
         match key.as_str()? {
             "pos" => Some(Value::from(self.pos)),
@@ -991,8 +992,26 @@ impl Object for Capture {
                 Some(Value::from_object(Pattern::new(&self.pattern, compiled)))
             }
             "string" => Some(Value::from(self.input_string.clone())),
+            // `m.name` falls back to a group, as Jinja's getattr does; subscripts
+            // check the groups first in `get_item`.
+            name if !self.is_findall => self
+                .named_groups
+                .get(name)
+                .and_then(|idx| self.groups.get(*idx))
+                .map(|(v, _)| v.clone()),
             _ => None,
         }
+    }
+
+    // Like `Match.__getitem__`, a subscript prefers a group over an attribute of the
+    // same name: `m['pos']` is a group named `pos`, `m.pos` stays the attribute.
+    fn get_item(self: &Arc<Self>, key: &Value) -> Option<Value> {
+        if !self.is_findall {
+            if let Some(&idx) = key.as_str().and_then(|name| self.named_groups.get(name)) {
+                return self.groups.get(idx).map(|(v, _)| v.clone());
+            }
+        }
+        self.get_value(key)
     }
 
     fn repr(self: &Arc<Self>) -> ObjectRepr {
@@ -1325,6 +1344,61 @@ mod tests {
             )
             .expect("match.group() should still work");
         assert_eq!(result, "a,b");
+    }
+
+    // Python's Match.__getitem__ returns the same as match.group(): m[0] is the whole
+    // match, m[1] the first group, m['name'] a named group.
+    #[test]
+    fn test_re_match_capture_index_access_returns_group() {
+        assert_eq!(
+            run_re_template(
+                r#"{% set m = re.search('(?P<name>[a-z]+)-(?P<num>[0-9]+)', 'order-42') %}{{ m[0] }},{{ m[1] }},{{ m[2] }},{{ m['num'] }}"#
+            ),
+            "order-42,order,42,42"
+        );
+    }
+
+    #[test]
+    fn test_re_match_result_index_access_returns_group() {
+        assert_eq!(
+            run_re_template(
+                r#"{% set m = re.match('([a-z]+)-([0-9]+)', 'order-42') %}{{ m[1] }},{{ m[2] }}"#
+            ),
+            "order,42"
+        );
+    }
+
+    // In dbt-core, Jinja turns Python's IndexError into undefined, so a missing
+    // group renders as an empty string instead of failing.
+    #[test]
+    fn test_re_match_capture_missing_group_is_undefined() {
+        assert_eq!(
+            run_re_template(
+                r#"{% set m = re.search('(?P<name>[a-z]+)', 'order') %}[{{ m[5] }}][{{ m['nope'] }}][{{ m[-1] }}]"#
+            ),
+            "[][][]"
+        );
+    }
+
+    #[test]
+    fn test_re_match_capture_attributes_still_resolve() {
+        assert_eq!(
+            run_re_template(
+                r#"{% set m = re.search('(?P<name>[a-z]+)-(?P<num>[0-9]+)', 'order-42') %}{{ m.pos }},{{ m.string }},{{ m.lastgroup }},{{ m['pos'] }},{{ m.num }}"#
+            ),
+            "0,order-42,num,0,42"
+        );
+    }
+
+    // A group named like a Match attribute: m['pos'] is the group, m.pos the attribute.
+    #[test]
+    fn test_re_match_capture_group_named_like_attribute() {
+        assert_eq!(
+            run_re_template(
+                r#"{% set p = re.search('(?P<pos>[a-z]+)-(?P<string>[0-9]+)', 'order-42') %}{{ p['pos'] }}|{{ p.pos }}|{{ p['string'] }}|{{ p.string }}"#
+            ),
+            "order|0|42|order-42"
+        );
     }
 
     fn re_env() -> minijinja::Environment<'static> {

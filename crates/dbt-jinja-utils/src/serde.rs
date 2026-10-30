@@ -555,6 +555,15 @@ where
             });
         typecheck_resolved_context
             .insert("DBT_AND_ADAPTERS_NAMESPACE".to_string(), dbt_and_adapters);
+        if let Some(dialect) = env.env.get_dialect().cloned() {
+            typecheck_resolved_context.insert(minijinja::constants::DIALECT.to_string(), dialect);
+        }
+        if let Some(registry) = env.env.get_macro_namespace_registry() {
+            typecheck_resolved_context.insert(
+                minijinja::constants::MACRO_NAMESPACE_REGISTRY.to_string(),
+                minijinja::Value::from_dyn_object(registry),
+            );
+        }
 
         // Perform typecheck (ignore fatal errors and return reported diagnostics)
         let _ = typecheck_fn(

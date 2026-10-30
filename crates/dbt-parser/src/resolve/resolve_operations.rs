@@ -20,7 +20,7 @@ use dbt_schemas::{
         CommonAttributes, NodeBaseAttributes,
         common::{DbtChecksum, DbtQuoting},
         manifest::DbtOperation,
-        project::DbtProject,
+        project::{DbtProject, InlineConfigAliasing},
         ref_and_source::{DbtRef, DbtSourceWrapper},
     },
     state::DbtRuntimeConfig,
@@ -181,6 +181,8 @@ fn new_operation(
                 adapter_type,
                 database,
                 schema,
+                None,
+                InlineConfigAliasing::fixed(adapter_type),
                 &operation.__common_attr__.name,
                 vec![
                     package_runtime_config.inner.project_name.clone(),
