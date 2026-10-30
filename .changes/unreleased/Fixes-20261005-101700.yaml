@@ -1,0 +1,6 @@
+kind: Fixes
+body: Show an error when the log directory cannot be created instead of exiting without output
+time: 2026-10-05T10:17:00.000000-07:00
+custom:
+    Author: officialpm
+    Issue: "9526"
