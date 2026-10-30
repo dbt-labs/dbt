@@ -1399,3 +1399,41 @@ class TestMicrobatchBuildRetryUsesOriginalInvocationTime(BaseMicrobatchTest):
         # Should only have 3 batches (2020-01-01, 2020-01-02, 2020-01-03)
         assert len(batch_catcher.caught_events) == 3
         self.assert_row_count(project, "microbatch_model", 3)
+
+
+microbatch_model_contracted_sql = """
+{{ config(materialized='incremental', incremental_strategy='microbatch', unique_key='id', on_schema_change='fail', event_time='event_time', batch_size='day', begin=modules.datetime.datetime(2020, 1, 1, 0, 0, 0)) }}
+select id, cast(id as text) as label, event_time from {{ ref('input_model') }}
+"""
+
+microbatch_model_contracted_yml = """
+models:
+  - name: microbatch_model
+    config:
+      contract:
+        enforced: true
+    columns:
+      - name: id
+        data_type: integer
+      - name: label
+        data_type: string
+      - name: event_time
+        data_type: timestamp
+"""
+
+
+class TestMicrobatchContractAliasTypes(BaseMicrobatchTest):
+    """A contracted microbatch model translates data_type aliases (string -> text) in every batch."""
+
+    @pytest.fixture(scope="class")
+    def models(self):
+        return {
+            "input_model.sql": input_model_sql,
+            "microbatch_model.sql": microbatch_model_contracted_sql,
+            "schema.yml": microbatch_model_contracted_yml,
+        }
+
+    def test_run_with_contract_alias_types(self, project):
+        with patch_microbatch_end_time("2020-01-03 13:57:00"):
+            run_dbt(["run"])
+        self.assert_row_count(project, "microbatch_model", 3)

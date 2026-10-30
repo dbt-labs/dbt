@@ -493,6 +493,7 @@ class TestMicrobatchBuilder:
         context = MicrobatchBuilder.build_jinja_context_for_batch(
             model=microbatch_model,
             incremental_batch=True,
+            adapter=mock.Mock(),
         )
 
         assert context["model"] == microbatch_model.to_dict()
@@ -506,6 +507,7 @@ class TestMicrobatchBuilder:
         context = MicrobatchBuilder.build_jinja_context_for_batch(
             model=microbatch_model,
             incremental_batch=False,
+            adapter=mock.Mock(),
         )
 
         assert context["model"] == microbatch_model.to_dict()
@@ -515,6 +517,34 @@ class TestMicrobatchBuilder:
         # Only build is_incremental callables when not first batch
         assert "is_incremental" not in context
         assert "should_full_refresh" not in context
+
+    @pytest.mark.parametrize(
+        "alias_types,expected_data_type",
+        [(True, "FLOAT64"), (False, "float")],
+    )
+    def test_build_jinja_context_for_batch_translates_contract_alias_types(
+        self, alias_types, expected_data_type
+    ):
+        model = mock.Mock()
+        model.contract.alias_types = alias_types
+        model.to_dict.return_value = {
+            "columns": {
+                "amount": {"name": "amount", "data_type": "float"},
+                "untyped": {"name": "untyped", "data_type": None},
+            }
+        }
+        adapter = mock.Mock()
+        adapter.Column.translate_type.side_effect = lambda dtype: {"float": "FLOAT64"}.get(
+            dtype, dtype
+        )
+
+        context = MicrobatchBuilder.build_jinja_context_for_batch(
+            model=model, incremental_batch=True, adapter=adapter
+        )
+
+        columns = context["model"]["columns"]
+        assert columns["amount"]["data_type"] == expected_data_type
+        assert columns["untyped"]["data_type"] is None
 
     @pytest.mark.parametrize(
         "timestamp,batch_size,offset,expected_timestamp",
