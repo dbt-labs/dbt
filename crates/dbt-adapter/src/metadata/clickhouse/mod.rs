@@ -596,6 +596,7 @@ pub fn relation_type_from_engine(engine_name: &str) -> RelationType {
     match engine_name {
         "View" | "LiveView" => RelationType::View,
         "MaterializedView" => RelationType::MaterializedView,
+        "Dictionary" => RelationType::Dictionary,
         // Anything else (MergeTree, ReplacingMergeTree, AggregatingMergeTree,
         // SummingMergeTree, CollapsingMergeTree, VersionedCollapsingMergeTree,
         // GraphiteMergeTree, Replicated*, Distributed, Memory, Log, etc.) is a table.
@@ -2100,6 +2101,34 @@ mod tests {
         assert_eq!(db_engine_clause(None), "");
         assert_eq!(db_engine_clause(Some("")), "");
         assert_eq!(db_engine_clause(Some("Replicated")), "ENGINE Replicated");
+    }
+
+    /// Mirrors the `type` column of v1's `clickhouse__list_relations_without_caching`.
+    #[test]
+    fn relation_type_from_engine_mirrors_list_relations_sql() {
+        assert_eq!(relation_type_from_engine("View"), RelationType::View);
+        assert_eq!(relation_type_from_engine("LiveView"), RelationType::View);
+        assert_eq!(
+            relation_type_from_engine("MaterializedView"),
+            RelationType::MaterializedView
+        );
+        assert_eq!(
+            relation_type_from_engine("Dictionary"),
+            RelationType::Dictionary
+        );
+        for engine in [
+            "MergeTree",
+            "ReplicatedReplacingMergeTree",
+            "Distributed",
+            "Memory",
+            "Log",
+        ] {
+            assert_eq!(
+                relation_type_from_engine(engine),
+                RelationType::Table,
+                "{engine}"
+            );
+        }
     }
 
     #[test]

@@ -2554,6 +2554,17 @@ impl AdapterImpl {
         }
     }
 
+    /// ClickHouse `adapter.supports_atomic_exchange()` — see
+    /// [`metadata::clickhouse::ClickHouseCapabilities::atomic_exchange`].
+    pub fn supports_atomic_exchange(&self, state: &State, token: CancellationToken) -> bool {
+        match self.inner_adapter() {
+            Impl(..) => {
+                metadata::clickhouse::server_capabilities(self, state, token).atomic_exchange
+            }
+            Replay(..) => false,
+        }
+    }
+
     /// BaseAdapter https://github.com/dbt-labs/dbt-adapters/blob/0efd8d3d1081e1ab43e38797d5104f7b424a6284/dbt-adapters/src/dbt/adapters/base/impl.py#L1231
     pub fn convert_type(
         &self,
