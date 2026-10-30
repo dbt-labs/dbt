@@ -1,9 +1,11 @@
 import pytest
 
 from dbt.artifacts.resources import MetricConfig
+from dbt.events.types import ValidationWarning
 from dbt.exceptions import CompilationError, ParsingError
 from dbt.tests.util import get_manifest, run_dbt, update_config_file
 from dbt_common.dataclass_schema import ValidationError
+from dbt_common.events.event_catcher import EventCatcher
 from tests.functional.metrics.fixtures import (
     disabled_metric_level_schema_yml,
     enabled_metric_level_schema_yml,
@@ -12,6 +14,9 @@ from tests.functional.metrics.fixtures import (
     metricflow_time_spine_yml,
     models_people_metrics_meta_top_yml,
     models_people_metrics_sql,
+    models_people_metrics_shared_tag_yml,
+    models_people_metrics_tags_yml,
+    models_people_metrics_top_level_tags_yml,
     models_people_metrics_yml,
     models_people_sql,
     semantic_model_people_yml,
@@ -297,3 +302,159 @@ class TestMetricMetaTopLevel(MetricConfigTests):
             "my_meta_top": "top"
         }
         assert manifest.metrics.get("metric.test.number_of_people").meta == {"my_meta_top": "top"}
+
+
+# Test tags config in dbt_project.yml
+class TestMetricTagsConfigProjectLevel(MetricConfigTests):
+    @pytest.fixture(scope="class")
+    def models(self):
+        return {
+            "people.sql": models_people_sql,
+            "metricflow_time_spine.sql": metricflow_time_spine_sql,
+            "semantic_model_people.yml": semantic_model_people_yml,
+            "schema.yml": models_people_metrics_yml,
+        }
+
+    @pytest.fixture(scope="class")
+    def project_config_update(self):
+        return {
+            "metrics": {
+                "test": {
+                    "+tags": ["project_tag"],
+                }
+            }
+        }
+
+    def test_tags_metric_config_dbt_project(self, project):
+        run_dbt(["parse"])
+        manifest = get_manifest(project.project_root)
+        for metric_id in [
+            "metric.test.number_of_people",
+            "metric.test.collective_tenure",
+            "metric.test.average_tenure",
+            "metric.test.average_tenure_minus_people",
+        ]:
+            metric = manifest.metrics.get(metric_id)
+            assert metric is not None, f"{metric_id} not found in manifest"
+            assert isinstance(metric.tags, list), f"{metric_id}.tags should be a list"
+            assert "project_tag" in metric.tags, f"{metric_id} missing project_tag in tags"
+            assert "project_tag" in metric.config.tags, f"{metric_id} missing project_tag in config.tags"
+
+
+# Test tags config in yaml config block
+class TestMetricTagsConfigYamlLevel(MetricConfigTests):
+    @pytest.fixture(scope="class")
+    def models(self):
+        return {
+            "people.sql": models_people_sql,
+            "metricflow_time_spine.sql": metricflow_time_spine_sql,
+            "semantic_model_people.yml": semantic_model_people_yml,
+            "schema.yml": models_people_metrics_tags_yml,
+        }
+
+    def test_tags_metric_config_yaml(self, project):
+        run_dbt(["parse"])
+        manifest = get_manifest(project.project_root)
+        metric = manifest.metrics.get("metric.test.number_of_people")
+        assert metric is not None
+        assert isinstance(metric.tags, list)
+        assert metric.tags == ["yaml_tag"]
+        assert metric.config.tags == ["yaml_tag"]
+
+
+# Test tags merging from both dbt_project.yml and yaml config block
+class TestMetricTagsConfigMerge(MetricConfigTests):
+    @pytest.fixture(scope="class")
+    def models(self):
+        return {
+            "people.sql": models_people_sql,
+            "metricflow_time_spine.sql": metricflow_time_spine_sql,
+            "semantic_model_people.yml": semantic_model_people_yml,
+            "schema.yml": models_people_metrics_tags_yml,
+        }
+
+    @pytest.fixture(scope="class")
+    def project_config_update(self):
+        return {
+            "metrics": {
+                "test": {
+                    "+tags": ["project_tag"],
+                }
+            }
+        }
+
+    def test_tags_merge(self, project):
+        run_dbt(["parse"])
+        manifest = get_manifest(project.project_root)
+        metric = manifest.metrics.get("metric.test.number_of_people")
+        assert metric is not None
+        assert isinstance(metric.tags, list)
+        assert "project_tag" in metric.tags
+        assert "yaml_tag" in metric.tags
+        assert "project_tag" in metric.config.tags
+        assert "yaml_tag" in metric.config.tags
+
+    def test_tags_deduplicated(self, project):
+        run_dbt(["parse"])
+        manifest = get_manifest(project.project_root)
+        metric = manifest.metrics.get("metric.test.number_of_people")
+        assert metric is not None
+        assert len(metric.tags) == len(set(metric.tags)), "Duplicate tags found in metric.tags"
+        assert len(metric.config.tags) == len(set(metric.config.tags))
+
+
+# Test that when the same tag appears in both +tags (dbt_project.yml) and config.tags (YAML),
+# it appears only once after normalization.
+class TestMetricTagsConfigDeduplication(MetricConfigTests):
+    @pytest.fixture(scope="class")
+    def models(self):
+        return {
+            "people.sql": models_people_sql,
+            "metricflow_time_spine.sql": metricflow_time_spine_sql,
+            "semantic_model_people.yml": semantic_model_people_yml,
+            "schema.yml": models_people_metrics_shared_tag_yml,
+        }
+
+    @pytest.fixture(scope="class")
+    def project_config_update(self):
+        return {
+            "metrics": {
+                "test": {
+                    "+tags": ["shared_tag"],
+                }
+            }
+        }
+
+    def test_same_tag_deduplicated(self, project):
+        run_dbt(["parse"])
+        manifest = get_manifest(project.project_root)
+        metric = manifest.metrics.get("metric.test.number_of_people")
+        assert metric is not None
+        assert metric.tags == ["shared_tag"], f"Expected ['shared_tag'], got {metric.tags}"
+        assert metric.config.tags == ["shared_tag"]
+
+
+class TestMetricTopLevelTagsWarning(MetricConfigTests):
+    @pytest.fixture(scope="class")
+    def models(self):
+        return {
+            "people.sql": models_people_sql,
+            "metricflow_time_spine.sql": metricflow_time_spine_sql,
+            "semantic_model_people.yml": semantic_model_people_yml,
+            "schema.yml": models_people_metrics_top_level_tags_yml,
+        }
+
+    def test_top_level_tags_emits_warning_and_tags_are_ignored(self, project):
+        catcher = EventCatcher(event_to_catch=ValidationWarning)
+        run_dbt(["parse"], callbacks=[catcher.catch])
+        manifest = get_manifest(project.project_root)
+        metric = manifest.metrics.get("metric.test.number_of_people")
+        assert metric is not None
+        assert "top_level_tag" not in metric.tags
+        assert "top_level_tag" not in metric.config.tags
+        assert len(catcher.caught_events) >= 1
+        warning_messages = [str(e.data) for e in catcher.caught_events]
+        assert any(
+            "top-level" in msg and "number_of_people" in msg and "ignored" in msg
+            for msg in warning_messages
+        )
