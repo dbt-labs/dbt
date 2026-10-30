@@ -12804,6 +12804,12 @@
               }
             }
           },
+          "dimensions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
           "created_at": {
             "type": "number"
           }
@@ -26898,6 +26904,12 @@
                         "items": {
                           "type": "string"
                         }
+                      }
+                    },
+                    "dimensions": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
                       }
                     },
                     "created_at": {
