@@ -246,7 +246,7 @@ mod tests {
     use dbt_schemas::schemas::project::QueryComment;
     use serde::Deserialize;
 
-    use crate::engine::query_comment::{
+    use crate::query_comment::{
         DATABRICKS_QUERY_COMMENT, DEFAULT_QUERY_COMMENT, DEFAULT_QUERY_COMMENT_WITH_CLOUD,
         QueryCommentConfig,
     };

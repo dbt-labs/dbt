@@ -32,7 +32,6 @@ use regex::Regex;
 use std::sync::LazyLock;
 
 use crate::adapter::adapter_impl::AdapterImpl;
-use crate::engine::databricks_statement_options;
 use crate::errors::{AdapterError, AdapterResult, AsyncAdapterResult};
 use crate::metadata::CatalogAndSchema;
 use crate::metadata::databricks::dbr_capabilities::DbrComputeContext;
@@ -58,6 +57,7 @@ use crate::relation::databricks::config::{
 use crate::relation::databricks::is_shallow_clone_type;
 use crate::sql_types::{TypeOps, make_arrow_field_v2};
 use crate::{AdapterEngine, AdapterResponse};
+use dbt_adapter_engine::databricks::query_tags::databricks_statement_options;
 
 pub mod dbr_capabilities;
 pub mod describe_json;

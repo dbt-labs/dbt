@@ -80,7 +80,7 @@ fn to_view_types(
 /// batches into a single [`RecordBatch`]. The concat itself is additionally guarded
 /// by `catch_unwind`, so any residual Arrow panic surfaces as a recoverable
 /// [`AdapterError`] instead of aborting the process.
-pub(crate) fn concat_batches_widened(
+pub fn concat_batches_widened(
     schema: SchemaRef,
     batches: Vec<RecordBatch>,
 ) -> AdapterResult<RecordBatch> {

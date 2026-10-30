@@ -1,15 +1,15 @@
 use std::borrow::Cow;
 use std::time::Duration;
 
+use crate::cow::lowercase;
 use dbt_adapter_core::AdapterType;
-use dbt_adapter_engine::cow::lowercase;
 use dbt_adbc::Connection;
 use dbt_adbc::duration::parse_duration;
 use dbt_auth::AdapterConfig;
 use dbt_common::Cancellable;
 
 #[derive(Debug)]
-pub(crate) enum BackoffStrategy {
+pub enum BackoffStrategy {
     /// Quadratic backoff: `attempt * attempt seconds`.
     ///
     /// Matches dbt-snowflake (Python)'s `exponential_backoff(attempt) = attempt * attempt`
@@ -64,7 +64,7 @@ fn retry_loop<T, E>(
 
 /// Policy for retrying a connection-establishment failure.
 #[derive(Debug)]
-pub(crate) struct ConnectionRetryPolicy {
+pub struct ConnectionRetryPolicy {
     adapter_type: AdapterType,
     /// Retries on top of the initial attempt. `0` is effectively no-retry.
     pub max_retries: u32,

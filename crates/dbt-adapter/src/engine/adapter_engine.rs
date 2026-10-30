@@ -25,11 +25,8 @@ use tracy_client::span;
 
 use crate::AdapterType;
 use crate::cache::RelationCache;
-use crate::engine::concat_batches::concat_batches_widened;
-use crate::engine::databricks_query_tags::query_tags_from_state;
 use crate::engine::query_comment::QueryCommentConfig;
 use crate::engine::retry::QueryRetryPolicy;
-use crate::engine::sidecar_client::SidecarClient;
 use crate::errors::adbc_error_to_adapter_error;
 use crate::metadata::clickhouse::ClickHouseCapabilities;
 use crate::record_batch::{ROWS_AFFECTED_META, RecordBatchExt, SchemaExt};
@@ -38,8 +35,11 @@ use crate::sql::normalize::strip_sql_comments;
 use crate::sql_types::TypeOps;
 use crate::statement::*;
 use crate::stmt_splitter::StmtSplitter;
+use dbt_adapter_engine::concat_batches::concat_batches_widened;
+use dbt_adapter_engine::databricks::query_tags::query_tags_from_state;
+use dbt_adapter_engine::sidecar_client::SidecarClient;
 
-pub type Options = Vec<(String, OptionValue)>;
+pub use dbt_adapter_engine::Options;
 
 /// Normalize result column names for Snowflake commands whose output schema is
 /// defined as lowercase.

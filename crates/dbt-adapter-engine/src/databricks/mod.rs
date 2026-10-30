@@ -1,4 +1,6 @@
-//! Databricks-specific helpers for the ADBC engine (`super::adbc`).
+//! Databricks-specific helpers for the ADBC engine.
+
+pub mod query_tags;
 
 use dbt_schemas::schemas::AdapterAttr;
 use minijinja::State;
@@ -18,7 +20,7 @@ struct AdapterAttrProbe {
 /// Get the Databricks compute engine configured for this model/snapshot
 ///
 /// https://docs.getdbt.com/reference/resource-configs/databricks-configs#selecting-compute-per-model
-pub(crate) fn compute_from_state(state: &State) -> Option<String> {
+pub fn compute_from_state(state: &State) -> Option<String> {
     let model = state.lookup("model", &[])?;
     // Only genuine malformation reaches here; log instead of silently falling
     // back to the default compute.
