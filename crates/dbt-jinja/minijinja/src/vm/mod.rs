@@ -134,6 +134,19 @@ fn share_location(
     }
 }
 
+fn explicit_return_value(
+    value: Value,
+    mode: OutputMode,
+    listeners: &[Rc<dyn RenderingEventListener>],
+) -> Value {
+    if !matches!(mode, OutputMode::Macro) {
+        for listener in listeners {
+            listener.on_output_replaced(&value);
+        }
+    }
+    value
+}
+
 fn notify_loop_iteration(
     state: &mut State<'_, '_>,
     listeners: &[Rc<dyn RenderingEventListener>],
@@ -541,9 +554,9 @@ impl<'env> Vm<'env> {
                         Some(instr) => instr,
                         None => break,
                     };
-                    for listener in listeners {
+                    listeners.iter().for_each(|listener| {
                         listener.on_template_execution_parent(state.instructions.name());
-                    }
+                    });
                     out.end_capture(AutoEscape::None);
                     pc = 0;
                     // because we swap out the instructions we also need to unload all
@@ -1725,18 +1738,11 @@ impl<'env> Vm<'env> {
         }
 
         // dbg!(&rv);
-        if is_caller_return || is_explicit_return {
-            let rv = stack.pop();
-            if !matches!(output_mode, OutputMode::Macro) {
-                for listener in listeners {
-                    listener.on_output_replaced(&rv);
-                }
-            }
-            if is_caller_return {
-                Ok(Value::from_object(CallerReturn::new(rv)))
-            } else {
-                Ok(rv)
-            }
+        if is_caller_return {
+            let rv = explicit_return_value(stack.pop(), output_mode, listeners);
+            Ok(Value::from_object(CallerReturn::new(rv)))
+        } else if is_explicit_return {
+            Ok(explicit_return_value(stack.pop(), output_mode, listeners))
         } else {
             Ok(Value::from(rv))
         }

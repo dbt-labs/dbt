@@ -376,15 +376,19 @@ mod tests {
             .collect();
         assert_eq!(literals[0].source_start, literals[2].source_start);
         assert_ne!(literals[0].rendered_start, literals[2].rendered_start);
-        assert!(trace
-            .events
-            .iter()
-            .any(|event| event.kind == "loop_iteration"));
+        assert!(
+            trace
+                .events
+                .iter()
+                .any(|event| event.kind == "loop_iteration")
+        );
         let skipped = render("{% for x in [] %}never{% endfor %}select 1", true);
-        assert!(skipped
-            .events
-            .iter()
-            .any(|event| event.kind == "loop_skipped"));
+        assert!(
+            skipped
+                .events
+                .iter()
+                .any(|event| event.kind == "loop_skipped")
+        );
         assert_eq!(skipped.rendered, "select 1");
     }
 
@@ -631,44 +635,48 @@ mod tests {
     #[test]
     fn inheritance_keeps_foreign_output_generated_and_child_literals_exact() {
         for default_tracker in [false, true] {
-            let source = "{% extends 'parent.sql' %}{% block b %}{% if true %}C{{ 2 }}{% endif %}D{% endblock %}";
-            let mut environment = Environment::new();
-            environment
-                .add_template("grandparent.sql", "G{% block outer %}unused{% endblock %}Z")
-                .unwrap();
-            environment.add_template("parent.sql", "{% extends 'grandparent.sql' %}{% block outer %}P{{ 1 }}{% for n in [1, 2] %}Q{% endfor %}{% block b %}B{% endblock %}R{% endblock %}").unwrap();
-            let normal = environment
-                .render_named_str("model.sql", source, (), &[])
-                .unwrap();
-            let observer = Rc::new(RenderTraceListener::new(Path::new("model.sql")));
-            let mut listeners: Vec<Rc<dyn RenderingEventListener>> = Vec::new();
-            if default_tracker {
-                listeners.push(Rc::new(
-                    crate::listener::DefaultRenderingEventListener::default(),
-                ));
-            }
-            listeners.push(observer.clone());
-            let rendered = environment
-                .render_named_str("model.sql", source, (), &listeners)
-                .unwrap();
-            let trace = observer.finish(source, rendered);
-            assert_eq!(trace.rendered, normal);
-            assert_eq!(trace.rendered, "GP1QQC2DRZ");
-            let mut literal = String::new();
-            for event in &trace.events {
-                let src = &source[event.source_start..event.source_end];
-                let dst = &trace.rendered[event.rendered_start..event.rendered_end];
-                if event.kind == "literal" {
-                    assert_eq!(src, dst);
-                    literal.push_str(src);
-                } else if event.kind.starts_with("block_") {
-                    assert!(src == "{% if true %}" || src == "{% endif %}", "{src}");
-                }
-            }
-            assert_eq!(literal, "CD");
-            assert!(!trace.events.iter().any(|e| e.kind.starts_with("loop_")));
-            assert!(observer.templates.borrow().is_empty());
+            check_inheritance(default_tracker);
         }
+    }
+
+    fn check_inheritance(default_tracker: bool) {
+        let source = "{% extends 'parent.sql' %}{% block b %}{% if true %}C{{ 2 }}{% endif %}D{% endblock %}";
+        let mut environment = Environment::new();
+        environment
+            .add_template("grandparent.sql", "G{% block outer %}unused{% endblock %}Z")
+            .unwrap();
+        environment.add_template("parent.sql", "{% extends 'grandparent.sql' %}{% block outer %}P{{ 1 }}{% for n in [1, 2] %}Q{% endfor %}{% block b %}B{% endblock %}R{% endblock %}").unwrap();
+        let normal = environment
+            .render_named_str("model.sql", source, (), &[])
+            .unwrap();
+        let observer = Rc::new(RenderTraceListener::new(Path::new("model.sql")));
+        let mut listeners: Vec<Rc<dyn RenderingEventListener>> = Vec::new();
+        if default_tracker {
+            listeners.push(Rc::new(
+                crate::listener::DefaultRenderingEventListener::default(),
+            ));
+        }
+        listeners.push(observer.clone());
+        let rendered = environment
+            .render_named_str("model.sql", source, (), &listeners)
+            .unwrap();
+        let trace = observer.finish(source, rendered);
+        assert_eq!(trace.rendered, normal);
+        assert_eq!(trace.rendered, "GP1QQC2DRZ");
+        let mut literal = String::new();
+        for event in &trace.events {
+            let src = &source[event.source_start..event.source_end];
+            let dst = &trace.rendered[event.rendered_start..event.rendered_end];
+            if event.kind == "literal" {
+                assert_eq!(src, dst);
+                literal.push_str(src);
+            } else if event.kind.starts_with("block_") {
+                assert!(src == "{% if true %}" || src == "{% endif %}", "{src}");
+            }
+        }
+        assert_eq!(literal, "CD");
+        assert!(!trace.events.iter().any(|e| e.kind.starts_with("loop_")));
+        assert!(observer.templates.borrow().is_empty());
     }
 
     #[test]
@@ -677,14 +685,27 @@ mod tests {
             for body in [
                 format!("select {{{{ n }}}};{{% {control} %}}"),
                 format!("{{% if n > 0 %}}select {{{{ n }}}};{{% {control} %}}{{% endif %}}"),
-                format!("{{% if false %}}unused{{% elif true %}}{{% if true %}}select {{{{ n }}}};{{% {control} %}}{{% endif %}}{{% endif %}}"),
+                format!(
+                    "{{% if false %}}unused{{% elif true %}}{{% if true %}}select {{{{ n }}}};{{% {control} %}}{{% endif %}}{{% endif %}}"
+                ),
             ] {
-                let source = format!("{{% if true %}}{{% for n in [1, 2] %}}{body}{{% else %}}unused{{% endfor %}}select 9{{% endif %}}");
+                let source = format!(
+                    "{{% if true %}}{{% for n in [1, 2] %}}{body}{{% else %}}unused{{% endfor %}}select 9{{% endif %}}"
+                );
                 let trace = render(&source, true);
-                assert_eq!(trace.rendered, if control == "continue" { "select 1;select 2;select 9" } else { "select 1;select 9" });
+                assert_eq!(
+                    trace.rendered,
+                    if control == "continue" {
+                        "select 1;select 2;select 9"
+                    } else {
+                        "select 1;select 9"
+                    }
+                );
                 assert_balanced_layout(&trace);
             }
-            let source = format!("{{% for outer in [1, 2] %}}{{% for n in [1, 2] %}}{{% if true %}}{{% {control} %}}{{% endif %}}{{% endfor %}}select {{{{ outer }}}};{{% endfor %}}");
+            let source = format!(
+                "{{% for outer in [1, 2] %}}{{% for n in [1, 2] %}}{{% if true %}}{{% {control} %}}{{% endif %}}{{% endfor %}}select {{{{ outer }}}};{{% endfor %}}"
+            );
             let trace = render(&source, true);
             assert_eq!(trace.rendered, "select 1;select 2;");
             assert_balanced_layout(&trace);
