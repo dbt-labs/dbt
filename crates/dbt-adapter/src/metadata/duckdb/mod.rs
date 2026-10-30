@@ -433,7 +433,9 @@ pub(crate) fn duckdb_attaches_via(catalog_type: CatalogType) -> Option<DuckDbAtt
         | CatalogType::Unity
         | CatalogType::Glue => Some(DuckDbAttachKind::IcebergRest),
         CatalogType::DuckLake => Some(DuckDbAttachKind::DuckLake),
-        CatalogType::LocalFilesystem
+        // Athena only: `s3_tables` catalogs take no `duckdb` block.
+        CatalogType::S3Tables
+        | CatalogType::LocalFilesystem
         | CatalogType::HiveMetastore
         | CatalogType::BiglakeMetastore
         | CatalogType::SnowflakeBuiltIn

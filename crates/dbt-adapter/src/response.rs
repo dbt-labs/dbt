@@ -28,6 +28,7 @@ const KEY_SLOT_MS: &str = "slot_ms";
 const KEY_LOCATION: &str = "location";
 const KEY_PROJECT_ID: &str = "project_id";
 const KEY_JOB_ID: &str = "job_id";
+const KEY_DATA_SCANNED_IN_BYTES: &str = "data_scanned_in_bytes";
 /// Non-fatal backend warning text (e.g. a LakeCompute export-limit
 /// truncation notice), kept distinct from `message` (which always carries
 /// a status/row-count summary) so callers can detect "was there a warning"
@@ -107,6 +108,13 @@ impl AdapterResponse {
 
     pub fn query_id(&self) -> Option<String> {
         self.get_str(KEY_QUERY_ID)
+    }
+
+    /// Bytes an Athena query scanned (`AthenaAdapterResponse.data_scanned_in_bytes`).
+    pub fn data_scanned_in_bytes(&self) -> Option<i64> {
+        self.0
+            .get(&Value::from(KEY_DATA_SCANNED_IN_BYTES))
+            .and_then(Value::as_i64)
     }
 
     /// Non-fatal backend warning text, if the executed statement's response
@@ -226,7 +234,6 @@ impl AdapterResponse {
         }
 
         // Add adapter-specific fields to the AdapterResponse
-        #[expect(clippy::single_match)]
         match adapter_type {
             AdapterType::Bigquery => {
                 use adbc::bigquery::schema_metadata::*;
@@ -248,9 +255,53 @@ impl AdapterResponse {
                     response = response.with(KEY_JOB_ID, job_id);
                 }
             }
+            AdapterType::Athena => {
+                let data_scanned = batch
+                    .meta_i64(adbc::athena::schema_metadata::DATA_SCANNED_IN_BYTES)
+                    .unwrap_or(0);
+                response = response.with(KEY_DATA_SCANNED_IN_BYTES, data_scanned);
+            }
             _ => {}
         }
 
+        response
+    }
+
+    /// `AthenaConnectionManager.process_query_stats`: a statement naming both
+    /// `rowcount` and `data_scanned_in_bytes` reports the JSON object after its last
+    /// `select`. The dbt-athena table materialization ends with
+    /// `SELECT '{"rowcount":99,"data_scanned_in_bytes":1552}'` for the CTAS it ran.
+    pub fn with_athena_query_stats(self, sql: &str) -> Self {
+        if !(sql.contains("rowcount") && sql.contains("data_scanned_in_bytes")) {
+            return self;
+        }
+        let lowered = sql.to_lowercase();
+        let tail = lowered.rsplit("select").next().unwrap_or_default();
+        let Some(object) = tail
+            .find('{')
+            .zip(tail.rfind('}'))
+            .and_then(|(start, end)| tail.get(start..=end))
+        else {
+            return self;
+        };
+        let (rows, data_scanned) = match serde_json::from_str::<serde_json::Value>(object) {
+            Ok(stats) => (
+                stats["rowcount"].as_i64().unwrap_or(-1),
+                stats["data_scanned_in_bytes"].as_i64().unwrap_or(0),
+            ),
+            Err(_) => (-1, 0),
+        };
+        let message = format!("{} {rows}", self.code());
+        let mut response = self
+            .with_message(message)
+            .with(KEY_DATA_SCANNED_IN_BYTES, data_scanned);
+        // -1 is dbt-athena's unknown count: unset, as for the other adapters, rather
+        // than the row the reporting SELECT itself returned.
+        if rows >= 0 {
+            response = response.with_rows_affected(rows);
+        } else {
+            response.0.shift_remove(&Value::from(KEY_ROWS_AFFECTED));
+        }
         response
     }
 
@@ -291,6 +342,7 @@ pub(crate) fn query_id_from_record_batch(
         AdapterType::LakeCompute => {
             batch.meta_string(adbc::lake_compute::schema_metadata::QUERY_ID)
         }
+        AdapterType::Athena => batch.meta_string(adbc::athena::schema_metadata::QUERY_ID),
         _ => None,
     }
 }
@@ -349,6 +401,16 @@ fn code_and_rows(adapter_type: AdapterType, batch: &RecordBatch) -> (String, Opt
                 "SELECT" => ("SELECT".to_string(), Some(batch_rows)),
                 _ => fallback(),
             }
+        }
+        // dbt-athena reports `OK <rows>`: the rows a query returns, or else what Athena
+        // says a CTAS, INSERT, MERGE or DELETE wrote; unknown for DDL, which reports none.
+        AdapterType::Athena => {
+            let rows = if batch_rows > 0 {
+                Some(batch_rows)
+            } else {
+                batch.meta_i64(adbc::athena::schema_metadata::UPDATE_COUNT)
+            };
+            ("OK".to_string(), rows)
         }
         _ => fallback(),
     }
@@ -675,12 +737,14 @@ mod from_record_batch_tests {
             ("SNOWFLAKE_QUERY_ID", "snowflake-id"),
             ("BIGQUERY:query_id", "bigquery-id"),
             ("DATABRICKS_QUERY_ID", "databricks-id"),
+            ("ATHENA:query_execution_id", "athena-id"),
         ];
         let batch = select_batch(1, &metadata);
         for (adapter_type, expected) in [
             (AdapterType::Snowflake, Some("snowflake-id")),
             (AdapterType::Bigquery, Some("bigquery-id")),
             (AdapterType::Databricks, Some("databricks-id")),
+            (AdapterType::Athena, Some("athena-id")),
             (AdapterType::Postgres, None),
         ] {
             let response = AdapterResponse::from_record_batch(&batch, adapter_type);
@@ -829,6 +893,61 @@ mod from_record_batch_tests {
             None
         );
         assert_eq!(AdapterResponse::new().known_rows_affected(), None);
+    }
+
+    #[test]
+    fn test_athena_reports_ok_with_the_rows_written_and_the_bytes_scanned() {
+        let ctas = select_batch(
+            0,
+            &[
+                ("ATHENA:update_count", "99"),
+                ("ATHENA:data_scanned_in_bytes", "931"),
+            ],
+        );
+        let response = AdapterResponse::from_record_batch(&ctas, AdapterType::Athena);
+        assert_eq!(response.message(), "OK 99");
+        assert_eq!(response.code(), "OK");
+        assert_eq!(response.known_rows_affected(), Some(99));
+        assert_eq!(response.data_scanned_in_bytes(), Some(931));
+
+        // A SELECT reports UpdateCount 0; its fetched rows are the count.
+        let select = select_batch(3, &[("ATHENA:update_count", "0")]);
+        let response = AdapterResponse::from_record_batch(&select, AdapterType::Athena);
+        assert_eq!(response.message(), "OK 3");
+        assert_eq!(response.known_rows_affected(), Some(3));
+        assert_eq!(response.data_scanned_in_bytes(), Some(0));
+
+        // A SELECT that returns no rows: Athena's update count of 0.
+        let empty = select_batch(0, &[("ATHENA:update_count", "0")]);
+        let response = AdapterResponse::from_record_batch(&empty, AdapterType::Athena);
+        assert_eq!(response.known_rows_affected(), Some(0));
+
+        // DDL: Athena reports no update count, so the count is unknown.
+        let ddl = select_batch(0, &[]);
+        let response = AdapterResponse::from_record_batch(&ddl, AdapterType::Athena);
+        assert_eq!(response.message(), "OK 0");
+        assert_eq!(response.known_rows_affected(), None);
+    }
+
+    #[test]
+    fn test_athena_query_stats_come_from_the_reporting_select() {
+        let reporting = AdapterResponse::from_record_batch(&select_batch(1, &[]), AdapterType::Athena)
+            .with_athena_query_stats(
+                "-- /* {\"app\": \"dbt\"} */\nSELECT '{\"rowcount\":99,\"data_scanned_in_bytes\":1552}'",
+            );
+        assert_eq!(reporting.message(), "OK 99");
+        assert_eq!(reporting.known_rows_affected(), Some(99));
+        assert_eq!(reporting.data_scanned_in_bytes(), Some(1552));
+
+        let other = AdapterResponse::from_record_batch(&select_batch(2, &[]), AdapterType::Athena)
+            .with_athena_query_stats("select rowcount from t");
+        assert_eq!(other.message(), "OK 2");
+
+        let malformed =
+            AdapterResponse::from_record_batch(&select_batch(1, &[]), AdapterType::Athena)
+                .with_athena_query_stats("select '{rowcount: data_scanned_in_bytes}'");
+        assert_eq!(malformed.known_rows_affected(), None);
+        assert_eq!(malformed.data_scanned_in_bytes(), Some(0));
     }
 
     #[test]
