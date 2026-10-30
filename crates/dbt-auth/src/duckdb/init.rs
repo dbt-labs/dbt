@@ -787,11 +787,12 @@ impl<'a> DuckDbInit<'a> {
             attachments: Attachments::from_config(config)?,
         };
         // Repositories are registered before `settings` are applied, so a forbidding setting
-        // would only take effect after they were trusted. DuckDB parses the value
-        // case-insensitively:
+        // would only take effect after they were trusted. DuckDB matches setting names and
+        // parses this value case-insensitively:
+        // https://github.com/duckdb/duckdb/blob/d54cbbe3df17e8e5ce68312f483b4155836112aa/src/include/duckdb/common/identifier.hpp#L32-L33
         // https://github.com/duckdb/duckdb/blob/d54cbbe3df17e8e5ce68312f483b4155836112aa/src/main/extension/extension_repository_manager.cpp#L201-L215
         let forbidden = init.settings.settings().any(|(key, value)| {
-            key == "allow_extension_repositories"
+            key.eq_ignore_ascii_case("allow_extension_repositories")
                 && value
                     .as_str()
                     .is_some_and(|v| v.eq_ignore_ascii_case("forbidden"))
@@ -1727,10 +1728,13 @@ extensions:
     fn test_forbidding_setting_conflicts_with_declared_repositories() {
         const REPOSITORY: &str =
             "extension_repositories: [{name: repo_a, prefix: 'https://a.invalid'}]";
-        for value in ["forbidden", "FORBIDDEN"] {
-            let config = config_from_yaml(&format!(
-                "{REPOSITORY}\nsettings: {{allow_extension_repositories: {value}}}"
-            ));
+        for (name, value) in [
+            ("allow_extension_repositories", "forbidden"),
+            ("allow_extension_repositories", "FORBIDDEN"),
+            ("ALLOW_EXTENSION_REPOSITORIES", "forbidden"),
+            ("Allow_Extension_Repositories", "Forbidden"),
+        ] {
+            let config = config_from_yaml(&format!("{REPOSITORY}\nsettings: {{{name}: {value}}}"));
             let err = DuckDbInit::from_config(&config).err().unwrap();
             assert!(
                 err.msg()

@@ -64,13 +64,14 @@ pub(crate) fn initialize(
     Ok(())
 }
 
-/// Identifies the repository declarations a database is initialized with, so that a cached
-/// database is never reused for different declarations without registering them.
+/// Validates `config` as [`initialize`] would and identifies the repository declarations it
+/// initializes a database with. Run before reusing a cached database, so that the database is
+/// never handed to a configuration that initialization rejects, or reused for different
+/// declarations without registering them.
 pub(crate) fn init_identity(config: &AdapterConfig) -> AdapterResult<u64> {
-    let declarations = DuckDbRepositoryDeclaration::all_from_config(config)
-        .map_err(auth_error_to_adapter_error)?;
+    let init = DuckDbInit::from_config(config).map_err(auth_error_to_adapter_error)?;
     let mut hasher = DefaultHasher::new();
-    declarations.hash(&mut hasher);
+    init.extension_repositories().hash(&mut hasher);
     Ok(hasher.finish())
 }
 

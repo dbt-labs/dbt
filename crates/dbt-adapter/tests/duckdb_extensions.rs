@@ -463,6 +463,81 @@ fn cached_database_is_not_reused_for_other_repository_declarations() {
     engine.new_connection_with_config(&first).unwrap();
 }
 
+/// `settings` that forbid repositories, as DuckDB would read them: setting names are
+/// case-insensitive.
+const FORBIDDING_SETTINGS: [&str; 3] = [
+    "settings:\n  allow_extension_repositories: forbidden\n",
+    "settings:\n  ALLOW_EXTENSION_REPOSITORIES: forbidden\n",
+    "settings:\n  Allow_Extension_Repositories: Forbidden\n",
+];
+
+fn assert_forbidding_conflict(err: &AdapterError) {
+    assert!(
+        err.message()
+            .contains("settings.allow_extension_repositories: 'forbidden' conflicts"),
+        "{err}"
+    );
+}
+
+#[test]
+#[ignore = "needs a DuckDB 2.0 driver; offline"]
+fn forbidding_setting_is_rejected_before_registration() {
+    require_duckdb_major("2");
+    let storage = Storage::new();
+    for settings in FORBIDDING_SETTINGS {
+        let mut profile =
+            repository_profile("test_repo", "https://repo-a.invalid", Some(KEY_A), "[]");
+        profile.push_str(settings);
+        let err = connect(&profile, storage.repository_options())
+            .err()
+            .unwrap_or_else(|| panic!("must fail: {profile}"));
+        assert_forbidding_conflict(&err);
+    }
+    // Nothing was registered: no repository file, and DuckDB lists no user repository.
+    assert_eq!(
+        std::fs::read_dir(storage.repositories.path())
+            .unwrap()
+            .count(),
+        0
+    );
+    let mut conn = connect(
+        "type: duckdb\npath: ':memory:'",
+        storage.repository_options(),
+    )
+    .unwrap();
+    assert_eq!(
+        query_string(
+            &mut conn,
+            "SELECT count(*)::VARCHAR FROM duckdb_extension_repositories() \
+             WHERE type = 'USER_PROVIDED'"
+        ),
+        "0"
+    );
+}
+
+#[test]
+#[ignore = "needs a DuckDB 2.0 driver; offline"]
+fn cached_database_is_not_reused_for_a_rejected_configuration() {
+    require_duckdb_major("2");
+    let storage = Storage::new();
+    let declared = repository_profile("test_repo", "https://repo-a.invalid", Some(KEY_A), "[]");
+    let first = profile_config(&declared);
+    let engine = engine(&first, storage.repository_options());
+    engine.new_connection_with_config(&first).unwrap();
+    // Same database options and declarations, so the same cached database, but settings that
+    // initialization rejects.
+    for settings in FORBIDDING_SETTINGS {
+        let rejected = profile_config(&format!("{declared}{settings}"));
+        let err = engine
+            .new_connection_with_config(&rejected)
+            .err()
+            .unwrap_or_else(|| panic!("must fail: {settings}"));
+        assert_forbidding_conflict(&err);
+    }
+    let mut conn = engine.new_connection_with_config(&first).unwrap();
+    assert_eq!(access(&mut conn), "allowed");
+}
+
 #[test]
 #[ignore = "needs a DuckDB 2.0 driver; downloads A5 and its signing key from Query Farm"]
 fn query_farm_a5_installs_and_loads_with_signature_verification() {

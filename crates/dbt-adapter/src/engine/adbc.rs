@@ -337,8 +337,9 @@ impl AdbcEngine {
         Ok(builder)
     }
 
-    /// Identifies the database initialization that the database fingerprint does not cover, so
-    /// that a cached database is not reused for a different one.
+    /// Validates the database initialization in `config` and identifies the part of it that the
+    /// database fingerprint does not cover, so that a cached database is neither reused for a
+    /// different initialization nor for a configuration that initialization would reject.
     fn init_identity(&self, config: &AdapterConfig) -> AdapterResult<Option<u64>> {
         match self.adapter_type {
             AdapterType::DuckDB => super::duckdb_init::init_identity(config).map(Some),
