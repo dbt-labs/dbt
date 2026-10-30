@@ -146,7 +146,8 @@ fn register(
     // creating a repository or installing from one requires 'allowed'; DuckDB permits changing
     // it from 'undecided' while the database is running.
     // https://github.com/duckdb/duckdb/blob/d54cbbe3df17e8e5ce68312f483b4155836112aa/src/main/settings/custom_settings.cpp#L215-L222
-    if access == "undecided" && (!missing.is_empty() || init.installs_from_user_repositories()) {
+    let needs_allowed = !missing.is_empty() || init.installs_from_user_repositories();
+    if access == "undecided" && needs_allowed {
         execute(conn, "SET allow_extension_repositories = 'allowed'")
             .map_err(adbc_error_to_adapter_error)?;
     }

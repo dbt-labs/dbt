@@ -239,6 +239,70 @@ struct Extension<'a> {
     repository: ExtensionRepository<'a>,
 }
 
+/// A mapping entry of a profile list such as `extensions[2]`, for field validation with
+/// errors that name the field.
+struct ListItem<'a> {
+    list: &'static str,
+    index: usize,
+    map: &'a dbt_yaml::Mapping,
+}
+
+impl<'a> ListItem<'a> {
+    /// Rejects fields other than `fields`.
+    fn new(
+        list: &'static str,
+        index: usize,
+        map: &'a dbt_yaml::Mapping,
+        fields: &[&str],
+    ) -> Result<Self, AuthError> {
+        let item = ListItem { list, index, map };
+        match map
+            .keys()
+            .find(|k| !k.as_str().is_some_and(|k| fields.contains(&k)))
+            .map(|k| k.as_str())
+        {
+            None => Ok(item),
+            Some(Some(key)) => Err(item.item_error(&format!("unknown field '{key}'"))),
+            Some(None) => Err(item.item_error("field names must be strings")),
+        }
+    }
+
+    fn item_error(&self, message: &str) -> AuthError {
+        AuthError::config(format!("{}[{}]: {message}", self.list, self.index))
+    }
+
+    fn field_error(&self, field: &str, message: &str) -> AuthError {
+        AuthError::config(format!("{}[{}].{field}: {message}", self.list, self.index))
+    }
+
+    /// `field` as an actual YAML string accepted by `valid`.
+    fn required_str(
+        &self,
+        field: &str,
+        valid: fn(&str) -> bool,
+        expected: &str,
+    ) -> Result<&'a str, AuthError> {
+        match self.map.get(field) {
+            Some(YmlValue::String(value, _)) if valid(value) => Ok(value),
+            Some(_) => Err(self.field_error(field, expected)),
+            None => Err(self.item_error(&format!("missing required field '{field}'"))),
+        }
+    }
+
+    /// Like [`Self::required_str`], but a missing or null `field` is `None`.
+    fn optional_str(
+        &self,
+        field: &str,
+        valid: fn(&str) -> bool,
+        expected: &str,
+    ) -> Result<Option<&'a str>, AuthError> {
+        match self.map.get(field) {
+            None | Some(YmlValue::Null(_)) => Ok(None),
+            _ => self.required_str(field, valid, expected).map(Some),
+        }
+    }
+}
+
 impl<'a> Extension<'a> {
     const OBJECT_FIELDS: &'static [&'static str] = &["name", "repo"];
 
@@ -260,43 +324,23 @@ impl<'a> Extension<'a> {
                 )));
             }
         };
-        if let Some(unknown) = map
-            .keys()
-            .find(|k| !k.as_str().is_some_and(|k| Self::OBJECT_FIELDS.contains(&k)))
-        {
-            return Err(AuthError::config(match unknown.as_str() {
-                Some(key) => format!("extensions[{i}]: unknown field '{key}'"),
-                None => format!("extensions[{i}]: field names must be strings"),
-            }));
-        }
-
-        let name = match map.get("name") {
-            Some(YmlValue::String(name, _)) if is_extension_name(name) => name,
-            Some(_) => {
-                return Err(AuthError::config(format!(
-                    "extensions[{i}].name: expected a non-empty string of ASCII letters, digits and '_'"
-                )));
-            }
-            None => {
-                return Err(AuthError::config(format!(
-                    "extensions[{i}]: missing required field 'name'"
-                )));
-            }
-        };
+        let item = ListItem::new("extensions", i, map, Self::OBJECT_FIELDS)?;
+        let name = item.required_str(
+            "name",
+            is_extension_name,
+            "expected a non-empty string of ASCII letters, digits and '_'",
+        )?;
         // `repo: null` is the same as omitting it, matching `DuckDbExtensionObject::repo`.
-        let repository = match map.get("repo") {
-            None | Some(YmlValue::Null(_)) => ExtensionRepository::Default,
-            Some(YmlValue::String(repo, _)) if BUILT_IN_REPOSITORIES.contains(&repo.as_str()) => {
+        let repository = match item.optional_str(
+            "repo",
+            is_repository_name,
+            "expected a repository name of ASCII letters, digits, '_' and '-'",
+        )? {
+            None => ExtensionRepository::Default,
+            Some(repo) if BUILT_IN_REPOSITORIES.contains(&repo) => {
                 ExtensionRepository::BuiltIn(repo)
             }
-            Some(YmlValue::String(repo, _)) if is_repository_name(repo) => {
-                ExtensionRepository::User(repo)
-            }
-            Some(_) => {
-                return Err(AuthError::config(format!(
-                    "extensions[{i}].repo: expected a repository name of ASCII letters, digits, '_' and '-'"
-                )));
-            }
+            Some(repo) => ExtensionRepository::User(repo),
         };
         Ok(Extension { name, repository })
     }
@@ -418,63 +462,36 @@ impl<'a> DuckDbRepositoryDeclaration<'a> {
                 "extension_repositories[{i}]: expected a mapping with 'name', 'prefix' and optional 'public_key'"
             )));
         };
-        if let Some(unknown) = map
-            .keys()
-            .find(|k| !k.as_str().is_some_and(|k| Self::FIELDS.contains(&k)))
-        {
-            return Err(AuthError::config(match unknown.as_str() {
-                Some(key) => format!("extension_repositories[{i}]: unknown field '{key}'"),
-                None => format!("extension_repositories[{i}]: field names must be strings"),
-            }));
-        }
-
-        let name = match map.get("name") {
-            Some(YmlValue::String(name, _)) if is_repository_name(name) => name,
-            Some(_) => {
-                return Err(AuthError::config(format!(
-                    "extension_repositories[{i}].name: expected a repository name of ASCII letters, digits, '_' and '-'"
-                )));
-            }
-            None => {
-                return Err(AuthError::config(format!(
-                    "extension_repositories[{i}]: missing required field 'name'"
-                )));
-            }
-        };
+        let item = ListItem::new("extension_repositories", i, map, Self::FIELDS)?;
+        let name = item.required_str(
+            "name",
+            is_repository_name,
+            "expected a repository name of ASCII letters, digits, '_' and '-'",
+        )?;
         // DuckDB lowercases user repository names before rejecting built-in ones.
         // https://github.com/duckdb/duckdb/blob/d54cbbe3df17e8e5ce68312f483b4155836112aa/src/main/extension/extension_repository_manager.cpp#L372-L376
         if BUILT_IN_REPOSITORIES
             .iter()
             .any(|built_in| built_in.eq_ignore_ascii_case(name))
         {
-            return Err(AuthError::config(format!(
-                "extension_repositories[{i}].name: '{name}' is built into DuckDB and cannot be declared"
-            )));
+            return Err(item.field_error(
+                "name",
+                &format!("'{name}' is built into DuckDB and cannot be declared"),
+            ));
         }
-        let prefix = match map.get("prefix") {
-            Some(YmlValue::String(prefix, _)) if !prefix.is_empty() => prefix,
-            Some(_) => {
-                return Err(AuthError::config(format!(
-                    "extension_repositories[{i}].prefix: expected a non-empty string"
-                )));
-            }
-            None => {
-                return Err(AuthError::config(format!(
-                    "extension_repositories[{i}]: missing required field 'prefix'"
-                )));
-            }
-        };
+        let prefix = item.required_str(
+            "prefix",
+            |prefix| !prefix.is_empty(),
+            "expected a non-empty string",
+        )?;
         // `public_key: null` is the same as omitting it, matching the profile schema.
-        let key = match map.get("public_key") {
-            None | Some(YmlValue::Null(_)) => DuckDbRepositoryKey::Discovered,
-            Some(YmlValue::String(key, _)) if !key.trim().is_empty() => {
-                DuckDbRepositoryKey::Pinned(key)
-            }
-            Some(_) => {
-                return Err(AuthError::config(format!(
-                    "extension_repositories[{i}].public_key: expected a non-empty string"
-                )));
-            }
+        let key = match item.optional_str(
+            "public_key",
+            |key| !key.trim().is_empty(),
+            "expected a non-empty string",
+        )? {
+            None => DuckDbRepositoryKey::Discovered,
+            Some(key) => DuckDbRepositoryKey::Pinned(key),
         };
         Ok(DuckDbRepositoryDeclaration { name, prefix, key })
     }

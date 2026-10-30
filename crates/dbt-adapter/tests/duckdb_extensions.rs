@@ -538,6 +538,37 @@ fn cached_database_is_not_reused_for_a_rejected_configuration() {
     assert_eq!(access(&mut conn), "allowed");
 }
 
+fn assert_a5_loaded_with_signature_verification(conn: &mut Box<dyn Connection>, run: &str) {
+    assert_eq!(
+        query_string(
+            conn,
+            "SELECT current_setting('allow_unsigned_extensions')::VARCHAR"
+        ),
+        "false"
+    );
+    assert_eq!(
+        query_string(
+            conn,
+            "SELECT loaded::VARCHAR FROM duckdb_extensions() WHERE extension_name = 'a5'"
+        ),
+        "true",
+        "{run}"
+    );
+    let functions = query_string(
+        conn,
+        "SELECT count(*)::VARCHAR FROM duckdb_functions() WHERE function_name LIKE 'a5%'",
+    );
+    assert_ne!(functions, "0", "{run}");
+    println!(
+        "{run}: {functions} a5 functions, keys {}",
+        query_string(
+            conn,
+            "SELECT key_fingerprints::VARCHAR FROM duckdb_extension_repositories() \
+             WHERE repository_name = 'query_farm'"
+        )
+    );
+}
+
 #[test]
 #[ignore = "needs a DuckDB 2.0 driver; downloads A5 and its signing key from Query Farm"]
 fn query_farm_a5_installs_and_loads_with_signature_verification() {
@@ -553,34 +584,7 @@ fn query_farm_a5_installs_and_loads_with_signature_verification() {
     for run in ["fresh", "reused"] {
         let mut conn = connect(&profile, storage.repository_options())
             .unwrap_or_else(|e| panic!("{run} run failed: {e}"));
-        assert_eq!(
-            query_string(
-                &mut conn,
-                "SELECT current_setting('allow_unsigned_extensions')::VARCHAR"
-            ),
-            "false"
-        );
-        assert_eq!(
-            query_string(
-                &mut conn,
-                "SELECT loaded::VARCHAR FROM duckdb_extensions() WHERE extension_name = 'a5'"
-            ),
-            "true",
-            "{run}"
-        );
-        let functions = query_string(
-            &mut conn,
-            "SELECT count(*)::VARCHAR FROM duckdb_functions() WHERE function_name LIKE 'a5%'",
-        );
-        assert_ne!(functions, "0", "{run}");
-        println!(
-            "{run}: {functions} a5 functions, keys {}",
-            query_string(
-                &mut conn,
-                "SELECT key_fingerprints::VARCHAR FROM duckdb_extension_repositories() \
-                 WHERE repository_name = 'query_farm'"
-            )
-        );
+        assert_a5_loaded_with_signature_verification(&mut conn, run);
     }
     // `duckdb_extensions()` does not report per-repository installs in DuckDB 2.0.0
     // (`installed` is false), so look for the file in the isolated storage instead.
