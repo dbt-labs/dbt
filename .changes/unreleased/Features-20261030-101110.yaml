@@ -1,0 +1,7 @@
+kind: Features
+body: Support registering custom DuckDB 2.0 extension repositories with extension_repositories in profiles.yml, and installing and loading extensions from them.
+time: 2026-10-30T10:11:10.045983548Z
+custom:
+    author: tsanton
+    issue: "16925"
+    project: dbt-core

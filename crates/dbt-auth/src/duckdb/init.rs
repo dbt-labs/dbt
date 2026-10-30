@@ -186,6 +186,16 @@ impl<'a> DuckDbTarget<'a> {
         stripped.split('?').next().unwrap_or("").to_owned()
     }
 
+    /// Whether `INSTALL` can run. Under MotherDuck SaaS, file access is locked at open and only
+    /// `LOAD` can run.
+    fn installs_extensions(&self) -> bool {
+        !matches!(
+            self,
+            DuckDbTarget::MotherduckSaasBrowserLogin { .. }
+                | DuckDbTarget::MotherduckSaasTokenAuth { .. }
+        )
+    }
+
     /// Strip URL query parameters from a MotherDuck attach path.
     fn attach_path(path: &str) -> String {
         path.split_once('?')
@@ -194,81 +204,323 @@ impl<'a> DuckDbTarget<'a> {
     }
 }
 
+/// Whether the loaded DuckDB supports user-provided extension repositories (DuckDB 2.0+).
+/// Their extensions are stored per repository, so they must be loaded with `LOAD ... FROM`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DuckDbUserRepositories {
+    Unsupported,
+    Supported,
+}
+
+/// The repositories built into DuckDB, which cannot be declared in `extension_repositories`.
+// https://github.com/duckdb/duckdb/blob/d54cbbe3df17e8e5ce68312f483b4155836112aa/src/main/extension_install_info.cpp#L27-L33
+const BUILT_IN_REPOSITORIES: &[&str] = &[
+    "core",
+    "core_nightly",
+    "community",
+    "local_build_debug",
+    "local_build_release",
+];
+
+/// The repository an extension is installed from.
+enum ExtensionRepository<'a> {
+    /// Bare `INSTALL`, which uses DuckDB's default repository.
+    Default,
+    /// A repository built into DuckDB, e.g. `community` or `core_nightly`. DuckDB matches these
+    /// names exactly.
+    BuiltIn(&'a str),
+    /// Any other name: a user-provided repository (DuckDB 2.0+), registered through
+    /// `extension_repositories` or earlier.
+    User(&'a str),
+}
+
+struct Extension<'a> {
+    name: &'a str,
+    repository: ExtensionRepository<'a>,
+}
+
+/// A mapping entry of a profile list such as `extensions[2]`, for field validation with
+/// errors that name the field.
+struct ListItem<'a> {
+    list: &'static str,
+    index: usize,
+    map: &'a dbt_yaml::Mapping,
+}
+
+impl<'a> ListItem<'a> {
+    /// Rejects fields other than `fields`.
+    fn new(
+        list: &'static str,
+        index: usize,
+        map: &'a dbt_yaml::Mapping,
+        fields: &[&str],
+    ) -> Result<Self, AuthError> {
+        let item = ListItem { list, index, map };
+        match map
+            .keys()
+            .find(|k| !k.as_str().is_some_and(|k| fields.contains(&k)))
+            .map(|k| k.as_str())
+        {
+            None => Ok(item),
+            Some(Some(key)) => Err(item.item_error(&format!("unknown field '{key}'"))),
+            Some(None) => Err(item.item_error("field names must be strings")),
+        }
+    }
+
+    fn item_error(&self, message: &str) -> AuthError {
+        AuthError::config(format!("{}[{}]: {message}", self.list, self.index))
+    }
+
+    fn field_error(&self, field: &str, message: &str) -> AuthError {
+        AuthError::config(format!("{}[{}].{field}: {message}", self.list, self.index))
+    }
+
+    /// `field` as an actual YAML string accepted by `valid`.
+    fn required_str(
+        &self,
+        field: &str,
+        valid: fn(&str) -> bool,
+        expected: &str,
+    ) -> Result<&'a str, AuthError> {
+        match self.map.get(field) {
+            Some(YmlValue::String(value, _)) if valid(value) => Ok(value),
+            Some(_) => Err(self.field_error(field, expected)),
+            None => Err(self.item_error(&format!("missing required field '{field}'"))),
+        }
+    }
+
+    /// Like [`Self::required_str`], but a missing or null `field` is `None`.
+    fn optional_str(
+        &self,
+        field: &str,
+        valid: fn(&str) -> bool,
+        expected: &str,
+    ) -> Result<Option<&'a str>, AuthError> {
+        match self.map.get(field) {
+            None | Some(YmlValue::Null(_)) => Ok(None),
+            _ => self.required_str(field, valid, expected).map(Some),
+        }
+    }
+}
+
+impl<'a> Extension<'a> {
+    const OBJECT_FIELDS: &'static [&'static str] = &["name", "repo"];
+
+    /// Parses `extensions[i]`: a bare name, or a `{name, repo?}` mapping as in dbt-duckdb.
+    // https://github.com/duckdb/dbt-duckdb/blob/6c010fc97bd5bba793f7132991edd001362e756b/dbt/adapters/duckdb/environments/__init__.py#L166-L177
+    fn from_item(i: usize, item: &'a YmlValue) -> Result<Self, AuthError> {
+        let map = match item {
+            // Bare names keep their legacy handling: sanitized at render, skipped if empty.
+            YmlValue::String(name, _) => {
+                return Ok(Extension {
+                    name,
+                    repository: ExtensionRepository::Default,
+                });
+            }
+            YmlValue::Mapping(map, _) => map,
+            _ => {
+                return Err(AuthError::config(format!(
+                    "extensions[{i}]: expected an extension name or a mapping with 'name' and optional 'repo'"
+                )));
+            }
+        };
+        let item = ListItem::new("extensions", i, map, Self::OBJECT_FIELDS)?;
+        let name = item.required_str(
+            "name",
+            is_extension_name,
+            "expected a non-empty string of ASCII letters, digits and '_'",
+        )?;
+        // `repo: null` is the same as omitting it, matching `DuckDbExtensionObject::repo`.
+        let repository = match item.optional_str(
+            "repo",
+            is_repository_name,
+            "expected a repository name of ASCII letters, digits, '_' and '-'",
+        )? {
+            None => ExtensionRepository::Default,
+            Some(repo) if BUILT_IN_REPOSITORIES.contains(&repo) => {
+                ExtensionRepository::BuiltIn(repo)
+            }
+            Some(repo) => ExtensionRepository::User(repo),
+        };
+        Ok(Extension { name, repository })
+    }
+
+    /// `INSTALL` (unless `install` is false) and `LOAD` for this extension.
+    fn render(
+        &self,
+        install: bool,
+        user_repositories: DuckDbUserRepositories,
+        out: &mut Vec<String>,
+    ) {
+        let name = sanitize_identifier(self.name);
+        if name.is_empty() {
+            return;
+        }
+        if install {
+            out.push(match self.repository {
+                ExtensionRepository::Default => format!("INSTALL {name}"),
+                ExtensionRepository::BuiltIn(repo) | ExtensionRepository::User(repo) => {
+                    format!("INSTALL {name} FROM \"{repo}\"")
+                }
+            });
+        }
+        // A bare `LOAD` finds extensions installed from the built-in repositories, but not from
+        // user-provided ones. DuckDB before 2.0 has no `LOAD ... FROM`.
+        // https://github.com/duckdb/duckdb/blob/d54cbbe3df17e8e5ce68312f483b4155836112aa/src/main/extension/extension_load.cpp#L485-L487
+        out.push(match (&self.repository, user_repositories) {
+            (ExtensionRepository::User(repo), DuckDbUserRepositories::Supported) => {
+                format!("LOAD {name} FROM \"{repo}\"")
+            }
+            _ => format!("LOAD {name}"),
+        });
+    }
+}
+
 struct Extensions<'a> {
-    names: Vec<&'a str>,
+    items: Vec<Extension<'a>>,
 }
 
 impl<'a> Extensions<'a> {
     fn from_config(config: &'a AdapterConfig) -> Result<Self, AuthError> {
         match config.get("extensions") {
             Some(YmlValue::Sequence(seq, _)) => {
-                let names = seq
+                let items = seq
                     .iter()
                     .enumerate()
-                    .map(|(i, item)| {
-                        item.as_str().ok_or_else(|| {
-                            AuthError::config(format!(
-                                "extensions: item {i} must be a string, got {item:?}"
-                            ))
-                        })
-                    })
+                    .map(|(i, item)| Extension::from_item(i, item))
                     .collect::<Result<_, _>>()?;
-                Ok(Extensions { names })
+                Ok(Extensions { items })
             }
-            None => Ok(Extensions { names: vec![] }),
+            None => Ok(Extensions { items: vec![] }),
             Some(other) => Err(AuthError::config(format!(
                 "extensions: expected a sequence, got {other:?}"
             ))),
         }
     }
 
-    /// `INSTALL`/`LOAD` for the configured extensions (local/memory paths).
-    fn render(&self) -> Vec<String> {
-        let names: Vec<String> = self
-            .names
+    fn uses_user_repository(&self) -> bool {
+        self.items
             .iter()
-            .map(|s| sanitize_identifier(s))
-            .filter(|s| !s.is_empty())
-            .collect();
+            .any(|ext| matches!(ext.repository, ExtensionRepository::User(_)))
+    }
 
-        let mut out = Vec::with_capacity(names.len() * 2);
-        for name in &names {
-            out.push(format!("INSTALL {name}"));
-            out.push(format!("LOAD {name}"));
+    /// `INSTALL`/`LOAD` for the configured extensions. MotherDuck targets get `motherduck`
+    /// auto-injected if absent.
+    fn render(
+        &self,
+        target: &DuckDbTarget<'_>,
+        user_repositories: DuckDbUserRepositories,
+    ) -> Vec<String> {
+        let is_motherduck = !matches!(target, DuckDbTarget::Plain { .. });
+        let install = target.installs_extensions();
+        let motherduck = (is_motherduck
+            && !self
+                .items
+                .iter()
+                .any(|ext| ext.name.eq_ignore_ascii_case("motherduck")))
+        .then_some(Extension {
+            name: "motherduck",
+            repository: ExtensionRepository::Default,
+        });
+
+        let mut out = Vec::with_capacity((self.items.len() + 1) * 2);
+        for ext in motherduck.iter().chain(&self.items) {
+            ext.render(install, user_repositories, &mut out);
         }
         out
     }
+}
 
-    /// Same as [`Self::render`], with `motherduck` auto-injected if absent.
-    /// `install` is false under SaaS, where file access is locked at open and only `LOAD` can run.
-    fn render_with_motherduck(&self, target: &DuckDbTarget<'_>) -> Vec<String> {
-        let has_motherduck = self
-            .names
-            .iter()
-            .any(|s| s.eq_ignore_ascii_case("motherduck"));
+/// How a declared repository's signing key is trusted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum DuckDbRepositoryKey<'a> {
+    /// No `public_key`: DuckDB fetches the key from the prefix when it registers the
+    /// repository, then keeps using the stored key.
+    Discovered,
+    /// `public_key`: a PEM key, several concatenated PEM keys, or a PEM key's base64 body.
+    Pinned(&'a str),
+}
 
-        let mut names: Vec<String> = if has_motherduck {
-            vec![]
-        } else {
-            vec!["motherduck".to_owned()]
+/// An `extension_repositories` entry: a custom, signed repository (DuckDB 2.0+).
+///
+/// Registering one needs the database's current state, so the engine compares and creates
+/// repositories; this type only carries the validated declaration.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct DuckDbRepositoryDeclaration<'a> {
+    pub name: &'a str,
+    pub prefix: &'a str,
+    pub key: DuckDbRepositoryKey<'a>,
+}
+
+impl<'a> DuckDbRepositoryDeclaration<'a> {
+    const FIELDS: &'static [&'static str] = &["name", "prefix", "public_key"];
+
+    // https://github.com/duckdb/dbt-duckdb/blob/2c6cc268a85280cf57a4257eea2b6b5d5944824f/dbt/adapters/duckdb/credentials.py#L174-L199
+    fn from_item(i: usize, item: &'a YmlValue) -> Result<Self, AuthError> {
+        let YmlValue::Mapping(map, _) = item else {
+            return Err(AuthError::config(format!(
+                "extension_repositories[{i}]: expected a mapping with 'name', 'prefix' and optional 'public_key'"
+            )));
         };
-        for ext in &self.names {
-            let sanitized = sanitize_identifier(ext);
-            if !sanitized.is_empty() {
-                names.push(sanitized);
-            }
+        let item = ListItem::new("extension_repositories", i, map, Self::FIELDS)?;
+        let name = item.required_str(
+            "name",
+            is_repository_name,
+            "expected a repository name of ASCII letters, digits, '_' and '-'",
+        )?;
+        // DuckDB lowercases user repository names before rejecting built-in ones.
+        // https://github.com/duckdb/duckdb/blob/d54cbbe3df17e8e5ce68312f483b4155836112aa/src/main/extension/extension_repository_manager.cpp#L372-L376
+        if BUILT_IN_REPOSITORIES
+            .iter()
+            .any(|built_in| built_in.eq_ignore_ascii_case(name))
+        {
+            return Err(item.field_error(
+                "name",
+                &format!("'{name}' is built into DuckDB and cannot be declared"),
+            ));
         }
+        let prefix = item.required_str(
+            "prefix",
+            |prefix| !prefix.is_empty(),
+            "expected a non-empty string",
+        )?;
+        // `public_key: null` is the same as omitting it, matching the profile schema.
+        let key = match item.optional_str(
+            "public_key",
+            |key| !key.trim().is_empty(),
+            "expected a non-empty string",
+        )? {
+            None => DuckDbRepositoryKey::Discovered,
+            Some(key) => DuckDbRepositoryKey::Pinned(key),
+        };
+        Ok(DuckDbRepositoryDeclaration { name, prefix, key })
+    }
 
-        let mut out = Vec::with_capacity(names.len() * 2);
-        for name in &names {
-            match target {
-                DuckDbTarget::MotherduckSaasBrowserLogin { .. }
-                | DuckDbTarget::MotherduckSaasTokenAuth { .. } => {}
-                _ => out.push(format!("INSTALL {name}")),
+    /// Parses and validates every `extension_repositories` entry.
+    pub fn all_from_config(config: &'a AdapterConfig) -> Result<Vec<Self>, AuthError> {
+        let items = match config.get("extension_repositories") {
+            None | Some(YmlValue::Null(_)) => return Ok(vec![]),
+            Some(YmlValue::Sequence(seq, _)) => seq,
+            Some(_) => {
+                return Err(AuthError::config(
+                    "extension_repositories: expected a sequence",
+                ));
             }
-            out.push(format!("LOAD {name}"));
+        };
+        let mut declarations: Vec<Self> = Vec::with_capacity(items.len());
+        for (i, item) in items.iter().enumerate() {
+            let declaration = Self::from_item(i, item)?;
+            if let Some(j) = declarations
+                .iter()
+                .position(|other| other.name.eq_ignore_ascii_case(declaration.name))
+            {
+                return Err(AuthError::config(format!(
+                    "extension_repositories[{i}].name: duplicates extension_repositories[{j}] (repository names are case-insensitive)"
+                )));
+            }
+            declarations.push(declaration);
         }
-        out
+        Ok(declarations)
     }
 }
 
@@ -530,27 +782,85 @@ pub fn motherduck_saas_mode_query() -> &'static str {
     "select coalesce(bool_or(try_cast(value as boolean)), false) as saas_mode from duckdb_settings() where name = 'motherduck_saas_mode'"
 }
 
+/// DuckDB initialization from the adapter config, parsed and validated before any database
+/// I/O, so that every profile error is reported before anything is changed.
+pub struct DuckDbInit<'a> {
+    target: DuckDbTarget<'a>,
+    extensions: Extensions<'a>,
+    extension_repositories: Vec<DuckDbRepositoryDeclaration<'a>>,
+    secrets: Secrets<'a>,
+    settings: Settings<'a>,
+    attachments: Attachments<'a>,
+}
+
+impl<'a> DuckDbInit<'a> {
+    pub fn from_config(config: &'a AdapterConfig) -> Result<Self, AuthError> {
+        let init = DuckDbInit {
+            target: DuckDbTarget::from_config(config)?,
+            extensions: Extensions::from_config(config)?,
+            extension_repositories: DuckDbRepositoryDeclaration::all_from_config(config)?,
+            secrets: Secrets::from_config(config)?,
+            settings: Settings::from_config(config)?,
+            attachments: Attachments::from_config(config)?,
+        };
+        // Repositories are registered before `settings` are applied, so a forbidding setting
+        // would only take effect after they were trusted. DuckDB matches setting names and
+        // parses this value case-insensitively:
+        // https://github.com/duckdb/duckdb/blob/d54cbbe3df17e8e5ce68312f483b4155836112aa/src/include/duckdb/common/identifier.hpp#L32-L33
+        // https://github.com/duckdb/duckdb/blob/d54cbbe3df17e8e5ce68312f483b4155836112aa/src/main/extension/extension_repository_manager.cpp#L201-L215
+        let forbidden = init.settings.settings().any(|(key, value)| {
+            key.eq_ignore_ascii_case("allow_extension_repositories")
+                && value
+                    .as_str()
+                    .is_some_and(|v| v.eq_ignore_ascii_case("forbidden"))
+        });
+        if !init.extension_repositories.is_empty() && forbidden {
+            return Err(AuthError::config(
+                "settings.allow_extension_repositories: 'forbidden' conflicts with extension_repositories, \
+                 which are registered before settings are applied",
+            ));
+        }
+        Ok(init)
+    }
+
+    /// The repositories to register before extensions are installed.
+    pub fn extension_repositories(&self) -> &[DuckDbRepositoryDeclaration<'a>] {
+        &self.extension_repositories
+    }
+
+    /// Whether initialization depends on user-provided repositories, which only DuckDB 2.0+
+    /// supports. If not, [`Self::render`] gives the same SQL on every DuckDB version.
+    pub fn uses_user_repositories(&self) -> bool {
+        !self.extension_repositories.is_empty() || self.extensions.uses_user_repository()
+    }
+
+    /// Whether [`Self::render`] installs from a user-provided repository, which DuckDB only
+    /// permits while `allow_extension_repositories` is 'allowed', even when the extension is
+    /// already installed.
+    // https://github.com/duckdb/duckdb/blob/d54cbbe3df17e8e5ce68312f483b4155836112aa/src/main/extension/extension_install_dynamic.cpp#L438-L445
+    pub fn installs_from_user_repositories(&self) -> bool {
+        self.target.installs_extensions() && self.extensions.uses_user_repository()
+    }
+
+    /// Ordered SQL statements to run after the declared repositories are registered.
+    /// When the path is a MotherDuck connection (`md:` / `motherduck:`), the
+    /// `motherduck` extension is auto-installed/loaded.
+    pub fn render(&self, user_repositories: DuckDbUserRepositories) -> Vec<String> {
+        let mut out = self.extensions.render(&self.target, user_repositories);
+        out.extend(self.secrets.render());
+        out.extend(self.settings.render());
+        out.extend(self.attachments.render());
+        out
+    }
+}
+
 /// Generate DuckDB initialization SQL statements from the adapter config.
 ///
-/// Returns an ordered list of SQL strings ready for sequential execution.
-/// When the path is a MotherDuck connection (`md:` / `motherduck:`), the
-/// `motherduck` extension is auto-installed/loaded and the token is injected.
+/// Returns an ordered list of SQL strings ready for sequential execution. This does not
+/// register `extension_repositories` and assumes that user-provided repositories are
+/// unsupported; see [`DuckDbInit`] for both.
 pub fn generate_duckdb_init_sql(config: &AdapterConfig) -> Result<Vec<String>, AuthError> {
-    let target = DuckDbTarget::from_config(config)?;
-    let extensions = Extensions::from_config(config)?;
-    let secrets = Secrets::from_config(config)?;
-    let settings = Settings::from_config(config)?;
-    let attachments = Attachments::from_config(config)?;
-
-    let mut out = Vec::new();
-    out.extend(match target {
-        DuckDbTarget::Plain { .. } => extensions.render(),
-        _ => extensions.render_with_motherduck(&target),
-    });
-    out.extend(secrets.render());
-    out.extend(settings.render());
-    out.extend(attachments.render());
-    Ok(out)
+    Ok(DuckDbInit::from_config(config)?.render(DuckDbUserRepositories::Unsupported))
 }
 
 // ---------------------------------------------------------------------------
@@ -562,6 +872,21 @@ fn sanitize_identifier(name: &str) -> String {
     name.chars()
         .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
         .collect()
+}
+
+/// Whether `name` is non-empty and unchanged by [`sanitize_identifier`].
+fn is_extension_name(name: &str) -> bool {
+    !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Whether `name` is a valid extension repository name, which never needs escaping inside
+/// double quotes. DuckDB applies the same rule to user-provided repository names:
+// https://github.com/duckdb/duckdb/blob/d54cbbe3df17e8e5ce68312f483b4155836112aa/src/main/extension/extension_repository_manager.cpp#L252-L263
+fn is_repository_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
 /// Escape single quotes for SQL string literals (`'` → `''`).
@@ -986,6 +1311,465 @@ extensions:
         // Semicolons and spaces stripped by sanitize_identifier
         assert_eq!(stmts[0], "INSTALL httpfsDROPTABLEusers");
         assert_eq!(stmts[1], "LOAD httpfsDROPTABLEusers");
+    }
+
+    #[test]
+    fn test_extension_dictionaries_mixed_with_strings() {
+        let config = config_from_yaml(
+            r#"
+extensions:
+  - httpfs
+  - name: parquet
+  - name: jev
+    repo: community
+  - name: uc_catalog
+    repo: core_nightly
+"#,
+        );
+        assert_eq!(
+            generate_duckdb_init_sql(&config).unwrap(),
+            vec![
+                "INSTALL httpfs",
+                "LOAD httpfs",
+                "INSTALL parquet",
+                "LOAD parquet",
+                "INSTALL jev FROM \"community\"",
+                "LOAD jev",
+                "INSTALL uc_catalog FROM \"core_nightly\"",
+                "LOAD uc_catalog",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_extension_null_repo_uses_default_repository() {
+        let config = config_from_yaml(
+            r#"
+extensions:
+  - name: jev
+    repo: null
+"#,
+        );
+        assert_eq!(
+            generate_duckdb_init_sql(&config).unwrap(),
+            vec!["INSTALL jev", "LOAD jev"]
+        );
+    }
+
+    #[test]
+    fn test_extension_repository_name_is_quoted_verbatim() {
+        let config = config_from_yaml(
+            r#"
+extensions:
+  - name: a5
+    repo: query-farm_2
+  - name: jev
+    repo: Community
+"#,
+        );
+        // Case is left for DuckDB to resolve, as with `INSTALL ... FROM` in SQL.
+        assert_eq!(
+            generate_duckdb_init_sql(&config).unwrap(),
+            vec![
+                "INSTALL a5 FROM \"query-farm_2\"",
+                "LOAD a5",
+                "INSTALL jev FROM \"Community\"",
+                "LOAD jev",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_extension_dictionary_errors_name_the_field() {
+        for (item, expected) in [
+            (
+                "{repo: community}",
+                "extensions[1]: missing required field 'name'",
+            ),
+            ("{name: 7}", "extensions[1].name: expected"),
+            ("{name: null}", "extensions[1].name: expected"),
+            ("{name: ''}", "extensions[1].name: expected"),
+            (
+                "{name: 'jev; DROP TABLE t'}",
+                "extensions[1].name: expected",
+            ),
+            ("{name: [jev]}", "extensions[1].name: expected"),
+            ("{name: jev, repo: ''}", "extensions[1].repo: expected"),
+            ("{name: jev, repo: 7}", "extensions[1].repo: expected"),
+            ("{name: jev, repo: true}", "extensions[1].repo: expected"),
+            (
+                "{name: jev, repo: [community]}",
+                "extensions[1].repo: expected",
+            ),
+            (
+                "{name: jev, repo: 'community; DROP TABLE t'}",
+                "extensions[1].repo: expected",
+            ),
+            (
+                "{name: jev, repo: 'comm\"unity'}",
+                "extensions[1].repo: expected",
+            ),
+            (
+                "{name: jev, repo: 'https://extensions.invalid'}",
+                "extensions[1].repo: expected",
+            ),
+            (
+                "{name: jev, repo: \"'https://extensions.invalid'\"}",
+                "extensions[1].repo: expected",
+            ),
+            (
+                "{name: jev, version: v1}",
+                "extensions[1]: unknown field 'version'",
+            ),
+            (
+                "{name: jev, 1: x}",
+                "extensions[1]: field names must be strings",
+            ),
+            (
+                "7",
+                "extensions[1]: expected an extension name or a mapping",
+            ),
+            (
+                "null",
+                "extensions[1]: expected an extension name or a mapping",
+            ),
+            (
+                "[jev]",
+                "extensions[1]: expected an extension name or a mapping",
+            ),
+        ] {
+            let config = config_from_yaml(&format!("extensions: [httpfs, {item}]"));
+            let err = generate_duckdb_init_sql(&config).err().unwrap();
+            assert!(err.msg().starts_with(expected), "{item}: {}", err.msg());
+            assert!(!err.msg().contains("DROP"), "{item}: {}", err.msg());
+            assert!(!err.msg().contains("invalid'"), "{item}: {}", err.msg());
+        }
+    }
+
+    #[test]
+    fn test_motherduck_dictionary_counts_as_present() {
+        for entry in ["{name: motherduck}", "{name: MotherDuck, repo: core}"] {
+            let config =
+                config_from_yaml(&format!("path: 'md:my_db'\nextensions: [httpfs, {entry}]"));
+            let stmts = generate_duckdb_init_sql(&config).unwrap();
+            let motherduck_loads = stmts
+                .iter()
+                .filter(|s| s.eq_ignore_ascii_case("LOAD motherduck"))
+                .count();
+            assert_eq!(motherduck_loads, 1, "{entry}: {stmts:?}");
+            assert_eq!(stmts[0], "INSTALL httpfs", "{entry}");
+        }
+    }
+
+    #[test]
+    fn test_motherduck_auto_injected_once_before_dictionaries() {
+        let config = config_from_yaml(
+            r#"
+path: "md:my_db"
+extensions:
+  - name: jev
+    repo: community
+"#,
+        );
+        assert_eq!(
+            generate_duckdb_init_sql(&config).unwrap(),
+            vec![
+                "INSTALL motherduck",
+                "LOAD motherduck",
+                "INSTALL jev FROM \"community\"",
+                "LOAD jev",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_saas_mode_skips_install_for_dictionaries() {
+        let config = config_from_yaml(
+            r#"
+path: "md:my_db"
+settings:
+  motherduck_saas_mode: true
+extensions:
+  - httpfs
+  - name: jev
+    repo: community
+"#,
+        );
+        assert_eq!(
+            generate_duckdb_init_sql(&config).unwrap(),
+            vec!["LOAD motherduck", "LOAD httpfs", "LOAD jev"]
+        );
+    }
+
+    #[test]
+    fn test_dictionary_extensions_precede_secrets_settings_and_attachments() {
+        let config = config_from_yaml(
+            r#"
+extensions:
+  - name: jev
+    repo: community
+secrets:
+  - type: s3
+settings:
+  threads: 4
+attach:
+  - path: /data/other.db
+"#,
+        );
+        assert_eq!(
+            generate_duckdb_init_sql(&config).unwrap(),
+            vec![
+                "INSTALL jev FROM \"community\"",
+                "LOAD jev",
+                "CREATE OR REPLACE SECRET __dbt_secret_0 (TYPE s3)",
+                "SET threads = 4",
+                "ATTACH IF NOT EXISTS '/data/other.db'",
+            ]
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Extension repositories
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extension_repositories_parse_with_and_without_key() {
+        let config = config_from_yaml(
+            r#"
+extension_repositories:
+  - name: query_farm
+    prefix: https://duckdb-extensions.query.farm
+  - name: Other-Repo_2
+    prefix: /srv/extensions
+    public_key: null
+  - name: pinned
+    prefix: https://pinned.invalid
+    public_key: "-----BEGIN PUBLIC KEY-----\nABC=\n-----END PUBLIC KEY-----\n"
+"#,
+        );
+        assert_eq!(
+            DuckDbRepositoryDeclaration::all_from_config(&config).unwrap(),
+            vec![
+                DuckDbRepositoryDeclaration {
+                    name: "query_farm",
+                    prefix: "https://duckdb-extensions.query.farm",
+                    key: DuckDbRepositoryKey::Discovered,
+                },
+                DuckDbRepositoryDeclaration {
+                    name: "Other-Repo_2",
+                    prefix: "/srv/extensions",
+                    key: DuckDbRepositoryKey::Discovered,
+                },
+                DuckDbRepositoryDeclaration {
+                    name: "pinned",
+                    prefix: "https://pinned.invalid",
+                    key: DuckDbRepositoryKey::Pinned(
+                        "-----BEGIN PUBLIC KEY-----\nABC=\n-----END PUBLIC KEY-----\n"
+                    ),
+                },
+            ]
+        );
+        for empty in [
+            "",
+            "extension_repositories: null",
+            "extension_repositories: []",
+        ] {
+            let config = config_from_yaml(&format!("path: ':memory:'\n{empty}"));
+            assert!(
+                DuckDbRepositoryDeclaration::all_from_config(&config)
+                    .unwrap()
+                    .is_empty()
+            );
+            assert!(
+                !DuckDbInit::from_config(&config)
+                    .unwrap()
+                    .uses_user_repositories()
+            );
+        }
+    }
+
+    #[test]
+    fn test_extension_repository_errors_name_the_field() {
+        const VALID: &str = "{name: repo_a, prefix: 'https://a.invalid'}";
+        for (repositories, expected) in [
+            ("repo_a", "extension_repositories: expected a sequence"),
+            ("[7]", "extension_repositories[0]: expected a mapping"),
+            (
+                "[{name: repo_a, prefix: x, url: y}]",
+                "extension_repositories[0]: unknown field 'url'",
+            ),
+            (
+                "[{prefix: x}]",
+                "extension_repositories[0]: missing required field 'name'",
+            ),
+            (
+                "[{name: repo_a}]",
+                "extension_repositories[0]: missing required field 'prefix'",
+            ),
+            (
+                "[{name: '', prefix: x}]",
+                "extension_repositories[0].name: expected",
+            ),
+            (
+                "[{name: 7, prefix: x}]",
+                "extension_repositories[0].name: expected",
+            ),
+            (
+                "[{name: 'query farm', prefix: x}]",
+                "extension_repositories[0].name: expected",
+            ),
+            (
+                "[{name: 'a\"b', prefix: x}]",
+                "extension_repositories[0].name: expected",
+            ),
+            (
+                "[{name: community, prefix: x}]",
+                "extension_repositories[0].name: 'community' is built into DuckDB",
+            ),
+            (
+                "[{name: Core_Nightly, prefix: x}]",
+                "extension_repositories[0].name: 'Core_Nightly' is built into DuckDB",
+            ),
+            (
+                "[{name: repo_a, prefix: ''}]",
+                "extension_repositories[0].prefix: expected a non-empty string",
+            ),
+            (
+                "[{name: repo_a, prefix: 7}]",
+                "extension_repositories[0].prefix: expected a non-empty string",
+            ),
+            (
+                "[{name: repo_a, prefix: x, public_key: '  '}]",
+                "extension_repositories[0].public_key: expected a non-empty string",
+            ),
+            (
+                "[{name: repo_a, prefix: x, public_key: [secret-key]}]",
+                "extension_repositories[0].public_key: expected a non-empty string",
+            ),
+            (
+                &format!("[{VALID}, {{name: REPO_A, prefix: 'https://b.invalid'}}]"),
+                "extension_repositories[1].name: duplicates extension_repositories[0]",
+            ),
+        ] {
+            let config = config_from_yaml(&format!("extension_repositories: {repositories}"));
+            let err = DuckDbInit::from_config(&config).err().unwrap();
+            assert!(
+                err.msg().starts_with(expected),
+                "{repositories}: {}",
+                err.msg()
+            );
+            assert!(!err.msg().contains("secret-key"), "{}", err.msg());
+        }
+    }
+
+    #[test]
+    fn test_user_repositories_are_loaded_from_their_repository_when_supported() {
+        let config = config_from_yaml(
+            r#"
+extension_repositories:
+  - name: query_farm
+    prefix: https://duckdb-extensions.query.farm
+extensions:
+  - httpfs
+  - name: jev
+    repo: community
+  - name: a5
+    repo: query_farm
+"#,
+        );
+        let init = DuckDbInit::from_config(&config).unwrap();
+        assert!(init.uses_user_repositories());
+        assert!(init.installs_from_user_repositories());
+        assert_eq!(
+            init.render(DuckDbUserRepositories::Supported),
+            vec![
+                "INSTALL httpfs",
+                "LOAD httpfs",
+                "INSTALL jev FROM \"community\"",
+                "LOAD jev",
+                "INSTALL a5 FROM \"query_farm\"",
+                "LOAD a5 FROM \"query_farm\"",
+            ]
+        );
+        // Registration is the engine's job: the rendered SQL never creates repositories.
+        assert_eq!(
+            init.render(DuckDbUserRepositories::Unsupported)[4..],
+            ["INSTALL a5 FROM \"query_farm\"", "LOAD a5"]
+        );
+        assert_eq!(
+            generate_duckdb_init_sql(&config).unwrap(),
+            init.render(DuckDbUserRepositories::Unsupported)
+        );
+    }
+
+    #[test]
+    fn test_user_repository_reference_without_declaration() {
+        // A repository registered earlier can be used without declaring it again.
+        let config = config_from_yaml("extensions: [{name: a5, repo: query_farm}]");
+        let init = DuckDbInit::from_config(&config).unwrap();
+        assert!(init.extension_repositories().is_empty());
+        assert!(init.uses_user_repositories());
+        assert!(init.installs_from_user_repositories());
+
+        // Built-in repositories never need user-repository support.
+        let config = config_from_yaml("extensions: [httpfs, {name: jev, repo: community}]");
+        assert!(
+            !DuckDbInit::from_config(&config)
+                .unwrap()
+                .uses_user_repositories()
+        );
+    }
+
+    #[test]
+    fn test_saas_mode_loads_user_repositories_without_installing() {
+        let config = config_from_yaml(
+            r#"
+path: "md:my_db"
+settings:
+  motherduck_saas_mode: true
+extensions:
+  - name: a5
+    repo: query_farm
+"#,
+        );
+        let init = DuckDbInit::from_config(&config).unwrap();
+        assert!(init.uses_user_repositories());
+        assert!(!init.installs_from_user_repositories());
+        assert_eq!(
+            init.render(DuckDbUserRepositories::Supported),
+            vec!["LOAD motherduck", "LOAD a5 FROM \"query_farm\""]
+        );
+    }
+
+    #[test]
+    fn test_forbidding_setting_conflicts_with_declared_repositories() {
+        const REPOSITORY: &str =
+            "extension_repositories: [{name: repo_a, prefix: 'https://a.invalid'}]";
+        for (name, value) in [
+            ("allow_extension_repositories", "forbidden"),
+            ("allow_extension_repositories", "FORBIDDEN"),
+            ("ALLOW_EXTENSION_REPOSITORIES", "forbidden"),
+            ("Allow_Extension_Repositories", "Forbidden"),
+        ] {
+            let config = config_from_yaml(&format!("{REPOSITORY}\nsettings: {{{name}: {value}}}"));
+            let err = DuckDbInit::from_config(&config).err().unwrap();
+            assert!(
+                err.msg()
+                    .starts_with("settings.allow_extension_repositories: 'forbidden' conflicts"),
+                "{}",
+                err.msg()
+            );
+        }
+        // Allowing them, or forbidding them without declarations, is not a conflict.
+        let config = config_from_yaml(&format!(
+            "{REPOSITORY}\nsettings: {{allow_extension_repositories: allowed}}"
+        ));
+        assert!(DuckDbInit::from_config(&config).is_ok());
+        let config = config_from_yaml("settings: {allow_extension_repositories: forbidden}");
+        assert_eq!(
+            generate_duckdb_init_sql(&config).unwrap(),
+            vec!["SET allow_extension_repositories = 'forbidden'"]
+        );
     }
 
     #[test]
