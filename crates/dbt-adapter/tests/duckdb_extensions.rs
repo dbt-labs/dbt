@@ -51,6 +51,22 @@ extensions:
     );
 }
 
+#[test]
+fn extension_dictionary_unknown_fields_are_rejected_from_profile() {
+    for (entry, field) in [
+        ("{name: httpfs, repository: community}", "repository"),
+        ("{name: httpfs, version: v1}", "version"),
+    ] {
+        let config = profile_config(&format!("type: duckdb\nextensions: [httpfs, {entry}]"));
+        let err = dbt_auth::generate_duckdb_init_sql(&config).unwrap_err();
+        assert_eq!(
+            err.msg(),
+            format!("extensions[1]: unknown field '{field}'"),
+            "{entry}"
+        );
+    }
+}
+
 /// DuckDB's auth, plus `extension_directory` so a live test never touches `~/.duckdb`.
 struct IsolatedDuckDbAuth {
     inner: Box<dyn Auth>,

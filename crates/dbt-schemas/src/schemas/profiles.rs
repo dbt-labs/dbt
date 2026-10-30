@@ -2960,6 +2960,28 @@ extensions:
     }
 
     #[test]
+    fn test_duckdb_extension_dictionary_keeps_unknown_fields_for_auth() {
+        // `dbt-auth` rejects these; they must not be dropped on the way there.
+        for (entry, field) in [
+            ("{name: httpfs, repository: community}", "repository"),
+            ("{name: httpfs, version: v1}", "version"),
+        ] {
+            let config: DbConfig =
+                dbt_yaml::from_str(&format!("type: duckdb\nextensions: [{entry}]")).unwrap();
+            let mapping = config.to_mapping().unwrap();
+            let extensions = mapping.get("extensions").unwrap().as_sequence().unwrap();
+            assert!(
+                extensions[0].as_mapping().unwrap().contains_key(field),
+                "{entry}: {extensions:?}"
+            );
+
+            let round_trip: DbConfig =
+                dbt_yaml::from_str(&dbt_yaml::to_string(&config).unwrap()).unwrap();
+            assert_eq!(config, round_trip, "{entry}");
+        }
+    }
+
+    #[test]
     fn test_redshift_drop_without_cascade_round_trips_through_connection_mapping() {
         let config: DbConfig = dbt_yaml::from_str(
             "type: redshift\n\

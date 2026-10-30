@@ -42,5 +42,6 @@ On MotherDuck paths, the `motherduck` extension is still added automatically
 unless an entry, in either form, already names it. In MotherDuck SaaS mode, only
 `LOAD` runs, so `repo` has no effect there.
 
-Installing extensions requires an extension-capable DuckDB driver installed
-through `dbc`.
+Installing extensions requires an extension-capable DuckDB driver. By default,
+dbt loads a DuckDB driver from the system if one is installed, for example
+through `dbc`, and otherwise downloads the official DuckDB driver.
