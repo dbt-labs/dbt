@@ -1,0 +1,6 @@
+kind: Fixes
+body: Report disabled refs from package analyses instead of inheriting models enabled config
+time: 2026-07-19T17:30:00.000000+05:30
+custom:
+    Author: Aastha204
+    Issue: "15415"
