@@ -397,4 +397,25 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn filtered_loops_report_only_executed_body_iterations() {
+        for (condition, expected, repeats) in
+            [("n == 3", "3", 0), ("n > 3", "", 0), ("n > 1", "23", 1)]
+        {
+            let source =
+                format!("{{% for n in [1, 2, 3] if {condition} %}}{{{{ n }}}}{{% endfor %}}");
+            let trace = render(&source, true);
+            assert_eq!(trace.rendered, expected);
+            assert_eq!(
+                trace
+                    .events
+                    .iter()
+                    .filter(|e| e.kind == "loop_iteration")
+                    .count(),
+                repeats,
+                "{condition}"
+            );
+        }
+    }
 }

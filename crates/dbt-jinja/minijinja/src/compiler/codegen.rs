@@ -1069,7 +1069,7 @@ impl<'source> CodeGenerator<'source> {
         if let Some(ref filter_expr) = for_loop.filter_expr {
             self.add(Instruction::LoadConst(Value::from(0usize)));
             self.compile_expr(&for_loop.iter)?;
-            self.start_for_loop_with_layout(false, false, span, Some(for_loop.start_tag_span));
+            self.start_for_loop_with_layout(false, false, span, None);
             self.add(Instruction::DupTop);
             self.compile_assignment(&for_loop.target)?;
             self.compile_expr(filter_expr)?;
