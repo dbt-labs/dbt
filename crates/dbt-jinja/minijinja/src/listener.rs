@@ -42,6 +42,10 @@ pub trait RenderingEventListener: std::fmt::Debug {
     /// Leave an evaluation, on both success and error, restoring its caller.
     fn on_template_execution_end(&self) {}
 
+    /// An explicit return replaces the active evaluation's accumulated output.
+    /// Observers must discard provenance for that buffer, even on success.
+    fn on_output_replaced(&self, _value: &Value) {}
+
     /// Begin a nested render into a temporary output buffer.
     fn on_output_buffer_start(&self) {}
 

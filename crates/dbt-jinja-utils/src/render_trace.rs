@@ -37,6 +37,15 @@ pub struct RenderTrace {
 }
 
 #[derive(Debug)]
+struct TemplateExecution {
+    path: PathBuf,
+    event_start: usize,
+    output_start: usize,
+    macro_depth: usize,
+    emit_depth: usize,
+}
+
+#[derive(Debug)]
 struct OutputBuffer {
     location: Rc<OutputTrackerLocation>,
     parent_start: usize,
@@ -49,7 +58,7 @@ struct OutputBuffer {
 #[derive(Debug)]
 pub(crate) struct RenderTraceListener {
     source_path: PathBuf,
-    templates: RefCell<Vec<PathBuf>>,
+    templates: RefCell<Vec<TemplateExecution>>,
     location: RefCell<Rc<OutputTrackerLocation>>,
     events: RefCell<Vec<RenderTraceEvent>>,
     emits: RefCell<Vec<(Span, usize)>>,
@@ -73,7 +82,10 @@ impl RenderTraceListener {
     }
 
     fn is_source_template(&self) -> bool {
-        self.templates.borrow().last() == Some(&self.source_path)
+        self.templates
+            .borrow()
+            .last()
+            .is_some_and(|frame| frame.path == self.source_path)
     }
 
     fn position(&self) -> usize {
@@ -112,23 +124,44 @@ impl RenderingEventListener for RenderTraceListener {
         if let Some(buffer) = self.buffers.borrow_mut().last_mut() {
             buffer.local_start = location.index() as usize;
         }
+        if let Some(frame) = self.templates.borrow_mut().last_mut() {
+            frame.output_start = location.index() as usize;
+        }
         self.location.replace(location);
     }
 
     fn on_template_execution_start(&self, name: &str) {
-        self.templates.borrow_mut().push(PathBuf::from(name));
+        self.templates.borrow_mut().push(TemplateExecution {
+            path: PathBuf::from(name),
+            event_start: self.events.borrow().len(),
+            output_start: self.position(),
+            macro_depth: self.macros.borrow().len(),
+            emit_depth: self.emits.borrow().len(),
+        });
     }
 
     fn on_template_execution_parent(&self, name: &str) {
-        *self
-            .templates
+        self.templates
             .borrow_mut()
             .last_mut()
-            .expect("missing template") = PathBuf::from(name);
+            .expect("missing template")
+            .path = PathBuf::from(name);
     }
 
     fn on_template_execution_end(&self) {
         self.templates.borrow_mut().pop();
+    }
+
+    fn on_output_replaced(&self, value: &minijinja::Value) {
+        let frames = self.templates.borrow();
+        let frame = frames.last().expect("missing template");
+        self.events.borrow_mut().truncate(frame.event_start);
+        self.macros.borrow_mut().truncate(frame.macro_depth);
+        self.emits.borrow_mut().truncate(frame.emit_depth);
+        // Template and named-block renders expose strings; non-string returns
+        // produce empty output. Neither is a literal copy of this source.
+        let end = frame.output_start + value.as_str().unwrap_or_default().len();
+        self.record("templated", &Span::default(), frame.output_start..end);
     }
 
     fn on_output_buffer_start(&self) {
@@ -671,5 +704,56 @@ mod tests {
             }
         }
         assert_eq!(depth, 0, "unclosed layout: {:?}", trace.events);
+    }
+
+    #[test]
+    fn explicit_returns_replace_provenance_only_for_their_output_buffer() {
+        for (source, expected, literal) in [
+            ("select 0 {{ return('select 1') }}", "select 1", ""),
+            ("{% if true %}discard{{ return('λ') }}{% endif %}", "λ", ""),
+            ("discard{{ return('') }}", "", ""),
+            ("discard{{ return(42) }}", "", ""),
+            (
+                "A{% block b %}B{{ return('X') }}{% endblock %}C",
+                "AXC",
+                "AC",
+            ),
+            (
+                "A{% block b %}B{{ return('longer λ') }}{% endblock %}C",
+                "Alonger λC",
+                "AC",
+            ),
+            ("A{% block b %}B{{ return('') }}{% endblock %}C", "AC", "AC"),
+            (
+                "A{% block b %}B{% block c %}C{{ return('X') }}{% endblock %}D{% endblock %}E",
+                "ABXDE",
+                "ABDE",
+            ),
+            (
+                "{% macro m() %}discard{{ return('X') }}{% endmacro %}A{{ m() }}C",
+                "AXC",
+                "AC",
+            ),
+        ] {
+            let trace = render(source, true);
+            assert_eq!(trace.rendered, expected);
+            let literals: String = trace
+                .events
+                .iter()
+                .filter(|e| e.kind == "literal")
+                .map(|e| &trace.rendered[e.rendered_start..e.rendered_end])
+                .collect();
+            assert_eq!(literals, literal, "{source}");
+            assert_balanced_layout(&trace);
+            for (index, _) in trace.rendered.char_indices() {
+                assert!(
+                    trace
+                        .events
+                        .iter()
+                        .any(|e| e.rendered_start <= index && e.rendered_end > index),
+                    "unmapped output: {trace:?}"
+                );
+            }
+        }
     }
 }

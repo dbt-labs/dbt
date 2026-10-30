@@ -1725,11 +1725,18 @@ impl<'env> Vm<'env> {
         }
 
         // dbg!(&rv);
-        if is_caller_return {
+        if is_caller_return || is_explicit_return {
             let rv = stack.pop();
-            Ok(Value::from_object(CallerReturn::new(rv)))
-        } else if is_explicit_return {
-            Ok(stack.pop())
+            if !matches!(output_mode, OutputMode::Macro) {
+                for listener in listeners {
+                    listener.on_output_replaced(&rv);
+                }
+            }
+            if is_caller_return {
+                Ok(Value::from_object(CallerReturn::new(rv)))
+            } else {
+                Ok(rv)
+            }
         } else {
             Ok(Value::from(rv))
         }

@@ -64,6 +64,10 @@ buffer is appended directly, and the enclosing tracker is restored even on an
 error. Captured or transformed block values do not publish intermediate literal
 spans; their final expression output remains generated. Buffer callbacks are
 internal observer hooks and do not add event kinds or change protocol version 1.
+An explicit return replaces that evaluation's output: all events for the
+discarded buffer are removed, and the returned string is generated (`templated`
+with an empty source range at byte zero). Enclosing output remains mapped;
+ordinary macro returns continue to be covered by their calling expression.
 
 The `rendered` string is deliberately the Jinja result before ephemeral CTE
 injection. These offsets must not be applied directly to the final compiled SQL
