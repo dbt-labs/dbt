@@ -1,0 +1,7 @@
+kind: Fixes
+body: "[Athena] Contracts compare the Athena column types, so a timestamp with time zone column matches its contract and a varchar contract no longer passes on a decimal column"
+time: 2026-10-01T15:32:39.205116+02:00
+custom:
+    author: David-Banquet
+    issue: "15731"
+    project: dbt-core
