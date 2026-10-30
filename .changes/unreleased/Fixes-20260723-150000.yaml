@@ -1,0 +1,8 @@
+kind: Fixes
+body: 'Exclude deprecations silenced via warn_error_options from the deprecations
+  summary, so a run whose only deprecations are silenced no longer fails under
+  `error: Deprecations`'
+time: 2026-07-23T15:00:00.000000+09:00
+custom:
+    Author: ota2000
+    Issue: "15646"
