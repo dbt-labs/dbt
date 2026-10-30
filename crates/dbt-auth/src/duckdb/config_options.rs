@@ -20,21 +20,7 @@ impl<'a> ConfigOptions<'a> {
         };
         let mut entries: Vec<(&str, ConfigValue<'a>)> = Vec::with_capacity(mapping.len());
         for (key, value) in mapping {
-            let key = key.as_str().filter(|key| !key.is_empty() && !key.contains('\0'))
-                .ok_or_else(|| AuthError::config("config_options: option names must be non-empty strings without NUL characters"))?;
-            match key.to_ascii_lowercase().as_str() {
-                "path"
-                | "uri"
-                | "username"
-                | "password"
-                | "motherduck_token"
-                | "motherduck_saas_mode" => {
-                    return Err(AuthError::config(format!(
-                        "config_options.{key}: this connection option is managed by the adapter; use the profile's path or MotherDuck settings instead"
-                    )));
-                }
-                _ => {}
-            }
+            let key = option_name(key)?;
             if let Some((existing, _)) = entries
                 .iter()
                 .find(|(existing, _)| key.eq_ignore_ascii_case(existing))
@@ -43,19 +29,7 @@ impl<'a> ConfigOptions<'a> {
                     "config_options: option names '{existing}' and '{key}' differ only in case"
                 )));
             }
-            let value = match value {
-                YmlValue::Sequence(values, _) => {
-                    for value in values {
-                        ConfigValue::validate_scalar(key, value)?;
-                    }
-                    ConfigValue::List(values)
-                }
-                value => {
-                    ConfigValue::validate_scalar(key, value)?;
-                    ConfigValue::Scalar(value)
-                }
-            };
-            entries.push((key, value));
+            entries.push((key, ConfigValue::from_yml(key, value)?));
         }
         // Profile maps can be deserialized through HashMap. Keep the option order
         // stable so equivalent profiles produce the same database fingerprint.
@@ -68,6 +42,44 @@ impl<'a> ConfigOptions<'a> {
             builder.with_named_option(key, value.into_driver_string())?;
         }
         Ok(())
+    }
+}
+
+/// A `config_options` key: a non-empty string without NUL characters that does not name a
+/// connection option the adapter manages.
+fn option_name(key: &YmlValue) -> Result<&str, AuthError> {
+    let key = key
+        .as_str()
+        .filter(|key| !key.is_empty() && !key.contains('\0'))
+        .ok_or_else(|| {
+            AuthError::config(
+                "config_options: option names must be non-empty strings without NUL characters",
+            )
+        })?;
+    match key.to_ascii_lowercase().as_str() {
+        "path" | "uri" | "username" | "password" | "motherduck_token" | "motherduck_saas_mode" => {
+            Err(AuthError::config(format!(
+                "config_options.{key}: this connection option is managed by the adapter; use the profile's path or MotherDuck settings instead"
+            )))
+        }
+        _ => Ok(key),
+    }
+}
+
+impl<'a> ConfigValue<'a> {
+    fn from_yml(key: &str, value: &'a YmlValue) -> Result<Self, AuthError> {
+        match value {
+            YmlValue::Sequence(values, _) => {
+                for value in values {
+                    Self::validate_scalar(key, value)?;
+                }
+                Ok(Self::List(values))
+            }
+            value => {
+                Self::validate_scalar(key, value)?;
+                Ok(Self::Scalar(value))
+            }
+        }
     }
 }
 
