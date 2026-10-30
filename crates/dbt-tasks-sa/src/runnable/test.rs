@@ -23,9 +23,7 @@ use dbt_pretty_table::{make_column_names, pretty_data_table};
 use dbt_scheduler::instructions::SqlInstruction;
 use dbt_schemas::schemas::DbtTest;
 use dbt_schemas::schemas::common::Severity;
-use dbt_schemas::schemas::project::{
-    DEFAULT_DATA_TEST_ERROR_IF, DEFAULT_DATA_TEST_WARN_IF, DataTestConfig,
-};
+use dbt_schemas::schemas::project::{DEFAULT_DATA_TEST_ERROR_IF, DEFAULT_DATA_TEST_WARN_IF};
 use dbt_schemas::schemas::{InternalDbtNode, InternalDbtNodeAttributes, NodePathKind};
 use dbt_tasks_core::context::{BlockingTaskCtx, TaskRunnerCtx};
 use dbt_tasks_core::pretty_table::from_pretty_table_error;
@@ -84,8 +82,12 @@ impl TestExecutionStatus {
 pub struct TestReportedResult {
     pub failures: usize,
     pub status: TestExecutionStatus,
-    /// Message for `run_results.json`; `None` falls back to the status name.
-    pub message: Option<String>,
+    /// Status before `--warn-error` overrides; a warning upgraded to an error keeps its
+    /// `warn_if` threshold in the message.
+    pub verdict: TestExecutionStatus,
+    /// Configured thresholds; `None` means the data test default.
+    pub error_if: Option<String>,
+    pub warn_if: Option<String>,
     pub diff: Option<String>,
     pub execution_result: Option<CachedTestExecutionResult>,
 }
@@ -97,6 +99,28 @@ impl TestReportedResult {
 
     pub fn test_outcome(&self) -> TestOutcome {
         self.status.test_outcome()
+    }
+
+    /// Message for `run_results.json` in dbt Core's wording, e.g.
+    /// "Got 2 results, configured to fail if != 0"; `None` falls back to the status name.
+    /// Built only when the stat is stored, so the result holds no formatted string.
+    pub fn message(&self) -> Option<String> {
+        let error_if = self
+            .error_if
+            .as_deref()
+            .unwrap_or(DEFAULT_DATA_TEST_ERROR_IF);
+        let warn_if = self.warn_if.as_deref().unwrap_or(DEFAULT_DATA_TEST_WARN_IF);
+        let (action, threshold) = match (self.verdict, self.status) {
+            (TestExecutionStatus::Failed, _) => ("fail", error_if),
+            (TestExecutionStatus::Warned, TestExecutionStatus::Failed) => ("fail", warn_if),
+            (TestExecutionStatus::Warned, TestExecutionStatus::Warned) => ("warn", warn_if),
+            _ => return None,
+        };
+        let failures = self.failures;
+        let results = if failures == 1 { "result" } else { "results" };
+        Some(format!(
+            "Got {failures} {results}, configured to {action} if {threshold}"
+        ))
     }
 }
 
@@ -142,35 +166,6 @@ fn reported_test_verdict_from_materialize_result(
     )
 }
 
-/// Message for a data test that failed or warned, in dbt Core's wording, e.g.
-/// "Got 2 results, configured to fail if != 0". `verdict` is the status before `--warn-error`
-/// overrides: a warning upgraded to an error reports its `warn_if` threshold.
-fn test_result_message(
-    failures: usize,
-    verdict: TestExecutionStatus,
-    status: TestExecutionStatus,
-    config: &DataTestConfig,
-) -> Option<String> {
-    let error_if = config
-        .error_if
-        .as_deref()
-        .unwrap_or(DEFAULT_DATA_TEST_ERROR_IF);
-    let warn_if = config
-        .warn_if
-        .as_deref()
-        .unwrap_or(DEFAULT_DATA_TEST_WARN_IF);
-    let (action, threshold) = match (verdict, status) {
-        (TestExecutionStatus::Failed, _) => ("fail", error_if),
-        (TestExecutionStatus::Warned, TestExecutionStatus::Failed) => ("fail", warn_if),
-        (TestExecutionStatus::Warned, TestExecutionStatus::Warned) => ("warn", warn_if),
-        _ => return None,
-    };
-    let results = if failures == 1 { "result" } else { "results" };
-    Some(format!(
-        "Got {failures} {results}, configured to {action} if {threshold}"
-    ))
-}
-
 pub fn record_test_metric(status: TestExecutionStatus) {
     if let Some(metric_key) = status.metric_key() {
         increment_metric(FusionMetricKey::InvocationMetric(metric_key), 1);
@@ -191,7 +186,7 @@ pub fn insert_test_run_stat(
             start,
             Some(result.failures),
             result.node_status(),
-            result.message.clone(),
+            result.message(),
             thread_id,
         ),
     );
@@ -330,18 +325,14 @@ impl AggregatedTestRunRemoteTask {
         test_results: &[crate::materialize::TestResult],
         warn_error_options: &WarnErrorOptions,
     ) -> (Vec<(String, TestReportedResult)>, TestExecutionStatus) {
-        let column_results: HashMap<_, _> = test_results
-            .iter()
-            .filter_map(|result| {
-                let column_name = result.column_name.as_deref()?;
+        let mut column_results = HashMap::new();
+        for result in test_results {
+            if let Some(column_name) = &result.column_name {
                 let normalized =
                     dbt_tasks_core::test_aggregation::normalize_column_name(column_name);
-                Some((normalized, result))
-            })
-            .collect();
-
-        // Only tests with the default thresholds are aggregated.
-        let config = DataTestConfig::default();
+                column_results.insert(normalized, result);
+            }
+        }
 
         // Ordered like `self.group.tests` so member result lines are emitted deterministically.
         let mut member_results = Vec::with_capacity(self.group.tests.len());
@@ -352,11 +343,12 @@ impl AggregatedTestRunRemoteTask {
                 dbt_tasks_core::test_aggregation::normalize_column_name(&test.column_name);
             let column_result = column_results.get(&column_name).copied();
 
-            let verdict = column_result
-                .map(|result| {
+            let verdict = match column_result {
+                Some(result) => {
                     reported_test_verdict_from_materialize_result(test.severity.as_ref(), result)
-                })
-                .unwrap_or(TestExecutionStatus::Passed);
+                }
+                None => TestExecutionStatus::Passed,
+            };
             let status = status_with_warn_error_overrides(verdict, warn_error_options);
             worst_status = worst_status.max(status);
 
@@ -369,7 +361,10 @@ impl AggregatedTestRunRemoteTask {
                 TestReportedResult {
                     failures,
                     status,
-                    message: test_result_message(failures, verdict, status, &config),
+                    verdict,
+                    // Only tests with the default thresholds are aggregated.
+                    error_if: None,
+                    warn_if: None,
                     diff: None,
                     execution_result: Some(CachedTestExecutionResult {
                         failures: failures as i64,
@@ -715,12 +710,9 @@ fn execute_test_remote_inner(
     Ok(TestReportedResult {
         failures: test_result.failures as usize,
         status: reported_status,
-        message: test_result_message(
-            test_result.failures as usize,
-            status,
-            reported_status,
-            &test.deprecated_config,
-        ),
+        verdict: status,
+        error_if: test.deprecated_config.error_if.clone(),
+        warn_if: test.deprecated_config.warn_if.clone(),
         diff,
         execution_result: Some(CachedTestExecutionResult {
             failures: test_result.failures,
@@ -762,7 +754,9 @@ pub fn process_statically_checked_test_result(
     let result = TestReportedResult {
         failures: 0,
         status: TestExecutionStatus::Passed,
-        message: None,
+        verdict: TestExecutionStatus::Passed,
+        error_if: None,
+        warn_if: None,
         diff: None,
         execution_result: None,
     };
@@ -792,56 +786,66 @@ pub fn process_statically_checked_test_result(
 mod tests {
     use super::*;
 
+    fn message(
+        failures: usize,
+        verdict: TestExecutionStatus,
+        status: TestExecutionStatus,
+        error_if: Option<&str>,
+        warn_if: Option<&str>,
+    ) -> Option<String> {
+        TestReportedResult {
+            failures,
+            status,
+            verdict,
+            error_if: error_if.map(str::to_string),
+            warn_if: warn_if.map(str::to_string),
+            diff: None,
+            execution_result: None,
+        }
+        .message()
+    }
+
     #[test]
     fn failed_test_message_names_error_if() {
-        let message = test_result_message(
-            2,
-            TestExecutionStatus::Failed,
-            TestExecutionStatus::Failed,
-            &DataTestConfig {
-                error_if: Some("!= 0".to_string()),
-                warn_if: Some("> 5".to_string()),
-                ..Default::default()
-            },
-        );
         assert_eq!(
-            message.as_deref(),
+            message(
+                2,
+                TestExecutionStatus::Failed,
+                TestExecutionStatus::Failed,
+                Some("!= 0"),
+                Some("> 5"),
+            )
+            .as_deref(),
             Some("Got 2 results, configured to fail if != 0")
         );
     }
 
     #[test]
     fn warned_test_message_names_warn_if() {
-        let message = test_result_message(
-            1,
-            TestExecutionStatus::Warned,
-            TestExecutionStatus::Warned,
-            &DataTestConfig {
-                error_if: Some("> 5".to_string()),
-                warn_if: Some("!= 0".to_string()),
-                ..Default::default()
-            },
-        );
         assert_eq!(
-            message.as_deref(),
+            message(
+                1,
+                TestExecutionStatus::Warned,
+                TestExecutionStatus::Warned,
+                Some("> 5"),
+                Some("!= 0"),
+            )
+            .as_deref(),
             Some("Got 1 result, configured to warn if != 0")
         );
     }
 
     #[test]
     fn warning_upgraded_by_warn_error_names_warn_if() {
-        let message = test_result_message(
-            3,
-            TestExecutionStatus::Warned,
-            TestExecutionStatus::Failed,
-            &DataTestConfig {
-                error_if: Some("> 5".to_string()),
-                warn_if: Some("> 1".to_string()),
-                ..Default::default()
-            },
-        );
         assert_eq!(
-            message.as_deref(),
+            message(
+                3,
+                TestExecutionStatus::Warned,
+                TestExecutionStatus::Failed,
+                Some("> 5"),
+                Some("> 1"),
+            )
+            .as_deref(),
             Some("Got 3 results, configured to fail if > 1")
         );
     }
@@ -852,32 +856,30 @@ mod tests {
             (TestExecutionStatus::Passed, TestExecutionStatus::Passed),
             (TestExecutionStatus::Warned, TestExecutionStatus::Passed),
         ] {
-            assert_eq!(
-                test_result_message(0, verdict, status, &DataTestConfig::default()),
-                None
-            );
+            assert_eq!(message(0, verdict, status, None, None), None);
         }
     }
 
     #[test]
     fn missing_thresholds_use_the_data_test_defaults() {
-        let config = DataTestConfig::default();
         assert_eq!(
-            test_result_message(
+            message(
                 1,
                 TestExecutionStatus::Failed,
                 TestExecutionStatus::Failed,
-                &config,
+                None,
+                None,
             )
             .as_deref(),
             Some("Got 1 result, configured to fail if != 0")
         );
         assert_eq!(
-            test_result_message(
+            message(
                 1,
                 TestExecutionStatus::Warned,
                 TestExecutionStatus::Warned,
-                &config,
+                None,
+                None,
             )
             .as_deref(),
             Some("Got 1 result, configured to warn if != 0")
