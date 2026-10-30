@@ -1119,11 +1119,11 @@ impl<'source> CodeGenerator<'source> {
             for node in &for_loop.else_body {
                 self.compile_stmt(node)?;
             }
-            self.end_if();
             self.add(Instruction::JinjaLayoutEvent(
                 JinjaLayoutEventKind::BlockEnd,
                 for_loop.end_tag_span,
             ));
+            self.end_if();
         };
         self.add(Instruction::MacroStop(
             span.end_line,

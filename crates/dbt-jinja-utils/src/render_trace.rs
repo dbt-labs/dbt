@@ -373,4 +373,28 @@ mod tests {
             render(source, true);
         }
     }
+
+    #[test]
+    fn for_else_closes_only_the_executed_body() {
+        for (items, expected, endings) in [
+            ("[]", "select 0", 1),
+            ("[1]", "select 1;", 1),
+            ("[1, 2]", "select 1;select 2;", 2),
+        ] {
+            let source = format!(
+                "{{% for x in {items} %}}select {{{{ x }}}};{{% else %}}select 0{{% endfor %}}"
+            );
+            let trace = render(&source, true);
+            assert_eq!(trace.rendered, expected);
+            assert_eq!(
+                trace
+                    .events
+                    .iter()
+                    .filter(|e| e.kind == "block_end")
+                    .count(),
+                endings,
+                "{items}"
+            );
+        }
+    }
 }
