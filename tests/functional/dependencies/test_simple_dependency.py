@@ -382,7 +382,7 @@ class TestSimpleDependencyBadProfile(object):
             "type": "postgres",
             "threads": 4,
             "host": "{{ env_var('PROFILE_TEST_HOST') }}",
-            "port": 5432,
+            "port": int(os.getenv("POSTGRES_TEST_PORT", 5432)),
             "user": "root",
             "pass": "password",
             "dbname": "dbt",
