@@ -4,5 +4,8 @@ pub mod base;
 /// This module contains the contract_mismatches function for comparing YAML and SQL column definitions
 mod contract_error;
 
+/// JSON serialization matching Python's json.dumps defaults
+mod python_json;
+
 pub use base::*;
 pub use dbt_jinja_vars::ConfiguredVar;
