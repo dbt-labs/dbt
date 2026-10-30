@@ -203,8 +203,8 @@ async fn measure_query_based_freshness(
     if !loaded_at_field.is_empty() {
         let filter = node.get_freshness_filter().unwrap_or("");
         match calculate_freshness(
-            &loaded_at_field.escape_default().to_string(),
-            &filter.escape_default().to_string(),
+            loaded_at_field,
+            filter,
             node,
             adapter_type,
             jinja_env,
@@ -278,6 +278,24 @@ where
     (unique_id, kind_label_lower, result, warnings)
 }
 
+/// Escapes `s` for a single-quoted Jinja string literal. Unlike
+/// `str::escape_default`, this leaves non-ASCII intact: minijinja only
+/// understands `\uXXXX` and rejects Rust's `\u{..}` as a bad escape.
+fn jinja_str_literal(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '\'' => out.push_str("\\'"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 #[allow(clippy::too_many_arguments)]
 #[tracing::instrument(skip_all, level = "trace")]
 pub async fn calculate_freshness(
@@ -297,9 +315,12 @@ pub async fn calculate_freshness(
         .as_ref()
         .ok_or_else(|| unexpected_fs_err!("{} needs a relation name", node.kind_label()))?
         .as_str();
+    let relation = jinja_str_literal(relation);
+    let loaded_at_field = jinja_str_literal(loaded_at_field);
     let macro_expr = if filter.is_empty() {
         format!("collect_freshness('{relation}', '{loaded_at_field}').table")
     } else {
+        let filter = jinja_str_literal(filter);
         format!("collect_freshness('{relation}', '{loaded_at_field}', '{filter}').table")
     };
 
@@ -418,8 +439,9 @@ pub async fn calculate_freshness_custom_sql(
     };
     // Insert loaded_at_query as an escaped string
     let macro_expr = format!(
-        "collect_freshness_custom_sql('{relation}', '{}').table",
-        rendered_query.escape_default()
+        "collect_freshness_custom_sql('{}', '{}').table",
+        jinja_str_literal(relation),
+        jinja_str_literal(&rendered_query)
     );
 
     calculate_freshness_common(
@@ -2210,5 +2232,42 @@ mod tests {
         node.__source_attr__.loaded_at_field = Some(String::new());
         node.__source_attr__.loaded_at_query = Some(String::new());
         assert!(!collects_freshness_during_build(&node));
+    }
+
+    /// Values from dbt-labs/dbt#16771 plus ASCII metacharacters: each must
+    /// survive being spliced into a single-quoted Jinja literal.
+    const JINJA_LITERAL_CASES: &[&str] = &[
+        "\"UPDATED_AT\"",
+        "\"注文更新日時\"",
+        "convert_timezone('UTC', \"注文更新日時\")",
+        "convert_timezone('UTC', 注文更新日時)",
+        "convert_timezone('UTC', updated_at) /* 注文更新日時 */",
+        "select max(\"注文更新日時\") from \"DB\".\"RAW\".\"repro\"",
+        "a\\b\n'c'\r\td",
+        "naïve — café 🚀",
+    ];
+
+    fn eval_jinja_str_literal(literal: &str) -> Result<minijinja::Value, minijinja::Error> {
+        let env = minijinja::Environment::new();
+        env.compile_expression(&format!("'{literal}'"))?
+            .eval((), &[])
+    }
+
+    #[test]
+    fn jinja_str_literal_round_trips_through_minijinja() {
+        for &case in JINJA_LITERAL_CASES {
+            let value = eval_jinja_str_literal(&jinja_str_literal(case))
+                .unwrap_or_else(|e| panic!("{case:?} failed to compile: {e}"));
+            assert_eq!(value.as_str(), Some(case), "{case:?} did not round-trip");
+        }
+    }
+
+    #[test]
+    fn escape_default_is_rejected_by_minijinja_for_non_ascii() {
+        // Guards the premise of `jinja_str_literal`: Rust's `\u{..}` escapes
+        // are a "bad string escape" to minijinja (dbt-labs/dbt#16771).
+        let err = eval_jinja_str_literal(&"\"注文更新日時\"".escape_default().to_string())
+            .expect_err("escape_default output should not compile");
+        assert_eq!(err.kind(), minijinja::ErrorKind::BadEscape);
     }
 }

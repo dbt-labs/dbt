@@ -1,0 +1,7 @@
+kind: Fixes
+body: '`dbt source freshness` no longer fails with "bad string escape" when `loaded_at_field`, the freshness `filter`, or `loaded_at_query` contains non-ASCII characters'
+time: 2026-10-20T13:56:48.537787-07:00
+custom:
+    author: jeremyyeo
+    issue: "16771"
+    project: dbt-core
