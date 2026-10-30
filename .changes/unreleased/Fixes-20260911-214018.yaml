@@ -1,0 +1,6 @@
+kind: Fixes
+body: Fix state:modified selecting sibling models when a null-valued key in dbt_project.yml is changed
+time: 2026-09-11T21:40:18.859025-04:00
+custom:
+    Author: wilu222
+    Issue: "16290"
