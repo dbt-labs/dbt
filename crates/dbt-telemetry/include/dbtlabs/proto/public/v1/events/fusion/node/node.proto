@@ -216,6 +216,29 @@ enum MicrobatchBatchSize {
   MICROBATCH_BATCH_SIZE_YEAR = 4;
 }
 
+// Response of a node's `main` statement.
+message NodeAdapterResponse {
+  // Id the warehouse assigned to the statement's query.
+  // Unset when the adapter reported none.
+  optional string query_id = 1;
+  // Status code of the statement, as the adapter reports it (e.g. "SUCCESS", "INSERT").
+  // Unset when the adapter reported none.
+  optional string code = 2;
+  // Adapter-defined statement metrics.
+  // INTERNAL METRICS ONLY. DO NOT DEPEND ON THESE KEYS. THEY MAY CHANGE OR BE REMOVED WITHOUT NOTICE.
+  map<string, AdapterResponseValue> extra = 3;
+}
+
+// Value of an adapter-defined key in `NodeAdapterResponse.extra`.
+message AdapterResponseValue {
+  oneof value {
+    int64 int = 1;
+    double float = 2;
+    bool bool = 3;
+    string string = 4;
+  }
+}
+
 // Evaluation of one time window within a microbatch model's run phase.
 // Maps to dbt-core's LogStartBatch (Q045) and LogBatchResult (Q046).
 message MicrobatchEvaluated {
@@ -346,6 +369,15 @@ message NodeEvaluated {
   // run-phase execution. Only set when the dbt State service was consulted and
   // returned an execution decision.
   optional string state_decision_id = 43;
+
+  // Response of the node's `main` statement, as in run_results.json minus the row count and
+  // the free-text message.
+  // Set in the Run phase when a model, seed, snapshot or data test succeeds. For a microbatch
+  // model: the last batch's response.
+  // Unset for other node types (e.g. functions, unit tests), for tests that share an aggregated
+  // query, for nodes that run outside the warehouse adapter (local or lake compute), and when
+  // the node did not succeed.
+  NodeAdapterResponse adapter_response = 44;
 }
 
 // Span event tracking full processing of a node across all phases.
@@ -476,4 +508,9 @@ message NodeProcessed {
   // If node_type == NODE_TYPE_PLUGIN, the kind of node the plugin added
   // (e.g. "widget").
   optional string plugin_type = 49;
+
+  // Response of the node's `main` statement.
+  // Rolled up from the Run phase `NodeEvaluated`; see its `adapter_response`.
+  // Unset when the Run phase did not run, or recorded none.
+  NodeAdapterResponse adapter_response = 50;
 }

@@ -20,7 +20,7 @@ use dbt_common::constants::RUNNING;
 use dbt_common::stats::{NodeStatus, Stat};
 use dbt_common::status_reporter::report_completed;
 use dbt_common::tracing::dbt_emit::{emit_error_log_from_fs_error, emit_warn_log_message};
-use dbt_common::tracing::span_info::find_and_update_span_attrs;
+use dbt_common::tracing::span_info::{find_and_update_span_attrs, update_span_attrs};
 use dbt_common::warn_error_options::WarnErrorOptions;
 use dbt_common::{ErrorCode, FsResult, fs_err};
 use dbt_schemas::schemas::common::Severity;
@@ -106,6 +106,8 @@ impl Task for RunTask {
         ctx: &'a mut TaskRunnerCtx,
     ) -> Pin<Box<dyn Future<Output = FsResult<NodeStatus>> + Send + 'a>> {
         Box::pin(async move {
+            // The visitor instruments this future with the node's `NodeEvaluated` span.
+            let task_span = tracing::Span::current();
             let unique_id = self.node.unique_id();
             let mut result_receiver = { self.result_receiver.lock().take() };
             let task_result = receive_task_result(&unique_id, &mut result_receiver)?;
@@ -536,6 +538,17 @@ impl Task for RunTask {
                     Some(elapsed_millis(execution_started_at)),
                 )
                 .await;
+            }
+
+            // A node that errored, or was reported as errored, leaves it unset.
+            if matches!(&result, Ok(status) if !matches!(status, NodeStatus::Errored)) {
+                let adapter_response = ctx
+                    .inner
+                    .main_adapter_responses
+                    .read_sync(&unique_id, |_, response| response.to_telemetry());
+                update_span_attrs(&task_span, |attrs: &mut NodeEvaluated| {
+                    attrs.adapter_response = adapter_response;
+                });
             }
 
             let mut span_rows_affected: Option<i64> = None;

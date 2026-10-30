@@ -153,6 +153,78 @@ impl ::prost::Name for NodeEvaluationDetail {
         "/v1.public.events.fusion.node.NodeEvaluationDetail".into()
     }
 }
+/// Response of a node's `main` statement.
+#[cfg_attr(any(test, feature = "test-utils"), derive(::fake::Dummy))]
+#[derive(crate::macros::ProtoNew)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct NodeAdapterResponse {
+    /// Id the warehouse assigned to the statement's query.
+    /// Unset when the adapter reported none.
+    #[prost(string, optional, tag = "1")]
+    pub query_id: ::core::option::Option<::prost::alloc::string::String>,
+    /// Status code of the statement, as the adapter reports it (e.g. "SUCCESS", "INSERT").
+    /// Unset when the adapter reported none.
+    #[prost(string, optional, tag = "2")]
+    pub code: ::core::option::Option<::prost::alloc::string::String>,
+    /// Adapter-defined statement metrics.
+    /// INTERNAL METRICS ONLY. DO NOT DEPEND ON THESE KEYS. THEY MAY CHANGE OR BE REMOVED WITHOUT NOTICE.
+    #[prost(btree_map = "string, message", tag = "3")]
+    pub extra: ::prost::alloc::collections::BTreeMap<
+        ::prost::alloc::string::String,
+        AdapterResponseValue,
+    >,
+}
+impl ::dbt_tracing::StaticName for NodeAdapterResponse {
+    const FULL_NAME: &'static str = "v1.public.events.fusion.node.NodeAdapterResponse";
+    const TYPE_URL: &'static str = "/v1.public.events.fusion.node.NodeAdapterResponse";
+}
+impl ::prost::Name for NodeAdapterResponse {
+    const NAME: &'static str = "NodeAdapterResponse";
+    const PACKAGE: &'static str = "v1.public.events.fusion.node";
+    fn full_name() -> ::prost::alloc::string::String {
+        "v1.public.events.fusion.node.NodeAdapterResponse".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "/v1.public.events.fusion.node.NodeAdapterResponse".into()
+    }
+}
+/// Value of an adapter-defined key in `NodeAdapterResponse.extra`.
+#[cfg_attr(any(test, feature = "test-utils"), derive(::fake::Dummy))]
+#[derive(crate::macros::ProtoNew)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct AdapterResponseValue {
+    #[prost(oneof = "adapter_response_value::Value", tags = "1, 2, 3, 4")]
+    pub value: ::core::option::Option<adapter_response_value::Value>,
+}
+/// Nested message and enum types in `AdapterResponseValue`.
+pub mod adapter_response_value {
+    #[cfg_attr(any(test, feature = "test-utils"), derive(::fake::Dummy))]
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Value {
+        #[prost(int64, tag = "1")]
+        Int(i64),
+        #[prost(double, tag = "2")]
+        Float(f64),
+        #[prost(bool, tag = "3")]
+        Bool(bool),
+        #[prost(string, tag = "4")]
+        String(::prost::alloc::string::String),
+    }
+}
+impl ::dbt_tracing::StaticName for AdapterResponseValue {
+    const FULL_NAME: &'static str = "v1.public.events.fusion.node.AdapterResponseValue";
+    const TYPE_URL: &'static str = "/v1.public.events.fusion.node.AdapterResponseValue";
+}
+impl ::prost::Name for AdapterResponseValue {
+    const NAME: &'static str = "AdapterResponseValue";
+    const PACKAGE: &'static str = "v1.public.events.fusion.node";
+    fn full_name() -> ::prost::alloc::string::String {
+        "v1.public.events.fusion.node.AdapterResponseValue".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "/v1.public.events.fusion.node.AdapterResponseValue".into()
+    }
+}
 /// Evaluation of one time window within a microbatch model's run phase.
 /// Maps to dbt-core's LogStartBatch (Q045) and LogBatchResult (Q046).
 #[cfg_attr(any(test, feature = "test-utils"), derive(::fake::Dummy))]
@@ -218,7 +290,7 @@ impl ::prost::Name for MicrobatchEvaluated {
 }
 #[cfg_attr(any(test, feature = "test-utils"), derive(::fake::Dummy))]
 #[derive(crate::macros::ProtoNew)]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct NodeEvaluated {
     /// unique_id is the globally unique identifier for this node.
     #[prost(string, tag = "1")]
@@ -330,6 +402,15 @@ pub struct NodeEvaluated {
     /// returned an execution decision.
     #[prost(string, optional, tag = "43")]
     pub state_decision_id: ::core::option::Option<::prost::alloc::string::String>,
+    /// Response of the node's `main` statement, as in run_results.json minus the row count and
+    /// the free-text message.
+    /// Set in the Run phase when a model, seed, snapshot or data test succeeds. For a microbatch
+    /// model: the last batch's response.
+    /// Unset for other node types (e.g. functions, unit tests), for tests that share an aggregated
+    /// query, for nodes that run outside the warehouse adapter (local or lake compute), and when
+    /// the node did not succeed.
+    #[prost(message, optional, tag = "44")]
+    pub adapter_response: ::core::option::Option<NodeAdapterResponse>,
     /// Node type specific details (e.g. test fail counts, cache use reasons).
     #[prost(oneof = "node_evaluated::NodeOutcomeDetail", tags = "30, 31, 32, 33, 34")]
     pub node_outcome_detail: ::core::option::Option<node_evaluated::NodeOutcomeDetail>,
@@ -382,7 +463,7 @@ impl ::prost::Name for NodeEvaluated {
 /// Supersedes legacy NodeStart (Q024) and NodeFinished (Q025) events.
 #[cfg_attr(any(test, feature = "test-utils"), derive(::fake::Dummy))]
 #[derive(crate::macros::ProtoNew)]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct NodeProcessed {
     /// unique_id is the globally unique identifier for this node.
     #[prost(string, tag = "1")]
@@ -519,6 +600,11 @@ pub struct NodeProcessed {
     /// (e.g. "widget").
     #[prost(string, optional, tag = "49")]
     pub plugin_type: ::core::option::Option<::prost::alloc::string::String>,
+    /// Response of the node's `main` statement.
+    /// Rolled up from the Run phase `NodeEvaluated`; see its `adapter_response`.
+    /// Unset when the Run phase did not run, or recorded none.
+    #[prost(message, optional, tag = "50")]
+    pub adapter_response: ::core::option::Option<NodeAdapterResponse>,
     /// Node type specific details (e.g. test fail counts, cache use reasons).
     #[prost(oneof = "node_processed::NodeOutcomeDetail", tags = "30, 31, 32, 33, 34")]
     pub node_outcome_detail: ::core::option::Option<node_processed::NodeOutcomeDetail>,

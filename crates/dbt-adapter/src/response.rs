@@ -3,6 +3,7 @@ use dbt_adapter_core::AdapterType;
 use dbt_adbc as adbc;
 use dbt_agate::AgateTable;
 use dbt_common::stats::ExecutionMetrics;
+use dbt_telemetry::{AdapterResponseValue, NodeAdapterResponse, adapter_response_value};
 use minijinja::listener::RenderingEventListener;
 use minijinja::value::{Enumerator, Object, ValueMap};
 use minijinja::{State, Value};
@@ -32,6 +33,10 @@ const KEY_JOB_ID: &str = "job_id";
 /// a status/row-count summary) so callers can detect "was there a warning"
 /// without parsing prose.
 const KEY_WARNING: &str = "warning";
+
+/// Keys of the response that telemetry sends in `NodeAdapterResponse.extra`, for internal
+/// metrics. Every other key stays in the response but is not sent.
+const TELEMETRY_EXTRA_KEYS: &[&str] = &[KEY_BYTES_PROCESSED, KEY_BYTES_BILLED, KEY_SLOT_MS];
 
 const KNOWN_KEYS: &[&str] = &[KEY_MESSAGE, KEY_CODE, KEY_ROWS_AFFECTED, KEY_QUERY_ID];
 
@@ -137,6 +142,37 @@ impl AdapterResponse {
             bytes_billed: self.bytes_billed(),
             slot_ms: self.slot_ms(),
         }
+    }
+
+    /// The response in its telemetry form, in one pass over its keys.
+    ///
+    /// `query_id` and `code` become typed fields when they are strings; an empty `code` is
+    /// left unset. `extra` gets only the keys in `TELEMETRY_EXTRA_KEYS`. Everything else,
+    /// including the row count and the free-text messages, is left out.
+    pub fn to_telemetry(&self) -> NodeAdapterResponse {
+        let mut telemetry = NodeAdapterResponse::default();
+        for (key, value) in &self.0 {
+            let Some(key) = key.as_str() else {
+                continue;
+            };
+            match key {
+                KEY_QUERY_ID => telemetry.query_id = value.as_str().map(str::to_string),
+                // The default response carries an empty `code`: no code was reported.
+                KEY_CODE => {
+                    telemetry.code = value
+                        .as_str()
+                        .filter(|code| !code.is_empty())
+                        .map(str::to_string)
+                }
+                _ if TELEMETRY_EXTRA_KEYS.contains(&key) => {
+                    if let Some(value) = telemetry_extra_value(value) {
+                        telemetry.extra.insert(key.to_string(), value);
+                    }
+                }
+                _ => {}
+            }
+        }
+        telemetry
     }
 
     /// Build the response for an executed statement from its result batch.
@@ -332,6 +368,18 @@ fn format_bytes(num_bytes: i64) -> String {
         num_bytes /= 1024.0;
     }
     format!("{num_bytes:.1} PiB")
+}
+
+/// Typed form of an allowlisted value, which adapters report as an integer. Any other
+/// value is skipped rather than sent in a shape consumers do not expect.
+fn telemetry_extra_value(value: &Value) -> Option<AdapterResponseValue> {
+    if !value.is_integer() {
+        return None;
+    }
+    let int = i64::try_from(value.clone()).ok()?;
+    Some(AdapterResponseValue {
+        value: Some(adapter_response_value::Value::Int(int)),
+    })
 }
 
 fn format_rows_number(rows_number: i64) -> String {
@@ -793,6 +841,61 @@ mod from_record_batch_tests {
         assert_eq!(format_bytes(2048 * 1024_i64.pow(5)), "2048.0 PiB");
     }
 
+    fn telemetry_extra_keys(response: &AdapterResponse) -> Vec<String> {
+        response.to_telemetry().extra.into_keys().collect()
+    }
+
+    #[test]
+    fn test_bigquery_telemetry_extra_is_bytes_and_slots_only() {
+        let response = bigquery(
+            2,
+            &[
+                ("BIGQUERY:query_id", "job-abc"),
+                ("BIGQUERY:Statistics:Query:StatementType", "SELECT"),
+                ("BIGQUERY:Statistics:Query:TotalBytesProcessed", "1536"),
+                ("BIGQUERY:Statistics:Query:TotalBytesBilled", "10485760"),
+                ("BIGQUERY:Statistics:Query:SlotMillis", "7167"),
+            ],
+        );
+
+        // `job_id` is in the response, and is not sent.
+        assert_eq!(json(&response)["job_id"], "job-abc");
+        assert_eq!(
+            telemetry_extra_keys(&response),
+            ["bytes_billed", "bytes_processed", "slot_ms"]
+        );
+        assert_eq!(response.to_telemetry().query_id.as_deref(), Some("job-abc"));
+    }
+
+    #[test]
+    fn test_snowflake_telemetry_extra_is_empty() {
+        let batch = select_batch(1, &[("SNOWFLAKE_QUERY_ID", "snowflake-id")]);
+        let response = AdapterResponse::from_record_batch(&batch, AdapterType::Snowflake);
+        assert_eq!(telemetry_extra_keys(&response), Vec::<String>::new());
+    }
+
+    #[test]
+    fn test_databricks_telemetry_extra_is_empty() {
+        let batch = select_batch(1, &[("DATABRICKS_QUERY_ID", "databricks-id")]);
+        let response = AdapterResponse::from_record_batch(&batch, AdapterType::Databricks);
+        assert_eq!(telemetry_extra_keys(&response), Vec::<String>::new());
+    }
+
+    #[test]
+    fn test_lake_compute_telemetry_extra_is_empty() {
+        let batch = select_batch(
+            1,
+            &[(
+                adbc::lake_compute::schema_metadata::WARNINGS,
+                "export limit exceeded",
+            )],
+        );
+        let response = AdapterResponse::from_record_batch(&batch, AdapterType::LakeCompute);
+        // The warning is in the response, and is not sent.
+        assert!(response.warning().is_some());
+        assert_eq!(telemetry_extra_keys(&response), Vec::<String>::new());
+    }
+
     #[test]
     fn test_format_rows_number() {
         assert_eq!(format_rows_number(0), "0.0");
@@ -925,6 +1028,38 @@ mod tests {
             sample_response(),
             "{{ obj | tojson }}",
             r#"{"_message": "SUCCESS 42", "code": "SUCCESS", "foo": "bar", "message": "SUCCESS 42", "query_id": "01c2f954-abc", "rows_affected": 42}"#,
+        );
+    }
+}
+
+#[cfg(test)]
+mod to_telemetry_tests {
+    use super::*;
+
+    #[test]
+    fn query_id_and_code_are_typed_and_the_row_count_and_messages_are_left_out() {
+        let telemetry = AdapterResponse::new()
+            .with_message("SUCCESS 5")
+            .with_code("SUCCESS")
+            .with_rows_affected(5)
+            .with_query_id("01-abc")
+            .to_telemetry();
+
+        assert_eq!(
+            telemetry,
+            NodeAdapterResponse {
+                query_id: Some("01-abc".to_string()),
+                code: Some("SUCCESS".to_string()),
+                extra: Default::default(),
+            }
+        );
+    }
+
+    #[test]
+    fn default_response_reports_no_code_or_query_id() {
+        assert_eq!(
+            AdapterResponse::new().to_telemetry(),
+            NodeAdapterResponse::default()
         );
     }
 }
