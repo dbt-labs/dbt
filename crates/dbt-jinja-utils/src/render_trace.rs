@@ -49,6 +49,7 @@ struct OutputBuffer {
 #[derive(Debug)]
 pub(crate) struct RenderTraceListener {
     source_path: PathBuf,
+    templates: RefCell<Vec<PathBuf>>,
     location: RefCell<Rc<OutputTrackerLocation>>,
     events: RefCell<Vec<RenderTraceEvent>>,
     emits: RefCell<Vec<(Span, usize)>>,
@@ -61,6 +62,7 @@ impl RenderTraceListener {
     pub(crate) fn new(source_path: &Path) -> Self {
         Self {
             source_path: source_path.to_owned(),
+            templates: RefCell::new(Vec::new()),
             location: RefCell::new(Rc::new(OutputTrackerLocation::default())),
             events: RefCell::new(Vec::new()),
             emits: RefCell::new(Vec::new()),
@@ -68,6 +70,10 @@ impl RenderTraceListener {
             function_frames: RefCell::new(Vec::new()),
             buffers: RefCell::new(Vec::new()),
         }
+    }
+
+    fn is_source_template(&self) -> bool {
+        self.templates.borrow().last() == Some(&self.source_path)
     }
 
     fn position(&self) -> usize {
@@ -109,6 +115,22 @@ impl RenderingEventListener for RenderTraceListener {
         self.location.replace(location);
     }
 
+    fn on_template_execution_start(&self, name: &str) {
+        self.templates.borrow_mut().push(PathBuf::from(name));
+    }
+
+    fn on_template_execution_parent(&self, name: &str) {
+        *self
+            .templates
+            .borrow_mut()
+            .last_mut()
+            .expect("missing template") = PathBuf::from(name);
+    }
+
+    fn on_template_execution_end(&self) {
+        self.templates.borrow_mut().pop();
+    }
+
     fn on_output_buffer_start(&self) {
         self.buffers.borrow_mut().push(OutputBuffer {
             location: self.location.borrow().clone(),
@@ -145,7 +167,7 @@ impl RenderingEventListener for RenderTraceListener {
     // even though this byte-oriented observer only needs the path and offset.
     // @codescene(disable:"Excess Number of Function Arguments")
     fn on_macro_start(&self, path: Option<&Path>, _line: &u32, _col: &u32, offset: &u32) {
-        if path == Some(self.source_path.as_path()) {
+        if self.is_source_template() && path == Some(self.source_path.as_path()) {
             self.macros
                 .borrow_mut()
                 .push((*offset as usize, self.position()));
@@ -155,7 +177,7 @@ impl RenderingEventListener for RenderTraceListener {
     // Keep the shared trait signature; line/column are unused by trace events.
     // @codescene(disable:"Excess Number of Function Arguments")
     fn on_macro_stop(&self, path: Option<&Path>, _line: &u32, _col: &u32, offset: &u32) {
-        if path != Some(self.source_path.as_path()) {
+        if !self.is_source_template() || path != Some(self.source_path.as_path()) {
             return;
         }
         if let Some((source_start, rendered_start)) = self.macros.borrow_mut().pop() {
@@ -171,11 +193,21 @@ impl RenderingEventListener for RenderTraceListener {
 
     fn on_raw_emit(&self, raw: &str, span: &Span) {
         let start = self.position();
-        self.record("literal", span, start..start + raw.len());
+        if self.is_source_template() {
+            self.record("literal", span, start..start + raw.len());
+        } else {
+            // Foreign template bytes have no editable range in this source.
+            self.record("templated", &Span::default(), start..start + raw.len());
+        }
     }
 
     fn on_emit_start(&self, span: &Span) {
-        self.emits.borrow_mut().push((*span, self.position()));
+        let span = if self.is_source_template() {
+            *span
+        } else {
+            Span::default()
+        };
+        self.emits.borrow_mut().push((span, self.position()));
     }
 
     fn on_emit_end(&self, _span: &Span) {
@@ -185,6 +217,9 @@ impl RenderingEventListener for RenderTraceListener {
     }
 
     fn on_jinja_layout_event(&self, kind: JinjaLayoutEventKind, span: &Span) {
+        if !self.is_source_template() {
+            return;
+        }
         let name = match kind {
             JinjaLayoutEventKind::BlockStart => "block_start",
             JinjaLayoutEventKind::BlockMid => "block_mid",
@@ -198,11 +233,17 @@ impl RenderingEventListener for RenderTraceListener {
     }
 
     fn on_jinja_loop_iteration_start(&self, span: &Span) {
+        if !self.is_source_template() {
+            return;
+        }
         let position = self.position();
         self.record("loop_iteration", span, position..position);
     }
 
     fn on_jinja_loop_skipped_end(&self, span: &Span) {
+        if !self.is_source_template() {
+            return;
+        }
         let position = self.position();
         self.record("loop_skipped", span, position..position);
     }
@@ -302,19 +343,15 @@ mod tests {
             .collect();
         assert_eq!(literals[0].source_start, literals[2].source_start);
         assert_ne!(literals[0].rendered_start, literals[2].rendered_start);
-        assert!(
-            trace
-                .events
-                .iter()
-                .any(|event| event.kind == "loop_iteration")
-        );
+        assert!(trace
+            .events
+            .iter()
+            .any(|event| event.kind == "loop_iteration"));
         let skipped = render("{% for x in [] %}never{% endfor %}select 1", true);
-        assert!(
-            skipped
-                .events
-                .iter()
-                .any(|event| event.kind == "loop_skipped")
-        );
+        assert!(skipped
+            .events
+            .iter()
+            .any(|event| event.kind == "loop_skipped"));
         assert_eq!(skipped.rendered, "select 1");
     }
 
@@ -555,6 +592,49 @@ mod tests {
                     .count(),
                 1
             );
+        }
+    }
+
+    #[test]
+    fn inheritance_keeps_foreign_output_generated_and_child_literals_exact() {
+        for default_tracker in [false, true] {
+            let source = "{% extends 'parent.sql' %}{% block b %}{% if true %}C{{ 2 }}{% endif %}D{% endblock %}";
+            let mut environment = Environment::new();
+            environment
+                .add_template("grandparent.sql", "G{% block outer %}unused{% endblock %}Z")
+                .unwrap();
+            environment.add_template("parent.sql", "{% extends 'grandparent.sql' %}{% block outer %}P{{ 1 }}{% for n in [1, 2] %}Q{% endfor %}{% block b %}B{% endblock %}R{% endblock %}").unwrap();
+            let normal = environment
+                .render_named_str("model.sql", source, (), &[])
+                .unwrap();
+            let observer = Rc::new(RenderTraceListener::new(Path::new("model.sql")));
+            let mut listeners: Vec<Rc<dyn RenderingEventListener>> = Vec::new();
+            if default_tracker {
+                listeners.push(Rc::new(
+                    crate::listener::DefaultRenderingEventListener::default(),
+                ));
+            }
+            listeners.push(observer.clone());
+            let rendered = environment
+                .render_named_str("model.sql", source, (), &listeners)
+                .unwrap();
+            let trace = observer.finish(source, rendered);
+            assert_eq!(trace.rendered, normal);
+            assert_eq!(trace.rendered, "GP1QQC2DRZ");
+            let mut literal = String::new();
+            for event in &trace.events {
+                let src = &source[event.source_start..event.source_end];
+                let dst = &trace.rendered[event.rendered_start..event.rendered_end];
+                if event.kind == "literal" {
+                    assert_eq!(src, dst);
+                    literal.push_str(src);
+                } else if event.kind.starts_with("block_") {
+                    assert!(src == "{% if true %}" || src == "{% endif %}", "{src}");
+                }
+            }
+            assert_eq!(literal, "CD");
+            assert!(!trace.events.iter().any(|e| e.kind.starts_with("loop_")));
+            assert!(observer.templates.borrow().is_empty());
         }
     }
 }

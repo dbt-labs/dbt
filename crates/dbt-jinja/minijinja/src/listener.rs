@@ -33,6 +33,15 @@ pub trait RenderingEventListener: std::fmt::Debug {
     /// callbacks; nested macro output buffers do not notify.
     fn on_output_tracker(&self, _location: Rc<OutputTrackerLocation>) {}
 
+    /// Enter an evaluation of the named template, including nested evaluations.
+    fn on_template_execution_start(&self, _name: &str) {}
+
+    /// Switch to a parent template within the current evaluation (inheritance).
+    fn on_template_execution_parent(&self, _name: &str) {}
+
+    /// Leave an evaluation, on both success and error, restoring its caller.
+    fn on_template_execution_end(&self) {}
+
     /// Begin a nested render into a temporary output buffer.
     fn on_output_buffer_start(&self) {}
 

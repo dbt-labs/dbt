@@ -48,6 +48,12 @@ surrounding stripped whitespace. Loop repetitions describe executions of the
 source body; a filtered loop's internal selection pass emits no repetitions.
 A for/else closes either each executed body or the executed else, never both.
 
+Template identity follows the executing instructions through inheritance and
+nested evaluations. Output from a different template is `templated` with an
+empty source range at byte zero; foreign layout and loop events are omitted.
+Overridden blocks belonging to this source retain their exact literal ranges.
+Foreign bytes are never offered as editable literals in the child file.
+
 Named blocks render into temporary buffers. Their events are rebased when the
 buffer is appended directly, and the enclosing tracker is restored even on an
 error. Captured or transformed block values do not publish intermediate literal

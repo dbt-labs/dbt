@@ -441,16 +441,19 @@ impl<'env> Vm<'env> {
         listeners: &[Rc<dyn RenderingEventListener>],
         output_mode: OutputMode,
     ) -> Result<Value, Error> {
+        for listener in listeners {
+            listener.on_template_execution_start(state.instructions.name());
+        }
         #[cfg(feature = "stacker")]
-        {
-            stacker::maybe_grow(32 * 1024, 1024 * 1024, || {
-                self.eval_impl(state, stack, pc, listeners, output_mode)
-            })
-        }
-        #[cfg(not(feature = "stacker"))]
-        {
+        let result = stacker::maybe_grow(32 * 1024, 1024 * 1024, || {
             self.eval_impl(state, stack, pc, listeners, output_mode)
+        });
+        #[cfg(not(feature = "stacker"))]
+        let result = self.eval_impl(state, stack, pc, listeners, output_mode);
+        for listener in listeners {
+            listener.on_template_execution_end();
         }
+        result
     }
 
     #[inline]
@@ -538,6 +541,9 @@ impl<'env> Vm<'env> {
                         Some(instr) => instr,
                         None => break,
                     };
+                    for listener in listeners {
+                        listener.on_template_execution_parent(state.instructions.name());
+                    }
                     out.end_capture(AutoEscape::None);
                     pc = 0;
                     // because we swap out the instructions we also need to unload all
