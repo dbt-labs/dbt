@@ -856,12 +856,15 @@ class TestTypeError(ParsingError):
 
 # This is triggered across multiple files
 class EnvVarMissingError(ParsingError):
-    def __init__(self, var: str):
+    def __init__(self, var: str, node=None):
         self.var = var
+        self.node = node
         super().__init__(msg=self.get_message())
 
     def get_message(self) -> str:
         msg = f"Env var required but not provided: '{self.var}'"
+        if self.node is not None and hasattr(self.node, "original_file_path"):
+            msg += f"\n  Referenced in: {self.node.original_file_path}"
         return msg
 
 

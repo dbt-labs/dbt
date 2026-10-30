@@ -1788,7 +1788,7 @@ class ProviderContext(ManifestContext):
                         source_file.env_vars.append(var)  # type: ignore[union-attr]
             return return_value
         else:
-            raise EnvVarMissingError(var)
+            raise EnvVarMissingError(var, node=self.model)
 
     @contextproperty()
     def selected_resources(self) -> List[str]:
@@ -2306,7 +2306,7 @@ class TestContext(ProviderContext):
                     source_file.add_env_var(var, yaml_key, name)  # type: ignore[union-attr]
             return return_value
         else:
-            raise EnvVarMissingError(var)
+            raise EnvVarMissingError(var, node=self.model)
 
 
 def generate_test_context(
