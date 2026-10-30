@@ -1040,6 +1040,7 @@ impl<'env> Vm<'env> {
                     };
                     match next {
                         Some(item) => {
+                            l.did_iterate = true;
                             // each iteration should start with clean local vars to match Python
                             state.ctx.current_locals_mut().clear();
                             stack.push(
@@ -1055,7 +1056,7 @@ impl<'env> Vm<'env> {
                 }
                 Instruction::PushDidNotIterate => {
                     let l = state.ctx.current_loop().unwrap();
-                    stack.push(Value::from(l.object.idx.load(Ordering::Relaxed) == 0));
+                    stack.push(Value::from(!l.did_iterate));
                 }
                 Instruction::Jump(jump_target, _) => {
                     pc = *jump_target;
@@ -1690,7 +1691,7 @@ impl<'env> Vm<'env> {
                     let did_not_iterate = state
                         .ctx
                         .current_loop()
-                        .is_some_and(|loop_ctx| loop_ctx.object.idx.load(Ordering::Relaxed) == 0);
+                        .is_some_and(|loop_ctx| !loop_ctx.did_iterate);
                     if did_not_iterate && current_macro_name.is_none() {
                         let source_span =
                             span_with_current_offset(source_span, &state.ctx.current_span);
@@ -1977,6 +1978,7 @@ impl<'env> Vm<'env> {
         let with_loop_var = flags & LOOP_FLAG_WITH_LOOP_VAR != 0;
         ok!(state.ctx.push_frame(Frame {
             current_loop: Some(LoopState {
+                did_iterate: false,
                 with_loop_var,
                 recurse_jump_target: if recursive { Some(pc) } else { None },
                 current_recursion_jump,

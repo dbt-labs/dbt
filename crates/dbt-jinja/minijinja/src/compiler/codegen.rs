@@ -82,6 +82,8 @@ pub struct CodeGenerator<'source> {
     instructions: Instructions<'source>,
     blocks: BTreeMap<&'source str, Instructions<'source>>,
     pending_block: Vec<PendingBlock>,
+    // Source layout scopes, independent of synthetic bytecode branches/loops.
+    layout_scopes: Vec<(Span, bool)>,
     current_line: u32,
     span_stack: Vec<Span>,
     filter_local_ids: BTreeMap<&'source str, LocalId>,
@@ -101,6 +103,7 @@ impl<'source> CodeGenerator<'source> {
             instructions: Instructions::new(file, source, None),
             blocks: BTreeMap::new(),
             pending_block: Vec::with_capacity(32),
+            layout_scopes: Vec::new(),
             current_line: 0,
             span_stack: Vec::with_capacity(32),
             filter_local_ids: BTreeMap::new(),
@@ -120,6 +123,7 @@ impl<'source> CodeGenerator<'source> {
             instructions: Instructions::new(file, source, filename),
             blocks: BTreeMap::new(),
             pending_block: Vec::with_capacity(32),
+            layout_scopes: Vec::new(),
             current_line: 0,
             span_stack: Vec::with_capacity(32),
             filter_local_ids: BTreeMap::new(),
@@ -598,6 +602,7 @@ impl<'source> CodeGenerator<'source> {
             #[cfg(feature = "loop_controls")]
             ast::Stmt::Continue(cont) => {
                 self.set_line_from_span(cont.span());
+                self.close_layout_for_loop_jump();
                 for pending_block in self.pending_block.iter().rev() {
                     if let PendingBlock::Loop { iter_instr, .. } = pending_block {
                         self.add(Instruction::Jump(*iter_instr, cont.span));
@@ -610,6 +615,7 @@ impl<'source> CodeGenerator<'source> {
                 match &self.profile {
                     CodeGenerationProfile::Render => {
                         self.set_line_from_span(brk.span());
+                        self.close_layout_for_loop_jump();
                         let instr = self.add(Instruction::Jump(0, brk.span));
                         for pending_block in self.pending_block.iter_mut().rev() {
                             if let PendingBlock::Loop {
@@ -893,6 +899,23 @@ impl<'source> CodeGenerator<'source> {
         Ok(())
     }
 
+    #[cfg(feature = "loop_controls")]
+    fn close_layout_for_loop_jump(&mut self) {
+        let mut endings = Vec::new();
+        for (span, is_loop) in self.layout_scopes.iter().rev() {
+            endings.push(*span);
+            if *is_loop {
+                break;
+            }
+        }
+        for span in endings {
+            self.add(Instruction::JinjaLayoutEvent(
+                JinjaLayoutEventKind::BlockEnd,
+                span,
+            ));
+        }
+    }
+
     fn compile_if_stmt(
         &mut self,
         if_cond: &ast::Spanned<ast::IfCond<'source>>,
@@ -918,6 +941,10 @@ impl<'source> CodeGenerator<'source> {
                 true,
                 span,
             ));
+        }
+        let owns_layout = if_cond.start_tag_kind == JinjaLayoutEventKind::BlockStart;
+        if owns_layout {
+            self.layout_scopes.push((if_cond.end_tag_span, false));
         }
         for node in &if_cond.true_body {
             self.compile_stmt(node)?;
@@ -949,7 +976,8 @@ impl<'source> CodeGenerator<'source> {
         self.end_if();
         // An elif is a synthetic nested IfCond sharing the outer endif. Only
         // the source-level if owns that closing layout event.
-        if if_cond.start_tag_kind == JinjaLayoutEventKind::BlockStart {
+        if owns_layout {
+            self.layout_scopes.pop();
             self.add(Instruction::JinjaLayoutEvent(
                 JinjaLayoutEventKind::BlockEnd,
                 if_cond.end_tag_span,
@@ -1093,9 +1121,11 @@ impl<'source> CodeGenerator<'source> {
             Some(for_loop.start_tag_span),
         );
         self.compile_assignment(&for_loop.target)?;
+        self.layout_scopes.push((for_loop.end_tag_span, true));
         for node in &for_loop.body {
             self.compile_stmt(node)?;
         }
+        self.layout_scopes.pop();
         self.add(Instruction::JinjaLayoutEvent(
             JinjaLayoutEventKind::BlockEnd,
             for_loop.end_tag_span,
@@ -1116,9 +1146,11 @@ impl<'source> CodeGenerator<'source> {
                     else_tag_span,
                 ));
             }
+            self.layout_scopes.push((for_loop.end_tag_span, false));
             for node in &for_loop.else_body {
                 self.compile_stmt(node)?;
             }
+            self.layout_scopes.pop();
             self.add(Instruction::JinjaLayoutEvent(
                 JinjaLayoutEventKind::BlockEnd,
                 for_loop.end_tag_span,

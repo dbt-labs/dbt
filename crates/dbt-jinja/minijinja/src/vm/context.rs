@@ -16,6 +16,7 @@ use crate::vm::closure_object::Closure;
 type Locals<'env> = BTreeMap<&'env str, Value>;
 
 pub(crate) struct LoopState {
+    pub(crate) did_iterate: bool,
     pub(crate) with_loop_var: bool,
     pub(crate) recurse_jump_target: Option<usize>,
     // if we're popping the frame, do we want to jump somewhere?  The

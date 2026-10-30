@@ -637,4 +637,39 @@ mod tests {
             assert!(observer.templates.borrow().is_empty());
         }
     }
+
+    #[test]
+    fn loop_control_closes_exited_layout_scopes_only() {
+        for control in ["continue", "break"] {
+            for body in [
+                format!("select {{{{ n }}}};{{% {control} %}}"),
+                format!("{{% if n > 0 %}}select {{{{ n }}}};{{% {control} %}}{{% endif %}}"),
+                format!("{{% if false %}}unused{{% elif true %}}{{% if true %}}select {{{{ n }}}};{{% {control} %}}{{% endif %}}{{% endif %}}"),
+            ] {
+                let source = format!("{{% if true %}}{{% for n in [1, 2] %}}{body}{{% else %}}unused{{% endfor %}}select 9{{% endif %}}");
+                let trace = render(&source, true);
+                assert_eq!(trace.rendered, if control == "continue" { "select 1;select 2;select 9" } else { "select 1;select 9" });
+                assert_balanced_layout(&trace);
+            }
+            let source = format!("{{% for outer in [1, 2] %}}{{% for n in [1, 2] %}}{{% if true %}}{{% {control} %}}{{% endif %}}{{% endfor %}}select {{{{ outer }}}};{{% endfor %}}");
+            let trace = render(&source, true);
+            assert_eq!(trace.rendered, "select 1;select 2;");
+            assert_balanced_layout(&trace);
+        }
+    }
+
+    fn assert_balanced_layout(trace: &RenderTrace) {
+        let mut depth = 0;
+        for event in &trace.events {
+            match event.kind.as_str() {
+                "block_start" | "loop_iteration" => depth += 1,
+                "block_end" | "loop_skipped" => {
+                    assert!(depth > 0, "unexpected closing event: {event:?}");
+                    depth -= 1;
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(depth, 0, "unclosed layout: {:?}", trace.events);
+    }
 }

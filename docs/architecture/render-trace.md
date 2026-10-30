@@ -47,6 +47,11 @@ Raw-block literal ranges cover the post-whitespace-control payload, not the
 surrounding stripped whitespace. Loop repetitions describe executions of the
 source body; a filtered loop's internal selection pass emits no repetitions.
 A for/else closes either each executed body or the executed else, never both.
+Loop `break` and `continue` emit closing boundaries for the exited conditionals
+and loop body before jumping, preserving enclosing scopes and genuine repeats.
+The VM records whether an item was visited separately from its zero-based index,
+so a break during the first item is not misreported as an empty loop or routed
+through its else body.
 
 Template identity follows the executing instructions through inheritance and
 nested evaluations. Output from a different template is `templated` with an
