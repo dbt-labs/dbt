@@ -332,6 +332,18 @@ pub struct ProjectSeedConfig {
     #[serde(rename = "+schedule")]
     pub schedule: Option<Schedule>,
 
+    // ClickHouse
+    #[serde(rename = "+engine")]
+    pub engine: Option<String>,
+    #[serde(rename = "+order_by")]
+    pub order_by: Option<StringOrArrayOfStrings>,
+    #[serde(
+        default,
+        rename = "+disable_on_cluster",
+        deserialize_with = "bool_or_string_bool"
+    )]
+    pub disable_on_cluster: Option<bool>,
+
     pub __additional_properties__: BTreeMap<String, ShouldBe<ProjectSeedConfig>>,
 }
 
@@ -640,14 +652,14 @@ impl From<ProjectSeedConfig> for SeedConfig {
                 primary_key: PrimaryKeyConfig::default(),
                 category: None,
 
-                engine: None,
-                order_by: None,
+                engine: config.engine,
+                order_by: config.order_by,
                 ttl: None,
                 settings: None,
                 query_settings: None,
                 projections: None,
                 sharding_key: None,
-                disable_on_cluster: None,
+                disable_on_cluster: config.disable_on_cluster,
                 inserts_only: None,
                 connection_overrides: None,
                 fields: None,
@@ -793,6 +805,10 @@ impl From<SeedConfig> for ProjectSeedConfig {
             indexes: config.__warehouse_specific_config__.indexes,
             unlogged: config.__warehouse_specific_config__.unlogged,
             schedule: config.__warehouse_specific_config__.schedule,
+            // ClickHouse fields
+            engine: config.__warehouse_specific_config__.engine,
+            order_by: config.__warehouse_specific_config__.order_by,
+            disable_on_cluster: config.__warehouse_specific_config__.disable_on_cluster,
             __additional_properties__: BTreeMap::new(),
         }
     }
@@ -903,6 +919,29 @@ __additional_properties__: {}
             resolved.__warehouse_specific_config__.query_tags.as_deref(),
             Some(r#"{"team":"seed"}"#)
         );
+    }
+
+    #[test]
+    fn test_seed_clickhouse_table_options_propagate_through_resolved_config() {
+        let project: ProjectSeedConfig = dbt_yaml::from_str(
+            r#"
++engine: ReplacingMergeTree()
++order_by: id
++disable_on_cluster: "true"
+__additional_properties__: {}
+"#,
+        )
+        .unwrap();
+
+        let resolved: SeedConfig = project.into();
+        let wh = &resolved.__warehouse_specific_config__;
+        assert_eq!(wh.engine.as_deref(), Some("ReplacingMergeTree()"));
+        assert!(wh.order_by.is_some());
+        assert_eq!(wh.disable_on_cluster, Some(true));
+
+        let round_trip: ProjectSeedConfig = resolved.into();
+        assert_eq!(round_trip.engine.as_deref(), Some("ReplacingMergeTree()"));
+        assert_eq!(round_trip.disable_on_cluster, Some(true));
     }
 
     #[test]

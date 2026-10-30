@@ -283,6 +283,10 @@ pub struct ProjectUnitTestConfig {
     )]
     pub unlogged: Option<bool>,
 
+    // ClickHouse
+    #[serde(rename = "+settings")]
+    pub settings: Option<BTreeMap<String, YmlValue>>,
+
     // Flattened fields
     pub __additional_properties__: BTreeMap<String, ShouldBe<ProjectUnitTestConfig>>,
 }
@@ -520,7 +524,7 @@ impl From<ProjectUnitTestConfig> for UnitTestConfig {
                 engine: None,
                 order_by: None,
                 ttl: None,
-                settings: None,
+                settings: config.settings,
                 query_settings: None,
                 projections: None,
                 sharding_key: None,
@@ -653,6 +657,8 @@ impl From<UnitTestConfig> for ProjectUnitTestConfig {
             // Postgres Fields
             indexes: config.__warehouse_specific_config__.indexes,
             unlogged: config.__warehouse_specific_config__.unlogged,
+            // ClickHouse fields
+            settings: config.__warehouse_specific_config__.settings,
             __additional_properties__: BTreeMap::new(),
         }
     }
@@ -719,6 +725,34 @@ __additional_properties__: {}
         assert_eq!(
             resolved.__warehouse_specific_config__.query_tags.as_deref(),
             Some(r#"{"team":"unit-test"}"#)
+        );
+    }
+
+    #[test]
+    fn test_unit_test_clickhouse_settings_propagate_through_resolved_config() {
+        let project: ProjectUnitTestConfig = dbt_yaml::from_str(
+            r#"
++settings:
+  allow_nullable_key: 1
+__additional_properties__: {}
+"#,
+        )
+        .unwrap();
+
+        let resolved: UnitTestConfig = project.into();
+        assert!(
+            resolved
+                .__warehouse_specific_config__
+                .settings
+                .as_ref()
+                .is_some_and(|s| s.contains_key("allow_nullable_key"))
+        );
+
+        let round_trip: ProjectUnitTestConfig = resolved.into();
+        assert!(
+            round_trip
+                .settings
+                .is_some_and(|s| s.contains_key("allow_nullable_key"))
         );
     }
 
