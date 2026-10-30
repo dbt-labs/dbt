@@ -112,11 +112,13 @@ pub trait CompiledSqlCache: Send + Sync {
 
 /// Trait for executing ad-hoc SQL queries via dynamic dispatch.
 pub trait AdhocRunner: Send + Sync {
+    /// `adapter` executes the query; `None` uses the environment's adapter.
     fn run_adhoc<'a>(
         self: Arc<Self>,
         instruction: &'a dbt_scheduler::instructions::Instruction,
         rendered_sql: &'a str,
         unique_id: Option<&'a str>,
+        adapter: Option<Arc<dbt_adapter::Adapter>>,
         connection: &'a mut Option<Box<dyn dbt_adbc::Connection>>,
     ) -> Pin<
         Box<

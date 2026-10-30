@@ -24,6 +24,7 @@ impl Showable for DbtTest {
             let unique_id = self.__common_attr__.unique_id.clone();
             run_show(
                 ctx,
+                self,
                 unique_id.as_str(),
                 "test",
                 false,
