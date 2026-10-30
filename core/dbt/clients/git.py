@@ -99,8 +99,6 @@ def clone(repo, cwd, dirname=None, remove_git_dir=False, revision=None, subdirec
     if has_revision and not is_commit:
         clone_cmd.extend(["--branch", revision])
 
-    # `--` keeps git from parsing the package URL or directory as an option
-    clone_cmd.append("--")
     clone_cmd.append(clone_url)
 
     if dirname is not None:
@@ -112,7 +110,7 @@ def clone(repo, cwd, dirname=None, remove_git_dir=False, revision=None, subdirec
 
     if subdirectory:
         cwd_subdir = os.path.join(cwd, dirname or "")
-        clone_cmd_subdir = ["git", "sparse-checkout", "set", "--", subdirectory]
+        clone_cmd_subdir = ["git", "sparse-checkout", "set", subdirectory]
         try:
             run_cmd(cwd_subdir, clone_cmd_subdir, env=auth_env)  # fetches blobs from origin
         except CommandResultError as exc:
@@ -137,10 +135,10 @@ def _checkout(cwd, repo, revision):
     _, auth_env = _split_credentials(repo)  # origin has no credentials, so fetch needs them
 
     if _is_commit(revision):
-        run_cmd(cwd, fetch_cmd + ["--", revision], env=auth_env)
+        run_cmd(cwd, fetch_cmd + [revision], env=auth_env)
     else:
-        run_cmd(cwd, ["git", "remote", "set-branches", "origin", "--", revision])
-        run_cmd(cwd, fetch_cmd + ["--tags", "--", revision], env=auth_env)
+        run_cmd(cwd, ["git", "remote", "set-branches", "origin", revision])
+        run_cmd(cwd, fetch_cmd + ["--tags", revision], env=auth_env)
 
     if _is_commit(revision):
         spec = revision
