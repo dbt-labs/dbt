@@ -14,6 +14,7 @@ from dbt.cli.option_types import (
 )
 from dbt.cli.options import MultiOption
 from dbt.cli.resolvers import default_profiles_dir, default_project_dir
+from dbt.deprecated_version import check_deprecated_version
 from dbt.version import get_version_information
 from dbt_common.constants import ENGINE_ENV_PREFIX
 from dbt_common.exceptions import DbtInternalError
@@ -787,6 +788,7 @@ def _version_callback(ctx, _param, value):
     if not value or ctx.resilient_parsing:
         return
     click.echo(get_version_information())
+    check_deprecated_version(is_warn=True)
     ctx.exit()
 
 

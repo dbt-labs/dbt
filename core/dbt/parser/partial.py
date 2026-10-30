@@ -968,6 +968,12 @@ class PartialParsing:
         for test_unique_id in tests:
             if test_unique_id in self.saved_manifest.nodes:
                 self.saved_manifest.nodes.pop(test_unique_id)
+            elif test_unique_id in self.saved_manifest.disabled:
+                # Generic tests are tracked in data_tests for BOTH enabled and
+                # disabled states. Mirror the disabled cleanup the other
+                # delete_* helpers already do below, otherwise ghost copies
+                # accumulate across partial parses (CORE-725).
+                self.delete_disabled(test_unique_id, schema_file.file_id)
         schema_file.remove_tests(dict_key, name)
         # We also need to remove tests in other schema files that
         # reference this node.
@@ -1044,6 +1050,13 @@ class PartialParsing:
             if file_id in self.new_files:
                 self.saved_files[file_id] = deepcopy(self.new_files[file_id])
                 self.add_to_pp_files(self.saved_files[file_id])
+        elif data_test_unique_id and data_test_unique_id in self.saved_manifest.disabled:
+            # A disabled singular data test lives in saved_manifest.disabled
+            # rather than saved_manifest.nodes; remove the stale copy there too
+            # so it does not accumulate across partial parses (CORE-725). The
+            # node's file_id is the .sql test file, not the schema_file, so
+            # pop by unique_id rather than filtering on schema_file.file_id.
+            self.saved_manifest.disabled.pop(data_test_unique_id)
 
     # exposures are created only from schema files, so just delete
     # the exposure or the disabled exposure.

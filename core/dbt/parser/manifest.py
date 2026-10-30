@@ -497,7 +497,7 @@ class ManifestLoader:
             start_process = time.perf_counter()
             self.process_sources(self.root_project.project_name)
             self.process_refs(self.root_project.project_name, self.root_project.dependencies)
-            self.process_unit_tests(self.root_project.project_name)
+            self.process_unit_tests()
             self.process_docs(self.root_project)
             self.process_metrics(self.root_project)
             self.process_saved_queries(self.root_project)
@@ -1367,7 +1367,7 @@ class ManifestLoader:
     # Loops through all nodes, for each element in
     # 'unit_test' array finds the node and updates the
     # 'depends_on.nodes' array with the unique id
-    def process_unit_tests(self, current_project: str):
+    def process_unit_tests(self):
         models_to_versions = None
         unit_test_unique_ids = list(self.manifest.unit_tests.keys())
         for unit_test_unique_id in unit_test_unique_ids:
@@ -1381,9 +1381,7 @@ class ManifestLoader:
                 continue
             if not models_to_versions:
                 models_to_versions = _build_model_names_to_versions(self.manifest)
-            process_models_for_unit_test(
-                self.manifest, current_project, unit_test, models_to_versions
-            )
+            process_models_for_unit_test(self.manifest, unit_test, models_to_versions)
 
     # Loops through all nodes, for each element in
     # 'functions' array finds the node and updates the
@@ -2250,6 +2248,7 @@ def write_semantic_manifest(manifest: Manifest, target_path: str) -> None:
     path = os.path.join(target_path, SEMANTIC_MANIFEST_FILE_NAME)
     semantic_manifest = SemanticManifest(manifest)
     semantic_manifest.write_json_to_file(path)
+    add_artifact_produced(path)
 
 
 def write_manifest(manifest: Manifest, target_path: str, which: Optional[str] = None):

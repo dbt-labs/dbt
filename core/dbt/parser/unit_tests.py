@@ -257,9 +257,6 @@ class UnitTestParser(YamlReader):
     def parse(self) -> ParseResult:
         for data in self.get_key_dicts():
             unit_test: UnparsedUnitTest = self._get_unit_test(data)
-            tested_model_node = find_tested_model_node(
-                self.manifest, self.project.project_name, unit_test.model
-            )
             unit_test_case_unique_id = (
                 f"{NodeType.Unit}.{self.project.project_name}.{unit_test.model}.{unit_test.name}"
             )
@@ -288,13 +285,6 @@ class UnitTestParser(YamlReader):
                 config=unit_test_config,
                 versions=unit_test.versions,
             )
-
-            if tested_model_node:
-                if tested_model_node.config.enabled:
-                    unit_test_definition.depends_on.nodes.append(tested_model_node.unique_id)
-                    unit_test_definition.schema = tested_model_node.schema
-                else:
-                    unit_test_definition.config.enabled = False
 
             # Check that format and type of rows matches for each given input,
             # convert rows to a list of dictionaries, and add the unique_id of
@@ -508,47 +498,47 @@ def find_tested_model_node(
 # This is called by the ManifestLoader after other processing has been done,
 # so that model versions are available.
 def process_models_for_unit_test(
-    manifest: Manifest, current_project: str, unit_test_def: UnitTestDefinition, models_to_versions
+    manifest: Manifest, unit_test_def: UnitTestDefinition, models_to_versions
 ):
-    # If the unit tests doesn't have a depends_on.nodes[0] then we weren't able to resolve
-    # the model, either because versions hadn't been processed yet, or it's not a valid model name
-    if not unit_test_def.depends_on.nodes:
-        tested_node = find_tested_model_node(manifest, current_project, unit_test_def.model)
-        if not tested_node:
-            raise ParsingError(
-                f"Unable to find model '{current_project}.{unit_test_def.model}' for "
-                f"unit test '{unit_test_def.name}' in {unit_test_def.original_file_path}"
-            )
-        if tested_node.config.enabled:
-            unit_test_def.depends_on.nodes.append(tested_node.unique_id)
-            unit_test_def.schema = tested_node.schema
-        else:
-            # If the model is disabled, the unit test should be disabled
-            unit_test_def.config.enabled = False
-
-    # The UnitTestDefinition should only have one "depends_on" at this point,
-    # the one that's found by the "model" field.
-    target_model_id = unit_test_def.depends_on.nodes[0]
-    if target_model_id not in manifest.nodes:
-        if target_model_id in manifest.disabled:
-            # If the model is disabled, the unit test should be disabled
-            unit_test_def.config.enabled = False
-        else:
-            # If we've reached here and the model is not disabled, throw an error
-            raise ParsingError(
-                f"Unit test '{unit_test_def.name}' references a model that does not exist: {target_model_id}"
-            )
+    # Resolve the tested model. This is the ONLY place resolution happens --
+    # UnitTestParser.parse() deliberately leaves depends_on empty, because
+    # resolving eagerly at parse time made the outcome depend on filesystem
+    # parse order relative to the tested model's own YAML (dbt-core #11139).
+    # By the time this runs, all models -- including versioned ones -- have
+    # been parsed and ref_lookup has been rebuilt, so resolution here is
+    # deterministic. Resolve using the unit test's own package -- not the
+    # root project -- so unit tests defined in a dependency package correctly
+    # resolve models within that same package.
+    tested_node = find_tested_model_node(manifest, unit_test_def.package_name, unit_test_def.model)
+    if tested_node is None:
+        raise ParsingError(
+            f"Unable to find model '{unit_test_def.package_name}.{unit_test_def.model}' for "
+            f"unit test '{unit_test_def.name}' in {unit_test_def.original_file_path}"
+        )
+    if tested_node.config.enabled:
+        unit_test_def.depends_on.nodes = [tested_node.unique_id]
+        unit_test_def.schema = tested_node.schema
+    else:
+        # If the model is disabled, the unit test should be disabled
+        unit_test_def.config.enabled = False
 
     if not unit_test_def.config.enabled:
-        # Ensure the unit test is disabled in the manifest
+        # Ensure the unit test is disabled in the manifest. Its unique_id is
+        # already in the source file's unit_tests list (parse() unconditionally
+        # added it there via add_unit_test() before this function ever ran), so
+        # use add_disabled_nofile() -- not add_disabled() -- to avoid appending
+        # the id to source_file.unit_tests a second time.
         if unit_test_def.unique_id in manifest.unit_tests:
             manifest.unit_tests.pop(unit_test_def.unique_id)
         if unit_test_def.unique_id not in manifest.disabled:
-            manifest.add_disabled(manifest.files[unit_test_def.file_id], unit_test_def)
+            manifest.add_disabled_nofile(unit_test_def)
 
         # The unit test is disabled, so we don't need to do any further processing (#10540)
         return
 
+    # The UnitTestDefinition should only have one "depends_on" at this point,
+    # the one that's found by the "model" field.
+    target_model_id = unit_test_def.depends_on.nodes[0]
     target_model = manifest.nodes[target_model_id]
     assert isinstance(target_model, ModelNode)
 

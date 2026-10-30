@@ -148,6 +148,30 @@ def test_select_fqn(manifest):
     }
 
 
+def test_qualified_name_bare_wildcard_matches_root_leaf(manifest):
+    # Regression guard: bare wildcard selectors (no dot) already work for
+    # root-level nodes. Documents the asymmetry alongside the nested-leaf case below.
+    method = QualifiedNameSelectorMethod(manifest, None, [])
+    assert method.node_is_match("d_*", ["my_pkg", "d_model"], is_versioned=False)
+
+
+def test_qualified_name_bare_wildcard_matches_nested_leaf(manifest):
+    # CORE-937: a bare wildcard selector (e.g. "f_*", no dot) should match the
+    # leaf model name regardless of how deep the model is nested in subfolders.
+    method = QualifiedNameSelectorMethod(manifest, None, [])
+    fqn = ["my_pkg", "marts", "subdir", "f_model"]
+    assert method.node_is_match("f_*", fqn, is_versioned=False)
+
+
+def test_qualified_name_bare_wildcard_matches_nested_versioned_leaf(manifest):
+    # CORE-937 follow-up: for a versioned model, the fqn's last segment is the
+    # version tag (e.g. "v4"), not the model name, so the bare wildcard match
+    # must fall back to the name segment (fqn[-2]) instead of fqn[-1].
+    method = QualifiedNameSelectorMethod(manifest, None, [])
+    fqn = ["my_pkg", "nested_dir", "versioned_model", "v4"]
+    assert method.node_is_match("versioned_model*", fqn, is_versioned=True)
+
+
 def test_select_tag(manifest):
     methods = MethodManager(manifest, None)
     method = methods.get_method("tag", [])

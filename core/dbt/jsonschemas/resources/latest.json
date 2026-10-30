@@ -4443,6 +4443,16 @@
             "null"
           ]
         },
+        "state": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ModelState"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "static_analysis": {
           "anyOf": [
             {
@@ -4896,6 +4906,70 @@
         },
         "standard_granularity_column": {
           "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ModelState": {
+      "type": "object",
+      "properties": {
+        "evaluate_volatile_sql": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
+        "execute_hooks_on_any_reuse": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
+        "lag_tolerance": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ModelFreshnessRules"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pre_clone": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StatePreClone"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "require_fresh_data_from": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/UpdatesOn"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "additionalProperties": false
@@ -7536,6 +7610,14 @@
         }
       },
       "additionalProperties": false
+    },
+    "StatePreClone": {
+      "type": "string",
+      "enum": [
+        "never",
+        "if_missing",
+        "always"
+      ]
     },
     "StaticAnalysisKind": {
       "type": "string",

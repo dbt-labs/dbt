@@ -340,3 +340,51 @@ class TestFileDiff:
                 "SingularTestParser": ["my_test://tests/my_singular_test.sql"],
             },
         }
+
+
+def test_remove_tests_removes_disabled_generic_test(partial_parsing, nodes):
+    # CORE-725: a GenericTestNode that is currently disabled (config.enabled:
+    # false) lives in saved_manifest.disabled rather than saved_manifest.nodes,
+    # but is still tracked in schema_file.data_tests. remove_tests must clean
+    # up the disabled copy too, otherwise ghost copies accumulate across
+    # partial parses.
+    schema_file_id = "my_test://" + normalize("models/schema.yml")
+    schema_file = partial_parsing.saved_manifest.files[schema_file_id]
+
+    my_model = nodes[0]
+    disabled_test = make_generic_test(PROJECT_NAME, "unique", my_model, {}, column_name="id")
+    disabled_test.file_key_name = "models.my_model"
+    disabled_test.original_file_path = normalize("models/schema.yml")
+
+    schema_file.add_test(disabled_test.unique_id, {"key": "models", "name": "my_model"})
+    partial_parsing.saved_manifest.disabled[disabled_test.unique_id] = [disabled_test]
+
+    partial_parsing.remove_tests(schema_file, "models", "my_model")
+
+    assert disabled_test.unique_id not in partial_parsing.saved_manifest.disabled
+
+
+def test_delete_schema_data_test_patch_removes_disabled_singular_test(partial_parsing):
+    # CORE-725: a disabled singular data test lives in saved_manifest.disabled
+    # rather than saved_manifest.nodes. delete_schema_data_test_patch must find
+    # it via schema_file.node_patches and remove the stale disabled copy so it
+    # does not accumulate across partial parses.
+    schema_file_id = "my_test://" + normalize("models/schema.yml")
+    schema_file = partial_parsing.saved_manifest.files[schema_file_id]
+
+    disabled_test = make_singular_test(
+        PROJECT_NAME,
+        "my_disabled_singular_test",
+        "select 1 where false",
+        path="my_disabled_singular_test.sql",
+    )
+
+    schema_file.node_patches.append(disabled_test.unique_id)
+    partial_parsing.saved_manifest.disabled[disabled_test.unique_id] = [disabled_test]
+    assert disabled_test.unique_id not in partial_parsing.saved_manifest.nodes
+
+    partial_parsing.delete_schema_data_test_patch(
+        schema_file, {"name": "my_disabled_singular_test"}
+    )
+
+    assert disabled_test.unique_id not in partial_parsing.saved_manifest.disabled

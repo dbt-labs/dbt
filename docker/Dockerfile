@@ -6,10 +6,10 @@ RUN apt-get update \
   # Install version-pinned packages for reproducible builds
   && apt-get install -y --no-install-recommends \
     build-essential=12.9 \
-    ca-certificates=20210119 \
-    libpq-dev=13.23-0+deb11u3 \
+    ca-certificates=20230311+deb12u1~deb11u1 \
+    libpq-dev=13.23-0+deb11u4 \
     make=4.3-4.1 \
-    openssh-client=1:8.4p1-5+deb11u3 \
+    openssh-client=1:8.4p1-5+deb11u7 \
     software-properties-common=0.96.20.2-2.1 \
   # Prevent dist-upgrade from changing pinned package versions
   && apt-mark hold \

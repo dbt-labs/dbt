@@ -8,6 +8,7 @@ from typing import Dict, Generic, List, Optional, TypeVar
 
 from dbt.contracts.project import ProjectPackageMetadata
 from dbt.events.types import DepsSetDownloadDirectory
+from dbt.exceptions import DependencyError
 from dbt_common.clients import system
 from dbt_common.events.functions import fire_event
 from dbt_common.utils.connection import connection_exception_retry
@@ -99,13 +100,29 @@ class PinnedPackage(BasePackage):
 
     def get_installation_path(self, project, renderer):
         dest_dirname = self.get_project_name(project, renderer)
-        return os.path.join(project.packages_install_path, dest_dirname)
+        install_path = os.path.join(project.packages_install_path, dest_dirname)
+
+        packages_install_path = os.path.realpath(project.packages_install_path)
+        resolved_install_path = os.path.realpath(install_path)
+        if (
+            os.path.commonpath([packages_install_path, resolved_install_path])
+            != packages_install_path
+        ):
+            raise DependencyError(
+                f"Invalid package name '{dest_dirname}': resolves outside of the "
+                f"packages-install-path ('{project.packages_install_path}')"
+            )
+
+        return install_path
 
     def get_subdirectory(self):
         return None
 
     def _install(self, project, renderer):
         metadata = self.fetch_metadata(project, renderer)
+
+        # Raises DependencyError if package_name resolves outside packages_install_path
+        self.get_installation_path(project, renderer)
 
         tar_name = f"{self.package}.{self.version}.tar.gz"
         tar_path = (Path(get_downloads_path()) / tar_name).resolve(strict=False)

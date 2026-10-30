@@ -38,6 +38,7 @@ DBT_INVOCATION_ENV = "DBT_INVOCATION_ENV"
 
 ADAPTER_INFO_SPEC = "iglu:com.dbt/adapter_info/jsonschema/1-0-1"
 DEPRECATION_WARN_SPEC = "iglu:com.dbt/deprecation_warn/jsonschema/1-0-0"
+DEPRECATED_VERSION_INVOCATION_SPEC = "iglu:com.dbt/deprecated_version_invocation/jsonschema/1-0-0"
 BEHAVIOR_CHANGE_WARN_SPEC = "iglu:com.dbt/behavior_change_warn/jsonschema/1-0-0"
 EXPERIMENTAL_PARSER = "iglu:com.dbt/experimental_parser/jsonschema/1-0-0"
 INVOCATION_ENV_SPEC = "iglu:com.dbt/invocation_env/jsonschema/1-0-0"
@@ -527,3 +528,18 @@ def track_run(run_command=None):
         raise
     finally:
         flush()
+
+
+def track_deprecated_version_invocation() -> None:
+    if active_user is None:
+        return
+
+    context = [SelfDescribingJson(DEPRECATED_VERSION_INVOCATION_SPEC, {})]
+
+    track(
+        active_user,
+        category="dbt",
+        action="deprecated_version_invocation",
+        label=get_invocation_id(),
+        context=context,
+    )

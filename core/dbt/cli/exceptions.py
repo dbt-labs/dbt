@@ -22,7 +22,7 @@ class CliException(ClickException):
     after an invocation."""
 
     def __init__(self, exit_code: ExitCodes) -> None:
-        self.exit_code = exit_code.value
+        self.exit_code = exit_code.value  # type: ignore[misc]
 
     # the typing of _file is to satisfy the signature of ClickException.show
     # overriding this method prevents click from printing any exceptions to stdout
