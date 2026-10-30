@@ -1,0 +1,7 @@
+kind: Features
+body: Support DuckDB connect-time config_options in profiles.yml before database initialization and extension loading.
+time: 2026-10-29T15:55:47.041505553Z
+custom:
+    author: tsanton
+    issue: "16926"
+    project: dbt-core

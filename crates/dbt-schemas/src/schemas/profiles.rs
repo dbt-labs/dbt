@@ -1246,7 +1246,12 @@ pub struct DuckDbConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[merge(strategy = merge_strategies_extend::overwrite_always)]
     pub extensions: Option<Vec<DuckDbExtension>>,
-    /// DuckDB configuration settings (e.g., {"memory_limit": "4GB"})
+    /// Options passed to DuckDB before opening the database and loading extensions.
+    /// Values may be strings, booleans, numbers, or flat lists of these scalars.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[merge(strategy = merge_strategies_extend::overwrite_always)]
+    pub config_options: Option<HashMap<String, YmlValue>>,
+    /// DuckDB settings applied with SET after opening the database and loading extensions.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[merge(strategy = merge_strategies_extend::overwrite_always)]
     pub settings: Option<HashMap<String, YmlValue>>,
@@ -2867,6 +2872,66 @@ query_tags:
             panic!("Expected DbConfig::DuckDB");
         };
         assert_eq!(duckdb_config.is_ducklake, Some(true));
+    }
+
+    #[test]
+    fn test_duckdb_config_options_survive_profile_round_trip() {
+        let config: DbConfig = dbt_yaml::from_str(
+            r#"
+type: duckdb
+config_options:
+  allow_unsigned_extensions: true
+  threads: 2
+  memory_limit: '1GB'
+  extension_directories: ['/tmp/ext', '/opt/ext']
+settings:
+  threads: 1
+"#,
+        )
+        .unwrap();
+        let mapping = config.to_mapping().unwrap();
+        let options = mapping.get("config_options").unwrap().as_mapping().unwrap();
+        assert_eq!(
+            options.get("allow_unsigned_extensions").unwrap().as_bool(),
+            Some(true)
+        );
+        assert_eq!(options.get("threads").unwrap().as_i64(), Some(2));
+        assert_eq!(options.get("memory_limit").unwrap().as_str(), Some("1GB"));
+        assert_eq!(
+            options
+                .get("extension_directories")
+                .unwrap()
+                .as_sequence()
+                .unwrap()
+                .len(),
+            2
+        );
+        let round_trip: DbConfig =
+            dbt_yaml::from_str(&dbt_yaml::to_string(&config).unwrap()).unwrap();
+        assert_eq!(config, round_trip);
+        assert_eq!(
+            mapping
+                .get("settings")
+                .unwrap()
+                .get("threads")
+                .unwrap()
+                .as_i64(),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn test_duckdb_config_options_are_not_in_connection_display() {
+        let config: DbConfig =
+            dbt_yaml::from_str("type: duckdb\nconfig_options: {custom_user_agent: super-secret}")
+                .unwrap();
+        let mapping = config.to_connection_mapping().unwrap();
+        assert!(!mapping.contains_key("config_options"));
+        assert!(
+            !dbt_yaml::to_string(&mapping)
+                .unwrap()
+                .contains("super-secret")
+        );
     }
 
     #[test]

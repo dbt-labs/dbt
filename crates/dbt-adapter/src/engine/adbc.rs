@@ -245,7 +245,7 @@ impl AdbcEngine {
             } else {
                 let database = driver
                     .new_database_with_opts(opts)
-                    .map_err(adbc_error_to_adapter_error)?;
+                    .map_err(|e| enrich_database_error(self.adapter_type, e, config))?;
                 match self.adapter_type {
                     AdapterType::DuckDB => self.apply_duckdb_init_sql(database.as_ref(), config)?,
                     AdapterType::ClickHouse => {
@@ -671,6 +671,26 @@ impl AdapterEngine for AdbcEngine {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Add profile context at database initialization, where drivers validate options.
+fn enrich_database_error(
+    adapter_type: AdapterType,
+    mut err: adbc_core::error::Error,
+    config: &AdapterConfig,
+) -> AdapterError {
+    match (adapter_type, config.get("config_options")) {
+        (AdapterType::DuckDB, Some(dbt_yaml::Value::Mapping(options, _)))
+            if !options.is_empty() && !config.use_dbt_cloud_credentials() =>
+        {
+            err.message = format!(
+                "DuckDB database initialization failed with profile config_options applied: {}",
+                err.message
+            );
+        }
+        _ => {}
+    }
+    adbc_error_to_adapter_error(err)
+}
+
 /// Enrich connection errors with adapter-specific hints where possible.
 fn enrich_connection_error(
     adapter_type: AdapterType,
@@ -720,6 +740,63 @@ mod tests {
     use minijinja::Environment;
     use minijinja::value::Value;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn database_error_context_is_limited_to_nonempty_duckdb_config_options() {
+        for (adapter_type, yaml, has_context) in [
+            (AdapterType::DuckDB, "config_options: {threads: 2}", true),
+            (
+                AdapterType::DuckDB,
+                "use_dbt_cloud_credentials: true\nconfig_options: {threads: 2}",
+                false,
+            ),
+            (AdapterType::DuckDB, "config_options: {}", false),
+            (AdapterType::DuckDB, "config_options: null", false),
+            (AdapterType::DuckDB, "path: dev.duckdb", false),
+            (
+                AdapterType::Snowflake,
+                "config_options: {threads: 2}",
+                false,
+            ),
+        ] {
+            let config = AdapterConfig::new(dbt_yaml::from_str(yaml).unwrap());
+            let mut err = adbc_core::error::Error::with_message_and_status(
+                "original driver error",
+                adbc_core::error::Status::Unauthenticated,
+            );
+            err.sqlstate = [50, 56, 48, 48, 48]; // 28000
+            err.vendor_code = 42;
+            let err = enrich_database_error(adapter_type, err, &config);
+            assert_eq!(err.message().contains("config_options"), has_context);
+            assert!(err.message().ends_with("original driver error"));
+            assert_eq!(err.kind(), crate::errors::AdapterErrorKind::Authentication);
+            assert_eq!(err.sqlstate(), "28000");
+            assert_eq!(err.vendor_code(), Some(42));
+        }
+    }
+
+    #[test]
+    #[ignore = "loads the DuckDB ADBC driver from the system, local cache, or CDN"]
+    fn duckdb_config_options_driver_errors_include_profile_context() {
+        let mut driver = driver::Builder::new(Backend::DuckDB, LoadStrategy::SystemThenCdnCache)
+            .try_load()
+            .unwrap();
+        let auth = dbt_auth::auth_for_backend(Backend::DuckDB);
+        for options in ["{not_a_duckdb_option: true}", "{threads: not_an_integer}"] {
+            let config = AdapterConfig::new(
+                dbt_yaml::from_str(&format!("config_options: {options}")).unwrap(),
+            );
+            let builder = auth.configure(&config).unwrap();
+            let err = match builder.build(&mut driver) {
+                Ok(_) => panic!("invalid config_options must fail database initialization"),
+                Err(err) => err,
+            };
+            let original_message = err.message.clone();
+            let err = enrich_database_error(AdapterType::DuckDB, err, &config);
+            assert!(err.message().contains("config_options"));
+            assert!(err.message().ends_with(&original_message));
+        }
+    }
 
     fn config_with_compute_block() -> AdapterConfig {
         AdapterConfig::new(Mapping::from_iter([("compute".into(), true.into())]))
