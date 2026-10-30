@@ -361,4 +361,16 @@ mod tests {
         assert_eq!(ends[0].source_start, ends[1].source_start);
         assert_eq!(ends[0].rendered_start, ends[1].rendered_start);
     }
+
+    #[test]
+    fn raw_whitespace_control_uses_the_emitted_payload_span() {
+        for source in [
+            "{% raw -%} select 1 {%- endraw %}",
+            "é\r\n{% raw -%}\r\n λ 😀 \r\n{%- endraw %}Z",
+            "{% raw %} {{ value }} {% endraw %}",
+            "{% raw -%}   {%- endraw %}select 1",
+        ] {
+            render(source, true);
+        }
+    }
 }

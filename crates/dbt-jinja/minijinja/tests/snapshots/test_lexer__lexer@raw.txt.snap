@@ -14,7 +14,7 @@ TemplateData(" this is a {{ raw }} {% block %} ")
 TemplateData("after\n\nbefore")
   "after\n\nbefore"
 TemplateData("this is a {{ raw }} {% block %}")
-  " this is a {{ raw }} {% block %} "
+  "this is a {{ raw }} {% block %}"
 TemplateData("after")
   "after"
 
