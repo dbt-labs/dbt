@@ -11682,6 +11682,17 @@
                       }
                     ],
                     "default": null
+                  },
+                  "unrendered_location": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
                   }
                 },
                 "additionalProperties": true
@@ -26026,6 +26037,17 @@
                                       }
                                     ]
                                   }
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ],
+                              "default": null
+                            },
+                            "unrendered_location": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
                                 },
                                 {
                                   "type": "null"

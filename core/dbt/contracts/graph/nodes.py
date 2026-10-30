@@ -37,6 +37,7 @@ from dbt.artifacts.resources import (
     CompiledResource,
     DependsOn,
     Docs,
+    ExternalTable,
 )
 from dbt.artifacts.resources import Documentation as DocumentationResource
 from dbt.artifacts.resources import Exposure as ExposureResource
@@ -1409,6 +1410,16 @@ class UnpatchedSourceDefinition(BaseNode):
             return self.table.tests
 
 
+def _comparable_external(external: ExternalTable, use_unrendered: bool) -> Dict[str, Any]:
+    """Everything in external (including additional properties), with only the location
+    normalized to either the unrendered or the rendered value."""
+    dct = external.to_dict(omit_none=True)
+    dct.pop("location", None)
+    dct.pop("unrendered_location", None)
+    location = external.unrendered_location if use_unrendered else external.location
+    return {**dct, "location": location}
+
+
 @dataclass
 class SourceDefinition(
     NodeInfoMixin,
@@ -1443,7 +1454,23 @@ class SourceDefinition(
         )
 
     def same_external(self, other: "SourceDefinition") -> bool:
-        return self.external == other.external
+        # preserve legacy behaviour -- compare the potentially rendered location
+        if get_flags().state_modified_compare_more_unrendered_values is False:
+            return self.external == other.external
+
+        if self.external is None or other.external is None:
+            return self.external == other.external
+
+        # Compare the configured (unrendered) location rather than the rendered one,
+        # so env_var()/jinja that resolves differently between runs is not a change.
+        # If either side has no unrendered value (e.g. a manifest written before this
+        # field existed, or a source patched via overrides), compare rendered locations.
+        use_unrendered = bool(
+            self.external.unrendered_location and other.external.unrendered_location
+        )
+        return _comparable_external(self.external, use_unrendered) == _comparable_external(
+            other.external, use_unrendered
+        )
 
     def same_config(self, old: "SourceDefinition") -> bool:
         return self.config.same_contents(
