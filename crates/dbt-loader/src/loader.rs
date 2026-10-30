@@ -1182,6 +1182,8 @@ pub async fn load_inner(
             package_path,
             package_lookup_map,
             dependency_package_name.as_deref(),
+            env,
+            &arg.vars,
         )?
     };
     // Only do this for the root package.
