@@ -12,7 +12,7 @@ use merge::Merge;
 use serde_derive::Deserialize;
 use serde_derive::Serialize;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::convert::TryFrom;
 use std::fmt::{self, Debug, Display};
 use std::path::PathBuf;
@@ -296,6 +296,7 @@ impl DbConfig {
                 "database",
                 "schema",
                 "extensions",
+                "extension_repositories",
                 "settings",
                 "attach",
             ],
@@ -1197,6 +1198,24 @@ pub struct DuckDbAttachment {
     pub is_ducklake: Option<bool>,
 }
 
+/// A custom, signed extension repository (DuckDB 2.0+) to register before `extensions`
+/// are installed. Matches dbt-duckdb's `extension_repositories` entries.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, DbtSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct DuckDbExtensionRepository {
+    /// Name used to refer to the repository, e.g. `repo: query_farm` in `extensions`.
+    pub name: String,
+    /// URL prefix the repository serves its extensions from.
+    pub prefix: String,
+    /// RSA public key to pin, in PEM form or as the base64 body of the PEM. When omitted,
+    /// DuckDB fetches the repository's key when the repository is first registered.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub public_key: Option<String>,
+    /// Any other fields, kept so that DuckDB auth rejects them instead of dropping them.
+    #[serde(flatten)]
+    pub unknown_fields: BTreeMap<String, YmlValue>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, DbtSchema, Merge)]
 #[merge(strategy = merge_strategies_extend::overwrite_option)]
 #[serde(rename_all = "snake_case")]
@@ -1246,6 +1265,10 @@ pub struct DuckDbConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[merge(strategy = merge_strategies_extend::overwrite_always)]
     pub extensions: Option<Vec<DuckDbExtension>>,
+    /// Custom extension repositories (DuckDB 2.0+) to register before installing `extensions`
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[merge(strategy = merge_strategies_extend::overwrite_always)]
+    pub extension_repositories: Option<Vec<DuckDbExtensionRepository>>,
     /// DuckDB configuration settings (e.g., {"memory_limit": "4GB"})
     #[serde(skip_serializing_if = "Option::is_none")]
     #[merge(strategy = merge_strategies_extend::overwrite_always)]
@@ -2953,6 +2976,59 @@ extensions:
         )
         .unwrap();
         assert_eq!(mapping.get("extensions"), Some(&expected));
+
+        let round_trip: DbConfig =
+            dbt_yaml::from_str(&dbt_yaml::to_string(&config).unwrap()).unwrap();
+        assert_eq!(config, round_trip);
+    }
+
+    #[test]
+    fn test_duckdb_extension_repositories_survive_profile_round_trip() {
+        let config: DbConfig = dbt_yaml::from_str(
+            r#"
+type: duckdb
+extension_repositories:
+  - name: query_farm
+    prefix: https://duckdb-extensions.query.farm
+  - name: pinned
+    prefix: https://pinned.invalid
+    public_key: "-----BEGIN PUBLIC KEY-----\nABC=\n-----END PUBLIC KEY-----\n"
+  - name: nulled
+    prefix: /srv/ext
+    public_key: null
+  - name: typo
+    prefix: /srv/ext
+    pubkey: ABC=
+extensions:
+  - name: a5
+    repo: query_farm
+"#,
+        )
+        .unwrap();
+        // This mapping is what `dbt-auth` receives; `pubkey` is kept so auth rejects it.
+        let mapping = config.to_mapping().unwrap();
+        let expected: dbt_yaml::Value = dbt_yaml::from_str(
+            r#"
+- name: query_farm
+  prefix: https://duckdb-extensions.query.farm
+- name: pinned
+  prefix: https://pinned.invalid
+  public_key: "-----BEGIN PUBLIC KEY-----\nABC=\n-----END PUBLIC KEY-----\n"
+- name: nulled
+  prefix: /srv/ext
+- name: typo
+  prefix: /srv/ext
+  pubkey: ABC=
+"#,
+        )
+        .unwrap();
+        assert_eq!(mapping.get("extension_repositories"), Some(&expected));
+        assert!(
+            config
+                .to_connection_mapping()
+                .unwrap()
+                .contains_key("extension_repositories")
+        );
 
         let round_trip: DbConfig =
             dbt_yaml::from_str(&dbt_yaml::to_string(&config).unwrap()).unwrap();

@@ -31,9 +31,11 @@ use super::make_behavior;
 use super::noop_connection::NoopConnection;
 use super::retry::{ConnectionRetryPolicy, QueryRetryPolicy};
 
+/// Configured databases, each with the identity of the initialization it ran, if any (see
+/// [`AdbcEngine::init_identity`]).
 #[derive(Default)]
 pub struct DatabaseMap {
-    inner: HashMap<database::Fingerprint, Box<dyn Database>, IdentityBuildHasher>,
+    inner: HashMap<database::Fingerprint, (Box<dyn Database>, Option<u64>), IdentityBuildHasher>,
 }
 
 /// Operational mode for [`AdbcEngine`].
@@ -231,17 +233,25 @@ impl AdbcEngine {
         // unless a different configuration is provided.
         let opts = database_builder.into_iter().collect::<Vec<_>>();
         let fingerprint = database::Builder::fingerprint(opts.iter());
+        let init_identity = self.init_identity(config)?;
+        let reuse = |(database, identity): &(Box<dyn Database>, Option<u64>)| {
+            if *identity == init_identity {
+                Ok((database.clone(), fingerprint))
+            } else {
+                // Only DuckDB has an init identity.
+                Err(super::duckdb_init::init_identity_conflict())
+            }
+        };
         {
             let read_guard = self.configured_databases.read();
-            if let Some(database) = read_guard.inner.get(&fingerprint) {
-                return Ok((database.clone(), fingerprint));
+            if let Some(entry) = read_guard.inner.get(&fingerprint) {
+                return reuse(entry);
             }
         }
         {
             let mut write_guard = self.configured_databases.write();
-            if let Some(database) = write_guard.inner.get(&fingerprint) {
-                let database: Box<dyn Database> = database.clone();
-                Ok((database, fingerprint))
+            if let Some(entry) = write_guard.inner.get(&fingerprint) {
+                reuse(entry)
             } else {
                 let database = driver
                     .new_database_with_opts(opts)
@@ -257,7 +267,9 @@ impl AdbcEngine {
                     }
                     _ => {}
                 }
-                write_guard.inner.insert(fingerprint, database.clone());
+                write_guard
+                    .inner
+                    .insert(fingerprint, (database.clone(), init_identity));
                 Ok((database, fingerprint))
             }
         }
@@ -325,40 +337,30 @@ impl AdbcEngine {
         Ok(builder)
     }
 
-    /// Apply DuckDB init SQL (extensions, settings, secrets, attachments)
-    /// to a newly created database instance. Uses a temporary connection.
+    /// Identifies the database initialization that the database fingerprint does not cover, so
+    /// that a cached database is not reused for a different one.
+    fn init_identity(&self, config: &AdapterConfig) -> AdapterResult<Option<u64>> {
+        match self.adapter_type {
+            AdapterType::DuckDB => super::duckdb_init::init_identity(config).map(Some),
+            _ => Ok(None),
+        }
+    }
+
+    /// Apply DuckDB init SQL (extension repositories, extensions, settings, secrets,
+    /// attachments) to a newly created database instance.
     fn apply_duckdb_init_sql(
         &self,
         database: &dyn Database,
         config: &AdapterConfig,
     ) -> AdapterResult<()> {
-        let mut all_stmts = dbt_auth::generate_duckdb_init_sql(config)
-            .map_err(crate::errors::auth_error_to_adapter_error)?;
-
-        // Append catalog-driven ATTACH statements for DuckDB REST catalogs, unless the
+        // Catalog-driven ATTACH statements for DuckDB REST catalogs, unless the
         // config opts out: a database that runs untrusted SQL must not see them.
-        if config.get_bool("attach_catalogs") != Some(false) {
-            all_stmts.extend(self.generate_catalog_attach_stmts()?);
-        }
-
-        if all_stmts.is_empty() {
-            return Ok(());
-        }
-        let mut conn = database
-            .new_connection()
-            .map_err(adbc_error_to_adapter_error)?;
-        for (idx, sql) in all_stmts.iter().enumerate() {
-            let mut stmt = conn.new_statement().map_err(adbc_error_to_adapter_error)?;
-            stmt.set_sql_query(sql)
-                .map_err(adbc_error_to_adapter_error)?;
-            let _ = stmt.execute_update().map_err(|e| {
-                adbc_error_to_adapter_error(adbc_core::error::Error::with_message_and_status(
-                    format!("DuckDB init SQL statement {} failed: {e}", idx + 1),
-                    adbc_core::error::Status::Internal,
-                ))
-            })?;
-        }
-        Ok(())
+        let catalog_attach_stmts = if config.get_bool("attach_catalogs") != Some(false) {
+            self.generate_catalog_attach_stmts()?
+        } else {
+            Vec::new()
+        };
+        super::duckdb_init::initialize(database, config, catalog_attach_stmts)
     }
 
     /// Build catalog-driven `ATTACH IF NOT EXISTS` statements for DuckDB
