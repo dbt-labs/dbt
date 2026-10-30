@@ -10,6 +10,7 @@
     {{ run_pre_hooks() }}
     {% if existing_relation %}
       {% if relation_should_be_altered(existing_relation, target_relation) %}
+        {% do validate_view_model(sql) %}
         {% set configuration_changes = get_configuration_changes(existing_relation) %}
         {% if configuration_changes and configuration_changes.changes %}
           {% if configuration_changes.requires_full_refresh %}

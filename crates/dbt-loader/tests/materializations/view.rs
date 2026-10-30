@@ -190,6 +190,9 @@ mod snowflake {
 
 mod databricks {
     use super::*;
+
+    mod column_comments;
+    mod validation;
     const ADAPTER: AdapterType = AdapterType::Databricks;
 
     // -- use_materialization_v2 = false, default --------------------
