@@ -43,6 +43,17 @@ Events can legitimately repeat when a source tag executes again in a loop,
 including with identical source and rendered offsets if the body emits no text.
 Consumers must not globally deduplicate events by their byte ranges.
 
+Raw-block literal ranges cover the post-whitespace-control payload, not the
+surrounding stripped whitespace. Loop repetitions describe executions of the
+source body; a filtered loop's internal selection pass emits no repetitions.
+A for/else closes either each executed body or the executed else, never both.
+
+Named blocks render into temporary buffers. Their events are rebased when the
+buffer is appended directly, and the enclosing tracker is restored even on an
+error. Captured or transformed block values do not publish intermediate literal
+spans; their final expression output remains generated. Buffer callbacks are
+internal observer hooks and do not add event kinds or change protocol version 1.
+
 The `rendered` string is deliberately the Jinja result before ephemeral CTE
 injection. These offsets must not be applied directly to the final compiled SQL
 artifact. Generated snapshot inputs do not yet have a mapping back to the

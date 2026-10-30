@@ -1,0 +1,7 @@
+kind: Fixes
+body: Correct render trace provenance for whitespace-controlled raw blocks, filtered and else loops, and buffered named blocks.
+time: 2026-10-30T18:52:30.7065157Z
+custom:
+    author: alanmcruickshank
+    issue: ""
+    project: dbt-core

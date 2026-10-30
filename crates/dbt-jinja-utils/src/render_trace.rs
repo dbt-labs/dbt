@@ -37,6 +37,16 @@ pub struct RenderTrace {
 }
 
 #[derive(Debug)]
+struct OutputBuffer {
+    location: Rc<OutputTrackerLocation>,
+    parent_start: usize,
+    local_start: usize,
+    event_start: usize,
+    macro_depth: usize,
+    emit_depth: usize,
+}
+
+#[derive(Debug)]
 pub(crate) struct RenderTraceListener {
     source_path: PathBuf,
     location: RefCell<Rc<OutputTrackerLocation>>,
@@ -44,6 +54,7 @@ pub(crate) struct RenderTraceListener {
     emits: RefCell<Vec<(Span, usize)>>,
     macros: RefCell<Vec<(usize, usize)>>,
     function_frames: RefCell<Vec<usize>>,
+    buffers: RefCell<Vec<OutputBuffer>>,
 }
 
 impl RenderTraceListener {
@@ -55,6 +66,7 @@ impl RenderTraceListener {
             emits: RefCell::new(Vec::new()),
             macros: RefCell::new(Vec::new()),
             function_frames: RefCell::new(Vec::new()),
+            buffers: RefCell::new(Vec::new()),
         }
     }
 
@@ -91,7 +103,42 @@ impl RenderingEventListener for RenderTraceListener {
     }
 
     fn on_output_tracker(&self, location: Rc<OutputTrackerLocation>) {
+        if let Some(buffer) = self.buffers.borrow_mut().last_mut() {
+            buffer.local_start = location.index() as usize;
+        }
         self.location.replace(location);
+    }
+
+    fn on_output_buffer_start(&self) {
+        self.buffers.borrow_mut().push(OutputBuffer {
+            location: self.location.borrow().clone(),
+            parent_start: self.position(),
+            local_start: 0,
+            event_start: self.events.borrow().len(),
+            macro_depth: self.macros.borrow().len(),
+            emit_depth: self.emits.borrow().len(),
+        });
+    }
+
+    fn on_output_buffer_end(&self, emitted: bool) {
+        let buffer = self
+            .buffers
+            .borrow_mut()
+            .pop()
+            .expect("unbalanced output buffer");
+        let mut events = self.events.borrow_mut();
+        if emitted {
+            for event in &mut events[buffer.event_start..] {
+                event.rendered_start =
+                    event.rendered_start - buffer.local_start + buffer.parent_start;
+                event.rendered_end = event.rendered_end - buffer.local_start + buffer.parent_start;
+            }
+        } else {
+            events.truncate(buffer.event_start);
+        }
+        self.macros.borrow_mut().truncate(buffer.macro_depth);
+        self.emits.borrow_mut().truncate(buffer.emit_depth);
+        self.location.replace(buffer.location);
     }
 
     // The existing RenderingEventListener contract requires line/column arguments,
@@ -415,6 +462,113 @@ mod tests {
                     .count(),
                 repeats,
                 "{condition}"
+            );
+        }
+    }
+
+    #[test]
+    fn buffered_blocks_use_final_output_positions_with_default_factory() {
+        for (source, expected) in [
+            ("A{% block b %}B{% endblock %}C", "ABC"),
+            (
+                "A{% block b %}B{% block c %}C{% endblock %}D{% endblock %}E",
+                "ABCDE",
+            ),
+        ] {
+            let trace = render(source, true);
+            assert_eq!(trace.rendered, expected);
+            let literals: String = trace
+                .events
+                .iter()
+                .filter(|e| e.kind == "literal")
+                .map(|e| &trace.rendered[e.rendered_start..e.rendered_end])
+                .collect();
+            assert_eq!(literals, expected);
+        }
+    }
+
+    #[test]
+    fn buffered_blocks_restore_the_observer_only_tracker() {
+        let source = "A{% block b %}B{% block c %}C{% endblock %}D{% endblock %}E";
+        let observer = Rc::new(RenderTraceListener::new(Path::new("model.sql")));
+        let listeners: Vec<Rc<dyn RenderingEventListener>> = vec![observer.clone()];
+        let rendered = Environment::new()
+            .render_named_str("model.sql", source, (), &listeners)
+            .unwrap();
+        let trace = observer.finish(source, rendered);
+        assert_eq!(trace.rendered, "ABCDE");
+        let positions: Vec<_> = trace
+            .events
+            .iter()
+            .filter(|e| e.kind == "literal")
+            .map(|e| (e.source_start, e.rendered_start, e.rendered_end))
+            .collect();
+        assert_eq!(
+            positions,
+            [
+                (0, 0, 1),
+                (source.find("B{").unwrap(), 1, 2),
+                (source.find("C{").unwrap(), 2, 3),
+                (source.find("D{").unwrap(), 3, 4),
+                (source.len() - 1, 4, 5),
+            ]
+        );
+    }
+
+    #[test]
+    fn buffered_block_values_and_captures_are_not_final_literals() {
+        for (source, expected, literal) in [
+            (
+                "A{% block b %}b{% endblock %}C{{ self.b() | upper }}D",
+                "AbCBD",
+                "AbCD",
+            ),
+            (
+                "A{% set saved %}{% block b %}B{% endblock %}{% endset %}C{{ saved }}D",
+                "ACBD",
+                "ACD",
+            ),
+        ] {
+            let trace = render(source, true);
+            assert_eq!(trace.rendered, expected);
+            let literals: String = trace
+                .events
+                .iter()
+                .filter(|e| e.kind == "literal")
+                .map(|e| &trace.rendered[e.rendered_start..e.rendered_end])
+                .collect();
+            assert_eq!(literals, literal);
+        }
+    }
+
+    #[test]
+    fn failed_buffered_blocks_restore_both_tracker_configurations() {
+        for default_tracker in [false, true] {
+            let observer = Rc::new(RenderTraceListener::new(Path::new("model.sql")));
+            let mut listeners: Vec<Rc<dyn RenderingEventListener>> = Vec::new();
+            if default_tracker {
+                listeners.push(Rc::new(
+                    crate::listener::DefaultRenderingEventListener::default(),
+                ));
+            }
+            listeners.push(observer.clone());
+            let result = Environment::new().render_named_str(
+                "model.sql",
+                "A{% block b %}B{% include 'missing.sql' %}{% endblock %}C",
+                (),
+                &listeners,
+            );
+            assert!(result.is_err());
+            assert_eq!(observer.position(), 1);
+            assert!(observer.buffers.borrow().is_empty());
+            assert_eq!(
+                observer
+                    .events
+                    .borrow()
+                    .iter()
+                    .filter(|e| e.kind == "literal")
+                    .count(),
+                1
             );
         }
     }

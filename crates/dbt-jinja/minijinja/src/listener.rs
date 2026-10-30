@@ -26,11 +26,23 @@ pub trait RenderingEventListener: std::fmt::Debug {
         None
     }
 
-    /// Observes the tracker selected for the top-level rendered output.
+    /// Observes the tracker selected for the active rendered output.
     ///
     /// A listener can retain this location without replacing another listener's
-    /// tracker. Nested macro output buffers do not trigger this callback.
+    /// tracker. Named-block buffers notify within output-buffer start/end
+    /// callbacks; nested macro output buffers do not notify.
     fn on_output_tracker(&self, _location: Rc<OutputTrackerLocation>) {}
+
+    /// Begin a nested render into a temporary output buffer.
+    fn on_output_buffer_start(&self) {}
+
+    /// Finish a temporary render and restore the enclosing output tracker.
+    ///
+    /// If emitted is true, the buffer will be appended directly to the
+    /// enclosing output. Observers can then rebase its events to that output.
+    /// Otherwise the value is captured, transformed, discarded, or failed and
+    /// its intermediate events must not describe final-output literals.
+    fn on_output_buffer_end(&self, _emitted: bool) {}
 
     /// Called when a macro start is encountered.
     /// The expanded location can be obtained from the output_tracker_location if needed.
