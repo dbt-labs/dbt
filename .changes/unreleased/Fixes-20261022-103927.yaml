@@ -1,0 +1,6 @@
+kind: Fixes
+body: Detect inherited grant changes in state:modified when state_modified_compare_more_unrendered_values is enabled.
+time: 2026-10-22T10:39:27.761023-05:00
+custom:
+    Author: trouze
+    Issue: "16438"
