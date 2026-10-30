@@ -129,6 +129,11 @@ pub struct InvocationEvalArgs {
     /// before the project is loaded.
     #[prost(message, optional, tag = "27")]
     pub warn_error_options: ::core::option::Option<InvocationWarnErrorOptions>,
+    /// Whether incremental models are dropped and fully rebuilt, resolved from
+    /// --full-refresh / DBT_FULL_REFRESH (or the original run's setting for
+    /// `dbt retry`).
+    #[prost(bool, optional, tag = "28")]
+    pub full_refresh: ::core::option::Option<bool>,
 }
 impl ::dbt_tracing::StaticName for InvocationEvalArgs {
     const FULL_NAME: &'static str = "v1.public.events.fusion.invocation.InvocationEvalArgs";

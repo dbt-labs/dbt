@@ -276,6 +276,9 @@ impl serde::Serialize for InvocationEvalArgs {
         if self.warn_error_options.is_some() {
             len += 1;
         }
+        if self.full_refresh.is_some() {
+            len += 1;
+        }
         let mut struct_ser = serializer.serialize_struct("v1.public.events.fusion.invocation.InvocationEvalArgs", len)?;
         if !self.command.is_empty() {
             struct_ser.serialize_field("command", &self.command)?;
@@ -362,6 +365,9 @@ impl serde::Serialize for InvocationEvalArgs {
         if let Some(v) = self.warn_error_options.as_ref() {
             struct_ser.serialize_field("warn_error_options", v)?;
         }
+        if let Some(v) = self.full_refresh.as_ref() {
+            struct_ser.serialize_field("full_refresh", v)?;
+        }
         struct_ser.end()
     }
 }
@@ -416,6 +422,8 @@ impl<'de> serde::Deserialize<'de> for InvocationEvalArgs {
             "warnError",
             "warn_error_options",
             "warnErrorOptions",
+            "full_refresh",
+            "fullRefresh",
         ];
 
         #[allow(clippy::enum_variant_names)]
@@ -447,6 +455,7 @@ impl<'de> serde::Deserialize<'de> for InvocationEvalArgs {
             ManageState,
             WarnError,
             WarnErrorOptions,
+            FullRefresh,
             __SkipField__,
         }
         impl<'de> serde::Deserialize<'de> for GeneratedField {
@@ -496,6 +505,7 @@ impl<'de> serde::Deserialize<'de> for InvocationEvalArgs {
                             "manageState" | "manage_state" => Ok(GeneratedField::ManageState),
                             "warnError" | "warn_error" => Ok(GeneratedField::WarnError),
                             "warnErrorOptions" | "warn_error_options" => Ok(GeneratedField::WarnErrorOptions),
+                            "fullRefresh" | "full_refresh" => Ok(GeneratedField::FullRefresh),
                             _ => Ok(GeneratedField::__SkipField__),
                         }
                     }
@@ -542,6 +552,7 @@ impl<'de> serde::Deserialize<'de> for InvocationEvalArgs {
                 let mut manage_state__ = None;
                 let mut warn_error__ = None;
                 let mut warn_error_options__ = None;
+                let mut full_refresh__ = None;
                 while let Some(k) = map_.next_key()? {
                     match k {
                         GeneratedField::Command => {
@@ -710,6 +721,12 @@ impl<'de> serde::Deserialize<'de> for InvocationEvalArgs {
                             }
                             warn_error_options__ = map_.next_value()?;
                         }
+                        GeneratedField::FullRefresh => {
+                            if full_refresh__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("fullRefresh"));
+                            }
+                            full_refresh__ = map_.next_value()?;
+                        }
                         GeneratedField::__SkipField__ => {
                             let _ = map_.next_value::<serde::de::IgnoredAny>()?;
                         }
@@ -743,6 +760,7 @@ impl<'de> serde::Deserialize<'de> for InvocationEvalArgs {
                     manage_state: manage_state__,
                     warn_error: warn_error__,
                     warn_error_options: warn_error_options__,
+                    full_refresh: full_refresh__,
                 })
             }
         }
