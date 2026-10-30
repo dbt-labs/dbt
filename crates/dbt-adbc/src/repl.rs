@@ -24,6 +24,7 @@ fn parse_backend(s: &str) -> Result<Backend> {
         "snowflake" => Ok(Backend::Snowflake),
         "bigquery" => Ok(Backend::BigQuery),
         "postgres" | "postgresql" => Ok(Backend::Postgres),
+        "motherduck" => Ok(Backend::MotherDuck),
         "databricks" => Ok(Backend::Databricks),
         "redshift" => Ok(Backend::Redshift),
         "spark" => Ok(Backend::Spark),
@@ -37,6 +38,17 @@ fn parse_backend(s: &str) -> Result<Backend> {
             format!("Unsupported backend: {s}"),
             Status::InvalidArguments,
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recognizes_motherduck_backend() {
+        assert_eq!(parse_backend("motherduck").unwrap(), Backend::MotherDuck);
+        assert_eq!(parse_backend("MotherDuck").unwrap(), Backend::MotherDuck);
     }
 }
 
