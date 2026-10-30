@@ -20,7 +20,13 @@ from dbt.config.runtime import RuntimeConfig
 from dbt.flags import set_from_args
 from dbt.graph import NodeSelector, parse_difference
 from dbt.node_types import NodeType
-from tests.unit.utils.manifest import make_manifest, make_model
+from tests.unit.utils.manifest import (
+    make_manifest,
+    make_model,
+    make_seed,
+    make_singular_test,
+    make_source,
+)
 
 set_from_args(Namespace(WARN_ERROR=False), None)
 
@@ -323,3 +329,72 @@ class TestNodeSelector:
         # Ensure that --indirect-selection empty returns the same result
         spec.indirect_selection = graph_selector.IndirectSelection.Empty
         assert selector.get_selected(spec) == {"model.pkg.model_two"}
+
+    @pytest.mark.parametrize(
+        "select,expected",
+        [
+            # a source test that reads a seed
+            ("source:raw.events", {"source.pkg.raw.events", "test.pkg.events_code_in_seed"}),
+            # a model test that reads a seed the model does not read, next to the same
+            # shape reading a source; a test that reads an unselected model stays out
+            (
+                "stg_events",
+                {
+                    "model.pkg.stg_events",
+                    "test.pkg.stg_events_code_in_seed",
+                    "test.pkg.stg_events_code_in_source",
+                },
+            ),
+        ],
+    )
+    def test_buildable_counts_unselected_seed_as_present(
+        self, runtime_config: RuntimeConfig, select, expected
+    ):
+        events = make_source(pkg="pkg", source_name="raw", table_name="events")
+        lookup = make_source(pkg="pkg", source_name="raw", table_name="lookup")
+        allowed_codes = make_seed(pkg="pkg", name="allowed_codes")
+        stg_events = make_model(
+            pkg="pkg",
+            name="stg_events",
+            code="select code from {{ source('raw', 'events') }}",
+            sources=[events],
+        )
+        other_model = make_model(pkg="pkg", name="other_model", code="select 'A' as code")
+        data_tests = [
+            make_singular_test(
+                pkg="pkg",
+                name="events_code_in_seed",
+                sql="select 1",
+                refs=[allowed_codes],
+                sources=[events],
+            ),
+            make_singular_test(
+                pkg="pkg",
+                name="stg_events_code_in_seed",
+                sql="select 1",
+                refs=[stg_events, allowed_codes],
+            ),
+            make_singular_test(
+                pkg="pkg",
+                name="stg_events_code_in_source",
+                sql="select 1",
+                refs=[stg_events],
+                sources=[lookup],
+            ),
+            make_singular_test(
+                pkg="pkg",
+                name="stg_events_code_in_model",
+                sql="select 1",
+                refs=[stg_events, other_model],
+            ),
+        ]
+        manifest = make_manifest(
+            nodes=[allowed_codes, stg_events, other_model, *data_tests],
+            sources=[events, lookup],
+        )
+        graph = dbt.compilation.Compiler(runtime_config).compile(manifest)
+        selector = NodeSelector(graph, manifest)
+
+        spec = graph_selector.SelectionCriteria.from_single_spec(select)
+        spec.indirect_selection = graph_selector.IndirectSelection.Buildable
+        assert selector.get_selected(spec) == expected
