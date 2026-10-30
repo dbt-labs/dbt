@@ -332,6 +332,11 @@ mod tests {
             ))
             .unwrap()
         );
+        assert_valid_trace(&trace);
+        trace
+    }
+
+    fn assert_valid_trace(trace: &RenderTrace) {
         for event in &trace.events {
             assert!(event.source_start <= event.source_end);
             assert!(event.rendered_start <= event.rendered_end);
@@ -346,7 +351,21 @@ mod tests {
                 );
             }
         }
-        trace
+        assert_balanced_layout(trace);
+        assert_output_coverage(trace);
+    }
+
+    fn assert_output_coverage(trace: &RenderTrace) {
+        let mut covered = vec![false; trace.rendered.len()];
+        for event in &trace.events {
+            if matches!(event.kind.as_str(), "literal" | "templated" | "macro") {
+                covered[event.rendered_start..event.rendered_end].fill(true);
+            }
+        }
+        assert!(
+            covered.iter().all(|byte| *byte),
+            "unmapped output: {trace:?}"
+        );
     }
 
     #[test]
@@ -620,6 +639,7 @@ mod tests {
             assert!(result.is_err());
             assert_eq!(observer.position(), 1);
             assert!(observer.buffers.borrow().is_empty());
+            assert!(observer.templates.borrow().is_empty());
             assert_eq!(
                 observer
                     .events
@@ -775,6 +795,59 @@ mod tests {
                     "unmapped output: {trace:?}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn simple_inheritance_maps_only_the_child_block() {
+        let source = "{% extends 'parent.sql' %}{% block b %}C{% endblock %}";
+        let mut environment = Environment::new();
+        environment
+            .add_template("parent.sql", "P{% block b %}B{% endblock %}Q")
+            .unwrap();
+        let observer = Rc::new(RenderTraceListener::new(Path::new("model.sql")));
+        let listeners: Vec<Rc<dyn RenderingEventListener>> = vec![observer.clone()];
+        let rendered = environment
+            .render_named_str("model.sql", source, (), &listeners)
+            .unwrap();
+        let trace = observer.finish(source, rendered);
+        assert_eq!(trace.rendered, "PCQ");
+        assert_valid_trace(&trace);
+        let literal = trace.events.iter().find(|e| e.kind == "literal").unwrap();
+        assert_eq!(literal.source_start, source.find('C').unwrap());
+        assert_eq!((literal.rendered_start, literal.rendered_end), (1, 2));
+        let foreign: Vec<_> = trace
+            .events
+            .iter()
+            .filter(|e| e.kind == "templated")
+            .collect();
+        assert_eq!(foreign.len(), 2);
+        assert!(
+            foreign
+                .iter()
+                .all(|e| e.source_start == 0 && e.source_end == 0)
+        );
+        assert_eq!((foreign[0].rendered_start, foreign[0].rendered_end), (0, 1));
+        assert_eq!((foreign[1].rendered_start, foreign[1].rendered_end), (2, 3));
+    }
+
+    #[test]
+    fn observer_only_returns_discard_stale_buffer_events() {
+        for (source, expected) in [
+            ("select 0 {{ return('select 1') }}", "select 1"),
+            ("A{% block b %}B{{ return('X') }}{% endblock %}C", "AXC"),
+            ("A{% block b %}B{{ return('') }}{% endblock %}C", "AC"),
+        ] {
+            let observer = Rc::new(RenderTraceListener::new(Path::new("model.sql")));
+            let listeners: Vec<Rc<dyn RenderingEventListener>> = vec![observer.clone()];
+            let rendered = Environment::new()
+                .render_named_str("model.sql", source, (), &listeners)
+                .unwrap();
+            let trace = observer.finish(source, rendered);
+            assert_eq!(trace.rendered, expected);
+            assert_valid_trace(&trace);
+            assert!(observer.templates.borrow().is_empty());
+            assert!(observer.buffers.borrow().is_empty());
         }
     }
 }

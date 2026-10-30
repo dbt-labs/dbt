@@ -121,27 +121,44 @@ fixture stays stable across releases and machines; execution events are captured
 from the real renderer. The local attributes keep fixture newlines as LF because
 the byte offsets describe those exact input bytes.
 
+## Regression coverage
+
+The [Python artifact regression matrix](../../crates/dbt-sa-python/tests/integration/test_render_trace_regressions.py)
+compiles 28 independent examples both normally and with trace export enabled.
+Every case checks identical compiled SQL, exact input/output, invocation/model
+identity, valid UTF-8 boundaries, literal equality, correctly nested layout
+closures, and complete rendered-output coverage. Individual cases also pin
+closing-event and loop-repeat counts or the exact text eligible for literal
+source mapping.
+
+The cases cover trimmed raw blocks, Unicode/CRLF, if/elif/else paths, nested
+conditionals, empty/single/multiple-iteration for/else, partially and entirely
+filtered loops, genuine empty-output iterations, buffered/captured/transformed
+blocks, break/continue through nested scopes, first-item breaks, top-level and
+block returns, empty returned values, and ordinary macro returns.
+
+Renderer unit tests additionally cover the short `PCQ` inheritance example,
+multiple inheritance levels with child overrides, both tracker configurations,
+observer-only explicit returns, and restoration after buffered-render errors.
+The shared unit-test assertions check ranges, literal equality, balanced layout
+and output coverage across the existing renderer regression examples.
+
+The existing project integrations continue to check pre-injection offsets for
+an ephemeral dependency, fresh provenance after a macro changes, disabled-node
+manifest identity and absence of successful artifacts after rendering fails.
+The executable JSON fixture above remains the complete format example.
+
 ## Local prototype validation
 
 Checked on Windows x86-64, Python 3.13.5 and Rust stable 1.98.1:
 
-- After rebasing onto upstream main (`4b4701c77`), all 16 `dbt-flags` and
-  all 158 `dbt-jinja-utils` library tests passed, including the four new
-  provenance tests. The executable artifact example test also passed.
-
-Before the rebase, the following integration checks passed on the same
-trace implementation:
-
-- Built and installed the `dbt-sa-python` ABI3 wheel and ran both tests in
-  `tests/integration/test_render_trace.py` successfully. These exercise a real
-  project, dbt `return()`, an ephemeral parent, output equality with tracing off,
-  repeated source spans, macro-change freshness, and failed rendering.
-- The installed console entry point emitted traces that drove SQLFluff source
-  fixes and a successful, idempotent recompile. This used a temporary metadata
-  adapter for the separate proof-of-concept consumer's old SHA-pinned format;
-  it did not modify execution events or the committed consumer.
-- Scoped Clippy completed for `dbt-flags`, `dbt-jinja-utils` and `dbt-tasks-sa`.
-  Its warnings were in existing code, not the new observer or artifact writer.
+- All 177 `dbt-jinja-utils` library tests passed.
+- All 31 Python exporter integrations passed: the 28-case regression matrix
+  and the three existing project/artifact tests. These use the ABI3 runtime
+  built from `b57b0f671`; this test expansion changes no production renderer code.
+- All 106 SQLFluff consumer and plugin-generation tests passed against that
+  runtime, including real CLI source fixes and parallel-worker integration.
+- The complete golden JSON example comparison passed.
 - Rust formatting, Python test lint/format and diff whitespace checks passed.
 
 This debug build required `RUST_LOG=debug` and `DBT_LOG_LEVEL=debug` to keep
