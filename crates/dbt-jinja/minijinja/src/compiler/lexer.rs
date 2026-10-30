@@ -1158,6 +1158,23 @@ mod tests {
         }
     }
 
+    fn assert_raw_payload_span(source: &str, ws_config: WhitespaceConfig) {
+        for token in tokenize(source, false, SyntaxConfig::default(), ws_config) {
+            let (token, span) = token.unwrap();
+            let Token::TemplateData(raw) = token else {
+                continue;
+            };
+            assert_eq!(
+                &source[span.start_offset as usize..span.end_offset as usize],
+                raw
+            );
+            if raw == "λ 😀" {
+                assert_eq!((span.start_line, span.start_col), (3, 3));
+                assert_eq!((span.end_line, span.end_col), (3, 6));
+            }
+        }
+    }
+
     #[test]
     fn raw_payload_spans_follow_whitespace_control() {
         for ws_config in [
@@ -1173,19 +1190,7 @@ mod tests {
                 "pre\n{% raw -%}\r\n  λ 😀 \n {%- endraw %}tail",
                 "{% raw %}\r\n  λ\n    {% endraw %}",
             ] {
-                for token in tokenize(source, false, SyntaxConfig::default(), ws_config) {
-                    let (token, span) = token.unwrap();
-                    if let Token::TemplateData(raw) = token {
-                        assert_eq!(
-                            &source[span.start_offset as usize..span.end_offset as usize],
-                            raw
-                        );
-                        if raw == "λ 😀" {
-                            assert_eq!((span.start_line, span.start_col), (3, 3));
-                            assert_eq!((span.end_line, span.end_col), (3, 6));
-                        }
-                    }
-                }
+                assert_raw_payload_span(source, ws_config);
             }
         }
     }

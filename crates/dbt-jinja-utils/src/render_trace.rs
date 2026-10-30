@@ -467,27 +467,6 @@ mod tests {
     }
 
     #[test]
-    fn buffered_blocks_use_final_output_positions_with_default_factory() {
-        for (source, expected) in [
-            ("A{% block b %}B{% endblock %}C", "ABC"),
-            (
-                "A{% block b %}B{% block c %}C{% endblock %}D{% endblock %}E",
-                "ABCDE",
-            ),
-        ] {
-            let trace = render(source, true);
-            assert_eq!(trace.rendered, expected);
-            let literals: String = trace
-                .events
-                .iter()
-                .filter(|e| e.kind == "literal")
-                .map(|e| &trace.rendered[e.rendered_start..e.rendered_end])
-                .collect();
-            assert_eq!(literals, expected);
-        }
-    }
-
-    #[test]
     fn buffered_blocks_restore_the_observer_only_tracker() {
         let source = "A{% block b %}B{% block c %}C{% endblock %}D{% endblock %}E";
         let observer = Rc::new(RenderTraceListener::new(Path::new("model.sql")));
@@ -516,8 +495,14 @@ mod tests {
     }
 
     #[test]
-    fn buffered_block_values_and_captures_are_not_final_literals() {
+    fn buffered_blocks_publish_only_final_literals_with_default_factory() {
         for (source, expected, literal) in [
+            ("A{% block b %}B{% endblock %}C", "ABC", "ABC"),
+            (
+                "A{% block b %}B{% block c %}C{% endblock %}D{% endblock %}E",
+                "ABCDE",
+                "ABCDE",
+            ),
             (
                 "A{% block b %}b{% endblock %}C{{ self.b() | upper }}D",
                 "AbCBD",
