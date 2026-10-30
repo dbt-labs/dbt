@@ -155,8 +155,27 @@ def extended_msgpack_encoder(obj):
     return obj
 
 
+def _coerce_int_map_keys(obj):
+    """Recursively coerce integer map keys to strings.
+
+    msgpack with strict_map_key=False allows integer keys, but dbt expects
+    string keys throughout. This converts any integer (or other non-string)
+    keys to their string representation.
+
+    Fixes: https://github.com/dbt-labs/dbt-core/issues/12578
+    """
+    if isinstance(obj, dict):
+        return {
+            str(k) if not isinstance(k, str) else k: _coerce_int_map_keys(v)
+            for k, v in obj.items()
+        }
+    return obj
+
+
 def extended_mashumuro_decoder(data):
-    return msgpack.unpackb(data, ext_hook=extended_msgpack_decoder, raw=False)
+    return _coerce_int_map_keys(
+        msgpack.unpackb(data, ext_hook=extended_msgpack_decoder, raw=False, strict_map_key=False)
+    )
 
 
 def extended_msgpack_decoder(code, data):
