@@ -1,0 +1,6 @@
+kind: Features
+body: 'Add --no-full-refresh flag to dbt compile'
+time: 2026-03-10T16:51:45.813368+09:00
+custom:
+    Author: dtaniwaki
+    Issue: "10918"
