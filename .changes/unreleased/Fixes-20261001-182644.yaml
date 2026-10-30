@@ -1,0 +1,7 @@
+kind: Fixes
+body: Exclude connection-limit wait time from the execution time reported in run results
+time: 2026-10-01T18:26:44Z
+custom:
+    author: ShaneMcGovern
+    issue: "15724"
+    project: dbt-core
