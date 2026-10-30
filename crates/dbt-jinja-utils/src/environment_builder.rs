@@ -484,6 +484,15 @@ impl JinjaEnvBuilder {
         self.env.add_test("callable", |value: Value| {
             value.is_undefined() || value.as_object().is_some()
         });
+
+        // ASCII-only on purpose: engines like DuckDB fold identifier case for A-Z only, so `ID`
+        // matches `id` but `É` does not match `é`.
+        self.env.add_test(
+            "equalto_ignore_ascii_case",
+            |value: std::borrow::Cow<'_, str>, other: std::borrow::Cow<'_, str>| {
+                value.eq_ignore_ascii_case(&other)
+            },
+        );
     }
 }
 

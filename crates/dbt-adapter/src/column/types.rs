@@ -18,6 +18,7 @@ use minijinja::{
 
 use dbt_schemas::schemas::dbt_column::DbtColumn;
 
+use crate::sql_types::{DefaultTypeOps, TypeOps};
 use crate::value::columns_to_value;
 
 static LOG_RE: LazyLock<Regex> =
@@ -1160,11 +1161,25 @@ impl Column {
 
     /// https://github.com/dbt-labs/dbt-adapters/blob/main/dbt-adapters/src/dbt/adapters/base/column.py#L102-L103
     pub fn can_expand_to(&self, other: &Column) -> Result<bool, minijinja::Error> {
-        // Databricks strings have no size to widen; `expand_target_column_types` would otherwise
-        // ALTER them to `character varying(256)`.
-        // https://github.com/databricks/dbt-databricks/blob/6cc739d473043d4e1c94be9ca391850edd02e7fb/dbt/adapters/databricks/column.py#L169-L172
-        if self._adapter_type == AdapterType::Databricks {
-            return Ok(false);
+        match self._adapter_type {
+            // Databricks strings have no size to widen; `expand_target_column_types` would
+            // otherwise ALTER them to `character varying(256)`.
+            // https://github.com/databricks/dbt-databricks/blob/6cc739d473043d4e1c94be9ca391850edd02e7fb/dbt/adapters/databricks/column.py#L169-L172
+            AdapterType::Databricks => return Ok(false),
+            AdapterType::DuckDB => {
+                let same_type = DefaultTypeOps::new(AdapterType::DuckDB)
+                    .normalize_and_compare_sql_types(&self.data_type(), &other.data_type())
+                    .map_err(|error| {
+                        minijinja::Error::new(
+                            minijinja::ErrorKind::InvalidOperation,
+                            error.to_string(),
+                        )
+                    })?;
+                if same_type {
+                    return Ok(true);
+                }
+            }
+            _ => {}
         }
         Ok(self.is_string()
             && other.is_string()
@@ -1803,6 +1818,60 @@ mod tests {
             Column::try_from_snowflake_raw_data_type("c", "VARCHAR(20) COLLATE 'en-ci'").unwrap();
         assert!(small.can_expand_to(&large).unwrap());
         assert!(!large.can_expand_to(&small).unwrap());
+    }
+
+    #[test]
+    fn test_can_expand_to_duckdb_equivalent_types() {
+        let col = |ty: &str| {
+            Column::new(
+                AdapterType::DuckDB,
+                "c".to_string(),
+                ty.to_string(),
+                None,
+                None,
+                None,
+            )
+        };
+        for (source, target) in [
+            ("integer", "INTEGER"),
+            ("bigint", "BIGINT"),
+            ("double", "DOUBLE"),
+            ("decimal(18, 3)", "DECIMAL(18,3)"),
+            ("timestamp", "TIMESTAMP"),
+            ("boolean", "BOOLEAN"),
+            ("date", "DATE"),
+            ("VARCHAR", "VARCHAR"),
+        ] {
+            assert!(
+                col(source).can_expand_to(&col(target)).unwrap(),
+                "{source} vs {target}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_can_expand_to_duckdb_real_differences() {
+        let col = |ty: &str| {
+            Column::new(
+                AdapterType::DuckDB,
+                "c".to_string(),
+                ty.to_string(),
+                None,
+                None,
+                None,
+            )
+        };
+        for (source, target) in [
+            ("bigint", "INTEGER"),
+            ("decimal(18, 4)", "DECIMAL(18,3)"),
+            ("timestamptz", "TIMESTAMP"),
+            ("varchar", "INTEGER"),
+        ] {
+            assert!(
+                !col(source).can_expand_to(&col(target)).unwrap(),
+                "{source} vs {target}"
+            );
+        }
     }
 
     #[test]

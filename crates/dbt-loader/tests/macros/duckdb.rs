@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use dbt_adapter::Column;
 use dbt_adapter::relation::RelationObject;
 use dbt_adapter_core::AdapterType;
 use dbt_jinja_utils::mock_object::MockJinjaObject;
@@ -669,4 +670,131 @@ fn load_csv_rows_without_fast_inserts_in_batches() {
         rendered.contains("values") && rendered.contains("(?,?)"),
         "each row should use the adapter's binding char, got: {rendered}"
     );
+}
+
+mod on_schema_change {
+    use super::*;
+
+    fn harness() -> MacroTestHarness {
+        MacroTestHarness::for_adapter(AdapterType::DuckDB)
+            .load_all_macros()
+            .build()
+            .expect("harness should build")
+    }
+
+    fn column(name: &str, data_type: &str) -> Value {
+        Value::from_object(Column::new(
+            AdapterType::DuckDB,
+            name.to_string(),
+            data_type.to_string(),
+            None,
+            None,
+            None,
+        ))
+    }
+
+    fn render_diff(source: Vec<Value>, target: Vec<Value>) -> String {
+        let ctx = BTreeMap::from([
+            ("source".to_string(), Value::from(source)),
+            ("target".to_string(), Value::from(target)),
+        ]);
+        harness()
+            .render(
+                "{{ diff_column_data_types(source, target) | map(attribute='column_name') | list }}",
+                ctx,
+            )
+            .expect("diff should render")
+    }
+
+    /// https://github.com/dbt-labs/dbt/issues/16353
+    #[test]
+    fn same_types_in_different_spellings_are_not_changes() {
+        let source = vec![
+            column("id", "integer"),
+            column("big", "bigint"),
+            column("dbl", "double"),
+            column("dec", "decimal(18, 3)"),
+            column("txt", "VARCHAR"),
+            column("dt", "date"),
+            column("ts", "timestamp"),
+            column("flg", "boolean"),
+        ];
+        let target = vec![
+            column("id", "INTEGER"),
+            column("big", "BIGINT"),
+            column("dbl", "DOUBLE"),
+            column("dec", "DECIMAL(18,3)"),
+            column("txt", "VARCHAR"),
+            column("dt", "DATE"),
+            column("ts", "TIMESTAMP"),
+            column("flg", "BOOLEAN"),
+        ];
+        assert_eq!(render_diff(source, target).trim(), "[]");
+    }
+
+    #[test]
+    fn real_type_changes_are_still_reported() {
+        let source = vec![
+            column("id", "bigint"),
+            column("dec", "decimal(18, 4)"),
+            column("ts", "timestamptz"),
+            column("same", "integer"),
+        ];
+        let target = vec![
+            column("id", "INTEGER"),
+            column("dec", "DECIMAL(18,3)"),
+            column("ts", "TIMESTAMP"),
+            column("same", "INTEGER"),
+        ];
+        assert_eq!(render_diff(source, target).trim(), "['id', 'dec', 'ts']");
+    }
+
+    fn render_name_diff(source: Vec<Value>, target: Vec<Value>) -> String {
+        let ctx = BTreeMap::from([
+            ("source".to_string(), Value::from(source)),
+            ("target".to_string(), Value::from(target)),
+        ]);
+        harness()
+            .render(
+                "{{ diff_columns(source, target) | map(attribute='name') | list }}",
+                ctx,
+            )
+            .expect("diff should render")
+    }
+
+    #[test]
+    fn column_names_differing_only_in_ascii_case_are_the_same_column() {
+        let source = vec![column("id", "integer"), column("Amount", "integer")];
+        let target = vec![column("ID", "INTEGER"), column("amount", "INTEGER")];
+        assert_eq!(
+            render_name_diff(source.clone(), target.clone()).trim(),
+            "[]"
+        );
+        assert_eq!(render_diff(source, target).trim(), "[]");
+    }
+
+    #[test]
+    fn column_names_differing_in_non_ascii_case_are_different_columns() {
+        let source = vec![column("É", "integer")];
+        let target = vec![column("é", "INTEGER")];
+        assert_eq!(render_name_diff(source, target).trim(), "['É']");
+    }
+
+    #[test]
+    fn columns_really_missing_are_still_reported() {
+        let source = vec![column("id", "integer"), column("newcol", "integer")];
+        let target = vec![column("ID", "INTEGER"), column("flg", "BOOLEAN")];
+        assert_eq!(
+            render_name_diff(source.clone(), target.clone()).trim(),
+            "['newcol']"
+        );
+        assert_eq!(render_name_diff(target, source).trim(), "['flg']");
+    }
+
+    #[test]
+    fn columns_missing_on_either_side_are_not_type_changes() {
+        let source = vec![column("only_source", "integer")];
+        let target = vec![column("only_target", "VARCHAR")];
+        assert_eq!(render_diff(source, target).trim(), "[]");
+    }
 }
