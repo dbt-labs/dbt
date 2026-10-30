@@ -1,0 +1,6 @@
+kind: Under the Hood
+body: Remove DBT_ENGINE_STATE_EMIT_REUSED_STATUS from the engine env var allow-list
+time: 2026-10-20T22:27:55.237445-06:00
+custom:
+    Author: aiguofer
+    Issue: "13002"
