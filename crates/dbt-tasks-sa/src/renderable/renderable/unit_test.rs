@@ -1135,8 +1135,11 @@ fn row_column_names_or_default<'a>(
     if rows.is_empty() {
         column_names
     } else {
-        let names = rows[0]
-            .keys()
+        // Compare the union of asserted columns. `create_values` fills omitted
+        // cells with NULL; columns omitted from every row remain uncompared.
+        let names = rows
+            .iter()
+            .flat_map(|row| row.keys())
             .map(|k| k.to_ascii_lowercase())
             .collect::<HashSet<_>>();
         expect_schema
