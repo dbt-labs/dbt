@@ -112,7 +112,7 @@ class SchemaYamlContext(ConfiguredContext):
 
             return return_value
         else:
-            raise EnvVarMissingError(var)
+            raise EnvVarMissingError(var, source=f"project '{self._project_name}'")
 
 
 class MacroResolvingContext(ConfiguredContext):
