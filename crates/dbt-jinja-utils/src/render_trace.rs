@@ -338,12 +338,18 @@ mod tests {
 
     fn assert_valid_trace(trace: &RenderTrace) {
         for event in &trace.events {
-            assert!(event.source_start <= event.source_end);
-            assert!(event.rendered_start <= event.rendered_end);
-            assert!(trace.source.is_char_boundary(event.source_start));
-            assert!(trace.source.is_char_boundary(event.source_end));
-            assert!(trace.rendered.is_char_boundary(event.rendered_start));
-            assert!(trace.rendered.is_char_boundary(event.rendered_end));
+            assert!(
+                event.source_start <= event.source_end
+                    && trace.source.is_char_boundary(event.source_start)
+                    && trace.source.is_char_boundary(event.source_end),
+                "invalid source range: {event:?}"
+            );
+            assert!(
+                event.rendered_start <= event.rendered_end
+                    && trace.rendered.is_char_boundary(event.rendered_start)
+                    && trace.rendered.is_char_boundary(event.rendered_end),
+                "invalid rendered range: {event:?}"
+            );
             if event.kind == "literal" {
                 assert_eq!(
                     &trace.source[event.source_start..event.source_end],
@@ -820,15 +826,16 @@ mod tests {
             .events
             .iter()
             .filter(|e| e.kind == "templated")
+            .map(|e| {
+                (
+                    e.source_start,
+                    e.source_end,
+                    e.rendered_start,
+                    e.rendered_end,
+                )
+            })
             .collect();
-        assert_eq!(foreign.len(), 2);
-        assert!(
-            foreign
-                .iter()
-                .all(|e| e.source_start == 0 && e.source_end == 0)
-        );
-        assert_eq!((foreign[0].rendered_start, foreign[0].rendered_end), (0, 1));
-        assert_eq!((foreign[1].rendered_start, foreign[1].rendered_end), (2, 3));
+        assert_eq!(foreign, [(0, 0, 0, 1), (0, 0, 2, 3)]);
     }
 
     #[test]
