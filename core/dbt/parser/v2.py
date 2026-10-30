@@ -28,6 +28,7 @@ from dbt.artifacts.schemas.manifest import WritableManifest
 from dbt.constants import SEMANTIC_MANIFEST_FILE_NAME
 from dbt.contracts.files import ParseFileType
 from dbt.contracts.graph.manifest import Manifest
+from dbt.contracts.graph.nodes import Macro
 from dbt.events.types import V2ParserEnd, V2ParserStart
 from dbt.exceptions import V2ParserError, V2ParserSchemaError, V2ParserVersionError
 from dbt.flags import get_flags
@@ -138,6 +139,18 @@ def parse_with_v2(
     return manifest
 
 
+def _restore_unreplaced_macros(manifest: Manifest, stale_macros: Dict[str, Macro]) -> None:
+    # Some fusion-bundled macros (e.g. adapter dispatch targets like
+    # snowflake__date_spine) have no .sql file on disk, so the reparse passes
+    # never recreate them. Evicting those unconditionally would leave
+    # dangling depends_on.macros references in whatever calls them. Put back
+    # any evicted macro that wasn't replaced by a reparsed one; it's not a
+    # "new" macro, so callers exclude it from new_macro_ids and it keeps
+    # whatever depends_on fusion originally gave it.
+    for uid, macro in stale_macros.items():
+        manifest.macros.setdefault(uid, macro)
+
+
 def rediscover_adapter_macros(manifest: Manifest, runtime_config: "RuntimeConfig") -> None:
     """Evict v2-embedded adapter macros and re-parse them from the installed adapter.
 
@@ -170,8 +183,7 @@ def rediscover_adapter_macros(manifest: Manifest, runtime_config: "RuntimeConfig
     internal_pkg_names = set(internal_pkg_names_list)
 
     stale_ids = [uid for uid, m in manifest.macros.items() if m.package_name in internal_pkg_names]
-    for uid in stale_ids:
-        manifest.macros.pop(uid)
+    stale_macros = {uid: manifest.macros.pop(uid) for uid in stale_ids}
     manifest._macros_by_name = None
     manifest._macros_by_package = None
 
@@ -202,6 +214,9 @@ def rediscover_adapter_macros(manifest: Manifest, runtime_config: "RuntimeConfig
                 generic_test_parser.parse_file(FileBlock(source_file))
 
     new_macro_ids = set(manifest.macros.keys()) - pre_existing_ids
+
+    _restore_unreplaced_macros(manifest, stale_macros)
+
     if new_macro_ids:
         macro_resolver = MacroResolver(
             manifest.macros, runtime_config.project_name, internal_pkg_names_list
