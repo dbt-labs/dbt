@@ -1895,6 +1895,26 @@ class ModelContext(ProviderContext):
             return None
 
     @contextproperty()
+    def compiled_code_full_refresh(self) -> Optional[str]:
+        # TODO: avoid routing on args.which if possible
+        if getattr(self.model, "defer_relation", None) and self.config.args.which == "clone":
+            # TODO https://github.com/dbt-labs/dbt-core/issues/7976
+            return f"select * from {self.model.defer_relation.relation_name or str(self.defer_relation)}"  # type: ignore[union-attr]
+        elif getattr(self.model, "extra_ctes_injected", None):
+            # TODO CT-211
+            return self.model.compiled_code_full_refresh  # type: ignore[union-attr]
+        else:
+            return None
+
+    @contextproperty()
+    def sql_full_refresh(self) -> Optional[str]:
+        # only set this for sql models, for backward compatibility
+        if self.model.language == ModelLanguage.sql:  # type: ignore[union-attr]
+            return self.compiled_code_full_refresh
+        else:
+            return None
+
+    @contextproperty()
     def database(self) -> str:
         return getattr(self.model, "database", self.config.credentials.database)
 

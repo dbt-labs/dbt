@@ -288,6 +288,7 @@ class CompiledResource(ParsedResource):
     compiled_path: Optional[str] = None
     compiled: bool = False
     compiled_code: Optional[str] = None
+    compiled_code_full_refresh: Optional[str] = None
     extra_ctes_injected: bool = False
     extra_ctes: List[InjectedCTE] = field(default_factory=list)
     _pre_injected_sql: Optional[str] = None
@@ -297,6 +298,11 @@ class CompiledResource(ParsedResource):
         dct = super().__post_serialize__(dct, context)
         if "_pre_injected_sql" in dct:
             del dct["_pre_injected_sql"]
+        # compiled_code_full_refresh is only needed at runtime for the
+        # `sql_full_refresh` Jinja context variable; it isn't part of the
+        # manifest/run-results JSON schemas.
+        if "compiled_code_full_refresh" in dct:
+            del dct["compiled_code_full_refresh"]
         # Remove compiled attributes
         if "compiled" in dct and dct["compiled"] is False:
             del dct["compiled"]

@@ -252,7 +252,12 @@ REQUIRED_MACRO_KEYS = REQUIRED_QUERY_HEADER_KEYS | {
     "dbt_metadata_envs",
     "function",
 }
-REQUIRED_MODEL_KEYS = REQUIRED_MACRO_KEYS | {"this", "compiled_code"}
+REQUIRED_MODEL_KEYS = REQUIRED_MACRO_KEYS | {
+    "this",
+    "compiled_code",
+    "sql_full_refresh",
+    "compiled_code_full_refresh",
+}
 MAYBE_KEYS = frozenset({"debug", "defer_relation"})
 
 
