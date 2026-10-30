@@ -32,6 +32,9 @@ use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
+mod split;
+pub(crate) use split::{is_empty_or_comment_only, split_statements};
+
 /// Escape a value to be safely interpolated inside a single-quoted ClickHouse
 /// string literal. ClickHouse uses backslash escaping for `\` and `'` within
 /// string literals (see <https://clickhouse.com/docs/en/sql-reference/syntax#string>).

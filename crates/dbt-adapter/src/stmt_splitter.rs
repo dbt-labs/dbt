@@ -55,6 +55,10 @@ pub struct DefaultStmtSplitter;
 impl StmtSplitter for DefaultStmtSplitter {
     fn split<'i>(&self, sql: &'i str, adapter_type: AdapterType) -> Vec<&'i str> {
         use AdapterType::*;
+        // No shipped lexer covers ClickHouse's lexis; see metadata::clickhouse::split.
+        if adapter_type == ClickHouse {
+            return crate::metadata::clickhouse::split_statements(sql);
+        }
         let dialect = match adapter_type {
             Postgres => Dialect::Postgresql,
             Snowflake => Dialect::Snowflake,
@@ -68,13 +72,6 @@ impl StmtSplitter for DefaultStmtSplitter {
             Salesforce => Dialect::Postgresql,
             // `LakeCompute` defines no dialect of its own, so it falls back to DuckDB's
             DuckDB | LakeCompute => Dialect::Duckdb,
-            // ClickHouse string literals use backslash escapes (\', \\, \xNN),
-            // which the Trino fallback lexer cannot tokenize — everything from
-            // the escape on is then passed through unsplit. The Databricks
-            // (Hive-style) lexer shares ClickHouse's string and backtick lexis.
-            // Local to splitting on purpose: dialect_of() also feeds SQL
-            // analysis, where ClickHouse stays unsupported.
-            ClickHouse => Dialect::Databricks,
             Trino => Dialect::Trino,
             _ => Dialect::Trino,
         };
@@ -92,8 +89,7 @@ impl StmtSplitter for DefaultStmtSplitter {
             Bigquery => by_dialect(Dialect::Bigquery),
             Databricks | Spark => by_dialect(Dialect::Databricks),
             Redshift => by_dialect(Dialect::Redshift),
-            // ClickHouse routes to Databricks for the same reason as split()
-            ClickHouse => by_dialect(Dialect::Databricks),
+            ClickHouse => crate::metadata::clickhouse::is_empty_or_comment_only(sql),
             // fallback to the Trino lexer for unsupported lexer dialects
             _ => by_dialect(Dialect::Trino),
         }
@@ -288,7 +284,6 @@ mod tests {
 
     #[test]
     fn test_split_clickhouse_backslash_escaped_strings() {
-        // the Trino fallback lexer cannot split these correctly
         assert_eq!(
             split(
                 r#"select 'don\'t; drop'; select '\x3F', 'a\\'; select 2"#,
@@ -301,6 +296,14 @@ mod tests {
             ]
         );
         assert!(!is_empty(r#"select 'don\'t'"#, AdapterType::ClickHouse));
+    }
+
+    #[test]
+    fn test_split_clickhouse_dollar_quoted_strings() {
+        assert_eq!(
+            split("select $tag$a;b$tag$; select 2", AdapterType::ClickHouse),
+            vec!["select $tag$a;b$tag$", " select 2"]
+        );
     }
 
     #[test]
