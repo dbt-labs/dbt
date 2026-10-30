@@ -174,6 +174,19 @@ class UnparsedDimension(UnparsedDimensionBase):
 
 
 @dataclass
+class UnparsedDimensionHierarchyLevel(dbtClassMixin):
+    dimension: str
+    parent: Optional[str] = None
+
+
+@dataclass
+class UnparsedDimensionHierarchy(dbtClassMixin):
+    name: str
+    levels: List[Union[UnparsedDimensionHierarchyLevel, str]]
+    label: Optional[str] = None
+
+
+@dataclass
 class UnparsedDimensionV2(UnparsedDimensionBase):
     """Used for dbt Semantic Layer dimensions (v2 YAML)."""
 
@@ -972,6 +985,7 @@ class UnparsedSemanticModel(dbtClassMixin):
     entities: List[UnparsedEntity] = field(default_factory=list)
     measures: List[UnparsedMeasure] = field(default_factory=list)
     dimensions: List[UnparsedDimension] = field(default_factory=list)
+    hierarchies: List[UnparsedDimensionHierarchy] = field(default_factory=list)
     primary_entity: Optional[str] = None
 
 

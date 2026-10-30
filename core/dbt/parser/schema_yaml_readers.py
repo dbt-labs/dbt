@@ -19,6 +19,8 @@ from dbt.artifacts.resources import (
     CumulativeTypeParams,
     Defaults,
     Dimension,
+    DimensionHierarchy,
+    DimensionHierarchyLevel,
     DimensionTypeParams,
     DimensionValidityParams,
     Entity,
@@ -67,6 +69,7 @@ from dbt.contracts.graph.unparsed import (
     UnparsedDerivedDimensionV2,
     UnparsedDerivedSemantics,
     UnparsedDimension,
+    UnparsedDimensionHierarchy,
     UnparsedDimensionTypeParams,
     UnparsedEntity,
     UnparsedExport,
@@ -776,6 +779,27 @@ class SemanticModelParser(YamlReader):
             )
         return dimensions
 
+    def _get_hierarchies(
+        self, unparsed_hierarchies: List[UnparsedDimensionHierarchy]
+    ) -> List[DimensionHierarchy]:
+        return [
+            DimensionHierarchy(
+                name=unparsed.name,
+                label=unparsed.label,
+                levels=[
+                    (
+                        DimensionHierarchyLevel(dimension=level)
+                        if isinstance(level, str)
+                        else DimensionHierarchyLevel(
+                            dimension=level.dimension, parent=level.parent
+                        )
+                    )
+                    for level in unparsed.levels
+                ],
+            )
+            for unparsed in unparsed_hierarchies
+        ]
+
     def _get_entities(self, unparsed_entities: List[UnparsedEntity]) -> List[Entity]:
         entities: List[Entity] = []
         for unparsed in unparsed_entities:
@@ -896,6 +920,7 @@ class SemanticModelParser(YamlReader):
             measures=measures,
             unparsed_measures=unparsed.measures,
             dimensions=dimensions,
+            hierarchies=self._get_hierarchies(unparsed.hierarchies),
         )
 
     def _parse_v2_column_dimensions(self, columns: Dict[str, ColumnInfo]) -> List[Dimension]:
@@ -1113,6 +1138,7 @@ class SemanticModelParser(YamlReader):
         dimensions: List[Dimension],
         measures: List[Measure],  # v1 only
         unparsed_measures: List[UnparsedMeasure] = [],  # v1 only
+        hierarchies: Sequence[DimensionHierarchy] = (),  # v1 only
     ) -> None:
         package_name = self.project.project_name
         unique_id = f"{NodeType.SemanticModel}.{package_name}.{semantic_model_name}"
@@ -1165,6 +1191,7 @@ class SemanticModelParser(YamlReader):
             entities=entities,
             measures=measures,
             dimensions=dimensions,
+            hierarchies=list(hierarchies),
             defaults=defaults,
             primary_entity=primary_entity,
             config=config,
