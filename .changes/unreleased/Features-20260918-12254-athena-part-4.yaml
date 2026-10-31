@@ -1,0 +1,7 @@
+kind: Features
+body: '[Athena] Vendor the dbt-athena 1.11.0 macro package into `dbt-loader`; `list_schemas`, `get_columns_in_relation`, `create_schema`, `check_schema_exists` and `get_catalog` are rewritten as plain SQL because their upstream delegation to `adapter.*` recurses under Fusion'
+time: 2026-09-18T12:25:02.970682-07:00
+custom:
+    author: aoelvp94
+    issue: "16252"
+    project: dbt-core
