@@ -276,6 +276,7 @@ pub enum Instruction<'source> {
     JinjaLayoutEventIfLoopDidNotIterate(JinjaLayoutEventKind, Span),
     JinjaLayoutLoopIterationStart(Span),
     JinjaLayoutLoopRecursionStart(Span),
+    JinjaLayoutLoopRecursionSkippedEnd(Span),
 
     // A label instruction to indicate the start of a macro
     // After MacroName, there will be a series of StoreLocal instructions for parameters

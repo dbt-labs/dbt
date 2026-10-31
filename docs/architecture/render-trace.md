@@ -45,6 +45,8 @@ Consumers must not globally deduplicate events by their byte ranges.
 Each recursive loop invocation opens its own source loop scope before iteration,
 including empty invocations. Repeated iterations within that invocation still
 use `loop_iteration`; their source spans may coincide with those of the caller.
+Empty recursive for/else calls close before the VM returns to the caller,
+without changing the ordinary renderer's existing output or control flow.
 
 Raw-block literal ranges cover the post-whitespace-control payload, not the
 surrounding stripped whitespace. Loop repetitions describe executions of the

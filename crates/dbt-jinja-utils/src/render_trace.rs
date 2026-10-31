@@ -873,10 +873,14 @@ mod tests {
             );
             let trace = render(&source, true);
             assert_eq!(trace.rendered, expected);
+            assert_eq!(render_templates(&source, &[], false).rendered, expected);
         }
         let source = "{% for item in [{'n': 1, 'children': [{'n': 2, 'children': []}]}] recursive %}select {{ item.n }};{{ loop(item.children) | upper }}{% endfor %}";
         let trace = render(source, true);
         assert_eq!(trace.rendered, "select 1;SELECT 2;");
+        let source = "{% for item in [{'n': 1, 'children': []}] recursive %}select {{ item.n }};{{ loop(item.children) }}{% else %}select 0{% endfor %}";
+        assert_eq!(render(source, true).rendered, "select 1;");
+        assert_eq!(render_templates(source, &[], false).rendered, "select 1;");
     }
 
     fn render_templates(

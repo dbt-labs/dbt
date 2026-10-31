@@ -86,10 +86,36 @@ pub(crate) struct BlockRender<'a> {
 }
 
 #[cfg(feature = "multi_template")]
+impl<'a> BlockRender<'a> {
+    fn new(name: &'a str, out: &Output<'_>, macro_name: &Option<String>) -> Self {
+        Self {
+            name,
+            emitted: emits_to_current_output(out, macro_name),
+        }
+    }
+}
+
+#[cfg(feature = "multi_template")]
 struct IncludeRender {
     name: Value,
     ignore_missing: bool,
     emitted: bool,
+}
+
+#[cfg(feature = "multi_template")]
+impl IncludeRender {
+    fn new(
+        name: Value,
+        ignore_missing: bool,
+        out: &Output<'_>,
+        macro_name: &Option<String>,
+    ) -> Self {
+        Self {
+            name,
+            ignore_missing,
+            emitted: emits_to_current_output(out, macro_name),
+        }
+    }
 }
 
 fn emits_to_current_output(out: &Output<'_>, macro_name: &Option<String>) -> bool {
@@ -158,6 +184,26 @@ fn explicit_return_value(
     value
 }
 
+fn notify_loop_boundary(
+    state: &mut State<'_, '_>,
+    listeners: &[Rc<dyn RenderingEventListener>],
+    instruction: &Instruction<'_>,
+    enabled: bool,
+) {
+    match instruction {
+        Instruction::JinjaLayoutLoopRecursionSkippedEnd(span) => {
+            notify_empty_loop_recursion(state, listeners, span, enabled)
+        }
+        Instruction::JinjaLayoutLoopRecursionStart(span) => {
+            notify_loop_recursion(state, listeners, span, enabled)
+        }
+        Instruction::JinjaLayoutLoopIterationStart(span) => {
+            notify_loop_iteration(state, listeners, span, enabled)
+        }
+        _ => unreachable!("not a loop layout boundary"),
+    }
+}
+
 fn notify_loop_iteration(
     state: &mut State<'_, '_>,
     listeners: &[Rc<dyn RenderingEventListener>],
@@ -190,6 +236,24 @@ fn notify_loop_recursion(
         let span = span_with_current_offset(source_span, &state.ctx.current_span);
         for listener in listeners {
             listener.on_jinja_layout_event(crate::JinjaLayoutEventKind::BlockStart, &span);
+        }
+    }
+}
+
+fn notify_empty_loop_recursion(
+    state: &mut State<'_, '_>,
+    listeners: &[Rc<dyn RenderingEventListener>],
+    source_span: &Span,
+    enabled: bool,
+) {
+    let skipped_recursive_call = state
+        .ctx
+        .current_loop()
+        .is_some_and(|loop_ctx| loop_ctx.current_recursion_jump.is_some() && !loop_ctx.did_iterate);
+    if skipped_recursive_call && enabled {
+        let span = span_with_current_offset(source_span, &state.ctx.current_span);
+        for listener in listeners {
+            listener.on_jinja_loop_skipped_end(&span);
         }
     }
 }
@@ -1181,10 +1245,7 @@ impl<'env> Vm<'env> {
                 #[cfg(feature = "multi_template")]
                 Instruction::CallBlock(name) => {
                     if parent_instructions.is_none() && !out.is_discarding() {
-                        let block = BlockRender {
-                            name,
-                            emitted: emits_to_current_output(&out, &current_macro_name),
-                        };
+                        let block = BlockRender::new(name, &out, &current_macro_name);
                         out.write_str(
                             call_wrapper(listeners, || self.call_block(block, state, listeners))?
                                 .as_str()
@@ -1634,18 +1695,11 @@ impl<'env> Vm<'env> {
                 #[cfg(feature = "multi_template")]
                 Instruction::Include(ignore_missing, span) => {
                     let a = stack.pop();
+                    let include = IncludeRender::new(a, *ignore_missing, &out, &current_macro_name);
                     out.write_str(
-                        self.perform_include(
-                            IncludeRender {
-                                name: a,
-                                ignore_missing: *ignore_missing,
-                                emitted: emits_to_current_output(&out, &current_macro_name),
-                            },
-                            state,
-                            listeners,
-                        )
-                        .map_err(|e| state.with_span_error(e, span))?
-                        .as_str(),
+                        self.perform_include(include, state, listeners)
+                            .map_err(|e| state.with_span_error(e, span))?
+                            .as_str(),
                     )?;
                 }
                 #[cfg(feature = "multi_template")]
@@ -1761,21 +1815,10 @@ impl<'env> Vm<'env> {
                             .for_each(|listener| listener.on_jinja_loop_skipped_end(&source_span));
                     }
                 }
-                Instruction::JinjaLayoutLoopRecursionStart(source_span) => {
-                    notify_loop_recursion(
-                        state,
-                        listeners,
-                        source_span,
-                        current_macro_name.is_none(),
-                    );
-                }
-                Instruction::JinjaLayoutLoopIterationStart(source_span) => {
-                    notify_loop_iteration(
-                        state,
-                        listeners,
-                        source_span,
-                        current_macro_name.is_none(),
-                    );
+                Instruction::JinjaLayoutLoopRecursionSkippedEnd(_)
+                | Instruction::JinjaLayoutLoopRecursionStart(_)
+                | Instruction::JinjaLayoutLoopIterationStart(_) => {
+                    notify_loop_boundary(state, listeners, instr, current_macro_name.is_none());
                 }
                 Instruction::MacroName(name, _) => {
                     current_macro_name = Some((*name).to_string());
@@ -1811,11 +1854,7 @@ impl<'env> Vm<'env> {
         state: &mut State<'_, 'env>,
         listeners: &[Rc<dyn RenderingEventListener>],
     ) -> Result<String, Error> {
-        let IncludeRender {
-            name,
-            ignore_missing,
-            emitted,
-        } = include;
+        let name = include.name;
         let obj = name.as_object();
         let choices = obj
             .as_ref()
@@ -1857,12 +1896,12 @@ impl<'env> Vm<'env> {
             #[cfg(feature = "macros")]
             {
                 let old_closure = state.ctx.take_closure();
-                rv = self.eval_buffered_state(state, listeners, emitted);
+                rv = self.eval_buffered_state(state, listeners, include.emitted);
                 state.ctx.reset_closure(old_closure);
             }
             #[cfg(not(feature = "macros"))]
             {
-                rv = self.eval_buffered_state(state, listeners, emitted);
+                rv = self.eval_buffered_state(state, listeners, include.emitted);
             }
             state.ctx.decr_depth(INCLUDE_RECURSION_COST);
             state.loaded_templates = old_loaded_templates;
@@ -1878,7 +1917,7 @@ impl<'env> Vm<'env> {
             }));
             return Ok(rv.as_str().unwrap().to_string());
         }
-        if !templates_tried.is_empty() && !ignore_missing {
+        if !templates_tried.is_empty() && !include.ignore_missing {
             Err(Error::new(
                 ErrorKind::TemplateNotFound,
                 if templates_tried.len() == 1 {

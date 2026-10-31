@@ -236,6 +236,33 @@ import pytest
             ),
             id="ordinary-macro-return-keeps-call-site-provenance",
         ),
+        pytest.param(
+            (
+                "{% for item in [{'n': 1, 'children': [{'n': 2, 'children': []}]}] recursive %}"
+                "select {{ item.n }};{{ loop(item.children) }}{% endfor %}",
+                "select 1;select 2;",
+                {"block_end": 2, "loop_skipped": 1},
+            ),
+            id="recursive-direct-including-empty-child",
+        ),
+        pytest.param(
+            (
+                "{% for item in [{'n': 1, 'children': [{'n': 2, 'children': []}]}] recursive %}"
+                "select {{ item.n }};{{ loop(item.children) | upper }}{% endfor %}",
+                "select 1;SELECT 2;",
+                {"literals": "select ;", "block_end": 2, "loop_skipped": 1},
+            ),
+            id="recursive-transformed-output-is-generated",
+        ),
+        pytest.param(
+            (
+                "{% for item in [{'n': 1, 'children': []}] recursive %}"
+                "select {{ item.n }};{{ loop(item.children) }}{% else %}select 0{% endfor %}",
+                "select 1;",
+                {"block_end": 1, "loop_skipped": 1},
+            ),
+            id="recursive-for-else-closes-before-returning-to-caller",
+        ),
     ],
 )
 def test_review_regression_artifact(case, tmp_project, invoke):

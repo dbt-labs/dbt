@@ -251,10 +251,16 @@ impl<'source> CodeGenerator<'source> {
             self.add(Instruction::Jump(iter_instr, span));
             let loop_end = self.next_instruction();
             if let Some(end_tag_span) = skipped_end_tag_span {
-                self.add(Instruction::JinjaLayoutEventIfLoopDidNotIterate(
-                    JinjaLayoutEventKind::BlockEnd,
-                    end_tag_span,
-                ));
+                if push_did_not_iterate {
+                    self.add(Instruction::JinjaLayoutLoopRecursionSkippedEnd(
+                        end_tag_span,
+                    ));
+                } else {
+                    self.add(Instruction::JinjaLayoutEventIfLoopDidNotIterate(
+                        JinjaLayoutEventKind::BlockEnd,
+                        end_tag_span,
+                    ));
+                }
             }
             if push_did_not_iterate {
                 self.add(Instruction::PushDidNotIterate);
@@ -1163,10 +1169,7 @@ impl<'source> CodeGenerator<'source> {
         self.end_for_loop_with_layout(
             !for_loop.else_body.is_empty(),
             span,
-            for_loop
-                .else_body
-                .is_empty()
-                .then_some(for_loop.end_tag_span),
+            Some(for_loop.end_tag_span),
         );
         if !for_loop.else_body.is_empty() {
             self.start_if(span);
