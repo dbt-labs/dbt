@@ -33,7 +33,8 @@
   {%- set other_existing_relation = load_cached_relation(defer_relation) -%}
   {%- set file_format = adapter.resolve_file_format(config) -%}
 
-  -- If this is a database that can do zero-copy cloning of tables, and the other relation is a table, then this will be a table
+  -- If this is a database that can do zero-copy cloning of tables, and the other relation is a table
+  -- without a row filter or column mask, then this will be a table
   -- Otherwise, this will be a view
 
   {% set can_clone_table = can_clone_table() %}
@@ -41,7 +42,8 @@
   {# DIVERGENCE BEGIN: relation.type is an Object in Fusion; upstream uses StrEnum.
      Use '.is_table' instead of `== 'table'`. No dbt_version guard needed: v1
      BaseRelation also exposes the `is_table` property. #}
-  {%- if other_existing_relation and other_existing_relation.is_table and can_clone_table -%}
+  {%- if other_existing_relation and other_existing_relation.is_table and can_clone_table
+        and not clone_source_has_policies(other_existing_relation) -%}
   {# DIVERGENCE END #}
 
       {%- set target_relation = this.incorporate(type='table') -%}

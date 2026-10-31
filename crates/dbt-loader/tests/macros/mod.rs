@@ -4,6 +4,7 @@ mod clickhouse;
 mod contract_wrappers;
 mod databricks_array_construct;
 mod databricks_catalog;
+mod databricks_clone;
 mod databricks_metadata;
 mod delete_insert;
 mod duckdb;

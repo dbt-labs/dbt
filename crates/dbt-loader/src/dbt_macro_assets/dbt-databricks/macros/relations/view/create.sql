@@ -1,10 +1,23 @@
+{% macro validate_view_model(sql) %}
+  {#-- A cloned view is select * over the deferred relation, which keeps enforcing its own policies --#}
+  {%- set is_clone = flags.WHICH == 'clone' -%}
+  {%- if not is_clone or model.config.materialized == 'view' -%}
+    {%- if column_mask_exists() -%}
+      {%- do exceptions.raise_compiler_error("Column masks are not supported for views.") -%}
+    {%- endif -%}
+    {%- if row_filter_exists() -%}
+      {%- do exceptions.raise_compiler_error("Row filters are not supported for views.") -%}
+    {%- endif -%}
+  {%- endif -%}
+  {%- set contract_config = config.get('contract') -%}
+  {#-- The deferred relation's columns may differ from the current contract --#}
+  {%- if contract_config and contract_config.enforced and not is_clone -%}
+    {%- do get_assert_columns_equivalent(sql) -%}
+  {%- endif -%}
+{% endmacro %}
+
 {% macro databricks__create_view_as(relation, sql) %}
-  {% if column_mask_exists() %}
-    {% do exceptions.raise_compiler_error("Column masks are not supported for views.") %}
-  {% endif %}
-  {% if row_filter_exists() %}
-    {% do exceptions.raise_compiler_error("Row filters are not supported for views.") %}
-  {% endif %}
+  {% do validate_view_model(sql) %}
   {{ log("Creating view " ~ relation) }}
   create or replace view {{ relation.render() }}
   {%- if config.persist_column_docs() -%}
@@ -17,10 +30,6 @@
     {%- endif -%}
   {%- endif %}
   {{ comment_clause() }}
-  {%- set contract_config = config.get('contract') -%}
-  {%- if contract_config and contract_config.enforced %}
-  {{ get_assert_columns_equivalent(sql) }}
-  {%- endif -%}
   {{ tblproperties_clause() }}
   as (
     {{ sql }}
