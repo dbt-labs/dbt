@@ -30,6 +30,7 @@ use std::{
 };
 
 use crate::listener::RenderingEventListenerFactory;
+use crate::render_trace::{RenderTrace, RenderTraceListener};
 use minijinja::listener::RenderingEventListener;
 
 use crate::{jinja_environment::JinjaEnv, phases::parse::sql_resource::SqlResource};
@@ -422,8 +423,42 @@ pub fn render_sql(
     listener_factory: &dyn RenderingEventListenerFactory,
     filename: &Path,
 ) -> FsResult<String> {
-    let listeners =
+    render_sql_inner(sql, env, ctx, listener_factory, filename, None)
+}
+
+/// Renders SQL and records provenance without changing its context or output.
+pub fn render_sql_with_trace(
+    sql: &str,
+    env: &JinjaEnv,
+    ctx: &BTreeMap<String, Value>,
+    listener_factory: &dyn RenderingEventListenerFactory,
+    filename: &Path,
+) -> FsResult<RenderTrace> {
+    let trace = Rc::new(RenderTraceListener::new(filename));
+    let rendered = render_sql_inner(
+        sql,
+        env,
+        ctx,
+        listener_factory,
+        filename,
+        Some(trace.clone()),
+    )?;
+    Ok(trace.finish(sql, rendered))
+}
+
+fn render_sql_inner(
+    sql: &str,
+    env: &JinjaEnv,
+    ctx: &BTreeMap<String, Value>,
+    listener_factory: &dyn RenderingEventListenerFactory,
+    filename: &Path,
+    trace: Option<Rc<RenderTraceListener>>,
+) -> FsResult<String> {
+    let mut listeners =
         listener_factory.create_listener_bundle(filename, &CodeLocation::start_of_file(), sql);
+    if let Some(trace) = trace {
+        listeners.push(trace);
+    }
     let result = env
         .env
         .render_named_str_with_tokenizer_listeners(

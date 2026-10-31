@@ -366,7 +366,14 @@ impl<'template, 'env> State<'template, 'env> {
         block: &str,
         listeners: &[Rc<dyn RenderingEventListener>],
     ) -> Result<String, Error> {
-        let value = crate::vm::Vm::new(self.env).call_block(block, self, listeners)?;
+        let value = crate::vm::Vm::new(self.env).call_block(
+            crate::vm::BlockRender {
+                name: block,
+                emitted: false,
+            },
+            self,
+            listeners,
+        )?;
         Ok(value.as_str().unwrap().to_string())
     }
 

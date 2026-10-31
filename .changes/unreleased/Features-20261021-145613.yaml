@@ -1,0 +1,7 @@
+kind: Features
+body: Add opt-in model Jinja render-provenance artifacts for external source-mapping tools.
+time: 2026-10-21T14:56:13.2956386+01:00
+custom:
+    author: ""
+    issue: ""
+    project: dbt-core

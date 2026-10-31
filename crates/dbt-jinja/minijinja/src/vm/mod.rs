@@ -79,6 +79,198 @@ pub(crate) fn prepare_blocks<'env, 'template>(
         .collect()
 }
 
+#[cfg(feature = "multi_template")]
+pub(crate) struct BlockRender<'a> {
+    pub name: &'a str,
+    pub emitted: bool,
+}
+
+#[cfg(feature = "multi_template")]
+impl<'a> BlockRender<'a> {
+    fn new(name: &'a str, out: &Output<'_>, macro_name: &Option<String>) -> Self {
+        Self {
+            name,
+            emitted: emits_to_current_output(out, macro_name),
+        }
+    }
+}
+
+#[cfg(feature = "multi_template")]
+struct IncludeRender {
+    name: Value,
+    ignore_missing: bool,
+    emitted: bool,
+}
+
+#[cfg(feature = "multi_template")]
+impl IncludeRender {
+    fn new(
+        name: Value,
+        ignore_missing: bool,
+        out: &Output<'_>,
+        macro_name: &Option<String>,
+    ) -> Self {
+        Self {
+            name,
+            ignore_missing,
+            emitted: emits_to_current_output(out, macro_name),
+        }
+    }
+}
+
+fn emits_to_current_output(out: &Output<'_>, macro_name: &Option<String>) -> bool {
+    macro_name.is_none() && !out.is_capturing()
+}
+
+#[derive(Clone, Copy)]
+enum OutputMode {
+    Final,
+    Buffered,
+    Macro,
+}
+
+// Buffered output is accounted for when appended, so rewind its shared tracker.
+struct OutputLocation {
+    location: Rc<crate::OutputTrackerLocation>,
+    checkpoint: Option<crate::OutputTrackerLocation>,
+}
+
+impl std::ops::Deref for OutputLocation {
+    type Target = crate::OutputTrackerLocation;
+
+    fn deref(&self) -> &Self::Target {
+        &self.location
+    }
+}
+
+impl Drop for OutputLocation {
+    fn drop(&mut self) {
+        if let Some(saved) = &self.checkpoint {
+            self.location.restore(saved);
+        }
+    }
+}
+
+// Share the render location with observers and the VM's value-override path.
+// Nested macro buffers must not replace the observers' top-level location.
+fn share_location(
+    tracker: &crate::OutputTracker<'_>,
+    listeners: &[Rc<dyn RenderingEventListener>],
+    mode: OutputMode,
+) -> OutputLocation {
+    let location = tracker.location.clone();
+    let checkpoint = matches!(mode, OutputMode::Buffered).then(|| location.as_ref().clone());
+    if !matches!(mode, OutputMode::Macro) {
+        for listener in listeners {
+            listener.on_output_tracker(location.clone());
+        }
+    }
+    OutputLocation {
+        location,
+        checkpoint,
+    }
+}
+
+fn explicit_return_value(
+    value: Value,
+    mode: OutputMode,
+    listeners: &[Rc<dyn RenderingEventListener>],
+) -> Value {
+    if !matches!(mode, OutputMode::Macro) {
+        for listener in listeners {
+            listener.on_output_replaced(&value);
+        }
+    }
+    value
+}
+
+fn notify_loop_boundary(
+    state: &mut State<'_, '_>,
+    listeners: &[Rc<dyn RenderingEventListener>],
+    instruction: &Instruction<'_>,
+    enabled: bool,
+) {
+    match instruction {
+        Instruction::JinjaLayoutLoopRecursionSkippedEnd(span) => {
+            notify_empty_loop_recursion(state, listeners, span, enabled)
+        }
+        Instruction::JinjaLayoutLoopRecursionStart(span) => {
+            notify_loop_recursion(state, listeners, span, enabled)
+        }
+        Instruction::JinjaLayoutLoopIterationStart(span) => {
+            notify_loop_iteration(state, listeners, span, enabled)
+        }
+        _ => unreachable!("not a loop layout boundary"),
+    }
+}
+
+fn notify_loop_iteration(
+    state: &mut State<'_, '_>,
+    listeners: &[Rc<dyn RenderingEventListener>],
+    source_span: &Span,
+    enabled: bool,
+) {
+    let is_repeated_iteration = state
+        .ctx
+        .current_loop()
+        .is_some_and(|loop_ctx| loop_ctx.object.idx.load(Ordering::Relaxed) > 0);
+    if is_repeated_iteration && enabled {
+        let source_span = span_with_current_offset(source_span, &state.ctx.current_span);
+        listeners
+            .iter()
+            .for_each(|listener| listener.on_jinja_loop_iteration_start(&source_span));
+    }
+}
+
+fn notify_loop_recursion(
+    state: &mut State<'_, '_>,
+    listeners: &[Rc<dyn RenderingEventListener>],
+    source_span: &Span,
+    enabled: bool,
+) {
+    let is_recursive_call = state
+        .ctx
+        .current_loop()
+        .is_some_and(|loop_ctx| loop_ctx.current_recursion_jump.is_some());
+    if is_recursive_call && enabled {
+        let span = span_with_current_offset(source_span, &state.ctx.current_span);
+        for listener in listeners {
+            listener.on_jinja_layout_event(crate::JinjaLayoutEventKind::BlockStart, &span);
+        }
+    }
+}
+
+fn notify_empty_loop_recursion(
+    state: &mut State<'_, '_>,
+    listeners: &[Rc<dyn RenderingEventListener>],
+    source_span: &Span,
+    enabled: bool,
+) {
+    let skipped_recursive_call = state
+        .ctx
+        .current_loop()
+        .is_some_and(|loop_ctx| loop_ctx.current_recursion_jump.is_some() && !loop_ctx.did_iterate);
+    if skipped_recursive_call && enabled {
+        let span = span_with_current_offset(source_span, &state.ctx.current_span);
+        for listener in listeners {
+            listener.on_jinja_loop_skipped_end(&span);
+        }
+    }
+}
+
+fn pop_frame_recursion(
+    state: &mut State<'_, '_>,
+    out: &mut Output<'_>,
+    stack: &mut Stack,
+) -> Option<usize> {
+    let mut loop_ctx = state.ctx.pop_frame().current_loop?;
+    let (target, end_capture) = loop_ctx.current_recursion_jump.take()?;
+    if end_capture {
+        stack.push(out.end_capture(state.auto_escape));
+    }
+    Some(target)
+}
+
 fn get_or_lookup_local<T, F>(vec: &mut [Option<T>], local_id: u8, f: F) -> Option<T>
 where
     T: Copy,
@@ -327,7 +519,7 @@ impl<'env> Vm<'env> {
             Stack::from(args),
             pc,
             listeners,
-            false,
+            OutputMode::Macro,
         )
     }
 
@@ -339,7 +531,23 @@ impl<'env> Vm<'env> {
         listeners: &[Rc<dyn RenderingEventListener>],
     ) -> Result<Value, Error> {
         // Top-level eval: use listener's location for macro span tracking
-        self.do_eval(state, Stack::default(), 0, listeners, true)
+        self.do_eval(state, Stack::default(), 0, listeners, OutputMode::Final)
+    }
+
+    fn eval_buffered_state(
+        &self,
+        state: &mut State<'_, 'env>,
+        listeners: &[Rc<dyn RenderingEventListener>],
+        emitted: bool,
+    ) -> Result<Value, Error> {
+        for listener in listeners {
+            listener.on_output_buffer_start();
+        }
+        let result = self.do_eval(state, Stack::default(), 0, listeners, OutputMode::Buffered);
+        for listener in listeners {
+            listener.on_output_buffer_end(emitted && result.is_ok());
+        }
+        result
     }
 
     /// Performs the actual evaluation, optionally with stack growth functionality.
@@ -350,18 +558,21 @@ impl<'env> Vm<'env> {
         stack: Stack,
         pc: usize,
         listeners: &[Rc<dyn RenderingEventListener>],
-        use_listener_location: bool,
+        output_mode: OutputMode,
     ) -> Result<Value, Error> {
+        for listener in listeners {
+            listener.on_template_execution_start(state.instructions.name());
+        }
         #[cfg(feature = "stacker")]
-        {
-            stacker::maybe_grow(32 * 1024, 1024 * 1024, || {
-                self.eval_impl(state, stack, pc, listeners, use_listener_location)
-            })
-        }
+        let result = stacker::maybe_grow(32 * 1024, 1024 * 1024, || {
+            self.eval_impl(state, stack, pc, listeners, output_mode)
+        });
         #[cfg(not(feature = "stacker"))]
-        {
-            self.eval_impl(state, stack, pc, listeners, use_listener_location)
+        let result = self.eval_impl(state, stack, pc, listeners, output_mode);
+        for listener in listeners {
+            listener.on_template_execution_end();
         }
+        result
     }
 
     #[inline]
@@ -372,14 +583,14 @@ impl<'env> Vm<'env> {
         mut stack: Stack,
         mut pc: usize,
         listeners: &[Rc<dyn RenderingEventListener>],
-        use_listener_location: bool,
+        output_mode: OutputMode,
     ) -> Result<Value, Error> {
         let mut rv = String::new();
 
         // Only use listener's output tracker for top-level render (macro span tracking).
         // Nested macro calls must use their own tracker to avoid sync issues.
         let mut output_tracker = 'tracker: {
-            if use_listener_location {
+            if !matches!(output_mode, OutputMode::Macro) {
                 for listener in listeners {
                     if let Some(tracker) = listener.create_output_tracker(&mut rv) {
                         break 'tracker tracker;
@@ -391,7 +602,7 @@ impl<'env> Vm<'env> {
         // Cloned before `out` borrows `output_tracker` mutably so the current
         // output position can still be read (via the shared `RefCell`s) when
         // substituting a value-override marker (see `VALUE_OVERRIDE_MARKER`).
-        let output_location = output_tracker.location.clone();
+        let output_location = share_location(&output_tracker, listeners, output_mode);
         let mut out = Output::with_write(&mut output_tracker);
 
         let initial_auto_escape = state.auto_escape;
@@ -449,6 +660,9 @@ impl<'env> Vm<'env> {
                         Some(instr) => instr,
                         None => break,
                     };
+                    listeners.iter().for_each(|listener| {
+                        listener.on_template_execution_parent(state.instructions.name());
+                    });
                     out.end_capture(AutoEscape::None);
                     pc = 0;
                     // because we swap out the instructions we also need to unload all
@@ -904,15 +1118,9 @@ impl<'env> Vm<'env> {
                         .map_err(|e| state.with_span_error(e, span))?;
                 }
                 Instruction::PopFrame => {
-                    if let Some(mut loop_ctx) = state.ctx.pop_frame().current_loop {
-                        if let Some((target, end_capture)) = loop_ctx.current_recursion_jump.take()
-                        {
-                            pc = target;
-                            if end_capture {
-                                stack.push(out.end_capture(state.auto_escape));
-                            }
-                            continue;
-                        }
+                    if let Some(target) = pop_frame_recursion(state, &mut out, &mut stack) {
+                        pc = target;
+                        continue;
                     }
                 }
                 #[cfg(feature = "macros")]
@@ -945,6 +1153,7 @@ impl<'env> Vm<'env> {
                     };
                     match next {
                         Some(item) => {
+                            l.did_iterate = true;
                             // each iteration should start with clean local vars to match Python
                             state.ctx.current_locals_mut().clear();
                             stack.push(
@@ -960,7 +1169,7 @@ impl<'env> Vm<'env> {
                 }
                 Instruction::PushDidNotIterate => {
                     let l = state.ctx.current_loop().unwrap();
-                    stack.push(Value::from(l.object.idx.load(Ordering::Relaxed) == 0));
+                    stack.push(Value::from(!l.did_iterate));
                 }
                 Instruction::Jump(jump_target, _) => {
                     pc = *jump_target;
@@ -1036,8 +1245,9 @@ impl<'env> Vm<'env> {
                 #[cfg(feature = "multi_template")]
                 Instruction::CallBlock(name) => {
                     if parent_instructions.is_none() && !out.is_discarding() {
+                        let block = BlockRender::new(name, &out, &current_macro_name);
                         out.write_str(
-                            call_wrapper(listeners, || self.call_block(name, state, listeners))?
+                            call_wrapper(listeners, || self.call_block(block, state, listeners))?
                                 .as_str()
                                 .unwrap_or_default(),
                         )?;
@@ -1166,7 +1376,7 @@ impl<'env> Vm<'env> {
                                 this_span,
                             ));
                         }
-                        self.perform_super(state, listeners)
+                        self.perform_super(state, listeners, false)
                             .map_err(|e| state.with_span_error(e, this_span))?
                     // loop is a special name which when called recurses the current loop.
                     } else if *name == "loop" {
@@ -1428,10 +1638,14 @@ impl<'env> Vm<'env> {
                 }
                 Instruction::FastSuper(span) => {
                     out.write_str(
-                        self.perform_super(state, listeners)
-                            .map_err(|e| state.with_span_error(e, span))?
-                            .as_str()
-                            .unwrap_or_default(),
+                        self.perform_super(
+                            state,
+                            listeners,
+                            emits_to_current_output(&out, &current_macro_name),
+                        )
+                        .map_err(|e| state.with_span_error(e, span))?
+                        .as_str()
+                        .unwrap_or_default(),
                     )?;
                 }
                 Instruction::FastRecurse(span) => {
@@ -1481,8 +1695,9 @@ impl<'env> Vm<'env> {
                 #[cfg(feature = "multi_template")]
                 Instruction::Include(ignore_missing, span) => {
                     let a = stack.pop();
+                    let include = IncludeRender::new(a, *ignore_missing, &out, &current_macro_name);
                     out.write_str(
-                        self.perform_include(a, state, *ignore_missing, listeners)
+                        self.perform_include(include, state, listeners)
                             .map_err(|e| state.with_span_error(e, span))?
                             .as_str(),
                     )?;
@@ -1591,7 +1806,7 @@ impl<'env> Vm<'env> {
                     let did_not_iterate = state
                         .ctx
                         .current_loop()
-                        .is_some_and(|loop_ctx| loop_ctx.object.idx.load(Ordering::Relaxed) == 0);
+                        .is_some_and(|loop_ctx| !loop_ctx.did_iterate);
                     if did_not_iterate && current_macro_name.is_none() {
                         let source_span =
                             span_with_current_offset(source_span, &state.ctx.current_span);
@@ -1600,18 +1815,10 @@ impl<'env> Vm<'env> {
                             .for_each(|listener| listener.on_jinja_loop_skipped_end(&source_span));
                     }
                 }
-                Instruction::JinjaLayoutLoopIterationStart(source_span) => {
-                    let is_repeated_iteration = state
-                        .ctx
-                        .current_loop()
-                        .is_some_and(|loop_ctx| loop_ctx.object.idx.load(Ordering::Relaxed) > 0);
-                    if is_repeated_iteration && current_macro_name.is_none() {
-                        let source_span =
-                            span_with_current_offset(source_span, &state.ctx.current_span);
-                        listeners.iter().for_each(|listener| {
-                            listener.on_jinja_loop_iteration_start(&source_span)
-                        });
-                    }
+                Instruction::JinjaLayoutLoopRecursionSkippedEnd(_)
+                | Instruction::JinjaLayoutLoopRecursionStart(_)
+                | Instruction::JinjaLayoutLoopIterationStart(_) => {
+                    notify_loop_boundary(state, listeners, instr, current_macro_name.is_none());
                 }
                 Instruction::MacroName(name, _) => {
                     current_macro_name = Some((*name).to_string());
@@ -1631,24 +1838,23 @@ impl<'env> Vm<'env> {
 
         // dbg!(&rv);
         if is_caller_return {
-            let rv = stack.pop();
+            let rv = explicit_return_value(stack.pop(), output_mode, listeners);
             Ok(Value::from_object(CallerReturn::new(rv)))
         } else if is_explicit_return {
-            Ok(stack.pop())
+            Ok(explicit_return_value(stack.pop(), output_mode, listeners))
         } else {
             Ok(Value::from(rv))
         }
     }
 
     #[cfg(feature = "multi_template")]
-    #[allow(clippy::too_many_arguments)]
     fn perform_include(
         &self,
-        name: Value,
+        include: IncludeRender,
         state: &mut State<'_, 'env>,
-        ignore_missing: bool,
         listeners: &[Rc<dyn RenderingEventListener>],
     ) -> Result<String, Error> {
+        let name = include.name;
         let obj = name.as_object();
         let choices = obj
             .as_ref()
@@ -1690,12 +1896,12 @@ impl<'env> Vm<'env> {
             #[cfg(feature = "macros")]
             {
                 let old_closure = state.ctx.take_closure();
-                rv = self.eval_state(state, listeners);
+                rv = self.eval_buffered_state(state, listeners, include.emitted);
                 state.ctx.reset_closure(old_closure);
             }
             #[cfg(not(feature = "macros"))]
             {
-                rv = self.eval_state(state, out);
+                rv = self.eval_buffered_state(state, listeners, include.emitted);
             }
             state.ctx.decr_depth(INCLUDE_RECURSION_COST);
             state.loaded_templates = old_loaded_templates;
@@ -1711,7 +1917,7 @@ impl<'env> Vm<'env> {
             }));
             return Ok(rv.as_str().unwrap().to_string());
         }
-        if !templates_tried.is_empty() && !ignore_missing {
+        if !templates_tried.is_empty() && !include.ignore_missing {
             Err(Error::new(
                 ErrorKind::TemplateNotFound,
                 if templates_tried.len() == 1 {
@@ -1735,6 +1941,7 @@ impl<'env> Vm<'env> {
         &self,
         state: &mut State<'_, 'env>,
         listeners: &[Rc<dyn RenderingEventListener>],
+        emitted: bool,
     ) -> Result<Value, Error> {
         let name = ok!(state.current_block.ok_or_else(|| {
             Error::new(ErrorKind::InvalidOperation, "cannot super outside of block")
@@ -1750,7 +1957,7 @@ impl<'env> Vm<'env> {
 
         let old_instructions = mem::replace(&mut state.instructions, block_stack.instructions());
         ok!(state.ctx.push_frame(Frame::default()));
-        let rv = self.eval_state(state, listeners);
+        let rv = self.eval_buffered_state(state, listeners, emitted);
         state.ctx.pop_frame();
         state.instructions = old_instructions;
         state.blocks.get_mut(name).unwrap().pop();
@@ -1813,16 +2020,17 @@ impl<'env> Vm<'env> {
     #[cfg(feature = "multi_template")]
     pub(crate) fn call_block(
         &self,
-        name: &str,
+        block: BlockRender<'_>,
         state: &mut State<'_, 'env>,
         listeners: &[Rc<dyn RenderingEventListener>],
     ) -> Result<Value, Error> {
+        let name = block.name;
         if let Some((name, block_stack)) = state.blocks.get_key_value(name) {
             let old_block = state.current_block.replace(name);
             let old_instructions =
                 mem::replace(&mut state.instructions, block_stack.instructions());
             state.ctx.push_frame(Frame::default())?;
-            let rv = self.eval_state(state, listeners);
+            let rv = self.eval_buffered_state(state, listeners, block.emitted);
             state.ctx.pop_frame();
             state.instructions = old_instructions;
             state.current_block = old_block;
@@ -1882,6 +2090,7 @@ impl<'env> Vm<'env> {
         let with_loop_var = flags & LOOP_FLAG_WITH_LOOP_VAR != 0;
         ok!(state.ctx.push_frame(Frame {
             current_loop: Some(LoopState {
+                did_iterate: false,
                 with_loop_var,
                 recurse_jump_target: if recursive { Some(pc) } else { None },
                 current_recursion_jump,

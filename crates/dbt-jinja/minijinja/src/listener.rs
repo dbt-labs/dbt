@@ -3,10 +3,11 @@
 
 use std::fmt::Write;
 use std::path::Path;
+use std::rc::Rc;
 
 use crate::compiler::tokens::Token;
 use crate::layout::JinjaLayoutEventKind;
-use crate::output_tracker::OutputTracker;
+use crate::output_tracker::{OutputTracker, OutputTrackerLocation};
 use crate::value::Value;
 use crate::{machinery::Span, CodeLocation};
 
@@ -24,6 +25,37 @@ pub trait RenderingEventListener: std::fmt::Debug {
     fn create_output_tracker<'a>(&self, _w: &'a mut (dyn Write + 'a)) -> Option<OutputTracker<'a>> {
         None
     }
+
+    /// Observes the tracker selected for the active rendered output.
+    ///
+    /// A listener can retain this location without replacing another listener's
+    /// tracker. Named-block buffers notify within output-buffer start/end
+    /// callbacks; nested macro output buffers do not notify.
+    fn on_output_tracker(&self, _location: Rc<OutputTrackerLocation>) {}
+
+    /// Enter an evaluation of the named template, including nested evaluations.
+    fn on_template_execution_start(&self, _name: &str) {}
+
+    /// Switch to a parent template within the current evaluation (inheritance).
+    fn on_template_execution_parent(&self, _name: &str) {}
+
+    /// Leave an evaluation, on both success and error, restoring its caller.
+    fn on_template_execution_end(&self) {}
+
+    /// An explicit return replaces the active evaluation's accumulated output.
+    /// Observers must discard provenance for that buffer, even on success.
+    fn on_output_replaced(&self, _value: &Value) {}
+
+    /// Begin a nested render into a temporary output buffer.
+    fn on_output_buffer_start(&self) {}
+
+    /// Finish a temporary render and restore the enclosing output tracker.
+    ///
+    /// If emitted is true, the buffer will be appended directly to the
+    /// enclosing output. Observers can then rebase its events to that output.
+    /// Otherwise the value is captured, transformed, discarded, or failed and
+    /// its intermediate events must not describe final-output literals.
+    fn on_output_buffer_end(&self, _emitted: bool) {}
 
     /// Called when a macro start is encountered.
     /// The expanded location can be obtained from the output_tracker_location if needed.

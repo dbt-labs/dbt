@@ -21,10 +21,41 @@ dbt is written in Rust. Please make sure that you have the [rust toolchain insta
 2. Install the testing framework used for all tests & testbench configuration [Nextest](https://nexte.st/docs/installation/pre-built-binaries/)
 3. Clone the repository `git clone https://github.com/dbt-labs/dbt.git`
 4. `cd dbt`
-5. `cargo build` for a debug build. `cargo build --release` for a release build
+5. `cargo build -p dbt-sa-cli` for a debug CLI.
+   `cargo build -p dbt-sa-cli --release` for a release CLI.
 
 *There are no virtual environments needed!*
 
+
+#### Protocol Buffers compiler
+
+Install the [Protocol Buffers compiler, protoc](https://protobuf.dev/installation/)
+before building. The dbt-state build script uses prost-build to compile its
+message definitions, so Rust alone is not sufficient. Check the installation:
+
+```sh
+protoc --version
+```
+
+Put the compiler on PATH, or set PROTOC to its absolute executable path.
+For a nonstandard installation, PROTOC_INCLUDE can point to the accompanying
+include directory. For example, the official protoc archives contain both
+a bin directory and an include directory. Keep both when extracting one.
+
+#### Building the Python distribution
+
+The Python distribution uses the same Rust engine. With Python 3.10 or later
+and the tools above installed, build a wheel from the repository root:
+
+```sh
+python -m pip install maturin
+python -m maturin build --manifest-path crates/dbt-sa-python/Cargo.toml --release --out dist
+```
+
+Install the platform-specific wheel from dist into the environment used by
+your consumer. Rust is required to build this wheel, not to install it.
+Build times depend on the machine and profile. LTO can be disabled for a
+development release build with --config profile.release.lto=false.
 
 ## Making a Change to dbt
 After you're done making your code change, make sure:

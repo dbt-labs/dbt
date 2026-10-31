@@ -6,7 +6,7 @@ input_file: minijinja/tests/lexer-inputs/lstrip-blocks-raw.txt
 TemplateData("<ul>\n")
   "<ul>\n"
 TemplateData("    <li>{{ item }}</li>\n")
-  "\n    <li>{{ item }}</li>\n  "
+  "    <li>{{ item }}</li>\n"
 TemplateData("</ul>")
   "</ul>"
 

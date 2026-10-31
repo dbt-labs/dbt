@@ -1,0 +1,7 @@
+kind: Fixes
+body: Preserve render trace provenance through recursive loop calls, includes, and super() output.
+time: 2026-10-31T00:25:19.3601838Z
+custom:
+    author: alanmcruickshank
+    issue: ""
+    project: dbt-core

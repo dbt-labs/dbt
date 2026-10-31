@@ -4,6 +4,9 @@
 /// Module for rendering event listener functionality
 pub mod listener;
 
+/// Execution provenance for an actual Jinja render.
+pub mod render_trace;
+
 /// Module for formatting Jinja macro arguments
 pub mod jinja_arg_format;
 

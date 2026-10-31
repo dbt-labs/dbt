@@ -1,0 +1,7 @@
+kind: Fixes
+body: Correct render trace provenance for template inheritance, loop-control jumps, and explicit return values.
+time: 2026-10-30T21:11:11.592602Z
+custom:
+    author: alanmcruickshank
+    issue: ""
+    project: dbt-core
