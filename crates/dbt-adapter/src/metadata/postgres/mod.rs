@@ -2,9 +2,9 @@ use crate::AdapterEngine;
 use crate::adapter::adapter_impl::AdapterImpl;
 use crate::connection::{AdapterConnectionFactory, ConnectionGuard};
 use crate::errors::{AdapterError, AdapterErrorKind};
-use crate::sql_types::make_arrow_field_v2;
+use crate::sql_types::{TypeOps, make_arrow_field_v2};
 use crate::{AdapterResult, errors::AsyncAdapterResult, metadata::*, record_batch::RecordBatchExt};
-use arrow_schema::Schema;
+use arrow_schema::{Field, Schema};
 use dbt_adbc::QueryCtx;
 use dbt_common::cancellation::{Cancellable, CancellationToken};
 
@@ -184,27 +184,7 @@ impl MetadataAdapter for PostgresMetadataAdapter {
             let (_, table) = adapter.query(&ctx, &mut *conn, &sql, None, token_clone.clone())?;
             let batch = table.original_record_batch();
 
-            let column_names = batch.column_values::<StringArray>("column_name")?;
-            let data_types = batch.column_values::<StringArray>("data_type")?;
-            let is_nullables = batch.column_values::<BooleanArray>("is_nullable")?;
-            let comments = batch.column_values::<StringArray>("remarks")?;
-
-            let fields = (0..batch.num_rows())
-                .map(|i| {
-                    let comment = match comments.value(i) {
-                        "" => None,
-                        c => Some(c.to_string()),
-                    };
-                    make_arrow_field_v2(
-                        adapter.engine().type_ops().as_ref(),
-                        column_names.value(i).to_string(),
-                        data_types.value(i),
-                        Some(is_nullables.value(i)),
-                        comment,
-                    )
-                })
-                .collect::<AdapterResult<Vec<_>>>()?;
-
+            let fields = fields_from_columns(&batch, adapter.engine().type_ops().as_ref())?;
             if fields.is_empty() {
                 return Err(AdapterError::new(
                     AdapterErrorKind::UnexpectedResult,
@@ -271,6 +251,30 @@ impl MetadataAdapter for PostgresMetadataAdapter {
     }
 }
 
+/// Arrow fields from the rows of [get_columns_sql], each keeping the type Postgres reported.
+fn fields_from_columns(batch: &RecordBatch, type_ops: &dyn TypeOps) -> AdapterResult<Vec<Field>> {
+    let column_names = batch.column_values::<StringArray>("column_name")?;
+    let data_types = batch.column_values::<StringArray>("data_type")?;
+    let is_nullables = batch.column_values::<BooleanArray>("is_nullable")?;
+    let comments = batch.column_values::<StringArray>("remarks")?;
+
+    (0..batch.num_rows())
+        .map(|i| {
+            let comment = match comments.value(i) {
+                "" => None,
+                c => Some(c.to_string()),
+            };
+            make_arrow_field_v2(
+                type_ops,
+                column_names.value(i).to_string(),
+                data_types.value(i),
+                Some(is_nullables.value(i)),
+                comment,
+            )
+        })
+        .collect()
+}
+
 /// The columns of one table or view, in order, with their types as Postgres writes them
 /// (`format_type`), from the catalog rather than `information_schema`, which shows only the
 /// relations the user holds privileges on and spells user-defined types as `USER-DEFINED`.
@@ -297,7 +301,76 @@ order by a.attnum",
 
 #[cfg(test)]
 mod tests {
-    use super::get_columns_sql;
+    use super::{fields_from_columns, get_columns_sql};
+    use crate::metadata::ARROW_FIELD_COMMENT_METADATA_KEY;
+    use crate::sql_types::DefaultTypeOps;
+    use arrow_array::{BooleanArray, RecordBatch, StringArray};
+    use dbt_adapter_core::AdapterType;
+    use dbt_adapter_sql::types::metadata_sql_type_key;
+    use std::sync::Arc;
+
+    fn columns(rows: &[(&str, &str, bool, &str)]) -> RecordBatch {
+        RecordBatch::try_from_iter([
+            (
+                "column_name",
+                Arc::new(StringArray::from_iter_values(rows.iter().map(|r| r.0))) as _,
+            ),
+            (
+                "data_type",
+                Arc::new(StringArray::from_iter_values(rows.iter().map(|r| r.1))) as _,
+            ),
+            (
+                "is_nullable",
+                Arc::new(BooleanArray::from_iter(rows.iter().map(|r| Some(r.2)))) as _,
+            ),
+            (
+                "remarks",
+                Arc::new(StringArray::from_iter_values(rows.iter().map(|r| r.3))) as _,
+            ),
+        ])
+        .unwrap()
+    }
+
+    #[test]
+    fn fields_keep_name_order_nullability_and_comment() {
+        let batch = columns(&[
+            ("id", "bigint", false, "The key"),
+            ("name", "text", true, ""),
+        ]);
+        let fields =
+            fields_from_columns(&batch, &DefaultTypeOps::new(AdapterType::Postgres)).unwrap();
+        let summary: Vec<_> = fields
+            .iter()
+            .map(|f| {
+                let comment = f.metadata().get(ARROW_FIELD_COMMENT_METADATA_KEY);
+                (
+                    f.name().as_str(),
+                    f.is_nullable(),
+                    comment.map(String::as_str),
+                )
+            })
+            .collect();
+        assert_eq!(
+            summary,
+            [("id", false, Some("The key")), ("name", true, None)]
+        );
+    }
+
+    #[test]
+    fn fields_keep_the_type_postgres_reported() {
+        let batch = columns(&[
+            ("lat", "double precision", true, ""),
+            ("at", "timestamp with time zone", true, ""),
+        ]);
+        let fields =
+            fields_from_columns(&batch, &DefaultTypeOps::new(AdapterType::Postgres)).unwrap();
+        let key = metadata_sql_type_key(AdapterType::Postgres);
+        let types: Vec<_> = fields
+            .iter()
+            .map(|f| f.metadata().get(key).unwrap().as_str())
+            .collect();
+        assert_eq!(types, ["double precision", "timestamp with time zone"]);
+    }
 
     #[test]
     fn get_columns_sql_filters_on_the_relation() {
