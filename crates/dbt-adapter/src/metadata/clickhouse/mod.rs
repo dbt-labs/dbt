@@ -6,6 +6,7 @@ use crate::query_ctx::{node_id_from_state, query_ctx_from_state};
 use crate::record_batch::RecordBatchExt;
 use crate::relation::Relation;
 use crate::sql_types::{TypeOps, make_arrow_field_v2};
+use crate::value::columns_to_value;
 use crate::{AdapterResult, errors::AsyncAdapterResult, metadata::*};
 use arrow_schema::Schema;
 
@@ -1357,12 +1358,7 @@ pub(crate) fn column_changes_value(
     );
     changes.insert(
         "columns_to_add".to_string(),
-        Value::from(
-            columns_to_add
-                .into_iter()
-                .map(Arc::unwrap_or_clone)
-                .collect::<Vec<_>>(),
-        ),
+        columns_to_value(columns_to_add),
     );
     changes.insert(
         "columns_to_drop".to_string(),
@@ -1375,12 +1371,7 @@ pub(crate) fn column_changes_value(
     );
     changes.insert(
         "columns_to_modify".to_string(),
-        Value::from(
-            columns_to_modify
-                .into_iter()
-                .map(Arc::unwrap_or_clone)
-                .collect::<Vec<_>>(),
-        ),
+        columns_to_value(columns_to_modify),
     );
     Ok(Value::from(changes))
 }

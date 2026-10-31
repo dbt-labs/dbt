@@ -2410,10 +2410,10 @@ impl AdapterImpl {
             .into_iter()
             .map(|col| {
                 let comment = col.comment.filter(|s| !s.is_empty());
-                let column =
-                    Column::new(Databricks, col.name, col.type_.sql_type(), None, None, None)
-                        .with_comment(comment);
-                Arc::new(column)
+                let mut column =
+                    Column::new_boxed(Databricks, col.name, col.type_.sql_type(), None, None, None);
+                column.comment = comment;
+                Arc::from(column)
             })
             .collect();
         Some(Ok(columns))
@@ -3873,7 +3873,7 @@ impl AdapterImpl {
         for field in fields {
             // XXX: consider changing build() to return a Box<Column>
             let column = builder.build(field, type_formatter.as_ref())?;
-            columns.push(Arc::new(column));
+            columns.push(Arc::from(column));
         }
         Ok(columns)
     }
@@ -3906,7 +3906,7 @@ impl AdapterImpl {
                 let mut columns = Vec::<Arc<Column>>::with_capacity(fields.len());
                 for field in fields {
                     let column = builder.build(field, type_ops)?;
-                    columns.push(Arc::new(column));
+                    columns.push(Arc::from(column));
                 }
 
                 let flattened_columns = columns
@@ -4281,7 +4281,7 @@ impl AdapterImpl {
     ) -> AdapterResult<Value> {
         match self.adapter_type() {
             Bigquery => {
-                let result = Column::vec_from_jinja_value(Bigquery, &columns)?;
+                let mut result = Column::vec_from_jinja_value(Bigquery, &columns)?;
 
                 if result
                     .iter()
@@ -4290,10 +4290,6 @@ impl AdapterImpl {
                     return Ok(columns);
                 }
 
-                let mut result = result
-                    .into_iter()
-                    .map(Arc::unwrap_or_clone)
-                    .collect::<Vec<Column>>();
                 let column = Column::new_bigquery(
                     partition_config
                         .insertable_time_partitioning_field()?
@@ -4305,9 +4301,9 @@ impl AdapterImpl {
                     // TODO(serramatutu): proper mode
                     BigqueryColumnMode::Nullable,
                 );
-                result.push(column);
+                result.push(column.into());
 
-                Ok(Value::from(result))
+                Ok(columns_to_value(result))
             }
             Postgres | Snowflake | Databricks | Redshift | Salesforce | Spark | DuckDB
             | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino

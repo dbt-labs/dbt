@@ -5,7 +5,6 @@
 use dbt_common::ErrorCode;
 
 mod macro_exec;
-mod value;
 
 pub mod adapter;
 pub mod cache;
@@ -33,6 +32,7 @@ pub mod sql;
 pub mod sql_types;
 pub use dbt_adapter_engine::statement;
 pub mod stmt_splitter;
+pub mod value;
 pub mod warn_once;
 
 /// Cross-Version Record/Replay System

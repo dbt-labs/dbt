@@ -420,7 +420,7 @@ pub struct Column {
     ///
     /// This is needed to support upstream-style persist-docs behavior, including clearing existing
     /// comments by setting them to the empty string when the model column has no description.
-    comment: Option<String>,
+    pub comment: Option<String>,
 
     /// dbt Core's degenerate representation of dtype, derived from _original_sql_str
     core_dtype: String,
@@ -609,6 +609,26 @@ impl Column {
         }
     }
 
+    #[cold]
+    pub fn new_boxed(
+        adapter_type: AdapterType,
+        name: String,
+        original_sql_str: String,
+        char_size: Option<u32>,
+        numeric_precision: Option<u64>,
+        numeric_scale: Option<u64>,
+    ) -> Box<Self> {
+        let column = Self::new(
+            adapter_type,
+            name,
+            original_sql_str,
+            char_size,
+            numeric_precision,
+            numeric_scale,
+        );
+        Box::new(column)
+    }
+
     /// Construct based on a value parsed from dbt Core Jinja
     fn from_dbt_core(adapter_type: AdapterType, col: DbtCoreBaseColumn) -> Self {
         Self {
@@ -663,12 +683,13 @@ impl Column {
     /// Create a new BigQuery column
     ///
     /// `mode` ias a field is seen in BQ (https://cloud.google.com/bigquery/docs/schemas#modes)
+    #[cold]
     pub fn new_bigquery(
         name: String,
         original_sql_str: String,
         fields: impl IntoIterator<Item = Arc<Column>>,
         mode: BigqueryColumnMode,
-    ) -> Self {
+    ) -> Box<Self> {
         use BigqueryColumnMode::*;
         let (nullable, repeated) = match mode {
             Nullable => (Some(true), None),
@@ -679,7 +700,7 @@ impl Column {
             Self::make_degenerate_types(AdapterType::Bigquery, &original_sql_str);
         // TODO: change _fields to be Vec<Arc<Column>> to avoid this transformation
         let fields = fields.into_iter().map(Arc::unwrap_or_clone).collect();
-        Self {
+        let column = Self {
             _adapter_type: AdapterType::Bigquery,
             _nullable: nullable,
             _repeated: repeated,
@@ -693,7 +714,8 @@ impl Column {
             numeric_precision: None,
             numeric_scale: None,
             collation: None,
-        }
+        };
+        Box::new(column)
     }
 
     pub fn as_static(&self) -> ColumnStatic {
@@ -1205,9 +1227,8 @@ impl Column {
         };
 
         if self._fields.is_empty() {
-            // XXX: change new_bigquery to return a Box<Self>
             let column = Self::new_bigquery(new_prefix, original_sql_str, [], self.mode());
-            Vec::from([Arc::new(column)])
+            Vec::from([Arc::from(column)])
         } else {
             let mut new_fields = Vec::new();
             for f in &self._fields {
@@ -1596,12 +1617,12 @@ mod tests {
 
     #[test]
     fn test_bq_flatten() {
-        let simple = Arc::new(Column::new_bigquery(
+        let simple = Column::new_bigquery(
             "col".to_string(),
             "NUMBER".to_string(),
             [],
             BigqueryColumnMode::Nullable,
-        ));
+        );
         assert!(
             simple
                 .flatten()
@@ -1621,7 +1642,7 @@ mod tests {
         let nested = Column::new_bigquery(
             "parent".to_string(),
             "STRUCT<NUMBER col>".to_string(),
-            [simple],
+            [simple.into()],
             BigqueryColumnMode::Nullable,
         );
         assert!(
@@ -1643,7 +1664,7 @@ mod tests {
         let deeply_nested = Column::new_bigquery(
             "grandpa".to_string(),
             "STRUCT<NUMBER col>".to_string(),
-            [Arc::new(nested)],
+            [Arc::from(nested)],
             BigqueryColumnMode::Nullable,
         );
         assert!(
@@ -1666,13 +1687,13 @@ mod tests {
             "parent".to_string(),
             "STRUCT<NUMBER a, BOOLEAN b>".to_string(),
             [
-                Arc::new(Column::new_bigquery(
+                Arc::from(Column::new_bigquery(
                     "a".to_string(),
                     "NUMBER".to_string(),
                     [],
                     BigqueryColumnMode::Nullable,
                 )),
-                Arc::new(Column::new_bigquery(
+                Arc::from(Column::new_bigquery(
                     "b".to_string(),
                     "BOOLEAN".to_string(),
                     [],
@@ -1719,13 +1740,13 @@ mod tests {
             "coords".to_string(),
             "STRUCT".to_string(),
             [
-                Arc::new(Column::new_bigquery(
+                Arc::from(Column::new_bigquery(
                     "lat".to_string(),
                     "FLOAT64".to_string(),
                     [],
                     BigqueryColumnMode::Nullable,
                 )),
-                Arc::new(Column::new_bigquery(
+                Arc::from(Column::new_bigquery(
                     "lon".to_string(),
                     "FLOAT64".to_string(),
                     [],
@@ -1738,7 +1759,7 @@ mod tests {
         let location = Column::new_bigquery(
             "location_entity".to_string(),
             "STRUCT".to_string(),
-            [Arc::new(city), Arc::new(coords)],
+            [Arc::from(city), Arc::from(coords)],
             BigqueryColumnMode::Nullable,
         );
 
@@ -1760,7 +1781,7 @@ mod tests {
         let content = Column::new_bigquery(
             "content_entity".to_string(),
             "STRUCT".to_string(),
-            [Arc::new(authors)],
+            [Arc::from(authors)],
             BigqueryColumnMode::Nullable,
         );
 

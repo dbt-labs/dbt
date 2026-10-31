@@ -5238,7 +5238,7 @@ mod tests {
         for (precision, scale) in [(11, 4), (38, 0), (38, 37), (4, 4)] {
             let data_type = DataType::Decimal128(precision, scale);
             let field = Arc::new(Field::new("AMOUNT", data_type.clone(), true));
-            let column = Arc::new(builder.build(&field, &type_ops).unwrap());
+            let column: Arc<Column> = Arc::from(builder.build(&field, &type_ops).unwrap());
             assert_eq!(column.original_sql_str(), Some("NUMBER"));
             assert_eq!(column.data_type(), format!("NUMBER({precision},{scale})"));
 
