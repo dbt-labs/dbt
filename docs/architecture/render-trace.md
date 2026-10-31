@@ -135,7 +135,7 @@ the byte offsets describe those exact input bytes.
 ## Regression coverage
 
 The [Python artifact regression matrix](../../crates/dbt-sa-python/tests/integration/test_render_trace_regressions.py)
-compiles 28 independent examples both normally and with trace export enabled.
+compiles 31 independent examples both normally and with trace export enabled.
 Every case checks identical compiled SQL, exact input/output, invocation/model
 identity, valid UTF-8 boundaries, literal equality, correctly nested layout
 closures, and complete rendered-output coverage. Individual cases also pin
@@ -146,11 +146,15 @@ The cases cover trimmed raw blocks, Unicode/CRLF, if/elif/else paths, nested
 conditionals, empty/single/multiple-iteration for/else, partially and entirely
 filtered loops, genuine empty-output iterations, buffered/captured/transformed
 blocks, break/continue through nested scopes, first-item breaks, top-level and
-block returns, empty returned values, and ordinary macro returns.
+block returns, empty returned values, ordinary macro returns, and recursive
+loops with direct/transformed output and empty for/else child calls.
 
 Renderer unit tests additionally cover the short `PCQ` inheritance example,
 multiple inheritance levels with child overrides, both tracker configurations,
 observer-only explicit returns, and restoration after buffered-render errors.
+Additional matrices check direct/nested/empty includes, ignored missing files,
+returned include values, captures/imports, and direct/filtered/captured/repeated
+`super()` calls using both default and observer-only trackers.
 The shared unit-test assertions check ranges, literal equality, balanced layout
 and output coverage across the existing renderer regression examples.
 
@@ -163,11 +167,12 @@ The executable JSON fixture above remains the complete format example.
 
 Checked on Windows x86-64, Python 3.13.5 and Rust stable 1.98.1:
 
-- All 177 `dbt-jinja-utils` library tests passed.
-- All 31 Python exporter integrations passed: the 28-case regression matrix
+- All 180 `dbt-jinja-utils` and 152 MiniJinja library tests passed, along with
+  82 compiler/render integration tests.
+- All 34 Python exporter integrations passed: the 31-case regression matrix
   and the three existing project/artifact tests. These use the ABI3 runtime
-  built from `b57b0f671`; this test expansion changes no production renderer code.
-- All 106 SQLFluff consumer and plugin-generation tests passed against that
+  rebuilt from `3116b9498`, including the latest recursion/include/super fixes.
+- All 112 SQLFluff consumer and plugin-generation tests passed against that
   runtime, including real CLI source fixes and parallel-worker integration.
 - The complete golden JSON example comparison passed.
 - Rust formatting, Python test lint/format and diff whitespace checks passed.
