@@ -925,6 +925,9 @@ impl CachedDataTestStatus {
         TestReportedResult {
             failures: self.failures,
             status: self.status,
+            verdict: self.status,
+            error_if: None,
+            warn_if: None,
             diff: None,
             execution_result: None,
         }
