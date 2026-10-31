@@ -60,6 +60,22 @@ use self::commands::{CommandParser, ExtensionCommandParser};
 pub const DEFAULT_LIMIT: &str = "10";
 pub const DEFAULT_FORMAT: DisplayFormat = DisplayFormat::Table;
 
+/// Parser for `--exclude-resource-type` values.
+///
+/// `all` and `default` describe a selection, so excluding by them is
+/// meaningless. Rejecting them while parsing makes both fail loudly with the
+/// same error, instead of silently excluding nothing.
+fn exclude_resource_type_parser() -> impl TypedValueParser<Value = ClapResourceType> {
+    let values = ClapResourceType::value_variants()
+        .iter()
+        .filter(|resource_type| !resource_type.is_unsupported_exclude())
+        .filter_map(|resource_type| resource_type.to_possible_value());
+    clap::builder::PossibleValuesParser::new(values).map(|value| {
+        <ClapResourceType as ValueEnum>::from_str(&value, true)
+            .expect("value comes from ClapResourceType::to_possible_value")
+    })
+}
+
 /// `--help` heading labels used to group flags into sections.
 ///
 /// Defined here as constants so a heading is named in exactly one place and
@@ -710,7 +726,14 @@ pub struct CompileArgs {
     pub resource_type: Option<Vec<ClapResourceType>>,
 
     /// Exclude nodes of a specific type;
-    #[arg(long, num_args(1..), value_delimiter = ' ', aliases = ["exclude-resource-types"], env = "DBT_EXCLUDE_RESOURCE_TYPES")]
+    #[arg(
+        long,
+        num_args(1..),
+        value_delimiter = ' ',
+        value_parser = exclude_resource_type_parser(),
+        aliases = ["exclude-resource-types"],
+        env = "DBT_EXCLUDE_RESOURCE_TYPES"
+    )]
     pub exclude_resource_type: Option<Vec<ClapResourceType>>,
 
     /// Limiting number of shown rows. Run with --limit -1 to remove limit [default: 10]
@@ -757,7 +780,7 @@ impl CompileArgs {
         eval_args.full_refresh = self.full_refresh;
         eval_args.format = self.output.unwrap_or(DEFAULT_FORMAT);
         if let Some(resource_type) = &self.resource_type {
-            eval_args.resource_types = resource_type.clone();
+            eval_args.resource_types = ClapResourceType::resolve(resource_type, &[]);
         }
         if let Some(exclude_resource_type) = &self.exclude_resource_type {
             eval_args.exclude_resource_types = exclude_resource_type.clone();
@@ -916,7 +939,14 @@ pub struct FreshnessArgs {
     pub resource_type: Option<Vec<ClapResourceType>>,
 
     /// Exclude nodes of a specific type;
-    #[arg(long, num_args(1..), value_delimiter = ' ', aliases = ["exclude-resource-types"], env = "DBT_EXCLUDE_RESOURCE_TYPES")]
+    #[arg(
+        long,
+        num_args(1..),
+        value_delimiter = ' ',
+        value_parser = exclude_resource_type_parser(),
+        aliases = ["exclude-resource-types"],
+        env = "DBT_EXCLUDE_RESOURCE_TYPES"
+    )]
     pub exclude_resource_type: Option<Vec<ClapResourceType>>,
 }
 
@@ -925,7 +955,7 @@ impl FreshnessArgs {
         let mut eval_args = self.common_args.to_eval_args(arg, in_dir, out_dir);
         eval_args.phase = Phases::Freshness;
         if let Some(resource_type) = &self.resource_type {
-            eval_args.resource_types = resource_type.clone();
+            eval_args.resource_types = ClapResourceType::resolve(resource_type, &[]);
         }
         if let Some(exclude_resource_type) = &self.exclude_resource_type {
             eval_args.exclude_resource_types = exclude_resource_type.clone();
@@ -962,7 +992,14 @@ pub struct ShowArgs {
     pub resource_type: Option<Vec<ClapResourceType>>,
 
     /// Exclude nodes of a specific type;
-    #[arg(long, num_args(1..), value_delimiter = ' ', aliases = ["exclude-resource-types"], env = "DBT_EXCLUDE_RESOURCE_TYPES")]
+    #[arg(
+        long,
+        num_args(1..),
+        value_delimiter = ' ',
+        value_parser = exclude_resource_type_parser(),
+        aliases = ["exclude-resource-types"],
+        env = "DBT_EXCLUDE_RESOURCE_TYPES"
+    )]
     pub exclude_resource_type: Option<Vec<ClapResourceType>>,
 
     /// Limiting number of shown rows. Run with --limit -1 to remove limit [default: 10]
@@ -1014,7 +1051,17 @@ impl ShowArgs {
         eval_args.adapter_override = self.adapter.clone();
         eval_args.query_id = self.query_id.clone();
         if let Some(resource_type) = &self.resource_type {
-            eval_args.resource_types = resource_type.clone();
+            eval_args.resource_types = ClapResourceType::resolve(
+                resource_type,
+                &[
+                    ClapResourceType::Model,
+                    ClapResourceType::Snapshot,
+                    ClapResourceType::Seed,
+                    ClapResourceType::Source,
+                    ClapResourceType::Analysis,
+                    ClapResourceType::Test,
+                ],
+            );
         } else {
             eval_args.resource_types = vec![
                 ClapResourceType::Model,
@@ -1104,7 +1151,14 @@ pub struct TestArgs {
     pub resource_type: Option<Vec<ClapResourceType>>,
 
     /// Exclude nodes of a specific type;
-    #[arg(long, num_args(1..), value_delimiter = ' ', aliases = ["exclude-resource-types"], env = "DBT_EXCLUDE_RESOURCE_TYPES")]
+    #[arg(
+        long,
+        num_args(1..),
+        value_delimiter = ' ',
+        value_parser = exclude_resource_type_parser(),
+        aliases = ["exclude-resource-types"],
+        env = "DBT_EXCLUDE_RESOURCE_TYPES"
+    )]
     pub exclude_resource_type: Option<Vec<ClapResourceType>>,
 
     /// Force node selection
@@ -1154,7 +1208,10 @@ impl TestArgs {
                 .insert(OptimizeTestsOptions::TestAggregation);
         }
         if let Some(resource_type) = &self.resource_type {
-            eval_args.resource_types = resource_type.clone();
+            eval_args.resource_types = ClapResourceType::resolve(
+                resource_type,
+                &[ClapResourceType::Test, ClapResourceType::UnitTest],
+            );
         } else {
             eval_args.resource_types = vec![ClapResourceType::Test, ClapResourceType::UnitTest];
         }
@@ -1185,7 +1242,14 @@ pub struct BuildArgs {
     pub resource_type: Option<Vec<ClapResourceType>>,
 
     /// Exclude nodes of a specific type;
-    #[arg(long, num_args(1..), value_delimiter = ' ', aliases = ["exclude-resource-types"], env = "DBT_EXCLUDE_RESOURCE_TYPES")]
+    #[arg(
+        long,
+        num_args(1..),
+        value_delimiter = ' ',
+        value_parser = exclude_resource_type_parser(),
+        aliases = ["exclude-resource-types"],
+        env = "DBT_EXCLUDE_RESOURCE_TYPES"
+    )]
     pub exclude_resource_type: Option<Vec<ClapResourceType>>,
 
     /// Batch compatible generic tests.
@@ -1262,24 +1326,26 @@ impl BuildArgs {
         }
         eval_args.phase = Phases::All;
         // Enable task cache
+        let mut default_resource_types = vec![
+            ClapResourceType::Model,
+            ClapResourceType::Seed,
+            ClapResourceType::Snapshot,
+            ClapResourceType::Test,
+            ClapResourceType::UnitTest,
+            ClapResourceType::Function,
+            ClapResourceType::Check,
+            // Plugin nodes are never selected by default, so this only keeps the ones
+            // selected directly.
+            ClapResourceType::Plugin,
+        ];
+        if eval_args.export_saved_queries {
+            default_resource_types.push(ClapResourceType::SavedQuery);
+        }
         if let Some(resource_type) = &self.resource_type {
-            eval_args.resource_types = resource_type.clone();
+            eval_args.resource_types =
+                ClapResourceType::resolve(resource_type, &default_resource_types);
         } else {
-            eval_args.resource_types = vec![
-                ClapResourceType::Model,
-                ClapResourceType::Seed,
-                ClapResourceType::Snapshot,
-                ClapResourceType::Test,
-                ClapResourceType::UnitTest,
-                ClapResourceType::Function,
-                ClapResourceType::Check,
-                // Plugin nodes are never selected by default, so this only keeps the ones
-                // selected directly.
-                ClapResourceType::Plugin,
-            ];
-            if eval_args.export_saved_queries {
-                eval_args.resource_types.push(ClapResourceType::SavedQuery);
-            }
+            eval_args.resource_types = default_resource_types.clone();
         }
         if let Some(exclude_resource_type) = &self.exclude_resource_type {
             eval_args.exclude_resource_types = exclude_resource_type.clone();
@@ -1324,7 +1390,14 @@ pub struct ListArgs {
     pub resource_type: Option<Vec<ClapResourceType>>,
 
     /// Exclude nodes of a specific type;
-    #[arg(long, num_args(1..), value_delimiter = ' ', aliases = ["exclude-resource-types"], env = "DBT_EXCLUDE_RESOURCE_TYPES")]
+    #[arg(
+        long,
+        num_args(1..),
+        value_delimiter = ' ',
+        value_parser = exclude_resource_type_parser(),
+        aliases = ["exclude-resource-types"],
+        env = "DBT_EXCLUDE_RESOURCE_TYPES"
+    )]
     pub exclude_resource_type: Option<Vec<ClapResourceType>>,
 }
 
@@ -1334,9 +1407,28 @@ impl ListArgs {
         eval_args.phase = Phases::List;
         eval_args.io.show.insert(ShowOptions::Nodes);
         eval_args.output_keys = self.output_keys.clone();
-        if let Some(resource_type) = &self.resource_type {
-            eval_args.resource_types = resource_type.clone();
-        }
+        // `list` defaults to every resource type except analyses, like v1.
+        let default_resource_types = vec![
+            ClapResourceType::Model,
+            ClapResourceType::Source,
+            ClapResourceType::Seed,
+            ClapResourceType::Snapshot,
+            ClapResourceType::Test,
+            ClapResourceType::UnitTest,
+            ClapResourceType::Function,
+            ClapResourceType::SemanticModel,
+            ClapResourceType::Metric,
+            ClapResourceType::SavedQuery,
+            ClapResourceType::Check,
+            ClapResourceType::Exposure,
+            ClapResourceType::Plugin,
+        ];
+        eval_args.resource_types = match &self.resource_type {
+            Some(resource_type) => {
+                ClapResourceType::resolve(resource_type, &default_resource_types)
+            }
+            None => default_resource_types,
+        };
         if let Some(exclude_resource_type) = &self.exclude_resource_type {
             eval_args.exclude_resource_types = exclude_resource_type.clone();
         }
@@ -3867,6 +3959,51 @@ mod tests {
         }
     }
 
+    fn command_eval_resource_types(args: &[&str]) -> Vec<ClapResourceType> {
+        let cmd = parse_core_command(args);
+        let in_dir = Path::new("/tmp/in");
+        let out_dir = Path::new("/tmp/out");
+        match cmd {
+            CoreCommand::List(args) => {
+                args.to_eval_args(test_system_args(FsCommand::List), in_dir, out_dir)
+                    .resource_types
+            }
+            CoreCommand::Compile(args) => {
+                args.to_eval_args(test_system_args(FsCommand::Compile), in_dir, out_dir)
+                    .resource_types
+            }
+            CoreCommand::Freshness(args) => {
+                args.to_eval_args(test_system_args(FsCommand::Freshness), in_dir, out_dir)
+                    .resource_types
+            }
+            CoreCommand::Show(args) => {
+                args.to_eval_args(test_system_args(FsCommand::Show), in_dir, out_dir)
+                    .resource_types
+            }
+            CoreCommand::Test(args) => {
+                args.to_eval_args(test_system_args(FsCommand::Test), in_dir, out_dir)
+                    .resource_types
+            }
+            CoreCommand::Build(args) => {
+                args.to_eval_args(test_system_args(FsCommand::Build), in_dir, out_dir)
+                    .resource_types
+            }
+            other => panic!("expected a command with --resource-type, got {other:?}"),
+        }
+    }
+
+    fn exclude_resource_type_error(command: &str, flag: &str) -> String {
+        match CliParser::new("dbt", "2.0.0", Box::new(NoopParser)).try_parse_from([
+            "dbt",
+            command,
+            "--exclude-resource-type",
+            flag,
+        ]) {
+            Ok(_) => panic!("`{command}` accepted `--exclude-resource-type {flag}`"),
+            Err(error) => error.to_string(),
+        }
+    }
+
     #[test]
     #[allow(clippy::disallowed_methods)]
     fn user_static_analysis_env_wins_over_default_static_analysis_env() {
@@ -3956,6 +4093,195 @@ mod tests {
             Path::new("/tmp/out"),
         );
         assert_eq!(eval_args.resource_types, vec![ClapResourceType::Exposure]);
+    }
+
+    #[test]
+    fn list_command_supports_all_and_default_resource_type() {
+        let eval = |flag: Option<&str>| {
+            let mut args = vec!["list"];
+            if let Some(flag) = flag {
+                args.extend(["--resource-type", flag]);
+            }
+            let cmd = parse_core_command(&args);
+            let CoreCommand::List(args) = &cmd else {
+                panic!("expected CoreCommand::List, got {cmd:?}");
+            };
+            args.to_eval_args(
+                test_system_args(FsCommand::List),
+                Path::new("/tmp/in"),
+                Path::new("/tmp/out"),
+            )
+            .resource_types
+        };
+
+        // v1 parity: `list` selects everything except analyses unless told otherwise,
+        // and `default` selects that same set.
+        let default = list_default_resource_types();
+        assert_eq!(eval(None), default);
+        assert_eq!(eval(Some("default")), default);
+
+        // `all` adds the one type the default set leaves out.
+        let all = eval(Some("all"));
+        assert_eq!(all.len(), default.len() + 1);
+        assert!(all.contains(&ClapResourceType::Analysis));
+        for resource_type in &default {
+            assert!(
+                all.contains(resource_type),
+                "{resource_type} missing from all"
+            );
+        }
+    }
+
+    #[test]
+    fn exclude_resource_type_rejects_all() {
+        let error = exclude_resource_type_error("list", "all");
+        assert!(
+            error.contains("invalid value 'all'"),
+            "should fail on the value: {error}"
+        );
+        assert!(error.contains("--exclude-resource-type"), "{error}");
+    }
+
+    #[test]
+    fn exclude_resource_type_rejects_default() {
+        let error = exclude_resource_type_error("list", "default");
+        assert!(
+            error.contains("invalid value 'default'"),
+            "should fail on the value: {error}"
+        );
+        assert!(error.contains("--exclude-resource-type"), "{error}");
+    }
+
+    #[test]
+    fn exclude_resource_type_all_and_default_share_error() {
+        let all = exclude_resource_type_error("list", "all").replace("'all'", "'<shorthand>'");
+        let default =
+            exclude_resource_type_error("list", "default").replace("'default'", "'<shorthand>'");
+        assert_eq!(all, default);
+    }
+
+    #[test]
+    fn exclude_resource_type_rejects_all_and_default() {
+        for command in ["list", "build", "compile", "show", "test", "freshness"] {
+            let mut messages = Vec::new();
+            for flag in ["all", "default"] {
+                let error = exclude_resource_type_error(command, flag);
+                assert!(
+                    error.contains(&format!("invalid value '{flag}'")),
+                    "`{command} --exclude-resource-type {flag}` should fail on the value: {error}"
+                );
+                assert!(
+                    error.contains("--exclude-resource-type"),
+                    "error should name the flag: {error}"
+                );
+                let possible_values = error
+                    .lines()
+                    .find(|line| line.contains("[possible values:"))
+                    .expect("clap lists the accepted values");
+                assert!(
+                    !possible_values.contains("all") && !possible_values.contains("default"),
+                    "neither shorthand should be offered for exclude: {possible_values}"
+                );
+                messages.push(error.replace(&format!("'{flag}'"), "'<shorthand>'"));
+            }
+            // Both shorthands must produce the same error, not just the same outcome.
+            assert_eq!(
+                messages[0], messages[1],
+                "`{command}` errors differ between all and default"
+            );
+        }
+    }
+
+    #[test]
+    fn v2_commands_accept_resource_type_all() {
+        let all = ClapResourceType::resolve(&[ClapResourceType::All], &[]);
+        for command in ["list", "build", "compile", "show", "test", "freshness"] {
+            assert_eq!(
+                command_eval_resource_types(&[command, "--resource-type", "all"]),
+                all,
+                "{command} --resource-type all"
+            );
+        }
+    }
+
+    fn list_default_resource_types() -> Vec<ClapResourceType> {
+        vec![
+            ClapResourceType::Model,
+            ClapResourceType::Source,
+            ClapResourceType::Seed,
+            ClapResourceType::Snapshot,
+            ClapResourceType::Test,
+            ClapResourceType::UnitTest,
+            ClapResourceType::Function,
+            ClapResourceType::SemanticModel,
+            ClapResourceType::Metric,
+            ClapResourceType::SavedQuery,
+            ClapResourceType::Check,
+            ClapResourceType::Exposure,
+            ClapResourceType::Plugin,
+        ]
+    }
+
+    #[test]
+    fn list_omitted_resource_type_matches_v1_default() {
+        let default = list_default_resource_types();
+        assert_eq!(command_eval_resource_types(&["list"]), default);
+        assert_eq!(
+            command_eval_resource_types(&["list", "--resource-type", "default"]),
+            default
+        );
+    }
+
+    #[test]
+    fn show_omitted_resource_type_uses_show_defaults() {
+        let default = vec![
+            ClapResourceType::Model,
+            ClapResourceType::Snapshot,
+            ClapResourceType::Seed,
+            ClapResourceType::Source,
+            ClapResourceType::Analysis,
+            ClapResourceType::Test,
+        ];
+        assert_eq!(command_eval_resource_types(&["show"]), default);
+        assert_eq!(
+            command_eval_resource_types(&["show", "--resource-type", "default"]),
+            default
+        );
+    }
+
+    #[test]
+    fn test_omitted_resource_type_uses_test_defaults() {
+        let default = vec![ClapResourceType::Test, ClapResourceType::UnitTest];
+        assert_eq!(command_eval_resource_types(&["test"]), default);
+        assert_eq!(
+            command_eval_resource_types(&["test", "--resource-type", "default"]),
+            default
+        );
+    }
+
+    #[test]
+    fn build_omitted_resource_type_uses_build_defaults() {
+        let default = vec![
+            ClapResourceType::Model,
+            ClapResourceType::Seed,
+            ClapResourceType::Snapshot,
+            ClapResourceType::Test,
+            ClapResourceType::UnitTest,
+            ClapResourceType::Function,
+            ClapResourceType::Check,
+            ClapResourceType::Plugin,
+        ];
+        assert_eq!(command_eval_resource_types(&["build"]), default);
+        assert_eq!(
+            command_eval_resource_types(&["build", "--resource-type", "default"]),
+            default
+        );
+    }
+
+    #[test]
+    fn compile_and_freshness_omitted_resource_type_is_unfiltered() {
+        assert!(command_eval_resource_types(&["compile"]).is_empty());
+        assert!(command_eval_resource_types(&["freshness"]).is_empty());
     }
 
     #[test]
