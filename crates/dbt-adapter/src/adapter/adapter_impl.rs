@@ -39,6 +39,7 @@ use crate::relation::Relation;
 use crate::relation::RelationObject;
 use crate::relation::config_v2::{ComponentConfigLoader, RelationConfig};
 use crate::relation::databricks::config::DatabricksRelationMetadata;
+use crate::relation::postgres::PostgresIndexConfig;
 use crate::relation::snowflake::config::{INTERACTIVE_TABLE_COLUMNS, INTERACTIVE_TABLE_KEY};
 use crate::render_constraint::{render_column_constraint, warn_constraint_support};
 use crate::response::AdapterResponse;
@@ -5091,9 +5092,16 @@ impl AdapterImpl {
     pub fn parse_index(
         &self,
         _state: &State,
-        _raw_index: &Value,
+        raw_index: &Value,
     ) -> Result<Value, minijinja::Error> {
-        unimplemented!("parse_index")
+        if self.adapter_type() != Postgres {
+            return Err(minijinja::Error::new(
+                minijinja::ErrorKind::InvalidOperation,
+                "parse_index is a Postgres adapter operation",
+            ));
+        }
+        Ok(PostgresIndexConfig::parse(raw_index)?
+            .map_or_else(|| Value::from(()), Value::from_object))
     }
 
     /// DatabricksAdapter https://github.com/databricks/dbt-databricks/blob/2f11abb306a400cde32b27891b766bf41a11fb1f/dbt/adapters/databricks/impl.py#L990
