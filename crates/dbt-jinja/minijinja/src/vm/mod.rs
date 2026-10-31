@@ -85,6 +85,17 @@ pub(crate) struct BlockRender<'a> {
     pub emitted: bool,
 }
 
+#[cfg(feature = "multi_template")]
+struct IncludeRender {
+    name: Value,
+    ignore_missing: bool,
+    emitted: bool,
+}
+
+fn emits_to_current_output(out: &Output<'_>, macro_name: &Option<String>) -> bool {
+    macro_name.is_none() && !out.is_capturing()
+}
+
 #[derive(Clone, Copy)]
 enum OutputMode {
     Final,
@@ -1172,7 +1183,7 @@ impl<'env> Vm<'env> {
                     if parent_instructions.is_none() && !out.is_discarding() {
                         let block = BlockRender {
                             name,
-                            emitted: current_macro_name.is_none() && !out.is_capturing(),
+                            emitted: emits_to_current_output(&out, &current_macro_name),
                         };
                         out.write_str(
                             call_wrapper(listeners, || self.call_block(block, state, listeners))?
@@ -1620,9 +1631,17 @@ impl<'env> Vm<'env> {
                 Instruction::Include(ignore_missing, span) => {
                     let a = stack.pop();
                     out.write_str(
-                        self.perform_include(a, state, *ignore_missing, listeners)
-                            .map_err(|e| state.with_span_error(e, span))?
-                            .as_str(),
+                        self.perform_include(
+                            IncludeRender {
+                                name: a,
+                                ignore_missing: *ignore_missing,
+                                emitted: emits_to_current_output(&out, &current_macro_name),
+                            },
+                            state,
+                            listeners,
+                        )
+                        .map_err(|e| state.with_span_error(e, span))?
+                        .as_str(),
                     )?;
                 }
                 #[cfg(feature = "multi_template")]
@@ -1782,14 +1801,17 @@ impl<'env> Vm<'env> {
     }
 
     #[cfg(feature = "multi_template")]
-    #[allow(clippy::too_many_arguments)]
     fn perform_include(
         &self,
-        name: Value,
+        include: IncludeRender,
         state: &mut State<'_, 'env>,
-        ignore_missing: bool,
         listeners: &[Rc<dyn RenderingEventListener>],
     ) -> Result<String, Error> {
+        let IncludeRender {
+            name,
+            ignore_missing,
+            emitted,
+        } = include;
         let obj = name.as_object();
         let choices = obj
             .as_ref()
@@ -1831,12 +1853,12 @@ impl<'env> Vm<'env> {
             #[cfg(feature = "macros")]
             {
                 let old_closure = state.ctx.take_closure();
-                rv = self.eval_buffered_state(state, listeners, false);
+                rv = self.eval_buffered_state(state, listeners, emitted);
                 state.ctx.reset_closure(old_closure);
             }
             #[cfg(not(feature = "macros"))]
             {
-                rv = self.eval_buffered_state(state, listeners, false);
+                rv = self.eval_buffered_state(state, listeners, emitted);
             }
             state.ctx.decr_depth(INCLUDE_RECURSION_COST);
             state.loaded_templates = old_loaded_templates;

@@ -878,4 +878,75 @@ mod tests {
         assert_eq!(trace.rendered, "select 1;SELECT 2;");
     }
 
+    fn render_templates(
+        source: &str,
+        templates: &[(&str, &str)],
+        default_tracker: bool,
+    ) -> RenderTrace {
+        let mut environment = Environment::new();
+        for &(name, input) in templates {
+            environment.add_template(name, input).unwrap();
+        }
+        let normal_listeners: Vec<Rc<dyn RenderingEventListener>> = default_tracker
+            .then(|| {
+                Rc::new(crate::listener::DefaultRenderingEventListener::default())
+                    as Rc<dyn RenderingEventListener>
+            })
+            .into_iter()
+            .collect();
+        let normal = environment
+            .render_named_str("model.sql", source, (), &normal_listeners)
+            .unwrap();
+        let observer = Rc::new(RenderTraceListener::new(Path::new("model.sql")));
+        let mut listeners: Vec<Rc<dyn RenderingEventListener>> = default_tracker
+            .then(|| {
+                Rc::new(crate::listener::DefaultRenderingEventListener::default())
+                    as Rc<dyn RenderingEventListener>
+            })
+            .into_iter()
+            .collect();
+        listeners.push(observer.clone());
+        let rendered = environment
+            .render_named_str("model.sql", source, (), &listeners)
+            .unwrap();
+        let trace = observer.finish(source, rendered);
+        assert_eq!(trace.rendered, normal);
+        assert_valid_trace(&trace);
+        trace
+    }
+
+    #[test]
+    fn successful_includes_preserve_only_final_generated_output() {
+        let templates = [
+            ("part.sql", "B{% set v = 'D' %}"),
+            ("nested.sql", "N{% include 'part.sql' %}"),
+            ("empty.sql", ""),
+            ("returned.sql", "discard{{ return('B') }}"),
+        ];
+        for default_tracker in [false, true] {
+            for (source, expected) in [
+                ("A{% include 'part.sql' %}C", "ABC"),
+                ("A{% include 'nested.sql' %}C", "ANBC"),
+                ("A{% include 'empty.sql' %}C", "AC"),
+                ("A{% include 'missing.sql' ignore missing %}C", "AC"),
+                ("A{% include 'returned.sql' %}C", "ABC"),
+                (
+                    "A{% set x %}{% include 'part.sql' %}{% endset %}{{ x | lower }}C",
+                    "AbC",
+                ),
+                ("A{% import 'part.sql' as p %}{{ p.v }}C", "ADC"),
+            ] {
+                let trace = render_templates(source, &templates, default_tracker);
+                assert_eq!(trace.rendered, expected);
+                let literals: String = trace
+                    .events
+                    .iter()
+                    .filter(|e| e.kind == "literal")
+                    .map(|e| &trace.source[e.source_start..e.source_end])
+                    .collect();
+                assert_eq!(literals, "AC");
+            }
+        }
+    }
+
 }
