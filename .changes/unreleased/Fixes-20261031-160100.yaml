@@ -1,5 +1,5 @@
 kind: Fixes
-body: Implement Postgres `list_relations_schemas`, so unit tests no longer panic on Postgres, and keep the type Postgres reports on columns read from the catalog
+body: Implement Postgres `list_relations_schemas`, which unit tests need to read their inputs' column types
 time: 2026-10-31T16:01:00.000000-04:00
 custom:
     author: gap777

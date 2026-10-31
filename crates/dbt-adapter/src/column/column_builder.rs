@@ -479,18 +479,6 @@ impl ColumnBuilder {
     }
 
     fn build_postgres_like(field: &FieldRef, type_ops: &dyn TypeOps) -> AdapterResult<Box<Column>> {
-        // The type as the catalog spells it (`format_type`), when the schema came from there:
-        // Arrow cannot carry `double precision`, an unconstrained `numeric` or a time zone back.
-        if let Some(type_text) = original_type_string(type_ops.adapter_type(), field) {
-            return Ok(Column::new_boxed(
-                type_ops.adapter_type(),
-                field.name().to_string(),
-                type_text.into_owned(),
-                None,
-                None,
-                None,
-            ));
-        }
         let data_type_ref = field.data_type();
         let mut rendered_type = String::new();
         match data_type_ref {
@@ -678,55 +666,6 @@ mod tests {
         assert_eq!(column.numeric_precision(), Some(18));
         assert_eq!(column.numeric_scale(), Some(4));
         assert_eq!(column.char_size(), None);
-    }
-
-    fn postgres_field(
-        name: &str,
-        data_type: DataType,
-        nullable: bool,
-        type_text: &str,
-    ) -> FieldRef {
-        let metadata = HashMap::from([(
-            metadata_sql_type_key(AdapterType::Postgres).to_string(),
-            type_text.to_string(),
-        )]);
-        Arc::new(Field::new(name, data_type, nullable).with_metadata(metadata))
-    }
-
-    fn build_postgres(field: &FieldRef) -> Box<Column> {
-        let type_ops = DefaultTypeOps::new(AdapterType::Postgres);
-        ColumnBuilder::new(AdapterType::Postgres)
-            .build(field, &type_ops)
-            .unwrap()
-    }
-
-    #[test]
-    fn test_build_postgres_keeps_the_catalog_type() {
-        let field = postgres_field("latitude", DataType::Float64, true, "double precision");
-        assert_eq!(build_postgres(&field).dtype(), "double precision");
-    }
-
-    #[test]
-    fn test_build_postgres_type_leaves_out_nullability() {
-        let field = postgres_field("id", DataType::Int64, false, "bigint");
-        assert_eq!(build_postgres(&field).dtype(), "bigint");
-    }
-
-    #[test]
-    fn test_build_postgres_keeps_a_time_zone() {
-        let field = postgres_field(
-            "created_at",
-            DataType::Timestamp(arrow_schema::TimeUnit::Microsecond, Some("UTC".into())),
-            true,
-            "timestamp with time zone",
-        );
-        assert_eq!(build_postgres(&field).dtype(), "timestamp with time zone");
-    }
-
-    #[test]
-    fn test_build_postgres_keeps_numeric_scale() {
-        let field = postgres_field("margin", DataType::Decimal128(38, 0), true, "numeric");
-        assert_eq!(build_postgres(&field).dtype(), "numeric");
     }
 
     #[test]
