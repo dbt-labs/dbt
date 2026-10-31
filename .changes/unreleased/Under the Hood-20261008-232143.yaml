@@ -1,0 +1,7 @@
+kind: Under the Hood
+body: Use a literal runner label so Bot Changelog starts on fork pull requests.
+time: 2026-10-08T23:21:43.022883-03:00
+custom:
+    author: luc-pimentel
+    issue: "16675"
+    project: dbt-core
