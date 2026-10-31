@@ -909,8 +909,21 @@ fn extract_sql_resources_from_ast<T: ResolvableConfig<T>>(
                     ));
                 }
                 MacroKind::Doc => {
-                    if let Some(Stmt::EmitRaw(emit_raw)) = macro_node.body.first() {
-                        sql_resources.push(SqlResource::Doc(macro_name.to_string(), emit_raw.span));
+                    // The doc is everything between the tags. `{% raw %}`, `{{ }}` and
+                    // other tags each start a new body statement, so no single statement's
+                    // span covers it.
+                    if let (Some(start_tag), Some(end_tag)) =
+                        (macro_node.start_tag_span, macro_node.end_tag_span)
+                    {
+                        let body_span = Span {
+                            start_line: start_tag.end_line,
+                            start_col: start_tag.end_col,
+                            start_offset: start_tag.end_offset,
+                            end_line: end_tag.start_line,
+                            end_col: end_tag.start_col,
+                            end_offset: end_tag.start_offset,
+                        };
+                        sql_resources.push(SqlResource::Doc(macro_name.to_string(), body_span));
                     }
                 }
                 MacroKind::Snapshot => {

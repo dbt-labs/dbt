@@ -1,4 +1,5 @@
 use dbt_adapter_core::AdapterType;
+use dbt_common::CodeLocationWithFile;
 use dbt_common::ErrorCode;
 use dbt_common::FsResult;
 use dbt_common::io_args::IoArgs;
@@ -71,7 +72,7 @@ fn process_docs_macro_file(
         match resource {
             SqlResource::Doc(name, span) => {
                 let unique_id = format!("doc.{package_name}.{name}");
-                let part = &docs_macro[span.start_offset as usize..span.end_offset as usize];
+                let body = &docs_macro[span.start_offset as usize..span.end_offset as usize];
                 if let Some(existing_doc) = docs_map.get(&unique_id) {
                     return err!(
                         ErrorCode::Unexpected,
@@ -81,6 +82,27 @@ fn process_docs_macro_file(
                         existing_doc.path.display()
                     );
                 }
+                // A block that cannot be rendered is skipped on its own, so the other blocks
+                // in the file stay available to `doc()`.
+                let block_contents = match render_docs_block(body) {
+                    Ok(block_contents) => block_contents,
+                    Err(err) => {
+                        emit_warn_log_from_fs_error(*fs_err!(
+                            code => ErrorCode::JinjaError,
+                            loc => CodeLocationWithFile::new(
+                                span.start_line,
+                                span.start_col,
+                                span.start_offset,
+                                docs_asset.path.clone(),
+                            ),
+                            "Failed to render docs block '{}': {}: {}",
+                            name,
+                            err.kind(),
+                            err.detail().unwrap_or_default()
+                        ));
+                        continue;
+                    }
+                };
                 docs_map.insert(
                     unique_id.clone(),
                     DbtDocsMacro {
@@ -89,7 +111,7 @@ fn process_docs_macro_file(
                         path: DbtPath::from(&docs_asset.path),
                         original_file_path: DbtPath::from(relative_docs_file_path),
                         unique_id,
-                        block_contents: part.trim().to_string(),
+                        block_contents,
                     },
                 );
             }
@@ -104,6 +126,22 @@ fn process_docs_macro_file(
     }
 
     Ok(())
+}
+
+/// Renders a docs block body as dbt Core does (`get_rendered(block.contents, {}).strip()`):
+/// `{% raw %}` text is kept without its tags, and expressions and tags are evaluated with an
+/// empty context. Like Jinja2's lexer, rendering normalizes `\r\n` and `\r` to `\n`; a body
+/// without Jinja is returned as written.
+fn render_docs_block(body: &str) -> Result<String, minijinja::Error> {
+    let has_jinja = ["{{", "{%", "{#", "}}", "%}", "#}"]
+        .iter()
+        .any(|marker| body.contains(marker));
+    if !has_jinja {
+        return Ok(body.trim().to_string());
+    }
+    let body = body.replace("\r\n", "\n").replace('\r', "\n");
+    let rendered = minijinja::Environment::new().render_str(&body, (), &[])?;
+    Ok(rendered.trim().to_string())
 }
 
 /// Resolve macros from a list of macro files
@@ -612,7 +650,7 @@ pub fn typecheck_macros(
                 dbt_and_adapters_namespace.clone(),
                 &file_path,
                 &dbt_macro.macro_sql,
-                &dbt_common::CodeLocationWithFile::new(1, 1, 0, file_path.clone()),
+                &CodeLocationWithFile::new(1, 1, 0, file_path.clone()),
                 unique_id,
                 adapter_type,
                 true,
@@ -670,6 +708,131 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
+    fn docs_block_contents_match_dbt_core() -> FsResult<()> {
+        let tmp_dir = tempdir().unwrap();
+        let base_path = tmp_dir.path().to_path_buf();
+        fs::create_dir_all(base_path.join("models")).unwrap();
+
+        // Expected values are dbt Core 1.11.7's `block_contents` for the same blocks.
+        let text = "\nSome **text** here.\n\n* Grain: one row\n";
+        let rendered_text = "Some **text** here.\n\n* Grain: one row";
+        let cases = [
+            ("plain_text", text.to_string(), rendered_text.to_string()),
+            (
+                "raw_at_tag",
+                format!("{{% raw %}}{text}{{% endraw %}} "),
+                rendered_text.to_string(),
+            ),
+            (
+                "space_before_raw",
+                format!(" {{% raw %}}{text}{{% endraw %}} "),
+                rendered_text.to_string(),
+            ),
+            (
+                "newline_before_raw",
+                format!("\n{{% raw %}}{text}{{% endraw %}}\n"),
+                rendered_text.to_string(),
+            ),
+            (
+                "text_before_raw",
+                format!(" lead {{% raw %}}{text}{{% endraw %}} "),
+                format!("lead \n{rendered_text}"),
+            ),
+            (
+                "text_after_raw",
+                "{% raw %}RAWBODY{% endraw %} tail".to_string(),
+                "RAWBODY tail".to_string(),
+            ),
+            (
+                "two_raws",
+                "{% raw %}ONE{% endraw %}{% raw %}TWO{% endraw %}".to_string(),
+                "ONETWO".to_string(),
+            ),
+            (
+                "raw_jinja_example",
+                "Use:\n{% raw %}select {{ ref('m') }}{% endraw %}\nDone.".to_string(),
+                "Use:\nselect {{ ref('m') }}\nDone.".to_string(),
+            ),
+            (
+                "expression",
+                " lead {{ 'x' }} after".to_string(),
+                "lead x after".to_string(),
+            ),
+            (
+                "expression_first",
+                "{{ \"x\" }} after".to_string(),
+                "x after".to_string(),
+            ),
+            (
+                "set_first",
+                "{% set y = 1 %}Body text.".to_string(),
+                "Body text.".to_string(),
+            ),
+            (
+                "if_block",
+                "{% if true %}yes{% endif %} done".to_string(),
+                "yes done".to_string(),
+            ),
+            (
+                "comment",
+                "before {# note #} after".to_string(),
+                "before  after".to_string(),
+            ),
+            (
+                "undefined_variable",
+                "a {{ nope }} b".to_string(),
+                "a  b".to_string(),
+            ),
+            (
+                "multibyte",
+                "héllo ✓ {% raw %}{{ x }}{% endraw %} ünd".to_string(),
+                "héllo ✓ {{ x }} ünd".to_string(),
+            ),
+            (
+                "crlf_without_jinja",
+                "\r\nline one\r\nline two\r\n".to_string(),
+                "line one\r\nline two".to_string(),
+            ),
+            (
+                "newlines_with_jinja",
+                "a\r\nb {{ 'x\ry' }}\rc".to_string(),
+                "a\nb x\ny\nc".to_string(),
+            ),
+            ("empty", String::new(), String::new()),
+        ];
+        // A block that fails to render is skipped; the blocks after it are still collected.
+        let file_contents = cases
+            .iter()
+            .map(|(name, body, _)| format!("{{% docs {name} %}}{body}{{% enddocs %}}\n"))
+            .collect::<String>()
+            + "{% docs calls_ref %}{{ ref('m') }}{% enddocs %}\n{% docs after_render_error %}kept{% enddocs %}\n";
+        let path = PathBuf::from("models/docs.md");
+        fs::write(base_path.join(&path), file_contents).unwrap();
+        let io_args = IoArgs {
+            in_dir: base_path.clone(),
+            ..Default::default()
+        };
+        let docs_asset = DbtAsset {
+            base_path,
+            original_path: path.clone(),
+            path,
+            package_name: "pkg".to_string(),
+        };
+
+        let docs = resolve_docs_macros(&io_args, &[docs_asset], None)?;
+
+        for (name, _, expected) in &cases {
+            let doc = docs
+                .get(&format!("doc.pkg.{name}"))
+                .unwrap_or_else(|| panic!("doc {name} should be collected"));
+            assert_eq!(&doc.block_contents, expected, "block_contents for {name}");
+        }
+        assert!(!docs.contains_key("doc.pkg.calls_ref"));
+        assert_eq!(docs["doc.pkg.after_render_error"].block_contents, "kept");
+        Ok(())
+    }
+
+    #[test]
     fn invalid_markdown_doc_reports_warning_and_continues() -> FsResult<()> {
         let tmp_dir = tempdir().unwrap();
         let base_path = tmp_dir.path().to_path_buf();
@@ -725,6 +888,15 @@ mod tests {
                 ],
                 expected_code: ErrorCode::Unexpected,
                 expected_warning_paths: vec!["models/dup_second.md"],
+            },
+            InvalidCase {
+                name: "render_error",
+                files: vec![(
+                    "render_error.md",
+                    "{% docs calls_ref %}see {{ ref('m') }}{% enddocs %}",
+                )],
+                expected_code: ErrorCode::JinjaError,
+                expected_warning_paths: vec!["models/render_error.md"],
             },
         ];
 
