@@ -217,6 +217,11 @@ impl<'source> CodeGenerator<'source> {
             flags |= LOOP_FLAG_RECURSIVE;
         }
         self.add(Instruction::PushLoop(flags, span));
+        if recursive {
+            if let Some(start_tag_span) = repeat_start_tag_span {
+                self.add(Instruction::JinjaLayoutLoopRecursionStart(start_tag_span));
+            }
+        }
         let instr = self.add(Instruction::Iterate(!0, span));
         if let Some(start_tag_span) = repeat_start_tag_span {
             self.add(Instruction::JinjaLayoutLoopIterationStart(start_tag_span));

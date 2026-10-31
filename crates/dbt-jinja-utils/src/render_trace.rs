@@ -857,4 +857,25 @@ mod tests {
             assert!(observer.buffers.borrow().is_empty());
         }
     }
+    #[test]
+    fn recursive_loops_open_each_direct_and_captured_invocation() {
+        for (items, expected) in [
+            (
+                "[{'n': 1, 'children': [{'n': 2, 'children': []}]}]",
+                "select 1;select 2;",
+            ),
+            ("[{'n': 1, 'children': []}]", "select 1;"),
+            ("[]", ""),
+        ] {
+            let source = format!(
+                "{{% for item in {items} recursive %}}select {{{{ item.n }}}};{{{{ loop(item.children) }}}}{{% endfor %}}"
+            );
+            let trace = render(&source, true);
+            assert_eq!(trace.rendered, expected);
+        }
+        let source = "{% for item in [{'n': 1, 'children': [{'n': 2, 'children': []}]}] recursive %}select {{ item.n }};{{ loop(item.children) | upper }}{% endfor %}";
+        let trace = render(source, true);
+        assert_eq!(trace.rendered, "select 1;SELECT 2;");
+    }
+
 }

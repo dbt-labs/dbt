@@ -2046,7 +2046,8 @@ impl<'src> TypeChecker<'src> {
                     // TYPECHECK: NO
                     listener.set_span(span);
                 }
-                Instruction::JinjaLayoutLoopIterationStart(span) => {
+                Instruction::JinjaLayoutLoopIterationStart(span)
+                | Instruction::JinjaLayoutLoopRecursionStart(span) => {
                     // TYPECHECK: NO
                     listener.set_span(span);
                 }

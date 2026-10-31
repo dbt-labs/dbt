@@ -42,6 +42,9 @@ additional Jinja layout blocks.
 Events can legitimately repeat when a source tag executes again in a loop,
 including with identical source and rendered offsets if the body emits no text.
 Consumers must not globally deduplicate events by their byte ranges.
+Each recursive loop invocation opens its own source loop scope before iteration,
+including empty invocations. Repeated iterations within that invocation still
+use `loop_iteration`; their source spans may coincide with those of the caller.
 
 Raw-block literal ranges cover the post-whitespace-control payload, not the
 surrounding stripped whitespace. Loop repetitions describe executions of the

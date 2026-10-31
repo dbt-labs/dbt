@@ -165,6 +165,37 @@ fn notify_loop_iteration(
     }
 }
 
+fn notify_loop_recursion(
+    state: &mut State<'_, '_>,
+    listeners: &[Rc<dyn RenderingEventListener>],
+    source_span: &Span,
+    enabled: bool,
+) {
+    let is_recursive_call = state
+        .ctx
+        .current_loop()
+        .is_some_and(|loop_ctx| loop_ctx.current_recursion_jump.is_some());
+    if is_recursive_call && enabled {
+        let span = span_with_current_offset(source_span, &state.ctx.current_span);
+        for listener in listeners {
+            listener.on_jinja_layout_event(crate::JinjaLayoutEventKind::BlockStart, &span);
+        }
+    }
+}
+
+fn pop_frame_recursion(
+    state: &mut State<'_, '_>,
+    out: &mut Output<'_>,
+    stack: &mut Stack,
+) -> Option<usize> {
+    let mut loop_ctx = state.ctx.pop_frame().current_loop?;
+    let (target, end_capture) = loop_ctx.current_recursion_jump.take()?;
+    if end_capture {
+        stack.push(out.end_capture(state.auto_escape));
+    }
+    Some(target)
+}
+
 fn get_or_lookup_local<T, F>(vec: &mut [Option<T>], local_id: u8, f: F) -> Option<T>
 where
     T: Copy,
@@ -1012,15 +1043,9 @@ impl<'env> Vm<'env> {
                         .map_err(|e| state.with_span_error(e, span))?;
                 }
                 Instruction::PopFrame => {
-                    if let Some(mut loop_ctx) = state.ctx.pop_frame().current_loop {
-                        if let Some((target, end_capture)) = loop_ctx.current_recursion_jump.take()
-                        {
-                            pc = target;
-                            if end_capture {
-                                stack.push(out.end_capture(state.auto_escape));
-                            }
-                            continue;
-                        }
+                    if let Some(target) = pop_frame_recursion(state, &mut out, &mut stack) {
+                        pc = target;
+                        continue;
                     }
                 }
                 #[cfg(feature = "macros")]
@@ -1712,6 +1737,14 @@ impl<'env> Vm<'env> {
                             .iter()
                             .for_each(|listener| listener.on_jinja_loop_skipped_end(&source_span));
                     }
+                }
+                Instruction::JinjaLayoutLoopRecursionStart(source_span) => {
+                    notify_loop_recursion(
+                        state,
+                        listeners,
+                        source_span,
+                        current_macro_name.is_none(),
+                    );
                 }
                 Instruction::JinjaLayoutLoopIterationStart(source_span) => {
                     notify_loop_iteration(
