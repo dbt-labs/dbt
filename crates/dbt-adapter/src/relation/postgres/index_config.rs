@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use minijinja::arg_utils::ArgsIter;
-use minijinja::value::{Enumerator, Object};
+use minijinja::value::{Enumerator, Object, ValueKind};
 use minijinja::{Error as MinijinjaError, ErrorKind as MinijinjaErrorKind, Value};
 use serde::Deserialize;
 
@@ -23,6 +23,15 @@ impl PostgresIndexConfig {
     pub fn parse(raw_index: &Value) -> Result<Option<Self>, MinijinjaError> {
         if raw_index.is_none() || raw_index.is_undefined() {
             return Ok(None);
+        }
+        // Serde would also read a sequence positionally, as dbt-postgres does not.
+        if raw_index.kind() != ValueKind::Map {
+            return Err(MinijinjaError::new(
+                MinijinjaErrorKind::InvalidOperation,
+                format!(
+                    "Invalid index config:\n  Got: {raw_index}\n  Expected a dictionary with at minimum a \"columns\" key"
+                ),
+            ));
         }
         Self::deserialize(raw_index.clone()).map(Some).map_err(|e| {
             MinijinjaError::new(
@@ -129,6 +138,12 @@ mod tests {
     #[test]
     fn refuses_an_index_without_columns() {
         let raw = Value::from_serialize(serde_json::json!({ "unique": true }));
+        assert!(PostgresIndexConfig::parse(&raw).is_err());
+    }
+
+    #[test]
+    fn refuses_an_index_that_is_not_a_dictionary() {
+        let raw = Value::from_serialize(serde_json::json!([["id"], true, "btree"]));
         assert!(PostgresIndexConfig::parse(&raw).is_err());
     }
 
