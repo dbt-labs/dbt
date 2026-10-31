@@ -2277,6 +2277,37 @@ impl<'source> Parser<'source> {
         }
     }
 
+    /// The parenthesized part of a geometry or geography type, as written back after the
+    /// type name. Postgres (PostGIS) writes a subtype and, optionally, an SRID:
+    ///
+    ///     [ '(' subtype [ ',' \d+ ] ')' ]
+    ///
+    /// Other backends write an SRID alone; see [Self::srid].
+    fn spatial_modifier(
+        &mut self,
+        backend: AdapterType,
+    ) -> Result<Option<String>, ParseError<'source>> {
+        if backend != AdapterType::Postgres {
+            return Ok(self.srid()?.map(str::to_string));
+        }
+        if !self.match_(Token::LParen) {
+            return Ok(None);
+        }
+        let Token::Word(first) = self.next()? else {
+            return Err(ParseError::UnexpectedEndOfInput);
+        };
+        // `ANY` and a bare SRID read as on other backends.
+        let first = if eqi(first, "ANY") { "ANY" } else { first };
+        let modifier = if self.match_(Token::Comma) {
+            let srid = self.next_int::<u32>()?;
+            format!("{first},{srid}")
+        } else {
+            first.to_string()
+        };
+        self.expect(Token::RParen)?;
+        Ok(Some(modifier))
+    }
+
     /// SRID for Geography type for some backends (e.g. Databricks [1]).
     ///
     ///     [ '(' \d+ | 'ANY' ')' ]
@@ -3075,11 +3106,9 @@ impl<'source> Parser<'source> {
                     };
                     SqlType::HashType(byte_size)
                 } else if eqi(w, "GEOMETRY") {
-                    let srid = self.srid()?;
-                    SqlType::Geometry(srid.map(str::to_string))
+                    SqlType::Geometry(self.spatial_modifier(backend)?)
                 } else if eqi(w, "GEOGRAPHY") {
-                    let srid = self.srid()?;
-                    SqlType::Geography(srid.map(str::to_string))
+                    SqlType::Geography(self.spatial_modifier(backend)?)
                 } else if eqi(w, "RANGE") {
                     self.range_type(backend, w)?
                 } else if eqi(w, "ARRAY") {
