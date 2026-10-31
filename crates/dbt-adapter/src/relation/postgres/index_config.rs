@@ -136,30 +136,24 @@ mod tests {
     // 2026-10-31T12:00:00 UTC, for the relation "db"."s"."t".
     #[test]
     fn renders_the_name_dbt_postgres_does() {
-        let index = PostgresIndexConfig {
-            columns: vec!["a".to_string(), "b".to_string()],
-            unique: true,
-            index_type: Some("btree".to_string()),
-        };
         let now = Utc.with_ymd_and_hms(2026, 10, 31, 12, 0, 0).unwrap();
-        assert_eq!(
-            index.index_name("\"db\".\"s\".\"t\"", now),
-            "2644471fd91c5a8f391de536364ebfe1"
-        );
-    }
-
-    #[test]
-    fn renders_the_name_dbt_postgres_does_with_defaults() {
-        let index = PostgresIndexConfig {
-            columns: vec!["a".to_string()],
-            unique: false,
-            index_type: None,
-        };
-        let now = Utc.with_ymd_and_hms(2026, 10, 31, 12, 0, 0).unwrap();
-        assert_eq!(
-            index.index_name("\"db\".\"s\".\"t\"", now),
-            "3f2ce2650d909c563bf6e4eb6d1dd1e3"
-        );
+        let cases = [
+            (
+                vec!["a", "b"],
+                true,
+                Some("btree"),
+                "2644471fd91c5a8f391de536364ebfe1",
+            ),
+            (vec!["a"], false, None, "3f2ce2650d909c563bf6e4eb6d1dd1e3"),
+        ];
+        for (columns, unique, index_type, expected) in cases {
+            let index = PostgresIndexConfig {
+                columns: columns.into_iter().map(String::from).collect(),
+                unique,
+                index_type: index_type.map(String::from),
+            };
+            assert_eq!(index.index_name("\"db\".\"s\".\"t\"", now), expected);
+        }
     }
 
     #[test]
