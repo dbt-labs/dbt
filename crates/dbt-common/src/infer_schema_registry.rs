@@ -13,11 +13,11 @@
 //! back (keyed by the relation name recorded as metadata on the
 //! placeholder) to fill placeholders back in before walking the plan.
 
-use crate::collections::{DashMap, HashSet};
+use crate::collections::{HashSet, SccHashMap};
 
 #[derive(Debug, Default)]
 pub struct InferSchemaRegistry {
-    inferred_columns: DashMap<String, HashSet<String>>,
+    inferred_columns: SccHashMap<String, HashSet<String>>,
 }
 
 impl InferSchemaRegistry {
@@ -28,14 +28,16 @@ impl InferSchemaRegistry {
     /// Record that `column` was confidently inferred to belong to `relation`.
     pub fn record_column(&self, relation: &str, column: &str) {
         self.inferred_columns
-            .entry(relation.to_string())
+            .entry_sync(relation.to_string())
             .or_default()
+            // `get_mut()` reaches the set; `OccupiedEntry::insert` would replace the whole set.
+            .get_mut()
             .insert(column.to_string());
     }
 
     /// Columns previously recorded for `relation`, if any.
     pub fn columns_for(&self, relation: &str) -> Option<HashSet<String>> {
-        self.inferred_columns.get(relation).map(|c| c.clone())
+        self.inferred_columns.read_sync(relation, |_, c| c.clone())
     }
 }
 

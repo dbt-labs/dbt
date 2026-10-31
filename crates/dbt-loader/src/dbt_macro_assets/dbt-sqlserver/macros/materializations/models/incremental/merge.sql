@@ -15,13 +15,13 @@
     {% if unique_key %}
         {% if unique_key is sequence and unique_key is not string %}
             SET NOCOUNT ON;
-            delete from {{ target }}
+            delete DBT_INTERNAL_DEST from {{ target }} as DBT_INTERNAL_DEST
             where exists (
                 select null
                 from {{ source }}
                 where
                 {% for key in unique_key %}
-                    {{ source }}.{{ key }} = {{ target }}.{{ key }}
+                    {{ source }}.{{ key }} = DBT_INTERNAL_DEST.{{ key }}
                     {{ "and " if not loop.last }}
                 {% endfor %}
             )
@@ -34,7 +34,7 @@
             SET NOCOUNT OFF;
         {% else %}
             SET NOCOUNT ON;
-            delete from {{ target }}
+            delete DBT_INTERNAL_DEST from {{ target }} as DBT_INTERNAL_DEST
             where (
                 {{ unique_key }}) in (
                 select ({{ unique_key }})

@@ -493,6 +493,7 @@ fn latest_group_supersedes_the_whole_group() {
         dir: "compile/columns",
         single_file: false,
         supersede: epoch::Supersede::LatestGroup("unique_id"),
+        backfill: &[],
     };
     let stmt = rel.create_view_sql(tmp.path());
     db.execute_update(&stmt)
@@ -632,4 +633,97 @@ fn each_check_view_offers_exactly_its_declared_columns() {
         );
     }
     assert!(seen > 0, "no parse-safe view was published to compare");
+}
+
+/// A backfilled column binds even when no file on disk has it yet, reading NULL
+/// from the files that predate it and its value from the ones that do not.
+#[test]
+fn backfill_reads_null_from_files_that_predate_the_column() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let dir = tmp.path().join("compile/nodes");
+    std::fs::create_dir_all(&dir).expect("create_dir_all");
+
+    let mut db = Db::open_memory().expect("open_memory");
+    db.execute_update("CREATE SCHEMA IF NOT EXISTS dbt_internal")
+        .expect("create schema");
+    let mut write = |file: &str, rows: &str| {
+        let path = dir.join(file);
+        db.execute_update(&format!(
+            "COPY ({rows}) TO '{}' (FORMAT parquet)",
+            path.display()
+        ))
+        .unwrap_or_else(|e| panic!("writing {file}: {e}"));
+    };
+    write("v1_0.parquet", "SELECT 'a' AS unique_id");
+
+    let rel = epoch::EpochRelation {
+        view: "epoch_backfill_test",
+        dir: "compile/nodes",
+        single_file: false,
+        supersede: epoch::Supersede::LatestBy("unique_id"),
+        backfill: &[("added", "VARCHAR")],
+    };
+    let query = |db: &mut Db| {
+        let stmt = rel.create_view_sql(tmp.path());
+        db.execute_update(&stmt)
+            .unwrap_or_else(|e| panic!("executing\n{stmt}\n{e}"));
+        let batches = db
+            .execute_query(
+                "SELECT unique_id || '=' || COALESCE(added, 'null') \
+                 FROM dbt_internal.epoch_backfill_test ORDER BY 1",
+            )
+            .expect("query");
+        let mut got: Vec<String> = Vec::new();
+        for batch in &batches {
+            for i in 0..batch.num_rows() {
+                got.push(cell_to_string(batch, i, 0));
+            }
+        }
+        got
+    };
+    assert_eq!(query(&mut db), vec!["a=null".to_string()]);
+
+    let path = dir.join("v1_1.parquet");
+    db.execute_update(&format!(
+        "COPY (SELECT 'b' AS unique_id, 'x' AS added) TO '{}' (FORMAT parquet)",
+        path.display()
+    ))
+    .expect("writing v1_1.parquet");
+    assert_eq!(
+        query(&mut db),
+        vec!["a=null".to_string(), "b=x".to_string()]
+    );
+}
+
+/// A `resolver_state.parquet` written before `pkg_lock_json` existed still binds,
+/// and reads the column as NULL.
+#[test]
+fn resolver_state_without_pkg_lock_json_reads_null() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let path = tmp.path().join(PARSE_RESOLVER_STATE);
+    std::fs::create_dir_all(path.parent().unwrap()).expect("create_dir_all");
+
+    let mut db = Db::open_memory().expect("open_memory");
+    db.execute_update("CREATE SCHEMA IF NOT EXISTS dbt_internal")
+        .expect("create schema");
+    db.execute_update(&format!(
+        "COPY (SELECT '{{}}' AS pkg_kinds_json) TO '{}' (FORMAT parquet)",
+        path.display()
+    ))
+    .expect("writing resolver_state.parquet");
+
+    let rel = epoch::EPOCH_RELATIONS
+        .iter()
+        .find(|r| r.view == "epoch_parse_resolver_state")
+        .expect("resolver_state relation");
+    let stmt = rel.create_view_sql(tmp.path());
+    db.execute_update(&stmt)
+        .unwrap_or_else(|e| panic!("executing\n{stmt}\n{e}"));
+    let batches = db
+        .execute_query(
+            "SELECT COALESCE(pkg_lock_json, 'null') \
+             FROM dbt_internal.epoch_parse_resolver_state",
+        )
+        .expect("query");
+    assert_eq!(cell_to_string(&batches[0], 0, 0), "null");
 }

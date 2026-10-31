@@ -19,8 +19,8 @@ use std::{
     sync::Arc,
 };
 
-use once_cell::sync::Lazy;
 use regex::Regex;
+use std::sync::LazyLock;
 
 use dbt_common::{
     FsResult,
@@ -31,60 +31,64 @@ use dbt_common::{
 use dbt_features::feature_stack::FeatureStack;
 
 // Pre-compiled regex patterns for optimal performance
-static SCHEMA_PATTERN: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?i)fusion_tests_schema__[a-zA-Z0-9_]*").unwrap());
+static SCHEMA_PATTERN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)fusion_tests_schema__[a-zA-Z0-9_]*").unwrap());
 /// Matches the ___<timestamp>___ suffix from random_schema() used for test isolation
-static SCHEMA_TIMESTAMP_SUFFIX_PATTERN: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"___\d+___").unwrap());
-static ISO_TIMESTAMP_PATTERN: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z").unwrap());
-static TIME_PATTERN: Lazy<Regex> = Lazy::new(|| Regex::new(r"\b\d{2}:\d{2}:\d{2}\b").unwrap());
-static NODE_INDEX_PATTERN: Lazy<Regex> = Lazy::new(|| Regex::new(r"\[(\d+) of (\d+)").unwrap());
-static BRACKETED_DURATION_PATTERN: Lazy<Regex> = Lazy::new(|| {
+static SCHEMA_TIMESTAMP_SUFFIX_PATTERN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"___\d+___").unwrap());
+static ISO_TIMESTAMP_PATTERN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z").unwrap());
+static TIME_PATTERN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\b\d{2}:\d{2}:\d{2}\b").unwrap());
+static NODE_INDEX_PATTERN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\[(\d+) of (\d+)").unwrap());
+static BRACKETED_DURATION_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
     // Matches bracketed durations in fixed 7-char width format with optional spacing:
     // "[  1.5s ]", "[ 2m42s]", "[1h 2m3s]", "[ 500ms ]", "[  100us]", "[1000ns ]", "[-------]"
     Regex::new(r"\[\s*(?:\d+h(?:\s*\d+m(?:\s*\d+s)?)?|\d+m(?:\s*\d+s)?|\d+(?:\.\d+)?(?:ns|us|μs|ms|s)|-------)\s*\]")
         .unwrap()
 });
-static IN_DURATION_PATTERN: Lazy<Regex> = Lazy::new(|| {
+static IN_DURATION_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
     // Matches: "in 1s", "in 500ms", "in 1s 298ms", "in 2m 10s", "in 4m28s" (no space), etc.
     Regex::new(
         r"\bin\s+\d+(?:\.\d+)?(?:ns|us|μs|ms|s|m|h)(?:\s*\d+(?:\.\d+)?(?:ns|us|μs|ms|s|m|h))*\b",
     )
     .unwrap()
 });
-static LAST_UPDATED_DURATION_PATTERN: Lazy<Regex> = Lazy::new(|| {
+static LAST_UPDATED_DURATION_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
     // Matches: "Last updated 1s ago", "Last updated 500ms ago", "Last updated 1s 298ms ago", "Last updated 2m 10s ago", etc.
     Regex::new(r"\bLast updated\s+\d+(?:\.\d+)?(?:ns|us|μs|ms|s|m|h)(?:\s*\d+(?:\.\d+)?(?:ns|us|μs|ms|s|m|h))* ago\b")
         .unwrap()
 });
-static MULTI_UNIT_DURATION_PATTERN: Lazy<Regex> = Lazy::new(|| {
+static MULTI_UNIT_DURATION_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
     // Matches sequences of 1+ duration tokens (e.g., "939ns", "32ms 101us", "4s 703ms 195us 939ns", "4m28s")
     Regex::new(r"\b\d+(?:\.\d+)?(?:ns|us|μs|ms|s|m|h)(?:\s*\d+(?:\.\d+)?(?:ns|us|μs|ms|s|m|h))*\b")
         .unwrap()
 });
-static AGE_PATTERN: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bage:\s*\d+").unwrap());
-static INLINE_SQL_PATTERN: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"inline_[a-f0-9]{8}\.sql").unwrap());
+static AGE_PATTERN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\bage:\s*\d+").unwrap());
+static INLINE_SQL_PATTERN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"inline_[a-f0-9]{8}\.sql").unwrap());
 #[cfg(not(windows))]
-static TEMP_ROOT_PATTERN: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?:/private)?/var/folders/[^/]+/[^/]+/T/").unwrap());
+static TEMP_ROOT_PATTERN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?:/private)?/var/folders/[^/]+/[^/]+/T/").unwrap());
 #[cfg(any(windows, test))]
-static WINDOWS_TEMP_ROOT_PATTERN: Lazy<Regex> = Lazy::new(|| {
+static WINDOWS_TEMP_ROOT_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
         r"(?i)[A-Z]:\\+Users\\+[^\\]+\\+AppData\\+Local\\+Temp\\+|[A-Z]:\\+Windows\\+Temp\\+|[A-Z]:\\+Temp\\+",
     )
     .unwrap()
 });
-static MKTEMP_PATTERN: Lazy<Regex> = Lazy::new(|| Regex::new(r"/\.tmp[0-9A-Za-z_-]+").unwrap());
+static MKTEMP_PATTERN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"/\.tmp[0-9A-Za-z_-]+").unwrap());
 // Matches OS thread IDs in Rust panic messages: "thread 'name' (12345678) panicked"
-static THREAD_ID_PATTERN: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(thread '[^']+') \(\d+\) (panicked)").unwrap());
+static THREAD_ID_PATTERN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(thread '[^']+') \(\d+\) (panicked)").unwrap());
 // Matches absolute replay recording paths in error messages: "(path: /abs/path)"
-static REPLAY_PATH_PATTERN: Lazy<Regex> = Lazy::new(|| Regex::new(r"\(path: [^)]+\)").unwrap());
+static REPLAY_PATH_PATTERN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\(path: [^)]+\)").unwrap());
 // Matches the platform-specific text `std::io::Error`'s `Display` embeds
-static OS_ERROR_PATTERN: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"[A-Za-z][A-Za-z0-9 .,'/-]*\(os error \d+\)").unwrap());
+static OS_ERROR_PATTERN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"[A-Za-z][A-Za-z0-9 .,'/-]*\(os error \d+\)").unwrap());
 
 /// Copies a directory and its contents, excluding .gitignored files.
 pub fn copy_dir_non_ignored(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> FsResult<()> {

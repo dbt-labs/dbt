@@ -1,0 +1,7 @@
+kind: Fixes
+body: Keep the existing Databricks table when a view model that replaces it fails to build without use_materialization_v2
+time: 2026-09-25T08:43:16.493667-07:00
+custom:
+    author: sd-db
+    issue: "16476"
+    project: dbt-core

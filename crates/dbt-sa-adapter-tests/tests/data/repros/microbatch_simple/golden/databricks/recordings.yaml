@@ -1,0 +1,399 @@
+85f3743c:
+- sequence: 0
+  type: execute
+  sql: SHOW SCHEMAS IN `e2e`
+e96afc72:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists `e2e`.`databricks_microbatch_simple`
+model.microbatch_simple.microbatch_simple:
+- sequence: 0
+  type: execute
+  sql: |-
+    SELECT
+    table_catalog,
+    table_schema,
+    table_name,
+    filter_name,
+    target_columns
+    FROM `e2e`.`information_schema`.`row_filters`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'databricks_microbatch_simple'
+    AND table_name = 'microbatch_simple'
+- sequence: 1
+  type: execute
+  sql: |-
+    create or replace table `e2e`.`databricks_microbatch_simple`.`microbatch_simple`
+    
+    
+    
+    using delta
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    as
+    select event_ts, id from (select * from `e2e`.`databricks_microbatch_simple`.`source_events` where event_ts >= '2025-01-01T00:00:00+00:00' and event_ts < '2025-01-02T00:00:00+00:00')
+- sequence: 2
+  type: execute
+  sql: DESCRIBE TABLE EXTENDED `e2e`.`databricks_microbatch_simple`.`microbatch_simple` AS JSON
+- sequence: 3
+  type: execute
+  sql: |-
+    SELECT column_name
+    FROM `e2e`.`information_schema`.`columns`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'databricks_microbatch_simple'
+    AND table_name = 'microbatch_simple'
+    AND is_nullable = 'NO'
+- sequence: 4
+  type: execute
+  sql: |-
+    SELECT kcu.constraint_name, kcu.column_name
+    FROM `e2e`.information_schema.key_column_usage kcu
+    WHERE kcu.table_catalog = 'e2e'
+    AND kcu.table_schema = 'databricks_microbatch_simple'
+    AND kcu.table_name = 'microbatch_simple'
+    AND kcu.constraint_name = (
+    SELECT constraint_name
+    FROM `e2e`.information_schema.table_constraints
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'databricks_microbatch_simple'
+    AND table_name = 'microbatch_simple'
+    AND constraint_type = 'PRIMARY KEY'
+    )
+    ORDER BY kcu.ordinal_position
+- sequence: 5
+  type: execute
+  sql: |-
+    SELECT
+    kcu.constraint_name,
+    kcu.column_name AS from_column,
+    ukcu.table_catalog AS to_catalog,
+    ukcu.table_schema AS to_schema,
+    ukcu.table_name AS to_table,
+    ukcu.column_name AS to_column
+    FROM `e2e`.information_schema.key_column_usage kcu
+    JOIN `e2e`.information_schema.referential_constraints rc
+    ON kcu.constraint_name = rc.constraint_name
+    JOIN `e2e`.information_schema.key_column_usage ukcu
+    ON rc.unique_constraint_name = ukcu.constraint_name
+    AND kcu.ordinal_position = ukcu.ordinal_position
+    WHERE kcu.table_catalog = 'e2e'
+    AND kcu.table_schema = 'databricks_microbatch_simple'
+    AND kcu.table_name = 'microbatch_simple'
+    AND kcu.constraint_name IN (
+    SELECT constraint_name
+    FROM `e2e`.information_schema.table_constraints
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'databricks_microbatch_simple'
+    AND table_name = 'microbatch_simple'
+    AND constraint_type = 'FOREIGN KEY'
+    )
+    ORDER BY kcu.ordinal_position
+- sequence: 6
+  type: execute
+  sql: |-
+    SELECT
+    column_name,
+    mask_name,
+    using_columns
+    FROM `system`.`information_schema`.`column_masks`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'databricks_microbatch_simple'
+    AND table_name = 'microbatch_simple'
+- sequence: 7
+  type: execute
+  sql: |-
+    SELECT
+    table_catalog,
+    table_schema,
+    table_name,
+    filter_name,
+    target_columns
+    FROM `e2e`.`information_schema`.`row_filters`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'databricks_microbatch_simple'
+    AND table_name = 'microbatch_simple'
+- sequence: 8
+  type: execute
+  sql: SHOW TBLPROPERTIES `e2e`.`databricks_microbatch_simple`.`microbatch_simple`
+- sequence: 9
+  type: execute
+  sql: describe extended `e2e`.`databricks_microbatch_simple`.`microbatch_simple`
+- sequence: 10
+  type: execute
+  sql: |-
+    create or replace temporary view `microbatch_simple__dbt_tmp_20250102` as
+    select event_ts, id from (select * from `e2e`.`databricks_microbatch_simple`.`source_events` where event_ts >= '2025-01-02T00:00:00+00:00' and event_ts < '2025-01-03T00:00:00+00:00')
+- sequence: 11
+  type: execute
+  sql: |-
+    INSERT INTO `e2e`.`databricks_microbatch_simple`.`microbatch_simple` BY NAME
+    REPLACE WHERE cast(event_ts as TIMESTAMP) >= '2025-01-02 00:00:00+00:00' and cast(event_ts as TIMESTAMP) < '2025-01-03 00:00:00+00:00'
+    TABLE `microbatch_simple__dbt_tmp_20250102`
+- sequence: 12
+  type: execute
+  sql: DESCRIBE TABLE EXTENDED `e2e`.`databricks_microbatch_simple`.`microbatch_simple` AS JSON
+- sequence: 13
+  type: execute
+  sql: |-
+    SELECT column_name
+    FROM `e2e`.`information_schema`.`columns`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'databricks_microbatch_simple'
+    AND table_name = 'microbatch_simple'
+    AND is_nullable = 'NO'
+- sequence: 14
+  type: execute
+  sql: |-
+    SELECT kcu.constraint_name, kcu.column_name
+    FROM `e2e`.information_schema.key_column_usage kcu
+    WHERE kcu.table_catalog = 'e2e'
+    AND kcu.table_schema = 'databricks_microbatch_simple'
+    AND kcu.table_name = 'microbatch_simple'
+    AND kcu.constraint_name = (
+    SELECT constraint_name
+    FROM `e2e`.information_schema.table_constraints
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'databricks_microbatch_simple'
+    AND table_name = 'microbatch_simple'
+    AND constraint_type = 'PRIMARY KEY'
+    )
+    ORDER BY kcu.ordinal_position
+- sequence: 15
+  type: execute
+  sql: |-
+    SELECT
+    kcu.constraint_name,
+    kcu.column_name AS from_column,
+    ukcu.table_catalog AS to_catalog,
+    ukcu.table_schema AS to_schema,
+    ukcu.table_name AS to_table,
+    ukcu.column_name AS to_column
+    FROM `e2e`.information_schema.key_column_usage kcu
+    JOIN `e2e`.information_schema.referential_constraints rc
+    ON kcu.constraint_name = rc.constraint_name
+    JOIN `e2e`.information_schema.key_column_usage ukcu
+    ON rc.unique_constraint_name = ukcu.constraint_name
+    AND kcu.ordinal_position = ukcu.ordinal_position
+    WHERE kcu.table_catalog = 'e2e'
+    AND kcu.table_schema = 'databricks_microbatch_simple'
+    AND kcu.table_name = 'microbatch_simple'
+    AND kcu.constraint_name IN (
+    SELECT constraint_name
+    FROM `e2e`.information_schema.table_constraints
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'databricks_microbatch_simple'
+    AND table_name = 'microbatch_simple'
+    AND constraint_type = 'FOREIGN KEY'
+    )
+    ORDER BY kcu.ordinal_position
+- sequence: 16
+  type: execute
+  sql: |-
+    SELECT
+    column_name,
+    mask_name,
+    using_columns
+    FROM `system`.`information_schema`.`column_masks`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'databricks_microbatch_simple'
+    AND table_name = 'microbatch_simple'
+- sequence: 17
+  type: execute
+  sql: |-
+    SELECT
+    table_catalog,
+    table_schema,
+    table_name,
+    filter_name,
+    target_columns
+    FROM `e2e`.`information_schema`.`row_filters`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'databricks_microbatch_simple'
+    AND table_name = 'microbatch_simple'
+- sequence: 18
+  type: execute
+  sql: SHOW TBLPROPERTIES `e2e`.`databricks_microbatch_simple`.`microbatch_simple`
+- sequence: 19
+  type: execute
+  sql: describe extended `e2e`.`databricks_microbatch_simple`.`microbatch_simple`
+- sequence: 20
+  type: execute
+  sql: |-
+    create or replace temporary view `microbatch_simple__dbt_tmp_20250103` as
+    select event_ts, id from (select * from `e2e`.`databricks_microbatch_simple`.`source_events` where event_ts >= '2025-01-03T00:00:00+00:00' and event_ts < '2025-01-04T00:00:00+00:00')
+- sequence: 21
+  type: execute
+  sql: |-
+    INSERT INTO `e2e`.`databricks_microbatch_simple`.`microbatch_simple` BY NAME
+    REPLACE WHERE cast(event_ts as TIMESTAMP) >= '2025-01-03 00:00:00+00:00' and cast(event_ts as TIMESTAMP) < '2025-01-04 00:00:00+00:00'
+    TABLE `microbatch_simple__dbt_tmp_20250103`
+- sequence: 22
+  type: execute
+  sql: DESCRIBE TABLE EXTENDED `e2e`.`databricks_microbatch_simple`.`microbatch_simple` AS JSON
+- sequence: 23
+  type: execute
+  sql: |-
+    SELECT column_name
+    FROM `e2e`.`information_schema`.`columns`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'databricks_microbatch_simple'
+    AND table_name = 'microbatch_simple'
+    AND is_nullable = 'NO'
+- sequence: 24
+  type: execute
+  sql: |-
+    SELECT kcu.constraint_name, kcu.column_name
+    FROM `e2e`.information_schema.key_column_usage kcu
+    WHERE kcu.table_catalog = 'e2e'
+    AND kcu.table_schema = 'databricks_microbatch_simple'
+    AND kcu.table_name = 'microbatch_simple'
+    AND kcu.constraint_name = (
+    SELECT constraint_name
+    FROM `e2e`.information_schema.table_constraints
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'databricks_microbatch_simple'
+    AND table_name = 'microbatch_simple'
+    AND constraint_type = 'PRIMARY KEY'
+    )
+    ORDER BY kcu.ordinal_position
+- sequence: 25
+  type: execute
+  sql: |-
+    SELECT
+    kcu.constraint_name,
+    kcu.column_name AS from_column,
+    ukcu.table_catalog AS to_catalog,
+    ukcu.table_schema AS to_schema,
+    ukcu.table_name AS to_table,
+    ukcu.column_name AS to_column
+    FROM `e2e`.information_schema.key_column_usage kcu
+    JOIN `e2e`.information_schema.referential_constraints rc
+    ON kcu.constraint_name = rc.constraint_name
+    JOIN `e2e`.information_schema.key_column_usage ukcu
+    ON rc.unique_constraint_name = ukcu.constraint_name
+    AND kcu.ordinal_position = ukcu.ordinal_position
+    WHERE kcu.table_catalog = 'e2e'
+    AND kcu.table_schema = 'databricks_microbatch_simple'
+    AND kcu.table_name = 'microbatch_simple'
+    AND kcu.constraint_name IN (
+    SELECT constraint_name
+    FROM `e2e`.information_schema.table_constraints
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'databricks_microbatch_simple'
+    AND table_name = 'microbatch_simple'
+    AND constraint_type = 'FOREIGN KEY'
+    )
+    ORDER BY kcu.ordinal_position
+- sequence: 26
+  type: execute
+  sql: |-
+    SELECT
+    column_name,
+    mask_name,
+    using_columns
+    FROM `system`.`information_schema`.`column_masks`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'databricks_microbatch_simple'
+    AND table_name = 'microbatch_simple'
+- sequence: 27
+  type: execute
+  sql: |-
+    SELECT
+    table_catalog,
+    table_schema,
+    table_name,
+    filter_name,
+    target_columns
+    FROM `e2e`.`information_schema`.`row_filters`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'databricks_microbatch_simple'
+    AND table_name = 'microbatch_simple'
+- sequence: 28
+  type: execute
+  sql: SHOW TBLPROPERTIES `e2e`.`databricks_microbatch_simple`.`microbatch_simple`
+- sequence: 29
+  type: execute
+  sql: describe extended `e2e`.`databricks_microbatch_simple`.`microbatch_simple`
+- sequence: 30
+  type: execute
+  sql: |-
+    create or replace temporary view `microbatch_simple__dbt_tmp_20250104` as
+    select event_ts, id from (select * from `e2e`.`databricks_microbatch_simple`.`source_events` where event_ts >= '2025-01-04T00:00:00+00:00' and event_ts < '2025-01-05T00:00:00+00:00')
+- sequence: 31
+  type: execute
+  sql: |-
+    INSERT INTO `e2e`.`databricks_microbatch_simple`.`microbatch_simple` BY NAME
+    REPLACE WHERE cast(event_ts as TIMESTAMP) >= '2025-01-04 00:00:00+00:00' and cast(event_ts as TIMESTAMP) < '2025-01-05 00:00:00+00:00'
+    TABLE `microbatch_simple__dbt_tmp_20250104`
+model.microbatch_simple.source_events:
+- sequence: 0
+  type: execute
+  sql: |-
+    SELECT
+    table_name,
+    if(table_type IN ('EXTERNAL', 'MANAGED', 'MANAGED_SHALLOW_CLONE', 'EXTERNAL_SHALLOW_CLONE'), 'table', lower(table_type)) AS table_type,
+    lower(data_source_format) AS file_format,
+    table_schema,
+    table_owner,
+    table_catalog,
+    if(
+    table_type IN (
+    'EXTERNAL',
+    'MANAGED',
+    'MANAGED_SHALLOW_CLONE',
+    'EXTERNAL_SHALLOW_CLONE'
+    ),
+    lower(table_type),
+    NULL
+    ) AS databricks_table_type
+    FROM `system`.`information_schema`.`tables`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'databricks_microbatch_simple'
+- sequence: 1
+  type: execute
+  sql: |-
+    SELECT
+    table_catalog,
+    table_schema,
+    table_name,
+    filter_name,
+    target_columns
+    FROM `e2e`.`information_schema`.`row_filters`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'databricks_microbatch_simple'
+    AND table_name = 'source_events'
+- sequence: 2
+  type: execute
+  sql: |-
+    create or replace table `e2e`.`databricks_microbatch_simple`.`source_events`
+    
+    
+    
+    using delta
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    as
+    select cast('2025-01-01 12:00:00' as timestamp) as event_ts, 1 as id
+    union all
+    select cast('2025-01-02 12:00:00' as timestamp) as event_ts, 2 as id
+    union all
+    select cast('2025-01-03 12:00:00' as timestamp) as event_ts, 3 as id
+    union all
+    select cast('2025-01-04 12:00:00' as timestamp) as event_ts, 4 as id

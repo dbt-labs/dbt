@@ -11,8 +11,8 @@ use super::{
 };
 use futures::FutureExt as _;
 use itertools::Itertools;
-use once_cell::sync::Lazy;
 use regex::Regex;
+use std::sync::LazyLock;
 use std::{
     env,
     fs::File,
@@ -34,8 +34,8 @@ pub(super) type TextualPatch = String;
 pub type OutputNormalizer = fn(String) -> String;
 
 // Snowflake prompt for our REPL
-static SNOWFLAKE_PROMPT: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"^\d+\(snowflake\[local\].*").unwrap());
+static SNOWFLAKE_PROMPT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\d+\(snowflake\[local\].*").unwrap());
 
 fn postprocess_actual(content: String, sort_output: bool) -> String {
     let res = [
@@ -348,6 +348,11 @@ fn filter_lines_internal(content: String, in_emacs: bool) -> String {
         // Parallel CI tests can contend on the process-wide `dbt_packages`
         // (or `target/`) directory lease. The wait line is timing-dependent.
         "Waiting for lease on '",
+        // Effective thread count, printed once per invocation. It depends on the
+        // adapter default or the test harness flags rather than on what a test
+        // exercises, so it would churn every golden if it were pinned.
+        " thread (target: ",
+        " threads (target: ",
     ];
 
     let mut res = content
@@ -412,6 +417,15 @@ mod tests {
             "   Loading profiles.yml\n   Parsing models/mat_view.sql\n",
             lines
         );
+    }
+
+    #[test]
+    fn test_filter_thread_count_line() {
+        let lines = filter_lines(
+            "a\n     Using 1 thread (target: dev)\n     Using 48 threads (target: dev)\nb"
+                .to_string(),
+        );
+        assert_eq!(lines, "a\nb");
     }
 
     #[test]

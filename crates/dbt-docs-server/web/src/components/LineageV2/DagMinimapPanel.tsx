@@ -7,7 +7,7 @@ import { DagGroupsMinimap } from './DagGroupsMinimap';
 import { dagResourceColor } from './dagResourceColors';
 import { GLASS_PANEL_CLASSES } from './glassPanel';
 
-interface Props {
+interface DagMinimapPanelProps {
   /** xyflow's own `<MiniMap>` only means anything against a pan/zoom canvas --
    *  Groups view has no canvas (it's a plain scrollable div), so 'groups'
    *  swaps in DagGroupsMinimap instead of trying to render the real one
@@ -16,7 +16,7 @@ interface Props {
   rootUniqueId: string;
 }
 
-export function DagMinimapPanel({ view, rootUniqueId }: Props) {
+export function DagMinimapPanel({ view, rootUniqueId }: DagMinimapPanelProps) {
   const [collapsed, setCollapsed] = useState(false);
 
   return (

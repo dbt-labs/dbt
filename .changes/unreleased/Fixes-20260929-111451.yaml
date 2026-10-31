@@ -1,0 +1,7 @@
+kind: Fixes
+body: Support `exposure` in the list command's `--resource-type` option
+time: 2026-09-29T11:14:51-05:00
+custom:
+    author: ShaneMcGovern
+    issue: "16224"
+    project: dbt-core

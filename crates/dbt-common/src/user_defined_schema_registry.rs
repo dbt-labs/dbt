@@ -9,11 +9,43 @@
 //! relation resolve its declared columns through the binder's normal
 //! catalog-lookup path, rather than falling through to placeholder inference.
 
-use crate::collections::{DashMap, HashSet};
+use crate::collections::{HashSet, SccHashMap};
+
+/// The key a relation is recorded under: `catalog.schema.table`, each part
+/// double-quoted (with `"` doubled) unless it is a lowercase identifier,
+/// that is, a lowercase ASCII letter or `_` followed by lowercase ASCII
+/// letters, digits and `_`.
+///
+/// This is the form the binder looks relations up by
+/// (`TableReference::to_quoted_string`).
+pub fn relation_key(catalog: &str, schema: &str, table: &str) -> String {
+    format!(
+        "{}.{}.{}",
+        quote_part(catalog),
+        quote_part(schema),
+        quote_part(table)
+    )
+}
+
+fn quote_part(part: &str) -> String {
+    let mut chars = part.chars();
+    let needs_quotes = match chars.next() {
+        Some(first) => {
+            !(first.is_ascii_lowercase() || first == '_')
+                || !chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+        }
+        None => false,
+    };
+    if needs_quotes {
+        format!("\"{}\"", part.replace('"', "\"\""))
+    } else {
+        part.to_string()
+    }
+}
 
 #[derive(Debug, Default)]
 pub struct UserDefinedSchemaRegistry {
-    declared_columns: DashMap<String, HashSet<String>>,
+    declared_columns: SccHashMap<String, HashSet<String>>,
 }
 
 impl UserDefinedSchemaRegistry {
@@ -24,20 +56,32 @@ impl UserDefinedSchemaRegistry {
     /// Record that `column` is declared for `relation`.
     pub fn record_column(&self, relation: &str, column: &str) {
         self.declared_columns
-            .entry(relation.to_string())
+            .entry_sync(relation.to_string())
             .or_default()
+            // `get_mut` because `OccupiedEntry::insert` replaces the whole value.
+            .get_mut()
             .insert(column.to_string());
     }
 
     /// Declared columns previously recorded for `relation`, if any.
     pub fn columns_for(&self, relation: &str) -> Option<HashSet<String>> {
-        self.declared_columns.get(relation).map(|c| c.clone())
+        self.declared_columns.read_sync(relation, |_, c| c.clone())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn relation_key_leaves_lowercase_identifiers_bare() {
+        assert_eq!(relation_key("db", "sch_1", "_tbl"), "db.sch_1._tbl");
+    }
+
+    #[test]
+    fn relation_key_quotes_other_parts() {
+        assert_eq!(relation_key("DB", "1sch", "a\"b"), r#""DB"."1sch"."a""b""#);
+    }
 
     #[test]
     fn record_and_read_back_a_column() {

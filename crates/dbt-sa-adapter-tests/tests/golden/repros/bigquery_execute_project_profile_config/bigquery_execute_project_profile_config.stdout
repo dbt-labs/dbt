@@ -1,0 +1,10 @@
+       dbt 
+   Loading profiles.yml
+   Parsing models/hello.sql
+ Rendering models/hello.sql
+   Running models/hello.sql
+    Failed [duration] model bigquery_execute_project_profile_config.hello (table)
+==================== Execution Summary =====================
+Finished 'run' with 1 warning and 1 error for target 'bigquery' [duration]
+Processed: 1 model
+Summary: 1 total | 1 error

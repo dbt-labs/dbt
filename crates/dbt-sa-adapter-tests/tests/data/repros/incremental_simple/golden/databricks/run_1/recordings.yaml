@@ -1,0 +1,252 @@
+14a65069:
+- sequence: 0
+  type: execute
+  sql: |-
+    SELECT
+    table_name,
+    if(table_type IN ('EXTERNAL', 'MANAGED', 'MANAGED_SHALLOW_CLONE', 'EXTERNAL_SHALLOW_CLONE'), 'table', lower(table_type)) AS table_type,
+    lower(data_source_format) AS file_format,
+    table_schema,
+    table_owner,
+    table_catalog,
+    if(
+    table_type IN (
+    'EXTERNAL',
+    'MANAGED',
+    'MANAGED_SHALLOW_CLONE',
+    'EXTERNAL_SHALLOW_CLONE'
+    ),
+    lower(table_type),
+    NULL
+    ) AS databricks_table_type
+    FROM `system`.`information_schema`.`tables`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'databricks_incremental_simple'
+85f3743c:
+- sequence: 0
+  type: execute
+  sql: SHOW SCHEMAS IN `e2e`
+model.hello_world.incremental:
+- sequence: 0
+  type: execute
+  sql: DESCRIBE TABLE EXTENDED `e2e`.`databricks_incremental_simple`.`incremental` AS JSON
+- sequence: 1
+  type: execute
+  sql: |-
+    SELECT column_name
+    FROM `e2e`.`information_schema`.`columns`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'databricks_incremental_simple'
+    AND table_name = 'incremental'
+    AND is_nullable = 'NO'
+- sequence: 2
+  type: execute
+  sql: |-
+    SELECT kcu.constraint_name, kcu.column_name
+    FROM `e2e`.information_schema.key_column_usage kcu
+    WHERE kcu.table_catalog = 'e2e'
+    AND kcu.table_schema = 'databricks_incremental_simple'
+    AND kcu.table_name = 'incremental'
+    AND kcu.constraint_name = (
+    SELECT constraint_name
+    FROM `e2e`.information_schema.table_constraints
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'databricks_incremental_simple'
+    AND table_name = 'incremental'
+    AND constraint_type = 'PRIMARY KEY'
+    )
+    ORDER BY kcu.ordinal_position
+- sequence: 3
+  type: execute
+  sql: |-
+    SELECT
+    kcu.constraint_name,
+    kcu.column_name AS from_column,
+    ukcu.table_catalog AS to_catalog,
+    ukcu.table_schema AS to_schema,
+    ukcu.table_name AS to_table,
+    ukcu.column_name AS to_column
+    FROM `e2e`.information_schema.key_column_usage kcu
+    JOIN `e2e`.information_schema.referential_constraints rc
+    ON kcu.constraint_name = rc.constraint_name
+    JOIN `e2e`.information_schema.key_column_usage ukcu
+    ON rc.unique_constraint_name = ukcu.constraint_name
+    AND kcu.ordinal_position = ukcu.ordinal_position
+    WHERE kcu.table_catalog = 'e2e'
+    AND kcu.table_schema = 'databricks_incremental_simple'
+    AND kcu.table_name = 'incremental'
+    AND kcu.constraint_name IN (
+    SELECT constraint_name
+    FROM `e2e`.information_schema.table_constraints
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'databricks_incremental_simple'
+    AND table_name = 'incremental'
+    AND constraint_type = 'FOREIGN KEY'
+    )
+    ORDER BY kcu.ordinal_position
+- sequence: 4
+  type: execute
+  sql: |-
+    SELECT
+    column_name,
+    mask_name,
+    using_columns
+    FROM `system`.`information_schema`.`column_masks`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'databricks_incremental_simple'
+    AND table_name = 'incremental'
+- sequence: 5
+  type: execute
+  sql: |-
+    SELECT
+    table_catalog,
+    table_schema,
+    table_name,
+    filter_name,
+    target_columns
+    FROM `e2e`.`information_schema`.`row_filters`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'databricks_incremental_simple'
+    AND table_name = 'incremental'
+- sequence: 6
+  type: execute
+  sql: SHOW TBLPROPERTIES `e2e`.`databricks_incremental_simple`.`incremental`
+- sequence: 7
+  type: execute
+  sql: describe extended `e2e`.`databricks_incremental_simple`.`incremental`
+- sequence: 8
+  type: execute
+  sql: |-
+    create or replace temporary view `incremental__dbt_tmp` as
+    WITH source_data AS (SELECT * FROM `e2e`.`databricks_incremental_simple`.`model_a` )
+    
+    
+    
+    SELECT id,
+    field1,
+    field2,
+    field3,
+    field4
+    FROM source_data WHERE id NOT IN (SELECT id from `e2e`.`databricks_incremental_simple`.`incremental` )
+- sequence: 9
+  type: execute
+  sql: DESCRIBE TABLE EXTENDED `incremental__dbt_tmp` AS JSON
+- sequence: 10
+  type: execute
+  sql: DESCRIBE TABLE EXTENDED `e2e`.`databricks_incremental_simple`.`incremental` AS JSON
+- sequence: 11
+  type: execute
+  sql: ALTER TABLE `e2e`.`databricks_incremental_simple`.`incremental` ADD COLUMNS (`field3` int, `field4` STRING)
+- sequence: 12
+  type: execute
+  sql: DESCRIBE TABLE EXTENDED `e2e`.`databricks_incremental_simple`.`incremental` AS JSON
+- sequence: 13
+  type: execute
+  sql: DESCRIBE TABLE EXTENDED `incremental__dbt_tmp` AS JSON
+- sequence: 14
+  type: execute
+  sql: |-
+    -- back compat for old kwarg name
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    merge
+    into
+    `e2e`.`databricks_incremental_simple`.`incremental` as DBT_INTERNAL_DEST
+    using
+    `incremental__dbt_tmp` as DBT_INTERNAL_SOURCE
+    on
+    
+    DBT_INTERNAL_SOURCE.`id` <=> DBT_INTERNAL_DEST.`id`
+    
+    when matched
+    then update set
+    `id` = DBT_INTERNAL_SOURCE.`id`, `field1` = DBT_INTERNAL_SOURCE.`field1`, `field2` = DBT_INTERNAL_SOURCE.`field2`, `field3` = DBT_INTERNAL_SOURCE.`field3`, `field4` = DBT_INTERNAL_SOURCE.`field4`
+    when not matched
+    then insert
+    (`id`, `field1`, `field2`, `field3`, `field4`) VALUES (DBT_INTERNAL_SOURCE.`id`, DBT_INTERNAL_SOURCE.`field1`, DBT_INTERNAL_SOURCE.`field2`, DBT_INTERNAL_SOURCE.`field3`, DBT_INTERNAL_SOURCE.`field4`)
+- sequence: 15
+  type: execute
+  sql: |-
+    COMMENT ON 
+    TABLE
+    `e2e`.`databricks_incremental_simple`.`incremental` IS 'my table description
+    with multiple
+    lines
+    '
+model.hello_world.model_a:
+- sequence: 0
+  type: execute
+  sql: DESCRIBE TABLE EXTENDED `e2e`.`databricks_incremental_simple`.`model_a` AS JSON
+- sequence: 1
+  type: execute
+  sql: |-
+    SELECT
+    table_catalog,
+    table_schema,
+    table_name,
+    filter_name,
+    target_columns
+    FROM `e2e`.`information_schema`.`row_filters`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'databricks_incremental_simple'
+    AND table_name = 'model_a'
+- sequence: 2
+  type: execute
+  sql: |-
+    create or replace table `e2e`.`databricks_incremental_simple`.`model_a`
+    
+    
+    
+    using delta
+    
+    
+    
+    
+    
+    
+    
+    
+    comment 'my description
+    with multiple
+    lines
+    '
+    
+    as
+    with source_data as (
+    
+    select 1 as id, 'aaa' as field1, 'bbb' as field2, 111 as field3, 'TTT' as field4
+    union all select 2 as id, 'ccc' as field1, 'ddd' as field2, 222 as field3, 'UUU' as field4
+    )
+    
+    select id
+    ,field1
+    ,field2
+    ,field3
+    ,field4
+    
+    from source_data
+model.hello_world.view_a:
+- sequence: 0
+  type: execute
+  sql: DESCRIBE TABLE EXTENDED `e2e`.`databricks_incremental_simple`.`view_a` AS JSON
+- sequence: 1
+  type: execute
+  sql: |-
+    create or replace view `e2e`.`databricks_incremental_simple`.`view_a`
+    comment 'my view description
+    with multiple
+    lines
+    '
+    as (
+    select * from `e2e`.`databricks_incremental_simple`.`model_a`
+    )

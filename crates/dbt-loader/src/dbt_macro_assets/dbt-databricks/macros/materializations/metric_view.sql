@@ -1,6 +1,9 @@
 {% materialization metric_view, adapter='databricks' -%}
   {%- set existing_relation = load_relation_with_metadata(this) -%}
   {%- set target_relation = this.incorporate(type='metric_view') -%}
+  {-# DIVERGENCE: This is an extra sanity check that should be back-ported
+      to dbt-databricks, but there is no functional difference from this
+      divergence. #-}
   {% if not sql | trim %}
     {{ exceptions.raise_compiler_error("Cannot compile metric view " ~ target_relation.identifier ~ " with no YAML definition") }}
   {% endif %}
@@ -11,7 +14,7 @@
   {{ run_pre_hooks() }}
 
   {% if existing_relation %}
-    {% if existing_relation.is_metric_view and relation_should_be_altered(existing_relation) %}
+    {% if relation_should_be_altered(existing_relation, target_relation) %}
       {% set configuration_changes = get_configuration_changes(existing_relation) %}
       {% if configuration_changes and configuration_changes.changes %}
         {% if configuration_changes.requires_full_refresh %}
@@ -20,6 +23,7 @@
           {{ alter_metric_view(target_relation, configuration_changes.changes) }}
         {% endif %}
       {% else %}
+        {# No changes detected - run a no-op statement for dbt tracking #}
         {% call statement('main') %}
           select 1
         {% endcall %}

@@ -18,6 +18,8 @@ pub(crate) mod resolve_metrics;
 pub(crate) mod resolve_models;
 /// Functions for resolving operations
 pub(crate) mod resolve_operations;
+/// Functions for resolving plugin nodes
+pub(crate) mod resolve_plugins;
 /// Functions for resolving properties
 pub(crate) mod resolve_properties;
 /// Functions for resolving query comments

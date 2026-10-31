@@ -2,12 +2,12 @@
 // driven by the per-type CSS classes in app.css. Used in the sidebar and
 // node detail header.
 
-interface Props {
+interface NodeIconProps {
   resourceType: string;
   size?: 'sm' | 'md';
 }
 
-export function NodeIcon({ resourceType, size = 'sm' }: Props) {
+export function NodeIcon({ resourceType, size = 'sm' }: NodeIconProps) {
   return (
     <span
       className={`type-pill ${resourceType} ${size === 'sm' ? 'sm' : ''}`}

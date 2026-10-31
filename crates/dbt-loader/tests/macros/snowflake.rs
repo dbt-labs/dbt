@@ -1,11 +1,239 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use dbt_adapter::relation::{Relation, RelationObject};
 use dbt_adapter_core::AdapterType;
 use dbt_jinja_utils::mock_object::MockJinjaObject;
+use dbt_schemas::dbt_types::RelationType;
+use dbt_schemas::schemas::relations::base::{BaseRelation, TableFormat};
 use minijinja::Value;
 
-use crate::macro_test_harness::{MacroTestHarness, default_mock_config};
+use crate::macro_test_harness::{
+    MacroTestHarness, assert_executed_contains, default_mock_config, executed_sql,
+    resolved_quoting_for,
+};
+
+#[test]
+fn snapshot_time_uses_iceberg_compatible_precision() {
+    let harness = MacroTestHarness::for_adapter(AdapterType::Snowflake)
+        .load_all_macros()
+        .build()
+        .expect("harness should build");
+
+    // Iceberg-ness comes from the catalog relation (so catalogs.yml-defined Iceberg counts too),
+    // not from a `table_format` key on the node config.
+    harness.mock().on("build_catalog_relation", |_| {
+        Ok(Value::from_serialize(BTreeMap::from([(
+            "table_format",
+            "iceberg",
+        )])))
+    });
+    let ctx = BTreeMap::from([(
+        "config".to_string(),
+        Value::from_dyn_object(default_mock_config()),
+    )]);
+
+    let rendered = harness
+        .render("{{ snapshot_get_time() }}", ctx)
+        .expect("snapshot_get_time should render");
+    let normalized = rendered.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    assert_eq!(
+        normalized,
+        "to_timestamp_ntz(convert_timezone('UTC', current_timestamp()))::timestamp_ntz(6)"
+    );
+}
+
+#[test]
+fn snapshot_time_uses_default_precision_for_non_iceberg() {
+    let harness = MacroTestHarness::for_adapter(AdapterType::Snowflake)
+        .load_all_macros()
+        .build()
+        .expect("harness should build");
+
+    harness.mock().on("build_catalog_relation", |_| {
+        Ok(Value::from_serialize(BTreeMap::from([(
+            "table_format",
+            "default",
+        )])))
+    });
+    let ctx = BTreeMap::from([(
+        "config".to_string(),
+        Value::from_dyn_object(default_mock_config()),
+    )]);
+
+    let rendered = harness
+        .render("{{ snapshot_get_time() }}", ctx)
+        .expect("snapshot_get_time should render");
+    let normalized = rendered.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    assert_eq!(
+        normalized,
+        "to_timestamp_ntz(convert_timezone('UTC', current_timestamp()))"
+    );
+}
+
+#[test]
+fn snapshot_schema_evolution_uses_iceberg_alter() {
+    let harness = MacroTestHarness::for_adapter(AdapterType::Snowflake)
+        .load_all_macros()
+        .with_stub_functions()
+        .build()
+        .expect("harness should build");
+    harness.mock().on("quote", |args| {
+        let identifier = args
+            .first()
+            .and_then(Value::as_str)
+            .expect("quote should receive an identifier");
+        Ok(Value::from(format!("\"{identifier}\"")))
+    });
+
+    let relation: Arc<dyn BaseRelation> = Arc::new(
+        Relation::new(
+            AdapterType::Snowflake,
+            "TEST_DB".to_string(),
+            "TEST_SCHEMA".to_string(),
+            "SNAPSHOT".to_string(),
+        )
+        .with_relation_type(RelationType::Table)
+        .with_quoting(resolved_quoting_for(AdapterType::Snowflake))
+        .with_table_format(TableFormat::Iceberg),
+    );
+    let column = Arc::new(MockJinjaObject::new());
+    column.set_attr("name", Value::from("NEW_COLUMN"));
+    column.set_attr("data_type", Value::from("NUMBER"));
+    column.on("is_string", |_| Ok(Value::from(false)));
+    let context = BTreeMap::from([
+        (
+            "relation".to_string(),
+            RelationObject::new(relation).into_value(),
+        ),
+        (
+            "columns".to_string(),
+            Value::from(vec![Value::from_dyn_object(column)]),
+        ),
+        ("execute".to_string(), Value::from(true)),
+    ]);
+
+    harness
+        .render("{{ create_columns(relation, columns) }}", context)
+        .expect("snapshot column creation should render");
+
+    assert_executed_contains(
+        harness.mock(),
+        "alter iceberg table TEST_DB.TEST_SCHEMA.SNAPSHOT add column",
+    );
+    assert_executed_contains(harness.mock(), "\"NEW_COLUMN\"");
+}
+
+#[test]
+fn snapshot_schema_evolution_matches_v1_default_for_non_iceberg() {
+    let harness = MacroTestHarness::for_adapter(AdapterType::Snowflake)
+        .load_all_macros()
+        .with_stub_functions()
+        .build()
+        .expect("harness should build");
+    harness.mock().on("quote", |args| {
+        let identifier = args
+            .first()
+            .and_then(Value::as_str)
+            .expect("quote should receive an identifier");
+        Ok(Value::from(format!("\"{identifier}\"")))
+    });
+
+    let relation: Arc<dyn BaseRelation> = Arc::new(
+        Relation::new(
+            AdapterType::Snowflake,
+            "TEST_DB".to_string(),
+            "TEST_SCHEMA".to_string(),
+            "SNAPSHOT".to_string(),
+        )
+        .with_relation_type(RelationType::Table)
+        .with_quoting(resolved_quoting_for(AdapterType::Snowflake))
+        .with_table_format(TableFormat::Default),
+    );
+    // Same SQL as dbt-snowflake v1 (no override there): one `ALTER TABLE ... ADD COLUMN` per
+    // column, typed with `expanded_data_type` (which carries the string size).
+    let new_column = |name: &str, expanded: &str| {
+        let column = Arc::new(MockJinjaObject::new());
+        column.set_attr("name", Value::from(name));
+        column.set_attr("data_type", Value::from("VARCHAR"));
+        column.set_attr("expanded_data_type", Value::from(expanded));
+        column.on("is_string", |_| Ok(Value::from(true)));
+        Value::from_dyn_object(column)
+    };
+    let context = BTreeMap::from([
+        (
+            "relation".to_string(),
+            RelationObject::new(relation).into_value(),
+        ),
+        (
+            "columns".to_string(),
+            Value::from(vec![
+                new_column("COL_A", "VARCHAR(100)"),
+                new_column("COL_B", "NUMBER(38,0)"),
+            ]),
+        ),
+        ("execute".to_string(), Value::from(true)),
+    ]);
+
+    harness
+        .render("{{ create_columns(relation, columns) }}", context)
+        .expect("snapshot column creation should render");
+
+    let sqls = executed_sql(harness.mock());
+    let normalized: Vec<String> = sqls
+        .iter()
+        .map(|s| s.split_whitespace().collect::<Vec<_>>().join(" "))
+        .collect();
+    let add_column_statements: Vec<&String> = normalized
+        .iter()
+        .filter(|s| {
+            s.to_lowercase()
+                .contains("alter table test_db.test_schema.snapshot add column")
+        })
+        .collect();
+    assert_eq!(
+        add_column_statements.len(),
+        2,
+        "expected one ALTER TABLE per added column, got: {sqls:?}"
+    );
+    assert!(
+        add_column_statements
+            .iter()
+            .any(|s| s.contains("\"COL_A\" VARCHAR(100)")),
+        "string size should come from expanded_data_type, got: {sqls:?}"
+    );
+    assert!(
+        add_column_statements
+            .iter()
+            .any(|s| s.contains("\"COL_B\" NUMBER(38,0)")),
+        "got: {sqls:?}"
+    );
+    assert!(
+        !normalized
+            .iter()
+            .any(|s| s.to_lowercase().contains("iceberg")),
+        "non-Iceberg snapshot should not use ALTER ICEBERG TABLE, got: {sqls:?}"
+    );
+}
+
+#[test]
+fn snapshot_check_cols_keeps_exact_case_matching() {
+    let harness = MacroTestHarness::for_adapter(AdapterType::Snowflake)
+        .load_all_macros()
+        .build()
+        .expect("harness should build");
+
+    let rendered = harness
+        .render(
+            "{{ 'found' if adapter.dispatch('snapshot_check_column_exists', 'dbt')('dice_change_hash', ['DICE_CHANGE_HASH']) else 'missing' }}|{{ 'found' if adapter.dispatch('snapshot_check_column_exists', 'dbt')('DICE_CHANGE_HASH', ['DICE_CHANGE_HASH']) else 'missing' }}",
+            BTreeMap::<String, Value>::new(),
+        )
+        .expect("snapshot column check should render");
+
+    assert_eq!(rendered.trim(), "missing|found");
+}
 
 #[test]
 fn python_table_tmp_relation_type_is_allowed() {
@@ -87,6 +315,162 @@ fn python_table_preserves_transient_config() {
     assert!(!rendered.contains("table_type='temporary'"));
 }
 
+/// Render `snowflake__create_table_as` for a SQL table whose (INFO_SCHEMA) catalog
+/// relation reports the given `change_tracking`, mirroring `render_python_table`.
+fn render_sql_table(change_tracking: Option<bool>) -> String {
+    let harness = MacroTestHarness::for_adapter(AdapterType::Snowflake)
+        .load_all_macros()
+        .build()
+        .expect("harness should build");
+
+    let catalog_relation = Arc::new(MockJinjaObject::new());
+    catalog_relation.set_attr("catalog_type", Value::from("INFO_SCHEMA"));
+    catalog_relation.set_attr("is_transient", Value::from(false));
+    catalog_relation.set_attr(
+        "change_tracking",
+        change_tracking.map_or_else(|| Value::from(()), Value::from),
+    );
+    harness.mock().on("build_catalog_relation", move |_| {
+        Ok(Value::from_dyn_object(catalog_relation.clone()))
+    });
+
+    let ctx = harness
+        .materialization_context("orders", "select 1 as id")
+        .relation_type(RelationType::Table)
+        .with("temporary", Value::from(false))
+        .build();
+
+    harness
+        .render(
+            "{{ snowflake__create_table_as(temporary, this, compiled_code) }}",
+            ctx,
+        )
+        .expect("SQL table macro should render")
+}
+
+/// Position of `needle` in the whitespace-normalized, lowercased SQL.
+fn position_in(normalized: &str, needle: &str) -> usize {
+    normalized
+        .find(needle)
+        .unwrap_or_else(|| panic!("expected `{needle}` in:\n{normalized}"))
+}
+
+#[test]
+fn sql_table_emits_change_tracking_true() {
+    let rendered = render_sql_table(Some(true));
+    let normalized = rendered
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+
+    // Table properties come before copy grants, and all of them before the `as (` select.
+    let change_tracking = position_in(&normalized, "change_tracking = true");
+    assert!(
+        change_tracking < position_in(&normalized, "copy grants"),
+        "change_tracking should precede copy grants, got:\n{rendered}"
+    );
+    assert!(
+        change_tracking < position_in(&normalized, "as ("),
+        "change_tracking should precede the CTAS body, got:\n{rendered}"
+    );
+}
+
+#[test]
+fn sql_table_emits_change_tracking_false() {
+    let rendered = render_sql_table(Some(false));
+    let normalized = rendered
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+
+    assert!(
+        normalized.contains("change_tracking = false"),
+        "an explicit change_tracking = false should still be emitted, got:\n{rendered}"
+    );
+}
+
+#[test]
+fn sql_table_omits_change_tracking_when_unset() {
+    let rendered = render_sql_table(None);
+
+    assert!(
+        !rendered.to_lowercase().contains("change_tracking"),
+        "change_tracking should not appear when unset, got:\n{rendered}"
+    );
+}
+
+/// Render `snowflake__create_csv_table` for a seed whose catalog relation
+/// reports `is_transient`, mirroring `render_python_table`.
+fn render_seed_create_csv_table(is_transient: bool) -> String {
+    let harness = MacroTestHarness::for_adapter(AdapterType::Snowflake)
+        .load_all_macros()
+        // `create_csv_table` wraps its DDL in `statement('_')`, which calls
+        // `store_result`; register the standard stubs so the render succeeds.
+        .with_stub_functions()
+        .build()
+        .expect("harness should build");
+
+    let catalog_relation = Arc::new(MockJinjaObject::new());
+    catalog_relation.set_attr("catalog_type", Value::from("INFO_SCHEMA"));
+    catalog_relation.set_attr("is_transient", Value::from(is_transient));
+    harness.mock().on("build_catalog_relation", move |_| {
+        Ok(Value::from_dyn_object(catalog_relation.clone()))
+    });
+
+    // Stub the adapter column typing/quoting the DDL body calls back into.
+    harness
+        .mock()
+        .on("convert_type", |_| Ok(Value::from("integer")));
+    harness.mock().on("quote_seed_column", |args| {
+        Ok(args.first().cloned().unwrap_or(Value::UNDEFINED))
+    });
+
+    // Minimal agate_table stand-in: a single `id` column, no rows.
+    let agate_table = Arc::new(MockJinjaObject::new());
+    agate_table.set_attr("column_names", Value::from(vec![Value::from("id")]));
+
+    let ctx = harness
+        .materialization_context("my_seed", "")
+        .relation_type(RelationType::Table)
+        .with("agate_table", Value::from_dyn_object(agate_table))
+        .build();
+
+    harness
+        .render("{{ snowflake__create_csv_table(model, agate_table) }}", ctx)
+        .expect("snowflake__create_csv_table should render")
+}
+
+/// CORE-903: a default-format seed is created TRANSIENT (is_transient defaults
+/// to true), matching table behavior. Pre-fix it emitted a plain CREATE TABLE.
+#[test]
+fn seed_create_csv_table_is_transient_by_default() {
+    let rendered = render_seed_create_csv_table(true);
+    let lower = rendered.to_lowercase();
+
+    assert!(
+        lower.contains("create transient table"),
+        "seed DDL should be TRANSIENT when the catalog relation is transient, got:\n{rendered}"
+    );
+}
+
+/// CORE-903: an explicit `transient: false` seed is a plain permanent table.
+#[test]
+fn seed_create_csv_table_honors_transient_false() {
+    let rendered = render_seed_create_csv_table(false);
+    let lower = rendered.to_lowercase();
+
+    assert!(
+        lower.contains("create table"),
+        "seed DDL should be a plain CREATE TABLE when not transient, got:\n{rendered}"
+    );
+    assert!(
+        !lower.contains("transient"),
+        "explicit transient: false must not emit the transient keyword, got:\n{rendered}"
+    );
+}
+
 #[test]
 fn alter_relation_comment_uses_iceberg_syntax_after_incorporate() {
     use dbt_adapter::relation::{Relation, RelationObject};
@@ -138,4 +522,238 @@ fn alter_relation_comment_uses_iceberg_syntax_after_incorporate() {
         !rendered.contains("comment on table"),
         "must not fall back to plain COMMENT ON TABLE for an Iceberg relation, got:\n{rendered}"
     );
+}
+
+mod cld_base_location {
+    use super::*;
+
+    const V2_BASE_LOCATION: &str = "s3://bucket/warehouse/TEST_SCHEMA/orders";
+    const V1_BASE_LOCATION: &str = "_dbt/TEST_SCHEMA/orders";
+
+    #[derive(Clone, Copy)]
+    enum CldMacro {
+        Rest,
+        Glue,
+    }
+
+    struct Runtime {
+        dbt_version: &'static str,
+        use_catalogs_v2: Option<bool>,
+    }
+
+    const V2: Runtime = Runtime {
+        dbt_version: "2.0.0",
+        use_catalogs_v2: Some(true),
+    };
+    const FUSION_V1: Runtime = Runtime {
+        dbt_version: "2.0.0",
+        use_catalogs_v2: Some(false),
+    };
+    const CORE_1X: Runtime = Runtime {
+        dbt_version: "1.10.0",
+        use_catalogs_v2: None,
+    };
+
+    fn catalog_relation(
+        catalog_database: Value,
+        catalog_linked_database: Value,
+        external_volume: Value,
+        base_location: Value,
+    ) -> Value {
+        let linked_catalog_provider = Arc::new(MockJinjaObject::new());
+        linked_catalog_provider.set_attr("is_glue", Value::from(false));
+
+        let is_cld = !catalog_linked_database.is_none() || !catalog_database.is_undefined();
+        let relation = Arc::new(MockJinjaObject::new());
+        relation.set_attr(
+            "linked_catalog_provider",
+            Value::from_dyn_object(linked_catalog_provider),
+        );
+        relation.on("has_catalog_linked_database", move |_| {
+            Ok(Value::from(is_cld))
+        });
+        relation.set_attr("catalog_name", Value::from("REST"));
+        relation.set_attr("catalog_database", catalog_database);
+        relation.set_attr("catalog_linked_database", catalog_linked_database);
+        relation.set_attr(
+            "catalog_linked_database_type",
+            if is_cld {
+                Value::from("unity")
+            } else {
+                Value::from(())
+            },
+        );
+        relation.set_attr("external_volume", external_volume);
+        relation.set_attr("base_location", base_location);
+        for attr in [
+            "iceberg_version",
+            "target_file_size",
+            "auto_refresh",
+            "max_data_extension_time_in_days",
+        ] {
+            relation.set_attr(attr, Value::from(()));
+        }
+        Value::from_dyn_object(relation)
+    }
+
+    fn v2_cld(base_location: Value) -> Value {
+        catalog_relation(
+            Value::from("MY_CLD"),
+            Value::from(()),
+            Value::from(()),
+            base_location,
+        )
+    }
+
+    fn fusion_v1_cld() -> Value {
+        catalog_relation(
+            Value::UNDEFINED,
+            Value::from("MY_CLD"),
+            Value::from(()),
+            Value::from(V1_BASE_LOCATION),
+        )
+    }
+
+    fn render(cld_macro: CldMacro, runtime: Runtime, catalog_relation: Value) -> String {
+        let harness = MacroTestHarness::for_adapter(AdapterType::Snowflake)
+            .load_all_macros()
+            .with_macro(
+                "test_project",
+                "make_glue_compatible_relation",
+                "{% macro make_glue_compatible_relation(relation) %}{{ return(relation) }}{% endmacro %}",
+            )
+            .with_macro(
+                "test_project",
+                "get_partition_by_keys",
+                "{% macro get_partition_by_keys(config) %}{{ return([]) }}{% endmacro %}",
+            )
+            .build()
+            .expect("harness should build");
+        if let Some(use_catalogs_v2) = runtime.use_catalogs_v2 {
+            harness.mock().set_attr(
+                "behavior",
+                Value::from_serialize(BTreeMap::from([(
+                    "use_catalogs_v2",
+                    BTreeMap::from([("no_warn", use_catalogs_v2)]),
+                )])),
+            );
+        }
+        harness.mock().on("get_relation", |_| Ok(Value::from(())));
+        harness.mock().on("get_column_schema_from_query", |_| {
+            Ok(Value::from_serialize(vec![BTreeMap::from([
+                ("name", "ID"),
+                ("data_type", "NUMBER"),
+            ])]))
+        });
+        harness.mock().on("quote", |args| {
+            Ok(Value::from(format!(
+                "\"{}\"",
+                args.first().and_then(Value::as_str).unwrap_or_default()
+            )))
+        });
+        let relation = catalog_relation.clone();
+        harness
+            .mock()
+            .on("build_catalog_relation", move |_| Ok(relation.clone()));
+
+        let ctx = harness
+            .materialization_context("orders", "select 1 as id")
+            .with("dbt_version", Value::from(runtime.dbt_version))
+            .with("catalog_relation", catalog_relation)
+            .build();
+        let template = match cld_macro {
+            CldMacro::Rest => "{{ snowflake__create_table_iceberg_rest_sql(this, compiled_code) }}",
+            CldMacro::Glue => {
+                "{{ snowflake__create_table_iceberg_rest_with_glue(this, compiled_code, catalog_relation) }}"
+            }
+        };
+        harness
+            .render(template, ctx)
+            .expect("CLD macro should render")
+    }
+
+    #[test]
+    fn v2_cld_renders_configured_base_location() {
+        let clause = format!("base_location = '{V2_BASE_LOCATION}'");
+        for cld_macro in [CldMacro::Rest, CldMacro::Glue] {
+            let rendered = render(cld_macro, V2, v2_cld(Value::from(V2_BASE_LOCATION)));
+            assert!(
+                rendered.lines().any(|line| line.trim() == clause),
+                "expected BASE_LOCATION on its own line in v2 CLD DDL, got:\n{rendered}"
+            );
+            assert!(
+                !rendered.contains("external_volume") && !rendered.contains("catalog ="),
+                "a CLD must never emit EXTERNAL_VOLUME or CATALOG, got:\n{rendered}"
+            );
+        }
+    }
+
+    #[test]
+    fn v2_cld_without_base_location_omits_clause() {
+        for cld_macro in [CldMacro::Rest, CldMacro::Glue] {
+            let rendered = render(cld_macro, V2, v2_cld(Value::from(())));
+            assert!(
+                !rendered.contains("base_location"),
+                "unexpected DDL:\n{rendered}"
+            );
+        }
+    }
+
+    #[test]
+    fn fusion_v1_cld_does_not_render_synthesized_base_location() {
+        for cld_macro in [CldMacro::Rest, CldMacro::Glue] {
+            let rendered = render(cld_macro, FUSION_V1, fusion_v1_cld());
+            assert!(
+                !rendered.contains("base_location"),
+                "a v1 CLD must keep its existing DDL, got:\n{rendered}"
+            );
+        }
+    }
+
+    #[test]
+    fn core_1x_cld_does_not_read_base_location() {
+        let core_cld = catalog_relation(
+            Value::UNDEFINED,
+            Value::from("MY_CLD"),
+            Value::from(()),
+            Value::UNDEFINED,
+        );
+        for cld_macro in [CldMacro::Rest, CldMacro::Glue] {
+            let rendered = render(cld_macro, CORE_1X, core_cld.clone());
+            assert!(
+                !rendered.contains("base_location")
+                    && !rendered.to_lowercase().contains("undefined"),
+                "unexpected DDL:\n{rendered}"
+            );
+        }
+    }
+
+    #[test]
+    fn v1_rest_catalog_without_cld_keeps_existing_clauses() {
+        let rest = catalog_relation(
+            Value::UNDEFINED,
+            Value::from(()),
+            Value::from("MY_VOLUME"),
+            Value::from(V1_BASE_LOCATION),
+        );
+        let rendered = render(CldMacro::Rest, FUSION_V1, rest);
+        for clause in [
+            "external_volume = 'MY_VOLUME'".to_string(),
+            format!("base_location = '{V1_BASE_LOCATION}'"),
+        ] {
+            assert!(
+                rendered.lines().any(|line| line.trim() == clause),
+                "expected `{clause}` on its own line, got:\n{rendered}"
+            );
+        }
+        assert!(
+            rendered.contains("catalog = 'REST'"),
+            "expected `catalog = 'REST'`, got:\n{rendered}"
+        );
+        assert_eq!(
+            rendered.matches("base_location").count(),
+            1,
+            "BASE_LOCATION must render exactly once, got:\n{rendered}"
+        );
+    }
 }

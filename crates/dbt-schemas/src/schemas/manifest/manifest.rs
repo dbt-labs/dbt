@@ -1171,7 +1171,7 @@ fn build_parent_and_child_maps(
     (parent_map, child_map)
 }
 
-pub fn nodes_from_dbt_manifest(manifest: DbtManifest, dbt_quoting: DbtQuoting) -> Nodes {
+pub fn nodes_from_dbt_manifest(mut manifest: DbtManifest, dbt_quoting: DbtQuoting) -> Nodes {
     let mut nodes = Nodes::default();
 
     let adapter_type =
@@ -1199,7 +1199,7 @@ pub fn nodes_from_dbt_manifest(manifest: DbtManifest, dbt_quoting: DbtQuoting) -
     };
 
     // Do not put disabled nodes into the nodes, because all things in Nodes object should be enabled.
-    for (unique_id, node) in manifest.nodes.clone() {
+    for (unique_id, node) in std::mem::take(&mut manifest.nodes) {
         match node {
             DbtNode::Model(model) => {
                 nodes.models.insert(
@@ -1294,6 +1294,7 @@ pub fn nodes_from_dbt_manifest(manifest: DbtManifest, dbt_quoting: DbtQuoting) -
                         __test_attr__: DbtTestAttr {
                             column_name: test.column_name,
                             attached_node: test.attached_node,
+                            test_subject_unique_id: None,
                             test_metadata: test.test_metadata,
                             file_key_name: test.file_key_name,
                             introspection: IntrospectionKind::None,
@@ -1402,6 +1403,12 @@ pub fn nodes_from_dbt_manifest(manifest: DbtManifest, dbt_quoting: DbtQuoting) -
                             introspection: IntrospectionKind::None,
                             sync: snapshot.config.sync.clone(),
                             state: snapshot.config.state.clone(),
+                            catalog_name: snapshot
+                                .config
+                                .__warehouse_specific_config__
+                                .catalog_name
+                                .clone(),
+                            table_format: snapshot.config.table_format.clone(),
                         },
                         __adapter_attr__: AdapterAttr::from_config_and_dialect(
                             &snapshot.config.__warehouse_specific_config__,
@@ -2176,7 +2183,9 @@ pub fn manifest_model_to_dbt_model(
             version: model.version,
             latest_version: model.latest_version,
             constraints: model.constraints.unwrap_or_default(),
-            deprecation_date: model.deprecation_date,
+            deprecation_date: model
+                .deprecation_date
+                .and_then(|raw| dbt_yaml::Timestamp::parse(&raw)),
             primary_key: model.primary_key.unwrap_or_default(),
             time_spine,
             event_time: model.config.event_time.clone(),
@@ -2342,6 +2351,7 @@ mod tests {
             functions: BTreeMap::new(),
             checks: BTreeMap::new(),
             macros: BTreeMap::new(),
+            plugins: BTreeMap::new(),
             project_name: None,
         }
     }

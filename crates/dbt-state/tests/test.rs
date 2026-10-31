@@ -7,7 +7,7 @@ mod tests {
     use std::{collections::HashMap, sync::Arc};
 
     use crossbeam_queue::SegQueue;
-    use dashmap::DashMap;
+    use dbt_common::collections::SccHashMap;
     use dbt_schemas::schemas::{CloudCredentials, ResolvedCloudConfig};
     use dbt_state::node_session::{Acquired, Contention, NodeCacheSession};
     use dbt_state::task_cache::{TaskCache, TaskState, TaskValue};
@@ -100,10 +100,12 @@ mod tests {
 
         // Build a reverse mapping of child nodes to parent nodes
         let mut reverse_nodes = HashMap::new();
-        let indegree = Arc::new(DashMap::<String, AtomicUsize>::new());
+        let indegree = Arc::new(SccHashMap::<String, AtomicUsize>::default());
 
         for (id, children) in nodes.iter() {
-            indegree.insert(id.to_string(), AtomicUsize::new(children.len()));
+            indegree
+                .insert_sync(id.to_string(), AtomicUsize::new(children.len()))
+                .expect("node ids are unique");
             for child_id in children {
                 reverse_nodes
                     .entry(child_id.to_string())
@@ -115,9 +117,7 @@ mod tests {
         // Initialize the worklist with nodes that have no pending children
         let worklist = Arc::new(SegQueue::new());
         for id in nodes.keys() {
-            if let Some(indegree) = indegree.get(id)
-                && indegree.load(Ordering::SeqCst) == 0
-            {
+            if indegree.read_sync(id, |_, count| count.load(Ordering::SeqCst) == 0) == Some(true) {
                 worklist.push(id.clone());
             }
         }
@@ -157,8 +157,9 @@ mod tests {
                     // Update the pending count and potentially add parent nodes to the worklist
                     if let Some(parents) = reverse_nodes.get(&node_id).as_ref() {
                         for parent_id in parents.iter() {
-                            if let Some(indegree) = indegree.get(parent_id)
-                                && indegree.fetch_sub(1, Ordering::SeqCst) == 1
+                            if indegree.read_sync(parent_id, |_, count| {
+                                count.fetch_sub(1, Ordering::SeqCst) == 1
+                            }) == Some(true)
                             {
                                 worklist.push(parent_id.clone());
                             }
@@ -467,5 +468,72 @@ mod tests {
         assert!(non_existent_info.is_none());
 
         println!("✅ get_info test passed: data retrieval works correctly");
+    }
+
+    /// A later step of the same run re-claiming a node must not inherit the
+    /// overdue heartbeat an earlier step left behind. Eviction only deletes
+    /// `start`, so this relies on each invocation having its own owner ID
+    /// (`resolve_lock_owner_id` appends the invocation ID to the run ID).
+    #[dbt_runtime::test]
+    async fn test_redis_reclaim_ignores_prior_step_heartbeat() {
+        let prefix = "test_reclaim_heartbeat_";
+        let Some(task_cache) =
+            redis_cache_or_skip(prefix, "test_redis_reclaim_ignores_prior_step_heartbeat").await
+        else {
+            return;
+        };
+
+        let key = "reclaim_heartbeat_test_node";
+        task_cache.invalidate_task(key).await.unwrap();
+
+        // Step 1 of run 123 builds the node and releases it.
+        let step_1 = "123/invocation-step-1";
+        let start_1 = TaskValue::new_now(step_1.into(), Some("hash".into()));
+        assert!(
+            task_cache
+                .try_start_task(key, &start_1, &None)
+                .await
+                .unwrap()
+        );
+        let stop_1 = TaskValue::new_now(step_1.into(), Some("hash".into()));
+        let info = dbt_state::task_cache::TaskInfo {
+            upstreams: HashMap::new(),
+        };
+        task_cache.stop_task(key, &stop_1, &info).await.unwrap();
+
+        // Its last heartbeat stays behind, long overdue.
+        let overdue = TaskValue::new(
+            step_1.into(),
+            chrono::Utc::now() - chrono::Duration::minutes(10),
+            Some("hash".into()),
+        );
+        let mut con = redis::Client::open(redis_uri())
+            .unwrap()
+            .get_connection()
+            .unwrap();
+        let heartbeat_key = format!("{prefix}fs-orc:1:1:redis-test/node/{{{key}}}/heartbeat");
+        let _: () = redis::cmd("SET")
+            .arg(&heartbeat_key)
+            .arg(serde_json::to_string(&overdue).unwrap())
+            .query(&mut con)
+            .unwrap();
+
+        // Step 2 of the same run evicts the completed entry and re-claims it.
+        task_cache
+            .try_cleanup_task(key, &Some(start_1))
+            .await
+            .unwrap();
+        let start_2 = TaskValue::new_now("123/invocation-step-2".into(), Some("hash".into()));
+        assert!(
+            task_cache
+                .try_start_task(key, &start_2, &None)
+                .await
+                .unwrap()
+        );
+
+        // Before step 2 writes its own heartbeat, other runs must see it as
+        // in progress, not stale.
+        let (state, _) = task_cache.get_task_state(key).await.unwrap();
+        assert_eq!(state, TaskState::InProgress);
     }
 }

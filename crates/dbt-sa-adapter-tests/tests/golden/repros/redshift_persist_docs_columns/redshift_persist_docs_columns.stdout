@@ -1,0 +1,11 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/schema.yml
+   Parsing models/test_model.sql
+ Rendering models/test_model.sql
+   Running models/test_model.sql
+ Succeeded model redshift_persist_docs_columns.test_model (table) [1 of 1 in duration]
+==================== Execution Summary =====================
+Finished 'run' successfully for target 'redshift' [duration]
+Processed: 1 model
+Summary: 1 total | 1 success

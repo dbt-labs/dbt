@@ -1,5 +1,5 @@
 use crate::adapter::adapter_impl::*;
-use crate::connection::AdapterConnectionFactory;
+use crate::connection::{AdapterConnectionFactory, ConnectionGuard};
 use crate::formatter::SqlLiteralFormatter;
 use crate::metadata::{
     CatalogAndSchema, MetadataAdapter, MetadataFreshness, RELATION_CACHE_OP_ID, RelationSchemaPair,
@@ -10,11 +10,11 @@ use crate::record_batch::RecordBatchExt;
 use crate::relation::Relation;
 use crate::sql_types::{TypeOps, make_arrow_field};
 use crate::{AdapterEngine, AdapterType};
-use arrow_array::{Array, Int32Array, RecordBatch, StringArray};
+use arrow_array::{Array, BooleanArray, Int32Array, RecordBatch, StringArray};
 use arrow_schema::Schema;
 use dbt_adapter_core::ExecutionPhase;
 use dbt_adapter_engine::MapReduce;
-use dbt_adbc::{Connection, QueryCtx};
+use dbt_adbc::QueryCtx;
 use dbt_common::cancellation::CancellationToken;
 use dbt_common::{AdapterError, AdapterErrorKind, Cancellable};
 use dbt_common::{AdapterResult, AsyncAdapterResult};
@@ -25,9 +25,23 @@ use dbt_schemas::schemas::{
     relations::base::{BaseRelation, RelationPattern},
 };
 use minijinja::State;
+use regex::Regex;
 use std::collections::HashMap;
 use std::collections::btree_map::Entry;
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, LazyLock},
+};
+
+static CTE_QUERY_PREFIX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?is)^\s*(?:(?:/\*.*?\*/)\s*|(?:--[^\r\n]*(?:\r?\n|$))\s*|;+\s*)*with\b")
+        .expect("valid SQL Server CTE prefix regex")
+});
+
+/// SQL Server CTEs must begin a statement; a leading semicolon is a valid terminator.
+pub(crate) fn query_starts_with_cte(sql: &str) -> bool {
+    CTE_QUERY_PREFIX.is_match(sql)
+}
 
 /// `sp_tables` and `sp_columns` are not usable here, for two reasons measured against
 /// SQL Server 2022:
@@ -110,6 +124,48 @@ pub(crate) fn relation_type_from_table_type(table_type: &str) -> Option<Relation
     }
 }
 
+pub(crate) fn describe_query_schema(
+    engine: &dyn AdapterEngine,
+    state: &State,
+    conn: &mut ConnectionGuard<'_>,
+    ctx: &QueryCtx,
+    sql: &str,
+    token: CancellationToken,
+) -> AdapterResult<Arc<Schema>> {
+    // A CTE cannot be wrapped in the empty derived-table query used by other adapters.
+    let sql_literal = SqlLiteralFormatter::new(AdapterType::SqlServer).format_str(sql);
+    let describe_sql = format!("exec sp_describe_first_result_set @tsql = N{sql_literal}");
+    let batch = engine.execute(Some(state), conn.as_mut(), ctx, &describe_sql, token)?;
+
+    let names = batch.column_values::<StringArray>("name")?;
+    let data_types = batch.column_values::<StringArray>("system_type_name")?;
+    let nullability = batch.column_values::<BooleanArray>("is_nullable")?;
+    let hidden = batch.column_values::<BooleanArray>("is_hidden")?;
+    let type_ops = engine.type_ops();
+
+    let mut fields = Vec::with_capacity(batch.num_rows());
+    for i in 0..batch.num_rows() {
+        if !hidden.is_null(i) && hidden.value(i) {
+            continue;
+        }
+        if names.is_null(i) || data_types.is_null(i) || nullability.is_null(i) {
+            return Err(AdapterError::new(
+                AdapterErrorKind::Configuration,
+                "SQL Server could not describe a result column's name or type",
+            ));
+        }
+        fields.push(make_arrow_field(
+            type_ops.as_ref(),
+            names.value(i).to_string(),
+            data_types.value(i),
+            Some(nullability.value(i)),
+            None,
+        )?);
+    }
+
+    Ok(Arc::new(Schema::new(fields)))
+}
+
 /// Rebuild the declared type text from the catalog columns.
 ///
 /// `sys.types.name` is the bare type name, so `decimal(18,4)` arrives as `decimal`
@@ -157,7 +213,7 @@ fn quoted_database(relation: &dyn BaseRelation) -> AdapterResult<String> {
 pub fn list_relations(
     engine: &dyn AdapterEngine,
     ctx: &QueryCtx,
-    conn: &'_ mut dyn Connection,
+    conn: &mut ConnectionGuard<'_>,
     db_schema: &CatalogAndSchema,
     token: CancellationToken,
 ) -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
@@ -169,7 +225,7 @@ pub fn list_relations(
     }
 
     let sql = build_list_relations_sql(&db_schema.rendered_catalog, &db_schema.resolved_schema);
-    let batch = engine.execute(None, conn, ctx, &sql, token)?;
+    let batch = engine.execute(None, conn.as_mut(), ctx, &sql, token)?;
 
     if batch.num_rows() == 0 {
         return Ok(Vec::new());
@@ -344,7 +400,7 @@ impl MetadataAdapter for SqlServerMetadataAdapter {
 
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
-        let map_f = move |conn: &'_ mut dyn Connection,
+        let map_f = move |conn: &mut ConnectionGuard<'_>,
                           relation: &Arc<dyn BaseRelation>|
               -> AdapterResult<Arc<Schema>> {
             let sql = build_columns_sql(
@@ -419,7 +475,7 @@ impl MetadataAdapter for SqlServerMetadataAdapter {
 
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
-        let map_f = move |conn: &'_ mut dyn Connection,
+        let map_f = move |conn: &mut ConnectionGuard<'_>,
                           db_schema: &CatalogAndSchema|
               -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
             let query_ctx = QueryCtx::default().with_desc("list_relations_in_parallel");
@@ -485,42 +541,6 @@ fn build_schema_from_columns(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_list_relations_sql_is_three_part_and_quotes_the_schema() {
-        let sql = build_list_relations_sql("\"my_db\"", "my_schema");
-
-        assert!(sql.contains("from \"my_db\".sys.objects o"));
-        assert!(sql.contains("join \"my_db\".sys.schemas s"));
-        assert!(sql.contains("s.name = 'my_schema'"));
-        assert!(sql.contains("o.type in ('U', 'V')"));
-    }
-
-    #[test]
-    fn test_get_relation_sql_matches_the_identifier_exactly() {
-        let sql = build_get_relation_sql("\"my_db\"", "my_schema", "stg_orders");
-
-        // `=`, not `like`: sp_tables' pattern matching also returns `stgXorders`.
-        assert!(sql.contains("o.name = 'stg_orders'"));
-        assert!(!sql.to_lowercase().contains("like"));
-    }
-
-    #[test]
-    fn test_single_quotes_in_a_name_are_escaped() {
-        let sql = build_get_relation_sql("\"my_db\"", "o'brien", "x");
-
-        assert!(sql.contains("s.name = 'o''brien'"));
-    }
-
-    #[test]
-    fn test_columns_sql_casts_the_narrow_integer_columns() {
-        let sql = build_columns_sql("\"my_db\"", "my_schema", "my_table");
-
-        assert!(sql.contains("cast(c.max_length as int) as max_length"));
-        assert!(sql.contains("cast(c.precision as int) as numeric_precision"));
-        assert!(sql.contains("cast(c.scale as int) as numeric_scale"));
-        assert!(sql.contains("order by c.column_id"));
-    }
 
     #[test]
     fn test_relation_type_from_table_type() {

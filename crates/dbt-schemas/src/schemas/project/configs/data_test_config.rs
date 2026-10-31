@@ -18,7 +18,7 @@ use crate::schemas::common::{
 };
 use crate::schemas::manifest::GrantAccessToTarget;
 use crate::schemas::project::configs::common::{
-    WarehouseSpecificNodeConfig, take_databricks_catalog_alias,
+    TYPED_ALIAS_KEYS, WarehouseSpecificNodeConfig, take_databricks_catalog_alias,
 };
 use crate::schemas::project::configs::config_merge::{Tags, TblProperties};
 use crate::schemas::properties::DataTestState;
@@ -259,6 +259,8 @@ pub struct ProjectDataTestConfig {
     pub not_matched_condition: Option<String>,
     #[serde(rename = "+not_matched_by_source_condition")]
     pub not_matched_by_source_condition: Option<String>,
+    #[serde(rename = "+merge_actions_explicit")]
+    pub merge_actions_explicit: Option<String>,
     #[serde(rename = "+not_matched_by_source_action")]
     pub not_matched_by_source_action: Option<String>,
     #[serde(
@@ -416,6 +418,7 @@ impl TypedRecursiveConfig for ProjectDataTestConfig {
             || self.matched_condition.is_some()
             || self.not_matched_condition.is_some()
             || self.not_matched_by_source_condition.is_some()
+            || self.merge_actions_explicit.is_some()
             || self.not_matched_by_source_action.is_some()
             || self.merge_with_schema_evolution.is_some()
             || self.skip_matched_step.is_some()
@@ -578,6 +581,7 @@ impl From<ProjectDataTestConfig> for DataTestConfig {
                 enable_list_inference: None,
                 intermediate_format: None,
                 storage_uri: None,
+                enable_change_history: None,
 
                 file_format: config.file_format,
                 catalog_name: config.catalog_name,
@@ -600,6 +604,7 @@ impl From<ProjectDataTestConfig> for DataTestConfig {
                 matched_condition: config.matched_condition,
                 not_matched_condition: config.not_matched_condition,
                 not_matched_by_source_condition: config.not_matched_by_source_condition,
+                merge_actions_explicit: config.merge_actions_explicit,
                 not_matched_by_source_action: config.not_matched_by_source_action,
                 merge_with_schema_evolution: config.merge_with_schema_evolution,
                 skip_matched_step: config.skip_matched_step,
@@ -609,6 +614,7 @@ impl From<ProjectDataTestConfig> for DataTestConfig {
                 row_filter: None,
                 incremental_apply_config_changes: None,
                 persist_constraints: None,
+                use_materialization_v2: None,
                 use_safer_relation_operations: None,
                 view_update_via_alter: None,
 
@@ -636,6 +642,8 @@ impl From<ProjectDataTestConfig> for DataTestConfig {
                 settings: None,
                 query_settings: None,
                 projections: None,
+                sharding_key: None,
+                disable_on_cluster: None,
                 inserts_only: None,
                 connection_overrides: None,
                 fields: None,
@@ -756,6 +764,7 @@ impl From<DataTestConfig> for ProjectDataTestConfig {
             not_matched_by_source_condition: config
                 .__warehouse_specific_config__
                 .not_matched_by_source_condition,
+            merge_actions_explicit: config.__warehouse_specific_config__.merge_actions_explicit,
             not_matched_by_source_action: config
                 .__warehouse_specific_config__
                 .not_matched_by_source_action,
@@ -796,6 +805,10 @@ impl ResolvableConfig<DataTestConfig> for DataTestConfig {
 
     fn get_enabled(&self) -> Option<bool> {
         self.enabled
+    }
+
+    fn get_adapter(&self) -> Option<AdapterType> {
+        self.adapter
     }
 
     fn disable(&mut self) {
@@ -843,9 +856,13 @@ impl ResolvableConfig<DataTestConfig> for DataTestConfig {
         self.default_to_fields(parent);
     }
 
-    fn canonicalize_adapter_aliases(&mut self, default_adapter: AdapterType) {
+    fn typed_alias_keys() -> &'static [&'static str] {
+        TYPED_ALIAS_KEYS
+    }
+
+    fn canonicalize_adapter_aliases(&mut self, alias_adapter: AdapterType) {
         if let Some(catalog) = take_databricks_catalog_alias(
-            default_adapter,
+            alias_adapter,
             &mut self.__warehouse_specific_config__,
             self.database.is_some(),
         ) {
@@ -879,6 +896,10 @@ impl ConfigKeys for DataTestConfig {
 
         field_names
     }
+}
+
+impl crate::schemas::project::configs::warehouse_scope::WarehouseConfigResource for DataTestConfig {
+    const NODE_TYPE: dbt_telemetry::NodeType = dbt_telemetry::NodeType::Test;
 }
 
 #[cfg(test)]

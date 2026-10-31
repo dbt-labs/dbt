@@ -37,6 +37,7 @@ use dbt_metadata::parse_cache::{
     determine_cache_state_from_previous_previous_resolved_nodes, drop_all_unchanged_nodes,
 };
 use dbt_parser::args::ResolveArgs;
+use dbt_parser::plugin::ResolvePlugins;
 use dbt_parser::resolver_hooks::ResolverHooks;
 use dbt_schema_store::SchemaStoreTrait;
 use dbt_schemas::{
@@ -127,6 +128,7 @@ async fn resolve_phase(
     token: &CancellationToken,
     jinja_type_checking_event_listener_factory: Arc<dyn JinjaTypeCheckingEventListenerFactory>,
     resolver_hooks: Arc<dyn ResolverHooks>,
+    plugins: ResolvePlugins,
 ) -> FsResult<(ResolverState, Arc<JinjaEnv>)> {
     use dbt_parser::resolver::resolve;
     use dbt_schemas::state::ResolvedNodes;
@@ -175,7 +177,7 @@ async fn resolve_phase(
 
     // Call the actual resolver
     let (mut resolved_state, jinja_env) = resolve(
-        &resolve_args,
+        resolve_args,
         invocation_args,
         dbt_state.clone(),
         macros,
@@ -187,6 +189,7 @@ async fn resolve_phase(
         token,
         jinja_type_checking_event_listener_factory,
         resolver_hooks,
+        plugins,
         loaded_project.jinja_factory.clone(),
     )
     .await?;
@@ -581,6 +584,7 @@ impl DbtLoadedProject {
         token: &CancellationToken,
         jinja_type_checking_event_listener_factory: Arc<dyn JinjaTypeCheckingEventListenerFactory>,
         resolver_hooks: Arc<dyn ResolverHooks>,
+        plugins: ResolvePlugins,
     ) -> FsResult<(ResolverState, Arc<JinjaEnv>)> {
         resolve_phase(
             self,
@@ -590,6 +594,7 @@ impl DbtLoadedProject {
             token,
             jinja_type_checking_event_listener_factory,
             resolver_hooks,
+            plugins,
         )
         .await
     }
@@ -611,7 +616,7 @@ impl DbtLoadedProject {
         sidecar_client: Option<Arc<dyn SidecarClient>>,
         execute: Execute,
         connection_mode: AdapterConnectionMode,
-    ) -> FsResult<Arc<AdapterStore>> {
+    ) -> FsResult<AdapterStore> {
         // Each declared adapter's `DbConfig`, cloned because the builder closure has
         // to be `'static` and so cannot hold `resolved_state`. Cloned rather than
         // *rendered* to a mapping here: rendering is fallible, and doing it up front
@@ -629,14 +634,16 @@ impl DbtLoadedProject {
 
         let project = self.clone();
         let flags = Self::flags_from_env(jinja_env)?;
-        // The *authored* `quoting:` block, not `resolved_state.root_project_quoting`.
-        // The latter has already had its unset fields filled from the default
-        // adapter's policy, so handing it to a non-default adapter of another type
-        // silently applies the wrong one -- quote-everything to an adapter that
-        // does not quote renders identifiers it then cannot find. Each adapter
-        // resolves the same authored block against its own defaults instead, which
-        // is what `resolve_package_quoting` is field-wise for.
-        let authored_quoting = *self.dbt_state.root_project().quoting;
+        // Match relation naming and parse-time API factories for each declared adapter.
+        let root_project = self.dbt_state.root_project();
+        let mut authored_quoting = dbt_schemas::schemas::project::authored_quoting_per_adapter(
+            root_project.adapters.as_ref(),
+            &resolved_state.dbt_profile.adapters,
+            default_adapter,
+            *root_project.quoting,
+        );
+        // Default-adapter API factories retain the parse environment's top-level policy.
+        authored_quoting.insert(default_adapter, root_project.quoting.unwrap_or_default());
         let query_comment = resolved_state.runtime_config.inner.query_comment.clone();
         let cloud_config = self.dbt_cloud_config().cloned();
         // One budget for every adapter for now; per-adapter threads is a follow-up.
@@ -654,28 +661,7 @@ impl DbtLoadedProject {
                     )
                 })?
                 .1;
-            // `lake_compute`, when configured as a secondary (non-default) adapter,
-            // inherits `database`/`schema` from the default adapter instead of
-            // requiring its own. `threads` is already shared across every adapter
-            // via the `threads` parameter passed to `build_adapter` below, so it
-            // needs no handling here. See fs#13653.
-            let resolved_config = if let DbConfig::LakeCompute(lake_compute) = matched_config {
-                let mut lake_compute = lake_compute.clone();
-                if lake_compute.database.is_none() || lake_compute.schema.is_none() {
-                    let default_config = configs
-                        .iter()
-                        .find(|(t, _)| *t == default_adapter)
-                        .map(|(_, c)| c);
-                    if lake_compute.database.is_none() {
-                        lake_compute.database =
-                            default_config.and_then(|c| c.get_database().cloned());
-                    }
-                    if lake_compute.schema.is_none() {
-                        lake_compute.schema = default_config.and_then(|c| c.get_schema().cloned());
-                    }
-                }
-                DbConfig::LakeCompute(lake_compute)
-            } else if let DbConfig::Snowflake(snowflake) = matched_config {
+            let resolved_config = if let DbConfig::Snowflake(snowflake) = matched_config {
                 // dbt-auth has no notion of self_signed_jwt; the connection
                 // it builds is identical to keypair's either way.
                 let mut snowflake = snowflake.clone();
@@ -692,7 +678,9 @@ impl DbtLoadedProject {
                     "could not read the '{adapter_type}' connection: {e}"
                 )
             })?;
-            let quoting = resolve_package_quoting(authored_quoting, adapter_type).try_into()?;
+            let quoting =
+                resolve_package_quoting(authored_quoting.get(&adapter_type).copied(), adapter_type)
+                    .try_into()?;
             project.build_adapter(
                 adapter_type,
                 db_config,
@@ -710,11 +698,7 @@ impl DbtLoadedProject {
             )
         });
 
-        Ok(Arc::new(AdapterStore::new(
-            declared,
-            default_adapter,
-            build,
-        )?))
+        AdapterStore::new(declared, default_adapter, build)
     }
 
     /// The target's default adapter.
@@ -912,7 +896,7 @@ impl DbtLoadedProject {
             DEFAULT_RESOLVED_QUOTING,
             None,
             token,
-            None, // cloud_config — debug only runs `select 1`, no cloud connection needed
+            self.dbt_cloud_config(),
             None, // threads
         )
     }

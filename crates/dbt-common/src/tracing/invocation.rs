@@ -1,7 +1,13 @@
-use dbt_telemetry::{Invocation, InvocationEvalArgs, create_process_event_data};
+use dbt_telemetry::{
+    Invocation, InvocationEvalArgs, InvocationWarnErrorOptions, create_process_event_data,
+};
 use dbt_tracing::TelemetryAttributes;
 
-use crate::{io_args::EvalArgs, tracing::span_info::with_root_span};
+use crate::{
+    io_args::EvalArgs,
+    tracing::{dbt_emit::emit_debug_log_message, span_info::with_root_span},
+    warn_error_options::WarnErrorOptions,
+};
 
 fn create_invocation_eval_args(eval_arg: &EvalArgs) -> InvocationEvalArgs {
     InvocationEvalArgs {
@@ -55,6 +61,12 @@ fn create_invocation_eval_args(eval_arg: &EvalArgs) -> InvocationEvalArgs {
         // `run_cache_service` holds the resolved dbt State management flag
         // (--manage-state / DBT_ENGINE_MANAGE_STATE / flags.manage_state).
         manage_state: Some(eval_arg.run_cache_service),
+        // `dbt retry` replaces this with the original run's value; see
+        // `record_resolved_full_refresh`.
+        full_refresh: Some(eval_arg.full_refresh),
+        // Set by `record_resolved_warn_error_options` once the project is loaded.
+        warn_error: None,
+        warn_error_options: None,
     }
 }
 
@@ -72,6 +84,32 @@ pub fn create_invocation_attributes(package: &str, eval_arg: &EvalArgs) -> Invoc
         process_info: Some(create_process_event_data(package)),
         metrics: Default::default(),
     }
+}
+
+/// Records the resolved warn-error settings on the Invocation span.
+/// Option values use their serde (config) spelling.
+pub fn record_resolved_warn_error_options(warn_error: bool, options: &WarnErrorOptions) {
+    with_invocation_mut(|invocation| {
+        if let Some(args) = invocation.eval_args.as_mut() {
+            args.warn_error = Some(warn_error);
+            args.warn_error_options = serde_json::to_value(options)
+                .and_then(serde_json::from_value::<InvocationWarnErrorOptions>)
+                .inspect_err(|e| {
+                    emit_debug_log_message(format!("could not record warn_error_options: {e}"))
+                })
+                .ok();
+        }
+    });
+}
+
+/// Records the effective `--full-refresh` setting on the Invocation span, for
+/// flows (e.g. `dbt retry`) that resolve it after the span is created.
+pub fn record_resolved_full_refresh(full_refresh: bool) {
+    with_invocation_mut(|invocation| {
+        if let Some(args) = invocation.eval_args.as_mut() {
+            args.full_refresh = Some(full_refresh);
+        }
+    });
 }
 
 pub fn with_invocation_mut<F>(mut f: F)

@@ -5,6 +5,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::mpsc;
 
+use dbt_adapter_core::AdapterType;
 use dbt_common::pretty_string::make_title;
 use dbt_common::stats::NodeStatus;
 use dbt_common::tracing::{
@@ -21,8 +22,8 @@ use dbt_schemas::schemas::{InternalDbtNodeAttributes, Nodes};
 use dbt_tasks_core::context::TaskRunnerCtx;
 use dbt_tasks_core::pretty_table::from_pretty_table_error;
 use dbt_tasks_core::show_task_hooks::ShowTaskHooks;
-use dbt_tasks_core::task::TaskOp;
 use dbt_tasks_core::task::TaskResult;
+use dbt_tasks_core::task::run_blocking_task_operation;
 use dbt_tasks_core::task::{TP, Task};
 use dbt_telemetry::{ShowDataOutput, ShowDataOutputFormat};
 
@@ -45,6 +46,7 @@ pub trait Showable: InternalDbtNodeAttributes {
 
 pub(super) async fn run_show<F>(
     ctx: &mut TaskRunnerCtx,
+    node: &dyn InternalDbtNodeAttributes,
     unique_id: &str,
     resource_label: &str,
     is_inline: bool,
@@ -66,7 +68,10 @@ where
         && matches!(ctx.inner.execute, Execute::Sidecar | Execute::Service)
         && ctx.is_sidecar();
 
-    let mut compile_ctx = make_show_compile_context(ctx)?;
+    let adapter_type = ctx.adapter_type_for(node);
+    let adapter = ctx.adapter_for(node)?;
+
+    let mut compile_ctx = make_show_compile_context(ctx, adapter_type)?;
     compile_ctx.insert(
         "compiled_code".to_string(),
         MinijinjaValue::from(query.as_str()),
@@ -96,10 +101,9 @@ where
         let env = Arc::clone(&ctx.env);
         let listener_factory = Arc::clone(&ctx.rendering_listener_factory);
         let filename = filename.clone();
-        TaskOp::Blocking(Box::new(move || {
+        run_blocking_task_operation(move || {
             render_sql(&template, &env, &compile_ctx, &*listener_factory, &filename)
-        }))
-        .run()
+        })
         .await??
     };
     let macro_spans = ctx.rendering_listener_factory.drain_macro_spans(&filename);
@@ -144,6 +148,7 @@ where
                 &Instruction::Sql(sql_instruction),
                 &final_rendered_sql,
                 Some(unique_id),
+                Some(adapter),
                 &mut None,
             )
             .await
@@ -251,19 +256,25 @@ pub(super) fn rendered_sql_for(
     unique_id: &str,
     resource_label: &str,
 ) -> FsResult<String> {
-    let rendered_node_info = ctx.inner.rendered_sql.get(unique_id).ok_or_else(|| {
-        dbt_common::fs_err!(
-            ErrorCode::Unexpected,
-            "No rendered SQL found for {resource_label}: {}",
-            unique_id
-        )
-    })?;
-
-    Ok(rendered_node_info.sql.clone())
+    ctx.inner
+        .rendered_sql
+        .read_sync(unique_id, |_, info| info.sql.to_string())
+        .ok_or_else(|| {
+            dbt_common::fs_err!(
+                ErrorCode::Unexpected,
+                "No rendered SQL found for {resource_label}: {}",
+                unique_id
+            )
+        })
 }
 
-fn make_show_compile_context(ctx: &TaskRunnerCtx) -> FsResult<BTreeMap<String, MinijinjaValue>> {
-    Ok(ctx.inner.base_context.clone())
+fn make_show_compile_context(
+    ctx: &TaskRunnerCtx,
+    adapter_type: AdapterType,
+) -> FsResult<BTreeMap<String, MinijinjaValue>> {
+    let mut compile_ctx = ctx.inner.base_context.clone();
+    ctx.insert_adapter_overlay(&mut compile_ctx, adapter_type)?;
+    Ok(compile_ctx)
 }
 
 /// A task that shows the compiled SQL results for a node

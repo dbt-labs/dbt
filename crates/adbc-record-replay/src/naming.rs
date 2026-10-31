@@ -6,10 +6,7 @@ use std::path::Path;
 
 use crate::COUNTERS;
 
-pub fn cleanup_schema_name(input: &str) -> String {
-    let re = Regex::new(r"___.*?___").unwrap();
-    re.replace_all(input, "").to_string()
-}
+pub use dbt_test_primitives::cleanup_schema_name;
 
 /// Strips real wall-clock content embedded in SQL that has no node context
 /// to hash against instead (`checksum8` is the only key such a statement
@@ -123,8 +120,10 @@ pub fn compute_file_name(
         },
     };
 
-    let dir_counters = COUNTERS.entry(recordings_dir.to_path_buf()).or_default();
-    let mut entry = dir_counters.entry(id.clone()).or_insert(0);
+    let dir_counters = COUNTERS
+        .entry_sync(recordings_dir.to_path_buf())
+        .or_default();
+    let mut entry = dir_counters.entry_sync(id.clone()).or_insert(0);
     let file_name = format!("{}-{}", id, *entry);
     *entry += 1;
 
@@ -149,8 +148,10 @@ pub fn compute_file_name_for_table_schema(
         Some(node_id) => format!("{node_id}.get_table_schema.{hash}"),
         None => format!("get_table_schema.{hash}"),
     };
-    let dir_counters = COUNTERS.entry(recordings_dir.to_path_buf()).or_default();
-    let mut entry = dir_counters.entry(counter_key.clone()).or_insert(0);
+    let dir_counters = COUNTERS
+        .entry_sync(recordings_dir.to_path_buf())
+        .or_default();
+    let mut entry = dir_counters.entry_sync(counter_key.clone()).or_insert(0);
     let file_name = format!("{counter_key}-{}", *entry);
     *entry += 1;
     file_name
@@ -180,8 +181,10 @@ pub fn compute_file_name_for_get_objects(
         Some(node_id) => format!("{node_id}.get_objects.{hash}"),
         None => format!("get_objects.{hash}"),
     };
-    let dir_counters = COUNTERS.entry(recordings_dir.to_path_buf()).or_default();
-    let mut entry = dir_counters.entry(counter_key.clone()).or_insert(0);
+    let dir_counters = COUNTERS
+        .entry_sync(recordings_dir.to_path_buf())
+        .or_default();
+    let mut entry = dir_counters.entry_sync(counter_key.clone()).or_insert(0);
     let file_name = format!("{counter_key}-{}", *entry);
     *entry += 1;
     file_name

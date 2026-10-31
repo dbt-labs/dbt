@@ -1,0 +1,22 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/cluster_by/dt_cluster_alter.sql
+   Parsing models/cluster_by/dt_cluster_drop.sql
+   Parsing models/copy_grants/dt_copy_grants1.sql
+   Parsing models/iceberg/dt_iceberg_explicit_snowflake_managed.sql
+   Parsing models/iceberg/dt_iceberg_external_volume.sql
+   Parsing models/iceberg/dt_iceberg_managed.sql
+   Parsing models/immutable_where/dt_imw1.sql
+   Parsing models/initialization_warehouse/init_wh.sql
+   Parsing models/initialization_warehouse/no_init_wh.sql
+   Parsing models/initialization_warehouse/same_wh.sql
+   Parsing models/initialize/init_default.sql
+   Parsing models/initialize/init_on_schedule.sql
+   Parsing models/refresh_mode/refresh_auto.sql
+   Parsing models/refresh_mode/refresh_full.sql
+   Parsing models/scheduler/scheduler_disable.sql
+   Parsing models/scheduler/scheduler_enable.sql
+   Parsing models/target_lag/lag.sql
+   Parsing models/transient/dt_transient1.sql
+==================== Execution Summary =====================
+Finished 'run-operation' successfully for target 'snowflake' [duration]

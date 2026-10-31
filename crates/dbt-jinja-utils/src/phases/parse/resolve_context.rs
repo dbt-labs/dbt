@@ -73,6 +73,8 @@ pub fn build_docs_jinja_environment(parse_env: &JinjaEnv) -> JinjaEnv {
 
     let mut docs_env = parse_env.clone();
     docs_env.env.clear_templates();
+    // The loader survives clear_templates; disable it so docs cannot load project macros.
+    docs_env.env.set_loader(|_| Ok(None::<String>));
     docs_env.env.reset_globals_to_defaults();
     // `jinja2.ext.debug` is not enabled in dbt Core.
     docs_env.env.remove_global("debug");
@@ -391,6 +393,15 @@ mod docs_context_tests {
                 None,
             )
             .unwrap();
+        env.env.set_loader(|name| match name {
+            "root_pkg.project_macro" => Ok(Some(
+                "{% macro project_macro() %}project{% endmacro %}".to_string(),
+            )),
+            "dependency_pkg.dependency_macro" => Ok(Some(
+                "{% macro dependency_macro() %}dependency{% endmacro %}".to_string(),
+            )),
+            _ => Ok(None),
+        });
         env.env.add_global(
             "root_pkg",
             Value::from_object(BTreeMap::from([(
@@ -539,6 +550,10 @@ mod docs_context_tests {
     fn docs_context_rejects_project_macros_and_runtime_callables() {
         let (env, ctx) = docs_env_and_ctx();
         for (label, template) in [
+            (
+                "loader-backed project macro",
+                "{% from 'root_pkg.project_macro' import project_macro %}{{ project_macro() }}",
+            ),
             ("direct project macro", "{{ project_macro() }}"),
             ("package-qualified macro", "{{ root_pkg.project_macro() }}"),
             (

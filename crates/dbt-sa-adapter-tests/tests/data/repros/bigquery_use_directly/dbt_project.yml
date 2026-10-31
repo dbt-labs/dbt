@@ -1,0 +1,7 @@
+name: 'bigquery_use_directly'
+
+config-version: 2
+version: '0.1'
+profile: 'fusion_tests'
+
+on-run-start: "{{ setup() }}"

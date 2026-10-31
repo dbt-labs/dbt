@@ -1,0 +1,7 @@
+version: 2
+sources:
+  - name: refresh_input
+    database: "{{ target.database }}"
+    schema: "{{ target.schema }}"
+    tables:
+      - name: refresh_source

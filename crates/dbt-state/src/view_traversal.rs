@@ -15,13 +15,13 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::Arc;
 
-use dashmap::DashMap;
 use dbt_adapter::AdapterType;
 use dbt_adapter::errors::{AdapterError, AdapterErrorKind, AdapterResult};
 use dbt_adapter::metadata::{MetadataAdapter, ViewDefinition};
 use dbt_common::cancellation::{Cancellable, CancellationToken};
+use dbt_common::collections::SccHashMap;
+use dbt_common::sources_extractor::SourcesExtractor;
 use dbt_frontend_common::FullyQualifiedName;
-use dbt_frontend_common::sources_extractor::SourcesExtractor;
 use dbt_schemas::schemas::relations::base::BaseRelation;
 use tokio::task::JoinSet;
 use tracing::Instrument as _;
@@ -70,7 +70,7 @@ pub struct ViewDefinitionTraverser {
 
     /// Long-lived deduplication cache. Lives for the lifetime of the
     /// traverser; reused across every `traverse()` call.
-    cache: Arc<DashMap<String, CachedViewLookup>>,
+    cache: Arc<SccHashMap<String, CachedViewLookup>>,
 }
 
 #[derive(Clone, Debug)]
@@ -91,7 +91,7 @@ impl ViewDefinitionTraverser {
         Self {
             adapter,
             sources_extractor,
-            cache: Arc::new(DashMap::new()),
+            cache: Arc::new(SccHashMap::default()),
         }
     }
 
@@ -102,7 +102,7 @@ impl ViewDefinitionTraverser {
     /// Intended for selected view models in the current run, whose
     /// compiled SQL is locally available and authoritative.
     pub fn insert_view_definition(&self, view_def: ViewDefinition) {
-        self.cache.insert(
+        self.cache.upsert_sync(
             view_def.fqn.clone(),
             CachedViewLookup::View(Arc::new(view_def)),
         );
@@ -141,7 +141,7 @@ impl ViewDefinitionTraverser {
                 seen_relations
                     .entry(fqn.clone())
                     .or_insert_with(|| Arc::clone(&rel));
-                let cached = self.cache.get(&fqn).map(|e| e.value().clone());
+                let cached = self.cache.read_sync(&fqn, |_, e| e.clone());
                 match cached {
                     Some(CachedViewLookup::View(view_def)) => record_and_enqueue(
                         adapter_type,
@@ -180,13 +180,23 @@ impl ViewDefinitionTraverser {
                                 for fqn in fqns {
                                     if let Some(view_def) = by_fqn.remove(&fqn) {
                                         let arc = Arc::new(view_def);
-                                        cache.insert(fqn, CachedViewLookup::View(Arc::clone(&arc)));
+                                        cache
+                                            .upsert_async(
+                                                fqn,
+                                                CachedViewLookup::View(Arc::clone(&arc)),
+                                            )
+                                            .await;
                                         fetched_views.push(arc);
                                     } else if view_defs.unresolvable.contains(&fqn) {
-                                        cache.insert(fqn.clone(), CachedViewLookup::Unresolvable);
+                                        cache
+                                            .upsert_async(
+                                                fqn.clone(),
+                                                CachedViewLookup::Unresolvable,
+                                            )
+                                            .await;
                                         unresolvable.insert(fqn);
                                     } else {
-                                        cache.insert(fqn, CachedViewLookup::NotView);
+                                        cache.upsert_async(fqn, CachedViewLookup::NotView).await;
                                     }
                                 }
                                 Ok((fetched_views, unresolvable))

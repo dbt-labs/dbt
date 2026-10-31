@@ -1,0 +1,16 @@
+version: 2
+models:
+  - name: test_evens
+    config:
+      materialized: materialized_view
+      pre_hook: ['{{ create_hide_even_numbers() }}']
+      row_filter:
+        function: hide_even_numbers
+        columns: [number]
+        
+  - name: test_cool_and_finance
+    config:
+      materialized: table
+      row_filter:
+        function: hide_cool_and_finance
+        columns: [is_cool, department]

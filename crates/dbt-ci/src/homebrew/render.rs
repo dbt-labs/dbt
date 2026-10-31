@@ -86,6 +86,32 @@ fn run(args: HomebrewRenderArgs) -> Result<PathBuf> {
         .clone()
         .unwrap_or_else(|| formula_name.clone());
 
+    let mut sidecar_packages = Vec::new();
+    for path in &args.sidecar_manifest {
+        let manifest: crate::packages::ReleasePackages = serde_json::from_slice(&fs::read(path)?)?;
+        let Some((os, arch)) = target_to_brew(&manifest.target) else {
+            continue;
+        };
+        let base = args
+            .sidecar_base_url
+            .as_deref()
+            .context("--sidecar-base-url is required with sidecar manifests")?;
+        crate::utils::require_https(base)?;
+        for package in manifest.packages {
+            if package.channels.iter().any(|channel| channel == "homebrew") {
+                sidecar_packages.push(SidecarPackage {
+                    name: package.name,
+                    install_as: package.install_as,
+                    platform: Platform {
+                        os,
+                        arch,
+                        url: format!("{}/{}", base.trim_end_matches('/'), package.filename),
+                        sha256: package.sha256,
+                    },
+                });
+            }
+        }
+    }
     let ctx = FormulaCtx {
         class_name: pascal_case(&formula_name),
         binary_name: args.binary_name.clone(),
@@ -96,6 +122,7 @@ fn run(args: HomebrewRenderArgs) -> Result<PathBuf> {
         license: spec.license.clone(),
         conflicts_with: args.conflicts_with.clone(),
         platforms,
+        sidecar_packages,
     };
     let rendered = render_formula(&ctx);
 
@@ -325,6 +352,12 @@ fn pick_homepage(spec: &Spec) -> Option<String> {
         .or_else(|| spec.urls.first().map(|(_, v)| v.clone()))
 }
 
+struct SidecarPackage {
+    name: String,
+    install_as: String,
+    platform: Platform,
+}
+
 struct FormulaCtx {
     class_name: String,
     /// Filename of the binary inside the tarball — used as the LHS of
@@ -344,6 +377,7 @@ struct FormulaCtx {
     license: Option<String>,
     conflicts_with: Vec<String>,
     platforms: Vec<Platform>,
+    sidecar_packages: Vec<SidecarPackage>,
 }
 
 fn render_formula(ctx: &FormulaCtx) -> String {
@@ -372,7 +406,7 @@ fn render_formula(ctx: &FormulaCtx) -> String {
 
     if !macos.is_empty() {
         let _ = writeln!(out, "  on_macos do");
-        emit_arch_blocks(&mut out, &macos, "    ");
+        emit_arch_blocks(&mut out, &macos, &ctx.sidecar_packages, "    ");
         let _ = writeln!(out, "  end");
     }
     if !linux.is_empty() {
@@ -380,7 +414,7 @@ fn render_formula(ctx: &FormulaCtx) -> String {
             out.push('\n');
         }
         let _ = writeln!(out, "  on_linux do");
-        emit_arch_blocks(&mut out, &linux, "    ");
+        emit_arch_blocks(&mut out, &linux, &ctx.sidecar_packages, "    ");
         let _ = writeln!(out, "  end");
     }
 
@@ -407,6 +441,28 @@ fn render_formula(ctx: &FormulaCtx) -> String {
             ruby_string(&ctx.install_as),
         );
     }
+    for package in &ctx.sidecar_packages {
+        let os = match package.platform.os {
+            BrewOs::Macos => "on_macos",
+            BrewOs::Linux => "on_linux",
+        };
+        let arch = match package.platform.arch {
+            BrewArch::Arm => "on_arm",
+            BrewArch::Intel => "on_intel",
+        };
+        let _ = writeln!(out, "    {os} do\n      {arch} do");
+        let _ = writeln!(
+            out,
+            "        resource({}).stage do",
+            ruby_string(&package.name)
+        );
+        let _ = writeln!(
+            out,
+            "          (lib/\"dbt\").install {}",
+            ruby_string(&package.install_as)
+        );
+        let _ = writeln!(out, "        end\n      end\n    end");
+    }
     let _ = writeln!(out, "  end");
 
     out.push('\n');
@@ -421,19 +477,37 @@ fn render_formula(ctx: &FormulaCtx) -> String {
     out
 }
 
-fn emit_arch_blocks(out: &mut String, platforms: &[&Platform], indent: &str) {
-    let arm = platforms.iter().find(|p| p.arch == BrewArch::Arm);
-    let intel = platforms.iter().find(|p| p.arch == BrewArch::Intel);
-    if let Some(p) = arm {
-        let _ = writeln!(out, "{indent}on_arm do");
+fn emit_arch_blocks(
+    out: &mut String,
+    platforms: &[&Platform],
+    packages: &[SidecarPackage],
+    indent: &str,
+) {
+    for p in platforms {
+        let arch = match p.arch {
+            BrewArch::Arm => "on_arm",
+            BrewArch::Intel => "on_intel",
+        };
+        let _ = writeln!(out, "{indent}{arch} do");
         let _ = writeln!(out, "{indent}  url {}", ruby_string(&p.url));
         let _ = writeln!(out, "{indent}  sha256 {}", ruby_string(&p.sha256));
-        let _ = writeln!(out, "{indent}end");
-    }
-    if let Some(p) = intel {
-        let _ = writeln!(out, "{indent}on_intel do");
-        let _ = writeln!(out, "{indent}  url {}", ruby_string(&p.url));
-        let _ = writeln!(out, "{indent}  sha256 {}", ruby_string(&p.sha256));
+        for package in packages
+            .iter()
+            .filter(|package| package.platform.os == p.os && package.platform.arch == p.arch)
+        {
+            let _ = writeln!(out, "{indent}  resource {} do", ruby_string(&package.name));
+            let _ = writeln!(
+                out,
+                "{indent}    url {}",
+                ruby_string(&package.platform.url)
+            );
+            let _ = writeln!(
+                out,
+                "{indent}    sha256 {}",
+                ruby_string(&package.platform.sha256)
+            );
+            let _ = writeln!(out, "{indent}  end");
+        }
         let _ = writeln!(out, "{indent}end");
     }
 }
@@ -707,6 +781,27 @@ mod tests {
     }
 
     #[test]
+    fn sidecar_resources_are_scoped_to_their_platform() {
+        let mut ctx = fixture_ctx_dbt();
+        ctx.sidecar_packages.push(SidecarPackage {
+            name: "bridge-adbc".into(),
+            install_as: "libadbc_driver_bridge.dylib".into(),
+            platform: Platform {
+                os: BrewOs::Macos,
+                arch: BrewArch::Arm,
+                url: "https://cdn/bridge.tar.gz".into(),
+                sha256: "e".repeat(64),
+            },
+        });
+        let rendered = render_formula(&ctx);
+        assert_eq!(rendered.matches("resource \"bridge-adbc\" do").count(), 1);
+        assert!(rendered.contains("(lib/\"dbt\").install \"libadbc_driver_bridge.dylib\""));
+        assert!(rendered.contains(
+            "    on_macos do\n      on_arm do\n        resource(\"bridge-adbc\").stage do"
+        ));
+    }
+
+    #[test]
     fn ruby_string_escapes_dangerous_chars() {
         assert_eq!(ruby_string("hello"), r#""hello""#);
         assert_eq!(ruby_string(r#"with"quote"#), r#""with\"quote""#);
@@ -740,6 +835,7 @@ mod tests {
             description: Some("dbt — data build tool".into()),
             license: None,
             conflicts_with: Vec::new(),
+            sidecar_packages: vec![],
             platforms: vec![
                 Platform {
                     os: BrewOs::Macos,

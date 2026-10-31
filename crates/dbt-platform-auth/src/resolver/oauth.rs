@@ -30,6 +30,16 @@ pub const OAUTH_SCOPES: &str = "account:read identity:read offline_access";
 /// Override with `DBT_CLOUD_REGISTER_URL` for testing against non-production environments.
 pub const REGISTER_URL: &str = "https://us1.dbt.com/register";
 
+/// Environment variable naming the dbt platform account host to log in against
+/// directly (e.g. `ab123.us1.dbt.com` or a single-tenant access URL). When set, the
+/// interactive flow skips [`REGISTER_URL`] and opens `https://{host}/oauth/authorize`,
+/// which routes the user through their account's own login (including SSO).
+pub const LOGIN_HOST_ENV: &str = "DBT_CLOUD_LOGIN_HOST";
+
+/// Environment variable naming the dbt platform account id to log in to. Only needed
+/// alongside [`LOGIN_HOST_ENV`] when the host does not identify the account on its own.
+pub const LOGIN_ACCOUNT_ID_ENV: &str = "DBT_CLOUD_LOGIN_ACCOUNT_ID";
+
 // ── Opener / abort handle ─────────────────────────────────────────────────────
 
 /// Callback invoked with the authorization URL. Implementations open a browser or
@@ -305,6 +315,10 @@ impl OAuthPassiveResolver {
 /// redirect server to capture the authorization code. On success the resulting
 /// session is persisted to the OAuth session cache and returned as a credential.
 ///
+/// The registration endpoint cannot route every user (e.g. SSO accounts on other
+/// deployments). Setting a login host ([`OAuthInteractiveResolverBuilder::login_host`]
+/// or [`LOGIN_HOST_ENV`]) opens `https://{host}/oauth/authorize` instead.
+///
 /// Construct via [`OAuthInteractiveResolver::builder`] (passing a `client_id`). An
 /// [`OAuthAbortHandle`] can be wired in via [`OAuthInteractiveResolverBuilder::abort_signal`]
 /// to cancel the flow from another thread, causing [`resolve`](Self::resolve) to return
@@ -315,6 +329,10 @@ pub struct OAuthInteractiveResolver {
     timeout: Duration,
     redirect_port: u16,
     register_url: String,
+    /// Base URL (scheme + host) for direct `/oauth/authorize` login. `None` uses
+    /// `register_url`.
+    login_base_url: Option<String>,
+    login_account_id: Option<String>,
     scopes: String,
     source_application: Option<String>,
     http: reqwest::Client,
@@ -363,8 +381,6 @@ impl OAuthInteractiveResolver {
             }
         };
 
-        let redirect_uri = format!("http://localhost:{}/", self.redirect_port);
-
         // If a session already exists for this client, include its scopes in the new
         // request so that a re-auth never silently drops previously-granted scopes.
         let effective_scopes = {
@@ -386,39 +402,78 @@ impl OAuthInteractiveResolver {
             .map_err(|e| {
                 AuthError::Interactive(format!("loopback port {} in use: {e}", self.redirect_port))
             })?;
+        let redirect_port = listener
+            .local_addr()
+            .map_err(|e| AuthError::Interactive(format!("cannot determine loopback port: {e}")))?
+            .port();
+        let redirect_uri = format!("http://localhost:{redirect_port}/");
 
         let pkce = generate_pkce();
         let state = generate_state();
 
-        let auth_url = build_register_url(
-            &self.register_url,
-            &redirect_uri,
-            &self.client_id,
-            &effective_scopes,
-            &state,
-            &pkce.challenge,
-            self.source_application.as_deref(),
-        )?;
+        let auth_url = match &self.login_base_url {
+            Some(base) => build_authorize_url(
+                base,
+                &redirect_uri,
+                &self.client_id,
+                &effective_scopes,
+                &state,
+                &pkce.challenge,
+                self.login_account_id.as_deref(),
+                self.source_application.as_deref(),
+            )?,
+            None => build_register_url(
+                &self.register_url,
+                &redirect_uri,
+                &self.client_id,
+                &effective_scopes,
+                &state,
+                &pkce.challenge,
+                self.source_application.as_deref(),
+            )?,
+        };
 
         (self.opener)(&auth_url);
 
         let abort_rx = self.abort_signal.lock().unwrap().take();
-        let redirect = accept_one_redirect(&listener, &state, self.timeout, abort_rx).await?;
+        let require_account_url = self.login_base_url.is_none();
+        let redirect = accept_one_redirect(
+            &listener,
+            &state,
+            self.timeout,
+            abort_rx,
+            require_account_url,
+        )
+        .await?;
 
-        // The dbt platform appends account_url to the callback URL. The server validates
-        // the token exchange redirect_uri against this full callback URL (minus code/state),
-        // not the bare redirect_uri from the auth request. Mirror VSCE's buildRedirectUriFromCallback.
-        let exchange_redirect_uri = {
-            let mut url = Url::parse(&redirect_uri)
-                .map_err(|e| AuthError::Interactive(format!("malformed redirect URI: {e}")))?;
-            url.query_pairs_mut()
-                .append_pair("account_url", &redirect.account_url);
-            url.to_string()
-        };
+        let (account_url, exchange_redirect_uri) =
+            match (&self.login_base_url, redirect.account_url) {
+                // Direct authorize: the server echoes our redirect_uri unchanged, and /token
+                // requires the identical value.
+                (Some(base), _) => (base.clone(), redirect_uri.clone()),
+                // The /register page appends account_url to the callback URL. The server validates
+                // the token exchange redirect_uri against this full callback URL (minus code/state),
+                // not the bare redirect_uri from the auth request. Mirror VSCE's
+                // buildRedirectUriFromCallback.
+                (None, Some(account_url)) => {
+                    let mut url = Url::parse(&redirect_uri).map_err(|e| {
+                        AuthError::Interactive(format!("malformed redirect URI: {e}"))
+                    })?;
+                    url.query_pairs_mut()
+                        .append_pair("account_url", &account_url);
+                    (account_url, url.to_string())
+                }
+                (None, None) => {
+                    return Err(AuthError::Interactive(
+                        "redirect missing account_url parameter".into(),
+                    ));
+                }
+            };
 
         let token = exchange_code(
             &self.http,
-            &redirect.account_url,
+            &account_url,
+            self.login_account_id.as_deref(),
             &self.client_id,
             &redirect.code,
             &exchange_redirect_uri,
@@ -467,6 +522,8 @@ pub struct OAuthInteractiveResolverBuilder {
     timeout: Option<Duration>,
     redirect_port: Option<u16>,
     register_url: Option<String>,
+    login_host: Option<String>,
+    login_account_id: Option<String>,
     scopes: Option<String>,
     source_application: Option<String>,
     http: Option<reqwest::Client>,
@@ -482,6 +539,8 @@ impl OAuthInteractiveResolverBuilder {
             timeout: None,
             redirect_port: None,
             register_url: None,
+            login_host: None,
+            login_account_id: None,
             scopes: None,
             source_application: None,
             http: None,
@@ -500,6 +559,7 @@ impl OAuthInteractiveResolverBuilder {
         self
     }
 
+    /// Callback listener port. Use `0` to let the OS assign an available port.
     pub fn redirect_port(mut self, v: u16) -> Self {
         self.redirect_port = Some(v);
         self
@@ -507,6 +567,21 @@ impl OAuthInteractiveResolverBuilder {
 
     pub fn register_url(mut self, v: impl Into<String>) -> Self {
         self.register_url = Some(v.into());
+        self
+    }
+
+    /// Log in directly against this account host (bare host or `https://` URL)
+    /// through `/oauth/authorize` instead of the registration page. Blank values
+    /// are ignored. Falls back to [`LOGIN_HOST_ENV`].
+    pub fn login_host(mut self, v: impl Into<String>) -> Self {
+        self.login_host = Some(v.into());
+        self
+    }
+
+    /// Account id sent with a [`login_host`](Self::login_host) login, for hosts that
+    /// do not identify the account on their own. Falls back to [`LOGIN_ACCOUNT_ID_ENV`].
+    pub fn login_account_id(mut self, v: impl Into<String>) -> Self {
+        self.login_account_id = Some(v.into());
         self
     }
 
@@ -546,6 +621,11 @@ impl OAuthInteractiveResolverBuilder {
             .register_url
             .or_else(|| std::env::var("DBT_CLOUD_REGISTER_URL").ok())
             .unwrap_or_else(|| REGISTER_URL.to_owned());
+        let login_base_url = non_blank(self.login_host)
+            .or_else(|| non_blank(std::env::var(LOGIN_HOST_ENV).ok()))
+            .map(|host| login_base_url(&host));
+        let login_account_id = non_blank(self.login_account_id)
+            .or_else(|| non_blank(std::env::var(LOGIN_ACCOUNT_ID_ENV).ok()));
         OAuthInteractiveResolver {
             client_id,
             opener: self
@@ -554,6 +634,8 @@ impl OAuthInteractiveResolverBuilder {
             timeout: self.timeout.unwrap_or(INTERACTIVE_TIMEOUT),
             redirect_port: self.redirect_port.unwrap_or(LOOPBACK_PORT),
             register_url,
+            login_base_url,
+            login_account_id,
             scopes: self.scopes.unwrap_or_else(|| OAUTH_SCOPES.to_owned()),
             source_application: self.source_application,
             http: self.http.unwrap_or_default(),
@@ -624,20 +706,91 @@ fn build_register_url(
     code_challenge: &str,
     source_application: Option<&str>,
 ) -> Result<String, AuthError> {
-    let mut url = Url::parse(base)
+    let url = Url::parse(base)
         .map_err(|e| AuthError::Interactive(format!("invalid register URL '{base}': {e}")))?;
+    Ok(append_pkce_params(
+        url,
+        ("redirect_url", redirect_url),
+        client_id,
+        scope,
+        state,
+        code_challenge,
+        None,
+        source_application,
+    ))
+}
+
+/// Appends the PKCE authorization-code query shared by `/register` and
+/// `/oauth/authorize`. The two differ only in the redirect parameter name.
+#[allow(clippy::too_many_arguments)]
+fn append_pkce_params(
+    mut url: Url,
+    (redirect_key, redirect): (&str, &str),
+    client_id: &str,
+    scope: &str,
+    state: &str,
+    code_challenge: &str,
+    account_id: Option<&str>,
+    source_application: Option<&str>,
+) -> String {
     url.query_pairs_mut()
-        .append_pair("redirect_url", redirect_url)
+        .append_pair(redirect_key, redirect)
         .append_pair("client_id", client_id)
         .append_pair("code_challenge", code_challenge)
         .append_pair("state", state)
         .append_pair("scope", scope)
         .append_pair("response_type", "code")
         .append_pair("code_challenge_method", "S256");
+    if let Some(account_id) = account_id {
+        url.query_pairs_mut().append_pair("account_id", account_id);
+    }
     if let Some(src) = source_application {
         url.query_pairs_mut().append_pair("_dbtsrc", src);
     }
-    Ok(url.to_string())
+    url.to_string()
+}
+
+fn non_blank(v: Option<String>) -> Option<String> {
+    v.map(|s| s.trim().to_owned()).filter(|s| !s.is_empty())
+}
+
+/// Turns a user-supplied host (`ab123.us1.dbt.com`, `https://ab123.us1.dbt.com/`)
+/// into a base URL. Defaults to `https://` when no scheme is given.
+fn login_base_url(host: &str) -> String {
+    let host = host.trim_end_matches('/');
+    if host.starts_with("https://") || host.starts_with("http://") {
+        host.to_owned()
+    } else {
+        format!("https://{host}")
+    }
+}
+
+/// Builds a standard OAuth authorize URL on the account host. Unlike the
+/// registration page, the account's own host resolves its SSO connection.
+#[allow(clippy::too_many_arguments)]
+fn build_authorize_url(
+    base: &str,
+    redirect_uri: &str,
+    client_id: &str,
+    scope: &str,
+    state: &str,
+    code_challenge: &str,
+    account_id: Option<&str>,
+    source_application: Option<&str>,
+) -> Result<String, AuthError> {
+    let authorize = format!("{base}/oauth/authorize");
+    let url = Url::parse(&authorize)
+        .map_err(|e| AuthError::Interactive(format!("invalid login host '{base}': {e}")))?;
+    Ok(append_pkce_params(
+        url,
+        ("redirect_uri", redirect_uri),
+        client_id,
+        scope,
+        state,
+        code_challenge,
+        account_id,
+        source_application,
+    ))
 }
 
 #[derive(Debug)]
@@ -645,7 +798,7 @@ struct RedirectResult {
     code: String,
     #[allow(dead_code)]
     state: String,
-    account_url: String,
+    account_url: Option<String>,
 }
 
 async fn accept_one_redirect(
@@ -653,13 +806,14 @@ async fn accept_one_redirect(
     expected_state: &str,
     timeout: Duration,
     abort_rx: Option<tokio::sync::oneshot::Receiver<()>>,
+    require_account_url: bool,
 ) -> Result<RedirectResult, AuthError> {
     let accept = async {
         let (stream, _) = listener
             .accept()
             .await
             .map_err(|e| AuthError::Interactive(format!("loopback accept failed: {e}")))?;
-        handle_redirect(stream, expected_state).await
+        handle_redirect(stream, expected_state, require_account_url).await
     };
 
     if let Some(mut rx) = abort_rx {
@@ -700,6 +854,7 @@ fn truncate_chars(s: &str, max_chars: usize) -> &str {
 async fn handle_redirect(
     stream: TcpStream,
     expected_state: &str,
+    require_account_url: bool,
 ) -> Result<RedirectResult, AuthError> {
     let (read_half, mut write_half) = stream.into_split();
     let mut reader = BufReader::new(read_half);
@@ -748,10 +903,12 @@ async fn handle_redirect(
         .cloned()
         .ok_or_else(|| AuthError::Interactive("redirect missing code parameter".into()))?;
 
-    let account_url = query
-        .get("account_url")
-        .cloned()
-        .ok_or_else(|| AuthError::Interactive("redirect missing account_url parameter".into()))?;
+    let account_url = query.get("account_url").cloned();
+    if require_account_url && account_url.is_none() {
+        return Err(AuthError::Interactive(
+            "redirect missing account_url parameter".into(),
+        ));
+    }
 
     let _ = write_http_response(&mut write_half, 200, &success_html()).await;
     Ok(RedirectResult {
@@ -910,12 +1067,20 @@ struct TokenResponse {
 async fn exchange_code(
     http: &reqwest::Client,
     account_url: &str,
+    account_id: Option<&str>,
     client_id: &str,
     code: &str,
     redirect_uri: &str,
     code_verifier: &str,
 ) -> Result<TokenResponse, AuthError> {
-    let token_url = format!("{}/oauth/token", account_url.trim_end_matches('/'));
+    let mut token_url = format!("{}/oauth/token", account_url.trim_end_matches('/'));
+    // Hosts without an account subdomain resolve the account from this GET param,
+    // and /token must see the same account /authorize did.
+    if let Some(account_id) = account_id {
+        token_url = Url::parse_with_params(&token_url, [("account_id", account_id)])
+            .map_err(|e| AuthError::Interactive(format!("invalid token URL: {e}")))?
+            .to_string();
+    }
     let form = [
         ("grant_type", "authorization_code"),
         ("code", code),
@@ -1156,7 +1321,7 @@ mod tests {
     async fn mock_token_server_with_request(
         status: u16,
         body: String,
-    ) -> (std::net::SocketAddr, oneshot::Receiver<String>) {
+    ) -> (std::net::SocketAddr, oneshot::Receiver<(String, String)>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let (request_sender, request_receiver) = oneshot::channel();
@@ -1164,6 +1329,8 @@ mod tests {
             let (stream, _) = listener.accept().await.unwrap();
             let (read, mut write) = stream.into_split();
             let mut reader = BufReader::new(read);
+            let mut request_line = String::new();
+            reader.read_line(&mut request_line).await.unwrap();
             let mut content_length: usize = 0;
             loop {
                 let mut line = String::new();
@@ -1179,7 +1346,7 @@ mod tests {
             use tokio::io::AsyncReadExt as _;
             let mut request_body = vec![0u8; content_length];
             reader.read_exact(&mut request_body).await.unwrap();
-            let _ = request_sender.send(String::from_utf8(request_body).unwrap());
+            let _ = request_sender.send((request_line, String::from_utf8(request_body).unwrap()));
             let status_text = if status == 200 { "OK" } else { "Unauthorized" };
             let resp = format!(
                 "HTTP/1.1 {status} {status_text}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -1270,7 +1437,7 @@ mod tests {
         ));
 
         let refreshed = resolver.force_refresh().await.unwrap();
-        let request_body = request_body.await.unwrap();
+        let (_, request_body) = request_body.await.unwrap();
         assert!(request_body.contains("grant_type=refresh_token"));
         assert!(request_body.contains("refresh_token=selected_refresh"));
         assert!(request_body.contains("client_id=test_client"));
@@ -1893,6 +2060,90 @@ mod tests {
     }
 
     #[test]
+    fn authorize_url_targets_login_host_with_standard_params() {
+        let url = build_authorize_url(
+            "https://ab123.cloud.example.com",
+            "http://localhost:29527/",
+            "client-id-x",
+            "account:read offline_access",
+            "state-abc",
+            "challenge-xyz",
+            Some("42"),
+            Some("core_v2"),
+        )
+        .unwrap();
+        let parsed = Url::parse(&url).unwrap();
+        assert_eq!(parsed.host_str(), Some("ab123.cloud.example.com"));
+        assert_eq!(parsed.path(), "/oauth/authorize");
+        let pairs: HashMap<_, _> = parsed.query_pairs().into_owned().collect();
+        assert_eq!(
+            pairs.get("redirect_uri").map(String::as_str),
+            Some("http://localhost:29527/")
+        );
+        assert!(!pairs.contains_key("redirect_url"));
+        assert_eq!(pairs.get("account_id").map(String::as_str), Some("42"));
+        assert_eq!(
+            pairs.get("code_challenge_method").map(String::as_str),
+            Some("S256")
+        );
+        assert_eq!(pairs.get("response_type").map(String::as_str), Some("code"));
+        assert_eq!(pairs.get("_dbtsrc").map(String::as_str), Some("core_v2"));
+    }
+
+    #[test]
+    fn login_base_url_accepts_bare_host_or_url() {
+        assert_eq!(
+            login_base_url("ab123.us1.dbt.com"),
+            "https://ab123.us1.dbt.com"
+        );
+        assert_eq!(
+            login_base_url("https://ab123.us1.dbt.com/"),
+            "https://ab123.us1.dbt.com"
+        );
+        assert_eq!(
+            login_base_url("http://127.0.0.1:8080"),
+            "http://127.0.0.1:8080"
+        );
+    }
+
+    #[test]
+    fn builder_reads_login_host_from_env_and_prefers_explicit_value() {
+        let _guard = crate::TEST_ENV_LOCK.lock().unwrap();
+        unsafe {
+            #[allow(clippy::disallowed_methods)]
+            std::env::set_var(LOGIN_HOST_ENV, "env.cloud.example.com");
+            #[allow(clippy::disallowed_methods)]
+            std::env::set_var(LOGIN_ACCOUNT_ID_ENV, "7");
+        }
+        let from_env = OAuthInteractiveResolver::builder("client").build();
+        let explicit = OAuthInteractiveResolver::builder("client")
+            .login_host("ab123.cloud.example.com")
+            .login_account_id("42")
+            .build();
+        unsafe {
+            #[allow(clippy::disallowed_methods)]
+            std::env::remove_var(LOGIN_HOST_ENV);
+            #[allow(clippy::disallowed_methods)]
+            std::env::remove_var(LOGIN_ACCOUNT_ID_ENV);
+        }
+        let blank = OAuthInteractiveResolver::builder("client")
+            .login_host("  ")
+            .build();
+
+        assert_eq!(
+            from_env.login_base_url.as_deref(),
+            Some("https://env.cloud.example.com")
+        );
+        assert_eq!(from_env.login_account_id.as_deref(), Some("7"));
+        assert_eq!(
+            explicit.login_base_url.as_deref(),
+            Some("https://ab123.cloud.example.com")
+        );
+        assert_eq!(explicit.login_account_id.as_deref(), Some("42"));
+        assert_eq!(blank.login_base_url, None);
+    }
+
+    #[test]
     fn decode_access_token_extracts_claims() {
         // Build a fake JWT with the required claims (no signature validation)
         use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -1932,7 +2183,14 @@ mod tests {
     async fn parses_code_state_and_account_url() {
         let (listener, addr) = bind_local().await;
         let handle = tokio::spawn(async move {
-            accept_one_redirect(&listener, "expected-state", Duration::from_secs(5), None).await
+            accept_one_redirect(
+                &listener,
+                "expected-state",
+                Duration::from_secs(5),
+                None,
+                true,
+            )
+            .await
         });
         send_get(
             addr,
@@ -1941,14 +2199,139 @@ mod tests {
         .await;
         let result = handle.await.unwrap().unwrap();
         assert_eq!(result.code, "auth-code");
-        assert_eq!(result.account_url, "https://ab123.us1.dbt.com");
+        assert_eq!(
+            result.account_url.as_deref(),
+            Some("https://ab123.us1.dbt.com")
+        );
+    }
+
+    #[dbt_runtime::test]
+    async fn requires_account_url_for_register_flow() {
+        let (listener, addr) = bind_local().await;
+        let handle = tokio::spawn(async move {
+            accept_one_redirect(
+                &listener,
+                "expected-state",
+                Duration::from_secs(5),
+                None,
+                true,
+            )
+            .await
+        });
+        send_get(addr, "/handler?code=auth-code&state=expected-state").await;
+        let err = handle.await.unwrap().unwrap_err();
+        assert!(err.to_string().contains("account_url"));
+    }
+
+    #[dbt_runtime::test]
+    async fn accepts_missing_account_url_for_direct_authorize() {
+        let (listener, addr) = bind_local().await;
+        let handle = tokio::spawn(async move {
+            accept_one_redirect(
+                &listener,
+                "expected-state",
+                Duration::from_secs(5),
+                None,
+                false,
+            )
+            .await
+        });
+        send_get(addr, "/handler?code=auth-code&state=expected-state").await;
+        let result = handle.await.unwrap().unwrap();
+        assert_eq!(result.code, "auth-code");
+        assert_eq!(result.account_url, None);
+    }
+
+    /// End-to-end direct login: authorize URL on the login host, callback without
+    /// `account_url`, and a code exchange against the same host that reuses the bare
+    /// `redirect_uri` and carries `account_id`.
+    #[dbt_runtime::test]
+    async fn direct_login_exchanges_code_on_login_host() {
+        let access_token = make_fake_jwt(7, 42, "ab123.cloud.example.com");
+        let token_response = serde_json::json!({
+            "access_token": access_token,
+            "refresh_token": "refresh",
+            "scope": "account:read offline_access",
+            "expires_in": 3600,
+        })
+        .to_string();
+        let (token_addr, token_request) = mock_token_server_with_request(200, token_response).await;
+        let cache_dir = tempfile::tempdir().unwrap();
+
+        let opened = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
+        let opener: Opener = {
+            let opened = opened.clone();
+            Box::new(move |url: &str| {
+                let parsed = Url::parse(url).unwrap();
+                let redirect_uri = parsed
+                    .query_pairs()
+                    .find(|(k, _)| k == "redirect_uri")
+                    .unwrap()
+                    .1
+                    .into_owned();
+                let redirect_port = Url::parse(&redirect_uri).unwrap().port().unwrap();
+                let redirect_addr: std::net::SocketAddr = ([127, 0, 0, 1], redirect_port).into();
+                let state = parsed
+                    .query_pairs()
+                    .find(|(k, _)| k == "state")
+                    .unwrap()
+                    .1
+                    .into_owned();
+                *opened.lock().unwrap() = Some(url.to_owned());
+                tokio::spawn(async move {
+                    send_get(redirect_addr, &format!("/?code=auth-code&state={state}")).await;
+                });
+            })
+        };
+
+        let credential = OAuthInteractiveResolver::builder("client")
+            .login_host(format!("http://{token_addr}"))
+            .login_account_id("42")
+            .redirect_port(/*v*/ 0)
+            .cache_path(cache_dir.path().join("oauth_sessions.json"))
+            .opener(opener)
+            .build()
+            .resolve()
+            .await
+            .unwrap();
+
+        let opened = opened.lock().unwrap().clone().unwrap();
+        assert!(opened.starts_with(&format!("http://{token_addr}/oauth/authorize?")));
+        let redirect_uri = Url::parse(&opened)
+            .unwrap()
+            .query_pairs()
+            .find(|(k, _)| k == "redirect_uri")
+            .unwrap()
+            .1
+            .into_owned();
+        assert_ne!(Url::parse(&redirect_uri).unwrap().port(), Some(0));
+
+        let (request_line, body) = token_request.await.unwrap();
+        assert!(request_line.starts_with("POST /oauth/token?account_id=42 "));
+        let form: HashMap<_, _> = url::form_urlencoded::parse(body.as_bytes())
+            .into_owned()
+            .collect();
+        assert_eq!(
+            form.get("redirect_uri").map(String::as_str),
+            Some(redirect_uri.as_str())
+        );
+        assert_eq!(form.get("code").map(String::as_str), Some("auth-code"));
+        assert_eq!(credential.account_host(), "ab123.cloud.example.com");
+        assert_eq!(credential.account_id(), 42);
     }
 
     #[dbt_runtime::test]
     async fn rejects_mismatched_state() {
         let (listener, addr) = bind_local().await;
         let handle = tokio::spawn(async move {
-            accept_one_redirect(&listener, "expected-state", Duration::from_secs(5), None).await
+            accept_one_redirect(
+                &listener,
+                "expected-state",
+                Duration::from_secs(5),
+                None,
+                true,
+            )
+            .await
         });
         send_get(
             addr,
@@ -1963,7 +2346,14 @@ mod tests {
     async fn surfaces_error_query_param() {
         let (listener, addr) = bind_local().await;
         let handle = tokio::spawn(async move {
-            accept_one_redirect(&listener, "expected-state", Duration::from_secs(5), None).await
+            accept_one_redirect(
+                &listener,
+                "expected-state",
+                Duration::from_secs(5),
+                None,
+                true,
+            )
+            .await
         });
         send_get(
             addr,
@@ -1978,7 +2368,8 @@ mod tests {
     #[dbt_runtime::test]
     async fn times_out_when_no_request_arrives() {
         let (listener, _addr) = bind_local().await;
-        let result = accept_one_redirect(&listener, "any", Duration::from_millis(100), None).await;
+        let result =
+            accept_one_redirect(&listener, "any", Duration::from_millis(100), None, true).await;
         let err = result.unwrap_err();
         assert!(err.to_string().contains("timed out"));
     }
@@ -1988,7 +2379,7 @@ mod tests {
         let (listener, _addr) = bind_local().await;
         let (tx, rx) = oneshot::channel::<()>();
         let handle = tokio::spawn(async move {
-            accept_one_redirect(&listener, "any", Duration::from_secs(60), Some(rx)).await
+            accept_one_redirect(&listener, "any", Duration::from_secs(60), Some(rx), true).await
         });
         // Immediately abort — no browser connection will arrive.
         let abort_handle = OAuthAbortHandle::new(tx);

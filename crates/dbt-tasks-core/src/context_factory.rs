@@ -7,10 +7,10 @@ use dbt_adapter::relation::create_relation_from_node;
 use dbt_adapter::{Adapter, AdapterStore};
 use dbt_adapter_core::AdapterType;
 use dbt_common::FsError;
-use dbt_common::collections::DashMap;
+use dbt_common::collections::SccHashMap;
 use dbt_common::node_selector::SelectExpression;
+use dbt_common::sources_extractor::SourcesExtractor;
 use dbt_dag::schedule::Schedule;
-use dbt_frontend_common::sources_extractor::SourcesExtractor;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::listener::RenderingEventListenerFactory;
 use dbt_schema_store::{DataStoreTrait, SchemaStoreTrait};
@@ -21,6 +21,7 @@ use dbt_state::explain::{
     append_state_explain_log_record, new_state_explain_log_path, prune_state_explain_logs,
 };
 use dbt_state::service_config::RunCacheServiceConfig;
+use dbt_state::telemetry::SharedEventOrder;
 use dbt_state::view_traversal::ViewDefinitionTraverser;
 use petgraph::graph::DiGraph;
 
@@ -60,6 +61,7 @@ pub trait TaskRunnerCtxFactory: Send + Sync + 'static {
         adapter: Arc<Adapter>,
         adapter_store: Arc<AdapterStore>,
         run_cache_lifecycle: Arc<RunCacheLifecycle>,
+        shared_event_order: Option<SharedEventOrder>,
     ) -> Pin<Box<dyn Future<Output = Result<TaskRunnerCtx, Box<FsError>>> + Send>> {
         let rendering_listener_factory = self.rendering_listener_factory();
         let span_manager = Arc::new({
@@ -137,7 +139,7 @@ pub trait TaskRunnerCtxFactory: Send + Sync + 'static {
             let sources_extractor = self.sources_extractor();
             let run_cache_ctx = RunCacheCtx {
                 run_cache_metadata,
-                run_cache_dev_cloned_nodes: DashMap::default(),
+                run_cache_dev_cloned_nodes: SccHashMap::default(),
                 run_cache_deferred_fqns,
                 run_cache_service_requested: run_cache_service.requested,
                 run_cache_service_config: run_cache_service.config.clone(),
@@ -151,10 +153,11 @@ pub trait TaskRunnerCtxFactory: Send + Sync + 'static {
                 }),
                 heuristic_clock: std::sync::OnceLock::new(),
                 prefetch: Default::default(),
-                telemetry_event_order: std::sync::atomic::AtomicI64::new(0),
+                shared_event_order: shared_event_order.unwrap_or_default(),
                 telemetry_session_start: std::sync::OnceLock::new(),
                 telemetry_session_ended: std::sync::atomic::AtomicBool::new(false),
                 telemetry_dispatcher: std::sync::OnceLock::new(),
+                redshift_case_sensitivity_enabled: tokio::sync::OnceCell::new(),
             };
 
             Ok(TaskRunnerCtx {
@@ -195,7 +198,7 @@ pub trait TaskRunnerCtxFactory: Send + Sync + 'static {
         env: &'a Arc<JinjaEnv>,
         freshness_results: Option<&'a dyn PreTaskRunData>,
         extended_ctx: &'a dyn ExtendedCtx,
-    ) -> Pin<Box<dyn Future<Output = Result<DashMap<String, String>, Box<FsError>>> + Send + 'a>>;
+    ) -> Pin<Box<dyn Future<Output = Result<SccHashMap<String, String>, Box<FsError>>> + Send + 'a>>;
 }
 
 /// Only the dbt State dispatch path appends node records, so a log created without it

@@ -16,6 +16,5 @@ workspace = true
 anyhow = { workspace = true }
 dbt-fusion-workspace-hack = { version = "0.1" }
 diffy = { workspace = true }
-once_cell = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

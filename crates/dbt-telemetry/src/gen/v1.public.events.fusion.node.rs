@@ -153,9 +153,144 @@ impl ::prost::Name for NodeEvaluationDetail {
         "/v1.public.events.fusion.node.NodeEvaluationDetail".into()
     }
 }
+/// Response of a node's `main` statement.
+#[cfg_attr(any(test, feature = "test-utils"), derive(::fake::Dummy))]
+#[derive(crate::macros::ProtoNew)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct NodeAdapterResponse {
+    /// Id the warehouse assigned to the statement's query.
+    /// Unset when the adapter reported none.
+    #[prost(string, optional, tag = "1")]
+    pub query_id: ::core::option::Option<::prost::alloc::string::String>,
+    /// Status code of the statement, as the adapter reports it (e.g. "SUCCESS", "INSERT").
+    /// Unset when the adapter reported none.
+    #[prost(string, optional, tag = "2")]
+    pub code: ::core::option::Option<::prost::alloc::string::String>,
+    /// Adapter-defined statement metrics.
+    /// INTERNAL METRICS ONLY. DO NOT DEPEND ON THESE KEYS. THEY MAY CHANGE OR BE REMOVED WITHOUT NOTICE.
+    #[prost(btree_map = "string, message", tag = "3")]
+    pub extra: ::prost::alloc::collections::BTreeMap<
+        ::prost::alloc::string::String,
+        AdapterResponseValue,
+    >,
+}
+impl ::dbt_tracing::StaticName for NodeAdapterResponse {
+    const FULL_NAME: &'static str = "v1.public.events.fusion.node.NodeAdapterResponse";
+    const TYPE_URL: &'static str = "/v1.public.events.fusion.node.NodeAdapterResponse";
+}
+impl ::prost::Name for NodeAdapterResponse {
+    const NAME: &'static str = "NodeAdapterResponse";
+    const PACKAGE: &'static str = "v1.public.events.fusion.node";
+    fn full_name() -> ::prost::alloc::string::String {
+        "v1.public.events.fusion.node.NodeAdapterResponse".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "/v1.public.events.fusion.node.NodeAdapterResponse".into()
+    }
+}
+/// Value of an adapter-defined key in `NodeAdapterResponse.extra`.
+#[cfg_attr(any(test, feature = "test-utils"), derive(::fake::Dummy))]
+#[derive(crate::macros::ProtoNew)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct AdapterResponseValue {
+    #[prost(oneof = "adapter_response_value::Value", tags = "1, 2, 3, 4")]
+    pub value: ::core::option::Option<adapter_response_value::Value>,
+}
+/// Nested message and enum types in `AdapterResponseValue`.
+pub mod adapter_response_value {
+    #[cfg_attr(any(test, feature = "test-utils"), derive(::fake::Dummy))]
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Value {
+        #[prost(int64, tag = "1")]
+        Int(i64),
+        #[prost(double, tag = "2")]
+        Float(f64),
+        #[prost(bool, tag = "3")]
+        Bool(bool),
+        #[prost(string, tag = "4")]
+        String(::prost::alloc::string::String),
+    }
+}
+impl ::dbt_tracing::StaticName for AdapterResponseValue {
+    const FULL_NAME: &'static str = "v1.public.events.fusion.node.AdapterResponseValue";
+    const TYPE_URL: &'static str = "/v1.public.events.fusion.node.AdapterResponseValue";
+}
+impl ::prost::Name for AdapterResponseValue {
+    const NAME: &'static str = "AdapterResponseValue";
+    const PACKAGE: &'static str = "v1.public.events.fusion.node";
+    fn full_name() -> ::prost::alloc::string::String {
+        "v1.public.events.fusion.node.AdapterResponseValue".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "/v1.public.events.fusion.node.AdapterResponseValue".into()
+    }
+}
+/// Evaluation of one time window within a microbatch model's run phase.
+/// Maps to dbt-core's LogStartBatch (Q045) and LogBatchResult (Q046).
 #[cfg_attr(any(test, feature = "test-utils"), derive(::fake::Dummy))]
 #[derive(crate::macros::ProtoNew)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct MicrobatchEvaluated {
+    /// Unique id of the model owning this batch.
+    #[prost(string, tag = "1")]
+    pub unique_id: ::prost::alloc::string::String,
+    /// Schema and identifier of the owning model's relation.
+    #[prost(string, tag = "2")]
+    pub schema: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub identifier: ::prost::alloc::string::String,
+    /// Stable batch id: YYYY, YYYYMM, YYYYMMDD, or YYYYMMDDHH.
+    #[prost(string, tag = "4")]
+    pub batch_id: ::prost::alloc::string::String,
+    /// Time grain of the event-time window.
+    #[prost(enumeration = "MicrobatchBatchSize", tag = "5")]
+    #[cfg_attr(
+        any(test, feature = "test-utils"),
+        dummy(expr = "::fake::Fake::fake::<MicrobatchBatchSize>(&::fake::Faker) as i32")
+    )]
+    pub batch_size: i32,
+    /// 1-based index within this execution window.
+    #[prost(uint32, tag = "6")]
+    pub batch_index: u32,
+    #[prost(uint32, tag = "7")]
+    pub total_batches: u32,
+    /// Inclusive start and exclusive end of the event-time window, in UTC RFC 3339.
+    #[prost(string, tag = "8")]
+    pub event_time_start: ::prost::alloc::string::String,
+    #[prost(string, tag = "9")]
+    pub event_time_end: ::prost::alloc::string::String,
+    #[prost(enumeration = "NodeOutcome", tag = "10")]
+    #[cfg_attr(
+        any(test, feature = "test-utils"),
+        dummy(expr = "::fake::Fake::fake::<NodeOutcome>(&::fake::Faker) as i32")
+    )]
+    pub node_outcome: i32,
+    /// Total time in milliseconds this batch evaluation spent idle: the summed
+    /// duration of `ThreadPoolWait` spans with this `batch_id`. It does not count
+    /// toward the owning `NodeEvaluated.idle_time_ms`.
+    #[prost(uint64, tag = "11")]
+    pub idle_time_ms: u64,
+    /// Optional legacy dbt core event code (Q045 at start, Q046 at completion).
+    #[prost(string, optional, tag = "12")]
+    pub dbt_core_event_code: ::core::option::Option<::prost::alloc::string::String>,
+}
+impl ::dbt_tracing::StaticName for MicrobatchEvaluated {
+    const FULL_NAME: &'static str = "v1.public.events.fusion.node.MicrobatchEvaluated";
+    const TYPE_URL: &'static str = "/v1.public.events.fusion.node.MicrobatchEvaluated";
+}
+impl ::prost::Name for MicrobatchEvaluated {
+    const NAME: &'static str = "MicrobatchEvaluated";
+    const PACKAGE: &'static str = "v1.public.events.fusion.node";
+    fn full_name() -> ::prost::alloc::string::String {
+        "v1.public.events.fusion.node.MicrobatchEvaluated".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "/v1.public.events.fusion.node.MicrobatchEvaluated".into()
+    }
+}
+#[cfg_attr(any(test, feature = "test-utils"), derive(::fake::Dummy))]
+#[derive(crate::macros::ProtoNew)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct NodeEvaluated {
     /// unique_id is the globally unique identifier for this node.
     #[prost(string, tag = "1")]
@@ -256,7 +391,10 @@ pub struct NodeEvaluated {
     #[prost(uint64, optional, tag = "41")]
     pub rows_affected: ::core::option::Option<u64>,
     /// Total time in milliseconds this node evaluation spent idle.
-    /// This includes time spent waiting on internal backpressure.
+    /// This includes time spent waiting on internal backpressure: the summed
+    /// duration of `ThreadPoolWait` spans of this node without a `batch_id`.
+    /// When the evaluation runs work concurrently, e.g. microbatches, those waits
+    /// cover only the time when all of that work is queued and none of it runs.
     #[prost(uint64, optional, tag = "42")]
     pub idle_time_ms: ::core::option::Option<u64>,
     /// Identifier of the dbt State execution decision that governed this node's
@@ -264,6 +402,15 @@ pub struct NodeEvaluated {
     /// returned an execution decision.
     #[prost(string, optional, tag = "43")]
     pub state_decision_id: ::core::option::Option<::prost::alloc::string::String>,
+    /// Response of the node's `main` statement, as in run_results.json minus the row count and
+    /// the free-text message.
+    /// Set in the Run phase when a model, seed, snapshot or data test succeeds. For a microbatch
+    /// model: the last batch's response.
+    /// Unset for other node types (e.g. functions, unit tests), for tests that share an aggregated
+    /// query, for nodes that run outside the warehouse adapter (local or lake compute), and when
+    /// the node did not succeed.
+    #[prost(message, optional, tag = "44")]
+    pub adapter_response: ::core::option::Option<NodeAdapterResponse>,
     /// Node type specific details (e.g. test fail counts, cache use reasons).
     #[prost(oneof = "node_evaluated::NodeOutcomeDetail", tags = "30, 31, 32, 33, 34")]
     pub node_outcome_detail: ::core::option::Option<node_evaluated::NodeOutcomeDetail>,
@@ -316,7 +463,7 @@ impl ::prost::Name for NodeEvaluated {
 /// Supersedes legacy NodeStart (Q024) and NodeFinished (Q025) events.
 #[cfg_attr(any(test, feature = "test-utils"), derive(::fake::Dummy))]
 #[derive(crate::macros::ProtoNew)]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct NodeProcessed {
     /// unique_id is the globally unique identifier for this node.
     #[prost(string, tag = "1")]
@@ -445,6 +592,19 @@ pub struct NodeProcessed {
     /// Mirrors dbt core's `num_nodes`.
     #[prost(uint32, optional, tag = "47")]
     pub node_count_total: ::core::option::Option<u32>,
+    /// Adapter type this node runs on (e.g. "snowflake"). Only set when the
+    /// project can run nodes on more than one adapter.
+    #[prost(string, optional, tag = "48")]
+    pub adapter: ::core::option::Option<::prost::alloc::string::String>,
+    /// If node_type == NODE_TYPE_PLUGIN, the kind of node the plugin added
+    /// (e.g. "widget").
+    #[prost(string, optional, tag = "49")]
+    pub plugin_type: ::core::option::Option<::prost::alloc::string::String>,
+    /// Response of the node's `main` statement.
+    /// Rolled up from the Run phase `NodeEvaluated`; see its `adapter_response`.
+    /// Unset when the Run phase did not run, or recorded none.
+    #[prost(message, optional, tag = "50")]
+    pub adapter_response: ::core::option::Option<NodeAdapterResponse>,
     /// Node type specific details (e.g. test fail counts, cache use reasons).
     #[prost(oneof = "node_processed::NodeOutcomeDetail", tags = "30, 31, 32, 33, 34")]
     pub node_outcome_detail: ::core::option::Option<node_processed::NodeOutcomeDetail>,
@@ -516,6 +676,9 @@ pub enum NodeType {
     SemanticModel = 14,
     Function = 15,
     Check = 16,
+    /// A node a plugin adds to the project. Its kind is in `plugin_type`. Numbered apart from the
+    /// core node types; node types must fit in a byte (node-count metric keys pack them).
+    Plugin = 100,
 }
 impl NodeType {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -541,6 +704,7 @@ impl NodeType {
             Self::SemanticModel => "NODE_TYPE_SEMANTIC_MODEL",
             Self::Function => "NODE_TYPE_FUNCTION",
             Self::Check => "NODE_TYPE_CHECK",
+            Self::Plugin => "NODE_TYPE_PLUGIN",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -563,6 +727,7 @@ impl NodeType {
             "NODE_TYPE_SEMANTIC_MODEL" => Some(Self::SemanticModel),
             "NODE_TYPE_FUNCTION" => Some(Self::Function),
             "NODE_TYPE_CHECK" => Some(Self::Check),
+            "NODE_TYPE_PLUGIN" => Some(Self::Plugin),
             _ => None,
         }
     }
@@ -947,6 +1112,43 @@ impl NodeWarningOutcome {
             "NODE_WARNING_OUTCOME_UNSPECIFIED" => Some(Self::Unspecified),
             "NODE_WARNING_OUTCOME_NO_WARNINGS" => Some(Self::NoWarnings),
             "NODE_WARNING_OUTCOME_WITH_WARNINGS" => Some(Self::WithWarnings),
+            _ => None,
+        }
+    }
+}
+/// Time grain of a microbatch model's batches.
+#[cfg_attr(any(test, feature = "test-utils"), derive(::fake::Dummy))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum MicrobatchBatchSize {
+    Unspecified = 0,
+    Hour = 1,
+    Day = 2,
+    Month = 3,
+    Year = 4,
+}
+impl MicrobatchBatchSize {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "MICROBATCH_BATCH_SIZE_UNSPECIFIED",
+            Self::Hour => "MICROBATCH_BATCH_SIZE_HOUR",
+            Self::Day => "MICROBATCH_BATCH_SIZE_DAY",
+            Self::Month => "MICROBATCH_BATCH_SIZE_MONTH",
+            Self::Year => "MICROBATCH_BATCH_SIZE_YEAR",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "MICROBATCH_BATCH_SIZE_UNSPECIFIED" => Some(Self::Unspecified),
+            "MICROBATCH_BATCH_SIZE_HOUR" => Some(Self::Hour),
+            "MICROBATCH_BATCH_SIZE_DAY" => Some(Self::Day),
+            "MICROBATCH_BATCH_SIZE_MONTH" => Some(Self::Month),
+            "MICROBATCH_BATCH_SIZE_YEAR" => Some(Self::Year),
             _ => None,
         }
     }

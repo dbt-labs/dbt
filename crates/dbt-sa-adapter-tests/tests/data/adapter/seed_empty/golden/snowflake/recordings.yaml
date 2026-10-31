@@ -1,0 +1,17 @@
+346f15b3:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists development.adapters_snowflake_seed_empty
+dbbbff64:
+- sequence: 0
+  type: execute
+  sql: |-
+    show terse schemas in database development
+    limit 10000
+seed.seed_empty.users:
+- sequence: 0
+  type: execute
+  sql: SHOW OBJECTS IN SCHEMA "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_SEED_EMPTY" LIMIT 10000
+- sequence: 1
+  type: execute
+  sql: create transient table development.adapters_snowflake_seed_empty.users (ID integer,FIRST_NAME text,LAST_NAME text,SALARY float8,IS_TEACHER boolean)

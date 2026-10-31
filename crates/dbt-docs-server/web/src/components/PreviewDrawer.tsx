@@ -11,7 +11,7 @@ import { type Asset, PageHeading } from '../shared';
 import type { NodeSummary } from '../types';
 import { Badge } from './ui/Badge';
 
-interface Props {
+interface PreviewDrawerProps {
   project: Project;
   previewId: string;
   /** What we already know from the loaded nodes list. Available immediately. */
@@ -32,7 +32,7 @@ export function PreviewDrawer({
   detail,
   onClose,
   onOpenFull,
-}: Props) {
+}: PreviewDrawerProps) {
   const titleRef = useRef<HTMLButtonElement>(null);
 
   // Move focus to the title link when the drawer opens.

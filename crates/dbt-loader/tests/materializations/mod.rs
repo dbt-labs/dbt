@@ -3,6 +3,8 @@ mod incremental;
 mod interactive_table;
 mod materialized_view;
 mod metric_view;
+mod snapshot;
 mod streaming_table;
 mod table;
+mod use_materialization_v2;
 mod view;

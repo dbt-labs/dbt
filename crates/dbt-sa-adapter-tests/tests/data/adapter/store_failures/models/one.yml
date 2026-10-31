@@ -1,0 +1,10 @@
+models:
+  - name: one
+    columns:
+      - name: id
+        description: "id"
+        data_tests:
+          - not_null:
+              config:
+                store_failures: false
+          - unique

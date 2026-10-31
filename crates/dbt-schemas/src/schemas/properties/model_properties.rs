@@ -57,7 +57,7 @@ pub struct ModelProperties {
     pub config: Option<ModelConfig>,
     pub constraints: Option<Vec<ModelConstraint>>,
     pub data_tests: Option<Vec<DataTests>>,
-    pub deprecation_date: Option<String>,
+    pub deprecation_date: Option<dbt_yaml::Timestamp>,
     pub description: Option<String>,
     pub identifier: Option<String>,
     pub latest_version: Option<FloatOrString>,

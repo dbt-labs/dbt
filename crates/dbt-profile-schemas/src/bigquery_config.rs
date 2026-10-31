@@ -101,7 +101,7 @@ impl InteractiveSetup for BigqueryDbConfig {
     }
 }
 
-pub fn setup_bigquery_profile(
+pub(crate) fn setup_bigquery_profile(
     existing_config: Option<&BigqueryDbConfig>,
 ) -> FsResult<Box<BigqueryDbConfig>> {
     let default_config = BigqueryDbConfig {

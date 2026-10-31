@@ -1,0 +1,2 @@
+[warning] [JinjaWarn (dbt1071)]: Constraint of type primary_key with no `name` provided. Generating hash instead for relation customers
+  --> dbt_internal_packages/dbt-databricks/macros/relations/constraints.sql:147:1

@@ -2,7 +2,9 @@
 //! load and propagate configuration properties from the root `dbt_project.yml`
 //! to the individual model directories.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
 
 use dbt_common::warn_error_options::project_flags_get_value;
 use dbt_common::{ErrorCode, FsError};
@@ -12,9 +14,10 @@ use crate::schemas::{common::DbtQuoting, project::DbtProject};
 use crate::schemas::{
     project::{
         AdapterProjectConfig, AnalysesConfig, CheckConfig, DataTestConfig, ExposureConfig,
-        FunctionConfig, MetricConfig, ModelConfig, ResolvableConfig, SavedQueryConfig, SeedConfig,
-        SemanticModelConfig, SkillConfig, SnapshotConfig, SourceConfig, TypedRecursiveConfig,
-        UnitTestConfig,
+        FunctionConfig, MetricConfig, ModelConfig, ProjectDataTestConfig, ProjectFunctionConfig,
+        ProjectModelConfig, ProjectSeedConfig, ProjectSnapshotConfig, ResolvableConfig,
+        SavedQueryConfig, SeedConfig, SemanticModelConfig, SkillConfig, SnapshotConfig,
+        SourceConfig, TypedRecursiveConfig, UnitTestConfig,
     },
     serde::yaml_to_fs_error,
 };
@@ -55,8 +58,8 @@ pub struct DbtProjectConfig<T: ResolvableConfig<T>> {
 impl<T: ResolvableConfig<T>> DbtProjectConfig<T> {
     /// Create a new [GlobalProjectConfig] from a default configuration and the root dbt_project.yml [DbtProjectConfigs]
     pub fn try_new<S: Into<T> + TypedRecursiveConfig>(
-        dbt_config: &T,
-        configs: &S,
+        configs: Option<&S>,
+        package_defaults: T::PackageDefaults,
         dependency_package_name: Option<&str>,
         disallow_plus_prefix: bool,
         default_adapter: AdapterType,
@@ -105,7 +108,20 @@ impl<T: ResolvableConfig<T>> DbtProjectConfig<T> {
                         .rsplit("::")
                         .next()
                         .unwrap_or_default();
-                    let detail = if err_msg.contains(&format!("expected struct {self_type}")) {
+                    // YAML reads an unquoted `on`/`off`/`yes`/`no` key as a boolean, which
+                    // fails as a field identifier. The spelling is lost, so name the rule.
+                    let bool_key = variant
+                        .as_ref_raw()
+                        .filter(|_| err_msg.contains("expected field identifier"))
+                        .and_then(|raw| raw.as_mapping())
+                        .and_then(|mapping| mapping.keys().find_map(|k| k.as_bool()));
+                    let detail = if let Some(bool_key) = bool_key {
+                        format!(
+                            "A key under `{key_path}` reads as the boolean `{bool_key}`, because \
+                             YAML treats unquoted `on`, `off`, `yes`, `no`, `true` and `false` as \
+                             booleans. If it names a folder, quote it, e.g. `'off':`."
+                        )
+                    } else if err_msg.contains(&format!("expected struct {self_type}")) {
                         format!("Unrecognized key `{key_path}`. Custom keys must go under `+meta`.")
                     } else {
                         err_msg.to_string()
@@ -124,16 +140,15 @@ impl<T: ResolvableConfig<T>> DbtProjectConfig<T> {
                 }
             }
         };
-        if !disallow_plus_prefix {
+        if !disallow_plus_prefix && let Some(configs) = configs {
             warn_plus_prefixed_resource_paths::<S>("", configs, "", false);
         }
-        Ok(recur_build_dbt_project_config(
-            dbt_config,
+        Ok(project_config_tree(
             configs,
-            "",
-            &on_error,
+            package_defaults,
             disallow_plus_prefix,
             default_adapter,
+            &on_error,
         ))
     }
 
@@ -194,12 +209,135 @@ impl<T: ResolvableConfig<T>> DbtProjectConfig<T> {
 /// overlay can disable a dependency node regardless of what lower layers set.
 ///
 /// For the root package, `root` is `None` and no overlay is applied.
+///
+/// Each node is merged over the trees, and with the alias table, of the adapter it picks; see
+/// [`NodeLayers`]. Adapters the target does not declare share the default's.
 #[derive(Clone)]
 pub struct ProjectConfigResolver<T: ResolvableConfig<T>> {
     local: DbtProjectConfig<T>,
     root: Option<DbtProjectConfig<T>>,
     resolve_defaults: T::ResolveDefaults,
     default_adapter: AdapterType,
+    adapter_override: Option<AdapterType>,
+    /// `None` when no other adapter has trees of its own.
+    other_adapters: Option<Arc<OtherAdapterTrees<T>>>,
+}
+
+/// A node's config layers, lowest precedence first, as the resolver merges them.
+pub struct NodeLayers<'a, T> {
+    /// The fqn the local tree is read at; see [`ProjectConfigResolver::resolve_with_configs`].
+    pub original_fqn: &'a [String],
+    /// The fqn the root overlay is read at.
+    pub fqn: &'a [String],
+    pub configs: &'a [Option<&'a T>],
+    /// The adapter the node runs on when no layer sets one (a data test's attached node's).
+    pub inherited_adapter: Option<AdapterType>,
+}
+
+impl<'a, T> NodeLayers<'a, T> {
+    /// Layers read at one fqn, inheriting no adapter.
+    pub fn new(fqn: &'a [String], configs: &'a [Option<&'a T>]) -> Self {
+        NodeLayers {
+            original_fqn: fqn,
+            fqn,
+            configs,
+            inherited_adapter: None,
+        }
+    }
+}
+
+/// A node's config with the adapter it picked and the alias table it was read with.
+#[derive(Debug, Clone)]
+pub struct ResolvedNode<C> {
+    pub config: C,
+    /// `--adapter`, else the layers' `+adapter`, else the inherited one; `None` when nothing sets one.
+    pub adapter: Option<AdapterType>,
+    /// The adapter whose alias table read the config: `adapter` when it has trees of its own,
+    /// else the default.
+    pub alias_adapter: AdapterType,
+}
+
+/// Whose alias table an inline `config()` call renames its raw keys with.
+#[derive(Debug, Clone)]
+pub struct InlineConfigAliasing {
+    /// The alias adapter of a pick the inline layer cannot change: `--adapter`, root overlay.
+    fixed: Option<AdapterType>,
+    /// The alias adapter of the pick before rendering.
+    pre_render: AdapterType,
+    /// The adapters with trees of their own; empty without per-adapter trees.
+    selectable: Vec<AdapterType>,
+    default: AdapterType,
+}
+
+impl InlineConfigAliasing {
+    /// Every call renames with `adapter`'s alias table.
+    pub fn fixed(adapter: AdapterType) -> Self {
+        InlineConfigAliasing {
+            fixed: Some(adapter),
+            pre_render: adapter,
+            selectable: Vec::new(),
+            default: adapter,
+        }
+    }
+
+    /// No fixed pick: a call's `adapter=` among `selectable` picks its table, else `default`'s.
+    pub fn selectable(default: AdapterType, selectable: Vec<AdapterType>) -> Self {
+        InlineConfigAliasing {
+            fixed: None,
+            pre_render: default,
+            selectable,
+            default,
+        }
+    }
+
+    /// The aliases a raw rename leaves to `T`'s typed hook: only while the table can still change.
+    pub fn deferred_alias_keys<T: ResolvableConfig<T>>(&self) -> &'static [&'static str] {
+        if self.fixed.is_none() && !self.selectable.is_empty() {
+            T::typed_alias_keys()
+        } else {
+            &[]
+        }
+    }
+
+    /// The alias adapter for a call whose own `adapter=` kwarg is `call_adapter`.
+    pub fn alias_adapter(&self, call_adapter: Option<AdapterType>) -> AdapterType {
+        self.fixed.unwrap_or_else(|| match call_adapter {
+            Some(adapter) if self.selectable.contains(&adapter) => adapter,
+            Some(_) => self.default,
+            None => self.pre_render,
+        })
+    }
+}
+
+/// The trees and alias table one node merges with.
+struct NodeTrees<'a, T: ResolvableConfig<T>> {
+    local: &'a DbtProjectConfig<T>,
+    root: Option<&'a DbtProjectConfig<T>>,
+    alias_adapter: AdapterType,
+}
+
+impl<T: ResolvableConfig<T>> NodeTrees<'_, T> {
+    /// Merges the local tree at `fqn` with `configs`, without the root overlay.
+    fn with_configs(&self, fqn: &[String], configs: &[Option<&T>]) -> T {
+        let mut config = self.local.get_config_for_fqn(fqn).clone();
+        for c in configs.iter().flatten() {
+            let mut c = (*c).clone();
+            c.canonicalize_adapter_aliases(self.alias_adapter);
+            c.default_to(&config);
+            config = c;
+        }
+        config
+    }
+
+    /// Applies the root project config overlay for dependency packages.
+    fn apply_root_overlay(&self, config: &mut T, fqn: &[String]) {
+        if let Some(root) = self.root {
+            let mut root_config = root.get_config_for_fqn(fqn).clone();
+            root_config.canonicalize_adapter_aliases(self.alias_adapter);
+            root_config.default_to(config);
+            *config = root_config;
+        }
+    }
 }
 
 impl<T: ResolvableConfig<T>> ProjectConfigResolver<T> {
@@ -210,6 +348,8 @@ impl<T: ResolvableConfig<T>> ProjectConfigResolver<T> {
             root: None,
             resolve_defaults: T::ResolveDefaults::default(),
             default_adapter,
+            adapter_override: None,
+            other_adapters: None,
         }
     }
 
@@ -224,12 +364,20 @@ impl<T: ResolvableConfig<T>> ProjectConfigResolver<T> {
             root: Some(root),
             resolve_defaults: T::ResolveDefaults::default(),
             default_adapter,
+            adapter_override: None,
+            other_adapters: None,
         }
     }
 
     /// Sets the resolve defaults, overriding the `Default` value.
     pub fn with_resolve_defaults(mut self, defaults: T::ResolveDefaults) -> Self {
         self.resolve_defaults = defaults;
+        self
+    }
+
+    /// Sets the `--adapter` override, which every node picks over its layers' `+adapter`.
+    pub fn with_adapter_override(mut self, adapter_override: Option<AdapterType>) -> Self {
+        self.adapter_override = adapter_override;
         self
     }
 
@@ -256,13 +404,228 @@ impl<T: ResolvableConfig<T>> ProjectConfigResolver<T> {
         }
     }
 
-    /// Applies the root project config overlay for dependency packages.
-    fn apply_root_overlay(&self, config: &mut T, fqn: &[String]) {
-        if let Some(root) = &self.root {
-            let mut root_config = root.get_config_for_fqn(fqn).clone();
-            root_config.canonicalize_adapter_aliases(self.default_adapter);
-            root_config.default_to(config);
-            *config = root_config;
+    /// Like [`Self::build`], plus lazy trees per other declared adapter: `adapter_root` picks
+    /// this type's root tree from them, and `local` is read only for a dependency package.
+    #[allow(clippy::too_many_arguments)]
+    pub fn per_adapter<S>(
+        root: DbtProjectConfig<T>,
+        adapter_root: fn(&AdapterRootConfigs) -> &DbtProjectConfig<T>,
+        root_project_configs: &RootProjectConfigs,
+        local: &Option<S>,
+        dependency_package_name: Option<&str>,
+        resolve_defaults: T::ResolveDefaults,
+        default_adapter: AdapterType,
+        adapter_override: Option<AdapterType>,
+    ) -> FsResult<Self>
+    where
+        T: PartialEq + 'static,
+        T::PackageDefaults: Default,
+        S: TypedRecursiveConfig + Into<T> + Send + Sync + 'static,
+    {
+        let disallow_plus_prefix = root_project_configs.disallow_plus_prefix;
+        let is_dependency = dependency_package_name.is_some();
+        let mut resolver = Self::build(
+            root,
+            is_dependency,
+            || {
+                init_project_config(
+                    local,
+                    T::PackageDefaults::default(),
+                    dependency_package_name,
+                    disallow_plus_prefix,
+                    default_adapter,
+                )
+            },
+            default_adapter,
+        )?
+        .with_resolve_defaults(resolve_defaults)
+        .with_adapter_override(adapter_override);
+        resolver.other_adapters = root_project_configs
+            .by_adapter
+            .as_ref()
+            .map(|root_configs| {
+                Arc::new(OtherAdapterTrees {
+                    trees: root_configs
+                        .adapters()
+                        .map(|adapter| (adapter, OnceLock::new()))
+                        .collect(),
+                    root_configs: root_configs.clone(),
+                    root_tree: adapter_root,
+                    local_tree: is_dependency.then(|| {
+                        let local = local.clone();
+                        Box::new(move |adapter| {
+                            project_config_tree(
+                                local.as_ref(),
+                                T::PackageDefaults::default(),
+                                disallow_plus_prefix,
+                                adapter,
+                                &|_, _, _| {},
+                            )
+                        }) as LocalTreeBuilder<T>
+                    }),
+                })
+            });
+        Ok(resolver)
+    }
+
+    /// The `+adapter` the layers merge to, read in the merge's precedence off the layers as they
+    /// are: no alias table renames `adapter`. Clones and emits nothing.
+    fn peek_adapter(&self, layers: &NodeLayers<'_, T>) -> Option<AdapterType> {
+        self.root
+            .as_ref()
+            .and_then(|root| root.get_config_for_fqn(layers.fqn).get_adapter())
+            .or_else(|| {
+                layers
+                    .configs
+                    .iter()
+                    .rev()
+                    .flatten()
+                    .find_map(|c| c.get_adapter())
+            })
+            .or_else(|| {
+                self.local
+                    .get_config_for_fqn(layers.original_fqn)
+                    .get_adapter()
+            })
+    }
+
+    /// The adapter a node runs on, known before its layers merge; `None` means the default.
+    fn pick_adapter(&self, layers: &NodeLayers<'_, T>) -> Option<AdapterType> {
+        self.adapter_override
+            .or_else(|| self.peek_adapter(layers))
+            .or(layers.inherited_adapter)
+    }
+
+    /// `adapter` when it has trees of its own, else the default; builds no tree.
+    fn alias_adapter_of(&self, adapter: Option<AdapterType>) -> AdapterType {
+        match (&self.other_adapters, adapter) {
+            (Some(others), Some(adapter)) if others.trees.contains_key(&adapter) => adapter,
+            _ => self.default_adapter,
+        }
+    }
+
+    /// The trees `adapter` merges with: its own when it has them, else the default's.
+    fn trees_for(&self, adapter: Option<AdapterType>) -> NodeTrees<'_, T> {
+        if let Some(others) = &self.other_adapters
+            && let Some((adapter, trees)) =
+                adapter.and_then(|adapter| others.trees.get_key_value(&adapter))
+        {
+            let trees = trees.get_or_init(|| others.build(*adapter));
+            return NodeTrees {
+                local: &trees.local,
+                root: trees.root.as_ref(),
+                alias_adapter: *adapter,
+            };
+        }
+        NodeTrees {
+            local: &self.local,
+            root: self.root.as_ref(),
+            alias_adapter: self.default_adapter,
+        }
+    }
+
+    /// Whether other declared adapters have trees of their own, so a node's alias table can
+    /// differ from the default's.
+    pub fn has_per_adapter_trees(&self) -> bool {
+        self.other_adapters
+            .as_ref()
+            .is_some_and(|others| !others.trees.is_empty())
+    }
+
+    /// How the node's inline `config()` calls pick their alias table, given its other layers.
+    pub fn inline_config_aliasing(&self, layers: &NodeLayers<'_, T>) -> InlineConfigAliasing {
+        let root_adapter = self
+            .root
+            .as_ref()
+            .and_then(|root| root.get_config_for_fqn(layers.fqn).get_adapter());
+        InlineConfigAliasing {
+            fixed: self
+                .adapter_override
+                .or(root_adapter)
+                .map(|adapter| self.alias_adapter_of(Some(adapter))),
+            pre_render: self.alias_adapter_of(self.pick_adapter(layers)),
+            selectable: self
+                .other_adapters
+                .as_ref()
+                .map(|others| others.trees.keys().copied().collect())
+                .unwrap_or_default(),
+            default: self.default_adapter,
+        }
+    }
+
+    /// The node's inline `config()` calls as one layer: each read with the alias table the node
+    /// picks with them, then folded in source order. `None` without calls.
+    pub fn fold_inline_calls(&self, layers: &NodeLayers<'_, T>, calls: &[&T]) -> Option<T> {
+        let configs: Vec<Option<&T>> = layers
+            .configs
+            .iter()
+            .copied()
+            .chain(calls.iter().copied().map(Some))
+            .collect();
+        let alias_adapter = self.alias_adapter_of(self.pick_adapter(&NodeLayers {
+            configs: &configs,
+            ..*layers
+        }));
+        let mut folded: Option<T> = None;
+        for call in calls {
+            let mut call = (*call).clone();
+            call.canonicalize_adapter_aliases(alias_adapter);
+            if let Some(prev) = &folded {
+                call.default_to(prev);
+            }
+            folded = Some(call);
+        }
+        folded
+    }
+
+    /// Merges every layer, the root overlay and the resolve defaults, before `finalize`.
+    fn merge_node(&self, layers: &NodeLayers<'_, T>) -> ResolvedNode<T> {
+        let adapter = self.pick_adapter(layers);
+        let trees = self.trees_for(adapter);
+        let mut config = trees.with_configs(layers.original_fqn, layers.configs);
+        trees.apply_root_overlay(&mut config, layers.fqn);
+        debug_assert_eq!(config.get_adapter(), self.peek_adapter(layers));
+        config.apply_resolve_defaults(self.resolve_defaults.clone());
+        ResolvedNode {
+            config,
+            adapter,
+            alias_adapter: trees.alias_adapter,
+        }
+    }
+
+    /// Merges the local project config with `layers.configs`, without the root overlay or
+    /// `finalize`: the Jinja render context before inline `{{ config(...) }}` calls are processed.
+    pub fn with_node_configs(&self, layers: &NodeLayers<'_, T>) -> ResolvedNode<T> {
+        let adapter = self.pick_adapter(layers);
+        let trees = self.trees_for(adapter);
+        ResolvedNode {
+            config: trees.with_configs(layers.original_fqn, layers.configs),
+            adapter,
+            alias_adapter: trees.alias_adapter,
+        }
+    }
+
+    /// Fully resolves a node by applying all layers and calling `finalize`.
+    pub fn resolve_node(&self, layers: &NodeLayers<'_, T>) -> ResolvedNode<T::Resolved> {
+        self.resolve_node_with_overrides(layers, |_| {})
+    }
+
+    /// Like [`Self::resolve_node`], applying `override_fn` just before `finalize`.
+    pub fn resolve_node_with_overrides(
+        &self,
+        layers: &NodeLayers<'_, T>,
+        override_fn: impl FnOnce(&mut T),
+    ) -> ResolvedNode<T::Resolved> {
+        let ResolvedNode {
+            mut config,
+            adapter,
+            alias_adapter,
+        } = self.merge_node(layers);
+        override_fn(&mut config);
+        ResolvedNode {
+            config: config.finalize(),
+            adapter,
+            alias_adapter,
         }
     }
 
@@ -270,22 +633,17 @@ impl<T: ResolvableConfig<T>> ProjectConfigResolver<T> {
     /// overlay or calling `finalize`. Use this when the intermediate result is needed as the
     /// Jinja render context before inline `{{ config(...) }}` calls are processed.
     pub fn with_configs(&self, fqn: &[String], configs: &[Option<&T>]) -> T {
-        let mut config = self.local.get_config_for_fqn(fqn).clone();
-        for c in configs.iter().flatten() {
-            let mut c = (*c).clone();
-            c.canonicalize_adapter_aliases(self.default_adapter);
-            c.default_to(&config);
-            config = c;
-        }
-        config
+        self.with_node_configs(&NodeLayers::new(fqn, configs))
+            .config
     }
 
     /// Like `with_configs` but also applies the root project overlay. Use this when you need to
     /// validate explicitly-configured values (including root overlay) before
     /// `apply_resolve_defaults` fills in CLI-flag defaults.
     pub fn with_configs_and_root_overlay(&self, fqn: &[String], configs: &[Option<&T>]) -> T {
-        let mut config = self.with_configs(fqn, configs);
-        self.apply_root_overlay(&mut config, fqn);
+        let trees = self.trees_for(self.pick_adapter(&NodeLayers::new(fqn, configs)));
+        let mut config = trees.with_configs(fqn, configs);
+        trees.apply_root_overlay(&mut config, fqn);
         config
     }
 
@@ -315,11 +673,14 @@ impl<T: ResolvableConfig<T>> ProjectConfigResolver<T> {
         configs: &[Option<&T>],
         override_fn: impl FnOnce(&mut T),
     ) -> T::Resolved {
-        let mut config = self.with_configs(original_fqn, configs);
-        self.apply_root_overlay(&mut config, fqn);
-        config.apply_resolve_defaults(self.resolve_defaults.clone());
-        override_fn(&mut config);
-        config.finalize()
+        let layers = NodeLayers {
+            original_fqn,
+            fqn,
+            configs,
+            inherited_adapter: None,
+        };
+        self.resolve_node_with_overrides(&layers, override_fn)
+            .config
     }
 
     /// Like `resolve_with_overrides` but `override_fn` may fail. Use this when the override
@@ -331,9 +692,13 @@ impl<T: ResolvableConfig<T>> ProjectConfigResolver<T> {
         configs: &[Option<&T>],
         override_fn: impl FnOnce(&mut T) -> Result<(), E>,
     ) -> Result<T::Resolved, E> {
-        let mut config = self.with_configs(original_fqn, configs);
-        self.apply_root_overlay(&mut config, fqn);
-        config.apply_resolve_defaults(self.resolve_defaults.clone());
+        let layers = NodeLayers {
+            original_fqn,
+            fqn,
+            configs,
+            inherited_adapter: None,
+        };
+        let mut config = self.merge_node(&layers).config;
         override_fn(&mut config)?;
         Ok(config.finalize())
     }
@@ -366,6 +731,43 @@ impl<T: ResolvableConfig<T>> ProjectConfigResolver<T> {
             .as_ref()
             .map(|root| root.get_config_for_fqn(fqn).get_enabled() == Some(true))
             .unwrap_or(false)
+    }
+}
+
+type LocalTreeBuilder<T> = Box<dyn Fn(AdapterType) -> DbtProjectConfig<T> + Send + Sync>;
+
+/// One other declared adapter's trees for a package.
+struct AdapterTrees<T: ResolvableConfig<T>> {
+    local: DbtProjectConfig<T>,
+    root: Option<DbtProjectConfig<T>>,
+}
+
+/// The trees of each declared adapter other than the default, built when a node first picks it.
+struct OtherAdapterTrees<T: ResolvableConfig<T>> {
+    root_configs: Arc<RootConfigsByAdapter>,
+    root_tree: fn(&AdapterRootConfigs) -> &DbtProjectConfig<T>,
+    /// `None` for the root package, whose local tree is its root tree.
+    local_tree: Option<LocalTreeBuilder<T>>,
+    trees: HashMap<AdapterType, OnceLock<AdapterTrees<T>>>,
+}
+
+impl<T: ResolvableConfig<T>> OtherAdapterTrees<T> {
+    fn build(&self, adapter: AdapterType) -> AdapterTrees<T> {
+        let root_configs = self
+            .root_configs
+            .get(adapter)
+            .expect("trees are keyed by the root configs' adapters");
+        let root = (self.root_tree)(root_configs).clone();
+        match &self.local_tree {
+            Some(local_tree) => AdapterTrees {
+                local: local_tree(adapter),
+                root: Some(root),
+            },
+            None => AdapterTrees {
+                local: root,
+                root: None,
+            },
+        }
     }
 }
 
@@ -544,6 +946,115 @@ pub struct RootProjectConfigs {
     /// by the root's via [`ProjectConfigResolver::apply_root_overlay`], and stays
     /// overridden.
     pub adapter_quoting: IndexMap<AdapterType, DbtQuoting>,
+    /// The target's other declared adapters' trees; `None` for a single-adapter target or
+    /// without multi-adapter support.
+    by_adapter: Option<Arc<RootConfigsByAdapter>>,
+    /// The root project's `require_resource_names_without_plus_prefix` flag.
+    disallow_plus_prefix: bool,
+}
+
+/// The root project's trees for the resource types that can select an adapter, with aliases
+/// translated for one non-default adapter.
+#[derive(Debug)]
+pub struct AdapterRootConfigs {
+    /// Model configs
+    pub models: DbtProjectConfig<ModelConfig>,
+    /// Seed configs
+    pub seeds: DbtProjectConfig<SeedConfig>,
+    /// Snapshot configs
+    pub snapshots: DbtProjectConfig<SnapshotConfig>,
+    /// Test configs
+    pub tests: DbtProjectConfig<DataTestConfig>,
+    /// Function configs
+    pub functions: DbtProjectConfig<FunctionConfig>,
+}
+
+/// [`AdapterRootConfigs`] per declared non-default adapter, built when a node first selects it,
+/// which is when a Databricks `catalog`/`database` conflict in them is reported, once.
+#[derive(Debug)]
+struct RootConfigsByAdapter {
+    models: Option<ProjectModelConfig>,
+    seeds: Option<ProjectSeedConfig>,
+    snapshots: Option<ProjectSnapshotConfig>,
+    tests: Option<ProjectDataTestConfig>,
+    functions: Option<ProjectFunctionConfig>,
+    disallow_plus_prefix: bool,
+    built: HashMap<AdapterType, OnceLock<AdapterRootConfigs>>,
+}
+
+impl RootConfigsByAdapter {
+    fn new(
+        root_project: &DbtProject,
+        target_adapters: &IndexMap<AdapterType, ProfileAdapter>,
+        default_adapter: AdapterType,
+        disallow_plus_prefix: bool,
+    ) -> Option<Self> {
+        let built: HashMap<_, _> = target_adapters
+            .keys()
+            .copied()
+            .filter(|adapter| *adapter != default_adapter)
+            .map(|adapter| (adapter, OnceLock::new()))
+            .collect();
+        (!built.is_empty()).then(|| RootConfigsByAdapter {
+            models: root_project.models.clone(),
+            seeds: root_project.seeds.clone(),
+            snapshots: root_project.snapshots.clone(),
+            tests: root_project.data_tests_config().cloned(),
+            functions: root_project.functions.clone(),
+            disallow_plus_prefix,
+            built,
+        })
+    }
+
+    /// The declared non-default adapters.
+    fn adapters(&self) -> impl Iterator<Item = AdapterType> + '_ {
+        self.built.keys().copied()
+    }
+
+    /// `adapter`'s trees, or `None` for the default adapter or one the target does not declare.
+    fn get(&self, adapter: AdapterType) -> Option<&AdapterRootConfigs> {
+        let trees = self.built.get(&adapter)?;
+        Some(trees.get_or_init(|| {
+            let disallow_plus_prefix = self.disallow_plus_prefix;
+            AdapterRootConfigs {
+                models: project_config_tree(
+                    self.models.as_ref(),
+                    DbtQuoting::default(),
+                    disallow_plus_prefix,
+                    adapter,
+                    &|_, _, _| {},
+                ),
+                seeds: project_config_tree(
+                    self.seeds.as_ref(),
+                    DbtQuoting::default(),
+                    disallow_plus_prefix,
+                    adapter,
+                    &|_, _, _| {},
+                ),
+                snapshots: project_config_tree(
+                    self.snapshots.as_ref(),
+                    DbtQuoting::default(),
+                    disallow_plus_prefix,
+                    adapter,
+                    &|_, _, _| {},
+                ),
+                tests: project_config_tree(
+                    self.tests.as_ref(),
+                    DbtQuoting::default(),
+                    disallow_plus_prefix,
+                    adapter,
+                    &|_, _, _| {},
+                ),
+                functions: project_config_tree(
+                    self.functions.as_ref(),
+                    DbtQuoting::default(),
+                    disallow_plus_prefix,
+                    adapter,
+                    &|_, _, _| {},
+                ),
+            }
+        }))
+    }
 }
 
 /// Read the `require_resource_names_without_plus_prefix` behavior flag from a
@@ -619,20 +1130,15 @@ pub fn authored_quoting_per_adapter(
         .collect()
 }
 
+/// `multi_adapter` builds the other declared adapters' trees; without it every node reads the
+/// default's.
 pub fn build_root_project_configs(
     root_project: &DbtProject,
     target_adapters: &IndexMap<AdapterType, ProfileAdapter>,
     default_adapter: AdapterType,
+    multi_adapter: bool,
 ) -> FsResult<RootProjectConfigs> {
-    let maybe_root_project_config =
-        match (root_project.tests.clone(), root_project.data_tests.clone()) {
-            (Some(_), Some(_)) => {
-                unimplemented!("Merge logic for tests and data tests is unimplemented")
-            }
-            (Some(tests), None) => Some(tests),
-            (None, Some(data_tests)) => Some(data_tests),
-            (None, None) => None,
-        };
+    let maybe_root_project_config = root_project.data_tests_config().cloned();
     let disallow_plus_prefix = disallow_plus_prefix_from_flags(root_project.flags.as_ref());
 
     Ok(RootProjectConfigs {
@@ -740,6 +1246,18 @@ pub fn build_root_project_configs(
             default_adapter,
             *root_project.quoting,
         ),
+        by_adapter: multi_adapter
+            .then(|| {
+                RootConfigsByAdapter::new(
+                    root_project,
+                    target_adapters,
+                    default_adapter,
+                    disallow_plus_prefix,
+                )
+            })
+            .flatten()
+            .map(Arc::new),
+        disallow_plus_prefix,
     })
 }
 
@@ -754,23 +1272,44 @@ pub fn init_project_config<
     disallow_plus_prefix: bool,
     default_adapter: AdapterType,
 ) -> FsResult<DbtProjectConfig<T>> {
+    DbtProjectConfig::try_new(
+        dbt_project_configs.as_ref(),
+        package_defaults,
+        dependency_package_name,
+        disallow_plus_prefix,
+        default_adapter,
+    )
+}
+
+/// Builds a project tree for `adapter`, passing each invalid child to `on_error`.
+fn project_config_tree<T, S, F>(
+    configs: Option<&S>,
+    package_defaults: T::PackageDefaults,
+    disallow_plus_prefix: bool,
+    adapter: AdapterType,
+    on_error: &F,
+) -> DbtProjectConfig<T>
+where
+    T: ResolvableConfig<T> + PartialEq,
+    S: TypedRecursiveConfig + Into<T>,
+    F: Fn(&ShouldBe<S>, &str, &str),
+{
     let mut default_config = T::default();
     default_config.apply_package_defaults(package_defaults);
-    let project_config = if let Some(configs) = dbt_project_configs {
-        DbtProjectConfig::try_new(
+    match configs {
+        Some(configs) => recur_build_dbt_project_config(
             &default_config,
             configs,
-            dependency_package_name,
+            "",
+            on_error,
             disallow_plus_prefix,
-            default_adapter,
-        )?
-    } else {
-        DbtProjectConfig {
+            adapter,
+        ),
+        None => DbtProjectConfig {
             config: default_config,
             children: IndexMap::new(),
-        }
-    };
-    Ok(project_config)
+        },
+    }
 }
 
 /// Strip resource paths from the beginning of a reference path

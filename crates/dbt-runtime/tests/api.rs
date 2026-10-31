@@ -8,7 +8,10 @@ use std::num::NonZeroUsize;
 use dbt_runtime::builder::Builder;
 use dbt_runtime::handle::{EnterGuard, Handle, TryCurrentError};
 use dbt_runtime::task_hooks::TaskMeta;
-use dbt_runtime::{Id, JoinError, JoinHandle, Runtime, spawn_blocking, spawn_mandatory_blocking};
+use dbt_runtime::{
+    Id, JoinError, JoinHandle, Runtime, spawn_blocking, spawn_blocking_with_wait_guard,
+    spawn_mandatory_blocking,
+};
 
 #[expect(dead_code)]
 fn build() -> Runtime {
@@ -45,6 +48,8 @@ fn use_runtime(rt: Runtime) {
     let guard: EnterGuard<'_> = handle.enter();
     let ambient: JoinHandle<u32> = spawn_blocking(|| 1u32);
     let ambient_mandatory: Option<JoinHandle<u32>> = spawn_mandatory_blocking(|| 1u32);
+    let observed = spawn_blocking_with_wait_guard(std::time::Duration::ZERO, || (), || 1u32);
+    drop(observed);
     drop(guard);
 
     // Dropping a `JoinHandle` detaches; that is the documented behaviour.

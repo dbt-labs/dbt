@@ -1,0 +1,175 @@
+85f3743c:
+- sequence: 0
+  type: execute
+  sql: SHOW SCHEMAS IN `e2e`
+model.hello_world.composite_incremental:
+- sequence: 0
+  type: execute
+  sql: DESCRIBE TABLE EXTENDED `e2e`.`databricks_delete_insert_composite_key`.`composite_incremental` AS JSON
+- sequence: 1
+  type: execute
+  sql: |-
+    SELECT column_name
+    FROM `e2e`.`information_schema`.`columns`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'databricks_delete_insert_composite_key'
+    AND table_name = 'composite_incremental'
+    AND is_nullable = 'NO'
+- sequence: 2
+  type: execute
+  sql: |-
+    SELECT kcu.constraint_name, kcu.column_name
+    FROM `e2e`.information_schema.key_column_usage kcu
+    WHERE kcu.table_catalog = 'e2e'
+    AND kcu.table_schema = 'databricks_delete_insert_composite_key'
+    AND kcu.table_name = 'composite_incremental'
+    AND kcu.constraint_name = (
+    SELECT constraint_name
+    FROM `e2e`.information_schema.table_constraints
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'databricks_delete_insert_composite_key'
+    AND table_name = 'composite_incremental'
+    AND constraint_type = 'PRIMARY KEY'
+    )
+    ORDER BY kcu.ordinal_position
+- sequence: 3
+  type: execute
+  sql: |-
+    SELECT
+    kcu.constraint_name,
+    kcu.column_name AS from_column,
+    ukcu.table_catalog AS to_catalog,
+    ukcu.table_schema AS to_schema,
+    ukcu.table_name AS to_table,
+    ukcu.column_name AS to_column
+    FROM `e2e`.information_schema.key_column_usage kcu
+    JOIN `e2e`.information_schema.referential_constraints rc
+    ON kcu.constraint_name = rc.constraint_name
+    JOIN `e2e`.information_schema.key_column_usage ukcu
+    ON rc.unique_constraint_name = ukcu.constraint_name
+    AND kcu.ordinal_position = ukcu.ordinal_position
+    WHERE kcu.table_catalog = 'e2e'
+    AND kcu.table_schema = 'databricks_delete_insert_composite_key'
+    AND kcu.table_name = 'composite_incremental'
+    AND kcu.constraint_name IN (
+    SELECT constraint_name
+    FROM `e2e`.information_schema.table_constraints
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'databricks_delete_insert_composite_key'
+    AND table_name = 'composite_incremental'
+    AND constraint_type = 'FOREIGN KEY'
+    )
+    ORDER BY kcu.ordinal_position
+- sequence: 4
+  type: execute
+  sql: |-
+    SELECT
+    column_name,
+    mask_name,
+    using_columns
+    FROM `system`.`information_schema`.`column_masks`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'databricks_delete_insert_composite_key'
+    AND table_name = 'composite_incremental'
+- sequence: 5
+  type: execute
+  sql: |-
+    SELECT
+    table_catalog,
+    table_schema,
+    table_name,
+    filter_name,
+    target_columns
+    FROM `e2e`.`information_schema`.`row_filters`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'databricks_delete_insert_composite_key'
+    AND table_name = 'composite_incremental'
+- sequence: 6
+  type: execute
+  sql: SHOW TBLPROPERTIES `e2e`.`databricks_delete_insert_composite_key`.`composite_incremental`
+- sequence: 7
+  type: execute
+  sql: describe extended `e2e`.`databricks_delete_insert_composite_key`.`composite_incremental`
+- sequence: 8
+  type: execute
+  sql: |-
+    create or replace temporary view `composite_incremental__dbt_tmp` as
+    select id, region, value
+    from `e2e`.`databricks_delete_insert_composite_key`.`source_data`
+- sequence: 9
+  type: execute
+  sql: DESCRIBE TABLE EXTENDED `e2e`.`databricks_delete_insert_composite_key`.`composite_incremental` AS JSON
+- sequence: 10
+  type: execute
+  sql: |-
+    delete from `e2e`.`databricks_delete_insert_composite_key`.`composite_incremental`
+    where EXISTS (SELECT 1 FROM `composite_incremental__dbt_tmp` WHERE `e2e`.`databricks_delete_insert_composite_key`.`composite_incremental`.`id` <=> `composite_incremental__dbt_tmp`.`id` AND `e2e`.`databricks_delete_insert_composite_key`.`composite_incremental`.`region` <=> `composite_incremental__dbt_tmp`.`region`)
+- sequence: 11
+  type: execute
+  sql: |-
+    insert into `e2e`.`databricks_delete_insert_composite_key`.`composite_incremental` by name
+    
+    select `id`, `region`, `value`
+    from `composite_incremental__dbt_tmp`
+model.hello_world.source_data:
+- sequence: 0
+  type: execute
+  sql: |-
+    SELECT
+    table_name,
+    if(table_type IN ('EXTERNAL', 'MANAGED', 'MANAGED_SHALLOW_CLONE', 'EXTERNAL_SHALLOW_CLONE'), 'table', lower(table_type)) AS table_type,
+    lower(data_source_format) AS file_format,
+    table_schema,
+    table_owner,
+    table_catalog,
+    if(
+    table_type IN (
+    'EXTERNAL',
+    'MANAGED',
+    'MANAGED_SHALLOW_CLONE',
+    'EXTERNAL_SHALLOW_CLONE'
+    ),
+    lower(table_type),
+    NULL
+    ) AS databricks_table_type
+    FROM `system`.`information_schema`.`tables`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'databricks_delete_insert_composite_key'
+- sequence: 1
+  type: execute
+  sql: DESCRIBE TABLE EXTENDED `e2e`.`databricks_delete_insert_composite_key`.`source_data` AS JSON
+- sequence: 2
+  type: execute
+  sql: |-
+    SELECT
+    table_catalog,
+    table_schema,
+    table_name,
+    filter_name,
+    target_columns
+    FROM `e2e`.`information_schema`.`row_filters`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'databricks_delete_insert_composite_key'
+    AND table_name = 'source_data'
+- sequence: 3
+  type: execute
+  sql: |-
+    create or replace table `e2e`.`databricks_delete_insert_composite_key`.`source_data`
+    
+    
+    
+    using delta
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    as
+    select 1 as id, 'us-east' as region, 100 as value
+    union all select 2 as id, 'us-east' as region, 200 as value
+    union all select 3 as id, 'us-west' as region, 300 as value

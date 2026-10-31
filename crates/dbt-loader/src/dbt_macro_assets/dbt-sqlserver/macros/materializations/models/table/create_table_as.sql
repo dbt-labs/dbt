@@ -79,7 +79,11 @@
                 holds the new table's Sch-M, which blocks catalog readers in other
                 sessions, for the whole load. Separate EXECs commit separately, so the
                 Sch-M lasts an instant. TABLOCK keeps the load minimally logged. -#}
+            {#- UNION ALL prevents SELECT INTO from copying an IDENTITY property, so the
+                subsequent load can insert the source values explicitly. -#}
             SELECT TOP 0 * INTO {{ table_name }} FROM {{ tmp_relation }}
+            UNION ALL
+            SELECT TOP 0 * FROM {{ tmp_relation }}
         {% endif %}
     {%- endset -%}
 

@@ -150,9 +150,12 @@ fn update_node_outcome_from_legacy_status(event: &mut NodeEvaluated, status: Nod
             // Handled inside the test task
         }
         NodeStatus::Errored => {
-            if event.node_type() == NodeType::Test || event.node_type() == NodeType::UnitTest {
-                // Normally handled inside the test task, but if node outcome is unspecified,
-                // set to error. This happens in some scenarios, e.g. statically analyzed error.
+            if matches!(
+                event.node_type(),
+                NodeType::Test | NodeType::UnitTest | NodeType::Plugin
+            ) {
+                // Normally handled inside the task, but if node outcome is unspecified, set to
+                // error. This happens in some scenarios, e.g. statically analyzed error.
                 if event.node_outcome() == NodeOutcome::Unspecified {
                     event.set_node_outcome(NodeOutcome::Error);
                     event.set_node_error_type(NodeErrorType::User);
@@ -375,6 +378,7 @@ fn update_node_processed_from_node_evaluated(sum_ev: &mut NodeProcessed, phase_e
         .map(|d| d.clone().into());
     sum_ev.last_phase = phase_ev.phase;
     sum_ev.rows_affected = phase_ev.rows_affected;
+    sum_ev.adapter_response = phase_ev.adapter_response.clone();
 }
 
 fn accumulate_node_processed_phase_duration(

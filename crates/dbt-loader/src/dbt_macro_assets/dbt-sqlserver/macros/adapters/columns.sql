@@ -1,12 +1,24 @@
 {% macro sqlserver__select_starts_with_cte(select_sql) %}
     {#-- Strip comments first so a leading comment does not hide the CTE --#}
     {%- set select_sql_stripped = modules.re.sub('(?s)/\\*.*?\\*/|--[^\n]*\n', '', select_sql) -%}
-    {{ return(select_sql_stripped.strip().lower().startswith('with')) }}
+    {%- set first_token = select_sql_stripped.strip().lower().lstrip(';').strip() -%}
+    {{ return(first_token.startswith('with')) }}
 {% endmacro %}
 
 {% macro sqlserver__get_empty_subquery_sql(select_sql, select_sql_header=none) %}
     {% if sqlserver__select_starts_with_cte(select_sql) %}
-        {{ select_sql }}
+        {% if execute %}
+            {# SQL Server cannot nest a CTE in the empty-query wrapper. Describe it and emit an empty typed select instead of scanning its rows. #}
+            {% set columns = adapter.get_column_schema_from_query(select_sql) %}
+            {% set select_list %}
+                {% for column in columns %}
+                    cast(null as {{ column.data_type }}) as {{ column.quoted }}{{ ", " if not loop.last }}
+                {% endfor %}
+            {% endset %}
+            select {{ select_list }} where 1 = 0
+        {% else %}
+            {{ select_sql }}
+        {% endif %}
     {% else -%}
         select * from (
         {{ select_sql }}
@@ -70,10 +82,17 @@
         {% set prefer_single = config.get('prefer_single_alter_column', false) %}
     {% endif %}
 
+    {# ALTER COLUMN without NOT NULL relaxes an existing NOT NULL column. #}
+    {% set nullable_sql %}
+        {{ get_use_database_sql(relation.database) }}
+        select columnproperty(object_id('{{ escape_single_quotes(relation) }}'), '{{ escape_single_quotes(column_name) }}', 'AllowsNull')
+    {%- endset %}
+    {%- set not_null = run_query(nullable_sql).columns[0].values()[0] == 0 -%}
+
     {% if prefer_single and relation.type == 'table' %}
         {% set alter_sql %}
             alter {{ relation.type }} {{ relation }}
-            alter column "{{ column_name }}" {{ new_column_type }};
+            alter column "{{ column_name }}" {{ new_column_type }}{{ ' not null' if not_null }};
         {%- endset %}
         {% do run_query(alter_sql) %}
 
@@ -109,6 +128,13 @@
         {% do run_query(update_column) %}
         {% do run_query(drop_column) %}
         {% do run_query(rename_column) %}
+        {% if not_null %}
+            {% set alter_sql_not_null %}
+                alter {{ relation.type }} {{ relation }}
+                alter column "{{ column_name }}" {{ new_column_type }} not null;
+            {%- endset %}
+            {% do run_query(alter_sql_not_null) %}
+        {% endif %}
     {% endif %}
 
 {% endmacro %}

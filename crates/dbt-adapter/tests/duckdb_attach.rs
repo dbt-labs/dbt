@@ -1,4 +1,4 @@
-//! Snapshot tests for `compose_v2_catalog_attach_stmts`.
+//! Snapshot tests for `compose_catalog_attach_stmts`.
 //!
 //! Each scenario under `tests/duckdb_attach_fixtures/<scenario>/catalogs.yml`
 //! is parsed and the joined ATTACH (and optional `INSTALL ducklake`) statements
@@ -6,8 +6,8 @@
 //! Update goldens: `cargo insta review` or `cargo insta accept`.
 //! Run: `cargo xtask test --llm --no-external-deps -p dbt-adapter duckdb_attach_fixtures`
 
-use dbt_adapter::engine::duckdb_attach::compose_v2_catalog_attach_stmts;
-use dbt_schemas::schemas::dbt_catalogs::DbtCatalogs;
+use dbt_adapter::engine::duckdb_attach::compose_catalog_attach_stmts;
+use dbt_schemas::schemas::dbt_catalogs_deprecated::DbtCatalogs;
 
 const SCENARIOS: &[&str] = &[
     "alias_collision_error",
@@ -35,8 +35,8 @@ fn render(yaml: &str) -> String {
         panic!("fixture must be a top-level mapping");
     };
     let catalogs = DbtCatalogs::new(repr, span);
-    let view = catalogs.view_v2().expect("valid v2 catalog view");
-    match compose_v2_catalog_attach_stmts(&view, "duckdb") {
+    let view = catalogs.view().expect("valid v2 catalog view");
+    match compose_catalog_attach_stmts(&view, "duckdb") {
         Ok(stmts) => stmts.join("\n"),
         Err(e) => format!("error: {:?}: {}", e.kind(), e),
     }

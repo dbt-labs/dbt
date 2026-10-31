@@ -1,0 +1,318 @@
+85f3743c:
+- sequence: 0
+  type: execute
+  sql: SHOW SCHEMAS IN `e2e`
+d18f803a:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists `e2e`.`adapters_databricks_column_tags`
+model.test.a:
+- sequence: 0
+  type: execute
+  sql: |-
+    SELECT
+    table_name,
+    if(table_type IN ('EXTERNAL', 'MANAGED', 'MANAGED_SHALLOW_CLONE', 'EXTERNAL_SHALLOW_CLONE'), 'table', lower(table_type)) AS table_type,
+    lower(data_source_format) AS file_format,
+    table_schema,
+    table_owner,
+    table_catalog,
+    if(
+    table_type IN (
+    'EXTERNAL',
+    'MANAGED',
+    'MANAGED_SHALLOW_CLONE',
+    'EXTERNAL_SHALLOW_CLONE'
+    ),
+    lower(table_type),
+    NULL
+    ) AS databricks_table_type
+    FROM `system`.`information_schema`.`tables`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'adapters_databricks_column_tags'
+- sequence: 1
+  type: execute
+  sql: |-
+    SELECT
+    table_catalog,
+    table_schema,
+    table_name,
+    filter_name,
+    target_columns
+    FROM `e2e`.`information_schema`.`row_filters`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'adapters_databricks_column_tags'
+    AND table_name = 'a'
+- sequence: 2
+  type: execute
+  sql: |-
+    create or replace table `e2e`.`adapters_databricks_column_tags`.`a`
+    
+    
+    
+    using delta
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    as
+    with source_data as (
+    select 1 as id, 'John' as name, 'john@example.com' as email, 100.50 as amount
+    union all select 2 as id, 'Jane' as name, 'jane@example.com' as email, 200.75 as amount
+    union all select 3 as id, 'Bob' as name, 'bob@example.com' as email, 150.25 as amount
+    )
+    
+    select id
+    ,name
+    ,email
+    ,amount
+    
+    from source_data
+- sequence: 3
+  type: execute
+  sql: |-
+    ALTER 
+    TABLE
+    `e2e`.`adapters_databricks_column_tags`.`a`ALTER COLUMN `id`
+    SET TAGS ('primary_key' = 'yes', 'indexed' = 'true')
+- sequence: 4
+  type: execute
+  sql: |-
+    ALTER 
+    TABLE
+    `e2e`.`adapters_databricks_column_tags`.`a`ALTER COLUMN `name`
+    SET TAGS ('data_type' = 'string', 'owner' = 'data_team')
+- sequence: 5
+  type: execute
+  sql: |-
+    ALTER 
+    TABLE
+    `e2e`.`adapters_databricks_column_tags`.`a`ALTER COLUMN `email`
+    SET TAGS ('format' = 'email', 'required' = 'true')
+- sequence: 6
+  type: execute
+  sql: |-
+    ALTER 
+    TABLE
+    `e2e`.`adapters_databricks_column_tags`.`a`ALTER COLUMN `amount`
+    SET TAGS ('data_category' = 'numeric')
+model.test.test_materialized_view:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace temporary view `test_materialized_view__dbt_tmp` as
+    SELECT 
+    id,
+    name,
+    email,
+    amount
+    FROM `e2e`.`adapters_databricks_column_tags`.`a` LIMIT 10
+- sequence: 1
+  type: execute
+  sql: DESCRIBE TABLE EXTENDED `test_materialized_view__dbt_tmp` AS JSON
+- sequence: 2
+  type: execute
+  sql: |-
+    SELECT
+    table_catalog,
+    table_schema,
+    table_name,
+    filter_name,
+    target_columns
+    FROM `e2e`.`information_schema`.`row_filters`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'adapters_databricks_column_tags'
+    AND table_name = 'test_materialized_view'
+- sequence: 3
+  type: execute
+  sql: |-
+    create or replace materialized view `e2e`.`adapters_databricks_column_tags`.`test_materialized_view`
+    
+    (
+    
+    
+    
+    
+    
+    
+    
+    `id` int COMMENT 'Primary key',
+    
+    
+    
+    
+    
+    
+    
+    `name` STRING COMMENT 'Customer name',
+    
+    
+    
+    
+    
+    
+    
+    `email` STRING COMMENT 'Customer email',
+    
+    
+    
+    
+    
+    
+    
+    `amount` DECIMAL(5,2) COMMENT 'Transaction amount'
+    
+    
+    
+    )
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    as
+    SELECT 
+    id,
+    name,
+    email,
+    amount
+    FROM `e2e`.`adapters_databricks_column_tags`.`a`
+- sequence: 4
+  type: execute
+  sql: |-
+    ALTER 
+    MATERIALIZED VIEW
+    `e2e`.`adapters_databricks_column_tags`.`test_materialized_view`ALTER COLUMN `id`
+    SET TAGS ('primary_key' = 'yes', 'indexed' = 'true')
+- sequence: 5
+  type: execute
+  sql: |-
+    ALTER 
+    MATERIALIZED VIEW
+    `e2e`.`adapters_databricks_column_tags`.`test_materialized_view`ALTER COLUMN `name`
+    SET TAGS ('data_type' = 'string', 'owner' = 'data_team')
+- sequence: 6
+  type: execute
+  sql: |-
+    ALTER 
+    MATERIALIZED VIEW
+    `e2e`.`adapters_databricks_column_tags`.`test_materialized_view`ALTER COLUMN `email`
+    SET TAGS ('format' = 'email', 'required' = 'true')
+- sequence: 7
+  type: execute
+  sql: |-
+    ALTER 
+    MATERIALIZED VIEW
+    `e2e`.`adapters_databricks_column_tags`.`test_materialized_view`ALTER COLUMN `amount`
+    SET TAGS ('data_category' = 'numeric')
+model.test.test_table:
+- sequence: 0
+  type: execute
+  sql: |-
+    SELECT
+    table_catalog,
+    table_schema,
+    table_name,
+    filter_name,
+    target_columns
+    FROM `e2e`.`information_schema`.`row_filters`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'adapters_databricks_column_tags'
+    AND table_name = 'test_table'
+- sequence: 1
+  type: execute
+  sql: |-
+    create or replace table `e2e`.`adapters_databricks_column_tags`.`test_table`
+    
+    
+    
+    using delta
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    as
+    SELECT 
+    id,
+    name,
+    email,
+    amount
+    FROM `e2e`.`adapters_databricks_column_tags`.`a`
+- sequence: 2
+  type: execute
+  sql: |-
+    ALTER 
+    TABLE
+    `e2e`.`adapters_databricks_column_tags`.`test_table`ALTER COLUMN `id`
+    SET TAGS ('primary_key' = 'yes', 'indexed' = 'true')
+- sequence: 3
+  type: execute
+  sql: |-
+    ALTER 
+    TABLE
+    `e2e`.`adapters_databricks_column_tags`.`test_table`ALTER COLUMN `name`
+    SET TAGS ('data_type' = 'string', 'owner' = 'data_team')
+- sequence: 4
+  type: execute
+  sql: |-
+    ALTER 
+    TABLE
+    `e2e`.`adapters_databricks_column_tags`.`test_table`ALTER COLUMN `email`
+    SET TAGS ('format' = 'email', 'required' = 'true')
+- sequence: 5
+  type: execute
+  sql: |-
+    ALTER 
+    TABLE
+    `e2e`.`adapters_databricks_column_tags`.`test_table`ALTER COLUMN `amount`
+    SET TAGS ('data_category' = 'numeric')
+model.test.test_view:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace view `e2e`.`adapters_databricks_column_tags`.`test_view`
+    
+    as (
+    SELECT 
+    id,
+    name,
+    email,
+    amount
+    FROM `e2e`.`adapters_databricks_column_tags`.`a`
+    )
+- sequence: 1
+  type: execute
+  sql: |-
+    ALTER TABLE `e2e`.`adapters_databricks_column_tags`.`test_view`ALTER COLUMN `id`
+    SET TAGS ('primary_key' = 'yes', 'indexed' = 'true')
+- sequence: 2
+  type: execute
+  sql: |-
+    ALTER TABLE `e2e`.`adapters_databricks_column_tags`.`test_view`ALTER COLUMN `name`
+    SET TAGS ('data_type' = 'string', 'owner' = 'data_team')
+- sequence: 3
+  type: execute
+  sql: |-
+    ALTER TABLE `e2e`.`adapters_databricks_column_tags`.`test_view`ALTER COLUMN `email`
+    SET TAGS ('format' = 'email', 'required' = 'true')
+- sequence: 4
+  type: execute
+  sql: |-
+    ALTER TABLE `e2e`.`adapters_databricks_column_tags`.`test_view`ALTER COLUMN `amount`
+    SET TAGS ('data_category' = 'numeric')

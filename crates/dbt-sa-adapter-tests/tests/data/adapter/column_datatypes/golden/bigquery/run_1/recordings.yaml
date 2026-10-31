@@ -1,0 +1,4 @@
+model.test.c.get_table_schema.8d3d9b69:
+- sequence: 0
+  type: get_table_schema
+  table_name: 8d3d9b69

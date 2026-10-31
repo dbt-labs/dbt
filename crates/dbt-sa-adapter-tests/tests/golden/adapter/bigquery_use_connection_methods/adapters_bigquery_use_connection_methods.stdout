@@ -1,0 +1,25 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/schema.yml
+   Parsing models/a.sql
+bigquery
+dataset_location
+update_table_description
+get_columns_in_select_sql
+get_column_schema_from_query
+grant_access_to
+list_relations_without_caching
+ Rendering models/a.sql
+bigquery
+dataset_location
+US
+update_table_description
+get_columns_in_select_sql
+get_column_schema_from_query
+grant_access_to
+[{'dataset': 'adapters_bigquery_use_connection_methods', 'project': 'dbt-test-env'}]
+list_relations_without_caching
+==================== Execution Summary =====================
+Finished 'compile' successfully for target 'bigquery' [duration]
+Processed: 1 model
+Summary: 1 total | 1 success

@@ -33,7 +33,7 @@ export function defaultSelectorFor(uniqueId: string, depth: number): string {
 
 /** Lineage's REST endpoint keys off unique_id alone, but the shared contract
  *  requires a resource type. The unique_id prefix is the resource type. */
-function resourceTypeFromUniqueId(uniqueId: string): ResourceType {
+export function resourceTypeFromUniqueId(uniqueId: string): ResourceType {
   return (uniqueId.split('.')[0] ?? 'model') as ResourceType;
 }
 

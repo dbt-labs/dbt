@@ -1,0 +1,9 @@
+functions:
+  - name: hide_cool_and_finance
+    arguments:
+      - name: is_cool
+        data_type: boolean
+      - name: department
+        data_type: string
+    returns:
+      data_type: boolean

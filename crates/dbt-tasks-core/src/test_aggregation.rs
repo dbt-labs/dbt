@@ -452,6 +452,7 @@ mod tests {
         test.__test_attr__ = DbtTestAttr {
             column_name: Some(column_name.to_string()),
             attached_node: Some("model.pkg.orders".to_string()),
+            test_subject_unique_id: Some("model.pkg.orders".to_string()),
             test_metadata: Some(TestMetadata {
                 name: macro_name.to_string(),
                 kwargs: BTreeMap::from([

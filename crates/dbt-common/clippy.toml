@@ -38,9 +38,5 @@ path = "std::collections::HashSet"
 reason = "Use dbt_common::collections::HashSet instead of std::collections::HashSet for deterministic and reproducible test baselines on debug builds."
 
 [[disallowed-types]]
-path = "dashmap::DashMap"
-reason = "Use dbt_common::collections::DashMap instead of dashmap::DashMap for deterministic and reproducible test baselines on debug builds."
-
-[[disallowed-types]]
 path = "scc::HashMap"
 reason = "Use dbt_common::collections::SccHashMap instead of scc::HashMap for deterministic and reproducible test baselines on debug builds."

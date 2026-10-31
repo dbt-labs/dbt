@@ -1,7 +1,7 @@
 {% macro sqlserver__create_columns(relation, columns) %}
   {% set column_list %}
     {% for column_entry in columns %}
-      {{column_entry.name}} {{column_entry.data_type}}{{ ", " if not loop.last }}
+      {{ adapter.quote(column_entry.name) }} {{column_entry.data_type}}{{ ", " if not loop.last }}
     {% endfor %}
   {% endset %}
 

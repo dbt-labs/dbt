@@ -1,7 +1,6 @@
-use std::collections::BTreeMap;
 use std::{fmt, marker::PhantomData};
 
-use crate::dashmap::DashMap;
+use crate::collections::SccHashMap;
 use indexmap::IndexMap;
 use minijinja::value::ValueMap;
 use minijinja::value::mutable_vec::MutableVec;
@@ -19,7 +18,11 @@ fn convert_yml_value(yml: YmlValue) -> minijinja::Value {
             let mut value_map = ValueMap::new();
             for (k, v) in map {
                 value_map.insert(
-                    minijinja::Value::from(k.as_str().expect("key is not a string").to_string()),
+                    minijinja::Value::from(
+                        k.as_scalar_string()
+                            .expect("mapping key is not a scalar")
+                            .as_ref(),
+                    ),
                     convert_yml_value(v),
                 );
             }
@@ -35,43 +38,25 @@ fn convert_yml_value(yml: YmlValue) -> minijinja::Value {
     }
 }
 
-/// Converts a [dbt_yaml::Value] to a [BTreeMap<String, Value>]
-pub fn convert_yml_to_map(yml: YmlValue) -> BTreeMap<String, minijinja::Value> {
+/// Converts a [dbt_yaml::Value] to a [SccHashMap<String, Value>]
+pub fn convert_yml_to_scc_map(yml: YmlValue) -> SccHashMap<String, minijinja::Value> {
     match yml {
         YmlValue::Mapping(map, _) => {
-            let mut value_map = BTreeMap::new();
+            let value_map = SccHashMap::default();
             for (k, v) in map {
-                value_map.insert(
-                    k.as_str().expect("key is not a string").to_string(),
+                // Last write wins if two keys stringify identically.
+                value_map.upsert_sync(
+                    k.as_scalar_string()
+                        .expect("mapping key is not a scalar")
+                        .into_owned(),
                     convert_yml_value(v),
                 );
             }
             value_map
         }
         _ => {
-            let mut map = BTreeMap::new();
-            map.insert("value".to_string(), convert_yml_value(yml));
-            map
-        }
-    }
-}
-
-/// Converts a [dbt_yaml::Value] to a [DashMap<String, Value>]
-pub fn convert_yml_to_dash_map(yml: YmlValue) -> DashMap<String, minijinja::Value> {
-    match yml {
-        YmlValue::Mapping(map, _) => {
-            let value_map = DashMap::default();
-            for (k, v) in map {
-                value_map.insert(
-                    k.as_str().expect("key is not a string").to_string(),
-                    convert_yml_value(v),
-                );
-            }
-            value_map
-        }
-        _ => {
-            let map = DashMap::default();
-            map.insert("value".to_string(), convert_yml_value(yml));
+            let map = SccHashMap::default();
+            map.upsert_sync("value".to_string(), convert_yml_value(yml));
             map
         }
     }
@@ -88,7 +73,11 @@ fn convert_yml_value_ordered(yml: YmlValue) -> minijinja::Value {
             let mut value_map = ValueMap::new();
             for (k, v) in map {
                 value_map.insert(
-                    minijinja::Value::from(k.as_str().expect("key is not a string").to_string()),
+                    minijinja::Value::from(
+                        k.as_scalar_string()
+                            .expect("mapping key is not a scalar")
+                            .as_ref(),
+                    ),
                     convert_yml_value(v),
                 );
             }
@@ -112,7 +101,9 @@ pub fn convert_yml_to_value_map(yml: YmlValue) -> IndexMap<String, minijinja::Va
             let mut value_map = IndexMap::with_capacity(map.len());
             for (k, v) in map {
                 value_map.insert(
-                    k.as_str().expect("key is not a string").to_string(),
+                    k.as_scalar_string()
+                        .expect("mapping key is not a scalar")
+                        .into_owned(),
                     convert_yml_value_ordered(v),
                 );
             }

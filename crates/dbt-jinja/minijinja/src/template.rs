@@ -4,7 +4,6 @@ use std::ops::Deref;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use dashmap::DashMap;
 use serde::Serialize;
 
 use crate::compiler::ast;
@@ -24,7 +23,6 @@ use crate::value::{self, Value};
 use crate::vm::listeners::TypecheckingEventListener;
 use crate::vm::typemeta::TypeChecker;
 use crate::vm::{prepare_blocks, Context, State, Vm};
-use crate::Type;
 
 /// Callback for auto escape determination
 pub type AutoEscapeFunc = dyn Fn(&str) -> AutoEscape + Sync + Send;
@@ -137,7 +135,7 @@ impl<'env, 'source> Template<'env, 'source> {
     pub fn typecheck(
         &self,
         funcsigns: Arc<FunctionRegistry>,
-        builtins: Arc<DashMap<String, Type>>,
+        builtins: Arc<crate::types::builtins::TypeRegistry>,
         warning_printer: Rc<dyn TypecheckingEventListener>,
         typecheck_resolved_context: BTreeMap<String, Value>,
     ) -> Result<(), crate::Error> {
@@ -392,7 +390,7 @@ impl<'source> CompiledTemplate<'source> {
         name: &'source str,
         source: &'source str,
         config: &TemplateConfig,
-        filename: Option<String>,
+        filename: Option<&'source str>,
         profile: CodeGenerationProfile,
     ) -> Result<CompiledTemplate<'source>, Error> {
         Self::_new_impl(name, source, config, filename, profile, &[], None)
@@ -407,7 +405,7 @@ impl<'source> CompiledTemplate<'source> {
         name: &'source str,
         source: &'source str,
         config: &TemplateConfig,
-        filename: Option<String>,
+        filename: Option<&'source str>,
         profile: CodeGenerationProfile,
         source_listeners: &[Rc<dyn TokenizerEventListener>],
         ast_visitor: Option<&mut dyn FnMut(&ast::Stmt<'_>)>,
@@ -428,7 +426,7 @@ impl<'source> CompiledTemplate<'source> {
         name: &'source str,
         source: &'source str,
         config: &TemplateConfig,
-        filename: Option<String>,
+        filename: Option<&'source str>,
         profile: CodeGenerationProfile,
         source_listeners: &[Rc<dyn TokenizerEventListener>],
         ast_visitor: Option<&mut dyn FnMut(&ast::Stmt<'_>)>,
@@ -436,9 +434,10 @@ impl<'source> CompiledTemplate<'source> {
         // the parser/compiler combination can create constants in which case
         // we can probably benefit from the value optimization a bit.
         let _guard = value::value_optimization();
+        let source_name = filename.unwrap_or(name);
         let ast = ok!(parse_with_listeners(
             source,
-            name,
+            source_name,
             config.syntax_config.clone(),
             config.ws_config,
             source_listeners,
@@ -446,7 +445,8 @@ impl<'source> CompiledTemplate<'source> {
         if let Some(visitor) = ast_visitor {
             visitor(&ast);
         }
-        let mut gen = CodeGenerator::new_with_filename(name, source, filename, profile);
+        let mut gen =
+            CodeGenerator::new_with_filename(name, source, filename.map(String::from), profile);
         gen.compile_stmt(&ast)?;
         let buffer_size_hint = gen.buffer_size_hint();
         let (instructions, blocks) = gen.finish();

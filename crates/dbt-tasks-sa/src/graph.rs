@@ -30,6 +30,7 @@ use dbt_tasks_core::test_aggregation::{
 use crate::barrier::BarrierTask;
 use crate::cloneable::RunCloneTask;
 use crate::cloneable::cloneable_task;
+use crate::plugin::{PluginRuns, Plugins};
 use crate::renderable::unit_test::build_unit_test_overrides_map;
 use crate::task::TasksForNodeFactory;
 
@@ -50,6 +51,19 @@ fn task_graph_phases_for_command(command: FsCommand) -> Option<&'static [TP]> {
         FsCommand::Show => Some(PHASES_RENDER_ANALYZE_SHOW),
         _ => None,
     }
+}
+
+/// A plugin's own command runs only its nodes, which only run.
+const PHASES_PLUGIN_COMMAND: &[TP] = &[TP::Run];
+
+/// The phases of `command`'s task graph, including a command a plugin adds; `None` if it builds
+/// none.
+pub fn command_phases(command: FsCommand, plugins: &Plugins) -> Option<&'static [TP]> {
+    task_graph_phases_for_command(command).or_else(|| {
+        plugins
+            .command_owner(command)
+            .map(|_| PHASES_PLUGIN_COMMAND)
+    })
 }
 
 fn command_uses_generic_test_aggregation(command: FsCommand) -> bool {
@@ -73,6 +87,8 @@ pub struct GraphBuilder {
     static_analysis_buckets: Arc<dyn StaticAnalysisBuckets>,
     tasks_for_node_factory: Arc<dyn TasksForNodeFactory>,
     compare_task_graph_builder: Option<Arc<dyn CompareTaskGraphBuilder>>,
+    plugins: Plugins,
+    plugin_runs: PluginRuns,
 }
 
 impl GraphBuilder {
@@ -81,6 +97,8 @@ impl GraphBuilder {
         static_analysis_buckets: Arc<dyn StaticAnalysisBuckets>,
         tasks_for_node_factory: Arc<dyn TasksForNodeFactory>,
         compare_task_graph_builder: Option<Arc<dyn CompareTaskGraphBuilder>>,
+        plugins: Plugins,
+        plugin_runs: PluginRuns,
     ) -> Self {
         let execute = Execute::from_compute_flag(arg.local_execution_backend);
         Self {
@@ -89,6 +107,8 @@ impl GraphBuilder {
             static_analysis_buckets,
             tasks_for_node_factory,
             compare_task_graph_builder,
+            plugins,
+            plugin_runs,
         }
     }
 
@@ -166,6 +186,28 @@ impl GraphBuilder {
                             self.static_analysis_buckets.as_ref(),
                             self.arg.infer_schemas_and_typeless,
                             aggregation,
+                            &self.plugin_runs,
+                        )
+                    } else if let Some(owner) = self.plugins.command_owner(cmd) {
+                        let plugin_type = owner.plugin_type();
+                        // A plugin's own command runs only that plugin's nodes.
+                        let mut task_schedule = schedule.clone();
+                        task_schedule.selected_nodes.retain(|unique_id| {
+                            nodes
+                                .plugins
+                                .get(unique_id)
+                                .is_some_and(|node| node.__plugin_attr__.plugin_type == plugin_type)
+                        });
+                        Self::build_phased_task_graph(
+                            &task_schedule,
+                            self.tasks_for_node_factory.as_ref(),
+                            nodes,
+                            self.execute,
+                            PHASES_PLUGIN_COMMAND,
+                            self.static_analysis_buckets.as_ref(),
+                            self.arg.infer_schemas_and_typeless,
+                            None,
+                            &self.plugin_runs,
                         )
                     } else {
                         // Freshness and `jinja-check` legitimately produce an
@@ -205,6 +247,7 @@ impl GraphBuilder {
         buckets: &dyn StaticAnalysisBuckets,
         infer_schemas: bool,
         generic_test_aggregation: Option<&GenericTestAggregation>,
+        plugin_runs: &PluginRuns,
     ) -> (DiGraph<Arc<dyn Task>, ()>, BTreeSet<String>) {
         // Build reverse dependencies map once for efficient propagation
         let reverse_deps = build_reverse_deps(&schedule.deps);
@@ -232,6 +275,7 @@ impl GraphBuilder {
             &unit_test_overrides_map,
             generic_test_aggregation,
             &reverse_deps,
+            plugin_runs,
         );
 
         // Add phase transitions (e.g. render -> analyze -> run) for each node
@@ -252,6 +296,7 @@ impl GraphBuilder {
 
         let mut first_upstream_nodes_per_phase: BTreeMap<TP, BTreeMap<String, BTreeSet<String>>> =
             BTreeMap::new();
+        let overlapping_seeds = overlapping_source_to_seed(schedule, nodes);
 
         // Add dependency edges for each phase
         for unique_id in schedule.sorted_nodes.iter() {
@@ -285,6 +330,21 @@ impl GraphBuilder {
                                                 }
                                             }
                                         });
+                                        // Render after the tested model's parents have run,
+                                        // like dbt-core's `BuildTask`; schema inference may
+                                        // read those relations.
+                                        for parent in unit_test_render_parent_runs(
+                                            unique_id,
+                                            nodes,
+                                            schedule,
+                                            &overlapping_seeds,
+                                        ) {
+                                            if let Some(&from_idx) =
+                                                node_indices.get(&(TP::Run, parent))
+                                            {
+                                                graph.update_edge(from_idx, to_idx, ());
+                                            }
+                                        }
                                         continue;
                                     }
                                     // If the current node is a unit test and the current phase is
@@ -373,7 +433,6 @@ impl GraphBuilder {
         drop(first_upstream_nodes_per_phase);
 
         // Add edges reflecting child render -> parent run / analyze for dynamic or none nodes
-        let overlapping_seeds = overlapping_source_to_seed(schedule, nodes);
         for (unique_id, _) in phase_to_nodes.get(&TP::Render).unwrap().iter() {
             // Unit tests are handled above for all of their dependncies, so skip here
             if unique_id.starts_with("unit_test.") {
@@ -626,6 +685,7 @@ fn initialize_graph(
     unit_test_overrides_map: &BTreeMap<String, UnitTestOverrides>,
     generic_test_aggregation: Option<&GenericTestAggregation>,
     reverse_deps: &HashMap<String, HashSet<String>>,
+    plugin_runs: &PluginRuns,
 ) -> (
     DiGraph<Arc<dyn Task>, ()>,
     BTreeMap<TP, BTreeMap<String, Arc<dyn Task>>>,
@@ -737,16 +797,29 @@ fn initialize_graph(
             analyzeable,
             runnable,
             showable,
-        } = tasks_for_node_factory.tasks_for_node(
-            unique_id,
-            nodes,
-            schedule,
-            execute,
-            &expected_node_phases,
-            generic_test_aggregation,
-            unit_test_overrides_map.get(unique_id),
-            reverse_deps,
-        );
+        } = match nodes.plugins.get(unique_id) {
+            // A plugin node has nothing to render or analyze. It runs when it is selected and
+            // its plugin is running.
+            Some(node) => TasksForNode {
+                renderable: None,
+                analyzeable: None,
+                runnable: (phases.contains(&TP::Run)
+                    && schedule.selected_nodes.contains(unique_id))
+                .then(|| plugin_runs.task(node, nodes))
+                .flatten(),
+                showable: None,
+            },
+            None => tasks_for_node_factory.tasks_for_node(
+                unique_id,
+                nodes,
+                schedule,
+                execute,
+                &expected_node_phases,
+                generic_test_aggregation,
+                unit_test_overrides_map.get(unique_id),
+                reverse_deps,
+            ),
+        };
         if renderable.is_none() && analyzeable.is_none() && runnable.is_none() && showable.is_none()
         {
             if schedule.selected_nodes.contains(unique_id) {
@@ -834,6 +907,43 @@ fn overlapping_source_to_seed(
             Some((source_uid.clone(), (*seed_uid).clone()))
         })
         .collect()
+}
+
+/// Nodes whose Run must finish before `unit_test_id`'s Render: the tested model's nearest
+/// non-ephemeral parents, looking through inlined ephemerals (an overlapping source stands in as
+/// its seed). dbt-core's `BuildTask` (`call_model_and_unit_tests_runner`) runs a unit test after
+/// those parents too, and schema inference may read their relations.
+fn unit_test_render_parent_runs(
+    unit_test_id: &str,
+    nodes: &Nodes,
+    schedule: &Schedule<String>,
+    overlapping_seeds: &BTreeMap<String, String>,
+) -> BTreeSet<String> {
+    let Some(unit_test) = nodes.unit_tests.get(unit_test_id) else {
+        return BTreeSet::new();
+    };
+    // `None` means the tested model did not resolve, which disables the unit test.
+    let Some(tested_id) = unit_test.tested_node_unique_id.as_ref() else {
+        return BTreeSet::new();
+    };
+
+    let mut parents = BTreeSet::new();
+    let mut visited = HashSet::new();
+    let mut stack: Vec<&String> = schedule.deps.get(tested_id).into_iter().flatten().collect();
+    while let Some(parent) = stack.pop() {
+        if !visited.insert(parent) {
+            continue;
+        }
+        let is_ephemeral = nodes
+            .get_node(parent)
+            .is_some_and(|node| node.materialized() == DbtMaterialization::Ephemeral);
+        if is_ephemeral {
+            stack.extend(schedule.deps.get(parent).into_iter().flatten());
+        } else {
+            parents.insert(overlapping_seeds.get(parent).unwrap_or(parent).clone());
+        }
+    }
+    parents
 }
 
 /// A frontier node's render exists only to feed a selected unit test and it has no analyze of

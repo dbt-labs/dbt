@@ -1,0 +1,712 @@
+model.test.a:
+- sequence: 0
+  type: execute
+  sql: DROP SCHEMA IF EXISTS adapters_redshift_expand_target_column_types CASCADE
+- sequence: 1
+  type: execute
+  sql: CREATE SCHEMA adapters_redshift_expand_target_column_types
+- sequence: 2
+  type: execute
+  sql: CREATE TABLE IF NOT EXISTS adapters_redshift_expand_target_column_types.a (id VARCHAR(2))
+- sequence: 3
+  type: execute
+  sql: CREATE TABLE IF NOT EXISTS adapters_redshift_expand_target_column_types.b (id VARCHAR(1))
+- sequence: 4
+  type: execute
+  sql: |-
+    with bound_views as (
+    select
+    ordinal_position,
+    table_schema,
+    column_name,
+    data_type,
+    character_maximum_length,
+    numeric_precision,
+    numeric_scale
+    
+    from information_schema."columns"
+    where table_name = 'a'
+    ),
+    
+    unbound_views as (
+    select
+    ordinal_position,
+    view_schema,
+    col_name,
+    case
+    when col_type ilike 'character varying%' then
+    'character varying'
+    when col_type ilike 'numeric%' then 'numeric'
+    else col_type
+    end as col_type,
+    case
+    when col_type like 'character%'
+    then nullif(REGEXP_SUBSTR(col_type, '[0-9]+'), '')::int
+    else null
+    end as character_maximum_length,
+    case
+    when col_type like 'numeric%'
+    then nullif(
+    SPLIT_PART(REGEXP_SUBSTR(col_type, '[0-9,]+'), ',', 1),
+    '')::int
+    else null
+    end as numeric_precision,
+    case
+    when col_type like 'numeric%'
+    then nullif(
+    SPLIT_PART(REGEXP_SUBSTR(col_type, '[0-9,]+'), ',', 2),
+    '')::int
+    else null
+    end as numeric_scale
+    
+    from pg_get_late_binding_view_cols()
+    cols(view_schema name, view_name name, col_name name,
+    col_type varchar, ordinal_position int)
+    where view_name = 'a'
+    ),
+    
+    external_views as (
+    select
+    columnnum,
+    schemaname,
+    columnname,
+    case
+    when external_type ilike 'character varying%' or external_type ilike 'varchar%'
+    then 'character varying'
+    when external_type ilike 'numeric%' then 'numeric'
+    else external_type
+    end as external_type,
+    case
+    when external_type like 'character%' or external_type like 'varchar%'
+    then nullif(
+    REGEXP_SUBSTR(external_type, '[0-9]+'),
+    '')::int
+    else null
+    end as character_maximum_length,
+    case
+    when external_type like 'numeric%'
+    then nullif(
+    SPLIT_PART(REGEXP_SUBSTR(external_type, '[0-9,]+'), ',', 1),
+    '')::int
+    else null
+    end as numeric_precision,
+    case
+    when external_type like 'numeric%'
+    then nullif(
+    SPLIT_PART(REGEXP_SUBSTR(external_type, '[0-9,]+'), ',', 2),
+    '')::int
+    else null
+    end as numeric_scale
+    from
+    pg_catalog.svv_external_columns
+    where
+    schemaname = 'adapters_redshift_expand_target_column_types'
+    and tablename = 'a'
+    
+    ),
+    
+    unioned as (
+    select * from bound_views
+    union all
+    select * from unbound_views
+    union all
+    select * from external_views
+    )
+    
+    select
+    column_name,
+    data_type,
+    character_maximum_length,
+    numeric_precision,
+    numeric_scale
+    
+    from unioned
+    
+    where table_schema = 'adapters_redshift_expand_target_column_types'
+    
+    order by ordinal_position
+- sequence: 5
+  type: execute
+  sql: |-
+    with bound_views as (
+    select
+    ordinal_position,
+    table_schema,
+    column_name,
+    data_type,
+    character_maximum_length,
+    numeric_precision,
+    numeric_scale
+    
+    from information_schema."columns"
+    where table_name = 'b'
+    ),
+    
+    unbound_views as (
+    select
+    ordinal_position,
+    view_schema,
+    col_name,
+    case
+    when col_type ilike 'character varying%' then
+    'character varying'
+    when col_type ilike 'numeric%' then 'numeric'
+    else col_type
+    end as col_type,
+    case
+    when col_type like 'character%'
+    then nullif(REGEXP_SUBSTR(col_type, '[0-9]+'), '')::int
+    else null
+    end as character_maximum_length,
+    case
+    when col_type like 'numeric%'
+    then nullif(
+    SPLIT_PART(REGEXP_SUBSTR(col_type, '[0-9,]+'), ',', 1),
+    '')::int
+    else null
+    end as numeric_precision,
+    case
+    when col_type like 'numeric%'
+    then nullif(
+    SPLIT_PART(REGEXP_SUBSTR(col_type, '[0-9,]+'), ',', 2),
+    '')::int
+    else null
+    end as numeric_scale
+    
+    from pg_get_late_binding_view_cols()
+    cols(view_schema name, view_name name, col_name name,
+    col_type varchar, ordinal_position int)
+    where view_name = 'b'
+    ),
+    
+    external_views as (
+    select
+    columnnum,
+    schemaname,
+    columnname,
+    case
+    when external_type ilike 'character varying%' or external_type ilike 'varchar%'
+    then 'character varying'
+    when external_type ilike 'numeric%' then 'numeric'
+    else external_type
+    end as external_type,
+    case
+    when external_type like 'character%' or external_type like 'varchar%'
+    then nullif(
+    REGEXP_SUBSTR(external_type, '[0-9]+'),
+    '')::int
+    else null
+    end as character_maximum_length,
+    case
+    when external_type like 'numeric%'
+    then nullif(
+    SPLIT_PART(REGEXP_SUBSTR(external_type, '[0-9,]+'), ',', 1),
+    '')::int
+    else null
+    end as numeric_precision,
+    case
+    when external_type like 'numeric%'
+    then nullif(
+    SPLIT_PART(REGEXP_SUBSTR(external_type, '[0-9,]+'), ',', 2),
+    '')::int
+    else null
+    end as numeric_scale
+    from
+    pg_catalog.svv_external_columns
+    where
+    schemaname = 'adapters_redshift_expand_target_column_types'
+    and tablename = 'b'
+    
+    ),
+    
+    unioned as (
+    select * from bound_views
+    union all
+    select * from unbound_views
+    union all
+    select * from external_views
+    )
+    
+    select
+    column_name,
+    data_type,
+    character_maximum_length,
+    numeric_precision,
+    numeric_scale
+    
+    from unioned
+    
+    where table_schema = 'adapters_redshift_expand_target_column_types'
+    
+    order by ordinal_position
+- sequence: 6
+  type: execute
+  sql: |-
+    with bound_views as (
+    select
+    ordinal_position,
+    table_schema,
+    column_name,
+    data_type,
+    character_maximum_length,
+    numeric_precision,
+    numeric_scale
+    
+    from information_schema."columns"
+    where table_name = 'a'
+    ),
+    
+    unbound_views as (
+    select
+    ordinal_position,
+    view_schema,
+    col_name,
+    case
+    when col_type ilike 'character varying%' then
+    'character varying'
+    when col_type ilike 'numeric%' then 'numeric'
+    else col_type
+    end as col_type,
+    case
+    when col_type like 'character%'
+    then nullif(REGEXP_SUBSTR(col_type, '[0-9]+'), '')::int
+    else null
+    end as character_maximum_length,
+    case
+    when col_type like 'numeric%'
+    then nullif(
+    SPLIT_PART(REGEXP_SUBSTR(col_type, '[0-9,]+'), ',', 1),
+    '')::int
+    else null
+    end as numeric_precision,
+    case
+    when col_type like 'numeric%'
+    then nullif(
+    SPLIT_PART(REGEXP_SUBSTR(col_type, '[0-9,]+'), ',', 2),
+    '')::int
+    else null
+    end as numeric_scale
+    
+    from pg_get_late_binding_view_cols()
+    cols(view_schema name, view_name name, col_name name,
+    col_type varchar, ordinal_position int)
+    where view_name = 'a'
+    ),
+    
+    external_views as (
+    select
+    columnnum,
+    schemaname,
+    columnname,
+    case
+    when external_type ilike 'character varying%' or external_type ilike 'varchar%'
+    then 'character varying'
+    when external_type ilike 'numeric%' then 'numeric'
+    else external_type
+    end as external_type,
+    case
+    when external_type like 'character%' or external_type like 'varchar%'
+    then nullif(
+    REGEXP_SUBSTR(external_type, '[0-9]+'),
+    '')::int
+    else null
+    end as character_maximum_length,
+    case
+    when external_type like 'numeric%'
+    then nullif(
+    SPLIT_PART(REGEXP_SUBSTR(external_type, '[0-9,]+'), ',', 1),
+    '')::int
+    else null
+    end as numeric_precision,
+    case
+    when external_type like 'numeric%'
+    then nullif(
+    SPLIT_PART(REGEXP_SUBSTR(external_type, '[0-9,]+'), ',', 2),
+    '')::int
+    else null
+    end as numeric_scale
+    from
+    pg_catalog.svv_external_columns
+    where
+    schemaname = 'adapters_redshift_expand_target_column_types'
+    and tablename = 'a'
+    
+    ),
+    
+    unioned as (
+    select * from bound_views
+    union all
+    select * from unbound_views
+    union all
+    select * from external_views
+    )
+    
+    select
+    column_name,
+    data_type,
+    character_maximum_length,
+    numeric_precision,
+    numeric_scale
+    
+    from unioned
+    
+    where table_schema = 'adapters_redshift_expand_target_column_types'
+    
+    order by ordinal_position
+- sequence: 7
+  type: execute
+  sql: |-
+    with bound_views as (
+    select
+    ordinal_position,
+    table_schema,
+    column_name,
+    data_type,
+    character_maximum_length,
+    numeric_precision,
+    numeric_scale
+    
+    from information_schema."columns"
+    where table_name = 'b'
+    ),
+    
+    unbound_views as (
+    select
+    ordinal_position,
+    view_schema,
+    col_name,
+    case
+    when col_type ilike 'character varying%' then
+    'character varying'
+    when col_type ilike 'numeric%' then 'numeric'
+    else col_type
+    end as col_type,
+    case
+    when col_type like 'character%'
+    then nullif(REGEXP_SUBSTR(col_type, '[0-9]+'), '')::int
+    else null
+    end as character_maximum_length,
+    case
+    when col_type like 'numeric%'
+    then nullif(
+    SPLIT_PART(REGEXP_SUBSTR(col_type, '[0-9,]+'), ',', 1),
+    '')::int
+    else null
+    end as numeric_precision,
+    case
+    when col_type like 'numeric%'
+    then nullif(
+    SPLIT_PART(REGEXP_SUBSTR(col_type, '[0-9,]+'), ',', 2),
+    '')::int
+    else null
+    end as numeric_scale
+    
+    from pg_get_late_binding_view_cols()
+    cols(view_schema name, view_name name, col_name name,
+    col_type varchar, ordinal_position int)
+    where view_name = 'b'
+    ),
+    
+    external_views as (
+    select
+    columnnum,
+    schemaname,
+    columnname,
+    case
+    when external_type ilike 'character varying%' or external_type ilike 'varchar%'
+    then 'character varying'
+    when external_type ilike 'numeric%' then 'numeric'
+    else external_type
+    end as external_type,
+    case
+    when external_type like 'character%' or external_type like 'varchar%'
+    then nullif(
+    REGEXP_SUBSTR(external_type, '[0-9]+'),
+    '')::int
+    else null
+    end as character_maximum_length,
+    case
+    when external_type like 'numeric%'
+    then nullif(
+    SPLIT_PART(REGEXP_SUBSTR(external_type, '[0-9,]+'), ',', 1),
+    '')::int
+    else null
+    end as numeric_precision,
+    case
+    when external_type like 'numeric%'
+    then nullif(
+    SPLIT_PART(REGEXP_SUBSTR(external_type, '[0-9,]+'), ',', 2),
+    '')::int
+    else null
+    end as numeric_scale
+    from
+    pg_catalog.svv_external_columns
+    where
+    schemaname = 'adapters_redshift_expand_target_column_types'
+    and tablename = 'b'
+    
+    ),
+    
+    unioned as (
+    select * from bound_views
+    union all
+    select * from unbound_views
+    union all
+    select * from external_views
+    )
+    
+    select
+    column_name,
+    data_type,
+    character_maximum_length,
+    numeric_precision,
+    numeric_scale
+    
+    from unioned
+    
+    where table_schema = 'adapters_redshift_expand_target_column_types'
+    
+    order by ordinal_position
+- sequence: 8
+  type: execute
+  sql: alter table "ci"."adapters_redshift_expand_target_column_types"."b" add column "id__dbt_alter" character varying(2)
+- sequence: 9
+  type: execute
+  sql: |-
+    update "ci"."adapters_redshift_expand_target_column_types"."b" set "id__dbt_alter" = "id"
+- sequence: 10
+  type: execute
+  sql: |-
+    alter table "ci"."adapters_redshift_expand_target_column_types"."b" drop column "id" cascade
+- sequence: 11
+  type: execute
+  sql: |-
+    alter table "ci"."adapters_redshift_expand_target_column_types"."b" rename column "id__dbt_alter" to "id"
+- sequence: 12
+  type: execute
+  sql: |-
+    with bound_views as (
+    select
+    ordinal_position,
+    table_schema,
+    column_name,
+    data_type,
+    character_maximum_length,
+    numeric_precision,
+    numeric_scale
+    
+    from information_schema."columns"
+    where table_name = 'a'
+    ),
+    
+    unbound_views as (
+    select
+    ordinal_position,
+    view_schema,
+    col_name,
+    case
+    when col_type ilike 'character varying%' then
+    'character varying'
+    when col_type ilike 'numeric%' then 'numeric'
+    else col_type
+    end as col_type,
+    case
+    when col_type like 'character%'
+    then nullif(REGEXP_SUBSTR(col_type, '[0-9]+'), '')::int
+    else null
+    end as character_maximum_length,
+    case
+    when col_type like 'numeric%'
+    then nullif(
+    SPLIT_PART(REGEXP_SUBSTR(col_type, '[0-9,]+'), ',', 1),
+    '')::int
+    else null
+    end as numeric_precision,
+    case
+    when col_type like 'numeric%'
+    then nullif(
+    SPLIT_PART(REGEXP_SUBSTR(col_type, '[0-9,]+'), ',', 2),
+    '')::int
+    else null
+    end as numeric_scale
+    
+    from pg_get_late_binding_view_cols()
+    cols(view_schema name, view_name name, col_name name,
+    col_type varchar, ordinal_position int)
+    where view_name = 'a'
+    ),
+    
+    external_views as (
+    select
+    columnnum,
+    schemaname,
+    columnname,
+    case
+    when external_type ilike 'character varying%' or external_type ilike 'varchar%'
+    then 'character varying'
+    when external_type ilike 'numeric%' then 'numeric'
+    else external_type
+    end as external_type,
+    case
+    when external_type like 'character%' or external_type like 'varchar%'
+    then nullif(
+    REGEXP_SUBSTR(external_type, '[0-9]+'),
+    '')::int
+    else null
+    end as character_maximum_length,
+    case
+    when external_type like 'numeric%'
+    then nullif(
+    SPLIT_PART(REGEXP_SUBSTR(external_type, '[0-9,]+'), ',', 1),
+    '')::int
+    else null
+    end as numeric_precision,
+    case
+    when external_type like 'numeric%'
+    then nullif(
+    SPLIT_PART(REGEXP_SUBSTR(external_type, '[0-9,]+'), ',', 2),
+    '')::int
+    else null
+    end as numeric_scale
+    from
+    pg_catalog.svv_external_columns
+    where
+    schemaname = 'adapters_redshift_expand_target_column_types'
+    and tablename = 'a'
+    
+    ),
+    
+    unioned as (
+    select * from bound_views
+    union all
+    select * from unbound_views
+    union all
+    select * from external_views
+    )
+    
+    select
+    column_name,
+    data_type,
+    character_maximum_length,
+    numeric_precision,
+    numeric_scale
+    
+    from unioned
+    
+    where table_schema = 'adapters_redshift_expand_target_column_types'
+    
+    order by ordinal_position
+- sequence: 13
+  type: execute
+  sql: |-
+    with bound_views as (
+    select
+    ordinal_position,
+    table_schema,
+    column_name,
+    data_type,
+    character_maximum_length,
+    numeric_precision,
+    numeric_scale
+    
+    from information_schema."columns"
+    where table_name = 'b'
+    ),
+    
+    unbound_views as (
+    select
+    ordinal_position,
+    view_schema,
+    col_name,
+    case
+    when col_type ilike 'character varying%' then
+    'character varying'
+    when col_type ilike 'numeric%' then 'numeric'
+    else col_type
+    end as col_type,
+    case
+    when col_type like 'character%'
+    then nullif(REGEXP_SUBSTR(col_type, '[0-9]+'), '')::int
+    else null
+    end as character_maximum_length,
+    case
+    when col_type like 'numeric%'
+    then nullif(
+    SPLIT_PART(REGEXP_SUBSTR(col_type, '[0-9,]+'), ',', 1),
+    '')::int
+    else null
+    end as numeric_precision,
+    case
+    when col_type like 'numeric%'
+    then nullif(
+    SPLIT_PART(REGEXP_SUBSTR(col_type, '[0-9,]+'), ',', 2),
+    '')::int
+    else null
+    end as numeric_scale
+    
+    from pg_get_late_binding_view_cols()
+    cols(view_schema name, view_name name, col_name name,
+    col_type varchar, ordinal_position int)
+    where view_name = 'b'
+    ),
+    
+    external_views as (
+    select
+    columnnum,
+    schemaname,
+    columnname,
+    case
+    when external_type ilike 'character varying%' or external_type ilike 'varchar%'
+    then 'character varying'
+    when external_type ilike 'numeric%' then 'numeric'
+    else external_type
+    end as external_type,
+    case
+    when external_type like 'character%' or external_type like 'varchar%'
+    then nullif(
+    REGEXP_SUBSTR(external_type, '[0-9]+'),
+    '')::int
+    else null
+    end as character_maximum_length,
+    case
+    when external_type like 'numeric%'
+    then nullif(
+    SPLIT_PART(REGEXP_SUBSTR(external_type, '[0-9,]+'), ',', 1),
+    '')::int
+    else null
+    end as numeric_precision,
+    case
+    when external_type like 'numeric%'
+    then nullif(
+    SPLIT_PART(REGEXP_SUBSTR(external_type, '[0-9,]+'), ',', 2),
+    '')::int
+    else null
+    end as numeric_scale
+    from
+    pg_catalog.svv_external_columns
+    where
+    schemaname = 'adapters_redshift_expand_target_column_types'
+    and tablename = 'b'
+    
+    ),
+    
+    unioned as (
+    select * from bound_views
+    union all
+    select * from unbound_views
+    union all
+    select * from external_views
+    )
+    
+    select
+    column_name,
+    data_type,
+    character_maximum_length,
+    numeric_precision,
+    numeric_scale
+    
+    from unioned
+    
+    where table_schema = 'adapters_redshift_expand_target_column_types'
+    
+    order by ordinal_position

@@ -1,0 +1,137 @@
+14a65069:
+- sequence: 0
+  type: execute
+  sql: |-
+    SELECT
+    table_name,
+    if(table_type IN ('EXTERNAL', 'MANAGED', 'MANAGED_SHALLOW_CLONE', 'EXTERNAL_SHALLOW_CLONE'), 'table', lower(table_type)) AS table_type,
+    lower(data_source_format) AS file_format,
+    table_schema,
+    table_owner,
+    table_catalog,
+    if(
+    table_type IN (
+    'EXTERNAL',
+    'MANAGED',
+    'MANAGED_SHALLOW_CLONE',
+    'EXTERNAL_SHALLOW_CLONE'
+    ),
+    lower(table_type),
+    NULL
+    ) AS databricks_table_type
+    FROM `system`.`information_schema`.`tables`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'databricks_incremental_simple'
+85f3743c:
+- sequence: 0
+  type: execute
+  sql: SHOW SCHEMAS IN `e2e`
+e4b018fe:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists `e2e`.`databricks_incremental_simple`
+model.hello_world.incremental:
+- sequence: 0
+  type: execute
+  sql: |-
+    SELECT
+    table_catalog,
+    table_schema,
+    table_name,
+    filter_name,
+    target_columns
+    FROM `e2e`.`information_schema`.`row_filters`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'databricks_incremental_simple'
+    AND table_name = 'incremental'
+- sequence: 1
+  type: execute
+  sql: |-
+    create or replace table `e2e`.`databricks_incremental_simple`.`incremental`
+    
+    
+    
+    using delta
+    
+    
+    
+    
+    
+    
+    
+    
+    comment 'my table description
+    with multiple
+    lines
+    '
+    
+    as
+    WITH source_data AS (SELECT * FROM `e2e`.`databricks_incremental_simple`.`model_a` )
+    
+    
+    
+    SELECT id,
+    field1,
+    field2
+    FROM source_data where id <= 1
+model.hello_world.model_a:
+- sequence: 0
+  type: execute
+  sql: |-
+    SELECT
+    table_catalog,
+    table_schema,
+    table_name,
+    filter_name,
+    target_columns
+    FROM `e2e`.`information_schema`.`row_filters`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'databricks_incremental_simple'
+    AND table_name = 'model_a'
+- sequence: 1
+  type: execute
+  sql: |-
+    create or replace table `e2e`.`databricks_incremental_simple`.`model_a`
+    
+    
+    
+    using delta
+    
+    
+    
+    
+    
+    
+    
+    
+    comment 'my description
+    with multiple
+    lines
+    '
+    
+    as
+    with source_data as (
+    
+    select 1 as id, 'aaa' as field1, 'bbb' as field2, 111 as field3, 'TTT' as field4
+    union all select 2 as id, 'ccc' as field1, 'ddd' as field2, 222 as field3, 'UUU' as field4
+    )
+    
+    select id
+    ,field1
+    ,field2
+    ,field3
+    ,field4
+    
+    from source_data
+model.hello_world.view_a:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace view `e2e`.`databricks_incremental_simple`.`view_a`
+    comment 'my view description
+    with multiple
+    lines
+    '
+    as (
+    select * from `e2e`.`databricks_incremental_simple`.`model_a`
+    )

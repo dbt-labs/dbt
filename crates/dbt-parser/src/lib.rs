@@ -24,13 +24,15 @@ mod dbt_project_config_tests;
 /// which cannot depend on this crate. Re-exported here for existing call sites.
 pub mod dbt_project_config {
     pub use dbt_schemas::schemas::project::{
-        DbtProjectConfig, ProjectConfigResolver, RootProjectConfigs, build_root_project_configs,
-        disallow_plus_prefix_from_flags, init_project_config, recur_build_dbt_project_config,
-        strip_resource_paths_from_ref_path,
+        DbtProjectConfig, NodeLayers, ProjectConfigResolver, ResolvedNode, RootProjectConfigs,
+        build_root_project_configs, disallow_plus_prefix_from_flags, init_project_config,
+        recur_build_dbt_project_config, strip_resource_paths_from_ref_path,
     };
 }
 /// Parallel dispatch utilities
 pub mod parallel;
+/// Plugins that add their own kind of node to a project
+pub mod plugin;
 /// Python AST parsing utilities
 pub mod python_ast;
 /// Python file information collection

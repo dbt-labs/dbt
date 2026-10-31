@@ -19,9 +19,9 @@ pub enum Channel {
     Brew,
     Winget,
     /// A native binary under a package manager we recognize by path but
-    /// don't publish to (e.g. Scoop, Chocolatey) — unlike Homebrew/Winget/
-    /// PyPI, we have no official package there, so there's no command we
-    /// can vouch for. The `String` is the manager's display name, used only
+    /// don't publish to (e.g. Scoop, Chocolatey, Mason) — unlike Homebrew/
+    /// Winget/PyPI, we have no official package there, so there's no command
+    /// we can vouch for. The `String` is the manager's display name, used only
     /// in messages (never matched on) — see `DistInfo::unsupported_channel_message`.
     Unsupported(String),
 }
@@ -110,8 +110,8 @@ impl DistInfo {
         }
     }
 
-    /// For a recognized-but-unsupported manager (Scoop, Chocolatey, ...),
-    /// the message telling the user to go through that manager instead —
+    /// For a recognized-but-unsupported manager (Scoop, Chocolatey, Mason,
+    /// ...), the message telling the user to go through that manager instead —
     /// `action` is the verb ("update" or "uninstall"). `None` for every
     /// other channel.
     pub fn unsupported_channel_message(&self, action: &str) -> Option<String> {

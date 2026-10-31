@@ -1,0 +1,221 @@
+256d5e51:
+- sequence: 0
+  type: execute
+  sql: |-
+    SELECT
+    table_name,
+    if(table_type IN ('EXTERNAL', 'MANAGED', 'MANAGED_SHALLOW_CLONE', 'EXTERNAL_SHALLOW_CLONE'), 'table', lower(table_type)) AS table_type,
+    lower(data_source_format) AS file_format,
+    table_schema,
+    table_owner,
+    table_catalog,
+    if(
+    table_type IN (
+    'EXTERNAL',
+    'MANAGED',
+    'MANAGED_SHALLOW_CLONE',
+    'EXTERNAL_SHALLOW_CLONE'
+    ),
+    lower(table_type),
+    NULL
+    ) AS databricks_table_type
+    FROM `system`.`information_schema`.`tables`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'adapters_databricks_incremental_tags'
+85f3743c:
+- sequence: 0
+  type: execute
+  sql: SHOW SCHEMAS IN `e2e`
+model.test.a:
+- sequence: 0
+  type: execute
+  sql: DESCRIBE TABLE EXTENDED `e2e`.`adapters_databricks_incremental_tags`.`a` AS JSON
+- sequence: 1
+  type: execute
+  sql: |-
+    SELECT
+    table_catalog,
+    table_schema,
+    table_name,
+    filter_name,
+    target_columns
+    FROM `e2e`.`information_schema`.`row_filters`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'adapters_databricks_incremental_tags'
+    AND table_name = 'a'
+- sequence: 2
+  type: execute
+  sql: |-
+    create or replace table `e2e`.`adapters_databricks_incremental_tags`.`a`
+    
+    
+    
+    using delta
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    as
+    with source_data as (
+    select 1 as id, 'aaa' as field1, 'bbb' as field2, 111 as field3, 'TTT' as field4
+    union all select 2 as id, 'ccc' as field1, 'ddd' as field2, 222 as field3, 'UUU' as field4
+    )
+    
+    select id
+    ,field1
+    ,field2
+    ,field3
+    ,field4
+    
+    from source_data
+model.test.test_incremental_tags:
+- sequence: 0
+  type: execute
+  sql: DESCRIBE TABLE EXTENDED `e2e`.`adapters_databricks_incremental_tags`.`test_incremental_tags` AS JSON
+- sequence: 1
+  type: execute
+  sql: |-
+    SELECT tag_name, tag_value
+    FROM `system`.`information_schema`.`table_tags`
+    WHERE catalog_name = 'e2e'
+    AND schema_name = 'adapters_databricks_incremental_tags'
+    AND table_name = 'test_incremental_tags'
+- sequence: 2
+  type: execute
+  sql: |-
+    SELECT column_name
+    FROM `e2e`.`information_schema`.`columns`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'adapters_databricks_incremental_tags'
+    AND table_name = 'test_incremental_tags'
+    AND is_nullable = 'NO'
+- sequence: 3
+  type: execute
+  sql: |-
+    SELECT kcu.constraint_name, kcu.column_name
+    FROM `e2e`.information_schema.key_column_usage kcu
+    WHERE kcu.table_catalog = 'e2e'
+    AND kcu.table_schema = 'adapters_databricks_incremental_tags'
+    AND kcu.table_name = 'test_incremental_tags'
+    AND kcu.constraint_name = (
+    SELECT constraint_name
+    FROM `e2e`.information_schema.table_constraints
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'adapters_databricks_incremental_tags'
+    AND table_name = 'test_incremental_tags'
+    AND constraint_type = 'PRIMARY KEY'
+    )
+    ORDER BY kcu.ordinal_position
+- sequence: 4
+  type: execute
+  sql: |-
+    SELECT
+    kcu.constraint_name,
+    kcu.column_name AS from_column,
+    ukcu.table_catalog AS to_catalog,
+    ukcu.table_schema AS to_schema,
+    ukcu.table_name AS to_table,
+    ukcu.column_name AS to_column
+    FROM `e2e`.information_schema.key_column_usage kcu
+    JOIN `e2e`.information_schema.referential_constraints rc
+    ON kcu.constraint_name = rc.constraint_name
+    JOIN `e2e`.information_schema.key_column_usage ukcu
+    ON rc.unique_constraint_name = ukcu.constraint_name
+    AND kcu.ordinal_position = ukcu.ordinal_position
+    WHERE kcu.table_catalog = 'e2e'
+    AND kcu.table_schema = 'adapters_databricks_incremental_tags'
+    AND kcu.table_name = 'test_incremental_tags'
+    AND kcu.constraint_name IN (
+    SELECT constraint_name
+    FROM `e2e`.information_schema.table_constraints
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'adapters_databricks_incremental_tags'
+    AND table_name = 'test_incremental_tags'
+    AND constraint_type = 'FOREIGN KEY'
+    )
+    ORDER BY kcu.ordinal_position
+- sequence: 5
+  type: execute
+  sql: |-
+    SELECT
+    column_name,
+    mask_name,
+    using_columns
+    FROM `system`.`information_schema`.`column_masks`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'adapters_databricks_incremental_tags'
+    AND table_name = 'test_incremental_tags'
+- sequence: 6
+  type: execute
+  sql: |-
+    SELECT
+    table_catalog,
+    table_schema,
+    table_name,
+    filter_name,
+    target_columns
+    FROM `e2e`.`information_schema`.`row_filters`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'adapters_databricks_incremental_tags'
+    AND table_name = 'test_incremental_tags'
+- sequence: 7
+  type: execute
+  sql: SHOW TBLPROPERTIES `e2e`.`adapters_databricks_incremental_tags`.`test_incremental_tags`
+- sequence: 8
+  type: execute
+  sql: describe extended `e2e`.`adapters_databricks_incremental_tags`.`test_incremental_tags`
+- sequence: 9
+  type: execute
+  sql: |-
+    create or replace temporary view `test_incremental_tags__dbt_tmp` as
+    WITH source_data AS (SELECT * FROM `e2e`.`adapters_databricks_incremental_tags`.`a` )
+    
+    
+    
+    SELECT * FROM source_data WHERE id NOT IN (SELECT id from `e2e`.`adapters_databricks_incremental_tags`.`test_incremental_tags` )
+- sequence: 10
+  type: execute
+  sql: DESCRIBE TABLE EXTENDED `e2e`.`adapters_databricks_incremental_tags`.`test_incremental_tags` AS JSON
+- sequence: 11
+  type: execute
+  sql: DESCRIBE TABLE EXTENDED `test_incremental_tags__dbt_tmp` AS JSON
+- sequence: 12
+  type: execute
+  sql: |-
+    -- back compat for old kwarg name
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    merge
+    into
+    `e2e`.`adapters_databricks_incremental_tags`.`test_incremental_tags` as DBT_INTERNAL_DEST
+    using
+    `test_incremental_tags__dbt_tmp` as DBT_INTERNAL_SOURCE
+    on
+    FALSE
+    when matched
+    then update set
+    *
+    when not matched
+    then insert
+    *
+- sequence: 13
+  type: execute
+  sql: |-
+    ALTER 
+    TABLE
+    `e2e`.`adapters_databricks_incremental_tags`.`test_incremental_tags` SET TAGS (
+    'key_value' = 'updated'
+    )

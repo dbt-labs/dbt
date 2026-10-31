@@ -24,6 +24,9 @@ enum NodeType {
   NODE_TYPE_SEMANTIC_MODEL = 14;
   NODE_TYPE_FUNCTION = 15;
   NODE_TYPE_CHECK = 16;
+  // A node a plugin adds to the project. Its kind is in `plugin_type`. Numbered apart from the
+  // core node types; node types must fit in a byte (node-count metric keys pack them).
+  NODE_TYPE_PLUGIN = 100;
 }
 
 // Core outcome for any node evaluation result within any phase.
@@ -204,6 +207,67 @@ message NodeEvaluationDetail {
   NodeWarningOutcome node_warning_outcome = 1;
 }
 
+// Time grain of a microbatch model's batches.
+enum MicrobatchBatchSize {
+  MICROBATCH_BATCH_SIZE_UNSPECIFIED = 0;
+  MICROBATCH_BATCH_SIZE_HOUR = 1;
+  MICROBATCH_BATCH_SIZE_DAY = 2;
+  MICROBATCH_BATCH_SIZE_MONTH = 3;
+  MICROBATCH_BATCH_SIZE_YEAR = 4;
+}
+
+// Response of a node's `main` statement.
+message NodeAdapterResponse {
+  // Id the warehouse assigned to the statement's query.
+  // Unset when the adapter reported none.
+  optional string query_id = 1;
+  // Status code of the statement, as the adapter reports it (e.g. "SUCCESS", "INSERT").
+  // Unset when the adapter reported none.
+  optional string code = 2;
+  // Adapter-defined statement metrics.
+  // INTERNAL METRICS ONLY. DO NOT DEPEND ON THESE KEYS. THEY MAY CHANGE OR BE REMOVED WITHOUT NOTICE.
+  map<string, AdapterResponseValue> extra = 3;
+}
+
+// Value of an adapter-defined key in `NodeAdapterResponse.extra`.
+message AdapterResponseValue {
+  oneof value {
+    int64 int = 1;
+    double float = 2;
+    bool bool = 3;
+    string string = 4;
+  }
+}
+
+// Evaluation of one time window within a microbatch model's run phase.
+// Maps to dbt-core's LogStartBatch (Q045) and LogBatchResult (Q046).
+message MicrobatchEvaluated {
+  // Unique id of the model owning this batch.
+  string unique_id = 1;
+  // Schema and identifier of the owning model's relation.
+  string schema = 2;
+  string identifier = 3;
+
+  // Stable batch id: YYYY, YYYYMM, YYYYMMDD, or YYYYMMDDHH.
+  string batch_id = 4;
+  // Time grain of the event-time window.
+  MicrobatchBatchSize batch_size = 5;
+  // 1-based index within this execution window.
+  uint32 batch_index = 6;
+  uint32 total_batches = 7;
+  // Inclusive start and exclusive end of the event-time window, in UTC RFC 3339.
+  string event_time_start = 8;
+  string event_time_end = 9;
+
+  NodeOutcome node_outcome = 10;
+  // Total time in milliseconds this batch evaluation spent idle: the summed
+  // duration of `ThreadPoolWait` spans with this `batch_id`. It does not count
+  // toward the owning `NodeEvaluated.idle_time_ms`.
+  uint64 idle_time_ms = 11;
+  // Optional legacy dbt core event code (Q045 at start, Q046 at completion).
+  optional string dbt_core_event_code = 12;
+}
+
 message NodeEvaluated {
   // unique_id is the globally unique identifier for this node.
   string unique_id = 1;
@@ -295,13 +359,25 @@ message NodeEvaluated {
   optional uint64 rows_affected = 41;
 
   // Total time in milliseconds this node evaluation spent idle.
-  // This includes time spent waiting on internal backpressure.
+  // This includes time spent waiting on internal backpressure: the summed
+  // duration of `ThreadPoolWait` spans of this node without a `batch_id`.
+  // When the evaluation runs work concurrently, e.g. microbatches, those waits
+  // cover only the time when all of that work is queued and none of it runs.
   optional uint64 idle_time_ms = 42;
 
   // Identifier of the dbt State execution decision that governed this node's
   // run-phase execution. Only set when the dbt State service was consulted and
   // returned an execution decision.
   optional string state_decision_id = 43;
+
+  // Response of the node's `main` statement, as in run_results.json minus the row count and
+  // the free-text message.
+  // Set in the Run phase when a model, seed, snapshot or data test succeeds. For a microbatch
+  // model: the last batch's response.
+  // Unset for other node types (e.g. functions, unit tests), for tests that share an aggregated
+  // query, for nodes that run outside the warehouse adapter (local or lake compute), and when
+  // the node did not succeed.
+  NodeAdapterResponse adapter_response = 44;
 }
 
 // Span event tracking full processing of a node across all phases.
@@ -424,4 +500,17 @@ message NodeProcessed {
   // Total number of nodes in the selection set, the denominator of `node_index`.
   // Mirrors dbt core's `num_nodes`.
   optional uint32 node_count_total = 47;
+
+  // Adapter type this node runs on (e.g. "snowflake"). Only set when the
+  // project can run nodes on more than one adapter.
+  optional string adapter = 48;
+
+  // If node_type == NODE_TYPE_PLUGIN, the kind of node the plugin added
+  // (e.g. "widget").
+  optional string plugin_type = 49;
+
+  // Response of the node's `main` statement.
+  // Rolled up from the Run phase `NodeEvaluated`; see its `adapter_response`.
+  // Unset when the Run phase did not run, or recorded none.
+  NodeAdapterResponse adapter_response = 50;
 }

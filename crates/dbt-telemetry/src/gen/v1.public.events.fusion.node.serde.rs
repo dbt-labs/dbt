@@ -1,3 +1,656 @@
+impl serde::Serialize for AdapterResponseValue {
+    #[allow(deprecated)]
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+        let mut len = 0;
+        if self.value.is_some() {
+            len += 1;
+        }
+        let mut struct_ser = serializer.serialize_struct("v1.public.events.fusion.node.AdapterResponseValue", len)?;
+        if let Some(v) = self.value.as_ref() {
+            match v {
+                adapter_response_value::Value::Int(v) => {
+                    #[allow(clippy::needless_borrow)]
+                    #[allow(clippy::needless_borrows_for_generic_args)]
+                    struct_ser.serialize_field("int", ToString::to_string(&v).as_str())?;
+                }
+                adapter_response_value::Value::Float(v) => {
+                    struct_ser.serialize_field("float", v)?;
+                }
+                adapter_response_value::Value::Bool(v) => {
+                    struct_ser.serialize_field("bool", v)?;
+                }
+                adapter_response_value::Value::String(v) => {
+                    struct_ser.serialize_field("string", v)?;
+                }
+            }
+        }
+        struct_ser.end()
+    }
+}
+impl<'de> serde::Deserialize<'de> for AdapterResponseValue {
+    #[allow(deprecated)]
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        const FIELDS: &[&str] = &[
+            "int",
+            "float",
+            "bool",
+            "string",
+        ];
+
+        #[allow(clippy::enum_variant_names)]
+        enum GeneratedField {
+            Int,
+            Float,
+            Bool,
+            String,
+            __SkipField__,
+        }
+        impl<'de> serde::Deserialize<'de> for GeneratedField {
+            fn deserialize<D>(deserializer: D) -> std::result::Result<GeneratedField, D::Error>
+            where
+                D: serde::Deserializer<'de>,
+            {
+                struct GeneratedVisitor;
+
+                impl<'de> serde::de::Visitor<'de> for GeneratedVisitor {
+                    type Value = GeneratedField;
+
+                    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                        write!(formatter, "expected one of: {:?}", &FIELDS)
+                    }
+
+                    #[allow(unused_variables)]
+                    fn visit_str<E>(self, value: &str) -> std::result::Result<GeneratedField, E>
+                    where
+                        E: serde::de::Error,
+                    {
+                        match value {
+                            "int" => Ok(GeneratedField::Int),
+                            "float" => Ok(GeneratedField::Float),
+                            "bool" => Ok(GeneratedField::Bool),
+                            "string" => Ok(GeneratedField::String),
+                            _ => Ok(GeneratedField::__SkipField__),
+                        }
+                    }
+                }
+                deserializer.deserialize_identifier(GeneratedVisitor)
+            }
+        }
+        struct GeneratedVisitor;
+        impl<'de> serde::de::Visitor<'de> for GeneratedVisitor {
+            type Value = AdapterResponseValue;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("struct v1.public.events.fusion.node.AdapterResponseValue")
+            }
+
+            fn visit_map<V>(self, mut map_: V) -> std::result::Result<AdapterResponseValue, V::Error>
+                where
+                    V: serde::de::MapAccess<'de>,
+            {
+                let mut value__ = None;
+                while let Some(k) = map_.next_key()? {
+                    match k {
+                        GeneratedField::Int => {
+                            if value__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("int"));
+                            }
+                            value__ = map_.next_value::<::std::option::Option<::pbjson::private::NumberDeserialize<_>>>()?.map(|x| adapter_response_value::Value::Int(x.0));
+                        }
+                        GeneratedField::Float => {
+                            if value__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("float"));
+                            }
+                            value__ = map_.next_value::<::std::option::Option<::pbjson::private::NumberDeserialize<_>>>()?.map(|x| adapter_response_value::Value::Float(x.0));
+                        }
+                        GeneratedField::Bool => {
+                            if value__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("bool"));
+                            }
+                            value__ = map_.next_value::<::std::option::Option<_>>()?.map(adapter_response_value::Value::Bool);
+                        }
+                        GeneratedField::String => {
+                            if value__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("string"));
+                            }
+                            value__ = map_.next_value::<::std::option::Option<_>>()?.map(adapter_response_value::Value::String);
+                        }
+                        GeneratedField::__SkipField__ => {
+                            let _ = map_.next_value::<serde::de::IgnoredAny>()?;
+                        }
+                    }
+                }
+                Ok(AdapterResponseValue {
+                    value: value__,
+                })
+            }
+        }
+        deserializer.deserialize_struct("v1.public.events.fusion.node.AdapterResponseValue", FIELDS, GeneratedVisitor)
+    }
+}
+impl serde::Serialize for MicrobatchBatchSize {
+    #[allow(deprecated)]
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let variant = match self {
+            Self::Unspecified => "MICROBATCH_BATCH_SIZE_UNSPECIFIED",
+            Self::Hour => "MICROBATCH_BATCH_SIZE_HOUR",
+            Self::Day => "MICROBATCH_BATCH_SIZE_DAY",
+            Self::Month => "MICROBATCH_BATCH_SIZE_MONTH",
+            Self::Year => "MICROBATCH_BATCH_SIZE_YEAR",
+        };
+        serializer.serialize_str(variant)
+    }
+}
+impl<'de> serde::Deserialize<'de> for MicrobatchBatchSize {
+    #[allow(deprecated)]
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        const FIELDS: &[&str] = &[
+            "MICROBATCH_BATCH_SIZE_UNSPECIFIED",
+            "MICROBATCH_BATCH_SIZE_HOUR",
+            "MICROBATCH_BATCH_SIZE_DAY",
+            "MICROBATCH_BATCH_SIZE_MONTH",
+            "MICROBATCH_BATCH_SIZE_YEAR",
+        ];
+
+        struct GeneratedVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for GeneratedVisitor {
+            type Value = MicrobatchBatchSize;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(formatter, "expected one of: {:?}", &FIELDS)
+            }
+
+            fn visit_i64<E>(self, v: i64) -> std::result::Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                i32::try_from(v)
+                    .ok()
+                    .and_then(|x| x.try_into().ok())
+                    .ok_or_else(|| {
+                        serde::de::Error::invalid_value(serde::de::Unexpected::Signed(v), &self)
+                    })
+            }
+
+            fn visit_u64<E>(self, v: u64) -> std::result::Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                i32::try_from(v)
+                    .ok()
+                    .and_then(|x| x.try_into().ok())
+                    .ok_or_else(|| {
+                        serde::de::Error::invalid_value(serde::de::Unexpected::Unsigned(v), &self)
+                    })
+            }
+
+            fn visit_str<E>(self, value: &str) -> std::result::Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                match value {
+                    "MICROBATCH_BATCH_SIZE_UNSPECIFIED" => Ok(MicrobatchBatchSize::Unspecified),
+                    "MICROBATCH_BATCH_SIZE_HOUR" => Ok(MicrobatchBatchSize::Hour),
+                    "MICROBATCH_BATCH_SIZE_DAY" => Ok(MicrobatchBatchSize::Day),
+                    "MICROBATCH_BATCH_SIZE_MONTH" => Ok(MicrobatchBatchSize::Month),
+                    "MICROBATCH_BATCH_SIZE_YEAR" => Ok(MicrobatchBatchSize::Year),
+                    _ => Err(serde::de::Error::unknown_variant(value, FIELDS)),
+                }
+            }
+        }
+        deserializer.deserialize_any(GeneratedVisitor)
+    }
+}
+impl serde::Serialize for MicrobatchEvaluated {
+    #[allow(deprecated)]
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+        let mut len = 0;
+        if !self.unique_id.is_empty() {
+            len += 1;
+        }
+        if !self.schema.is_empty() {
+            len += 1;
+        }
+        if !self.identifier.is_empty() {
+            len += 1;
+        }
+        if !self.batch_id.is_empty() {
+            len += 1;
+        }
+        if self.batch_size != 0 {
+            len += 1;
+        }
+        if self.batch_index != 0 {
+            len += 1;
+        }
+        if self.total_batches != 0 {
+            len += 1;
+        }
+        if !self.event_time_start.is_empty() {
+            len += 1;
+        }
+        if !self.event_time_end.is_empty() {
+            len += 1;
+        }
+        if self.node_outcome != 0 {
+            len += 1;
+        }
+        if self.idle_time_ms != 0 {
+            len += 1;
+        }
+        if self.dbt_core_event_code.is_some() {
+            len += 1;
+        }
+        let mut struct_ser = serializer.serialize_struct("v1.public.events.fusion.node.MicrobatchEvaluated", len)?;
+        if !self.unique_id.is_empty() {
+            struct_ser.serialize_field("unique_id", &self.unique_id)?;
+        }
+        if !self.schema.is_empty() {
+            struct_ser.serialize_field("schema", &self.schema)?;
+        }
+        if !self.identifier.is_empty() {
+            struct_ser.serialize_field("identifier", &self.identifier)?;
+        }
+        if !self.batch_id.is_empty() {
+            struct_ser.serialize_field("batch_id", &self.batch_id)?;
+        }
+        if self.batch_size != 0 {
+            let v = MicrobatchBatchSize::try_from(self.batch_size)
+                .map_err(|_| serde::ser::Error::custom(format!("Invalid variant {}", self.batch_size)))?;
+            struct_ser.serialize_field("batch_size", &v)?;
+        }
+        if self.batch_index != 0 {
+            struct_ser.serialize_field("batch_index", &self.batch_index)?;
+        }
+        if self.total_batches != 0 {
+            struct_ser.serialize_field("total_batches", &self.total_batches)?;
+        }
+        if !self.event_time_start.is_empty() {
+            struct_ser.serialize_field("event_time_start", &self.event_time_start)?;
+        }
+        if !self.event_time_end.is_empty() {
+            struct_ser.serialize_field("event_time_end", &self.event_time_end)?;
+        }
+        if self.node_outcome != 0 {
+            let v = NodeOutcome::try_from(self.node_outcome)
+                .map_err(|_| serde::ser::Error::custom(format!("Invalid variant {}", self.node_outcome)))?;
+            struct_ser.serialize_field("node_outcome", &v)?;
+        }
+        if self.idle_time_ms != 0 {
+            #[allow(clippy::needless_borrow)]
+            #[allow(clippy::needless_borrows_for_generic_args)]
+            struct_ser.serialize_field("idle_time_ms", ToString::to_string(&self.idle_time_ms).as_str())?;
+        }
+        if let Some(v) = self.dbt_core_event_code.as_ref() {
+            struct_ser.serialize_field("dbt_core_event_code", v)?;
+        }
+        struct_ser.end()
+    }
+}
+impl<'de> serde::Deserialize<'de> for MicrobatchEvaluated {
+    #[allow(deprecated)]
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        const FIELDS: &[&str] = &[
+            "unique_id",
+            "uniqueId",
+            "schema",
+            "identifier",
+            "batch_id",
+            "batchId",
+            "batch_size",
+            "batchSize",
+            "batch_index",
+            "batchIndex",
+            "total_batches",
+            "totalBatches",
+            "event_time_start",
+            "eventTimeStart",
+            "event_time_end",
+            "eventTimeEnd",
+            "node_outcome",
+            "nodeOutcome",
+            "idle_time_ms",
+            "idleTimeMs",
+            "dbt_core_event_code",
+            "dbtCoreEventCode",
+        ];
+
+        #[allow(clippy::enum_variant_names)]
+        enum GeneratedField {
+            UniqueId,
+            Schema,
+            Identifier,
+            BatchId,
+            BatchSize,
+            BatchIndex,
+            TotalBatches,
+            EventTimeStart,
+            EventTimeEnd,
+            NodeOutcome,
+            IdleTimeMs,
+            DbtCoreEventCode,
+            __SkipField__,
+        }
+        impl<'de> serde::Deserialize<'de> for GeneratedField {
+            fn deserialize<D>(deserializer: D) -> std::result::Result<GeneratedField, D::Error>
+            where
+                D: serde::Deserializer<'de>,
+            {
+                struct GeneratedVisitor;
+
+                impl<'de> serde::de::Visitor<'de> for GeneratedVisitor {
+                    type Value = GeneratedField;
+
+                    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                        write!(formatter, "expected one of: {:?}", &FIELDS)
+                    }
+
+                    #[allow(unused_variables)]
+                    fn visit_str<E>(self, value: &str) -> std::result::Result<GeneratedField, E>
+                    where
+                        E: serde::de::Error,
+                    {
+                        match value {
+                            "uniqueId" | "unique_id" => Ok(GeneratedField::UniqueId),
+                            "schema" => Ok(GeneratedField::Schema),
+                            "identifier" => Ok(GeneratedField::Identifier),
+                            "batchId" | "batch_id" => Ok(GeneratedField::BatchId),
+                            "batchSize" | "batch_size" => Ok(GeneratedField::BatchSize),
+                            "batchIndex" | "batch_index" => Ok(GeneratedField::BatchIndex),
+                            "totalBatches" | "total_batches" => Ok(GeneratedField::TotalBatches),
+                            "eventTimeStart" | "event_time_start" => Ok(GeneratedField::EventTimeStart),
+                            "eventTimeEnd" | "event_time_end" => Ok(GeneratedField::EventTimeEnd),
+                            "nodeOutcome" | "node_outcome" => Ok(GeneratedField::NodeOutcome),
+                            "idleTimeMs" | "idle_time_ms" => Ok(GeneratedField::IdleTimeMs),
+                            "dbtCoreEventCode" | "dbt_core_event_code" => Ok(GeneratedField::DbtCoreEventCode),
+                            _ => Ok(GeneratedField::__SkipField__),
+                        }
+                    }
+                }
+                deserializer.deserialize_identifier(GeneratedVisitor)
+            }
+        }
+        struct GeneratedVisitor;
+        impl<'de> serde::de::Visitor<'de> for GeneratedVisitor {
+            type Value = MicrobatchEvaluated;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("struct v1.public.events.fusion.node.MicrobatchEvaluated")
+            }
+
+            fn visit_map<V>(self, mut map_: V) -> std::result::Result<MicrobatchEvaluated, V::Error>
+                where
+                    V: serde::de::MapAccess<'de>,
+            {
+                let mut unique_id__ = None;
+                let mut schema__ = None;
+                let mut identifier__ = None;
+                let mut batch_id__ = None;
+                let mut batch_size__ = None;
+                let mut batch_index__ = None;
+                let mut total_batches__ = None;
+                let mut event_time_start__ = None;
+                let mut event_time_end__ = None;
+                let mut node_outcome__ = None;
+                let mut idle_time_ms__ = None;
+                let mut dbt_core_event_code__ = None;
+                while let Some(k) = map_.next_key()? {
+                    match k {
+                        GeneratedField::UniqueId => {
+                            if unique_id__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("uniqueId"));
+                            }
+                            unique_id__ = Some(map_.next_value()?);
+                        }
+                        GeneratedField::Schema => {
+                            if schema__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("schema"));
+                            }
+                            schema__ = Some(map_.next_value()?);
+                        }
+                        GeneratedField::Identifier => {
+                            if identifier__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("identifier"));
+                            }
+                            identifier__ = Some(map_.next_value()?);
+                        }
+                        GeneratedField::BatchId => {
+                            if batch_id__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("batchId"));
+                            }
+                            batch_id__ = Some(map_.next_value()?);
+                        }
+                        GeneratedField::BatchSize => {
+                            if batch_size__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("batchSize"));
+                            }
+                            batch_size__ = Some(map_.next_value::<MicrobatchBatchSize>()? as i32);
+                        }
+                        GeneratedField::BatchIndex => {
+                            if batch_index__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("batchIndex"));
+                            }
+                            batch_index__ = 
+                                Some(map_.next_value::<::pbjson::private::NumberDeserialize<_>>()?.0)
+                            ;
+                        }
+                        GeneratedField::TotalBatches => {
+                            if total_batches__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("totalBatches"));
+                            }
+                            total_batches__ = 
+                                Some(map_.next_value::<::pbjson::private::NumberDeserialize<_>>()?.0)
+                            ;
+                        }
+                        GeneratedField::EventTimeStart => {
+                            if event_time_start__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("eventTimeStart"));
+                            }
+                            event_time_start__ = Some(map_.next_value()?);
+                        }
+                        GeneratedField::EventTimeEnd => {
+                            if event_time_end__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("eventTimeEnd"));
+                            }
+                            event_time_end__ = Some(map_.next_value()?);
+                        }
+                        GeneratedField::NodeOutcome => {
+                            if node_outcome__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("nodeOutcome"));
+                            }
+                            node_outcome__ = Some(map_.next_value::<NodeOutcome>()? as i32);
+                        }
+                        GeneratedField::IdleTimeMs => {
+                            if idle_time_ms__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("idleTimeMs"));
+                            }
+                            idle_time_ms__ = 
+                                Some(map_.next_value::<::pbjson::private::NumberDeserialize<_>>()?.0)
+                            ;
+                        }
+                        GeneratedField::DbtCoreEventCode => {
+                            if dbt_core_event_code__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("dbtCoreEventCode"));
+                            }
+                            dbt_core_event_code__ = map_.next_value()?;
+                        }
+                        GeneratedField::__SkipField__ => {
+                            let _ = map_.next_value::<serde::de::IgnoredAny>()?;
+                        }
+                    }
+                }
+                Ok(MicrobatchEvaluated {
+                    unique_id: unique_id__.unwrap_or_default(),
+                    schema: schema__.unwrap_or_default(),
+                    identifier: identifier__.unwrap_or_default(),
+                    batch_id: batch_id__.unwrap_or_default(),
+                    batch_size: batch_size__.unwrap_or_default(),
+                    batch_index: batch_index__.unwrap_or_default(),
+                    total_batches: total_batches__.unwrap_or_default(),
+                    event_time_start: event_time_start__.unwrap_or_default(),
+                    event_time_end: event_time_end__.unwrap_or_default(),
+                    node_outcome: node_outcome__.unwrap_or_default(),
+                    idle_time_ms: idle_time_ms__.unwrap_or_default(),
+                    dbt_core_event_code: dbt_core_event_code__,
+                })
+            }
+        }
+        deserializer.deserialize_struct("v1.public.events.fusion.node.MicrobatchEvaluated", FIELDS, GeneratedVisitor)
+    }
+}
+impl serde::Serialize for NodeAdapterResponse {
+    #[allow(deprecated)]
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+        let mut len = 0;
+        if self.query_id.is_some() {
+            len += 1;
+        }
+        if self.code.is_some() {
+            len += 1;
+        }
+        if !self.extra.is_empty() {
+            len += 1;
+        }
+        let mut struct_ser = serializer.serialize_struct("v1.public.events.fusion.node.NodeAdapterResponse", len)?;
+        if let Some(v) = self.query_id.as_ref() {
+            struct_ser.serialize_field("query_id", v)?;
+        }
+        if let Some(v) = self.code.as_ref() {
+            struct_ser.serialize_field("code", v)?;
+        }
+        if !self.extra.is_empty() {
+            struct_ser.serialize_field("extra", &self.extra)?;
+        }
+        struct_ser.end()
+    }
+}
+impl<'de> serde::Deserialize<'de> for NodeAdapterResponse {
+    #[allow(deprecated)]
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        const FIELDS: &[&str] = &[
+            "query_id",
+            "queryId",
+            "code",
+            "extra",
+        ];
+
+        #[allow(clippy::enum_variant_names)]
+        enum GeneratedField {
+            QueryId,
+            Code,
+            Extra,
+            __SkipField__,
+        }
+        impl<'de> serde::Deserialize<'de> for GeneratedField {
+            fn deserialize<D>(deserializer: D) -> std::result::Result<GeneratedField, D::Error>
+            where
+                D: serde::Deserializer<'de>,
+            {
+                struct GeneratedVisitor;
+
+                impl<'de> serde::de::Visitor<'de> for GeneratedVisitor {
+                    type Value = GeneratedField;
+
+                    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                        write!(formatter, "expected one of: {:?}", &FIELDS)
+                    }
+
+                    #[allow(unused_variables)]
+                    fn visit_str<E>(self, value: &str) -> std::result::Result<GeneratedField, E>
+                    where
+                        E: serde::de::Error,
+                    {
+                        match value {
+                            "queryId" | "query_id" => Ok(GeneratedField::QueryId),
+                            "code" => Ok(GeneratedField::Code),
+                            "extra" => Ok(GeneratedField::Extra),
+                            _ => Ok(GeneratedField::__SkipField__),
+                        }
+                    }
+                }
+                deserializer.deserialize_identifier(GeneratedVisitor)
+            }
+        }
+        struct GeneratedVisitor;
+        impl<'de> serde::de::Visitor<'de> for GeneratedVisitor {
+            type Value = NodeAdapterResponse;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("struct v1.public.events.fusion.node.NodeAdapterResponse")
+            }
+
+            fn visit_map<V>(self, mut map_: V) -> std::result::Result<NodeAdapterResponse, V::Error>
+                where
+                    V: serde::de::MapAccess<'de>,
+            {
+                let mut query_id__ = None;
+                let mut code__ = None;
+                let mut extra__ = None;
+                while let Some(k) = map_.next_key()? {
+                    match k {
+                        GeneratedField::QueryId => {
+                            if query_id__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("queryId"));
+                            }
+                            query_id__ = map_.next_value()?;
+                        }
+                        GeneratedField::Code => {
+                            if code__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("code"));
+                            }
+                            code__ = map_.next_value()?;
+                        }
+                        GeneratedField::Extra => {
+                            if extra__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("extra"));
+                            }
+                            extra__ = Some(
+                                map_.next_value::<std::collections::BTreeMap<_, _>>()?
+                            );
+                        }
+                        GeneratedField::__SkipField__ => {
+                            let _ = map_.next_value::<serde::de::IgnoredAny>()?;
+                        }
+                    }
+                }
+                Ok(NodeAdapterResponse {
+                    query_id: query_id__,
+                    code: code__,
+                    extra: extra__.unwrap_or_default(),
+                })
+            }
+        }
+        deserializer.deserialize_struct("v1.public.events.fusion.node.NodeAdapterResponse", FIELDS, GeneratedVisitor)
+    }
+}
 impl serde::Serialize for NodeCacheDetail {
     #[allow(deprecated)]
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
@@ -436,6 +1089,9 @@ impl serde::Serialize for NodeEvaluated {
         if self.state_decision_id.is_some() {
             len += 1;
         }
+        if self.adapter_response.is_some() {
+            len += 1;
+        }
         if self.node_outcome_detail.is_some() {
             len += 1;
         }
@@ -524,6 +1180,9 @@ impl serde::Serialize for NodeEvaluated {
         if let Some(v) = self.state_decision_id.as_ref() {
             struct_ser.serialize_field("state_decision_id", v)?;
         }
+        if let Some(v) = self.adapter_response.as_ref() {
+            struct_ser.serialize_field("adapter_response", v)?;
+        }
         if let Some(v) = self.node_outcome_detail.as_ref() {
             match v {
                 node_evaluated::NodeOutcomeDetail::NodeCacheDetail(v) => {
@@ -591,6 +1250,8 @@ impl<'de> serde::Deserialize<'de> for NodeEvaluated {
             "idleTimeMs",
             "state_decision_id",
             "stateDecisionId",
+            "adapter_response",
+            "adapterResponse",
             "node_cache_detail",
             "nodeCacheDetail",
             "node_test_detail",
@@ -627,6 +1288,7 @@ impl<'de> serde::Deserialize<'de> for NodeEvaluated {
             RowsAffected,
             IdleTimeMs,
             StateDecisionId,
+            AdapterResponse,
             NodeCacheDetail,
             NodeTestDetail,
             NodeFreshnessOutcome,
@@ -676,6 +1338,7 @@ impl<'de> serde::Deserialize<'de> for NodeEvaluated {
                             "rowsAffected" | "rows_affected" => Ok(GeneratedField::RowsAffected),
                             "idleTimeMs" | "idle_time_ms" => Ok(GeneratedField::IdleTimeMs),
                             "stateDecisionId" | "state_decision_id" => Ok(GeneratedField::StateDecisionId),
+                            "adapterResponse" | "adapter_response" => Ok(GeneratedField::AdapterResponse),
                             "nodeCacheDetail" | "node_cache_detail" => Ok(GeneratedField::NodeCacheDetail),
                             "nodeTestDetail" | "node_test_detail" => Ok(GeneratedField::NodeTestDetail),
                             "nodeFreshnessOutcome" | "node_freshness_outcome" => Ok(GeneratedField::NodeFreshnessOutcome),
@@ -722,6 +1385,7 @@ impl<'de> serde::Deserialize<'de> for NodeEvaluated {
                 let mut rows_affected__ = None;
                 let mut idle_time_ms__ = None;
                 let mut state_decision_id__ = None;
+                let mut adapter_response__ = None;
                 let mut node_outcome_detail__ = None;
                 while let Some(k) = map_.next_key()? {
                     match k {
@@ -865,6 +1529,12 @@ impl<'de> serde::Deserialize<'de> for NodeEvaluated {
                             }
                             state_decision_id__ = map_.next_value()?;
                         }
+                        GeneratedField::AdapterResponse => {
+                            if adapter_response__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("adapterResponse"));
+                            }
+                            adapter_response__ = map_.next_value()?;
+                        }
                         GeneratedField::NodeCacheDetail => {
                             if node_outcome_detail__.is_some() {
                                 return Err(serde::de::Error::duplicate_field("nodeCacheDetail"));
@@ -928,6 +1598,7 @@ impl<'de> serde::Deserialize<'de> for NodeEvaluated {
                     rows_affected: rows_affected__,
                     idle_time_ms: idle_time_ms__,
                     state_decision_id: state_decision_id__,
+                    adapter_response: adapter_response__,
                     node_outcome_detail: node_outcome_detail__,
                 })
             }
@@ -1321,6 +1992,15 @@ impl serde::Serialize for NodeProcessed {
         if self.node_count_total.is_some() {
             len += 1;
         }
+        if self.adapter.is_some() {
+            len += 1;
+        }
+        if self.plugin_type.is_some() {
+            len += 1;
+        }
+        if self.adapter_response.is_some() {
+            len += 1;
+        }
         if self.node_outcome_detail.is_some() {
             len += 1;
         }
@@ -1426,6 +2106,15 @@ impl serde::Serialize for NodeProcessed {
         if let Some(v) = self.node_count_total.as_ref() {
             struct_ser.serialize_field("node_count_total", v)?;
         }
+        if let Some(v) = self.adapter.as_ref() {
+            struct_ser.serialize_field("adapter", v)?;
+        }
+        if let Some(v) = self.plugin_type.as_ref() {
+            struct_ser.serialize_field("plugin_type", v)?;
+        }
+        if let Some(v) = self.adapter_response.as_ref() {
+            struct_ser.serialize_field("adapter_response", v)?;
+        }
         if let Some(v) = self.node_outcome_detail.as_ref() {
             match v {
                 node_processed::NodeOutcomeDetail::NodeCacheDetail(v) => {
@@ -1503,6 +2192,11 @@ impl<'de> serde::Deserialize<'de> for NodeProcessed {
             "nodeIndex",
             "node_count_total",
             "nodeCountTotal",
+            "adapter",
+            "plugin_type",
+            "pluginType",
+            "adapter_response",
+            "adapterResponse",
             "node_cache_detail",
             "nodeCacheDetail",
             "node_test_detail",
@@ -1544,6 +2238,9 @@ impl<'de> serde::Deserialize<'de> for NodeProcessed {
             IdleTimeMs,
             NodeIndex,
             NodeCountTotal,
+            Adapter,
+            PluginType,
+            AdapterResponse,
             NodeCacheDetail,
             NodeTestDetail,
             NodeFreshnessOutcome,
@@ -1598,6 +2295,9 @@ impl<'de> serde::Deserialize<'de> for NodeProcessed {
                             "idleTimeMs" | "idle_time_ms" => Ok(GeneratedField::IdleTimeMs),
                             "nodeIndex" | "node_index" => Ok(GeneratedField::NodeIndex),
                             "nodeCountTotal" | "node_count_total" => Ok(GeneratedField::NodeCountTotal),
+                            "adapter" => Ok(GeneratedField::Adapter),
+                            "pluginType" | "plugin_type" => Ok(GeneratedField::PluginType),
+                            "adapterResponse" | "adapter_response" => Ok(GeneratedField::AdapterResponse),
                             "nodeCacheDetail" | "node_cache_detail" => Ok(GeneratedField::NodeCacheDetail),
                             "nodeTestDetail" | "node_test_detail" => Ok(GeneratedField::NodeTestDetail),
                             "nodeFreshnessOutcome" | "node_freshness_outcome" => Ok(GeneratedField::NodeFreshnessOutcome),
@@ -1649,6 +2349,9 @@ impl<'de> serde::Deserialize<'de> for NodeProcessed {
                 let mut idle_time_ms__ = None;
                 let mut node_index__ = None;
                 let mut node_count_total__ = None;
+                let mut adapter__ = None;
+                let mut plugin_type__ = None;
+                let mut adapter_response__ = None;
                 let mut node_outcome_detail__ = None;
                 while let Some(k) = map_.next_key()? {
                     match k {
@@ -1828,6 +2531,24 @@ impl<'de> serde::Deserialize<'de> for NodeProcessed {
                                 map_.next_value::<::std::option::Option<::pbjson::private::NumberDeserialize<_>>>()?.map(|x| x.0)
                             ;
                         }
+                        GeneratedField::Adapter => {
+                            if adapter__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("adapter"));
+                            }
+                            adapter__ = map_.next_value()?;
+                        }
+                        GeneratedField::PluginType => {
+                            if plugin_type__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("pluginType"));
+                            }
+                            plugin_type__ = map_.next_value()?;
+                        }
+                        GeneratedField::AdapterResponse => {
+                            if adapter_response__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("adapterResponse"));
+                            }
+                            adapter_response__ = map_.next_value()?;
+                        }
                         GeneratedField::NodeCacheDetail => {
                             if node_outcome_detail__.is_some() {
                                 return Err(serde::de::Error::duplicate_field("nodeCacheDetail"));
@@ -1896,6 +2617,9 @@ impl<'de> serde::Deserialize<'de> for NodeProcessed {
                     idle_time_ms: idle_time_ms__,
                     node_index: node_index__,
                     node_count_total: node_count_total__,
+                    adapter: adapter__,
+                    plugin_type: plugin_type__,
+                    adapter_response: adapter_response__,
                     node_outcome_detail: node_outcome_detail__,
                 })
             }
@@ -2106,6 +2830,7 @@ impl serde::Serialize for NodeType {
             Self::SemanticModel => "NODE_TYPE_SEMANTIC_MODEL",
             Self::Function => "NODE_TYPE_FUNCTION",
             Self::Check => "NODE_TYPE_CHECK",
+            Self::Plugin => "NODE_TYPE_PLUGIN",
         };
         serializer.serialize_str(variant)
     }
@@ -2134,6 +2859,7 @@ impl<'de> serde::Deserialize<'de> for NodeType {
             "NODE_TYPE_SEMANTIC_MODEL",
             "NODE_TYPE_FUNCTION",
             "NODE_TYPE_CHECK",
+            "NODE_TYPE_PLUGIN",
         ];
 
         struct GeneratedVisitor;
@@ -2191,6 +2917,7 @@ impl<'de> serde::Deserialize<'de> for NodeType {
                     "NODE_TYPE_SEMANTIC_MODEL" => Ok(NodeType::SemanticModel),
                     "NODE_TYPE_FUNCTION" => Ok(NodeType::Function),
                     "NODE_TYPE_CHECK" => Ok(NodeType::Check),
+                    "NODE_TYPE_PLUGIN" => Ok(NodeType::Plugin),
                     _ => Err(serde::de::Error::unknown_variant(value, FIELDS)),
                 }
             }

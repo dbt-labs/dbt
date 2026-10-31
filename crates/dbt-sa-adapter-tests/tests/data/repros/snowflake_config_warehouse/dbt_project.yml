@@ -1,0 +1,11 @@
+name: 'hello_world'
+
+config-version: 2
+version: '0.1'
+profile: 'fusion_tests'
+
+# query_tag exercises the set_query_tag / unset_query_tag macro path
+models:
+  +query_tag: 'snowflake_config_warehouse_test'
+tests:
+  +query_tag: 'snowflake_config_warehouse_test'

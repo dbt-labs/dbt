@@ -1,0 +1,21 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/schemas.yml
+   Parsing models/incremental.sql
+   Parsing models/model_a.sql
+   Parsing models/view_a.sql
+   Started downloading referenced relations (1 items)
+  Finished [duration] downloading referenced relations (1 items)
+ Rendering models/model_a.sql
+   Running models/model_a.sql
+ Succeeded model databricks_incremental_simple.model_a (table) [1 of 3 in duration]
+ Rendering models/view_a.sql
+ Rendering models/incremental.sql
+   Running models/view_a.sql
+ Succeeded model databricks_incremental_simple.view_a (view) [2 of 3 in duration]
+   Running models/incremental.sql
+ Succeeded model databricks_incremental_simple.incremental (incremental) [3 of 3 in duration]
+==================== Execution Summary =====================
+Finished 'run' with 1 warning for target 'databricks' [duration]
+Processed: 3 models
+Summary: 3 total | 3 success

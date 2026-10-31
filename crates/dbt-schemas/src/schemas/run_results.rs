@@ -95,7 +95,7 @@ pub struct ContextRunResult {
     #[serde(default)]
     pub batch_results: Option<BatchResults>,
     /// Compiled SQL code for the node.
-    pub compiled_code: Option<String>,
+    pub compiled_code: Option<Arc<str>>,
     /// Reason why static analysis was disabled for this node (Fusion-only; omitted when absent).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub static_analysis_off_reason: Option<StaticAnalysisOffReason>,
@@ -124,7 +124,7 @@ impl From<ContextRunResult> for RunResultOutput {
             failures: result.failures,
             unique_id,
             compiled: None, // TODO: Handle compiled i think its a deprecated field
-            compiled_code: result.compiled_code,
+            compiled_code: result.compiled_code.map(|code| code.to_string()),
             relation_name,
             batch_results: result.batch_results,
             static_analysis_off_reason: result.static_analysis_off_reason,

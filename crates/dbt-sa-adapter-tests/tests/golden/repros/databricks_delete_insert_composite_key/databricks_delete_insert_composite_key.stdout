@@ -1,0 +1,14 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/composite_incremental.sql
+   Parsing models/source_data.sql
+ Rendering models/source_data.sql
+   Running models/source_data.sql
+ Succeeded model databricks_delete_insert_composite_key.source_data (table) [1 of 2 in duration]
+ Rendering models/composite_incremental.sql
+   Running models/composite_incremental.sql
+ Succeeded model databricks_delete_insert_composite_key.composite_incremental (incremental) [2 of 2 in duration]
+==================== Execution Summary =====================
+Finished 'run' successfully for target 'databricks' [duration]
+Processed: 2 models
+Summary: 2 total | 2 success

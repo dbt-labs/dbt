@@ -14,6 +14,9 @@
         ) }}
     {%- endif -%}
 
+    {# A view body starts a fresh statement; a leading terminator before WITH is invalid there. #}
+    {%- set sql = modules.re.sub('(?is)^((?:\\s|/\\*.*?\\*/|--[^\\n]*(?:\\n|$))*)\\s*;(\\s*with\\b)', '\\1\\2', sql) -%}
+
     {{ get_use_database_sql(relation.database) }}
     {% set contract_config = config.get('contract') %}
     {% if contract_config.enforced %}

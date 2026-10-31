@@ -598,6 +598,9 @@ fn yaml_value_to_json(v: &dbt_yaml::Value) -> serde_json::Value {
             serde_json::Value::Object(obj)
         }
         dbt_yaml::Value::Tagged(tagged, _) => yaml_value_to_json(&tagged.value),
+        dbt_yaml::Value::Timestamp(timestamp, _) => {
+            serde_json::Value::String(timestamp.to_string())
+        }
     }
 }
 

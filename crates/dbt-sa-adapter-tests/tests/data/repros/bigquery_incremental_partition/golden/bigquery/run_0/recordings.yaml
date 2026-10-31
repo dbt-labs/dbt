@@ -1,0 +1,11 @@
+c17f4991:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists `dbt-test-env`.`bigquery_incremental_partition`
+seed.BigQueryPartitionConfigRender.animal:
+- sequence: 0
+  type: execute
+  sql: ''
+- sequence: 1
+  type: execute
+  sql: "\n    alter table `dbt-test-env`.`bigquery_incremental_partition`.`animal` set OPTIONS()\n  "

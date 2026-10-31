@@ -261,8 +261,7 @@ pub async fn initialize_container(config: ContainerConfig) -> Result<Container, 
                 let user_string = if bind_user {
                     #[cfg(not(windows))]
                     {
-                        let uid = uzers::get_current_uid();
-                        let gid = uzers::get_current_gid();
+                        let (uid, gid) = unsafe { (libc::getuid(), libc::getgid()) };
                         Some(format!("{uid}:{gid}"))
                     }
                     #[cfg(windows)]

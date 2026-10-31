@@ -1,0 +1,17 @@
+model.test.b:
+- sequence: 0
+  type: execute
+  sql: DESCRIBE TABLE EXTENDED `e2e`.`adapters_databricks_get_columns_in_relation_missing`.`a` AS JSON
+  error: |-
+    InvalidData: failed to execute query: databricks: execution error: failed to execute query: unexpected operation state ERROR_STATE: [TABLE_OR_VIEW_NOT_FOUND] The table or view `e2e`.`adapters_databricks_get_columns_in_relation_missing`.`a` cannot be found. Verify the spelling and correctness of the schema and catalog.
+    Search path: [`system`.`session`, `system`.`builtin`, `system`.`ai`, `e2e`.`adapters_databricks_get_columns_in_relation_missing`].
+    If you did not qualify the name with a schema, verify the current_schema() output, or qualify the name with the correct schema and catalog.
+    To tolerate the error on drop use DROP VIEW IF EXISTS or DROP TABLE IF EXISTS. SQLSTATE: 42P01; line 1 pos 24 (sqlstate: 00000, vendor_code: -2147483648)
+- sequence: 1
+  type: execute
+  sql: DESCRIBE TABLE `hive_metastore`.`adapters_databricks_get_columns_in_relation_missing`.`a`
+  error: |-
+    InvalidData: failed to execute query: databricks: execution error: failed to execute query: unexpected operation state ERROR_STATE: [TABLE_OR_VIEW_NOT_FOUND] The table or view `hive_metastore`.`adapters_databricks_get_columns_in_relation_missing`.`a` cannot be found. Verify the spelling and correctness of the schema and catalog.
+    Search path: [`system`.`session`, `system`.`builtin`, `system`.`ai`, `e2e`.`adapters_databricks_get_columns_in_relation_missing`].
+    If you did not qualify the name with a schema, verify the current_schema() output, or qualify the name with the correct schema and catalog.
+    To tolerate the error on drop use DROP VIEW IF EXISTS or DROP TABLE IF EXISTS. SQLSTATE: 42P01; line 1 pos 15 (sqlstate: 00000, vendor_code: -2147483648)

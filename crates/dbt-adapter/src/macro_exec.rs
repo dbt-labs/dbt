@@ -3,6 +3,7 @@ use crate::response::ResultObject;
 
 use arrow::array::RecordBatch;
 use dbt_agate::AgateTable;
+use minijinja::dispatch_object::macro_namespace_template_resolver;
 use minijinja::{State, Value};
 
 use std::error::Error;
@@ -61,7 +62,8 @@ pub fn execute_macro_with_package(
     macro_name: &str,
     package: &str,
 ) -> Result<Value, AdapterError> {
-    let template_name = format!("{package}.{macro_name}");
+    let template_name = macro_namespace_template_resolver(state, macro_name, &mut Vec::new())
+        .unwrap_or_else(|| format!("{package}.{macro_name}"));
     let template = state.env().get_template(&template_name)?;
     let base_ctx = state.get_base_context();
     let state = template.eval_to_state(base_ctx, &[])?;

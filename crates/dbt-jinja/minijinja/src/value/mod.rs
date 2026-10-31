@@ -1634,9 +1634,9 @@ impl Value {
 
         match self.0 {
             ValueRepr::Object(ref dy) => match dy.repr() {
-                ObjectRepr::Map | ObjectRepr::Plain => dy.get_value(key),
+                ObjectRepr::Map | ObjectRepr::Plain => dy.get_item(key),
                 ObjectRepr::Iterable => {
-                    if let Some(rv) = dy.get_value(key) {
+                    if let Some(rv) = dy.get_item(key) {
                         return Some(rv);
                     }
                     // The default behavior is to try to index into the iterable
@@ -1653,7 +1653,7 @@ impl Value {
                 }
                 ObjectRepr::Seq => {
                     let idx = index(key, || dy.enumerator_len()).map(Value::from);
-                    dy.get_value(idx.as_ref().unwrap_or(key))
+                    dy.get_item(idx.as_ref().unwrap_or(key))
                 }
             },
             ValueRepr::String(ref s, _) => {
@@ -1819,15 +1819,6 @@ impl Value {
             }
         }
         Ok(rv)
-    }
-
-    #[cfg(feature = "builtins")]
-    pub(crate) fn get_path_or_default(&self, path: &str, default: &Value) -> Value {
-        match self.get_path(path) {
-            Err(_) => default.clone(),
-            Ok(val) if val.is_undefined() => default.clone(),
-            Ok(val) => val,
-        }
     }
 
     /// Creates a value from a tuple.

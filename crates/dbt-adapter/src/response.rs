@@ -2,6 +2,8 @@ use arrow_array::RecordBatch;
 use dbt_adapter_core::AdapterType;
 use dbt_adbc as adbc;
 use dbt_agate::AgateTable;
+use dbt_common::stats::ExecutionMetrics;
+use dbt_telemetry::{AdapterResponseValue, NodeAdapterResponse, adapter_response_value};
 use minijinja::listener::RenderingEventListener;
 use minijinja::value::{Enumerator, Object, ValueMap};
 use minijinja::{State, Value};
@@ -31,6 +33,10 @@ const KEY_JOB_ID: &str = "job_id";
 /// a status/row-count summary) so callers can detect "was there a warning"
 /// without parsing prose.
 const KEY_WARNING: &str = "warning";
+
+/// Keys of the response that telemetry sends in `NodeAdapterResponse.extra`, for internal
+/// metrics. Every other key stays in the response but is not sent.
+const TELEMETRY_EXTRA_KEYS: &[&str] = &[KEY_BYTES_PROCESSED, KEY_BYTES_BILLED, KEY_SLOT_MS];
 
 const KNOWN_KEYS: &[&str] = &[KEY_MESSAGE, KEY_CODE, KEY_ROWS_AFFECTED, KEY_QUERY_ID];
 
@@ -87,6 +93,10 @@ impl AdapterResponse {
             .and_then(|v| v.as_str().map(String::from))
     }
 
+    fn get_i64(&self, key: &str) -> Option<i64> {
+        self.0.get(&Value::from(key)).and_then(|v| v.as_i64())
+    }
+
     pub fn message(&self) -> String {
         self.get_str(KEY_MESSAGE).unwrap_or_default()
     }
@@ -105,24 +115,73 @@ impl AdapterResponse {
         self.get_str(KEY_WARNING)
     }
 
-    /// Rows affected, clamping the `-1` unknown sentinel (and any negative) to 0.
-    pub fn rows_affected(&self) -> u64 {
-        u64::try_from(self.rows_affected_i64()).unwrap_or(0)
+    /// Rows affected, or `None` when absent or the `-1` unknown sentinel.
+    pub fn known_rows_affected(&self) -> Option<i64> {
+        self.get_i64(KEY_ROWS_AFFECTED).filter(|rows| *rows >= 0)
     }
 
-    /// Raw rows-affected value; negative (e.g. `-1`) means unknown.
-    pub fn rows_affected_i64(&self) -> i64 {
-        self.0
-            .get(&Value::from(KEY_ROWS_AFFECTED))
-            .and_then(|v| v.as_i64())
-            .unwrap_or(0)
+    /// BigQuery bytes processed; `None` for other adapters.
+    pub fn bytes_processed(&self) -> Option<i64> {
+        self.get_i64(KEY_BYTES_PROCESSED)
+    }
+
+    /// BigQuery bytes billed; `None` for other adapters.
+    pub fn bytes_billed(&self) -> Option<i64> {
+        self.get_i64(KEY_BYTES_BILLED)
+    }
+
+    /// BigQuery slot milliseconds; `None` for other adapters.
+    pub fn slot_ms(&self) -> Option<i64> {
+        self.get_i64(KEY_SLOT_MS)
+    }
+
+    pub fn execution_metrics(&self) -> ExecutionMetrics {
+        ExecutionMetrics {
+            rows_affected: self.known_rows_affected(),
+            bytes_processed: self.bytes_processed(),
+            bytes_billed: self.bytes_billed(),
+            slot_ms: self.slot_ms(),
+        }
+    }
+
+    /// The response in its telemetry form, in one pass over its keys.
+    ///
+    /// `query_id` and `code` become typed fields when they are strings; an empty `code` is
+    /// left unset. `extra` gets only the keys in `TELEMETRY_EXTRA_KEYS`. Everything else,
+    /// including the row count and the free-text messages, is left out.
+    pub fn to_telemetry(&self) -> NodeAdapterResponse {
+        let mut telemetry = NodeAdapterResponse::default();
+        for (key, value) in &self.0 {
+            let Some(key) = key.as_str() else {
+                continue;
+            };
+            match key {
+                KEY_QUERY_ID => telemetry.query_id = value.as_str().map(str::to_string),
+                // The default response carries an empty `code`: no code was reported.
+                KEY_CODE => {
+                    telemetry.code = value
+                        .as_str()
+                        .filter(|code| !code.is_empty())
+                        .map(str::to_string)
+                }
+                _ if TELEMETRY_EXTRA_KEYS.contains(&key) => {
+                    if let Some(value) = telemetry_extra_value(value) {
+                        telemetry.extra.insert(key.to_string(), value);
+                    }
+                }
+                _ => {}
+            }
+        }
+        telemetry
     }
 
     /// Build the response for an executed statement from its result batch.
     ///
     /// Uses schema metadata to build adapter-specific fields.
     pub fn from_record_batch(batch: &RecordBatch, adapter_type: AdapterType) -> Self {
-        let (code, rows) = code_and_rows(adapter_type, batch);
+        let (code, known_rows) = code_and_rows(adapter_type, batch);
+        // Messages render an unreported count as 0, as dbt Core's do.
+        let rows = known_rows.unwrap_or(0);
 
         let message = match adapter_type {
             AdapterType::Bigquery => {
@@ -148,10 +207,10 @@ impl AdapterResponse {
             _ => format!("{code} {rows}"),
         };
 
-        let mut response = Self::new()
-            .with_message(message)
-            .with_code(code)
-            .with_rows_affected(rows);
+        let mut response = Self::new().with_message(message).with_code(code);
+        if let Some(rows) = known_rows {
+            response = response.with_rows_affected(rows);
+        }
 
         let query_id = query_id_from_record_batch(batch, adapter_type);
         if let Some(query_id) = query_id {
@@ -172,11 +231,12 @@ impl AdapterResponse {
             AdapterType::Bigquery => {
                 use adbc::bigquery::schema_metadata::*;
 
-                let bytes_processed = batch
+                if let Some(bytes_processed) = batch
                     .meta_i64(QUERY_TOTAL_BYTES_PROCESSED)
                     .or_else(|| batch.meta_i64(JOB_TOTAL_BYTES_PROCESSED))
-                    .unwrap_or(0);
-                response = response.with(KEY_BYTES_PROCESSED, bytes_processed);
+                {
+                    response = response.with(KEY_BYTES_PROCESSED, bytes_processed);
+                }
 
                 if let Some(bytes_billed) = batch.meta_i64(TOTAL_BYTES_BILLED) {
                     response = response.with(KEY_BYTES_BILLED, bytes_billed);
@@ -257,11 +317,16 @@ fn rows_affected(batch: &RecordBatch, adapter_type: AdapterType) -> i64 {
 /// Core describes them; everything else falls back to `SUCCESS` and the row count
 /// the batch itself carries. A row count of `None` means the statement has no row
 /// count, as opposed to a count of zero.
-fn code_and_rows(adapter_type: AdapterType, batch: &RecordBatch) -> (String, i64) {
+fn code_and_rows(adapter_type: AdapterType, batch: &RecordBatch) -> (String, Option<i64>) {
     let schema = batch.schema();
     let metadata = schema.metadata();
     let batch_rows = batch.num_rows() as i64;
-    let fallback = || ("SUCCESS".to_string(), rows_affected(batch, adapter_type));
+    let fallback = || {
+        (
+            "SUCCESS".to_string(),
+            Some(rows_affected(batch, adapter_type)),
+        )
+    };
 
     match adapter_type {
         AdapterType::Bigquery => {
@@ -271,18 +336,17 @@ fn code_and_rows(adapter_type: AdapterType, batch: &RecordBatch) -> (String, i64
             };
             let dml_affected_rows = metadata
                 .get(bq::NUM_DML_AFFECTED_ROWS)
-                .and_then(|v| v.parse::<i64>().ok())
-                .unwrap_or(0);
+                .and_then(|v| v.parse::<i64>().ok());
             match statement_type.as_str() {
-                "CREATE_VIEW" => ("CREATE VIEW".to_string(), 0),
-                // dbt Core reads the row count off the destination table, which
-                // costs an extra round trip. An unfetched batch reports zero rows.
-                "CREATE_TABLE_AS_SELECT" => ("CREATE TABLE".to_string(), batch_rows),
-                "SCRIPT" => ("SCRIPT".to_string(), 0),
+                "CREATE_VIEW" => ("CREATE VIEW".to_string(), None),
+                // dbt-bigquery reads the count with an extra `get_table` on the
+                // destination table; Fusion doesn't make that call, so it's unknown.
+                "CREATE_TABLE_AS_SELECT" => ("CREATE TABLE".to_string(), None),
+                "SCRIPT" => ("SCRIPT".to_string(), None),
                 "INSERT" | "DELETE" | "MERGE" | "UPDATE" => {
                     (statement_type.clone(), dml_affected_rows)
                 }
-                "SELECT" => ("SELECT".to_string(), batch_rows),
+                "SELECT" => ("SELECT".to_string(), Some(batch_rows)),
                 _ => fallback(),
             }
         }
@@ -306,6 +370,18 @@ fn format_bytes(num_bytes: i64) -> String {
     format!("{num_bytes:.1} PiB")
 }
 
+/// Typed form of an allowlisted value, which adapters report as an integer. Any other
+/// value is skipped rather than sent in a shape consumers do not expect.
+fn telemetry_extra_value(value: &Value) -> Option<AdapterResponseValue> {
+    if !value.is_integer() {
+        return None;
+    }
+    let int = i64::try_from(value.clone()).ok()?;
+    Some(AdapterResponseValue {
+        value: Some(adapter_response_value::Value::Int(int)),
+    })
+}
+
 fn format_rows_number(rows_number: i64) -> String {
     let mut rows_number = rows_number as f64;
     for unit in ["", "k", "m", "b"] {
@@ -319,12 +395,11 @@ fn format_rows_number(rows_number: i64) -> String {
 
 impl Default for AdapterResponse {
     /// Build a response with the canonical field layout, adding defaults for
-    /// `message`, `code`, and `rows_affected`.
+    /// `message` and `code`.
     fn default() -> AdapterResponse {
         let mut map = ValueMap::default();
         map.insert(Value::from(KEY_MESSAGE), Value::from(String::default()));
         map.insert(Value::from(KEY_CODE), Value::from(String::default()));
-        map.insert(Value::from(KEY_ROWS_AFFECTED), Value::from(0i64));
         Self(map)
     }
 }
@@ -493,13 +568,13 @@ mod from_record_batch_tests {
     fn test_snowflake_merge_sums_dml_counts() {
         let batch = dml_batch(100, 50, 10);
         let response = AdapterResponse::from_record_batch(&batch, AdapterType::Snowflake);
-        assert_eq!(response.rows_affected_i64(), 160);
+        assert_eq!(response.known_rows_affected(), Some(160));
         assert_eq!(response.message(), "SUCCESS 160");
         assert_eq!(response.code(), "SUCCESS");
 
         // The DML columns are Snowflake's convention; elsewhere they are just columns.
         let response = AdapterResponse::from_record_batch(&batch, AdapterType::Bigquery);
-        assert_eq!(response.rows_affected_i64(), 1);
+        assert_eq!(response.known_rows_affected(), Some(1));
     }
 
     #[test]
@@ -520,7 +595,7 @@ mod from_record_batch_tests {
             &[],
         );
         let response = AdapterResponse::from_record_batch(&batch, AdapterType::Snowflake);
-        assert_eq!(response.rows_affected_i64(), 300);
+        assert_eq!(response.known_rows_affected(), Some(300));
     }
 
     #[test]
@@ -530,7 +605,7 @@ mod from_record_batch_tests {
             &[],
         );
         let response = AdapterResponse::from_record_batch(&batch, AdapterType::Snowflake);
-        assert_eq!(response.rows_affected_i64(), 42);
+        assert_eq!(response.known_rows_affected(), Some(42));
     }
 
     #[test]
@@ -544,14 +619,14 @@ mod from_record_batch_tests {
             &[],
         );
         let response = AdapterResponse::from_record_batch(&batch, AdapterType::Snowflake);
-        assert_eq!(response.rows_affected_i64(), 50);
+        assert_eq!(response.known_rows_affected(), Some(50));
     }
 
     #[test]
     fn test_empty_batch_reports_no_rows() {
         let batch = RecordBatch::new_empty(dml_batch(1, 1, 1).schema());
         let response = AdapterResponse::from_record_batch(&batch, AdapterType::Snowflake);
-        assert_eq!(response.rows_affected_i64(), 0);
+        assert_eq!(response.known_rows_affected(), Some(0));
         assert_eq!(response.message(), "SUCCESS 0");
     }
 
@@ -591,7 +666,7 @@ mod from_record_batch_tests {
     fn test_select_uses_num_rows() {
         let response =
             AdapterResponse::from_record_batch(&select_batch(3, &[]), AdapterType::Snowflake);
-        assert_eq!(response.rows_affected_i64(), 3);
+        assert_eq!(response.known_rows_affected(), Some(3));
     }
 
     #[test]
@@ -618,8 +693,8 @@ mod from_record_batch_tests {
         let response = bigquery(1, &[]);
         assert_eq!(response.message(), "SUCCESS (1.0 rows)");
         assert_eq!(response.code(), "SUCCESS");
-        let json = json(&response);
-        assert_eq!(json["bytes_processed"], 0);
+        assert_eq!(response.bytes_processed(), None);
+        assert_eq!(json(&response).get("bytes_processed"), None);
     }
 
     #[test]
@@ -637,7 +712,10 @@ mod from_record_batch_tests {
 
         assert_eq!(response.message(), "SELECT (2.0 rows, 1.5 KiB processed)");
         assert_eq!(response.code(), "SELECT");
-        assert_eq!(response.rows_affected_i64(), 2);
+        assert_eq!(response.known_rows_affected(), Some(2));
+        assert_eq!(response.bytes_processed(), Some(1536));
+        assert_eq!(response.bytes_billed(), Some(10485760));
+        assert_eq!(response.slot_ms(), Some(7167));
 
         let json = json(&response);
         assert_eq!(json["bytes_processed"], 1536);
@@ -660,13 +738,13 @@ mod from_record_batch_tests {
 
         assert_eq!(response.message(), "MERGE (1.5k rows, 0 processed)");
         assert_eq!(response.code(), "MERGE");
-        assert_eq!(response.rows_affected_i64(), 1500);
+        assert_eq!(response.known_rows_affected(), Some(1500));
     }
 
     #[test]
-    fn test_bigquery_create_table_as_select_uses_batch_rows() {
+    fn test_bigquery_create_table_as_select_rows_unknown() {
         let response = bigquery(
-            2,
+            0,
             &[
                 (
                     "BIGQUERY:Statistics:Query:StatementType",
@@ -676,8 +754,37 @@ mod from_record_batch_tests {
             ],
         );
 
-        assert_eq!(response.message(), "CREATE TABLE (2.0 rows, 0 processed)");
+        assert_eq!(response.message(), "CREATE TABLE (0 processed)");
         assert_eq!(response.code(), "CREATE TABLE");
+        assert_eq!(response.known_rows_affected(), None);
+    }
+
+    #[test]
+    fn test_bigquery_dml_without_affected_rows_is_unknown() {
+        let response = bigquery(
+            0,
+            &[
+                ("BIGQUERY:Statistics:Query:StatementType", "INSERT"),
+                ("BIGQUERY:Statistics:Query:TotalBytesProcessed", "0"),
+            ],
+        );
+
+        assert_eq!(response.message(), "INSERT (0 processed)");
+        assert_eq!(response.code(), "INSERT");
+        assert_eq!(response.known_rows_affected(), None);
+    }
+
+    #[test]
+    fn test_bigquery_create_view_reports_no_rows_affected() {
+        let response = bigquery(
+            0,
+            &[
+                ("BIGQUERY:Statistics:Query:StatementType", "CREATE_VIEW"),
+                ("BIGQUERY:Statistics:Query:TotalBytesProcessed", "0"),
+            ],
+        );
+        assert_eq!(response.message(), "CREATE VIEW (0 processed)");
+        assert_eq!(response.known_rows_affected(), None);
     }
 
     #[test]
@@ -702,6 +809,26 @@ mod from_record_batch_tests {
             AdapterResponse::from_record_batch(&select_batch(1, &metadata), AdapterType::Snowflake);
         assert_eq!(response.message(), "SUCCESS 1");
         assert_eq!(json(&response).get("slot_ms"), None);
+        assert_eq!(response.bytes_processed(), None);
+        assert_eq!(response.bytes_billed(), None);
+        assert_eq!(response.slot_ms(), None);
+    }
+
+    #[test]
+    fn test_known_rows_affected_treats_sentinel_and_absence_as_unknown() {
+        assert_eq!(
+            AdapterResponse::new()
+                .with_rows_affected(0)
+                .known_rows_affected(),
+            Some(0)
+        );
+        assert_eq!(
+            AdapterResponse::new()
+                .with_rows_affected(-1)
+                .known_rows_affected(),
+            None
+        );
+        assert_eq!(AdapterResponse::new().known_rows_affected(), None);
     }
 
     #[test]
@@ -712,6 +839,61 @@ mod from_record_batch_tests {
         assert_eq!(format_bytes(1024 * 1024), "1.0 MiB");
         assert_eq!(format_bytes(3 * 1024_i64.pow(5)), "3.0 PiB");
         assert_eq!(format_bytes(2048 * 1024_i64.pow(5)), "2048.0 PiB");
+    }
+
+    fn telemetry_extra_keys(response: &AdapterResponse) -> Vec<String> {
+        response.to_telemetry().extra.into_keys().collect()
+    }
+
+    #[test]
+    fn test_bigquery_telemetry_extra_is_bytes_and_slots_only() {
+        let response = bigquery(
+            2,
+            &[
+                ("BIGQUERY:query_id", "job-abc"),
+                ("BIGQUERY:Statistics:Query:StatementType", "SELECT"),
+                ("BIGQUERY:Statistics:Query:TotalBytesProcessed", "1536"),
+                ("BIGQUERY:Statistics:Query:TotalBytesBilled", "10485760"),
+                ("BIGQUERY:Statistics:Query:SlotMillis", "7167"),
+            ],
+        );
+
+        // `job_id` is in the response, and is not sent.
+        assert_eq!(json(&response)["job_id"], "job-abc");
+        assert_eq!(
+            telemetry_extra_keys(&response),
+            ["bytes_billed", "bytes_processed", "slot_ms"]
+        );
+        assert_eq!(response.to_telemetry().query_id.as_deref(), Some("job-abc"));
+    }
+
+    #[test]
+    fn test_snowflake_telemetry_extra_is_empty() {
+        let batch = select_batch(1, &[("SNOWFLAKE_QUERY_ID", "snowflake-id")]);
+        let response = AdapterResponse::from_record_batch(&batch, AdapterType::Snowflake);
+        assert_eq!(telemetry_extra_keys(&response), Vec::<String>::new());
+    }
+
+    #[test]
+    fn test_databricks_telemetry_extra_is_empty() {
+        let batch = select_batch(1, &[("DATABRICKS_QUERY_ID", "databricks-id")]);
+        let response = AdapterResponse::from_record_batch(&batch, AdapterType::Databricks);
+        assert_eq!(telemetry_extra_keys(&response), Vec::<String>::new());
+    }
+
+    #[test]
+    fn test_lake_compute_telemetry_extra_is_empty() {
+        let batch = select_batch(
+            1,
+            &[(
+                adbc::lake_compute::schema_metadata::WARNINGS,
+                "export limit exceeded",
+            )],
+        );
+        let response = AdapterResponse::from_record_batch(&batch, AdapterType::LakeCompute);
+        // The warning is in the response, and is not sent.
+        assert!(response.warning().is_some());
+        assert_eq!(telemetry_extra_keys(&response), Vec::<String>::new());
     }
 
     #[test]
@@ -739,7 +921,7 @@ mod tests {
         map.insert("code".to_string(), dbt_yaml::Value::string(resp.code()));
         map.insert(
             "rows_affected".to_string(),
-            dbt_yaml::to_value(resp.rows_affected_i64()).expect("i64 serialises to YAML"),
+            dbt_yaml::to_value(resp.known_rows_affected()).expect("i64 serialises to YAML"),
         );
         if let Some(qid) = resp.query_id() {
             map.insert("query_id".to_string(), dbt_yaml::Value::string(qid));
@@ -836,7 +1018,7 @@ mod tests {
         jinja_assert(
             AdapterResponse::default(),
             "{{ obj.message }}|{{ obj.code }}|{{ obj.rows_affected }}|{{ obj.query_id }}|{{ obj.foo }}",
-            "||0|None|None",
+            "||None|None|None",
         );
     }
 
@@ -846,6 +1028,38 @@ mod tests {
             sample_response(),
             "{{ obj | tojson }}",
             r#"{"_message": "SUCCESS 42", "code": "SUCCESS", "foo": "bar", "message": "SUCCESS 42", "query_id": "01c2f954-abc", "rows_affected": 42}"#,
+        );
+    }
+}
+
+#[cfg(test)]
+mod to_telemetry_tests {
+    use super::*;
+
+    #[test]
+    fn query_id_and_code_are_typed_and_the_row_count_and_messages_are_left_out() {
+        let telemetry = AdapterResponse::new()
+            .with_message("SUCCESS 5")
+            .with_code("SUCCESS")
+            .with_rows_affected(5)
+            .with_query_id("01-abc")
+            .to_telemetry();
+
+        assert_eq!(
+            telemetry,
+            NodeAdapterResponse {
+                query_id: Some("01-abc".to_string()),
+                code: Some("SUCCESS".to_string()),
+                extra: Default::default(),
+            }
+        );
+    }
+
+    #[test]
+    fn default_response_reports_no_code_or_query_id() {
+        assert_eq!(
+            AdapterResponse::new().to_telemetry(),
+            NodeAdapterResponse::default()
         );
     }
 }

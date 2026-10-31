@@ -110,6 +110,8 @@ pub use tasks::{
     CompareStdoutStderr, ExecuteAndCompare, ExecuteAndCompareTelemetry, ExecuteOnly, FnTask,
 };
 
+pub use telemetry::read_parquet_to_records;
+
 // Dir manifest utilities
 pub use dir_manifest::{CompareDirManifest, assert_golden_manifest, compute_dir_manifest};
 

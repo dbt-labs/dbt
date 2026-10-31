@@ -1,0 +1,1 @@
+CREATE TABLE adapters_snowflake_truncate_relation.a (val int)
