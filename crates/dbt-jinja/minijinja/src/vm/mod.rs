@@ -1315,7 +1315,7 @@ impl<'env> Vm<'env> {
                                 this_span,
                             ));
                         }
-                        self.perform_super(state, listeners)
+                        self.perform_super(state, listeners, false)
                             .map_err(|e| state.with_span_error(e, this_span))?
                     // loop is a special name which when called recurses the current loop.
                     } else if *name == "loop" {
@@ -1577,10 +1577,14 @@ impl<'env> Vm<'env> {
                 }
                 Instruction::FastSuper(span) => {
                     out.write_str(
-                        self.perform_super(state, listeners)
-                            .map_err(|e| state.with_span_error(e, span))?
-                            .as_str()
-                            .unwrap_or_default(),
+                        self.perform_super(
+                            state,
+                            listeners,
+                            emits_to_current_output(&out, &current_macro_name),
+                        )
+                        .map_err(|e| state.with_span_error(e, span))?
+                        .as_str()
+                        .unwrap_or_default(),
                     )?;
                 }
                 Instruction::FastRecurse(span) => {
@@ -1898,6 +1902,7 @@ impl<'env> Vm<'env> {
         &self,
         state: &mut State<'_, 'env>,
         listeners: &[Rc<dyn RenderingEventListener>],
+        emitted: bool,
     ) -> Result<Value, Error> {
         let name = ok!(state.current_block.ok_or_else(|| {
             Error::new(ErrorKind::InvalidOperation, "cannot super outside of block")
@@ -1913,7 +1918,7 @@ impl<'env> Vm<'env> {
 
         let old_instructions = mem::replace(&mut state.instructions, block_stack.instructions());
         ok!(state.ctx.push_frame(Frame::default()));
-        let rv = self.eval_buffered_state(state, listeners, false);
+        let rv = self.eval_buffered_state(state, listeners, emitted);
         state.ctx.pop_frame();
         state.instructions = old_instructions;
         state.blocks.get_mut(name).unwrap().pop();

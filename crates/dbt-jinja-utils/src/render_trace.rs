@@ -857,6 +857,7 @@ mod tests {
             assert!(observer.buffers.borrow().is_empty());
         }
     }
+
     #[test]
     fn recursive_loops_open_each_direct_and_captured_invocation() {
         for (items, expected) in [
@@ -949,4 +950,31 @@ mod tests {
         }
     }
 
+    #[test]
+    fn super_preserves_direct_output_and_discards_transformed_buffers() {
+        let templates = [("parent.sql", "{% block b %}B{% endblock %}")];
+        for default_tracker in [false, true] {
+            for (body, expected) in [
+                ("A{{ super() }}C", "ABC"),
+                ("A{{ super() | lower }}C", "AbC"),
+                (
+                    "A{% set x %}{{ super() }}{% endset %}{{ x | lower }}C",
+                    "AbC",
+                ),
+                ("A{{ super() }}{{ super() }}C", "ABBC"),
+            ] {
+                let source =
+                    format!("{{% extends 'parent.sql' %}}{{% block b %}}{body}{{% endblock %}}");
+                let trace = render_templates(&source, &templates, default_tracker);
+                assert_eq!(trace.rendered, expected);
+                let literals: String = trace
+                    .events
+                    .iter()
+                    .filter(|e| e.kind == "literal")
+                    .map(|e| &trace.source[e.source_start..e.source_end])
+                    .collect();
+                assert_eq!(literals, "AC");
+            }
+        }
+    }
 }

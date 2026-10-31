@@ -63,7 +63,10 @@ Overridden blocks belonging to this source retain their exact literal ranges.
 Foreign bytes are never offered as editable literals in the child file.
 Directly emitted includes retain and rebase their generated provenance. Captured
 and imported includes discard intermediate events; only an eventual expression
-emission describes their final output.
+emission describes their final output. Direct `super()` output follows the same
+rule: parent bytes remain generated, while captured/filtered calls are covered
+by their eventual expression. The fast path also closes its expression frame
+so the default macro-span listener remains balanced.
 
 Named blocks render into temporary buffers. Their events are rebased when the
 buffer is appended directly, and the enclosing tracker is restored even on an

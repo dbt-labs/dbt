@@ -1034,6 +1034,16 @@ impl<'source> CodeGenerator<'source> {
         }
     }
 
+    fn compile_fast_super(&mut self, call_span: Span, emit_span: Span) {
+        self.add_with_span(Instruction::FastSuper(call_span), call_span);
+        // FastSuper bypasses Emit, but must still close its expression frame.
+        self.add(Instruction::MacroStop(
+            emit_span.end_line,
+            emit_span.end_col,
+            emit_span.end_offset,
+        ));
+    }
+
     fn compile_emit_expr(
         &mut self,
         expr: &ast::Spanned<ast::EmitExpr<'source>>,
@@ -1067,7 +1077,7 @@ impl<'source> CodeGenerator<'source> {
                         });
                         return Ok(());
                     } else if name == "super" && call.args.is_empty() {
-                        self.add_with_span(Instruction::FastSuper(call.span()), call.span());
+                        self.compile_fast_super(call.span(), span);
                         return Ok(());
                     } else if name == "loop" && call.args.len() == 1 {
                         self.compile_call_args(
