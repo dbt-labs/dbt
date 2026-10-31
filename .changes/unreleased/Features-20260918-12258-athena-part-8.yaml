@@ -1,0 +1,7 @@
+kind: Features
+body: '[Athena] dbt unit tests run on Athena: query-schema inference instead of an empty CTAS probe, Trino type names in `sql_types`, integer widths preserved'
+time: 2026-09-18T12:25:04.630926-07:00
+custom:
+    author: aoelvp94
+    issue: "16252"
+    project: dbt-core

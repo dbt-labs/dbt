@@ -354,6 +354,12 @@ impl DefaultTypeOps {
         let sql_type = SqlType::from_arrow_type(adapter_type, data_type);
 
         let type_str = match (&sql_type, adapter_type) {
+            // Athena (Trino) keeps integer widths: `integer` is 32-bit, so a
+            // collapsed name would overflow bigint fixtures and columns.
+            (SqlType::BigInt | SqlType::UBigInt | SqlType::UInteger, Athena) => "bigint",
+            (SqlType::Integer | SqlType::USmallInt, Athena) => "integer",
+            (SqlType::SmallInt | SqlType::UTinyInt, Athena) => "smallint",
+            (SqlType::TinyInt, Athena) => "tinyint",
             // ## convert_integer_type()
             // Upstream collapses all integer widths to a single type per backend.
             (
@@ -379,6 +385,8 @@ impl DefaultTypeOps {
                 Fabric => "real",
                 // Exasol float type is DOUBLE PRECISION (no float8 alias).
                 Exasol => "DOUBLE PRECISION",
+                // Trino has no float8; dbt-athena's convert_number_type returns double.
+                Athena => "double",
                 _ => "float8",
             },
 
@@ -392,6 +400,8 @@ impl DefaultTypeOps {
                 Fabric => "float",
                 // Exasol float type is DOUBLE PRECISION (no float8 alias).
                 Exasol => "DOUBLE PRECISION",
+                // Trino has no float8; dbt-athena's convert_number_type returns double.
+                Athena => "double",
                 _ => "float8",
             },
 
@@ -413,6 +423,7 @@ impl DefaultTypeOps {
                 // Exasol: fractional -> DOUBLE PRECISION; zero/negative scale
                 // falls through to "integer" (a valid DECIMAL(18,0) alias).
                 (Exasol, 1..) => "DOUBLE PRECISION",
+                (Athena, 1..) => "double",
                 (_, 1..) => "float8",
                 (_, ..=0) => "integer",
             },
@@ -434,6 +445,8 @@ impl DefaultTypeOps {
                 Databricks | Spark => "timestamp",
                 Fabric => "datetime2(6)",
                 Exasol => "timestamp",
+                // Trino spells it `timestamp`; `without time zone` is not accepted.
+                Athena => "timestamp",
                 _ => "timestamp without time zone",
             },
 
@@ -460,6 +473,9 @@ impl DefaultTypeOps {
                     // - N = max(16, max_length) if column is not empty
                     Fabric => "varchar",
                     Exasol => "VARCHAR(2000000)",
+                    // Trino's DML type is varchar; dbt-athena's `ddl_data_type` macro
+                    // turns it into Hive's `string` where DDL needs it.
+                    Athena => "varchar",
                     _ => "text",
                 }
             }
@@ -594,7 +610,8 @@ pub const fn get_field_sql_type_metadata_key(adapter_type: AdapterType) -> &'sta
         AdapterType::ClickHouse => CLICKHOUSE_METADATA_SQL_TYPE_KEY,
         AdapterType::Exasol => "DATA_TYPE",
         AdapterType::Starburst => todo!(),
-        AdapterType::Athena => todo!(),
+        // Emitted by adbc_driver_athena (dbt-labs/athena#6).
+        AdapterType::Athena => "ATHENA:type",
         AdapterType::Trino => todo!(),
         AdapterType::Dremio => todo!(),
         AdapterType::Oracle => todo!(),
