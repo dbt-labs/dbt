@@ -1,0 +1,7 @@
+kind: Fixes
+body: Support Postgres `indexes` model config by implementing `adapter.parse_index`, which panicked as unimplemented
+time: 2026-10-31T16:00:00.000000-04:00
+custom:
+    author: gap777
+    issue: "13123"
+    project: dbt-core
