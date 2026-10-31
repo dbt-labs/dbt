@@ -1,0 +1,7 @@
+kind: Fixes
+body: Accept `zone` as a keyword argument in `modules.pytz.timezone()`, matching pytz
+time: 2026-10-31T03:07:01.00085-04:00
+custom:
+    author: geethasagarb
+    issue: "16972"
+    project: dbt-core
