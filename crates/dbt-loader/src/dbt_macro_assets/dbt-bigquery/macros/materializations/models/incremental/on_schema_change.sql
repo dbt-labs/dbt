@@ -34,9 +34,6 @@
 
 {% endmacro %}
 
-{# DIVERGENCE: FIXME:
-   Fusion is missing the adapter.sync_struct_columns method.
-   Only uncomment this when this is implemented.
 {% macro bigquery__process_schema_changes(on_schema_change, source_relation, target_relation) %}
 
   {% if on_schema_change == 'ignore' %}
@@ -80,11 +77,7 @@
   {% endif %}
 
 {% endmacro %}
-#}
 
-{# DIVERGENCE: FIXME:
-   Fusion is missing the adapter.sync_struct_columns method.
-   Only uncomment this when this is implemented.
 {% macro bigquery__sync_column_schemas(on_schema_change, target_relation, schema_changes_dict) %}
   {% set struct_sync_dict = schema_changes_dict %}
   {% set source_relation = schema_changes_dict.get('source_relation') %}
@@ -138,4 +131,3 @@
 
   {% do struct_sync_dict.pop('source_relation', none) %}
 {% endmacro %}
-#}

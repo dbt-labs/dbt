@@ -2425,6 +2425,56 @@ impl Adapter {
     }
 
     #[tracing::instrument(skip(self, state), level = "trace")]
+    pub fn sync_struct_columns(
+        &self,
+        state: &State,
+        args: &[Value],
+    ) -> Result<Value, minijinja::Error> {
+        match &self.inner {
+            Typed { adapter, .. } => {
+                let iter = ArgsIter::new(
+                    "sync_struct_columns",
+                    &[
+                        "on_schema_change",
+                        "source_relation",
+                        "target_relation",
+                        "schema_changes_dict",
+                    ],
+                    args,
+                );
+                let on_schema_change = iter.next_arg::<&str>()?;
+                let source = downcast_value_to_dyn_base_relation(iter.next_arg::<&Value>()?)?;
+                let target = downcast_value_to_dyn_base_relation(iter.next_arg::<&Value>()?)?;
+                let schema_changes_dict = iter.next_arg::<&Value>()?;
+                iter.finish()?;
+
+                let new_target_types = schema_changes_dict
+                    .get_item(&Value::from("new_target_types"))?
+                    .try_iter()?
+                    .filter_map(|change| {
+                        change
+                            .get_item(&Value::from("new_type"))
+                            .ok()?
+                            .as_str()
+                            .map(str::to_string)
+                    })
+                    .collect::<Vec<_>>();
+
+                let result = adapter.sync_struct_columns(
+                    state,
+                    on_schema_change,
+                    &source,
+                    &target,
+                    &new_target_types,
+                    self.cancellation_token.clone(),
+                )?;
+                Ok(result)
+            }
+            Parse(_) => Ok(none_value()),
+        }
+    }
+
+    #[tracing::instrument(skip(self, state), level = "trace")]
     pub fn update_columns(&self, state: &State, args: &[Value]) -> Result<Value, minijinja::Error> {
         match &self.inner {
             Typed { adapter, .. } => {
@@ -4103,6 +4153,8 @@ impl Adapter {
             "update_columns" => self.update_columns(state, args),
             // database: str, schema: str, identifier: str, description: str
             "update_table_description" => self.update_table_description(state, args),
+            // on_schema_change: str, source_relation: BaseRelation, target_relation: BaseRelation, schema_changes_dict: dict
+            "sync_struct_columns" => self.sync_struct_columns(state, args),
             // relation: BaseRelation, columns: Value
             "alter_table_add_columns" => self.alter_table_add_columns(state, args),
             // database: str, schema: str, table_name: str, file_path: str,
