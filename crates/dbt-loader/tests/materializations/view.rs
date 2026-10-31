@@ -553,13 +553,15 @@ mod databricks {
     }
 
     #[test]
-    fn clone_skips_policy_rejection_only_for_materialized_views_and_streaming_tables() {
+    fn clone_skips_policy_rejection_for_models_that_are_not_views() {
         let cases = [
             ("run", "view", true),
             ("run", "materialized_view", true),
             ("clone", "view", true),
             ("clone", "materialized_view", false),
             ("clone", "streaming_table", false),
+            ("clone", "table", false),
+            ("clone", "incremental", false),
         ];
         for (command, materialized, rejected) in cases {
             for (policy, masked, message) in [

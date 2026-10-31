@@ -1,7 +1,7 @@
 {% macro validate_view_model(sql) %}
-  {#-- A cloned view is select * over the deferred relation; MVs and STs keep their own policies there --#}
+  {#-- A cloned view is select * over the deferred relation, which keeps enforcing its own policies --#}
   {%- set is_clone = flags.WHICH == 'clone' -%}
-  {%- if not (is_clone and model.config.materialized in ['materialized_view', 'streaming_table']) -%}
+  {%- if not is_clone or model.config.materialized == 'view' -%}
     {%- if column_mask_exists() -%}
       {%- do exceptions.raise_compiler_error("Column masks are not supported for views.") -%}
     {%- endif -%}
