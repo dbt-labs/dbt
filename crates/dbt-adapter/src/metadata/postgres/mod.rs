@@ -168,11 +168,15 @@ impl MetadataAdapter for PostgresMetadataAdapter {
         let map_f = move |conn: &mut ConnectionGuard<'_>,
                           relation: &Arc<dyn BaseRelation>|
               -> AdapterResult<Arc<Schema>> {
-            // A Postgres connection sees only its own database, so the catalog is not filtered.
+            // A Postgres connection sees only its own database: another one is refused, as
+            // verify_database refuses it in a model, rather than answered from this one.
             let catalog = relation.database_as_str()?;
+            if !catalog.is_empty() {
+                adapter.verify_database(catalog.clone())?;
+            }
             let schema = relation.schema_as_str()?;
             let identifier = relation.identifier_as_str()?;
-            let sql = get_columns_sql(&schema, &identifier);
+            let sql = get_relation_columns_sql(relation.as_ref())?;
 
             let mut ctx = QueryCtx::new_metadata().with_desc("Get table schema");
             if let Some(node_id) = unique_id.clone() {
@@ -275,6 +279,15 @@ fn fields_from_columns(batch: &RecordBatch, type_ops: &dyn TypeOps) -> AdapterRe
         .collect()
 }
 
+/// [get_columns_sql] for a relation, by the names Postgres stores under its quote policy: an
+/// unquoted `Orders` is `orders`.
+fn get_relation_columns_sql(relation: &dyn BaseRelation) -> AdapterResult<String> {
+    Ok(get_columns_sql(
+        &relation.schema_as_resolved_str()?,
+        &relation.identifier_as_resolved_str()?,
+    ))
+}
+
 /// The columns of one table or view, in order, with their types as Postgres writes them
 /// (`format_type`), from the catalog rather than `information_schema`, which shows only the
 /// relations the user holds privileges on and spells user-defined types as `USER-DEFINED`.
@@ -301,12 +314,15 @@ order by a.attnum",
 
 #[cfg(test)]
 mod tests {
-    use super::{fields_from_columns, get_columns_sql};
+    use super::{fields_from_columns, get_columns_sql, get_relation_columns_sql};
     use crate::metadata::ARROW_FIELD_COMMENT_METADATA_KEY;
+    use crate::relation::create_relation;
     use crate::sql_types::DefaultTypeOps;
     use arrow_array::{BooleanArray, RecordBatch, StringArray};
     use dbt_adapter_core::AdapterType;
     use dbt_adapter_sql::types::metadata_sql_type_key;
+    use dbt_schemas::schemas::common::ResolvedQuoting;
+    use dbt_schemas::schemas::relations::base::BaseRelation;
     use std::sync::Arc;
 
     fn columns(rows: &[(&str, &str, bool, &str)]) -> RecordBatch {
@@ -370,6 +386,38 @@ mod tests {
             .map(|f| f.metadata().get(key).unwrap().as_str())
             .collect();
         assert_eq!(types, ["double precision", "timestamp with time zone"]);
+    }
+
+    fn relation(schema: &str, identifier: &str, quoted: bool) -> Box<dyn BaseRelation> {
+        let quoting = ResolvedQuoting {
+            database: quoted,
+            identifier: quoted,
+            schema: quoted,
+        };
+        create_relation(
+            AdapterType::Postgres,
+            "db".to_string(),
+            schema.to_string(),
+            Some(identifier.to_string()),
+            None,
+            quoting,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn get_relation_columns_sql_looks_up_an_unquoted_name_as_postgres_folds_it() {
+        let sql =
+            get_relation_columns_sql(relation("Analytics", "Orders", false).as_ref()).unwrap();
+        assert!(sql.contains("n.nspname = 'analytics'"));
+        assert!(sql.contains("c.relname = 'orders'"));
+    }
+
+    #[test]
+    fn get_relation_columns_sql_keeps_a_quoted_name() {
+        let sql = get_relation_columns_sql(relation("Analytics", "Orders", true).as_ref()).unwrap();
+        assert!(sql.contains("n.nspname = 'Analytics'"));
+        assert!(sql.contains("c.relname = 'Orders'"));
     }
 
     #[test]
