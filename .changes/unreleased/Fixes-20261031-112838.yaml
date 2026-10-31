@@ -3,5 +3,5 @@ body: dbt clone no longer fails on Databricks tables with a row filter or column
 time: 2026-10-31T11:28:38.838852+05:30
 custom:
     author: sd-db
-    issue: ""
+    issue: "16979"
     project: dbt-core
