@@ -1,5 +1,6 @@
 use chrono::{DateTime, LocalResult, NaiveDateTime, TimeZone};
 use chrono_tz::{Tz, TZ_VARIANTS};
+use minijinja::value::mutable_set::MutableSet;
 use minijinja::{Error, ErrorKind, Value};
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
@@ -78,6 +79,28 @@ pub fn create_pytz_namespace() -> BTreeMap<String, Value> {
     pytz_module.insert(
         "utc".to_string(),
         Value::from_object(PytzTimezone::new(chrono_tz::UTC)),
+    );
+    // Like pytz, `all_timezones` is an alphabetized list of every timezone name
+    let mut all_timezones: Vec<&str> = TZ_VARIANTS.iter().map(|tz| tz.name()).collect();
+    all_timezones.sort_unstable();
+    pytz_module.insert(
+        "all_timezones_set".to_string(),
+        Value::from(
+            all_timezones
+                .iter()
+                .copied()
+                .map(Value::from)
+                .collect::<MutableSet>(),
+        ),
+    );
+    pytz_module.insert(
+        "all_timezones".to_string(),
+        Value::from(
+            all_timezones
+                .into_iter()
+                .map(Value::from)
+                .collect::<Vec<_>>(),
+        ),
     );
     // You could also add "utc", "country", etc.
 
@@ -299,6 +322,24 @@ mod tests {
         // Should be aware with Pacific timezone
         assert!(result.tzinfo.is_some());
         assert_eq!(result.tzinfo.as_ref().unwrap().tz, chrono_tz::US::Pacific);
+    }
+
+    #[test]
+    fn test_all_timezones() {
+        let pytz = create_pytz_namespace();
+        let all_timezones = pytz.get("all_timezones").unwrap();
+        let all_timezones_set = pytz.get("all_timezones_set").unwrap();
+
+        assert_eq!(all_timezones.len(), Some(TZ_VARIANTS.len()));
+        assert_eq!(all_timezones_set.len(), Some(TZ_VARIANTS.len()));
+        assert_eq!(
+            all_timezones.get_item(&Value::from(0)).unwrap(),
+            Value::from("Africa/Abidjan")
+        );
+        assert_eq!(
+            all_timezones.get_item(&Value::from(-1)).unwrap(),
+            Value::from("Zulu")
+        );
     }
 
     #[test]
