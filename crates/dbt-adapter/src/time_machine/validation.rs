@@ -266,6 +266,7 @@ impl TimeMachineEventValidationEngine {
         engine.register_sanitizer(Box::new(QueryTagSanitizer));
         engine.register_sanitizer(Box::new(UuidSanitizer));
         engine.register_sanitizer(Box::new(TmpSuffixSanitizer));
+        engine.register_sanitizer(Box::new(PostgresIndexNameSanitizer));
         engine.register_sanitizer(Box::new(GrantOrderingSanitizer));
         // Strip SQL comments before whitespace normalization so dynamic text in comments
         // (timestamps, state fingerprints, etc.) does not cause false mismatches.
@@ -676,6 +677,30 @@ impl SqlSanitizer for TmpSuffixSanitizer {
     }
 }
 
+/// Sanitizer for the generated name of a Postgres index.
+///
+/// `postgres__get_create_index_sql` names each index by an md5 that includes the time it was
+/// rendered, as dbt-postgres does, so a replay renders a different name. Only that quoted
+/// name in `create [unique] index [if not exists]` is replaced, with `"<INDEX_NAME>"`; the
+/// relation, columns, uniqueness and method are still compared.
+pub struct PostgresIndexNameSanitizer;
+
+impl SqlSanitizer for PostgresIndexNameSanitizer {
+    fn name(&self) -> &'static str {
+        "postgres_index_name"
+    }
+
+    fn sanitize(&self, sql: &str) -> String {
+        static RE: LazyLock<Regex> = LazyLock::new(|| {
+            Regex::new(
+                r#"(?i)(create\s+(?:unique\s+)?index\s+(?:if\s+not\s+exists\s+)?)"[0-9a-f]{32}""#,
+            )
+            .expect("valid regex")
+        });
+        RE.replace_all(sql, "${1}\"<INDEX_NAME>\"").to_string()
+    }
+}
+
 /// Sanitizer that normalizes the ordering of semicolon-separated GRANT/REVOKE privilege
 /// statements within contiguous verb groups.
 ///
@@ -950,6 +975,36 @@ mod tests {
 
         let result = engine.validate(&incoming, &recorded);
         assert!(matches!(result, ValidationResult::Match));
+    }
+
+    fn validate_execute(recorded_sql: &str, incoming_sql: &str) -> bool {
+        let engine =
+            TimeMachineEventValidationEngine::new().with_adapter_type(AdapterType::Postgres);
+        let recorded_args = serde_json::json!([recorded_sql]);
+        let incoming_args = serde_json::json!([incoming_sql]);
+        let incoming = IncomingEvent::new("model.my_project.orders", "execute", &incoming_args);
+        let recorded = make_recorded_event(incoming.node_id, "execute", recorded_args);
+        matches!(
+            engine.validate(&incoming, &recorded),
+            ValidationResult::Match
+        )
+    }
+
+    // A Postgres index name hashes the time it was rendered, so a replay renders another.
+    #[test]
+    fn test_postgres_index_name_makes_replay_match() {
+        assert!(validate_execute(
+            r#"create unique index if not exists "2644471fd91c5a8f391de536364ebfe1" on "db"."s"."t" using btree (a, b)"#,
+            r#"create unique index if not exists "5d41402abc4b2a76b9719d911017c592" on "db"."s"."t" using btree (a, b)"#,
+        ));
+    }
+
+    #[test]
+    fn test_postgres_index_replay_still_checks_the_definition() {
+        assert!(!validate_execute(
+            r#"create index if not exists "2644471fd91c5a8f391de536364ebfe1" on "db"."s"."t" (a)"#,
+            r#"create index if not exists "5d41402abc4b2a76b9719d911017c592" on "db"."s"."t" (b)"#,
+        ));
     }
 
     #[test]
