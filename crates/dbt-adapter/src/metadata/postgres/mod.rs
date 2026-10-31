@@ -1,10 +1,14 @@
 use crate::AdapterEngine;
 use crate::adapter::adapter_impl::AdapterImpl;
+use crate::connection::{AdapterConnectionFactory, ConnectionGuard};
+use crate::errors::{AdapterError, AdapterErrorKind};
+use crate::sql_types::make_arrow_field_v2;
 use crate::{AdapterResult, errors::AsyncAdapterResult, metadata::*, record_batch::RecordBatchExt};
 use arrow_schema::Schema;
-use dbt_common::cancellation::CancellationToken;
+use dbt_adbc::QueryCtx;
+use dbt_common::cancellation::{Cancellable, CancellationToken};
 
-use arrow_array::{Array, Decimal128Array, RecordBatch, StringArray};
+use arrow_array::{Array, BooleanArray, Decimal128Array, RecordBatch, StringArray};
 
 use dbt_adapter_core::ExecutionPhase;
 use dbt_schemas::schemas::{
@@ -149,14 +153,82 @@ impl MetadataAdapter for PostgresMetadataAdapter {
 
     fn list_relations_schemas_inner(
         &self,
-        _unique_id: Option<String>,
-        _phase: Option<ExecutionPhase>,
-        _relations: &[Arc<dyn BaseRelation>],
-        _item_span_operation_id: Option<&str>,
-        _token: CancellationToken,
+        unique_id: Option<String>,
+        phase: Option<ExecutionPhase>,
+        relations: &[Arc<dyn BaseRelation>],
+        item_span_operation_id: Option<&str>,
+        token: CancellationToken,
     ) -> AsyncAdapterResult<'_, HashMap<String, AdapterResult<Arc<Schema>>>> {
-        let future = async move { todo!("PostgreSQL's list_relations_schemas") };
-        Box::pin(future)
+        type Acc = HashMap<String, AdapterResult<Arc<Schema>>>;
+
+        let factory = Box::new(AdapterConnectionFactory::new(self.adapter.engine().clone()));
+
+        let adapter = self.adapter.clone();
+        let token_clone = token.clone();
+        let map_f = move |conn: &mut ConnectionGuard<'_>,
+                          relation: &Arc<dyn BaseRelation>|
+              -> AdapterResult<Arc<Schema>> {
+            // A Postgres connection sees only its own database, so the catalog is not filtered.
+            let catalog = relation.database_as_str()?;
+            let schema = relation.schema_as_str()?;
+            let identifier = relation.identifier_as_str()?;
+            let sql = get_columns_sql(&schema, &identifier);
+
+            let mut ctx = QueryCtx::new_metadata().with_desc("Get table schema");
+            if let Some(node_id) = unique_id.clone() {
+                ctx = ctx.with_node_id(&node_id);
+            }
+            if let Some(phase) = phase {
+                ctx = ctx.with_phase(phase.as_str());
+            }
+            let (_, table) = adapter.query(&ctx, &mut *conn, &sql, None, token_clone.clone())?;
+            let batch = table.original_record_batch();
+
+            let column_names = batch.column_values::<StringArray>("column_name")?;
+            let data_types = batch.column_values::<StringArray>("data_type")?;
+            let is_nullables = batch.column_values::<BooleanArray>("is_nullable")?;
+            let comments = batch.column_values::<StringArray>("remarks")?;
+
+            let fields = (0..batch.num_rows())
+                .map(|i| {
+                    let comment = match comments.value(i) {
+                        "" => None,
+                        c => Some(c.to_string()),
+                    };
+                    make_arrow_field_v2(
+                        adapter.engine().type_ops().as_ref(),
+                        column_names.value(i).to_string(),
+                        data_types.value(i),
+                        Some(is_nullables.value(i)),
+                        comment,
+                    )
+                })
+                .collect::<AdapterResult<Vec<_>>>()?;
+
+            if fields.is_empty() {
+                return Err(AdapterError::new(
+                    AdapterErrorKind::UnexpectedResult,
+                    format!("No columns in pg_attribute for {catalog}.{schema}.{identifier}"),
+                ));
+            }
+            Ok(Arc::new(Schema::new(fields)))
+        };
+        let reduce_f = |acc: &mut Acc,
+                        relation: Arc<dyn BaseRelation>,
+                        schema: AdapterResult<Arc<Schema>>|
+         -> Result<(), Cancellable<AdapterError>> {
+            acc.insert(relation.semantic_fqn(), schema);
+            Ok(())
+        };
+        run_schema_cache_map_reduce(
+            factory,
+            relations.to_vec(),
+            item_span_operation_id,
+            map_f,
+            reduce_f,
+            None,
+            token,
+        )
     }
 
     fn list_relations_schemas_by_patterns_inner(
@@ -196,5 +268,48 @@ impl MetadataAdapter for PostgresMetadataAdapter {
         // FIXME: Implement cache hydration
         let future = async move { Ok(BTreeMap::new()) };
         Box::pin(future)
+    }
+}
+
+/// The columns of one table or view, in order, with their types as Postgres writes them
+/// (`format_type`), from the catalog rather than `information_schema`, which shows only the
+/// relations the user holds privileges on and spells user-defined types as `USER-DEFINED`.
+fn get_columns_sql(schema: &str, identifier: &str) -> String {
+    let literal = |s: &str| format!("'{}'", s.replace('\'', "''"));
+    format!(
+        "select
+    a.attname::text as column_name,
+    pg_catalog.format_type(a.atttypid, a.atttypmod) as data_type,
+    not a.attnotnull as is_nullable,
+    coalesce(pg_catalog.col_description(a.attrelid, a.attnum), '') as remarks
+from pg_catalog.pg_attribute as a
+join pg_catalog.pg_class as c on c.oid = a.attrelid
+join pg_catalog.pg_namespace as n on n.oid = c.relnamespace
+where n.nspname = {schema}
+  and c.relname = {identifier}
+  and a.attnum > 0
+  and not a.attisdropped
+order by a.attnum",
+        schema = literal(schema),
+        identifier = literal(identifier),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::get_columns_sql;
+
+    #[test]
+    fn get_columns_sql_filters_on_the_relation() {
+        let sql = get_columns_sql("analytics", "orders");
+        assert!(sql.contains("n.nspname = 'analytics'"));
+        assert!(sql.contains("c.relname = 'orders'"));
+    }
+
+    #[test]
+    fn get_columns_sql_escapes_quotes_in_names() {
+        let sql = get_columns_sql("o'brien", "it's");
+        assert!(sql.contains("n.nspname = 'o''brien'"));
+        assert!(sql.contains("c.relname = 'it''s'"));
     }
 }

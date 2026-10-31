@@ -1,0 +1,7 @@
+kind: Fixes
+body: Implement Postgres `list_relations_schemas`, so unit tests no longer panic on Postgres, and keep the type Postgres reports on columns read from the catalog
+time: 2026-10-31T16:01:00.000000-04:00
+custom:
+    author: gap777
+    issue: "13123"
+    project: dbt-core
