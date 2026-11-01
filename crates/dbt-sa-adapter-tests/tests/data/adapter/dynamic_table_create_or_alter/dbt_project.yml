@@ -1,0 +1,106 @@
+flags:
+  send_anonymous_usage_stats: false
+  snowflake_dynamic_table_create_or_alter: true
+name: test
+profile: fusion_tests
+
+macro-paths: ["macros"]
+
+vars:
+  evolved: false
+
+models:
+  test:
+    +static_analysis: off
+    +materialized: dynamic_table
+    +snowflake_warehouse: FUSION_ADAPTER_TESTING
+
+    deploy_matrix:
+      dm_full_disable:
+        +refresh_mode: FULL
+        +scheduler: disable
+      dm_full_enable:
+        +refresh_mode: FULL
+        +scheduler: enable
+        +target_lag: 1 hour
+      dm_incremental_disable:
+        +refresh_mode: INCREMENTAL
+        +scheduler: disable
+      dm_incremental_enable:
+        +refresh_mode: INCREMENTAL
+        +scheduler: enable
+        +target_lag: 1 hour
+      dm_auto_disable:
+        +refresh_mode: AUTO
+        +scheduler: disable
+      dm_auto_enable:
+        +refresh_mode: AUTO
+        +scheduler: enable
+        +target_lag: 1 hour
+
+    routing:
+      transient_flip:
+        +refresh_mode: FULL
+        +scheduler: disable
+        +transient: true
+      transient_preserved:
+        +refresh_mode: FULL
+        +scheduler: disable
+        +transient: true
+      refresh_mode_replace:
+        +refresh_mode: INCREMENTAL
+        +scheduler: disable
+      refresh_mode_to_auto:
+        +refresh_mode: INCREMENTAL
+        +scheduler: disable
+      idempotent_noop:
+        +refresh_mode: FULL
+        +scheduler: disable
+
+    config_changes:
+      cfg_cluster_by:
+        +refresh_mode: FULL
+        +scheduler: disable
+      cfg_warehouse:
+        +refresh_mode: FULL
+        +scheduler: disable
+        +snowflake_warehouse: FUSION_ADAPTER_TESTING
+      cfg_init_warehouse:
+        +refresh_mode: FULL
+        +scheduler: disable
+
+    on_configuration_change:
+      continue_skips_both:
+        +refresh_mode: FULL
+        +scheduler: disable
+        +on_configuration_change: continue
+
+    attributes:
+      attr_masking_policy:
+        +refresh_mode: FULL
+        +scheduler: disable
+      attr_row_access_policy:
+        +refresh_mode: FULL
+        +scheduler: disable
+      attr_tag:
+        +refresh_mode: FULL
+        +scheduler: disable
+      attr_projection_policy:
+        +refresh_mode: FULL
+        +scheduler: disable
+      attr_aggregation_policy:
+        +refresh_mode: FULL
+        +scheduler: disable
+      attr_max_data_extension:
+        +refresh_mode: FULL
+        +scheduler: disable
+      attr_data_retention:
+        +refresh_mode: FULL
+        +scheduler: disable
+      attr_comment:
+        +refresh_mode: FULL
+        +scheduler: disable
+      attr_multi:
+        +refresh_mode: FULL
+        +scheduler: disable
+        +cluster_by: [id]

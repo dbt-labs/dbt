@@ -57,7 +57,17 @@ pub fn adapter_specific_behavior_flags(adapter_type: AdapterType) -> Vec<Behavio
                 None,
                 None,
             );
-            vec![flag]
+            // https://github.com/dbt-labs/dbt-adapters/pull/2147
+            let create_or_alter = BehaviorFlag::new(
+                "snowflake_dynamic_table_create_or_alter",
+                false,
+                Some(
+                    "When enabled, native (info schema) dynamic tables are synced with CREATE OR ALTER DYNAMIC TABLE on every run, so edits to the model's SQL are deployed without --full-refresh (matching CTAS experience). WARNING: for INCREMENTAL and AUTO refresh modes, a definition edit reinitializes the dynamic table (full recompute, incremental state discarded) -- this diverges from dbt incremental models, where a logic change requires --full-refresh. CREATE OR ALTER does not support every schema change (e.g. column reorder, mid-list insert); incompatible edits still require --full-refresh. If `transient` is not set explicitly and the effective transient default diverges from the live table (the default flag changed, or an explicit `transient` was removed), dbt does not detect it and CREATE OR ALTER attempts a transient flip that Snowflake rejects -- recover with --full-refresh. With on_configuration_change='continue', a run carrying both a config change and a SQL edit skips both. Iceberg dynamic tables are unaffected: CREATE OR ALTER is not applied to them yet (they keep create-or-replace behavior). When disabled (default), behavior is unchanged.",
+                ),
+                None,
+                None,
+            );
+            vec![flag, create_or_alter]
         }
         Databricks => {
             let use_user_folder_for_python = BehaviorFlag::new(
