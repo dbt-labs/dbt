@@ -1,4 +1,4 @@
-use std::{fmt, time::Duration};
+﻿use std::{fmt, time::Duration};
 
 use console::Style;
 
@@ -354,11 +354,7 @@ impl fmt::Display for SummaryLines<'_> {
         }
 
         // A centered execution summary delimiter line
-        write!(
-            f,
-            "\n{}\n",
-            Delimiter::new(" Execution Summary ", max_line_width, colorize)
-        )?;
+        write_delimiter(f, " Execution Summary ", max_line_width, colorize)?;
         write_status_line(f, input, colorize)?;
 
         if is_summary_command {
@@ -371,6 +367,10 @@ impl fmt::Display for SummaryLines<'_> {
                 write_result_line(f, &input.metrics.outcomes, colorize)?;
             }
         }
+
+        // Close the block with a matching delimiter so one invocation's end is
+        // distinguishable from the next one's start in scrollback.
+        write_delimiter(f, " End of Execution ", max_line_width, colorize)?;
         Ok(())
     }
 }
@@ -400,6 +400,15 @@ impl SummaryLines<'_> {
         }
         Ok(())
     }
+}
+
+fn write_delimiter(
+    f: &mut fmt::Formatter<'_>,
+    label: &str,
+    max_line_width: Option<usize>,
+    colorize: bool,
+) -> fmt::Result {
+    write!(f, "\n{}\n", Delimiter::new(label, max_line_width, colorize))
 }
 
 fn write_status_line(
@@ -659,17 +668,26 @@ mod tests {
     }
 
     #[test]
-    fn test_optimization_banner_matches_execution_summary_shape() {
-        let lines = section(1, 0, 0).expect("section should be present");
-        assert_eq!(
-            lines[0],
-            "==================== Test Optimization ====================="
+    fn summary_delimiters_match_execution_summary_shape() {
+        let execution_width = Delimiter::new(" Execution Summary ", WIDTH, false)
+            .to_string()
+            .len();
+        let test_optimization = section(1, 0, 0).expect("section should be present");
+
+        assert_delimiter_matches_width(
+            &test_optimization[0],
+            "==================== Test Optimization =====================",
+            execution_width,
         );
-        assert_eq!(
-            lines[0].len(),
-            Delimiter::new(" Execution Summary ", WIDTH, false)
-                .to_string()
-                .len()
+        assert_delimiter_matches_width(
+            &Delimiter::new(" End of Execution ", WIDTH, false).to_string(),
+            "===================== End of Execution =====================",
+            execution_width,
         );
+    }
+
+    fn assert_delimiter_matches_width(actual: &str, expected: &str, width: usize) {
+        assert_eq!(actual, expected);
+        assert_eq!(actual.len(), width);
     }
 }
