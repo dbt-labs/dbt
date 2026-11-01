@@ -120,8 +120,8 @@ on:
         required: true
         type: string
       core_wheel_version:
-        description: "Optional dbt-core Python package SemVer (same format as version). Defaults to version; does not change the Rust build, release tag, dbt-oss, or parser version."
-        required: false
+        description: "dbt-core Python package SemVer: X.Y.Z-{alpha|beta|rc|preview|dev}.N. Must be a pre-release; stable dbt-core releases are not cut from this workflow. Does not change the Rust build, release tag, dbt-oss, or parser version."
+        required: true
         type: string
       dry_run:
         description: "Build and pack only — skip tag push, PyPI publish, GitHub Release, and Homebrew publish."
@@ -167,12 +167,34 @@ defaults:
 
 jobs:
   # ------------------------------------------------------------------
+  # Fail fast on inputs before prepare-release pushes a branch.
+  # Stable dbt-core releases are not cut from this workflow, so
+  # `core_wheel_version` must be a pre-release — guards against an
+  # accidental stable dbt-core publish.
+  # ------------------------------------------------------------------
+  validate-inputs:
+    name: Validate inputs
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Require a pre-release dbt-core version
+        env:
+          CORE_WHEEL_VERSION: ${{ inputs.core_wheel_version }}
+        run: |
+          number='(0|[1-9][0-9]*)'
+          if [[ ! "$CORE_WHEEL_VERSION" =~ ^${number}\.${number}\.${number}-(alpha|beta|rc|preview|dev)\.${number}$ ]]; then
+            echo "::error::core_wheel_version '$CORE_WHEEL_VERSION' must be X.Y.Z-{alpha|beta|rc|preview|dev}.N; stable dbt-core releases cannot be cut from this workflow."
+            exit 1
+          fi
+
+  # ------------------------------------------------------------------
   # Cut release/vX.Y.Z, bump workspace version, generate the changelog,
   # push the branch.
   # Exposes branch/tag/version outputs that the rest of the pipeline hangs off.
   # ------------------------------------------------------------------
   prepare-release:
     name: Prepare release branch
+    needs: [validate-inputs]
     permissions:
       contents: write
     uses: ./.github/workflows/release-prep-v2.yml
@@ -434,7 +456,6 @@ jobs:
       # in particular don't reliably ship a `python3` shim).
       - name: Validate dbt-core wheel version
         id: core-wheel-version
-        if: inputs.core_wheel_version != ''
         env:
           CORE_WHEEL_VERSION: ${{ inputs.core_wheel_version }}
         run: |
@@ -496,13 +517,11 @@ jobs:
           fi
           "$VENV_BIN/python" -m pip install --upgrade pip "maturin>=1.0,<2.0"
 
-          if [ -n "$CORE_WHEEL_VERSION" ]; then
-            PYPROJECT=crates/dbt-sa-python/pyproject.toml
-            sed "s/dynamic = \[\"version\"\]/version = \"$CORE_WHEEL_VERSION\"/" "$PYPROJECT" > "$PYPROJECT.tmp"
-            mv "$PYPROJECT.tmp" "$PYPROJECT"
-            # Guard against a silent no-op sed (exits 0 either way).
-            grep -qx "version = \"$CORE_WHEEL_VERSION\"" "$PYPROJECT"
-          fi
+          PYPROJECT=crates/dbt-sa-python/pyproject.toml
+          sed "s/dynamic = \[\"version\"\]/version = \"$CORE_WHEEL_VERSION\"/" "$PYPROJECT" > "$PYPROJECT.tmp"
+          mv "$PYPROJECT.tmp" "$PYPROJECT"
+          # Guard against a silent no-op sed (exits 0 either way).
+          grep -qx "version = \"$CORE_WHEEL_VERSION\"" "$PYPROJECT"
 
           "$VENV_BIN/maturin" build --release --locked \
             --target "$TARGET" \
@@ -517,7 +536,7 @@ jobs:
           echo "MATURIN_VENV_BIN=$VENV_BIN" >> "$GITHUB_ENV"
 
       - name: Restore pyproject after dbt-core wheel
-        if: ${{ always() && inputs.core_wheel_version != '' }}
+        if: ${{ always() }}
         run: git -c safe.directory="$GITHUB_WORKSPACE" restore -- crates/dbt-sa-python/pyproject.toml
 
       - name: Upload binary artifact
@@ -923,7 +942,7 @@ jobs:
       - name: Publish (dbt-core)
         if: inputs.release_target == 'all' || inputs.release_target == 'core'
         env:
-          CORE_WHEEL_VERSION: ${{ inputs.core_wheel_version || needs.prepare-release.outputs.version }}
+          CORE_WHEEL_VERSION: ${{ inputs.core_wheel_version }}
         run: |
           cargo ci pypi publish \
             --environment ${{ inputs.dry_run_with_test_pypi && 'test-pypi' || 'prod' }} \
