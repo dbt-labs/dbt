@@ -16,7 +16,7 @@ In the meantime, we actually did the two-engine thing. We triaged bugs and featu
 
 | **Version** | **When** | **Namesake** | **Stuff** |
 | --- | --- | --- | --- |
-| [v1.12](https://docs.getdbt.com/docs/dbt-versions/core-upgrade/upgrading-to-v1.12) | May (beta) | Alecia Beth Moore-Hart (P!NK) | UDF extensions. Easier specs for semantic layer, and Iceberg `catalogs`. Long-upvoted feature requests: `vars.yml`; `on_error` model config; [mix-and-match yaml selectors](https://docs.getdbt.com/reference/node-selection/methods?version=1.12#selector); `run-operation` for adhoc `—-sql`; jinja file extensions; `latest_version_pointer`. Improved exception handling and error messages. Dozens of bug fixes across core + adapters, including Python 3.14 support. `dbt login` to unlock paid platform features. `--use-v2-parser` to try out the speedy new Rust parser before you upgrade to v2.0. |
+| [v1.12](https://docs.getdbt.com/docs/dbt-versions/core-upgrade/upgrading-to-v1.12) | May (beta) | Alecia Beth Moore-Hart (P!NK) | UDF extensions. Easier specs for semantic layer, and Iceberg `catalogs`. Long-upvoted feature requests: `vars.yml`; `on_error` model config; [mix-and-match yaml selectors](https://docs.getdbt.com/reference/node-selection/methods?version=1.12#selector); `run-operation` for adhoc `—-sql`; jinja file extensions; `latest_version_pointer`. Improved exception handling and error messages. Dozens of bug fixes across core + adapters, including Python 3.14 support. `--use-v2-parser` to try out the speedy new Rust parser before you upgrade to v2.0. |
 | v2.0 | June (alpha) |  | Faster Rust rewrite, at full parity with v1. Strict codified language spec. New parquet metadata artifacts, built for speed & scale, powering new dbt-docs. |
 
 ## Past
@@ -113,7 +113,7 @@ Humans like CLIs. Agents like CLIs. dbt is, first and foremost, a CLI. We think 
 
 By that we mean *all* capabilities of dbt — open source and proprietary, local and remote — should have an entry point in the CLI.
 
-The start is: `dbt login` for connected platform features, shipped in v1.12 for [dbt State](https://docs.getdbt.com/docs/deploy/dbt-state-about). In v2.0, that includes things (available in Fusion only) like advanced SQL comprehension, linting, and column-level lineage.
+The start is: `dbt login` for connected platform features. We're planning to add this in the next dbt Core v1.X release (v1.13), to smooth the onboarding path for folks who want to use [dbt State](https://docs.getdbt.com/docs/deploy/dbt-state-about). `dbt login` is already in dbt Core v2 and in Fusion, where it will also get you access to Fusion-only things like advanced SQL comprehension, linting, and column-level lineage.
 
 You do not need to use those features. You do not need to run `dbt login` if you don’t want to. The code in `dbt-core` to power those features is in thin clients, all licensed under Apache 2.0. But when you run `dbt --help`, you will start seeing the new `login` command.
 
