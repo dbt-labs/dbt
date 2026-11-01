@@ -1,0 +1,7 @@
+kind: Fixes
+body: Implement utcoffset(), dst() and tzname() on pytz timezone objects
+time: 2026-10-31T22:38:54.403916-03:00
+custom:
+    author: luc-pimentel
+    issue: "16975"
+    project: dbt-core

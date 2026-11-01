@@ -1,6 +1,8 @@
-use chrono::{DateTime, LocalResult, NaiveDateTime, TimeZone};
-use chrono_tz::{Tz, TZ_VARIANTS};
+use chrono::{DateTime, LocalResult, NaiveDateTime, Offset, TimeZone};
+use chrono_tz::{OffsetComponents, OffsetName, Tz, TZ_VARIANTS};
 use minijinja::{Error, ErrorKind, Value};
+
+use crate::modules::py_datetime::timedelta::PyTimeDelta;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::sync::{Arc, OnceLock};
@@ -50,22 +52,63 @@ impl PytzTimezone {
         self.tz.from_utc_datetime(naive_utc)
     }
 
-    /// Return an offset from UTC as a `chrono::Duration` for the given local DateTime in this tz.
-    pub fn utcoffset(&self, _local_dt: &DateTime<Tz>) -> Value {
-        // Get the seconds offset directly from the datetime's offset
-        Value::from("TODO IMPLEMENT")
+    /// Return the offset from UTC in effect at the given DateTime in this tz.
+    pub fn utcoffset(&self, local_dt: &DateTime<Tz>) -> chrono::Duration {
+        chrono::Duration::seconds(local_dt.offset().fix().local_minus_utc() as i64)
     }
 
-    /// Return the DST offset if any. If you just want to return None or 0, do so.
-    pub fn dst(&self, _local_dt: &DateTime<Tz>) -> Option<chrono::Duration> {
-        // Real DST logic is more nuanced, and Chrono doesn't directly expose it.
-        // If you prefer to always return None or Some(0), do so:
-        None
+    /// Return the daylight saving part of the offset in effect at the given DateTime.
+    pub fn dst(&self, local_dt: &DateTime<Tz>) -> chrono::Duration {
+        local_dt.offset().dst_offset()
     }
 
-    /// Return the timezone name for the given local DateTime. This might be "EST", "EDT", or a raw offset, etc.
+    /// Return the abbreviation in effect at the given DateTime ("EST", "EDT", "UTC"),
+    /// or the numeric offset for zones without one.
     pub fn tzname(&self, local_dt: &DateTime<Tz>) -> String {
-        local_dt.offset().to_string()
+        match local_dt.offset().abbreviation() {
+            Some(name) => name.to_string(),
+            None => local_dt.offset().to_string(),
+        }
+    }
+
+    /// Resolve the datetime argument of utcoffset(), dst() and tzname() in this tz.
+    /// `None` stays `None`; a naive datetime is read as local time, like localize();
+    /// an aware datetime is converted so the answer describes the same instant.
+    fn resolve_argument(
+        &self,
+        method: &str,
+        args: &[Value],
+    ) -> Result<Option<DateTime<Tz>>, Error> {
+        let dt_val = args.first().ok_or_else(|| {
+            Error::new(
+                ErrorKind::MissingArgument,
+                format!("{method}() requires a datetime argument"),
+            )
+        })?;
+        if dt_val.is_none() {
+            return Ok(None);
+        }
+        let dt = dt_val
+            .downcast_object_ref::<crate::modules::py_datetime::datetime::PyDateTime>()
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorKind::InvalidArgument,
+                    format!("{method}() expects a datetime object"),
+                )
+            })?;
+
+        use crate::modules::py_datetime::datetime::DateTimeState;
+        let resolved = match &dt.state {
+            DateTimeState::Naive(naive) => self.from_local(naive).ok_or_else(|| {
+                Error::new(
+                    ErrorKind::InvalidOperation,
+                    format!("ambiguous or invalid local time for {method}()"),
+                )
+            })?,
+            DateTimeState::Aware(aware) => aware.with_timezone(&self.tz),
+            DateTimeState::FixedOffset(fixed) => fixed.with_timezone(&self.tz),
+        };
+        Ok(Some(resolved))
     }
 }
 
@@ -212,6 +255,18 @@ impl minijinja::value::Object for PytzTimezone {
 
                 Ok(Value::from_object(result))
             }
+            "utcoffset" => Ok(match self.resolve_argument(method, args)? {
+                Some(dt) => Value::from_object(PyTimeDelta::new(self.utcoffset(&dt))),
+                None => Value::from(()),
+            }),
+            "dst" => Ok(match self.resolve_argument(method, args)? {
+                Some(dt) => Value::from_object(PyTimeDelta::new(self.dst(&dt))),
+                None => Value::from(()),
+            }),
+            "tzname" => Ok(match self.resolve_argument(method, args)? {
+                Some(dt) => Value::from(self.tzname(&dt)),
+                None => Value::from(self.tz.name()),
+            }),
             _ => Err(Error::new(
                 ErrorKind::UnknownMethod,
                 format!("Timezone object has no method named '{method}'"),
