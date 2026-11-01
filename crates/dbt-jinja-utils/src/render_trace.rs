@@ -374,6 +374,12 @@ mod tests {
         );
     }
 
+    fn assert_output_restored(observer: &RenderTraceListener, position: usize) {
+        assert_eq!(observer.position(), position);
+        assert!(observer.buffers.borrow().is_empty());
+        assert!(observer.templates.borrow().is_empty());
+    }
+
     #[test]
     fn identical_branches_have_distinct_provenance() {
         let source = "{% if flag %}select 1{% else %}select 1{% endif %}";
@@ -643,9 +649,7 @@ mod tests {
                 &listeners,
             );
             assert!(result.is_err());
-            assert_eq!(observer.position(), 1);
-            assert!(observer.buffers.borrow().is_empty());
-            assert!(observer.templates.borrow().is_empty());
+            assert_output_restored(&observer, 1);
             assert_eq!(
                 observer
                     .events
@@ -1011,8 +1015,10 @@ mod tests {
                     .rev()
                     .find(|event| event.kind == "literal")
                     .unwrap();
-                assert_eq!(last.rendered_start, expected.len() - 1);
-                assert_eq!(last.rendered_end, expected.len());
+                assert_eq!(
+                    last.rendered_start..last.rendered_end,
+                    expected.len() - 1..expected.len()
+                );
             }
         }
     }
@@ -1038,9 +1044,7 @@ mod tests {
                 )
                 .unwrap_err();
             assert_eq!(error.kind(), minijinja::ErrorKind::UnknownFunction);
-            assert_eq!(observer.position(), 1);
-            assert!(observer.templates.borrow().is_empty());
-            assert!(observer.buffers.borrow().is_empty());
+            assert_output_restored(&observer, 1);
             assert!(
                 observer
                     .events
