@@ -81,6 +81,53 @@ class TestGenerateSelectLimitsNoMatch(TestBaseGenerate):
         assert len(catalog.sources) == 0
 
 
+class TestGenerateSelectLimitsCatalogNoCompile(TestBaseGenerate):
+    def test_select_limits_catalog_no_compile(self, project):
+        run_dbt(["run"])
+        catalog = run_dbt(["docs", "generate", "--select", "my_model", "--no-compile"])
+        assert list(catalog.nodes) == ["model.test.my_model"]
+        assert len(catalog.sources) == 0
+
+
+class TestGenerateSelectSourceNoCompile(TestBaseGenerate):
+    def test_select_source_no_compile(self, project):
+        project.run_sql("create table {}.sample_source (id int)".format(project.test_schema))
+        project.run_sql("create table {}.second_source (id int)".format(project.test_schema))
+        run_dbt(["run"])
+        catalog = run_dbt(
+            [
+                "docs",
+                "generate",
+                "--select",
+                "source:test.my_source_schema.sample_source",
+                "--no-compile",
+            ]
+        )
+        assert len(catalog.nodes) == 0
+        assert list(catalog.sources) == ["source.test.my_source_schema.sample_source"]
+
+
+class TestGenerateSelectLimitsNoMatchNoCompile(TestBaseGenerate):
+    def test_select_limits_no_match_no_compile(self, project):
+        run_dbt(["run"])
+        catalog = run_dbt(["docs", "generate", "--select", "my_missing_model", "--no-compile"])
+        assert len(catalog.nodes) == 0
+        assert len(catalog.sources) == 0
+
+
+class TestGenerateNoSelectNoCompile(TestBaseGenerate):
+    def test_no_select_no_compile(self, project):
+        project.run_sql("create table {}.sample_source (id int)".format(project.test_schema))
+        project.run_sql("create table {}.second_source (id int)".format(project.test_schema))
+        run_dbt(["run"])
+        catalog = run_dbt(["docs", "generate", "--no-compile"])
+        assert set(catalog.nodes) == {"model.test.my_model", "model.test.alt_model"}
+        assert set(catalog.sources) == {
+            "source.test.my_source_schema.sample_source",
+            "source.test.my_source_schema.second_source",
+        }
+
+
 class TestGenerateCatalogWithSources(TestBaseGenerate):
     def test_catalog_with_sources(self, project):
         # populate sources other than non_existent_source
