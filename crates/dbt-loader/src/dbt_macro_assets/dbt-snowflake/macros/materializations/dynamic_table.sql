@@ -35,32 +35,42 @@
 
     {% set full_refresh_mode = should_full_refresh() %}
 
-    -- determine the scenario we're in: create, full_refresh, alter, refresh data
+    -- determine the scenario we're in: create, full_refresh, create-or-alter, alter, refresh data
     {% if existing_relation is none %}
         {% set build_sql = get_create_sql(target_relation, sql) %}
     {% elif full_refresh_mode or not existing_relation.is_dynamic_table %}
         {% set build_sql = get_replace_sql(existing_relation, target_relation, sql) %}
     {% else %}
 
-        -- get config options
-        {% set on_configuration_change = config.get('on_configuration_change') %}
-        {% set configuration_changes = snowflake__get_dynamic_table_configuration_changes(existing_relation, config) %}
-
-        {% if configuration_changes is none %}
-            {% set build_sql = '' %}
-            {{ exceptions.warn("No configuration changes were identified on: `" ~ target_relation ~ "`. Continuing.") }}
-
-        {% elif on_configuration_change == 'apply' %}
-            {% set build_sql = snowflake__get_alter_dynamic_table_as_sql(existing_relation, configuration_changes, target_relation, sql) %}
-        {% elif on_configuration_change == 'continue' %}
-            {% set build_sql = '' %}
-            {{ exceptions.warn("Configuration changes were identified and `on_configuration_change` was set to `continue` for `" ~ target_relation ~ "`") }}
-        {% elif on_configuration_change == 'fail' %}
-            {{ exceptions.raise_fail_fast_error("Configuration changes were identified and `on_configuration_change` was set to `fail` for `" ~ target_relation ~ "`") }}
+        {#- Opt-in query-evolution path: a native (info schema) dynamic table syncs its definition
+            in place via CREATE OR ALTER, so SQL edits deploy without --full-refresh. When it does
+            not apply, fall through to the standard config-change handling below. -#}
+        {% if adapter.dynamic_table_create_or_alter_enabled(config.model) %}
+            {% set build_sql = snowflake__get_create_or_alter_dynamic_table_sql(existing_relation, target_relation, sql) %}
 
         {% else %}
-            -- this only happens if the user provides a value other than `apply`, 'continue', 'fail'
-            {{ exceptions.raise_compiler_error("Unexpected configuration scenario: `" ~ on_configuration_change ~ "`") }}
+
+            -- get config options
+            {% set on_configuration_change = config.get('on_configuration_change') %}
+            {% set configuration_changes = snowflake__get_dynamic_table_configuration_changes(existing_relation, config) %}
+
+            {% if configuration_changes is none %}
+                {% set build_sql = '' %}
+                {{ exceptions.warn("No configuration changes were identified on: `" ~ target_relation ~ "`. Continuing.") }}
+
+            {% elif on_configuration_change == 'apply' %}
+                {% set build_sql = snowflake__get_alter_dynamic_table_as_sql(existing_relation, configuration_changes, target_relation, sql) %}
+            {% elif on_configuration_change == 'continue' %}
+                {% set build_sql = '' %}
+                {{ exceptions.warn("Configuration changes were identified and `on_configuration_change` was set to `continue` for `" ~ target_relation ~ "`") }}
+            {% elif on_configuration_change == 'fail' %}
+                {{ exceptions.raise_fail_fast_error("Configuration changes were identified and `on_configuration_change` was set to `fail` for `" ~ target_relation ~ "`") }}
+
+            {% else %}
+                -- this only happens if the user provides a value other than `apply`, 'continue', 'fail'
+                {{ exceptions.raise_compiler_error("Unexpected configuration scenario: `" ~ on_configuration_change ~ "`") }}
+
+            {% endif %}
 
         {% endif %}
 

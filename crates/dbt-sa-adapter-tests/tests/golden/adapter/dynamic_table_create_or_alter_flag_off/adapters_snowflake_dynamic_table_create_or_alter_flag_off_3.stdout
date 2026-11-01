@@ -1,0 +1,6 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/dt_flag_off.sql
+[PASS] dt_flag_off: SQL-only edit is a no-op without the flag
+==================== Execution Summary =====================
+Finished 'run-operation' successfully for target 'snowflake' [duration]

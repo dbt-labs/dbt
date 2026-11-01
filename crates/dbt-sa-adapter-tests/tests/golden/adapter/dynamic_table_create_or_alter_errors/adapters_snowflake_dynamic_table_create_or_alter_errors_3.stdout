@@ -1,0 +1,13 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/err_fail_fast.sql
+   Parsing models/err_reorder.sql
+   Parsing models/err_transient_drift.sql
+   Parsing models/ok_evolve.sql
+ Rendering models/err_fail_fast.sql
+   Running models/err_fail_fast.sql
+    Failed model adapters_snowflake_dynamic_table_create_or_alter_errors.err_fail_fast (dynamic_table) [1 of 1 in duration]
+==================== Execution Summary =====================
+Finished 'run' with 1 error for target 'snowflake' [duration]
+Processed: 1 model
+Summary: 1 total | 1 error

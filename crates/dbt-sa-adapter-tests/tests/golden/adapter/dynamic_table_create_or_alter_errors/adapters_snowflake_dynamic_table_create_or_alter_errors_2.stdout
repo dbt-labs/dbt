@@ -1,0 +1,19 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/err_fail_fast.sql
+   Parsing models/err_reorder.sql
+   Parsing models/err_transient_drift.sql
+   Parsing models/ok_evolve.sql
+ Rendering models/ok_evolve.sql
+   Running models/ok_evolve.sql
+ Succeeded model adapters_snowflake_dynamic_table_create_or_alter_errors.ok_evolve (dynamic_table) [1 of 3 in duration]
+ Rendering models/err_transient_drift.sql
+   Running models/err_transient_drift.sql
+    Failed model adapters_snowflake_dynamic_table_create_or_alter_errors.err_transient_drift (dynamic_table) [2 of 3 in duration]
+ Rendering models/err_reorder.sql
+   Running models/err_reorder.sql
+    Failed model adapters_snowflake_dynamic_table_create_or_alter_errors.err_reorder (dynamic_table) [3 of 3 in duration]
+==================== Execution Summary =====================
+Finished 'run' with 2 errors for target 'snowflake' [duration]
+Processed: 3 models
+Summary: 3 total | 1 success | 2 error

@@ -1,0 +1,2 @@
+[warning] [JinjaWarn (dbt1071)]: Configuration changes were identified and `on_configuration_change` was set to `continue` for `development.adapters_snowflake_dynamic_table_create_or_alter.continue_skips_both`
+  --> dbt_internal_packages/dbt-snowflake/macros/relations/dynamic_table/create_or_alter.sql:8:1
