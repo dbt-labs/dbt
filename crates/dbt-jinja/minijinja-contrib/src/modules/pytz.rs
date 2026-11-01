@@ -230,6 +230,7 @@ mod tests {
     use super::*;
     use crate::modules::py_datetime::datetime::{DateTimeState, PyDateTime};
     use chrono::{NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Timelike};
+    use minijinja::Environment;
 
     #[test]
     fn test_localize_naive_datetime() {
@@ -328,5 +329,96 @@ mod tests {
             other => panic!("expected aware datetime, got {other:?}"),
         }
         assert_eq!(result.tzinfo.as_ref().unwrap().tz, chrono_tz::US::Eastern);
+    }
+
+    fn naive(y: i32, m: u32, d: u32, h: u32, min: u32) -> Value {
+        let naive = NaiveDateTime::new(
+            NaiveDate::from_ymd_opt(y, m, d).unwrap(),
+            NaiveTime::from_hms_opt(h, min, 0).unwrap(),
+        );
+        Value::from_object(PyDateTime {
+            state: DateTimeState::Naive(naive),
+            tzinfo: None,
+        })
+    }
+
+    fn render_tz_methods(tz: PytzTimezone, dt: Value) -> Result<String, Error> {
+        let env = Environment::new();
+        let template = env
+            .template_from_str("{{ tz.utcoffset(dt) }}|{{ tz.dst(dt) }}|{{ tz.tzname(dt) }}")
+            .unwrap();
+        template.render(
+            minijinja::context!(tz => Value::from_object(tz), dt => dt),
+            &[],
+        )
+    }
+
+    #[test]
+    fn test_utcoffset_dst_tzname_in_summer() {
+        let tz = PytzTimezone::new(chrono_tz::America::New_York);
+        assert_eq!(
+            render_tz_methods(tz, naive(2024, 7, 4, 12, 0)).unwrap(),
+            "-1 day, 20:00:00|1:00:00|EDT"
+        );
+    }
+
+    #[test]
+    fn test_utcoffset_dst_tzname_in_winter() {
+        let tz = PytzTimezone::new(chrono_tz::America::New_York);
+        assert_eq!(
+            render_tz_methods(tz, naive(2024, 1, 4, 12, 0)).unwrap(),
+            "-1 day, 19:00:00|0:00:00|EST"
+        );
+    }
+
+    #[test]
+    fn test_utcoffset_dst_tzname_utc() {
+        let tz = PytzTimezone::new(chrono_tz::UTC);
+        assert_eq!(
+            render_tz_methods(tz, naive(2024, 7, 4, 12, 0)).unwrap(),
+            "0:00:00|0:00:00|UTC"
+        );
+    }
+
+    #[test]
+    fn test_utcoffset_rejects_ambiguous_local_time() {
+        // 01:30 on 2024-11-03 happens twice in New York (fall back).
+        let tz = PytzTimezone::new(chrono_tz::America::New_York);
+        let err = render_tz_methods(tz, naive(2024, 11, 3, 1, 30)).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("ambiguous or invalid local time for utcoffset()"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_aware_datetime_is_converted_to_the_timezone() {
+        // 12:00 EDT is 16:00 UTC; pytz.utc answers for the instant, not the wall time.
+        let eastern = chrono_tz::America::New_York
+            .with_ymd_and_hms(2024, 7, 4, 12, 0, 0)
+            .single()
+            .unwrap();
+        let aware = Value::from_object(PyDateTime {
+            state: DateTimeState::Aware(eastern),
+            tzinfo: Some(PytzTimezone::new(chrono_tz::America::New_York)),
+        });
+        assert_eq!(
+            render_tz_methods(PytzTimezone::new(chrono_tz::UTC), aware.clone()).unwrap(),
+            "0:00:00|0:00:00|UTC"
+        );
+        assert_eq!(
+            render_tz_methods(PytzTimezone::new(chrono_tz::America::New_York), aware).unwrap(),
+            "-1 day, 20:00:00|1:00:00|EDT"
+        );
+    }
+
+    #[test]
+    fn test_none_argument_matches_pytz() {
+        let tz = PytzTimezone::new(chrono_tz::America::New_York);
+        assert_eq!(
+            render_tz_methods(tz, Value::from(())).unwrap(),
+            "None|None|America/New_York"
+        );
     }
 }
