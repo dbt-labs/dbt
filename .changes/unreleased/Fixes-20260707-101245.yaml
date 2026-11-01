@@ -1,0 +1,7 @@
+kind: Fixes
+body: Expose --favor-state and --no-favor-state in dbt run --help output
+time: 2026-07-07T10:12:45.597118+05:30
+custom:
+    author: gps23
+    issue: "15428"
+    project: dbt-core
