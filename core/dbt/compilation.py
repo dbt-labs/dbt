@@ -497,6 +497,17 @@ class Compiler:
 
     def initialize(self):
         make_directory(self.config.project_target_path)
+        if getattr(self.config.args, "NO_FULL_REFRESH", False) and getattr(
+            self.config.args, "FULL_REFRESH", False
+        ):
+            raise DbtRuntimeError(
+                "--no-full-refresh and --full-refresh are mutually exclusive."
+            )
+
+    def _should_force_incremental(self, node: ManifestSQLNode) -> bool:
+        if not getattr(self.config.args, "NO_FULL_REFRESH", False):
+            return False
+        return isinstance(node, ModelNode) and node.config.materialized == "incremental"
 
     # creates a ModelContext which is converted to
     # a dict for jinja rendering of SQL
@@ -511,6 +522,10 @@ class Compiler:
         else:
             context = generate_runtime_model_context(node, self.config, manifest)
         context.update(extra_context)
+
+        if self._should_force_incremental(node):
+            context["is_incremental"] = lambda: True
+            context["should_full_refresh"] = lambda: False
 
         if isinstance(node, GenericTestNode):
             # for test nodes, add a special keyword args value to the context

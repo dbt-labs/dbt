@@ -38,6 +38,7 @@ FLAGS_DEFAULTS = {
     "WARN_ERROR": None,
     # Cli args without project_flags or env var option.
     "FULL_REFRESH": False,
+    "NO_FULL_REFRESH": False,
     "STRICT_MODE": False,
     "STORE_FAILURES": False,
     "INTROSPECT": True,
