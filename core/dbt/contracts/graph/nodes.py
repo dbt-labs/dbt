@@ -1,5 +1,6 @@
 import hashlib
 import os
+import re
 import sys
 import threading
 from dataclasses import dataclass, field
@@ -771,10 +772,11 @@ class ModelNode(ModelResource, CompiledNode):
         if not data_type:
             return data_type
 
-        # Split on the first '(' to get the base type without parameters
+        # Drop size/precision/scale argument lists (numbers only); keep type
+        # arguments such as Nullable(String) or STRUCT(a INTEGER).
         # Convert to lowercase for case-insensitive comparison
-        base_type, _, _ = data_type.partition("(")
-        return base_type.strip().lower()
+        without_sizes = re.sub(r"\s*\(\s*\d+(?:\s*,\s*\d+)*\s*\)", "", data_type)
+        return re.sub(r"\s+", " ", without_sizes).strip().lower()
 
     def same_contract(self, old: "ModelNode", adapter_type: Optional[str] = None) -> bool:  # type: ignore[override]
         # If the contract wasn't previously enforced:
