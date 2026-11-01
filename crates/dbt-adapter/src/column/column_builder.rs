@@ -20,7 +20,7 @@ impl ColumnBuilder {
         Self { adapter_type }
     }
 
-    pub fn build(&self, field: &FieldRef, type_ops: &dyn TypeOps) -> AdapterResult<Column> {
+    pub fn build(&self, field: &FieldRef, type_ops: &dyn TypeOps) -> AdapterResult<Box<Column>> {
         use AdapterType::*;
         match self.adapter_type {
             Snowflake => Ok(Self::build_snowflake(field, type_ops)),
@@ -49,10 +49,10 @@ impl ColumnBuilder {
         numeric_precision: Option<u64>,
         numeric_scale: Option<u64>,
         mode: Option<BigqueryColumnMode>,
-    ) -> Column {
+    ) -> Box<Column> {
         use AdapterType::*;
         match self.adapter_type {
-            Postgres => Column::new(
+            Postgres => Column::new_boxed(
                 Postgres,
                 name,
                 dtype,
@@ -60,7 +60,7 @@ impl ColumnBuilder {
                 numeric_precision,
                 numeric_scale,
             ),
-            DuckDB => Column::new(
+            DuckDB => Column::new_boxed(
                 DuckDB,
                 name,
                 dtype,
@@ -68,7 +68,7 @@ impl ColumnBuilder {
                 numeric_precision,
                 numeric_scale,
             ),
-            LakeCompute => Column::new(
+            LakeCompute => Column::new_boxed(
                 LakeCompute,
                 name,
                 dtype,
@@ -76,7 +76,7 @@ impl ColumnBuilder {
                 numeric_precision,
                 numeric_scale,
             ),
-            Snowflake => Column::new(
+            Snowflake => Column::new_boxed(
                 Snowflake,
                 name,
                 dtype,
@@ -86,7 +86,7 @@ impl ColumnBuilder {
             ),
             // TODO: BigQuery fields
             Bigquery => Column::new_bigquery(name, dtype, [], mode.unwrap_or_default()),
-            Redshift => Column::new(
+            Redshift => Column::new_boxed(
                 Redshift,
                 name,
                 dtype,
@@ -94,7 +94,7 @@ impl ColumnBuilder {
                 numeric_precision,
                 numeric_scale,
             ),
-            Databricks | Spark => Column::new(
+            Databricks | Spark => Column::new_boxed(
                 self.adapter_type,
                 name,
                 dtype,
@@ -103,7 +103,7 @@ impl ColumnBuilder {
                 None, // numeric_scale
             ),
             Salesforce => todo!("Salesforce column creation not implemented yet"),
-            ClickHouse => Column::new(
+            ClickHouse => Column::new_boxed(
                 ClickHouse,
                 name,
                 dtype,
@@ -111,7 +111,7 @@ impl ColumnBuilder {
                 numeric_precision,
                 numeric_scale,
             ),
-            Exasol => Column::new(
+            Exasol => Column::new_boxed(
                 Exasol,
                 name,
                 dtype,
@@ -125,7 +125,7 @@ impl ColumnBuilder {
             Dremio => todo!("Dremio"),
             Oracle => todo!("Oracle"),
             Datafusion => todo!("Datafusion"),
-            Fabric => Column::new(
+            Fabric => Column::new_boxed(
                 Fabric,
                 name,
                 dtype,
@@ -203,7 +203,7 @@ impl ColumnBuilder {
         })
     }
 
-    fn build_clickhouse(field: &FieldRef, type_ops: &dyn TypeOps) -> AdapterResult<Column> {
+    fn build_clickhouse(field: &FieldRef, type_ops: &dyn TypeOps) -> AdapterResult<Box<Column>> {
         use AdapterType::ClickHouse;
 
         let type_text = match original_type_string(ClickHouse, field) {
@@ -228,7 +228,7 @@ impl ColumnBuilder {
                 Self::clickhouse_numeric_precision_scale(field.data_type())?
             };
 
-        Ok(Column::new(
+        Ok(Column::new_boxed(
             ClickHouse,
             field.name().to_string(),
             type_text,
@@ -238,7 +238,7 @@ impl ColumnBuilder {
         ))
     }
 
-    fn build_fabric(field: &FieldRef, type_ops: &dyn TypeOps) -> Column {
+    fn build_fabric(field: &FieldRef, type_ops: &dyn TypeOps) -> Box<Column> {
         use AdapterType::Fabric;
         let data_type = field.data_type();
         let char_size = sql_types::var_size(Fabric, data_type);
@@ -261,7 +261,7 @@ impl ColumnBuilder {
             type_name_or_formatted = data_type.to_string();
         }
 
-        Column::new(
+        Column::new_boxed(
             Fabric,
             field.name().to_string(),
             type_name_or_formatted,
@@ -271,7 +271,7 @@ impl ColumnBuilder {
         )
     }
 
-    fn build_snowflake(field: &FieldRef, type_ops: &dyn TypeOps) -> Column {
+    fn build_snowflake(field: &FieldRef, type_ops: &dyn TypeOps) -> Box<Column> {
         use AdapterType::Snowflake;
         use sql_types::snowflake::*;
 
@@ -370,7 +370,7 @@ impl ColumnBuilder {
             _ => {}
         }
 
-        Column::new(
+        Column::new_boxed(
             Snowflake,
             field.name().to_string(),
             dtype,
@@ -383,7 +383,7 @@ impl ColumnBuilder {
     /// The logic from `get_column_schema_from_query` for BigQuery [1].
     ///
     /// [1] https://github.com/dbt-labs/dbt-adapters/blob/c16cc7047e8678f8bb88ae294f43da2c68e9f5cc/dbt-bigquery/src/dbt/adapters/bigquery/impl.py#L444
-    fn build_bigquery(field: &FieldRef, type_ops: &dyn TypeOps) -> Column {
+    fn build_bigquery(field: &FieldRef, type_ops: &dyn TypeOps) -> Box<Column> {
         let original_type_str = type_ops
             .get_original_sql_type_from_field(field)
             // FIXME: whats a good fallback here? This should technically never fail unless the
@@ -427,7 +427,7 @@ impl ColumnBuilder {
                     // only structs can have named fields
                     DataType::Struct(inner) => inner
                         .into_iter()
-                        .map(|f| Arc::new(Self::build_bigquery(f, type_ops)))
+                        .map(|f| Arc::from(Self::build_bigquery(f, type_ops)))
                         .collect(),
                     // we don't need to worry about nested lists because that is not supported by
                     // BigQuery
@@ -436,7 +436,7 @@ impl ColumnBuilder {
             }
             DataType::Struct(fields) => fields
                 .into_iter()
-                .map(|f| Arc::new(Self::build_bigquery(f, type_ops)))
+                .map(|f| Arc::from(Self::build_bigquery(f, type_ops)))
                 .collect(),
             _ => Vec::new(),
         };
@@ -449,7 +449,7 @@ impl ColumnBuilder {
         )
     }
 
-    fn build_databricks(field: &FieldRef, type_ops: &dyn TypeOps) -> AdapterResult<Column> {
+    fn build_databricks(field: &FieldRef, type_ops: &dyn TypeOps) -> AdapterResult<Box<Column>> {
         let name = field.name().to_string();
         let type_text = {
             let type_text = original_type_string(AdapterType::Databricks, field);
@@ -468,7 +468,7 @@ impl ColumnBuilder {
                 Cow::Owned(type_text)
             }
         };
-        Ok(Column::new(
+        Ok(Column::new_boxed(
             AdapterType::Databricks,
             name,
             type_text.to_string(),
@@ -478,7 +478,7 @@ impl ColumnBuilder {
         ))
     }
 
-    fn build_postgres_like(field: &FieldRef, type_ops: &dyn TypeOps) -> AdapterResult<Column> {
+    fn build_postgres_like(field: &FieldRef, type_ops: &dyn TypeOps) -> AdapterResult<Box<Column>> {
         let data_type_ref = field.data_type();
         let mut rendered_type = String::new();
         match data_type_ref {
@@ -509,7 +509,7 @@ impl ColumnBuilder {
                 None => (None, None),
             }
         };
-        Ok(Column::new(
+        Ok(Column::new_boxed(
             AdapterType::Postgres,
             field.name().to_string(),
             rendered_type,
@@ -524,7 +524,7 @@ impl ColumnBuilder {
     /// through the real formatter instead of a hardcoded "datetime" string,
     /// so a `WITH TIME ZONE` column keeps that information through the
     /// column round-trip instead of being collapsed to a naive timestamp.
-    fn build_duckdb(field: &FieldRef, type_ops: &dyn TypeOps) -> AdapterResult<Column> {
+    fn build_duckdb(field: &FieldRef, type_ops: &dyn TypeOps) -> AdapterResult<Box<Column>> {
         let adapter_type = type_ops.adapter_type();
         let data_type_ref = field.data_type();
         let mut rendered_type = String::new();
@@ -547,7 +547,7 @@ impl ColumnBuilder {
                 None => (None, None),
             }
         };
-        Ok(Column::new(
+        Ok(Column::new_boxed(
             adapter_type,
             field.name().to_string(),
             rendered_type,
@@ -557,7 +557,7 @@ impl ColumnBuilder {
         ))
     }
 
-    fn build_exasol(field: &FieldRef, type_ops: &dyn TypeOps) -> Column {
+    fn build_exasol(field: &FieldRef, type_ops: &dyn TypeOps) -> Box<Column> {
         use AdapterType::Exasol;
         let data_type = field.data_type();
         let char_size = sql_types::var_size(Exasol, data_type);
@@ -580,7 +580,7 @@ impl ColumnBuilder {
             rendered_type = data_type.to_string();
         }
 
-        Column::new(
+        Column::new_boxed(
             Exasol,
             field.name().to_string(),
             rendered_type,
@@ -590,7 +590,7 @@ impl ColumnBuilder {
         )
     }
 
-    fn build_redshift(field: &FieldRef, type_ops: &dyn TypeOps) -> Column {
+    fn build_redshift(field: &FieldRef, type_ops: &dyn TypeOps) -> Box<Column> {
         use AdapterType::Redshift;
         let data_type = field.data_type();
         let char_size = sql_types::var_size(Redshift, data_type);
@@ -624,7 +624,7 @@ impl ColumnBuilder {
             type_name_or_formatted
         };
 
-        Column::new(
+        Column::new_boxed(
             Redshift,
             field.name().to_string(),
             base_type_name, // dtype

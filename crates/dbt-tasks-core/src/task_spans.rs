@@ -378,6 +378,7 @@ fn update_node_processed_from_node_evaluated(sum_ev: &mut NodeProcessed, phase_e
         .map(|d| d.clone().into());
     sum_ev.last_phase = phase_ev.phase;
     sum_ev.rows_affected = phase_ev.rows_affected;
+    sum_ev.adapter_response = phase_ev.adapter_response.clone();
 }
 
 fn accumulate_node_processed_phase_duration(

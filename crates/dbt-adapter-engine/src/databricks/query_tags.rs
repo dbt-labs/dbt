@@ -7,8 +7,8 @@ use minijinja::State;
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::Options;
-use crate::AdapterType;
+use crate::Options;
+use dbt_adapter_core::AdapterType;
 
 const QUERY_TAG_OPTION_PREFIX: &str = "databricks.query_tag.";
 const DBT_CORE_VERSION: &str = "@@dbt_core_version";
@@ -18,7 +18,7 @@ const MAX_AUTOMATIC_VALUE_CHARS: usize = 128;
 const RESERVED_KEYS: [&str; 3] = [DBT_CORE_VERSION, DBT_MODEL_NAME, DBT_MATERIALIZED];
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(super) struct DatabricksQueryTags {
+pub struct DatabricksQueryTags {
     tags: IndexMap<String, String>,
 }
 
@@ -42,7 +42,7 @@ impl DatabricksQueryTags {
         Ok(Self { tags })
     }
 
-    pub(super) fn into_statement_options(self) -> Vec<(String, OptionValue)> {
+    pub fn into_statement_options(self) -> Vec<(String, OptionValue)> {
         self.tags
             .into_iter()
             .map(|(key, value)| {
@@ -55,7 +55,7 @@ impl DatabricksQueryTags {
     }
 }
 
-pub(super) fn query_tags_from_state(state: Option<&State>) -> AdapterResult<DatabricksQueryTags> {
+pub fn query_tags_from_state(state: Option<&State>) -> AdapterResult<DatabricksQueryTags> {
     let Some(node) = state.and_then(|state| state.lookup("model", &[])) else {
         return Ok(DatabricksQueryTags::default());
     };
@@ -64,7 +64,7 @@ pub(super) fn query_tags_from_state(state: Option<&State>) -> AdapterResult<Data
     query_tags_from_yaml_node(&yaml_node)
 }
 
-pub(crate) fn databricks_statement_options(
+pub fn databricks_statement_options(
     adapter_type: AdapterType,
     state: Option<&State>,
 ) -> AdapterResult<Options> {
@@ -198,8 +198,8 @@ mod tests {
         DatabricksQueryTags, QUERY_TAG_OPTION_PREFIX, databricks_statement_options,
         query_tags_from_state, query_tags_from_yaml_node,
     };
-    use crate::AdapterType;
     use adbc_core::options::OptionValue;
+    use dbt_adapter_core::AdapterType;
     use dbt_schemas::schemas::{
         AdapterAttr, DbtModel, DbtSeed, DbtSnapshot, DbtTest, DbtUnitTest,
         common::DbtMaterialization, manifest::DbtOperation, nodes::DatabricksAttr,

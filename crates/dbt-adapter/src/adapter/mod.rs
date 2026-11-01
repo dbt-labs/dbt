@@ -1626,7 +1626,7 @@ impl Adapter {
                 iter.finish()?;
 
                 let columns = adapter.get_missing_columns(state, &from_relation, &to_relation)?;
-                Ok(columns_to_value(columns))
+                Ok(columns_to_value_mut(columns))
             }
             Parse(_) => Ok(empty_mutable_vec_value()),
         }
@@ -1658,7 +1658,7 @@ impl Adapter {
                     )
                 } else {
                     let columns = adapter.get_columns_in_relation(state, relation)?;
-                    Ok(columns_to_value(columns))
+                    Ok(columns_to_value_mut(columns))
                 }
             }
             Parse(parse_adapter_state) => {

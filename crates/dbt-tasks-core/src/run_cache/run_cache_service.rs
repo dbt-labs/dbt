@@ -8288,6 +8288,7 @@ mod tests {
             _instruction: &'a dbt_scheduler::instructions::Instruction,
             _rendered_sql: &'a str,
             _unique_id: Option<&'a str>,
+            _adapter: Option<Arc<Adapter>>,
             _connection: &'a mut Option<Box<dyn dbt_adbc::Connection>>,
         ) -> Pin<Box<dyn Future<Output = FsResult<(Vec<RecordBatch>, SchemaRef)>> + Send + 'a>>
         {

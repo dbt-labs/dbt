@@ -20,7 +20,7 @@ use dbt_common::constants::RUNNING;
 use dbt_common::stats::{NodeStatus, Stat};
 use dbt_common::status_reporter::report_completed;
 use dbt_common::tracing::dbt_emit::{emit_error_log_from_fs_error, emit_warn_log_message};
-use dbt_common::tracing::span_info::find_and_update_span_attrs;
+use dbt_common::tracing::span_info::{find_and_update_span_attrs, update_span_attrs};
 use dbt_common::warn_error_options::WarnErrorOptions;
 use dbt_common::{ErrorCode, FsResult, fs_err};
 use dbt_schemas::schemas::common::Severity;
@@ -106,6 +106,8 @@ impl Task for RunTask {
         ctx: &'a mut TaskRunnerCtx,
     ) -> Pin<Box<dyn Future<Output = FsResult<NodeStatus>> + Send + 'a>> {
         Box::pin(async move {
+            // The visitor instruments this future with the node's `NodeEvaluated` span.
+            let task_span = tracing::Span::current();
             let unique_id = self.node.unique_id();
             let mut result_receiver = { self.result_receiver.lock().take() };
             let task_result = receive_task_result(&unique_id, &mut result_receiver)?;
@@ -538,10 +540,23 @@ impl Task for RunTask {
                 .await;
             }
 
+            // A node that errored, or was reported as errored, leaves it unset.
+            if matches!(&result, Ok(status) if !matches!(status, NodeStatus::Errored)) {
+                let adapter_response = ctx
+                    .inner
+                    .main_adapter_responses
+                    .read_sync(&unique_id, |_, response| response.to_telemetry());
+                update_span_attrs(&task_span, |attrs: &mut NodeEvaluated| {
+                    attrs.adapter_response = adapter_response;
+                });
+            }
+
             let mut span_rows_affected: Option<i64> = None;
+            let mut span_idle_time_ms: Option<u64> = None;
             find_and_update_span_attrs(|attrs: &mut NodeEvaluated| {
                 attrs.sao_enabled = Some(cache_enabled);
                 span_rows_affected = attrs.rows_affected.map(|n| n as i64);
+                span_idle_time_ms = attrs.idle_time_ms;
             });
 
             // Get status and insert stats
@@ -572,6 +587,7 @@ impl Task for RunTask {
                             ctx.thread_id,
                         );
                         stat.rows_affected = span_rows_affected;
+                        stat.idle_time_ms = span_idle_time_ms;
                         ctx.inner.run_stats.upsert_sync(unique_id.clone(), stat);
                     }
 
@@ -599,17 +615,16 @@ impl Task for RunTask {
                     }
 
                     // Insert stats for the error case so it appears in run_results.json
-                    ctx.inner.run_stats.upsert_sync(
+                    let mut stat = Stat::new(
                         unique_id.clone(),
-                        Stat::new(
-                            unique_id.clone(),
-                            start_time.into(),
-                            None,
-                            node_status.clone(),
-                            Some(error_message),
-                            ctx.thread_id,
-                        ),
+                        start_time.into(),
+                        None,
+                        node_status.clone(),
+                        Some(error_message),
+                        ctx.thread_id,
                     );
+                    stat.idle_time_ms = span_idle_time_ms;
+                    ctx.inner.run_stats.upsert_sync(unique_id.clone(), stat);
 
                     node_status
                 }

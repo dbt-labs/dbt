@@ -5,6 +5,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::mpsc;
 
+use dbt_adapter_core::AdapterType;
 use dbt_common::pretty_string::make_title;
 use dbt_common::stats::NodeStatus;
 use dbt_common::tracing::{
@@ -45,6 +46,7 @@ pub trait Showable: InternalDbtNodeAttributes {
 
 pub(super) async fn run_show<F>(
     ctx: &mut TaskRunnerCtx,
+    node: &dyn InternalDbtNodeAttributes,
     unique_id: &str,
     resource_label: &str,
     is_inline: bool,
@@ -66,7 +68,10 @@ where
         && matches!(ctx.inner.execute, Execute::Sidecar | Execute::Service)
         && ctx.is_sidecar();
 
-    let mut compile_ctx = make_show_compile_context(ctx)?;
+    let adapter_type = ctx.adapter_type_for(node);
+    let adapter = ctx.adapter_for(node)?;
+
+    let mut compile_ctx = make_show_compile_context(ctx, adapter_type)?;
     compile_ctx.insert(
         "compiled_code".to_string(),
         MinijinjaValue::from(query.as_str()),
@@ -143,6 +148,7 @@ where
                 &Instruction::Sql(sql_instruction),
                 &final_rendered_sql,
                 Some(unique_id),
+                Some(adapter),
                 &mut None,
             )
             .await
@@ -262,8 +268,13 @@ pub(super) fn rendered_sql_for(
         })
 }
 
-fn make_show_compile_context(ctx: &TaskRunnerCtx) -> FsResult<BTreeMap<String, MinijinjaValue>> {
-    Ok(ctx.inner.base_context.clone())
+fn make_show_compile_context(
+    ctx: &TaskRunnerCtx,
+    adapter_type: AdapterType,
+) -> FsResult<BTreeMap<String, MinijinjaValue>> {
+    let mut compile_ctx = ctx.inner.base_context.clone();
+    ctx.insert_adapter_overlay(&mut compile_ctx, adapter_type)?;
+    Ok(compile_ctx)
 }
 
 /// A task that shows the compiled SQL results for a node

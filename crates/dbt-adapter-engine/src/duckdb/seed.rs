@@ -14,7 +14,7 @@ use dbt_adbc::driver::Builder as DriverBuilder;
 use dbt_adbc::{Backend, Connection, Database, LoadStrategy, QueryCtx, database};
 use dbt_common::stdfs;
 
-use crate::AdapterResult;
+use crate::errors::AdapterResult;
 use crate::errors::{AdapterError, AdapterErrorKind, adbc_error_to_adapter_error};
 use crate::statement::DBT_NODE_ID;
 
@@ -170,7 +170,7 @@ pub(crate) fn get_duckdb_seed_writer() -> AdapterResult<&'static DuckDbSeedWrite
 /// `database.schema.table_name` with a `COPY` run by the target, which reads
 /// the file itself. A target that cannot read local files, such as MotherDuck
 /// with `motherduck_saas_mode`, needs [`ingest_seed_csv`] instead.
-pub(crate) fn copy_seed_csv(
+pub fn copy_seed_csv(
     conn: &mut dyn Connection,
     database: &str,
     schema: &str,
@@ -203,7 +203,7 @@ pub(crate) fn copy_seed_csv(
 /// (`31/12/2024`, `12/31/2024 01:45:00 PM`, ...) and casts values as `COPY`
 /// does. A TIMESTAMPTZ value without an offset is read in the reader's
 /// `TimeZone`, where `COPY` would use the target session's.
-pub(crate) fn ingest_seed_csv(
+pub fn ingest_seed_csv(
     ctx: &QueryCtx,
     conn: &mut dyn Connection,
     database: &str,

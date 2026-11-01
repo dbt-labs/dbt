@@ -71,6 +71,7 @@ members = [
   "crates/dbt-dist-classify",
   "crates/dbt-sa-adapter-tests",
   "crates/dbt-sa-cli",
+  "crates/dbt-pse",
   "crates/dbt-adbc",
   "crates/dbt-artifact-download",
   "crates/dbt-tracked-stmt",
@@ -242,6 +243,8 @@ opt-level = 3
 # https://doc.rust-lang.org/cargo/reference/specifying-dependencies.html#inheriting-a-dependency-from-a-workspace
 
 
+z3 = { version = "0.19.13", features = ["gh-release"] }
+
 # fs source available dependencies
 dbt-adapter = { path = "crates/dbt-adapter" }
 dbt-adapter-core = { path = "crates/dbt-adapter-core" }
@@ -297,6 +300,7 @@ dbt-pretty-table = { path = "crates/dbt-pretty-table" }
 dbt-proc-macros = { path = "crates/dbt-proc-macros" }
 dbt-profile = { path = "crates/dbt-profile" }
 dbt-profile-schemas = { path = "crates/dbt-profile-schemas" }
+dbt-pse = { path = "crates/dbt-pse" }
 dbt-python-core = { path = "crates/dbt-python-core" }
 dbt-runtime = { path = "crates/dbt-runtime" }
 dbt-runtime-macros = { path = "crates/dbt-runtime-macros" }

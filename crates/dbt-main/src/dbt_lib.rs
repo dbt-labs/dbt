@@ -41,7 +41,7 @@ use dbt_common::{
             get_error_count, return_exit_code_from_error_counter,
         },
         emit::emit_info_event,
-        invocation::create_invocation_attributes,
+        invocation::{create_invocation_attributes, record_resolved_full_refresh},
         metrics::get_metric,
         span_info::record_span_status,
     },
@@ -825,6 +825,7 @@ impl<'a> AllPhasesExecutor<'a> {
             arg_for_retry.command = command_for_retry.as_command();
             arg_for_retry.static_analysis = effective_sa;
             arg_for_retry.full_refresh = retry_state.original_full_refresh;
+            record_resolved_full_refresh(retry_state.original_full_refresh);
 
             // Create a custom schedule for the retryable nodes from the original run.
             // This keeps retry bounded to nodes recorded in run_results.json instead
@@ -1797,6 +1798,7 @@ impl<'a> AllPhasesExecutor<'a> {
                                         unique_id: uid.clone(),
                                         num_rows: None,
                                         rows_affected: None,
+                                        idle_time_ms: None,
                                         start_time: now,
                                         end_time: now,
                                         status: dbt_common::stats::NodeStatus::Errored,

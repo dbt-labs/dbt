@@ -414,6 +414,7 @@ impl NodeEvaluated {
             None, // rows_affected
             None, // idle_time_ms
             None, // state_decision_id
+            None, // adapter_response
             None, // node_outcome_detail
         )
     }
@@ -535,6 +536,7 @@ impl NodeProcessed {
             None, // node_count_total assigned by the span builder at start of processing
             None, // adapter
             None, // plugin_type
+            None, // adapter_response
             None, // node_outcome_detail
         )
     }

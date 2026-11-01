@@ -347,9 +347,15 @@ where
             MinijinjaValue::from(jinja_path.to_string_lossy().into_owned()),
         );
     }
+    // Unit tests have no batch window. Models still need the placeholder for
+    // their pre-batch render; microbatch execution installs the real window.
     model_map.insert(
         MinijinjaValue::from("batch"),
-        MinijinjaValue::from_object(init_batch_context()),
+        if model.resource_type() == NodeType::UnitTest {
+            MinijinjaValue::from(())
+        } else {
+            MinijinjaValue::from_object(init_batch_context())
+        },
     );
 
     let result_store = ResultStore::default();
