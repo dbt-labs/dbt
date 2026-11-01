@@ -1,0 +1,7 @@
+kind: Fixes
+body: Sort `dbt debug` connection keys alphabetically so account and warehouse appear in a deterministic order.
+time: 2026-10-23T00:15:00.000000+00:00
+custom:
+    author: mahesh-desu
+    issue: "13626"
+    project: dbt-core
