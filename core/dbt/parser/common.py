@@ -57,6 +57,17 @@ resource_types_to_schema_file_keys = {
 schema_file_keys = list(schema_file_keys_to_resource_types.keys())
 
 
+def normalize_tags(*sources: Union[List[str], str, None], sort: bool = False) -> List[str]:
+    """Return a deduplicated list of tags from all sources, preserving order unless sort is set."""
+    tags: List[str] = []
+    for source in sources:
+        if source is None:
+            continue
+        tags.extend([source] if isinstance(source, str) else source)
+    unique_tags = list(dict.fromkeys(tags))
+    return sorted(unique_tags) if sort else unique_tags
+
+
 def trimmed(inp: str) -> str:
     if len(inp) < 50:
         return inp

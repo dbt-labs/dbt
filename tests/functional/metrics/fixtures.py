@@ -114,6 +114,88 @@ models:
         granularity: day
 """
 
+models_people_metrics_shared_tag_yml = """
+version: 2
+
+metrics:
+
+  - name: number_of_people
+    label: "Number of people"
+    description: Total count of people
+    type: simple
+    type_params:
+      measure: people
+    time_granularity: month
+    config:
+      tags:
+        - shared_tag
+
+"""
+
+models_people_metrics_top_level_tags_yml = """
+version: 2
+
+metrics:
+
+  - name: number_of_people
+    label: "Number of people"
+    description: Total count of people
+    type: simple
+    type_params:
+      measure: people
+    time_granularity: month
+    tags:
+      - top_level_tag
+
+"""
+
+models_people_metrics_tags_yml = """
+version: 2
+
+metrics:
+
+  - name: number_of_people
+    label: "Number of people"
+    description: Total count of people
+    type: simple
+    type_params:
+      measure: people
+    time_granularity: month
+    config:
+      tags:
+        - yaml_tag
+
+  - name: collective_tenure
+    label: "Collective tenure"
+    description: Total number of years of team experience
+    type: simple
+    type_params:
+      measure:
+        name: years_tenure
+        filter: "{{ Dimension('id__loves_dbt') }} is true"
+        join_to_timespine: true
+        fill_nulls_with: 0
+
+  - name: average_tenure
+    label: Average Tenure
+    description: The average tenure of our people
+    type: ratio
+    type_params:
+      numerator: collective_tenure
+      denominator: number_of_people
+
+  - name: average_tenure_minus_people
+    label: Average Tenure minus People
+    description: Well this isn't really useful is it?
+    type: derived
+    type_params:
+      expr: average_tenure - number_of_people
+      metrics:
+        - average_tenure
+        - number_of_people
+
+"""
+
 models_people_metrics_yml = """
 version: 2
 

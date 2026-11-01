@@ -14,6 +14,9 @@ from tests.functional.semantic_models.fixtures import (
     semantic_model_dimensions_entities_measures_meta_config,
     semantic_model_meta_clobbering_yml,
     semantic_model_people_yml,
+    base_schema_yml_v2,
+    fct_revenue_sql,
+    schema_yml_v2_metric_with_config_tags,
 )
 
 
@@ -313,3 +316,23 @@ class TestMetaConfigClobbering:
             "model_level": "should_be_inherited",
             "component_level": "should_be_overridden",
         }
+
+
+class TestV2MetricTagsConfig:
+    @pytest.fixture(scope="class")
+    def models(self):
+        return {
+            "fct_revenue.sql": fct_revenue_sql,
+            "metricflow_time_spine.sql": metricflow_time_spine_sql,
+            "schema.yml": base_schema_yml_v2 + schema_yml_v2_metric_with_config_tags,
+        }
+
+    def test_v2_metric_config_tags(self, project):
+        run_dbt(["parse"])
+        manifest = get_manifest(project.project_root)
+        metric = manifest.metrics.get("metric.test.simple_metric_with_tag")
+        assert metric is not None, "V2 metric 'simple_metric_with_tag' not found in manifest"
+        assert isinstance(metric.tags, list)
+        assert metric.tags == ["v2_yaml_tag"], f"Expected ['v2_yaml_tag'], got {metric.tags}"
+        assert metric.config.tags == ["v2_yaml_tag"]
+
