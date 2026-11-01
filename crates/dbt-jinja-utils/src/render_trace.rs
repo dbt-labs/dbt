@@ -981,4 +981,73 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn fallback_render_discards_intermediate_provenance_and_restores_positions() {
+        for default_tracker in [false, true] {
+            for (source, expected) in [
+                ("A{{ render('B') }}C", "ABC"),
+                ("A{{ render('B') | lower }}C", "AbC"),
+                ("A{{ render('') }}C", "AC"),
+                ("A{{ render('λ') }}C", "AλC"),
+                (
+                    "A{% set x %}{{ render('B') }}{% endset %}{{ x | lower }}C",
+                    "AbC",
+                ),
+                (r#"A{{ render("{{ render('B') }}") }}C"#, "ABC"),
+            ] {
+                let trace = render_templates(source, &[], default_tracker);
+                assert_eq!(trace.rendered, expected);
+                let literals: String = trace
+                    .events
+                    .iter()
+                    .filter(|event| event.kind == "literal")
+                    .map(|event| &trace.source[event.source_start..event.source_end])
+                    .collect();
+                assert_eq!(literals, "AC");
+                let last = trace
+                    .events
+                    .iter()
+                    .rev()
+                    .find(|event| event.kind == "literal")
+                    .unwrap();
+                assert_eq!(last.rendered_start, expected.len() - 1);
+                assert_eq!(last.rendered_end, expected.len());
+            }
+        }
+    }
+
+    #[test]
+    fn failed_fallback_render_restores_the_callers_tracker() {
+        for default_tracker in [false, true] {
+            let observer = Rc::new(RenderTraceListener::new(Path::new("model.sql")));
+            let mut listeners: Vec<Rc<dyn RenderingEventListener>> = default_tracker
+                .then(|| {
+                    Rc::new(crate::listener::DefaultRenderingEventListener::default())
+                        as Rc<dyn RenderingEventListener>
+                })
+                .into_iter()
+                .collect();
+            listeners.push(observer.clone());
+            let error = Environment::new()
+                .render_named_str(
+                    "model.sql",
+                    "A{{ render('B{{ missing() }}') }}C",
+                    (),
+                    &listeners,
+                )
+                .unwrap_err();
+            assert_eq!(error.kind(), minijinja::ErrorKind::UnknownFunction);
+            assert_eq!(observer.position(), 1);
+            assert!(observer.templates.borrow().is_empty());
+            assert!(observer.buffers.borrow().is_empty());
+            assert!(
+                observer
+                    .events
+                    .borrow()
+                    .iter()
+                    .all(|event| event.rendered_end <= 1)
+            );
+        }
+    }
 }

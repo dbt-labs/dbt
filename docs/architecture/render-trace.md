@@ -69,6 +69,12 @@ emission describes their final output. Direct `super()` output follows the same
 rule: parent bytes remain generated, while captured/filtered calls are covered
 by their eventual expression. The fast path also closes its expression frame
 so the default macro-span listener remains balanced.
+MiniJinja's fallback `render()` likewise returns an intermediate string: nested
+callbacks still run, but their trace events are discarded and shared output
+positions are restored on success and error. Only the eventual enclosing
+expression describes the generated string, including filtered/captured values.
+dbt's registered `render()` function already renders its intermediate value
+without listeners; its behaviour is unchanged.
 
 Named blocks render into temporary buffers. Their events are rebased when the
 buffer is appended directly, and the enclosing tracker is restored even on an
@@ -116,6 +122,26 @@ Before treating this as stable, agree the schema, validate warehouse-dependent
 macros and both shipped distributions, measure overhead, and extend the cache
 and source-rewriting cases as needed.
 
+## Effects on ordinary rendering
+
+The export flag controls artifact generation and the extra observer. Several
+shared renderer corrections also apply with the flag disabled:
+
+- A first-item `break` no longer runs a loop's `else` body. The VM separately
+  records whether an item was visited, rather than inferring emptiness from
+  the zero-based iteration index. This changes previously incorrect SQL output.
+- The optimized direct `super()` path closes its expression frame, keeping
+  existing macro-span listener bookkeeping balanced.
+- Temporary renders restore shared output positions before their values are
+  emitted. This corrects positions seen by existing listeners without changing
+  the intended SQL text, including captured/transformed values.
+- Raw-block token spans cover the payload after whitespace control. The emitted
+  text is unchanged; source locations now exclude stripped whitespace.
+
+These changes merit review independently of the experimental artifact schema.
+Normal/traced output comparisons cover the renderer matrices, including the
+first-item break and inherited-block cases.
+
 ## Executable format example
 
 See the six-line [SQL/Jinja input](../../crates/dbt-tasks-sa/tests/fixtures/render_trace/example.sql)
@@ -154,7 +180,9 @@ multiple inheritance levels with child overrides, both tracker configurations,
 observer-only explicit returns, and restoration after buffered-render errors.
 Additional matrices check direct/nested/empty includes, ignored missing files,
 returned include values, captures/imports, and direct/filtered/captured/repeated
-`super()` calls using both default and observer-only trackers.
+`super()` calls using both default and observer-only trackers. Fallback `render()`
+tests cover direct, filtered, empty, Unicode, captured and nested strings, plus
+tracker restoration after a nested render fails.
 The shared unit-test assertions check ranges, literal equality, balanced layout
 and output coverage across the existing renderer regression examples.
 
@@ -167,7 +195,7 @@ The executable JSON fixture above remains the complete format example.
 
 Checked on Windows x86-64, Python 3.13.5 and Rust stable 1.98.1:
 
-- All 180 `dbt-jinja-utils` and 152 MiniJinja library tests passed, along with
+- All 182 `dbt-jinja-utils` and 152 MiniJinja library tests passed, along with
   82 compiler/render integration tests.
 - All 34 Python exporter integrations passed: the 31-case regression matrix
   and the three existing project/artifact tests. These use the ABI3 runtime
@@ -176,6 +204,13 @@ Checked on Windows x86-64, Python 3.13.5 and Rust stable 1.98.1:
   runtime, including real CLI source fixes and parallel-worker integration.
 - The complete golden JSON example comparison passed.
 - Rust formatting, Python test lint/format and diff whitespace checks passed.
+
+The fallback `render()` follow-up re-ran the 182 renderer-library tests, 152
+MiniJinja library tests, 82 renderer integrations and golden JSON comparison.
+The Python exporter and SQLFluff checks above used the earlier `3116b9498`
+runtime; a wheel was not rebuilt for this final follow-up. dbt's registered
+`render()` path is unchanged, and both default/observer-only fallback paths
+are checked by the native regressions.
 
 This debug build required `RUST_LOG=debug` and `DBT_LOG_LEVEL=debug` to keep
 upstream tracing spans enabled. Without them, the ordinary untraced Python

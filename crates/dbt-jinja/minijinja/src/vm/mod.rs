@@ -1511,7 +1511,23 @@ impl<'env> Vm<'env> {
                     } else if *name == "render" {
                         let raw = args[0].as_str().unwrap_or_default();
                         let template = state.env().template_from_str(raw)?;
-                        let rendered_sql = template.render(state.get_base_context(), listeners)?;
+                        // render() returns an intermediate string. Preserve listener
+                        // callbacks, but rewind any shared tracker and discard trace
+                        // events before the enclosing expression emits that value.
+                        let rendered_sql = {
+                            let _checkpoint = OutputLocation {
+                                location: output_location.location.clone(),
+                                checkpoint: Some(output_location.location.as_ref().clone()),
+                            };
+                            for listener in listeners {
+                                listener.on_output_buffer_start();
+                            }
+                            let result = template.render(state.get_base_context(), listeners);
+                            for listener in listeners {
+                                listener.on_output_buffer_end(false);
+                            }
+                            result?
+                        };
                         Value::from(rendered_sql)
                     } else {
                         return Err(state.with_span_error(
