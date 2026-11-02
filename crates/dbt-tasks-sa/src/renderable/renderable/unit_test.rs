@@ -23,7 +23,7 @@ use dbt_common::io_args::{ReplayMode, TimeMachineMode};
 use dbt_common::static_analysis::is_static_analysis_off_or_baseline;
 use dbt_common::stats::NodeStatus;
 use dbt_common::stdfs;
-use dbt_common::{ErrorCode, FsResult, MacroSpansOnly, err, fs_err};
+use dbt_common::{ErrorCode, FsResult, MacroSpan, MacroSpansOnly, err, fs_err};
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::phases::compile::DependencyValidationConfig;
 use dbt_jinja_utils::phases::run::build_run_node_context;
@@ -1480,8 +1480,6 @@ fn render_unit_test(
         ctx.inner.arg.io.in_dir.as_path(),
         ctx.inner.arg.io.out_dir.as_path(),
     );
-    let new_macro_span_name = format!("{}.macro_spans.json", node.__common_attr__.name);
-    let absolute_path_macro_span = absolute_path_unit_test.with_file_name(&new_macro_span_name);
     let relative_path_unit_test = absolute_path_unit_test
         .strip_prefix(&ctx.inner.arg.io.out_dir)
         .map(Path::to_path_buf)
@@ -1946,17 +1944,16 @@ WITH
     let rendered_sql =
         replace_subquery_refs_with_cte_names(adapter_type, type_ops, rendered_sql, &subqueries);
 
-    validate_local_unit_test_sql(adapter_type, effective_execute, &rendered_sql)
-        .map_err(|error| error.with_location(original_file_path.to_path_buf()))?;
-
-    stdfs::create_dir_all(absolute_path_unit_test.parent().unwrap())?;
-    stdfs::write(&absolute_path_unit_test, &rendered_sql)?;
-
     // todo: the macro spans are off: render the whole query, not just the actual sql model
     let macro_spans = macro_spans_to_macro_span_vec(&macro_spans);
-    stdfs::write(
-        absolute_path_macro_span,
-        serde_json::to_string_pretty(&macro_spans).unwrap(),
+    write_unit_test_artifacts(
+        adapter_type,
+        effective_execute,
+        &rendered_sql,
+        original_file_path,
+        &absolute_path_unit_test,
+        &node.__common_attr__.name,
+        &macro_spans,
     )?;
 
     Ok((
@@ -1972,6 +1969,86 @@ WITH
         },
         config_map,
     ))
+}
+
+fn write_unit_test_artifacts(
+    adapter_type: AdapterType,
+    execute: schemas::profiles::Execute,
+    sql: &str,
+    original_file_path: &Path,
+    compiled_path: &Path,
+    unit_test_name: &str,
+    macro_spans: &[MacroSpan],
+) -> FsResult<()> {
+    validate_local_unit_test_sql(adapter_type, execute, sql)
+        .map_err(|error| error.with_location(original_file_path.to_path_buf()))?;
+    stdfs::create_dir_all(compiled_path.parent().unwrap())?;
+    stdfs::write(compiled_path, sql)?;
+    stdfs::write(
+        compiled_path.with_file_name(format!("{unit_test_name}.macro_spans.json")),
+        serde_json::to_string_pretty(macro_spans).unwrap(),
+    )?;
+    Ok(())
+}
+
+fn has_asof_join_candidate(tokens: &[Token]) -> bool {
+    let mut previous_asof = false;
+    tokens
+        .iter()
+        .filter(|token| !matches!(token, Token::Whitespace(_)))
+        .any(|token| {
+            let is_join = matches!(token, Token::Word(word) if word.keyword == Keyword::JOIN);
+            let candidate = previous_asof && is_join;
+            previous_asof = matches!(token, Token::Word(word) if word.keyword == Keyword::ASOF);
+            candidate
+        })
+}
+
+struct AsOfJoinVisitor;
+
+impl AsOfJoinVisitor {
+    fn visit_body(body: &SetExpr) -> ControlFlow<()> {
+        match body {
+            SetExpr::Select(select) => {
+                if select.from.iter().any(|table| {
+                    table
+                        .joins
+                        .iter()
+                        .any(|join| matches!(join.join_operator, JoinOperator::AsOf { .. }))
+                }) {
+                    return ControlFlow::Break(());
+                }
+            }
+            SetExpr::SetOperation { left, right, .. } => {
+                Self::visit_body(left)?;
+                Self::visit_body(right)?;
+            }
+            _ => {}
+        }
+        ControlFlow::Continue(())
+    }
+}
+
+impl Visitor for AsOfJoinVisitor {
+    type Break = ();
+
+    fn pre_visit_query(&mut self, query: &Query) -> ControlFlow<Self::Break> {
+        Self::visit_body(&query.body)
+    }
+
+    fn pre_visit_table_factor(&mut self, table: &TableFactor) -> ControlFlow<Self::Break> {
+        if let TableFactor::NestedJoin {
+            table_with_joins, ..
+        } = table
+            && table_with_joins
+                .joins
+                .iter()
+                .any(|join| matches!(join.join_operator, JoinOperator::AsOf { .. }))
+        {
+            return ControlFlow::Break(());
+        }
+        ControlFlow::Continue(())
+    }
 }
 
 fn validate_local_unit_test_sql(
@@ -1990,17 +2067,7 @@ fn validate_local_unit_test_sql(
             "Unable to tokenize SQL for local unit test execution: {error}"
         )
     })?;
-    let mut previous_asof = false;
-    let candidate = tokens
-        .iter()
-        .filter(|token| !matches!(token, Token::Whitespace(_)))
-        .any(|token| {
-            let is_join = matches!(token, Token::Word(word) if word.keyword == Keyword::JOIN);
-            let candidate = previous_asof && is_join;
-            previous_asof = matches!(token, Token::Word(word) if word.keyword == Keyword::ASOF);
-            candidate
-        });
-    if !candidate {
+    if !has_asof_join_candidate(&tokens) {
         return Ok(());
     }
 
@@ -2011,48 +2078,6 @@ fn validate_local_unit_test_sql(
             "Unable to check ASOF JOIN support for local unit test execution: {error}"
         )
     })?;
-    struct AsOfJoinVisitor;
-    impl Visitor for AsOfJoinVisitor {
-        type Break = ();
-
-        fn pre_visit_query(&mut self, query: &Query) -> ControlFlow<Self::Break> {
-            fn visit_body(body: &SetExpr) -> ControlFlow<()> {
-                match body {
-                    SetExpr::Select(select) => {
-                        if select.from.iter().any(|table| {
-                            table
-                                .joins
-                                .iter()
-                                .any(|join| matches!(join.join_operator, JoinOperator::AsOf { .. }))
-                        }) {
-                            return ControlFlow::Break(());
-                        }
-                    }
-                    SetExpr::SetOperation { left, right, .. } => {
-                        visit_body(left)?;
-                        visit_body(right)?;
-                    }
-                    _ => {}
-                }
-                ControlFlow::Continue(())
-            }
-            visit_body(&query.body)
-        }
-
-        fn pre_visit_table_factor(&mut self, table: &TableFactor) -> ControlFlow<Self::Break> {
-            if let TableFactor::NestedJoin {
-                table_with_joins, ..
-            } = table
-                && table_with_joins
-                    .joins
-                    .iter()
-                    .any(|join| matches!(join.join_operator, JoinOperator::AsOf { .. }))
-            {
-                return ControlFlow::Break(());
-            }
-            ControlFlow::Continue(())
-        }
-    }
     if statements.visit(&mut AsOfJoinVisitor).is_break() {
         return Err(fs_err!(
             ErrorCode::SidecarUnsupportedFeature,
