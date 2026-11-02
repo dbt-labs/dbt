@@ -1995,7 +1995,7 @@ impl serde::Serialize for NodeProcessed {
         if self.adapter.is_some() {
             len += 1;
         }
-        if self.plugin_type.is_some() {
+        if self.experimental_type.is_some() {
             len += 1;
         }
         if self.adapter_response.is_some() {
@@ -2109,8 +2109,8 @@ impl serde::Serialize for NodeProcessed {
         if let Some(v) = self.adapter.as_ref() {
             struct_ser.serialize_field("adapter", v)?;
         }
-        if let Some(v) = self.plugin_type.as_ref() {
-            struct_ser.serialize_field("plugin_type", v)?;
+        if let Some(v) = self.experimental_type.as_ref() {
+            struct_ser.serialize_field("experimental_type", v)?;
         }
         if let Some(v) = self.adapter_response.as_ref() {
             struct_ser.serialize_field("adapter_response", v)?;
@@ -2193,8 +2193,8 @@ impl<'de> serde::Deserialize<'de> for NodeProcessed {
             "node_count_total",
             "nodeCountTotal",
             "adapter",
-            "plugin_type",
-            "pluginType",
+            "experimental_type",
+            "experimentalType",
             "adapter_response",
             "adapterResponse",
             "node_cache_detail",
@@ -2239,7 +2239,7 @@ impl<'de> serde::Deserialize<'de> for NodeProcessed {
             NodeIndex,
             NodeCountTotal,
             Adapter,
-            PluginType,
+            ExperimentalType,
             AdapterResponse,
             NodeCacheDetail,
             NodeTestDetail,
@@ -2296,7 +2296,7 @@ impl<'de> serde::Deserialize<'de> for NodeProcessed {
                             "nodeIndex" | "node_index" => Ok(GeneratedField::NodeIndex),
                             "nodeCountTotal" | "node_count_total" => Ok(GeneratedField::NodeCountTotal),
                             "adapter" => Ok(GeneratedField::Adapter),
-                            "pluginType" | "plugin_type" => Ok(GeneratedField::PluginType),
+                            "experimentalType" | "experimental_type" => Ok(GeneratedField::ExperimentalType),
                             "adapterResponse" | "adapter_response" => Ok(GeneratedField::AdapterResponse),
                             "nodeCacheDetail" | "node_cache_detail" => Ok(GeneratedField::NodeCacheDetail),
                             "nodeTestDetail" | "node_test_detail" => Ok(GeneratedField::NodeTestDetail),
@@ -2350,7 +2350,7 @@ impl<'de> serde::Deserialize<'de> for NodeProcessed {
                 let mut node_index__ = None;
                 let mut node_count_total__ = None;
                 let mut adapter__ = None;
-                let mut plugin_type__ = None;
+                let mut experimental_type__ = None;
                 let mut adapter_response__ = None;
                 let mut node_outcome_detail__ = None;
                 while let Some(k) = map_.next_key()? {
@@ -2537,11 +2537,11 @@ impl<'de> serde::Deserialize<'de> for NodeProcessed {
                             }
                             adapter__ = map_.next_value()?;
                         }
-                        GeneratedField::PluginType => {
-                            if plugin_type__.is_some() {
-                                return Err(serde::de::Error::duplicate_field("pluginType"));
+                        GeneratedField::ExperimentalType => {
+                            if experimental_type__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("experimentalType"));
                             }
-                            plugin_type__ = map_.next_value()?;
+                            experimental_type__ = map_.next_value()?;
                         }
                         GeneratedField::AdapterResponse => {
                             if adapter_response__.is_some() {
@@ -2618,7 +2618,7 @@ impl<'de> serde::Deserialize<'de> for NodeProcessed {
                     node_index: node_index__,
                     node_count_total: node_count_total__,
                     adapter: adapter__,
-                    plugin_type: plugin_type__,
+                    experimental_type: experimental_type__,
                     adapter_response: adapter_response__,
                     node_outcome_detail: node_outcome_detail__,
                 })
@@ -2830,7 +2830,7 @@ impl serde::Serialize for NodeType {
             Self::SemanticModel => "NODE_TYPE_SEMANTIC_MODEL",
             Self::Function => "NODE_TYPE_FUNCTION",
             Self::Check => "NODE_TYPE_CHECK",
-            Self::Plugin => "NODE_TYPE_PLUGIN",
+            Self::Experimental => "NODE_TYPE_EXPERIMENTAL",
         };
         serializer.serialize_str(variant)
     }
@@ -2859,7 +2859,7 @@ impl<'de> serde::Deserialize<'de> for NodeType {
             "NODE_TYPE_SEMANTIC_MODEL",
             "NODE_TYPE_FUNCTION",
             "NODE_TYPE_CHECK",
-            "NODE_TYPE_PLUGIN",
+            "NODE_TYPE_EXPERIMENTAL",
         ];
 
         struct GeneratedVisitor;
@@ -2917,7 +2917,7 @@ impl<'de> serde::Deserialize<'de> for NodeType {
                     "NODE_TYPE_SEMANTIC_MODEL" => Ok(NodeType::SemanticModel),
                     "NODE_TYPE_FUNCTION" => Ok(NodeType::Function),
                     "NODE_TYPE_CHECK" => Ok(NodeType::Check),
-                    "NODE_TYPE_PLUGIN" => Ok(NodeType::Plugin),
+                    "NODE_TYPE_EXPERIMENTAL" => Ok(NodeType::Experimental),
                     _ => Err(serde::de::Error::unknown_variant(value, FIELDS)),
                 }
             }

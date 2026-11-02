@@ -179,6 +179,10 @@ pub enum ErrorCode {
     PackageMissingProjectFile = 1158,
     DbtYamlValidationError = 1159,
     CleanTargetOutsideProject = 1160,
+    /// A project or package defines a `unit` materialization or a
+    /// `get_unit_test_sql` macro. Fusion builds unit-test SQL in Rust and never
+    /// dispatches through either, so the override has no effect.
+    UnitTestMacroOverrideIgnored = 1161,
 
     // Network/HTTP [1200–1249]
     NetworkError = 1200,
@@ -374,20 +378,20 @@ pub enum ErrorCode {
     SkillPathEscapesProject = 1806,
 
     // --------------------------------------------------------------------------------------------
-    // Plugins
-    /// An error a plugin reported. Plugins never report under any other code.
-    PluginError = 1900,
-    /// A warning a plugin reported. Plugins never report under any other code.
-    PluginWarning = 1901,
-    /// A project gives entries or paths to a reserved plugin type whose plugin is off, or that
-    /// this dbt doesn't have. dbt ignores them.
-    PluginNotEnabled = 1902,
-    /// A project gives entries or paths to a plugin type no one reserved. dbt ignores them.
-    UnknownPlugin = 1903,
-    /// A `plugin-paths` entry overlaps a directory dbt reads, or another plugin's.
-    PluginPathOverlap = 1904,
-    /// A `plugin-paths` entry resolves outside the project that declared it. dbt skips it.
-    PluginPathEscapesProject = 1905,
+    // Experimentals
+    /// An error an experimental reported. Experimentals never report under any other code.
+    ExperimentalError = 1900,
+    /// A warning an experimental reported. Experimentals never report under any other code.
+    ExperimentalWarning = 1901,
+    /// A project gives entries or paths to a reserved experimental type whose experimental is off,
+    /// or that this dbt doesn't have. dbt ignores them.
+    ExperimentalNotEnabled = 1902,
+    /// A project gives entries or paths to an experimental type no one reserved. dbt ignores them.
+    UnknownExperimental = 1903,
+    /// An `experimental-paths` entry overlaps a directory dbt reads, or another experimental's.
+    ExperimentalPathOverlap = 1904,
+    /// An `experimental-paths` entry resolves outside the project that declared it. dbt skips it.
+    ExperimentalPathEscapesProject = 1905,
 
     // --------------------------------------------------------------------------------------------
     // Local execution

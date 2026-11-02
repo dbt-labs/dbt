@@ -152,10 +152,10 @@ pub struct DbtProject {
     pub docs_paths: Option<Vec<String>>,
     #[serde(rename = "skill-paths")]
     pub skill_paths: Option<Vec<String>>,
-    /// Directories whose files belong to a plugin, by plugin type. There is no default: a plugin
-    /// reads only the paths a project names for it.
-    #[serde(rename = "plugin-paths")]
-    pub plugin_paths: Option<BTreeMap<String, Vec<String>>>,
+    /// Directories whose files belong to an experimental, by experimental type. There is no
+    /// default: an experimental reads only the paths a project names for it.
+    #[serde(rename = "experimental-paths")]
+    pub experimental_paths: Option<BTreeMap<String, Vec<String>>>,
     #[serde(rename = "target-path")]
     pub target_path: Option<TargetPath>,
     #[serde(rename = "log-path")]
@@ -231,7 +231,7 @@ impl Default for DbtProject {
             check_paths: None,
             docs_paths: None,
             skill_paths: None,
-            plugin_paths: None,
+            experimental_paths: None,
             target_path: None,
             log_path: None,
             packages_install_path: None,
@@ -530,7 +530,7 @@ mod tests {
             check_paths: Some(vec![]),
             docs_paths: Some(vec![]),
             skill_paths: Some(vec![]),
-            plugin_paths: None,
+            experimental_paths: None,
             target_path: Some(TargetPath::Target),
             log_path: Some(LogPath::Logs),
             packages_install_path: Some("packages".to_string()),

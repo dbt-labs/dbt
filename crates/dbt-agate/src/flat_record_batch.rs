@@ -527,13 +527,16 @@ pub(crate) struct FlatRecordBatch {
 
 impl FlatRecordBatch {
     pub fn try_new(batch: Arc<RecordBatch>) -> Result<Self, ArrowError> {
-        let flat = Arc::new(flatten_record_batch_columns(batch.as_ref()));
-        Self::_from_flattened_record_batch(flat, Some(batch))
+        Self::try_new_impl(batch, None)
     }
 
-    pub(crate) fn with_original(mut self, original: Arc<RecordBatch>) -> Self {
-        self.original = Some(original);
-        self
+    pub fn try_new_impl(
+        batch: Arc<RecordBatch>,
+        original: Option<Arc<RecordBatch>>,
+    ) -> Result<Self, ArrowError> {
+        let flat = Arc::new(flatten_record_batch_columns(batch.as_ref()));
+        let original = original.or_else(|| Some(batch));
+        Self::_from_flattened_record_batch(flat, original)
     }
 
     pub(crate) fn _from_flattened_record_batch(

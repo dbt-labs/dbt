@@ -12,6 +12,7 @@ use crate::runnable::test::{
     process_statically_checked_test_result, record_test_metric, record_test_span_with_detail,
     reported_test_verdict_from_components, status_with_warn_error_overrides,
 };
+use dbt_adapter::response::AdapterResponse;
 use dbt_adapter::time_machine::{
     RecordedCachedTestResult, SaoStatus, global_recorder, global_replayer, is_replaying,
 };
@@ -540,16 +541,33 @@ impl Task for RunTask {
                 .await;
             }
 
-            // A node that errored, or was reported as errored, leaves it unset.
-            if matches!(&result, Ok(status) if !matches!(status, NodeStatus::Errored)) {
-                let adapter_response = ctx
-                    .inner
-                    .main_adapter_responses
-                    .read_sync(&unique_id, |_, response| response.to_telemetry());
-                update_span_attrs(&task_span, |attrs: &mut NodeEvaluated| {
-                    attrs.adapter_response = adapter_response;
-                });
+            // The span carries what `RunModel` sends. A materialization that fails before
+            // recording a `main` response leaves both unset. A failed microbatch batch returns
+            // above before this runs, so that model reports neither, even when an earlier
+            // batch recorded a response.
+            let is_microbatch = try_get_microbatch_model(self.node.as_ref()).is_some();
+            let metrics = node_execution_metrics(
+                is_microbatch,
+                &unique_id,
+                &ctx.inner.microbatch_execution_metrics,
+                &ctx.inner.main_adapter_responses,
+            );
+            // A negative count is an adapter's unknown sentinel.
+            let rows_affected = metrics
+                .and_then(|metrics| metrics.rows_affected)
+                .and_then(|rows| u64::try_from(rows).ok());
+            let mut response = ctx
+                .inner
+                .main_adapter_responses
+                .read_sync(&unique_id, |_, response| response.clone());
+            // A microbatch model reports the metric totals over its batches.
+            if let (true, Some(metrics)) = (is_microbatch, metrics) {
+                response = response.map(|response| response.with_execution_metrics(&metrics));
             }
+            update_span_attrs(&task_span, |attrs: &mut NodeEvaluated| {
+                attrs.rows_affected = rows_affected;
+                attrs.adapter_response = response.as_ref().map(AdapterResponse::to_telemetry);
+            });
 
             let mut span_rows_affected: Option<i64> = None;
             let mut span_idle_time_ms: Option<u64> = None;
