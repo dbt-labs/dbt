@@ -386,8 +386,12 @@ pub struct NodeEvaluated {
     /// Optional legacy dbt core event code (e.g. "Q018") if this event has a strict mapping to a dbt core event.
     #[prost(string, optional, tag = "40")]
     pub dbt_core_event_code: ::core::option::Option<::prost::alloc::string::String>,
-    /// Number of rows affected by this node evaluation, if available.
-    /// Only set for successful outcomes where row count is known (e.g., models, seeds).
+    /// Rows affected by the node's `main` statement. Other named statements are ignored.
+    /// Set in the Run phase whenever the node recorded a `main` response, for the node types that
+    /// set `adapter_response`. This includes a test that ran and failed.
+    /// For a microbatch model: the sum across batches.
+    /// Unset when the materialization failed before recording one, when a microbatch batch failed,
+    /// and when the adapter reported no known (non-negative) count.
     #[prost(uint64, optional, tag = "41")]
     pub rows_affected: ::core::option::Option<u64>,
     /// Total time in milliseconds this node evaluation spent idle.
@@ -404,11 +408,13 @@ pub struct NodeEvaluated {
     pub state_decision_id: ::core::option::Option<::prost::alloc::string::String>,
     /// Response of the node's `main` statement, as in run_results.json minus the row count and
     /// the free-text message.
-    /// Set in the Run phase when a model, seed, snapshot or data test succeeds. For a microbatch
-    /// model: the last batch's response.
-    /// Unset for other node types (e.g. functions, unit tests), for tests that share an aggregated
-    /// query, for nodes that run outside the warehouse adapter (local or lake compute), and when
-    /// the node did not succeed.
+    /// Set in the Run phase whenever a model, seed, snapshot, function, unit test or data test
+    /// recorded a `main` response, including a test that ran and failed.
+    /// For a microbatch model: `query_id` and `code` from the last batch, `extra` metrics summed
+    /// across batches.
+    /// Unset for other node types, for tests that share an aggregated query, for nodes that run
+    /// outside the warehouse adapter (local or lake compute), when the materialization failed
+    /// before recording a response, and when a microbatch batch failed.
     #[prost(message, optional, tag = "44")]
     pub adapter_response: ::core::option::Option<NodeAdapterResponse>,
     /// Node type specific details (e.g. test fail counts, cache use reasons).
@@ -572,8 +578,8 @@ pub struct NodeProcessed {
     /// whether the node was in the selection set.
     #[prost(bool, tag = "42")]
     pub in_selection: bool,
-    /// Number of rows affected by this node processing, if available.
-    /// Only set for successful outcomes where row count is known (e.g., models, seeds).
+    /// Rows affected by the node's `main` statement.
+    /// Rolled up from the Run phase `NodeEvaluated`; see its `rows_affected`.
     #[prost(uint64, optional, tag = "43")]
     pub rows_affected: ::core::option::Option<u64>,
     /// Group identifier for model level notifications

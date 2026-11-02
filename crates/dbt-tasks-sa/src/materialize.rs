@@ -1344,8 +1344,8 @@ pub fn materialize_unit_test_fast_pass(
     jinja_env: Arc<JinjaEnv>,
     base_context: &BTreeMap<String, Value>,
     io_args: &IoArgs,
-) -> FsResult<(bool, usize, String)> {
-    let (mut context, _result_store) = build_run_node_context(
+) -> FsResult<(bool, usize, String, Option<AdapterResponse>)> {
+    let (mut context, result_store) = build_run_node_context(
         unit_test,
         &unit_test.deprecated_config,
         adapter_type,
@@ -1408,19 +1408,24 @@ pub fn materialize_unit_test_fast_pass(
     } = compare_record_batches(table.original_record_batch().as_ref())?;
     let diff_num_rows = diff_batch.num_rows();
 
-    Ok((!has_differences, diff_num_rows, {
-        let mut s = pretty_format_batches(&[diff_batch])?.to_string();
-        s.push('\n');
-        s.push_str(&format!("{diff_num_rows} row(s) differ."));
+    Ok((
+        !has_differences,
+        diff_num_rows,
+        {
+            let mut s = pretty_format_batches(&[diff_batch])?.to_string();
+            s.push('\n');
+            s.push_str(&format!("{diff_num_rows} row(s) differ."));
 
-        if actual_rows != expected_rows {
-            s.push_str(&format!(
-                "\nExpected {expected_rows} row(s), got {actual_rows} row(s)."
-            ))
-        }
+            if actual_rows != expected_rows {
+                s.push_str(&format!(
+                    "\nExpected {expected_rows} row(s), got {actual_rows} row(s)."
+                ))
+            }
 
-        s
-    }))
+            s
+        },
+        result_store.main_adapter_response(),
+    ))
 }
 
 #[derive(Debug)]
@@ -3385,8 +3390,8 @@ pub fn materialize_function(
     jinja_env: Arc<JinjaEnv>,
     base_context: &BTreeMap<String, Value>,
     io_args: &IoArgs,
-) -> FsResult<Value> {
-    let (mut context, _result_store) = build_run_node_context(
+) -> FsResult<(Value, Option<AdapterResponse>)> {
+    let (mut context, result_store) = build_run_node_context(
         function,
         &function.deprecated_config,
         adapter_type,
@@ -3430,5 +3435,5 @@ pub fn materialize_function(
     }
     let _ = std::fs::write(&compiled_path, sql);
 
-    result
+    result.map(|value| (value, result_store.main_adapter_response()))
 }
