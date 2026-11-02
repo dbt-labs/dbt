@@ -5,6 +5,9 @@ All adapter macros are currently maintained in:
 
 ## Changelog
 
+### [2026-10-11]
+  - dbt-databricks: drop no-op create_indexes and commit from the snapshot materialization from PR #1691 (commit d6fefeb6ef601164ed76e2ce7d4049a756fec548)
+
 ### [2026-10-06]
   - dbt-databricks: emit constraint ALTER statements in a stable order from PR #1698
 
