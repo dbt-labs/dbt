@@ -1,0 +1,3 @@
+[error] [DbDriverFailed (dbt1308)]: Database Error in model ice_identity_change (../scratch/target/run/test/models/ice_identity_change.sql)
+  [Snowflake] 000002 (0A000): Unsupported feature 'CREATE OR ALTER on Dynamic Iceberg Table with changed iceberg properties'. (sqlstate: 0A000, vendor_code: 2)
+  (in run/test/models/ice_identity_change.sql)
