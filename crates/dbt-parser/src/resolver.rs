@@ -57,7 +57,8 @@ use dbt_schemas::state::{
 use dbt_schemas::state::{DbtRuntimeConfig, Operations};
 use dbt_schemas::state::{DbtState, ResolverState};
 use minijinja::constants::CURRENT_PATH;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use minijinja::dispatch_object::{get_adapter_prefixes, get_internal_packages};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::Instrument as _;
@@ -689,6 +690,145 @@ fn microbatch_model_no_event_time_inputs_warnings(nodes: &Nodes) -> Vec<FsError>
             )
         })
         .collect()
+}
+
+/// Report effective macro overrides ignored by selected unit tests.
+/// Call after scheduling, before running tasks, so promoted warnings stop the run.
+pub fn unit_test_macro_override_warnings(
+    command: FsCommand,
+    nodes: &Nodes,
+    selected_nodes: &BTreeSet<String>,
+    macros: &Macros,
+    jinja_env: &JinjaEnv,
+    dbt_dispatch_search_order: Option<&[String]>,
+) -> Vec<FsError> {
+    if !matches!(command, FsCommand::Build | FsCommand::Test) {
+        return vec![];
+    }
+    let unit_tests: Vec<_> = nodes
+        .unit_tests
+        .iter()
+        .filter(|(id, _)| selected_nodes.contains(*id))
+        .map(|(_, node)| node)
+        .collect();
+    if unit_tests.is_empty() {
+        return vec![];
+    }
+
+    let root_project_name = jinja_env.env.get_root_package_name();
+    let materializations = dbt_schemas::materialization_resolver::MaterializationResolver::new(
+        &macros.macros,
+        &root_project_name,
+    );
+    let mut overrides = BTreeMap::new();
+    for unit_test in unit_tests {
+        let adapter_type = unit_test.node_adapter();
+        let internal_packages = get_internal_packages(adapter_type.as_ref());
+        for (qualified, kind) in [
+            (
+                materializations
+                    .find_materialization_macro_by_name("unit", adapter_type)
+                    .ok(),
+                "the `unit` materialization",
+            ),
+            (
+                unit_test_sql_macro(
+                    &jinja_env.env,
+                    adapter_type,
+                    &unit_test.common().package_name,
+                    dbt_dispatch_search_order,
+                ),
+                "`get_unit_test_sql`",
+            ),
+        ] {
+            if let Some(qualified) = qualified
+                && let Some(dbt_macro) = macros.macros.get(&format!("macro.{qualified}"))
+                && !internal_packages.contains(&dbt_macro.package_name)
+            {
+                overrides.insert(dbt_macro.unique_id.clone(), kind);
+            }
+        }
+    }
+
+    macros
+        .macros
+        .values()
+        .filter_map(|dbt_macro| {
+            let kind = overrides.get(&dbt_macro.unique_id)?;
+            let package_name = &dbt_macro.package_name;
+            let scope = if package_name == &root_project_name {
+                "This project".to_string()
+            } else {
+                format!("Package '{package_name}'")
+            };
+            Some(
+                FsError::new(
+                    ErrorCode::UnitTestMacroOverrideIgnored,
+                    format!(
+                        "{scope} overrides {kind}, but dbt builds unit test SQL itself and never \
+                         calls it, so the override has no effect. Unit tests in this run ignore it. \
+                         dbt 1.x does call it, so the same project can produce different unit test \
+                         results on the two engines."
+                    ),
+                )
+                .with_location(if dbt_macro.has_absolute_path() {
+                    dbt_macro.absolute_path.to_path_buf()
+                } else {
+                    dbt_macro.original_file_path.to_path_buf()
+                }),
+            )
+        })
+        .collect()
+}
+
+fn unit_test_sql_macro(
+    env: &minijinja::Environment<'_>,
+    adapter_type: AdapterType,
+    package_name: &str,
+    dbt_dispatch_search_order: Option<&[String]>,
+) -> Option<String> {
+    use minijinja::Value;
+    use minijinja::constants::{DIALECT, TARGET_PACKAGE_NAME};
+    use minijinja::dispatch_object::macro_namespace_template_resolver;
+    use minijinja::value::mutable_map::MutableMap;
+
+    let dialect = adapter_type.as_ref();
+    let context = MutableMap::new();
+    context.insert(Value::from(DIALECT), Value::from(dialect));
+    context.insert(Value::from(TARGET_PACKAGE_NAME), Value::from(package_name));
+    let state = env.new_state_with_context(context);
+    let direct = macro_namespace_template_resolver(&state, "get_unit_test_sql", &mut vec![])?;
+    let internal_packages = get_internal_packages(dialect);
+    if let Some((package, _)) = direct.split_once('.')
+        && !internal_packages.iter().any(|internal| internal == package)
+    {
+        return Some(direct);
+    }
+
+    // The built-in wrapper dispatches in the dbt namespace. An explicit search
+    // order can opt a dependency in; loading its macros alone cannot.
+    let default_order = [env.get_root_package_name(), "dbt".to_string()];
+    let search_order = dbt_dispatch_search_order.unwrap_or(&default_order);
+    let prefixes = get_adapter_prefixes(dialect);
+    let internal_namespace = env.get_dbt_and_adapters_namespace(dialect);
+    for package in search_order {
+        for prefix in &prefixes {
+            let name = format!("{prefix}__get_unit_test_sql");
+            let qualified = if package == "dbt" {
+                internal_namespace
+                    .get(&Value::from(&name))
+                    .map(|package| format!("{package}.{name}"))
+            } else {
+                Some(format!("{package}.{name}"))
+            };
+            if let Some(qualified) = qualified
+                && env.get_template(&qualified).is_ok()
+            {
+                return Some(qualified);
+            }
+        }
+    }
+    None
 }
 
 fn has_event_time_input(nodes: &Nodes, model: &dyn InternalDbtNode) -> bool {
@@ -1876,6 +2016,263 @@ mod tests {
 
     use super::inject_default_overview;
     use crate::constants::DEFAULT_OVERVIEW_CONTENTS;
+
+    mod unit_test_macro_overrides {
+        use std::collections::BTreeSet;
+        use std::path::{Path, PathBuf};
+        use std::sync::Arc;
+
+        use dbt_adapter::{Adapter, sql_types::DefaultTypeOps};
+        use dbt_adapter_core::AdapterType;
+        use dbt_common::{ErrorCode, io_args::FsCommand};
+        use dbt_jinja_utils::{JinjaEnvBuilder, MacroUnitsWrapper, jinja_environment::JinjaEnv};
+        use dbt_schemas::schemas::macros::{DbtMacro, build_macro_units};
+        use dbt_schemas::schemas::relations::DEFAULT_DBT_QUOTING;
+        use dbt_schemas::schemas::{DbtUnitTest, Nodes};
+        use dbt_schemas::state::Macros;
+
+        use super::super::unit_test_macro_override_warnings;
+
+        fn fixture(extra_macros: &[(&str, &str)]) -> (Nodes, Macros, JinjaEnv) {
+            let mut macros = Macros::default();
+            for (package, name) in [
+                ("dbt", "materialization_unit_default"),
+                ("dbt", "get_unit_test_sql"),
+                ("dbt", "default__get_unit_test_sql"),
+            ]
+            .iter()
+            .chain(extra_macros)
+            {
+                let unique_id = format!("macro.{package}.{name}");
+                let path = format!("macros/{package}/{name}.sql");
+                macros.macros.insert(
+                    unique_id.clone(),
+                    DbtMacro {
+                        unique_id,
+                        name: name.to_string(),
+                        package_name: package.to_string(),
+                        path: path.as_str().into(),
+                        original_file_path: path.as_str().into(),
+                        span: Some(Default::default()),
+                        macro_name_span: Some(Default::default()),
+                        macro_sql: format!(
+                            "{{% macro {name}() %}}{{{{ exceptions.raise_compiler_error('must not execute') }}}}{{% endmacro %}}"
+                        ),
+                        ..Default::default()
+                    },
+                );
+            }
+            let adapter = Arc::new(Adapter::new_parse_phase_adapter(
+                AdapterType::Snowflake,
+                dbt_yaml::Mapping::new(),
+                DEFAULT_DBT_QUOTING,
+                Arc::new(DefaultTypeOps::new(AdapterType::Snowflake)),
+                None,
+            ));
+            let env = JinjaEnvBuilder::new()
+                .with_adapter(adapter)
+                .with_root_package("root".to_string())
+                .with_extra_dialects(vec!["databricks".to_string()])
+                .try_with_macros(MacroUnitsWrapper::new(build_macro_units(
+                    &macros.macros,
+                    Path::new("."),
+                )))
+                .unwrap()
+                .build();
+            let mut nodes = Nodes::default();
+            for (name, adapter) in [
+                ("snowflake", AdapterType::Snowflake),
+                ("databricks", AdapterType::Databricks),
+                ("databricks_again", AdapterType::Databricks),
+            ] {
+                let mut node = DbtUnitTest::default();
+                node.__common_attr__.unique_id = format!("unit_test.root.{name}");
+                node.__common_attr__.package_name = "root".to_string();
+                node.__base_attr__.adapter = adapter;
+                nodes
+                    .unit_tests
+                    .insert(node.__common_attr__.unique_id.clone(), Arc::new(node));
+            }
+            (nodes, macros, env)
+        }
+
+        fn warning_paths(
+            nodes: &Nodes,
+            selected: &BTreeSet<String>,
+            macros: &Macros,
+            env: &JinjaEnv,
+            dispatch: Option<&[String]>,
+        ) -> Vec<PathBuf> {
+            unit_test_macro_override_warnings(
+                FsCommand::Build,
+                nodes,
+                selected,
+                macros,
+                env,
+                dispatch,
+            )
+            .into_iter()
+            .map(|warning| {
+                assert_eq!(warning.code, ErrorCode::UnitTestMacroOverrideIgnored);
+                warning.location.unwrap().file.as_ref().clone()
+            })
+            .collect()
+        }
+
+        #[test]
+        fn selected_non_default_adapter_includes_parent_and_deduplicates() {
+            let (nodes, macros, env) = fixture(&[
+                ("root", "databricks__get_unit_test_sql"),
+                ("root", "materialization_unit_spark"),
+                ("root", "snowflake__get_unit_test_sql"),
+                ("root", "materialization_unit_snowflake"),
+            ]);
+            let selected = BTreeSet::from([
+                "unit_test.root.databricks".to_string(),
+                "unit_test.root.databricks_again".to_string(),
+            ]);
+            assert_eq!(
+                warning_paths(&nodes, &selected, &macros, &env, None),
+                vec![
+                    PathBuf::from("macros/root/databricks__get_unit_test_sql.sql"),
+                    PathBuf::from("macros/root/materialization_unit_spark.sql"),
+                ]
+            );
+        }
+
+        #[test]
+        fn commands_and_selections_without_unit_tests_do_not_warn() {
+            let (nodes, macros, env) = fixture(&[("root", "get_unit_test_sql")]);
+            let all = nodes.unit_tests.keys().cloned().collect();
+            for command in [
+                FsCommand::Run,
+                FsCommand::Compile,
+                FsCommand::Parse,
+                FsCommand::List,
+            ] {
+                assert!(
+                    unit_test_macro_override_warnings(command, &nodes, &all, &macros, &env, None)
+                        .is_empty()
+                );
+            }
+            for command in [FsCommand::Build, FsCommand::Test] {
+                for selected in [
+                    BTreeSet::new(),
+                    BTreeSet::from(["model.root.unrelated".to_string()]),
+                ] {
+                    assert!(
+                        unit_test_macro_override_warnings(
+                            command, &nodes, &selected, &macros, &env, None,
+                        )
+                        .is_empty()
+                    );
+                }
+                assert_eq!(
+                    unit_test_macro_override_warnings(command, &nodes, &all, &macros, &env, None)
+                        .len(),
+                    1
+                );
+            }
+        }
+
+        #[test]
+        fn inactive_dependency_macros_do_not_warn() {
+            let (nodes, macros, env) = fixture(&[
+                ("dependency", "get_unit_test_sql"),
+                ("dependency", "databricks__get_unit_test_sql"),
+                ("dependency", "materialization_unit_databricks"),
+            ]);
+            let selected = nodes.unit_tests.keys().cloned().collect();
+            assert!(warning_paths(&nodes, &selected, &macros, &env, None).is_empty());
+        }
+
+        #[test]
+        fn reports_only_resolution_winners() {
+            let (nodes, macros, env) = fixture(&[
+                ("root", "materialization_unit_default"),
+                ("dbt_databricks", "materialization_unit_databricks"),
+                ("root", "databricks__get_unit_test_sql"),
+                ("root", "spark__get_unit_test_sql"),
+                ("root", "default__get_unit_test_sql"),
+            ]);
+            let selected = BTreeSet::from(["unit_test.root.databricks".to_string()]);
+            assert_eq!(
+                warning_paths(&nodes, &selected, &macros, &env, None),
+                vec![PathBuf::from(
+                    "macros/root/databricks__get_unit_test_sql.sql"
+                )]
+            );
+        }
+
+        #[test]
+        fn dispatch_can_enable_a_dependency_or_prefer_internal_macros() {
+            let (nodes, macros, env) = fixture(&[
+                ("root", "databricks__get_unit_test_sql"),
+                ("dependency", "databricks__get_unit_test_sql"),
+            ]);
+            let selected = BTreeSet::from(["unit_test.root.databricks".to_string()]);
+            let dispatch = ["dependency".to_string(), "dbt".to_string()];
+            assert_eq!(
+                warning_paths(&nodes, &selected, &macros, &env, Some(&dispatch)),
+                vec![PathBuf::from(
+                    "macros/dependency/databricks__get_unit_test_sql.sql"
+                )]
+            );
+            let dispatch = ["dbt".to_string(), "root".to_string()];
+            assert!(warning_paths(&nodes, &selected, &macros, &env, Some(&dispatch)).is_empty());
+        }
+
+        #[test]
+        fn dependency_override_warning_uses_installed_macro_path() {
+            use dbt_common::tracing::fs_error_log::FsErrorLog;
+            use dbt_schemas::state::DbtAsset;
+
+            use crate::resolve::resolve_macros::resolve_macros;
+
+            let project = tempfile::tempdir().unwrap();
+            let package_dir = project.path().join("dbt_packages/dependency");
+            let relative_path = PathBuf::from("macros/unit.sql");
+            let absolute_path = package_dir.join(&relative_path);
+            std::fs::create_dir_all(absolute_path.parent().unwrap()).unwrap();
+            std::fs::write(
+                &absolute_path,
+                "{% macro default__get_unit_test_sql() %}unused{% endmacro %}",
+            )
+            .unwrap();
+            let asset = DbtAsset {
+                base_path: package_dir,
+                original_path: relative_path.clone(),
+                path: relative_path,
+                package_name: "dependency".to_string(),
+            };
+            let (nodes, mut macros, env) = fixture(&[("dependency", "default__get_unit_test_sql")]);
+            macros
+                .macros
+                .extend(resolve_macros(&[&asset], None).unwrap());
+            let selected = BTreeSet::from(["unit_test.root.databricks".to_string()]);
+            let dispatch = ["dependency".to_string(), "dbt".to_string()];
+            let mut warnings = unit_test_macro_override_warnings(
+                FsCommand::Build,
+                &nodes,
+                &selected,
+                &macros,
+                &env,
+                Some(&dispatch),
+            );
+            assert_eq!(warnings.len(), 1);
+            let warning = warnings.pop().unwrap();
+            assert_eq!(
+                warning.location.as_ref().unwrap().file.as_ref(),
+                &absolute_path
+            );
+            let log = FsErrorLog::new(warning, tracing::Level::WARN);
+            let displayed_path = log.get_log_message().relative_path.as_ref().unwrap();
+            assert!(
+                Path::new(displayed_path).ends_with("dbt_packages/dependency/macros/unit.sql"),
+                "wrong dependency warning path: {displayed_path}"
+            );
+        }
+    }
 
     /// When a project defines no {% docs %} blocks, `doc.dbt.__overview__`
     /// must be present in the manifest so the dbt Docs HTML doesn't crash.

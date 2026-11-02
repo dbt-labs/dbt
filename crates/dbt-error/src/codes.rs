@@ -179,6 +179,10 @@ pub enum ErrorCode {
     PackageMissingProjectFile = 1158,
     DbtYamlValidationError = 1159,
     CleanTargetOutsideProject = 1160,
+    /// A project or package defines a `unit` materialization or a
+    /// `get_unit_test_sql` macro. Fusion builds unit-test SQL in Rust and never
+    /// dispatches through either, so the override has no effect.
+    UnitTestMacroOverrideIgnored = 1161,
 
     // Network/HTTP [1200–1249]
     NetworkError = 1200,

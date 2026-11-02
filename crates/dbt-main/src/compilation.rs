@@ -38,6 +38,7 @@ use dbt_jinja_utils::{
 };
 use dbt_loader::args::*;
 use dbt_parser::args::ResolveArgs;
+use dbt_parser::resolver::unit_test_macro_override_warnings;
 use dbt_scheduler::args::SchedulerArgs;
 use dbt_schema_store::{
     SchemaStoreTrait,
@@ -1831,6 +1832,23 @@ impl DbtProjectCompilation {
                     "Nothing to do. Try checking your model configs and model specification args",
                 );
             }
+        }
+
+        let dbt_dispatch_search_order = self
+            .root_project()
+            .dispatch
+            .as_ref()
+            .and_then(|entries| entries.iter().find(|entry| entry.macro_namespace == "dbt"))
+            .map(|entry| entry.search_order.as_slice());
+        for warning in unit_test_macro_override_warnings(
+            arg.command,
+            &self.resolved_state.nodes,
+            &schedule.selected_nodes,
+            &self.resolved_state.macros,
+            &jinja_env,
+            dbt_dispatch_search_order,
+        ) {
+            emit_warn_log_from_fs_error(warning);
         }
 
         // We may have elevated errors from selection
