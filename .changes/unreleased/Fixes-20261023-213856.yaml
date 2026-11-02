@@ -1,0 +1,7 @@
+kind: Fixes
+body: Databricks views updated with view_update_via_alter now enforce model contracts and reject column masks and row filters on ALTER and no-op runs, and keep column comments after ALTER VIEW AS changes the query
+time: 2026-10-23T21:38:56.383389+05:30
+custom:
+    author: sd-db
+    issue: "16882"
+    project: dbt-core
