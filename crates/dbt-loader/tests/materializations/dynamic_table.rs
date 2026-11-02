@@ -14,10 +14,12 @@ use dbt_agate::AgateTable;
 use dbt_jinja_utils::mock_object::MockJinjaObject;
 use dbt_schemas::dbt_types::RelationType;
 use dbt_schemas::schemas::common::DbtMaterialization;
-use dbt_schemas::schemas::dbt_catalogs::{CatalogType, TableFormat};
+use dbt_schemas::schemas::dbt_catalogs::TableFormat;
 use dbt_schemas::schemas::project::{ModelConfig, WarehouseSpecificNodeConfig};
 use dbt_schemas::schemas::relations::SNOWFLAKE_RESOLVED_QUOTING;
-use dbt_schemas::schemas::{AdapterAttr, CommonAttributes, DbtModel, NodeBaseAttributes};
+use dbt_schemas::schemas::{
+    AdapterAttr, CommonAttributes, DbtModel, DbtModelAttr, NodeBaseAttributes,
+};
 use dbt_yaml::Spanned;
 use minijinja::Value;
 use minijinja::value::{Kwargs, ValueMap};
@@ -92,6 +94,9 @@ struct LocalConfig {
     copy_grants: Option<bool>,
     table_tag: Option<String>,
     row_access_policy: Option<String>,
+    /// Configure a managed Iceberg table (`table_format`, `external_volume`, `base_location_root`,
+    /// `iceberg_version`); the catalog relation is then resolved from this config for real.
+    iceberg: bool,
 }
 
 /// A serialized model node, built the way the run context builds `config.model`.
@@ -135,6 +140,9 @@ fn serialized_model(config: &LocalConfig) -> Value {
         copy_grants: config.copy_grants,
         table_tag: config.table_tag.clone(),
         row_access_policy: config.row_access_policy.clone(),
+        external_volume: config.iceberg.then(|| "MY_VOLUME".to_string()),
+        base_location_root: config.iceberg.then(|| "_dbt".to_string()),
+        iceberg_version: config.iceberg.then_some(2),
         ..Default::default()
     };
     let adapter_attr = AdapterAttr::from_config_and_dialect(&wh_config, ADAPTER);
@@ -142,6 +150,10 @@ fn serialized_model(config: &LocalConfig) -> Value {
     let model = DbtModel {
         deprecated_config: ModelConfig {
             __warehouse_specific_config__: wh_config,
+            ..Default::default()
+        },
+        __model_attr__: DbtModelAttr {
+            table_format: config.iceberg.then(|| "iceberg".to_string()),
             ..Default::default()
         },
         __common_attr__: CommonAttributes {
@@ -254,24 +266,6 @@ struct FixtureOptions {
     iceberg_existing: bool,
 }
 
-/// The catalog relation a managed Iceberg model resolves to (`catalog_type == 'BUILT_IN'`).
-fn managed_iceberg_catalog_relation() -> dbt_adapter::catalog_relation::CatalogRelation {
-    dbt_adapter::catalog_relation::CatalogRelation {
-        adapter_type: ADAPTER,
-        catalog_name: None,
-        integration_name: None,
-        catalog_type: CatalogType::SnowflakeBuiltIn,
-        table_format: TableFormat::Iceberg,
-        adapter_properties: BTreeMap::from([("iceberg_version".to_string(), "2".to_string())]),
-        is_transient: Some(false),
-        external_volume: Some("MY_VOLUME".to_string()),
-        catalog_database: None,
-        lakehouse_catalog: None,
-        base_location: Some("_dbt/my_dt".to_string()),
-        file_format: None,
-    }
-}
-
 /// Build a harness whose `describe_relation` returns `remote` for a dynamic-table relation.
 fn fixture(existing: Option<RelationType>, remote: RemoteState) -> Fixture {
     fixture_with(existing, remote, FixtureOptions::default())
@@ -327,15 +321,24 @@ fn fixture_with(
             Ok(Value::from(create_or_alter))
         });
 
-    let catalog_relation = if options.iceberg_target {
-        Value::from_object(managed_iceberg_catalog_relation())
-    } else {
-        Value::from_object(
-            dbt_adapter::catalog_relation::CatalogRelation::default_catalog_relation_snowflake(),
-        )
-    };
-    harness.mock().on("build_catalog_relation", move |_| {
-        Ok(catalog_relation.clone())
+    let iceberg_target = options.iceberg_target;
+    let native_catalog_relation = Value::from_object(
+        dbt_adapter::catalog_relation::CatalogRelation::default_catalog_relation_snowflake(),
+    );
+    harness.mock().on("build_catalog_relation", move |args| {
+        if !iceberg_target {
+            return Ok(native_catalog_relation.clone());
+        }
+        // Resolve the managed Iceberg catalog from the model config exactly as the adapter does.
+        let model = args
+            .first()
+            .expect("build_catalog_relation takes the model");
+        let catalog_relation =
+            dbt_adapter::catalog_relation::CatalogRelation::from_model_config_and_catalogs(
+                ADAPTER, model, None,
+            )
+            .expect("the managed Iceberg model config should resolve");
+        Ok(Value::from_object(catalog_relation))
     });
 
     let existing_value = match existing {
@@ -1064,8 +1067,16 @@ fn iceberg_options() -> FixtureOptions {
     }
 }
 
-/// The identity clauses CREATE OR ALTER must restate for [`managed_iceberg_catalog_relation`].
-const ICEBERG_IDENTITY: &str = "external_volume = 'MY_VOLUME' catalog = 'SNOWFLAKE' base_location = '_dbt/my_dt' iceberg_version = 2";
+/// [`base_local_config`] on a managed Iceberg table.
+fn iceberg_local_config() -> LocalConfig {
+    LocalConfig {
+        iceberg: true,
+        ..base_local_config()
+    }
+}
+
+/// The identity clauses CREATE OR ALTER must restate, as resolved from [`iceberg_local_config`].
+const ICEBERG_IDENTITY: &str = "external_volume = 'MY_VOLUME' catalog = 'SNOWFLAKE' base_location = '_dbt/TEST_SCHEMA/MY_DT' iceberg_version = 2";
 
 /// The `create or alter` DDL for [`base_local_config`] on a managed Iceberg table.
 fn base_iceberg_create_or_alter_sql() -> String {
@@ -1081,7 +1092,7 @@ fn create_or_alter_iceberg_deploys_the_definition_and_restates_the_identity() {
         matching_remote_state(),
         iceberg_options(),
     );
-    render_ok(&fixture, &base_local_config(), false, "apply");
+    render_ok(&fixture, &iceberg_local_config(), false, "apply");
 
     assert_eq!(fixture.executed(), vec![base_iceberg_create_or_alter_sql()]);
 }
@@ -1102,7 +1113,7 @@ fn create_or_alter_iceberg_applies_dynamic_table_attributes_in_place() {
         cluster_by: Some(dbt_schemas::schemas::common::ClusterConfig::List(vec![
             "id".to_string(),
         ])),
-        ..base_local_config()
+        ..iceberg_local_config()
     };
     render_ok(&fixture, &local, false, "apply");
 
@@ -1126,14 +1137,14 @@ fn create_or_alter_iceberg_refresh_mode_change_routes_to_replace() {
     );
     let local = LocalConfig {
         refresh_mode: Some("FULL".to_string()),
-        ..base_local_config()
+        ..iceberg_local_config()
     };
     render_ok(&fixture, &local, false, "apply");
 
     assert_eq!(
         fixture.executed(),
         vec![format!(
-            "create or replace dynamic iceberg table {RENDERED_RELATION} target_lag = '1 minute' warehouse = WH external_volume = 'MY_VOLUME' catalog = 'snowflake' base_location = '_dbt/my_dt' iceberg_version = 2 refresh_mode = FULL initialize = ON_CREATE scheduler = 'ENABLE' as ( {MODEL_SQL} )"
+            "create or replace dynamic iceberg table {RENDERED_RELATION} target_lag = '1 minute' warehouse = WH external_volume = 'MY_VOLUME' catalog = 'snowflake' base_location = '_dbt/TEST_SCHEMA/MY_DT' iceberg_version = 2 refresh_mode = FULL initialize = ON_CREATE scheduler = 'ENABLE' as ( {MODEL_SQL} )"
         )]
     );
 }
@@ -1149,7 +1160,7 @@ fn create_or_alter_native_to_iceberg_conversion_routes_to_replace() {
             ..iceberg_options()
         },
     );
-    render_ok(&fixture, &base_local_config(), false, "apply");
+    render_ok(&fixture, &iceberg_local_config(), false, "apply");
 
     let executed = fixture.executed();
     assert_eq!(executed.len(), 1, "got: {executed:?}");
@@ -1170,7 +1181,7 @@ fn create_or_alter_iceberg_to_native_conversion_routes_to_replace() {
             ..iceberg_options()
         },
     );
-    render_ok(&fixture, &base_local_config(), false, "apply");
+    render_ok(&fixture, &iceberg_local_config(), false, "apply");
 
     let executed = fixture.executed();
     assert_eq!(executed.len(), 1, "got: {executed:?}");
@@ -1183,7 +1194,7 @@ fn create_or_alter_iceberg_to_native_conversion_routes_to_replace() {
 #[test]
 fn create_or_alter_iceberg_does_not_apply_on_first_build_or_full_refresh() {
     let first_build = fixture_with(None, RemoteState::default(), iceberg_options());
-    render_ok(&first_build, &base_local_config(), false, "apply");
+    render_ok(&first_build, &iceberg_local_config(), false, "apply");
     assert!(
         first_build.executed()[0].starts_with("create dynamic iceberg table"),
         "got: {:?}",
@@ -1195,7 +1206,7 @@ fn create_or_alter_iceberg_does_not_apply_on_first_build_or_full_refresh() {
         matching_remote_state(),
         iceberg_options(),
     );
-    render_ok(&full_refresh, &base_local_config(), true, "apply");
+    render_ok(&full_refresh, &iceberg_local_config(), true, "apply");
     assert!(
         full_refresh.executed()[0].starts_with("create or replace dynamic iceberg table"),
         "got: {:?}",
@@ -1213,7 +1224,7 @@ fn create_or_alter_iceberg_gate_off_keeps_sql_only_edit_a_noop() {
             ..iceberg_options()
         },
     );
-    render_ok(&fixture, &base_local_config(), false, "apply");
+    render_ok(&fixture, &iceberg_local_config(), false, "apply");
 
     assert!(
         fixture.executed().is_empty(),
@@ -1240,7 +1251,7 @@ fn create_or_alter_iceberg_omits_transient_and_governance_clauses() {
         copy_grants: Some(true),
         table_tag: Some("my_tag = 'v1'".to_string()),
         row_access_policy: Some("my_policy on (id)".to_string()),
-        ..base_local_config()
+        ..iceberg_local_config()
     };
     render_ok(&fixture, &local, false, "apply");
 
@@ -1271,6 +1282,7 @@ fn create_or_alter_iceberg_without_target_lag_declares_a_disabled_scheduler() {
     );
     let local = LocalConfig {
         snowflake_warehouse: Some("WH".to_string()),
+        iceberg: true,
         ..Default::default()
     };
     render_ok(&fixture, &local, false, "apply");
@@ -1301,9 +1313,9 @@ fn create_or_alter_iceberg_honors_on_configuration_change() {
         },
         iceberg_options(),
     );
-    render_ok(&continued, &base_local_config(), false, "continue");
+    render_ok(&continued, &iceberg_local_config(), false, "continue");
     assert!(continued.executed().is_empty());
 
     let failing = fixture_with(Some(RelationType::DynamicTable), changed, iceberg_options());
-    assert!(render(&failing, &base_local_config(), false, "fail").is_err());
+    assert!(render(&failing, &iceberg_local_config(), false, "fail").is_err());
 }
