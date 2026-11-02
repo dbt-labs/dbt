@@ -22,6 +22,12 @@ models:
       +refresh_mode: FULL
       +scheduler: disable
       +transient: true
+    err_type_narrow:
+      +refresh_mode: FULL
+      +scheduler: disable
+    err_type_change:
+      +refresh_mode: FULL
+      +scheduler: disable
     err_fail_fast:
       +refresh_mode: FULL
       +scheduler: disable

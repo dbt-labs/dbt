@@ -18,6 +18,14 @@
 - sequence: 0
   type: execute
   sql: ALTER TABLE development.adapters_snowflake_dynamic_table_create_or_alter.attr_projection_policy MODIFY COLUMN value SET PROJECTION POLICY development.adapters_snowflake_dynamic_table_create_or_alter.pp
+1e348d2e:
+- sequence: 0
+  type: execute
+  sql: INSERT INTO development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks VALUES ('attr_masking_policy', 'Mon, 02 Nov 2026 01:50:19 -0800')
+23e333a1:
+- sequence: 0
+  type: execute
+  sql: INSERT INTO development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks VALUES ('cfg_warehouse', 'Mon, 02 Nov 2026 01:50:13 -0800')
 23f103da:
 - sequence: 0
   type: execute
@@ -26,22 +34,22 @@
 - sequence: 0
   type: execute
   sql: select "created_on"::varchar, "text", "refresh_mode", "cluster_by", "warehouse", "initialization_warehouse", "configured_refresh_mode" from table(result_scan(last_query_id())) where upper("name") = upper('attr_data_retention')
+2678f3fa:
+- sequence: 0
+  type: execute
+  sql: select "created_on"::varchar, "text", "refresh_mode", "cluster_by", "warehouse", "initialization_warehouse", "configured_refresh_mode" from table(result_scan(last_query_id())) where upper("name") = upper('inc_props')
 27b9e9a2:
 - sequence: 0
   type: execute
   sql: select "created_on"::varchar, "text", "refresh_mode", "cluster_by", "warehouse", "initialization_warehouse", "configured_refresh_mode" from table(result_scan(last_query_id())) where upper("name") = upper('dm_auto_disable')
+27d4fdca:
+- sequence: 0
+  type: execute
+  sql: INSERT INTO development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks VALUES ('dm_incremental_disable', 'Mon, 02 Nov 2026 01:50:09 -0800')
 2815d37c:
 - sequence: 0
   type: execute
   sql: show dynamic tables like 'attr_row_access_policy' in schema development.adapters_snowflake_dynamic_table_create_or_alter
-284280d4:
-- sequence: 0
-  type: execute
-  sql: INSERT INTO development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks VALUES ('transient_flip', 'Sun, 01 Nov 2026 13:22:58 -0800')
-2bb0ec53:
-- sequence: 0
-  type: execute
-  sql: INSERT INTO development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks VALUES ('dm_full_enable', 'Sun, 01 Nov 2026 13:23:02 -0800')
 2e47955a:
 - sequence: 0
   type: execute
@@ -54,14 +62,18 @@
 - sequence: 0
   type: execute
   sql: select "created_on"::varchar, "text", "refresh_mode", "cluster_by", "warehouse", "initialization_warehouse", "configured_refresh_mode" from table(result_scan(last_query_id())) where upper("name") = upper('attr_row_access_policy')
-2f752c1d:
-- sequence: 0
-  type: execute
-  sql: INSERT INTO development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks VALUES ('continue_skips_both', 'Sun, 01 Nov 2026 13:23:05 -0800')
 30d33973:
 - sequence: 0
   type: execute
   sql: show dynamic tables like 'idempotent_noop' in schema development.adapters_snowflake_dynamic_table_create_or_alter
+31f0fb77:
+- sequence: 0
+  type: execute
+  sql: INSERT INTO development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks VALUES ('dm_full_enable', 'Mon, 02 Nov 2026 01:50:10 -0800')
+32621a5c:
+- sequence: 0
+  type: execute
+  sql: INSERT INTO development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks VALUES ('attr_tag', 'Mon, 02 Nov 2026 01:50:16 -0800')
 33fb2332:
 - sequence: 0
   type: execute
@@ -70,42 +82,38 @@
 - sequence: 0
   type: execute
   sql: select policy_name from table(development.information_schema.policy_references(ref_entity_name => 'development.adapters_snowflake_dynamic_table_create_or_alter.attr_multi', ref_entity_domain => 'table'))
+35d2426f:
+- sequence: 0
+  type: execute
+  sql: INSERT INTO development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks VALUES ('dm_auto_enable', 'Mon, 02 Nov 2026 01:50:11 -0800')
 3c9b83be:
 - sequence: 0
   type: execute
   sql: ALTER DYNAMIC TABLE development.adapters_snowflake_dynamic_table_create_or_alter.attr_comment SET COMMENT = 'keepme'
+3cba2789:
+- sequence: 0
+  type: execute
+  sql: INSERT INTO development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks VALUES ('attr_data_retention', 'Mon, 02 Nov 2026 01:50:20 -0800')
 3ce1bf4d:
 - sequence: 0
   type: execute
   sql: show dynamic tables like 'attr_data_retention' in schema development.adapters_snowflake_dynamic_table_create_or_alter
+3dc32b52:
+- sequence: 0
+  type: execute
+  sql: INSERT INTO development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks VALUES ('cfg_init_warehouse', 'Mon, 02 Nov 2026 01:50:14 -0800')
 3e7a56c2:
 - sequence: 0
   type: execute
   sql: show dynamic tables like 'attr_projection_policy' in schema development.adapters_snowflake_dynamic_table_create_or_alter
-3fa2c936:
-- sequence: 0
-  type: execute
-  sql: INSERT INTO development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks VALUES ('attr_multi', 'Sun, 01 Nov 2026 13:23:10 -0800')
-42360ab9:
-- sequence: 0
-  type: execute
-  sql: INSERT INTO development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks VALUES ('dm_incremental_disable', 'Sun, 01 Nov 2026 13:23:02 -0800')
 432e1f5d:
 - sequence: 0
   type: execute
   sql: show dynamic tables like 'dm_full_disable' in schema development.adapters_snowflake_dynamic_table_create_or_alter
-4581820e:
-- sequence: 0
-  type: execute
-  sql: INSERT INTO development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks VALUES ('cfg_warehouse', 'Sun, 01 Nov 2026 13:23:06 -0800')
 47f99041:
 - sequence: 0
   type: execute
   sql: select tag_name from table(development.information_schema.tag_references('development.adapters_snowflake_dynamic_table_create_or_alter.attr_multi', 'table'))
-484a7e45:
-- sequence: 0
-  type: execute
-  sql: INSERT INTO development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks VALUES ('dm_auto_disable', 'Sun, 01 Nov 2026 13:23:04 -0800')
 49e3b1cc:
 - sequence: 0
   type: execute
@@ -118,18 +126,10 @@
 - sequence: 0
   type: execute
   sql: select policy_name from table(development.information_schema.policy_references(ref_entity_name => 'development.adapters_snowflake_dynamic_table_create_or_alter.attr_projection_policy', ref_entity_domain => 'table'))
-4dd79f5d:
-- sequence: 0
-  type: execute
-  sql: INSERT INTO development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks VALUES ('attr_max_data_extension', 'Sun, 01 Nov 2026 13:23:11 -0800')
 4e87b73b:
 - sequence: 0
   type: execute
   sql: show dynamic tables like 'dm_auto_disable' in schema development.adapters_snowflake_dynamic_table_create_or_alter
-4fc1d874:
-- sequence: 0
-  type: execute
-  sql: INSERT INTO development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks VALUES ('attr_projection_policy', 'Sun, 01 Nov 2026 13:23:09 -0800')
 4fdc9397:
 - sequence: 0
   type: execute
@@ -142,14 +142,18 @@
 - sequence: 0
   type: execute
   sql: select "created_on"::varchar, "text", "refresh_mode", "cluster_by", "warehouse", "initialization_warehouse", "configured_refresh_mode" from table(result_scan(last_query_id())) where upper("name") = upper('dm_incremental_disable')
+540359fc:
+- sequence: 0
+  type: execute
+  sql: INSERT INTO development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks VALUES ('attr_projection_policy', 'Mon, 02 Nov 2026 01:50:17 -0800')
 562b7e31:
 - sequence: 0
   type: execute
   sql: select retention_time from development.information_schema.tables where table_schema ilike 'adapters_snowflake_dynamic_table_create_or_alter' and table_name ilike 'attr_multi'
-5f065e8c:
+5ee3d78d:
 - sequence: 0
   type: execute
-  sql: INSERT INTO development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks VALUES ('idempotent_noop', 'Sun, 01 Nov 2026 13:23:00 -0800')
+  sql: INSERT INTO development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks VALUES ('attr_comment', 'Mon, 02 Nov 2026 01:50:21 -0800')
 5f8bdbc2:
 - sequence: 0
   type: execute
@@ -158,14 +162,22 @@
 - sequence: 0
   type: execute
   sql: select tag_name from table(development.information_schema.tag_references('development.adapters_snowflake_dynamic_table_create_or_alter.attr_tag', 'table'))
+5fe0d9be:
+- sequence: 0
+  type: execute
+  sql: INSERT INTO development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks VALUES ('dm_full_disable', 'Mon, 02 Nov 2026 01:50:11 -0800')
+61cfc8f7:
+- sequence: 0
+  type: execute
+  sql: INSERT INTO development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks VALUES ('continue_skips_both', 'Mon, 02 Nov 2026 01:50:13 -0800')
 64eaac0c:
 - sequence: 0
   type: execute
   sql: select "created_on"::varchar, "text", "refresh_mode", "cluster_by", "warehouse", "initialization_warehouse", "configured_refresh_mode" from table(result_scan(last_query_id())) where upper("name") = upper('transient_preserved')
-653b62ad:
+6512cda2:
 - sequence: 0
   type: execute
-  sql: INSERT INTO development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks VALUES ('refresh_mode_to_auto', 'Sun, 01 Nov 2026 13:22:59 -0800')
+  sql: INSERT INTO development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks VALUES ('cfg_cluster_by', 'Mon, 02 Nov 2026 01:50:15 -0800')
 65ea1f6c:
 - sequence: 0
   type: execute
@@ -182,6 +194,18 @@
 - sequence: 0
   type: execute
   sql: ALTER TABLE development.adapters_snowflake_dynamic_table_create_or_alter.attr_multi MODIFY COLUMN value SET MASKING POLICY development.adapters_snowflake_dynamic_table_create_or_alter.mp
+6ed1710f:
+- sequence: 0
+  type: execute
+  sql: INSERT INTO development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks VALUES ('attr_row_access_policy', 'Mon, 02 Nov 2026 01:50:16 -0800')
+70ead8a9:
+- sequence: 0
+  type: execute
+  sql: INSERT INTO development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks VALUES ('transient_preserved', 'Mon, 02 Nov 2026 01:50:03 -0800')
+76806a42:
+- sequence: 0
+  type: execute
+  sql: INSERT INTO development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks VALUES ('inc_noop', 'Mon, 02 Nov 2026 01:50:07 -0800')
 '77909996':
 - sequence: 0
   type: execute
@@ -206,10 +230,10 @@
 - sequence: 0
   type: execute
   sql: show dynamic tables like 'continue_skips_both' in schema development.adapters_snowflake_dynamic_table_create_or_alter
-83ba9a19:
+80cfb4b9:
 - sequence: 0
   type: execute
-  sql: INSERT INTO development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks VALUES ('dm_auto_enable', 'Sun, 01 Nov 2026 13:23:04 -0800')
+  sql: INSERT INTO development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks VALUES ('transient_flip', 'Mon, 02 Nov 2026 01:50:04 -0800')
 855fb543:
 - sequence: 0
   type: execute
@@ -218,18 +242,14 @@
 - sequence: 0
   type: execute
   sql: show dynamic tables like 'dm_incremental_disable' in schema development.adapters_snowflake_dynamic_table_create_or_alter
-8861f972:
-- sequence: 0
-  type: execute
-  sql: INSERT INTO development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks VALUES ('attr_comment', 'Sun, 01 Nov 2026 13:23:13 -0800')
-8868b6b2:
-- sequence: 0
-  type: execute
-  sql: INSERT INTO development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks VALUES ('dm_incremental_enable', 'Sun, 01 Nov 2026 13:23:01 -0800')
 8b8c3b47:
 - sequence: 0
   type: execute
   sql: ALTER TABLE development.adapters_snowflake_dynamic_table_create_or_alter.attr_masking_policy MODIFY COLUMN value SET MASKING POLICY development.adapters_snowflake_dynamic_table_create_or_alter.mp
+8d27d74f:
+- sequence: 0
+  type: execute
+  sql: INSERT INTO development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks VALUES ('attr_aggregation_policy', 'Mon, 02 Nov 2026 01:50:22 -0800')
 90ad3702:
 - sequence: 0
   type: execute
@@ -246,10 +266,18 @@
 - sequence: 0
   type: execute
   sql: select "created_on"::varchar, "text", "refresh_mode", "cluster_by", "warehouse", "initialization_warehouse", "configured_refresh_mode" from table(result_scan(last_query_id())) where upper("name") = upper('refresh_mode_to_auto')
+976ad8e7:
+- sequence: 0
+  type: execute
+  sql: INSERT INTO development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks VALUES ('dm_auto_disable', 'Mon, 02 Nov 2026 01:50:12 -0800')
 98207dd4:
 - sequence: 0
   type: execute
   sql: ALTER DYNAMIC TABLE development.adapters_snowflake_dynamic_table_create_or_alter.attr_tag SET TAG development.adapters_snowflake_dynamic_table_create_or_alter.mytag = 'v1'
+9e7a04da:
+- sequence: 0
+  type: execute
+  sql: INSERT INTO development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks VALUES ('refresh_mode_replace', 'Mon, 02 Nov 2026 01:50:06 -0800')
 9f0b07d2:
 - sequence: 0
   type: execute
@@ -282,38 +310,26 @@ ac94be75:
 - sequence: 0
   type: execute
   sql: select "created_on"::varchar, "text", "refresh_mode", "cluster_by", "warehouse", "initialization_warehouse", "configured_refresh_mode" from table(result_scan(last_query_id())) where upper("name") = upper('cfg_init_warehouse')
-b49d76b4:
-- sequence: 0
-  type: execute
-  sql: INSERT INTO development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks VALUES ('attr_row_access_policy', 'Sun, 01 Nov 2026 13:23:09 -0800')
 b4c15425:
 - sequence: 0
   type: execute
   sql: show dynamic tables like 'dm_incremental_enable' in schema development.adapters_snowflake_dynamic_table_create_or_alter
-b7e97c38:
-- sequence: 0
-  type: execute
-  sql: INSERT INTO development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks VALUES ('attr_tag', 'Sun, 01 Nov 2026 13:23:08 -0800')
 b85d3239:
 - sequence: 0
   type: execute
   sql: ALTER DYNAMIC TABLE development.adapters_snowflake_dynamic_table_create_or_alter.attr_multi SET DATA_RETENTION_TIME_IN_DAYS = 3
-b9cde787:
+b8a804fe:
 - sequence: 0
   type: execute
-  sql: INSERT INTO development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks VALUES ('cfg_cluster_by', 'Sun, 01 Nov 2026 13:23:07 -0800')
+  sql: show dynamic tables like 'inc_props' in schema development.adapters_snowflake_dynamic_table_create_or_alter
+ba90be6e:
+- sequence: 0
+  type: execute
+  sql: show dynamic tables like 'inc_noop' in schema development.adapters_snowflake_dynamic_table_create_or_alter
 bc9d19cd:
 - sequence: 0
   type: execute
   sql: show dynamic tables like 'attr_max_data_extension' in schema development.adapters_snowflake_dynamic_table_create_or_alter
-c191342e:
-- sequence: 0
-  type: execute
-  sql: INSERT INTO development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks VALUES ('refresh_mode_replace', 'Sun, 01 Nov 2026 13:23:00 -0800')
-c293e0da:
-- sequence: 0
-  type: execute
-  sql: INSERT INTO development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks VALUES ('attr_data_retention', 'Sun, 01 Nov 2026 13:23:12 -0800')
 c47f54fc:
 - sequence: 0
   type: execute
@@ -326,10 +342,10 @@ c72b7cae:
 - sequence: 0
   type: execute
   sql: select "value" from table(result_scan(last_query_id()))
-cc945c4b:
+cabbfd8a:
 - sequence: 0
   type: execute
-  sql: INSERT INTO development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks VALUES ('attr_masking_policy', 'Sun, 01 Nov 2026 13:23:12 -0800')
+  sql: INSERT INTO development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks VALUES ('refresh_mode_to_auto', 'Mon, 02 Nov 2026 01:50:05 -0800')
 cf4cfad1:
 - sequence: 0
   type: execute
@@ -338,6 +354,14 @@ d1ff4f1c:
 - sequence: 0
   type: execute
   sql: select "created_on"::varchar, "text", "refresh_mode", "cluster_by", "warehouse", "initialization_warehouse", "configured_refresh_mode" from table(result_scan(last_query_id())) where upper("name") = upper('dm_full_disable')
+d59ada3a:
+- sequence: 0
+  type: execute
+  sql: INSERT INTO development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks VALUES ('dm_incremental_enable', 'Mon, 02 Nov 2026 01:50:09 -0800')
+d7d1a16b:
+- sequence: 0
+  type: execute
+  sql: INSERT INTO development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks VALUES ('inc_props', 'Mon, 02 Nov 2026 01:50:06 -0800')
 e3b47feb:
 - sequence: 0
   type: execute
@@ -346,14 +370,6 @@ e4f735fc:
 - sequence: 0
   type: execute
   sql: select "created_on"::varchar, "text", "refresh_mode", "cluster_by", "warehouse", "initialization_warehouse", "configured_refresh_mode" from table(result_scan(last_query_id())) where upper("name") = upper('cfg_warehouse')
-e64df634:
-- sequence: 0
-  type: execute
-  sql: INSERT INTO development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks VALUES ('cfg_init_warehouse', 'Sun, 01 Nov 2026 13:23:06 -0800')
-e65d7511:
-- sequence: 0
-  type: execute
-  sql: INSERT INTO development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks VALUES ('transient_preserved', 'Sun, 01 Nov 2026 13:22:57 -0800')
 e752c1f9:
 - sequence: 0
   type: execute
@@ -370,11 +386,19 @@ ebfc6bd9:
 - sequence: 0
   type: execute
   sql: select "created_on"::varchar, "text", "refresh_mode", "cluster_by", "warehouse", "initialization_warehouse", "configured_refresh_mode" from table(result_scan(last_query_id())) where upper("name") = upper('refresh_mode_replace')
-ee19aa22:
+f3505715:
 - sequence: 0
   type: execute
-  sql: INSERT INTO development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks VALUES ('dm_full_disable', 'Sun, 01 Nov 2026 13:23:03 -0800')
-fb7d346c:
+  sql: INSERT INTO development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks VALUES ('attr_max_data_extension', 'Mon, 02 Nov 2026 01:50:19 -0800')
+f986a3fd:
 - sequence: 0
   type: execute
-  sql: INSERT INTO development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks VALUES ('attr_aggregation_policy', 'Sun, 01 Nov 2026 13:23:14 -0800')
+  sql: select "created_on"::varchar, "text", "refresh_mode", "cluster_by", "warehouse", "initialization_warehouse", "configured_refresh_mode" from table(result_scan(last_query_id())) where upper("name") = upper('inc_noop')
+fa6de147:
+- sequence: 0
+  type: execute
+  sql: INSERT INTO development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks VALUES ('attr_multi', 'Mon, 02 Nov 2026 01:50:18 -0800')
+fec89855:
+- sequence: 0
+  type: execute
+  sql: INSERT INTO development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks VALUES ('idempotent_noop', 'Mon, 02 Nov 2026 01:50:08 -0800')

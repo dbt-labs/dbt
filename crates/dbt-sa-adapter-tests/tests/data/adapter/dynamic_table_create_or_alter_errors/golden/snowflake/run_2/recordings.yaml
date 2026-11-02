@@ -66,6 +66,70 @@ model.test.err_transient_drift:
 - sequence: 3
   type: execute
   sql: use warehouse [MASKED_WH]
+model.test.err_type_change:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: show dynamic tables like 'ERR_TYPE_CHANGE' in schema "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE_CREATE_OR_ALTER_ERRORS"
+- sequence: 2
+  type: execute
+  sql: |-
+    create or alter dynamic table development.adapters_snowflake_dynamic_table_create_or_alter_errors.err_type_change
+    
+    warehouse = [MASKED_WH]
+    
+    
+    refresh_mode = FULL
+    
+    scheduler = 'DISABLE'
+    
+    
+    
+    
+    
+    as (
+    select cast(id as varchar) as id, value from development.adapters_snowflake_dynamic_table_create_or_alter_errors.source_table
+    )
+  error: |-
+    Internal: [Snowflake] 002108 (22000): CREATE OR ALTER execution failed. Partial updates may have been applied. Please visit https://docs.snowflake.com/sql-reference/sql/create-table#label-create-or-alter-table-atomicity for details. Error message: SQL compilation error: cannot change column ID from type NUMBER(1,0) to VARCHAR(16777216)
+     (sqlstate: 22000, vendor_code: 2108)
+- sequence: 3
+  type: execute
+  sql: use warehouse [MASKED_WH]
+model.test.err_type_narrow:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: show dynamic tables like 'ERR_TYPE_NARROW' in schema "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE_CREATE_OR_ALTER_ERRORS"
+- sequence: 2
+  type: execute
+  sql: |-
+    create or alter dynamic table development.adapters_snowflake_dynamic_table_create_or_alter_errors.err_type_narrow
+    
+    warehouse = [MASKED_WH]
+    
+    
+    refresh_mode = FULL
+    
+    scheduler = 'DISABLE'
+    
+    
+    
+    
+    
+    as (
+    select id, cast(value as varchar(5)) as value from development.adapters_snowflake_dynamic_table_create_or_alter_errors.source_table
+    )
+  error: |-
+    Internal: [Snowflake] 040050 (22000): CREATE OR ALTER execution failed. Partial updates may have been applied. Please visit https://docs.snowflake.com/sql-reference/sql/create-table#label-create-or-alter-table-atomicity for details. Error message: SQL compilation error: cannot change column VALUE from type VARCHAR(100) to VARCHAR(5) because reducing the byte-length of a varchar is not supported.
+     (sqlstate: 22000, vendor_code: 40050)
+- sequence: 3
+  type: execute
+  sql: use warehouse [MASKED_WH]
 model.test.ok_evolve:
 - sequence: 0
   type: execute

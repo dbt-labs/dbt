@@ -104,3 +104,13 @@ models:
         +refresh_mode: FULL
         +scheduler: disable
         +cluster_by: [id]
+
+    # Incremental tables: a property-only change or a no-op must not reinitialize; a query change
+    # (the deploy_matrix models above) does.
+    incremental_properties:
+      inc_noop:
+        +refresh_mode: INCREMENTAL
+        +scheduler: disable
+      inc_props:
+        +refresh_mode: INCREMENTAL
+        +scheduler: disable

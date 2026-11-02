@@ -18,6 +18,8 @@
    Parsing models/deploy_matrix/dm_full_enable.sql
    Parsing models/deploy_matrix/dm_incremental_disable.sql
    Parsing models/deploy_matrix/dm_incremental_enable.sql
+   Parsing models/incremental_properties/inc_noop.sql
+   Parsing models/incremental_properties/inc_props.sql
    Parsing models/on_configuration_change/continue_skips_both.sql
    Parsing models/routing/idempotent_noop.sql
    Parsing models/routing/refresh_mode_replace.sql
@@ -36,6 +38,20 @@
 [PASS] dm_auto_disable: synced in place (created_on unchanged)
 [PASS] dm_auto_enable: definition deployed
 [PASS] dm_auto_enable: synced in place (created_on unchanged)
+dm_incremental_disable: refresh actions ['INCREMENTAL', 'NO_DATA', 'REINITIALIZE']
+[PASS] dm_incremental_disable: query change reinitialized the table
+dm_auto_disable: refresh_mode=ADAPTIVE refresh actions ['INCREMENTAL', 'NO_DATA', 'REINITIALIZE']
+[PASS] dm_auto_disable: reinitialized exactly when AUTO resolved to incremental
+dm_full_disable: refresh actions ['FULL', 'NO_DATA', 'FULL']
+[PASS] dm_full_disable: FULL table is recomputed, not reinitialized
+inc_noop: refresh actions ['INCREMENTAL', 'NO_DATA', 'NO_DATA']
+[PASS] inc_noop: not rebuilt (created_on unchanged)
+[PASS] inc_noop: no reinitialization
+inc_props: refresh actions ['INCREMENTAL', 'NO_DATA', 'NO_DATA']
+[PASS] inc_props: cluster key applied
+[PASS] inc_props: warehouse applied
+[PASS] inc_props: synced in place (created_on unchanged)
+[PASS] inc_props: properties change did not reinitialize
 [PASS] transient_flip: now non-transient
 [PASS] transient_flip: rebuilt (created_on changed)
 [PASS] transient_preserved: definition deployed

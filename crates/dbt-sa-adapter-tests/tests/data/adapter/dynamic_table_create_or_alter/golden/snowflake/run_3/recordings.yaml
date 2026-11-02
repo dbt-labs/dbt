@@ -616,6 +616,70 @@ model.test.idempotent_noop:
 - sequence: 4
   type: execute
   sql: use warehouse [MASKED_WH]
+model.test.inc_noop:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: show dynamic tables like 'INC_NOOP' in schema "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE_CREATE_OR_ALTER"
+- sequence: 2
+  type: execute
+  sql: |-
+    create or alter dynamic table development.adapters_snowflake_dynamic_table_create_or_alter.inc_noop
+    
+    warehouse = [MASKED_WH]
+    
+    
+    refresh_mode = INCREMENTAL
+    
+    scheduler = 'DISABLE'
+    
+    
+    
+    
+    
+    as (
+    select id, value from development.adapters_snowflake_dynamic_table_create_or_alter.source_table
+    )
+- sequence: 3
+  type: execute
+  sql: alter dynamic table development.adapters_snowflake_dynamic_table_create_or_alter.inc_noop refresh
+- sequence: 4
+  type: execute
+  sql: use warehouse [MASKED_WH]
+model.test.inc_props:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: show dynamic tables like 'INC_PROPS' in schema "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE_CREATE_OR_ALTER"
+- sequence: 2
+  type: execute
+  sql: |-
+    create or alter dynamic table development.adapters_snowflake_dynamic_table_create_or_alter.inc_props
+    
+    warehouse = [MASKED_WH]
+    
+    
+    refresh_mode = INCREMENTAL
+    
+    scheduler = 'DISABLE'
+    
+    cluster by (id)
+    
+    
+    
+    as (
+    select id, value from development.adapters_snowflake_dynamic_table_create_or_alter.source_table
+    )
+- sequence: 3
+  type: execute
+  sql: alter dynamic table development.adapters_snowflake_dynamic_table_create_or_alter.inc_props refresh
+- sequence: 4
+  type: execute
+  sql: use warehouse [MASKED_WH]
 model.test.refresh_mode_replace:
 - sequence: 0
   type: execute

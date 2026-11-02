@@ -70,7 +70,7 @@
 {% endmacro %}
 
 {% macro _dynamic_table_names() %}
-  {% do return(["dm_full_disable", "dm_full_enable", "dm_incremental_disable", "dm_incremental_enable", "dm_auto_disable", "dm_auto_enable", "transient_flip", "transient_preserved", "refresh_mode_replace", "refresh_mode_to_auto", "idempotent_noop", "cfg_cluster_by", "cfg_warehouse", "cfg_init_warehouse", "continue_skips_both", "attr_masking_policy", "attr_row_access_policy", "attr_tag", "attr_projection_policy", "attr_aggregation_policy", "attr_max_data_extension", "attr_data_retention", "attr_comment", "attr_multi"]) %}
+  {% do return(["dm_full_disable", "dm_full_enable", "dm_incremental_disable", "dm_incremental_enable", "dm_auto_disable", "dm_auto_enable", "transient_flip", "transient_preserved", "refresh_mode_replace", "refresh_mode_to_auto", "idempotent_noop", "inc_noop", "inc_props", "cfg_cluster_by", "cfg_warehouse", "cfg_init_warehouse", "continue_skips_both", "attr_masking_policy", "attr_row_access_policy", "attr_tag", "attr_projection_policy", "attr_aggregation_policy", "attr_max_data_extension", "attr_data_retention", "attr_comment", "attr_multi"]) %}
 {% endmacro %}
 
 {% macro set_up() %}
@@ -120,6 +120,17 @@
   {{ _check("setup: attr_multi retention is 3", _table_field('attr_multi', 'retention_time') | string == '3') }}
 {% endmacro %}
 
+{#- The refresh actions Snowflake recorded for a dynamic table, oldest first (INCREMENTAL / FULL /
+    NO_DATA / REINITIALIZE). CREATE OR ALTER on an incremental table reinitializes it on a query
+    change; a no-op or a property-only change must not. -#}
+{% macro _refresh_actions(name) %}
+  {% set t = run_query(
+      "select refresh_action from table(" ~ target.database ~ ".information_schema.dynamic_table_refresh_history("
+      ~ "name => '" ~ ((_fq() ~ '.' ~ name) | upper) ~ "')) order by data_timestamp, refresh_start_time"
+  ) %}
+  {% do return(t.rows | map(attribute=0) | list) %}
+{% endmacro %}
+
 {% macro _created_on_unchanged(name, row) %}
   {% do return(_scalar("select count(*) from " ~ _fq() ~ ".coa_marks where name = '" ~ name ~ "' and created_on = '" ~ row[0] ~ "'") | int == 1) %}
 {% endmacro %}
@@ -135,6 +146,33 @@
     {{ _check(name ~ ": definition deployed", _evolved(row)) }}
     {{ _check(name ~ ": synced in place (created_on unchanged)", _created_on_unchanged(name, row)) }}
   {% endfor %}
+
+  {# reinitialization: a query change reinitializes an incremental table; a FULL table just recomputes #}
+  {% set actions = _refresh_actions('dm_incremental_disable') %}
+  {% do log("dm_incremental_disable: refresh actions " ~ actions, info=True) %}
+  {{ _check("dm_incremental_disable: query change reinitialized the table", 'REINITIALIZE' in actions) }}
+  {% set row = _show_dt('dm_auto_disable') %}
+  {% set actions = _refresh_actions('dm_auto_disable') %}
+  {% do log("dm_auto_disable: refresh_mode=" ~ row[2] ~ " refresh actions " ~ actions, info=True) %}
+  {{ _check("dm_auto_disable: reinitialized exactly when AUTO resolved to incremental", ('REINITIALIZE' in actions) == ((row[2] | upper) in ['INCREMENTAL', 'ADAPTIVE'])) }}
+  {% set actions = _refresh_actions('dm_full_disable') %}
+  {% do log("dm_full_disable: refresh actions " ~ actions, info=True) %}
+  {{ _check("dm_full_disable: FULL table is recomputed, not reinitialized", 'REINITIALIZE' not in actions and 'FULL' in actions) }}
+
+  {# incremental, no reinitialization: a no-op and a property-only change #}
+  {% set row = _show_dt('inc_noop') %}
+  {% set actions = _refresh_actions('inc_noop') %}
+  {% do log("inc_noop: refresh actions " ~ actions, info=True) %}
+  {{ _check("inc_noop: not rebuilt (created_on unchanged)", _created_on_unchanged('inc_noop', row)) }}
+  {{ _check("inc_noop: no reinitialization", 'REINITIALIZE' not in actions) }}
+
+  {% set row = _show_dt('inc_props') %}
+  {% set actions = _refresh_actions('inc_props') %}
+  {% do log("inc_props: refresh actions " ~ actions, info=True) %}
+  {{ _check("inc_props: cluster key applied", 'ID' in ((row[3] or '') | upper)) }}
+  {{ _check("inc_props: warehouse applied", (row[4] | upper) == 'FUSION_SLT_WAREHOUSE') }}
+  {{ _check("inc_props: synced in place (created_on unchanged)", _created_on_unchanged('inc_props', row)) }}
+  {{ _check("inc_props: properties change did not reinitialize", 'REINITIALIZE' not in actions) }}
 
   {# routing: transient / refresh_mode changes are rebuilt, everything else is synced in place #}
   {% set row = _show_dt('transient_flip') %}

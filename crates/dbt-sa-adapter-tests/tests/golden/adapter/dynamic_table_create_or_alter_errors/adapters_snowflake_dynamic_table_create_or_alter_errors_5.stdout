@@ -3,10 +3,14 @@
    Parsing models/err_fail_fast.sql
    Parsing models/err_reorder.sql
    Parsing models/err_transient_drift.sql
+   Parsing models/err_type_change.sql
+   Parsing models/err_type_narrow.sql
    Parsing models/ok_evolve.sql
 [PASS] err_reorder: recovered with the reordered definition
 [PASS] err_transient_drift: recovered with the evolved definition
 [PASS] err_transient_drift: recovered as non-transient
+[PASS] err_type_narrow: recovered with the narrowed type
+[PASS] err_type_change: recovered with the changed type
 [PASS] err_fail_fast: config change not applied
 [PASS] ok_evolve: definition deployed despite sibling failures
 ==================== Execution Summary =====================
