@@ -67,6 +67,7 @@
       {%- endif -%}
     {%- endfor -%}
     {%- for column, tag_names in tags_by_column.items() -%}
+      {{ log("Unsetting tags " ~ tag_names ~ " on column " ~ column ~ " of " ~ relation ~ " before it is dropped", info=True) }}
       {%- call statement('unset_column_tags') -%}
         {{ alter_unset_column_tags(relation, column, tag_names) }}
       {%- endcall -%}
@@ -74,9 +75,25 @@
   {%- endif -%}
 {%- endmacro -%}
 
+{#-- UC rejects any replace that removes a governed-tagged column, so unset its tags first. --#}
+{% macro unset_tags_on_removed_columns(existing_relation, new_column_names) -%}
+  {%- if existing_relation.type == 'table' and not existing_relation.is_hive_metastore() -%}
+    {%- set kept = new_column_names | map('lower') | list -%}
+    {%- set removed = [] -%}
+    {%- for column in adapter.get_columns_in_relation(existing_relation) -%}
+      {%- if (column.name | lower) not in kept -%}
+        {%- do removed.append(column) -%}
+      {%- endif -%}
+    {%- endfor -%}
+    {{ unset_column_tags(existing_relation, removed) }}
+  {%- endif -%}
+{%- endmacro -%}
+
 {% macro alter_unset_column_tags(relation, column, tag_names) -%}
-  {# Only reached from the DROP COLUMNS path, which never runs on views. #}
-  ALTER {{ relation.type.render() }} {{ relation.render() }}
+  {# Only reached for existing tables, never views. #}
+  {#- DIVERGENCE BEGIN: upstream uses relation.type.render(); we use render_type() Jinja macro instead -#}
+  ALTER {{ render_type(relation.type) }} {{ relation.render() }}
+  {# DIVERGENCE END #}
   ALTER COLUMN `{{ column }}`
   UNSET TAGS (
     {%- for tag_name in tag_names -%}
