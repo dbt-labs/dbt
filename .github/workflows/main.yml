@@ -85,7 +85,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
     env:
       HATCH_PYTHON: ${{ matrix.python-version }}
 
@@ -146,7 +146,7 @@ jobs:
       - name: generate include
         id: generate-include
         run: |
-          INCLUDE=('"python-version":"3.10","os":"windows-latest"' '"python-version":"3.10","os":"macos-14"' )
+          INCLUDE=('"python-version":"3.11","os":"windows-latest"' '"python-version":"3.11","os":"macos-14"' )
           INCLUDE_GROUPS="["
           for include in ${INCLUDE[@]}; do
               for group in $(seq 1 ${{ env.PYTHON_INTEGRATION_TEST_WORKERS }}); do
@@ -168,7 +168,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
         os: ["ubuntu-latest"]
         split-group: ${{ fromJson(needs.integration-metadata.outputs.split-groups) }}
     env:
