@@ -962,20 +962,12 @@ pub enum ClapResourceType {
     Exposure,
     /// Nodes added by plugins.
     Plugin,
-    /// Selects every resource type, as if each one had been listed.
     All,
     /// Selects the resource types a command uses when no filter is given.
     Default,
 }
 
 impl ClapResourceType {
-    /// `all` and `default` describe a selection set, so they are not valid
-    /// `--exclude-resource-type` values. Defined once so every command's
-    /// exclude parser rejects both with the same clap error.
-    pub fn is_unsupported_exclude(self) -> bool {
-        matches!(self, Self::All | Self::Default)
-    }
-
     /// Expand the `all` and `default` shorthands into resource types.
     ///
     /// `defaults` is the calling command's own default set and is only used
@@ -1050,10 +1042,8 @@ impl From<&ClapResourceType> for NodeType {
             ClapResourceType::Exposure => NodeType::Exposure,
             ClapResourceType::Plugin => NodeType::Plugin,
             // `all` and `default` are expanded by `resolve` before conversion.
-            // Mapping them to Unspecified would silently match no nodes, which
-            // is how `--exclude-resource-type all|default` used to be ignored.
             ClapResourceType::All | ClapResourceType::Default => {
-                panic!(
+                unreachable!(
                     "{value} is not a NodeType; expand `all`/`default` with ClapResourceType::resolve first"
                 )
             }
@@ -2091,13 +2081,6 @@ mod tests {
             ClapResourceType::resolve(&[ClapResourceType::Default], &defaults),
             defaults
         );
-    }
-
-    #[test]
-    fn all_and_default_are_unsupported_exclude_values() {
-        assert!(ClapResourceType::All.is_unsupported_exclude());
-        assert!(ClapResourceType::Default.is_unsupported_exclude());
-        assert!(!ClapResourceType::Model.is_unsupported_exclude());
     }
 
     #[test]

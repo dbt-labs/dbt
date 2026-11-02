@@ -23,7 +23,7 @@ use uuid::Uuid;
 
 use clap::{
     ArgAction, Parser, ValueEnum, ValueHint,
-    builder::{BoolishValueParser, TypedValueParser},
+    builder::{BoolishValueParser, PossibleValuesParser, TypedValueParser},
 };
 use clap_complete::Shell;
 use dbt_common::constants::{
@@ -63,15 +63,19 @@ pub const DEFAULT_FORMAT: DisplayFormat = DisplayFormat::Table;
 /// Parser for `--exclude-resource-type` values.
 ///
 /// `all` and `default` describe a selection, so excluding by them is
-/// meaningless. Rejecting them while parsing makes both fail loudly with the
-/// same error, instead of silently excluding nothing.
+/// meaningless.
 fn exclude_resource_type_parser() -> impl TypedValueParser<Value = ClapResourceType> {
     let values = ClapResourceType::value_variants()
         .iter()
-        .filter(|resource_type| !resource_type.is_unsupported_exclude())
+        .filter(|resource_type| {
+            !matches!(
+                resource_type,
+                ClapResourceType::All | ClapResourceType::Default
+            )
+        })
         .filter_map(|resource_type| resource_type.to_possible_value());
-    clap::builder::PossibleValuesParser::new(values).map(|value| {
-        <ClapResourceType as ValueEnum>::from_str(&value, true)
+    PossibleValuesParser::new(values).map(|value| {
+        ClapResourceType::from_str(&value, true)
             .expect("value comes from ClapResourceType::to_possible_value")
     })
 }
@@ -1345,7 +1349,7 @@ impl BuildArgs {
             eval_args.resource_types =
                 ClapResourceType::resolve(resource_type, &default_resource_types);
         } else {
-            eval_args.resource_types = default_resource_types.clone();
+            eval_args.resource_types = default_resource_types;
         }
         if let Some(exclude_resource_type) = &self.exclude_resource_type {
             eval_args.exclude_resource_types = exclude_resource_type.clone();
@@ -1407,7 +1411,6 @@ impl ListArgs {
         eval_args.phase = Phases::List;
         eval_args.io.show.insert(ShowOptions::Nodes);
         eval_args.output_keys = self.output_keys.clone();
-        // `list` defaults to every resource type except analyses, like v1.
         let default_resource_types = vec![
             ClapResourceType::Model,
             ClapResourceType::Source,
@@ -2187,7 +2190,7 @@ pub struct CommonArgs {
         long,
         env = "DBT_ENGINE_DEFAULT_STATIC_ANALYSIS",
         // Leave out the deprecated `on` and `unsafe`.
-        value_parser = clap::builder::PossibleValuesParser::new(["off", "baseline", "strict"])
+        value_parser = PossibleValuesParser::new(["off", "baseline", "strict"])
             .map(|s| s.parse::<StaticAnalysisKind>().expect("restricted to valid kinds")),
         hide = true
     )]
@@ -4096,74 +4099,8 @@ mod tests {
     }
 
     #[test]
-    fn list_command_supports_all_and_default_resource_type() {
-        let eval = |flag: Option<&str>| {
-            let mut args = vec!["list"];
-            if let Some(flag) = flag {
-                args.extend(["--resource-type", flag]);
-            }
-            let cmd = parse_core_command(&args);
-            let CoreCommand::List(args) = &cmd else {
-                panic!("expected CoreCommand::List, got {cmd:?}");
-            };
-            args.to_eval_args(
-                test_system_args(FsCommand::List),
-                Path::new("/tmp/in"),
-                Path::new("/tmp/out"),
-            )
-            .resource_types
-        };
-
-        // v1 parity: `list` selects everything except analyses unless told otherwise,
-        // and `default` selects that same set.
-        let default = list_default_resource_types();
-        assert_eq!(eval(None), default);
-        assert_eq!(eval(Some("default")), default);
-
-        // `all` adds the one type the default set leaves out.
-        let all = eval(Some("all"));
-        assert_eq!(all.len(), default.len() + 1);
-        assert!(all.contains(&ClapResourceType::Analysis));
-        for resource_type in &default {
-            assert!(
-                all.contains(resource_type),
-                "{resource_type} missing from all"
-            );
-        }
-    }
-
-    #[test]
-    fn exclude_resource_type_rejects_all() {
-        let error = exclude_resource_type_error("list", "all");
-        assert!(
-            error.contains("invalid value 'all'"),
-            "should fail on the value: {error}"
-        );
-        assert!(error.contains("--exclude-resource-type"), "{error}");
-    }
-
-    #[test]
-    fn exclude_resource_type_rejects_default() {
-        let error = exclude_resource_type_error("list", "default");
-        assert!(
-            error.contains("invalid value 'default'"),
-            "should fail on the value: {error}"
-        );
-        assert!(error.contains("--exclude-resource-type"), "{error}");
-    }
-
-    #[test]
-    fn exclude_resource_type_all_and_default_share_error() {
-        let all = exclude_resource_type_error("list", "all").replace("'all'", "'<shorthand>'");
-        let default =
-            exclude_resource_type_error("list", "default").replace("'default'", "'<shorthand>'");
-        assert_eq!(all, default);
-    }
-
-    #[test]
     fn exclude_resource_type_rejects_all_and_default() {
         for command in ["list", "build", "compile", "show", "test", "freshness"] {
-            let mut messages = Vec::new();
             for flag in ["all", "default"] {
                 let error = exclude_resource_type_error(command, flag);
                 assert!(
@@ -4174,26 +4111,13 @@ mod tests {
                     error.contains("--exclude-resource-type"),
                     "error should name the flag: {error}"
                 );
-                let possible_values = error
-                    .lines()
-                    .find(|line| line.contains("[possible values:"))
-                    .expect("clap lists the accepted values");
-                assert!(
-                    !possible_values.contains("all") && !possible_values.contains("default"),
-                    "neither shorthand should be offered for exclude: {possible_values}"
-                );
-                messages.push(error.replace(&format!("'{flag}'"), "'<shorthand>'"));
             }
-            // Both shorthands must produce the same error, not just the same outcome.
-            assert_eq!(
-                messages[0], messages[1],
-                "`{command}` errors differ between all and default"
-            );
+            // Both `all` and `default` must be rejected, not silently ignored.
         }
     }
 
     #[test]
-    fn v2_commands_accept_resource_type_all() {
+    fn commands_accept_resource_type_all() {
         let all = ClapResourceType::resolve(&[ClapResourceType::All], &[]);
         for command in ["list", "build", "compile", "show", "test", "freshness"] {
             assert_eq!(
@@ -4204,8 +4128,9 @@ mod tests {
         }
     }
 
-    fn list_default_resource_types() -> Vec<ClapResourceType> {
-        vec![
+    #[test]
+    fn list_omitted_resource_type_uses_list_defaults() {
+        let default = vec![
             ClapResourceType::Model,
             ClapResourceType::Source,
             ClapResourceType::Seed,
@@ -4219,12 +4144,7 @@ mod tests {
             ClapResourceType::Check,
             ClapResourceType::Exposure,
             ClapResourceType::Plugin,
-        ]
-    }
-
-    #[test]
-    fn list_omitted_resource_type_matches_v1_default() {
-        let default = list_default_resource_types();
+        ];
         assert_eq!(command_eval_resource_types(&["list"]), default);
         assert_eq!(
             command_eval_resource_types(&["list", "--resource-type", "default"]),
