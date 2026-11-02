@@ -2427,7 +2427,7 @@ mod compare_record_batches_tests {
 
     fn databricks_table(batch: arrow::array::RecordBatch) -> AgateTable {
         let display = batch.clone().jsonify_nested_columns();
-        AgateTable::from_record_batch_with_original(Arc::new(display), Arc::new(batch))
+        AgateTable::from_record_batch_impl(Arc::new(display), Some(Arc::new(batch)), None)
     }
 
     #[test]

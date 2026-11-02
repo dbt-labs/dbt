@@ -917,7 +917,7 @@ impl AdapterImpl {
             Databricks => {
                 let original = Arc::new(last_batch);
                 let display = original.as_ref().clone().jsonify_nested_columns();
-                AgateTable::from_record_batch_with_original(Arc::new(display), original)
+                AgateTable::from_record_batch_impl(Arc::new(display), Some(original), None)
             }
             _ => AgateTable::from_record_batch(Arc::new(last_batch)),
         };

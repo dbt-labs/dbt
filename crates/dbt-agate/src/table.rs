@@ -518,25 +518,23 @@ impl AgateTable {
     /// `row_names` is an optional array of strings with the same length as the number
     /// of rows in the `RecordBatch`.
     pub fn new(batch: Arc<RecordBatch>, row_names: Option<Arc<StringViewArray>>) -> Self {
-        let flat = FlatRecordBatch::try_new(batch).unwrap();
-        let repr = TableRepr::new(Arc::new(flat), None, row_names);
-        Self::from_repr(Arc::new(repr))
+        Self::from_record_batch_impl(Arc::clone(&batch), Some(batch), row_names)
     }
 
     /// Create an AgateTable from an Arrow RecordBatch.
     pub fn from_record_batch(batch: Arc<RecordBatch>) -> Self {
-        Self::new(batch, None)
+        Self::from_record_batch_impl(Arc::clone(&batch), Some(batch), None)
     }
 
-    /// Keep typed query values alongside a separate display representation.
-    pub fn from_record_batch_with_original(
+    /// Constructor for callers that do their own batch transformation but
+    /// still need to keep the original [RecordBatch] around.
+    pub fn from_record_batch_impl(
         batch: Arc<RecordBatch>,
-        original: Arc<RecordBatch>,
+        original: Option<Arc<RecordBatch>>,
+        row_names: Option<Arc<StringViewArray>>,
     ) -> Self {
-        let flat = FlatRecordBatch::try_new(batch)
-            .unwrap()
-            .with_original(original);
-        let repr = TableRepr::new(Arc::new(flat), None, None);
+        let flat = FlatRecordBatch::try_new_impl(batch, original).unwrap();
+        let repr = TableRepr::new(Arc::new(flat), None, row_names);
         Self::from_repr(Arc::new(repr))
     }
 
@@ -1556,7 +1554,8 @@ mod tests {
             ])
             .unwrap(),
         );
-        let table = AgateTable::from_record_batch_with_original(display.clone(), original.clone());
+        let table =
+            AgateTable::from_record_batch_impl(display.clone(), Some(original.clone()), None);
         assert!(Arc::ptr_eq(&table.original_record_batch(), &original));
         assert_eq!(table.to_record_batch().column(0), display.column(0));
         assert_eq!(
@@ -1570,7 +1569,7 @@ mod tests {
             Some("Text")
         );
         let native_display =
-            AgateTable::from_record_batch_with_original(original.clone(), original);
+            AgateTable::from_record_batch_impl(original.clone(), Some(original), None);
         assert_eq!(
             native_display
                 .to_record_batch()
