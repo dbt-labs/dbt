@@ -10,12 +10,12 @@ use crate::schemas::project::ResolvableConfig;
 use crate::schemas::project::configs::config_merge::Tags;
 use crate::schemas::serde::bool_or_string_bool;
 
-/// A plugin node's `config:`: what dbt itself reads of it.
+/// An experimental node's `config:`: what dbt itself reads of it.
 // NOTE: No #[skip_serializing_none] - we handle None serialization in serialize_with_mode
 #[derive(
     Resolvable, DefaultTo, Deserialize, Serialize, Debug, Clone, Default, DbtSchema, PartialEq,
 )]
-pub struct PluginNodeConfig {
+pub struct ExperimentalNodeConfig {
     #[resolved(promote, method = get_enabled_with_default)]
     #[serde(default, deserialize_with = "bool_or_string_bool")]
     pub enabled: Option<bool>,
@@ -25,8 +25,8 @@ pub struct PluginNodeConfig {
     pub tags: Tags,
 }
 
-impl ResolvableConfig<PluginNodeConfig> for PluginNodeConfig {
-    type Resolved = ResolvedPluginNodeConfig;
+impl ResolvableConfig<ExperimentalNodeConfig> for ExperimentalNodeConfig {
+    type Resolved = ResolvedExperimentalNodeConfig;
     type PackageDefaults = ();
     type ResolveDefaults = ();
 
@@ -40,11 +40,11 @@ impl ResolvableConfig<PluginNodeConfig> for PluginNodeConfig {
 
     fn apply_package_defaults(&mut self, _: ()) {}
 
-    fn finalize(self) -> ResolvedPluginNodeConfig {
+    fn finalize(self) -> ResolvedExperimentalNodeConfig {
         self.finalize_resolved()
     }
 
-    fn default_to(&mut self, parent: &PluginNodeConfig) {
+    fn default_to(&mut self, parent: &ExperimentalNodeConfig) {
         self.default_to_fields(parent);
     }
 }

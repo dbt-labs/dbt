@@ -24,9 +24,9 @@ enum NodeType {
   NODE_TYPE_SEMANTIC_MODEL = 14;
   NODE_TYPE_FUNCTION = 15;
   NODE_TYPE_CHECK = 16;
-  // A node a plugin adds to the project. Its kind is in `plugin_type`. Numbered apart from the
-  // core node types; node types must fit in a byte (node-count metric keys pack them).
-  NODE_TYPE_PLUGIN = 100;
+  // A node an experimental adds to the project. Its kind is in `experimental_type`. Numbered apart
+  // from the core node types; node types must fit in a byte (node-count metric keys pack them).
+  NODE_TYPE_EXPERIMENTAL = 100;
 }
 
 // Core outcome for any node evaluation result within any phase.
@@ -505,9 +505,9 @@ message NodeProcessed {
   // project can run nodes on more than one adapter.
   optional string adapter = 48;
 
-  // If node_type == NODE_TYPE_PLUGIN, the kind of node the plugin added
+  // If node_type == NODE_TYPE_EXPERIMENTAL, the kind of node the experimental added
   // (e.g. "widget").
-  optional string plugin_type = 49;
+  optional string experimental_type = 49;
 
   // Response of the node's `main` statement.
   // Rolled up from the Run phase `NodeEvaluated`; see its `adapter_response`.

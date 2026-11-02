@@ -596,10 +596,10 @@ pub struct NodeProcessed {
     /// project can run nodes on more than one adapter.
     #[prost(string, optional, tag = "48")]
     pub adapter: ::core::option::Option<::prost::alloc::string::String>,
-    /// If node_type == NODE_TYPE_PLUGIN, the kind of node the plugin added
+    /// If node_type == NODE_TYPE_EXPERIMENTAL, the kind of node the experimental added
     /// (e.g. "widget").
     #[prost(string, optional, tag = "49")]
-    pub plugin_type: ::core::option::Option<::prost::alloc::string::String>,
+    pub experimental_type: ::core::option::Option<::prost::alloc::string::String>,
     /// Response of the node's `main` statement.
     /// Rolled up from the Run phase `NodeEvaluated`; see its `adapter_response`.
     /// Unset when the Run phase did not run, or recorded none.
@@ -676,9 +676,9 @@ pub enum NodeType {
     SemanticModel = 14,
     Function = 15,
     Check = 16,
-    /// A node a plugin adds to the project. Its kind is in `plugin_type`. Numbered apart from the
-    /// core node types; node types must fit in a byte (node-count metric keys pack them).
-    Plugin = 100,
+    /// A node an experimental adds to the project. Its kind is in `experimental_type`. Numbered apart
+    /// from the core node types; node types must fit in a byte (node-count metric keys pack them).
+    Experimental = 100,
 }
 impl NodeType {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -704,7 +704,7 @@ impl NodeType {
             Self::SemanticModel => "NODE_TYPE_SEMANTIC_MODEL",
             Self::Function => "NODE_TYPE_FUNCTION",
             Self::Check => "NODE_TYPE_CHECK",
-            Self::Plugin => "NODE_TYPE_PLUGIN",
+            Self::Experimental => "NODE_TYPE_EXPERIMENTAL",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -727,7 +727,7 @@ impl NodeType {
             "NODE_TYPE_SEMANTIC_MODEL" => Some(Self::SemanticModel),
             "NODE_TYPE_FUNCTION" => Some(Self::Function),
             "NODE_TYPE_CHECK" => Some(Self::Check),
-            "NODE_TYPE_PLUGIN" => Some(Self::Plugin),
+            "NODE_TYPE_EXPERIMENTAL" => Some(Self::Experimental),
             _ => None,
         }
     }

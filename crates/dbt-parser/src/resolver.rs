@@ -41,7 +41,7 @@ use dbt_schemas::schemas::dbt_catalogs_deprecated::DbtCatalogs;
 
 use crate::args::ResolveArgs;
 use crate::dbt_project_config::{RootProjectConfigs, build_root_project_configs};
-use crate::plugin::{ActivePlugins, ResolvePlugins};
+use crate::experimental::{ActiveExperimentals, ResolveExperimentals};
 use crate::resolve::resolve_groups::resolve_groups;
 use crate::resolve::resolve_operations::resolve_operations;
 use crate::resolve::resolve_query_comment::resolve_query_comment;
@@ -64,6 +64,9 @@ use tracing::Instrument as _;
 
 use crate::resolve::resolve_analyses::resolve_analyses;
 use crate::resolve::resolve_checks::resolve_checks;
+use crate::resolve::resolve_experimentals::{
+    ExperimentalNodeContext, ResolvedExperimentalNodes, resolve_experimentals,
+};
 use crate::resolve::resolve_exposures::resolve_exposures;
 use crate::resolve::resolve_functions::resolve_functions;
 use crate::resolve::resolve_macros::apply_macro_patches;
@@ -72,7 +75,6 @@ use crate::resolve::resolve_macros::resolve_macros;
 use crate::resolve::resolve_macros::typecheck_macros;
 use crate::resolve::resolve_metrics::resolve_metrics;
 use crate::resolve::resolve_models::resolve_models;
-use crate::resolve::resolve_plugins::{PluginNodeContext, ResolvedPluginNodes, resolve_plugins};
 use crate::resolve::resolve_properties;
 use crate::resolve::resolve_properties::resolve_minimal_properties;
 use crate::resolve::resolve_saved_queries::resolve_saved_queries;
@@ -141,7 +143,7 @@ pub async fn resolve(
     token: &CancellationToken,
     jinja_type_checking_event_listener_factory: Arc<dyn JinjaTypeCheckingEventListenerFactory>,
     resolver_hooks: Arc<dyn ResolverHooks>,
-    plugins: ResolvePlugins,
+    experimentals: ResolveExperimentals,
     jinja_factory: Arc<dyn JinjaFactory>,
 ) -> FsResult<(ResolverState, Arc<JinjaEnv>)> {
     // Hand this invocation a fresh `graph` mapping before any Jinja renders.
@@ -328,7 +330,7 @@ pub async fn resolve(
         root_runtime_config.clone(),
         token,
         jinja_type_checking_event_listener_factory.clone(),
-        Arc::new(plugins.turned_on(dbt_state.root_project().flags.as_ref())),
+        Arc::new(experimentals.turned_on(dbt_state.root_project().flags.as_ref())),
     )
     .await?;
     nodes.extend(resolved_nodes);
@@ -770,7 +772,7 @@ pub async fn resolve_inner(
     seen_generic_test_paths: &mut HashMap<PathBuf, String>,
     token: &CancellationToken,
     jinja_type_checking_event_listener_factory: Arc<dyn JinjaTypeCheckingEventListenerFactory>,
-    plugins: &ActivePlugins,
+    experimentals: &ActiveExperimentals,
 ) -> FsResult<(
     Nodes,
     Nodes,
@@ -812,7 +814,7 @@ pub async fn resolve_inner(
         &base_ctx,
         token,
         adapter_type,
-        plugins,
+        experimentals,
     )
     .await?;
 
@@ -1069,7 +1071,7 @@ pub async fn resolve_inner(
     nodes.exposures.extend(exposures);
     disabled_nodes.exposures.extend(disabled_exposures);
 
-    let plugin_ctx = PluginNodeContext {
+    let experimental_ctx = ExperimentalNodeContext {
         args: arg,
         package,
         root_package: dbt_state.root_package(),
@@ -1079,15 +1081,17 @@ pub async fn resolve_inner(
         env: &jinja_env,
         base_ctx: &base_ctx,
     };
-    let mut plugin_nodes = ResolvedPluginNodes::default();
-    resolve_plugins(
-        &plugin_ctx,
-        plugins,
-        &mut min_properties.plugins,
-        &mut plugin_nodes,
+    let mut experimental_nodes = ResolvedExperimentalNodes::default();
+    resolve_experimentals(
+        &experimental_ctx,
+        experimentals,
+        &mut min_properties.experimental,
+        &mut experimental_nodes,
     )?;
-    nodes.plugins.extend(plugin_nodes.enabled);
-    disabled_nodes.plugins.extend(plugin_nodes.disabled);
+    nodes.experimentals.extend(experimental_nodes.enabled);
+    disabled_nodes
+        .experimentals
+        .extend(experimental_nodes.disabled);
 
     if !semantic_layer_spec_is_legacy {
         let (semantic_models, disabled_semantic_models) = resolve_semantic_models(
@@ -1616,7 +1620,7 @@ async fn resolve_package(
     root_runtime_config: Arc<DbtRuntimeConfig>,
     token: &CancellationToken,
     jinja_type_checking_event_listener_factory: Arc<dyn JinjaTypeCheckingEventListenerFactory>,
-    plugins: &ActivePlugins,
+    experimentals: &ActiveExperimentals,
 ) -> FsResult<(
     String,
     Nodes,
@@ -1672,7 +1676,7 @@ async fn resolve_package(
         &mut seen_generic_test_paths,
         token,
         jinja_type_checking_event_listener_factory.clone(),
-        plugins,
+        experimentals,
     )
     .await?;
 
@@ -1706,7 +1710,7 @@ async fn resolve_package_waves(
     root_runtime_config: Arc<DbtRuntimeConfig>,
     token: &CancellationToken,
     jinja_type_checking_event_listener_factory: Arc<dyn JinjaTypeCheckingEventListenerFactory>,
-    plugins: Arc<ActivePlugins>,
+    experimentals: Arc<ActiveExperimentals>,
 ) -> FsResult<(
     Nodes,
     Nodes,
@@ -1750,7 +1754,7 @@ async fn resolve_package_waves(
         let token = token.clone();
         let jinja_type_checking_event_listener_factory =
             jinja_type_checking_event_listener_factory.clone();
-        let plugins = plugins.clone();
+        let experimentals = experimentals.clone();
         let parse_adapter_scopes = parse_adapter_scopes.clone();
 
         let results = crate::parallel::dispatch_maybe_parallel(
@@ -1769,7 +1773,7 @@ async fn resolve_package_waves(
                 let token = token.clone();
                 let jinja_type_checking_event_listener_factory =
                     jinja_type_checking_event_listener_factory.clone();
-                let plugins = plugins.clone();
+                let experimentals = experimentals.clone();
                 let parse_adapter_scopes = parse_adapter_scopes.clone();
 
                 async move {
@@ -1788,7 +1792,7 @@ async fn resolve_package_waves(
                         root_runtime_config,
                         &token,
                         jinja_type_checking_event_listener_factory,
-                        &plugins,
+                        &experimentals,
                     )
                     .await
                 }
