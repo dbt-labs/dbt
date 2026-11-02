@@ -164,6 +164,27 @@ pub fn insert_test_run_stat(
     );
 }
 
+/// Records a test that errored before it produced a result, so it still
+/// appears in run_results.json.
+pub fn insert_errored_test_run_stat(
+    ctx: &TaskRunnerCtx,
+    unique_id: String,
+    start: SystemTime,
+    message: String,
+) {
+    ctx.inner.run_stats.upsert_sync(
+        unique_id.clone(),
+        Stat::new(
+            unique_id,
+            start,
+            None,
+            NodeStatus::Errored,
+            Some(message),
+            ctx.thread_id,
+        ),
+    );
+}
+
 pub(super) fn record_test_span_with_detail(
     result: &TestReportedResult,
     skip_reason: Option<NodeSkipReason>,
@@ -539,17 +560,7 @@ impl Task for AggregatedTestRunRemoteTask {
                 // errored too. Record each one so it appears in run_results.json.
                 let error_message = e.to_string();
                 for (unique_id, (_, span)) in spans_by_id {
-                    ctx.inner.run_stats.upsert_sync(
-                        unique_id.clone(),
-                        Stat::new(
-                            unique_id,
-                            start,
-                            None,
-                            NodeStatus::Errored,
-                            Some(error_message.clone()),
-                            ctx.thread_id,
-                        ),
-                    );
+                    insert_errored_test_run_stat(ctx, unique_id, start, error_message.clone());
                     ctx.inner.span_manager().handle_task_finished(span, &status);
                 }
             }
