@@ -109,6 +109,12 @@
     to AUTO is likewise undetected, but CREATE OR ALTER applies it in place -- AUTO resolves to a
     concrete mode -- so it is not an error.) See the flag description in behavior.rs.
 
+    Query layout: the `as ( ... )` block at the end must stay byte-identical to create.sql and
+    replace.sql. Snowflake compares the stored query text literally (whitespace included), so a
+    different layout makes the first sync after a CREATE look like a definition change and
+    reinitializes INCREMENTAL tables. Pinned by the loader test
+    `create_or_alter_query_text_matches_create_and_replace_byte_for_byte`.
+
     Args:
     - dynamic_table: the dynamic table config built from the model (relation.from_config)
     - relation: the target relation
