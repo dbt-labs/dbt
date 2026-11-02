@@ -3,7 +3,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, HashSet};
 use std::fmt::Debug;
 use std::io::Cursor;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -1947,48 +1947,47 @@ WITH
     // todo: the macro spans are off: render the whole query, not just the actual sql model
     let macro_spans = macro_spans_to_macro_span_vec(&macro_spans);
     write_unit_test_artifacts(
-        adapter_type,
         effective_execute,
-        &rendered_sql,
+        rendered_sql,
         original_file_path,
         &absolute_path_unit_test,
-        &node.__common_attr__.name,
-        &macro_spans,
-    )?;
-
-    Ok((
-        SqlInstruction {
-            fqn: vec![
-                node.__base_attr__.database.clone(),
-                node.__base_attr__.schema.clone(),
-                node.__common_attr__.name.clone(),
-            ],
-            sql: rendered_sql,
-            original_path: relative_path_unit_test,
-            spans: Box::new(MacroSpansOnly { macro_spans }),
-        },
-        config_map,
-    ))
+        node,
+        relative_path_unit_test,
+        macro_spans,
+    )
+    .map(|instruction| (instruction, config_map))
 }
 
 fn write_unit_test_artifacts(
-    adapter_type: AdapterType,
     execute: schemas::profiles::Execute,
-    sql: &str,
+    sql: String,
     original_file_path: &Path,
     compiled_path: &Path,
-    unit_test_name: &str,
-    macro_spans: &[MacroSpan],
-) -> FsResult<()> {
-    validate_local_unit_test_sql(adapter_type, execute, sql)
+    unit_test: &DbtUnitTest,
+    relative_path: PathBuf,
+    macro_spans: Vec<MacroSpan>,
+) -> FsResult<SqlInstruction> {
+    validate_local_unit_test_sql(unit_test.node_adapter(), execute, &sql)
         .map_err(|error| error.with_location(original_file_path.to_path_buf()))?;
     stdfs::create_dir_all(compiled_path.parent().unwrap())?;
-    stdfs::write(compiled_path, sql)?;
+    stdfs::write(compiled_path, &sql)?;
     stdfs::write(
-        compiled_path.with_file_name(format!("{unit_test_name}.macro_spans.json")),
-        serde_json::to_string_pretty(macro_spans).unwrap(),
+        compiled_path.with_file_name(format!(
+            "{}.macro_spans.json",
+            unit_test.__common_attr__.name
+        )),
+        serde_json::to_string_pretty(&macro_spans).unwrap(),
     )?;
-    Ok(())
+    Ok(SqlInstruction {
+        fqn: vec![
+            unit_test.__base_attr__.database.clone(),
+            unit_test.__base_attr__.schema.clone(),
+            unit_test.__common_attr__.name.clone(),
+        ],
+        sql,
+        original_path: relative_path,
+        spans: Box::new(MacroSpansOnly { macro_spans }),
+    })
 }
 
 fn has_asof_join_candidate(tokens: &[Token]) -> bool {
