@@ -6,7 +6,7 @@ use std::sync::mpsc;
 use std::time::SystemTime;
 
 use dbt_common::FsResult;
-use dbt_common::stats::NodeStatus;
+use dbt_common::stats::{NodeStatus, Stat};
 use dbt_schemas::schemas::{DbtTest, InternalDbtNode, InternalDbtNodeAttributes};
 use dbt_tasks_core::context::TaskRunnerCtx;
 use dbt_tasks_core::render_task_hooks::RenderTaskHooks;
@@ -19,7 +19,6 @@ use dbt_tasks_core::visitor::SkipReason;
 use dbt_telemetry::{ExecutionPhase, NodeType};
 
 use super::RenderTask;
-use crate::runnable::test::insert_errored_test_run_stat;
 
 #[derive(Clone)]
 pub struct AggregatedTestRenderTask {
@@ -95,11 +94,10 @@ impl Task for AggregatedTestRenderTask {
                 // Record each one so it appears in run_results.json.
                 let error_message = e.to_string();
                 for test in &self.member_tests {
-                    insert_errored_test_run_stat(
-                        ctx,
-                        test.common().unique_id.clone(),
-                        start,
-                        error_message.clone(),
+                    let unique_id = test.common().unique_id.clone();
+                    ctx.inner.run_stats.upsert_sync(
+                        unique_id.clone(),
+                        Stat::errored(unique_id, start, error_message.clone(), ctx.thread_id),
                     );
                 }
             }
