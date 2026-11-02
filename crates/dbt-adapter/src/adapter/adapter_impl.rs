@@ -6604,9 +6604,8 @@ mod tests {
         let msg = "[Snowflake] 002108 (22000): CREATE OR ALTER execution failed.";
         let hinted = with_create_or_alter_hint(Snowflake, CREATE_OR_ALTER_SQL, driver_error(msg));
         assert!(hinted.message().starts_with(msg) && hinted.message().contains("--full-refresh"));
-        assert_eq!(hinted.kind(), AdapterErrorKind::Driver);
-        assert_eq!(hinted.sqlstate(), "22000");
-        assert_eq!(hinted.vendor_code(), Some(2108));
+        let code = (hinted.kind(), hinted.sqlstate(), hinted.vendor_code());
+        assert_eq!(code, (AdapterErrorKind::Driver, "22000", Some(2108)));
     }
 
     #[test]
