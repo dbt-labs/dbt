@@ -3,5 +3,5 @@ body: With --batch-tests, a SQL error in a batched test query no longer drops it
 time: 2026-11-02T09:48:48.325466+01:00
 custom:
     author: i-zaykov
-    issue: ""
+    issue: "16993"
     project: dbt
