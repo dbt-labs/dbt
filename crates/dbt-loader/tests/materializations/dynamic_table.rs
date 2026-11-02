@@ -8,13 +8,15 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use dbt_adapter::relation::RelationObject;
+use dbt_adapter::relation::{RelationObject, create_relation};
 use dbt_adapter_core::AdapterType;
 use dbt_agate::AgateTable;
 use dbt_jinja_utils::mock_object::MockJinjaObject;
 use dbt_schemas::dbt_types::RelationType;
 use dbt_schemas::schemas::common::DbtMaterialization;
+use dbt_schemas::schemas::dbt_catalogs::{CatalogType, TableFormat};
 use dbt_schemas::schemas::project::{ModelConfig, WarehouseSpecificNodeConfig};
+use dbt_schemas::schemas::relations::SNOWFLAKE_RESOLVED_QUOTING;
 use dbt_schemas::schemas::{AdapterAttr, CommonAttributes, DbtModel, NodeBaseAttributes};
 use dbt_yaml::Spanned;
 use minijinja::Value;
@@ -103,7 +105,7 @@ fn serialized_model(config: &LocalConfig) -> Value {
         schema: SCHEMA.to_string(),
         alias: IDENTIFIER.to_string(),
         relation_name: None,
-        quoting: dbt_schemas::schemas::relations::SNOWFLAKE_RESOLVED_QUOTING,
+        quoting: SNOWFLAKE_RESOLVED_QUOTING,
         quoting_ignore_case: false,
         materialized: DbtMaterialization::DynamicTable,
         compute: None,
@@ -246,6 +248,28 @@ struct FixtureOptions {
     create_or_alter: bool,
     /// The `snowflake_default_transient_dynamic_tables` behavior flag.
     default_transient: bool,
+    /// The configured catalog is a managed Iceberg one (`BUILT_IN`) instead of the native default.
+    iceberg_target: bool,
+    /// The live relation is a dynamic Iceberg table (`SHOW OBJECTS` reports `is_iceberg`).
+    iceberg_existing: bool,
+}
+
+/// The catalog relation a managed Iceberg model resolves to (`catalog_type == 'BUILT_IN'`).
+fn managed_iceberg_catalog_relation() -> dbt_adapter::catalog_relation::CatalogRelation {
+    dbt_adapter::catalog_relation::CatalogRelation {
+        adapter_type: ADAPTER,
+        catalog_name: None,
+        integration_name: None,
+        catalog_type: CatalogType::SnowflakeBuiltIn,
+        table_format: TableFormat::Iceberg,
+        adapter_properties: BTreeMap::from([("iceberg_version".to_string(), "2".to_string())]),
+        is_transient: Some(false),
+        external_volume: Some("MY_VOLUME".to_string()),
+        catalog_database: None,
+        lakehouse_catalog: None,
+        base_location: Some("_dbt/my_dt".to_string()),
+        file_format: None,
+    }
 }
 
 /// Build a harness whose `describe_relation` returns `remote` for a dynamic-table relation.
@@ -303,17 +327,32 @@ fn fixture_with(
             Ok(Value::from(create_or_alter))
         });
 
-    let catalog_relation = Value::from_object(
-        dbt_adapter::catalog_relation::CatalogRelation::default_catalog_relation_snowflake(),
-    );
+    let catalog_relation = if options.iceberg_target {
+        Value::from_object(managed_iceberg_catalog_relation())
+    } else {
+        Value::from_object(
+            dbt_adapter::catalog_relation::CatalogRelation::default_catalog_relation_snowflake(),
+        )
+    };
     harness.mock().on("build_catalog_relation", move |_| {
         Ok(catalog_relation.clone())
     });
 
     let existing_value = match existing {
         Some(relation_type) => {
-            let relation = harness.relation(DATABASE, SCHEMA, IDENTIFIER, Some(relation_type));
-            RelationObject::new(relation).into_value()
+            let mut relation = create_relation(
+                ADAPTER,
+                DATABASE.to_string(),
+                SCHEMA.to_string(),
+                Some(IDENTIFIER.to_string()),
+                Some(relation_type),
+                SNOWFLAKE_RESOLVED_QUOTING,
+            )
+            .expect("create_relation");
+            if options.iceberg_existing {
+                relation.set_table_format(Some(TableFormat::Iceberg));
+            }
+            RelationObject::new(Arc::from(relation)).into_value()
         }
         None => Value::from(()),
     };
@@ -881,6 +920,7 @@ fn create_or_alter_transient_comes_from_the_default_flag_when_unset() {
         FixtureOptions {
             create_or_alter: true,
             default_transient: true,
+            ..Default::default()
         },
     );
     render_ok(&fixture, &base_local_config(), false, "apply");
@@ -904,6 +944,7 @@ fn create_or_alter_explicit_transient_overrides_the_default_flag() {
         FixtureOptions {
             create_or_alter: true,
             default_transient: true,
+            ..Default::default()
         },
     );
     let local = LocalConfig {
@@ -1002,4 +1043,267 @@ fn create_or_alter_without_target_lag_declares_a_disabled_scheduler() {
         ),
         "got: {executed:?}"
     );
+}
+
+// ---------------------------------------------------------------------------------------------
+// Managed dynamic Iceberg tables (`BUILT_IN` catalog) under `snowflake_dynamic_table_create_or_alter`.
+//
+// Snowflake lets a managed dynamic Iceberg table change its dynamic-table clauses (warehouse,
+// target lag, refresh mode, query, clustering) like a native one, forbids changing the Iceberg
+// identity clauses (external volume, catalog, base location, Iceberg version), and cannot convert
+// between a native and an Iceberg dynamic table. The Snowflake-side rejections are exercised only
+// against a live account; these tests pin the DDL dbt sends and the routing around it.
+// ---------------------------------------------------------------------------------------------
+
+fn iceberg_options() -> FixtureOptions {
+    FixtureOptions {
+        create_or_alter: true,
+        iceberg_target: true,
+        iceberg_existing: true,
+        ..Default::default()
+    }
+}
+
+/// The identity clauses CREATE OR ALTER must restate for [`managed_iceberg_catalog_relation`].
+const ICEBERG_IDENTITY: &str = "external_volume = 'MY_VOLUME' catalog = 'SNOWFLAKE' base_location = '_dbt/my_dt' iceberg_version = 2";
+
+/// The `create or alter` DDL for [`base_local_config`] on a managed Iceberg table.
+fn base_iceberg_create_or_alter_sql() -> String {
+    format!(
+        "create or alter dynamic iceberg table {RENDERED_RELATION} target_lag = '1 minute' warehouse = WH {ICEBERG_IDENTITY} refresh_mode = AUTO scheduler = 'ENABLE' as ( {MODEL_SQL} )"
+    )
+}
+
+#[test]
+fn create_or_alter_iceberg_deploys_the_definition_and_restates_the_identity() {
+    let fixture = fixture_with(
+        Some(RelationType::DynamicTable),
+        matching_remote_state(),
+        iceberg_options(),
+    );
+    render_ok(&fixture, &base_local_config(), false, "apply");
+
+    assert_eq!(fixture.executed(), vec![base_iceberg_create_or_alter_sql()]);
+}
+
+#[test]
+fn create_or_alter_iceberg_applies_dynamic_table_attributes_in_place() {
+    // Warehouse, target lag and clustering change under the same rules as a native table.
+    let fixture = fixture_with(
+        Some(RelationType::DynamicTable),
+        RemoteState {
+            target_lag: Some("5 minutes".to_string()),
+            warehouse: Some("OLD_WH".to_string()),
+            ..matching_remote_state()
+        },
+        iceberg_options(),
+    );
+    let local = LocalConfig {
+        cluster_by: Some(dbt_schemas::schemas::common::ClusterConfig::List(vec![
+            "id".to_string(),
+        ])),
+        ..base_local_config()
+    };
+    render_ok(&fixture, &local, false, "apply");
+
+    assert_eq!(
+        fixture.executed(),
+        vec![format!(
+            "create or alter dynamic iceberg table {RENDERED_RELATION} target_lag = '1 minute' warehouse = WH {ICEBERG_IDENTITY} refresh_mode = AUTO scheduler = 'ENABLE' cluster by (id) as ( {MODEL_SQL} )"
+        )]
+    );
+}
+
+#[test]
+fn create_or_alter_iceberg_refresh_mode_change_routes_to_replace() {
+    let fixture = fixture_with(
+        Some(RelationType::DynamicTable),
+        RemoteState {
+            refresh_mode: Some("INCREMENTAL".to_string()),
+            ..matching_remote_state()
+        },
+        iceberg_options(),
+    );
+    let local = LocalConfig {
+        refresh_mode: Some("FULL".to_string()),
+        ..base_local_config()
+    };
+    render_ok(&fixture, &local, false, "apply");
+
+    assert_eq!(
+        fixture.executed(),
+        vec![format!(
+            "create or replace dynamic iceberg table {RENDERED_RELATION} target_lag = '1 minute' warehouse = WH external_volume = 'MY_VOLUME' catalog = 'snowflake' base_location = '_dbt/my_dt' iceberg_version = 2 refresh_mode = FULL initialize = ON_CREATE scheduler = 'ENABLE' as ( {MODEL_SQL} )"
+        )]
+    );
+}
+
+#[test]
+fn create_or_alter_native_to_iceberg_conversion_routes_to_replace() {
+    // CREATE OR ALTER cannot convert a regular dynamic table to a dynamic Iceberg table.
+    let fixture = fixture_with(
+        Some(RelationType::DynamicTable),
+        matching_remote_state(),
+        FixtureOptions {
+            iceberg_existing: false,
+            ..iceberg_options()
+        },
+    );
+    render_ok(&fixture, &base_local_config(), false, "apply");
+
+    let executed = fixture.executed();
+    assert_eq!(executed.len(), 1, "got: {executed:?}");
+    assert!(
+        executed[0].starts_with("create or replace dynamic iceberg table"),
+        "got: {executed:?}"
+    );
+}
+
+#[test]
+fn create_or_alter_iceberg_to_native_conversion_routes_to_replace() {
+    // ... and cannot convert a dynamic Iceberg table to a regular one either.
+    let fixture = fixture_with(
+        Some(RelationType::DynamicTable),
+        matching_remote_state(),
+        FixtureOptions {
+            iceberg_target: false,
+            ..iceberg_options()
+        },
+    );
+    render_ok(&fixture, &base_local_config(), false, "apply");
+
+    let executed = fixture.executed();
+    assert_eq!(executed.len(), 1, "got: {executed:?}");
+    assert!(
+        executed[0].starts_with("create or replace dynamic table"),
+        "got: {executed:?}"
+    );
+}
+
+#[test]
+fn create_or_alter_iceberg_does_not_apply_on_first_build_or_full_refresh() {
+    let first_build = fixture_with(None, RemoteState::default(), iceberg_options());
+    render_ok(&first_build, &base_local_config(), false, "apply");
+    assert!(
+        first_build.executed()[0].starts_with("create dynamic iceberg table"),
+        "got: {:?}",
+        first_build.executed()
+    );
+
+    let full_refresh = fixture_with(
+        Some(RelationType::DynamicTable),
+        matching_remote_state(),
+        iceberg_options(),
+    );
+    render_ok(&full_refresh, &base_local_config(), true, "apply");
+    assert!(
+        full_refresh.executed()[0].starts_with("create or replace dynamic iceberg table"),
+        "got: {:?}",
+        full_refresh.executed()
+    );
+}
+
+#[test]
+fn create_or_alter_iceberg_gate_off_keeps_sql_only_edit_a_noop() {
+    let fixture = fixture_with(
+        Some(RelationType::DynamicTable),
+        matching_remote_state(),
+        FixtureOptions {
+            create_or_alter: false,
+            ..iceberg_options()
+        },
+    );
+    render_ok(&fixture, &base_local_config(), false, "apply");
+
+    assert!(
+        fixture.executed().is_empty(),
+        "gate off must not build, got: {:?}",
+        fixture.executed()
+    );
+    assert_eq!(fixture.raw_results(), vec!["main=skip".to_string()]);
+}
+
+#[test]
+fn create_or_alter_iceberg_omits_transient_and_governance_clauses() {
+    // Iceberg targets reject transient conversion, so the default-transient behavior flag must not
+    // reach the DDL; the create-only and governance clauses are omitted as for native tables.
+    let fixture = fixture_with(
+        Some(RelationType::DynamicTable),
+        matching_remote_state(),
+        FixtureOptions {
+            default_transient: true,
+            ..iceberg_options()
+        },
+    );
+    let local = LocalConfig {
+        initialize: Some("ON_SCHEDULE".to_string()),
+        copy_grants: Some(true),
+        table_tag: Some("my_tag = 'v1'".to_string()),
+        row_access_policy: Some("my_policy on (id)".to_string()),
+        ..base_local_config()
+    };
+    render_ok(&fixture, &local, false, "apply");
+
+    let executed = fixture.executed();
+    assert_eq!(executed, vec![base_iceberg_create_or_alter_sql()]);
+    let sql = executed[0].to_lowercase();
+    for forbidden in [
+        "transient",
+        "initialize",
+        "copy grants",
+        "tag",
+        "row access policy",
+    ] {
+        assert!(!sql.contains(forbidden), "`{forbidden}` leaked into: {sql}");
+    }
+}
+
+#[test]
+fn create_or_alter_iceberg_without_target_lag_declares_a_disabled_scheduler() {
+    let fixture = fixture_with(
+        Some(RelationType::DynamicTable),
+        RemoteState {
+            scheduler: Some("DISABLE".to_string()),
+            warehouse: Some("WH".to_string()),
+            ..Default::default()
+        },
+        iceberg_options(),
+    );
+    let local = LocalConfig {
+        snowflake_warehouse: Some("WH".to_string()),
+        ..Default::default()
+    };
+    render_ok(&fixture, &local, false, "apply");
+
+    assert_eq!(
+        fixture.executed(),
+        vec![
+            format!(
+                "create or alter dynamic iceberg table {RENDERED_RELATION} warehouse = WH {ICEBERG_IDENTITY} refresh_mode = AUTO scheduler = 'DISABLE' as ( {MODEL_SQL} )"
+            ),
+            format!("alter dynamic table {RENDERED_RELATION} refresh"),
+        ]
+    );
+}
+
+#[test]
+fn create_or_alter_iceberg_honors_on_configuration_change() {
+    let changed = RemoteState {
+        target_lag: Some("5 minutes".to_string()),
+        ..matching_remote_state()
+    };
+
+    let continued = fixture_with(
+        Some(RelationType::DynamicTable),
+        RemoteState {
+            target_lag: changed.target_lag.clone(),
+            ..matching_remote_state()
+        },
+        iceberg_options(),
+    );
+    render_ok(&continued, &base_local_config(), false, "continue");
+    assert!(continued.executed().is_empty());
+
+    let failing = fixture_with(Some(RelationType::DynamicTable), changed, iceberg_options());
+    assert!(render(&failing, &base_local_config(), false, "fail").is_err());
 }

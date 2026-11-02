@@ -2,5 +2,5 @@
 (in run/test/models/err_fail_fast.sql)
 (in dbt_internal_packages/dbt-snowflake/macros/materializations/dynamic_table.sql:10:24)
 (in dbt_internal_packages/dbt-snowflake/macros/materializations/dynamic_table.sql:49:32)
-(in dbt_internal_packages/dbt-snowflake/macros/relations/dynamic_table/create_or_alter.sql:52:9)
+(in dbt_internal_packages/dbt-snowflake/macros/relations/dynamic_table/create_or_alter.sql:61:9)
   --> run/test/models/err_fail_fast.sql

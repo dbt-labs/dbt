@@ -2,12 +2,16 @@
     The gate for this path -- behavior flag on + native (info schema) catalog -- lives in Rust as
     adapter.dynamic_table_create_or_alter_enabled(), so the decision is unit-testable without a
     database. The materialization calls it; this file only renders the DDL once that gate has
-    passed.
+    passed. The gate admits native (INFO_SCHEMA) and managed Iceberg (BUILT_IN) dynamic tables.
 -#}
 -- funcsign: (relation, relation, string) -> string
 {% macro snowflake__get_create_or_alter_dynamic_table_sql(existing_relation, target_relation, sql) -%}
 {#-
     Definition SQL for the query-evolution path (assumes the gate above already passed).
+
+    CREATE OR ALTER cannot convert a regular dynamic table to or from a dynamic Iceberg table, so a
+    mismatch between the live relation's format and the configured catalog is rebuilt with
+    CREATE OR REPLACE before anything else is considered.
 
     CREATE OR ALTER expresses the complete desired end state and applies it idempotently,
     preserving the object -- and its grants / attached policies / tags -- instead of replacing it.
@@ -28,10 +32,15 @@
     {%- set configuration_changes = snowflake__get_dynamic_table_configuration_changes(existing_relation, config) -%}
     {%- set on_configuration_change = config.get('on_configuration_change') -%}
     {%- set dynamic_table = target_relation.from_config(config.model) -%}
+    {%- set catalog_relation = adapter.build_catalog_relation(config.model) -%}
+    {%- set target_is_iceberg = catalog_relation.catalog_type == 'BUILT_IN' -%}
 
-    {%- if configuration_changes is none -%}
+    {%- if existing_relation.is_iceberg_format != target_is_iceberg -%}
+        {{ return(get_replace_sql(existing_relation, target_relation, sql)) }}
+
+    {%- elif configuration_changes is none -%}
         {#- query-only edit (or no change): sync the definition in place. -#}
-        {{ return(snowflake__create_or_alter_dynamic_table_info_schema_sql(dynamic_table, target_relation, sql)) }}
+        {{ return(snowflake__create_or_alter_dynamic_table_sql(dynamic_table, target_relation, sql)) }}
 
     {%- elif on_configuration_change == 'apply' -%}
         {%- if configuration_changes.requires_full_refresh -%}
@@ -39,7 +48,7 @@
             {{ return(get_replace_sql(existing_relation, target_relation, sql)) }}
         {%- else -%}
             {#- CREATE OR ALTER declares the full end state, applying config changes and query together. -#}
-            {{ return(snowflake__create_or_alter_dynamic_table_info_schema_sql(dynamic_table, target_relation, sql)) }}
+            {{ return(snowflake__create_or_alter_dynamic_table_sql(dynamic_table, target_relation, sql)) }}
         {%- endif -%}
 
     {%- elif on_configuration_change == 'continue' -%}
@@ -52,6 +61,19 @@
         {{ exceptions.raise_fail_fast_error("Configuration changes were identified and `on_configuration_change` was set to `fail` for `" ~ target_relation ~ "`") }}
     {%- else -%}
         {{ exceptions.raise_compiler_error("Unexpected configuration scenario: `" ~ on_configuration_change ~ "`") }}
+    {%- endif -%}
+{%- endmacro %}
+
+
+{% macro snowflake__create_or_alter_dynamic_table_sql(dynamic_table, relation, sql) -%}
+    {%- set catalog_relation = adapter.build_catalog_relation(config.model) -%}
+
+    {%- if catalog_relation.catalog_type == 'INFO_SCHEMA' -%}
+        {{ snowflake__create_or_alter_dynamic_table_info_schema_sql(dynamic_table, relation, sql) }}
+    {%- elif catalog_relation.catalog_type == 'BUILT_IN' -%}
+        {{ snowflake__create_or_alter_dynamic_table_built_in_sql(dynamic_table, relation, catalog_relation, sql) }}
+    {%- else -%}
+        {% do exceptions.raise_compiler_error('Unexpected model config for: ' ~ relation) %}
     {%- endif -%}
 {%- endmacro %}
 
@@ -110,6 +132,43 @@ create or alter {{ transient_keyword }}dynamic table {{ relation }}
     {{ optional('refresh_mode', dynamic_table.refresh_mode) }}
     {#- initialize is a create-time-only attribute; CREATE OR ALTER always runs on an existing
         table where it is meaningless and Snowflake prohibits changing it, so we omit it. -#}
+    {% if dynamic_table.scheduler is not none %}
+    scheduler = '{{ dynamic_table.scheduler }}'
+    {% elif dynamic_table.target_lag is none %}
+    scheduler = 'DISABLE'
+    {% endif %}
+    {{ optional('cluster by', dynamic_table.cluster_by, quote_char='(', equals_char='') }}
+    {{ optional('immutable where', dynamic_table.immutable_where, quote_char='(', equals_char='') }}
+    as (
+        {{ sql }}
+    )
+
+{%- endmacro %}
+
+
+{% macro snowflake__create_or_alter_dynamic_table_built_in_sql(dynamic_table, relation, catalog_relation, sql) -%}
+{#-
+    Renders the CREATE OR ALTER DDL for a managed dynamic Iceberg table (Snowflake is the Iceberg
+    catalog).
+
+    The dynamic-table clauses follow the same rules as a native dynamic table (see the info schema
+    macro above). The Iceberg identity clauses -- external volume, catalog, base location, Iceberg
+    version -- cannot change: restating the current value is accepted and any difference fails with
+    "CREATE OR ALTER on Dynamic Iceberg Table with changed iceberg properties", so they are emitted
+    exactly as CREATE OR REPLACE would. Editing one of them requires --full-refresh.
+
+    Not emitted: transient (Iceberg targets reject it), initialize, copy grants, row access policy
+    and tag -- for the same reasons as the native macro.
+-#}
+create or alter dynamic iceberg table {{ relation }}
+    {% if dynamic_table.target_lag is not none %}target_lag = '{{ dynamic_table.target_lag }}'{% endif %}
+    warehouse = {{ dynamic_table.snowflake_warehouse }}
+    {{ optional('initialization_warehouse', dynamic_table.snowflake_initialization_warehouse) }}
+    {{ optional('external_volume', catalog_relation.external_volume, "'") }}
+    catalog = 'SNOWFLAKE'
+    {{ optional('base_location', catalog_relation.base_location, "'") }}
+    {{ optional('iceberg_version', catalog_relation.iceberg_version) }}
+    {{ optional('refresh_mode', dynamic_table.refresh_mode) }}
     {% if dynamic_table.scheduler is not none %}
     scheduler = '{{ dynamic_table.scheduler }}'
     {% elif dynamic_table.target_lag is none %}
