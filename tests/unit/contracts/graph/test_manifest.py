@@ -589,6 +589,75 @@ class ManifestTest(unittest.TestCase):
         self.assertEqual(flat_unit_test["model"], "events")
         self.assertEqual(flat_unit_test["package_name"], "root")
 
+    def _flat_graph_manifest(self):
+        manifest = Manifest(
+            nodes=deepcopy(self.nested_nodes),
+            sources=deepcopy(self.sources),
+            macros={},
+            docs={},
+            disabled={},
+            files={},
+            exposures={},
+            metrics={},
+            groups={},
+            selectors={},
+        )
+        manifest.build_flat_graph()
+        return manifest
+
+    def test_flat_graph_memoizes_node_dicts(self):
+        """Repeated reads of the same graph key must not re-run to_dict (see #15997)."""
+        manifest = self._flat_graph_manifest()
+        flat_nodes = manifest.flat_graph["nodes"]
+        flat_sources = manifest.flat_graph["sources"]
+        unique_id = "model.root.events"
+        source_id = next(iter(self.sources))
+
+        with mock.patch.object(
+            ModelNode, "to_dict", autospec=True, side_effect=ModelNode.to_dict
+        ) as to_dict:
+            first = flat_nodes[unique_id]
+            for _ in range(5):
+                self.assertIs(flat_nodes[unique_id], first)
+            # Iterating values (as macros scanning graph.nodes do) reuses the cache too.
+            self.assertIs(dict(flat_nodes.items())[unique_id], first)
+        node = manifest.nodes[unique_id]
+        self.assertEqual(sum(1 for c in to_dict.call_args_list if c.args[0] is node), 1)
+        self.assertEqual(first["unique_id"], unique_id)
+        self.assertIs(flat_sources[source_id], flat_sources[source_id])
+
+    def test_flat_graph_reconverts_replaced_node(self):
+        """If a manifest entry is replaced with a new node object, the cached dict
+        for the old object must not be served."""
+        manifest = self._flat_graph_manifest()
+        flat_nodes = manifest.flat_graph["nodes"]
+        unique_id = "model.root.events"
+        old = flat_nodes[unique_id]
+
+        replacement = deepcopy(manifest.nodes[unique_id])
+        replacement.raw_code = "select 'replaced' as id"
+        manifest.nodes[unique_id] = replacement
+
+        new = flat_nodes[unique_id]
+        self.assertIsNot(new, old)
+        self.assertEqual(new["raw_code"], "select 'replaced' as id")
+        self.assertIs(flat_nodes[unique_id], new)
+
+    def test_flat_graph_tracks_added_and_removed_nodes(self):
+        manifest = self._flat_graph_manifest()
+        flat_nodes = manifest.flat_graph["nodes"]
+        unique_id = "model.root.events"
+        flat_nodes[unique_id]  # populate the cache
+
+        removed = manifest.nodes.pop(unique_id)
+        self.assertNotIn(unique_id, flat_nodes)
+        with self.assertRaises(KeyError):
+            flat_nodes[unique_id]
+
+        manifest.nodes[unique_id] = removed
+        self.assertEqual(flat_nodes[unique_id]["unique_id"], unique_id)
+        self.assertEqual(len(flat_nodes), len(manifest.nodes))
+
     @mock.patch.object(tracking, "active_user")
     @freezegun.freeze_time("2018-02-14T09:15:13Z")
     def test_no_nodes_with_metadata(self, mock_user):

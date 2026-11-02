@@ -941,13 +941,24 @@ ResourceClassT = TypeVar("ResourceClassT", bound="BaseResource")
 
 class FlatGraphMapping(Mapping[str, Dict]):
     """Provides a no-copy view of one of the node dictionaries that make up the
-    'flat_graph' data structure, with values converted to dictionaries on demand."""
+    'flat_graph' data structure, with values converted to dictionaries on demand.
+
+    Converted dictionaries are memoized per key, since macros commonly scan
+    graph.nodes from every node and to_dict() is expensive. The cache entry
+    remembers which node object it was built from, so a node replaced in the
+    underlying dictionary is converted again rather than served stale."""
 
     def __init__(self, inner_dict: Mapping[str, BaseNode]) -> None:
         self.inner_dict = inner_dict
+        self._cache: Dict[str, Tuple[BaseNode, Dict]] = {}
 
     def __getitem__(self, key: str) -> Dict:
-        return self.inner_dict.__getitem__(key).to_dict(omit_none=False)
+        node = self.inner_dict[key]
+        cached = self._cache.get(key)
+        if cached is None or cached[0] is not node:
+            cached = (node, node.to_dict(omit_none=False))
+            self._cache[key] = cached
+        return cached[1]
 
     def __len__(self) -> int:
         return len(self.inner_dict)
