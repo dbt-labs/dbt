@@ -10,2142 +10,2677 @@ pub static SORTED_CDN_DRIVER_CHECKSUMS: &[(
         &str, // arch
         &str, // version
     ),
-    &str, // checksum
+    &str, // checksum (compressed)
+    &str, // checksum (decompressed)
 )] = &[
     (
         ("bigquery", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.21.10"),
         "07c3a53a87d2304f37bcb5dedb9596432c5fed8e7f3403dfa9f1d5912e523aa8",
+        "8188b9315ce8ca0fc55d1a11c33c7d928442102fa89e0fe5884044d9dffced24",
     ),
     (
         ("bigquery", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.21.11"),
         "f449484f8fea492855a2d2e8f49ed2b9701c675e6f125b6d54b7b29e1a5bd2fa",
+        "4a30c0739db8a61ca89ed15eaea83a306498e5f800297cc6dec69f0316475680",
     ),
     (
         ("bigquery", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.21.12"),
         "c408484d21dfcc76f3afbb0be80c353ad276ecebd98f2f66a6cbcf23dccbe6c0",
+        "c27311858827c87ee7c20eea5b065fd889171d3f5e976adc7d21aadcdf50d0ee",
     ),
     (
         ("bigquery", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.21.13"),
         "7d188d408859741b3cf90dc01e77b2e969b0d98a3c21f83d59efad95df19c0b8",
+        "1257059d797eac486255330a82262d673dabc55d65274665cd0ea09a047938cf",
     ),
     (
         ("bigquery", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.21.14"),
         "30caf0f89909ff1bc94a5c30ec4377ffbaed2f82b1c90b314be98688c51932b2",
+        "92e87a2825802ab49fdc2dcfef61dc591044650bd86dc94b5d97e9ed2754ea4a",
     ),
     (
         ("bigquery", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.21.15"),
         "2567c010ce8dd660d61ca171ff6ade729dcbf1c71a66be58df7139ce8ff21a4b",
+        "cfa970788bd6d5a4bad502d0a646d4c8a60c17b260063da90f7ba6bb35551910",
     ),
     (
         ("bigquery", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.21.16"),
         "153a80ed3ff94f19362bb5e7cd556a03fbb64d3a009c7c06b31e8c05a2a5cda8",
+        "145fd4daf41c09927d5cb9d754b21ecbafcf15fcc36622e33c4fae71c92b20a2",
     ),
     (
         ("bigquery", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.21.17"),
         "d398066b9290ca0564d302a7905e82187680981e0ac603a511d892cf6b31cdd2",
+        "dd481da8f1914cfcf0f838842c638a0d78f9762aca74efb41fdc8fb821f751bf",
     ),
     (
         ("bigquery", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.21.18"),
         "3750d8c106a37111463157df9ca072e92e66b04161ebcb394e2f40782011fa1c",
+        "8688ce753d0317494b1b6329cc6260a58ddc1c6806789669df6ed24c011c861e",
     ),
     (
         ("bigquery", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.21.19"),
         "ac77d3d8071e02177febaea811ff290a77bf75fdfee6ed94702bf496afab056a",
+        "ba714a2933e658c04e97792327f076c5f6826ff76f234bfde7868904961b4580",
     ),
     (
         ("bigquery", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.21.20"),
         "aabc5ea60fec24dc95a55d3dcb8b43f02d4a75616096294e4c9434553458ef8a",
+        "ec8a97a6346717d7255eb01a8c614090984687757aa75e9e7ef741588bfb76b5",
     ),
     (
         ("bigquery", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.21.21"),
         "4b25e29864da4bfe3b27b5695cc1a6b7c6a8b3da01e779cec654a5d6f03a2aba",
+        "3a5ea65dde86565212277980e6bb03b32f68a79b107158531d646824985b6174",
     ),
     (
         ("bigquery", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.21.22"),
         "0f55dd4ec76162e301f36c5b3ef17a7c1c1abca30fee5a4dc439ca27fcf10a14",
+        "91691342b85f1a949f5f70f72b44334177ad03a5bd5571e55543ecc5010b5cf5",
     ),
     (
         ("bigquery", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.21.23"),
         "a25b18cdd1ff0f44c4f811976d5de42828137e92f127b1b3e0d7ccd88025ebdf",
+        "fa1d4e31765f06c5401a8097284872f0f584199a56451d2b25701f011e006652",
     ),
     (
         ("bigquery", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.21.24"),
         "8a81ed5d50e7d1580c8b6dd59883b7ac044941877d7c6307ebc5683b4d171d40",
+        "c9da50d98bf9e3de87d2c0977ea55754c365dd3dcaf3777facb812f941e86a3e",
     ),
     (
         ("bigquery", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.21.8"),
         "b52f005523f09db5df8e59818f1775364d59086d96f42e0fe79b5a2d13f4d99b",
+        "a154a3471b33042a8d052d6722cf0958d455b36ea97468fe8d4abb2a83a16bcc",
     ),
     (
         ("bigquery", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.21.9"),
         "ec2d400ed5cc868150aba4d2b995964cc821bb413d697f81bf5e2c358caca31e",
+        "8114ebae39c0b058934bca73a09c5fb65e3799f71a6b6d77f79ef82372a49c88",
     ),
     (
         ("bigquery", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.21.10"),
         "ba4854112679eaff31303fbdb171827f500f7f9773973804136465ddd5d60507",
+        "f6338f5267a330073cc1bbe68e4fdca7391528e5eb302791d78cfbfa6c4d8a0b",
     ),
     (
         ("bigquery", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.21.11"),
         "beddb6cea5400630a188a87eb54a0b47d53d2ecf87fbf78c51300f75c6a4bf1a",
+        "efd69a42429cbee177e031c998c99f3cedc6af87851b5870b0282d518c34aec1",
     ),
     (
         ("bigquery", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.21.12"),
         "dee60a0169296e524e4e476e27033bd5ef3e738da1f4564b4444b77d1bd4c8fd",
+        "1f14add0d338572ff065b2973ea8e4cf14d887bd9ea7eaa367c083bc44b10c72",
     ),
     (
         ("bigquery", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.21.13"),
         "d099d0e4e36963115ea9fe70b808014eb528bd71a023219240ce02c972f9b27c",
+        "df595d0b01fc59e5973e4966399463d12c06a9c971579438cfafc9219df7bb46",
     ),
     (
         ("bigquery", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.21.14"),
         "8e50d0795e4fc4fdddee452c1356f7d213ba32dc1ad9955a746e0c6801a102cf",
+        "cf1649a407309a56c3b87e4eb5a688db5e4d431a082872b0778ed450e84bf67f",
     ),
     (
         ("bigquery", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.21.15"),
         "cdf41377abbc56f1c7d6efcd807b37b467c6823b79c1a138fd4305dfd0450fb9",
+        "1262539d8d34864b2497e4fa727a714c5e7bbee8e174d5bc5737eb8c131f5ddd",
     ),
     (
         ("bigquery", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.21.16"),
         "4ef95bf4c0ca3c26ffc992091e46a6ff0593eacf8ef27bb608ea43a9d525e2df",
+        "e53d6ccd7cdd723ea49215ccfd6cb0b9ceff8c523a61f3781732db9375211f55",
     ),
     (
         ("bigquery", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.21.17"),
         "bf7a70a24875b1e0f5d3830eba9d56d47039877e588201fef894d08792def4d6",
+        "87b89b9ee6a30f0096116e66b5ae780a9aa70fa293ecf4541a1cc320bd41dbe3",
     ),
     (
         ("bigquery", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.21.18"),
         "e8b7c66ea338e645b3585c7e48b89e2ff862af289daa9c03a17879a94fe29ca2",
+        "f51adc7664f5af67290b6c93f13aed2b5c2355c05c6c9e8e9dad1b0036664b47",
     ),
     (
         ("bigquery", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.21.19"),
         "40b5e95e812cfb16db0bd8f9a49ed066c305fd981b212a396de283970e1fd515",
+        "e74cd336b74f149cd7e77be39ac05bfced66fdc9cf461f0685d6d922d37e37e9",
     ),
     (
         ("bigquery", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.21.20"),
         "28caef5f5271ab8a59be5bb6bb9553dd0179471b02ba1202a13408c5d85ed5d1",
+        "cb49ebf308239fc8803b8d942f86c5b7674e3942dd5977092c31d7c40dbd49d8",
     ),
     (
         ("bigquery", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.21.21"),
         "7e29847d3b7f3300ace1d243cfa98ffc66b4bbb3f81a044ecd5a2e0173aec3b5",
+        "9a063a201b7aa217e62ff5b62ea5a5cd8cd007ff68ffdcb0d9531d3b30848c44",
     ),
     (
         ("bigquery", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.21.22"),
         "6ba7123ef6f835349fba9ef7bc1b7e29c782b6b74c9813cb1ffeff2e23427447",
+        "135a2ce628ea79517cecb086dfc4d77f22ae1bd9ec4875b2669048af6c0360c4",
     ),
     (
         ("bigquery", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.21.23"),
         "4cf259f78fb6e327c0235e388ff285cf2df78925b91889a0637ed06938b294b3",
+        "b460d927031cf3c82e7680e0df8408204f68ee4b73f754771e9005ea380317d9",
     ),
     (
         ("bigquery", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.21.24"),
         "40047243007f4ab6426c387da5c65cfbfd0ae0664b6b69007af91e491e1f74e3",
+        "8b31bc1b657b863381102e40c21e7f0c53f35323d84b05a85053a9282c75a40d",
     ),
     (
         ("bigquery", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.21.8"),
         "346f3a916575f08bdba98d6dd6bc69df5d70d197e614cca25213ec839a4bb1b4",
+        "1c805e25a9720972e689ea8581837fa7ea5497576afbe361dd673749f9746e68",
     ),
     (
         ("bigquery", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.21.9"),
         "7015f7c515997ff666bbe3d96d62dd0da39824177dc9bc69155a989a500eed4d",
+        "9c126ec11707595679e8651b90c6d27dc136ac9822edb162dd1068058a337562",
     ),
     (
         ("bigquery", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.21.10"),
         "16028dee53e2da1d4bf08b57b39a70ae5334f9923a68e9b047afbc22e7a46f6c",
+        "525b8c9f25e05eff0bcb7c1feb2721150f2323eff98c5d0499879e25d6ecf9a6",
     ),
     (
         ("bigquery", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.21.11"),
         "107d9dde4e6c081b908b3fa9eda0cc354a7da4a2f062879b91b8110971552fce",
+        "2101cb972cc224d12e9103ab398e8b97aaa5a0d9b4a58a17f02ca7c2e2cdd28d",
     ),
     (
         ("bigquery", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.21.12"),
         "35d048f8211cbefab956fd677e2767895690881635014fe179ff8548dd95f333",
+        "3e4a77968f7597145de817b8e80be8f00e69cfdbb72f5055cdb49eac9a63d825",
     ),
     (
         ("bigquery", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.21.13"),
         "ace49003e4e22ca2f65d3c6620464b0f8f8dee5fa035d5eb220de7010f2825ac",
+        "60de65d456491931415139491fb4a940989f446d8f479279cf3ca34115cc2c95",
     ),
     (
         ("bigquery", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.21.14"),
         "2da0327e7a3b6072b44df0e59bf7ad00bd61e26d4becd4e3296bb349f4c815a2",
+        "8d9b205c6492e4ca4a99c17508030f05c63f5d835c7923440f42cf4f1b2c98b7",
     ),
     (
         ("bigquery", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.21.15"),
         "175d76d9b34bfdf4847fcd4f8eb590260cbf65fa9a09f0ae114a2eac182fa752",
+        "833a937f7462eb44c6f7674591f9c003c2d1e0f8efbef1a2f021818d2af434e1",
     ),
     (
         ("bigquery", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.21.16"),
         "ac0fa9cf98296bdb8985df84c8bdcf60b8cb9b66cd262a587005dc8b08c30543",
+        "80e06f5f8874b1d821be515ef3ee71e08d076fed146427a1781057278320950d",
     ),
     (
         ("bigquery", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.21.17"),
         "a5bbd1aa9f61830d0f4a584e43eb8da82854a2879e551566875cd93944baced0",
+        "d212550b25d2b43e98dabd5fc2abba285344e04220c34cd9c94520e87d5f8c16",
     ),
     (
         ("bigquery", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.21.18"),
         "d0b8d1f675d2f281b3eed2ab45e9a50523f56e805b75b9c65a82fdaa226f848c",
+        "8b2331a7831b16b94960e7890c58c25679729835a895fe85564225e5dc2a0d35",
     ),
     (
         ("bigquery", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.21.19"),
         "69cabb03f881b1233579bf82b6c60e8a3790b2009db497cb7541a8b2e0e0b61f",
+        "a7ba450dd10bec9660695029b3994a1c7f76c9af666ac920e4634181328ed5b4",
     ),
     (
         ("bigquery", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.21.20"),
         "511b08817eeda77506663d4c2d364e00e0aa16baae89667fbbe247fba900ca2a",
+        "59b74609607b5427244f33f5ccf251f0a1311579f1d4d01aa7fbf0c80b16120e",
     ),
     (
         ("bigquery", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.21.21"),
         "d45fb044d2f9fa5efa04d3f60e6a797e38a00d9ba84c99b0bde89667ed5df473",
+        "5182cdbfd07fbb65e508dc2e05a4afcd952dc0bf1f1099ae46d42ebeecffc4c5",
     ),
     (
         ("bigquery", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.21.22"),
         "8d8744817875f709397a0c54ce2fc09fca77f380dc463f1f20e4479379982160",
+        "9a6f0cc9c755a46521c6a11ab664c1490725d605fa3726adcdf95360d451061e",
     ),
     (
         ("bigquery", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.21.23"),
         "71a64617f9e7cdaeabda9860b9b5b8903957af4fc3d52efc6b6e6a14863070fb",
+        "86e6bc014f6b848c479035e6640748af3dbddf3fab9e9d1de70c39cc4b54ee08",
     ),
     (
         ("bigquery", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.21.24"),
         "38d6e6adcb79df975d650420d7087164bcc6047d7152e4d212e8654c35745ffb",
+        "9d7f1fcfd01eeba6b73d2cdac47773466755ef502b9b30904f4b16c8b0011650",
     ),
     (
         ("bigquery", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.21.8"),
         "06723a3dc1ff519e952fb9844fd00ee75d414ca79da135207b96bbfd842cfabb",
+        "bb857d4743eec8e7dc20d0f1ccdc4d6f1525e09e201b5f1f3b24899874409693",
     ),
     (
         ("bigquery", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.21.9"),
         "288009c1fd5c18ec9a54cfd7c7223179151d3fc57832f77d0c069220cbcc008b",
+        "037915c165cc652ff3bcfa73bea87c51e56d811607325f5e4773b6e0d11a975c",
     ),
     (
         ("bigquery", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.21.10"),
         "1e0f6a2db045e217d42e52cc499df1422c81d49c37d7a64704665b4720d04cd0",
+        "5b7cb5ca4f0f1868b39ad1e5262f956d0152a85ca43f15ea28267bb118c662ea",
     ),
     (
         ("bigquery", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.21.11"),
         "e595ee7b4a84653a74af3a9747ef9f18cfa6c522d514bb10006827ec21ceecf7",
+        "eccca2f036a9ca5694f8298f5e7fa13ae52b67f158340c74b66de4148f2f40b7",
     ),
     (
         ("bigquery", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.21.12"),
         "9fa3d3a0abcf10cff2fe74bf9fe7e1c35ceda27e74fb08d74e52fc815a830383",
+        "5e128a3d574378812329bb0abd6558ae9fbf478a47204d5fe4e91e8561671144",
     ),
     (
         ("bigquery", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.21.13"),
         "9beec3a1c5ee20147b4511eab7ce787ddb861e540d3c82f900c6dfaa0c9b07a7",
+        "0395e31c5aa9db2d180629d547ed671fceb24645cc7adecab5fc1f6ac798b1d4",
     ),
     (
         ("bigquery", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.21.14"),
         "bc23ddaa0eaeb7dfa9144ab8aad657df64e935e12bb99c5d811f7b21ed411485",
+        "d6b7ac69897966133af8b5955fd4ffc0442677c1e53ab6ecb099fcbcd939f2ea",
     ),
     (
         ("bigquery", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.21.15"),
         "17740c39df7ff05f0851d19f80e591799f74780309715ecdac289208032bd27d",
+        "10a3d05ad2f7675d124908ee6016dd73857088378ca7ecbb6b1c59057d2b2c20",
     ),
     (
         ("bigquery", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.21.16"),
         "ee830706345e68ee484ee7d4f7dbe830c90b48f2f1fc0832f3fdc47eb09a9d4b",
+        "70edc5011a1b71a200093c1e3b688c58dcd08799a178502094895ab364ea3648",
     ),
     (
         ("bigquery", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.21.17"),
         "5949adac13905f7e1efc483df53e690f315ccb6747690a3c042cd98fd89675a4",
+        "8714de774678de4b2ff51d9387a791a4c493519ae46ea0ad3bbb7b2df48aea1b",
     ),
     (
         ("bigquery", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.21.18"),
         "d77f0bb7dc1f0b782a1ed6019b8af8df48bffe53ae6d6dc9cc507511a957222c",
+        "7e8187fda9c1c95632d15649d3c424ee1d69f657984a75413c4ecef3f3b28792",
     ),
     (
         ("bigquery", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.21.19"),
         "0d6a526f6fe5d470206929505cee11fd4e836cbda43a435a487edb94a30aa690",
+        "960eea8c47a2a9503fcc917e449e728f7a5e657ea7e7d2afb3c155494fc649fb",
     ),
     (
         ("bigquery", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.21.20"),
         "1a44ffa4f749e4b7ed1fbab6f1e55ddc8acb6eab64201872abb1cdcbec5f72e0",
+        "5d407dd134e5ad4937a541c8b0f1e47981621f5277865b081b14239fa57e8f1b",
     ),
     (
         ("bigquery", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.21.21"),
         "22f832ee65bcd9dd6b4c08de908a1d10f5477ed9581f0e8ecaf23c0c6de64991",
+        "96ed0f371394d555a55e8f35d1a61c4655183d52eb035122bd3b29c777a9fcf9",
     ),
     (
         ("bigquery", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.21.22"),
         "d2636599d59cb8110e486e4a1d908ca0d383fa49c6bf93c1b9c3c1827206bdee",
+        "90b422cb5b955d800a4d1c63dd6a39c3dbf022cd3a0480b98f8a730464b892b3",
     ),
     (
         ("bigquery", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.21.23"),
         "dda4cada31b060d76dd114e92ba29e197a9c7311aa3cd97306e3e05c31f9b39c",
+        "e5d1e01c68723d6d03e125a50c660647d28ad0c90cf4aac2c99eca3c99d42ff1",
     ),
     (
         ("bigquery", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.21.24"),
         "d4e0103f9cf30f9c9bf9c0a8149671fc03f0234e81a02b2beff7b09a8ea6ca11",
+        "4f94b858b9c9830850af29f055c5e4602cc7b016afdb6b08b99d9caa618a1a2b",
     ),
     (
         ("bigquery", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.21.8"),
         "9d1ff67cde78b73bd5cc28b2f5ab4b853c3b4b598d99f7c9f1140b8111bf126b",
+        "637a93c3b3838b378fc2e2e817e414041360bb6c46f73f1e6a0fcf890ff15039",
     ),
     (
         ("bigquery", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.21.9"),
         "36b9e54aa4ee5df0ebadb66f1635daa9736dc3173794762c09da401b5d9f177f",
+        "cf05ca81cea6d258ddaac5f101ec3d72c02c6368c0f50a271b8e87cbaa814be7",
     ),
     (
         ("bigquery", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.21.10"),
         "d9c7d501dc590dba12005972af1243797ee97fa717d1bcfe3e971397ed6f002b",
+        "108b10f72e1b334eb81b5cb3d35fd06bdac7f6d05b98f758ee0d7ac401fb69f5",
     ),
     (
         ("bigquery", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.21.11"),
         "421ab972c25d7b83bf0a09e0cfb5c91de01454bc7191219662c3dbbe3b876a5c",
+        "dfe26d240013a5769e576767f600f656ad38eefe86dc11f979be60621f369de7",
     ),
     (
         ("bigquery", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.21.12"),
         "32bc018f9c823c9848a95a251e51d6a39996fb105a62f7a2d6790e51756233a0",
+        "6c5e92c04acce37d664f066fb6f17b2f0b31ec6fd6ff8d45c0228b9c41c84476",
     ),
     (
         ("bigquery", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.21.13"),
         "cab55fdfc3a77fceabbd477b1f82975ab726c2eed8a102700b40a7efe37f56f0",
+        "94b083b6efcaaf6b241461490f58ab37a685d2da12ed1ebf5fef9e6a041bab64",
     ),
     (
         ("bigquery", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.21.14"),
         "0e215e67bb19710ab2b8fe1c5c9a824c6293198f3adfe0aa0ab2a08e1d98f3bd",
+        "18f789dfadaf14fd7518b4c9c3a720bff911d30a948e0832f725c81a086c24be",
     ),
     (
         ("bigquery", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.21.15"),
         "15a7825c0c5c5dd13c5a817a6f5d527815a9b8aa2664c7f90a772a9598bdc671",
+        "4bc5791b277f01fff19df7a405eb4df3c985cac87d7bde71eb2a685e9c32f216",
     ),
     (
         ("bigquery", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.21.16"),
         "09497a7dc4d37486ec02eb69b9c876cd20836fb354aea7434f3e66711f76bf2b",
+        "40261674edbe871c4859f9b02b1832e13b133f5490548acf409cfce50ba04e26",
     ),
     (
         ("bigquery", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.21.17"),
         "edaa8848d0f54a5a7119fa5ea1d7ecf7aee0c5e68713e28e476812666aaa5981",
+        "d987ef8c7475d80acae7240665ec1ca69413a02d822a386b47a9612e16bc8386",
     ),
     (
         ("bigquery", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.21.18"),
         "17039f0d395d5f7995da1ec5ca3432b165f9ca00218ec42207709b7b13f6f009",
+        "d357d7b60d892a968e1f6fae0c4217c5f66c6f8cb3c8b673c81e94dea07a9de0",
     ),
     (
         ("bigquery", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.21.19"),
         "0e266cc45d68ccb1706b0794e7484bf33a433ba029d1bbc269efc7c48459eea2",
+        "e7e878675ee74af693653d1b7ee3a944787789252a36e5688bc37a799be9f8ca",
     ),
     (
         ("bigquery", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.21.20"),
         "69265bc4df88c22f8276ad314d43c6700b7d25727dc3dcbd6817ab7f16acea8e",
+        "3229a921e6e882e8db14d280c75dd686b917564980512cc3fa433445c7718a34",
     ),
     (
         ("bigquery", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.21.21"),
         "7ab8d6c4c56798da26ebcb9e3cce43ed4f210db6d0ba2ff63553b445712e0d77",
+        "6467c586f6b6cc73618ff28c6327951bde612f0063cb7a55fb3c5daa854b17b5",
     ),
     (
         ("bigquery", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.21.22"),
         "6ec93d878b8e53cea62b13581f4ee59372693757f7ab1cd5c79bace4b6514242",
+        "e6099590c3a9ab208857268128c65f3ffc20975131885a03c67ad9671af4d220",
     ),
     (
         ("bigquery", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.21.23"),
         "97951eedbdeb95f61ac6c2c1fc17f740bbd338e63cc2ac88102120e5bf2e33fe",
+        "61c0a8a73b17fc385d1b5b9aa79cf8e9394ac28b8852b0af716af1b78db750b3",
     ),
     (
         ("bigquery", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.21.24"),
         "abfc24ec89067739675d30be9ccc851b555269cb0e426424b8e124aa1c896aec",
+        "0d10d3c612efc256abc6cd5b0d211f54462a1875ee9255641b4083375b15e77a",
     ),
     (
         ("bigquery", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.21.8"),
         "ecf0127dfcc50f2917fbff4de9022f370b2f1caf44ab75ea01846d4a81990e60",
+        "727eed2fee7525aa4fcce5592fdd5725f765c5f5a94f0ea3d8e9d33482ba98f9",
     ),
     (
         ("bigquery", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.21.9"),
         "4aaf192f26f791ab58850ff357235717245963e9e83401246ac72b54771517a3",
+        "aa81aa1a355e70e31afe36b179446d4a6b658382d673819b5aebc9c038001d71",
     ),
     (
         ("bigquery_foundry", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.1.0"),
         "8127132bad84b9a5635fd67a49d26b0d2a0b4680ed1dd5a18cb46aeec476c1a7",
+        "507eb08d4e33f644eddfb1f45b53232f538af1f413c0d17911c1d53dafc99b12",
     ),
     (
         ("bigquery_foundry", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.1.1"),
         "5ce77e08d36013e7df934376695ac813761f1966c657fbf5a0146913a9f0ca23",
+        "f8ea0ac28ef5675984ae4b21f62aad4929c351102b26f939676103a2c52b92c7",
     ),
     (
         ("bigquery_foundry", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.1.10"),
         "cc1e727e885b7eb87813af7ea49d1c78788b690ca9b680447fac7378f2459f5b",
+        "9e8afe7c6b133fb5695ac1d5fc2d2e148ea9366a72237b4e0c1616e5b633ff34",
     ),
     (
         ("bigquery_foundry", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.1.11"),
         "23e2371766a9865a41c174be8c48e2f32219e39e5386adeca2a8e9cd16560f93",
+        "3e294ce8a64022a2fd76c46b2d842e813fda19c9bb736182fb57510efae851eb",
     ),
     (
         ("bigquery_foundry", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.1.12"),
         "bb610f184bfaa47ab5f7ed22b81a5e61c8362913ffacbe0e7a7a2132a700a453",
+        "40250e1f7511850a6cd24e1802afa11f509eb1bef00f928a43b4998e0f2fa9b5",
     ),
     (
         ("bigquery_foundry", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.1.2"),
         "743cf5e91c65777d15fedeeb9b505c0c3f2f169add3e25717b09b30697deeaca",
+        "33df7eb73cd2c675438202f2cc122adc02e2a704c9b4bdf1c1551876cf7c89d2",
     ),
     (
         ("bigquery_foundry", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.1.4"),
         "c558b3ab49c030c5ba15b35f7614cc26cef52545f3dd2fc8c7e94ffbe183a7cf",
+        "7e4a1ab4c908f5de80f7b99bbb34a28e59e4c2da53ab2329b8332d2fdada3894",
     ),
     (
         ("bigquery_foundry", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.1.5"),
         "14efdb62924bb6f90c8220a9722344d65e7e5e610a7d02f9805316e93532d0af",
+        "2de82be14e4f711c59a4b7f30fe4ad2354525e24067d07ea7ac5c48a7c4bf0a4",
     ),
     (
         ("bigquery_foundry", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.1.6"),
         "ca997a6dd32163f4a93a13ceaf71caabb1c49061c4ae252a8ae3bfd2895ae921",
+        "bfec1aa7397f1533b60654ff620d7ff668dcd47bf24645923a3c0b72e4ed4236",
     ),
     (
         ("bigquery_foundry", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.1.7"),
         "4d5de411e6b029f753a9f94924c15ee6d9a1169e9ad436132908419c6b2baa32",
+        "ce25299a5237ce8554437740b8dd8d7ddd859f594deebcd9561ed7a74340cfcb",
     ),
     (
         ("bigquery_foundry", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.1.8"),
         "1b42849a1926aaa35c2924e5445b137fd3cccd1a9658b9d392902786d4b62ee5",
+        "b467ebc8b35178632effc10cf139115156f3d8e60ec79c7bd53ce4658ee93ad5",
     ),
     (
         ("bigquery_foundry", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.1.9"),
         "3da8d030bce3c9f82f4874c8195be6790cf1b870ae55863717fcd0398eeafb48",
+        "7c25fabf33aa3dbdbbe88a3e177aa28c2c8d6e3158fc39c4d960e1188462957d",
     ),
     (
         ("bigquery_foundry", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.1.0"),
         "f6f0bb13dac398295b6aa33311a43dcaed6d9963c96bcc3f6cb57dbe81756de0",
+        "9a520d28f45cd16050d99bef69e41feb85f6e6b7b4a12c243f07cab684c62be6",
     ),
     (
         ("bigquery_foundry", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.1.1"),
         "d816b9f8ca51115b313cb1977f64735749addcf2d99f83e4dc27ac2151436e54",
+        "8d4c66d6f130b097b2fe37237a97e51297e8dbcb90d7c6e8d0054893a4b6870b",
     ),
     (
         ("bigquery_foundry", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.1.10"),
         "0f89e04c2ac0d1f6fb5c93c50600be5742294f826c4fe4b7922d57773361642e",
+        "5710883bbc97f6138e50f8085dfc3c13d152009004c59b6846716d1777df214b",
     ),
     (
         ("bigquery_foundry", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.1.11"),
         "e87a85f1834090ecbeec92a17b6388572b7dadec503d8368ca3cac773a4f6ab7",
+        "0f8d6f8f6cb7d867635fe1c4d1ecf7adf38d9dc08ed19b8567b464c1adb3d391",
     ),
     (
         ("bigquery_foundry", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.1.12"),
         "0dbea42fb3afb89ac95f12a891cb71c1ae83dc0937eceb51b3d46542249113fb",
+        "9f281251e964881811735e09373e84faf5b091863202706243370dc18ecfb1b5",
     ),
     (
         ("bigquery_foundry", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.1.2"),
         "97daa176420cfef4d9a806eea42e503054235811d09f7195e5a3939948a27709",
+        "b0d7e268c15c2779c06493b547bd2e48223fd28f0d7928bf5cfa6b9f17fdbc52",
     ),
     (
         ("bigquery_foundry", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.1.4"),
         "c222e669d4266e4ae576ce7819e6c4d74b00fd2ee9bd95addaabe8d1235ee178",
+        "1e17fd357ffe9c2056ca7fceb981d2472dde15158a1a855c0082589f22c2f3f7",
     ),
     (
         ("bigquery_foundry", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.1.5"),
         "b46a328543c403faa931b3142bf9cf47a712bf27740bee6c4becd7234767711d",
+        "5cf72d77d2052f2285c6471996e538249b5042121337ea7e9ca58d36a53da071",
     ),
     (
         ("bigquery_foundry", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.1.6"),
         "b211ab4c4550d2ef5c9d51fbecb583e9dc88499ce49e6cd95bb54e81f2c678c5",
+        "81c2ec79663c6b5ebed1c41a3258821c1ed586348a7eb4ba3eb708575f1caf8f",
     ),
     (
         ("bigquery_foundry", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.1.7"),
         "3799099c9c8409dcf88a39c48cf87d3275649d4706ed3d93127fc4a2dbf99649",
+        "365b2caef61abd2f06b4d4f3bb0f0806df15d5616d0d08b01bd0a8853b65bff3",
     ),
     (
         ("bigquery_foundry", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.1.8"),
         "d4a890d0b731a961d5e32551e2f39afd0a9f391471c964a6cba0738fb68c70f5",
+        "03d0cab052d2a89dc6cb85fbf17c591117adb61e1165915f0505e5eb600eb5a0",
     ),
     (
         ("bigquery_foundry", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.1.9"),
         "e7f3cbd4aab0fd58afa2db79c3c8b2f5421fc8b696a60a5d5dd1d566059729e9",
+        "0298626620c7659d31afa3813cedf6c075cd332355e9bbde06c1d23a40bf1d8e",
     ),
     (
         ("bigquery_foundry", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.1.0"),
         "05f1c1296a5cc5395b53e8ef10a3d653a221b353c4615cc15e0127ee01b42b2e",
+        "a24c2b6a0f6a49f36cdedaff4d1f9bd35aa03af10ccb5d5c8777d623048476a0",
     ),
     (
         ("bigquery_foundry", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.1.1"),
         "61ef8555654c8ce2209fb7b4a93083a40acb7fa44b89ebe0b649291f0cca0416",
+        "b3103c3e08e06089d50f5b14c45c685658241448e898cdb82f6f302373fc9990",
     ),
     (
         ("bigquery_foundry", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.1.10"),
         "5056525214618b73c61ccb2c06aaa840da0fe2aa782e9c8b94e2271c393564e5",
+        "f1d3c61ec464d1ca2fb34a357416812e6089c1ce432837e342de7adf7847d5f0",
     ),
     (
         ("bigquery_foundry", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.1.11"),
         "43ea3bf437da57e5ce2de090cb9fa6972e706c4b7a6e7af6bd009b4c5d3e1fcb",
+        "8f42300a67bda1666e4eba32bbc6f40e075e302902b51b1a51b0e60c6f58207d",
     ),
     (
         ("bigquery_foundry", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.1.12"),
         "114a922e0557b06324fdcbddcb5285fd456d96879365ab1939990a1f2aaa9fb0",
+        "b1b19e5bb8835389d1af52e9d24ff19761c29b00a8f8e7d210b6cf0410635f03",
     ),
     (
         ("bigquery_foundry", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.1.2"),
         "8eb492eb0fb63a2904ea7174a25074231e11f0650c90777df217e92a6771aff7",
+        "9f7e9f97538d4ac3fab8aec290ba5d0a3a98cdf0f474a1d20532a5431adc0e51",
     ),
     (
         ("bigquery_foundry", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.1.4"),
         "f9c0bb3ea9ef295167c8dbe7f232068a869481a00122eed758a2cde7e9e3ed44",
+        "18c76ccdccf74fbe9be145bd98a19462b534bde52d5d8cb619780aa5805ea0e1",
     ),
     (
         ("bigquery_foundry", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.1.5"),
         "8095b1a6e9fcfc4f66106fc2534a86cc4e86fa671900f03ed452200108be7ef0",
+        "63d36d4f3995ce33c94f328aaf53a89e11fee0fa6ba2420163c9be2131413b12",
     ),
     (
         ("bigquery_foundry", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.1.6"),
         "b771c5eb5d215cbcfcb1b3fa3794e50cd7d9c1da398667dcb35aae09bcbaf2a4",
+        "0aaa4703fce0827cb0d659a640b0e2b51344d410dd9679b53d5fe7971ba41093",
     ),
     (
         ("bigquery_foundry", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.1.7"),
         "f677bb142af97bfa373347868e0551089543c82fea0f67dfbed20bbb41af2777",
+        "459865d3994ce0e4843f7f3389b9c9e36d7e424aedbd7cef6c6d6bfbb14752d2",
     ),
     (
         ("bigquery_foundry", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.1.8"),
         "39e47b1e7865454efbab8eb7dd3834faf000bff1be5ff4477624f7026890fd21",
+        "52cb812f69620313186ed8d8623675e58c0d6e68ef6297bb612e50ef3999f401",
     ),
     (
         ("bigquery_foundry", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.1.9"),
         "319912039ce3b85a46702faffbd8bb18a25eb296e2e0f7b591681f71a27b58a3",
+        "ecc1ef21184ff7a847266f5391af0937ea0d3f05a6231a11e7d2592465b04fbf",
     ),
     (
         ("bigquery_foundry", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.1.0"),
         "f9a2c05ab38e1aff74bed11f650c332a7825e23c28db5219bef02101a9e4b4dc",
+        "68e06d41e60405711bb7e1fec27c11233a44ff455f1b3b27c1311e06a544d1d0",
     ),
     (
         ("bigquery_foundry", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.1.1"),
         "f09de4b87f56dc091384b5040e991ab53c553f9977ec7e488c9758273d041697",
+        "6caa3ef59fa326f52c8a2c8857e58d465bff2b65fa58c2b82e881825e6ecf3bd",
     ),
     (
         ("bigquery_foundry", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.1.10"),
         "1406ee2d33852d6d1899d94958cb82e578bf95bf8162b6e4c57cf9c2c7f01f96",
+        "7f05562c5e858b401d705076c52915b4cc4f4a039c4402290393f4f36f2d0e55",
     ),
     (
         ("bigquery_foundry", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.1.11"),
         "43617c60692386d611e70b4fa07652e21fb6762de0ab6b711b64ee73c0caca09",
+        "c7718c1fa54d371ef90d2e3229f823172d957ae5085b46ab672b982361bd9594",
     ),
     (
         ("bigquery_foundry", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.1.12"),
         "70d72d2d98e8cded9c97ddf059e627e1b04f6dbad8a51b1c1a1a4508c10e9f96",
+        "e96cf610ab48d86d1dee6c5e0fdfaa679cebe3ea664cc30887a6cd006106f2a8",
     ),
     (
         ("bigquery_foundry", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.1.2"),
         "2fef98ce41f955153ac8bcca27c647e2d241150facfdd5e59952286c6d6ee6fe",
+        "eddf16d96d57fe364c738b89903d0a9433780c2d05da794659aa1e9c5dc7ecd8",
     ),
     (
         ("bigquery_foundry", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.1.4"),
         "5788a9e126f06dafb0dd7875f3ba040a03fe349324c45d72c9bf0adc09ac136f",
+        "082a01d7995f31b7fe894810f7678f059b4371695c721a6a4bad5b1d6919fdfc",
     ),
     (
         ("bigquery_foundry", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.1.5"),
         "dbabf4874adbe306117df1cd2ccead5bfcfc2294fc14c34741e62983750b95e1",
+        "8c3796aaf7bb71914213721d6de47d762f6a5f1605e67b3419933b4ad54d2eca",
     ),
     (
         ("bigquery_foundry", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.1.6"),
         "7d0b56d8754818d42f1d8ae3012b78e3cc91f756472345e5a0d1137df02a0847",
+        "2b62becb80a01e77218010758be2d9647fa409651896afab764d5ad9f54c31a2",
     ),
     (
         ("bigquery_foundry", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.1.7"),
         "d3e6cc1649a80dcf657ce9b06555d69fe41246036af862e1c3601b6b7b472bdb",
+        "fa8f9ca92c7ed58f143ea4a003936a99cb0c3a0b8651a1f7af7767e5d862c57d",
     ),
     (
         ("bigquery_foundry", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.1.8"),
         "e973689c398cddf987d75f6ed0065344161a5c70015aee5ffd6df9ea13d35861",
+        "61590f95e00da2fc91426c4bd4dae66e93dc64042ef4349038a27aff57b2e135",
     ),
     (
         ("bigquery_foundry", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.1.9"),
         "24c4fba46a04051156abd2d903b926e29b56bebf0c7c1add259b6f9aad66f27e",
+        "cc8a97aefa78a0656b922c42e0cc02f7feb3ec80454734c840b61d40ff5701d1",
     ),
     (
         ("bigquery_foundry", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.1.0"),
         "90174bef515a240e3bf0a4a86904013149df9f97d1a12bfc92c0b28431fd26a7",
+        "7d960b0db3543b0a8f554f8080b2837f85ca9d519bfa8337d43a5503cdcab4f2",
     ),
     (
         ("bigquery_foundry", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.1.1"),
         "cb833ca98e2e62631b86d78044ec42cacfbf9037531dbd882b5778f2b7d81886",
+        "bb0b2706a2da62c33db64da84616efbde66e91df401cf454417984da398ec29a",
     ),
     (
         ("bigquery_foundry", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.1.10"),
         "1938dbfa82177d27ce68312df826b10525230d410f8bc1d4e204a8668836bdc1",
+        "f0a8947e30071fc00c9b5d9892f055cfa7c011b13d5e1861d37fc17d9894673d",
     ),
     (
         ("bigquery_foundry", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.1.11"),
         "6dbc191e90b27a84c59e7758b9d4fe854ebaf1d7db3ea7256e8bf40051784b2c",
+        "749c6839281a42670d6aa4d4a90fe7083c1b04b09cde1d26c4bf95218b85da62",
     ),
     (
         ("bigquery_foundry", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.1.12"),
         "c7ba3780cdaab13dc5bd0984f402b33ce471c8ce424646e4834a1d2ed9f38a75",
+        "c060ea0473cab10361623121008b941fa02fecd5062fcbe4eff330d80d4ac0cb",
     ),
     (
         ("bigquery_foundry", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.1.2"),
         "45dbdd6966be431f3fdf6cdc38f3b15899ea58c98a03f802c3c10776c2c2d7bb",
+        "bb8f90451dee46b5340d60474c3b2b2071a7e336ccefc15aa7b579c6a3acc609",
     ),
     (
         ("bigquery_foundry", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.1.4"),
         "c4708cf9602552a15626e564088b5c49150fe118c242c1e62a195e045275c80c",
+        "e3582cf65ebd622cc2f95cd3a1aebefde6cce7d5e42084c2e429ce9698280ee8",
     ),
     (
         ("bigquery_foundry", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.1.5"),
         "5e8467cec71386e78f5af0f45188c1038d4b60224b248dea3ce39ca13b10f0ee",
+        "1c58bcb482aef39421fe8bfd3aa0470a02a2becf31dd53dc36e5ad3362588445",
     ),
     (
         ("bigquery_foundry", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.1.6"),
         "35a3c60979001099943a8f0e606d901c2932479107253420991b23e8519353b8",
+        "5afd8c321ab95a0f2bfaefd3dfcf304427ad13394dfb027d3e94442ae4bfd3c0",
     ),
     (
         ("bigquery_foundry", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.1.7"),
         "53c876015ed42ee5910e19bb19c60796806747d8e41cce047959f27499ea2ccd",
+        "3e52fc5b3a57ae5a9926e02cb0c5b6954c0ecf13dcbc0d7c564312046c435628",
     ),
     (
         ("bigquery_foundry", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.1.8"),
         "d44508e7b6c5abc5ff47c015021b0fb7ae60643adc21c80d1d8d83f7f9f21c34",
+        "0dbd17abe3e21fccf5b4843ce878ab166c3ba7a48ce545e5e2321fcaf1a241eb",
     ),
     (
         ("bigquery_foundry", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.1.9"),
         "5c3f1e7331a9a0de081475472d55573cf3fd18ae4c3361bba19d79086f2f4b7a",
+        "710f59c5406e05e21d1dfa4ad86674c26b9d2f18b15d36bf3dcdb3d594558fd9",
     ),
     (
         ("clickhouse", "apple-darwin", "aarch64", "0.1.0"),
         "0ccd62dbf47dc9714a328e70a1718faad4a188d222170849411829f2339bc5d2",
+        "58c0c36d5ad6e40242ed0c47f855840196e0b76062533d9949094605ffc3f758",
     ),
     (
         ("clickhouse", "apple-darwin", "aarch64", "0.1.0-alpha.1"),
         "d7f4dd2f67c4ba4e1569986d893ef9a877c3ae385da4ff3aa1faa646adb96f2a",
+        "a15b5a7d690452c8e364d845e663c3660dc3936787f4e6b864dce01786de5787",
     ),
     (
         ("clickhouse", "apple-darwin", "aarch64", "0.1.0-alpha.2"),
         "7ba6156458599b35f6a1c5a2ddbc4cd62036c1d2e46abad702bb950478697472",
+        "0ba3fa44d9c2ff2a9030cf61ce6983526bc0c64a64d10f6b10c764c4364f9787",
     ),
     (
         ("clickhouse", "apple-darwin", "aarch64", "0.1.1"),
         "f32488649f24e01dc5b1cb5a724ea50950b4e0b59520b3071ebd6439153e2610",
+        "ae18004b82ff08b6d3ec8f1218ea18a0f87ac50adbe42f917d8e1ac4fa6006b7",
     ),
     (
         ("clickhouse", "manylinux_2_17-linux-gnu", "aarch64", "0.1.0"),
         "66050b3e1e945cdc9a8c6980e99396aea0592daf37d7e3d28f0ae4eeec2c8f2d",
+        "f60f19c120dfed9185e182614e582da00b77e1de7b89d706ec419b9874ef10be",
     ),
     (
         ("clickhouse", "manylinux_2_17-linux-gnu", "aarch64", "0.1.0-alpha.1"),
         "5ea43a9ab39898fb448d23915cbea56c9284afea89d3324501606c3917d3fc37",
+        "d29d1f0726607d232f44b3f424aaf45aec8afe7a89aad409ecd3e2dafb4cf166",
     ),
     (
         ("clickhouse", "manylinux_2_17-linux-gnu", "aarch64", "0.1.0-alpha.2"),
         "81cc15fea37bdf211f97be1eafd09d364d1772396a067f314ffbf01a943afec7",
+        "42685293d7894413cda2a9f4b075d5573e975e444bde7135b010eaa41ff3ec93",
     ),
     (
         ("clickhouse", "manylinux_2_17-linux-gnu", "aarch64", "0.1.1"),
         "509cf895f7ae0c87e70118417798dcb2ef2568eb37293ad7a271aa503bd86b30",
+        "43888169deb813ac67bd51794df3258c2d12ffd16436386c550e7b5d8d7e72df",
     ),
     (
         ("clickhouse", "manylinux_2_17-linux-gnu", "x86_64", "0.1.0"),
         "6a6805df2b0ffed47beb2c78b4ddd6b2548fe100e42221c9bbcd0999fcae9bd4",
+        "50bd03eccef149b478c7ceff00b6204be795f54e589169411b44db12716f560d",
     ),
     (
         ("clickhouse", "manylinux_2_17-linux-gnu", "x86_64", "0.1.0-alpha.1"),
         "ef018d0c80498777583c92403781d8cda934aa5709dd27b624154f18d3891425",
+        "589778344bd52ec5ed04aec13601274fc22b855fec1a3a61499fc2d3503ebcc1",
     ),
     (
         ("clickhouse", "manylinux_2_17-linux-gnu", "x86_64", "0.1.0-alpha.2"),
         "d548d9e1e3511553f2e89fe66614e8cb4d69012f194491b869d31cbdbf19343f",
+        "eede0934e37263eeb6bc6b4a5bd8a31133b484585e9d1a81f0c2edd4852509e9",
     ),
     (
         ("clickhouse", "manylinux_2_17-linux-gnu", "x86_64", "0.1.1"),
         "4d0d8fb910fd0b792b179b307ab53e3ede3bc051dcf97ecf8c51c04ff8f31bf7",
+        "a77e803d2ea6e0ce0b7ff8b59fc72d00c577c9a39b6e38b383cbe68e7f8bb142",
     ),
     (
         ("clickhouse", "pc-windows-msvc", "x86_64", "0.1.0"),
         "1f92179cc7f154de97edace0c5f1bad016f3dbd4b4b0c4a037401f84114309a7",
+        "cd1f9256b0835cd86e0eb1e792f3a13457fde347f2cdfc8866715c573391c5e0",
     ),
     (
         ("clickhouse", "pc-windows-msvc", "x86_64", "0.1.0-alpha.1"),
         "b29e3234db386be0c6e1cad6e4ea4185944dd063cb34d385b8ba3fca7b5451f2",
+        "532b9e9ceb69890a5931246dd8cb43b03aa55e42c40235da6d84d0e25f400e15",
     ),
     (
         ("clickhouse", "pc-windows-msvc", "x86_64", "0.1.0-alpha.2"),
         "80a8eeabbb1a2913efc423c1bfddcd99bc5acffc19422181a9f7e8ddec54ed9b",
+        "3db5fa1991bb556be5f7dab5ef1b1a2b880f1664b0ca0c7e6857287f3d7d0cee",
     ),
     (
         ("clickhouse", "pc-windows-msvc", "x86_64", "0.1.1"),
         "d47397683f6eb486d809d6f29df47e3d3fbbd58d3a377dfba32665bedc353bb1",
+        "19748f5a039dd968420b8d66677ec41e76f42d892b4327697fd9d22cda01051d",
     ),
     (
         ("databricks", "apple-darwin", "aarch64", "0.21.0+dbt0.21.6"),
         "56528db01bce2834d601acb45fe2b6f0ed1e80b7856078fb51f769c1459591ec",
+        "d8f9fb283723106e6d47c7868506f164fd99aff5b8353f66d07abbe1de3b2cbd",
     ),
     (
         ("databricks", "apple-darwin", "aarch64", "0.21.0+dbt0.21.7"),
         "2aba2e95e2d5110f03bfbacd24a873ff94335f56e09e86ec04453151c499a1b6",
+        "61c2e80fbf1de877441439b9c9104c3010a3dd9f0e8698a2d8c62724c4a26cb7",
     ),
     (
         ("databricks", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.21.10"),
         "cc2d50145a4420309c95a65a39b51dc2731279ffe1fa44898462aff7ceda8c3c",
+        "47c4928a67f61cc3b517992be519a6d7ac588747acafae87a43dac580f89e632",
     ),
     (
         ("databricks", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.21.11"),
         "e9e15cc3dfb74683f753098d25a6e70bc0f5ecb8a4ca0a20ed0bc0db89935506",
+        "a45903ab4af044887c92e09366df4b38222de224fa1c05194ee48cb1ec23f5c7",
     ),
     (
         ("databricks", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.21.12"),
         "5c05a0cda065fb591bc499c3c10446f94bde32b19f5ffb0ace3145aae058e993",
+        "1a0415fb3e93c738f5c0b1f15822975bb909dfc59708290e8c417ead70459a55",
     ),
     (
         ("databricks", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.21.13"),
         "e470afdd3ea4c5297510d944309e4ac4770960b2999d85214454568d3308f84d",
+        "5f25c03526cf8ffadca99cec07302bb5d27ca4a4c29cc14566c0ac8e47b6518b",
     ),
     (
         ("databricks", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.21.14"),
         "f01bf8bcb6458a6dac9ff065373c7fdd172a8adb20e82eb9f1443f812123b9d2",
+        "27e23ff733c3e5e49700502c06ce75e9c628aaf1acbe78f94a1b7a6ec2ecef7f",
     ),
     (
         ("databricks", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.21.15"),
         "2fda431b630990e4648ff7e532658b752992ab66a46bf42b2cf88317a6101e13",
+        "1515ff4f5d22ea8c00047c46eadab402b9c93b08d33f57cd23ed1545bcb37743",
     ),
     (
         ("databricks", "apple-darwin", "x86_64", "0.21.0+dbt0.21.6"),
         "fcc269a403eb936bbf2a26936c7e7c61e8d05370cb087834838ab9eee6a380d4",
+        "58a903b940997ae7850fb6760a66895b890798d71ac7e6ffc35501f6805a4936",
     ),
     (
         ("databricks", "apple-darwin", "x86_64", "0.21.0+dbt0.21.7"),
         "fa06f6e8570f5b5ca65d1d653b157c9fbd8124fc8f3df1f9e1da1ab242deb33f",
+        "775d64ea38d7d629535937a4dba692bb663936b9e2a171d0b3f52d902601a5be",
     ),
     (
         ("databricks", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.21.10"),
         "81c6d69d88cfb467c90aa9f16e65548f64ae4c10e8a5c23061a4e9dad9e84021",
+        "e127f567c5e9e50648d7e5a420a984be647d2f296d81163799055523013a4a87",
     ),
     (
         ("databricks", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.21.11"),
         "d83af05b478c6e3b0b945ac823bd0edd465a15091060df2f986969516bef9252",
+        "b55315b1f92ef2fbf214bda8e8c02a524b2fd11d34685c4aab69f2541a2af209",
     ),
     (
         ("databricks", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.21.12"),
         "9467c30b0bafb849290b539aa64c05b21ded13c3eac75e88ea4d75d744c68ef1",
+        "8c47ec224cd656941cf4dcd6aaa42111ff7c220a865bdd4785357ca91d2a6bf0",
     ),
     (
         ("databricks", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.21.13"),
         "588f38465ce409cb17f8ff241033baf4a97ed54f23f143a3822b58d292b45478",
+        "dd5d7edd3f5a05bb175c6fb73b8105bd583b49a57bb70d91a3b49d0bbeaec4ed",
     ),
     (
         ("databricks", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.21.14"),
         "638e27e002e51618715a1485e065c1d27f807ec7832bb6cdc0c96b6fa57eaeb4",
+        "cf803e2c01ef6ddd5c73365dadd0cf0880aaa033567b2bec9b0e1c3d12a76da7",
     ),
     (
         ("databricks", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.21.15"),
         "43bb398a9d45c34e0ef11c1318c599a028d21de0afb17fe7f5e9bcd9cd2221a9",
+        "0a5c48e5310952fa50ea814d3edbc2be4471469f2343062c99bef52326320478",
     ),
     (
         ("databricks", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0+dbt0.21.6"),
         "da993d20451662c41c21aea0b878b296532a30fe5d92db34f0ffc7179a6c369c",
+        "fd8edd1c817fe580fd336f0fbf930c27ebc6178ed7c78b13b6bb11cca932dec8",
     ),
     (
         ("databricks", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0+dbt0.21.7"),
         "7cdccf45953ad72fc1285d286e52778ece6cb8949d56de43a418f59cde14d858",
+        "04a5c030345dcf8745d8221c7eac0e0ea14d491489259abdfb8baeeab666447f",
     ),
     (
         ("databricks", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.21.10"),
         "c8744e1a902357f49ee3ef21c6b366334a786af6394790751b0d5b9196857354",
+        "1c1482d7f49567d81c6e4c08b8522fa4371c14946dbf770d0f8bc7fcdb6c44db",
     ),
     (
         ("databricks", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.21.11"),
         "8d8bc2d435ea7384521c03fe563d46cc609070bae5dcbc090ef4142d2da2b9b7",
+        "e62de98845ca2342be5a3fb2d973d42c9413fc8a4ee99dbe7c20bd54fbc1fe4e",
     ),
     (
         ("databricks", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.21.12"),
         "9c93417e4cfb903c9dd045380d41192277c024f323757fa66bc867c3fb194695",
+        "56d5d5a5d9e372bc28f51629f83b50881ddab598bcf89703186df91e8539debb",
     ),
     (
         ("databricks", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.21.13"),
         "d72138c9ad8e1cd9a1b739c93ef27201b6072b481b3eee8830af648d4102b30d",
+        "f1810dbdfea746340e51bcd4df8befde1f332fc493a9a2bb4a8abb97fc847439",
     ),
     (
         ("databricks", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.21.14"),
         "dc60854b2fd1e8d1cfc6b67fcc0f909b21c2ad5de1e241e8261cb1e07e752b79",
+        "5703fd17bcc8e5184f1f9ade13ec670c82cda58294ef8a86881bdc4400c6a3f7",
     ),
     (
         ("databricks", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.21.15"),
         "3f1433bb0f98f40e8e34f90891b1c76f0e49b8434094e22f297bc79c3124bb7b",
+        "43c2e4a6c3ae9bebd0c44d6f1672998aacb0f1adfa22cf920531e5c21460462f",
     ),
     (
         ("databricks", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0+dbt0.21.6"),
         "37a4ba937d9aea99581ebca6b9e418121c4cc81e02f6273d7aa8022121d6854d",
+        "0957e7a373751fd263ab5a5129be3e6162a89b8747fe338efbbaf58537407446",
     ),
     (
         ("databricks", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0+dbt0.21.7"),
         "84e15ef3c5305431d34c84588aba10f4f68d8bbda2adcd157a2d18f39fe71434",
+        "6910ece7718394bd60cb6bc192c8d325eab64692d75ecb3d020463b48608c85a",
     ),
     (
         ("databricks", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.21.10"),
         "24846db74ed1b4a9da2535b1215999f700668f8a5e9ccdb3a66ca6822f0175e9",
+        "b031626e5cc4e61f10b60debf8a165546d1238906189d26cccbe6e5976b31a90",
     ),
     (
         ("databricks", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.21.11"),
         "50c20e05aedc0fe1cc9325f751953d307a1e743cbac334b27f19f96539e91ba3",
+        "276799b93cab63cadaa12a0de07bc3ee6346db5f9730bab5f63ed2d0ef50ac21",
     ),
     (
         ("databricks", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.21.12"),
         "f74578ced4c2b78194f51f85686725ad935dcdf895c81a142f9f1f3f707558af",
+        "375f9994e01c775cd1d624b3c96fa5e56b670c6c71ce9f52557531da95ff42c0",
     ),
     (
         ("databricks", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.21.13"),
         "ec654b492ce6bdeca04d4de20bef67f59ccc39b11a3b8e543e92ac58ae369def",
+        "572fe21b55a3c863e29a864d5377fd8f83e9c04f2392219d6a6e6ebe9ba4b165",
     ),
     (
         ("databricks", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.21.14"),
         "81e242fcf426c8aa147a4a1c948466b1a365ba0ac9997f015cfb33b7d9a43ac0",
+        "841a0699dca9534cbd659bba5e3de5c85e39a21741f8f3fad5ff42134be31ab8",
     ),
     (
         ("databricks", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.21.15"),
         "e221d0ec6f142ce2fc9eb010f25bc5f5f6fff061d929e786d449ac6f81357520",
+        "28c89b0666c3bbe90200513acbd3e48880187eb0f78b041fa955b32c6f0dc446",
     ),
     (
         ("databricks", "pc-windows-msvc", "x86_64", "0.21.0+dbt0.21.6"),
         "e6ec384ae6a106208674f6aa3381baad64207c89da46560a6dfae5ec20d9b9cb",
+        "158d2ff7429acfad372201e0c2af2ccc74c7d75f2327d254259e93e2d6a5f1ce",
     ),
     (
         ("databricks", "pc-windows-msvc", "x86_64", "0.21.0+dbt0.21.7"),
         "5d70ef5a470adf499e8aba40423123ce15df16c050012e16f1511c92091ec712",
+        "0122e081327901d3726aad6d81270ddfa77f4841c7d77a5801dc0e5e3d2b260a",
     ),
     (
         ("databricks", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.21.10"),
         "30fdb72ed127c68ec3bf9c0c411eb6e3fa847e670407004612d4c2efdefec37d",
+        "d37ee7d2f026dcc67f2b17a1d733cb76fef981dac096fcb592fe81c213eab79d",
     ),
     (
         ("databricks", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.21.11"),
         "097926ba6db8df800159cef3ec845ac649d1bf34d8c8d420f6ec98c3022424a7",
+        "f346868d67aee44437d2d33a5e2cc14a263accdc8f159790c8121f5fa2d07144",
     ),
     (
         ("databricks", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.21.12"),
         "22c1908ae7953f6e39e9110630f89127f267aec048bece33e1d639629c1d806f",
+        "17e8cfbbc737b6eadb054d76fb7376d356850291b1b9606b24809c233514094d",
     ),
     (
         ("databricks", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.21.13"),
         "b8c4f2488ae5ec0a425c5b8b774d85ebc2b281b333befda43d9f3f9dd1153a02",
+        "ee600616b4c1400ec1b9539a8dd3ed2f4731d5aecbe5c49fd666b869e96e7aa9",
     ),
     (
         ("databricks", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.21.14"),
         "a73b3fffe4396d873436aaac08f35771bf1cb3dfb200b2650ed0768068faf586",
+        "413b72133c3a05691f74af518ebbdf83f13310ad37675131caa410436cc3ba09",
     ),
     (
         ("databricks", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.21.15"),
         "6eebceb3c2ec50c8b5632f90228d77043f1b119bc5b6ecf75e6c694dba0c4e11",
+        "185039ba7628b0f0df06e9ea6c14d7448cd9e1869c2225490127ac9d49d715c7",
     ),
     (
         ("dbt", "apple-darwin", "aarch64", "0.4.0+dbt0.1.0.ga3f6df3"),
         "62fab9c84d894702f9836b51c2bb57672c78813b10ae0fc4d4cac773e8be414d",
+        "515103a137980187fedc85779cb2712b58c90758411bf368001831732b92aad6",
     ),
     (
         ("dbt", "apple-darwin", "aarch64", "0.4.0+dbt0.1.10.g53736d6"),
         "dac715b8fc91769d15098085c63bc740b8b2e3898152344cc55fb81b6d43832f",
+        "a45f7b3c4d5969481ca79cdfdb25c993e040148f5f19e5043a2fb5992219c635",
     ),
     (
         ("dbt", "apple-darwin", "aarch64", "0.4.0+dbt0.1.11.gc853a7b"),
         "dc00bbcf22f1811a5fabf087878f59c3415e6a558ce8c6b83426eeb87a1b0851",
+        "c67d07062dafdc9ce1076f3d2c207521a22bcf63df9a3df89204ae252c15fa13",
     ),
     (
         ("dbt", "apple-darwin", "aarch64", "0.4.0+dbt0.1.12.gc55396d"),
         "d71943c4a88d7361a55baa726ca6180d3336ab7effe1ccd55b74af95a0095fb8",
+        "d6fe7fe7836ca63549a3cba9d884fa9118d6340053172f258e1b3a24ddce6567",
     ),
     (
         ("dbt", "apple-darwin", "aarch64", "0.4.0+dbt0.1.13.g2679dc0"),
         "9d6a67e4bd81850815ef7cbcc3ce321310e96dfb8ddc12f5c59ee65126fc34a9",
+        "b9aa52f81af3ab9f4afd546a92c5de543e4a7d40da020d5ffb8f74e5b6989790",
     ),
     (
         ("dbt", "apple-darwin", "aarch64", "0.4.0+dbt0.1.14.g6611400"),
         "683fc912bddb4fec3efd403e3a341654a5249005273519945d15e67f8dd8c35b",
+        "fef5be3621716aea0f6df21190b509a41d542225c06543b7e6ed149ddd4db9e0",
     ),
     (
         ("dbt", "apple-darwin", "aarch64", "0.4.0+dbt0.1.2.gd85701a"),
         "09e99a6d365bd5549cafc35a48e151551938668fdb6988a6df31a0f17d5a2d70",
+        "e35da70b685076528b4cbd5e3461ef5926973d36f92fb87728752787012e273e",
     ),
     (
         ("dbt", "apple-darwin", "aarch64", "0.4.0+dbt0.1.3.g55b4a60"),
         "7a19b3f8ba1e49456ae542ecb19ec1ae953aa7e2589973639096af8f9e8c335d",
+        "e0ab3591f759129b34cf6300d01382a37c1a0486fdab9058811d6f1a7c422047",
     ),
     (
         ("dbt", "apple-darwin", "aarch64", "0.4.0+dbt0.1.4.ge26bfb6"),
         "62fed99ba21262c9dab4999b9a3b474f4db0b13150043dbc09bde719d4b704d2",
+        "b8eb915f0f52a9aaa932a3ed533339afdc97ee19b21080572870f7b91ba8e1eb",
     ),
     (
         ("dbt", "apple-darwin", "aarch64", "0.4.0+dbt0.1.5.ge613996"),
         "8e8a633c11736a02a0bf41640f0b5be36e743c25f2f9fd7ba303086fd7cb3fb2",
+        "b0b5030f893e376fc1726b4cf87353938f26b1bbb091c5db0de865b986e2badc",
     ),
     (
         ("dbt", "apple-darwin", "aarch64", "0.4.0+dbt0.1.6.gbe8bb7e"),
         "5250eb2eabffe65cc8be40f75c174616ea1fcbab829c466788ac8958c863a2ce",
+        "9515edd0d9dec3c5ecf836b4af277a9aa19df292b6f24562404a8cb8af701d5f",
     ),
     (
         ("dbt", "apple-darwin", "aarch64", "0.4.0+dbt0.1.7.g9e77239"),
         "6f2ef72fd4097c4610df08b014f7dc268fb5481ae6641433ff0b9414a8ee1532",
+        "40b3b88f213a51da7d1ca743b4f2fda86c908e28d90f84544af7ef4fd0485a27",
     ),
     (
         ("dbt", "apple-darwin", "aarch64", "0.4.0+dbt0.1.8.g5b803e8"),
         "0904f2bb1b619b680ad2da44c22dacfd75bb671efe9e05709b72c1d127a3a328",
+        "5dca5cb927d44bdac9fa61296604e9313ecc9654e659ed42fdc9c4ff6f12bc38",
     ),
     (
         ("dbt", "apple-darwin", "aarch64", "0.4.0+dbt0.1.9.g765633c"),
         "f046ddad43c383d302f35a52c2453b91803d32eb2e38f09ee30b60eef3da1cc4",
+        "aeca17b3f47b01604b678329e56ca6fdfb72221b582d7dddc0fa437413e8174e",
     ),
     (
         ("dbt", "apple-darwin", "x86_64", "0.4.0+dbt0.1.0.ga3f6df3"),
         "a71f4dd13d7c5efef55390484d324fa1f3d2127544dc3523326ba63b98ebe31e",
+        "3c72a96b532f5ff03dad8f93dfe9f0332f1e40fdf27100232febbbeba7340a8c",
     ),
     (
         ("dbt", "apple-darwin", "x86_64", "0.4.0+dbt0.1.10.g53736d6"),
         "de9adc5f463eeb447b2a89b0854815be8be12a93783cb6f30cc6543145c09053",
+        "451b7ae7a251bbe135734cfd5f258bc924bde21028ff2a43dde022180265f6c1",
     ),
     (
         ("dbt", "apple-darwin", "x86_64", "0.4.0+dbt0.1.11.gc853a7b"),
         "7705438c047f1841058b3388daed8a17d0ae0e84dfc602ac351579ed754265de",
+        "e36aafedacc2a56940dba289197643e6796287eb1adecea18f934bf9213960cc",
     ),
     (
         ("dbt", "apple-darwin", "x86_64", "0.4.0+dbt0.1.12.gc55396d"),
         "ef0c46beebeed9f3b5b3037ae0c8c0a28b4960ca3014a4b85a73142abf41d296",
+        "b4b02f6d9137a5db235d3f14b8a5d008b5eff824b704febc02568289ff9374ab",
     ),
     (
         ("dbt", "apple-darwin", "x86_64", "0.4.0+dbt0.1.13.g2679dc0"),
         "001efa55df3504d9345009f38ce5127169fa598f7514484c9587ab8ffea8195d",
+        "2680eba526bf4ae23830583e51bb270041e067ce89d793d998f94cdb598eee64",
     ),
     (
         ("dbt", "apple-darwin", "x86_64", "0.4.0+dbt0.1.14.g6611400"),
         "5d152a0a3cf70e1577a8de8e1989ea19e15bf4b8ce5ed2d80fb7ee72eedc79ae",
+        "7dcb6262dde796a8ae7b664fb46280dda30766071f1dea8b059196266922a97c",
     ),
     (
         ("dbt", "apple-darwin", "x86_64", "0.4.0+dbt0.1.2.gd85701a"),
         "fb25a8dbd904717a6fe9a9e4bc8bc1f51087c6495269a408bf76b1d58fdb6973",
+        "fb43d217bfdcd032cc0c32a52b4a94c10a749da719bc234c4d9ca2727f355f44",
     ),
     (
         ("dbt", "apple-darwin", "x86_64", "0.4.0+dbt0.1.3.g55b4a60"),
         "b8a14b6c4a2a2e10f7d71e60cc498cbf3363a3e25cff6b1584813efa9aff65e7",
+        "87731b29b5ede464f8a516d65325e81962fc3fc0d40d8ca1ac508b6c91d7e2bf",
     ),
     (
         ("dbt", "apple-darwin", "x86_64", "0.4.0+dbt0.1.4.ge26bfb6"),
         "f306d827ed9dc4b56693d6edfc7c66d56f10226fe48b97271e612c5981ed4fbb",
+        "4f1f57fd232783a5362a3bd580ca0d676635cdeb14d0301f83ad3f7e21de3306",
     ),
     (
         ("dbt", "apple-darwin", "x86_64", "0.4.0+dbt0.1.5.ge613996"),
         "7980f36f76402c7ef18442f8fada7d1c0b07a3f049dfd83c618637083cfb33e2",
+        "f540f4c17ab4d07fc19e3ec1c7ffa212638af9987b6bada79b1ae736474a122a",
     ),
     (
         ("dbt", "apple-darwin", "x86_64", "0.4.0+dbt0.1.6.gbe8bb7e"),
         "823fe8fd634e2a68fe4f7fe0b786083b8be1ed03f37f6d72e551591a5a0c23d9",
+        "5dedcad07860acf25c253601ce8b542813b6e46456e31450df2db4e77fb78222",
     ),
     (
         ("dbt", "apple-darwin", "x86_64", "0.4.0+dbt0.1.7.g9e77239"),
         "236387f9915a6349785cdac5f3984ca77f9c9a7a684123d399a02a4a8aa1aa7a",
+        "0a9f31019212e85990386b827464a42aa02c6b080021f38ac058ee0e81a749b4",
     ),
     (
         ("dbt", "apple-darwin", "x86_64", "0.4.0+dbt0.1.8.g5b803e8"),
         "a6a36fd8ce5f770cf439d6316c1a05fbf9e1e23440605d7d4a34188dd25ef418",
+        "b2c521c3f815741e5f2e0a8df9190f14c9483f89179c8a97723755373f48d62d",
     ),
     (
         ("dbt", "apple-darwin", "x86_64", "0.4.0+dbt0.1.9.g765633c"),
         "10ee5237371599b37bb715503e90420f041f929942448a420177d5ad151c849c",
+        "69bbeeb2b119f173f53dee30e7616a8da1e8af2203d379cf4d74060527799cec",
     ),
     (
         ("dbt", "manylinux_2_28-linux-gnu", "aarch64", "0.4.0+dbt0.1.0.ga3f6df3"),
         "1e7a3c6c22ccae07dc726ca9718fbf1966d985bbefc1cf044622081eea26277d",
+        "0955c4fefcfe0b4c3a7f5ec13dd0f5edb70095d7d4b803915a2f8d36a0d31a90",
     ),
     (
         ("dbt", "manylinux_2_28-linux-gnu", "aarch64", "0.4.0+dbt0.1.10.g53736d6"),
         "23cae36fb7138cf51fefa3fd4ec16b138410909592c73b15a0e29f0c87544457",
+        "40cec3707c10378b6df5f2a557125f2d447ad7540c5cb630045e33d28473bfc4",
     ),
     (
         ("dbt", "manylinux_2_28-linux-gnu", "aarch64", "0.4.0+dbt0.1.11.gc853a7b"),
         "7de9f8370450d382b7a3f60104d98a050fd4120e3a9f847279b62bc07d016547",
+        "fee5df22c65e955791afec4343c9520dcaed36003d85dc8c042a66e1f6123269",
     ),
     (
         ("dbt", "manylinux_2_28-linux-gnu", "aarch64", "0.4.0+dbt0.1.12.gc55396d"),
         "420627ea3e0600b3b7aaf772dad71936f92550423e488e23f8927213c42614e0",
+        "6445ab6d50dbd151e75250390856cddeefd0cfada719852c2facfd1c94779e57",
     ),
     (
         ("dbt", "manylinux_2_28-linux-gnu", "aarch64", "0.4.0+dbt0.1.13.g2679dc0"),
         "c1a5875ebd89fe354809309579f7c9ed92090e065b5dbaa972ee9abc9d74a5b7",
+        "1d9500027b60b40a0da3d0201098045753ac9f8ea8677f32976b85b3f07dbf99",
     ),
     (
         ("dbt", "manylinux_2_28-linux-gnu", "aarch64", "0.4.0+dbt0.1.14.g6611400"),
         "2010e8486245695ad2dcd9310a4451bcf140e7c755e341793f8ecbedc15a1a33",
+        "d62ae556299f55a410ae651d7cf4ae58edecdb2651bc9f9562dfa561d8f36421",
     ),
     (
         ("dbt", "manylinux_2_28-linux-gnu", "aarch64", "0.4.0+dbt0.1.2.gd85701a"),
         "0c4eebb307a2bd35d269848e327d5a78aaabcbf0b7938969c39add7c94d02a1f",
+        "c3c4b88cc5c13cfa57f67205d86d3bd76df1fa202d468f8469a18bee21605aa7",
     ),
     (
         ("dbt", "manylinux_2_28-linux-gnu", "aarch64", "0.4.0+dbt0.1.3.g55b4a60"),
         "672ffd0dc4f24da225b1472eb1d36914b7a41e7e4b490fca9ac3e9db24b0ddd6",
+        "70127acd7dc516c6ac47b07034d7f426c31140bd96a17eb5bf551a6096e5c3c8",
     ),
     (
         ("dbt", "manylinux_2_28-linux-gnu", "aarch64", "0.4.0+dbt0.1.4.ge26bfb6"),
         "d3294ba8fd1a2a157bb4bf1a5c37b46aa8a9f5e3e6c60789d243a6aea92b6d4c",
+        "5fb2bd1a848052b885e57211afcd5bc361a24e0308fe0f929b52d11efebe4f22",
     ),
     (
         ("dbt", "manylinux_2_28-linux-gnu", "aarch64", "0.4.0+dbt0.1.5.ge613996"),
         "963fa1c0296514df1ab1d8254451d279e5837e486149fa8f2b16aea5e4e28503",
+        "3c7110ce96ada2c471597863666c5517b6b8be7f4c88161108587d4e1e2f4fc0",
     ),
     (
         ("dbt", "manylinux_2_28-linux-gnu", "aarch64", "0.4.0+dbt0.1.6.gbe8bb7e"),
         "79cc55ad945b458cb14ff9b716de7e0622020b16670d1e3e2429b7fabb976467",
+        "361d89508a5f7f86cf9cd4241f2298e1e09ed816b2b35983d4c49abf27809f81",
     ),
     (
         ("dbt", "manylinux_2_28-linux-gnu", "aarch64", "0.4.0+dbt0.1.7.g9e77239"),
         "2dffb3163e5eb66347765c6c13467b59f8f6cdd5f41dc0ef5f4aa04a502eb419",
+        "4dc3dfe1cb1fde2359df71d2f71277579e531f6868864476c00c37e70ea8f6dc",
     ),
     (
         ("dbt", "manylinux_2_28-linux-gnu", "aarch64", "0.4.0+dbt0.1.8.g5b803e8"),
         "319d59dbc88fee9a17c625a32adc16e233df03735782c04a5d0c58e463019cd9",
+        "8796b55e8420e30d288fa4beb255ffd2aa115da8c67705cd8354011ae14fa73b",
     ),
     (
         ("dbt", "manylinux_2_28-linux-gnu", "aarch64", "0.4.0+dbt0.1.9.g765633c"),
         "6cf97537c2d26954f50ca3c1923a78b81a82fe86ba6f610b145b8df5006c044b",
+        "b09a533b0a51b56e5b11d7aa2d1ffbb96396a919671a777d1725fa495093bfac",
     ),
     (
         ("dbt", "manylinux_2_28-linux-gnu", "x86_64", "0.4.0+dbt0.1.0.ga3f6df3"),
         "40373b8e88c457bd9c3b0067868d20c30a09b558a29450d7dfa411346277248d",
+        "092747bcdc7d0a2aae3676578a722868c015e57187d665a491d9306eae4bffad",
     ),
     (
         ("dbt", "manylinux_2_28-linux-gnu", "x86_64", "0.4.0+dbt0.1.10.g53736d6"),
         "52bd2415de21316995e41356be98eb74abe6aa4b80c3b6a36134133be2b04ab8",
+        "b2c43800b99e076b236ef8ab370113e5b4ec3df3d9483ec361eab78eabdb571e",
     ),
     (
         ("dbt", "manylinux_2_28-linux-gnu", "x86_64", "0.4.0+dbt0.1.11.gc853a7b"),
         "cd1027ca81dfab5907eefe0372b9a2fb4704af434e2f1fa9dd035dadd6afb88e",
+        "36c14958f4bd33c473f95e499f74309e8bc44e14e027b5460637648fd5859dd6",
     ),
     (
         ("dbt", "manylinux_2_28-linux-gnu", "x86_64", "0.4.0+dbt0.1.12.gc55396d"),
         "f5d149d6179fee5aeec87c40a257a4c8b939264b00c31c580105b352074f2007",
+        "2e7cec132bdc82f9097ec014cbfd45df507260adafb64dbbaafb56cd28a4bd27",
     ),
     (
         ("dbt", "manylinux_2_28-linux-gnu", "x86_64", "0.4.0+dbt0.1.13.g2679dc0"),
         "2fd78d20bf1cfe93ce917ca8814bc4a5d1a56786d0fbdab4979219add27b1763",
+        "48e53eb9b3c14ef1c664e9c25de4ed44f119402de4ef6250b899ff88f76f87c2",
     ),
     (
         ("dbt", "manylinux_2_28-linux-gnu", "x86_64", "0.4.0+dbt0.1.14.g6611400"),
         "01b8fb0aa6f34984ce87922291703f77b1abd84d145b0dd4d783348a5488b175",
+        "bfde9fd78c2d1762b77b6e5db14ebe39aadb305d4e83feef99bb39597c63964f",
     ),
     (
         ("dbt", "manylinux_2_28-linux-gnu", "x86_64", "0.4.0+dbt0.1.2.gd85701a"),
         "c0681921eb23ac203d50ffebfde527f46ca8632b9b73b716f4fb67bd65eb31e6",
+        "b321f991289a7ac08a6309f7628e4103cde22cd4d5e2a357b9fdb4954467b022",
     ),
     (
         ("dbt", "manylinux_2_28-linux-gnu", "x86_64", "0.4.0+dbt0.1.3.g55b4a60"),
         "af8e58af9b6d55f10a9ecd5ef22387e551da6b1175497d03b420b1bf3bcc4e65",
+        "cc0b3d00d0d47cff5a0ed1a93fcdf3354d43e4b6ff968314fa4a725586c07ba0",
     ),
     (
         ("dbt", "manylinux_2_28-linux-gnu", "x86_64", "0.4.0+dbt0.1.4.ge26bfb6"),
         "9b19a4ec16c2bfe54fa06680f18ea513d6309d973ee7666aa98f29ca075824f3",
+        "f78a9cbbdeb82cdf8799a03a1670c07a3acbb2bf433cddd684a5597b233e1eff",
     ),
     (
         ("dbt", "manylinux_2_28-linux-gnu", "x86_64", "0.4.0+dbt0.1.5.ge613996"),
         "35dfdac89494f544d21c2439e3cffb052e93474df775e039206e198019fc8c7c",
+        "689c09ee2e4bd0656ed036b9e657c8791e8153fc918569d8471404a3ef53457f",
     ),
     (
         ("dbt", "manylinux_2_28-linux-gnu", "x86_64", "0.4.0+dbt0.1.6.gbe8bb7e"),
         "33d04af95e7800120d7bb680d3dd7c33ea4bd8adec38378c4cc3aa8504ef7a39",
+        "9332a7997817353c9f03eaa90aa14c2ddd6bac082fd36353a1550acaddf4dede",
     ),
     (
         ("dbt", "manylinux_2_28-linux-gnu", "x86_64", "0.4.0+dbt0.1.7.g9e77239"),
         "0b5160eae2fd89e2cc2c7f8dc2c109e7d3c5f4bfb7971b4da072b78f83bfb77c",
+        "e81abc2d649671bd91e9bdfe9a53e6ac1a8300b6d9acf71c4f51ed1bcc45501e",
     ),
     (
         ("dbt", "manylinux_2_28-linux-gnu", "x86_64", "0.4.0+dbt0.1.8.g5b803e8"),
         "860ba35cf4acca47d359a06de49263d4e326f73b93306adfac4168218ffb2be5",
+        "d23b84554c1692ee01f75afe06eb98c9e2370c12c7c9eaa744b088e7a2ea25b2",
     ),
     (
         ("dbt", "manylinux_2_28-linux-gnu", "x86_64", "0.4.0+dbt0.1.9.g765633c"),
         "448003266a452c6e3ce4dee339a49e2d29253260c8f932709ed5d809d48a1950",
+        "b211a47fc5a578b43102d44830b44571e706633877475e7d922b7f918aa56c13",
     ),
     (
         ("dbt", "pc-windows-msvc", "x86_64", "0.4.0+dbt0.1.0.ga3f6df3"),
         "70a917d2628d2aae9e8eb0a90f83927eaf5d618ec47271427c27ad6715600b7b",
+        "9103719b4d1b1e450a84d37f45ef6790776ed1c51ea4c0939d6a7dddf3ce297e",
     ),
     (
         ("dbt", "pc-windows-msvc", "x86_64", "0.4.0+dbt0.1.10.g53736d6"),
         "b03e663196122d353f5790784580ce43cd6f0a29fb9a992d579f98e891dbf9cf",
+        "01e6f8f9cdce532e4606305dca38cec0088e68e7b40ece84e06aabaaea7e9d8c",
     ),
     (
         ("dbt", "pc-windows-msvc", "x86_64", "0.4.0+dbt0.1.11.gc853a7b"),
         "0281e1db06f2b9d6a8a8a768b8d3c2516b6ea34e0b7cc7b3de8c4a0253c7d9d5",
+        "10c1021b2c28f064d8432f64922fd6b59d39f64bd7ad5af8997179a1747f2aa6",
     ),
     (
         ("dbt", "pc-windows-msvc", "x86_64", "0.4.0+dbt0.1.12.gc55396d"),
         "d0987056bd14ba41690b064b04a6d26f5c7c3279388dcb12d4254401364584ae",
+        "69696c47625689ec1c196e17d2c3d2bbdee5f1a9ff6d7b58e7765600b582b14c",
     ),
     (
         ("dbt", "pc-windows-msvc", "x86_64", "0.4.0+dbt0.1.13.g2679dc0"),
         "1db3fd52604dc42c6e373af2892a04cc06a9a63457e0e27ffbc59d1defc3642a",
+        "e50559725279c77a4b9d0f5d1df2ba2bfac34f5310b662394c79966380a469f1",
     ),
     (
         ("dbt", "pc-windows-msvc", "x86_64", "0.4.0+dbt0.1.14.g6611400"),
         "b6917071867ae9d2e31d19e9ac84bcec79a952f71fbc23108999eb78a8fa5545",
+        "34fd591e196b94039e0f5f4a04e3fc47dd69c9e611bddf7041bd4f6a4e1ed54c",
     ),
     (
         ("dbt", "pc-windows-msvc", "x86_64", "0.4.0+dbt0.1.2.gd85701a"),
         "88e91fce4984739e5e63eccfe37d306113443182ee5a51c90ee1c9191c36f792",
+        "32e1bb4872791ca692476f173bbb60b3544034060257772ba7c2a286401be35c",
     ),
     (
         ("dbt", "pc-windows-msvc", "x86_64", "0.4.0+dbt0.1.3.g55b4a60"),
         "08f059fa85d43970b50525d40f268c9e5f79373be7fb0c29e879c85237e2ad81",
+        "6ae30bf3c8a7d94724c9e742059fccb1d24d0ce550c0f1da9758579cef2a0ae9",
     ),
     (
         ("dbt", "pc-windows-msvc", "x86_64", "0.4.0+dbt0.1.4.ge26bfb6"),
         "13789c14e40ea38cbe9be46618b57ebd72e07f083ff065d0c2cf7aa1e3e95ae3",
+        "084868511521c256393624caf9bbc52aa30928da33bb4d845ed38f6eaab8def7",
     ),
     (
         ("dbt", "pc-windows-msvc", "x86_64", "0.4.0+dbt0.1.5.ge613996"),
         "47bfb77b7de9851968190a96a91409772067a7db75d08ba932a2de982d78e103",
+        "3719bc028515ee7cac49e0365f604bd659493bef6541017ca6bbf9a43abf1f28",
     ),
     (
         ("dbt", "pc-windows-msvc", "x86_64", "0.4.0+dbt0.1.6.gbe8bb7e"),
         "1a335174ba39ecf6882cbe7c35ea736f0a214b2d46d3dd900cf89fb5ba54ac78",
+        "33f8c771a587fdabc9d8dbdf62eb99d860108f4fbc4f76698eb7612a77f67d66",
     ),
     (
         ("dbt", "pc-windows-msvc", "x86_64", "0.4.0+dbt0.1.7.g9e77239"),
         "c749c73d0053e7dada78ff034e06175a56d1dbbccd2c209793310b0759915fa0",
+        "43b396852288baf3258443dc0609949f32afc055ef78800050d7804fb0fd5afe",
     ),
     (
         ("dbt", "pc-windows-msvc", "x86_64", "0.4.0+dbt0.1.8.g5b803e8"),
         "f680376e32f46cb772b6d30cd0df4243efadfc7fe2a0f2760489b13f321a86da",
+        "ec0fd2df6ec5ccb7df140c6b26274ee68dd049648a6e768bbd7a345f94150dc7",
     ),
     (
         ("dbt", "pc-windows-msvc", "x86_64", "0.4.0+dbt0.1.9.g765633c"),
         "81a591c9db4a707262966da9d37c82bd310b4f71c2fadc341803449d3cfc3256",
+        "e765f9e62a8ffc307f1bacd28e4d7687e840d4afa76cad1be7e604ff1c21a30a",
     ),
     (
         ("duckdb", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.0.20"),
         "bf6a8920eccb15c8fc53902c52516bf3ef4a988129239e706631e0d59da22053",
+        "7011485ab11bdde61772fd6bb20254732f379748a14d3aaf4e07901a4b2d7438",
     ),
     (
         ("duckdb", "apple-darwin", "aarch64", "1.5.2"),
         "15a645873704bf5f610eb99cb2f3b8b725914f7172d7037b366e828bd6ae27a5",
+        "dd52518af961ec04113d08cbb8b1695eb5f97244ef5a54fbe93bce6bfc9df00f",
     ),
     (
         ("duckdb", "apple-darwin", "aarch64", "1.5.3"),
         "ac513a8baefc96218fdcdd2a02339e8eec259c44d54a2b2bd8163043262c80fa",
+        "2de60b6210a6bc9a1405dabd1e26d8ea8ce8c0d03d992ceba0f4f61ccbe031a5",
     ),
     (
         ("duckdb", "apple-darwin", "aarch64", "1.5.4"),
         "0094c4c34218fad716c6d88409d78c90b10a1cbcdb16675989a5ba4db550c95d",
+        "4890e5b4a340aae7d5fc207d267b9ac78a1578abbc6eec9061a56d086fee93de",
     ),
     (
         ("duckdb", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.0.20"),
         "ba1edff2728f0bd3b81b886baa8841af94a0186954bde69feab3138062f274b7",
+        "5ea7a767aeda4ba98f0d4e5d2e2676a860472f79ee8277c969612f3cada53765",
     ),
     (
         ("duckdb", "apple-darwin", "x86_64", "1.5.2"),
         "15a645873704bf5f610eb99cb2f3b8b725914f7172d7037b366e828bd6ae27a5",
+        "dd52518af961ec04113d08cbb8b1695eb5f97244ef5a54fbe93bce6bfc9df00f",
     ),
     (
         ("duckdb", "apple-darwin", "x86_64", "1.5.3"),
         "ac513a8baefc96218fdcdd2a02339e8eec259c44d54a2b2bd8163043262c80fa",
+        "2de60b6210a6bc9a1405dabd1e26d8ea8ce8c0d03d992ceba0f4f61ccbe031a5",
     ),
     (
         ("duckdb", "apple-darwin", "x86_64", "1.5.4"),
         "0094c4c34218fad716c6d88409d78c90b10a1cbcdb16675989a5ba4db550c95d",
+        "4890e5b4a340aae7d5fc207d267b9ac78a1578abbc6eec9061a56d086fee93de",
     ),
     (
         ("duckdb", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.0.20"),
         "14d8b6229614670c23cc6711532a22d76aea27b043e296f16c67fc412512fedd",
+        "d5a35231c8d47dcdd4966a74a789edf194dbd6d89151e9e11643250b73ec1fab",
     ),
     (
         ("duckdb", "manylinux_2_17-linux-gnu", "aarch64", "1.5.2"),
         "061b4a6014a1456f3e3620328452af3cc687e0067a21d64d0f69dce023c14cce",
+        "68cb4105e40b2c87c79dfba356589c2179c61031fed889d8f1c3541e93a254df",
     ),
     (
         ("duckdb", "manylinux_2_17-linux-gnu", "aarch64", "1.5.3"),
         "789999e95798bc845d9948526bdd89ce432959c70702001a05c2aaee6e4b1b24",
+        "1e42de13bc7badaa093932c933073c5b8ea801bac83d694949bce1d500ff0728",
     ),
     (
         ("duckdb", "manylinux_2_17-linux-gnu", "aarch64", "1.5.4"),
         "e50fe3e9c23766f6ccdfc3eb2ca2bf54da83cb639b6f3b3d100a9d83a7c604d9",
+        "e8cb8c234ade5e6ccd722d727725cb38582ebe4554630dbec66f874155db246a",
     ),
     (
         ("duckdb", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.0.20"),
         "8aad95227a05ecec119f76579625cc61eec52796a4a2e0be877e13b1a7933996",
+        "091aedf1c5552fe2ee871973fc5402203be0e2db1eeece376abe420927e61c3b",
     ),
     (
         ("duckdb", "manylinux_2_17-linux-gnu", "x86_64", "1.5.2"),
         "fc875898f6ce25aec77098a10e9160c536701932c7031e862dfcf5b435702852",
+        "392f1dc1135c1d9d2e8353b8bf273b44ea86d367722f57d92b385f550d067f3f",
     ),
     (
         ("duckdb", "manylinux_2_17-linux-gnu", "x86_64", "1.5.3"),
         "5dc107adeb7d04ecf085da3d4f08244220ca2670235d66f39ffe80921130c5cb",
+        "b926328da25bf83bffc207938478d8016d93c6649346228ea92bd8ad0fa7ba3e",
     ),
     (
         ("duckdb", "manylinux_2_17-linux-gnu", "x86_64", "1.5.4"),
         "23528e49435b97f2dfa924f5d19513849937e671bd392696ea26f3457f656556",
+        "d7f30ef2ef4b813edb94ce82906329cc689672624a4161617ea33431040ce174",
     ),
     (
         ("duckdb", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.0.20"),
         "bb36c1f5aeeeb676b722f7c7f5257998b53f113254c20e24937b102caafff658",
+        "7f3d24e9e0ead5eec2285f7a7da40f8560ba0e0f47adecb3874fa38ddc448d49",
     ),
     (
         ("duckdb", "pc-windows-msvc", "x86_64", "1.5.2"),
         "8df3a965a573fe6fb33e123ae95ecbdf50122a322e968ec60b67f6fa9d182842",
+        "8bdbf7cfe619482e64f30e99c628eaee28936c5b10fe8459baea9df8b78095b6",
     ),
     (
         ("duckdb", "pc-windows-msvc", "x86_64", "1.5.3"),
         "73b12943a85219ebc70da1f756fee0d33bbef0aac2a01ae4c6782b4e57f52deb",
+        "bd4dd87fc2780efc9db46f70d949829d4d38677ee6b1e2ca8b14eba3495d77c9",
     ),
     (
         ("duckdb", "pc-windows-msvc", "x86_64", "1.5.4"),
         "dd6a975796f513f1a52c0f99a0beecea227e3a4a546724ae63328cb58152aad9",
+        "16c1ea3802c81ebfe68778e65bf7742222487c8d6f8f1f2e5dd86857ea75c6ee",
     ),
     (
         ("duckdb_extended", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.0.26"),
         "8ff984fa575a330e7d95e2950c8c06058b51488774526d49cddc6ca77a61e333",
+        "4a40d45b1a52bd39efb6f6bb7b43bddc9829b19f98c9ed82864d07fa1b4e559f",
     ),
     (
         ("duckdb_extended", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.0.27"),
         "1175f573e9a38dedcfb14b2c629a0a558a726720f3f38b464ecb8c74fc424c67",
+        "e3c2aaabb67ddd1002c1f01eb34ce976c5b2a07fa424e5aae111ffb35df3e9a9",
     ),
     (
         ("duckdb_extended", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.0.28"),
         "48ee92e05c4f702fb07bebec3f2b1a468d9d30e02d9bea10bae717df75bdbd4b",
+        "c45172d0111d415eb6542ecd34813b5714d2895417900cba0d8dd3cac0fa6643",
     ),
     (
         ("duckdb_extended", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.0.29"),
         "aa6adc0db29122a3951e101a10567e828b43e30896c408ed0c60ae040c8e4dd4",
+        "4dac550893733a403f42689c33030409898eaebdb7640254007bdcf92fb98992",
     ),
     (
         ("duckdb_extended", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.0.30"),
         "230bc3911556820e8fe14f1c1f5edf37810350ae6f6faf0c1c8622a5ebea0ff6",
+        "803570eeceab175d8214e0855d46c49754767a8ff92c7a39d162235e78cee9cf",
     ),
     (
         ("duckdb_extended", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.0.31"),
         "d393142286e8279d18e0c07d57f0673e619674de8d5d75917933df5adad70b51",
+        "4de5870f4da9a141993369f11b92affae48eb7f6dd6d3e8d94e378cba1bf47d4",
     ),
     (
         ("duckdb_extended", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.0.32"),
         "348d9f34f1f47b45626576ee603eac08a1f19acf7cf57452961f93d54d3dd107",
+        "2b69a6e6c3281e01125340c979e72c5ec22688c15e8c9a0fe4eceb454f82f75e",
     ),
     (
         ("duckdb_extended", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.0.33"),
         "ba776c5eef50d6e87ad8902ead389f22b2df4c924dd075ea7d1dbf224f59a19c",
+        "c8c010c3c854287c1c0d7d35bdea1709c71ff3f438b29db706fb977f077e3266",
     ),
     (
         ("duckdb_extended", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.0.34"),
         "1c351e034db10213762b8a6cdb942db71fa62e5a5bf08ae1a489b0266cb91c9e",
+        "6ae5bd76854458a5981a0778bafd27cf741669d57a1b85f68fbc82d7133b4560",
     ),
     (
         ("duckdb_extended", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.0.35"),
         "4cc5c8794f2f1bc2e9148cd600f71bd182438b5e4fa17bd95855454a3741d35d",
+        "8401a04f365546a24bca41ba820920c4c88107a311478368da114f1c366a0209",
     ),
     (
         ("duckdb_extended", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.0.36"),
         "c861a37459cb6fb007e9234967b61ff39c74ed04550dfde41fb826d1b845a00f",
+        "0741c9d8412063652332226217a60a438f53f45280bfbe209c63999a8b285c5b",
     ),
     (
         ("duckdb_extended", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.0.37"),
         "f07def3d736c47735ac5d81e4e18727d132836955388c50863007fa34ba7b4e5",
+        "490ba310c01fe1df9e79517858ee372fa34b4fd382198d30595650b9ec63cf34",
     ),
     (
         ("duckdb_extended", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.0.38"),
         "e65e8e8ac3379e92ba0ac360c6cdfcd12c8222dfbb3e2b2243832c515963feb4",
+        "fcf6d65b8940c3ecfd5536fbca328077788de8832d2ef0d602241e19d0228311",
     ),
     (
         ("duckdb_extended", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.0.26"),
         "795c1625f8736cc9cb9122857b44bc8800436800835a64f1a1e7207e614e3806",
+        "cfa89d736a4bbdae6df9e3f7c1cc8a121413cbaedab873f33b75d2c42ac600a8",
     ),
     (
         ("duckdb_extended", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.0.27"),
         "125e08ed1bd7310e4038b308809006d11c8c442e612db069865e1b6e2f6da6ed",
+        "3b4294b529288bd88c8cd174ad008b467d47f732f182eb92a011d930ba093503",
     ),
     (
         ("duckdb_extended", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.0.28"),
         "a58ae356b159d4c0e84a75365f716e81d1b1562ba66a11a554b4bf7ebc6f57a7",
+        "d8b53f4ae1f1d0c09c6ab4d44e6e80d91dbb957ca7acdd7303d91caddd0042d5",
     ),
     (
         ("duckdb_extended", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.0.29"),
         "992481cfe0aaef7be036f7a39ad6472564dcbc9e5c5290265be79a4041262b9f",
+        "53dde480d1cce2c8e7f7d23686dc4fbcfc2dbf18872fa5912cf8f359493c6580",
     ),
     (
         ("duckdb_extended", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.0.30"),
         "d77bfa8aeb21b78281b52fc3f167fa3251017b80de61d27c81e85fd6441ac6f6",
+        "baef99df181b8ac005849db22758275b0f507576fffef7b96aefdceeb85e78c2",
     ),
     (
         ("duckdb_extended", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.0.31"),
         "580f5eb75f209112fcd2894dba662cb3e34798ca6ed298a3bcfc7f027ba06fcd",
+        "54201e06b671badf23610d0c63a66ceae18880abe057f63b50fe56f06bee857f",
     ),
     (
         ("duckdb_extended", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.0.32"),
         "911609d150dce452423dff4ec728d7237442e85abe2ecf90c32feb54f9842c74",
+        "1a40c660112d2032d3a8139beb48e6b09e472ac89318fece22c164b89613b051",
     ),
     (
         ("duckdb_extended", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.0.33"),
         "ccc23e939c48250545fb773bfc19b98b38a20981be3acbd4bf7ab68902a6a9ce",
+        "8894d06098120219daa83abbe933f3b7708d5443fc39488cbd058edee2305de6",
     ),
     (
         ("duckdb_extended", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.0.34"),
         "ffd76116471a742fe9c50fdd1172fa12dda3453e979e3abce013a19ab68717c9",
+        "28d3283b6b22659be3c2d799281b5e124bc813d0b90df1cdc7149c0d33e38fbc",
     ),
     (
         ("duckdb_extended", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.0.35"),
         "7c5d6bbd140f5a62937b7ea6369b30bc4cac64167a72fb2e088504a07db83215",
+        "181a00d92eb3e3a3055b39303d0b6b6177def8d178c6d23c3eebee022546fa59",
     ),
     (
         ("duckdb_extended", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.0.36"),
         "482ba92a5a37f344a6b2e82bf95084cd8371bc1d1ebbd211b9b1965df18e51d2",
+        "b8056fef1b1eae3d8d18973ddf5885a1d12a9a066b5681ebbb7c1782e3f00657",
     ),
     (
         ("duckdb_extended", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.0.37"),
         "1ad85300a8a9be3761b46fb834fabce05ccd359be4cfffe42e92a64ab7904a05",
+        "f924297ad6eb00f773d571c1c2a0d057960594d0bd8346303525d1802e0ff47c",
     ),
     (
         ("duckdb_extended", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.0.38"),
         "9fe5efb470b003165fa415ec3948674fb39b1eef7cb7b46884a1976efbffff50",
+        "679964c48b4e1c943ee824e345866a2f73b6ed5f8f7363a8191033b38deee119",
     ),
     (
         ("duckdb_extended", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.0.26"),
         "3f71ca8d73f2379505d25d40ed3e4200fe2eb4827a598cc3f2bb99ca21020931",
+        "b7bc8e1b1153e8ba24da269e90021d972228d257e6d26b44e75e428bf06df328",
     ),
     (
         ("duckdb_extended", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.0.27"),
         "66f8cd705f05695852982332bc8233cf8112b2214150fd54fc6f70ce4ba7281c",
+        "81ab53b3daa36325e97050274a9fc6899520f251925c641c9b80add5c6f4bc77",
     ),
     (
         ("duckdb_extended", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.0.28"),
         "f68978ec0a45aae650aac66bd4a85897837ae124fc3b826c6009ac46955b66c0",
+        "fe033553c553554026fee37c9f7f3f7fde33289667d9112533a3afe920ad6d3a",
     ),
     (
         ("duckdb_extended", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.0.29"),
         "1e68f1e6b5b0ce3d6f6bcb239843ff136d6d46bb510ea1cf6fd2c3cb5dc2350a",
+        "7db363f7cb99139ef93df95b2f12e642427d4186a5ebb38d6f31482edbd87ded",
     ),
     (
         ("duckdb_extended", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.0.30"),
         "c10cdaac2aea5bae1db1d9f3e0398ea2ee4816e6aeb1589c0d2a0e331423e9b7",
+        "1c8ebc3da807f961b035f7232b096b19f3c5e1e2b0a10c29fed398d6524642d1",
     ),
     (
         ("duckdb_extended", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.0.31"),
         "f0ce4722f82fe3b3751451cc67325046c5670a42beea58579b79fdba37441d63",
+        "344d183eaaf97255b49a1a084497999a50989397444fe4aaf44bbbca19b66917",
     ),
     (
         ("duckdb_extended", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.0.32"),
         "d49778d22c192e7367ed8746d53f3debee81f97b04dfe2d7ba9a9179943aa2a8",
+        "7303d5d7d6a67e56e0a75c79c834c745771cb0deddbc23dcedd69e36d15b4e0e",
     ),
     (
         ("duckdb_extended", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.0.33"),
         "cdbcd029325b8148cee621d92f5219f7dabc3262dff43e7eadb681395a346323",
+        "eea03444b576d686e3f63b8c248e7247932a1a1e57fa4522a6fdb59db3a4ef17",
     ),
     (
         ("duckdb_extended", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.0.34"),
         "5fbb11b5b271be8ea5df323c3bf4b60c2df67b810bc52246ac34d0ab2e624541",
+        "0c5c3ed3397ed76ac7054f3d333a453d82320bdec1e85b18ac90fcafe5531b05",
     ),
     (
         ("duckdb_extended", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.0.35"),
         "1120c2fa03800738b15804979c8728bb6e970477ed1023a0c3bad8f01b8b3f8d",
+        "33e618d0a8062a52e11e1b7eec5a6c0c6aaf3ef23df2e2b49812ac64a3504a1a",
     ),
     (
         ("duckdb_extended", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.0.36"),
         "14640d313591bc3bea8883d173b247200e760180d694aa0a97053b9c0d7f0c6a",
+        "58ee080ab8a84b96dcdbe40fa907a7041c36bb5f3c38bb84b87e56c160cac87a",
     ),
     (
         ("duckdb_extended", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.0.37"),
         "024144befa9bf038fa61a5668a789d1318d41e4e6c02e02d46b5bd56e0e2a698",
+        "26ea5047d13d4b719060981bf5fbc5d9434f09849d1d3d2febe87c54919b2aba",
     ),
     (
         ("duckdb_extended", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.0.38"),
         "023e273e04acaa3f9ae410b0590bd3b89b3362ca35b04b834a68ffc6fd16a76f",
+        "66c1dcf0555275ad3412d7d4a636a5150c2b265665987f3acf0165069f83110f",
     ),
     (
         ("duckdb_extended", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.0.26"),
         "5bd6e93cb9a783b5412bcec9b0e0289c1403377a7442ee553ad514654e2fc278",
+        "2b24b0b3d0ecf90da46a6f961a6e79bc44b0c3c43c390a2661f13ac09ce6bbc1",
     ),
     (
         ("duckdb_extended", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.0.27"),
         "dae1405e9b5560a4a371667c3195cdaf25ae95856438697127235fff3a691606",
+        "7d246268643867ef33b6134bbd08344475c8a08ba0ff5f1422912fefce444e3c",
     ),
     (
         ("duckdb_extended", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.0.28"),
         "7d769ea96c12d1c1c161953f07e7f6f68073dab56cc537b22db07b5a1ce6e0c2",
+        "c4277f86695cbc81fa0f0aea3af251e72ba3885db592942dcd62a56de4b511e0",
     ),
     (
         ("duckdb_extended", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.0.29"),
         "d85bb5bdcf3040b8a9c299a5de85163e5e71f3a2036866d8af041c3f253e2560",
+        "09f2b95579b34b4cccf619863ad39519f9b2b4b1644e3c31f0d4a17f1c6ad302",
     ),
     (
         ("duckdb_extended", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.0.30"),
         "828f28981ec349948c87a159089d6947dbabaa6cfe4e9ab8001c5360398e738e",
+        "d7d22142efb2472491fe82ebfdef78a2b2ad6bc2a18140f86317c9ff4cb7c4ca",
     ),
     (
         ("duckdb_extended", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.0.31"),
         "0071c67cb4b0f869d2addadf9195df34fb406909d1d8e5ea35cfa1824af1e837",
+        "8a688def75c0ccc68d2df7c6871bd73cfd0ee355517102c9df932e8da5e54e6f",
     ),
     (
         ("duckdb_extended", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.0.32"),
         "9d3f912194032b0a14c9b09735312c93e2861c65b1c4f3c65d284ab522736bad",
+        "555ca20487ce07104c5934f1ffd70af561e468177c886675af5cf847719b1814",
     ),
     (
         ("duckdb_extended", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.0.33"),
         "610fe09526a8c346b68c204d9e7fff34439277252d236324da8af850031663f2",
+        "c32fef8128035f73ce2e77b962870a487eb85ae14dd3748a4a749518921151e7",
     ),
     (
         ("duckdb_extended", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.0.34"),
         "005b50d9f228f1b06468f65618f723cffca5e45565fe0340ddd21e26621d1429",
+        "e3c23d53e8e0a5d9bc619053088f1be63d8172d72da0c45bcb27999300bc5f93",
     ),
     (
         ("duckdb_extended", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.0.35"),
         "64664ee03c9e3eebc5394fbfdc15d66b9aeb9460458740a3cd0545e020d37ed0",
+        "435cfd55f6f1962d1cd572155f4c9aa245f634dc10baaddbb69438af22b73dfd",
     ),
     (
         ("duckdb_extended", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.0.36"),
         "9784d03fa654bbd1cde6fea892c5f50441393cacc5b2acdfb1826cdb1f4aa50a",
+        "cc054383f49d119e78b990fbb6e5e72d05264cfebe4888ce3da5c77269422f84",
     ),
     (
         ("duckdb_extended", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.0.37"),
         "e5898b36ca984092cad1ed7c690ec989a9dc31c45684e686edb0ed06798efd64",
+        "343d439077d755df3980f03fe00ad0dd30d6c73b9f285444d5212bd9138076b1",
     ),
     (
         ("duckdb_extended", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.0.38"),
         "5e66bc6f043925efa5983b8b9b886bd519fc959673be74cd8820037f22523d8f",
+        "06c295450da43ff36e0a578e1cb77dd5e138bd65a812a107808bebe988e36f90",
     ),
     (
         ("duckdb_extended", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.0.26"),
         "4dd8c879aabdc03949c24206e232dddf6ef0dcffce3d11a5b8a1fe32fdd8637f",
+        "ce747e9d2ed86001ab97b09606e8dab8cdaeea494a32430c3166ae3f480f1aab",
     ),
     (
         ("duckdb_extended", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.0.27"),
         "7e9ffc827d245141807e61ba95650b2d46e76662d31a86ab7d2d1a5d810eae6b",
+        "9a1324572d3b805731e8addb47468ec2ce59a252e1da0962af3ed737876122da",
     ),
     (
         ("duckdb_extended", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.0.28"),
         "9c7fc353caa4a99d8fc3c1a276300cc6a1a87fa15baa8c71c77b2c553b40fbb1",
+        "cbc27bff6259ed0af176430276be8bcf04d033a507ced18d5b340591b52a4e3f",
     ),
     (
         ("duckdb_extended", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.0.29"),
         "7e0d613a2bcac41ac26df55bb61b00ff602ee2fc4a0977e214f3c2a9af4f5453",
+        "5c87069c28f909f41c0330b824bdaedcbcd5580290bc03d154024edeacc8ae71",
     ),
     (
         ("duckdb_extended", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.0.30"),
         "1bbb877d880eddf6ec7c0732baf3d0007efec39f573172687b19b9fca5ec06b0",
+        "f1b21fe39036988edb7cce8d247deef70f4afcd0ba3d52a2997c27fbd20200d5",
     ),
     (
         ("duckdb_extended", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.0.31"),
         "638a94dec702012b9369f6379f00e2675cc730d56feffac4aff4399c45ec9bc2",
+        "a8b5fd81ac2c584d861caf107b68435270ecd35be9ac9f19751754c50c239459",
     ),
     (
         ("duckdb_extended", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.0.32"),
         "201db74300870e7c3fd8dbccdcefddc2a18cc7aedef67b15430537c939df8f5f",
+        "605b23a448a6cae7b7db95931955ac7fcd0d01c29fa814b0d47b7d3f2d98e97d",
     ),
     (
         ("duckdb_extended", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.0.33"),
         "945f62d4e9a5c383db0279a04286bd8918a8a5cd9ee82363676b20af2609c4b9",
+        "51eae48767d9192d74aa397be83744f98b7e5a2a24799b09ba9f8c279ca4cc71",
     ),
     (
         ("duckdb_extended", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.0.34"),
         "6ac1dd14c6cfcd5c3e8c16ff57003b777270b16d77166c93711c3461fc57df18",
+        "22ea663060f6757d7e70a4e19bae889e7e784fe3294999de293cadeda4c2cd30",
     ),
     (
         ("duckdb_extended", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.0.35"),
         "6af9fb29c1591a2b280d6d7728154cc79ee1a0d550ff7f4145f646612c589d83",
+        "42d9b309b5c2f7a021586380788273bb1d0d555c14be9be0f82592445afed3c8",
     ),
     (
         ("duckdb_extended", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.0.36"),
         "53ade41d8560b30b716d1539ed33cd9baf367cff43384001b9cff146eceb85a1",
+        "03d540ccb1092678cb4590383319d04c36eee9ea9c9b2cafa6a04fdeaa1041df",
     ),
     (
         ("duckdb_extended", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.0.37"),
         "b54115303c43d0591b530d25563928e7daf3c4a8d1e2a8fe2a84a67235c765b6",
+        "97d1a2f9051e62d79c716bd6d59e8589ae57b25709ff57d0817b47cac4a367d8",
     ),
     (
         ("duckdb_extended", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.0.38"),
         "d6855915bd2fb6b881dd7a9fb2ad78857ccaa70b3867a7830254ef70210bfa33",
+        "172fd56d355d258e4ff25caed4fb3df606a63bc61613372c7c7b22507bbef787",
     ),
     (
         ("mssql", "apple-darwin", "aarch64", "1.3.1"),
         "7e356f8f2f89a89b7a5c45fc255e8c5429f934b634e6071c689fad323a0f0de4",
+        "c056d31a746dddf4570f1e1807860f9b6ea2b1cf0278ed6c25748e224c42d54e",
     ),
     (
         ("mssql", "apple-darwin", "aarch64", "1.7.1"),
         "679b76a88a3def84819ceb1a62865bff60c8d0d91980e34672d033faaafbcae6",
+        "9334f4ff75b5cd72139ed19912e8eadfb21355735c17dc1f911b56cfd590e204",
     ),
     (
         ("mssql", "manylinux_2_17-linux-gnu", "aarch64", "1.3.1"),
         "cb3f81b8a220fb5659f1f9d3516b8cb15742326fb900df01b18cb68bb0dd0e96",
+        "05d2bc6848a1b958f279f71b7845be55ba8f19c248ebab142edea5c5acaedcf6",
     ),
     (
         ("mssql", "manylinux_2_17-linux-gnu", "aarch64", "1.7.1"),
         "e30b63b473c0b00c5d751e2fc239f4a93f621e1ac84b641f801d3fd3bf337921",
+        "6424edfb09d8d23aac78a487e5161725b3a71cad7e8b7fc97aabbdb6c326c510",
     ),
     (
         ("mssql", "manylinux_2_17-linux-gnu", "x86_64", "1.3.1"),
         "8714af2a435e4de896192fa89336dde1461ff127fd1375b07be33a8da4e7da30",
+        "d537798b96fd27c3e4a4081902c7a0fd8ffebd920c92cd816a777088a6a67f5c",
     ),
     (
         ("mssql", "manylinux_2_17-linux-gnu", "x86_64", "1.7.1"),
         "19ba44e6824941b3dfd86a8a46b796d4ffd81f9c6c9940ffcd44b1bb9c59c7c1",
+        "aaab50fa55bdfa5e6975ee93b2518f3f7872c351856c07925793e7e195569d49",
     ),
     (
         ("mssql", "pc-windows-msvc", "x86_64", "1.3.1"),
         "bcb6b0235297c0797e0cd0999fe1cf79d35c6b45e4abf33b9cae0252fc2a8cd3",
+        "2f13ff6dc2336ff72657c88bdd804136c8686d52d6dee663dfedc1df04d60391",
     ),
     (
         ("mssql", "pc-windows-msvc", "x86_64", "1.7.1"),
         "685359c2d25212b9be237809c9cdf89bc388709345f7a89c9ff50cfe6f25b09d",
+        "8199ffbacdaad80817ad2504316b4d010d35ea319f3d021a71fe3aba7eb5e208",
     ),
     (
         ("postgresql", "apple-darwin", "aarch64", "0.18.0+dbt0.0.3"),
         "759eaacee1ea8139f884fa258ec8a7496ae9458f66cb8029817a2978b6f651ed",
+        "227be67c33fd64e34fc0234142420764a224124f06a83815f718e92696c0eb78",
     ),
     (
         ("postgresql", "apple-darwin", "aarch64", "0.21.0+dbt0.21.0"),
         "07afc8277fd952d956b7de7a8129b323dad9a1aea71e35e3a0d31dee6371546d",
+        "ef2de5ac724601c416a9c30be19e0b726bdc99e97ffad9afa4cb8601dceb07f0",
     ),
     (
         ("postgresql", "apple-darwin", "x86_64", "0.18.0+dbt0.0.3"),
         "aa0b1da8145aa3b374dd0bd2b52cd02a8814ce3b03490aa8b5fc99178682803c",
+        "247f2da46e89bbf859136496b353f74b1159742a24385f36f6cf05a804cb943b",
     ),
     (
         ("postgresql", "apple-darwin", "x86_64", "0.21.0+dbt0.21.0"),
         "cca3bb3f50a93879a346b50fb49374ced4494f65796ccd60e933c841eea3f27f",
+        "d238ca0f67448c875e596c767df3dfa0408a23dd602389af4ebd074935782397",
     ),
     (
         ("postgresql", "manylinux_2_17-linux-gnu", "aarch64", "0.18.0+dbt0.0.3"),
         "0650e5069c7ba4c545fc2850143109292842b117719991a7554bd35434a08bd0",
+        "65ba3daac10cc83b8829ae5a06f3765b7dac3b26ccd065f1480c1528a44557bc",
     ),
     (
         ("postgresql", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0+dbt0.21.0"),
         "279f5b9f042a7729f33c053e675f6d0c530a9ce8b88fa6965a981bd93a939df8",
+        "e73b6729d32d14c275d0e79652fa5da6ccf97e52cc8cb8b1f1ea1d30761da2ef",
     ),
     (
         ("postgresql", "manylinux_2_17-linux-gnu", "x86_64", "0.18.0+dbt0.0.3"),
         "ff3cd85d65c0425eb31471f536812c333dec6ef0eb5e51d537ce607c9d2853dc",
+        "3f5939166663b352b552a28a8206cb8fa540863f82297a581b2d4f5232c10f0a",
     ),
     (
         ("postgresql", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0+dbt0.21.0"),
         "cbc2a0865bfc311663db2c2564830e4d4d260beda29baecd4371d8ce52eada5b",
+        "b4e089dab3fd3fedfc8080f497a0ec18b241339f740c4c4b4e1dd637317fd9d2",
     ),
     (
         ("postgresql", "pc-windows-msvc", "x86_64", "0.18.0+dbt0.0.3"),
         "6f38377190af7320b0020c11f726e018cae0932272adba88359bf395c0f8ad94",
+        "5034ec2ac8bbde0953ef57c0a16797734eded65ba32924d75be55093960cd22e",
     ),
     (
         ("postgresql", "pc-windows-msvc", "x86_64", "0.21.0+dbt0.21.0"),
         "4986f51e67888f77999525301386505f6375edcb36af4018becff374bb3f82e2",
+        "ff55733f27465bb5e0cd941fb98e1f7d96c6cf4345fd685c33616893f7dc5fb7",
     ),
     (
         ("redshift", "apple-darwin", "aarch64", "0.18.0+dbt0.18.2"),
         "ab2b73c667a2b977362ca03cdca9ee309c68b1659f428dee176639d9070c9c1c",
+        "087dead40d439454e6ff94f9cf36867317f09629eeae66c501014a532b9382ec",
     ),
     (
         ("redshift", "apple-darwin", "aarch64", "0.18.0+dbt0.18.3"),
         "ce4f16d63e73955b7609ce3658fe95a14426ff0394305c1dcff060b5e71ce398",
+        "7747b3c22bb32ed8ab50787d3f438aba9dabcb2e6ce35aa1198007712af8c91c",
     ),
     (
         ("redshift", "apple-darwin", "aarch64", "0.18.0+dbt0.18.4"),
         "06577fa0d7049dbac38ad50c91c13c636f188d3278a2a3abc5ba563eb83d51f2",
+        "17f9d746125d31a9f70d60debc16ea8497d80cdfc34eb8506f932b18d1ed8f22",
     ),
     (
         ("redshift", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.18.10"),
         "86d05424fb5d5f5dce6119c1ca08c80825d23b1e48eea875a167055afafe34df",
+        "5041a91ff7c585cd3f6677d7bd7b48dc882db90abe734f1b08f1988f31af2556",
     ),
     (
         ("redshift", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.18.11"),
         "47075843af4810658d2fc015ddbff0db0ef3f5efd3756cb0551d32c87e5d99cb",
+        "e7891514919563df09728cf41b6bc0fe6e9fedee5c8454c1c628b6392dfb5cf5",
     ),
     (
         ("redshift", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.18.5"),
         "2543764be8c60f100a9a5252ea38839c8bb6c9a1bc4abd14ace05c83797fe77e",
+        "22ecaf5c68c456393dfed10920f89e0ab6f06a45618ae2089d5fef247b79cdb7",
     ),
     (
         ("redshift", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.18.6"),
         "57b2f50d385644f28c3f5534cd855f2e3a405ad6aafde068804ab47133a788f0",
+        "5e86c3f05c2082d9331e8f25676120c210826c26ec9d0790199c6b2242b9a97b",
     ),
     (
         ("redshift", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.18.7"),
         "abb3d7b74e24af4d4b1d2b2d3d95a4952a504851cb8c2f8e46b19c6b0085f6d8",
+        "c4b632cdd2fb5c6a20f3d896f7644e0369eb977032e937983142173a3e86224a",
     ),
     (
         ("redshift", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.18.8"),
         "3959dc3937994419b917e48113037f5504f2eeb31eb28fda043916c59824a246",
+        "67ff68123ccf86b2e556a61464924c186e01189f5a1267d06ce807c97bf2c450",
     ),
     (
         ("redshift", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.18.9"),
         "4c6c04d19bfe894260ad7905cbd4b60ea0ddceedbd9d6a529555a646474c58c5",
+        "8bd3f249f0b40f2afbedd47cd12d266aaf1808e21cfbbea3afe45fc6a3cc3135",
     ),
     (
         ("redshift", "apple-darwin", "x86_64", "0.18.0+dbt0.18.2"),
         "4283d97f8adaf6066ee84b9a3efb4ce4340774f8cd77e79310272daa317e9d7f",
+        "8676cfbeb7a061142357a93b1775ad8d06a11cabf099cf0682fa02a774443c57",
     ),
     (
         ("redshift", "apple-darwin", "x86_64", "0.18.0+dbt0.18.3"),
         "1be66c9643987b70b3baae8e41135415c4433d92e85508bec3c0a3c6e0151978",
+        "a637b7f9b492f22e3230cfb860dc1c87e0957db562247602b11037c1c011009c",
     ),
     (
         ("redshift", "apple-darwin", "x86_64", "0.18.0+dbt0.18.4"),
         "33f49abc1eaebead97d0e3edcfdfa37fb1c92b779bcfa5fee1022bb75ce1c9d4",
+        "1f06a8c3f5b97f510060564e16e59d96fd84dc2bd0690b56e815a93d5e4de4f9",
     ),
     (
         ("redshift", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.18.10"),
         "f89481803cddf7e62f01883a3aa18f342108cf91f61e96850c70bf0a8dfb5142",
+        "7434e305989d7c69489f0041cd74c1cce2b62f7bf8a2a71c0315479b7ed77a0b",
     ),
     (
         ("redshift", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.18.11"),
         "b526ffe68b94f303f55e456d76ea3b6472bf2693b982b8bd0acc8880a54afa8e",
+        "4d7f1b0ca39acb64721236fba76a6cd2d6aee1b39ed8173648951beac9497303",
     ),
     (
         ("redshift", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.18.5"),
         "6ca69cee28cfae0db39bc207c5d7ed20b040a3b35fdf7ef2fd962163be267e86",
+        "50edc6a96a56a238e54905f7876f87c0b733584ed4eb372e5d71ccc2f71d45f9",
     ),
     (
         ("redshift", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.18.6"),
         "d2d4f8afa1b59b96fe6d755f163e09a9b1320e442ec61b34eeaea4d1146eb134",
+        "525b37d1d44361848b936f525d2cb5f4b8115456eda4a878baea30c2e1dbc22f",
     ),
     (
         ("redshift", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.18.7"),
         "c3295f8afb78e673d6e946111d08fc1754ad4dd935bc30e6b2101b339eaaceca",
+        "f5b7ad9866a0386f130cbae6025e68b7384f1ae5416440c3854c826de1a252ed",
     ),
     (
         ("redshift", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.18.8"),
         "efd76a9f20f4925d7ef5510863e464efbd71984dd05c41d30c3e015b296fd9d3",
+        "fea40fd8ccb7292d3316349811ad612ffc539575ca2aba64276ad7bf9cfe826c",
     ),
     (
         ("redshift", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.18.9"),
         "d3dbb28ad13b58c42645feca89180285562c6ecf71ab3025c77cad210ce2da40",
+        "165bff7741cc8fcf57a5c053a8c66cf3cebd64f74b4878f5095ac439c0c2fc57",
     ),
     (
         ("redshift", "manylinux_2_17-linux-gnu", "aarch64", "0.18.0+dbt0.18.2"),
         "0ea7538a182b73bbafd4f594f8d63aa2cd26c3c2e354c13967540f861f20ccc7",
+        "447eb75e9c1c21dd939a1ceadce71c171098cd8c977a1c4669c983042857abfb",
     ),
     (
         ("redshift", "manylinux_2_17-linux-gnu", "aarch64", "0.18.0+dbt0.18.3"),
         "cb2538c84e6dcbad15e074a2a9907a7cab551d66c833264a5af7835a19352cbd",
+        "d18495bc60a6dd9579130c5e5456260359791b9a851e0361fbb2c335842c5108",
     ),
     (
         ("redshift", "manylinux_2_17-linux-gnu", "aarch64", "0.18.0+dbt0.18.4"),
         "4044e6e1f37ef4d5696c56b7de7303f8a56d64678609f2694413baf493cf9560",
+        "5314032f65e556567eb5cac848db3f8b31d0121db95e9fe51e2b9d99708989c9",
     ),
     (
         ("redshift", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.18.10"),
         "0deefbd29e941130f7f14c033ec24705fcf10c7ff6ba8d1a14ef3dbdd23de96f",
+        "6cba094d80e685f3a7501f5a343ba9e719c481cb077919d43c83888e13564122",
     ),
     (
         ("redshift", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.18.11"),
         "07f57b7a756a12ee9f6fb0b008f626206de37378afb0bfbec5d98f1ff34c4131",
+        "4406656240566f03e3fa9f49a827b303440c82b0c58a9ebc041228e9c0589322",
     ),
     (
         ("redshift", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.18.5"),
         "564194a3e7766ef2ac67c51325861399367aef1471d8741982f1a665f0080961",
+        "76435b8052029395ce901b13d6362b3041d6035cbd03796b72adb669b4381901",
     ),
     (
         ("redshift", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.18.6"),
         "6cf07835a36c0129a8e4541e786a379958b44a599914f8021c77fa4e1b006aad",
+        "8babcf2a9e9199252ffd10576ef062048fc453bc343a096485cbc6ac1f7c234c",
     ),
     (
         ("redshift", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.18.7"),
         "f7247b1f868258bda1b7044fcabfb7ac4772848c4ef15e1bbef1f227e697ee7d",
+        "e8af9c6ca19bbea519e311473537ece098349cf09a5729c64df4579005bed0bb",
     ),
     (
         ("redshift", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.18.8"),
         "10253e243ade98d17e196261f0bba48906a4bf69a7120c16f37fe9db82c70249",
+        "5da4c0fc14543c07453eddce49cd2f41c3f69c37037039f84f11b8591577a6a9",
     ),
     (
         ("redshift", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.18.9"),
         "6dffd1ce9043f72ffde4a15b54c1ff52fe5b8df9d7c76d7017fa27dd01aca72e",
+        "d297c8fcc48de3b0e01e897aaef740c41fef631027a822552f6405d1df135f00",
     ),
     (
         ("redshift", "manylinux_2_17-linux-gnu", "x86_64", "0.18.0+dbt0.18.2"),
         "3c853f6444cd16bb9a7600f6b6350717aac440b840df1790d3c3d138d907283f",
+        "ec5436390dabee4acf5c09e4f18c1d5093480b1000047ea9bdd3ab193b6a9d20",
     ),
     (
         ("redshift", "manylinux_2_17-linux-gnu", "x86_64", "0.18.0+dbt0.18.3"),
         "89c1e7b6b5e860259bb382d2b6257f9c593e8f977365f82dacc17bd14defb533",
+        "c0725f633dfb5471417503fd9dc86d19080b62a7429bb83f1551c3e94757d660",
     ),
     (
         ("redshift", "manylinux_2_17-linux-gnu", "x86_64", "0.18.0+dbt0.18.4"),
         "5a2600f85b0f9c8d34d91d8d0ae13cab266947238f97df07efe0351b53af3af9",
+        "8404140202549a0749fadb7e48fbb8a310817c5b372ba7311997a0b9b04595ef",
     ),
     (
         ("redshift", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.18.10"),
         "3556433ab480b1a55aee482a156d9047bacd7cc1de48a46ccff68944e7ba9357",
+        "ee3a12db17305f9423de847a37d879c90db86c91497c7d0c708869860d3594ed",
     ),
     (
         ("redshift", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.18.11"),
         "8fb81cb27afcdac3964dafae112f37ad76a9847a141d42762c088e3706d624d7",
+        "9cec6d02c3d42295aaa2c41da7d1336d243af712bf702cec2cfbdb378ae93027",
     ),
     (
         ("redshift", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.18.5"),
         "0cc48ea7f6f39491750f47f4611ee3debfe8d2a7ed548dad10b6865bd4cfdb75",
+        "dfca5fd49ac4326a31acc4b1cc82c13009d4013fae935d6ceee0a74ceb3d56e9",
     ),
     (
         ("redshift", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.18.6"),
         "e72186195c1aeec1b375a155d0421046665aeadcd26f2c04f70d809f9e4d6b45",
+        "a6082b463f601ff3c6359832daa4be164345df0ad9adb847c30699d35b77e1b8",
     ),
     (
         ("redshift", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.18.7"),
         "30fb147f88b1e79967d98c9aeb86c0cab630f53e16e7fe9838f77d504cd6b0cd",
+        "f15f1fc09128cbba9299638192977442e5dbb7f5267078f4040a47640856c1c1",
     ),
     (
         ("redshift", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.18.8"),
         "fd4afca1bd19c0fdeafd2b8105173a5f3544f6952b104efed020acc3fa7d1ab5",
+        "28b5953ebc2b310d2e8212a3b9926f189f511faafae3b05497520744ad4052f1",
     ),
     (
         ("redshift", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.18.9"),
         "d081ad2e9a03ef76626785930445c6abd77aae293902f4526bcc088e5c2e9be4",
+        "2ab8859220476269ff14ec83172e4ce2bda49c9a1fb2798b0bca2c645a9e167d",
     ),
     (
         ("redshift", "pc-windows-msvc", "x86_64", "0.18.0+dbt0.18.2"),
         "3c802b424c2fd1ea7fb45ebd1251fbe3e65b4d53a9d61dd4da303b1d5f206506",
+        "f33ff05d3d0fae8bbdcfc4037fee4d1d623e0f3b1872d15042168ccbeac60f6f",
     ),
     (
         ("redshift", "pc-windows-msvc", "x86_64", "0.18.0+dbt0.18.3"),
         "d6cf68f50f2551e07902d43631ff01f8dd507d9592a43cf8a074ac57ef2cb9e4",
+        "74e5f83cf10e75578ba02b81a7732b7b841920d52c231f739b3446e79173551b",
     ),
     (
         ("redshift", "pc-windows-msvc", "x86_64", "0.18.0+dbt0.18.4"),
         "566dc019803edae2b29a58dace76034a793fd2ace289a54da35438834231e388",
+        "e170ee4c8655ff3c84f6dfbd7b5532d7156abb6cb35e6966c4d20d16f62879d5",
     ),
     (
         ("redshift", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.18.10"),
         "0ae9fe985ba93f9996bf0d96f7bf88a45eaec02733c60332c63736294007a8a4",
+        "f90f0720b8d8b8acfd301a7ed75d21f99e4f98602d1b56efe3018fe7a146137f",
     ),
     (
         ("redshift", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.18.11"),
         "16944de9f0b9192c98f01a8e2877d57bb6a66d97b765a21b41768d4ffb6d09db",
+        "913b21c950e7d7f7edc626c032f3addb0327774c915622917b01c93056a97d8d",
     ),
     (
         ("redshift", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.18.5"),
         "f47931677e3bd3ff10641f9d9ae0143dffefe5e148add30c7cbfd051e371477d",
+        "5a8c4f12da001009416d5c663384e4893dc27e27a17138767c949cf4eb0dd97b",
     ),
     (
         ("redshift", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.18.6"),
         "aa901a4933839e8ebe8563819aef56eca37d0fa9e0ddd95bb609c6716a4731a2",
+        "73281ceeca267886c4b66553101e6f8fbf935a2edfd96b422854882f888be77f",
     ),
     (
         ("redshift", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.18.7"),
         "b83def5ab11552fd1c1b1a683d23cc3a3343c071eeca36fea163ae468b1ea62d",
+        "e8418a9eba9701cb2312b786d8de0051c592c7b6ce457b6d59e9526d29798064",
     ),
     (
         ("redshift", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.18.8"),
         "258ccbc77dbc97be64084ec14f29e5c22d643c4790eba7bc9ee20fe103c141fe",
+        "a8079bf28a09049f817bbcd55a45c66df47d8c0bd17d02c3a90d119aed62c9bb",
     ),
     (
         ("redshift", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.18.9"),
         "96a6e86a094001618dc3f680501afa326b6cb90bb58296e319c87b4b07f8e200",
+        "e8a8293782e0f3ce695fa8ad63d8f84a280be71a45b077db7524ac3d2fb928b1",
     ),
     (
         ("salesforce", "apple-darwin", "aarch64", "0.18.0+dbt0.0.4"),
         "d18e39ae09ff1a94da2dc3b4af9c7ac5f135d8affe8fab930d21966c6613b234",
+        "b1fa8f98c2483d9673e6e1e803f4f5a87eb3c80e35adfba8bdf6d7547afce1ee",
     ),
     (
         ("salesforce", "apple-darwin", "aarch64", "0.21.0+dbt0.21.1"),
         "a651b99de9f3d4987259735f9d4bd45c965edd76d46f7b8a1126e1ada07257ab",
+        "e3108662263006472ac9e6fa0edd01a4e35c9e5b429ff83868f68cfd16b7cc27",
     ),
     (
         ("salesforce", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.21.2"),
         "7398485ff259430a72b494a0748def1008b73b8f6f8f44a3f8e69e07e595f7e8",
+        "f6de917995a4d9465d89c2ea02c6ebc26f78646bbb7ba349c790cca47fd38849",
     ),
     (
         ("salesforce", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.22.0"),
         "dd1eaf5090467e878316398381000d752a1e59d01856afef5ae516033b0ec73e",
+        "af266a3f5f4434704e0fd289a9fb036b72ab8f0ebadd5543e293bd30524dc1f8",
     ),
     (
         ("salesforce", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.22.1"),
         "a1b67a3ed75972b231a2af4037e5d21565c821f728004cd9b7a45b63b3d8f166",
+        "fe98024933ca11684ccf1c9b30cdb3fb550fcad042e06171c64c4ba91b41e961",
     ),
     (
         ("salesforce", "apple-darwin", "x86_64", "0.18.0+dbt0.0.4"),
         "d0b94c4d28569cc95c0a07cb4218b053727ea9df13ed0ef2f55b3a920351d589",
+        "5b3177c1845053b6b74ccda182e59c1fd30c92394fa2b1353b53f4e4d96bd0cf",
     ),
     (
         ("salesforce", "apple-darwin", "x86_64", "0.21.0+dbt0.21.1"),
         "06daae1581f75f8bf4d26fed1baf880d7ef31deeb0e15b5d6e90090e447831cc",
+        "5467e2658074af2da2f44b7c5f0c8a72d0cde3145cd0636bb9d54fda831e3230",
     ),
     (
         ("salesforce", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.21.2"),
         "9bea90938356fde1fd6f45328acc8d4195d65a99d5f0691a0589b22eefc6a5c4",
+        "16841d3c3e56c73ff1c2012cd9278138d919f1140372517fca80bcdb990cd1b0",
     ),
     (
         ("salesforce", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.22.0"),
         "9676f55baa15ee703447ae13f5e6afaaf2f45e6f59ccbb443b19452017e9d94d",
+        "98de0a4fc3de85a4353dcfa9134811f5747779b4b0c003aaee6439e0d65199fc",
     ),
     (
         ("salesforce", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.22.1"),
         "a80cf5ea730bf9c7e437bd04f613b3bc17cca2b2e3b4c793e40ecf568f83305d",
+        "a81c9be41cd081154ce13d28b82019db692d244e7d4809597e7b2be5bbc4ee08",
     ),
     (
         ("salesforce", "manylinux_2_17-linux-gnu", "aarch64", "0.18.0+dbt0.0.4"),
         "a826655fc9b626951d08c39b174756dff99b04b10c33601f9a1feff6325aec7a",
+        "132829fd2e45ccdd76c0de635e5297f6c0b79f95a9e6ad94bbd663f78de3acc8",
     ),
     (
         ("salesforce", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0+dbt0.21.1"),
         "c77793e9b83963d144a250bcec207dbec598b653eed077f4fae95e59959472c0",
+        "06e51b1a3a49b5185075f319ad77edbbb6be56cf8bd385d2ce39393fdae3b70c",
     ),
     (
         ("salesforce", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.21.2"),
         "bc67fe4e18559d9cf32b7a70606062dde549048aeb3891043cfcc359beeeddf6",
+        "20ac5e67bdc3d12a4d6bd29147b02b34bff6298674f8f3fa52791f967baef0c7",
     ),
     (
         ("salesforce", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.22.0"),
         "d45e958e253e1852ca116d20615889631ffb354c2c1d3b73ed74a30521795589",
+        "e500060769ba5a1594730541570ad30b9b4af1defcee383420aa72d79dee3f20",
     ),
     (
         ("salesforce", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.22.1"),
         "b9a9d02b194105aaa45e31e48b8da2331821dd3e22645fce740706655950cca5",
+        "f57407c5f78189a27ac6a00df56d8f9ba9828015f06c5d5e3dc2ae6a9ee9ad46",
     ),
     (
         ("salesforce", "manylinux_2_17-linux-gnu", "x86_64", "0.18.0+dbt0.0.4"),
         "a1eb2b25f4f4bf63c731fdc5d47bbca621e4bd23c6201b28d6f98ba85e400951",
+        "384408f12381b2198a31da28b6a0106b37532c1a04676ddc94b468f17bb32b34",
     ),
     (
         ("salesforce", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0+dbt0.21.1"),
         "6833d78af651a22cd81e8e6b1a67cf5e263ff15cbf116a3292f5558f9cdad696",
+        "2557b10019d956f578300e99a453b9300a146db48a9e7f4788d0a2e364614b25",
     ),
     (
         ("salesforce", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.21.2"),
         "a4164521066952ea7e49429dec0ce416d28504085d1b136e7e1fdb52d1f80c4d",
+        "b31691a5f16786a9e06fcefad3309f5b685ddd1005a0be4b1abe88ff6b70c85f",
     ),
     (
         ("salesforce", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.22.0"),
         "ecdaf290e104068013c8645578df0c548e1abe32370d03364f31d92accf29fb3",
+        "398e5c83381d5811ebc29b3941a6147ded3a0d74074c68f3648108826e729ec5",
     ),
     (
         ("salesforce", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.22.1"),
         "4d3e17a3afbffb4e22c193c254e5709d4c6006a17fb737ef94063aca4a0c9ec7",
+        "8e7b9c42b5e364046ebb48531c1c2704fa07373f9790d8d2be8dcfc750941018",
     ),
     (
         ("salesforce", "pc-windows-msvc", "x86_64", "0.18.0+dbt0.0.4"),
         "f73ad9a1bc6f6f418a9abb3ca54723da32f9b70e28b610d772aa796cc4d83641",
+        "77236fe99ed4b4e3f262e32990fdf1e8493a446afd4e9351539b7d43d5953183",
     ),
     (
         ("salesforce", "pc-windows-msvc", "x86_64", "0.21.0+dbt0.21.1"),
         "4226fa0ed53848b61647f1bdf5b914bae7a033f44dc5bd84622f6d900c1f32f8",
+        "690e853754c0c17bca431e679a91c78858f4d1365c4aa555e7320a08f8740dd1",
     ),
     (
         ("salesforce", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.21.2"),
         "62266aef59e70e22ce293a6bc1accd24f09c0eb2283fb24c00bdf6e92213a28d",
+        "c5d7855c3d59f495bdeb7af107d843c816f7aed0d44340e1681bfd6f6c9ad6fa",
     ),
     (
         ("salesforce", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.22.0"),
         "315a502177cd6dd0d9ca1d8bc8df44c545f6b1c7da4575300af94e7c4405d299",
+        "f613b474c04411672e521aa577412e9f8373e5ca9513a4edccd464aa566aaed0",
     ),
     (
         ("salesforce", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.22.1"),
         "4f71b4f0ccdf5823a2fe70e0f8ccd76edcd3abbcae13bbe0fa92e0a8d529179d",
+        "ba5a13d3fe1a3babcb8478a229758d5a5f10ffb5ef2d9904d316cb00e8b0c6bd",
     ),
     (
         ("snowflake", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.21.10"),
         "499ca4757242586134dc5a09d07f6359dfd54ad637b20e497765042c71240708",
+        "3f78c5a44aca2aa545fee55f765b1aa6b0da3c1431d3b1f254724a856f654f87",
     ),
     (
         ("snowflake", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.21.11"),
         "988001635b63ffce5e7ebc5b78aeb4099c4a574a608972789a3a12cc11ec3f98",
+        "7118d5abffb463a56b07c8666d9b26713fa9c733273e59685c5baaea838bf066",
     ),
     (
         ("snowflake", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.21.12"),
         "24fb799bcc1211668cdb832c09d3f8e4687f2f789b368f22abc17d7f520871bc",
+        "01f6baea07b2130a43fbbec48a6bc8a61667aefd66bcc549f594e7564e2f43cd",
     ),
     (
         ("snowflake", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.21.13"),
         "c45f3daa5132d929edbba3e1bdd925f21b485c4e3c0e826714d3fcd7bb74e510",
+        "4e1dc4b174d851feeab2d974bc406a528fa048b870538fe4373a1b57256ab45c",
     ),
     (
         ("snowflake", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.21.14"),
         "892ecef4534a9b733b187511703128243ea392711042dff5ea25240f252b6c9f",
+        "5d01cb4d9174b9706b561e2fbcf71f4790548b81adebf005ec56fb30e797be30",
     ),
     (
         ("snowflake", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.21.15"),
         "8d9762600543ef7b7136cc00935e518cb750150c7491ee6cc56d894eaf4f7a5f",
+        "62ea74b95c865f78c8d6bdb3c924e1c122e2a5cfcb6927396e36bb2f66c30977",
     ),
     (
         ("snowflake", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.21.16"),
         "c693bea093be2531745b40d31f703e5cf97237bfa2422718cb9f61b63fa90cd9",
+        "eec5c8fecfb1f4e86b68623bff072d5dc410a60ee46335c4d58b4058b0df191e",
     ),
     (
         ("snowflake", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.21.17"),
         "750dbc2ad44bc3cdaad714bda4e9efaa7436359ad118f5a8645f1581261d5553",
+        "368ca3f969328d3aa7152748634b40ae277e1520b991215d0638efce79eefc14",
     ),
     (
         ("snowflake", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.21.18"),
         "1fced2b2722975394b1d146438c3ebb10027513f25b3c78c5f0eeefd2ed5d28d",
+        "1e93712426e9ef313c20820e7e0832d28203cf6a4d049939f1240e797773fe04",
     ),
     (
         ("snowflake", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.21.19"),
         "3ab569e6bcdbbf532be4d61141f741fe8c5f5127e85a288abb37719368d26295",
+        "7e5604405ca1d1319057825002b5eec2dacd780ceb8d5026131e1f09c7da1713",
     ),
     (
         ("snowflake", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.21.20"),
         "b776f2621cb8b49f311a4a29479c93f4aea1cb89da1fbee0bb4639ecee729bb4",
+        "8464966c7733a3c7abf62aa0796b2a4984a5c07f16e7fee6f1c4d008ce91af6c",
     ),
     (
         ("snowflake", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.21.21"),
         "657fdfa681455484c0b1237a26fb531db2fbbd00240bde1f13eee3e66248d233",
+        "9de6b6a6e4b9eb490717f60cb50e6ec24bffcd65691b97117adc1be5af93b6e7",
     ),
     (
         ("snowflake", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.21.10"),
         "2373e633158e743e3df33ec7b79816f25c252be936e834a8e49400dd51c9f19e",
+        "cd9189a874cb4a664ecbe8dca7ed7b6f86e46ad163427f73a3db8cd668455680",
     ),
     (
         ("snowflake", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.21.11"),
         "61585acd8b80f3a808cffb1d030312ee995beacb86f9afcbae937ca4ba93d1e1",
+        "d086fa95ed3c3f78108f5efc28023d4972de50b24014887882feafae0e5cd2e4",
     ),
     (
         ("snowflake", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.21.12"),
         "9100012d9dbf968e3346485bc8eb93b8308e174b9e8c0f2ed08a232b1269ae0a",
+        "2e63d092ec9f5fbfd9c84cf3827f8db597732b82f01eb7ed89693a78f970b93e",
     ),
     (
         ("snowflake", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.21.13"),
         "889fb9b386b9875c9e54d06982bb475fc15c46ac413c9aa2d58e1711a933ae27",
+        "a034080b5fbe06a72b28e7512659abdf576f20751093e077193b61c29fbb8382",
     ),
     (
         ("snowflake", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.21.14"),
         "c206df97d94d84295c7713f49c48199301d20834489cb276b576d513864f80f4",
+        "a24d89482f5629885232fb0ef4fa0a789403b153ca225ffc506f88eed2dee01b",
     ),
     (
         ("snowflake", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.21.15"),
         "e4b9107d787357c6720a3e1817d9fda9e3eb69d62b31e9339c85540174abb86b",
+        "76bb2ca6ca28e63b3dc4dde54f706d29c213285f7cff154d6738385ed1b08a74",
     ),
     (
         ("snowflake", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.21.16"),
         "4d65fe00a6186a067d1f58d523c6c5bdfc623fc5625fbf03e1ba340fc23c9c1c",
+        "34b89362e1d290e672b71833abe8c1cf69b736e06a0ee8754d01f1cebb128e9c",
     ),
     (
         ("snowflake", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.21.17"),
         "3730d41c7f83813ab9a04d2ee44ce01abcad5cc28717044aaa1d991b5efab765",
+        "95ce43fc6f802a80c1fed486a188f89a6a547e4c1372fb136bcf7cb9d3ed5db6",
     ),
     (
         ("snowflake", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.21.18"),
         "9e4b2e955542bca8676bfe01dc5a00709cc60802d4051517f307884c2bfe54eb",
+        "a95df2c7b115e204ca8b8550d888dc3b9fd25572ad8ad59ccd4cc55ae0cc4ab9",
     ),
     (
         ("snowflake", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.21.19"),
         "61e0f6f48b16006d0014feeeae92481e4728fd37a928d89815bc0e0e8dcf17f5",
+        "b1220a567a753891f340ddc7d96fd091dc6d5e91889a746f902be92df431ac7a",
     ),
     (
         ("snowflake", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.21.20"),
         "87c28cb07f7b2040db4185d18d51704f0027fa4fa13bb813ac434d83ecb21a3b",
+        "a507d79f9b5452074c2da15bdd6bf1a69c12eca0974e721e0c46542148c456da",
     ),
     (
         ("snowflake", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.21.21"),
         "ae22e90589bf43f8df719c7e6b4f5041278882cfe4084aff7ee34b0731f892e9",
+        "483f99c6c2300b643acd4454baaa78cbbd9e1d03711b3f4c604a48085e968baf",
     ),
     (
         ("snowflake", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.21.10"),
         "a29e533233009fef21bccb93950b338e41806536d84ed5b6b42e657fcafb9999",
+        "a7bc671a71682a3f527eb059e51488a72f76e26cf3de8f4f4c9d0bfd53a1d2db",
     ),
     (
         ("snowflake", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.21.11"),
         "725f717916e5baff2bb9068bc1e0b2b989ea344860bf355038c9a914d4d02ff8",
+        "f242804c933429fadadac91e0d1ecee2b08da4ecd3108f99386c9a8ec683118f",
     ),
     (
         ("snowflake", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.21.12"),
         "38dddea25a7e4ead5d253cf491aebc8db7174bdcb5e2163bd67ae4a0ae426411",
+        "ed119abd69c3a5c83483dc2286bdb24f7b1cd0c58a8f07989565badebe24ff88",
     ),
     (
         ("snowflake", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.21.13"),
         "527a6d8ffc6e7ce2b922a49f21c646d713617f6b1c1bda799800ca9cc7d80407",
+        "656647b5105a7facaf7a67194433828ebee82b6ea71aa66d78e1988c1addd7b2",
     ),
     (
         ("snowflake", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.21.14"),
         "34c1e80710ab2c7fd17a9c415452112341ce2e217bf2d5d1e4371d3860229111",
+        "62ba276b0607fc1f0e8058de949796ce7d498b22ff86255260f64b84d57b1624",
     ),
     (
         ("snowflake", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.21.15"),
         "9e203377486a63e74102208a3b273071c4c70c705534745bc63214cb79cde04e",
+        "42d52edadaccbf4d89d320855d0a53e05ffb00ae09c343318cb9aa8423680a04",
     ),
     (
         ("snowflake", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.21.16"),
         "d9625920784d5a88b0ca7cdbdd346989ed8e865ca6f139aa8c6f07970e21cff8",
+        "c182dfe8c8b56432dad3bca35c718dc8aa1b3d7c92fbb33c97c0a1a0402ba86b",
     ),
     (
         ("snowflake", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.21.17"),
         "1986c6a1da0d5db8557eb3b3db27a087525227e90332ec5b04c2445132be2658",
+        "e94d9903e0239c4cbb1d3bdbf8ee56d99c8ecba6b1025f3304eaf033e7004973",
     ),
     (
         ("snowflake", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.21.18"),
         "2ec2b93d401c0213afd96331dbeef05f2c6a3c511d8c6ac6dee698256e9a282d",
+        "68b33bd9662789244b47d0a02f1c16d101ec0f8dccc6a80c51cd705c6d1e2082",
     ),
     (
         ("snowflake", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.21.19"),
         "24bc403f5be2aa8b234ceb1bf48e516038d640ed3de9a7a76b76caae66bd142c",
+        "8f2e1c95b6f02b68911251240270557e75dad17b98bb6eae88a54567f58ffd6b",
     ),
     (
         ("snowflake", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.21.20"),
         "174bb064208d269c700100cc5abd551114645c4d9807794025ad96e5d7f880d6",
+        "721f24764397f81154b0e24f1f22451941162eff3a6351218f27f6f43f6b3964",
     ),
     (
         ("snowflake", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.21.21"),
         "c56cc77bbe960692972ba2e3f3fc31537d34dcba491d4bd0b24855418a674ac2",
+        "5ddd16997be80af37412f4e212fb89ba1f664e2142f56716f89a37ac50e5781f",
     ),
     (
         ("snowflake", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.21.10"),
         "60212a57ec83687b8db4e5aeddda59b4f472b97518ba34322c4d3e8e64d14172",
+        "a09aea43c2d241fd41dfd18573fff8964b95ac97943a3e9600957b85677a70ec",
     ),
     (
         ("snowflake", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.21.11"),
         "cc4834689ab2ac2c02bcadee0346534d88e5e0e5e1f72a172935d074d17bc130",
+        "a19ebc994e45423745384b5cf8b042335bfb00710c42cb022829912b4dd950ba",
     ),
     (
         ("snowflake", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.21.12"),
         "0672a665f36f262f8919554631465d25bdac5e2242f7053254708883013dc295",
+        "3fd962f26e489848180811f02045b578915684e9b43eec503e1706527730958f",
     ),
     (
         ("snowflake", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.21.13"),
         "36099516357b357b6b6d07c03b6e6980425671b88b8319bf28e7da5e24df9df8",
+        "ab326186a63a63392e6892581ea7be3c94972b5fa9a4f6a6134263952f979855",
     ),
     (
         ("snowflake", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.21.14"),
         "21b0a5e8896e4c4a80aa26822db4acaa7adfb4b7baaf767ac33ce87e8805784a",
+        "42ee6d0d0cb28edeced09e65b2bb423edbc931cfaa9e7f53179e844edf55e671",
     ),
     (
         ("snowflake", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.21.15"),
         "234da040cd3e3196df9a1ecdac7008c3414c1d2aa93682d3fd549be4bbe77048",
+        "a72e94840c6a6db329de2f41559fd1307777443c57a5453be9d984e9ed2e8400",
     ),
     (
         ("snowflake", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.21.16"),
         "386d86bf8f2c7369a9643ee6881748f5051da493dfce14532203257277d8e75c",
+        "31a8714ace485540d83702bbed52e19a328e91b4513ad6c0106eaf8a25037181",
     ),
     (
         ("snowflake", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.21.17"),
         "a6562582599854847e0bb2fe05ffdcadb2d3a09e479e29aca5f026f5e0a16630",
+        "d4815d79b076a865221a3d07eb69bfda0d4d2c380be5885e51ce5957dee20570",
     ),
     (
         ("snowflake", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.21.18"),
         "b6aa3c709716f0c512e26a33dd2154f3938e863ba29638817529254679f4a5f9",
+        "cbef0fe86d59db2902cec9fabe3a6899ce414f4e12ca9f90b02a0a3fb7a005be",
     ),
     (
         ("snowflake", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.21.19"),
         "cb566010026758c01ace4b666057c93cb1b6dd5a363bd36ea3c69c0b138bd3c5",
+        "f3efe700a9635254ab0d76a2cc85f187939c4565a4ab6682922f2f7d35e1d9f0",
     ),
     (
         ("snowflake", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.21.20"),
         "de5b5f08b54b65e1fba0b6eeb0abbbe68bf45550c7d259adaca87d4341d008a9",
+        "5b40678e5004b7c28bffe1568a42918fb8bbd4a5e7e40097659a7b5e93c8d877",
     ),
     (
         ("snowflake", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.21.21"),
         "5d3269e90e955d3ef3d691c7ad487586e3844118a32766dca5f98ff472918339",
+        "2e71d820312456b1759a50285d01cd07c2156709aa15f26bb769417ff7ebfed5",
     ),
     (
         ("snowflake", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.21.10"),
         "896042c7f2d8ffc82093a79239a1adaa938e436952088fe369b86ccfdd04a79a",
+        "b117e21b093e17bc93160aa56e53749e9c2f181e963860eae4f8019fb694e326",
     ),
     (
         ("snowflake", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.21.11"),
         "76a3263906d2d8c723b707584c3ac7de0d7e398d3fd25806e2b03a3541879ff3",
+        "fed51dc3fc6b9f73636232db2c9ad928a49912014a280616c558d9e9bbb938ce",
     ),
     (
         ("snowflake", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.21.12"),
         "6ebe6522377d8ebd9af59a51eab3a43fdf3e36c03aa4bf06ea17f914f7f99adc",
+        "6c14d45276977771fbc75f72bee7eee70b8429a2ff42178121c595db946c4a1c",
     ),
     (
         ("snowflake", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.21.13"),
         "06341a78ee31243b141405949c2d315506a5fc9401b4373f98c70fbefce406c2",
+        "ad37229eb9807dd6e5fdc17e4044cb5016524ccef14078b0cb38964d1df02198",
     ),
     (
         ("snowflake", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.21.14"),
         "0b969b0a2443ee52b5b982e2b98a8314a27871b0f0b762518f42585c65f54c73",
+        "1a4bb0bb858b568932f46b875c1cfcbf02872141e398770497c471247de4e391",
     ),
     (
         ("snowflake", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.21.15"),
         "3e8e36b57f6b613df6d6e7e7d1f7a0e886bbe43982b8301b8e97aa5cf0928900",
+        "d71836e495da2376583be226ecc8e6adb082e13189776b3e4b4e92c0368b1e5e",
     ),
     (
         ("snowflake", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.21.16"),
         "3d7d52624f461b527167f0d90a293cf23cdac92b7400eeaaf0176a0fbb64fe16",
+        "9040dc6143b4bfa956c7ec93e6a61a2401c6ea5734a7140a129706262c440600",
     ),
     (
         ("snowflake", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.21.17"),
         "668b8ff33f280440a0da63c40febce13b3da9d8eff8db2b696e0707a55dd7949",
+        "5ff8d4a3089efef4614b9962d5b789f4e482695f657a26bfa879368c31264c34",
     ),
     (
         ("snowflake", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.21.18"),
         "f1a8f8171e3f7ab24ec0384d25898140ea908dc3298cf688196b8b50083fb952",
+        "7a46805a8d5881a1e424c9ebc9459f2c0f537ea9d03789887efc961252bcdd82",
     ),
     (
         ("snowflake", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.21.19"),
         "a65c7d916f5ead783a8cc462a46abe9aea8fd6e5508cff0158f418ac4f1fdc02",
+        "9150f791335489939c5a8a97196d00c2045b29ad546b6dada1d1f7d099983867",
     ),
     (
         ("snowflake", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.21.20"),
         "5a6cbb8d10f3c201eb41df62e36762c4b75f6d0bdfd73190ff8e081afc92e6d8",
+        "b73c46b222d235a5037548ac69bd2c73daf6b5da58922f7809a889c8f9629f37",
     ),
     (
         ("snowflake", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.21.21"),
         "abc65cc7ffbb8a9c91d5153018d35832ef43ab84f65a83a0498d2ec7bb674071",
+        "6c733b9da1abff4e54630828638859d02cb8bb04ee61566f5662bd86553e9408",
     ),
     (
         ("spark", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.1.0"),
         "b6c5434bea75b3a1da5d4f9598de93384d316c44e6fcd21d8b2dd8b3dfad93de",
+        "fe11882df09c15e7672e851d9c219e9d8d633a66901cb7d04e7311e948603d7d",
     ),
     (
         ("spark", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.1.1"),
         "bae99943762c0a0ee9bc615b49aff22668ec5cb3d4f3447ebb738abda7d0f0e5",
+        "7a98407d61c7f3f436552ddefd8a68b800bb06bf61707336acd5be1e3b703d25",
     ),
     (
         ("spark", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.1.2"),
         "c67f0438c19ad463bc9eb0792f504fb14105e6470cde1974651ea30e08abfacb",
+        "7e1ab90ec4cff1538a56e7528fe3fc7ea557dcb16e18edfaaf68dec401ad050a",
     ),
     (
         ("spark", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.1.3"),
         "13b5a8e89dfc45b257978d1f9c789c7ccd8ae2db6601127fdc746030329b8950",
+        "3847e919f774a30cda8151b0b49369d576cf95822132691642ac20819d49421a",
     ),
     (
         ("spark", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.1.4"),
         "d0fd8f66f84b2f348d9d4f72885e894ec795e1e75c52374ee2e55711cab7e1e7",
+        "540f180dab9a5dea113be7f2fb6afbdfa12aa8e3612e84e4cf580cfd2c93f495",
     ),
     (
         ("spark", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.1.0"),
         "347b18c1cc2fb82a22e3b51cb5d8f1165991cfc5eccf147f1baea3e1ddb7fb67",
+        "8944ad9c36fcdf5ad86a57d6c591e27e03cec514048a89a9644233ac015b5a40",
     ),
     (
         ("spark", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.1.1"),
         "48298834a061ab3809189a6bbab828b502e0fcc3a3a836e90a27e3ed62a7c044",
+        "08dfa9f86132b207c112af6a170369e69f14acb39f43a1efc4b1ba92952c607b",
     ),
     (
         ("spark", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.1.2"),
         "70a74705e224a1cd777fbd8453ee3ae631ff7c68bcbbd2a1282cacf49f8e29e6",
+        "ab13ce51d10fff8a269394d33629cccb905740d3f723df3ebe774b809b6df9b4",
     ),
     (
         ("spark", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.1.3"),
         "a60db62717ccd3fc1855381f5a19538614b1a56c4bbf92144eebf55eed02f321",
+        "e2d44aef6e5e80e59d16c728fd0b868fe001145ad714d853137ea4100523053b",
     ),
     (
         ("spark", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.1.4"),
         "c4b5788fcde780f0c95ac2414dc3d7c277ea258639972ca5b850b97026b62346",
+        "979932d14e8b5980c705c012dd1cbbd57fc07da997d09a57dfe51c78d901b1cc",
     ),
     (
         ("spark", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.1.0"),
         "b653fd0fe587e46f71375ce6927b81385c706dc80af98b9ab19b82799119f91b",
+        "8a5f9bd5af21019097f712862baf744734383a787fb68abf5d90b80151a9e4d5",
     ),
     (
         ("spark", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.1.1"),
         "7212f821c41131c9bd229875f3546e6a9da26f4a855faf18c8788a447de5b2fa",
+        "c03b80a0caa1822c1d08d3d7600a3e40bee9fef680e126ff170eaaa587dcb9a3",
     ),
     (
         ("spark", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.1.2"),
         "b75b2da9fad45d4762be3df198d647fa5cb268fe9197a0a5d6b8be4e9b429235",
+        "e3e7d0300ff87af9e007d7069c36af6f6077f5c5589e510316c9dfbe40a14d4e",
     ),
     (
         ("spark", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.1.3"),
         "63e398dea7b4c289ae0eb0b07cb63f3df7b03fe080a41cf1bbcafffa1eb56468",
+        "413cb0d8ba8d8ed99f0cbacdb8196278ff863bc2fb137cdcab1fe5a003841a2c",
     ),
     (
         ("spark", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.1.4"),
         "63e398dea7b4c289ae0eb0b07cb63f3df7b03fe080a41cf1bbcafffa1eb56468",
+        "413cb0d8ba8d8ed99f0cbacdb8196278ff863bc2fb137cdcab1fe5a003841a2c",
     ),
     (
         ("spark", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.1.0"),
         "3712e4d8dd9938c22e070f66bafb7757e67ce8a29c13de57bf17c214013a13dc",
+        "d4778c73bad3f8429cde635878ee34b100c66801bd932806290882fff4656e55",
     ),
     (
         ("spark", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.1.1"),
         "09f3477242f0a1741954567b39e7bad1493e89b6c82b7f28e73ca2a88645745e",
+        "d589f38dfc9624feb6f922dbc0582f51da95e91aae6c11ee8b99f7c9221e330f",
     ),
     (
         ("spark", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.1.2"),
         "396d683d0db0dcd3f8a4eb72981663d32ed45e7d191b4db9f72a0c8615c65897",
+        "417045cb6293ee756b384abb68944a301deb5edc59324f2209f8f563815d98a0",
     ),
     (
         ("spark", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.1.3"),
         "13e30b222b69d167568e23a9993f5af9567792143984293efcf9652e7e7f20a6",
+        "74e338cafd439fbac80cf7fe680a092ad9e1c342487630f3d387ddec190bd658",
     ),
     (
         ("spark", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.1.4"),
         "13e30b222b69d167568e23a9993f5af9567792143984293efcf9652e7e7f20a6",
+        "74e338cafd439fbac80cf7fe680a092ad9e1c342487630f3d387ddec190bd658",
     ),
     (
         ("spark", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.1.0"),
         "ee8d81104889a3e7a0324e108bc41a0a38e724806b92136e2c38f96e5ee7ca93",
+        "d221bc55c9d2491289b2aad8f3c63113cead2811b4b477ca320388642a8253bc",
     ),
     (
         ("spark", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.1.1"),
         "7530ed9212418205bfa5196b40541ccff8e83137852d2b3c732873abdea9e747",
+        "4e1bcf1be16f51ac01182450f776616b7615bf110def71f8d24ced26b4ca644d",
     ),
     (
         ("spark", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.1.2"),
         "2c8185419f355e233fb77b68221bde0b361a5efe9d4bdb14198c56eb1c81aa07",
+        "206596f285eeef12cf518354f94b65dd16840f09d1a0c76a460724f3eb9f63fc",
     ),
     (
         ("spark", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.1.3"),
         "22104fe7b4f91afaa08554e8d9f5e44cb9c8c0a3eec6b83533359fde19cc94a4",
+        "6fe5068041331297828d9ec7ad72c45176c66258db372ab05c91b7ea54c2e7a9",
     ),
     (
         ("spark", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.1.4"),
         "49b61dd6c8658de8781bf72dbef94465304614febbbb5eea56a6c8735f219a36",
+        "cc92ecaa794fc3149e300c0be5a6e9580c4eba42697b3623a5e068cf317f0584",
     ),
 ];
