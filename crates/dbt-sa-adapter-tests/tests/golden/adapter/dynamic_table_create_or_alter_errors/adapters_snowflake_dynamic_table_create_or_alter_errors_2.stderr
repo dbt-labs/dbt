@@ -1,3 +1,11 @@
+[error] [DbDriverFailed (dbt1308)]: Database Error in model err_type_narrow (../scratch/target/run/test/models/err_type_narrow.sql)
+  [Snowflake] 040050 (22000): CREATE OR ALTER execution failed. Partial updates may have been applied. Please visit https://docs.snowflake.com/sql-reference/sql/create-table#label-create-or-alter-table-atomicity for details. Error message: SQL compilation error: cannot change column VALUE from type VARCHAR(100) to VARCHAR(5) because reducing the byte-length of a varchar is not supported.
+   (sqlstate: 22000, vendor_code: 40050)
+  (in run/test/models/err_type_narrow.sql)
+[error] [DbDriverFailed (dbt1308)]: Database Error in model err_type_change (../scratch/target/run/test/models/err_type_change.sql)
+  [Snowflake] 002108 (22000): CREATE OR ALTER execution failed. Partial updates may have been applied. Please visit https://docs.snowflake.com/sql-reference/sql/create-table#label-create-or-alter-table-atomicity for details. Error message: SQL compilation error: cannot change column ID from type NUMBER(1,0) to VARCHAR(16777216)
+   (sqlstate: 22000, vendor_code: 2108)
+  (in run/test/models/err_type_change.sql)
 [error] [DbDriverFailed (dbt1308)]: Database Error in model err_transient_drift (../scratch/target/run/test/models/err_transient_drift.sql)
   [Snowflake] 001521 (55000): SQL compilation error: Property 'TRANSIENT_DATA' cannot be changed in CREATE OR ALTER. (sqlstate: 55000, vendor_code: 1521)
   (in run/test/models/err_transient_drift.sql)

@@ -112,6 +112,78 @@ model.test.err_transient_drift:
 - sequence: 3
   type: execute
   sql: use warehouse [MASKED_WH]
+model.test.err_type_change:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: |-
+    create dynamic table development.adapters_snowflake_dynamic_table_create_or_alter_errors.err_type_change
+    
+    warehouse = [MASKED_WH]
+    
+    
+    refresh_mode = FULL
+    
+    initialize = ON_CREATE
+    
+    
+    scheduler = 'DISABLE'
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    as (
+    select id, value from development.adapters_snowflake_dynamic_table_create_or_alter_errors.source_table
+    )
+- sequence: 2
+  type: execute
+  sql: alter dynamic table development.adapters_snowflake_dynamic_table_create_or_alter_errors.err_type_change refresh
+- sequence: 3
+  type: execute
+  sql: use warehouse [MASKED_WH]
+model.test.err_type_narrow:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: |-
+    create dynamic table development.adapters_snowflake_dynamic_table_create_or_alter_errors.err_type_narrow
+    
+    warehouse = [MASKED_WH]
+    
+    
+    refresh_mode = FULL
+    
+    initialize = ON_CREATE
+    
+    
+    scheduler = 'DISABLE'
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    as (
+    select id, cast(value as varchar(100)) as value from development.adapters_snowflake_dynamic_table_create_or_alter_errors.source_table
+    )
+- sequence: 2
+  type: execute
+  sql: alter dynamic table development.adapters_snowflake_dynamic_table_create_or_alter_errors.err_type_narrow refresh
+- sequence: 3
+  type: execute
+  sql: use warehouse [MASKED_WH]
 model.test.ok_evolve:
 - sequence: 0
   type: execute

@@ -3,6 +3,8 @@
    Parsing models/err_fail_fast.sql
    Parsing models/err_reorder.sql
    Parsing models/err_transient_drift.sql
+   Parsing models/err_type_change.sql
+   Parsing models/err_type_narrow.sql
    Parsing models/ok_evolve.sql
  Rendering models/err_fail_fast.sql
    Running models/err_fail_fast.sql

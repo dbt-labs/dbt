@@ -663,8 +663,8 @@ async fn adapters_snowflake_dynamic_table_create_or_alter() -> FsResult<()> {
     .await
 }
 
-/// Schema changes CREATE OR ALTER cannot express (column reorder) and a transient flip it cannot
-/// make surface Snowflake's error; `--full-refresh` recovers. `on_configuration_change: fail`
+/// Schema changes CREATE OR ALTER cannot express (column reorder, type narrowing, an incompatible
+/// type change) and a transient flip it cannot make surface Snowflake's error; `--full-refresh` recovers. `on_configuration_change: fail`
 /// aborts the run. The failing turns' stderr goldies pin the errors.
 #[dbt_runtime::test]
 async fn adapters_snowflake_dynamic_table_create_or_alter_errors() -> FsResult<()> {
@@ -679,7 +679,7 @@ async fn adapters_snowflake_dynamic_table_create_or_alter_errors() -> FsResult<(
             AdapterRecordReplayTurn::new("run-operation set_up", &[]), // run_0: source table
             AdapterRecordReplayTurn::new("run", &[]), // run_1: CREATE all dynamic tables
             AdapterRecordReplayTurn::new(
-                "run --select err_reorder err_transient_drift ok_evolve",
+                "run --select err_reorder err_transient_drift err_type_narrow err_type_change ok_evolve",
                 &[FileOverride {
                     original: "dbt_project.yml",
                     overriding_file: "_project_overrides/run_3.yml",
@@ -687,7 +687,7 @@ async fn adapters_snowflake_dynamic_table_create_or_alter_errors() -> FsResult<(
             ), // run_2: column reorder and transient drift error, the sibling deploys
             AdapterRecordReplayTurn::new("run --select err_fail_fast", &[]), // run_3: fail-fast on a config change
             AdapterRecordReplayTurn::new(
-                "run --full-refresh --select err_reorder err_transient_drift",
+                "run --full-refresh --select err_reorder err_transient_drift err_type_narrow err_type_change",
                 &[],
             ), // run_4: --full-refresh recovers
             AdapterRecordReplayTurn::new("run-operation verify", &[]),       // run_5: read back

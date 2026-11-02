@@ -679,6 +679,39 @@ fn create_or_alter_deploys_the_definition_when_nothing_else_changed() {
     assert_eq!(fixture.describe_calls(), 1);
 }
 
+/// The text after `as` of a rendered statement, whitespace included.
+fn query_block(sql: &str) -> String {
+    let start = sql.find("as (").expect("statement has a query block");
+    sql[start..].trim_end().to_string()
+}
+
+#[test]
+fn create_or_alter_query_text_matches_create_and_replace_byte_for_byte() {
+    // Snowflake compares the stored query text literally, whitespace included. If the text sent by
+    // CREATE OR ALTER differed from the one CREATE / CREATE OR REPLACE stored, the first sync
+    // would look like a definition change and reinitialize an incremental dynamic table.
+    let create = fixture_with(None, RemoteState::default(), create_or_alter_options());
+    render_ok(&create, &base_local_config(), false, "apply");
+
+    let replace = fixture_with(
+        Some(RelationType::DynamicTable),
+        matching_remote_state(),
+        create_or_alter_options(),
+    );
+    render_ok(&replace, &base_local_config(), true, "apply");
+
+    let sync = fixture_with(
+        Some(RelationType::DynamicTable),
+        matching_remote_state(),
+        create_or_alter_options(),
+    );
+    render_ok(&sync, &base_local_config(), false, "apply");
+
+    let create_block = query_block(&create.executed_raw()[0]);
+    assert_eq!(query_block(&replace.executed_raw()[0]), create_block);
+    assert_eq!(query_block(&sync.executed_raw()[0]), create_block);
+}
+
 #[test]
 fn create_or_alter_does_not_apply_on_first_build_or_full_refresh() {
     // No existing relation: plain create. --full-refresh: create or replace.

@@ -18,6 +18,8 @@
    Parsing models/deploy_matrix/dm_full_enable.sql
    Parsing models/deploy_matrix/dm_incremental_disable.sql
    Parsing models/deploy_matrix/dm_incremental_enable.sql
+   Parsing models/incremental_properties/inc_noop.sql
+   Parsing models/incremental_properties/inc_props.sql
    Parsing models/on_configuration_change/continue_skips_both.sql
    Parsing models/routing/idempotent_noop.sql
    Parsing models/routing/refresh_mode_replace.sql

@@ -80,6 +80,11 @@
   {{ _check("err_transient_drift: recovered with the evolved definition", _evolved(row)) }}
   {{ _check("err_transient_drift: recovered as non-transient", not _is_transient('err_transient_drift')) }}
 
+  {% set row = _show_dt('err_type_narrow') %}
+  {{ _check("err_type_narrow: recovered with the narrowed type", 'varchar(5)' in (row[1] | lower)) }}
+  {% set row = _show_dt('err_type_change') %}
+  {{ _check("err_type_change: recovered with the changed type", 'cast(id as varchar)' in (row[1] | lower)) }}
+
   {# fail-fast: the config change was refused, nothing was applied #}
   {% set row = _show_dt('err_fail_fast') %}
   {{ _check("err_fail_fast: config change not applied", ((row[3] or '') | trim) == '') }}
