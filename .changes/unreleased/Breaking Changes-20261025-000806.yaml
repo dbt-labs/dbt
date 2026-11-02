@@ -1,0 +1,7 @@
+kind: Breaking Changes
+body: Databricks views no longer depend on use_materialization_v2 and always use the V2 behavior, so view_update_via_alter is honored with the flag off (and rejected on Hive metastore), tags are applied before grants, and replacing a view calls get_create_view_as_sql overrides
+time: 2026-10-25T00:08:06.405062+05:30
+custom:
+    author: sd-db
+    issue: "16919"
+    project: dbt-core

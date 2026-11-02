@@ -1,0 +1,7 @@
+kind: Fixes
+body: Databricks view-to-view replacement uses CREATE OR REPLACE VIEW even with use_safer_relation_operations or a non-Delta file_format, so a view whose upstream dropped or renamed a column it used no longer fails with UNRESOLVED_COLUMN
+time: 2026-10-25T09:44:44.12026+05:30
+custom:
+    author: sd-db
+    issue: "16920"
+    project: dbt-core
