@@ -17,6 +17,37 @@ fn base_create_or_alter_sql() -> String {
     )
 }
 
+/// A live dynamic table matching [`base_local_config`], with CREATE OR ALTER enabled.
+fn matching_table() -> Fixture {
+    fixture_with(
+        Some(RelationType::DynamicTable),
+        matching_remote_state(),
+        create_or_alter_options(),
+    )
+}
+
+/// [`base_local_config`] plus a `cluster by (id)` change, which the config changeset tracks.
+fn cluster_by_id_config() -> LocalConfig {
+    LocalConfig {
+        cluster_by: Some(dbt_schemas::schemas::common::ClusterConfig::List(vec![
+            "id".to_string(),
+        ])),
+        ..base_local_config()
+    }
+}
+
+/// Run a normal (`apply`) sync of `local` over a live table in the `remote` state, with CREATE OR
+/// ALTER enabled, and return the fixture to assert on.
+fn sync_over(remote: RemoteState, local: &LocalConfig) -> Fixture {
+    let fixture = fixture_with(
+        Some(RelationType::DynamicTable),
+        remote,
+        create_or_alter_options(),
+    );
+    render_ok(&fixture, local, false, "apply");
+    fixture
+}
+
 #[test]
 fn create_or_alter_gate_off_keeps_sql_only_edit_a_noop() {
     // Control: with the gate off an unchanged config is a skip, whatever the model SQL says.
@@ -141,19 +172,16 @@ fn create_or_alter_does_not_apply_on_first_build_or_full_refresh() {
 #[test]
 fn create_or_alter_transient_change_routes_to_replace() {
     // transient cannot be converted by CREATE OR ALTER: the requires_full_refresh veto rebuilds.
-    let fixture = fixture_with(
-        Some(RelationType::DynamicTable),
+    let fixture = sync_over(
         RemoteState {
             transient: Some(true),
             ..matching_remote_state()
         },
-        create_or_alter_options(),
+        &LocalConfig {
+            transient: Some(false),
+            ..base_local_config()
+        },
     );
-    let local = LocalConfig {
-        transient: Some(false),
-        ..base_local_config()
-    };
-    render_ok(&fixture, &local, false, "apply");
 
     assert_eq!(
         fixture.executed(),
@@ -167,19 +195,16 @@ fn create_or_alter_transient_change_routes_to_replace() {
 fn create_or_alter_unchanged_transient_is_preserved_in_place() {
     // A query-only edit on a transient table must not route to replace, and the table must stay
     // transient: the DDL re-declares `transient`.
-    let fixture = fixture_with(
-        Some(RelationType::DynamicTable),
+    let fixture = sync_over(
         RemoteState {
             transient: Some(true),
             ..matching_remote_state()
         },
-        create_or_alter_options(),
+        &LocalConfig {
+            transient: Some(true),
+            ..base_local_config()
+        },
     );
-    let local = LocalConfig {
-        transient: Some(true),
-        ..base_local_config()
-    };
-    render_ok(&fixture, &local, false, "apply");
 
     assert_eq!(
         fixture.executed(),
@@ -191,19 +216,16 @@ fn create_or_alter_unchanged_transient_is_preserved_in_place() {
 
 #[test]
 fn create_or_alter_refresh_mode_change_routes_to_replace() {
-    let fixture = fixture_with(
-        Some(RelationType::DynamicTable),
+    let fixture = sync_over(
         RemoteState {
             refresh_mode: Some("INCREMENTAL".to_string()),
             ..matching_remote_state()
         },
-        create_or_alter_options(),
+        &LocalConfig {
+            refresh_mode: Some("FULL".to_string()),
+            ..base_local_config()
+        },
     );
-    let local = LocalConfig {
-        refresh_mode: Some("FULL".to_string()),
-        ..base_local_config()
-    };
-    render_ok(&fixture, &local, false, "apply");
 
     assert_eq!(
         fixture.executed(),
@@ -217,19 +239,16 @@ fn create_or_alter_refresh_mode_change_routes_to_replace() {
 fn create_or_alter_refresh_mode_change_to_auto_is_undetected_and_applied_in_place() {
     // The changeset ignores changes *to* AUTO, so this takes the in-place path (Snowflake resolves
     // AUTO to a concrete mode) rather than the replace route.
-    let fixture = fixture_with(
-        Some(RelationType::DynamicTable),
+    let fixture = sync_over(
         RemoteState {
             refresh_mode: Some("INCREMENTAL".to_string()),
             ..matching_remote_state()
         },
-        create_or_alter_options(),
+        &LocalConfig {
+            refresh_mode: Some("AUTO".to_string()),
+            ..base_local_config()
+        },
     );
-    let local = LocalConfig {
-        refresh_mode: Some("AUTO".to_string()),
-        ..base_local_config()
-    };
-    render_ok(&fixture, &local, false, "apply");
 
     assert_eq!(fixture.executed(), vec![base_create_or_alter_sql()]);
 }
@@ -254,18 +273,7 @@ fn create_or_alter_transient_default_drift_is_undetected_and_redeclared() {
 
 #[test]
 fn create_or_alter_applies_a_config_change_together_with_the_query() {
-    let fixture = fixture_with(
-        Some(RelationType::DynamicTable),
-        matching_remote_state(),
-        create_or_alter_options(),
-    );
-    let local = LocalConfig {
-        cluster_by: Some(dbt_schemas::schemas::common::ClusterConfig::List(vec![
-            "id".to_string(),
-        ])),
-        ..base_local_config()
-    };
-    render_ok(&fixture, &local, false, "apply");
+    let fixture = sync_over(matching_remote_state(), &cluster_by_id_config());
 
     assert_eq!(
         fixture.executed(),
@@ -277,18 +285,8 @@ fn create_or_alter_applies_a_config_change_together_with_the_query() {
 
 #[test]
 fn create_or_alter_on_configuration_change_fail_raises_on_a_config_change() {
-    let fixture = fixture_with(
-        Some(RelationType::DynamicTable),
-        matching_remote_state(),
-        create_or_alter_options(),
-    );
-    let local = LocalConfig {
-        cluster_by: Some(dbt_schemas::schemas::common::ClusterConfig::List(vec![
-            "id".to_string(),
-        ])),
-        ..base_local_config()
-    };
-    let result = render(&fixture, &local, false, "fail");
+    let fixture = matching_table();
+    let result = render(&fixture, &cluster_by_id_config(), false, "fail");
 
     assert!(result.is_err(), "`fail` must raise, got: {result:?}");
     assert!(fixture.executed().is_empty());
@@ -297,11 +295,7 @@ fn create_or_alter_on_configuration_change_fail_raises_on_a_config_change() {
 #[test]
 fn create_or_alter_on_configuration_change_fail_does_not_block_a_query_only_edit() {
     // `fail` is only about detected config changes: with none, the definition still deploys.
-    let fixture = fixture_with(
-        Some(RelationType::DynamicTable),
-        matching_remote_state(),
-        create_or_alter_options(),
-    );
+    let fixture = matching_table();
     render_ok(&fixture, &base_local_config(), false, "fail");
 
     assert_eq!(fixture.executed(), vec![base_create_or_alter_sql()]);
@@ -310,18 +304,8 @@ fn create_or_alter_on_configuration_change_fail_does_not_block_a_query_only_edit
 #[test]
 fn create_or_alter_on_configuration_change_continue_skips_config_change_and_query() {
     // Known limitation: a run carrying a tracked config change AND a SQL edit skips both.
-    let fixture = fixture_with(
-        Some(RelationType::DynamicTable),
-        matching_remote_state(),
-        create_or_alter_options(),
-    );
-    let local = LocalConfig {
-        cluster_by: Some(dbt_schemas::schemas::common::ClusterConfig::List(vec![
-            "id".to_string(),
-        ])),
-        ..base_local_config()
-    };
-    render_ok(&fixture, &local, false, "continue");
+    let fixture = matching_table();
+    render_ok(&fixture, &cluster_by_id_config(), false, "continue");
 
     assert!(
         fixture.executed().is_empty(),
@@ -333,18 +317,8 @@ fn create_or_alter_on_configuration_change_continue_skips_config_change_and_quer
 
 #[test]
 fn create_or_alter_rejects_an_unknown_on_configuration_change_value() {
-    let fixture = fixture_with(
-        Some(RelationType::DynamicTable),
-        matching_remote_state(),
-        create_or_alter_options(),
-    );
-    let local = LocalConfig {
-        cluster_by: Some(dbt_schemas::schemas::common::ClusterConfig::List(vec![
-            "id".to_string(),
-        ])),
-        ..base_local_config()
-    };
-    assert!(render(&fixture, &local, false, "bogus").is_err());
+    let fixture = matching_table();
+    assert!(render(&fixture, &cluster_by_id_config(), false, "bogus").is_err());
     assert!(fixture.executed().is_empty());
 }
 
