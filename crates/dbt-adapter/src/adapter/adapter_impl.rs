@@ -6401,7 +6401,12 @@ mod tests {
         let mut model = serde_json::json!({"schema": "SCH", "identifier": "ID"});
         if let Some(table_format) = table_format {
             model["table_format"] = table_format.into();
-            model["config"] = serde_json::json!({ "table_format": table_format });
+            // A managed Iceberg model also names its storage; mirror a realistic config.
+            model["config"] = serde_json::json!({
+                "table_format": table_format,
+                "external_volume": "VOL",
+                "base_location_root": "root",
+            });
         }
         adapter
             .dynamic_table_create_or_alter_enabled(&Value::from_serialize(model))
