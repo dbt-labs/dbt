@@ -1564,7 +1564,8 @@ impl AdapterImpl {
 
     /// Whether the opt-in `CREATE OR ALTER` path applies to this dynamic table model: the
     /// `snowflake_dynamic_table_create_or_alter` behavior flag is on and the model is a native
-    /// (info schema) dynamic table. Iceberg and linked catalogs keep create-or-replace behavior.
+    /// (info schema) or managed (built-in) Iceberg dynamic table. Dynamic tables in externally
+    /// owned catalogs keep create-or-replace behavior.
     ///
     /// SnowflakeAdapter https://github.com/dbt-labs/dbt-adapters/blob/1d97c39d2f763704a2a9d61d18513bbf1177874e/dbt-snowflake/src/dbt/adapters/snowflake/impl.py#L731
     pub fn dynamic_table_create_or_alter_enabled(&self, model: &Value) -> AdapterResult<bool> {
@@ -1579,7 +1580,7 @@ impl AdapterImpl {
         let catalog_relation = self.build_catalog_relation(model)?;
         Ok(matches!(
             catalog_relation.catalog_type,
-            CatalogType::SnowflakeNative
+            CatalogType::SnowflakeNative | CatalogType::SnowflakeBuiltIn
         ))
     }
 
@@ -6421,14 +6422,24 @@ mod tests {
     }
 
     #[test]
-    fn test_dynamic_table_create_or_alter_disabled_for_iceberg() {
-        // Built-in Iceberg is deliberately excluded for now: Snowflake supports
-        // CREATE OR ALTER DYNAMIC ICEBERG TABLE, but that DDL path is not implemented yet.
-        assert!(!create_or_alter_enabled(
+    fn test_dynamic_table_create_or_alter_enabled_for_managed_iceberg() {
+        // Snowflake supports CREATE OR ALTER DYNAMIC ICEBERG TABLE when Snowflake is the Iceberg
+        // catalog (built-in), so the gate follows the same flag as native tables.
+        assert!(create_or_alter_enabled(
             Snowflake,
             Some(true),
             Some("ICEBERG")
         ));
+    }
+
+    #[test]
+    fn test_dynamic_table_create_or_alter_iceberg_still_requires_the_flag() {
+        assert!(!create_or_alter_enabled(
+            Snowflake,
+            Some(false),
+            Some("ICEBERG")
+        ));
+        assert!(!create_or_alter_enabled(Snowflake, None, Some("ICEBERG")));
     }
 
     #[test]
