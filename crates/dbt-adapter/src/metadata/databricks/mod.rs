@@ -465,6 +465,8 @@ impl DatabricksMetadataAdapter {
             components::RelationTagsLoader::requires_server_metadata_for_diff(model_config);
         let fetch_column_tags =
             components::ColumnTagsLoader::requires_server_metadata_for_diff(model_config);
+        let fetch_constraints =
+            components::ConstraintsLoader::requires_server_metadata_for_diff(model_config);
 
         let mut metadata = IndexMap::new();
 
@@ -753,39 +755,41 @@ impl DatabricksMetadataAdapter {
                             row_filters_metadata_table(&relation_metadata.row_filters)?,
                         );
                     } else {
-                        metadata.insert(
-                            DatabricksRelationMetadataKey::NonNullConstraints,
-                            self.fetch_non_null_constraint_columns(
-                                &database,
-                                &schema,
-                                &identifier,
-                                state,
-                                &mut *conn,
-                                token.clone(),
-                            )?,
-                        );
-                        metadata.insert(
-                            DatabricksRelationMetadataKey::PrimaryKeyConstraints,
-                            self.fetch_primary_key_constraints(
-                                &database,
-                                &schema,
-                                &identifier,
-                                state,
-                                &mut *conn,
-                                token.clone(),
-                            )?,
-                        );
-                        metadata.insert(
-                            DatabricksRelationMetadataKey::ForeignKeyConstraints,
-                            self.fetch_foreign_key_constraints(
-                                &database,
-                                &schema,
-                                &identifier,
-                                state,
-                                &mut *conn,
-                                token.clone(),
-                            )?,
-                        );
+                        if fetch_constraints {
+                            metadata.insert(
+                                DatabricksRelationMetadataKey::NonNullConstraints,
+                                self.fetch_non_null_constraint_columns(
+                                    &database,
+                                    &schema,
+                                    &identifier,
+                                    state,
+                                    &mut *conn,
+                                    token.clone(),
+                                )?,
+                            );
+                            metadata.insert(
+                                DatabricksRelationMetadataKey::PrimaryKeyConstraints,
+                                self.fetch_primary_key_constraints(
+                                    &database,
+                                    &schema,
+                                    &identifier,
+                                    state,
+                                    &mut *conn,
+                                    token.clone(),
+                                )?,
+                            );
+                            metadata.insert(
+                                DatabricksRelationMetadataKey::ForeignKeyConstraints,
+                                self.fetch_foreign_key_constraints(
+                                    &database,
+                                    &schema,
+                                    &identifier,
+                                    state,
+                                    &mut *conn,
+                                    token.clone(),
+                                )?,
+                            );
+                        }
                         metadata.insert(
                             DatabricksRelationMetadataKey::ColumnMasks,
                             self.fetch_column_masks(
@@ -1991,6 +1995,100 @@ mod tests {
             .with_relation_type(RelationType::Table)
             .with_quoting(quote_policy),
         )
+    }
+
+    #[test]
+    fn test_relation_metadata_preserves_constraint_fetch_defaults() {
+        use crate::cache::RelationCache;
+        use crate::engine::{AdbcEngine, NoopConnection};
+        use crate::relation::config_v2::ComponentConfigLoader;
+        use crate::relation::databricks::config::test_helpers::{
+            TestModelConfig, create_mock_dbt_model,
+        };
+        use crate::sql_types::DefaultTypeOps;
+        use crate::stmt_splitter::DefaultStmtSplitter;
+        use dbt_auth::AdapterConfig;
+        use dbt_schemas::schemas::relations::DEFAULT_RESOLVED_QUOTING;
+        use minijinja::Environment;
+
+        let config =
+            AdapterConfig::new(dbt_yaml::from_str("http_path: /sql/1.0/warehouses/test").unwrap());
+        let engine = Arc::new(AdbcEngine::new_mock(
+            AdapterType::Databricks,
+            dbt_auth::auth_for_backend(dbt_adbc::Backend::Databricks).into(),
+            config,
+            DEFAULT_RESOLVED_QUOTING,
+            Arc::new(DefaultTypeOps::new(AdapterType::Databricks)),
+            Arc::new(DefaultStmtSplitter),
+            Arc::new(RelationCache::default()),
+            BTreeMap::from([(
+                "use_describe_as_json_for_relation_metadata".to_string(),
+                false,
+            )]),
+        ));
+        let adapter = DatabricksMetadataAdapter::new(engine);
+        let local_config = |enforced| {
+            let model = create_mock_dbt_model(TestModelConfig {
+                contract_enforced: Some(enforced),
+                ..Default::default()
+            });
+            RelationConfig::new(
+                AdapterType::Databricks,
+                [components::ConstraintsLoader
+                    .from_local_config(&model)
+                    .unwrap()],
+                |_| false,
+            )
+        };
+        let enforced_empty = local_config(true);
+        let unenforced = local_config(false);
+        let without_constraints = RelationConfig::new(AdapterType::Databricks, [], |_| false);
+        let env = Environment::new();
+        let state = env.empty_state();
+        let relation = create_test_relation("catalog", "schema", "table", true, true, true);
+        let mut conn = ConnectionGuard::new(Box::new(NoopConnection));
+        conn.discard_conn_on_drop();
+
+        for (case, model_config, expected_constraints) in [
+            ("no model config", None, true),
+            ("no constraints component", Some(&without_constraints), true),
+            ("enforced empty contract", Some(&enforced_empty), true),
+            ("unenforced contract", Some(&unenforced), false),
+        ] {
+            let (_, metadata) = adapter
+                .fetch_relation_config_from_remote(
+                    &state,
+                    &mut conn,
+                    &relation,
+                    model_config,
+                    CancellationToken::never_cancels(),
+                )
+                .unwrap();
+            for key in [
+                DatabricksRelationMetadataKey::NonNullConstraints,
+                DatabricksRelationMetadataKey::PrimaryKeyConstraints,
+                DatabricksRelationMetadataKey::ForeignKeyConstraints,
+            ] {
+                assert_eq!(
+                    metadata.contains_key(&key),
+                    expected_constraints,
+                    "{case}: {key:?}"
+                );
+            }
+            for key in [
+                DatabricksRelationMetadataKey::InfoSchemaRelationTags,
+                DatabricksRelationMetadataKey::InfoSchemaColumnTags,
+                DatabricksRelationMetadataKey::ColumnMasks,
+                DatabricksRelationMetadataKey::RowFilters,
+                DatabricksRelationMetadataKey::ShowTblProperties,
+                DatabricksRelationMetadataKey::DescribeExtended,
+            ] {
+                assert!(
+                    metadata.contains_key(&key),
+                    "{case}: missing surrounding {key:?}"
+                );
+            }
+        }
     }
 
     #[test]

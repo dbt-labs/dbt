@@ -6,7 +6,9 @@
 //! Reference: https://github.com/databricks/dbt-databricks/blob/e7099a2c75a92fa5240989b19d246a0ca8a313ef/dbt/adapters/databricks/relation_configs/constraints.py
 
 use crate::errors::AdapterResult;
-use crate::relation::config_v2::{ComponentConfig, ComponentConfigLoader, impl_loader};
+use crate::relation::config_v2::{
+    ComponentConfig, ComponentConfigLoader, RelationConfig, impl_loader,
+};
 use crate::relation::databricks::config::{
     DatabricksRelationMetadata, DatabricksRelationMetadataKey,
 };
@@ -27,6 +29,7 @@ pub struct Constraints {
     pub unset_non_nulls: IndexSet<String>,
     pub set_constraints: IndexSet<TypedConstraint>,
     pub unset_constraints: IndexSet<TypedConstraint>,
+    pub contract_enforced: bool,
 }
 
 impl Constraints {
@@ -41,6 +44,7 @@ impl Constraints {
             unset_non_nulls,
             set_constraints,
             unset_constraints,
+            contract_enforced: true,
         }
     }
 
@@ -410,7 +414,10 @@ impl Constraints {
                 model_constraints,
             )
         else {
-            return Self::default();
+            return Self {
+                contract_enforced: true,
+                ..Self::default()
+            };
         };
 
         // Name unnamed keys as at create time so they match the server's names instead of churning.
@@ -451,6 +458,13 @@ fn from_local_config(
 impl_loader!(Constraints, DatabricksRelationMetadata);
 
 impl ConstraintsLoader {
+    pub(crate) fn requires_server_metadata_for_diff(model_config: Option<&RelationConfig>) -> bool {
+        model_config
+            .and_then(|config| config.get(TYPE_NAME))
+            .and_then(|component| component.as_any().downcast_ref::<Constraints>())
+            .is_none_or(|constraints| constraints.contract_enforced)
+    }
+
     pub fn new_component_type_erased(
         set_non_nulls: IndexSet<String>,
         unset_non_nulls: IndexSet<String>,

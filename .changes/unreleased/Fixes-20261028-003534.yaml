@@ -1,0 +1,7 @@
+kind: Fixes
+body: Skip fallback constraint metadata queries for Databricks incremental models without enforced contracts.
+time: 2026-10-28T00:35:34.899106+05:30
+custom:
+    author: sd-db
+    issue: "16930"
+    project: dbt-core
