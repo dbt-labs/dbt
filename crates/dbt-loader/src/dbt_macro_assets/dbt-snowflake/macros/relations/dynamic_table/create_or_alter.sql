@@ -27,7 +27,9 @@
 
     See the DDL macro below for the per-attribute contract. Note CREATE OR ALTER also cannot
     express every schema change (column reorder, mid-list insert, type narrowing, drop-all); those
-    surface a Snowflake error at run time and the fallback is --full-refresh.
+    surface a Snowflake error at run time and the fallback is --full-refresh. The adapter appends
+    a hint to that effect to any failed CREATE OR ALTER (see `with_create_or_alter_hint` in
+    adapter_impl.rs), so the run's error output points at --full-refresh.
 -#}
     {%- set configuration_changes = snowflake__get_dynamic_table_configuration_changes(existing_relation, config) -%}
     {%- set on_configuration_change = config.get('on_configuration_change') -%}
