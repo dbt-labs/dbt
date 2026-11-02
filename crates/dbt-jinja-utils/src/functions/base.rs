@@ -36,53 +36,7 @@ type YmlValue = dbt_yaml::Value;
 use crate::utils::{ENV_VARS, node_metadata_from_state};
 
 use crate::functions::contract_error::get_contract_mismatches;
-use serde::Serialize;
-
-/// A JSON formatter that matches Python's json.dumps() default style:
-/// - Compact (no newlines or indentation)
-/// - Space after colons (e.g., `{"key": "value"}` instead of `{"key":"value"}`)
-/// - Space after commas (e.g., `{"a": 1, "b": 2}` instead of `{"a": 1,"b": 2}`)
-struct PythonStyleFormatter;
-
-impl serde_json::ser::Formatter for PythonStyleFormatter {
-    fn begin_object_key<W>(&mut self, writer: &mut W, first: bool) -> std::io::Result<()>
-    where
-        W: ?Sized + std::io::Write,
-    {
-        if first {
-            Ok(())
-        } else {
-            writer.write_all(b", ")
-        }
-    }
-
-    fn begin_object_value<W>(&mut self, writer: &mut W) -> std::io::Result<()>
-    where
-        W: ?Sized + std::io::Write,
-    {
-        writer.write_all(b": ")
-    }
-
-    fn begin_array_value<W>(&mut self, writer: &mut W, first: bool) -> std::io::Result<()>
-    where
-        W: ?Sized + std::io::Write,
-    {
-        if first {
-            Ok(())
-        } else {
-            writer.write_all(b", ")
-        }
-    }
-}
-
-/// Serialize a value to JSON string with Python-style formatting (space after colon)
-fn to_json_string_python_style<T: Serialize>(value: &T) -> Result<String, serde_json::Error> {
-    let mut buf = Vec::new();
-    let mut ser = serde_json::Serializer::with_formatter(&mut buf, PythonStyleFormatter);
-    value.serialize(&mut ser)?;
-    // Safe because serde_json only produces valid UTF-8
-    Ok(unsafe { String::from_utf8_unchecked(buf) })
-}
+use crate::functions::python_json::to_json_string_python_style;
 
 pub use dbt_jinja_vars::{LookupFn, SECRET_PLACEHOLDER, Var};
 
@@ -1677,6 +1631,35 @@ mod tests {
         let tmpl = env.template_from_str(template_source).unwrap();
         let output = tmpl.render(Value::UNDEFINED, &[]).unwrap();
         assert_eq!(output.trim(), r#"{"a": 1, "b": 2}"#);
+    }
+
+    #[test]
+    fn test_tojson_escapes_non_ascii() {
+        let mut env = Environment::new();
+        env.add_function("tojson", tojson);
+        env.add_function("local_md5", local_md5_fn());
+
+        let cases = [
+            ("{{ tojson({'x': '\u{3042}'}) }}", r#"{"x": "\u3042"}"#),
+            (
+                "{{ tojson({'x': '\u{e9}\u{1f600}\u{2028}'}) }}",
+                r#"{"x": "\u00e9\ud83d\ude00\u2028"}"#,
+            ),
+            (
+                "{{ tojson({'k\u{e9}': 'a\"b\\n\u{7f}'}) }}",
+                r#"{"k\u00e9": "a\"b\n\u007f"}"#,
+            ),
+        ];
+        for (src, expected) in cases {
+            let output = env.render_str(src, (), &[]).unwrap();
+            assert_eq!(output, expected, "{src}");
+        }
+
+        // Same digest as dbt 1.x: md5(json.dumps({"x": "\u3042"}))
+        let output = env
+            .render_str("{{ local_md5(tojson({'x': '\u{3042}'})) }}", (), &[])
+            .unwrap();
+        assert_eq!(output, "f3dd52a0cdda6cf470609dcfc4759191");
     }
 
     #[test]
