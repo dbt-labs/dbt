@@ -59,7 +59,11 @@ use minijinja::listener::RenderingEventListener;
 use minijinja::value::Object;
 use minijinja::{CodeLocation, State, Value, Value as MinijinjaValue};
 use regex::Regex;
+use sqlparser::ast::{JoinOperator, Query, SetExpr, TableFactor, Visit, Visitor};
+use sqlparser::keywords::Keyword;
+use sqlparser::parser::Parser;
 use sqlparser::tokenizer::{Token, Tokenizer, Whitespace};
+use std::ops::ControlFlow;
 
 type YmlValue = dbt_yaml::Value;
 
@@ -920,6 +924,13 @@ fn infer_schema_from_compiled_sql(
         ctx.rendering_listener_factory.as_ref(),
         original_file_path,
     )?;
+
+    validate_local_unit_test_sql(
+        unit_test.node_adapter(),
+        effective_unit_test_execute(unit_test, ctx.inner.execute),
+        &compiled_model_sql,
+    )
+    .map_err(|error| error.with_location(original_file_path.to_path_buf()))?;
 
     infer_unit_test_expected_schema(
         ctx,
@@ -1935,6 +1946,9 @@ WITH
     let rendered_sql =
         replace_subquery_refs_with_cte_names(adapter_type, type_ops, rendered_sql, &subqueries);
 
+    validate_local_unit_test_sql(adapter_type, effective_execute, &rendered_sql)
+        .map_err(|error| error.with_location(original_file_path.to_path_buf()))?;
+
     stdfs::create_dir_all(absolute_path_unit_test.parent().unwrap())?;
     stdfs::write(&absolute_path_unit_test, &rendered_sql)?;
 
@@ -1958,6 +1972,94 @@ WITH
         },
         config_map,
     ))
+}
+
+fn validate_local_unit_test_sql(
+    adapter_type: AdapterType,
+    execute: schemas::profiles::Execute,
+    sql: &str,
+) -> FsResult<()> {
+    if adapter_type != AdapterType::Snowflake || execute != schemas::profiles::Execute::Sidecar {
+        return Ok(());
+    }
+
+    let dialect = sqlparser_dialect_for(adapter_type);
+    let tokens = Tokenizer::new(dialect, sql).tokenize().map_err(|error| {
+        fs_err!(
+            ErrorCode::SyntaxInvalid,
+            "Unable to tokenize SQL for local unit test execution: {error}"
+        )
+    })?;
+    let mut previous_asof = false;
+    let candidate = tokens
+        .iter()
+        .filter(|token| !matches!(token, Token::Whitespace(_)))
+        .any(|token| {
+            let is_join = matches!(token, Token::Word(word) if word.keyword == Keyword::JOIN);
+            let candidate = previous_asof && is_join;
+            previous_asof = matches!(token, Token::Word(word) if word.keyword == Keyword::ASOF);
+            candidate
+        });
+    if !candidate {
+        return Ok(());
+    }
+
+    // Confirm the join operator: a relation named `asof` followed by JOIN is legal.
+    let statements = Parser::parse_sql(dialect, sql).map_err(|error| {
+        fs_err!(
+            ErrorCode::SyntaxInvalid,
+            "Unable to check ASOF JOIN support for local unit test execution: {error}"
+        )
+    })?;
+    struct AsOfJoinVisitor;
+    impl Visitor for AsOfJoinVisitor {
+        type Break = ();
+
+        fn pre_visit_query(&mut self, query: &Query) -> ControlFlow<Self::Break> {
+            fn visit_body(body: &SetExpr) -> ControlFlow<()> {
+                match body {
+                    SetExpr::Select(select) => {
+                        if select.from.iter().any(|table| {
+                            table
+                                .joins
+                                .iter()
+                                .any(|join| matches!(join.join_operator, JoinOperator::AsOf { .. }))
+                        }) {
+                            return ControlFlow::Break(());
+                        }
+                    }
+                    SetExpr::SetOperation { left, right, .. } => {
+                        visit_body(left)?;
+                        visit_body(right)?;
+                    }
+                    _ => {}
+                }
+                ControlFlow::Continue(())
+            }
+            visit_body(&query.body)
+        }
+
+        fn pre_visit_table_factor(&mut self, table: &TableFactor) -> ControlFlow<Self::Break> {
+            if let TableFactor::NestedJoin {
+                table_with_joins, ..
+            } = table
+                && table_with_joins
+                    .joins
+                    .iter()
+                    .any(|join| matches!(join.join_operator, JoinOperator::AsOf { .. }))
+            {
+                return ControlFlow::Break(());
+            }
+            ControlFlow::Continue(())
+        }
+    }
+    if statements.visit(&mut AsOfJoinVisitor).is_break() {
+        return Err(fs_err!(
+            ErrorCode::SidecarUnsupportedFeature,
+            "Snowflake ASOF JOIN is not supported for local unit test execution because its matching predicates are not preserved. Set this unit test's compute configuration to remote to execute it in the warehouse."
+        ));
+    }
+    Ok(())
 }
 
 fn format_unit_test_subquery(adapter_type: AdapterType, fqn: &str, values: &str) -> String {
@@ -3029,6 +3131,101 @@ mod tests {
     use minijinja::dispatch_object::DispatchObject;
 
     type YmlValue = dbt_yaml::Value;
+
+    #[test]
+    fn local_unit_test_asof_rejects_matching_joins() {
+        let join = "SELECT * FROM trades t ASOF JOIN actions a \
+            MATCH_CONDITION (t.traded_at >= a.action_at) \
+            ON t.device_id = a.device_id AND t.token_id = a.token_id";
+        for sql in [
+            join.to_string(),
+            join.replace("ASOF JOIN", "aSoF /* comment */\n JoIn"),
+            format!("WITH matched AS ({join}) SELECT * FROM matched"),
+            format!("SELECT * FROM ({join}) matched"),
+            format!("SELECT 1 UNION ALL {join}"),
+            format!("{join} UNION ALL SELECT 1"),
+            "SELECT * FROM (trades t ASOF JOIN actions a \
+                MATCH_CONDITION (t.traded_at >= a.action_at) ON t.id = a.id)"
+                .to_string(),
+            format!(
+                "{join} ASOF JOIN prices p MATCH_CONDITION (t.traded_at >= p.at) ON t.token_id = p.token_id"
+            ),
+        ] {
+            let error =
+                validate_local_unit_test_sql(AdapterType::Snowflake, Execute::Sidecar, &sql)
+                    .unwrap_err();
+            assert_eq!(error.code, ErrorCode::SidecarUnsupportedFeature);
+            assert_contains!(error.to_string(), "compute configuration to remote");
+        }
+    }
+
+    #[test]
+    fn local_unit_test_asof_allows_non_join_mentions() {
+        for sql in [
+            "SELECT 'ASOF JOIN' AS message",
+            "SELECT $$ASOF JOIN$$ AS message",
+            "SELECT 1 -- ASOF JOIN\n",
+            "SELECT 1 /* ASOF JOIN */",
+            "SELECT * FROM \"ASOF\" JOIN actions ON true",
+            "SELECT * FROM asof JOIN actions ON true",
+            "SELECT * FROM trades AS asof JOIN actions ON true",
+            "SELECT * FROM trades JOIN actions ON true",
+            "SELECT asof, join_column FROM trades",
+        ] {
+            validate_local_unit_test_sql(AdapterType::Snowflake, Execute::Sidecar, sql)
+                .unwrap_or_else(|error| panic!("{sql}: {error}"));
+        }
+    }
+
+    #[test]
+    fn local_unit_test_asof_preserves_other_execution_modes_and_adapters() {
+        for (adapter, execute) in [
+            (AdapterType::Snowflake, Execute::Remote),
+            (AdapterType::Snowflake, Execute::Service),
+            (AdapterType::DuckDB, Execute::Sidecar),
+            (AdapterType::Bigquery, Execute::Sidecar),
+        ] {
+            for sql in [
+                "SELECT * FROM trades ASOF JOIN actions MATCH_CONDITION (trades.at >= actions.at)",
+                "SELECT 'unterminated",
+            ] {
+                validate_local_unit_test_sql(adapter, execute, sql).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn local_unit_test_asof_respects_compute_overrides() {
+        let sql = "SELECT * FROM trades ASOF JOIN actions \
+            MATCH_CONDITION (trades.at >= actions.at)";
+        let mut unit_test = DbtUnitTest::default();
+        for (invocation, compute, rejected) in [
+            (Execute::Remote, None, false),
+            (Execute::Sidecar, None, true),
+            (Execute::Remote, Some(ComputeArg::Sidecar), true),
+            (Execute::Sidecar, Some(ComputeArg::Remote), false),
+        ] {
+            unit_test.deprecated_config.compute = compute;
+            assert_eq!(
+                validate_local_unit_test_sql(
+                    AdapterType::Snowflake,
+                    effective_unit_test_execute(&unit_test, invocation),
+                    sql,
+                )
+                .is_err(),
+                rejected,
+            );
+        }
+    }
+
+    #[test]
+    fn local_unit_test_asof_does_not_ignore_invalid_sql() {
+        for sql in ["SELECT 'unterminated", "SELECT * FROM trades ASOF JOIN"] {
+            let error = validate_local_unit_test_sql(AdapterType::Snowflake, Execute::Sidecar, sql)
+                .unwrap_err();
+            assert_eq!(error.code, ErrorCode::SyntaxInvalid);
+        }
+    }
 
     #[test]
     fn schema_policy_preserves_old_mixed_recordings() {
