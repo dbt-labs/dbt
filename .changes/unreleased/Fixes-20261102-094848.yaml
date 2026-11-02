@@ -1,0 +1,7 @@
+kind: Fixes
+body: With --batch-tests, a SQL error in a batched test query no longer drops its member tests from run_results.json; each member is recorded as errored
+time: 2026-11-02T09:48:48.325466+01:00
+custom:
+    author: i-zaykov
+    issue: ""
+    project: dbt
