@@ -1,0 +1,6 @@
+kind: Fixes
+body: Recognize supported dbt State configurations on snapshots and data tests during JSON schema validation
+time: 2026-11-03T13:53:07.959405638-08:00
+custom:
+    Author: dataders
+    Issue: N/A

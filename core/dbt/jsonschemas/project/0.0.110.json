@@ -449,6 +449,51 @@
         "Other"
       ]
     },
+    "DataTestState": {
+      "description": "The dbt State configs supported on data tests: only `require_fresh_data_from`, `evaluate_volatile_sql` and `compare_unrendered_code` (snapshots reuse the full `ModelState`). Other keys are not fields here, so they are flagged as unknown keys at parse time.",
+      "type": "object",
+      "properties": {
+        "compare_unrendered_code": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
+        "evaluate_volatile_sql": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
+        "require_fresh_data_from": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/UpdatesOn"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
     "DbtBatchSize": {
       "type": "string",
       "enum": [
@@ -877,6 +922,20 @@
     "ModelState": {
       "type": "object",
       "properties": {
+        "compare_unrendered_code": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "evaluate_volatile_sql": {
           "anyOf": [
             {
@@ -892,6 +951,20 @@
           ]
         },
         "execute_hooks_on_any_reuse": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
+        "ignore_external_modifications": {
           "anyOf": [
             {
               "type": [
@@ -1606,6 +1679,16 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "+state": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/DataTestState"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "+tags": {
@@ -4214,6 +4297,16 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "+state": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ModelState"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "+tags": {
