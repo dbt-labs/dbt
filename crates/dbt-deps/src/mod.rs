@@ -21,7 +21,9 @@ use dbt_common::cancellation::CancellationToken;
 use dbt_common::constants::{DBT_PACKAGES_LOCK_FILE, DBT_PROJECT_YML};
 use dbt_common::io_args::{FsCommand, IoArgs, ReplayMode, TimeMachineMode};
 use dbt_common::path::DbtPath;
-use dbt_common::tracing::dbt_emit::{emit_info_log_message, emit_info_progress_message};
+use dbt_common::tracing::dbt_emit::{
+    emit_info_log_message, emit_info_progress_message, emit_warn_log_message,
+};
 use dbt_common::tracing::span_info::{
     SpanStatusRecorder as _, record_span_status, record_span_status_with_attrs,
 };
@@ -35,7 +37,8 @@ use std::sync::Arc;
 use std::{collections::BTreeMap, path::Path};
 use steps::{
     SkillInstallInputs, compute_package_lock, install_packages, install_skills, load_dbt_packages,
-    load_dbt_packages_lock_without_validation, try_load_valid_dbt_packages_lock,
+    load_dbt_packages_lock_without_validation, try_infer_dbt_packages_lock_from_installed,
+    try_load_valid_dbt_packages_lock,
 };
 use tracing::Instrument as _;
 
@@ -172,8 +175,37 @@ pub async fn get_or_install_packages(
                 }
                 Err(e) => {
                     record_span_status(&fetch_span, Some(&e.to_string()));
-                    deps_context.flush_notices(&DbtPackagesLock::default());
-                    return Err(e);
+                    // When packages can't be resolved, for example because the Package Hub
+                    // is unreachable, commands other than `dbt deps` use the packages already
+                    // installed.
+                    let installed_lock = if install_deps {
+                        None
+                    } else {
+                        try_infer_dbt_packages_lock_from_installed(
+                            io,
+                            packages_install_path,
+                            dbt_packages,
+                            env,
+                            &vars,
+                        )
+                        .await
+                    };
+                    let Some(installed_lock) = installed_lock else {
+                        deps_context.flush_notices(&DbtPackagesLock::default());
+                        return Err(e);
+                    };
+                    emit_warn_log_message(
+                        ErrorCode::DepsInstalledPackagesFallback,
+                        format!(
+                            "Couldn't resolve packages from {packages_yml}: {e}. Using the packages installed in {install_path}, which aren't checked against {packages_yml}. Run `dbt deps` to resolve and lock them.",
+                            packages_yml = package_yml_name.as_ref(),
+                            install_path = packages_install_path
+                                .strip_prefix(&io.in_dir)
+                                .unwrap_or(packages_install_path)
+                                .display(),
+                        ),
+                    );
+                    installed_lock
                 }
             }
         }
@@ -183,7 +215,6 @@ pub async fn get_or_install_packages(
 
         // If upgrade flag is set but no packages.yml exists, we can't upgrade
         if upgrade {
-            use dbt_common::tracing::dbt_emit::emit_warn_log_message;
             emit_warn_log_message(
                 ErrorCode::InvalidConfig,
                 "Cannot upgrade packages without packages.yml or dependencies.yml. Using existing package-lock.yml.",

@@ -183,6 +183,7 @@ pub enum ErrorCode {
     /// `get_unit_test_sql` macro. Fusion builds unit-test SQL in Rust and never
     /// dispatches through either, so the override has no effect.
     UnitTestMacroOverrideIgnored = 1161,
+    DepsInstalledPackagesFallback = 1162,
 
     // Network/HTTP [1200–1249]
     NetworkError = 1200,
