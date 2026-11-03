@@ -9,8 +9,8 @@ use minijinja::Value;
 use minijinja::dispatch_object::DispatchObject;
 
 use crate::macro_test_harness::{
-    MacroTestHarness, MacroTestHarnessBuilder, assert_executed_contains, default_mock_config,
-    executed_sql,
+    MacroTestHarness, MacroTestHarnessBuilder, assert_executed_contains, cache_added_types,
+    default_mock_config, executed_sql,
 };
 
 fn incremental_macro_name(adapter_type: AdapterType) -> &'static str {
@@ -183,6 +183,8 @@ mod databricks {
         });
         mock.on("get_column_tags_from_model", |_| Ok(Value::UNDEFINED));
         mock.on("drop_relation", |_| Ok(Value::UNDEFINED));
+        mock.on("cache_dropped", |_| Ok(Value::UNDEFINED));
+        mock.on("cache_added", |_| Ok(Value::UNDEFINED));
         mock.on("commit", |_| Ok(Value::UNDEFINED));
         mock.on("resolve_file_format", |_| Ok(Value::from("delta")));
         mock.on("is_uniform", |_| Ok(Value::from(false)));
@@ -323,6 +325,7 @@ mod databricks {
             .observed_calls()
             .assert_called("drop_relation");
         assert_executed_contains(harness.mock(), "create");
+        assert_eq!(cache_added_types(harness.mock()), ["table"]);
     }
 
     #[test]

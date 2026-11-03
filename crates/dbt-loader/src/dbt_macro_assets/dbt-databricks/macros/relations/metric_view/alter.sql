@@ -44,6 +44,7 @@ $$
   {% set tags = config.get('databricks_tags') %}
   {% set tblproperties = config.get('tblproperties') %}
   {{ execute_multiple_statements(get_replace_sql(existing_relation, target_relation, sql)) }}
+  {% do cache_replaced_relation(target_relation) %}
   {%- do apply_tags(target_relation, tags) -%}
 
   {% if tblproperties %}

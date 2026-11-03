@@ -179,6 +179,14 @@ pub fn executed_sql(mock: &MockJinjaObject) -> Vec<String> {
         .collect()
 }
 
+/// Types of the relations passed to `adapter.cache_added()`, in call order.
+pub fn cache_added_types(mock: &MockJinjaObject) -> Vec<String> {
+    mock.observed_calls()
+        .to("cache_added")
+        .map(|c| c.args[0].get_attr("type").unwrap().to_string())
+        .collect()
+}
+
 /// Assert that at least one SQL sent to `adapter.execute()` contains the given
 /// substring (case insensitive).
 pub fn assert_executed_contains(mock: &MockJinjaObject, substring: &str) {

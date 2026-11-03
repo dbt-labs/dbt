@@ -291,6 +291,57 @@ mod databricks {
         );
     }
 
+    #[test]
+    fn cache_replaced_relation_replaces_only_a_missing_or_other_type_entry() {
+        let cases = [
+            (None, vec![("cache_added", "table")]),
+            (
+                Some(RelationType::View),
+                vec![("cache_dropped", "view"), ("cache_added", "table")],
+            ),
+            (Some(RelationType::Table), vec![]),
+        ];
+        for (cached_type, expected) in cases {
+            let harness = MacroTestHarness::for_adapter(AdapterType::Databricks)
+                .load_all_macros()
+                .with_stub_functions()
+                .build()
+                .expect("cache harness should build");
+            let cached = cached_type
+                .map(|relation_type| harness.relation("c", "s", "my_model", Some(relation_type)));
+            harness.mock().on("get_relation", move |_| {
+                Ok(cached.clone().map_or_else(
+                    || Value::from(()),
+                    |relation| RelationObject::new(relation).into_value(),
+                ))
+            });
+            harness.mock().on("cache_dropped", |_| Ok(Value::UNDEFINED));
+            harness.mock().on("cache_added", |_| Ok(Value::UNDEFINED));
+            let target = harness.relation("c", "s", "my_model", Some(RelationType::Table));
+            let ctx = BTreeMap::from([("target", RelationObject::new(target).into_value())]);
+
+            harness
+                .render("{% do cache_replaced_relation(target) %}", ctx)
+                .expect("cache_replaced_relation should render");
+
+            let cache_calls: Vec<(String, String)> = harness
+                .mock()
+                .observed_calls()
+                .iter()
+                .filter(|call| call.method.starts_with("cache_"))
+                .map(|call| {
+                    let relation_type = call.args[0].get_attr("type").unwrap().to_string();
+                    (call.method.clone(), relation_type)
+                })
+                .collect();
+            let expected: Vec<(String, String)> = expected
+                .into_iter()
+                .map(|(method, relation_type)| (method.to_string(), relation_type.to_string()))
+                .collect();
+            assert_eq!(cache_calls, expected, "cached relation: {cached_type:?}");
+        }
+    }
+
     fn constraint_config(persist_constraints: bool) -> Value {
         let config = default_mock_config();
         config.on("get", move |args| {
