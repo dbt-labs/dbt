@@ -258,9 +258,7 @@ class TestStateConfigs:
             "version": 2,
             "models": [{"name": "my_model", "config": {"state": self.model_state}}],
             "snapshots": [{"name": "my_snapshot", "config": {"state": self.model_state}}],
-            "data_tests": [
-                {"name": "my_data_test", "config": {"state": self.data_test_state}}
-            ],
+            "data_tests": [{"name": "my_data_test", "config": {"state": self.data_test_state}}],
         }
         jsonschema_validate(resources_schema(), resources_dict, "properties.yml")
         assert active_deprecations == {}
