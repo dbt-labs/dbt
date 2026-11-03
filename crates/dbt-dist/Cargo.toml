@@ -29,6 +29,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 tempfile = { workspace = true }
+toml = { workspace = true }
 toml_edit = { workspace = true }
 
 [dev-dependencies]

@@ -1,0 +1,5 @@
+model.test.b:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists `dbt-test-env`.`adapters_bigquery_create_schema_execution_project`
+  error: 'InvalidArguments: [bq] Could not run query: 400 Bad Request: ProjectId must be non-empty (sqlstate: 00000, vendor_code: -2147483648)'

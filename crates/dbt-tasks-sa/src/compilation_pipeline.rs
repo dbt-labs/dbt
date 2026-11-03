@@ -33,7 +33,7 @@ use dbt_schemas::{
 };
 use dbt_state::selector::{RunCacheStateSelectorArgs, evaluate_state_selector};
 use dbt_telemetry::{ExecutionPhase, PhaseExecuted};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use tracing::Instrument as _;
 
@@ -305,38 +305,92 @@ fn collect_service_state_selector_values(
     values: &mut BTreeSet<String>,
     selector_definitions: &HashMap<String, SelectorEntry>,
 ) {
-    match expr {
-        SelectExpression::Atom(criteria) => {
-            if criteria.method == MethodName::State {
-                if let Some(value) = criteria.value.as_str() {
-                    values.insert(value.to_string());
-                }
-            } else if criteria.method == MethodName::Selector {
-                // Handle selector:name references by looking up the named selector
-                if let Some(entry) = criteria
+    visit_selector_atoms(
+        expr,
+        selector_definitions,
+        &mut HashSet::new(),
+        &mut |criteria| {
+            if criteria.method == MethodName::State
+                && let Some(value) = criteria.value.as_str()
+            {
+                values.insert(value.to_string());
+            }
+        },
+    );
+}
+
+/// Whether the selection uses a method that reads previous state (`state:`, `result:`,
+/// `source_status:`), or a `selector:` reference that is not an exact selector name.
+pub fn selection_reads_previous_state(selectors: &ResolvedSelector) -> bool {
+    let definitions = &selectors.selector_definitions;
+    let mut reads = false;
+    for expr in selectors.include.iter().chain(&selectors.exclude) {
+        visit_selector_atoms(expr, definitions, &mut HashSet::new(), &mut |criteria| {
+            reads |= match criteria.method {
+                MethodName::State | MethodName::Result | MethodName::SourceStatus => true,
+                MethodName::Selector => !criteria
                     .value
                     .as_str()
-                    .and_then(|name| selector_definitions.get(name))
+                    .is_some_and(|name| definitions.contains_key(name)),
+                MethodName::Access
+                | MethodName::Config
+                | MethodName::Exposure
+                | MethodName::File
+                | MethodName::Function
+                | MethodName::Fqn
+                | MethodName::Group
+                | MethodName::Metric
+                | MethodName::Package
+                | MethodName::Path
+                | MethodName::ResourceType
+                | MethodName::SavedQuery
+                | MethodName::SemanticModel
+                | MethodName::Source
+                | MethodName::Tag
+                | MethodName::TestName
+                | MethodName::TestType
+                | MethodName::UnitTest
+                | MethodName::Version
+                | MethodName::Column => false,
+            };
+        });
+    }
+    reads
+}
+
+/// Visits every atom in `expr`, following each `selector:name` reference once.
+fn visit_selector_atoms<'a>(
+    expr: &'a SelectExpression,
+    selector_definitions: &'a HashMap<String, SelectorEntry>,
+    expanded: &mut HashSet<&'a str>,
+    visit: &mut impl FnMut(&SelectionCriteria),
+) {
+    match expr {
+        SelectExpression::Atom(criteria) => {
+            visit(criteria);
+            if criteria.method == MethodName::Selector {
+                // Handle selector:name references by looking up the named selector
+                if let Some((name, entry)) = criteria
+                    .value
+                    .as_str()
+                    .and_then(|name| selector_definitions.get_key_value(name))
+                    && expanded.insert(name.as_str())
                 {
-                    collect_service_state_selector_values(
-                        &entry.include,
-                        values,
-                        selector_definitions,
-                    );
+                    visit_selector_atoms(&entry.include, selector_definitions, expanded, visit);
                 }
             }
             // Also traverse nested excludes within the atom
             if let Some(ref exclude) = criteria.exclude {
-                collect_service_state_selector_values(exclude, values, selector_definitions);
+                visit_selector_atoms(exclude, selector_definitions, expanded, visit);
             }
         }
         SelectExpression::And(children) | SelectExpression::Or(children) => {
             for child in children {
-                collect_service_state_selector_values(child, values, selector_definitions);
+                visit_selector_atoms(child, selector_definitions, expanded, visit);
             }
         }
         SelectExpression::Exclude(inner) => {
-            collect_service_state_selector_values(inner, values, selector_definitions);
+            visit_selector_atoms(inner, selector_definitions, expanded, visit);
         }
     }
 }
@@ -621,5 +675,71 @@ mod scheduled_adapter_tests {
         .expect("the externally evaluated state selector result is scheduled");
 
         assert_eq!(schedule.selected_nodes, BTreeSet::from([unique_id]));
+    }
+}
+
+#[cfg(test)]
+mod selection_reads_previous_state_tests {
+    use super::*;
+    use dbt_common::node_selector::parse_model_specifiers;
+    use dbt_schemas::schemas::selectors::SelectorDefinitionValue;
+
+    fn expr(spec: &str) -> SelectExpression {
+        parse_model_specifiers(&[spec.to_string()]).expect("valid selection spec")
+    }
+
+    /// `--select <select>` with named selectors given as `(name, definition)` pairs.
+    fn reads(select: &str, selectors: &[(&str, &str)]) -> bool {
+        let selector_definitions = selectors
+            .iter()
+            .map(|(name, include)| {
+                let entry = SelectorEntry {
+                    include: expr(include),
+                    is_default: false,
+                    description: None,
+                    definition: SelectorDefinitionValue::String(String::new()),
+                };
+                ((*name).to_string(), entry)
+            })
+            .collect();
+        selection_reads_previous_state(&ResolvedSelector {
+            include: Some(expr(select)),
+            exclude: None,
+            selector_definitions,
+        })
+    }
+
+    #[test]
+    fn top_level_methods() {
+        assert!(reads("result:success", &[]));
+        assert!(reads("state:modified", &[]));
+        assert!(reads("source_status:fresher", &[]));
+        assert!(!reads("tag:nightly", &[]));
+    }
+
+    #[test]
+    fn selector_reference_reads_its_definition() {
+        assert!(reads("selector:failed", &[("failed", "result:error")]));
+        assert!(reads("selector:changed", &[("changed", "state:modified")]));
+        assert!(!reads("selector:nightly", &[("nightly", "tag:nightly")]));
+    }
+
+    #[test]
+    fn nested_selector_references() {
+        let nested = [("outer", "selector:inner"), ("inner", "state:modified")];
+        assert!(reads("selector:outer", &nested));
+        let plain = [("outer", "selector:inner"), ("inner", "tag:nightly")];
+        assert!(!reads("selector:outer", &plain));
+    }
+
+    #[test]
+    fn selector_cycle_terminates() {
+        let cycle = [("a", "selector:b"), ("b", "selector:a")];
+        assert!(!reads("selector:a", &cycle));
+    }
+
+    #[test]
+    fn wildcard_selector_reference_fails_closed() {
+        assert!(reads("selector:foo_*", &[("foo_bar", "tag:nightly")]));
     }
 }

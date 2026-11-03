@@ -2,13 +2,13 @@
 //!
 //! `dbt-error` and `dbt-frontend-common` keep a DataFusion error only as an
 //! opaque cause. Code that gets errors from DataFusion converts them here:
-//! `.into_fs()` / `.into_internal()` on a DataFusion result, and
+//! `.into_fs()` on a DataFusion result, and
 //! `.into_datafusion()` on an `FsResult` that has to be returned to
-//! DataFusion.
+//! DataFusion. (The frontend converts DataFusion errors to its own
+//! `InternalError` itself.)
 
 use datafusion_common::DataFusionError;
 use dbt_error::{ErrorCode, FsError, FsResult, NameError, WrappedError};
-use dbt_frontend_common::error::{DatafusionError, InternalError, InternalResult};
 
 /// The [FsError] for a DataFusion error.
 pub fn fs_error(err: DataFusionError) -> FsError {
@@ -67,17 +67,6 @@ pub fn fs_error(err: DataFusionError) -> FsError {
     }
 }
 
-/// The [InternalError] for a DataFusion error.
-pub fn internal_error(err: DataFusionError) -> InternalError {
-    let message = match &err {
-        DataFusionError::Plan(e) => e.to_string(),
-        DataFusionError::SchemaError(e, _) => e.to_string(),
-        DataFusionError::ArrowError(e, _) => e.to_string(),
-        _ => err.to_string(),
-    };
-    DatafusionError::new(message, err).into()
-}
-
 /// The DataFusion error for an [FsError]: the DataFusion error it wraps, if
 /// any, and the [FsError] itself as an external error otherwise.
 pub fn datafusion_error(err: FsError) -> DataFusionError {
@@ -92,17 +81,11 @@ pub fn datafusion_error(err: FsError) -> DataFusionError {
 
 pub trait DatafusionResultExt<T> {
     fn into_fs(self) -> FsResult<T>;
-
-    fn into_internal(self) -> InternalResult<T>;
 }
 
 impl<T> DatafusionResultExt<T> for Result<T, DataFusionError> {
     fn into_fs(self) -> FsResult<T> {
         self.map_err(|err| Box::new(fs_error(err)))
-    }
-
-    fn into_internal(self) -> InternalResult<T> {
-        self.map_err(|err| Box::new(internal_error(err)))
     }
 }
 
@@ -136,15 +119,5 @@ mod tests {
             datafusion_error(err),
             DataFusionError::Internal(message) if message == "boom"
         ));
-    }
-
-    #[test]
-    fn an_internal_error_shows_the_plan_message_without_datafusion_prefix() {
-        let err = internal_error(DataFusionError::Plan("no such table".to_string()));
-        assert_eq!(
-            err.to_string(),
-            "DataFusion error: Error during planning: no such table"
-        );
-        assert_eq!(err.message(), "no such table");
     }
 }

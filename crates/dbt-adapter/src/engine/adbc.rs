@@ -26,10 +26,10 @@ use crate::sql_types::TypeOps;
 use crate::stmt_splitter::StmtSplitter;
 
 use super::adapter_engine::*;
-use super::databricks;
-use super::make_behavior;
-use super::noop_connection::NoopConnection;
 use super::retry::{ConnectionRetryPolicy, QueryRetryPolicy};
+use dbt_adapter_engine::behavior::make_behavior;
+use dbt_adapter_engine::databricks;
+use dbt_adapter_engine::noop_connection::NoopConnection;
 
 #[derive(Default)]
 pub struct DatabaseMap {
@@ -217,7 +217,7 @@ impl AdbcEngine {
             })
             .map_err(crate::errors::auth_error_to_adapter_error)?;
         let load_strategy = match (use_cloud_credentials, self.adapter_type) {
-            (true, _) => LoadStrategy::Remote,
+            (true, _) => LoadStrategy::Bridge,
             (false, AdapterType::DuckDB) => LoadStrategy::SystemThenCdnCache,
             (false, _) => LoadStrategy::CdnCache,
         };

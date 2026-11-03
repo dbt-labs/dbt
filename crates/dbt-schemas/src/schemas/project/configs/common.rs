@@ -202,10 +202,10 @@ pub struct WarehouseSpecificNodeConfig {
     #[serde(default, deserialize_with = "bool_or_string_bool")]
     #[warehouse(valid(all_nodes))]
     pub auto_liquid_cluster: Option<bool>,
-    #[warehouse(valid(Model))]
+    #[warehouse(valid(Model, Snapshot))]
     pub zorder: Option<StringOrArrayOfStrings>,
     #[serde(default, deserialize_with = "bool_or_string_bool")]
-    #[warehouse(valid(Model))]
+    #[warehouse(valid(Model, Snapshot))]
     pub skip_optimize: Option<bool>,
     #[warehouse(valid(all_nodes))]
     pub clustered_by: Option<StringOrArrayOfStrings>,
@@ -231,6 +231,8 @@ pub struct WarehouseSpecificNodeConfig {
     pub not_matched_condition: Option<String>,
     #[warehouse(valid(all_nodes))]
     pub not_matched_by_source_condition: Option<String>,
+    #[warehouse(valid(all_nodes))]
+    pub merge_actions_explicit: Option<String>,
     #[warehouse(valid(all_nodes))]
     pub not_matched_by_source_action: Option<String>,
     #[serde(default, deserialize_with = "bool_or_string_bool")]
@@ -374,24 +376,30 @@ pub struct WarehouseSpecificNodeConfig {
     pub category: Option<DataLakeObjectCategory>,
 
     // ClickHouse
-    // Snapshots share ClickHouse table creation; seeds also consume engine and order_by.
-    #[warehouse(valid(Model, Seed, Snapshot))]
+    // Table options, valid where the v1 macros render them: create_csv_table (seeds: engine,
+    // order_by), create_table_as (snapshots and store_failures tests: all of them), the Memory
+    // fixture tables of unit tests (settings only). v2's seed insert renders no query_settings
+    // yet, so the key is not valid on seeds until the v1 insert path is restored.
+    #[warehouse(valid(Model, Seed, Snapshot, Test))]
     pub engine: Option<String>,
-    #[warehouse(valid(Model, Seed, Snapshot))]
+    #[warehouse(valid(Model, Seed, Snapshot, Test))]
     pub order_by: Option<StringOrArrayOfStrings>,
-    #[warehouse(valid(Model, Snapshot))]
+    #[warehouse(valid(Model, Snapshot, Test))]
     pub ttl: Option<String>,
-    #[warehouse(valid(Model, Snapshot))]
+    #[warehouse(valid(Model, Snapshot, Test, UnitTest))]
     pub settings: Option<BTreeMap<String, YmlValue>>,
-    #[warehouse(valid(Model, Snapshot))]
+    #[warehouse(valid(Model, Snapshot, Test))]
     pub query_settings: Option<BTreeMap<String, YmlValue>>,
-    #[warehouse(valid(Model, Snapshot))]
+    #[warehouse(valid(Model, Snapshot, Test))]
     pub projections: Option<Vec<YmlValue>>,
     // distributed materializations
     #[warehouse(valid(Model))]
     pub sharding_key: Option<String>,
+    // Only reaches DDL through a node-built relation (`ClickHouseRelation.create_from`,
+    // dbt/adapters/clickhouse/relation.py): models and seeds. Snapshot and test targets come from
+    // api.Relation.create, where v1 ignores it too.
     #[serde(default, deserialize_with = "bool_or_string_bool")]
-    #[warehouse(valid(Model))]
+    #[warehouse(valid(Model, Seed))]
     pub disable_on_cluster: Option<bool>,
     // incremental materialization
     #[serde(default, deserialize_with = "bool_or_string_bool")]
@@ -453,6 +461,9 @@ impl ResolvedConfig for WarehouseSpecificNodeConfig {
         true
     }
 }
+
+/// The aliases [`take_databricks_catalog_alias`] translates, for a config type that calls it.
+pub const TYPED_ALIAS_KEYS: &[&str] = &["catalog"];
 
 /// Takes the Databricks `catalog` alias value out of `warehouse_specific`, for the caller to
 /// move into its own `database` field -- mirroring dbt-core's `Credentials._ALIASES`
@@ -643,6 +654,8 @@ pub fn same_warehouse_config(
     let not_matched_condition_eq = self_wh.not_matched_condition == other_wh.not_matched_condition;
     let not_matched_by_source_condition_eq =
         self_wh.not_matched_by_source_condition == other_wh.not_matched_by_source_condition;
+    let merge_actions_explicit_eq =
+        self_wh.merge_actions_explicit == other_wh.merge_actions_explicit;
     let not_matched_by_source_action_eq =
         self_wh.not_matched_by_source_action == other_wh.not_matched_by_source_action;
     let merge_with_schema_evolution_eq =
@@ -756,6 +769,7 @@ pub fn same_warehouse_config(
         && matched_condition_eq
         && not_matched_condition_eq
         && not_matched_by_source_condition_eq
+        && merge_actions_explicit_eq
         && not_matched_by_source_action_eq
         && merge_with_schema_evolution_eq
         && skip_matched_step_eq
@@ -1114,6 +1128,14 @@ pub fn same_warehouse_config(
                     Some((
                         format!("{:?}", &self_wh.not_matched_by_source_condition),
                         format!("{:?}", &other_wh.not_matched_by_source_condition),
+                    )),
+                ),
+                (
+                    "merge_actions_explicit",
+                    merge_actions_explicit_eq,
+                    Some((
+                        format!("{:?}", &self_wh.merge_actions_explicit),
+                        format!("{:?}", &other_wh.merge_actions_explicit),
                     )),
                 ),
                 (

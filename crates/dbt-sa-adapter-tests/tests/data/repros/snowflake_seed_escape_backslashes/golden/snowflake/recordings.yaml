@@ -1,0 +1,97 @@
+b568cfbf:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists development.snowflake_seed_escape_backslashes
+dbbbff64:
+- sequence: 0
+  type: execute
+  sql: |-
+    show terse schemas in database development
+    limit 10000
+seed.snowflake_seed_escape_backslashes.backslash_seed:
+- sequence: 0
+  type: execute
+  sql: SHOW OBJECTS IN SCHEMA "DEVELOPMENT"."SNOWFLAKE_SEED_ESCAPE_BACKSLASHES" LIMIT 10000
+- sequence: 1
+  type: execute
+  sql: create transient table development.snowflake_seed_escape_backslashes.backslash_seed (ID bigint,TEST_CASE varchar,VALUE varchar)
+- sequence: 2
+  type: execute
+  sql: BEGIN
+- sequence: 3
+  type: execute
+  sql: |-
+    insert overwrite into development.snowflake_seed_escape_backslashes.backslash_seed (ID, TEST_CASE, VALUE) values
+    ('1','no_backslash','MomBaby'),('2','single_backslash','Mom\\Baby'),('3','double_backslash','Mom\\\\Baby'),('4','trailing_backslash','Baby\\'),('5','literal_backslash_n','line1\\
+    line2'),('6','actual_newline','line1
+    line2'),('7','literal_backslash_t','col1\\tcol2'),('8','actual_tab','col1\tcol2'),('9','literal_backslash_r','line1\\rline2'),('10','literal_backslash_b','a\\bc'),('11','literal_backslash_f','a\\fc'),('12','literal_single_quote','it''s')
+- sequence: 4
+  type: execute
+  sql: COMMIT
+test.snowflake_seed_escape_backslashes.backslash_seed_round_trip:
+- sequence: 0
+  type: execute
+  sql: |-
+    select
+    count(*) as failures,
+    count(*) != 0 as should_warn,
+    count(*) != 0 as should_error
+    from (
+    
+    
+    
+    with expected as (
+    select 1  as id, $$MomBaby$$       as expected_value union all
+    select 2,        $$Mom\Baby$$              union all
+    select 3,        $$Mom\\Baby$$             union all
+    select 4,        $$Baby\$$                 union all
+    select 5,        $$line1\
+    line2$$          union all
+    -- id 6: an actual LF inside the dollar-quoted literal.
+    select 6,        $$line1
+    line2$$                                          union all
+    select 7,        $$col1\tcol2$$            union all
+    -- id 8: an actual TAB character (between col1 and col2).
+    select 8,        $$col1\tcol2$$           union all
+    select 9,        $$line1\rline2$$          union all
+    select 10,       $$a\bc$$                  union all
+    select 11,       $$a\fc$$                  union all
+    select 12,       $$it's$$
+    ),
+    
+    actual as (
+    select id, test_case, value
+    from development.snowflake_seed_escape_backslashes.backslash_seed
+    ),
+    
+    joined as (
+    select
+    coalesce(a.id, e.id)              as id,
+    a.test_case                       as test_case,
+    a.value                           as actual_value,
+    e.expected_value                  as expected_value,
+    case
+    when a.id is null then 'missing_row'
+    when e.id is null then 'unexpected_row'
+    when a.value is distinct from e.expected_value then 'value_mismatch'
+    end                               as failure_reason
+    from actual a
+    full outer join expected e
+    on a.id = e.id
+    )
+    
+    select
+    id,
+    test_case,
+    failure_reason,
+    actual_value,
+    expected_value,
+    hex_encode(to_binary(actual_value,   'utf-8')) as actual_hex,
+    hex_encode(to_binary(expected_value, 'utf-8')) as expected_hex
+    from joined
+    where failure_reason is not null
+    order by id, failure_reason
+    
+    
+    
+    ) dbt_internal_test

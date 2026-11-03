@@ -1,0 +1,16 @@
+32bbc51d:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists "123_I_NEED_QUOTES".snowflake_database_quoting
+  error: |-
+    Internal: [Snowflake] 002003 (02000): SQL compilation error:
+    Database '"123_I_NEED_QUOTES"' does not exist or not authorized. Your primary role TESTER or one of your secondary roles must have USAGE or any other privilege granted on DATABASE "123_I_NEED_QUOTES". (sqlstate: 02000, vendor_code: 2003)
+f8644564:
+- sequence: 0
+  type: execute
+  sql: |-
+    show terse schemas in database "123_I_NEED_QUOTES"
+    limit 10000
+  error: |-
+    Internal: [Snowflake] 002043 (02000): SQL compilation error:
+    Object does not exist, or operation cannot be performed. (sqlstate: 02000, vendor_code: 2043)

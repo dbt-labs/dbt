@@ -1,0 +1,13 @@
+model.test.b:
+- sequence: 0
+  type: execute
+  sql: USE DATABASE development
+- sequence: 1
+  type: execute
+  sql: ' CREATE OR REPLACE SCHEMA adapters_snowflake_get_columns_in_relation'
+- sequence: 2
+  type: execute
+  sql: CREATE OR REPLACE TABLE adapters_snowflake_get_columns_in_relation.c (number_col int, text_col varchar(100), text_col2 varchar(101), array_col array(object(key varchar, value varchar, nested object(nested_key varchar, nested_value varchar))))
+- sequence: 3
+  type: execute
+  sql: describe table development.adapters_snowflake_get_columns_in_relation.c

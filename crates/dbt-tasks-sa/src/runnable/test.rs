@@ -19,7 +19,6 @@ use dbt_common::warn_error_options::{
     SupportedLegacyWarnError, WarnErrorDecision, WarnErrorOptions,
 };
 use dbt_common::{ErrorCode, fs_err, unexpected_fs_err};
-use dbt_jinja_utils::utils::add_task_context;
 use dbt_pretty_table::{make_column_names, pretty_data_table};
 use dbt_scheduler::instructions::SqlInstruction;
 use dbt_schemas::schemas::DbtTest;
@@ -152,7 +151,7 @@ pub fn insert_test_run_stat(
     status: TestExecutionStatus,
 ) {
     let thread_id = ctx.thread_id;
-    ctx.inner.run_stats.insert(
+    ctx.inner.run_stats.upsert_sync(
         unique_id.clone(),
         Stat::new(
             unique_id,
@@ -231,7 +230,10 @@ impl AggregatedTestRunRemoteTask {
         )
     }
 
-    fn build_base_context(&self, ctx: &TaskRunnerCtx) -> BTreeMap<String, MinijinjaValue> {
+    fn build_base_context(
+        &self,
+        ctx: &TaskRunnerCtx,
+    ) -> FsResult<BTreeMap<String, MinijinjaValue>> {
         let mut base_context = ctx.inner.base_context.clone();
         base_context.insert(
             TARGET_PACKAGE_NAME.to_string(),
@@ -245,7 +247,11 @@ impl AggregatedTestRunRemoteTask {
             DBT_AGGREGATED_GENERIC_TEST_CONTEXT.to_string(),
             MinijinjaValue::from(Vec::<String>::new()),
         );
-        base_context
+        ctx.insert_adapter_overlay(
+            &mut base_context,
+            ctx.adapter_type_for(self.group.aggregated_test.as_ref()),
+        )?;
+        Ok(base_context)
     }
 
     async fn receive_sql_instruction(&self) -> FsResult<SqlInstruction> {
@@ -366,10 +372,10 @@ impl AggregatedTestRunRemoteTask {
             }
         }
 
-        let base_context = self.build_base_context(ctx);
+        let base_context = self.build_base_context(ctx)?;
         let sql_instruction = self.receive_sql_instruction().await?;
 
-        let adapter_type = self.group.aggregated_test.node_adapter();
+        let adapter = ctx.adapter_for(self.group.aggregated_test.as_ref())?;
         let test = self.group.aggregated_test.clone();
         let ctx_inner = ctx.clone();
         let wait_parents = span_by_id
@@ -384,7 +390,7 @@ impl AggregatedTestRunRemoteTask {
                         &sql_instruction.sql,
                         &test,
                         ctx_inner.generic_test_relationships(),
-                        adapter_type,
+                        &adapter,
                         ctx_inner.runtime_config(),
                         &ctx_inner.inner.materialization_resolver,
                         ctx_inner.env.clone(),
@@ -441,7 +447,7 @@ impl AggregatedTestRunRemoteTask {
             if let Some(main_response) = &main_response {
                 ctx.inner
                     .main_adapter_responses
-                    .insert(unique_id.clone(), main_response.clone());
+                    .upsert_sync(unique_id.clone(), main_response.clone());
             }
             let (_, span) = span_by_id
                 .remove(unique_id)
@@ -492,7 +498,7 @@ impl AggregatedTestRunRemoteTask {
         if let Some(execution_result) = result.execution_result {
             ctx.inner
                 .data_test_execution_results
-                .insert(unique_id.to_string(), execution_result);
+                .upsert_sync(unique_id.to_string(), execution_result);
         }
 
         ctx.inner
@@ -587,9 +593,7 @@ pub fn execute_test_remote(
 ) -> FsResult<NodeStatus> {
     let start = SystemTime::now();
     let unique_id = &test.common().unique_id;
-    let mut base_context = ctx.inner.base_context.clone();
-
-    add_task_context(&mut base_context, test.common(), &ctx.thread_id);
+    let base_context = ctx.run_base_context(test)?;
 
     let sql_instruction = match &task_result.lp_instruction {
         Some(_) => {
@@ -619,11 +623,12 @@ fn execute_test_remote_inner(
     // path. The runner framework turns the returned Err into NodeStatus::Errored
     // and records it. Severity is only consulted for successfully-returned
     // results below.
+    let adapter = ctx.adapter_for(test)?;
     let (test_results, failing_rows_opt, main_response) = materialize_test(
         &sql_instruction.sql,
         test,
         ctx.generic_test_relationships(),
-        test.node_adapter(),
+        &adapter,
         ctx.runtime_config(),
         &ctx.inner.materialization_resolver,
         ctx.env.clone(),
@@ -633,7 +638,7 @@ fn execute_test_remote_inner(
     if let Some(main_response) = main_response {
         ctx.inner
             .main_adapter_responses
-            .insert(test.__common_attr__.unique_id.clone(), main_response);
+            .upsert_sync(test.__common_attr__.unique_id.clone(), main_response);
     }
     let test_result = test_results
         .into_iter()
@@ -706,7 +711,7 @@ pub fn process_test_result(
     if let Some(execution_result) = result.execution_result {
         ctx.inner
             .data_test_execution_results
-            .insert(unique_id.clone(), execution_result);
+            .upsert_sync(unique_id.clone(), execution_result);
     }
 
     Ok(node_status)
@@ -730,7 +735,7 @@ pub fn process_statically_checked_test_result(
     );
 
     let unique_id = &test.common().unique_id;
-    ctx.inner.run_stats.insert(
+    ctx.inner.run_stats.upsert_sync(
         unique_id.clone(),
         Stat::new(
             unique_id.clone(),

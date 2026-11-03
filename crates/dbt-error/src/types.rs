@@ -1,4 +1,4 @@
-use dbt_base::cancel::CancelledError;
+use dbt_cancel::CancelledError;
 use dbt_frontend_common::error::{FrontendError, FrontendResult, NameCandidate, format_candidates};
 use itertools::Itertools as _;
 use regex::Regex;

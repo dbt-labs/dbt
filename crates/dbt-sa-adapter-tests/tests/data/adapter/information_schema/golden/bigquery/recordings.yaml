@@ -1,0 +1,139 @@
+'105057e7':
+- sequence: 0
+  type: execute
+  sql: create schema if not exists `dbt-test-env`.`adapters_bigquery_information_schema`
+model.test.test_columns_info:
+- sequence: 0
+  type: execute
+  sql: CREATE SCHEMA IF NOT EXISTS adapters_bigquery_information_schema
+- sequence: 1
+  type: execute
+  sql: |-
+    CREATE OR REPLACE TABLE adapters_bigquery_information_schema.info_schema_test_table (
+    id INT64,
+    name STRING,
+    created_at TIMESTAMP
+    )
+- sequence: 2
+  type: execute
+  sql: |-
+    INSERT INTO adapters_bigquery_information_schema.info_schema_test_table VALUES
+    (1, 'test', CURRENT_TIMESTAMP())
+- sequence: 3
+  type: execute
+  sql: |-
+    create or replace view `dbt-test-env`.`adapters_bigquery_information_schema`.`test_columns_info`
+    OPTIONS()
+    as -- Create a test table  
+    
+    
+    
+    
+    
+    
+    -- Generate INFORMATION_SCHEMA.COLUMNS path using the relation.information_schema() method
+    
+    
+    
+    
+    
+    -- Query INFORMATION_SCHEMA.COLUMNS to get column details for our test table
+    select 
+    table_catalog,
+    table_schema,
+    table_name,
+    column_name,
+    data_type,
+    ordinal_position,
+    'Listed from ' || '`dbt-test-env`.adapters_bigquery_information_schema.INFORMATION_SCHEMA.COLUMNS' as source
+    from `dbt-test-env`.adapters_bigquery_information_schema.INFORMATION_SCHEMA.COLUMNS
+    where table_schema = 'adapters_bigquery_information_schema'
+    and upper(table_name) = 'INFO_SCHEMA_TEST_TABLE'
+    order by ordinal_position;
+model.test.test_object_privileges:
+- sequence: 0
+  type: execute
+  sql: CREATE SCHEMA IF NOT EXISTS adapters_bigquery_information_schema
+- sequence: 1
+  type: execute
+  sql: |-
+    CREATE OR REPLACE TABLE adapters_bigquery_information_schema.info_schema_test_table (
+    id INT64,
+    name STRING,
+    created_at TIMESTAMP
+    )
+- sequence: 2
+  type: execute
+  sql: |-
+    INSERT INTO adapters_bigquery_information_schema.info_schema_test_table VALUES
+    (1, 'test', CURRENT_TIMESTAMP())
+- sequence: 3
+  type: execute
+  sql: |-
+    create or replace view `dbt-test-env`.`adapters_bigquery_information_schema`.`test_object_privileges`
+    OPTIONS()
+    as -- Test OBJECT_PRIVILEGES view for BigQuery (requires project-level with region)
+    
+    
+    
+    
+    -- Use adapter.get_relation to fetch the relation with location from BigQuery
+    
+    
+    
+    select 'SKIPPED - object privileges not supported for this adapter' as result
+    ;
+model.test.test_show_grants:
+- sequence: 0
+  type: execute
+  sql: CREATE SCHEMA IF NOT EXISTS adapters_bigquery_information_schema
+- sequence: 1
+  type: execute
+  sql: |-
+    CREATE OR REPLACE TABLE adapters_bigquery_information_schema.info_schema_test_table (
+    id INT64,
+    name STRING,
+    created_at TIMESTAMP
+    )
+- sequence: 2
+  type: execute
+  sql: |-
+    INSERT INTO adapters_bigquery_information_schema.info_schema_test_table VALUES
+    (1, 'test', CURRENT_TIMESTAMP())
+- sequence: 3
+  type: execute
+  sql: |-
+    SELECT
+    location
+    FROM `dbt-test-env.INFORMATION_SCHEMA.SCHEMATA` WHERE schema_name = 'adapters_bigquery_information_schema'
+- sequence: 4
+  type: execute
+  sql: |-
+    create or replace view `dbt-test-env`.`adapters_bigquery_information_schema`.`test_show_grants`
+    OPTIONS()
+    as -- Exercise bigquery__get_show_grant_sql macro path
+    
+    
+    
+    
+    
+    
+    -- macro does incorporate(location=...) before OBJECT_PRIVILEGES
+    
+    
+    
+    
+    
+    
+    
+    
+    select privilege_type, grantee
+    from `dbt-test-env`.`region-US`.INFORMATION_SCHEMA.OBJECT_PRIVILEGES
+    where object_schema = "adapters_bigquery_information_schema"
+    and object_name = "info_schema_test_table"
+    -- filter out current user
+    and split(grantee, ':')[offset(1)] != session_user()
+    
+    
+    
+    ;

@@ -1,0 +1,38 @@
+model.test.a:
+- sequence: 0
+  type: execute
+  sql: CREATE SCHEMA IF NOT EXISTS adapters_bigquery_use_connection_methods
+- sequence: 1
+  type: execute
+  sql: CREATE TABLE IF NOT EXISTS adapters_bigquery_use_connection_methods.a (id INT64)
+- sequence: 2
+  type: execute
+  sql: CREATE VIEW IF NOT EXISTS adapters_bigquery_use_connection_methods.a_view AS SELECT * FROM adapters_bigquery_use_connection_methods.a
+- sequence: 3
+  type: execute
+  sql: CREATE MATERIALIZED VIEW IF NOT EXISTS adapters_bigquery_use_connection_methods.a_materialized_view AS SELECT * FROM adapters_bigquery_use_connection_methods.a
+- sequence: 4
+  type: execute
+  sql: |-
+    SELECT
+    location
+    FROM `dbt-test-env.INFORMATION_SCHEMA.SCHEMATA` WHERE schema_name = 'adapters_bigquery_use_connection_methods'
+- sequence: 5
+  type: execute
+  sql: ''
+- sequence: 6
+  type: execute
+  sql: |-
+    select * from (
+    select 1 as id
+    ) as __dbt_sbq
+    where false
+    limit 0
+- sequence: 7
+  type: execute
+  sql: |-
+    select * from (
+    select 1 as id
+    ) as __dbt_sbq
+    where false and current_timestamp() = current_timestamp()
+    limit 0

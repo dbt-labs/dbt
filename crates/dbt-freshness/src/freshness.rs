@@ -1571,7 +1571,7 @@ mod tests {
                 }
             },
             cloud_config: None,
-            render_results: RenderResults::default(),
+            render_results: Arc::new(RenderResults::default()),
             node_resolver: Arc::new(DummyNodeResolverTracker),
             get_relation_calls: Default::default(),
             get_columns_in_relation_calls: Default::default(),

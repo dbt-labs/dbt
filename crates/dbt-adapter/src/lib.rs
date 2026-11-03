@@ -5,7 +5,6 @@
 use dbt_common::ErrorCode;
 
 mod macro_exec;
-mod value;
 
 pub mod adapter;
 pub mod cache;
@@ -14,11 +13,11 @@ pub mod column;
 /// Connection management: the per-worker-thread connection and its guard.
 pub mod connection;
 pub mod engine;
-pub mod errors;
+pub use dbt_adapter_engine::errors;
 pub mod format_ident;
 pub mod formatter;
 pub mod introspective_taint;
-pub mod load_catalogs;
+pub use dbt_adapter_engine::load_catalogs;
 pub mod metadata;
 pub mod need_quotes;
 pub(crate) mod python;
@@ -31,8 +30,10 @@ pub mod snapshots;
 /// Tokenizing and fuzzy diffing of SQL strings
 pub mod sql;
 pub mod sql_types;
-pub mod statement;
+pub use dbt_adapter_engine::statement;
 pub mod stmt_splitter;
+pub mod value;
+pub mod warn_once;
 
 /// Cross-Version Record/Replay System
 pub mod time_machine;

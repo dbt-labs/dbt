@@ -1,0 +1,18 @@
+name: 'snowflake_python_model_empty'
+
+config-version: 2
+version: '0.1'
+
+profile: 'fusion_tests'
+
+model-paths: ["models"]
+
+target-path: "target"
+clean-targets:
+    - "target"
+    - "dbt_modules"
+    - "logs"
+
+models:
+  snowflake_python_model_empty:
+    +materialized: table

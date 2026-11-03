@@ -1,0 +1,24 @@
+82fdd5ca:
+- sequence: 0
+  type: execute
+  sql: |-
+    /* {"app": "dbt", "dbt_version": "2.0.0", "node_id": "internal", "profile_name": "fusion_tests", "target_name": "bigquery"} */
+    create schema if not exists `dbt-test-env`.`adapters_bigquery_query_comment_with_split`
+model.test.a:
+- sequence: 0
+  type: execute
+  sql: |-
+    /* {"app": "dbt", "dbt_version": "2.0.0", "node_id": "model.test.a", "node_name": "a", "package_name": "test", "profile_name": "fusion_tests", "relation": {"database": "dbt-test-env", "identifier": null, "schema": "adapters_bigquery_query_comment_with_split"}, "resource_type": "model", "target_name": "bigquery"} */
+    
+    select 1 as q1; select 2 as q2
+- sequence: 1
+  type: execute
+  sql: |-
+    /* {"app": "dbt", "dbt_version": "2.0.0", "node_id": "model.test.a", "node_name": "a", "package_name": "test", "profile_name": "fusion_tests", "relation": {"database": "dbt-test-env", "identifier": null, "schema": "adapters_bigquery_query_comment_with_split"}, "resource_type": "model", "target_name": "bigquery"} */
+    
+    
+    create or replace view `dbt-test-env`.`adapters_bigquery_query_comment_with_split`.`a`
+    OPTIONS()
+    as 
+    
+    select 1 as id;

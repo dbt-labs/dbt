@@ -1,0 +1,11 @@
+[graph]
+exclude = ["dbt-fusion-workspace-hack"]
+
+[bans]
+multiple-versions = "allow"
+deny = [
+  { crate = "dbt-common", reason = "dbt-base sits at the root of the fusion dependency graph; it must not depend on other fusion crates" },
+  { crate = "dbt-error", reason = "dbt-base sits at the root of the fusion dependency graph; it must not depend on other fusion crates" },
+  { crate = "dbt-tracing", reason = "dbt-base sits at the root of the fusion dependency graph; it must not depend on other fusion crates" },
+  { crate = "dbt-cancel", reason = "dbt-base sits at the root of the fusion dependency graph; it must not depend on other fusion crates" },
+]

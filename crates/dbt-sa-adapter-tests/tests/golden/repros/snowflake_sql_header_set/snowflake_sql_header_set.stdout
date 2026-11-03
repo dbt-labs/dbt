@@ -1,0 +1,10 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/model.sql
+   Parsing models/model_ambiguous_names.sql
+ Rendering models/model_ambiguous_names.sql
+ Rendering models/model.sql
+==================== Execution Summary =====================
+Finished 'compile' successfully for target 'snowflake' [duration]
+Processed: 2 models
+Summary: 2 total | 2 success

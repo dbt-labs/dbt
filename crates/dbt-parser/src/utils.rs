@@ -1,6 +1,7 @@
 //! Utility functions for the resolver
 use crate::dbt_project_config::strip_resource_paths_from_ref_path;
 use crate::resolve::resolve_properties::MinimalPropertiesEntry;
+use dbt_adapter::relation::render_effective_relation;
 use dbt_adapter_core::AdapterType;
 use dbt_common::constants::DBT_SNAPSHOTS_DIR_NAME;
 use dbt_common::io_args::IoArgs;
@@ -9,8 +10,9 @@ use dbt_common::tracing::dbt_emit::emit_error_log_from_fs_error;
 use dbt_common::{ErrorCode, FsError, FsResult, fs_err, stdfs};
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::malformed_block_name::MalformedBlockNameListener;
+use dbt_jinja_utils::phases::parse::ParseAdapterScopes;
 use dbt_jinja_utils::phases::parse::sql_resource::SqlResource;
-use dbt_jinja_utils::utils::{generate_component_name, generate_relation_name_with_target};
+use dbt_jinja_utils::utils::generate_component_name;
 use dbt_schemas::schemas::InternalDbtNodeAttributes;
 use dbt_schemas::schemas::common::{DbtMaterialization, ResolvedQuoting, normalize_quoting};
 use dbt_schemas::schemas::project::{ResolvableConfig, ResolvedConfig};
@@ -24,6 +26,7 @@ use minijinja::listener::TokenizerEventListener;
 use minijinja::machinery::{Span, WhitespaceConfig};
 use minijinja::syntax::SyntaxConfig;
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::path::PathBuf;
@@ -368,117 +371,26 @@ pub fn trigger_duplicate_errors(duplicate_errors: &mut Vec<FsError>) -> FsResult
     Ok(())
 }
 
-/// Generate relation components (database, schema, alias) and relation name
-/// Returns components that can be used to update a node
-/// https://github.com/dbt-labs/dbt-core/blob/a1958c119399f765ad43e49b8b12c88cf3ec1245/core/dbt/parser/base.py#L287
-pub fn generate_relation_components(
-    env: &JinjaEnv,
-    root_project_name: &str,
-    current_project_name: &str,
-    base_ctx: &BTreeMap<String, minijinja::Value>,
-    components: &RelationComponents,
-    node: &dyn InternalDbtNodeAttributes,
-    adapter_type: AdapterType,
-) -> FsResult<(String, String, String, String, ResolvedQuoting)> {
-    // Get default values from the node
-    let (default_database, default_schema) = (node.database(), node.schema());
-    // Generate database name
-    let database = if node.skip_generate_database_name_macro() {
-        components.database.clone().unwrap_or(default_database)
-    } else {
-        generate_component_name(
-            env,
-            "database",
-            root_project_name,
-            current_project_name,
-            base_ctx,
-            components.database.clone(),
-            Some(node),
-        )?
-    };
-
-    // Generate schema name
-    let schema = if node.skip_generate_schema_name_macro() {
-        components.schema.clone().unwrap_or(default_schema)
-    } else {
-        generate_component_name(
-            env,
-            "schema",
-            root_project_name,
-            current_project_name,
-            base_ctx,
-            components.schema.clone(),
-            Some(node),
-        )?
-    };
-
-    // Generate alias
-    let alias = generate_component_name(
-        env,
-        "alias",
-        root_project_name,
-        current_project_name,
-        base_ctx,
-        components.alias.clone(),
-        Some(node),
-    )?;
-
-    // Ensure alias is never empty - use node name as ultimate fallback
-    let alias = if alias.is_empty() {
-        node.common().name.clone()
-    } else {
-        alias
-    };
-
-    let (database, schema, alias, quoting) =
-        normalize_quoting(&node.quoting(), adapter_type, &database, &schema, &alias);
-
-    // Only generate relation_name if not ephemeral
-    let parse_adapter = env.get_adapter().expect("Failed to get parse adapter");
-    let database_name = if !matches!(node.materialized(), DbtMaterialization::Ephemeral) {
-        database.as_str()
-    } else {
-        &format!("{database}_ephemeral")
-    };
-    let schema_name = if !matches!(node.materialized(), DbtMaterialization::Ephemeral) {
-        schema.as_str()
-    } else {
-        &format!("{schema}_ephemeral")
-    };
-    let alias_name = if !matches!(node.materialized(), DbtMaterialization::Ephemeral) {
-        alias.as_str()
-    } else {
-        &format!("{alias}_ephemeral")
-    };
-    let relation_name = generate_relation_name_with_target(
-        parse_adapter,
-        database_name,
-        schema_name,
-        alias_name,
-        quoting,
-        node.base().effective_propagation_target,
-    )?;
-
-    Ok((database, schema, alias, relation_name, quoting))
-}
-
 /// Generate only database and schema components.
 /// This is the first step in a two-phase generation process that allows
 /// generate_alias_name to access the computed schema via node.schema.
-fn generate_database_and_schema(
+fn generate_database_and_schema<T: InternalDbtNodeAttributes + Clone>(
     env: &JinjaEnv,
     root_project_name: &str,
     current_project_name: &str,
     base_ctx: &BTreeMap<String, minijinja::Value>,
     components: &RelationComponents,
-    node: &dyn InternalDbtNodeAttributes,
+    node: T,
     adapter_type: AdapterType,
-) -> FsResult<(String, String, ResolvedQuoting)> {
+) -> FsResult<(String, String, ResolvedQuoting, T)> {
     let (default_database, default_schema) = (node.database(), node.schema());
 
     // Generate database name
-    let database = if node.skip_generate_database_name_macro() {
-        components.database.clone().unwrap_or(default_database)
+    let (database, node) = if node.skip_generate_database_name_macro() {
+        (
+            components.database.clone().unwrap_or(default_database),
+            node,
+        )
     } else {
         generate_component_name(
             env,
@@ -487,13 +399,13 @@ fn generate_database_and_schema(
             current_project_name,
             base_ctx,
             components.database.clone(),
-            Some(node),
+            node,
         )?
     };
 
     // Generate schema name
-    let schema = if node.skip_generate_schema_name_macro() {
-        components.schema.clone().unwrap_or(default_schema)
+    let (schema, node) = if node.skip_generate_schema_name_macro() {
+        (components.schema.clone().unwrap_or(default_schema), node)
     } else {
         generate_component_name(
             env,
@@ -502,7 +414,7 @@ fn generate_database_and_schema(
             current_project_name,
             base_ctx,
             components.schema.clone(),
-            Some(node),
+            node,
         )?
     };
 
@@ -510,33 +422,33 @@ fn generate_database_and_schema(
     let (database, schema, _, quoting) =
         normalize_quoting(&node.quoting(), adapter_type, &database, &schema, "");
 
-    Ok((database, schema, quoting))
+    Ok((database, schema, quoting, node))
 }
 
 /// Generate alias and relation_name after database and schema have been set on the node.
 /// This is the second step in a two-phase generation process.
 #[allow(clippy::too_many_arguments)]
-fn generate_alias_and_relation_name(
+fn generate_alias_and_relation_name<T: InternalDbtNodeAttributes + Clone>(
     env: &JinjaEnv,
     root_project_name: &str,
     current_project_name: &str,
     base_ctx: &BTreeMap<String, minijinja::Value>,
     components: &RelationComponents,
-    node: &dyn InternalDbtNodeAttributes,
+    node: T,
     adapter_type: AdapterType,
     database: &str,
     schema: &str,
     quoting: ResolvedQuoting,
-) -> FsResult<(String, String)> {
+) -> FsResult<(String, String, T)> {
     // Generate alias - node.schema is now set to the computed schema
-    let alias = generate_component_name(
+    let (alias, node) = generate_component_name(
         env,
         "alias",
         root_project_name,
         current_project_name,
         base_ctx,
         components.alias.clone(),
-        Some(node),
+        node,
     )?;
 
     // Ensure alias is never empty
@@ -550,7 +462,6 @@ fn generate_alias_and_relation_name(
     let (_, _, alias, _) = normalize_quoting(&quoting, adapter_type, database, schema, &alias);
 
     // Generate relation_name
-    let parse_adapter = env.get_adapter().expect("Failed to get parse adapter");
     let database_name = if !matches!(node.materialized(), DbtMaterialization::Ephemeral) {
         database
     } else {
@@ -566,8 +477,8 @@ fn generate_alias_and_relation_name(
     } else {
         &format!("{alias}_ephemeral")
     };
-    let relation_name = generate_relation_name_with_target(
-        parse_adapter,
+    let relation_name = render_effective_relation(
+        adapter_type,
         database_name,
         schema_name,
         alias_name,
@@ -575,7 +486,7 @@ fn generate_alias_and_relation_name(
         node.base().effective_propagation_target,
     )?;
 
-    Ok((alias, relation_name))
+    Ok((alias, relation_name, node))
 }
 
 /// Relation components for a node
@@ -598,28 +509,39 @@ pub struct RelationComponents {
 /// Note: We generate and update database/schema BEFORE generating alias, so that
 /// generate_alias_name macro can access the computed schema via node.schema.
 /// This matches dbt-core behavior where custom alias macros can reference node.schema.
-pub fn update_node_relation_components(
-    node: &mut dyn InternalDbtNodeAttributes,
+///
+/// The components follow `node.node_adapter()`. With `scopes`, the naming macros see
+/// that adapter's context; without, `base_ctx` as is.
+pub fn update_node_relation_components<T: InternalDbtNodeAttributes + Clone>(
+    node: T,
     jinja_env: &JinjaEnv,
     root_project_name: &str,
     package_name: &str,
     base_ctx: &BTreeMap<String, minijinja::Value>,
     components: &RelationComponents,
-    adapter_type: AdapterType,
-) -> FsResult<()> {
+    scopes: Option<&ParseAdapterScopes>,
+) -> FsResult<T> {
     // Source and unit test nodes do not have relation components
     if [NodeType::Source, NodeType::UnitTest].contains(&node.resource_type()) {
-        return Ok(());
+        return Ok(node);
     }
+
+    let adapter_type = node.node_adapter();
+    let ctx = match scopes {
+        Some(scopes) => scopes
+            .ctx_for(adapter_type, base_ctx)
+            .map_err(|e| e.with_location(node.original_file_path()))?,
+        None => Cow::Borrowed(base_ctx),
+    };
 
     // Step 1: Generate database and schema first, then update the node.
     // This ensures that when generate_alias_name is called, node.schema reflects
     // the computed schema (not the default profile schema).
-    let (database, schema, quoting) = generate_database_and_schema(
+    let (database, schema, quoting, mut node) = generate_database_and_schema(
         jinja_env,
         root_project_name,
         package_name,
-        base_ctx,
+        &ctx,
         components,
         node,
         adapter_type,
@@ -634,11 +556,11 @@ pub fn update_node_relation_components(
     }
 
     // Step 2: Now generate alias with the updated node (node.schema is now correct)
-    let (alias, relation_name) = generate_alias_and_relation_name(
+    let (alias, relation_name, mut node) = generate_alias_and_relation_name(
         jinja_env,
         root_project_name,
         package_name,
-        base_ctx,
+        &ctx,
         components,
         node,
         adapter_type,
@@ -668,7 +590,25 @@ pub fn update_node_relation_components(
 
     let base_attr = node.base_mut();
     base_attr.alias = alias;
-    Ok(())
+    Ok(node)
+}
+
+/// The database and schema a node of `adapter_type` starts from: its scope's, or
+/// `database`/`schema` without `scopes`. `path` locates a scope error.
+pub fn node_starting_database_and_schema<'a>(
+    scopes: Option<&'a ParseAdapterScopes>,
+    adapter_type: AdapterType,
+    database: &'a str,
+    schema: &'a str,
+    path: &Path,
+) -> FsResult<(&'a str, &'a str)> {
+    let Some(scopes) = scopes else {
+        return Ok((database, schema));
+    };
+    let scope = scopes
+        .get(adapter_type)
+        .map_err(|e| e.with_location(path.to_path_buf()))?;
+    Ok((&scope.database, &scope.schema))
 }
 
 /// Extracts a resource type subtree from a raw `dbt_project.yml` into a RawProjectConfig struct for building unrendered configs.
@@ -1132,5 +1072,194 @@ select 1
     #[test]
     fn no_config_call_returns_none() {
         assert!(parse_unrendered_config("select 1", false).is_none());
+    }
+}
+
+#[cfg(test)]
+mod relation_components_tests {
+    use super::{
+        RelationComponents, node_starting_database_and_schema, update_node_relation_components,
+    };
+    use dbt_adapter_core::AdapterType;
+    use dbt_common::ErrorCode;
+    use dbt_common::io_args::IoArgs;
+    use dbt_jinja_utils::invocation_args::InvocationArgs;
+    use dbt_jinja_utils::jinja_environment::JinjaEnv;
+    use dbt_jinja_utils::phases::parse::ParseAdapterScopes;
+    use dbt_jinja_utils::phases::parse::init::initialize_parse_jinja_environment;
+    use dbt_schemas::schemas::profiles::{DbConfig, SnowflakeDbConfig};
+    use dbt_schemas::schemas::relations::DEFAULT_DBT_QUOTING;
+    use dbt_schemas::schemas::{CommonAttributes, DbtModel, NodeBaseAttributes};
+    use dbt_schemas::state::{DbtProfile, ProfileAdapter};
+    use minijinja::machinery::Span;
+    use minijinja::macro_unit::{MacroInfo, MacroUnit};
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::path::PathBuf;
+
+    fn naming_macro(component: &str, value: &str) -> MacroUnit {
+        let name = format!("generate_{component}_name");
+        MacroUnit {
+            sql: format!("{{% macro {name}(custom_name, node) %}}{value}{{% endmacro %}}"),
+            info: MacroInfo {
+                name,
+                path: PathBuf::from("test"),
+                span: Span::default(),
+                funcsign: None,
+                args: vec![],
+                unique_id: "test".to_string(),
+                name_span: Span::default(),
+            },
+        }
+    }
+
+    fn snowflake_config() -> DbConfig {
+        SnowflakeDbConfig {
+            account: Some("acct".to_string()),
+            database: Some("db".to_string()),
+            schema: Some("sch".to_string()),
+            ..Default::default()
+        }
+        .into()
+    }
+
+    fn snowflake_parse_env() -> JinjaEnv {
+        let macros = vec![
+            naming_macro("database", "db"),
+            naming_macro("schema", "sch"),
+            naming_macro("alias", "orders"),
+        ];
+        initialize_parse_jinja_environment(
+            "common",
+            "profile",
+            "target",
+            AdapterType::Snowflake,
+            snowflake_config(),
+            vec![AdapterType::Snowflake],
+            DEFAULT_DBT_QUOTING,
+            BTreeMap::from([("common".to_string(), macros)]),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            chrono::Utc::now().with_timezone(&chrono_tz::Tz::UTC),
+            &InvocationArgs::default(),
+            BTreeSet::from(["common".to_string()]),
+            IoArgs::default(),
+            None,
+        )
+        .unwrap()
+    }
+
+    fn model(adapter: AdapterType) -> DbtModel {
+        DbtModel {
+            __common_attr__: CommonAttributes {
+                name: "orders".to_string(),
+                original_file_path: "models/orders.sql".into(),
+                ..Default::default()
+            },
+            __base_attr__: NodeBaseAttributes {
+                adapter,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    fn no_components() -> RelationComponents {
+        RelationComponents {
+            database: None,
+            schema: None,
+            alias: None,
+            store_failures: None,
+        }
+    }
+
+    /// The relation name follows the node's adapter, not the parse adapter's.
+    #[test]
+    fn relation_name_follows_the_node_adapter() {
+        let env = snowflake_parse_env();
+        let model = update_node_relation_components(
+            model(AdapterType::Bigquery),
+            &env,
+            "common",
+            "common",
+            &BTreeMap::new(),
+            &no_components(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            model.__base_attr__.relation_name.as_deref(),
+            Some("`db`.`sch`.`orders`")
+        );
+    }
+
+    /// A Snowflake default plus a BigQuery connection that cannot form a target (no dataset).
+    fn unusable_bigquery_profile() -> DbtProfile {
+        let bigquery: DbConfig =
+            dbt_yaml::from_str("type: bigquery\nmethod: oauth\nproject: bq-proj\n").unwrap();
+        DbtProfile {
+            profile: "profile".to_string(),
+            target: "target".to_string(),
+            defer_to_target: None,
+            allow_clones: true,
+            adapters: [snowflake_config(), bigquery]
+                .into_iter()
+                .map(|c| (c.adapter_type(), ProfileAdapter::single(c)))
+                .collect(),
+            default_adapter: AdapterType::Snowflake,
+            schema: "sch".to_string(),
+            database: "db".to_string(),
+            relative_profile_path: "profiles.yml".into(),
+            threads: None,
+        }
+    }
+
+    /// A connection that cannot form a target fails only the nodes selecting it,
+    /// located at the node's file.
+    #[test]
+    fn unusable_connection_errors_at_the_node() {
+        let env = snowflake_parse_env();
+        let scopes = ParseAdapterScopes::from_profile(&unusable_bigquery_profile());
+        let update = |model: DbtModel| {
+            update_node_relation_components(
+                model,
+                &env,
+                "common",
+                "common",
+                &BTreeMap::new(),
+                &no_components(),
+                Some(&scopes),
+            )
+        };
+
+        let err = update(model(AdapterType::Bigquery)).unwrap_err();
+        assert_eq!(err.code, ErrorCode::InvalidConfig);
+        assert!(err.to_string().contains("'bigquery'"), "{err}");
+        assert_eq!(
+            err.location.as_ref().map(|l| l.file.as_path()),
+            Some(std::path::Path::new("models/orders.sql"))
+        );
+
+        let snowflake_model = update(model(AdapterType::Snowflake)).unwrap();
+        assert_eq!(
+            snowflake_model.__base_attr__.relation_name.as_deref(),
+            Some(r#""db"."sch"."orders""#)
+        );
+    }
+
+    /// The starting database's scope error is located at the path the caller gives.
+    #[test]
+    fn starting_database_error_is_located_at_the_given_path() {
+        let scopes = ParseAdapterScopes::from_profile(&unusable_bigquery_profile());
+        let path = std::path::Path::new("seeds/x.csv");
+        let start = |adapter_type| {
+            node_starting_database_and_schema(Some(&scopes), adapter_type, "db", "sch", path)
+        };
+
+        let err = start(AdapterType::Bigquery).unwrap_err();
+        assert_eq!(err.code, ErrorCode::InvalidConfig);
+        assert_eq!(err.location.as_ref().map(|l| l.file.as_path()), Some(path));
+
+        assert_eq!(start(AdapterType::Snowflake).unwrap(), ("db", "sch"));
     }
 }

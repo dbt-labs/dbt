@@ -42,6 +42,7 @@ impl NodeType {
             Self::SemanticModel => "semantic_model",
             Self::Function => "function",
             Self::Check => "check",
+            Self::Experimental => "experimental",
         }
     }
 }
@@ -66,6 +67,7 @@ impl NodeType {
             Self::SemanticModel => "semantic model",
             Self::Function => "function",
             Self::Check => "check",
+            Self::Experimental => "experimental",
         }
     }
 }
@@ -412,6 +414,7 @@ impl NodeEvaluated {
             None, // rows_affected
             None, // idle_time_ms
             None, // state_decision_id
+            None, // adapter_response
             None, // node_outcome_detail
         )
     }
@@ -532,6 +535,8 @@ impl NodeProcessed {
             None, // node_index assigned by the span builder at start of processing
             None, // node_count_total assigned by the span builder at start of processing
             None, // adapter
+            None, // experimental_type
+            None, // adapter_response
             None, // node_outcome_detail
         )
     }

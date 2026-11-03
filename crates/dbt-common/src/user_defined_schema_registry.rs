@@ -9,7 +9,7 @@
 //! relation resolve its declared columns through the binder's normal
 //! catalog-lookup path, rather than falling through to placeholder inference.
 
-use crate::collections::{DashMap, HashSet};
+use crate::collections::{HashSet, SccHashMap};
 
 /// The key a relation is recorded under: `catalog.schema.table`, each part
 /// double-quoted (with `"` doubled) unless it is a lowercase identifier,
@@ -45,7 +45,7 @@ fn quote_part(part: &str) -> String {
 
 #[derive(Debug, Default)]
 pub struct UserDefinedSchemaRegistry {
-    declared_columns: DashMap<String, HashSet<String>>,
+    declared_columns: SccHashMap<String, HashSet<String>>,
 }
 
 impl UserDefinedSchemaRegistry {
@@ -56,14 +56,16 @@ impl UserDefinedSchemaRegistry {
     /// Record that `column` is declared for `relation`.
     pub fn record_column(&self, relation: &str, column: &str) {
         self.declared_columns
-            .entry(relation.to_string())
+            .entry_sync(relation.to_string())
             .or_default()
+            // `get_mut` because `OccupiedEntry::insert` replaces the whole value.
+            .get_mut()
             .insert(column.to_string());
     }
 
     /// Declared columns previously recorded for `relation`, if any.
     pub fn columns_for(&self, relation: &str) -> Option<HashSet<String>> {
-        self.declared_columns.get(relation).map(|c| c.clone())
+        self.declared_columns.read_sync(relation, |_, c| c.clone())
     }
 }
 

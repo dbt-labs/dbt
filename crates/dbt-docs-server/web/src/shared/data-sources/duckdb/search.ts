@@ -28,6 +28,7 @@
  */
 
 import type { ResourceType } from '../../typings/domain/asset';
+import { modelingLayerPredicate } from './layers';
 import { sqlStr } from './sql';
 
 /** Matches the handler's caps. A longer query is a mistake, not a search. */
@@ -288,6 +289,8 @@ export interface SearchFilter {
   resourceTypes?: ResourceType[];
   packages?: string[];
   tags?: string[];
+  modelingLayers?: string[];
+  materializations?: string[];
 }
 
 export interface SearchQuery {
@@ -311,6 +314,28 @@ function filterWhere(filter: SearchFilter): string {
       `\n  AND b.tags IS NOT NULL AND len(list_intersect(b.tags, [${list}])) > 0`,
     );
   }
+  // Layer and materialization describe models only. Other selected types (say
+  // Sources) pass through untouched, so "Sources + Marts" reads as the sources
+  // plus the marts models rather than as an empty intersection. With no type
+  // selected the filter narrows to matching models alone.
+  const passThrough = (filter.resourceTypes ?? []).filter((t) => t !== 'model');
+  const modelOnly = (pred: string): string => {
+    const models = `(b.resource_type = 'model' AND ${pred})`;
+    return passThrough.length
+      ? `\n  AND (b.resource_type IN (${passThrough.map(sqlStr).join(', ')}) OR ${models})`
+      : `\n  AND ${models}`;
+  };
+  if (filter.materializations?.length) {
+    parts.push(
+      modelOnly(
+        `b.materialized IN (${filter.materializations.map(sqlStr).join(', ')})`,
+      ),
+    );
+  }
+  if (filter.modelingLayers?.length) {
+    const pred = modelingLayerPredicate('b.original_file_path', filter.modelingLayers);
+    parts.push(modelOnly(pred ?? 'FALSE'));
+  }
   return parts.join('');
 }
 
@@ -332,11 +357,26 @@ export function buildSearchQuery(
 ): SearchQuery | null {
   const tokens = tokenize(query);
   const hasFilters = Boolean(
-    filter.resourceTypes?.length || filter.packages?.length || filter.tags?.length,
+    filter.resourceTypes?.length ||
+    filter.packages?.length ||
+    filter.tags?.length ||
+    filter.modelingLayers?.length ||
+    filter.materializations?.length,
   );
   if (!tokens.length && !hasFilters) return null;
 
-  const base = baseUnion(filter.resourceTypes);
+  // The union is narrowed by type first, so a layer/materialization filter has to
+  // bring models back in when only other types were ticked.
+  const needsModels = Boolean(
+    filter.modelingLayers?.length || filter.materializations?.length,
+  );
+  const unionTypes =
+    needsModels &&
+    filter.resourceTypes?.length &&
+    !filter.resourceTypes.includes('model')
+      ? [...filter.resourceTypes, 'model' as ResourceType]
+      : filter.resourceTypes;
+  const base = baseUnion(unionTypes);
   if (!base) return null;
 
   const where = filterWhere(filter);

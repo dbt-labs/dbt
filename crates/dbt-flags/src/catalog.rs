@@ -63,12 +63,29 @@ pub static FRONTEND_LIBRARY: FlagDef = FlagDef {
     docs_url: None,
 };
 
+/// Whether a dbt State run also takes the per-model task-cache lock before asking
+/// dbt State about a node. Off, a dbt State run uses no task cache at all.
+pub static LOCK_WITH_STATE: FlagDef = FlagDef {
+    name: "lock_with_state",
+    description: "Take the per-model task-cache lock before asking dbt State whether to \
+                  build a node, so concurrent runs do not build it twice.",
+    stage: Stage::Internal,
+    default: false,
+    remote: Remote::Force,
+    aliases: &[],
+    legacy_env: &["DBT_ENGINE_LOCK_WITH_STATE"],
+    tracking: None,
+    remove_by: None,
+    docs_url: None,
+};
+
 /// Every flag declared in this crate.
 pub static ALL: &[&FlagDef] = &[
     &GIT_DEPS_FAST_PATH,
     &REQUIRE_REF_SEARCHES_NODE_PACKAGE_BEFORE_ROOT,
     &LATEST_VERSION_POINTER_ENABLED_BY_DEFAULT,
     &FRONTEND_LIBRARY,
+    &LOCK_WITH_STATE,
 ];
 
 #[cfg(test)]

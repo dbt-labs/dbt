@@ -17,7 +17,7 @@ mod tests {
     use dbt_jinja_utils::utils::render_sql;
     use dbt_schemas::schemas::profiles::PostgresDbConfig;
     use dbt_schemas::schemas::project::ProjectModelConfig;
-    use dbt_schemas::schemas::project::{ModelConfig, ResolvableConfig};
+    use dbt_schemas::schemas::project::{InlineConfigAliasing, ModelConfig, ResolvableConfig};
     use dbt_schemas::schemas::relations::DEFAULT_DBT_QUOTING;
     use dbt_schemas::schemas::serde::StringOrInteger;
     use dbt_schemas::state::DbtRuntimeConfig;
@@ -49,6 +49,8 @@ mod tests {
             AdapterType::Postgres,
             "db",
             "schema",
+            None,
+            InlineConfigAliasing::fixed(AdapterType::Postgres),
             "my_model",
             get_node_fqn(
                 "common",
@@ -1631,51 +1633,284 @@ mod tests {
         );
     }
 
-    /// Residual (fs#13424 phase 2): `canonicalize_adapter_aliases` runs with the *target's
-    /// default* adapter, threaded once per `resolve_*.rs` call, before a node's own `+adapter:`
-    /// override (a real, mergeable `ModelConfig.adapter` field -- Fusion's multi-adapter/mesh
-    /// dispatch, `resolve_utils.rs::validate_node_adapter`) is known. That override can only be
-    /// read *from* the merged config, so canonicalizing per-layer before merging (required for
-    /// D3's mixed-spelling precedence above) and keying it to the node's own resolved adapter
-    /// are in tension -- resolving both needs a two-pass merge (discover `.adapter`, then
-    /// re-merge with the right alias table), which this phase does not attempt. Pre-existing:
-    /// the five deleted `RelationComponents.database` special cases and phase 1's
-    /// `build_unrendered_config` gate on the exact same target-default `adapter_type`, so a
-    /// `+adapter:`-overridden node was never correctly handled either; this residual just
-    /// documents it rather than fixing it. `#[ignore]`d because it pins the gap, not the
-    /// desired behavior.
-    #[test]
-    #[ignore = "fs#13424 phase 2 residual: canonicalize_adapter_aliases is keyed to the \
-                target's default adapter, not a node's own +adapter: override (see \
-                ResolvableConfig::canonicalize_adapter_aliases)"]
-    fn test_databricks_catalog_alias_not_canonicalized_for_adapter_overridden_node() {
+    /// `sql`'s `config()` calls under `aliasing`, in source order.
+    fn inline_config_calls(sql: &str, aliasing: InlineConfigAliasing) -> Vec<Box<ModelConfig>> {
+        let (env, sql_resources, init_config) = setup_test_env();
+        let mut context = build_resolve_model_context(
+            &init_config,
+            false,
+            AdapterType::Snowflake,
+            "db",
+            "schema",
+            None,
+            aliasing,
+            "my_model",
+            vec!["common".to_string(), "my_model".to_string()],
+            "common",
+            "test",
+            DEFAULT_DBT_QUOTING,
+            Arc::new(DbtRuntimeConfig::default()),
+            Arc::new(DbtRuntimeConfig::default()),
+            sql_resources.clone(),
+            Arc::new(AtomicBool::new(false)),
+            &PathBuf::from("test"),
+            &PathBuf::from("test"),
+            Some(StaticAnalysisKind::Strict),
+            None,
+        );
+        context.insert(TARGET_PACKAGE_NAME.to_string(), Value::from("common"));
+        render_sql(
+            sql,
+            &env,
+            &context,
+            &DefaultRenderingEventListenerFactory::default(),
+            &PathBuf::from("test"),
+        )
+        .unwrap();
+        let resources = sql_resources.lock().unwrap().clone();
+        crate::sql_file_info::SqlFileInfo::from_sql_resources(resources, Default::default(), false)
+            .config_calls
+    }
+
+    /// A Snowflake default that also declares BigQuery.
+    fn bigquery_declared() -> crate::dbt_project_config::RootProjectConfigs {
+        use crate::dbt_project_config_tests::per_adapter_config_resolver_tests::root_configs_declaring;
+        use dbt_schemas::schemas::profiles::DbConfig;
+
+        let bigquery: DbConfig =
+            dbt_yaml::from_str("type: bigquery\nmethod: oauth\nproject: bq-proj\ndataset: bq_ds\n")
+                .unwrap();
+        root_configs_declaring(bigquery, "{}")
+    }
+
+    /// `sql`'s inline calls folded and merged by `resolver`, with the aliasing it gives the node.
+    fn resolve_inline(
+        resolver: &crate::dbt_project_config::ProjectConfigResolver<ModelConfig>,
+        sql: &str,
+    ) -> ModelConfig {
+        let fqn = vec!["my_model".to_string()];
+        let layers = crate::dbt_project_config::NodeLayers::new(&fqn, &[]);
+        let calls = inline_config_calls(sql, resolver.inline_config_aliasing(&layers));
+        let calls: Vec<&ModelConfig> = calls.iter().map(|call| call.as_ref()).collect();
+        let inline = resolver.fold_inline_calls(&layers, &calls);
+        resolver.with_configs(&fqn, &[inline.as_ref()])
+    }
+
+    /// A call's own `adapter=` picks the alias table for its raw-only aliases.
+    #[dbt_runtime::test]
+    async fn test_inline_raw_only_alias_translated_with_same_call_adapter() {
+        use crate::dbt_project_config_tests::per_adapter_config_resolver_tests::root_package_resolver;
+
+        let resolver = root_package_resolver(&bigquery_declared());
+        let resolved = resolve_inline(
+            &resolver,
+            "{{ config(adapter='bigquery', timeout_seconds=300) }}",
+        );
+        assert_eq!(
+            resolved
+                .__warehouse_specific_config__
+                .job_execution_timeout_seconds,
+            Some(300)
+        );
+    }
+
+    /// An undeclared call adapter reads with the default's table, so Postgres' `dbname` alias
+    /// is not applied on a Snowflake default.
+    #[dbt_runtime::test]
+    async fn test_inline_undeclared_call_adapter_uses_the_default_table() {
+        use crate::dbt_project_config_tests::per_adapter_config_resolver_tests::root_package_resolver;
+
+        let resolver = root_package_resolver(&bigquery_declared());
+        let resolved = resolve_inline(&resolver, "{{ config(adapter='postgres', dbname='x') }}");
+        assert_eq!(resolved.database.into_inner().flatten(), None);
+    }
+
+    /// `--adapter` fixes the alias table above the inline layer, whatever the call says.
+    #[dbt_runtime::test]
+    async fn test_inline_call_adapter_cannot_beat_adapter_override() {
+        use crate::dbt_project_config_tests::per_adapter_config_resolver_tests::root_package_resolver_with_override;
+
+        let resolver =
+            root_package_resolver_with_override(&bigquery_declared(), Some(AdapterType::Snowflake));
+        let resolved = resolve_inline(
+            &resolver,
+            "{{ config(adapter='bigquery', timeout_seconds=300) }}",
+        );
+        assert_eq!(
+            resolved
+                .__warehouse_specific_config__
+                .job_execution_timeout_seconds,
+            None
+        );
+    }
+
+    /// A single-adapter Databricks project renames each call's `catalog` raw, so a later call's
+    /// `catalog` beats an earlier `database`.
+    #[dbt_runtime::test]
+    async fn test_inline_later_catalog_beats_database_on_single_adapter_databricks() {
         use crate::dbt_project_config::{DbtProjectConfig, ProjectConfigResolver};
 
         let root = DbtProjectConfig::<ModelConfig> {
             config: ModelConfig::default(),
             children: indexmap::IndexMap::new(),
         };
-        // The package/target default is Snowflake; this node overrides to Databricks via
-        // `+adapter:`, which is only readable *after* this same merge produces it.
-        let resolver = ProjectConfigResolver::for_root(root, AdapterType::Snowflake);
-        let mut model_level_databricks_override = ModelConfig {
-            adapter: Some(AdapterType::Databricks),
-            ..Default::default()
-        };
-        model_level_databricks_override
-            .__warehouse_specific_config__
-            .catalog = Some("my_catalog".to_string());
-
-        let fqn = vec!["my_model".to_string()];
-        let resolved = resolver.with_configs(&fqn, &[Some(&model_level_databricks_override)]);
-
-        // Desired (not delivered): `database == Some("my_catalog")`, since the node actually
-        // runs on Databricks. Actual: canonicalization ran keyed to Snowflake (a no-op), so
-        // `database` stays unset and `catalog` stays an un-canonicalized extra key.
-        assert_eq!(resolved.database.into_inner().flatten(), None);
+        let resolver = ProjectConfigResolver::for_root(root, AdapterType::Databricks);
+        let resolved = resolve_inline(
+            &resolver,
+            "{{ config(database='b') }}{{ config(catalog='a') }}",
+        );
         assert_eq!(
-            resolved.__warehouse_specific_config__.catalog,
-            Some("my_catalog".to_string())
+            resolved.database.into_inner().flatten(),
+            Some("a".to_string())
+        );
+        assert_eq!(resolved.__warehouse_specific_config__.catalog, None);
+    }
+
+    /// `--adapter` fixes the table, so each call's `catalog` is renamed raw there too.
+    #[dbt_runtime::test]
+    async fn test_inline_later_catalog_beats_database_under_adapter_override() {
+        use crate::dbt_project_config_tests::per_adapter_config_resolver_tests::{
+            root_configs_declaring, root_package_resolver_with_override,
+        };
+        use dbt_schemas::schemas::profiles::DbConfig;
+
+        let root = root_configs_declaring(DbConfig::Databricks(Box::default()), "{}");
+        let resolver = root_package_resolver_with_override(&root, Some(AdapterType::Databricks));
+        let resolved = resolve_inline(
+            &resolver,
+            "{{ config(database='b') }}{{ config(catalog='a') }}",
+        );
+        assert_eq!(
+            resolved.database.into_inner().flatten(),
+            Some("a".to_string())
+        );
+        assert_eq!(resolved.__warehouse_specific_config__.catalog, None);
+    }
+
+    /// With per-adapter trees and no fixed table, each call's `catalog` is left to the typed hook,
+    /// which renames it per call, so a later `catalog` still beats an earlier `database`.
+    #[dbt_runtime::test]
+    async fn test_inline_later_catalog_beats_database_with_deferred_catalog() {
+        use crate::dbt_project_config_tests::per_adapter_config_resolver_tests::{
+            root_configs_declaring, root_package_resolver,
+        };
+        use dbt_schemas::schemas::profiles::DbConfig;
+
+        let root = root_configs_declaring(
+            DbConfig::Databricks(Box::default()),
+            "+adapter: databricks\n",
+        );
+        let resolver = root_package_resolver(&root);
+        let resolved = resolve_inline(
+            &resolver,
+            "{{ config(database='b') }}{{ config(catalog='a') }}",
+        );
+        assert_eq!(
+            resolved.database.into_inner().flatten(),
+            Some("a".to_string())
+        );
+        assert_eq!(resolved.__warehouse_specific_config__.catalog, None);
+    }
+
+    /// The reverse order: a later `database` beats an earlier deferred `catalog`.
+    #[dbt_runtime::test]
+    async fn test_inline_later_database_beats_catalog_with_deferred_catalog() {
+        use crate::dbt_project_config_tests::per_adapter_config_resolver_tests::{
+            root_configs_declaring, root_package_resolver,
+        };
+        use dbt_schemas::schemas::profiles::DbConfig;
+
+        let root = root_configs_declaring(
+            DbConfig::Databricks(Box::default()),
+            "+adapter: databricks\n",
+        );
+        let resolver = root_package_resolver(&root);
+        let resolved = resolve_inline(
+            &resolver,
+            "{{ config(catalog='a') }}{{ config(database='b') }}",
+        );
+        assert_eq!(
+            resolved.database.into_inner().flatten(),
+            Some("b".to_string())
+        );
+        assert_eq!(resolved.__warehouse_specific_config__.catalog, None);
+    }
+
+    /// Residual: a later deferred `catalog=none` does not clear an earlier `database`, as the
+    /// typed `catalog` cannot hold an explicit null. `#[ignore]`d: asserts the desired result.
+    #[dbt_runtime::test]
+    #[ignore = "residual: a deferred catalog=none does not clear an earlier database"]
+    async fn test_inline_later_null_catalog_clears_database_with_deferred_catalog() {
+        use crate::dbt_project_config_tests::per_adapter_config_resolver_tests::{
+            root_configs_declaring, root_package_resolver,
+        };
+        use dbt_schemas::schemas::profiles::DbConfig;
+
+        let root = root_configs_declaring(
+            DbConfig::Databricks(Box::default()),
+            "+adapter: databricks\n",
+        );
+        let resolver = root_package_resolver(&root);
+        let resolved = resolve_inline(
+            &resolver,
+            "{{ config(database='b') }}{{ config(catalog=none) }}",
+        );
+        assert_eq!(resolved.database.into_inner().flatten(), None);
+    }
+
+    /// Pins the existing fold, not dbt Core's call-by-call merge: the calls merge first, so the
+    /// later `+select` replaces the earlier one and then the project's `select`.
+    #[dbt_runtime::test]
+    async fn test_inline_grants_fold_across_calls_before_the_project_layer() {
+        use crate::dbt_project_config::{ProjectConfigResolver, init_project_config};
+
+        let models: ProjectModelConfig = dbt_jinja_utils::serde::from_yaml_raw(
+            "+grants:\n  select: [base]\n",
+            None,
+            false,
+            None,
+        )
+        .unwrap();
+        let root = init_project_config(
+            &Some(models),
+            Default::default(),
+            None,
+            false,
+            AdapterType::DuckDB,
+        )
+        .unwrap();
+        let resolver = ProjectConfigResolver::for_root(root, AdapterType::DuckDB);
+        let resolved = resolve_inline(
+            &resolver,
+            "{{ config(grants={'+select': ['a']}) }}{{ config(grants={'+select': ['b']}) }}",
+        );
+        let select: Option<Vec<String>> = resolved
+            .grants
+            .as_ref()
+            .and_then(|grants| grants.0.get("select").cloned())
+            .map(Into::into);
+        assert_eq!(select, Some(vec!["b".to_string()]));
+    }
+
+    /// Residual: an adapter set in an earlier `config()` call does not reach a later call's
+    /// raw-only aliases. `#[ignore]`d: pins it.
+    #[dbt_runtime::test]
+    #[ignore = "residual: an adapter set in an earlier config() call does not pick a later \
+                call's alias table"]
+    async fn test_inline_raw_only_alias_not_translated_for_adapter_set_in_earlier_call() {
+        use crate::dbt_project_config_tests::per_adapter_config_resolver_tests::root_package_resolver;
+
+        let resolver = root_package_resolver(&bigquery_declared());
+        let resolved = resolve_inline(
+            &resolver,
+            "{{ config(adapter='bigquery') }}{{ config(timeout_seconds=300) }}",
+        );
+        // Desired (not delivered): `Some(300)`, as BigQuery's table maps `timeout_seconds`.
+        assert_eq!(
+            resolved
+                .__warehouse_specific_config__
+                .job_execution_timeout_seconds,
+            None
         );
     }
 

@@ -107,11 +107,17 @@ pub struct Stat {
     /// Rows affected by the warehouse DML (e.g. `CREATE TABLE AS SELECT`).
     /// Set from the NodeEvaluated OTel span after execution; `None` for views.
     pub rows_affected: Option<i64>,
+    /// Thread pool wait time accumulated on the NodeEvaluated span.
+    /// Subtracted from wall-clock duration to report net execution time.
+    pub idle_time_ms: Option<u64>,
     pub start_time: SystemTime,
     pub end_time: SystemTime,
     pub status: NodeStatus,
     pub thread_id: String,
     pub message: Option<String>,
+    /// Whether the node's result is an assertion, reported as `pass`/`fail` by its row count.
+    /// Tests, unit tests and checks always are; see [`Stat::is_assertion_node`].
+    pub assertion: bool,
 }
 
 impl Stat {
@@ -130,18 +136,27 @@ impl Stat {
             unique_id,
             num_rows,
             rows_affected: None,
+            idle_time_ms: None,
             start_time,
             end_time,
             status,
             thread_id: format!("Thread-{} (worker)", thread_id),
             message,
+            assertion: false,
         }
+    }
+
+    /// Reports this result as an assertion: `pass` with no rows, `fail` with some.
+    pub fn as_assertion(mut self) -> Self {
+        self.assertion = true;
+        self
     }
 
     pub fn get_duration(&self) -> Duration {
         self.end_time
             .duration_since(self.start_time)
             .unwrap_or_default()
+            .saturating_sub(Duration::from_millis(self.idle_time_ms.unwrap_or_default()))
     }
 
     pub fn format_time(system_time: SystemTime) -> String {
@@ -169,7 +184,8 @@ impl Stat {
     /// of `success`/`error`, and the row count decides which. Checks belong here for the same reason
     /// tests do — "3 rows came back" is a failed assertion, not a failed build.
     fn is_assertion_node(&self) -> bool {
-        self.unique_id.starts_with("test.")
+        self.assertion
+            || self.unique_id.starts_with("test.")
             || self.unique_id.starts_with("unit_test.")
             || self.unique_id.starts_with("check.")
     }
@@ -208,6 +224,23 @@ impl Stat {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn assertions_report_pass_or_fail_by_row_count() {
+        let stat = |rows| {
+            Stat::new(
+                "widget.p.w".to_string(),
+                SystemTime::now(),
+                Some(rows),
+                NodeStatus::Succeeded,
+                None,
+                1,
+            )
+        };
+        assert_eq!(stat(0).result_status_string(), "success");
+        assert_eq!(stat(0).as_assertion().result_status_string(), "pass");
+        assert_eq!(stat(2).as_assertion().result_status_string(), "fail");
+    }
 
     #[test]
     fn test_thread_id_format() {
@@ -346,6 +379,43 @@ mod tests {
                 bytes_billed: None,
                 slot_ms: None,
             }
+        );
+    }
+
+    fn stat_with_idle(idle_time_ms: u64) -> Stat {
+        let start = SystemTime::now();
+        let end = start + Duration::from_secs(10);
+        Stat {
+            unique_id: "model.my_project.my_model".to_string(),
+            num_rows: None,
+            rows_affected: None,
+            idle_time_ms: Some(idle_time_ms),
+            start_time: start,
+            end_time: end,
+            status: NodeStatus::Succeeded,
+            thread_id: "Thread-1 (worker)".to_string(),
+            message: None,
+            assertion: false,
+        }
+    }
+
+    #[test]
+    fn test_get_duration_subtracts_idle() {
+        let stat = stat_with_idle(3000);
+        assert_eq!(
+            stat.get_duration(),
+            Duration::from_secs(7),
+            "duration should subtract idle time"
+        );
+    }
+
+    #[test]
+    fn test_get_duration_clamps_to_zero() {
+        let stat = stat_with_idle(20000);
+        assert_eq!(
+            stat.get_duration(),
+            Duration::ZERO,
+            "duration should clamp to zero when idle time exceeds duration"
         );
     }
 }

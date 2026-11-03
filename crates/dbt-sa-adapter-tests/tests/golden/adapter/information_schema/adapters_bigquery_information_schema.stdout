@@ -1,0 +1,45 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/test_columns_info.sql
+Setting up BigQuery test table for information_schema tests
+Created BigQuery test table: adapters_bigquery_information_schema.info_schema_test_table
+Testing INFORMATION_SCHEMA.COLUMNS access:
+  COLUMNS view: `dbt-test-env`.adapters_bigquery_information_schema.INFORMATION_SCHEMA.COLUMNS
+   Parsing models/test_object_privileges.sql
+Setting up BigQuery test table for information_schema tests
+Created BigQuery test table: adapters_bigquery_information_schema.info_schema_test_table
+   Parsing models/test_show_grants.sql
+Setting up BigQuery test table for information_schema tests
+Created BigQuery test table: adapters_bigquery_information_schema.info_schema_test_table
+   Started downloading referenced relations (1 items)
+  Finished [duration] downloading referenced relations (1 items)
+ Rendering models/test_show_grants.sql
+Setting up BigQuery test table for information_schema tests
+Created BigQuery test table: adapters_bigquery_information_schema.info_schema_test_table
+relation: `dbt-test-env`.`adapters_bigquery_information_schema`.`info_schema_test_table`
+relation.render(): `dbt-test-env`.`adapters_bigquery_information_schema`.`info_schema_test_table`
+SHOW GRANTS SQL:
+    select privilege_type, grantee
+    from `dbt-test-env`.`region-US`.INFORMATION_SCHEMA.OBJECT_PRIVILEGES
+    where object_schema = "adapters_bigquery_information_schema"
+      and object_name = "info_schema_test_table"
+      -- filter out current user
+      and split(grantee, ':')[offset(1)] != session_user()
+   Running models/test_show_grants.sql
+ Succeeded model adapters_bigquery_information_schema.test_show_grants (view) [1 of 3 in duration]
+ Rendering models/test_object_privileges.sql
+Setting up BigQuery test table for information_schema tests
+Created BigQuery test table: adapters_bigquery_information_schema.info_schema_test_table
+   Running models/test_object_privileges.sql
+ Succeeded model adapters_bigquery_information_schema.test_object_privileges (view) [2 of 3 in duration]
+ Rendering models/test_columns_info.sql
+Setting up BigQuery test table for information_schema tests
+Created BigQuery test table: adapters_bigquery_information_schema.info_schema_test_table
+Testing INFORMATION_SCHEMA.COLUMNS access:
+  COLUMNS view: `dbt-test-env`.adapters_bigquery_information_schema.INFORMATION_SCHEMA.COLUMNS
+   Running models/test_columns_info.sql
+ Succeeded model adapters_bigquery_information_schema.test_columns_info (view) [3 of 3 in duration]
+==================== Execution Summary =====================
+Finished 'run' successfully for target 'bigquery' [duration]
+Processed: 3 models
+Summary: 3 total | 3 success

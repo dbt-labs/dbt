@@ -7,7 +7,7 @@ use std::{
     sync::Arc,
 };
 
-use dbt_common::dashmap::DashMap;
+use dbt_common::collections::SccHashMap;
 use dbt_common::{
     CodeLocationWithFile, ErrorCode, fs_err, tracing::dbt_emit::emit_warn_log_from_fs_error,
 };
@@ -22,7 +22,7 @@ use minijinja::{
 #[derive(Debug, Clone)]
 pub struct CompileConfig {
     /// A map of config values to be used during compile time
-    pub config: Arc<DashMap<String, Value>>,
+    pub config: Arc<SccHashMap<String, Value>>,
     /// Set of valid config field names for this config type
     pub valid_keys: HashSet<String>,
 }
@@ -40,8 +40,7 @@ impl Object for CompileConfig {
     /// Get the value of a key from the config
     fn get_value(self: &Arc<Self>, key: &Value) -> Option<Value> {
         self.config
-            .get(key.as_str().unwrap())
-            .map(|v| v.value().clone())
+            .read_sync(key.as_str().unwrap(), |_, value| value.clone())
     }
 
     /// Flatten the wrapper struct so that this Object can be treated like a Map of the inner `config`
@@ -49,11 +48,11 @@ impl Object for CompileConfig {
     /// Without this, the deserialized instance has its fields all set to default value
     /// See an example of the ManifestModelConfig::deserialize usage in adapters crate
     fn enumerate(self: &Arc<Self>) -> Enumerator {
-        let keys = self
-            .config
-            .iter()
-            .map(|v| Value::from(v.key().clone()))
-            .collect::<Vec<_>>();
+        let mut keys = Vec::new();
+        self.config.iter_sync(|key, _| {
+            keys.push(Value::from(key.clone()));
+            true
+        });
         Enumerator::Iter(Box::new(keys.into_iter()))
     }
 
@@ -76,12 +75,12 @@ impl Object for CompileConfig {
                     .unwrap_or_else(|| Value::from(None::<Option<String>>));
 
                 // First, try to get the value from config.<key>
-                let result = match self.config.get(&name) {
-                    Some(val) if !val.is_none() => val.clone(),
+                let result = match self.config.read_sync(&name, |_, value| value.clone()) {
+                    Some(val) if !val.is_none() => val,
                     _ => {
                         // Check if key exists in meta and warn if it's a custom config
-                        if let Some(meta_value) = self.config.get("meta") {
-                            let meta = meta_value.value();
+                        if let Some(meta) = self.config.read_sync("meta", |_, value| value.clone())
+                        {
                             if let Some(meta_obj) = meta.as_object()
                                 && let Some(value) = meta_obj.get_value(&Value::from(name.clone()))
                                 && !value.is_none()
@@ -126,7 +125,7 @@ impl Object for CompileConfig {
                 let mut args = ArgParser::new(args, None);
                 let key: String = args.get("name")?;
                 let value: String = args.get("value")?;
-                self.config.insert(key, Value::from(value));
+                self.config.upsert_sync(key, Value::from(value));
                 Ok(Value::from(""))
             }
             // At compile time, this will throw an error if the config required does not exist
@@ -136,12 +135,12 @@ impl Object for CompileConfig {
                 let name: String = args.get("name")?;
 
                 // First, try to get the value from config.<key>
-                match self.config.get(&name) {
-                    Some(val) if !val.is_none() => Ok(val.clone()),
+                match self.config.read_sync(&name, |_, value| value.clone()) {
+                    Some(val) if !val.is_none() => Ok(val),
                     _ => {
                         // Check if key exists in meta and warn if it's a custom config
-                        if let Some(meta_value) = self.config.get("meta") {
-                            let meta = meta_value.value();
+                        if let Some(meta) = self.config.read_sync("meta", |_, value| value.clone())
+                        {
                             if let Some(meta_obj) = meta.as_object()
                                 && let Some(value) = meta_obj.get_value(&Value::from(name.clone()))
                                 && !value.is_none()
@@ -176,8 +175,11 @@ impl Object for CompileConfig {
             }
             "persist_relation_docs" => {
                 let default_value = Value::from(BTreeMap::<String, Value>::new());
-                let persist_docs = match self.config.get("persist_docs") {
-                    Some(val) if !val.is_none() => val.value().clone(),
+                let persist_docs = match self
+                    .config
+                    .read_sync("persist_docs", |_, value| value.clone())
+                {
+                    Some(val) if !val.is_none() => val,
                     _ => default_value,
                 };
                 let persist_docs_map = match persist_docs.as_object() {
@@ -196,8 +198,11 @@ impl Object for CompileConfig {
             }
             "persist_column_docs" => {
                 let default_value = Value::from(BTreeMap::<String, Value>::new());
-                let persist_docs = match self.config.get("persist_docs") {
-                    Some(val) if !val.is_none() => val.value().clone(),
+                let persist_docs = match self
+                    .config
+                    .read_sync("persist_docs", |_, value| value.clone())
+                {
+                    Some(val) if !val.is_none() => val,
                     _ => default_value,
                 };
                 let persist_docs_map = match persist_docs.as_object() {
@@ -223,20 +228,20 @@ impl Object for CompileConfig {
                     .unwrap_or_else(|| Value::from(None::<Option<String>>));
 
                 // Get the value from meta or use default
-                let result = if let Some(meta_value) = self.config.get("meta") {
-                    let meta = meta_value.value();
-                    if let Some(meta_obj) = meta.as_object() {
-                        if let Some(value) = meta_obj.get_value(&Value::from(name)) {
-                            if !value.is_none() { value } else { default }
+                let result =
+                    if let Some(meta) = self.config.read_sync("meta", |_, value| value.clone()) {
+                        if let Some(meta_obj) = meta.as_object() {
+                            if let Some(value) = meta_obj.get_value(&Value::from(name)) {
+                                if !value.is_none() { value } else { default }
+                            } else {
+                                default
+                            }
                         } else {
                             default
                         }
                     } else {
                         default
-                    }
-                } else {
-                    default
-                };
+                    };
 
                 // Handle validator if provided (same as in get method)
                 let validator = args.get_optional::<Value>("validator");
@@ -254,8 +259,7 @@ impl Object for CompileConfig {
                 let name: String = args.get("name")?;
 
                 // Only check config.meta.<key>
-                if let Some(meta_value) = self.config.get("meta") {
-                    let meta = meta_value.value();
+                if let Some(meta) = self.config.read_sync("meta", |_, value| value.clone()) {
                     if let Some(meta_obj) = meta.as_object() {
                         if let Some(value) = meta_obj.get_value(&Value::from(name.clone())) {
                             if !value.is_none() {

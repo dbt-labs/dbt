@@ -9,13 +9,21 @@ import { isTelemetryInitialized, trackLineageViewed } from '../../lib/telemetry'
 import { paths } from '../../routes';
 import { LineageEmptyState, Spinner } from '../../shared';
 import { UNSUPPORTED_SURFACE_MESSAGE } from '../../shared/hooks/unsupportedSurface';
+import {
+  isProjectLineageRoot,
+  PROJECT_LINEAGE_ROOT,
+} from '../../shared/util/projectLineage';
 import { Button } from './../ui/Button';
 import { BaseDag } from './BaseDag';
 import { DagNodePanel } from './DagNodePanel';
 
 export default function FullLineagePage() {
   const [searchParams, setSearchParams] = useSearchParams();
-  const rootUniqueId = searchParams.get('uniqueId') ?? '';
+  // `?scope=project` is the whole-project view: no single root node.
+  const isProjectScope = searchParams.get('scope') === 'project';
+  const rootUniqueId = isProjectScope
+    ? PROJECT_LINEAGE_ROOT
+    : (searchParams.get('uniqueId') ?? '');
   const panelId = searchParams.get('panel');
   const navigate = useNavigate();
   const { data, error, isSupported } = useLineageData(rootUniqueId, 1);
@@ -24,6 +32,7 @@ export default function FullLineagePage() {
   // current root. Re-fires when the root changes (refetch → data null → data).
   useEffect(() => {
     if (!isTelemetryInitialized() || !data || !rootUniqueId) return;
+    if (isProjectLineageRoot(rootUniqueId)) return;
     const rootType =
       data.nodes.find((n) => n.uniqueId === rootUniqueId)?.resourceType ??
       inferResourceType(rootUniqueId);
@@ -58,14 +67,17 @@ export default function FullLineagePage() {
   }, [updateParams]);
 
   const onClose = useCallback(() => {
-    navigate(paths.details(rootUniqueId));
-  }, [navigate, rootUniqueId]);
+    navigate(isProjectScope ? paths.home() : paths.details(rootUniqueId));
+  }, [navigate, rootUniqueId, isProjectScope]);
 
   // Groups pill click -> that resource becomes the new root. BaseDag resets
   // hops to 1+/+1 on its own whenever rootUniqueId changes.
   const onRecenter = useCallback(
     (uniqueId: string) => {
-      updateParams((p) => p.set('uniqueId', uniqueId));
+      updateParams((p) => {
+        p.delete('scope');
+        p.set('uniqueId', uniqueId);
+      });
     },
     [updateParams],
   );
@@ -86,8 +98,12 @@ export default function FullLineagePage() {
   // `<resource>.<package>.<...path>.<name>`.
   const rootProject = useMemo(() => {
     if (!rootUniqueId) return null;
-    return rootUniqueId.split('.')[1] ?? null;
-  }, [rootUniqueId]);
+    // The whole-project root is a stand-in, so read the package off a real node.
+    const id = isProjectLineageRoot(rootUniqueId)
+      ? data?.nodes[0]?.uniqueId
+      : rootUniqueId;
+    return id?.split('.')[1] ?? null;
+  }, [rootUniqueId, data]);
 
   return (
     <div className="relative h-screen w-screen overflow-hidden bg-bgMain">
@@ -141,6 +157,7 @@ export default function FullLineagePage() {
           >
             <BaseDag
               rootUniqueId={rootUniqueId}
+              projectName={rootProject}
               onRecenter={onRecenter}
               onNodeClick={onNodeClick}
               topBarLeft={

@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::fmt;
+use std::sync::Arc;
 
 use crate::schemas::BatchResults;
 use crate::schemas::Nodes;
@@ -11,7 +12,7 @@ pub struct Stats {
     pub stats: Vec<Stat>,
     pub nodes: Option<Nodes>,
     pub batch_results: HashMap<String, BatchResults>,
-    pub compiled_code: HashMap<String, String>,
+    pub compiled_code: HashMap<String, Arc<str>>,
 }
 
 impl fmt::Display for Stats {

@@ -1,6 +1,6 @@
 use std::fmt::Display;
 
-use int_enum::IntEnum;
+use strum_macros::FromRepr;
 
 /// Error codes for the SDF Frontend.
 ///
@@ -8,7 +8,7 @@ use int_enum::IntEnum;
 /// type.
 #[repr(u16)]
 #[non_exhaustive]
-#[derive(Debug, Copy, Clone, Eq, PartialEq, IntEnum)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, FromRepr)]
 pub enum ErrorCode {
     SyntaxInvalid = 101,
     SqlSchemaInvalid = 102,
@@ -91,6 +91,7 @@ pub enum ErrorCode {
     FilterColumnWrappedInFunction = 179,
     LeadingWildcardLikePattern = 180,
     HardCodedReference = 181,
+    SelectStarForbidden = 182,
 
     /// Generic catch-all error for all errors originating from the PySpark LP
     /// binder. The PySpark LP binder is different in that its input is a
@@ -241,6 +242,14 @@ pub enum ErrorCode {
     ExecutionError = 905,
     JinjaError = 906,
     JinjaAssertionError = 907,
+}
+
+impl TryFrom<u16> for ErrorCode {
+    type Error = u16;
+
+    fn try_from(value: u16) -> Result<Self, Self::Error> {
+        Self::from_repr(value).ok_or(value)
+    }
 }
 
 impl Display for ErrorCode {

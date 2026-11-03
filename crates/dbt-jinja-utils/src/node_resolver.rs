@@ -165,16 +165,14 @@ impl NodeResolver {
         for (_, node) in nodes.iter() {
             // A node's relation is rendered with *its own* adapter, not the
             // target's default. `ref('x')` returns x's relation, and x lives in
-            // x's adapter's warehouse, so it must render with x's rules however it
-            // is referenced. Both inputs are per-node: the node carries its own
+            // x's adapter's warehouse; `RefFunction` respells it for a caller on
+            // another adapter. Both inputs are per-node: the node carries its own
             // quoting (resolved against its `+adapter` during resolve) and the
             // adapter type decides `include_policy` -- DuckDB suppresses the
             // database component for `main`/`memory` while others do not.
             //
             // Each relation stays cached one-per-node; only the adapter type used
             // to build it changes.
-            let node_adapter_type = node.node_adapter();
-
             if let Some(source) = node.as_any().downcast_ref::<DbtSource>() {
                 // Sources have no `+adapter`: they are external data, so they take
                 // the target's default.
@@ -185,11 +183,12 @@ impl NodeResolver {
                     ModelStatus::Enabled,
                 )?;
             } else if let Some(function) = node.as_any().downcast_ref::<DbtFunction>() {
-                node_resolver.insert_function(function, node_adapter_type, ModelStatus::Enabled)?;
+                node_resolver.insert_function(function, ModelStatus::Enabled)?;
             } else {
                 match node.resource_type() {
-                    NodeType::Model | NodeType::Snapshot | NodeType::Seed => node_resolver
-                        .insert_ref(node, node_adapter_type, ModelStatus::Enabled, false)?,
+                    NodeType::Model | NodeType::Snapshot | NodeType::Seed => {
+                        node_resolver.insert_ref(node, ModelStatus::Enabled, false)?
+                    }
                     _ => (),
                 }
             }
@@ -367,7 +366,6 @@ impl NodeResolverTracker for NodeResolver {
     fn insert_ref(
         &mut self,
         node: &dyn InternalDbtNodeAttributes,
-        adapter_type: AdapterType,
         status: ModelStatus,
         override_existing: bool,
     ) -> FsResult<()> {
@@ -382,7 +380,7 @@ impl NodeResolverTracker for NodeResolver {
         };
 
         let relation = RelationObject::new_with_filter(
-            create_ref_relation(node, adapter_type, Some(self.run_filter.clone()))?.into(),
+            create_ref_relation(node, node.node_adapter(), Some(self.run_filter.clone()))?.into(),
             self.run_filter.clone(),
             node.event_time(),
         )
@@ -461,7 +459,6 @@ impl NodeResolverTracker for NodeResolver {
     fn insert_function(
         &mut self,
         node: &dyn InternalDbtNodeAttributes,
-        adapter_type: AdapterType,
         status: ModelStatus,
     ) -> FsResult<()> {
         let package_name = &node.package_name();
@@ -469,7 +466,8 @@ impl NodeResolverTracker for NodeResolver {
         let unique_id = node.unique_id();
 
         // For functions, create a FunctionObject that renders function calls
-        let function_object = create_function_object_from_node(adapter_type, node)?.into_value();
+        let function_object =
+            create_function_object_from_node(node.node_adapter(), node)?.into_value();
 
         // Lookup by function name
         let function_entry = self.functions.entry(function_name.clone()).or_default();
@@ -1157,6 +1155,12 @@ pub fn resolve_dependencies(
             };
         }
 
+        // These vectors live as long as the node. Drop the spare capacity left by
+        // growing them one element at a time.
+        node_base.refs.shrink_to_fit();
+        node_base.depends_on.nodes.shrink_to_fit();
+        node_base.depends_on.nodes_with_ref_location.shrink_to_fit();
+
         if is_test && has_disabled_or_missing_dependency {
             tests_to_disable.push(node_unique_id.clone());
         }
@@ -1542,12 +1546,7 @@ mod tests {
 
         let mut resolver = NodeResolver::default();
         resolver
-            .insert_ref(
-                model.as_ref(),
-                AdapterType::LakeCompute,
-                ModelStatus::Enabled,
-                false,
-            )
+            .insert_ref(model.as_ref(), ModelStatus::Enabled, false)
             .unwrap();
         let (relation, deferred) = resolver
             .lookup_self_relation("model.root_project.orders", "root_project", "orders", &None)
@@ -1568,20 +1567,6 @@ mod tests {
                 .inner()
                 .is_table()
         );
-        assert!(deferred.is_none());
-
-        let mut snowflake_resolver = NodeResolver::default();
-        snowflake_resolver
-            .insert_ref(
-                model.as_ref(),
-                AdapterType::Snowflake,
-                ModelStatus::Enabled,
-                false,
-            )
-            .unwrap();
-        let (relation, deferred) = snowflake_resolver
-            .lookup_self_relation("model.root_project.orders", "root_project", "orders", &None)
-            .unwrap();
         assert_eq!(
             relation
                 .downcast_object_ref::<RelationObject>()
@@ -1637,12 +1622,7 @@ mod tests {
 
         let mut resolver = NodeResolver::default();
         resolver
-            .insert_ref(
-                model.as_ref(),
-                AdapterType::Snowflake,
-                ModelStatus::Enabled,
-                false,
-            )
+            .insert_ref(model.as_ref(), ModelStatus::Enabled, false)
             .unwrap();
         resolver
             .update_ref_with_deferral(model.as_ref(), AdapterType::Snowflake, true)

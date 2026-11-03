@@ -1,0 +1,4 @@
+[warning] [JinjaWarn (dbt1071)]: 'runtime_version' is accepted for compatibility but has no effect on Databricks Python UDFs. Databricks manages the Python runtime internally.
+  --> dbt_internal_packages/dbt-databricks/macros/materializations/functions/scalar.sql:28:1
+[warning] [JinjaWarn (dbt1071)]: 'entry_point' is accepted for compatibility but has no effect on Databricks Python UDFs. The function body is used directly.
+  --> dbt_internal_packages/dbt-databricks/macros/materializations/functions/scalar.sql:28:1

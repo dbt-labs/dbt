@@ -12,9 +12,9 @@ use crate::vec_of_rows::VecOfRows;
 use crate::{Tuple, adjusted_index};
 
 use arrow::array::StringViewBuilder;
-use arrow::compute::TakeOptions;
+use arrow::compute::{LexicographicalComparator, SortColumn, SortOptions, TakeOptions};
 use arrow::record_batch::RecordBatch;
-use arrow_array::{Array, StringViewArray, UInt64Array};
+use arrow_array::{Array, BooleanArray, StringViewArray, UInt64Array};
 use arrow_schema::{ArrowError, Schema};
 use minijinja::arg_utils::ArgsIter;
 use minijinja::listener::RenderingEventListener;
@@ -26,6 +26,53 @@ use std::hint::unreachable_unchecked;
 use std::io;
 use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
+
+/// Prepare the Arrow array to sort it like Python does sorting.
+///
+/// `None`, `bool`, numbers, `str`, `bytes`, `date`, `datetime` or `timedelta`,
+/// are types that Python can compare. Everything else (maps, unions, lists,
+/// structs, run-end encoded arrays) is rejected even when arrow could order it:
+/// Python can't compare dicts, and mixed or nested values would raise `TypeError`
+/// or order differently.
+fn safe_to_sort(array: Arc<dyn Array>) -> Result<Arc<dyn Array>, ArrowError> {
+    use arrow::compute::CastOptions;
+    use arrow::compute::cast_with_options;
+    use arrow_schema::DataType::*;
+
+    let is_sortable_like_python = match array.data_type() {
+        Null | Boolean => true,
+        Int8 | Int16 | Int32 | Int64 | UInt8 | UInt16 | UInt32 | UInt64 => true,
+        Float16 | Float32 | Float64 => true,
+        Decimal32(_, _) | Decimal64(_, _) | Decimal128(_, _) | Decimal256(_, _) => true,
+        Date32 | Date64 | Timestamp(_, _) => true,
+        Time32(_) | Time64(_) | Duration(_) | Interval(_) => true,
+        Utf8 | LargeUtf8 | Utf8View => true,
+        Binary | LargeBinary | BinaryView | FixedSizeBinary(_) => true,
+        Dictionary(_, value_type) => {
+            // Dictionary-encoded arrays are not handled by the sort_to_indices()
+            // function yet, so we must decompress them before sorting.
+            let cast_options = CastOptions {
+                safe: false,
+                ..Default::default()
+            };
+            let values = cast_with_options(array.as_ref(), value_type.as_ref(), &cast_options)?;
+            return safe_to_sort(values);
+        }
+        // XXX: consider supporting REE arrays in the future.
+        RunEndEncoded(_, _) => false,
+        List(_) | LargeList(_) | ListView(_) | LargeListView(_) | FixedSizeList(_, _) => false,
+        Struct(_) | Union(_, _) | Map(_, _) => false,
+    };
+
+    if is_sortable_like_python {
+        Ok(array)
+    } else {
+        Err(ArrowError::ComputeError(format!(
+            "Sort not supported for data type {}",
+            array.data_type()
+        )))
+    }
+}
 
 /// Internal table representation.
 ///
@@ -219,25 +266,50 @@ impl TableRepr {
         Some(Arc::new(repr))
     }
 
-    /// Return a single-column table with the distinct values in this column.
-    pub fn column_distinct(&self, col_idx: isize) -> Arc<Self> {
-        let _col = self.single_column_table(col_idx).unwrap();
-        todo!("column_distinct")
+    pub fn column_distinct(&self, col_idx: isize) -> Result<Option<Arc<Self>>, ArrowError> {
+        self.single_column_table(col_idx)
+            .map(|repr| repr.distinct(&[0]))
+            .transpose()
     }
 
-    pub fn column_without_nulls(&self, col_idx: isize) -> Arc<Self> {
-        let _col = self.single_column_table(col_idx).unwrap();
-        todo!("column_without_nulls")
+    pub fn column_without_nulls(&self, col_idx: isize) -> Result<Option<Arc<Self>>, ArrowError> {
+        let Some(col) = self.single_column_table(col_idx) else {
+            return Ok(None);
+        };
+        let arr = col.flat.inner().column(0);
+
+        // logical_nulls() also covers Null, Dictionary, RunEndEncoded and Union arrays.
+        let validity_filter = match arr.logical_nulls() {
+            Some(nulls) if nulls.null_count() > 0 => {
+                // Create a BooleanArray based on the logical nulls bitmap of the column.
+                BooleanArray::new(nulls.into_inner(), None)
+            }
+            // Nothing to remove: reuse the column as is.
+            _ => return Ok(Some(col)),
+        };
+        let filtered = arrow::compute::filter(arr.as_ref(), &validity_filter)?;
+
+        let repr = {
+            let schema = col.flat.inner().schema();
+            let batch = RecordBatch::try_new(schema, vec![filtered])?;
+            let flat = FlatRecordBatch::_from_flattened_record_batch(Arc::new(batch), None)?;
+            let repr = TableRepr::new(Arc::new(flat), None, None);
+            Arc::new(repr)
+        };
+        Ok(Some(repr))
     }
 
-    pub fn column_sorted(&self, col_idx: isize) -> Arc<Self> {
-        let _col = self.single_column_table(col_idx).unwrap();
-        todo!("column_sorted")
-    }
-
-    pub fn column_without_nulls_sorted(&self, col_idx: isize) -> Arc<Self> {
-        let _col = self.single_column_table(col_idx).unwrap();
-        todo!("column_without_nulls_sorted")
+    /// The column values sorted according to `options`.
+    pub fn column_sorted(
+        &self,
+        col_idx: isize,
+        options: SortOptions,
+    ) -> Result<Option<Arc<Self>>, ArrowError> {
+        let Some(col) = self.single_column_table(col_idx) else {
+            return Ok(None);
+        };
+        let indices = col.sort_to_indices(&[(0, options)])?;
+        Ok(Some(Arc::new(col.select_rows(&indices, None)?)))
     }
 
     pub fn count_occurrences_of_value_in_column(&self, needle: &Value, col_idx: isize) -> usize {
@@ -348,6 +420,7 @@ impl TableRepr {
         self.select_rows(&indices, None)
     }
 
+    #[cold]
     pub(crate) fn select_rows(
         &self,
         indices: &UInt64Array,
@@ -400,6 +473,74 @@ impl TableRepr {
         Ok(repr)
     }
 
+    /// Row indices that sort the whole table by the `keys` columns.
+    ///
+    /// Rows are compared lexicographically: by the first key column and its
+    /// [SortOptions] (ascending/descending, nulls first/last), ties broken by
+    /// the next key, and so on. The sort is stable, like Python's `sorted()`,
+    /// so rows that compare equal on every key keep their original order.
+    ///
+    /// Stability matters because rows can have different names in a table and
+    /// a non-stable sorter could create non-determinism in the names of the
+    /// sorted rows.
+    #[cold]
+    pub(crate) fn sort_to_indices(
+        &self,
+        keys: &[(usize, SortOptions)],
+    ) -> Result<Box<UInt64Array>, ArrowError> {
+        let columns = self.flat.inner().columns();
+        let sort_columns = keys
+            .iter()
+            .map(|&(idx, options)| {
+                let values = safe_to_sort(Arc::clone(&columns[idx]))?;
+                let sort_column = SortColumn {
+                    values,
+                    options: Some(options),
+                };
+                Ok(sort_column)
+            })
+            .collect::<Result<Vec<_>, ArrowError>>()?;
+
+        let num_rows = self.num_rows();
+        let indices = {
+            let mut indices = (0..num_rows as u64).collect::<Vec<_>>();
+            if !sort_columns.is_empty() {
+                let comparator = LexicographicalComparator::try_new(&sort_columns)?;
+                indices.sort_by(|&a, &b| comparator.compare(a as usize, b as usize));
+            }
+            UInt64Array::from(indices)
+        };
+        Ok(Box::new(indices))
+    }
+
+    #[cold]
+    pub(crate) fn distinct(&self, column_indices: &[usize]) -> Result<Arc<Self>, ArrowError> {
+        // TODO: cast the values in `column` according to `key_type`, create a new
+        // table with the casted column, and use that table to create the grouper
+        let grouper = self.grouper(column_indices)?;
+
+        // Builds a selection vector with the first `row_idx` of every group.
+        // A "group" is the set of rows that are identical, so whenever the
+        // grouper emits a `group_id` we've already seen, we know we shouldn't
+        // emit that `row_idx` because it's not the index of a distinct row.
+        let mut seen_groups = HashSet::new();
+        let indices: Vec<u64> = grouper
+            .iter()
+            .enumerate()
+            .filter_map(|(row_idx, group_id)| {
+                if seen_groups.insert(group_id) {
+                    Some(row_idx as u64)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let selection_vector = UInt64Array::new(indices.into(), None);
+
+        let repr = self.select_rows(&selection_vector, None)?;
+        Ok(Arc::new(repr))
+    }
+
     // Cells ------------------------------------------------------------------
 
     pub fn cell(&self, row_idx: isize, col_idx: isize) -> Option<Value> {
@@ -445,14 +586,24 @@ impl AgateTable {
     /// `row_names` is an optional array of strings with the same length as the number
     /// of rows in the `RecordBatch`.
     pub fn new(batch: Arc<RecordBatch>, row_names: Option<Arc<StringViewArray>>) -> Self {
-        let flat = FlatRecordBatch::try_new(batch).unwrap();
-        let repr = TableRepr::new(Arc::new(flat), None, row_names);
-        Self::from_repr(Arc::new(repr))
+        Self::from_record_batch_impl(Arc::clone(&batch), Some(batch), row_names)
     }
 
     /// Create an AgateTable from an Arrow RecordBatch.
     pub fn from_record_batch(batch: Arc<RecordBatch>) -> Self {
-        Self::new(batch, None)
+        Self::from_record_batch_impl(Arc::clone(&batch), Some(batch), None)
+    }
+
+    /// Constructor for callers that do their own batch transformation but
+    /// still need to keep the original [RecordBatch] around.
+    pub fn from_record_batch_impl(
+        batch: Arc<RecordBatch>,
+        original: Option<Arc<RecordBatch>>,
+        row_names: Option<Arc<StringViewArray>>,
+    ) -> Self {
+        let flat = FlatRecordBatch::try_new_impl(batch, original).unwrap();
+        let repr = TableRepr::new(Arc::new(flat), None, row_names);
+        Self::from_repr(Arc::new(repr))
     }
 
     /// Create an [AgateTable] from an Arrow [RecordBatch] using a single row name for all rows.
@@ -952,43 +1103,17 @@ impl AgateTable {
                 .collect(),
             None => self.column_names(),
         };
-        // TODO: cast the values in `column` according to `key_type`, create a new
-        // table with the casted column, and use that table to create the grouper
-        let grouper = self.grouper(&column_names).map_err(|e| {
-            Error::new(
-                ErrorKind::InvalidOperation,
-                format!("Table.distinct: error creating grouper: {e}"),
-            )
-        })?;
-
-        // Builds a selection vector with the first `row_idx` of every group.
-        // A "group" is the set of rows that are identical, so whenever the
-        // grouper emits a `group_id` we've already seen, we know we shouldn't
-        // emit that `row_idx` because it's not the index of a distinct row.
-        let mut seen_groups = HashSet::new();
-        let indices: Vec<u64> = grouper
-            .iter()
-            .enumerate()
-            .filter_map(|(row_idx, group_id)| {
-                if seen_groups.insert(group_id) {
-                    Some(row_idx as u64)
-                } else {
-                    None
-                }
-            })
-            .collect();
-        let selection_vector = UInt64Array::new(indices.into(), None);
+        let column_indices = self
+            .repr
+            .column_indices(&column_names)
+            .collect::<Vec<usize>>();
 
         let repr = self
             .repr
-            .select_rows(&selection_vector, None)
-            .map_err(|e| {
-                Error::new(
-                    ErrorKind::InvalidOperation,
-                    format!("Table.distinct: error selecting rows: {e}"),
-                )
-            })?;
-        Ok(AgateTable::from_repr(repr.into()))
+            .distinct(&column_indices)
+            .map_err(|e| Error::new(ErrorKind::InvalidOperation, format!("Table.distinct: {e}")))?;
+
+        Ok(AgateTable::from_repr(repr))
     }
 }
 
@@ -1456,6 +1581,47 @@ mod tests {
         ]));
         let batch = RecordBatch::try_new(schema, vec![id_array, country_array]).unwrap();
         Arc::new(batch)
+    }
+
+    #[test]
+    fn retain_original_values_with_separate_display_batch() {
+        let original = simple_record_batch();
+        let display = Arc::new(
+            RecordBatch::try_from_iter(vec![
+                (
+                    "id",
+                    Arc::new(StringArray::from(vec!["42", "43", "44"])) as ArrayRef,
+                ),
+                ("country", original.column(1).clone()),
+            ])
+            .unwrap(),
+        );
+        let table =
+            AgateTable::from_record_batch_impl(display.clone(), Some(original.clone()), None);
+        assert!(Arc::ptr_eq(&table.original_record_batch(), &original));
+        assert_eq!(table.to_record_batch().column(0), display.column(0));
+        assert_eq!(
+            table
+                .to_record_batch()
+                .schema()
+                .field(0)
+                .metadata()
+                .get("AGATE:dtype")
+                .map(String::as_str),
+            Some("Text")
+        );
+        let native_display =
+            AgateTable::from_record_batch_impl(original.clone(), Some(original), None);
+        assert_eq!(
+            native_display
+                .to_record_batch()
+                .schema()
+                .field(0)
+                .metadata()
+                .get("AGATE:dtype")
+                .map(String::as_str),
+            Some("Number")
+        );
     }
 
     /// End-to-end regression test for dbt-labs/fs#15412.
@@ -3067,5 +3233,159 @@ mod tests {
                 .contains("Table.join: right_table must be a Table"),
             "{err}"
         );
+    }
+
+    const COLUMN_VALUES_METHODS: [&str; 4] = [
+        "values_distinct",
+        "values_without_nulls",
+        "values_sorted",
+        "values_without_nulls_sorted",
+    ];
+
+    fn single_column_table_value(array: ArrayRef) -> Value {
+        let batch = RecordBatch::try_from_iter([("c", array)]).unwrap();
+        Value::from_object(AgateTable::from_record_batch(Arc::new(batch)))
+    }
+
+    fn render_column_method(table: &Value, method: &str) -> Result<String, minijinja::Error> {
+        Environment::new().render_str(
+            &format!("{{{{ t.columns[0].{method}() | list }}}}"),
+            context! { t => table.clone() },
+            &[],
+        )
+    }
+
+    fn assert_column_values_methods(name: &str, array: ArrayRef, expected: [&str; 4]) {
+        let table = single_column_table_value(array);
+        for (method, expected) in COLUMN_VALUES_METHODS.iter().zip(expected) {
+            let actual = render_column_method(&table, method).unwrap();
+            let expected = Environment::new()
+                .render_str(&format!("{{{{ {expected} }}}}"), context! {}, &[])
+                .unwrap();
+            assert_eq!(actual, expected, "{name}: {method}");
+        }
+    }
+
+    fn utf8_with_nulls() -> Vec<Option<&'static str>> {
+        vec![Some("b"), None, Some("a"), Some("c"), Some("a"), None]
+    }
+
+    #[test]
+    fn test_column_values_methods() {
+        assert_column_values_methods(
+            "int64",
+            Arc::new(arrow::array::Int64Array::from(vec![
+                Some(3),
+                None,
+                Some(1),
+                Some(2),
+                Some(1),
+                None,
+            ])),
+            [
+                "[3, none, 1, 2]",
+                "[3, 1, 2, 1]",
+                "[1, 1, 2, 3, none, none]",
+                "[1, 1, 2, 3]",
+            ],
+        );
+        assert_column_values_methods(
+            "utf8",
+            Arc::new(StringArray::from(utf8_with_nulls())),
+            [
+                "['b', none, 'a', 'c']",
+                "['b', 'a', 'c', 'a']",
+                "['a', 'a', 'b', 'c', none, none]",
+                "['a', 'a', 'b', 'c']",
+            ],
+        );
+        assert_column_values_methods(
+            "int64 without nulls",
+            Arc::new(arrow::array::Int64Array::from(vec![2, 1, 2])),
+            ["[2, 1]", "[2, 1, 2]", "[1, 2, 2]", "[1, 2, 2]"],
+        );
+        assert_column_values_methods(
+            "empty int64",
+            Arc::new(arrow::array::Int64Array::from(Vec::<i64>::new())),
+            ["[]", "[]", "[]", "[]"],
+        );
+    }
+
+    #[test]
+    fn test_column_values_methods_logical_nulls() {
+        assert_column_values_methods(
+            "all-null int64",
+            Arc::new(arrow::array::Int64Array::from(Vec::<Option<i64>>::from([
+                None, None, None,
+            ]))),
+            ["[none]", "[]", "[none, none, none]", "[]"],
+        );
+        assert_column_values_methods(
+            "null array",
+            Arc::new(arrow::array::NullArray::new(3)),
+            ["[none]", "[]", "[none, none, none]", "[]"],
+        );
+        let keys_to_null_value = DictionaryArray::<Int32Type>::try_new(
+            Int32Array::from(vec![0, 1, 2, 0, 1]),
+            Arc::new(StringArray::from(vec![Some("b"), None, Some("a")])),
+        )
+        .unwrap();
+        assert_column_values_methods(
+            "dictionary with null values",
+            Arc::new(keys_to_null_value),
+            [
+                "['b', none, 'a']",
+                "['b', 'a', 'b']",
+                "['a', 'b', 'b', none, none]",
+                "['a', 'b', 'b']",
+            ],
+        );
+        let dictionary: DictionaryArray<Int32Type> = utf8_with_nulls().into_iter().collect();
+        assert_column_values_methods(
+            "dictionary-encoded utf8",
+            Arc::new(dictionary),
+            [
+                "['b', none, 'a', 'c']",
+                "['b', 'a', 'c', 'a']",
+                "['a', 'a', 'b', 'c', none, none]",
+                "['a', 'a', 'b', 'c']",
+            ],
+        );
+    }
+
+    #[test]
+    fn test_column_values_methods_unsupported_type() {
+        let mut builder = arrow::array::MapBuilder::new(
+            None,
+            StringBuilder::new(),
+            arrow::array::Int64Builder::new(),
+        );
+        for value in [1, 2] {
+            builder.keys().append_value("k");
+            builder.values().append_value(value);
+            builder.append(true).unwrap();
+        }
+        let table = single_column_table_value(Arc::new(builder.finish()));
+
+        for method in [
+            "values_distinct",
+            "values_sorted",
+            "values_without_nulls_sorted",
+        ] {
+            let err = render_column_method(&table, method).unwrap_err();
+            assert_eq!(err.kind(), ErrorKind::InvalidOperation, "{err}");
+            assert!(
+                err.to_string().contains(&format!("Column.{method}:")),
+                "{err}"
+            );
+        }
+        let out = Environment::new()
+            .render_str(
+                "{{ t.columns[0].values_without_nulls() | list | length }}",
+                context! { t => table },
+                &[],
+            )
+            .unwrap();
+        assert_eq!(out, "2");
     }
 }

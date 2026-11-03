@@ -19,7 +19,6 @@ comfy-table = { workspace = true }
 dbt-fusion-workspace-hack = { version = "0.1" }
 dbt-yaml = { workspace = true }
 serde_json = { workspace = true }
-term_size = { workspace = true }
 
 [lib]
 name = "dbt_pretty_table"

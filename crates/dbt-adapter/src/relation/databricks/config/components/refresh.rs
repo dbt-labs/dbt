@@ -7,6 +7,7 @@ use crate::relation::config_v2::{
 use crate::relation::databricks::config::{
     DatabricksRelationMetadata, DatabricksRelationMetadataKey,
 };
+use dbt_adapter_engine::cow::uppercase;
 use dbt_schemas::schemas::DbtModel;
 use dbt_schemas::schemas::InternalDbtNodeAttributes;
 use minijinja::value::Value;
@@ -116,7 +117,7 @@ fn normalize_time_zone(time_zone: Option<&str>) -> Cow<'_, str> {
     if time_zone.eq_ignore_ascii_case("UTC") || time_zone.eq_ignore_ascii_case("ETC/UTC") {
         Cow::Borrowed("UTC")
     } else {
-        Cow::Owned(time_zone.to_uppercase())
+        uppercase(time_zone.into())
     }
 }
 

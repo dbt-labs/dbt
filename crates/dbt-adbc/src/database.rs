@@ -158,6 +158,7 @@ impl TokenRefresher {
         const BASE64_ENGINE: &general_purpose::GeneralPurpose = &general_purpose::STANDARD;
 
         let http_config = ureq::Agent::config_builder()
+            .tls_config(crate::install::build_tls_config())
             .timeout_global(Some(REFRESH_TOKEN_REQ_TIMEOUT))
             .build();
         let http_agent = ureq::Agent::new_with_config(http_config);
@@ -348,7 +349,11 @@ impl InnerAdbcDatabase {
             } else {
                 managed_database.new_connection_with_opts(conn_opts)
             };
-            Ok(AdbcConnection(self.backend, conn_res?, 0))
+            Ok(AdbcConnection {
+                backend: self.backend,
+                inner: conn_res?,
+                fingerprint: 0,
+            })
         };
 
         let conn = if db_opts.is_empty() {

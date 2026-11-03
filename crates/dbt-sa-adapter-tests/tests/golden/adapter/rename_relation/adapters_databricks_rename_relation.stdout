@@ -1,0 +1,28 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/a.sql
+   Parsing models/c.sql
+databricks
+to_relation
+None
+from_relation
+None
+None
+renamed_relation
+None
+   Started downloading referenced relations (1 items)
+  Finished [duration] downloading referenced relations (1 items)
+ Rendering models/c.sql
+databricks
+to_relation
+None
+from_relation
+`e2e`.`adapters_databricks_rename_relation`.`a`
+None
+renamed_relation
+`e2e`.`adapters_databricks_rename_relation`.`b`
+ Rendering models/a.sql
+==================== Execution Summary =====================
+Finished 'compile' successfully for target 'databricks' [duration]
+Processed: 2 models
+Summary: 2 total | 2 success

@@ -1,9 +1,11 @@
 use std::{
+    borrow::Cow,
     collections::{BTreeMap, BTreeSet, HashMap},
     fmt,
     sync::Arc,
 };
 
+use crate::connection::{ConnectionGuard, DynConnectionFactory};
 use crate::{
     AdapterResult, AdapterType,
     errors::{AdapterError, AdapterErrorKind},
@@ -12,8 +14,7 @@ use crate::{
 use arrow::array::RecordBatch;
 use arrow_schema::{DataType, Field, Schema};
 use chrono::{DateTime, Utc};
-use dbt_adapter_engine::{ConnectionFactory, MapReduce};
-use dbt_adbc::Connection;
+use dbt_adapter_engine::MapReduce;
 use dbt_common::AsyncAdapterResult;
 use dbt_common::cancellation::{Cancellable, CancellationToken};
 use dbt_schemas::schemas::{dbt_catalogs::DbtCatalogsView, relations::base::BaseRelation};
@@ -90,10 +91,10 @@ impl SchemaCacheKey for (String, String) {
 
 #[allow(clippy::type_complexity)]
 fn run_schema_cache_map_reduce<K>(
-    factory: Box<dyn ConnectionFactory<Error = Cancellable<AdapterError>>>,
+    factory: Box<DynConnectionFactory>,
     keys: Vec<K>,
     item_span_operation_id: Option<&str>,
-    map_f: impl Fn(&mut dyn Connection, &K) -> AdapterResult<Arc<Schema>> + Send + Sync + 'static,
+    map_f: impl Fn(&mut ConnectionGuard<'_>, &K) -> AdapterResult<Arc<Schema>> + Send + Sync + 'static,
     reduce_f: impl Fn(
         &mut HashMap<String, AdapterResult<Arc<Schema>>>,
         K,
@@ -111,17 +112,18 @@ where
     // Callers that don't own a parent `GenericOpExecuted` span (item_span_operation_id ==
     // None) get no item span at all, rather than being silently attributed to the schema
     // hydration bar's operation_id.
-    let map_f: Box<dyn Fn(&mut dyn Connection, &K) -> AdapterResult<Arc<Schema>> + Send + Sync> =
-        match item_span_operation_id {
-            Some(operation_id) => {
-                let operation_id = operation_id.to_string();
-                Box::new(move |conn: &mut dyn Connection, key: &K| {
-                    let target = key.schema_cache_target();
-                    with_schema_cache_item_span(&operation_id, &target, || map_f(conn, key))
-                })
-            }
-            None => Box::new(map_f),
-        };
+    let map_f: Box<
+        dyn Fn(&mut ConnectionGuard<'_>, &K) -> AdapterResult<Arc<Schema>> + Send + Sync,
+    > = match item_span_operation_id {
+        Some(operation_id) => {
+            let operation_id = operation_id.to_string();
+            Box::new(move |conn: &mut ConnectionGuard<'_>, key: &K| {
+                let target = key.schema_cache_target();
+                with_schema_cache_item_span(&operation_id, &target, || map_f(conn, key))
+            })
+        }
+        None => Box::new(map_f),
+    };
     MapReduce::new(factory, map_f, Box::new(reduce_f), node_id).run(Arc::new(keys), token)
 }
 
@@ -224,8 +226,8 @@ impl From<&dyn BaseRelation> for CatalogAndSchema {
         Self {
             rendered_catalog,
             rendered_schema,
-            resolved_catalog,
-            resolved_schema,
+            resolved_catalog: resolved_catalog.into_owned(),
+            resolved_schema: resolved_schema.into_owned(),
         }
     }
 }
@@ -402,9 +404,9 @@ pub fn new_arrow_field_with_metadata(
     field.with_metadata(metadata)
 }
 
-pub fn get_input_schema_database_and_table(
-    relation: &Arc<dyn BaseRelation>,
-) -> AdapterResult<(String, String, String)> {
+pub fn get_input_schema_database_and_table<'a>(
+    relation: &'a Arc<dyn BaseRelation>,
+) -> AdapterResult<(Cow<'a, str>, Cow<'a, str>, Cow<'a, str>)> {
     let table_name = relation.semantic_fqn();
 
     let parts: Vec<&str> = table_name.split('.').collect();
@@ -436,7 +438,7 @@ pub fn get_input_schema_database_and_table(
         )
     })?;
 
-    Ok((input_schema, database.to_owned(), input_table))
+    Ok((input_schema, Cow::Owned(database.to_owned()), input_table))
 }
 
 /// Builds and returns ([WhereClausesByDb], [RelationsByDb]) from a list of [BaseRelation]
@@ -453,13 +455,13 @@ pub fn build_relation_clauses(
         let (input_schema, database, input_table) = get_input_schema_database_and_table(relation)?;
 
         where_clauses_by_database
-            .entry(database.to_owned())
+            .entry(database.as_ref().to_owned())
             .or_insert_with(Vec::new)
             .push(format!(
                 "table_schema = '{input_schema}' and table_name = '{input_table}'"
             ));
         relations_by_database
-            .entry(database.to_owned())
+            .entry(database.into_owned())
             .or_insert_with(Vec::new)
             .push(relation.clone());
     }

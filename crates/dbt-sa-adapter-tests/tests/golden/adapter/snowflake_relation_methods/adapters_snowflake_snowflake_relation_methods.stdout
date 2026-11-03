@@ -1,0 +1,28 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/c.sql
+snowflake
+executed
+development
+adapters_snowflake_snowflake_relation_methods
+relation: None
+get_iceberg_ddl_options:
+          external_volume = 'test'
+          catalog = 'snowflake'
+          base_location = '_dbt///test'
+   Started downloading referenced relations (1 items)
+  Finished [duration] downloading referenced relations (1 items)
+ Rendering models/c.sql
+snowflake
+executed
+development
+adapters_snowflake_snowflake_relation_methods
+relation: development.adapters_snowflake_snowflake_relation_methods.a
+get_iceberg_ddl_options:
+          external_volume = 'test'
+          catalog = 'snowflake'
+          base_location = '_dbt/adapters_snowflake_snowflake_relation_methods/a/test'
+==================== Execution Summary =====================
+Finished 'compile' successfully for target 'snowflake' [duration]
+Processed: 1 model
+Summary: 1 total | 1 success

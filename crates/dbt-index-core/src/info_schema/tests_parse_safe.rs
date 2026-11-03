@@ -78,16 +78,6 @@ const DEAD_AT_PARSE: &[(&str, &[&str])] = &[
         &["project_id", "description", "quoting", "ai_context"],
     ),
     (
-        "packages",
-        &[
-            "package_source",
-            "version",
-            "git_url",
-            "git_revision",
-            "local_path",
-        ],
-    ),
-    (
         "groups",
         &["package_name", "file_path", "original_file_path", "config"],
     ),

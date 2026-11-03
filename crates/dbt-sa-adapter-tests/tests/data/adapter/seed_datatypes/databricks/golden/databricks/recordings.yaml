@@ -1,0 +1,70 @@
+6c244b79:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists `e2e`.`adapters_databricks_seed_datatypes`
+85f3743c:
+- sequence: 0
+  type: execute
+  sql: SHOW SCHEMAS IN `e2e`
+seed.test.mixed_dtypes:
+- sequence: 0
+  type: execute
+  sql: |-
+    create  table `e2e`.`adapters_databricks_seed_datatypes`.`mixed_dtypes` (`id` bigint ,`first_name` string ,`last_name` string ,`created_at` timestamp ,`birth_date` date ,`is_cool` boolean ,`net_worth` bigint ,`num_employees` bigint ,`revenue` double ,`discount_pct` bigint ,`score` bigint )
+    
+    
+    using delta
+- sequence: 1
+  type: execute
+  sql: |-
+    insert overwrite `e2e`.`adapters_databricks_seed_datatypes`.`mixed_dtypes` values
+    (2,'Arthur','Aardvark','2024-01-15T10:30:00','1990-05-20',true,100.0,1.0,1000.0,10.0,9.0),(3,'Rachel','Bean','2024-01-16T14:45:30','1985-12-03',false,150.0,2.0,500.5,25.0,8.0)
+seed.test.mixed_dtypes_w_schema:
+- sequence: 0
+  type: execute
+  sql: |-
+    create  table `e2e`.`adapters_databricks_seed_datatypes`.`mixed_dtypes_w_schema` (`id` INT ,`first_name` STRING ,`last_name` STRING ,`created_at` TIMESTAMP ,`birth_date` DATE ,`is_cool` BOOLEAN ,`net_worth` DECIMAL(38,9) )
+    
+    
+    using delta
+- sequence: 1
+  type: execute
+  sql: |-
+    insert overwrite `e2e`.`adapters_databricks_seed_datatypes`.`mixed_dtypes_w_schema` values
+    ('2','Arthur','Aardvark','2024-01-15 10:30:00','1990-05-20','true','100.00'),('3','Rachel','Bean','2024-01-16 14:45:30','1985-12-03','false','150.00')
+seed.test.timestamps:
+- sequence: 0
+  type: execute
+  sql: |-
+    SELECT
+    table_name,
+    if(table_type IN ('EXTERNAL', 'MANAGED', 'MANAGED_SHALLOW_CLONE', 'EXTERNAL_SHALLOW_CLONE'), 'table', lower(table_type)) AS table_type,
+    lower(data_source_format) AS file_format,
+    table_schema,
+    table_owner,
+    table_catalog,
+    if(
+    table_type IN (
+    'EXTERNAL',
+    'MANAGED',
+    'MANAGED_SHALLOW_CLONE',
+    'EXTERNAL_SHALLOW_CLONE'
+    ),
+    lower(table_type),
+    NULL
+    ) AS databricks_table_type
+    FROM `system`.`information_schema`.`tables`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'adapters_databricks_seed_datatypes'
+- sequence: 1
+  type: execute
+  sql: |-
+    create  table `e2e`.`adapters_databricks_seed_datatypes`.`timestamps` (`timestamp_without_timezone` TIMESTAMP )
+    
+    
+    using delta
+- sequence: 2
+  type: execute
+  sql: |-
+    insert overwrite `e2e`.`adapters_databricks_seed_datatypes`.`timestamps` values
+    ('2014-05-08 04:08:00'),('2023-12-25 15:30:45'),('1999-12-31 23:59:59'),('2000-01-01 00:00:00'),('2024-02-29 12:00:00')

@@ -1,0 +1,18 @@
+   dbt-oss 
+   Loading profiles.yml
+   Started resolving packages from packages.yml
+  Finished [duration] resolving packages from packages.yml (2 items)
+Auto installing dependencies while running `dbt build`. To ensure dependencies are cached, run `dbt deps` to initialize a valid package-lock.yml.
+Installing packages
+ Installed 2 packages
+   Parsing models/example.yml
+   Parsing models/example.sql
+ Rendering models/example.sql
+   Running models/example.sql
+ Succeeded model snowflake_dtype_no_precision.example (view) [1 of 2 in duration]
+   Running ../scratch/target/run/hello_world/generic_tests/dbt_expectations_expect_column_c96f099cc9fe64d28f2d1e29b6209f51.sql
+    Passed test  dbt_expectations_expect_column_values_to_be_of_type_example_my_numeric_column__number [2 of 2 in duration]
+==================== Execution Summary =====================
+Finished 'build' successfully for target 'snowflake' [duration]
+Processed: 1 model | 1 test
+Summary: 2 total | 2 success

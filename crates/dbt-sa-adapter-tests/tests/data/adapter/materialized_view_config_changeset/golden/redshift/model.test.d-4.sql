@@ -1,0 +1,1 @@
+drop materialized view if exists "ci"."adapters_redshift_materialized_view_config_changeset"."d__dbt_backup" cascade

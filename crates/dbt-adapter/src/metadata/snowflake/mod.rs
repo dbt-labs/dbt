@@ -1,5 +1,5 @@
 use crate::adapter::adapter_impl::*;
-use crate::connection::AdapterConnectionFactory;
+use crate::connection::{AdapterConnectionFactory, ConnectionGuard, DynConnectionFactory};
 use crate::metadata::FreshnessOverride;
 use crate::metadata::freshness_overrides::{
     FreshnessTask, FreshnessTaskResult, apply_freshness_task_result, freshness_override_sql,
@@ -14,6 +14,7 @@ use crate::time_machine::{
     with_time_machine_metadata_wrapper,
 };
 use crate::{AdapterEngine, AdapterResult, AdapterType};
+use dbt_adapter_engine::cow::uppercase;
 use dbt_adapter_sql::ident::{escape_string_literal, quote_identifier};
 
 use arrow_array::{
@@ -22,7 +23,7 @@ use arrow_array::{
 use arrow_schema::Schema;
 use dbt_adapter_core::ExecutionPhase;
 use dbt_adapter_engine::{ConnectionFactory, MapReduce};
-use dbt_adbc::{Connection, QueryCtx};
+use dbt_adbc::QueryCtx;
 use dbt_common::AsyncAdapterResult;
 use dbt_common::ErrorCode;
 use dbt_common::cancellation::Cancellable;
@@ -36,7 +37,7 @@ use dbt_schemas::schemas::legacy_catalog::*;
 use dbt_schemas::schemas::relations::base::*;
 use indexmap::IndexMap;
 use minijinja::State;
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Display;
@@ -58,14 +59,15 @@ fn metadata_warehouse_error(err: impl Display) -> AdapterError {
 /// the switch to `new_connection` (once, when the connection is first obtained
 /// for the batch) and the restore to `recycle_connection` (once, right before
 /// the connection is handed back).
-type UseWarehouseFn = Box<dyn Fn(&mut dyn Connection, &str) -> AdapterResult<()> + Send + Sync>;
-type RestoreWarehouseFn = Box<dyn Fn(&mut dyn Connection) -> AdapterResult<()> + Send + Sync>;
+type UseWarehouseFn =
+    Box<dyn Fn(&mut ConnectionGuard<'_>, &str) -> AdapterResult<()> + Send + Sync>;
+type RestoreWarehouseFn = Box<dyn Fn(&mut ConnectionGuard<'_>) -> AdapterResult<()> + Send + Sync>;
 
 struct MetadataWarehouseConnectionFactory {
     metadata_warehouse: Option<String>,
     use_warehouse: UseWarehouseFn,
     restore_warehouse: RestoreWarehouseFn,
-    inner: Box<dyn ConnectionFactory<Error = Cancellable<AdapterError>>>,
+    inner: Box<DynConnectionFactory>,
 }
 
 impl MetadataWarehouseConnectionFactory {
@@ -73,12 +75,12 @@ impl MetadataWarehouseConnectionFactory {
         adapter: AdapterImpl,
         metadata_warehouse: Option<String>,
         token: CancellationToken,
-        inner: Box<dyn ConnectionFactory<Error = Cancellable<AdapterError>>>,
+        inner: Box<DynConnectionFactory>,
     ) -> Self {
         let use_warehouse = {
             let adapter = adapter.clone();
             let token = token.clone();
-            Box::new(move |conn: &mut dyn Connection, warehouse: &str| {
+            Box::new(move |conn: &mut ConnectionGuard<'_>, warehouse: &str| {
                 adapter
                     .use_warehouse(
                         conn,
@@ -90,7 +92,7 @@ impl MetadataWarehouseConnectionFactory {
                     .map_err(metadata_warehouse_error)
             }) as UseWarehouseFn
         };
-        let restore_warehouse = Box::new(move |conn: &mut dyn Connection| {
+        let restore_warehouse = Box::new(move |conn: &mut ConnectionGuard<'_>| {
             adapter
                 .restore_warehouse(conn, SNOWFLAKE_METADATA_NODE_ID, token.clone())
                 .map_err(metadata_warehouse_error)
@@ -102,7 +104,7 @@ impl MetadataWarehouseConnectionFactory {
         metadata_warehouse: Option<String>,
         use_warehouse: UseWarehouseFn,
         restore_warehouse: RestoreWarehouseFn,
-        inner: Box<dyn ConnectionFactory<Error = Cancellable<AdapterError>>>,
+        inner: Box<DynConnectionFactory>,
     ) -> Self {
         Self {
             metadata_warehouse,
@@ -121,16 +123,17 @@ impl MetadataWarehouseConnectionFactory {
 
 impl ConnectionFactory for MetadataWarehouseConnectionFactory {
     type Error = Cancellable<AdapterError>;
+    type Connection = ConnectionGuard<'static>;
 
-    fn new_connection(&self, node_id: Option<&str>) -> Result<Box<dyn Connection>, Self::Error> {
+    fn new_connection(&self, node_id: Option<&str>) -> Result<Self::Connection, Self::Error> {
         let mut conn = self.inner.new_connection(node_id)?;
         if let Some(warehouse) = self.active_warehouse() {
-            (self.use_warehouse)(conn.as_mut(), warehouse).map_err(Cancellable::Error)?;
+            (self.use_warehouse)(&mut conn, warehouse).map_err(Cancellable::Error)?;
         }
         Ok(conn)
     }
 
-    fn recycle_connection(&self, mut conn: Box<dyn Connection>) {
+    fn recycle_connection(&self, mut conn: Self::Connection) {
         // These connections go back into the worker thread's slot, where the
         // next node to run there picks them up. A failed restore leaves the
         // connection stuck on the metadata warehouse, so drop it instead —
@@ -138,10 +141,11 @@ impl ConnectionFactory for MetadataWarehouseConnectionFactory {
         // warehouse. Mirrors `reset_node_overrides` in
         // dbt-tasks-sa/src/materialize.rs.
         if self.active_warehouse().is_some() {
-            if let Err(e) = (self.restore_warehouse)(conn.as_mut()) {
+            if let Err(e) = (self.restore_warehouse)(&mut conn) {
                 tracing::warn!(
                     "failed to restore warehouse before recycling Snowflake metadata connection, dropping it instead: {e}"
                 );
+                conn.discard_conn_on_drop();
                 return;
             }
         }
@@ -260,7 +264,7 @@ fn snowflake_freshness_sql(database: &str, where_clauses: &[String]) -> AdapterR
 }
 
 fn is_table_ddl(ddl: &str) -> bool {
-    static TABLE_REGEX: Lazy<fancy_regex::Regex> = Lazy::new(|| {
+    static TABLE_REGEX: LazyLock<fancy_regex::Regex> = LazyLock::new(|| {
         fancy_regex::Regex::new(
             r"(?ix)
                 ^\s*create\b
@@ -498,7 +502,7 @@ fn build_relations_from_show_objects(
 pub fn list_relations(
     engine: &dyn AdapterEngine,
     ctx: &QueryCtx,
-    conn: &'_ mut dyn Connection,
+    conn: &mut ConnectionGuard<'_>,
     db_schema: &CatalogAndSchema,
     token: CancellationToken,
 ) -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
@@ -515,7 +519,7 @@ pub fn list_relations(
                 .map(|name| format!(" FROM '{name}'"))
                 .unwrap_or_default()
         );
-        let batch = engine.execute(None, conn, ctx, &sql, token.clone())?;
+        let batch = engine.execute(None, conn.as_mut(), ctx, &sql, token.clone())?;
 
         // From the RecordBatch, get the last row of the vector of name 'name'
         let names = batch.column_values::<StringArray>("name")?;
@@ -584,7 +588,7 @@ impl SnowflakeMetadataAdapter {
 
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
-        let map_f = move |conn: &'_ mut dyn Connection,
+        let map_f = move |conn: &mut ConnectionGuard<'_>,
                           database_and_where_clauses: &(String, Vec<String>)|
               -> AdapterResult<Arc<RecordBatch>> {
             let (database, where_clauses) = &database_and_where_clauses;
@@ -680,7 +684,7 @@ impl SnowflakeMetadataAdapter {
 
         let token_clone = token.clone();
         let adapter_for_map = self.adapter.clone();
-        let map_f = move |conn: &'_ mut dyn Connection,
+        let map_f = move |conn: &mut ConnectionGuard<'_>,
                           task: &FreshnessTask|
               -> AdapterResult<FreshnessTaskResult> {
             match task {
@@ -769,7 +773,7 @@ impl SnowflakeMetadataAdapter {
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
 
-        let map_f = move |conn: &'_ mut dyn Connection,
+        let map_f = move |conn: &mut ConnectionGuard<'_>,
                           db_schema: &CatalogAndSchema|
               -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
             let query_ctx = QueryCtx::default().with_desc("list_relations_in_parallel");
@@ -835,7 +839,7 @@ impl SnowflakeMetadataAdapter {
             Box::new(AdapterConnectionFactory::new(adapter.engine().clone())),
         ));
 
-        let map_f = move |conn: &'_ mut dyn Connection, _: &()| -> AdapterResult<usize> {
+        let map_f = move |conn: &mut ConnectionGuard<'_>, _: &()| -> AdapterResult<usize> {
             let ctx = QueryCtx::default().with_desc("dbt State schema-count probe");
             let (_resp, agate_table) =
                 adapter.query(&ctx, conn, &sql, None, token_clone.clone())?;
@@ -1004,7 +1008,7 @@ impl SnowflakeMetadataAdapter {
         ));
         type Acc = BTreeMap<String, MetadataFreshness>;
 
-        let map_f = move |conn: &'_ mut dyn Connection,
+        let map_f = move |conn: &mut ConnectionGuard<'_>,
                           _: &()|
               -> AdapterResult<Arc<RecordBatch>> {
             let ctx = QueryCtx::default().with_desc("Extracting freshness from information schema");
@@ -1287,13 +1291,14 @@ impl MetadataAdapter for SnowflakeMetadataAdapter {
 
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
-        let map_f =
-            move |conn: &'_ mut dyn Connection, sql: &String| -> AdapterResult<Arc<RecordBatch>> {
-                let ctx = QueryCtx::default().with_desc("List user functions");
-                let (_, table) = adapter.query(&ctx, conn, sql, None, token_clone.clone())?;
-                let batch = table.original_record_batch();
-                Ok(batch)
-            };
+        let map_f = move |conn: &mut ConnectionGuard<'_>,
+                          sql: &String|
+              -> AdapterResult<Arc<RecordBatch>> {
+            let ctx = QueryCtx::default().with_desc("List user functions");
+            let (_, table) = adapter.query(&ctx, conn, sql, None, token_clone.clone())?;
+            let batch = table.original_record_batch();
+            Ok(batch)
+        };
 
         let reduce_f = |acc: &mut Acc,
                         _sql: String,
@@ -1315,10 +1320,10 @@ impl MetadataAdapter for SnowflakeMetadataAdapter {
             let arguments = batch.column_values::<StringArray>("arguments")?;
 
             // possible values are either "Y" or "N"
-            let is_true = |s: &str| s.to_uppercase() == "Y";
+            let is_true = |s: &str| uppercase(s.into()) == "Y";
             for i in 0..batch.num_rows() {
-                let language = language.value(i).to_string();
-                if language.to_uppercase() != "SQL" {
+                let language: &str = language.value(i);
+                if uppercase(language.into()) != "SQL" {
                     continue;
                 }
 
@@ -1379,7 +1384,7 @@ impl MetadataAdapter for SnowflakeMetadataAdapter {
 
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
-        let map_f = move |conn: &'_ mut dyn Connection,
+        let map_f = move |conn: &mut ConnectionGuard<'_>,
                           key: &(String, String)|
               -> AdapterResult<Arc<Schema>> {
             let (_, rendered) = key;
@@ -1462,7 +1467,7 @@ impl MetadataAdapter for SnowflakeMetadataAdapter {
         let factory = Box::new(AdapterConnectionFactory::new(self.adapter.engine().clone()));
         let adapter = self.adapter.clone();
         let query_token = token.clone();
-        let map_f = move |conn: &'_ mut dyn Connection,
+        let map_f = move |conn: &mut ConnectionGuard<'_>,
                           database: &String|
               -> AdapterResult<Option<IdentifierCaseSensitivity>> {
             discover_database_identifier_case_sensitivity(
@@ -1568,13 +1573,14 @@ ORDER BY TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION"
         // map_f runs the queries, reduce_f decodes the result set and builds the schemas
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
-        let map_f =
-            move |conn: &'_ mut dyn Connection, sql: &String| -> AdapterResult<Arc<RecordBatch>> {
-                let ctx = QueryCtx::default().with_desc("Get schema by pattern");
-                let (_, table) = adapter.query(&ctx, conn, sql, None, token_clone.clone())?;
-                let batch = table.original_record_batch();
-                Ok(batch)
-            };
+        let map_f = move |conn: &mut ConnectionGuard<'_>,
+                          sql: &String|
+              -> AdapterResult<Arc<RecordBatch>> {
+            let ctx = QueryCtx::default().with_desc("Get schema by pattern");
+            let (_, table) = adapter.query(&ctx, conn, sql, None, token_clone.clone())?;
+            let batch = table.original_record_batch();
+            Ok(batch)
+        };
 
         let quoting = self.adapter.quoting();
 
@@ -1719,7 +1725,7 @@ ORDER BY TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION"
         ));
         type Acc = BTreeMap<String, MetadataFreshness>;
 
-        let map_f = move |conn: &'_ mut dyn Connection,
+        let map_f = move |conn: &mut ConnectionGuard<'_>,
                           _: &()|
               -> AdapterResult<Arc<RecordBatch>> {
             let ctx = QueryCtx::default().with_desc("Extracting freshness from information schema");
@@ -1786,9 +1792,9 @@ ORDER BY TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION"
                     let database = relation.database_as_resolved_str().unwrap_or_default();
                     let schema = relation.schema_as_resolved_str().unwrap_or_default();
                     by_database
-                        .entry(database)
+                        .entry(database.into_owned())
                         .or_default()
-                        .entry(schema)
+                        .entry(schema.into_owned())
                         .or_default()
                         .push(Arc::clone(relation));
                 }
@@ -1986,7 +1992,7 @@ ORDER BY TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION"
 
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
-        let map_f = move |conn: &'_ mut dyn Connection,
+        let map_f = move |conn: &mut ConnectionGuard<'_>,
                           script: &String|
               -> AdapterResult<Arc<RecordBatch>> {
             let ctx = QueryCtx::default().with_desc("Fetch view definitions");
@@ -2010,7 +2016,7 @@ ORDER BY TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION"
 
 fn discover_database_identifier_case_sensitivity(
     adapter: &AdapterImpl,
-    conn: &mut dyn Connection,
+    conn: &mut ConnectionGuard<'_>,
     database: &str,
     token: CancellationToken,
 ) -> AdapterResult<Option<IdentifierCaseSensitivity>> {
@@ -2093,7 +2099,7 @@ fn build_schema_from_desc_table(
     let mut fields = vec![];
     for i in 0..show_columns_result.num_rows() {
         let name = column_names.value(i);
-        let nullable = nullability.value(i).to_uppercase() == "Y";
+        let nullable = uppercase(nullability.value(i).into()) == "Y";
         let text_data_type = data_types.value(i);
         let comment = match comments.value(i) {
             "" => None,
@@ -2178,7 +2184,7 @@ fn build_schemas_from_information_schema(
 
         let name = column_names.value(i);
         let data_type = data_types.value(i);
-        let nullable = is_nullable.value(i).to_uppercase() == "YES";
+        let nullable = uppercase(is_nullable.value(i).into()) == "YES";
         let comment = match comments.value(i) {
             "" => None,
             c => Some(c.to_string()),
@@ -2230,6 +2236,7 @@ fn build_schemas_from_information_schema(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::connection::tlocal_slot_occupied;
     use crate::engine::NoopConnection;
     use arrow_schema::{DataType, Field};
 
@@ -2303,15 +2310,13 @@ mod tests {
 
     impl ConnectionFactory for FakeConnectionFactory {
         type Error = Cancellable<AdapterError>;
+        type Connection = ConnectionGuard<'static>;
 
-        fn new_connection(
-            &self,
-            _node_id: Option<&str>,
-        ) -> Result<Box<dyn Connection>, Self::Error> {
-            Ok(Box::new(NoopConnection))
+        fn new_connection(&self, _node_id: Option<&str>) -> Result<Self::Connection, Self::Error> {
+            Ok(ConnectionGuard::new(Box::new(NoopConnection)))
         }
 
-        fn recycle_connection(&self, _conn: Box<dyn Connection>) {
+        fn recycle_connection(&self, _conn: Self::Connection) {
             *self.recycled.lock().unwrap() += 1;
         }
     }
@@ -2325,11 +2330,11 @@ mod tests {
         let use_log = log.clone();
         let restore_log = log;
         (
-            Box::new(move |_conn: &mut dyn Connection, _warehouse: &str| {
+            Box::new(move |_conn: &mut ConnectionGuard<'_>, _warehouse: &str| {
                 use_log.lock().unwrap().push("use");
                 Ok(())
             }),
-            Box::new(move |_conn: &mut dyn Connection| {
+            Box::new(move |_conn: &mut ConnectionGuard<'_>| {
                 restore_log.lock().unwrap().push("restore");
                 if fail_restore {
                     Err(AdapterError::new(
@@ -2389,6 +2394,10 @@ mod tests {
             *recycled.lock().unwrap(),
             0,
             "connection must not be recycled after a failed restore"
+        );
+        assert!(
+            !tlocal_slot_occupied(),
+            "connection stuck on the metadata warehouse must not be parked for the next node"
         );
     }
 

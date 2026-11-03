@@ -1,0 +1,35 @@
+dbbbff64:
+- sequence: 0
+  type: execute
+  sql: |-
+    show terse schemas in database development
+    limit 10000
+f3efad88:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists development.snowflake_query_tag
+model.hello_world.hello:
+- sequence: 0
+  type: execute
+  sql: show parameters like 'query_tag' in session
+- sequence: 1
+  type: execute
+  sql: alter session set query_tag = 'foo'
+- sequence: 2
+  type: execute
+  sql: SHOW OBJECTS IN SCHEMA "DEVELOPMENT"."SNOWFLAKE_QUERY_TAG" LIMIT 10000
+- sequence: 3
+  type: execute
+  sql: |-
+    create or replace transient  table development.snowflake_query_tag.hello
+    
+    
+    
+    
+    as (
+    
+    select 1 as id
+    )
+- sequence: 4
+  type: execute
+  sql: alter session unset query_tag

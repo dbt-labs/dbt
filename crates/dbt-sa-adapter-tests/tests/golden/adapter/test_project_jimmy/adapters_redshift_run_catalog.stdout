@@ -1,0 +1,23 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/a.sql
+   Parsing models/c.sql
+{'message': '', 'code': '', 'rows_affected': None, 'query_id': None}
+{}
+ Rendering models/c.sql
+{'message': 'SUCCESS 0', 'code': 'SUCCESS', 'rows_affected': 0, 'query_id': None, '_message': 'SUCCESS 0'}
+{}
+   Running models/c.sql
+ Succeeded model adapters_redshift_run_catalog.c (view) [1 of 2 in duration]
+ Rendering models/a.sql
+   Running models/a.sql
+ Succeeded model adapters_redshift_run_catalog.a (view) [2 of 2 in duration]
+Fetching catalog from warehouse
+   Started fetching catalog (2 items)
+  Finished [duration] fetching catalog (2 items)
+Fetched full catalog.json results
+Successfully wrote catalog.json
+==================== Execution Summary =====================
+Finished 'run' successfully for target 'redshift' [duration]
+Processed: 2 models
+Summary: 2 total | 2 success

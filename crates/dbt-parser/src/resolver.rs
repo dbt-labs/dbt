@@ -5,7 +5,7 @@ use dbt_adapter_core::AdapterType;
 use dbt_common::FsError;
 use dbt_common::cancellation::CancellationToken;
 use dbt_common::constants::DBT_GENERIC_TESTS_DIR_NAME;
-use dbt_common::io_args::FsCommand;
+use dbt_common::io_args::{FsCommand, multi_adapter_enabled};
 use dbt_common::once_cell_vars::DISPATCH_CONFIG;
 use dbt_common::path::DbtPath;
 use dbt_common::stdfs;
@@ -21,7 +21,8 @@ use dbt_jinja_utils::node_resolver::{
     NodeResolver, PackageSearchOrder, check_for_model_deprecations, resolve_dependencies,
 };
 use dbt_jinja_utils::phases::parse::{
-    build_docs_jinja_environment, build_docs_resolve_context, build_resolve_context,
+    ParseAdapterScopes, build_docs_jinja_environment, build_docs_resolve_context,
+    build_resolve_context,
 };
 use dbt_jinja_utils::serde::into_typed_with_jinja;
 use dbt_jinja_utils::utils::dependency_package_name_from_ctx;
@@ -33,13 +34,14 @@ use dbt_schemas::schemas::properties::{
     FUNCTION_LANGUAGE_JAVASCRIPT, FUNCTION_LANGUAGE_PYTHON, FUNCTION_LANGUAGE_SQL, FunctionKind,
     ModelProperties,
 };
-use dbt_schemas::schemas::{DbtModel, DbtSeed, DbtSource, InternalDbtNode, Nodes};
+use dbt_schemas::schemas::{DbtModel, DbtSeed, DbtSource, InternalDbtNode, Nodes, TableFormat};
 use dbt_telemetry::GenericOpExecuted;
 
 use dbt_schemas::schemas::dbt_catalogs_deprecated::DbtCatalogs;
 
 use crate::args::ResolveArgs;
 use crate::dbt_project_config::{RootProjectConfigs, build_root_project_configs};
+use crate::experimental::{ActiveExperimentals, ResolveExperimentals};
 use crate::resolve::resolve_groups::resolve_groups;
 use crate::resolve::resolve_operations::resolve_operations;
 use crate::resolve::resolve_query_comment::resolve_query_comment;
@@ -55,13 +57,17 @@ use dbt_schemas::state::{
 use dbt_schemas::state::{DbtRuntimeConfig, Operations};
 use dbt_schemas::state::{DbtState, ResolverState};
 use minijinja::constants::CURRENT_PATH;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use minijinja::dispatch_object::{get_adapter_prefixes, get_internal_packages};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::Instrument as _;
 
 use crate::resolve::resolve_analyses::resolve_analyses;
 use crate::resolve::resolve_checks::resolve_checks;
+use crate::resolve::resolve_experimentals::{
+    ExperimentalNodeContext, ResolvedExperimentalNodes, resolve_experimentals,
+};
 use crate::resolve::resolve_exposures::resolve_exposures;
 use crate::resolve::resolve_functions::resolve_functions;
 use crate::resolve::resolve_macros::apply_macro_patches;
@@ -126,7 +132,7 @@ fn parse_asset_count_total(dbt_state: &DbtState) -> u64 {
 )]
 #[allow(clippy::too_many_arguments)]
 pub async fn resolve(
-    arg: &ResolveArgs,
+    mut arg: ResolveArgs,
     invocation_args: &InvocationArgs,
     dbt_state: Arc<DbtState>,
     macros: Macros,
@@ -138,6 +144,7 @@ pub async fn resolve(
     token: &CancellationToken,
     jinja_type_checking_event_listener_factory: Arc<dyn JinjaTypeCheckingEventListenerFactory>,
     resolver_hooks: Arc<dyn ResolverHooks>,
+    experimentals: ResolveExperimentals,
     jinja_factory: Arc<dyn JinjaFactory>,
 ) -> FsResult<(ResolverState, Arc<JinjaEnv>)> {
     // Hand this invocation a fresh `graph` mapping before any Jinja renders.
@@ -176,6 +183,8 @@ pub async fn resolve(
     inject_default_overview(&mut macros.docs_macros);
 
     let adapter_type = dbt_state.dbt_profile.default_db_config().adapter_type();
+    let parse_adapter_scopes = Arc::new(ParseAdapterScopes::from_profile(&dbt_state.dbt_profile));
+    arg.profile_adapter_types = Some(dbt_state.dbt_profile.adapter_types());
 
     // Build the root project config
     let root_project_quoting =
@@ -209,9 +218,9 @@ pub async fn resolve(
     );
 
     // Load and resolve selectors
-    let resolved_selectors_map = resolve_selectors_from_yaml(arg, root_project_name, &jinja_env)?;
+    let resolved_selectors_map = resolve_selectors_from_yaml(&arg, root_project_name, &jinja_env)?;
     let manifest_selectors = resolve_manifest_selectors(resolved_selectors_map.clone())?;
-    let resolved_selectors = resolve_final_selectors(resolved_selectors_map, arg)?;
+    let resolved_selectors = resolve_final_selectors(resolved_selectors_map, &arg)?;
 
     // let mut nodes = Nodes::default();
     let mut disabled_nodes = disabled_nodes;
@@ -227,6 +236,8 @@ pub async fn resolve(
         dbt_state.root_project(),
         &dbt_state.dbt_profile.adapters,
         dbt_state.dbt_profile.default_adapter,
+        // Read the flag only when it can matter: it warns on a malformed value at every read.
+        dbt_state.dbt_profile.adapters.len() > 1 && multi_adapter_enabled(),
     )?;
     let root_project_configs = Arc::new(root_project_configs);
     // Process packages in topological order
@@ -307,11 +318,12 @@ pub async fn resolve(
         resolved_macro_properties,
     ) = resolve_package_waves(
         package_waves,
-        arg,
+        &arg,
         dbt_state.clone(),
         root_project_name,
         root_project_configs.clone(),
         adapter_type,
+        parse_adapter_scopes,
         &macros,
         jinja_env.clone(),
         &mut node_resolver,
@@ -319,6 +331,7 @@ pub async fn resolve(
         root_runtime_config.clone(),
         token,
         jinja_type_checking_event_listener_factory.clone(),
+        Arc::new(experimentals.turned_on(dbt_state.root_project().flags.as_ref())),
     )
     .await?;
     nodes.extend(resolved_nodes);
@@ -506,7 +519,7 @@ pub async fn resolve(
             operations,
             dbt_profile: dbt_state.dbt_profile.clone(),
             cloud_config: dbt_state.cloud_config.clone(),
-            render_results: collector,
+            render_results: Arc::new(collector),
             run_started_at: dbt_state.run_started_at,
             nodes_with_resolution_errors,
             nodes_with_access_errors,
@@ -679,6 +692,145 @@ fn microbatch_model_no_event_time_inputs_warnings(nodes: &Nodes) -> Vec<FsError>
         .collect()
 }
 
+/// Report effective macro overrides ignored by selected unit tests.
+/// Call after scheduling, before running tasks, so promoted warnings stop the run.
+pub fn unit_test_macro_override_warnings(
+    command: FsCommand,
+    nodes: &Nodes,
+    selected_nodes: &BTreeSet<String>,
+    macros: &Macros,
+    jinja_env: &JinjaEnv,
+    dbt_dispatch_search_order: Option<&[String]>,
+) -> Vec<FsError> {
+    if !matches!(command, FsCommand::Build | FsCommand::Test) {
+        return vec![];
+    }
+    let unit_tests: Vec<_> = nodes
+        .unit_tests
+        .iter()
+        .filter(|(id, _)| selected_nodes.contains(*id))
+        .map(|(_, node)| node)
+        .collect();
+    if unit_tests.is_empty() {
+        return vec![];
+    }
+
+    let root_project_name = jinja_env.env.get_root_package_name();
+    let materializations = dbt_schemas::materialization_resolver::MaterializationResolver::new(
+        &macros.macros,
+        &root_project_name,
+    );
+    let mut overrides = BTreeMap::new();
+    for unit_test in unit_tests {
+        let adapter_type = unit_test.node_adapter();
+        let internal_packages = get_internal_packages(adapter_type.as_ref());
+        for (qualified, kind) in [
+            (
+                materializations
+                    .find_materialization_macro_by_name("unit", adapter_type)
+                    .ok(),
+                "the `unit` materialization",
+            ),
+            (
+                unit_test_sql_macro(
+                    &jinja_env.env,
+                    adapter_type,
+                    &unit_test.common().package_name,
+                    dbt_dispatch_search_order,
+                ),
+                "`get_unit_test_sql`",
+            ),
+        ] {
+            if let Some(qualified) = qualified
+                && let Some(dbt_macro) = macros.macros.get(&format!("macro.{qualified}"))
+                && !internal_packages.contains(&dbt_macro.package_name)
+            {
+                overrides.insert(dbt_macro.unique_id.clone(), kind);
+            }
+        }
+    }
+
+    macros
+        .macros
+        .values()
+        .filter_map(|dbt_macro| {
+            let kind = overrides.get(&dbt_macro.unique_id)?;
+            let package_name = &dbt_macro.package_name;
+            let scope = if package_name == &root_project_name {
+                "This project".to_string()
+            } else {
+                format!("Package '{package_name}'")
+            };
+            Some(
+                FsError::new(
+                    ErrorCode::UnitTestMacroOverrideIgnored,
+                    format!(
+                        "{scope} overrides {kind}, but dbt builds unit test SQL itself and never \
+                         calls it, so the override has no effect. Unit tests in this run ignore it. \
+                         dbt 1.x does call it, so the same project can produce different unit test \
+                         results on the two engines."
+                    ),
+                )
+                .with_location(if dbt_macro.has_absolute_path() {
+                    dbt_macro.absolute_path.to_path_buf()
+                } else {
+                    dbt_macro.original_file_path.to_path_buf()
+                }),
+            )
+        })
+        .collect()
+}
+
+fn unit_test_sql_macro(
+    env: &minijinja::Environment<'_>,
+    adapter_type: AdapterType,
+    package_name: &str,
+    dbt_dispatch_search_order: Option<&[String]>,
+) -> Option<String> {
+    use minijinja::Value;
+    use minijinja::constants::{DIALECT, TARGET_PACKAGE_NAME};
+    use minijinja::dispatch_object::macro_namespace_template_resolver;
+    use minijinja::value::mutable_map::MutableMap;
+
+    let dialect = adapter_type.as_ref();
+    let context = MutableMap::new();
+    context.insert(Value::from(DIALECT), Value::from(dialect));
+    context.insert(Value::from(TARGET_PACKAGE_NAME), Value::from(package_name));
+    let state = env.new_state_with_context(context);
+    let direct = macro_namespace_template_resolver(&state, "get_unit_test_sql", &mut vec![])?;
+    let internal_packages = get_internal_packages(dialect);
+    if let Some((package, _)) = direct.split_once('.')
+        && !internal_packages.iter().any(|internal| internal == package)
+    {
+        return Some(direct);
+    }
+
+    // The built-in wrapper dispatches in the dbt namespace. An explicit search
+    // order can opt a dependency in; loading its macros alone cannot.
+    let default_order = [env.get_root_package_name(), "dbt".to_string()];
+    let search_order = dbt_dispatch_search_order.unwrap_or(&default_order);
+    let prefixes = get_adapter_prefixes(dialect);
+    let internal_namespace = env.get_dbt_and_adapters_namespace(dialect);
+    for package in search_order {
+        for prefix in &prefixes {
+            let name = format!("{prefix}__get_unit_test_sql");
+            let qualified = if package == "dbt" {
+                internal_namespace
+                    .get(&Value::from(&name))
+                    .map(|package| format!("{package}.{name}"))
+            } else {
+                Some(format!("{package}.{name}"))
+            };
+            if let Some(qualified) = qualified
+                && env.get_template(&qualified).is_ok()
+            {
+                return Some(qualified);
+            }
+        }
+    }
+    None
+}
+
 fn has_event_time_input(nodes: &Nodes, model: &dyn InternalDbtNode) -> bool {
     model.base().depends_on.nodes.iter().any(|unique_id| {
         nodes
@@ -750,6 +902,7 @@ pub async fn resolve_inner(
     root_package_name: &str,
     root_project_configs: &RootProjectConfigs,
     adapter_type: AdapterType,
+    parse_adapter_scopes: &Arc<ParseAdapterScopes>,
     macros: &Macros,
     jinja_env: Arc<JinjaEnv>,
     mut node_resolver: NodeResolver,
@@ -759,6 +912,7 @@ pub async fn resolve_inner(
     seen_generic_test_paths: &mut HashMap<PathBuf, String>,
     token: &CancellationToken,
     jinja_type_checking_event_listener_factory: Arc<dyn JinjaTypeCheckingEventListenerFactory>,
+    experimentals: &ActiveExperimentals,
 ) -> FsResult<(
     Nodes,
     Nodes,
@@ -767,10 +921,6 @@ pub async fn resolve_inner(
     bool,
     BTreeMap<String, resolve_properties::MinimalPropertiesEntry>,
 )> {
-    let mut resolve_args = arg.clone();
-    resolve_args.profile_adapter_types = Some(dbt_state.dbt_profile.adapter_types());
-    let arg = &resolve_args;
-
     let mut nodes = Nodes::default();
     let mut disabled_nodes = Nodes::default();
 
@@ -804,7 +954,9 @@ pub async fn resolve_inner(
         &base_ctx,
         token,
         adapter_type,
-    )?;
+        experimentals,
+    )
+    .await?;
 
     let package_name = package.dbt_project.name.as_str();
 
@@ -886,6 +1038,7 @@ pub async fn resolve_inner(
         root_project_configs,
         database,
         schema,
+        parse_adapter_scopes,
         adapter_type,
         package_name,
         &jinja_env,
@@ -913,6 +1066,7 @@ pub async fn resolve_inner(
         &macros.macros,
         database,
         schema,
+        parse_adapter_scopes,
         adapter_type,
         &root_project_configs.adapter_quoting,
         jinja_env.clone(),
@@ -953,6 +1107,7 @@ pub async fn resolve_inner(
         // TODO: pass in typed_models_properties
         database,
         schema,
+        parse_adapter_scopes,
         adapter_type,
         package_name,
         jinja_env.clone(),
@@ -981,6 +1136,7 @@ pub async fn resolve_inner(
         &mut min_properties.analyses,
         database,
         schema,
+        parse_adapter_scopes,
         adapter_type,
         package_name,
         jinja_env.clone(),
@@ -1024,6 +1180,7 @@ pub async fn resolve_inner(
         &mut min_properties.functions,
         database,
         schema,
+        parse_adapter_scopes,
         adapter_type,
         &root_project_configs.adapter_quoting,
         package_name,
@@ -1053,6 +1210,28 @@ pub async fn resolve_inner(
     .await?;
     nodes.exposures.extend(exposures);
     disabled_nodes.exposures.extend(disabled_exposures);
+
+    let experimental_ctx = ExperimentalNodeContext {
+        args: arg,
+        package,
+        root_package: dbt_state.root_package(),
+        database,
+        schema,
+        adapter_type,
+        env: &jinja_env,
+        base_ctx: &base_ctx,
+    };
+    let mut experimental_nodes = ResolvedExperimentalNodes::default();
+    resolve_experimentals(
+        &experimental_ctx,
+        experimentals,
+        &mut min_properties.experimental,
+        &mut experimental_nodes,
+    )?;
+    nodes.experimentals.extend(experimental_nodes.enabled);
+    disabled_nodes
+        .experimentals
+        .extend(experimental_nodes.disabled);
 
     if !semantic_layer_spec_is_legacy {
         let (semantic_models, disabled_semantic_models) = resolve_semantic_models(
@@ -1127,6 +1306,7 @@ pub async fn resolve_inner(
             &mut min_properties.tests,
             database,
             schema,
+            parse_adapter_scopes,
             adapter_type,
             jinja_env.clone(),
             &base_ctx,
@@ -1166,7 +1346,8 @@ pub async fn resolve_inner(
         &dbt_state.packages,
         adapter_type,
         &node_resolver,
-    )?;
+    )
+    .await?;
 
     nodes.unit_tests.extend(unit_tests);
     disabled_nodes.unit_tests.extend(disabled_unit_tests);
@@ -1227,13 +1408,16 @@ fn catalog_is_lake_compute_reachable(catalogs: &DbtCatalogs, name: &str) -> FsRe
 /// Returns `true` if `upstream` is readable as an input for a node running on
 /// `lake_compute`.
 ///
-/// The question is about the *catalog*, never about which adapter wrote the
-/// upstream: a BigQuery model landing in a lake-compute-readable catalog is a legal input,
-/// while a Snowflake model in warehouse-native storage is not.
+/// Where a `catalog_name` is declared, it decides: a BigQuery model landing
+/// in a lake-compute-readable catalog is a legal input, while a Snowflake
+/// model in warehouse-native storage is not. Without a `catalog_name`, Iceberg
+/// is reachable, and so is Databricks managed Delta when a declared attach
+/// covers it (see [`databricks_lands_delta`]); other warehouses' native
+/// storage is not.
 ///
-/// Where the catalog type is known, it decides. Where it cannot be resolved — no
-/// `catalogs.yml`, or a name that is not a v2 catalog — a named catalog stays
-/// permissive, so this only ever tightens on positive knowledge.
+/// Where a catalog name cannot be resolved (no `catalogs.yml`, or a name that
+/// is not a v2 catalog), a named catalog stays permissive, so this only ever
+/// tightens on positive knowledge.
 fn upstream_is_catalog_reachable(
     upstream: &DbtModel,
     catalogs: Option<&DbtCatalogs>,
@@ -1262,12 +1446,74 @@ fn upstream_is_catalog_reachable(
             Some(catalogs) => catalog_is_lake_compute_reachable(catalogs, name),
             None => Ok(true),
         },
-        // Iceberg without a named catalog is still an open format.
-        None => Ok(attr
-            .table_format
-            .as_deref()
-            .is_some_and(|f| f.eq_ignore_ascii_case("iceberg"))),
+        // The upstream's materialization rejects any value that
+        // `TableFormat::parse` does not accept, so the parser must not
+        // promise one either.
+        None => Ok(match TableFormat::parse(attr.table_format.as_deref()) {
+            Ok(TableFormat::Iceberg) => true,
+            Ok(TableFormat::Default) => databricks_lands_delta(upstream, catalogs)?,
+            Err(_) => false,
+        }),
     }
+}
+
+/// Returns whether Lake Compute can read `upstream` as a Databricks managed
+/// Delta table. Called for upstreams with no `catalog_name` and a
+/// `table_format` that is unset or `default`.
+///
+/// Only table and incremental models qualify, and only when `file_format` is
+/// unset or `delta`. Snapshots, materialized views, and streaming tables also
+/// write Delta, but reading them through Lake Compute has not been verified.
+/// Lake Compute reaches the table only through a Unity catalog entry in
+/// `catalogs.yml` whose `lakecompute` block sets `catalog_database` to the
+/// upstream's database, so that entry must exist. `catalogs` is `None` when
+/// the project has no `catalogs.yml` or `use_catalogs_v2` is off. In both
+/// cases Lake Compute has no Unity entry to attach, so this returns `false`.
+///
+/// Returns `false` if the model has no resolved Databricks config.
+/// `resolve_models` builds that config from the project's default adapter,
+/// so a model that sets `adapter: databricks` in a project with a different
+/// default adapter has none. Returns an error if `catalogs.yml` is malformed.
+fn databricks_lands_delta(upstream: &DbtModel, catalogs: Option<&DbtCatalogs>) -> FsResult<bool> {
+    use dbt_schemas::schemas::dbt_catalogs::CatalogType;
+
+    if upstream.node_adapter() != AdapterType::Databricks {
+        return Ok(false);
+    }
+    if !matches!(
+        upstream.base().materialized,
+        DbtMaterialization::Table | DbtMaterialization::Incremental
+    ) {
+        return Ok(false);
+    }
+    let Some(databricks) = upstream.__adapter_attr__.databricks_attr.as_deref() else {
+        return Ok(false);
+    };
+    if !databricks
+        .file_format
+        .as_deref()
+        .is_none_or(|f| f.eq_ignore_ascii_case("delta"))
+    {
+        return Ok(false);
+    }
+    let Some(catalogs) = catalogs else {
+        return Ok(false);
+    };
+    let view = catalogs.view()?;
+    Ok(view.catalogs.iter().any(|catalog| {
+        matches!(catalog.catalog_type, CatalogType::Unity)
+            && catalog.config_block("lakecompute").is_some_and(|block| {
+                block
+                    .get(dbt_yaml::Value::from("catalog_database"))
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|db| {
+                        // Unity stores catalog names in lowercase and Lake
+                        // Compute matches them case-insensitively, quoted or
+                        // not, so compare them the same way.
+                        db.to_uppercase() == upstream.base().database.to_uppercase()
+                    })
+            })
+    }))
 }
 
 /// Same question as [`upstream_is_catalog_reachable`], for a seed upstream.
@@ -1383,18 +1629,31 @@ fn check_upstreams_reachable(
                     );
                 }
             }
+            // Databricks upstreams get a Delta hint appended; the generic
+            // advice already tells every other adapter what to do.
             return err!(
                 ErrorCode::InvalidConfig,
                 "{} '{}' runs on adapter: '{}' but its upstream '{}' is not \
                  reachable through a catalog. Materialize '{}' into an open table \
                  format (set 'catalog_name', or set 'table_format: iceberg' to land \
-                 it in Iceberg without a named catalog) or place it on adapter: '{}'.",
+                 it in Iceberg without a named catalog) or place it on adapter: '{}'.{}",
                 node_label,
                 unique_id,
                 AdapterType::LakeCompute.as_ref(),
                 upstream_id,
                 upstream_id,
-                AdapterType::LakeCompute.as_ref()
+                AdapterType::LakeCompute.as_ref(),
+                match upstream_model.filter(|up| up.node_adapter() == AdapterType::Databricks) {
+                    Some(up) => format!(
+                        " A Databricks 'table' or 'incremental' model with no 'table_format' \
+                         and 'file_format' unset or 'delta' can also be read through a Unity \
+                         catalog entry in catalogs.yml whose 'lakecompute' block sets \
+                         'catalog_database' to the model's database ('{}'). This requires \
+                         'use_catalogs_v2', which is on by default.",
+                        up.base().database
+                    ),
+                    None => String::new(),
+                }
             );
         }
     }
@@ -1493,6 +1752,7 @@ async fn resolve_package(
     root_project_name: String,
     root_project_configs: Arc<RootProjectConfigs>,
     adapter_type: AdapterType,
+    parse_adapter_scopes: &Arc<ParseAdapterScopes>,
     macros: &Macros,
     jinja_env: Arc<JinjaEnv>,
     node_resolver: NodeResolver,
@@ -1500,6 +1760,7 @@ async fn resolve_package(
     root_runtime_config: Arc<DbtRuntimeConfig>,
     token: &CancellationToken,
     jinja_type_checking_event_listener_factory: Arc<dyn JinjaTypeCheckingEventListenerFactory>,
+    experimentals: &ActiveExperimentals,
 ) -> FsResult<(
     String,
     Nodes,
@@ -1545,6 +1806,7 @@ async fn resolve_package(
         &root_project_name,
         &root_project_configs,
         adapter_type,
+        parse_adapter_scopes,
         macros,
         jinja_env.clone(),
         node_resolver,
@@ -1554,6 +1816,7 @@ async fn resolve_package(
         &mut seen_generic_test_paths,
         token,
         jinja_type_checking_event_listener_factory.clone(),
+        experimentals,
     )
     .await?;
 
@@ -1579,6 +1842,7 @@ async fn resolve_package_waves(
     root_project_name: &str,
     root_project_configs: Arc<RootProjectConfigs>,
     adapter_type: AdapterType,
+    parse_adapter_scopes: Arc<ParseAdapterScopes>,
     macros: &Macros,
     jinja_env: Arc<JinjaEnv>,
     node_resolver: &mut NodeResolver,
@@ -1586,6 +1850,7 @@ async fn resolve_package_waves(
     root_runtime_config: Arc<DbtRuntimeConfig>,
     token: &CancellationToken,
     jinja_type_checking_event_listener_factory: Arc<dyn JinjaTypeCheckingEventListenerFactory>,
+    experimentals: Arc<ActiveExperimentals>,
 ) -> FsResult<(
     Nodes,
     Nodes,
@@ -1629,6 +1894,8 @@ async fn resolve_package_waves(
         let token = token.clone();
         let jinja_type_checking_event_listener_factory =
             jinja_type_checking_event_listener_factory.clone();
+        let experimentals = experimentals.clone();
+        let parse_adapter_scopes = parse_adapter_scopes.clone();
 
         let results = crate::parallel::dispatch_maybe_parallel(
             package_wave,
@@ -1646,6 +1913,8 @@ async fn resolve_package_waves(
                 let token = token.clone();
                 let jinja_type_checking_event_listener_factory =
                     jinja_type_checking_event_listener_factory.clone();
+                let experimentals = experimentals.clone();
+                let parse_adapter_scopes = parse_adapter_scopes.clone();
 
                 async move {
                     resolve_package(
@@ -1655,6 +1924,7 @@ async fn resolve_package_waves(
                         root_project_name,
                         root_project_configs,
                         adapter_type,
+                        &parse_adapter_scopes,
                         &macros,
                         jinja_env,
                         node_resolver,
@@ -1662,6 +1932,7 @@ async fn resolve_package_waves(
                         root_runtime_config,
                         &token,
                         jinja_type_checking_event_listener_factory,
+                        &experimentals,
                     )
                     .await
                 }
@@ -1745,6 +2016,263 @@ mod tests {
 
     use super::inject_default_overview;
     use crate::constants::DEFAULT_OVERVIEW_CONTENTS;
+
+    mod unit_test_macro_overrides {
+        use std::collections::BTreeSet;
+        use std::path::{Path, PathBuf};
+        use std::sync::Arc;
+
+        use dbt_adapter::{Adapter, sql_types::DefaultTypeOps};
+        use dbt_adapter_core::AdapterType;
+        use dbt_common::{ErrorCode, io_args::FsCommand};
+        use dbt_jinja_utils::{JinjaEnvBuilder, MacroUnitsWrapper, jinja_environment::JinjaEnv};
+        use dbt_schemas::schemas::macros::{DbtMacro, build_macro_units};
+        use dbt_schemas::schemas::relations::DEFAULT_DBT_QUOTING;
+        use dbt_schemas::schemas::{DbtUnitTest, Nodes};
+        use dbt_schemas::state::Macros;
+
+        use super::super::unit_test_macro_override_warnings;
+
+        fn fixture(extra_macros: &[(&str, &str)]) -> (Nodes, Macros, JinjaEnv) {
+            let mut macros = Macros::default();
+            for (package, name) in [
+                ("dbt", "materialization_unit_default"),
+                ("dbt", "get_unit_test_sql"),
+                ("dbt", "default__get_unit_test_sql"),
+            ]
+            .iter()
+            .chain(extra_macros)
+            {
+                let unique_id = format!("macro.{package}.{name}");
+                let path = format!("macros/{package}/{name}.sql");
+                macros.macros.insert(
+                    unique_id.clone(),
+                    DbtMacro {
+                        unique_id,
+                        name: name.to_string(),
+                        package_name: package.to_string(),
+                        path: path.as_str().into(),
+                        original_file_path: path.as_str().into(),
+                        span: Some(Default::default()),
+                        macro_name_span: Some(Default::default()),
+                        macro_sql: format!(
+                            "{{% macro {name}() %}}{{{{ exceptions.raise_compiler_error('must not execute') }}}}{{% endmacro %}}"
+                        ),
+                        ..Default::default()
+                    },
+                );
+            }
+            let adapter = Arc::new(Adapter::new_parse_phase_adapter(
+                AdapterType::Snowflake,
+                dbt_yaml::Mapping::new(),
+                DEFAULT_DBT_QUOTING,
+                Arc::new(DefaultTypeOps::new(AdapterType::Snowflake)),
+                None,
+            ));
+            let env = JinjaEnvBuilder::new()
+                .with_adapter(adapter)
+                .with_root_package("root".to_string())
+                .with_extra_dialects(vec!["databricks".to_string()])
+                .try_with_macros(MacroUnitsWrapper::new(build_macro_units(
+                    &macros.macros,
+                    Path::new("."),
+                )))
+                .unwrap()
+                .build();
+            let mut nodes = Nodes::default();
+            for (name, adapter) in [
+                ("snowflake", AdapterType::Snowflake),
+                ("databricks", AdapterType::Databricks),
+                ("databricks_again", AdapterType::Databricks),
+            ] {
+                let mut node = DbtUnitTest::default();
+                node.__common_attr__.unique_id = format!("unit_test.root.{name}");
+                node.__common_attr__.package_name = "root".to_string();
+                node.__base_attr__.adapter = adapter;
+                nodes
+                    .unit_tests
+                    .insert(node.__common_attr__.unique_id.clone(), Arc::new(node));
+            }
+            (nodes, macros, env)
+        }
+
+        fn warning_paths(
+            nodes: &Nodes,
+            selected: &BTreeSet<String>,
+            macros: &Macros,
+            env: &JinjaEnv,
+            dispatch: Option<&[String]>,
+        ) -> Vec<PathBuf> {
+            unit_test_macro_override_warnings(
+                FsCommand::Build,
+                nodes,
+                selected,
+                macros,
+                env,
+                dispatch,
+            )
+            .into_iter()
+            .map(|warning| {
+                assert_eq!(warning.code, ErrorCode::UnitTestMacroOverrideIgnored);
+                warning.location.unwrap().file.as_ref().clone()
+            })
+            .collect()
+        }
+
+        #[test]
+        fn selected_non_default_adapter_includes_parent_and_deduplicates() {
+            let (nodes, macros, env) = fixture(&[
+                ("root", "databricks__get_unit_test_sql"),
+                ("root", "materialization_unit_spark"),
+                ("root", "snowflake__get_unit_test_sql"),
+                ("root", "materialization_unit_snowflake"),
+            ]);
+            let selected = BTreeSet::from([
+                "unit_test.root.databricks".to_string(),
+                "unit_test.root.databricks_again".to_string(),
+            ]);
+            assert_eq!(
+                warning_paths(&nodes, &selected, &macros, &env, None),
+                vec![
+                    PathBuf::from("macros/root/databricks__get_unit_test_sql.sql"),
+                    PathBuf::from("macros/root/materialization_unit_spark.sql"),
+                ]
+            );
+        }
+
+        #[test]
+        fn commands_and_selections_without_unit_tests_do_not_warn() {
+            let (nodes, macros, env) = fixture(&[("root", "get_unit_test_sql")]);
+            let all = nodes.unit_tests.keys().cloned().collect();
+            for command in [
+                FsCommand::Run,
+                FsCommand::Compile,
+                FsCommand::Parse,
+                FsCommand::List,
+            ] {
+                assert!(
+                    unit_test_macro_override_warnings(command, &nodes, &all, &macros, &env, None)
+                        .is_empty()
+                );
+            }
+            for command in [FsCommand::Build, FsCommand::Test] {
+                for selected in [
+                    BTreeSet::new(),
+                    BTreeSet::from(["model.root.unrelated".to_string()]),
+                ] {
+                    assert!(
+                        unit_test_macro_override_warnings(
+                            command, &nodes, &selected, &macros, &env, None,
+                        )
+                        .is_empty()
+                    );
+                }
+                assert_eq!(
+                    unit_test_macro_override_warnings(command, &nodes, &all, &macros, &env, None)
+                        .len(),
+                    1
+                );
+            }
+        }
+
+        #[test]
+        fn inactive_dependency_macros_do_not_warn() {
+            let (nodes, macros, env) = fixture(&[
+                ("dependency", "get_unit_test_sql"),
+                ("dependency", "databricks__get_unit_test_sql"),
+                ("dependency", "materialization_unit_databricks"),
+            ]);
+            let selected = nodes.unit_tests.keys().cloned().collect();
+            assert!(warning_paths(&nodes, &selected, &macros, &env, None).is_empty());
+        }
+
+        #[test]
+        fn reports_only_resolution_winners() {
+            let (nodes, macros, env) = fixture(&[
+                ("root", "materialization_unit_default"),
+                ("dbt_databricks", "materialization_unit_databricks"),
+                ("root", "databricks__get_unit_test_sql"),
+                ("root", "spark__get_unit_test_sql"),
+                ("root", "default__get_unit_test_sql"),
+            ]);
+            let selected = BTreeSet::from(["unit_test.root.databricks".to_string()]);
+            assert_eq!(
+                warning_paths(&nodes, &selected, &macros, &env, None),
+                vec![PathBuf::from(
+                    "macros/root/databricks__get_unit_test_sql.sql"
+                )]
+            );
+        }
+
+        #[test]
+        fn dispatch_can_enable_a_dependency_or_prefer_internal_macros() {
+            let (nodes, macros, env) = fixture(&[
+                ("root", "databricks__get_unit_test_sql"),
+                ("dependency", "databricks__get_unit_test_sql"),
+            ]);
+            let selected = BTreeSet::from(["unit_test.root.databricks".to_string()]);
+            let dispatch = ["dependency".to_string(), "dbt".to_string()];
+            assert_eq!(
+                warning_paths(&nodes, &selected, &macros, &env, Some(&dispatch)),
+                vec![PathBuf::from(
+                    "macros/dependency/databricks__get_unit_test_sql.sql"
+                )]
+            );
+            let dispatch = ["dbt".to_string(), "root".to_string()];
+            assert!(warning_paths(&nodes, &selected, &macros, &env, Some(&dispatch)).is_empty());
+        }
+
+        #[test]
+        fn dependency_override_warning_uses_installed_macro_path() {
+            use dbt_common::tracing::fs_error_log::FsErrorLog;
+            use dbt_schemas::state::DbtAsset;
+
+            use crate::resolve::resolve_macros::resolve_macros;
+
+            let project = tempfile::tempdir().unwrap();
+            let package_dir = project.path().join("dbt_packages/dependency");
+            let relative_path = PathBuf::from("macros/unit.sql");
+            let absolute_path = package_dir.join(&relative_path);
+            std::fs::create_dir_all(absolute_path.parent().unwrap()).unwrap();
+            std::fs::write(
+                &absolute_path,
+                "{% macro default__get_unit_test_sql() %}unused{% endmacro %}",
+            )
+            .unwrap();
+            let asset = DbtAsset {
+                base_path: package_dir,
+                original_path: relative_path.clone(),
+                path: relative_path,
+                package_name: "dependency".to_string(),
+            };
+            let (nodes, mut macros, env) = fixture(&[("dependency", "default__get_unit_test_sql")]);
+            macros
+                .macros
+                .extend(resolve_macros(&[&asset], None).unwrap());
+            let selected = BTreeSet::from(["unit_test.root.databricks".to_string()]);
+            let dispatch = ["dependency".to_string(), "dbt".to_string()];
+            let mut warnings = unit_test_macro_override_warnings(
+                FsCommand::Build,
+                &nodes,
+                &selected,
+                &macros,
+                &env,
+                Some(&dispatch),
+            );
+            assert_eq!(warnings.len(), 1);
+            let warning = warnings.pop().unwrap();
+            assert_eq!(
+                warning.location.as_ref().unwrap().file.as_ref(),
+                &absolute_path
+            );
+            let log = FsErrorLog::new(warning, tracing::Level::WARN);
+            let displayed_path = log.get_log_message().relative_path.as_ref().unwrap();
+            assert!(
+                Path::new(displayed_path).ends_with("dbt_packages/dependency/macros/unit.sql"),
+                "wrong dependency warning path: {displayed_path}"
+            );
+        }
+    }
 
     /// When a project defines no {% docs %} blocks, `doc.dbt.__overview__`
     /// must be present in the manifest so the dbt Docs HTML doesn't crash.
@@ -2079,6 +2607,184 @@ mod tests {
             .models
             .insert(consumer_uid.to_string(), Arc::new(consumer));
         assert!(check_compute_platform_upstreams(&nodes, None).is_ok());
+    }
+
+    /// A Databricks upstream that lands as managed Delta (see
+    /// `databricks_lands_delta`) is reachable without a named catalog, but
+    /// only when `catalogs.yml` declares a Unity entry for its database.
+    #[test]
+    fn test_check_compute_platform_upstreams_delta_upstream() {
+        use std::sync::Arc;
+
+        use dbt_adapter_core::AdapterType;
+        use dbt_adapter_core::AdapterType::{Databricks, Snowflake};
+        use dbt_schemas::schemas::CommonAttributes;
+        use dbt_schemas::schemas::common::DbtMaterialization;
+        use dbt_schemas::schemas::common::DbtMaterialization::{
+            Incremental, MaterializedView, MetricView, Table, View,
+        };
+        use dbt_schemas::schemas::dbt_catalogs_deprecated::DbtCatalogs;
+        use dbt_schemas::schemas::nodes::{AdapterAttr, DatabricksAttr};
+        use dbt_schemas::schemas::{DbtModel, Nodes};
+
+        use super::check_compute_platform_upstreams;
+
+        let make_model = |uid: &str,
+                          adapter: AdapterType,
+                          materialized: DbtMaterialization,
+                          table_format: Option<&str>,
+                          file_format: Option<&str>|
+         -> DbtModel {
+            let mut model = DbtModel {
+                __common_attr__: CommonAttributes {
+                    unique_id: uid.to_string(),
+                    name: uid.rsplit('.').next().unwrap_or(uid).to_string(),
+                    package_name: "test".to_string(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            model.__base_attr__.adapter = adapter;
+            model.__base_attr__.materialized = materialized;
+            model.__base_attr__.database = "quack_demo".to_string();
+            model.__model_attr__.table_format = table_format.map(str::to_string);
+            // Parsing under a Databricks default adapter resolves Databricks attrs.
+            model.__adapter_attr__ =
+                AdapterAttr::default().with_databricks_attr(Some(Box::new(DatabricksAttr {
+                    file_format: file_format.map(str::to_string),
+                    ..Default::default()
+                })));
+            model
+        };
+
+        let consumer_uid = "model.test.consumer";
+        let upstream_uid = "model.test.upstream";
+
+        fn attach_catalogs(catalog_database: &str, with_lakecompute_block: bool) -> DbtCatalogs {
+            // A valid config block that is not a lakecompute attach, so the
+            // no-block case exercises the attach rejection and not a
+            // catalogs.yml schema error.
+            let block = if with_lakecompute_block {
+                format!(
+                    "\n      lakecompute:\n        catalog_database: {catalog_database}\n        region: us-east-1"
+                )
+            } else {
+                "\n      databricks:\n        file_format: parquet".to_string()
+            };
+            let yaml = format!(
+                "catalogs:\n  - name: attach_cat\n    type: unity\n    table_format: iceberg\n    config:{block}\n"
+            );
+            let value: dbt_yaml::Value = dbt_yaml::from_str(&yaml).unwrap();
+            DbtCatalogs::new(value.as_mapping().unwrap().clone(), value.span().clone())
+        }
+
+        let run_with = |upstream: DbtModel, catalogs: Option<&DbtCatalogs>| {
+            let mut consumer =
+                make_model(consumer_uid, AdapterType::LakeCompute, Table, None, None);
+            consumer.__model_attr__.catalog_name = Some("horizon".to_string());
+            consumer.__base_attr__.depends_on.nodes = vec![upstream_uid.to_string()];
+            let mut nodes = Nodes::default();
+            nodes
+                .models
+                .insert(consumer_uid.to_string(), Arc::new(consumer));
+            nodes
+                .models
+                .insert(upstream_uid.to_string(), Arc::new(upstream));
+            check_compute_platform_upstreams(&nodes, catalogs)
+        };
+
+        let declared = attach_catalogs("quack_demo", true);
+        let run = |upstream: DbtModel| run_with(upstream, Some(&declared));
+
+        for (adapter, materialized, table_format, file_format, reachable) in [
+            (Databricks, Table, None, None, true),
+            (Databricks, Table, Some("default"), None, true),
+            (Databricks, Table, None, Some("DELTA"), true),
+            (Databricks, Incremental, None, None, true),
+            // `TableFormat::parse` rejects 'delta' at materialization time.
+            (Databricks, Table, Some("delta"), None, false),
+            (Snowflake, Table, Some("delta"), None, false),
+            (Snowflake, Table, Some("default"), None, false),
+            (Databricks, Table, None, Some("parquet"), false),
+            (Databricks, View, None, None, false),
+            (Databricks, MetricView, None, None, false),
+            (Databricks, MaterializedView, None, None, false),
+        ] {
+            assert_eq!(
+                run(make_model(
+                    upstream_uid,
+                    adapter,
+                    materialized.clone(),
+                    table_format,
+                    file_format
+                ))
+                .is_ok(),
+                reachable,
+                "{adapter:?} {materialized:?} table_format={table_format:?} file_format={file_format:?}"
+            );
+        }
+
+        // An `adapter: databricks` override under a non-Databricks default
+        // adapter leaves Databricks attrs unresolved.
+        let mut unresolved = make_model(upstream_uid, Databricks, Table, None, None);
+        unresolved.__adapter_attr__ = AdapterAttr::default();
+        assert!(run(unresolved).is_err());
+
+        // The Delta hint is a separate sentence appended only for Databricks
+        // upstreams, so Snowflake errors keep the original generic advice.
+        let databricks_err = run(make_model(
+            upstream_uid,
+            Databricks,
+            Table,
+            None,
+            Some("parquet"),
+        ))
+        .unwrap_err()
+        .to_string();
+        assert!(
+            databricks_err.contains("Databricks 'table' or 'incremental' model"),
+            "missing Delta hint: {databricks_err}"
+        );
+        let snowflake_err = run(make_model(upstream_uid, Snowflake, Table, None, None))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            !snowflake_err.contains("Databricks"),
+            "unexpected Databricks hint: {snowflake_err}"
+        );
+
+        // Without catalogs (no `catalogs.yml`, or `use_catalogs_v2` off) there
+        // is no Unity entry for Lake Compute to attach, so the upstream is
+        // unreachable.
+        assert!(
+            run_with(
+                make_model(upstream_uid, Databricks, Table, None, None),
+                None
+            )
+            .is_err()
+        );
+
+        // The Unity entry must have a `lakecompute` block whose
+        // `catalog_database` names the upstream's database.
+        let attachable = |catalog_database: &str, with_block: bool| {
+            run_with(
+                make_model(upstream_uid, Databricks, Table, None, None),
+                Some(&attach_catalogs(catalog_database, with_block)),
+            )
+        };
+        assert!(attachable("quack_demo", true).is_ok());
+        // Runtime attach selection is case-insensitive on both names.
+        assert!(attachable("QUACK_DEMO", true).is_ok());
+        assert!(attachable("other_catalog", true).is_err());
+        assert!(attachable("quack_demo", false).is_err());
+        // The no-block rejection is the attach gate, not a catalogs.yml
+        // schema error; pin the message so the fixture can't regress into
+        // failing for the wrong reason.
+        let no_attach_err = attachable("quack_demo", false).unwrap_err().to_string();
+        assert!(
+            no_attach_err.contains("not reachable through a catalog"),
+            "unexpected rejection: {no_attach_err}"
+        );
     }
 
     #[test]

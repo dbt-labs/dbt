@@ -1,0 +1,147 @@
+flags:
+  send_anonymous_usage_stats: false
+name: test
+profile: fusion_tests
+
+macro-paths: ["macros"]
+
+models:
+  test:
+    +static_analysis: off
+
+    initialization_warehouse:
+      # test alter init warehouse: FUSION_SLT_WAREHOUSE -> FUSION_SLT_WAREHOUSE
+      init_wh:
+        +materialized: dynamic_table
+        +snowflake_warehouse: FUSION_SLT_WAREHOUSE
+        +target_lag: 1 hour
+        +snowflake_initialization_warehouse: FUSION_SLT_WAREHOUSE
+
+      # test alter init warehouse: unset -> FUSION_SLT_WAREHOUSE
+      no_init_wh:
+        +materialized: dynamic_table
+        +snowflake_warehouse: FUSION_SLT_WAREHOUSE
+        +target_lag: 1 hour
+        +snowflake_initialization_warehouse: FUSION_SLT_WAREHOUSE
+
+      # test alter init warehouse: set -> unset
+      same_wh:
+        +materialized: dynamic_table
+        +snowflake_warehouse: FUSION_SLT_WAREHOUSE
+        +target_lag: 1 hour
+
+    initialize:
+      # no config changes -- initialize is one-time only, not tracked after creation
+      init_default:
+        +materialized: dynamic_table
+        +snowflake_warehouse: FUSION_SLT_WAREHOUSE
+        +target_lag: 1 hour
+
+      init_on_schedule:
+        +materialized: dynamic_table
+        +snowflake_warehouse: FUSION_SLT_WAREHOUSE
+        +target_lag: 1 hour
+        +initialize: ON_SCHEDULE
+
+    target_lag:
+      # test alter target lag: 1 hour -> downstream
+      lag:
+        +materialized: dynamic_table
+        +snowflake_warehouse: FUSION_SLT_WAREHOUSE
+        +target_lag: downstream
+
+    refresh_mode:
+      # test refresh mode: AUTO -> FULL
+      # should trigger a full refresh
+      refresh_auto:
+        +materialized: dynamic_table
+        +snowflake_warehouse: FUSION_SLT_WAREHOUSE
+        +target_lag: 1 hour
+        +refresh_mode: FULL
+
+      # test refresh mode: FULL -> AUTO
+      # no-op: no change detected by design
+      refresh_full:
+        +materialized: dynamic_table
+        +snowflake_warehouse: FUSION_SLT_WAREHOUSE
+        +target_lag: 1 hour
+
+    cluster_by:
+      # test alter cluster_by: [id] -> [id, id2]
+      dt_cluster_alter:
+        +materialized: dynamic_table
+        +snowflake_warehouse: FUSION_SLT_WAREHOUSE
+        +target_lag: 1 hour
+        +cluster_by: [id, id2]
+
+      # test drop clustering key: [id] -> none
+      dt_cluster_drop:
+        +materialized: dynamic_table
+        +snowflake_warehouse: FUSION_SLT_WAREHOUSE
+        +target_lag: 1 hour
+
+    transient:
+      # test alter transient: true -> false (triggers REPLACE)
+      dt_transient1:
+        +materialized: dynamic_table
+        +snowflake_warehouse: FUSION_SLT_WAREHOUSE
+        +target_lag: 1 hour
+        +transient: false
+
+    copy_grants:
+      # no-op: copy_grants is create-time only, not tracked after creation
+      dt_copy_grants1:
+        +materialized: dynamic_table
+        +snowflake_warehouse: FUSION_SLT_WAREHOUSE
+        +target_lag: 1 hour
+        +copy_grants: true
+
+    immutable_where:
+      # test alter immutable_where: "id < 100" -> "id < 200"
+      dt_imw1:
+        +materialized: dynamic_table
+        +snowflake_warehouse: FUSION_SLT_WAREHOUSE
+        +target_lag: 1 hour
+        +refresh_mode: INCREMENTAL
+        +immutable_where: "id < 200"
+
+    scheduler:
+      # test alter scheduler: DISABLE -> ENABLE (adds target_lag)
+      scheduler_disable:
+        +materialized: dynamic_table
+        +snowflake_warehouse: FUSION_SLT_WAREHOUSE
+        +target_lag: 5 minutes
+        +scheduler: enable
+
+      # test alter scheduler: ENABLE -> DISABLE (removes target_lag)
+      scheduler_enable:
+        +materialized: dynamic_table
+        +snowflake_warehouse: FUSION_SLT_WAREHOUSE
+        +scheduler: disable
+
+    iceberg:
+      # test alter target lag: 1 hour -> downstream (non-destructive ALTER,
+      # no table replacement/reinitialization)
+      dt_iceberg_managed:
+        +materialized: dynamic_table
+        +snowflake_warehouse: FUSION_SLT_WAREHOUSE
+        +target_lag: downstream
+        +table_format: iceberg
+
+      dt_iceberg_external_volume:
+        +materialized: dynamic_table
+        +snowflake_warehouse: FUSION_SLT_WAREHOUSE
+        +target_lag: downstream
+        +table_format: iceberg
+        +external_volume: s3_iceberg_snow
+        +base_location_root: fs_test_user
+        +base_location_subpath: ci
+
+      dt_iceberg_explicit_snowflake_managed:
+        +materialized: dynamic_table
+        +snowflake_warehouse: FUSION_SLT_WAREHOUSE
+        +target_lag: downstream
+        +table_format: iceberg
+        +external_volume: SNOWFLAKE_MANAGED
+        +base_location_root: fs_test_user
+        +base_location_subpath: ci

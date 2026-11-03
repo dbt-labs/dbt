@@ -1,12 +1,18 @@
-use super::duration::format_duration_fixed_width;
+use std::fmt;
 
-pub fn format_thread_pool_wait_start() -> String {
-    "Started thread pool wait".to_string()
-}
+use super::duration::FixedWidthDuration;
 
-pub fn format_thread_pool_wait_end(duration: std::time::Duration) -> String {
-    format!(
-        "Finished thread pool wait [{}]",
-        format_duration_fixed_width(duration)
-    )
+pub const THREAD_POOL_WAIT_START: &str = "Started thread pool wait";
+
+/// Displays the end of a thread pool wait.
+pub struct ThreadPoolWaitEnd(pub std::time::Duration);
+
+impl fmt::Display for ThreadPoolWaitEnd {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "Finished thread pool wait [{}]",
+            FixedWidthDuration(self.0)
+        )
+    }
 }

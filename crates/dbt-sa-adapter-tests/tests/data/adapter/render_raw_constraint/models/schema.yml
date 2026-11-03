@@ -1,0 +1,37 @@
+models:
+  - name: a
+    config:
+      contract:
+        enforced: true
+    constraints:
+      - type: check
+        expression: "name"
+        warn_unsupported: false
+        warn_unenforced: false
+    columns:
+      - name: id
+        data_type: int
+        constraints:
+          - type: not_null
+            warn_unsupported: false
+            warn_unenforced: false
+          - type: primary_key
+            warn_unsupported: false
+            warn_unenforced: false
+          - type: check
+            expression: "(id > 0)"
+            warn_unsupported: false
+            warn_unenforced: false
+          - type: check
+            expression: "(id >= 1)"
+            warn_unsupported: false
+            warn_unenforced: false
+          - type: foreign_key
+            to: ref("b")
+            to_columns: ["id"]
+            warn_unsupported: false
+            warn_unenforced: false
+          - type: unique
+            warn_unsupported: false
+            warn_unenforced: false
+      

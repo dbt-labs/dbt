@@ -20,7 +20,9 @@ use super::event_recorder::EventRecorder;
 use super::event_replay::{Recording, ReplayError, ReplayMode, is_read_only_execute_call};
 use super::semantic::SemanticCategory;
 use super::serde::{ReplayCallContext, ReplayContext, json_to_value_with_context};
-use super::validation::{IncomingEvent, TimeMachineEventValidationEngine, ValidationResult};
+use super::validation::{
+    IncomingEvent, MismatchKind, TimeMachineEventValidationEngine, ValidationResult,
+};
 
 /// Unified time machine for recording or replaying adapter calls.
 #[derive(Clone)]
@@ -312,6 +314,32 @@ impl EventReplayer {
         self.recording
             .take_semantic_match(node_id, method, args, call_category)
             .ok_or_else(|| {
+                let sql_detail = if is_read_only_execute_call(method, args) {
+                    self.recording
+                        .read_only_execute_candidate(node_id, method)
+                        .and_then(|recorded| {
+                            let incoming = IncomingEvent::new(node_id, method, args);
+                            match self.validation_engine.validate(&incoming, recorded) {
+                                ValidationResult::Mismatch(mismatch)
+                                    if mismatch.kind == MismatchKind::Sql =>
+                                {
+                                    Some(format!(
+                                        "\nRecorded read candidate is event seq {}. SQL differs:\n{}",
+                                        recorded.seq,
+                                        Self::format_sql_diff(
+                                            &mismatch.expected,
+                                            &mismatch.actual,
+                                        ),
+                                    ))
+                                }
+                                _ => None,
+                            }
+                        })
+                        .unwrap_or_default()
+                } else {
+                    String::new()
+                };
+
                 // Read-only SQL run through `execute` is matched as a read (see
                 // `take_semantic_match`), so a miss there is not a write-barrier miss.
                 let (kind, context) = if is_read_only_execute_call(method, args) {
@@ -334,13 +362,57 @@ impl EventReplayer {
                 };
                 ReplayCallError {
                     message: format!(
-                        "No recorded event for {} call '{}' on node '{}'. {}",
-                        kind, method, node_id, context
+                        "No recorded event for {} call '{}' on node '{}'. {}{}",
+                        kind, method, node_id, context, sql_detail
                     ),
                     recorded_error: None,
                     is_method_mismatch: false,
                 }
             })
+    }
+
+    /// Show a small window around the first SQL difference.
+    fn format_sql_diff(expected: &str, actual: &str) -> String {
+        const CONTEXT_CHARS: usize = 120;
+
+        let expected: Vec<char> = expected.chars().collect();
+        let actual: Vec<char> = actual.chars().collect();
+        let prefix = expected
+            .iter()
+            .zip(&actual)
+            .take_while(|(expected, actual)| expected == actual)
+            .count();
+        let max_suffix = expected.len().min(actual.len()).saturating_sub(prefix);
+        let suffix = expected
+            .iter()
+            .rev()
+            .zip(actual.iter().rev())
+            .take(max_suffix)
+            .take_while(|(expected, actual)| expected == actual)
+            .count();
+
+        let expected_start = prefix.saturating_sub(CONTEXT_CHARS);
+        let actual_start = expected_start.min(actual.len());
+        let expected_end = (expected.len() - suffix + CONTEXT_CHARS).min(expected.len());
+        let actual_end = (actual.len() - suffix + CONTEXT_CHARS).min(actual.len());
+
+        format!(
+            "Recorded SQL: {}\nReplay SQL: {}",
+            Self::sql_excerpt(&expected, expected_start, expected_end),
+            Self::sql_excerpt(&actual, actual_start, actual_end),
+        )
+    }
+
+    fn sql_excerpt(sql: &[char], start: usize, end: usize) -> String {
+        let mut excerpt = String::new();
+        if start > 0 {
+            excerpt.push_str("...");
+        }
+        excerpt.extend(sql[start..end].iter());
+        if end < sql.len() {
+            excerpt.push_str("...");
+        }
+        excerpt
     }
 
     /// Convert a matched event to a replay result.
@@ -698,7 +770,36 @@ mod tests {
             .unwrap_err();
 
         assert!(err.message.contains("read-only call 'execute'"), "{err}");
+        assert!(
+            err.message
+                .contains("Recorded read candidate is event seq 0"),
+            "{err}"
+        );
+        assert!(
+            err.message.contains("Recorded SQL:") && err.message.contains("from t"),
+            "{err}"
+        );
+        assert!(
+            err.message.contains("Replay SQL:") && err.message.contains("from other"),
+            "{err}"
+        );
         assert!(!err.message.contains("write barrier"), "{err}");
+    }
+
+    #[test]
+    fn test_semantic_write_miss_does_not_include_read_sql_hint() {
+        let (_dir, replayer) = replayer_with_recorded_execute("select count(*) from t");
+
+        let err = replayer
+            .get_result(
+                "n",
+                "execute",
+                &[Value::from("create table other (id int)")],
+            )
+            .unwrap_err();
+
+        assert!(err.message.contains("write call 'execute'"), "{err}");
+        assert!(!err.message.contains("Recorded read candidate"), "{err}");
     }
 
     #[test]

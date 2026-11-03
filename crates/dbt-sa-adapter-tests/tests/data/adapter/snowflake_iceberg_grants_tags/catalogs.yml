@@ -1,0 +1,30 @@
+catalogs:
+  - name: c1
+    type: horizon
+    table_format: iceberg
+    config:
+      snowflake:
+        external_volume: s3_iceberg_snow
+        change_tracking: true
+        iceberg_version: 3
+        base_location_root: '_fusion_ci/grants_tags'
+
+  - name: c2
+    type: unity
+    table_format: iceberg
+    config:
+      snowflake:
+        catalog_database: test_catalog_linked_db_internal
+        target_file_size: AUTO
+        auto_refresh: true
+        iceberg_version: 3
+
+  - name: c3
+    type: glue
+    table_format: iceberg
+    config:
+      snowflake:
+        catalog_database: test_catalog_linked_db_glue
+        target_file_size: AUTO
+        auto_refresh: true
+        iceberg_version: 3

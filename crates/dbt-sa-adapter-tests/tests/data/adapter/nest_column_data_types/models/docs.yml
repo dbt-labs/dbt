@@ -1,0 +1,58 @@
+models:
+  - name: a
+    description: |
+      This model is used to test the `nest_column_data_types()` macro.
+      It defines a nested column data type.
+    config:
+      contract:
+        enforced: true
+    constraints:
+      - type: check
+        expression: "full_name.firstname"
+    columns:
+      # primitive column
+      - name: id
+        description: id
+        data_type: string
+        constraints:
+          - type: primary_key
+          - type: check
+            expression: "id > 0"
+
+      # implicit struct (no fields have data_type set)
+      - name: full_name.firstname
+        description: user first name
+        data_type: string
+      - name: full_name.lastname
+        description: user last name
+
+      # implicit struct (user error set data_type to struct, all fields have data_type set)
+      - name: a
+        description: "a column is a implicit struct with two fields b, c"
+        data_type: string # this is incorrect and will be overriden by the adapter.nest_column_data_types method to struct 
+      - name: a.b
+        data_type: string
+      - name: a.c
+        data_type: number
+
+      # explicit struct (some fields has data_type set)
+      - name: d
+        description: "a column is a explicit struct with two fields e, f"
+        data_type: struct
+      - name: d.e
+        data_type: string
+      - name: d.f
+      
+      # explicit array
+      - name: b
+        description: "b column is an array with two fields c, d"
+        data_type: array
+      - name: b.c
+        data_type: string
+      - name: b.d
+        data_type: number
+      
+      # arbitrarily nested
+      - name: c
+      - name: c.d
+      - name: c.d.e

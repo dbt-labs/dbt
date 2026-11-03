@@ -1420,6 +1420,33 @@ fn test_namespace_dict_method_names_resolve_to_attributes() {
 }
 
 #[test]
+fn test_object_get_item_overrides_subscript_only() {
+    #[derive(Debug)]
+    struct ItemFirst;
+
+    impl Object for ItemFirst {
+        fn get_value(self: &Arc<Self>, key: &Value) -> Option<Value> {
+            (key.as_str() == Some("name")).then(|| Value::from("attribute"))
+        }
+
+        fn get_item(self: &Arc<Self>, key: &Value) -> Option<Value> {
+            (key.as_str() == Some("name")).then(|| Value::from("item"))
+        }
+    }
+
+    let env = Environment::new();
+    assert_eq!(
+        env.render_str(
+            "{{ obj.name }}|{{ obj['name'] }}",
+            context! { obj => Value::from_object(ItemFirst) },
+            &[],
+        )
+        .unwrap(),
+        "attribute|item"
+    );
+}
+
+#[test]
 fn test_downcast_arg() {
     #[derive(Debug)]
     struct A;

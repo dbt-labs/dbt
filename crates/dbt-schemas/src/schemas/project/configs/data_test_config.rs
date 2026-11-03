@@ -18,7 +18,7 @@ use crate::schemas::common::{
 };
 use crate::schemas::manifest::GrantAccessToTarget;
 use crate::schemas::project::configs::common::{
-    WarehouseSpecificNodeConfig, take_databricks_catalog_alias,
+    TYPED_ALIAS_KEYS, WarehouseSpecificNodeConfig, take_databricks_catalog_alias,
 };
 use crate::schemas::project::configs::config_merge::{Tags, TblProperties};
 use crate::schemas::properties::DataTestState;
@@ -259,6 +259,8 @@ pub struct ProjectDataTestConfig {
     pub not_matched_condition: Option<String>,
     #[serde(rename = "+not_matched_by_source_condition")]
     pub not_matched_by_source_condition: Option<String>,
+    #[serde(rename = "+merge_actions_explicit")]
+    pub merge_actions_explicit: Option<String>,
     #[serde(rename = "+not_matched_by_source_action")]
     pub not_matched_by_source_action: Option<String>,
     #[serde(
@@ -327,6 +329,20 @@ pub struct ProjectDataTestConfig {
     // dbt State configs (restricted subset: only require_fresh_data_from + evaluate_volatile_sql)
     #[serde(rename = "+state")]
     pub state: Option<DataTestState>,
+
+    // ClickHouse
+    #[serde(rename = "+engine")]
+    pub engine: Option<String>,
+    #[serde(rename = "+order_by")]
+    pub order_by: Option<StringOrArrayOfStrings>,
+    #[serde(rename = "+ttl")]
+    pub ttl: Option<String>,
+    #[serde(rename = "+settings")]
+    pub settings: Option<BTreeMap<String, YmlValue>>,
+    #[serde(rename = "+query_settings")]
+    pub query_settings: Option<BTreeMap<String, YmlValue>>,
+    #[serde(rename = "+projections")]
+    pub projections: Option<Vec<YmlValue>>,
 
     pub __additional_properties__: BTreeMap<String, ShouldBe<ProjectDataTestConfig>>,
 }
@@ -416,6 +432,7 @@ impl TypedRecursiveConfig for ProjectDataTestConfig {
             || self.matched_condition.is_some()
             || self.not_matched_condition.is_some()
             || self.not_matched_by_source_condition.is_some()
+            || self.merge_actions_explicit.is_some()
             || self.not_matched_by_source_action.is_some()
             || self.merge_with_schema_evolution.is_some()
             || self.skip_matched_step.is_some()
@@ -601,6 +618,7 @@ impl From<ProjectDataTestConfig> for DataTestConfig {
                 matched_condition: config.matched_condition,
                 not_matched_condition: config.not_matched_condition,
                 not_matched_by_source_condition: config.not_matched_by_source_condition,
+                merge_actions_explicit: config.merge_actions_explicit,
                 not_matched_by_source_action: config.not_matched_by_source_action,
                 merge_with_schema_evolution: config.merge_with_schema_evolution,
                 skip_matched_step: config.skip_matched_step,
@@ -632,12 +650,12 @@ impl From<ProjectDataTestConfig> for DataTestConfig {
                 primary_key: PrimaryKeyConfig::default(),
                 category: None,
 
-                engine: None,
-                order_by: None,
-                ttl: None,
-                settings: None,
-                query_settings: None,
-                projections: None,
+                engine: config.engine,
+                order_by: config.order_by,
+                ttl: config.ttl,
+                settings: config.settings,
+                query_settings: config.query_settings,
+                projections: config.projections,
                 sharding_key: None,
                 disable_on_cluster: None,
                 inserts_only: None,
@@ -760,6 +778,7 @@ impl From<DataTestConfig> for ProjectDataTestConfig {
             not_matched_by_source_condition: config
                 .__warehouse_specific_config__
                 .not_matched_by_source_condition,
+            merge_actions_explicit: config.__warehouse_specific_config__.merge_actions_explicit,
             not_matched_by_source_action: config
                 .__warehouse_specific_config__
                 .not_matched_by_source_action,
@@ -784,6 +803,13 @@ impl From<DataTestConfig> for ProjectDataTestConfig {
             unlogged: config.__warehouse_specific_config__.unlogged,
             // Schedule (Databricks streaming tables)
             schedule: config.__warehouse_specific_config__.schedule,
+            // ClickHouse fields
+            engine: config.__warehouse_specific_config__.engine,
+            order_by: config.__warehouse_specific_config__.order_by,
+            ttl: config.__warehouse_specific_config__.ttl,
+            settings: config.__warehouse_specific_config__.settings,
+            query_settings: config.__warehouse_specific_config__.query_settings,
+            projections: config.__warehouse_specific_config__.projections,
             __additional_properties__: BTreeMap::new(),
         }
     }
@@ -800,6 +826,10 @@ impl ResolvableConfig<DataTestConfig> for DataTestConfig {
 
     fn get_enabled(&self) -> Option<bool> {
         self.enabled
+    }
+
+    fn get_adapter(&self) -> Option<AdapterType> {
+        self.adapter
     }
 
     fn disable(&mut self) {
@@ -847,9 +877,13 @@ impl ResolvableConfig<DataTestConfig> for DataTestConfig {
         self.default_to_fields(parent);
     }
 
-    fn canonicalize_adapter_aliases(&mut self, default_adapter: AdapterType) {
+    fn typed_alias_keys() -> &'static [&'static str] {
+        TYPED_ALIAS_KEYS
+    }
+
+    fn canonicalize_adapter_aliases(&mut self, alias_adapter: AdapterType) {
         if let Some(catalog) = take_databricks_catalog_alias(
-            default_adapter,
+            alias_adapter,
             &mut self.__warehouse_specific_config__,
             self.database.is_some(),
         ) {
@@ -909,6 +943,43 @@ __additional_properties__: {}
             resolved.__warehouse_specific_config__.query_tags.as_deref(),
             Some(r#"{"team":"data-test"}"#)
         );
+    }
+
+    #[test]
+    fn test_data_test_clickhouse_table_options_propagate_through_resolved_config() {
+        let project: ProjectDataTestConfig = dbt_yaml::from_str(
+            r#"
++engine: ReplacingMergeTree()
++order_by: [id, ts]
++ttl: ts + INTERVAL 1 DAY
++settings:
+  allow_nullable_key: 1
++query_settings:
+  max_insert_threads: 1
++projections:
+  - name: p
+    query: SELECT id ORDER BY ts
+__additional_properties__: {}
+"#,
+        )
+        .unwrap();
+
+        let resolved: DataTestConfig = project.into();
+        let wh = &resolved.__warehouse_specific_config__;
+        assert_eq!(wh.engine.as_deref(), Some("ReplacingMergeTree()"));
+        assert!(wh.order_by.is_some());
+        assert_eq!(wh.ttl.as_deref(), Some("ts + INTERVAL 1 DAY"));
+        assert!(
+            wh.settings
+                .as_ref()
+                .is_some_and(|s| s.contains_key("allow_nullable_key"))
+        );
+        assert!(wh.query_settings.is_some());
+        assert_eq!(wh.projections.as_ref().map(Vec::len), Some(1));
+
+        let round_trip: ProjectDataTestConfig = resolved.into();
+        assert_eq!(round_trip.engine.as_deref(), Some("ReplacingMergeTree()"));
+        assert_eq!(round_trip.ttl.as_deref(), Some("ts + INTERVAL 1 DAY"));
     }
 
     #[test]

@@ -46,6 +46,7 @@ impl DatabricksApiClient {
 
         let base_url = Self::normalize_host(host.as_ref());
         let agent: Agent = Agent::config_builder()
+            .tls_config(dbt_adbc::install::build_tls_config())
             .http_status_as_error(false)
             .timeout_global(Some(Duration::from_secs(REQUEST_TIMEOUT_SECS)))
             .build()

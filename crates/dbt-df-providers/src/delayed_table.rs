@@ -14,8 +14,6 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::OnceLock;
 
-use crate::seed_io::TableFormat;
-
 // Ref to cache_state in delayed data table provider?
 
 /// A [TableProvider] that allows the data source to be set after creation
@@ -148,14 +146,12 @@ impl TableProvider for DelayedDataTableProvider {
     }
 }
 
-/// Checks if the source schema can be safely overlaid with the target schema.
-pub fn is_schema_compat(source: &arrow_schema::Schema, target: &arrow_schema::Schema) -> bool {
-    source
-        .fields()
-        .iter()
-        .zip(target.fields())
-        .all(|(a, b)| a.name() == b.name())
-        && source.fields().len() == target.fields().len()
+/// Supported on-disk table formats.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TableFormat {
+    Parquet,
+    Csv,
+    Json,
 }
 
 /// Build a [`ListingTable`] over a single on-disk parquet/JSON file, inferring

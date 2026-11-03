@@ -1,16 +1,13 @@
 use dbt_adapter::Adapter;
 use dbt_adapter::relation::render_effective_relation;
-use dbt_adapter_core::AdapterType;
 use dbt_common::{ErrorCode, FsError, fs_err};
 use dbt_common::{FsResult, constants::DBT_CTE_PREFIX, error::MacroSpan, stdfs};
 use dbt_frontend_common::{error::CodeLocation, span::Span};
 use dbt_schemas::schemas::common::ResolvedQuoting;
 use dbt_schemas::schemas::project::ResolvableConfig;
 use dbt_schemas::schemas::telemetry::NodeType;
-use dbt_schemas::schemas::{
-    CommonAttributes, DbtModel, DbtSeed, DbtSnapshot, DbtTest, DbtUnitTest, InternalDbtNode,
-};
-use dbt_yaml::{Spanned, Value as YmlValue};
+use dbt_schemas::schemas::{CommonAttributes, InternalDbtNode};
+use dbt_yaml::Spanned;
 use minijinja::arg_utils::ArgParser;
 use minijinja::constants::{ROOT_PACKAGE_NAME, TARGET_PACKAGE_NAME, TARGET_UNIQUE_ID, THREAD_ID};
 use minijinja::{
@@ -19,7 +16,6 @@ use minijinja::{
     value::{Rest, Value as MinijinjaValue, ValueKind},
 };
 use regex::Regex;
-use serde::Deserialize;
 use sqlparser::dialect::GenericDialect;
 use sqlparser::keywords::Keyword;
 use sqlparser::tokenizer::{Location, Token, Tokenizer};
@@ -244,7 +240,7 @@ pub fn inject_and_persist_ephemeral_models(
     } else {
         // Preserve the wrapper fallback for statements without a leading WITH clause.
         final_sql = format!(
-            "with {ctes}\n--EPHEMERAL-SELECT-WRAPPER-START\nselect * from (\n{final_sql}\n--EPHEMERAL-SELECT-WRAPPER-END\n)"
+            "with {ctes}\n--EPHEMERAL-SELECT-WRAPPER-START\nselect * from (\n{final_sql}\n--EPHEMERAL-SELECT-WRAPPER-END\n) as {model_name}"
         );
         let added_lines = ctes.lines().count() + 2;
         let added_offset = ctes.len() + 23;
@@ -648,63 +644,77 @@ pub fn find_macro_template(
 }
 
 /// Generate a component name using the specified macro
-pub fn generate_component_name(
+///
+/// Takes the node by value and returns it with the name, so the macro can read
+/// it without the node being copied.
+pub fn generate_component_name<T: InternalDbtNode + Clone>(
     env: &JinjaEnv,
     component: &str,
     root_project_name: &str,
     current_project_name: &str,
     base_ctx: &BTreeMap<String, Value>,
     custom_name: Option<String>,
-    node: Option<&dyn InternalDbtNode>,
+    node: T,
+) -> FsResult<(String, T)> {
+    // The macro only reads the node, but Jinja objects must be 'static, so the
+    // context can't borrow it. We lend the owned node through an `Arc` instead
+    // and take it back once the call is done.
+    let node = Arc::new(node);
+    let mut context = dbt_schemas::jinja_node::LazyNodeContext::from_node(
+        node.clone(),
+        dbt_schemas::schemas::serialization_utils::SerializationMode::KeepNone,
+    );
+    let prefix = match node.resource_type() {
+        NodeType::Model => "models",
+        NodeType::Snapshot => "snapshots",
+        NodeType::Seed => "seeds",
+        NodeType::Analysis => "analyses",
+        _ => "",
+    };
+    if !prefix.is_empty() {
+        context.transform("path", move |value| {
+            if let Some(path) = value.as_str() {
+                let stripped = Path::new(path)
+                    .strip_prefix(prefix)
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .unwrap_or_else(|_| path.to_string());
+                dbt_yaml::Value::string(stripped)
+            } else {
+                value
+            }
+        });
+    }
+    let result = generate_component_name_value(
+        env,
+        component,
+        root_project_name,
+        current_project_name,
+        base_ctx,
+        custom_name,
+        Value::from_object(context),
+    );
+    let node = Arc::unwrap_or_clone(node);
+    result.map(|name| (name, node))
+}
+
+/// Invokes a naming macro with an existing Jinja node value.
+#[allow(clippy::too_many_arguments)]
+pub fn generate_component_name_value(
+    env: &JinjaEnv,
+    component: &str,
+    root_project_name: &str,
+    current_project_name: &str,
+    base_ctx: &BTreeMap<String, Value>,
+    custom_name: Option<String>,
+    node: Value,
 ) -> FsResult<String> {
     let macro_name = format!("generate_{component}_name");
-    // find the macro template - this is now cached for performance
     let template_name =
         find_macro_template(env, &macro_name, root_project_name, current_project_name)?;
-
-    // Create a state object for rendering
     let template = env.get_template(&template_name)?;
-
-    // Create a new state
-    let new_state = template.eval_to_state(base_ctx, &[])?;
-
-    // Build the args
-    let mut args = custom_name
-        .map(|name| vec![Value::from(name)])
-        .unwrap_or_else(|| vec![Value::from(())]); // If no custom name, pass in none so the macro reads from the target context
-    if let Some(node) = node {
-        let mut serialized = node.serialize_keep_none();
-        // Strip resource-type prefix from path so node.path inside macros like
-        // generate_schema_name matches dbt-core convention ("staging/model.sql"
-        // not "models/staging/model.sql"). build_flat_graph does the same for
-        // graph.nodes.
-        let prefix = match node.resource_type() {
-            NodeType::Model => "models",
-            NodeType::Snapshot => "snapshots",
-            NodeType::Seed => "seeds",
-            NodeType::Analysis => "analyses",
-            _ => "",
-        };
-        if !prefix.is_empty() {
-            if let YmlValue::Mapping(ref mut map, _) = serialized {
-                let path_key = YmlValue::string("path".to_string());
-                if let Some(path_value) = map.get(&path_key) {
-                    if let Some(path_str) = path_value.as_str() {
-                        let stripped = Path::new(path_str)
-                            .strip_prefix(prefix)
-                            .map(|p| p.to_string_lossy().into_owned())
-                            .unwrap_or_else(|_| path_str.to_string());
-                        map.insert(path_key, YmlValue::string(stripped));
-                    }
-                }
-            }
-        }
-        args.push(Value::from_serialize(serialized));
-    }
-
-    // Call the macro
-    let result = new_state
-        .call_macro_raw(macro_name.as_str(), &args, &[])
+    let state = template.eval_to_state(base_ctx, &[])?;
+    state
+        .call_macro_raw(&macro_name, &[Value::from(custom_name), node], &[])
         .map(|v| match v.kind() {
             ValueKind::None => "".to_string(),
             _ => v.to_string().trim().to_string(),
@@ -714,9 +724,7 @@ pub fn generate_component_name(
                 err,
                 format!("Failed to run macro {macro_name} for component {component}"),
             ))
-        })?;
-    // Return the result
-    Ok(result)
+        })
 }
 
 /// Clear template cache (primarily for testing purposes)
@@ -734,8 +742,8 @@ pub fn generate_relation_name(
     identifier: &str,
     quote_config: ResolvedQuoting,
 ) -> FsResult<String> {
-    generate_relation_name_with_target(
-        parse_adapter,
+    render_effective_relation(
+        parse_adapter.adapter_type(),
         database,
         schema,
         identifier,
@@ -744,71 +752,13 @@ pub fn generate_relation_name(
     )
 }
 
-/// Generate a relation name using a node's resolved destination.
-pub fn generate_relation_name_with_target(
-    parse_adapter: Arc<Adapter>,
-    database: &str,
-    schema: &str,
-    identifier: &str,
-    quote_config: ResolvedQuoting,
-    target: Option<AdapterType>,
-) -> FsResult<String> {
-    render_effective_relation(
-        parse_adapter.adapter_type(),
-        database,
-        schema,
-        identifier,
-        quote_config,
-        target,
-    )
-}
-
 type NodeId = String;
 /// Returns the metadata of the current model from the given Jinja execution state
 pub fn node_metadata_from_state(state: &State) -> Option<(NodeId, PathBuf)> {
-    match state.lookup("model", &[]) {
-        Some(node) => {
-            if let Ok(model) = DbtModel::deserialize(&node) {
-                Some((
-                    model.__common_attr__.unique_id,
-                    model.__common_attr__.original_file_path.to_path_buf(),
-                ))
-            } else if let Ok(test) = DbtTest::deserialize(&node) {
-                Some((
-                    test.__common_attr__.unique_id,
-                    test.__common_attr__.original_file_path.to_path_buf(),
-                ))
-            } else if let Ok(snapshot) = DbtSnapshot::deserialize(&node) {
-                Some((
-                    snapshot.__common_attr__.unique_id,
-                    snapshot.__common_attr__.original_file_path.to_path_buf(),
-                ))
-            } else if let Ok(seed) = DbtSeed::deserialize(&node) {
-                Some((
-                    seed.__common_attr__.unique_id,
-                    seed.__common_attr__.original_file_path.to_path_buf(),
-                ))
-            } else if let Ok(unit_test) = DbtUnitTest::deserialize(&node) {
-                Some((
-                    unit_test.__common_attr__.unique_id,
-                    unit_test.__common_attr__.original_file_path.to_path_buf(),
-                ))
-            } else {
-                // Fallback: direct attribute extraction for Object types
-                // (e.g. LazyModelWrapper) where full deserialization fails
-                let unique_id = node
-                    .get_attr("unique_id")
-                    .ok()
-                    .and_then(|v| v.as_str().map(|s| s.to_string()));
-                let file_path = node
-                    .get_attr("original_file_path")
-                    .ok()
-                    .and_then(|v| v.as_str().map(PathBuf::from));
-                unique_id.zip(file_path)
-            }
-        }
-        None => None,
-    }
+    let node = state.lookup("model", &[])?;
+    let unique_id = node.get_attr("unique_id").ok()?.as_str()?.to_owned();
+    let file_path = PathBuf::from(node.get_attr("original_file_path").ok()?.as_str()?);
+    Some((unique_id, file_path))
 }
 
 /// Render a reference or source string and return the corresponding SqlResource

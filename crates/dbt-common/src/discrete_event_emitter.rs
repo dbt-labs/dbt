@@ -2,6 +2,8 @@ use std::path::Path;
 
 use uuid::Uuid;
 
+use crate::telemetry_command::TelemetryCommand;
+
 /// Emit discrete events during dbt execution.
 pub trait DiscreteEventEmitter: Send + Sync {
     fn configure(&mut self, send_anonymous_usage_stats: bool);
@@ -13,6 +15,6 @@ pub trait DiscreteEventEmitter: Send + Sync {
         invocation_id: &Uuid,
         root_project_name: &str,
         profile_path: Option<&Path>,
-        command: String,
+        command: TelemetryCommand,
     );
 }

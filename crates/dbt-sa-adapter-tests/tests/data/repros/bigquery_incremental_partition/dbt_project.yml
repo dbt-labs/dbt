@@ -1,0 +1,8 @@
+name: 'BigQueryPartitionConfigRender'
+version: '1.0.0'
+config-version: 2
+
+profile: 'fusion_tests'
+
+models:
+  +materialized: view

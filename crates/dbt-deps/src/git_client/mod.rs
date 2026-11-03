@@ -17,14 +17,12 @@ mod traits;
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
-use dbt_common::cancellation::never_cancels;
 use dbt_common::tracing::dbt_emit::emit_warn_log_message;
 use dbt_common::{ErrorCode, FsResult, fs_err, tokiofs};
-use reqwest_middleware::ClientWithMiddleware;
 use traits::GitHostClient as _;
 
 use crate::context::DepsOperationContext;
-use crate::network_client::retrying_http_client;
+use crate::network_client::LazyHttpClient;
 use crate::tarball_client::TarballClient;
 use crate::utils::sanitize_git_url;
 
@@ -36,19 +34,8 @@ pub struct GitClientContext {
     generic_client: generic::GenericClient,
 }
 
-impl Default for GitClientContext {
-    fn default() -> Self {
-        Self::from_http_client(retrying_http_client())
-    }
-}
-
 impl GitClientContext {
-    pub fn from_http_client(http_client: ClientWithMiddleware) -> Self {
-        let tarball_client = TarballClient::from_client(http_client.clone(), never_cancels());
-        Self::from_clients(http_client, tarball_client)
-    }
-
-    pub fn from_clients(http_client: ClientWithMiddleware, tarball_client: TarballClient) -> Self {
+    pub fn from_clients(http_client: LazyHttpClient, tarball_client: TarballClient) -> Self {
         Self {
             resolve_cache: cache::ResolveCache::new(),
             github_client: github::GitHubClient::new(http_client, tarball_client),
@@ -485,9 +472,10 @@ async fn reset_download_dir(download_dir: &Path) -> FsResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dbt_common::cancellation::never_cancels;
 
     fn test_github_client() -> github::GitHubClient {
-        let http = retrying_http_client();
+        let http = LazyHttpClient::new();
         let tb = TarballClient::from_client(http.clone(), never_cancels());
         github::GitHubClient::new(http, tb)
     }

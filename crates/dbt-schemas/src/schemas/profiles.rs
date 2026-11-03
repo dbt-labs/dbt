@@ -161,6 +161,9 @@ impl DbConfig {
             // DuckDB `path` is optional — attach-only profiles default to `:memory:`.
             DbConfig::DuckDB(config) => Some(config.path.as_deref().unwrap_or(":memory:")),
             DbConfig::LakeCompute(config) => config.base_url.as_deref(),
+            DbConfig::Spark(config) if config.is_fabric_lakehouse() => {
+                config.lakehouseid.as_deref()
+            }
             DbConfig::Spark(config) => config.host.as_deref(),
             DbConfig::Fabric(config) => config.host.as_deref(),
             DbConfig::Exasol(config) => config.host.as_deref(),
@@ -312,8 +315,20 @@ impl DbConfig {
             | AdapterType::Starburst
             | AdapterType::Dremio
             | AdapterType::Oracle => &[],
-            // TODO(serramatutu): Spark connection keys
-            AdapterType::Spark => &[],
+            AdapterType::Spark => &[
+                "method",
+                "host",
+                "port",
+                "schema",
+                "endpoint",
+                "workspaceid",
+                "lakehouse",
+                "lakehouseid",
+                "lakehouse_schemas",
+                "authentication",
+                "tenant_id",
+                "client_id",
+            ],
             // TODO: Trino and Datafusion connection keys
             AdapterType::Trino => &[],
             AdapterType::Datafusion => &[],
@@ -442,7 +457,7 @@ impl DbConfig {
             DbConfig::Databricks(config) => config.database.as_ref(),
             DbConfig::Salesforce(config) => config.database.as_ref(),
             DbConfig::DuckDB(config) => config.database.as_ref(),
-            DbConfig::Spark(_) => None,
+            DbConfig::Spark(config) => config.database(),
             DbConfig::Fabric(config) => config.database.as_ref(),
             DbConfig::Exasol(config) => config.database.as_ref(),
             DbConfig::ClickHouse(config) => config.database.as_ref(),
@@ -490,6 +505,18 @@ impl DbConfig {
         }
     }
 
+    /// The database and schema a profile reports for this connection
+    /// (`DbtProfile.database` / `DbtProfile.schema`).
+    pub fn profile_database_and_schema(&self) -> (String, String) {
+        let database = self.get_database_or_default();
+        let schema = self
+            .get_schema()
+            .map(String::as_str)
+            .unwrap_or("public")
+            .to_string();
+        (database, schema)
+    }
+
     pub fn get_threads(&self) -> Option<&StringOrInteger> {
         match self {
             DbConfig::Snowflake(config) => config.threads.as_ref(),
@@ -501,7 +528,7 @@ impl DbConfig {
             DbConfig::DuckDB(config) => config.threads.as_ref(),
             DbConfig::Datafusion(_) => None,
             DbConfig::Salesforce(_) => None,
-            DbConfig::Spark(_) => None,
+            DbConfig::Spark(config) => config.threads.as_ref(),
             DbConfig::Fabric(_) => None,
             DbConfig::Exasol(config) => config.threads.as_ref(),
             DbConfig::ClickHouse(config) => config.threads.as_ref(),
@@ -520,7 +547,7 @@ impl DbConfig {
             DbConfig::DuckDB(config) => config.threads = threads,
             DbConfig::Datafusion(_) => (),
             DbConfig::Salesforce(_) => (),
-            DbConfig::Spark(_) => (),
+            DbConfig::Spark(config) => config.threads = threads,
             DbConfig::Fabric(_) => (),
             DbConfig::Exasol(config) => config.threads = threads,
             DbConfig::ClickHouse(config) => config.threads = threads,
@@ -1068,6 +1095,8 @@ pub struct DatabricksDbConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auth_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub oidc_token_filepath: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[merge(strategy = merge_strategies_extend::overwrite_always)]
     pub compute: Option<HashMap<String, YmlValue>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1273,6 +1302,16 @@ pub enum SparkMethod {
     // TODO: EMR StartJob (?)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, DbtSchema)]
+pub enum SparkPlatformHint {
+    #[serde(rename = "aws_emr_serverless")]
+    AwsEmrServerless,
+    #[serde(rename = "aws_emr_eks")]
+    AwsEmrEks,
+    #[serde(rename = "fabric_lakehouse")]
+    FabricLakehouse,
+}
+
 #[derive(Default, Debug, Clone, Copy, PartialEq, Serialize, Deserialize, DbtSchema)]
 pub enum SparkAuth {
     #[serde(rename = "NOSASL")]
@@ -1354,10 +1393,41 @@ pub struct SparkDbConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kerberos_service_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub platform_hint: Option<String>,
+    pub platform_hint: Option<SparkPlatformHint>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[merge(strategy = merge_strategies_extend::overwrite_always)]
     pub server_side_parameters: Option<HashMap<String, YmlValue>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub threads: Option<StringOrInteger>,
+
+    /// Fabric API base endpoint. Defaults to `https://api.fabric.microsoft.com/v1`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    /// GUID of the Fabric workspace.
+    #[serde(skip_serializing_if = "Option::is_none", alias = "workspace_id")]
+    pub workspaceid: Option<String>,
+    /// Display name of the lakehouse.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lakehouse: Option<String>,
+    /// GUID of the lakehouse.
+    #[serde(skip_serializing_if = "Option::is_none", alias = "lakehouse_id")]
+    pub lakehouseid: Option<String>,
+    /// Schema-enabled lakehouse: the lakehouse becomes the database and
+    /// relations are 3-part `lakehouse.schema.table`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lakehouse_schemas: Option<bool>,
+    /// Entra ID credential selection: `CLI` (default) | `SPN` | `default` |
+    /// `environment` | `managed_identity`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub authentication: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tenant_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_secret: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token_scope: Option<String>,
     // TODO: python supports some extra properties:
     // - cluster
     // - connect_retries
@@ -1365,13 +1435,29 @@ pub struct SparkDbConfig {
     // - connection_string_suffix
     // - database (same as schema)
     // - driver
-    // - endpoint
     // - organization
     // - poll_interval
     // - query_retries
     // - query_timeout
     // - retry_all
     // - token
+}
+
+impl SparkDbConfig {
+    pub fn is_fabric_lakehouse(&self) -> bool {
+        self.method == Some(SparkMethod::Livy)
+            && self.platform_hint == Some(SparkPlatformHint::FabricLakehouse)
+    }
+
+    /// Schema-enabled lakehouses put the lakehouse in the database slot
+    /// (3-part naming); classic lakehouses and plain Spark have no database.
+    pub fn database(&self) -> Option<&String> {
+        if self.lakehouse_schemas == Some(true) {
+            self.lakehouse.as_ref()
+        } else {
+            None
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, DbtSchema, Merge)]
@@ -1869,6 +1955,21 @@ pub struct SparkTargetEnv {
     pub auth: SparkAuth,
     pub use_ssl: bool,
     pub kerberos_service_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub platform_hint: Option<SparkPlatformHint>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspaceid: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lakehouse: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lakehouseid: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lakehouse_schemas: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub authentication: Option<String>,
 }
 
 #[derive(Serialize, DbtSchema)]
@@ -1994,6 +2095,49 @@ impl<'a> DuckDBPathInfo<'a> {
             is_ducklake,
         }
     }
+}
+
+/// Builds the target context for a `spark` profile. Microsoft Fabric Lakehouse
+/// targets default the host to the Fabric API endpoint, and a
+/// schema-enabled lakehouse occupies the database slot.
+fn spark_target_context(
+    config: SparkDbConfig,
+    adapter_type: String,
+) -> Result<TargetContext, String> {
+    let is_fabric_lakehouse = config.is_fabric_lakehouse();
+    let database = config.database().cloned().unwrap_or_default();
+    let method = config.method.ok_or_else(|| missing("method"))?;
+    let host = match config.host {
+        Some(host) => host,
+        None if is_fabric_lakehouse => "api.fabric.microsoft.com".to_string(),
+        None => return Err(missing("host")),
+    };
+    Ok(TargetContext::Spark(SparkTargetEnv {
+        method,
+        host,
+        port: config.port.unwrap_or(10000),
+        user: config.user.unwrap_or_default(),
+        password: config.password.unwrap_or_default(),
+
+        kerberos_service_name: config.kerberos_service_name.unwrap_or_default(),
+        use_ssl: config.use_ssl.unwrap_or(false),
+        auth: config.auth.unwrap_or_default(),
+        platform_hint: config.platform_hint,
+
+        endpoint: config.endpoint,
+        workspaceid: config.workspaceid,
+        lakehouse: config.lakehouse,
+        lakehouseid: config.lakehouseid,
+        lakehouse_schemas: config.lakehouse_schemas,
+        authentication: config.authentication,
+
+        __common__: CommonTargetContext {
+            database,
+            schema: config.schema.ok_or_else(|| missing("schema"))?,
+            type_: adapter_type,
+            threads: None,
+        },
+    }))
 }
 
 fn missing(field: &str) -> String {
@@ -2265,24 +2409,7 @@ impl TryFrom<DbConfig> for TargetContext {
                 }))
             }
 
-            DbConfig::Spark(config) => Ok(TargetContext::Spark(SparkTargetEnv {
-                method: config.method.ok_or_else(|| missing("method"))?,
-                host: config.host.ok_or_else(|| missing("host"))?,
-                port: config.port.unwrap_or(10000),
-                user: config.user.unwrap_or_default(),
-                password: config.password.unwrap_or_default(),
-
-                kerberos_service_name: config.kerberos_service_name.unwrap_or_default(),
-                use_ssl: config.use_ssl.unwrap_or(false),
-                auth: config.auth.unwrap_or_default(),
-
-                __common__: CommonTargetContext {
-                    database: "".to_string(),
-                    schema: config.schema.ok_or_else(|| missing("schema"))?,
-                    type_: adapter_type,
-                    threads: None,
-                },
-            })),
+            DbConfig::Spark(config) => spark_target_context(*config, adapter_type),
             DbConfig::Fabric(config) => {
                 let common = CommonTargetContext {
                     database: config.database.ok_or_else(|| missing("database"))?,
@@ -3218,5 +3345,40 @@ threads: 8
 
         assert_eq!(config.get_database(), None);
         assert_eq!(config.get_database_or_default(), "");
+    }
+
+    #[test]
+    fn test_profile_database_and_schema() {
+        let pair = |database: &str, schema: &str| (database.to_string(), schema.to_string());
+        let snowflake: DbConfig = SnowflakeDbConfig {
+            database: Some("ANALYTICS".to_string()),
+            schema: Some("DBT_X".to_string()),
+            ..Default::default()
+        }
+        .into();
+        assert_eq!(
+            snowflake.profile_database_and_schema(),
+            pair("ANALYTICS", "DBT_X")
+        );
+
+        let no_schema: DbConfig = PostgresDbConfig {
+            database: Some("pg".to_string()),
+            ..Default::default()
+        }
+        .into();
+        assert_eq!(
+            no_schema.profile_database_and_schema(),
+            pair("pg", "public")
+        );
+
+        let duckdb_path_only: DbConfig = DuckDbConfig {
+            path: Some("/data/jaffle_shop.duckdb".to_string()),
+            ..Default::default()
+        }
+        .into();
+        assert_eq!(
+            duckdb_path_only.profile_database_and_schema(),
+            pair("jaffle_shop", "public")
+        );
     }
 }

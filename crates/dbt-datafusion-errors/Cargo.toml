@@ -11,7 +11,6 @@ version.workspace = true
 
 [dependencies]
 dbt-error = { workspace = true }
-dbt-frontend-common = { workspace = true }
 
 datafusion-common = { workspace = true }
 dbt-fusion-workspace-hack = { version = "0.1" }

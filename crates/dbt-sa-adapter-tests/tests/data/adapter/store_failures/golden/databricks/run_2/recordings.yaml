@@ -1,0 +1,119 @@
+85f3743c:
+- sequence: 0
+  type: execute
+  sql: SHOW SCHEMAS IN `e2e`
+9508c4ca:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists `e2e`.`adapters_databricks_store_failures_dbt_test__audit`
+test.store_failures.not_null_one_id.fe01050880:
+- sequence: 0
+  type: execute
+  sql: |-
+    select
+    count(*) as failures,
+    count(*) != 0 as should_warn,
+    count(*) != 0 as should_error
+    from (
+    
+    
+    
+    
+    
+    
+    
+    
+    select id
+    from `e2e`.`adapters_databricks_store_failures`.`one`
+    where id is null
+    
+    
+    
+    
+    
+    
+    ) dbt_internal_test
+test.store_failures.unique_one_id.7d693d05ef:
+- sequence: 0
+  type: execute
+  sql: |-
+    SELECT
+    table_name,
+    if(table_type IN ('EXTERNAL', 'MANAGED', 'MANAGED_SHALLOW_CLONE', 'EXTERNAL_SHALLOW_CLONE'), 'table', lower(table_type)) AS table_type,
+    lower(data_source_format) AS file_format,
+    table_schema,
+    table_owner,
+    table_catalog,
+    if(
+    table_type IN (
+    'EXTERNAL',
+    'MANAGED',
+    'MANAGED_SHALLOW_CLONE',
+    'EXTERNAL_SHALLOW_CLONE'
+    ),
+    lower(table_type),
+    NULL
+    ) AS databricks_table_type
+    FROM `system`.`information_schema`.`tables`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'adapters_databricks_store_failures_dbt_test__audit'
+- sequence: 1
+  type: execute
+  sql: |-
+    SELECT
+    table_catalog,
+    table_schema,
+    table_name,
+    filter_name,
+    target_columns
+    FROM `e2e`.`information_schema`.`row_filters`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'adapters_databricks_store_failures_dbt_test__audit'
+    AND table_name = 'unique_one_id'
+- sequence: 2
+  type: execute
+  sql: |-
+    create or replace table `e2e`.`adapters_databricks_store_failures_dbt_test__audit`.`unique_one_id`
+    
+    
+    
+    using delta
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    as
+    
+    
+    
+    
+    
+    
+    select
+    id as unique_field,
+    count(*) as n_records
+    
+    from `e2e`.`adapters_databricks_store_failures`.`one`
+    where id is not null
+    group by id
+    having count(*) > 1
+- sequence: 3
+  type: execute
+  sql: |-
+    select
+    count(*) as failures,
+    count(*) != 0 as should_warn,
+    count(*) != 0 as should_error
+    from (
+    
+    select *
+    from `e2e`.`adapters_databricks_store_failures_dbt_test__audit`.`unique_one_id`
+    
+    
+    ) dbt_internal_test

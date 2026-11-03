@@ -1,0 +1,20 @@
+version: 2
+models:
+  - name: lc_table
+    config: &region_cluster
+      liquid_clustered_by: [region]
+    columns: &columns
+      - name: user_id
+        data_type: string
+      - name: region
+        data_type: string
+      - name: amount
+        data_type: bigint
+
+  - name: lc_incremental
+    config: *region_cluster
+    columns: *columns
+
+  - name: lc_materialized_view
+    config: *region_cluster
+    columns: *columns

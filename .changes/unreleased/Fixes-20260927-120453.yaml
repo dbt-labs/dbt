@@ -1,0 +1,7 @@
+kind: Fixes
+body: Indexing a modules.re match object (m[1], m['name']) returns the group instead of an empty string, matching dbt-core
+time: 2026-09-27T12:04:53.800895-03:00
+custom:
+    author: luc-pimentel
+    issue: "16451"
+    project: dbt-core

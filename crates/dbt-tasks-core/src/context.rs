@@ -9,23 +9,22 @@ use std::time::Instant;
 use crate::run_cache::run_cache_service::{
     CachedTestExecutionResult, HeuristicClock, TelemetryDispatcher,
 };
-use arrow::array::RecordBatch;
-use arrow_schema::SchemaRef;
-use dbt_adapter::AdapterStore;
 use dbt_adapter::relation::create_relation_from_node;
 use dbt_adapter::response::AdapterResponse;
+use dbt_adapter::{Adapter, AdapterStore};
 use dbt_adapter_core::AdapterType;
 use dbt_common::FsResult;
-use dbt_common::collections::{DashMap, SccHashMap};
+use dbt_common::collections::SccHashMap;
 use dbt_common::io_args::OptimizeTestsOptions;
 use dbt_common::path::DbtPath;
 use dbt_common::sources_extractor::SourcesExtractor;
 use dbt_common::stats::{ExecutionMetrics, NodeStatus, Stat};
 use dbt_dag::schedule::Schedule;
-use dbt_jinja_utils::jinja_environment::{JinjaEnv, adapter_api_value};
+use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::phases::compile::{
     DependencyValidationConfig, build_compile_node_context_inner,
 };
+use dbt_jinja_utils::utils::add_task_context;
 use dbt_schema_store::{DataStoreTrait, SchemaStoreTrait};
 use dbt_schemas::materialization_resolver::MaterializationResolver;
 use dbt_schemas::schemas::common::UpdatesOn;
@@ -47,6 +46,7 @@ use crate::task::Task;
 use crate::test_aggregation::{GenericTestRelationships, is_data_test_static_analysis_eligible};
 use crate::unit_test_schema::UnitTestSchemaState;
 use crate::visitor::SkipReason;
+use dbt_schemas::schemas::Preview;
 
 use dbt_schemas::schemas::common::DbtMaterialization;
 
@@ -54,7 +54,7 @@ use dbt_schemas::schemas::common::DbtMaterialization;
 /// construction time from the extended-context factory.
 pub struct RunCacheCtx {
     pub run_cache_metadata: Arc<RunCacheMetadataCache>,
-    pub run_cache_dev_cloned_nodes: DashMap<String, StateExplainDevClone>,
+    pub run_cache_dev_cloned_nodes: SccHashMap<String, StateExplainDevClone>,
     pub run_cache_deferred_fqns: BTreeSet<String>,
     pub run_cache_service_requested: bool,
     pub run_cache_service_config: Option<RunCacheServiceConfig>,
@@ -159,7 +159,7 @@ impl RunCachePrefetchState {
 /// Information about a rendered node, used for unit test hash computation.
 #[derive(Debug, Clone)]
 pub struct RenderedNodeInfo {
-    pub sql: String,
+    pub sql: Arc<str>,
     pub materialization: DbtMaterialization,
 }
 
@@ -169,14 +169,14 @@ pub struct TaskRunnerCtxInner {
     pub schedule: Schedule<String>,
     pub runtime_deps: BTreeMap<String, BTreeSet<String>>,
     pub base_context: BTreeMap<String, Value>,
-    pub analyze_stats: DashMap<String, Stat>,
-    pub run_stats: DashMap<String, Stat>,
-    pub data_test_execution_results: DashMap<String, CachedTestExecutionResult>,
-    pub batch_results_map: DashMap<String, BatchResults>,
-    pub main_adapter_responses: DashMap<String, AdapterResponse>,
+    pub analyze_stats: SccHashMap<String, Stat>,
+    pub run_stats: SccHashMap<String, Stat>,
+    pub data_test_execution_results: SccHashMap<String, CachedTestExecutionResult>,
+    pub batch_results_map: SccHashMap<String, BatchResults>,
+    pub main_adapter_responses: SccHashMap<String, AdapterResponse>,
     pub microbatch_execution_metrics: SccHashMap<String, ExecutionMetrics>,
-    pub node_hashes: DashMap<String, String>,
-    pub rendered_sql: DashMap<String, RenderedNodeInfo>,
+    pub node_hashes: SccHashMap<String, String>,
+    pub rendered_sql: SccHashMap<String, RenderedNodeInfo>,
     pub freshness_seconds: SccHashMap<String, i64>,
     pub updates_on: SccHashMap<String, UpdatesOn>,
     pub execute: dbt_schemas::schemas::profiles::Execute,
@@ -201,8 +201,8 @@ pub struct TaskRunnerCtxInner {
     /// every task in this run.
     pub infer_schema_registry: Arc<dbt_common::infer_schema_registry::InferSchemaRegistry>,
     span_manager: Arc<SpanManager<FsResult<NodeStatus>, SkipReason>>,
-    /// Captured show batches for the LSP preview path; set by run_show, collected after the task loop.
-    pub preview_results: parking_lot::Mutex<Option<(Vec<RecordBatch>, SchemaRef)>>,
+    /// Captured show results; set by run_show, collected after the task loop.
+    pub preview_results: parking_lot::Mutex<Option<Preview>>,
     /// Error from a failed show query; set by run_show when execution fails, collected after the task loop.
     pub preview_error: parking_lot::Mutex<Option<String>>,
     /// Coordinates unit-test schema hydration and memoization for this invocation.
@@ -219,7 +219,7 @@ impl TaskRunnerCtxInner {
         worker_id: String,
         schedule: Schedule<String>,
         base_context: BTreeMap<String, Value>,
-        node_hashes: DashMap<String, String>,
+        node_hashes: SccHashMap<String, String>,
         extended_ctx: Box<dyn ExtendedCtx>,
         compiled_sql_cache: Arc<dyn crate::CompiledSqlCache>,
         adhoc_runner: Arc<dyn crate::AdhocRunner>,
@@ -248,10 +248,10 @@ impl TaskRunnerCtxInner {
             &resolver_state.root_project_name,
         );
 
-        let batch_results_map: DashMap<String, BatchResults> = {
-            let map = DashMap::default();
+        let batch_results_map: SccHashMap<String, BatchResults> = {
+            let map = SccHashMap::default();
             for (uid, br) in &arg.previous_batch_results {
-                map.insert(uid.clone(), br.clone());
+                map.upsert_sync(uid.clone(), br.clone());
             }
             map
         };
@@ -265,14 +265,14 @@ impl TaskRunnerCtxInner {
             schedule,
             runtime_deps,
             base_context,
-            analyze_stats: DashMap::default(),
-            run_stats: DashMap::default(),
-            data_test_execution_results: DashMap::default(),
+            analyze_stats: SccHashMap::default(),
+            run_stats: SccHashMap::default(),
+            data_test_execution_results: SccHashMap::default(),
             batch_results_map,
-            main_adapter_responses: DashMap::default(),
+            main_adapter_responses: SccHashMap::default(),
             microbatch_execution_metrics: SccHashMap::default(),
             node_hashes,
-            rendered_sql: DashMap::default(),
+            rendered_sql: SccHashMap::default(),
             freshness_seconds: SccHashMap::default(),
             updates_on: SccHashMap::default(),
             execute,
@@ -479,6 +479,41 @@ impl TaskRunnerCtx {
         &self.inner.adapter_store
     }
 
+    /// The adapter that executes `node` outside compute_platform (a lakecompute node gets the run
+    /// adapter).
+    pub fn adapter_for(&self, node: &dyn InternalDbtNodeAttributes) -> FsResult<Arc<Adapter>> {
+        self.adapter_store().get(self.adapter_type_for(node))
+    }
+
+    /// [`Self::adapter_for`]'s type; the run adapter is [`AdapterStore::run_adapter_type`].
+    pub fn adapter_type_for(&self, node: &dyn InternalDbtNodeAttributes) -> AdapterType {
+        adapter_type_outside_compute_platform(
+            node.node_adapter(),
+            self.adapter_store().run_adapter_type(),
+        )
+    }
+
+    /// [`dbt_jinja_utils::phases::insert_adapter_overlay`] with this run's store.
+    pub fn insert_adapter_overlay(
+        &self,
+        ctx: &mut BTreeMap<String, Value>,
+        adapter_type: AdapterType,
+    ) -> FsResult<()> {
+        dbt_jinja_utils::phases::insert_adapter_overlay(ctx, adapter_type, self.adapter_store())
+    }
+
+    /// One node's run-phase base context: the run's base context, the node's task keys and its
+    /// adapter overlay.
+    pub fn run_base_context(
+        &self,
+        node: &dyn InternalDbtNodeAttributes,
+    ) -> FsResult<BTreeMap<String, Value>> {
+        let mut ctx = self.inner.base_context.clone();
+        add_task_context(&mut ctx, node.common(), &self.thread_id);
+        self.insert_adapter_overlay(&mut ctx, self.adapter_type_for(node))?;
+        Ok(ctx)
+    }
+
     pub fn extended_ctx<T: ExtendedCtx + 'static>(&self) -> Option<&T> {
         self.inner.extended_ctx.as_any().downcast_ref::<T>()
     }
@@ -544,10 +579,10 @@ impl TaskRunnerCtx {
     #[allow(clippy::type_complexity, clippy::too_many_arguments)]
     pub fn build_compile_node_context<T>(
         &self,
-        model: &T,
+        model: Arc<T>,
         base_context: &BTreeMap<String, Value>,
         ref_validation_config: DependencyValidationConfig,
-    ) -> FsResult<(BTreeMap<String, Value>, Arc<DashMap<String, Value>>)>
+    ) -> FsResult<(BTreeMap<String, Value>, Arc<SccHashMap<String, Value>>)>
     where
         T: InternalDbtNodeAttributes + ?Sized,
     {
@@ -576,11 +611,7 @@ impl TaskRunnerCtx {
         // Only when the node differs from the default: an unannotated node then
         // resolves the identical global it always did, and a single-adapter
         // target never asks the store for a second adapter.
-        if node_adapter != self.default_adapter_type() {
-            let adapter = self.adapter_store().get(node_adapter)?;
-            ctx.insert("api".to_string(), adapter_api_value(&adapter));
-            ctx.insert("adapter".to_string(), adapter.as_value());
-        }
+        self.insert_adapter_overlay(&mut ctx, node_adapter)?;
 
         Ok((ctx, config_map))
     }
@@ -594,6 +625,18 @@ impl TaskRunnerCtx {
 
     pub fn is_sidecar(&self) -> bool {
         self.inner.extended_ctx.is_sidecar()
+    }
+}
+
+/// The adapter that prepares and reads a node's relations outside its write path:
+/// the node's own, except that a LakeCompute node uses `run_adapter`.
+pub fn adapter_type_outside_compute_platform(
+    node_adapter: AdapterType,
+    run_adapter: AdapterType,
+) -> AdapterType {
+    match node_adapter {
+        AdapterType::LakeCompute => run_adapter,
+        other => other,
     }
 }
 
@@ -617,7 +660,7 @@ pub fn node_execution_metrics(
     is_microbatch: bool,
     unique_id: &str,
     microbatch_totals: &SccHashMap<String, ExecutionMetrics>,
-    main_responses: &DashMap<String, AdapterResponse>,
+    main_responses: &SccHashMap<String, AdapterResponse>,
 ) -> Option<ExecutionMetrics> {
     if is_microbatch {
         Some(
@@ -626,9 +669,7 @@ pub fn node_execution_metrics(
                 .unwrap_or_default(),
         )
     } else {
-        main_responses
-            .get(unique_id)
-            .map(|response| response.execution_metrics())
+        main_responses.read_sync(unique_id, |_, response| response.execution_metrics())
     }
 }
 
@@ -692,11 +733,11 @@ mod execution_metrics_tests {
     #[test]
     fn node_metrics_selects_source_by_materialization() {
         let totals = SccHashMap::default();
-        let main = DashMap::default();
+        let main = SccHashMap::default();
         record_microbatch_metrics(&totals, "model.mb", Some(&response(10, 100)));
         record_microbatch_metrics(&totals, "model.mb", Some(&response(5, 300)));
-        main.insert("model.mb".to_string(), response(99, 99));
-        main.insert("model.t".to_string(), response(3, 30));
+        main.upsert_sync("model.mb".to_string(), response(99, 99));
+        main.upsert_sync("model.t".to_string(), response(3, 30));
 
         let microbatch = node_execution_metrics(true, "model.mb", &totals, &main).unwrap();
         assert_eq!(microbatch.rows_affected, Some(15));
@@ -712,5 +753,34 @@ mod execution_metrics_tests {
             node_execution_metrics(true, "model.none", &totals, &main),
             Some(ExecutionMetrics::default())
         );
+    }
+}
+
+#[cfg(test)]
+mod adapter_routing_tests {
+    use super::*;
+
+    #[test]
+    fn adapter_type_outside_compute_platform_routes_only_lakecompute_to_the_run_adapter() {
+        for node_adapter in [
+            AdapterType::Snowflake,
+            AdapterType::Bigquery,
+            AdapterType::DuckDB,
+        ] {
+            assert_eq!(
+                adapter_type_outside_compute_platform(node_adapter, AdapterType::Snowflake),
+                node_adapter
+            );
+        }
+        for run_adapter in [
+            AdapterType::Snowflake,
+            AdapterType::Bigquery,
+            AdapterType::LakeCompute,
+        ] {
+            assert_eq!(
+                adapter_type_outside_compute_platform(AdapterType::LakeCompute, run_adapter),
+                run_adapter
+            );
+        }
     }
 }

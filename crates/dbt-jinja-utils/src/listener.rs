@@ -137,7 +137,8 @@ impl DefaultRenderingEventListenerFactory {
         // current render position at the moment their hooks fire.
         let shared_tracker = Rc::new(OutputTrackerLocation::default());
         let mut listeners: Vec<Rc<dyn RenderingEventListener>> = vec![Rc::new(
-            DefaultRenderingEventListener::with_tracker(self.quiet, shared_tracker.clone()),
+            DefaultRenderingEventListener::with_tracker(self.quiet, shared_tracker.clone())
+                .without_raw_source_spans(),
         )];
 
         if self.check_mangled_refs {
@@ -166,7 +167,8 @@ impl RenderingEventListenerFactory for DefaultRenderingEventListenerFactory {
             .as_any()
             .downcast_ref::<DefaultRenderingEventListener>()
         {
-            let new_macro_spans = default_listener.macro_spans.borrow().clone();
+            // The listener is being destroyed, so move the spans out instead of cloning them.
+            let new_macro_spans = std::mem::take(&mut *default_listener.macro_spans.borrow_mut());
             if let Ok(mut macro_spans) = self.macro_spans.write() {
                 macro_spans.insert(filename.to_path_buf(), new_macro_spans);
             } else {
@@ -719,6 +721,12 @@ pub struct DefaultRenderingEventListener {
     /// came from real `ref`/`source`/`this` provenance rather than literal text
     /// or other templating -- without any text matching on the rendered output.
     pub ref_source_this_spans: RefCell<Vec<(u32, u32)>>,
+
+    /// Whether to record [`MacroSpans::raw_source_spans`] (one span pair per
+    /// line of raw template text). Only the linter's source map consumes them;
+    /// they cost ~48 bytes per template line per render, so the parser's
+    /// listeners turn this off.
+    track_raw_source_spans: bool,
 }
 
 impl Default for DefaultRenderingEventListener {
@@ -730,6 +738,7 @@ impl Default for DefaultRenderingEventListener {
             macro_start_stack: RefCell::new(vec![vec![]]),
             output_tracker_location: Rc::new(OutputTrackerLocation::default()),
             ref_source_this_spans: RefCell::new(Vec::new()),
+            track_raw_source_spans: true,
         }
     }
 }
@@ -744,7 +753,14 @@ impl DefaultRenderingEventListener {
             macro_start_stack: RefCell::new(vec![vec![]]),
             output_tracker_location: Rc::new(OutputTrackerLocation::default()),
             ref_source_this_spans: RefCell::new(Vec::new()),
+            track_raw_source_spans: true,
         }
+    }
+
+    /// Stops recording [`MacroSpans::raw_source_spans`] for this listener.
+    pub fn without_raw_source_spans(mut self) -> Self {
+        self.track_raw_source_spans = false;
+        self
     }
 
     /// Creates a new rendering event listener with a shared output tracker location.
@@ -758,6 +774,7 @@ impl DefaultRenderingEventListener {
             macro_start_stack: RefCell::new(vec![vec![]]),
             output_tracker_location,
             ref_source_this_spans: RefCell::new(Vec::new()),
+            track_raw_source_spans: true,
         }
     }
 }
@@ -908,6 +925,9 @@ impl RenderingEventListener for DefaultRenderingEventListener {
     fn on_jinja_layout_event(&self, _kind: JinjaLayoutEventKind, _source_span: &Span) {}
 
     fn on_raw_emit(&self, raw: &str, source_span: &Span) {
+        if !self.track_raw_source_spans {
+            return;
+        }
         push_raw_source_spans(
             raw,
             *source_span,
@@ -1222,6 +1242,28 @@ mod introspective_hole_tests {
             .downcast_ref::<SymbolicRenderingEventListener>()
             .unwrap();
         assert!(!symbolic_listener.macro_spans().items.is_empty());
+    }
+
+    #[test]
+    fn raw_source_spans_are_only_recorded_when_tracked() {
+        let env = Environment::new();
+        let sql = "select 1\nfrom t\n";
+        let render = |listener: Rc<DefaultRenderingEventListener>| {
+            env.render_str(
+                sql,
+                context! {},
+                &[listener.clone() as Rc<dyn RenderingEventListener>],
+            )
+            .unwrap();
+            listener.macro_spans.borrow().raw_source_spans.len()
+        };
+        assert_eq!(render(Rc::new(DefaultRenderingEventListener::new(true))), 2);
+        assert_eq!(
+            render(Rc::new(
+                DefaultRenderingEventListener::new(true).without_raw_source_spans()
+            )),
+            0
+        );
     }
 
     #[test]

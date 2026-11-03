@@ -1,0 +1,4 @@
+model.test.b:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists `e2e`.`adapters_databricks_create_schema`

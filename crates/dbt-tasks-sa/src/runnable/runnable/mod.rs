@@ -12,6 +12,7 @@ use crate::runnable::test::{
     process_statically_checked_test_result, record_test_metric, record_test_span_with_detail,
     reported_test_verdict_from_components, status_with_warn_error_overrides,
 };
+use dbt_adapter::response::AdapterResponse;
 use dbt_adapter::time_machine::{
     RecordedCachedTestResult, SaoStatus, global_recorder, global_replayer, is_replaying,
 };
@@ -20,14 +21,13 @@ use dbt_common::constants::RUNNING;
 use dbt_common::stats::{NodeStatus, Stat};
 use dbt_common::status_reporter::report_completed;
 use dbt_common::tracing::dbt_emit::{emit_error_log_from_fs_error, emit_warn_log_message};
-use dbt_common::tracing::span_info::find_and_update_span_attrs;
+use dbt_common::tracing::span_info::{find_and_update_span_attrs, update_span_attrs};
 use dbt_common::warn_error_options::WarnErrorOptions;
 use dbt_common::{ErrorCode, FsResult, fs_err};
-use dbt_jinja_utils::utils::add_task_context;
 use dbt_schemas::schemas::common::Severity;
 use dbt_schemas::schemas::manifest::saved_query::DbtSavedQuery;
 use dbt_schemas::schemas::{
-    DbtFunction, DbtModel, DbtSeed, DbtSnapshot, DbtSource, DbtTest, DbtUnitTest, InternalDbtNode,
+    DbtFunction, DbtModel, DbtSeed, DbtSnapshot, DbtSource, DbtTest, DbtUnitTest,
     InternalDbtNodeAttributes, NodePathKind, Nodes,
 };
 use dbt_tasks_core::context::{TaskRunnerCtx, node_execution_metrics};
@@ -107,6 +107,8 @@ impl Task for RunTask {
         ctx: &'a mut TaskRunnerCtx,
     ) -> Pin<Box<dyn Future<Output = FsResult<NodeStatus>> + Send + 'a>> {
         Box::pin(async move {
+            // The visitor instruments this future with the node's `NodeEvaluated` span.
+            let task_span = tracing::Span::current();
             let unique_id = self.node.unique_id();
             let mut result_receiver = { self.result_receiver.lock().take() };
             let task_result = receive_task_result(&unique_id, &mut result_receiver)?;
@@ -214,7 +216,7 @@ impl Task for RunTask {
                             .inner
                             .run_cache_ctx
                             .run_cache_dev_cloned_nodes
-                            .contains_key(&self.node.unique_id())
+                            .contains_sync(&self.node.unique_id())
                     {
                         let status = replay_dev_clone_decision(&unique_id)
                             .map(|clone| clone.replay_status())
@@ -277,7 +279,7 @@ impl Task for RunTask {
                     if let Some(node_hash) = decision.node_hash() {
                         ctx.inner
                             .node_hashes
-                            .insert(unique_id.to_string(), node_hash);
+                            .upsert_sync(unique_id.to_string(), node_hash);
                     }
 
                     if let RunCacheServiceDecision::Skip {
@@ -312,7 +314,7 @@ impl Task for RunTask {
                                 test.deprecated_config.store_failures,
                                 None,
                             );
-                            ctx.inner.run_stats.insert(
+                            ctx.inner.run_stats.upsert_sync(
                                 unique_id.clone(),
                                 Stat::new(
                                     unique_id.clone(),
@@ -428,12 +430,8 @@ impl Task for RunTask {
                                         ctx.runtime_config(),
                                     )
                                 {
-                                    let mut base_context = ctx.inner.base_context.clone();
-                                    add_task_context(
-                                        &mut base_context,
-                                        model.common(),
-                                        &ctx.thread_id,
-                                    );
+                                    let base_context = ctx.run_base_context(model)?;
+                                    let adapter = ctx.adapter_for(model)?;
                                     let model_clone = model.clone();
                                     let ctx_clone = ctx.clone();
                                     run_blocking_task_operation(move || {
@@ -447,6 +445,7 @@ impl Task for RunTask {
                                             &ctx_clone.inner.arg.io,
                                         )?;
                                         let _ = cache_materialization_return_value(
+                                            &adapter,
                                             ctx_clone.env,
                                             &relations_map,
                                         );
@@ -542,16 +541,46 @@ impl Task for RunTask {
                 .await;
             }
 
+            // The span carries what `RunModel` sends. A materialization that fails before
+            // recording a `main` response leaves both unset. A failed microbatch batch returns
+            // above before this runs, so that model reports neither, even when an earlier
+            // batch recorded a response.
+            let is_microbatch = try_get_microbatch_model(self.node.as_ref()).is_some();
+            let metrics = node_execution_metrics(
+                is_microbatch,
+                &unique_id,
+                &ctx.inner.microbatch_execution_metrics,
+                &ctx.inner.main_adapter_responses,
+            );
+            // A negative count is an adapter's unknown sentinel.
+            let rows_affected = metrics
+                .and_then(|metrics| metrics.rows_affected)
+                .and_then(|rows| u64::try_from(rows).ok());
+            let mut response = ctx
+                .inner
+                .main_adapter_responses
+                .read_sync(&unique_id, |_, response| response.clone());
+            // A microbatch model reports the metric totals over its batches.
+            if let (true, Some(metrics)) = (is_microbatch, metrics) {
+                response = response.map(|response| response.with_execution_metrics(&metrics));
+            }
+            update_span_attrs(&task_span, |attrs: &mut NodeEvaluated| {
+                attrs.rows_affected = rows_affected;
+                attrs.adapter_response = response.as_ref().map(AdapterResponse::to_telemetry);
+            });
+
             let mut span_rows_affected: Option<i64> = None;
+            let mut span_idle_time_ms: Option<u64> = None;
             find_and_update_span_attrs(|attrs: &mut NodeEvaluated| {
                 attrs.sao_enabled = Some(cache_enabled);
                 span_rows_affected = attrs.rows_affected.map(|n| n as i64);
+                span_idle_time_ms = attrs.idle_time_ms;
             });
 
             // Get status and insert stats
             // Note: Inner visit_run implementations may insert their own stats on success,
             // but we need to ensure stats are inserted even when errors occur early.
-            // The DashMap will just overwrite if there's a duplicate.
+            // The SccHashMap will just overwrite if there's a duplicate.
             // Ensure stats are always inserted, even if inner visit_run had early returns
             let node_status = match result {
                 Ok(node_status) => {
@@ -566,7 +595,7 @@ impl Task for RunTask {
 
                     // Insert stats for success case if not already inserted by inner implementation
                     // This ensures stats are present even if inner code didn't insert them
-                    if !ctx.inner.run_stats.contains_key(&unique_id) {
+                    if !ctx.inner.run_stats.contains_sync(&unique_id) {
                         let mut stat = Stat::new(
                             unique_id.clone(),
                             start_time.into(),
@@ -576,7 +605,8 @@ impl Task for RunTask {
                             ctx.thread_id,
                         );
                         stat.rows_affected = span_rows_affected;
-                        ctx.inner.run_stats.insert(unique_id.clone(), stat);
+                        stat.idle_time_ms = span_idle_time_ms;
+                        ctx.inner.run_stats.upsert_sync(unique_id.clone(), stat);
                     }
 
                     node_status
@@ -603,17 +633,16 @@ impl Task for RunTask {
                     }
 
                     // Insert stats for the error case so it appears in run_results.json
-                    ctx.inner.run_stats.insert(
+                    let mut stat = Stat::new(
                         unique_id.clone(),
-                        Stat::new(
-                            unique_id.clone(),
-                            start_time.into(),
-                            None,
-                            node_status.clone(),
-                            Some(error_message),
-                            ctx.thread_id,
-                        ),
+                        start_time.into(),
+                        None,
+                        node_status.clone(),
+                        Some(error_message),
+                        ctx.thread_id,
                     );
+                    stat.idle_time_ms = span_idle_time_ms;
+                    ctx.inner.run_stats.upsert_sync(unique_id.clone(), stat);
 
                     node_status
                 }
@@ -623,7 +652,7 @@ impl Task for RunTask {
             // emission. PR #9146 broke this by emitting before stats were
             // inserted for dbt State-reused models.
             debug_assert!(
-                ctx.inner.run_stats.contains_key(&unique_id),
+                ctx.inner.run_stats.contains_sync(&unique_id),
                 "run_stats missing for {unique_id} before telemetry emission"
             );
 
@@ -687,8 +716,10 @@ async fn execute_run_cache_service_clone_with_hooks(
     let pre_hooks_configured = hook_node
         .as_ref()
         .is_some_and(RunCacheReuseHookNode::has_pre_hooks);
-    let hook_executor =
-        hook_node.map(|hook_node| build_reuse_hook_executor(ctx, node, task_result, hook_node));
+    let hook_executor = hook_node
+        .map(|hook_node| build_reuse_hook_executor(ctx, node, task_result, hook_node))
+        .transpose()
+        .map_err(RunCacheCloneError::Fatal)?;
     execute_run_cache_service_clone(ctx, node, clone, hook_executor, pre_hooks_configured).await
 }
 
@@ -707,7 +738,7 @@ async fn execute_hooks_for_run_cache_skip_reuse(
     let Some(hook_node) = run_cache_reuse_hook_node(node, service_default) else {
         return Ok(());
     };
-    let hook_executor = build_reuse_hook_executor(ctx, node, task_result, hook_node);
+    let hook_executor = build_reuse_hook_executor(ctx, node, task_result, hook_node)?;
     let ctx_inner = ctx.clone();
     run_blocking_task_operation(move || {
         hook_executor(&ctx_inner, RunCacheReuseHookPhase::Pre)?;
@@ -767,14 +798,13 @@ fn build_reuse_hook_executor(
     node: &dyn InternalDbtNodeAttributes,
     task_result: Option<&TaskResult>,
     hook_node: RunCacheReuseHookNode,
-) -> RunCacheReuseHookExecutor {
-    let mut base_context = ctx.inner.base_context.clone();
-    add_task_context(&mut base_context, node.common(), &ctx.thread_id);
+) -> FsResult<RunCacheReuseHookExecutor> {
+    let base_context = ctx.run_base_context(node)?;
     let sql = task_result.map(|task_result| task_result.sql_instruction.sql.clone());
-    Arc::new(move |ctx, phase| {
+    Ok(Arc::new(move |ctx, phase| {
         let sql = sql.as_deref();
         execute_hook_node_blocking(&hook_node, ctx, &base_context, sql, phase)
-    })
+    }))
 }
 
 fn hooks_are_configured(hooks: &Option<dbt_schemas::schemas::common::Hooks>) -> bool {
@@ -877,9 +907,9 @@ async fn run_cache_after_success_action(
                 if let Some(result) = ctx
                     .inner
                     .data_test_execution_results
-                    .get(node.unique_id().as_str())
+                    .read_sync(node.unique_id().as_str(), |_, result| *result)
                 {
-                    confirmation.set_test_execution_results(*result);
+                    confirmation.set_test_execution_results(result);
                 }
             }
             confirm_run_cache_service_execution(

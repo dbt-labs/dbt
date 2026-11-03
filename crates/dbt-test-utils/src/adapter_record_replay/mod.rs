@@ -4,8 +4,9 @@ use self::fs_runner::FsRunner;
 
 use crate::{
     is_update_mode_with_warehouse, random_schema, should_strip_query_comments,
-    task::{HydrateProfilesTask, OverrideFileTask, ProjectEnv, SedTask, TaskSeq},
+    task::{HydrateProfilesTask, OverrideFileTask, ProjectEnv, SedTask, TaskSeq, TestEnv},
 };
+use dbt_common::constants::{DBT_CATALOG_JSON, DBT_TARGET_DIR_NAME};
 use dbt_common::{FsResult, stdfs};
 use dbt_test_primitives::cleanup_schema_name;
 use std::path::PathBuf;
@@ -164,17 +165,15 @@ where
 
     // Drop ephemeral schemas from the remote warehouse after recording.
     if is_full_update {
-        let macro_abs_path = PathBuf::from(root)
-            .join(project_path)
-            .join("macros")
-            .join(DROP_DEV_SCHEMA_FILENAME);
-
-        let write_path = macro_abs_path.clone();
-        task_seq.task_fn(move |_project_env, _test_env, _idx| {
-            if let Some(parent) = write_path.parent() {
-                stdfs::create_dir_all(parent)?;
-            }
-            stdfs::write(&write_path, DROP_DEV_SCHEMA_MACRO)?;
+        // Written into the copy of the project the commands run in, which was
+        // taken before this task runs.
+        task_seq.task_fn(|project_env, _test_env, _idx| {
+            let macros_dir = project_env.absolute_project_dir.join("macros");
+            stdfs::create_dir_all(&macros_dir)?;
+            stdfs::write(
+                macros_dir.join(DROP_DEV_SCHEMA_FILENAME),
+                DROP_DEV_SCHEMA_MACRO,
+            )?;
             Ok(())
         });
 
@@ -183,14 +182,6 @@ where
             runner,
             &format!("run-operation drop_dev_schema --target {}", dialect),
         );
-
-        let rm_path = macro_abs_path;
-        task_seq.task_fn(move |_project_env, _test_env, _idx| {
-            if rm_path.exists() {
-                stdfs::remove_file(&rm_path)?;
-            }
-            Ok(())
-        });
     }
 
     // Schema Pt 2 — SedTask for each recording directory
@@ -270,4 +261,22 @@ pub async fn run_dbt_replay_task_seq(
     );
     task_seq.execute_in(&env).await?;
     Ok(())
+}
+
+/// Reads and parses `target/catalog.json` from a completed test run
+pub fn read_catalog_nodes(
+    test_env: &TestEnv,
+) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+    let catalog_path = test_env
+        .temp_dir
+        .join(DBT_TARGET_DIR_NAME)
+        .join(DBT_CATALOG_JSON);
+    let contents = std::fs::read_to_string(&catalog_path)
+        .map_err(|e| format!("failed to read {}: {e}", catalog_path.display()))?;
+    let catalog: serde_json::Value = serde_json::from_str(&contents)
+        .map_err(|e| format!("failed to parse {}: {e}", catalog_path.display()))?;
+    catalog["nodes"]
+        .as_object()
+        .cloned()
+        .ok_or_else(|| "catalog.json missing \"nodes\" object".to_string())
 }

@@ -13,9 +13,42 @@ use std::sync::atomic::AtomicBool;
 
 use chrono::{DateTime, Duration, Utc};
 
+use crate::service_client::get_cloud_run_id;
 use crate::task_cache::{
     BACKOFF_FACTOR, INITIAL_DELAY, MAX_DELAY, TaskCache, TaskInfo, TaskState, TaskValue,
 };
+
+/// Separates the run ID from the invocation ID in a lock owner ID.
+const OWNER_ID_SEPARATOR: char = '/';
+
+/// Owner ID to record in the distributed lock for a node session:
+/// `<DBT_CLOUD_RUN_ID>/<invocation_id>` on the dbt platform (see
+/// [`run_id_from_owner_id`]), the invocation ID alone elsewhere.
+///
+/// The invocation ID keeps owners unique per Fusion process: release and
+/// eviction leave the old `heartbeat` key behind, so under a shared owner a
+/// later step of the same run would inherit it and be judged `Stale`
+/// (`TaskValue::validate_owner`) before its first heartbeat is written.
+pub fn resolve_lock_owner_id(invocation_id: &str) -> String {
+    lock_owner_id_from(&get_cloud_run_id(), invocation_id)
+}
+
+fn lock_owner_id_from(cloud_run_id: &str, invocation_id: &str) -> String {
+    let cloud_run_id = cloud_run_id.trim();
+    if cloud_run_id.is_empty() {
+        invocation_id.to_string()
+    } else {
+        format!("{cloud_run_id}{OWNER_ID_SEPARATOR}{invocation_id}")
+    }
+}
+
+/// Run ID recorded in an owner ID by [`resolve_lock_owner_id`], or `None` when
+/// the owner has no run ID (local runs, or entries written by older versions).
+pub fn run_id_from_owner_id(owner_id: &str) -> Option<&str> {
+    owner_id
+        .split_once(OWNER_ID_SEPARATOR)
+        .map(|(run_id, _)| run_id)
+}
 
 /// Signalled when `acquire` has to wait for, or recover from, another worker.
 ///
@@ -278,5 +311,49 @@ pub trait TaskCacheExt {
 impl TaskCacheExt for Arc<dyn TaskCache> {
     fn session(self, unique_id: String, owner_id: String) -> NodeCacheSession {
         NodeCacheSession::new(self, unique_id, owner_id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{lock_owner_id_from, run_id_from_owner_id};
+
+    #[test]
+    fn prefixes_invocation_id_with_cloud_run_id() {
+        assert_eq!(
+            lock_owner_id_from("12345", "invocation-abc"),
+            "12345/invocation-abc"
+        );
+    }
+
+    #[test]
+    fn trims_cloud_run_id() {
+        assert_eq!(
+            lock_owner_id_from(" 12345\n", "invocation-abc"),
+            "12345/invocation-abc"
+        );
+    }
+
+    #[test]
+    fn falls_back_when_unset_or_blank() {
+        assert_eq!(lock_owner_id_from("", "invocation-abc"), "invocation-abc");
+        assert_eq!(lock_owner_id_from("  ", "invocation-abc"), "invocation-abc");
+    }
+
+    #[test]
+    fn steps_of_one_run_get_distinct_owners() {
+        assert_ne!(
+            lock_owner_id_from("12345", "invocation-step-1"),
+            lock_owner_id_from("12345", "invocation-step-2")
+        );
+    }
+
+    #[test]
+    fn extracts_run_id_from_owner_id() {
+        assert_eq!(
+            run_id_from_owner_id(&lock_owner_id_from("12345", "invocation-abc")),
+            Some("12345")
+        );
+        assert_eq!(run_id_from_owner_id("invocation-abc"), None);
     }
 }
