@@ -1,7 +1,0 @@
-kind: Fixes
-body: Match BigQuery partition fields case-insensitively when inspecting existing tables
-time: 2026-11-03T11:49:02.921148+05:30
-custom:
-    author: ragesh-g
-    issue: "14646"
-    project: dbt-core

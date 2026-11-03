@@ -1,7 +1,0 @@
-kind: Fixes
-body: Refresh persisted unit-test given fixture schemas so warehouse DDL changes are reflected.
-time: 2026-11-03T11:49:03.118968+05:30
-custom:
-    author: mach-kernel
-    issue: ""
-    project: dbt-core

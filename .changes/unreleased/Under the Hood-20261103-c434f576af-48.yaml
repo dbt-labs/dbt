@@ -1,7 +1,0 @@
-kind: Under the Hood
-body: 'dbt-parser: avoid a second, redundant Jinja parse when statically recovering source() calls hidden in a conditional branch during model, function, and singular data test rendering'
-time: 2026-11-03T11:49:03.068744+05:30
-custom:
-    author: itsannbat
-    issue: ""
-    project: dbt-core

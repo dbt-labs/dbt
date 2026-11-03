@@ -1,7 +1,0 @@
-kind: Fixes
-body: 'Databricks Python models: wait for the all-purpose cluster to be running before creating the execution context, surface Command API error messages, and stop warning on an unset timeout'
-time: 2026-11-03T11:49:03.488665+05:30
-custom:
-    author: b-per
-    issue: ""
-    project: dbt-core

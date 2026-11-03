@@ -1,7 +1,0 @@
-kind: Fixes
-body: Add copy_grants support to Snowflake dynamic tables
-time: 2026-11-03T11:49:02.827729+05:30
-custom:
-    author: r-jais
-    issue: ""
-    project: dbt-core

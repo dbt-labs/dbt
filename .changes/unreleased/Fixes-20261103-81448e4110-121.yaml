@@ -1,7 +1,0 @@
-kind: Fixes
-body: Write `warn_error_options` to `run_results.json` args, matching dbt Core.
-time: 2026-11-03T11:49:03.543594+05:30
-custom:
-    author: itsannbat
-    issue: ""
-    project: dbt-core

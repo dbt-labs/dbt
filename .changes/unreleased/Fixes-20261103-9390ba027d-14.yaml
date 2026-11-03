@@ -1,7 +1,0 @@
-kind: Fixes
-body: Replace `DBT_AI_PROVIDER` with `DBT_ENGINE_AI_PROVIDER`
-time: 2026-11-03T11:49:02.857523+05:30
-custom:
-    author: dbeatty10
-    issue: "16312"
-    project: dbt-core

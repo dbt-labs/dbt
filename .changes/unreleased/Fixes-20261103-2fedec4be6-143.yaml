@@ -1,7 +1,0 @@
-kind: Fixes
-body: Always mark reused passing dbt State tests as reused in run results.
-time: 2026-11-03T11:49:03.668804+05:30
-custom:
-    author: kczimm
-    issue: ""
-    project: dbt-core

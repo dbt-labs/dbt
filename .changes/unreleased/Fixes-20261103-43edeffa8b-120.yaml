@@ -1,7 +1,0 @@
-kind: Fixes
-body: '[Redshift] Fix issues with external OAuth breaking for multi-threaded execution'
-time: 2026-11-03T11:49:03.536548+05:30
-custom:
-    author: ajhlee-dbt
-    issue: "15555"
-    project: dbt-core

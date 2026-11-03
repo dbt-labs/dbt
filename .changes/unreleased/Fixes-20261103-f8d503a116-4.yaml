@@ -1,7 +1,0 @@
-kind: Fixes
-body: docs-v2 source detail page showed the first table's description instead of the source's own
-time: 2026-11-03T11:49:02.785919+05:30
-custom:
-    author: jess-scott
-    issue: ""
-    project: dbt-core

@@ -1,7 +1,0 @@
-kind: Features
-body: Rename the --run-cache-mode CLI flag to --state-mode to match the dbt State terminology it configures. --run-cache-mode is kept as a deprecated alias and will keep working, with a warning, until it is removed in a future release.
-time: 2026-11-03T11:49:02.993981+05:30
-custom:
-    author: itsannbat
-    issue: ""
-    project: dbt-core

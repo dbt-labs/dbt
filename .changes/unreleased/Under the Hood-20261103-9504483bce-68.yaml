@@ -1,7 +1,0 @@
-kind: Under the Hood
-body: Add force closing of span subtrees to dbt-tracing, ending a span's structured telemetry even while other handles to it or its descendants are alive.
-time: 2026-11-03T11:49:03.2212+05:30
-custom:
-    author: mishamsk
-    issue: ""
-    project: dbt-core

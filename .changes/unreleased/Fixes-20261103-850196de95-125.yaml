@@ -1,7 +1,0 @@
-kind: Fixes
-body: Build source relations the same way as `source()`, so they skip the adapter's max identifier length check (matching dbt Core) and use `catalog_name` as the database
-time: 2026-11-03T11:49:03.57471+05:30
-custom:
-    author: itsannbat
-    issue: ""
-    project: dbt-core

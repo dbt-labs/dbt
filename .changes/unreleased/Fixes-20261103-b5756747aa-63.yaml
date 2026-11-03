@@ -1,7 +1,0 @@
-kind: Fixes
-body: Snowflake incremental models on catalog-linked databases (e.g. Glue) no longer fail on `DROP TABLE ... CASCADE` of the `__dbt_tmp` relation
-time: 2026-11-03T11:49:03.188721+05:30
-custom:
-    author: dataders claude
-    issue: ""
-    project: dbt-core

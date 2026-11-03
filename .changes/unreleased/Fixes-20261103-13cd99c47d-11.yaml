@@ -1,7 +1,0 @@
-kind: Fixes
-body: Find user-installed dbt executables and Windows virtual environments reliably.
-time: 2026-11-03T11:49:02.843403+05:30
-custom:
-    author: eakmanrq
-    issue: ""
-    project: dbt-core

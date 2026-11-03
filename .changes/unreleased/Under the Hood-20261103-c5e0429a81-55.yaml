@@ -1,7 +1,0 @@
-kind: Under the Hood
-body: Add a per-resource-type applicability table for adapter-specific config keys, replacing the shared WarehouseSpecificNodeConfig field list with per-(resource type, key) status. A key set on a resource type that does not support it now emits a DeprecatedConfigKey warning. On schema.yml and inline config() the key is still applied, so behavior is unchanged; in dbt_project.yml, where the key has no field to deserialize into and already warned, it is dropped.
-time: 2026-11-03T11:49:03.127466+05:30
-custom:
-    author: itsannbat
-    issue: ""
-    project: dbt-core

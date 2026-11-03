@@ -1,7 +1,0 @@
-kind: Fixes
-body: Protect Windows process environment variables from project .env overrides.
-time: 2026-11-03T11:49:02.95543+05:30
-custom:
-    author: eakmanrq
-    issue: ""
-    project: dbt-core

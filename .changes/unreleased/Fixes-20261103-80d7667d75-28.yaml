@@ -1,7 +1,0 @@
-kind: Fixes
-body: Fix broken image links in documentation
-time: 2026-11-03T11:49:02.948667+05:30
-custom:
-    author: ajhlee-dbt
-    issue: "16288"
-    project: dbt-core

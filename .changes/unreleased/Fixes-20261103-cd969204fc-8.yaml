@@ -1,7 +1,0 @@
-kind: Fixes
-body: Commit a rebuilt metadata index only once every table has been written, so a write that fails partway through leaves the previous index in place instead of a mix of new and stale files.
-time: 2026-11-03T11:49:02.818109+05:30
-custom:
-    author: VaggelisD
-    issue: ""
-    project: dbt-core

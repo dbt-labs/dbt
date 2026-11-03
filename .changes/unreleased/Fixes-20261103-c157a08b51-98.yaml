@@ -1,7 +1,0 @@
-kind: Fixes
-body: DuckDB unit test fixtures for TIMESTAMP WITH TIME ZONE columns are no longer cast to a naive timestamp, which previously dropped the offset and shifted the value by the session timezone
-time: 2026-11-03T11:49:03.388297+05:30
-custom:
-    author: lottaquestions
-    issue: "16470"
-    project: dbt-core

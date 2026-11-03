@@ -1,7 +1,0 @@
-kind: Fixes
-body: Fix BigQuery incremental models being recreated instead of merged when a concurrent table drop makes a dataset listing fail
-time: 2026-11-03T11:49:03.300217+05:30
-custom:
-    author: HannanNaeem
-    issue: ""
-    project: dbt-core

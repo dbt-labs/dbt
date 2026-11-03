@@ -1,7 +1,0 @@
-kind: Fixes
-body: Avoid unsafe CREATE OR REPLACE TABLE operations in BigQuery incremental and snapshot materializations.
-time: 2026-11-03T11:49:03.290703+05:30
-custom:
-    author: xuliangs
-    issue: "15953"
-    project: dbt-core

@@ -1,7 +1,0 @@
-kind: Fixes
-body: BigQuery unit tests no longer leak partition pseudocolumns into expected results
-time: 2026-11-03T11:49:02.942053+05:30
-custom:
-    author: serramatutu
-    issue: "15357"
-    project: dbt-core

@@ -1,7 +1,0 @@
-kind: Fixes
-body: 'Databricks: views and metric views under an iceberg catalog no longer fail with ''materialized must be incremental, table, or seed'' when catalogs.yml v2 is enabled.'
-time: 2026-11-03T11:49:03.551522+05:30
-custom:
-    author: will-sargent-dbtlabs
-    issue: "16474"
-    project: dbt-core
