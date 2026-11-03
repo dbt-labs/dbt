@@ -155,6 +155,8 @@ pub enum ErrorCode {
     ConstraintNotEnforced = 1109,
     /// A constraint type is not supported by the adapter at all and is dropped from the rendered DDL.
     ConstraintNotSupported = 1110,
+    /// The packages install dir exists but was not created by dbt (no valid `CACHEDIR.TAG`).
+    DepsUnownedInstallDir = 1111,
 
     // --------------------------------------------------------------------------------------------
     // CLI args/config [1100–1149]

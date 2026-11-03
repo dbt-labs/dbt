@@ -1,0 +1,7 @@
+kind: Fixes
+body: Avoid rmtree on non owned package path
+time: 2026-11-03T15:12:15.089627+05:30
+custom:
+    author: ash2shukla
+    issue: ""
+    project: dbt-core

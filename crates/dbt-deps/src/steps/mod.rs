@@ -1,4 +1,5 @@
 mod compute_package_lock;
+mod install_dir_guard;
 mod install_packages;
 mod install_skills;
 mod load_dbt_packages;

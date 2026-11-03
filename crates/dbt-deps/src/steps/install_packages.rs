@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use dbt_common::tracing::dbt_emit::emit_info_log_message;
+use dbt_common::tracing::dbt_emit::{emit_info_log_message, emit_warn_log_message};
 use dbt_common::tracing::span_info::find_and_update_span_attrs;
 use dbt_common::{ErrorCode, FsResult, constants::DBT_PACKAGES_LOCK_FILE, fs_err};
 use dbt_schemas::schemas::packages::{DbtPackageLock, DbtPackagesLock};
@@ -9,6 +9,7 @@ use dbt_yaml::Verbatim;
 
 use crate::context::DepsOperationContext;
 use crate::package_listing::{PackageListing, UnpinnedPackage};
+use crate::steps::install_dir_guard::{unowned_dir_reason, write_cachedir_tag};
 use crate::utils::{max_resolve_concurrency, scrub_package_name_secret_env_vars};
 
 fn package_lock_needs_scrub(package: &DbtPackageLock) -> bool {
@@ -50,6 +51,24 @@ pub async fn install_packages(
     dbt_packages_lock: &DbtPackagesLock,
     packages_install_path: &Path,
 ) -> FsResult<()> {
+    // Only empty the install dir if dbt created it. An explicit `--packages-install-path` is an
+    // error; values from the env or `dbt_project.yml` only warn so existing projects keep working.
+    if let Some(reason) = unowned_dir_reason(packages_install_path) {
+        let path = packages_install_path.display();
+        if ctx.io.packages_install_path_from_cli {
+            return Err(fs_err!(
+                ErrorCode::DepsUnownedInstallDir,
+                "Cannot remove `{}`: it was not created by dbt ({})",
+                path,
+                reason,
+            ));
+        }
+        emit_warn_log_message(
+            ErrorCode::DepsUnownedInstallDir,
+            format!("`{path}` was not created by dbt ({reason}); its contents will be removed"),
+        );
+    }
+
     let package_lock_str = if dbt_packages_lock
         .packages
         .iter()
@@ -86,6 +105,14 @@ pub async fn install_packages(
         fs_err!(
             ErrorCode::IoError,
             "Failed to create packages install dir: {}",
+            e,
+        )
+    })?;
+
+    write_cachedir_tag(packages_install_path).map_err(|e| {
+        fs_err!(
+            ErrorCode::IoError,
+            "Failed to write CACHEDIR.TAG in packages install dir: {}",
             e,
         )
     })?;

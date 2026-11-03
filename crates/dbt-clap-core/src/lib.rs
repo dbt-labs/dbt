@@ -141,8 +141,14 @@ impl CliParser {
         &self,
         arg_matches: &mut clap::ArgMatches,
     ) -> Result<Cli, clap::Error> {
+        let packages_install_path_from_cli = matches!(
+            arg_matches.value_source("packages_install_path"),
+            Some(clap::parser::ValueSource::CommandLine)
+        );
         let command = self.command_parser.from_arg_matches_mut(arg_matches)?;
-        let common_args = <CommonArgs as clap::FromArgMatches>::from_arg_matches_mut(arg_matches)?;
+        let mut common_args =
+            <CommonArgs as clap::FromArgMatches>::from_arg_matches_mut(arg_matches)?;
+        common_args.packages_install_path_from_cli = packages_install_path_from_cli;
         let cli = Cli {
             command,
             common_args,
@@ -1861,6 +1867,11 @@ pub struct CommonArgs {
     )]
     pub packages_install_path: Option<PathBuf>,
 
+    /// Whether `packages_install_path` was given on the command line (not via env var).
+    #[arg(skip)]
+    #[serde(default)]
+    pub packages_install_path_from_cli: bool,
+
     /// The output directory for all produced assets
     #[arg(
         global = true,
@@ -2852,6 +2863,7 @@ impl CommonArgs {
                 port: self.port,
                 use_v2_compatible_package_downloads: self.use_v2_compatible_package_downloads,
                 require_hub_verified_downloads: self.require_hub_verified_downloads,
+                packages_install_path_from_cli: self.packages_install_path_from_cli,
             },
             profiles_dir: self.profiles_dir.clone(),
             packages_install_path: self.packages_install_path.clone(),
@@ -3141,6 +3153,7 @@ impl InitArgs {
                     .common_args
                     .use_v2_compatible_package_downloads,
                 require_hub_verified_downloads: self.common_args.require_hub_verified_downloads,
+                packages_install_path_from_cli: self.common_args.packages_install_path_from_cli,
             },
             task_cache_url: "noop".to_string(),
             favor_state: self.common_args.favor_state,
@@ -3197,6 +3210,7 @@ pub fn from_main(cli: &Cli) -> SystemArgs {
             port: common_args.port,
             use_v2_compatible_package_downloads: common_args.use_v2_compatible_package_downloads,
             require_hub_verified_downloads: common_args.require_hub_verified_downloads,
+            packages_install_path_from_cli: common_args.packages_install_path_from_cli,
         },
         from_main: true,
         exit_process_on_panic: true,
@@ -3240,6 +3254,7 @@ pub fn from_lib(cli: &Cli) -> SystemArgs {
             port: common_args.port,
             use_v2_compatible_package_downloads: common_args.use_v2_compatible_package_downloads,
             require_hub_verified_downloads: common_args.require_hub_verified_downloads,
+            packages_install_path_from_cli: common_args.packages_install_path_from_cli,
         },
         from_main: false,
         exit_process_on_panic: true,
@@ -3820,6 +3835,37 @@ mod tests {
             Command::Core(cmd) => cmd,
             Command::Extension(_) => panic!("expected a core command"),
         }
+    }
+
+    fn parse_packages_install_path(args: &[&str]) -> (Option<PathBuf>, bool) {
+        let cli = CliParser::new("dbt", "2.0.0", Box::new(NoopParser))
+            .try_parse_from(std::iter::once("dbt").chain(args.iter().copied()))
+            .expect("args should parse");
+        (
+            cli.common_args.packages_install_path,
+            cli.common_args.packages_install_path_from_cli,
+        )
+    }
+
+    #[test]
+    #[allow(clippy::disallowed_methods)]
+    fn packages_install_path_from_cli_tracks_value_source() {
+        unsafe { env::remove_var("DBT_PACKAGES_INSTALL_PATH") };
+        assert_eq!(parse_packages_install_path(&["deps"]), (None, false));
+        for args in [
+            ["--packages-install-path", "pkgs", "deps"],
+            ["deps", "--packages-install-path", "pkgs"],
+        ] {
+            assert_eq!(
+                parse_packages_install_path(&args),
+                (Some(PathBuf::from("pkgs")), true)
+            );
+        }
+
+        unsafe { env::set_var("DBT_PACKAGES_INSTALL_PATH", "from_env") };
+        let from_env = parse_packages_install_path(&["deps"]);
+        unsafe { env::remove_var("DBT_PACKAGES_INSTALL_PATH") };
+        assert_eq!(from_env, (Some(PathBuf::from("from_env")), false));
     }
 
     #[test]

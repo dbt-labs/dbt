@@ -346,6 +346,9 @@ pub struct IoArgs {
     // Flag for deps to require a sha1-verified download from Package Hub
     pub require_hub_verified_downloads: bool,
 
+    // Whether the packages install path was given on the command line (not via env var)
+    pub packages_install_path_from_cli: bool,
+
     /// Optional status reporter for reporting status messages during execution
     pub status_reporter: Option<Arc<dyn StatusReporter>>,
     pub send_anonymous_usage_stats: bool,
