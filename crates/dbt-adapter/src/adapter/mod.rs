@@ -4361,6 +4361,16 @@ impl Adapter {
                     Parse(_) => Ok(Value::from(false)),
                 }
             }
+            "supports_atomic_exchange" => {
+                // (no args) -> bool (server passed the EXCHANGE TABLES probe)
+                ArgsIter::new("supports_atomic_exchange", &[], args).finish()?;
+                match &self.inner {
+                    Typed { adapter, .. } => Ok(Value::from(
+                        adapter.supports_atomic_exchange(state, self.cancellation_token.clone()),
+                    )),
+                    Parse(_) => Ok(Value::from(false)),
+                }
+            }
             "should_on_cluster" => {
                 // materialized: str = '', engine: str = '', relation: BaseRelation = None -> bool
                 // (materialized/engine ignored, as in impl.py; `relation` is v2's on_cluster_clause
