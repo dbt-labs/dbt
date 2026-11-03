@@ -1,7 +1,0 @@
-kind: Under the Hood
-body: Allow metadata freshness checks to use an explicit artifact directory.
-time: 2026-11-03T11:49:02.769449+05:30
-custom:
-    author: eakmanrq
-    issue: ""
-    project: dbt-core

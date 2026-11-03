@@ -1,7 +1,0 @@
-kind: Fixes
-body: 'Fix `--write-index` and `--dirty` runs missing files added since the last parse: new models, seeds, macros and other resources are now loaded, `--dirty` selects newly added SQL models and analyses, and `--no-partial-load` now turns off the cached-state shortcut.'
-time: 2026-11-03T11:49:03.414816+05:30
-custom:
-    author: HannanNaeem
-    issue: ""
-    project: dbt-core

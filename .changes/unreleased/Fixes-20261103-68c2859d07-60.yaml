@@ -1,7 +1,0 @@
-kind: Fixes
-body: Add duckdb__date dispatch macro so dbt.date() / dbt.date_spine() work on DuckDB targets
-time: 2026-11-03T11:49:03.162591+05:30
-custom:
-    author: b-per
-    issue: ""
-    project: dbt-core

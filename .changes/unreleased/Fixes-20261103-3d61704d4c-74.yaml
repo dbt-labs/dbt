@@ -1,7 +1,0 @@
-kind: Fixes
-body: Include the underlying cause in package hub and tarball request errors, and stop reporting a 500 status when no response was received
-time: 2026-11-03T11:49:03.242379+05:30
-custom:
-    author: itsannbat
-    issue: ""
-    project: dbt-core

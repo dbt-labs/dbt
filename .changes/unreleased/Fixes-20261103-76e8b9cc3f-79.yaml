@@ -1,7 +1,0 @@
-kind: Fixes
-body: Respect project-level overrides of create_schema and other adapter macros invoked from Rust.
-time: 2026-11-03T11:49:03.280945+05:30
-custom:
-    author: lottaquestions
-    issue: "16346"
-    project: dbt-core

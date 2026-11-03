@@ -1,7 +1,0 @@
-kind: Fixes
-body: Refresh an account-scoped OAuth session when a server rejects an access token before its cached expiry.
-time: 2026-11-03T11:49:02.793384+05:30
-custom:
-    author: eakmanrq
-    issue: ""
-    project: dbt-core

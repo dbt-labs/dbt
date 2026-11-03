@@ -1,7 +1,0 @@
-kind: Fixes
-body: Inline SQL and CSV unit-test fixture file contents into the parsed manifest and resolve fixtures in dependency packages.
-time: 2026-11-03T11:49:03.264277+05:30
-custom:
-    author: lottaquestions
-    issue: "16354"
-    project: dbt-core

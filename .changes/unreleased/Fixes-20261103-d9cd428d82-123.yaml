@@ -1,7 +1,0 @@
-kind: Fixes
-body: Stop panicking on Jinja AgateTable comparisons; compare tables by identity like dbt 1.x
-time: 2026-11-03T11:49:03.559017+05:30
-custom:
-    author: debrin-og
-    issue: "15920"
-    project: dbt-core

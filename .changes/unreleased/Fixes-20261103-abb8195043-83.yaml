@@ -1,7 +1,0 @@
-kind: Fixes
-body: Skip per-table metadata when hydrating the BigQuery relation cache through ADBC GetObjects.
-time: 2026-11-03T11:49:03.310901+05:30
-custom:
-    author: xuliangs
-    issue: "16425"
-    project: dbt-core

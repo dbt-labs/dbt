@@ -1,7 +1,0 @@
-kind: Features
-body: Report whether each node ran remotely, locally, or on Lake Compute in anonymous usage telemetry.
-time: 2026-11-03T11:49:02.836179+05:30
-custom:
-    author: mach-kernel
-    issue: ""
-    project: dbt-core

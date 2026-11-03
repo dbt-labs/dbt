@@ -1,7 +1,0 @@
-kind: Fixes
-body: Stop emitting the `with connection` clause for BigQuery Iceberg tables using `lakehouse_catalog` (LRC) when `use_catalogs_v2` is left at its default.
-time: 2026-11-03T11:49:03.257387+05:30
-custom:
-    author: debrin-og
-    issue: ""
-    project: dbt-core

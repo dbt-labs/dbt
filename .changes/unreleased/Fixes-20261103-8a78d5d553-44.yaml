@@ -1,7 +1,0 @@
-kind: Fixes
-body: Order a unit test's render after the seed that materializes an overlapping source, so dbt build no longer reads the relation before the seed has created it. This ordering now also holds when the tested model is not selected, for example when only the seed and the unit test are selected
-time: 2026-11-03T11:49:03.040491+05:30
-custom:
-    author: HannanNaeem
-    issue: ""
-    project: dbt-core

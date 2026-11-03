@@ -1,7 +1,0 @@
-kind: Under the Hood
-body: 'docs-v2: document the __overview__ landing-page customization block in the README'
-time: 2026-11-03T11:49:03.327591+05:30
-custom:
-    author: j19s84
-    issue: ""
-    project: dbt-core

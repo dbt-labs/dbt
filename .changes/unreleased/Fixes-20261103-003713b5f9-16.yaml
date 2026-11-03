@@ -1,7 +1,0 @@
-kind: Fixes
-body: Setting `DBT_ENGINE_AI_PROVIDER` no longer aborts the invocation. The variable was moved onto the reserved `DBT_ENGINE_` prefix without being registered as a known engine variable, so `validate_engine_env_vars` rejected it as user-authored and every command that reached setup exited 1 with dbt1005.
-time: 2026-11-03T11:49:02.871598+05:30
-custom:
-    author: aahel
-    issue: ""
-    project: dbt-core

@@ -1,7 +1,0 @@
-kind: Fixes
-body: Preserve BigQuery GEOGRAPHY, TIMESTAMP, and JSON types in dbt OSS unit test fixtures
-time: 2026-11-03T11:49:03.054257+05:30
-custom:
-    author: mach-kernel
-    issue: "16410"
-    project: dbt-core

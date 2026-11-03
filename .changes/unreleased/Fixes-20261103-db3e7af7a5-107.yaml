@@ -1,7 +1,0 @@
-kind: Fixes
-body: Removed lingering 'dbt' naming from parse-failure and warn_error_options log output, and pointed the parse-failure suggestion at the dbt v2 upgrade guide.
-time: 2026-11-03T11:49:03.450486+05:30
-custom:
-    author: eliasdefaria
-    issue: ""
-    project: dbt-core

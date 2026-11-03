@@ -1,7 +1,0 @@
-kind: Under the Hood
-body: Allow base Jinja context builders to reuse a caller-provided ResultStore.
-time: 2026-11-03T11:49:02.905423+05:30
-custom:
-    author: itsannbat
-    issue: ""
-    project: dbt-core

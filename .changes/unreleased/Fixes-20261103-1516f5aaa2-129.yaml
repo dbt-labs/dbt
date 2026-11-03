@@ -1,7 +1,0 @@
-kind: Fixes
-body: Include semantic_manifest.json in the artifact ingest upload when the run writes it
-time: 2026-11-03T11:49:03.600622+05:30
-custom:
-    author: ayshukla
-    issue: ""
-    project: dbt-core

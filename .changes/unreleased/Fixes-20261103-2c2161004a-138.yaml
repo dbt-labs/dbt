@@ -1,7 +1,0 @@
-kind: Fixes
-body: Verify TLS certificates against the operating system's certificate store instead of a bundled CA list, so HTTPS connections work behind TLS-inspecting proxies whose CA is only installed in the OS store.
-time: 2026-11-03T11:49:03.654222+05:30
-custom:
-    author: felipecrv
-    issue: ""
-    project: dbt-core

@@ -1,7 +1,0 @@
-kind: Fixes
-body: 'Correct how dbt State classifies model materializations: materialized views submit as VIEW, adapter-specific materializations such as dynamic tables and metric views submit as DBT_CUSTOM (and are therefore no longer eligible as clone candidates), semantic views are no longer submitted, and full-refreshed snapshots submit as FULL'
-time: 2026-11-03T11:49:03.003309+05:30
-custom:
-    author: ""
-    issue: ""
-    project: dbt-core

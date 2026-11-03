@@ -1,7 +1,0 @@
-kind: Fixes
-body: Honor valid dbt Core-generated package lock checksums for common package declarations with best-effort compatibility.
-time: 2026-11-03T11:49:02.984516+05:30
-custom:
-    author: mishamsk
-    issue: ""
-    project: dbt-core

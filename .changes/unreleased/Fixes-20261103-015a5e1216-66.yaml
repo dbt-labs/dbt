@@ -1,7 +1,0 @@
-kind: Fixes
-body: Time Machine replay now preserves Snowflake column precision/scale (e.g. NUMBER(38,6), TIMESTAMP_LTZ(6)) so unit-test fixture SQL matches the recording
-time: 2026-11-03T11:49:03.205916+05:30
-custom:
-    author: itsannbat
-    issue: ""
-    project: dbt-core

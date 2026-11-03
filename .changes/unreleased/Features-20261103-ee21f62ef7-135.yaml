@@ -1,7 +1,0 @@
-kind: Features
-body: Thread pool wait spans now record the unique_id and batch_id of the node or microbatch they belong to
-time: 2026-11-03T11:49:03.631906+05:30
-custom:
-    author: mishamsk
-    issue: ""
-    project: dbt-core

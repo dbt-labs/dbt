@@ -1,7 +1,0 @@
-kind: Fixes
-body: Strip CR and BOM from PEM-headered Snowflake private keys so keys saved with Windows line endings decode correctly
-time: 2026-11-03T11:49:03.334798+05:30
-custom:
-    author: r-jais
-    issue: "15107"
-    project: dbt-core

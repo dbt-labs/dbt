@@ -1,7 +1,0 @@
-kind: Fixes
-body: Accept compute_region and legacy dataproc_region together in BigQuery profiles.
-time: 2026-11-03T11:49:02.927859+05:30
-custom:
-    author: joaodaher
-    issue: ""
-    project: dbt-core

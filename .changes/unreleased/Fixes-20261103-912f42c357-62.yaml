@@ -1,7 +1,0 @@
-kind: Fixes
-body: Warn on missing persist_docs columns for Databricks table, incremental, materialized view, and streaming table; fix V2 column comments being gated on the wrong persist_docs config key
-time: 2026-11-03T11:49:03.18038+05:30
-custom:
-    author: r-jais
-    issue: ""
-    project: dbt-core

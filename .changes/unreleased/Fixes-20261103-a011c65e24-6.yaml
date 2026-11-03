@@ -1,7 +1,0 @@
-kind: Fixes
-body: Validate refreshed OAuth credentials against the cached account and host before persisting.
-time: 2026-11-03T11:49:02.801207+05:30
-custom:
-    author: ""
-    issue: ""
-    project: dbt-core

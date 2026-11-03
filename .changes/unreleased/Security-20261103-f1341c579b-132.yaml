@@ -1,7 +1,0 @@
-kind: Security
-body: Upgrade gix to 0.84.0 to address security advisories in the gix dependency family.
-time: 2026-11-03T11:49:03.609875+05:30
-custom:
-    author: fivetran-bradbeggs
-    issue: ""
-    project: dbt-core

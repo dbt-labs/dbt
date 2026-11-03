@@ -1,7 +1,0 @@
-kind: Features
-body: '[docs v2] Add resource filter to lineage view to select what resource types are displayed in the DAG'
-time: 2026-11-03T11:49:03.406581+05:30
-custom:
-    author: chayac
-    issue: ""
-    project: dbt-core

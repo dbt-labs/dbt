@@ -1,7 +1,0 @@
-kind: Under the Hood
-body: Extend package metadata with cross-project environment routing fields.
-time: 2026-11-03T11:49:03.061455+05:30
-custom:
-    author: will-sargent-dbtlabs
-    issue: ""
-    project: dbt-core

@@ -1,7 +1,0 @@
-kind: Security
-body: Update rustls-webpki to 0.103.16 and webpki-root-certs to 1.0.10 to reject distrusted certificate chains.
-time: 2026-11-03T11:58:34.779277+05:30
-custom:
-    author: ""
-    issue: ""
-    project: dbt-core

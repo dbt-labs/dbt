@@ -1,7 +1,0 @@
-kind: Fixes
-body: BigQuery freshness checks are now faster and safer. Freshness scans for different schemas now run at the same time. Freshness checks for the same schema and different nodes now share one request.
-time: 2026-11-03T11:49:03.319518+05:30
-custom:
-    author: kczimm
-    issue: ""
-    project: dbt-core

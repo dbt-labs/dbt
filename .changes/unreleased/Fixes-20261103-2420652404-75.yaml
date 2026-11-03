@@ -1,7 +1,0 @@
-kind: Fixes
-body: Auto-exposures discovered from BI tools now carry the target's adapter instead of defaulting to Snowflake, so non-Snowflake projects no longer fail selection with dbt1005 'selected nodes need adapters the target does not declare'
-time: 2026-11-03T11:49:03.250215+05:30
-custom:
-    author: akbog
-    issue: ""
-    project: dbt-core
