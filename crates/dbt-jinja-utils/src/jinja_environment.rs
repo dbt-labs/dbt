@@ -1,5 +1,7 @@
 use dbt_adapter::{Adapter, column::ColumnStatic, relation::factory::create_static_relation};
+use dbt_adapter_core::AdapterType;
 use dbt_common::{FsError, FsResult};
+use dbt_schemas::schemas::common::ResolvedQuoting;
 use minijinja::{
     Environment, Error as MinijinjaError, State, Template, UndefinedBehavior, Value,
     listener::RenderingEventListener,
@@ -148,11 +150,15 @@ impl AsRef<JinjaEnv> for JinjaEnv {
 /// own -- built here rather than duplicated, so the environment-wide default and
 /// a per-node override cannot drift.
 pub fn adapter_api_value(adapter: &Adapter) -> Value {
-    let adapter_type = adapter.adapter_type();
+    adapter_api_value_for_type(adapter.adapter_type(), adapter.engine().quoting())
+}
+
+/// Builds the type-only API without creating an adapter or connection.
+pub fn adapter_api_value_for_type(adapter_type: AdapterType, quoting: ResolvedQuoting) -> Value {
     let mut api_map = BTreeMap::new();
     api_map.insert(
         "Relation".to_string(),
-        create_static_relation(adapter_type, adapter.engine().quoting()),
+        create_static_relation(adapter_type, quoting),
     );
     api_map.insert(
         "Column".to_string(),

@@ -522,6 +522,7 @@ pub fn save_parse_state(
         .map(|p| p.join("package-lock.yml"))
         .unwrap_or_default();
     let packages_lock_hash = hash_file_at_path(&lock_file_path);
+    let pkg_lock_json = crate::parse_state::pkg_lock_json(&lock_file_path);
 
     crate::parse_state::save(&crate::parse_state::SaveArgs {
         out_dir: &io.out_dir,
@@ -547,6 +548,7 @@ pub fn save_parse_state(
         nodes_with_resolution_errors_json: &nodes_with_resolution_errors_json,
         nodes_with_access_errors_json: &nodes_with_access_errors_json,
         operations_json: &operations_json,
+        pkg_lock_json: &pkg_lock_json,
         packages: &packages,
         nodes: &resolved_state.nodes,
         disabled_nodes: &resolved_state.disabled_nodes,

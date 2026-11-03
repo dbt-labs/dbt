@@ -86,6 +86,10 @@ message InvocationEvalArgs {
   // `flags.warn_error_options` in dbt_project.yml. Unset if the invocation ends
   // before the project is loaded.
   optional InvocationWarnErrorOptions warn_error_options = 27;
+  // Whether incremental models are dropped and fully rebuilt, resolved from
+  // --full-refresh / DBT_FULL_REFRESH (or the original run's setting for
+  // `dbt retry`).
+  optional bool full_refresh = 28;
 }
 
 // Resolved warn-error options. Entries use the canonical config spelling

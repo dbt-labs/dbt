@@ -1,0 +1,16 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/a.sql
+databricks
+e2e
+adapters_databricks_list_schemas
+schemas
+ Rendering models/a.sql
+databricks
+e2e
+adapters_databricks_list_schemas
+schemas
+==================== Execution Summary =====================
+Finished 'compile' successfully for target 'databricks' [duration]
+Processed: 1 model
+Summary: 1 total | 1 success

@@ -37,7 +37,7 @@ use dbt_schemas::schemas::legacy_catalog::*;
 use dbt_schemas::schemas::relations::base::*;
 use indexmap::IndexMap;
 use minijinja::State;
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Display;
@@ -264,7 +264,7 @@ fn snowflake_freshness_sql(database: &str, where_clauses: &[String]) -> AdapterR
 }
 
 fn is_table_ddl(ddl: &str) -> bool {
-    static TABLE_REGEX: Lazy<fancy_regex::Regex> = Lazy::new(|| {
+    static TABLE_REGEX: LazyLock<fancy_regex::Regex> = LazyLock::new(|| {
         fancy_regex::Regex::new(
             r"(?ix)
                 ^\s*create\b

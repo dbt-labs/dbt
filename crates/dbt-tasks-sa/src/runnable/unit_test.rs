@@ -10,7 +10,6 @@ use dbt_common::tracing::span_info::{
     find_and_record_span_status_from_attrs, find_and_record_span_status_with_attrs,
 };
 use dbt_common::{ErrorCode, fs_err};
-use dbt_jinja_utils::utils::add_task_context;
 use dbt_scheduler::instructions::SqlInstruction;
 use dbt_schemas::schemas::InternalDbtNode;
 use dbt_schemas::schemas::common::DbtMaterialization;
@@ -30,10 +29,8 @@ pub fn execute_unit_test_remote(
     task_result: &TaskResult,
 ) -> FsResult<(NodeStatus, Option<UnitTestExecutionResult>)> {
     let start = SystemTime::now();
-    let mut base_context = ctx.inner.base_context.clone();
+    let base_context = ctx.run_base_context(unit_test)?;
     let unique_id = &unit_test.common().unique_id;
-
-    add_task_context(&mut base_context, unit_test.common(), &ctx.thread_id);
 
     // return early if the node is a ephemeral unit_test since we don't need to execute it.
     if unit_test.materialized() == DbtMaterialization::Ephemeral {
@@ -95,11 +92,18 @@ fn execute_unit_test_remote_inner(
         base_context,
         &ctx.inner.arg.io,
     ) {
-        Ok((is_test_succeed, diff_num_rows, diff)) => Ok(UnitTestExecutionResult {
-            passed: is_test_succeed,
-            diff_num_rows,
-            diff,
-        }),
+        Ok((is_test_succeed, diff_num_rows, diff, main_response)) => {
+            if let Some(main_response) = main_response {
+                ctx.inner
+                    .main_adapter_responses
+                    .upsert_sync(unique_id.to_string(), main_response);
+            }
+            Ok(UnitTestExecutionResult {
+                passed: is_test_succeed,
+                diff_num_rows,
+                diff,
+            })
+        }
         Err(e) => {
             // Collect the error and continue with other tests
             find_and_record_span_status_with_attrs(

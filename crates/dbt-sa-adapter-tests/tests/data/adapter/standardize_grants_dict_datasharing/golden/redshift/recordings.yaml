@@ -1,0 +1,22 @@
+model.test.c:
+- sequence: 0
+  type: execute
+  sql: DROP SCHEMA IF EXISTS adapters_redshift_standardize_grants_dict_datasharing CASCADE
+- sequence: 1
+  type: execute
+  sql: CREATE SCHEMA adapters_redshift_standardize_grants_dict_datasharing
+- sequence: 2
+  type: execute
+  sql: CREATE TABLE adapters_redshift_standardize_grants_dict_datasharing.a (one int)
+- sequence: 3
+  type: execute
+  sql: GRANT SELECT ON adapters_redshift_standardize_grants_dict_datasharing.a TO dbt_test_user_1
+- sequence: 4
+  type: execute
+  sql: GRANT SELECT ON adapters_redshift_standardize_grants_dict_datasharing.a TO ROLE tester
+- sequence: 5
+  type: execute
+  sql: GRANT SELECT ON adapters_redshift_standardize_grants_dict_datasharing.a TO PUBLIC
+- sequence: 6
+  type: execute
+  sql: SHOW GRANTS ON TABLE "ci"."adapters_redshift_standardize_grants_dict_datasharing"."a"

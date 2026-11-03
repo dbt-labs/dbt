@@ -27,7 +27,7 @@ walkdir = { workspace = true }
 
 # Only if not windows
 [target.'cfg(not(windows))'.dependencies]
-uzers = "0.12.1"
+libc = { workspace = true }
 
 [features]
 start-db-deps = ["dep:clap"]

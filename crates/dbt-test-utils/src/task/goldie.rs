@@ -11,8 +11,8 @@ use super::{
 };
 use futures::FutureExt as _;
 use itertools::Itertools;
-use once_cell::sync::Lazy;
 use regex::Regex;
+use std::sync::LazyLock;
 use std::{
     env,
     fs::File,
@@ -34,8 +34,8 @@ pub(super) type TextualPatch = String;
 pub type OutputNormalizer = fn(String) -> String;
 
 // Snowflake prompt for our REPL
-static SNOWFLAKE_PROMPT: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"^\d+\(snowflake\[local\].*").unwrap());
+static SNOWFLAKE_PROMPT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\d+\(snowflake\[local\].*").unwrap());
 
 fn postprocess_actual(content: String, sort_output: bool) -> String {
     let res = [
@@ -140,12 +140,12 @@ pub fn diff_goldie<P: Fn(String) -> String>(
         .to_string_lossy()
         .to_string();
 
-    let patch = diffy::DiffOptions::new()
-        .set_original_filename(original_filename)
-        .set_modified_filename(modified_filename)
-        .create_patch(&golden, &actual);
+    let patch = similar::TextDiff::from_lines(golden.as_str(), actual.as_str())
+        .unified_diff()
+        .header(&original_filename, &modified_filename)
+        .to_string();
 
-    Some(patch.to_string())
+    Some(patch)
 }
 
 pub struct CompareEnv {

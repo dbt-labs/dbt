@@ -28,11 +28,10 @@ use dbt_schemas::schemas::relations::base::{BaseRelation, RelationPattern};
 use indexmap::IndexMap;
 use minijinja::value::Object;
 use minijinja::{State, Value};
-use once_cell::sync::Lazy;
 use regex::Regex;
+use std::sync::LazyLock;
 
 use crate::adapter::adapter_impl::AdapterImpl;
-use crate::engine::databricks_statement_options;
 use crate::errors::{AdapterError, AdapterResult, AsyncAdapterResult};
 use crate::metadata::CatalogAndSchema;
 use crate::metadata::databricks::dbr_capabilities::DbrComputeContext;
@@ -58,6 +57,7 @@ use crate::relation::databricks::config::{
 use crate::relation::databricks::is_shallow_clone_type;
 use crate::sql_types::{TypeOps, make_arrow_field_v2};
 use crate::{AdapterEngine, AdapterResponse};
+use dbt_adapter_engine::databricks::query_tags::databricks_statement_options;
 
 pub mod dbr_capabilities;
 pub mod describe_json;
@@ -1060,7 +1060,7 @@ impl DatabricksMetadataAdapter {
         Ok(result)
     }
 
-    // https://github.com/databricks/dbt-databricks/blob/9e2566fdb56318cb7a59a4492f96c7aaa7af73b0/dbt/include/databricks/macros/relations/components/constraints.sql#L47
+    // https://github.com/databricks/dbt-databricks/blob/0f7f1396711cc4ff19092dfdb26c7a8afad946cf/dbt/include/databricks/macros/relations/components/constraints.sql#L47
     fn fetch_foreign_key_constraints(
         &self,
         database: &str,
@@ -1085,9 +1085,13 @@ impl DatabricksMetadataAdapter {
                 ukcu.column_name AS to_column
             FROM `{database}`.information_schema.key_column_usage kcu
             JOIN `{database}`.information_schema.referential_constraints rc
-                ON kcu.constraint_name = rc.constraint_name
+                ON kcu.constraint_catalog = rc.constraint_catalog
+                AND kcu.constraint_schema = rc.constraint_schema
+                AND kcu.constraint_name = rc.constraint_name
             JOIN `{database}`.information_schema.key_column_usage ukcu
-                ON rc.unique_constraint_name = ukcu.constraint_name
+                ON rc.unique_constraint_catalog = ukcu.constraint_catalog
+                AND rc.unique_constraint_schema = ukcu.constraint_schema
+                AND rc.unique_constraint_name = ukcu.constraint_name
                 AND kcu.ordinal_position = ukcu.ordinal_position
             WHERE kcu.table_catalog = '{database}'
                 AND kcu.table_schema = '{schema}'
@@ -1928,8 +1932,8 @@ fn build_schema_from_basic_describe_table(
     Ok(Arc::new(Schema::new(fields)))
 }
 
-static DBR_VERSION_REGEX: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"([1-9][0-9]*)\.(x|0|[1-9][0-9]*)").unwrap());
+static DBR_VERSION_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"([1-9][0-9]*)\.(x|0|[1-9][0-9]*)").unwrap());
 
 /// Extract DBR version from a spark version string using regex.
 ///

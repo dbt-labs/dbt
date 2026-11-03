@@ -1155,6 +1155,12 @@ pub fn resolve_dependencies(
             };
         }
 
+        // These vectors live as long as the node. Drop the spare capacity left by
+        // growing them one element at a time.
+        node_base.refs.shrink_to_fit();
+        node_base.depends_on.nodes.shrink_to_fit();
+        node_base.depends_on.nodes_with_ref_location.shrink_to_fit();
+
         if is_test && has_disabled_or_missing_dependency {
             tests_to_disable.push(node_unique_id.clone());
         }

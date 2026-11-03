@@ -13,10 +13,10 @@ use dbt_common::{
 };
 use dbt_test_primitives::is_update_golden_files_mode;
 use dbt_tracing::{IndexedTelemetryDeserializeError, TelemetryRecord};
-#[cfg(any(windows, test))]
-use once_cell::sync::Lazy;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use sha2::{Digest, Sha256};
+#[cfg(any(windows, test))]
+use std::sync::LazyLock;
 
 use crate::task::{
     goldie::{TextualPatch, diff_goldie, execute_and_compare},
@@ -47,8 +47,8 @@ const OTEL_PARQUET_FILE_NAME: &str = "otel.parquet";
 const TELEMETRY_INVOCATION_ID: &str = "424242424242";
 
 #[cfg(any(windows, test))]
-static JSON_ESCAPED_BACKSLASH_PATTERN: Lazy<regex::Regex> =
-    Lazy::new(|| regex::Regex::new(r"\\{2,}").unwrap());
+static JSON_ESCAPED_BACKSLASH_PATTERN: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"\\{2,}").unwrap());
 
 /// Telemetry event types that are known to be unstable and removed before normalization.
 const UNSTABLE_TELEMETRY_EVENT_TYPES: &[&str] = &[

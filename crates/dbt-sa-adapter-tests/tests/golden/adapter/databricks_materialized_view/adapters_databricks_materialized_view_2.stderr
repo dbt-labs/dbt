@@ -1,0 +1,5 @@
+[error] [JinjaError (dbt1501)]: Error executing materialization macro 'dbt_databricks.materialization_materialized_view_databricks' for model model.test.test_fail: Failed to eval the compiled Jinja expression invalid operation: FailFast Error for model.test.test_fail from models/test_fail.sql: Configuration changes were identified and `on_configuration_change` was set to `fail` for ``e2e`.`adapters_databricks_materialized_view`.`test_fail``
+(in run/test/models/test_fail.sql)
+(in dbt_internal_packages/dbt-databricks/macros/materializations/materialized_view.sql:7:24)
+(in dbt_internal_packages/dbt-databricks/macros/materializations/materialized_view.sql:53:13)
+  --> run/test/models/test_fail.sql

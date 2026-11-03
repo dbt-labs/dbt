@@ -8,11 +8,12 @@ use chrono::{DateTime, Utc};
 
 use crate::functions::build_flat_graph;
 use crate::invocation_graph::invocation_graph;
-use crate::jinja_environment::JinjaEnv;
+use crate::jinja_environment::{JinjaEnv, adapter_api_value};
 use crate::phases::compile::DependencyValidationConfig;
 use dbt_adapter::load_store::ResultStore;
 use dbt_adapter::relation::RelationObject;
-use dbt_adapter::{Adapter, AdapterType};
+use dbt_adapter::{Adapter, AdapterStore, AdapterType};
+use dbt_common::FsResult;
 use dbt_common::once_cell_vars::DISPATCH_CONFIG;
 use dbt_schemas::dbt_types::RelationType;
 use dbt_schemas::filter::{RunFilter, Sample};
@@ -20,6 +21,7 @@ use dbt_schemas::schemas::Nodes;
 use dbt_schemas::state::{DbtRuntimeConfig, NodeResolverTracker};
 use dbt_telemetry::NodeType;
 use minijinja::arg_utils::ArgParser;
+use minijinja::constants::DIALECT;
 use minijinja::listener::RenderingEventListener;
 use minijinja::value::{Object, ValueMap};
 use minijinja::{
@@ -34,6 +36,26 @@ use dbt_jinja_ctx::{CompileBaseCtx, DummyConfig, JinjaObject, OperationCtx, to_j
 pub fn configure_compile_and_run_jinja_environment(env: &mut JinjaEnv, adapter: Arc<Adapter>) {
     env.set_adapter(adapter);
     env.set_undefined_behavior(UndefinedBehavior::Lenient);
+}
+
+/// Shadows the env's `adapter`, `api` and `dialect` globals in `ctx` with
+/// `adapter_type`'s. Inserts nothing for the store's default adapter.
+pub fn insert_adapter_overlay(
+    ctx: &mut BTreeMap<String, MinijinjaValue>,
+    adapter_type: AdapterType,
+    store: &AdapterStore,
+) -> FsResult<()> {
+    if adapter_type == store.default_adapter_type() {
+        return Ok(());
+    }
+    let adapter = store.get(adapter_type)?;
+    ctx.insert("api".to_string(), adapter_api_value(&adapter));
+    ctx.insert("adapter".to_string(), adapter.as_value());
+    ctx.insert(
+        DIALECT.to_string(),
+        MinijinjaValue::from(adapter_type.as_ref()),
+    );
+    Ok(())
 }
 
 /// Build the truly-shared compile/run base ctx — values that are identical
@@ -1040,6 +1062,7 @@ impl Object for LazyFlatGraph {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dbt_adapter::relation::StaticBaseRelationObject;
     use dbt_schemas::state::DummyNodeResolverTracker;
     use dbt_test_utils::TestEnvGuard;
     use std::env;
@@ -1121,5 +1144,66 @@ mod tests {
             downcast.is_some(),
             "OperationCtx.config must be a DummyConfig Object"
         );
+    }
+
+    /// A Snowflake-default store that also declares BigQuery, built from mock adapters.
+    fn snowflake_default_store() -> AdapterStore {
+        AdapterStore::new_mock(
+            vec![AdapterType::Snowflake, AdapterType::Bigquery],
+            AdapterType::Snowflake,
+        )
+        .expect("valid store")
+    }
+
+    #[test]
+    fn adapter_overlay_inserts_nothing_for_the_default() {
+        let store = snowflake_default_store();
+        let mut ctx = BTreeMap::from([("dialect".to_string(), MinijinjaValue::from("unchanged"))]);
+        insert_adapter_overlay(&mut ctx, AdapterType::Snowflake, &store).expect("default overlay");
+        assert_eq!(
+            ctx.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["dialect"]
+        );
+        assert_eq!(ctx["dialect"].as_str(), Some("unchanged"));
+        // The default path never asks the store, so nothing is built.
+        assert!(!store.is_built(AdapterType::Snowflake));
+        assert!(!store.is_built(AdapterType::Bigquery));
+    }
+
+    #[test]
+    fn adapter_overlay_shadows_adapter_api_and_dialect() {
+        let store = snowflake_default_store();
+        let mut ctx = BTreeMap::new();
+        insert_adapter_overlay(&mut ctx, AdapterType::Bigquery, &store).expect("bigquery overlay");
+        assert_eq!(
+            ctx.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["adapter", "api", "dialect"]
+        );
+        let adapter = ctx["adapter"]
+            .downcast_object::<Adapter>()
+            .expect("adapter object");
+        assert_eq!(adapter.adapter_type(), AdapterType::Bigquery);
+        let relation = ctx["api"].get_attr("Relation").expect("api.Relation");
+        let relation = relation
+            .downcast_object_ref::<StaticBaseRelationObject>()
+            .expect("api.Relation is a static relation");
+        assert_eq!(relation.get_adapter_type(), "bigquery");
+        assert!(
+            !ctx["api"]
+                .get_attr("Column")
+                .expect("api.Column")
+                .is_undefined()
+        );
+        assert_eq!(ctx["dialect"].as_str(), Some("bigquery"));
+        assert!(store.is_built(AdapterType::Bigquery));
+        assert!(!store.is_built(AdapterType::Snowflake));
+    }
+
+    #[test]
+    fn adapter_overlay_errors_for_an_undeclared_adapter() {
+        let store = snowflake_default_store();
+        let mut ctx = BTreeMap::new();
+        assert!(insert_adapter_overlay(&mut ctx, AdapterType::Databricks, &store).is_err());
+        assert!(ctx.is_empty());
     }
 }

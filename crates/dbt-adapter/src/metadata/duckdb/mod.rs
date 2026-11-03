@@ -439,7 +439,8 @@ pub(crate) fn duckdb_attaches_via(catalog_type: CatalogType) -> Option<DuckDbAtt
         | CatalogType::SnowflakeBuiltIn
         | CatalogType::SnowflakeNative
         | CatalogType::BigqueryNative
-        | CatalogType::DuckdbNative => None,
+        | CatalogType::DuckdbNative
+        | CatalogType::SparkNative => None,
     }
 }
 

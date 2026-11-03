@@ -35,7 +35,7 @@ use crate::{
         data_provider::DataProvider,
         formatters::{
             asset::AssetParsedStart,
-            color::BLUE,
+            color::{BLUE, MaybeColored},
             constants::SELECTED_NODES_TITLE,
             deps::{
                 INSTALLING_ACTION, PackageAddEnd, PackageAddStart, PackageInstallEnd,
@@ -261,7 +261,7 @@ fn emit_pending_skips(tui: &TuiLayer, data_provider: &mut DataProvider<'_>) {
             seen_test,
             seen_unit_test,
             node_count_total,
-            colorize: true,
+            colorize: tui.colorize,
         });
     }
 }
@@ -365,6 +365,8 @@ pub struct TuiLayer {
     /// instead of applying a blanket filter on the whole layer
     max_log_verbosity: LevelFilter,
     max_term_line_width: Option<usize>,
+    /// Whether output is styled with ANSI colors
+    colorize: bool,
     show_options: HashSet<ShowOptions>,
     command: FsCommand,
     quiet: bool,
@@ -428,6 +430,7 @@ impl TuiLayer {
         Self::with_output(
             max_log_verbosity,
             max_term_line_width,
+            console::colors_enabled(),
             progress,
             config,
             TuiOutput::Std,
@@ -443,6 +446,7 @@ impl TuiLayer {
     pub(crate) fn new_captured(
         max_log_verbosity: LevelFilter,
         is_interactive: bool,
+        colorize: bool,
         config: TuiConfig,
     ) -> (Self, Arc<CapturedTuiOutput>) {
         let captured = Arc::new(CapturedTuiOutput::default());
@@ -450,6 +454,7 @@ impl TuiLayer {
         let layer = Self::with_output(
             max_log_verbosity,
             None,
+            colorize,
             progress,
             config,
             TuiOutput::Captured(captured.clone()),
@@ -462,6 +467,7 @@ impl TuiLayer {
     fn with_output(
         max_log_verbosity: LevelFilter,
         max_term_line_width: Option<usize>,
+        colorize: bool,
         progress: Option<Arc<ProgressController<ProgressId>>>,
         config: TuiConfig,
         output: TuiOutput,
@@ -484,6 +490,7 @@ impl TuiLayer {
         Self {
             max_log_verbosity,
             max_term_line_width,
+            colorize,
             show_options,
             command,
             quiet,
@@ -876,7 +883,11 @@ impl TuiLayer {
                         write!(
                             stdout,
                             "\n{}\n",
-                            Delimiter::new(" Test Failures ", self.max_term_line_width, true)
+                            Delimiter::new(
+                                " Test Failures ",
+                                self.max_term_line_width,
+                                self.colorize
+                            )
                         )
                         .expect("failed to write to stdout");
                         for msg in &delayed_messages.test_failures {
@@ -891,7 +902,11 @@ impl TuiLayer {
                         write!(
                             stderr,
                             "\n{}\n",
-                            Delimiter::new(" Errors and Warnings ", self.max_term_line_width, true)
+                            Delimiter::new(
+                                " Errors and Warnings ",
+                                self.max_term_line_width,
+                                self.colorize
+                            )
                         )
                         .expect("failed to write to stderr");
 
@@ -927,7 +942,7 @@ impl TuiLayer {
             span,
             invocation,
             data_provider,
-            true,
+            self.colorize,
             self.max_term_line_width,
         );
 
@@ -1198,7 +1213,7 @@ impl TuiLayer {
         if span.severity_number <= self.max_log_verbosity {
             let formatted = NodeEvaluatedStart {
                 node: ne,
-                colorize: true,
+                colorize: self.colorize,
             };
             self.write_stdout_line(&formatted);
         }
@@ -1249,7 +1264,7 @@ impl TuiLayer {
         let formatted = NodeEvaluatedEnd {
             node: ne,
             duration,
-            colorize: true,
+            colorize: self.colorize,
         };
         self.write_stdout_line(&formatted);
     }
@@ -1267,7 +1282,7 @@ impl TuiLayer {
 
         let formatted = MicrobatchEvaluatedStart {
             batch,
-            colorize: true,
+            colorize: self.colorize,
         };
         self.write_stdout_line(&formatted);
     }
@@ -1303,7 +1318,7 @@ impl TuiLayer {
         let formatted = MicrobatchEvaluatedEnd {
             batch,
             duration,
-            colorize: true,
+            colorize: self.colorize,
         };
         self.write_stdout_line(&formatted);
     }
@@ -1372,7 +1387,7 @@ impl TuiLayer {
             && node.node_outcome() == NodeOutcome::Success
         {
             // This is a failed test, capture its summary diff table to be printed on stdout later
-            if let Some(test_failure_message) = TestFailure::new(node, true) {
+            if let Some(test_failure_message) = TestFailure::new(node, self.colorize) {
                 data_provider.with_root_mut::<DelayedMessages>(|delayed_messages| {
                     delayed_messages.test_failures.push(DelayedMessage {
                         message: format!("{}\n", test_failure_message),
@@ -1450,7 +1465,7 @@ impl TuiLayer {
                     NodeProcessedEnd {
                         node,
                         duration,
-                        colorize: true,
+                        colorize: self.colorize,
                     }
                 )?;
 
@@ -1463,7 +1478,7 @@ impl TuiLayer {
                             batch,
                             duration: *duration,
                             is_last: index + 1 == batches.len(),
-                            colorize: true,
+                            colorize: self.colorize,
                         }
                     )?;
                 }
@@ -1518,7 +1533,7 @@ impl TuiLayer {
             adapter: members
                 .first()
                 .and_then(|(node, _)| node.adapter.as_deref()),
-            colorize: true,
+            colorize: self.colorize,
         };
 
         // Written under one stdout lock, so concurrently completing nodes cannot interleave
@@ -1534,7 +1549,7 @@ impl TuiLayer {
                         AggregatedTestGroupMember {
                             node,
                             is_last: index + 1 == members.len(),
-                            colorize: true,
+                            colorize: self.colorize,
                         }
                     )?;
                 }
@@ -1557,7 +1572,7 @@ impl TuiLayer {
                 .and_then(|c| ErrorCode::try_from(c).ok()),
             message: &log_record.body,
             severity: log_record.severity_number,
-            colorize: true,
+            colorize: self.colorize,
             include_level_prefix: true,
         };
 
@@ -1605,7 +1620,11 @@ impl TuiLayer {
                         writeln!(
                             stdout,
                             "{}",
-                            Delimiter::new(SELECTED_NODES_TITLE, self.max_term_line_width, true)
+                            Delimiter::new(
+                                SELECTED_NODES_TITLE,
+                                self.max_term_line_width,
+                                self.colorize
+                            )
                         )
                         .expect("failed to write header to stdout");
                     }
@@ -1631,7 +1650,7 @@ impl TuiLayer {
                     writeln!(stdout, "{}", show_result.content)
                         .expect("failed to write show result to stdout");
                 } else {
-                    let colored_title = BLUE.apply_to(&show_result.title);
+                    let colored_title = MaybeColored::new(&BLUE, &show_result.title, self.colorize);
                     write!(stdout, "\n{}\n{}\n", colored_title, show_result.content)
                         .expect("failed to write show result to stdout");
                 }
@@ -1657,7 +1676,7 @@ impl TuiLayer {
 
         let formatted = CompiledInlineCode {
             compiled_code,
-            colorize: true,
+            colorize: self.colorize,
         };
         self.write_stdout_line(&formatted);
     }
@@ -1673,7 +1692,7 @@ impl TuiLayer {
 
         let formatted = CompiledCodeLine {
             compiled_code,
-            colorize: true,
+            colorize: self.colorize,
         };
         self.write_stdout_line(&formatted);
     }
@@ -1684,7 +1703,7 @@ impl TuiLayer {
             error_code: stderr_message.error_code(),
             message: &log_record.body,
             severity: log_record.severity_number,
-            colorize: true,
+            colorize: self.colorize,
             include_level_prefix: true,
         };
 
@@ -1705,7 +1724,7 @@ impl TuiLayer {
             progress: progress_msg,
             severity: severity_number,
             pad_action: true,
-            colorize: true,
+            colorize: self.colorize,
         };
         self.write_stdout_line(&formatted);
     }
@@ -1731,7 +1750,7 @@ impl TuiLayer {
 
         let formatted = AssetParsedStart {
             asset,
-            colorize: true,
+            colorize: self.colorize,
         };
         self.write_stdout_line(&formatted);
     }
@@ -1779,7 +1798,7 @@ impl TuiLayer {
         // In non-interactive mode (or debug mode) - print static message when starting
         let formatted_message = PackageInstallStart {
             event: ev,
-            colorize: true,
+            colorize: self.colorize,
         };
 
         // Print immediately to stdout
@@ -1802,7 +1821,7 @@ impl TuiLayer {
         // Regardless of the mode - print static message when finished
         let formatted_message = PackageInstallEnd {
             event: ev,
-            colorize: true,
+            colorize: self.colorize,
         };
 
         // Print immediately to stdout
@@ -1841,7 +1860,7 @@ impl TuiLayer {
         // In non-interactive mode (or debug mode) - print static message
         let formatted_message = PackageInstalledStart {
             pkg,
-            colorize: true,
+            colorize: self.colorize,
         };
 
         // Print immediately to stdout
@@ -1884,11 +1903,11 @@ impl TuiLayer {
             }
         }
 
-        // Format with shared formatter (colorize = true for TUI)
+        // Format with shared formatter
         let formatted_message = PackageInstalledEnd {
             pkg,
             status: span.status.as_ref().map_or(StatusCode::Unset, |s| s.code),
-            colorize: true,
+            colorize: self.colorize,
         };
 
         // Print immediately to stdout
@@ -1918,7 +1937,7 @@ impl TuiLayer {
 
         let formatted_message = HookProcessedStart {
             hook,
-            colorize: true,
+            colorize: self.colorize,
         };
 
         self.write_stdout_line(&formatted_message);
@@ -1964,7 +1983,7 @@ impl TuiLayer {
         let formatted_message = HookProcessedEnd {
             hook,
             duration,
-            colorize: true,
+            colorize: self.colorize,
         };
 
         self.write_stdout_line(&formatted_message);
@@ -1978,10 +1997,10 @@ impl TuiLayer {
             return;
         }
 
-        // Format with shared formatter (colorize = true for TUI)
+        // Format with shared formatter
         let formatted_message = PackageAddStart {
             pkg,
-            colorize: true,
+            colorize: self.colorize,
         };
 
         // Print immediately to stdout
@@ -1996,11 +2015,11 @@ impl TuiLayer {
             return;
         }
 
-        // Format with shared formatter (colorize = true for TUI)
+        // Format with shared formatter
         let formatted_message = PackageAddEnd {
             pkg,
             status: span.status.as_ref().map_or(StatusCode::Unset, |s| s.code),
-            colorize: true,
+            colorize: self.colorize,
         };
 
         // Print immediately to stdout
@@ -2060,7 +2079,10 @@ impl TuiLayer {
             return;
         }
 
-        let formatted_message = GenericOpStart { op, colorize: true };
+        let formatted_message = GenericOpStart {
+            op,
+            colorize: self.colorize,
+        };
 
         self.write_stdout_line(&formatted_message);
     }
@@ -2109,12 +2131,12 @@ impl TuiLayer {
             .duration_since(span.start_time_unix_nano)
             .unwrap_or_default();
 
-        // Format with shared formatter (colorize = true for TUI)
+        // Format with shared formatter
         let formatted_message = GenericOpEnd {
             op,
             duration,
             status: span.status.as_ref(),
-            colorize: true,
+            colorize: self.colorize,
         };
 
         // Print conclusion line
@@ -2213,7 +2235,7 @@ impl TuiLayer {
             item,
             duration,
             status: span.status.as_ref(),
-            colorize: true,
+            colorize: self.colorize,
         };
 
         self.write_stdout_line(&formatted_message);

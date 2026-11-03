@@ -132,6 +132,8 @@ impl SemanticCategory {
             | "sync_struct_columns"
             | "resolve_file_format"
             | "get_seed_file_path"
+            | "convert_datetimes_to_strs"
+            | "get_binding_char"
             | "is_uniform"
             | "external_root"
             | "external_write_options"
@@ -156,6 +158,7 @@ impl SemanticCategory {
             | "s3source_clause"
             | "get_csv_data"
             | "table_format"
+            | "warn_once"
             | "strip_trailing_statement_terminator" => SemanticCategory::Pure,
 
             _ => {

@@ -1,0 +1,1 @@
+refresh materialized view "ci"."adapters_redshift_materialized_view_config_changeset"."a"

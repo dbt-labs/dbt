@@ -915,7 +915,7 @@ impl Object for StaticBaseRelationObject {
                 iter.finish()?;
 
                 let local_config = minijinja_value_to_typed_struct::<InternalDbtNodeWrapper>(
-                    local_config_value.clone(),
+                    local_config_value,
                 )
                 .map_err(|e| {
                     minijinja::Error::new(

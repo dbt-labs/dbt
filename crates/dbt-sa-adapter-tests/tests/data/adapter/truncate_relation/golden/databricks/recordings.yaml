@@ -1,0 +1,22 @@
+model.test.b:
+- sequence: 0
+  type: execute
+  sql: DROP SCHEMA IF EXISTS adapters_databricks_truncate_relation CASCADE
+- sequence: 1
+  type: execute
+  sql: CREATE SCHEMA adapters_databricks_truncate_relation
+- sequence: 2
+  type: execute
+  sql: CREATE TABLE adapters_databricks_truncate_relation.a (val int)
+- sequence: 3
+  type: execute
+  sql: INSERT INTO adapters_databricks_truncate_relation.a (val) VALUES (1), (2)
+- sequence: 4
+  type: execute
+  sql: select * from `e2e`.`adapters_databricks_truncate_relation`.`a`
+- sequence: 5
+  type: execute
+  sql: truncate table `e2e`.`adapters_databricks_truncate_relation`.`a`
+- sequence: 6
+  type: execute
+  sql: select * from `e2e`.`adapters_databricks_truncate_relation`.`a`

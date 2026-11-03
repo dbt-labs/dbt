@@ -34,8 +34,8 @@ pub mod ingest;
 
 pub mod info_schema;
 pub use info_schema::{
-    INFO_SCHEMA_DIR_NAME, INFO_SCHEMA_VERSION, Materializer, STAGING_DIR_NAME, versioned_dir,
-    write_info_schema,
+    INFO_SCHEMA_DIR_NAME, INFO_SCHEMA_VERSION, Materializer, STAGING_DIR_NAME, refresh_invocations,
+    versioned_dir, write_info_schema,
 };
 
 pub mod parquet;

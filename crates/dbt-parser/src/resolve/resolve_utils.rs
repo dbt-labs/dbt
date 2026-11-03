@@ -1,7 +1,8 @@
-use std::collections::BTreeMap;
+use std::collections::hash_map::Entry;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
-use crate::args::ResolveArgs;
+use crate::utils::{RawProjectConfig, extract_resource_config_from_raw_project};
 use dbt_adapter_core::AdapterType;
 use dbt_common::ErrorCode;
 use dbt_common::FsResult;
@@ -196,8 +197,8 @@ pub(crate) fn canonicalize_source_config_keys(
 /// `pre_hook`/`post_hook` (models, seeds, snapshots, tests).
 pub(crate) fn build_unrendered_config(
     fqn: &[String],
-    local: &crate::utils::RawProjectConfig,
-    root: Option<&crate::utils::RawProjectConfig>,
+    local: &RawProjectConfig,
+    root: Option<&RawProjectConfig>,
     schema: Option<&BTreeMap<String, dbt_yaml::Value>>,
     inline: Option<&BTreeMap<String, dbt_yaml::Value>>,
     normalize_hooks: bool,
@@ -238,6 +239,83 @@ pub(crate) fn build_unrendered_config(
     }
 
     Ok(unrendered)
+}
+
+/// A package's raw project trees for one resource type, per adapter whose aliases they are read
+/// with, for [`build_unrendered_config`].
+pub(crate) struct RawProjectConfigsByAdapter<'a> {
+    package_yml: &'a dbt_yaml::Value,
+    /// `Some` for a dependency package.
+    root_yml: Option<&'a dbt_yaml::Value>,
+    resource_type: &'a str,
+    trees: HashMap<AdapterType, (RawProjectConfig, Option<RawProjectConfig>)>,
+}
+
+impl<'a> RawProjectConfigsByAdapter<'a> {
+    /// Builds the trees for `default_adapter`; any other adapter's are built on first use.
+    pub(crate) fn new(
+        package_yml: &'a dbt_yaml::Value,
+        root_yml: Option<&'a dbt_yaml::Value>,
+        resource_type: &'a str,
+        default_adapter: AdapterType,
+    ) -> FsResult<Self> {
+        let mut configs = RawProjectConfigsByAdapter {
+            package_yml,
+            root_yml,
+            resource_type,
+            trees: HashMap::new(),
+        };
+        configs.trees(default_adapter)?;
+        Ok(configs)
+    }
+
+    fn trees(
+        &mut self,
+        adapter: AdapterType,
+    ) -> FsResult<&(RawProjectConfig, Option<RawProjectConfig>)> {
+        Ok(match self.trees.entry(adapter) {
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(entry) => {
+                let local = extract_resource_config_from_raw_project(
+                    self.package_yml,
+                    self.resource_type,
+                    adapter,
+                )?;
+                let root = self
+                    .root_yml
+                    .map(|root_yml| {
+                        extract_resource_config_from_raw_project(
+                            root_yml,
+                            self.resource_type,
+                            adapter,
+                        )
+                    })
+                    .transpose()?;
+                entry.insert((local, root))
+            }
+        })
+    }
+
+    /// [`build_unrendered_config`] over the project trees read with `config_adapter`'s aliases.
+    pub(crate) fn unrendered_config(
+        &mut self,
+        config_adapter: AdapterType,
+        fqn: &[String],
+        schema: Option<&BTreeMap<String, dbt_yaml::Value>>,
+        inline: Option<&BTreeMap<String, dbt_yaml::Value>>,
+        normalize_hooks: bool,
+    ) -> FsResult<BTreeMap<String, dbt_yaml::Value>> {
+        let (local, root) = self.trees(config_adapter)?;
+        build_unrendered_config(
+            fqn,
+            local,
+            root.as_ref(),
+            schema,
+            inline,
+            normalize_hooks,
+            config_adapter,
+        )
+    }
 }
 
 /// Returns an error for resource names derived from filenames that contain spaces.
@@ -315,21 +393,16 @@ pub(crate) fn validate_node_adapter(adapter: Option<AdapterType>, path: &Path) -
     }
 }
 
-/// The adapter a node runs on: `--adapter`, then the gated `authored` `+adapter`, then
-/// `inherited` (a data test's attached node), then the target default.
+/// The adapter a node runs on: the resolver's pick, else the target default, once the gate has
+/// checked the `authored` `+adapter`.
 pub(crate) fn select_node_adapter(
-    arg: &ResolveArgs,
     authored: Option<AdapterType>,
-    inherited: Option<AdapterType>,
+    picked: Option<AdapterType>,
     default_adapter: AdapterType,
     path: &Path,
 ) -> FsResult<AdapterType> {
     validate_node_adapter(authored, path)?;
-    Ok(arg
-        .adapter_override
-        .or(authored)
-        .or(inherited)
-        .unwrap_or(default_adapter))
+    Ok(picked.unwrap_or(default_adapter))
 }
 
 /// Fills a node's `quoting` from `adapter`'s `adapters:` entry, then from `adapter`'s default.

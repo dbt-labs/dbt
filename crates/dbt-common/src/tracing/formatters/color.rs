@@ -15,7 +15,8 @@ pub fn severity_to_color_style(severity_number: SeverityNumber) -> &'static Styl
     }
 }
 
-/// Displays `value`, styled with `style` when `colorize` is set.
+/// Displays `value`, styled with `style` when `colorize` is set, irrespective of the
+/// global auto-detected `console` setting.
 #[derive(Clone, Copy)]
 pub struct MaybeColored<'a, D> {
     pub style: &'a Style,
@@ -36,7 +37,11 @@ impl<'a, D: fmt::Display> MaybeColored<'a, D> {
 impl<D: fmt::Display> fmt::Display for MaybeColored<'_, D> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.colorize {
-            write!(f, "{}", self.style.apply_to(&self.value))
+            write!(
+                f,
+                "{}",
+                self.style.apply_to(&self.value).force_styling(true)
+            )
         } else {
             write!(f, "{}", self.value)
         }

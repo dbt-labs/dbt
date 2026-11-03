@@ -4,8 +4,9 @@ use self::fs_runner::FsRunner;
 
 use crate::{
     is_update_mode_with_warehouse, random_schema, should_strip_query_comments,
-    task::{HydrateProfilesTask, OverrideFileTask, ProjectEnv, SedTask, TaskSeq},
+    task::{HydrateProfilesTask, OverrideFileTask, ProjectEnv, SedTask, TaskSeq, TestEnv},
 };
+use dbt_common::constants::{DBT_CATALOG_JSON, DBT_TARGET_DIR_NAME};
 use dbt_common::{FsResult, stdfs};
 use dbt_test_primitives::cleanup_schema_name;
 use std::path::PathBuf;
@@ -260,4 +261,22 @@ pub async fn run_dbt_replay_task_seq(
     );
     task_seq.execute_in(&env).await?;
     Ok(())
+}
+
+/// Reads and parses `target/catalog.json` from a completed test run
+pub fn read_catalog_nodes(
+    test_env: &TestEnv,
+) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+    let catalog_path = test_env
+        .temp_dir
+        .join(DBT_TARGET_DIR_NAME)
+        .join(DBT_CATALOG_JSON);
+    let contents = std::fs::read_to_string(&catalog_path)
+        .map_err(|e| format!("failed to read {}: {e}", catalog_path.display()))?;
+    let catalog: serde_json::Value = serde_json::from_str(&contents)
+        .map_err(|e| format!("failed to parse {}: {e}", catalog_path.display()))?;
+    catalog["nodes"]
+        .as_object()
+        .cloned()
+        .ok_or_else(|| "catalog.json missing \"nodes\" object".to_string())
 }

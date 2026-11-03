@@ -106,8 +106,8 @@ pub struct ParseSafeView {
 /// [`super::schema`]'s `node_cols!`. Textual expansion for the same reason: const slices
 /// cannot be concatenated.
 ///
-/// Absent, and deliberately: `compiled_code`, `compiled_path`, `grain*`, `layer_inferred`
-/// and `search_text` (written during compile); `classifiers` (partially written at parse,
+/// Absent, and deliberately: `compiled_code`, `compiled_path` and `grain*` (written during
+/// compile); `classifiers` (partially written at parse,
 /// which is worse — a check filtering on it sees a subset and passes); `unique_key`,
 /// `pre_hook`, `post_hook`, `grants`, `persist_docs`, `incremental_strategy`,
 /// `on_schema_change`, `full_refresh`, `docs_show`, `time_spine` and
@@ -198,15 +198,21 @@ pub const VIEWS: &[ParseSafeView] = &[
             "ingested_at",
         ],
     },
-    // Which packages are installed, and nothing else: the ingest has no source for the
-    // other columns (`package_source`, `version`, `git_url`, `git_revision`,
-    // `local_path`) and writes the name alone.
+    // Which packages are installed, and where each comes from per `package-lock.yml`.
     ParseSafeView {
         name: "packages",
         vocabulary: "packages",
         src: Src::Table("packages"),
         filter: Filter::All,
-        cols: &["package_name", "ingested_at"],
+        cols: &[
+            "package_name",
+            "package_source",
+            "version",
+            "git_url",
+            "git_revision",
+            "local_path",
+            "ingested_at",
+        ],
     },
     ParseSafeView {
         name: "project_vars",

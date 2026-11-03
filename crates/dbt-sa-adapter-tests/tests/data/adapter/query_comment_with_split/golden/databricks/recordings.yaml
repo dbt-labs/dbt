@@ -1,0 +1,55 @@
+36930bcd:
+- sequence: 0
+  type: execute
+  sql: |-
+    /* {"app": "dbt", "dbt_version": "2.0.0", "node_id": "internal", "profile_name": "fusion_tests", "target_name": "databricks"} */
+    SHOW SCHEMAS IN `e2e`
+b47a2009:
+- sequence: 0
+  type: execute
+  sql: |-
+    /* {"app": "dbt", "dbt_version": "2.0.0", "node_id": "internal", "profile_name": "fusion_tests", "target_name": "databricks"} */
+    create schema if not exists `e2e`.`adapters_databricks_query_comment_with_split`
+model.test.a:
+- sequence: 0
+  type: execute
+  sql: |-
+    SELECT
+    table_name,
+    if(table_type IN ('EXTERNAL', 'MANAGED', 'MANAGED_SHALLOW_CLONE', 'EXTERNAL_SHALLOW_CLONE'), 'table', lower(table_type)) AS table_type,
+    lower(data_source_format) AS file_format,
+    table_schema,
+    table_owner,
+    table_catalog,
+    if(
+    table_type IN (
+    'EXTERNAL',
+    'MANAGED',
+    'MANAGED_SHALLOW_CLONE',
+    'EXTERNAL_SHALLOW_CLONE'
+    ),
+    lower(table_type),
+    NULL
+    ) AS databricks_table_type
+    FROM `system`.`information_schema`.`tables`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'adapters_databricks_query_comment_with_split'
+- sequence: 1
+  type: execute
+  sql: |-
+    /* {"app": "dbt", "dbt_version": "2.0.0", "node_id": "model.test.a", "node_name": "a", "package_name": "test", "profile_name": "fusion_tests", "relation": {"database": "e2e", "identifier": null, "schema": "adapters_databricks_query_comment_with_split"}, "resource_type": "model", "target_name": "databricks"} */
+    select 1 as q1
+- sequence: 2
+  type: execute
+  sql: |-
+    /* {"app": "dbt", "dbt_version": "2.0.0", "node_id": "model.test.a", "node_name": "a", "package_name": "test", "profile_name": "fusion_tests", "relation": {"database": "e2e", "identifier": null, "schema": "adapters_databricks_query_comment_with_split"}, "resource_type": "model", "target_name": "databricks"} */
+    select 2 as q2
+- sequence: 3
+  type: execute
+  sql: |-
+    /* {"app": "dbt", "dbt_version": "2.0.0", "node_id": "model.test.a", "node_name": "a", "package_name": "test", "profile_name": "fusion_tests", "relation": {"database": "e2e", "identifier": null, "schema": "adapters_databricks_query_comment_with_split"}, "resource_type": "model", "target_name": "databricks"} */
+    create or replace view `e2e`.`adapters_databricks_query_comment_with_split`.`a`
+    
+    as (
+    select 1 as id
+    )

@@ -20,9 +20,9 @@ use crate::sql_types::TypeOps;
 use crate::stmt_splitter::StmtSplitter;
 
 use super::adapter_engine::*;
-use super::make_behavior;
-use super::noop_connection::NoopConnection;
-use super::sidecar_client::SidecarClient;
+use dbt_adapter_engine::behavior::make_behavior;
+use dbt_adapter_engine::noop_connection::NoopConnection;
+use dbt_adapter_engine::sidecar_client::SidecarClient;
 
 /// Sidecar engine for subprocess-based execution.
 ///

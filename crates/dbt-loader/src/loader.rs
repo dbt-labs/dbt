@@ -9,7 +9,7 @@ use dbt_common::constants::{
     DBT_CATALOGS_YML, DBT_DEPENDENCIES_YML, DBT_PACKAGES_LOCK_FILE, DBT_PACKAGES_YML,
     DBT_PROFILES_YML, DBT_SELECTORS_YML, DBT_VARS_YML,
 };
-use dbt_common::io_args::{InternalPackageMode, ReplayMode, TimeMachineMode};
+use dbt_common::io_args::{FsCommand, InternalPackageMode, ReplayMode, TimeMachineMode};
 use dbt_common::once_cell_vars::DISPATCH_CONFIG;
 use dbt_common::path::{DbtPath, resource_extension};
 use dbt_common::tracing::TracingConfigProvider;
@@ -507,27 +507,56 @@ pub async fn load(
         )?;
     }
 
-    let (packages_lock, upstream_projects) = get_or_install_packages(
-        &arg.io,
-        arg.command,
-        &env,
-        &packages_install_path,
-        arg.install_deps,
-        arg.add_package.clone(),
-        arg.upgrade,
-        arg.lock,
-        arg.vars.clone(),
-        arg.version_check,
-        arg.skip_private_deps,
-        iarg.replay.as_ref(),
-        token,
-        use_v2_compatible_package_downloads,
-        require_hub_verified_downloads,
-        private_package_resolver,
-        dbt_state.cloud_config.clone(),
-        arg.ai_provider.as_deref(),
-    )
-    .await?;
+    if arg.no_deps && arg.command != FsCommand::Extension("lint") {
+        return err!(
+            ErrorCode::InvalidArgument,
+            "--no-deps is only supported by `dbt lint`"
+        );
+    }
+
+    // Rendered/turbo lint executes macros, which may live in packages we skip.
+    if arg.no_deps {
+        let mode = arg
+            .vars
+            .get("__lint_jinja_render_mode")
+            .and_then(|v| v.as_str())
+            .unwrap_or("symbolic");
+        if !mode.trim().eq_ignore_ascii_case("symbolic") {
+            return err!(
+                ErrorCode::InvalidArgument,
+                "--no-deps requires `--jinja-render-mode symbolic`, got `{}`",
+                mode
+            );
+        }
+    }
+
+    // `dbt lint --no-deps`: lint the files as they are, without resolving
+    // `packages.yml`/`dependencies.yml` (no installs, no cross-project refs).
+    let (packages_lock, upstream_projects) = if arg.no_deps {
+        Default::default()
+    } else {
+        get_or_install_packages(
+            &arg.io,
+            arg.command,
+            &env,
+            &packages_install_path,
+            arg.install_deps,
+            arg.add_package.clone(),
+            arg.upgrade,
+            arg.lock,
+            arg.vars.clone(),
+            arg.version_check,
+            arg.skip_private_deps,
+            iarg.replay.as_ref(),
+            token,
+            use_v2_compatible_package_downloads,
+            require_hub_verified_downloads,
+            private_package_resolver,
+            dbt_state.cloud_config.clone(),
+            arg.ai_provider.as_deref(),
+        )
+        .await?
+    };
 
     // Skip downloading publication artifacts in Time Machine replay mode
     // In replay mode, we're replaying a recorded session and don't need to download anything

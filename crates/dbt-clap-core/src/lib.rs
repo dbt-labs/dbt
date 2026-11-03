@@ -317,6 +317,29 @@ pub struct Cli {
     pub common_args: CommonArgs,
 }
 
+/// The output directory `in_out_dir` will choose, computed before project setup
+/// and without touching the filesystem beyond the `dbt_project.yml` search.
+/// Falls back to the current directory when no project is found.
+pub fn expected_out_dir(common_args: &CommonArgs) -> PathBuf {
+    let in_dir = common_args
+        .project_dir
+        .clone()
+        .unwrap_or_else(|| determine_project_dir(&[], DBT_PROJECT_YML).unwrap_or_default());
+    join_target_path(&in_dir, common_args.target_path.as_deref())
+}
+
+fn join_target_path(in_dir: &Path, target_path: Option<&Path>) -> PathBuf {
+    target_path
+        .map(|p| {
+            if p.is_relative() {
+                in_dir.join(p)
+            } else {
+                p.to_path_buf()
+            }
+        })
+        .unwrap_or_else(|| in_dir.join(DBT_TARGET_DIR_NAME))
+}
+
 /// Determine in/out dir assuming the command requires project dir.
 ///
 /// NOTE: Don't call for commands that don't need project directory.
@@ -331,11 +354,7 @@ pub fn in_out_dir(common_args: &CommonArgs) -> FsResult<(PathBuf, PathBuf)> {
     };
     let in_dir = stdfs::canonicalize(in_dir)?;
 
-    let out_dir = common_args
-        .target_path
-        .clone()
-        .map(|p| if p.is_relative() { in_dir.join(p) } else { p })
-        .unwrap_or_else(|| in_dir.join(DBT_TARGET_DIR_NAME));
+    let out_dir = join_target_path(&in_dir, common_args.target_path.as_deref());
     stdfs::create_dir_all(&out_dir).map_err(|e| {
         fs_err!(
             ErrorCode::IoError,
@@ -1254,9 +1273,9 @@ impl BuildArgs {
                 ClapResourceType::UnitTest,
                 ClapResourceType::Function,
                 ClapResourceType::Check,
-                // Plugin nodes are never selected by default, so this only keeps the ones
+                // Experimental nodes are never selected by default, so this only keeps the ones
                 // selected directly.
-                ClapResourceType::Plugin,
+                ClapResourceType::Experimental,
             ];
             if eval_args.export_saved_queries {
                 eval_args.resource_types.push(ClapResourceType::SavedQuery);
@@ -2499,6 +2518,10 @@ pub struct CommonArgs {
     #[arg(global = true, long, default_value = "false", action = ArgAction::SetTrue, hide = true)]
     pub skip_private_deps: bool,
 
+    /// Skip dependency resolution and linting files as-is (`dbt lint` only; unresolved package macros are tolerated in symbolic mode)
+    #[arg(global = true, long, default_value = "false", action = ArgAction::SetTrue, hide = true)]
+    pub no_deps: bool,
+
     /// If specified, the end datetime dbt uses to filter microbatch model inputs (exclusive).
     #[arg(
         global = true,
@@ -2985,6 +3008,7 @@ impl CommonArgs {
             local_execution_backend: self.compute.into(),
             skip_checkpoints: false,
             skip_private_deps: self.skip_private_deps,
+            no_deps: self.no_deps,
             event_time_end: self.event_time_end.clone(),
             event_time_start: self.event_time_start.clone(),
             internal_package_mode: self.internal_package_mode.clone(),
@@ -3252,6 +3276,27 @@ pub fn from_lib(cli: &Cli) -> SystemArgs {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn expected_out_dir_joins_target_path_to_project_dir() {
+        let args = |project_dir: &str, target_path: Option<&str>| CommonArgs {
+            project_dir: Some(project_dir.into()),
+            target_path: target_path.map(PathBuf::from),
+            ..Default::default()
+        };
+        assert_eq!(
+            expected_out_dir(&args("proj", None)),
+            PathBuf::from("proj/target")
+        );
+        assert_eq!(
+            expected_out_dir(&args("proj", Some("out"))),
+            PathBuf::from("proj/out")
+        );
+        assert_eq!(
+            expected_out_dir(&args("proj", Some("/abs/out"))),
+            PathBuf::from("/abs/out")
+        );
+    }
 
     struct NoopParser;
 

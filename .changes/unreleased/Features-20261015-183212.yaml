@@ -1,0 +1,7 @@
+kind: Features
+body: '[ClickHouse] Accept the ClickHouse table options on snapshots and tests, engine, order_by and disable_on_cluster on seeds, and settings on unit tests, in dbt_project.yml and node config.'
+time: 2026-10-15T18:32:12.957844+02:00
+custom:
+    author: koletzilla
+    issue: ""
+    project: dbt-core

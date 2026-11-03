@@ -7,7 +7,8 @@ use crate::constants::{
     DBT_AND_ADAPTERS_NAMESPACE, DIALECT, ROOT_PACKAGE_NAME, TARGET_PACKAGE_NAME,
 };
 use crate::dispatch_object::dbt_and_adapters_namespace_for;
-use crate::types::builtins::TypeRegistry;
+use crate::types::adapter::AdapterDispatchFunction;
+use crate::types::builtins::{Reference, TypeRegistry};
 use crate::types::function::{LambdaType, UserDefinedFunctionType};
 use crate::types::list::ListType;
 use crate::types::struct_::StructType;
@@ -537,6 +538,29 @@ pub struct TypeChecker<'src> {
 
 /// Typecheck logic implementation
 impl<'src> TypeChecker<'src> {
+    fn bind_dispatch(
+        &self,
+        mut function: TypeWithConstraint,
+        context: &BTreeMap<String, Value>,
+    ) -> TypeWithConstraint {
+        let resolved = match &function.inner {
+            Type::Object(object) => object
+                .downcast_ref::<Reference>()
+                .and_then(|reference| reference.get_type().ok())
+                .unwrap_or_else(|| function.inner.clone()),
+            _ => function.inner.clone(),
+        };
+        if let Type::Object(object) = &resolved {
+            if object.downcast_ref::<AdapterDispatchFunction>().is_some() {
+                // Builtins are shared. Dispatch state belongs to this template.
+                function.inner = Type::Object(DynObject::new(Arc::new(
+                    AdapterDispatchFunction::new(context.clone(), self.function_registry.clone()),
+                )));
+            }
+        }
+        function
+    }
+
     pub fn new(
         instr: &'src [Instruction<'src>],
         cfg: CFG,
@@ -801,9 +825,10 @@ impl<'src> TypeChecker<'src> {
                             ))
                         }
                     };
+                    let attribute = value_type.get_attribute(name, listener.clone())?;
                     typestate
                         .stack
-                        .push(value_type.get_attribute(name, listener.clone())?);
+                        .push(self.bind_dispatch(attribute, &typecheck_resolved_context));
                 }
 
                 Instruction::SetAttr(_name, _span) => {
@@ -1791,6 +1816,7 @@ impl<'src> TypeChecker<'src> {
                         }
 
                         let function = self_type.get_attribute(name, listener.clone())?;
+                        let function = self.bind_dispatch(function, &typecheck_resolved_context);
 
                         if function.is_any() {
                             typestate.stack.push(function);

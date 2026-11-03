@@ -1,8 +1,6 @@
 use crate::args::ResolveArgs;
-use crate::dbt_project_config::ProjectConfigResolver;
 use crate::dbt_project_config::RootProjectConfigs;
-use crate::dbt_project_config::disallow_plus_prefix_from_flags;
-use crate::dbt_project_config::init_project_config;
+use crate::dbt_project_config::{NodeLayers, ProjectConfigResolver, ResolvedNode};
 use crate::python_ast::parse_python;
 use crate::python_file_info::PythonFileInfo;
 use crate::python_validation::validate_python_model;
@@ -13,12 +11,10 @@ use crate::renderer::SqlFileRenderResult;
 use crate::renderer::collect_adapter_identifiers_detect_unsafe;
 use crate::renderer::render_unresolved_sql_files;
 use crate::renderer::strip_deprecated_warehouse_keys_from_properties;
-use crate::resolve::resolve_utils::build_unrendered_config;
+use crate::resolve::resolve_utils::RawProjectConfigsByAdapter;
 use crate::resolve::resolve_utils::err_resource_name_has_spaces;
 use crate::resolve::resolve_utils::extract_config_map;
-use crate::utils::RawProjectConfig;
 use crate::utils::RelationComponents;
-use crate::utils::extract_resource_config_from_raw_project;
 use crate::utils::get_node_fqn;
 use crate::utils::get_original_file_path;
 use crate::utils::get_unique_id;
@@ -180,7 +176,7 @@ pub async fn resolve_models(
     models_properties: &BTreeMap<String, MinimalPropertiesEntry>,
     database: &str,
     schema: &str,
-    parse_adapter_scopes: &ParseAdapterScopes,
+    parse_adapter_scopes: &Arc<ParseAdapterScopes>,
     default_adapter: AdapterType,
     package_name: &str,
     env: Arc<JinjaEnv>,
@@ -207,46 +203,36 @@ pub async fn resolve_models(
     let is_dependency = dependency_package_name.is_some();
     // Best-effort raw parse of the root project's `models:` subtree, used only to hydrate
     // dependency package nodes' `unrendered_config` with root overrides (preserving Jinja).
-    let raw_local_project_config = extract_resource_config_from_raw_project(
+    let mut raw_project_configs_by_adapter = RawProjectConfigsByAdapter::new(
         &package.raw_project_yml,
+        is_dependency.then_some(&root_package.raw_project_yml),
         "models",
         default_adapter,
     )?;
-    let raw_root_project_models_cfg = if is_dependency {
-        Some(extract_resource_config_from_raw_project(
-            &root_package.raw_project_yml,
-            "models",
-            default_adapter,
-        )?)
-    } else {
-        None
-    };
 
-    let config_resolver = ProjectConfigResolver::build(
+    let config_resolver = ProjectConfigResolver::per_adapter(
         root_project_configs.models.clone(),
-        is_dependency,
-        || {
-            init_project_config(
-                &package.dbt_project.models,
-                DbtQuoting::default(),
-                dependency_package_name,
-                disallow_plus_prefix_from_flags(root_package.dbt_project.flags.as_ref()),
-                default_adapter,
-            )
-        },
+        |root| &root.models,
+        root_project_configs,
+        &package.dbt_project.models,
+        dependency_package_name,
+        (
+            arg.unconfigured_static_analysis(),
+            root_package.dbt_project.sync.clone(),
+            Some(default_adapter),
+        ),
         default_adapter,
-    )?
-    .with_resolve_defaults((
-        arg.unconfigured_static_analysis(),
-        root_package.dbt_project.sync.clone(),
-        Some(default_adapter),
-    ));
+        arg.adapter_override,
+    )?;
 
     let render_ctx = RenderCtx {
         inner: Arc::new(RenderCtxInner {
             args: arg.clone(),
             root_project_name: root_package.dbt_project.name.clone(),
-            config_resolver: config_resolver.clone(),
+            config_resolver,
+            adapter_hint: None,
+            parse_adapter_scopes: Some(parse_adapter_scopes.clone()),
+            adapter_quoting: root_project_configs.adapter_quoting.clone(),
             package_quoting,
             uses_snapshot_fqn: false,
             defer_render_errors_to_compile: true,
@@ -348,7 +334,7 @@ pub async fn resolve_models(
         base_ctx,
         package_name,
         &package.dbt_project,
-        config_resolver,
+        &render_ctx.inner.config_resolver,
         python_files,
         &mut models_properties_sans_semantics,
         default_adapter,
@@ -373,8 +359,7 @@ pub async fn resolve_models(
         adapter_quoting,
         root_package,
         &models_properties_sans_semantics,
-        &raw_local_project_config,
-        raw_root_project_models_cfg.as_ref(),
+        &mut raw_project_configs_by_adapter,
         &raw_schema_yml_configs,
         &raw_test_configs,
         model_sql_resources_map,
@@ -507,8 +492,7 @@ async fn build_model_nodes(
     adapter_quoting: &IndexMap<AdapterType, DbtQuoting>,
     root_package: &DbtPackage,
     models_properties_sans_semantics: &BTreeMap<String, MinimalPropertiesEntry>,
-    raw_local_project_config: &RawProjectConfig,
-    raw_root_project_models_cfg: Option<&RawProjectConfig>,
+    raw_project_configs_by_adapter: &mut RawProjectConfigsByAdapter<'_>,
     raw_schema_yml_configs: &BTreeMap<String, BTreeMap<String, dbt_yaml::Value>>,
     raw_test_configs: &BTreeMap<String, TestUnrenderedConfigs>,
     model_sql_resources_map: Vec<SqlFileRenderResult<ModelConfig, ModelProperties>>,
@@ -544,6 +528,8 @@ async fn build_model_nodes(
         asset: dbt_asset,
         sql_file_info,
         config: model_config_resolved,
+        adapter,
+        alias_adapter,
         raw_code,
         rendered_sql,
         macro_spans,
@@ -763,9 +749,8 @@ async fn build_model_nodes(
         // while only selected nodes run, so one checked here would reject nodes the
         // invocation never touches. See `resolve_compute_write_target`.
         let selected_adapter = select_node_adapter(
-            arg,
             model_config.adapter,
-            None,
+            adapter,
             default_adapter,
             &dbt_asset.path,
         )?;
@@ -926,14 +911,12 @@ async fn build_model_nodes(
         // (`crates/dbt-cli/tests/dbt_conformance/list/defer_state/test_modified_state.rs`), which
         // pins that Stage 1/Stage 2 already handle a Mantle-produced manifest with the duplicate
         // correctly (suppress-only phantom diff, cleared by Stage 2).
-        let unrendered_config = build_unrendered_config(
+        let unrendered_config = raw_project_configs_by_adapter.unrendered_config(
+            alias_adapter,
             &fqn,
-            raw_local_project_config,
-            raw_root_project_models_cfg,
             raw_schema_yml_configs.get(ref_name),
             raw_config_call_dict.as_ref(),
             true,
-            default_adapter,
         )?;
 
         // Quoting is resolved here rather than at the package seed, because both
@@ -1621,7 +1604,7 @@ fn process_python_models(
     base_ctx: &BTreeMap<String, minijinja::Value>,
     package_name: &str,
     dbt_project: &DbtProject,
-    config_resolver: ProjectConfigResolver<ModelConfig>,
+    config_resolver: &ProjectConfigResolver<ModelConfig>,
     python_files: Vec<dbt_schemas::state::DbtAsset>,
     models_properties: &mut BTreeMap<String, MinimalPropertiesEntry>,
     adapter_type: AdapterType,
@@ -1662,6 +1645,7 @@ fn process_python_models(
             dependency_package_name,
             Some(python_asset.path.clone()),
             adapter_type,
+            config_resolver.has_per_adapter_trees(),
         ) {
             Ok(info) => info,
             Err(e) => {
@@ -1676,24 +1660,24 @@ fn process_python_models(
             extract_model_properties(env, base_ctx, models_properties, ref_name)?;
 
         // Merge Python model config with project config and schema.yml properties
-        let merged_config = match merge_python_config(
+        let merged = match merge_python_config(
             &python_file_info,
             &python_asset,
             package_name,
             dependency_package_name,
             dbt_project,
-            &config_resolver,
+            config_resolver,
             maybe_properties.as_ref(),
             arg,
         ) {
-            Ok(config) => config,
+            Ok(merged) => merged,
             Err(err) => {
                 emit_error_log_from_fs_error(*err);
                 continue;
             }
         };
 
-        let status = if merged_config.enabled {
+        let status = if merged.config.enabled {
             ModelStatus::Enabled
         } else {
             ModelStatus::Disabled
@@ -1702,14 +1686,16 @@ fn process_python_models(
         // Convert to SqlFileRenderResult for uniform downstream processing
         let python_result = SqlFileRenderResult {
             asset: python_asset.clone(),
-            config: merged_config,
+            config: merged.config,
+            adapter: merged.adapter,
+            alias_adapter: merged.alias_adapter,
             sql_file_info: crate::sql_file_info::SqlFileInfo {
                 sources: python_file_info.sources,
                 static_sources: vec![], // Python models have no dead-branch source discovery
                 refs: python_file_info.refs,
                 this: false,
                 metrics: vec![],
-                explicit_config: None,
+                config_calls: vec![],
                 tests: vec![],
                 macros: vec![],
                 materializations: vec![],
@@ -1810,7 +1796,7 @@ fn merge_python_config(
     config_resolver: &ProjectConfigResolver<ModelConfig>,
     maybe_properties: Option<&ModelProperties>,
     arg: &ResolveArgs,
-) -> FsResult<ResolvedModelConfig> {
+) -> FsResult<ResolvedNode<ResolvedModelConfig>> {
     let model_name = python_asset
         .path
         .file_stem()
@@ -1842,28 +1828,34 @@ fn merge_python_config(
         properties_config.materialized = Some(DbtMaterialization::Table);
     }
 
-    let python_config = *python_file_info.config.clone();
+    // Python calls fold over a default config, unlike SQL calls; it changes how `+grants` merge.
+    let default_config = ModelConfig::default();
+    let calls: Vec<&ModelConfig> = std::iter::once(&default_config)
+        .chain(&python_file_info.config_calls)
+        .collect();
+    let python_config = config_resolver
+        .fold_inline_calls(&NodeLayers::new(&fqn, &[Some(&properties_config)]), &calls)
+        .unwrap_or_default();
+    let configs = [Some(&properties_config), Some(&python_config)];
     // Capture static_analysis BEFORE apply_resolve_defaults so we can distinguish an
     // explicitly-set value from one inherited from the CLI --static-analysis flag.
-    let pre_defaults_config = config_resolver
-        .with_configs_and_root_overlay(&fqn, &[Some(&properties_config), Some(&python_config)]);
-    let merged_config = config_resolver.resolve_with_overrides(
-        &fqn,
-        &fqn,
-        &[Some(&properties_config), Some(&python_config)],
-        |c| {
-            if !python_file_info.config_keys_used.is_empty() {
-                c.config_keys_used = Some(python_file_info.config_keys_used.clone());
-                c.config_keys_defaults = Some(python_file_info.config_keys_defaults.clone());
-            }
-            if !python_file_info.meta_keys_used.is_empty() {
-                c.meta_keys_used = Some(python_file_info.meta_keys_used.clone());
-                c.meta_keys_defaults = Some(python_file_info.meta_keys_defaults.clone());
-            }
-            // Python models always have static_analysis turned off
-            c.static_analysis = Some(Spanned::new(StaticAnalysisKind::Off));
-        },
-    );
+    let pre_defaults_config = config_resolver.with_configs_and_root_overlay(&fqn, &configs);
+    let ResolvedNode {
+        config: merged_config,
+        adapter,
+        alias_adapter,
+    } = config_resolver.resolve_node_with_overrides(&NodeLayers::new(&fqn, &configs), |c| {
+        if !python_file_info.config_keys_used.is_empty() {
+            c.config_keys_used = Some(python_file_info.config_keys_used.clone());
+            c.config_keys_defaults = Some(python_file_info.config_keys_defaults.clone());
+        }
+        if !python_file_info.meta_keys_used.is_empty() {
+            c.meta_keys_used = Some(python_file_info.meta_keys_used.clone());
+            c.meta_keys_defaults = Some(python_file_info.meta_keys_defaults.clone());
+        }
+        // Python models always have static_analysis turned off
+        c.static_analysis = Some(Spanned::new(StaticAnalysisKind::Off));
+    });
 
     if let Some(spanned) = pre_defaults_config.static_analysis {
         crate::validation::warn_python_static_analysis(spanned.into_inner(), &unique_id);
@@ -1889,7 +1881,11 @@ fn merge_python_config(
         return Err(err);
     }
 
-    Ok(merged_config)
+    Ok(ResolvedNode {
+        config: merged_config,
+        adapter,
+        alias_adapter,
+    })
 }
 
 /// Reconciles `loaded_at_field` / `loaded_at_query` set inside `freshness` with
@@ -2306,6 +2302,122 @@ catalogs:
         assert!(msg.contains("multiple catalogs"), "message was: {msg}");
         assert!(msg.contains("cat_a"), "message was: {msg}");
         assert!(msg.contains("cat_b"), "message was: {msg}");
+    }
+
+    /// `source`'s Python model merged by `resolver`, as `process_python_models` does.
+    fn merge_python_source(
+        source: &str,
+        resolver: &crate::dbt_project_config::ProjectConfigResolver<
+            dbt_schemas::schemas::project::ModelConfig,
+        >,
+        adapter_type: AdapterType,
+    ) -> crate::dbt_project_config::ResolvedNode<dbt_schemas::schemas::project::ResolvedModelConfig>
+    {
+        use super::merge_python_config;
+        use crate::args::ResolveArgs;
+        use crate::python_ast::parse_python;
+        use crate::python_visitor::analyze_python_file;
+        use dbt_schemas::schemas::common::DbtChecksum;
+        use dbt_schemas::schemas::project::{DbtProject, ModelConfig};
+        use dbt_schemas::state::DbtAsset;
+        use std::path::PathBuf;
+
+        let path = PathBuf::from("models/m.py");
+        let suite = parse_python(source, &path).unwrap();
+        let info = analyze_python_file::<ModelConfig>(
+            &path,
+            source,
+            &suite,
+            DbtChecksum::default(),
+            None,
+            Some(path.clone()),
+            adapter_type,
+            resolver.has_per_adapter_trees(),
+        )
+        .unwrap();
+        let asset = DbtAsset {
+            base_path: PathBuf::new(),
+            original_path: path.clone(),
+            path,
+            package_name: "my_project".to_string(),
+        };
+        merge_python_config(
+            &info,
+            &asset,
+            "my_project",
+            None,
+            &DbtProject::default(),
+            resolver,
+            None,
+            &ResolveArgs::default(),
+        )
+        .unwrap()
+    }
+
+    /// Each `dbt.config()` call is aliased with the node's table before the fold, so a later
+    /// deferred `catalog` still beats an earlier `database` on a Databricks node.
+    #[test]
+    fn python_later_catalog_beats_database_with_deferred_catalog() {
+        use crate::dbt_project_config_tests::per_adapter_config_resolver_tests::{
+            root_configs_declaring, root_package_resolver,
+        };
+        use dbt_schemas::schemas::profiles::DbConfig;
+
+        let root = root_configs_declaring(
+            DbConfig::Databricks(Box::default()),
+            "+adapter: databricks\n",
+        );
+        let resolver = root_package_resolver(&root);
+        let resolved = merge_python_source(
+            "def model(dbt, session):\n    dbt.config(database='b')\n    \
+             dbt.config(catalog='a')\n    return session.table('data')\n",
+            &resolver,
+            AdapterType::Snowflake,
+        );
+        assert_eq!(resolved.alias_adapter, AdapterType::Databricks);
+        assert_eq!(
+            resolved.config.database.into_inner().flatten(),
+            Some("a".to_string())
+        );
+        assert_eq!(resolved.config.__warehouse_specific_config__.catalog, None);
+    }
+
+    /// Pins the existing Python fold, which starts from a default config, unlike SQL's: the
+    /// first `+select` already has a parent, so the second one extends it.
+    #[test]
+    fn python_grants_fold_across_calls_over_a_default_config() {
+        use crate::dbt_project_config::{ProjectConfigResolver, init_project_config};
+        use dbt_schemas::schemas::project::ProjectModelConfig;
+
+        let models: ProjectModelConfig = dbt_jinja_utils::serde::from_yaml_raw(
+            "+grants:\n  select: [base]\n",
+            None,
+            false,
+            None,
+        )
+        .unwrap();
+        let root = init_project_config(
+            &Some(models),
+            Default::default(),
+            None,
+            false,
+            AdapterType::DuckDB,
+        )
+        .unwrap();
+        let resolver = ProjectConfigResolver::for_root(root, AdapterType::DuckDB);
+        let resolved = merge_python_source(
+            "def model(dbt, session):\n    dbt.config(grants={'+select': ['a']})\n    \
+             dbt.config(grants={'+select': ['b']})\n    return session.table('data')\n",
+            &resolver,
+            AdapterType::DuckDB,
+        );
+        let select: Option<Vec<String>> = resolved
+            .config
+            .grants
+            .as_ref()
+            .and_then(|grants| grants.0.get("select").cloned())
+            .map(Into::into);
+        assert_eq!(select, Some(vec!["a".to_string(), "b".to_string()]));
     }
 
     #[test]

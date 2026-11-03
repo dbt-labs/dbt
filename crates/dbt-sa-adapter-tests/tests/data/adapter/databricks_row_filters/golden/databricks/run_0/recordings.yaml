@@ -1,0 +1,22 @@
+'83164862':
+- sequence: 0
+  type: execute
+  sql: |-
+    CREATE OR REPLACE FUNCTION e2e.adapters_databricks_row_filters.user_filter(
+    user_id STRING
+    )
+    RETURNS BOOLEAN
+    RETURN user_id = 'user1'
+d94d89e1:
+- sequence: 0
+  type: execute
+  sql: CREATE SCHEMA IF NOT EXISTS `e2e`.`adapters_databricks_row_filters`
+e25fd61b:
+- sequence: 0
+  type: execute
+  sql: |-
+    CREATE OR REPLACE FUNCTION e2e.adapters_databricks_row_filters.region_filter(
+    region STRING
+    )
+    RETURNS BOOLEAN
+    RETURN region = 'region_a'

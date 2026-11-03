@@ -121,6 +121,9 @@ mod tests {
                     root_config,
                     AdapterType::Postgres,
                 ),
+                adapter_hint: None,
+                parse_adapter_scopes: None,
+                adapter_quoting: Default::default(),
                 resource_paths: vec!["models".to_string()],
                 package_quoting: DbtQuoting {
                     database: Some(true),
@@ -299,6 +302,9 @@ mod tests {
                     root_config,
                     AdapterType::Postgres,
                 ),
+                adapter_hint: None,
+                parse_adapter_scopes: None,
+                adapter_quoting: Default::default(),
                 resource_paths: vec!["models".to_string()],
                 package_quoting: DbtQuoting {
                     database: Some(true),

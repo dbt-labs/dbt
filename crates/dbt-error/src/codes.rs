@@ -2,8 +2,7 @@
 use std::{collections::HashMap, fmt::Display};
 
 use dbt_proc_macros::include_frontend_error_codes;
-use int_enum::IntEnum;
-use strum_macros::{EnumString, IntoStaticStr};
+use strum_macros::{EnumString, FromRepr, IntoStaticStr};
 
 /// Error codes for the SDF CLI.
 ///
@@ -12,7 +11,7 @@ use strum_macros::{EnumString, IntoStaticStr};
 #[include_frontend_error_codes]
 #[repr(u16)]
 #[non_exhaustive]
-#[derive(Debug, Copy, Clone, Eq, PartialEq, IntEnum, EnumString, IntoStaticStr, Default)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, FromRepr, EnumString, IntoStaticStr, Default)]
 pub enum ErrorCode {
     // ----------------- Frontend errors [0, 999] -----------------------------
     //
@@ -179,6 +178,11 @@ pub enum ErrorCode {
     SemanticModelDeprecated = 1157,
     PackageMissingProjectFile = 1158,
     DbtYamlValidationError = 1159,
+    CleanTargetOutsideProject = 1160,
+    /// A project or package defines a `unit` materialization or a
+    /// `get_unit_test_sql` macro. Fusion builds unit-test SQL in Rust and never
+    /// dispatches through either, so the override has no effect.
+    UnitTestMacroOverrideIgnored = 1161,
 
     // Network/HTTP [1200–1249]
     NetworkError = 1200,
@@ -208,6 +212,7 @@ pub enum ErrorCode {
     DbDriverFailed = 1308,
     ReplayDataInvalid = 1309,
     ReplayDataMissing = 1310,
+    ShallowCloneCheckFailed = 1311,
 
     // Execution/runtime [1400–1449]
     PlannerFailed = 1400,
@@ -222,6 +227,9 @@ pub enum ErrorCode {
     /// dbt State service degraded into fail-open: config/init/decision/cache
     /// errors that don't abort the command but indicate degraded behavior.
     StateServiceWarn = 1410,
+    /// The per-node Redis lock behind `lock_with_state` could not be created,
+    /// taken, or released; the run continues without it.
+    StateLockUnavailable = 1411,
 
     // Serialization [1450–1460]
     JsonInvalid = 1450,
@@ -331,6 +339,12 @@ pub enum ErrorCode {
     IndexWriteFailed = 1659,
 
     // --------------------------------------------------------------------------------------------
+    // Schema cache
+    /// A schema cache row read from `target/` holds IPC bytes that do not deserialize. The row
+    /// is skipped, so its schema is fetched or computed again, as with a cold cache.
+    SchemaCacheEntryCorrupt = 1660,
+
+    // --------------------------------------------------------------------------------------------
     // CLI errors
     NoLongerSupportedOption = 1700,
     NotYetSupportedOption = 1701,
@@ -364,20 +378,20 @@ pub enum ErrorCode {
     SkillPathEscapesProject = 1806,
 
     // --------------------------------------------------------------------------------------------
-    // Plugins
-    /// An error a plugin reported. Plugins never report under any other code.
-    PluginError = 1900,
-    /// A warning a plugin reported. Plugins never report under any other code.
-    PluginWarning = 1901,
-    /// A project gives entries or paths to a reserved plugin type whose plugin is off, or that
-    /// this dbt doesn't have. dbt ignores them.
-    PluginNotEnabled = 1902,
-    /// A project gives entries or paths to a plugin type no one reserved. dbt ignores them.
-    UnknownPlugin = 1903,
-    /// A `plugin-paths` entry overlaps a directory dbt reads, or another plugin's.
-    PluginPathOverlap = 1904,
-    /// A `plugin-paths` entry resolves outside the project that declared it. dbt skips it.
-    PluginPathEscapesProject = 1905,
+    // Experimentals
+    /// An error an experimental reported. Experimentals never report under any other code.
+    ExperimentalError = 1900,
+    /// A warning an experimental reported. Experimentals never report under any other code.
+    ExperimentalWarning = 1901,
+    /// A project gives entries or paths to a reserved experimental type whose experimental is off,
+    /// or that this dbt doesn't have. dbt ignores them.
+    ExperimentalNotEnabled = 1902,
+    /// A project gives entries or paths to an experimental type no one reserved. dbt ignores them.
+    UnknownExperimental = 1903,
+    /// An `experimental-paths` entry overlaps a directory dbt reads, or another experimental's.
+    ExperimentalPathOverlap = 1904,
+    /// An `experimental-paths` entry resolves outside the project that declared it. dbt skips it.
+    ExperimentalPathEscapesProject = 1905,
 
     // --------------------------------------------------------------------------------------------
     // Local execution
@@ -394,6 +408,12 @@ pub enum ErrorCode {
     // --------------------------------------------------------------------------------------------
     // Lineage
     InvalidLineageSchema = 3500,
+
+    // --------------------------------------------------------------------------------------------
+    // SQL frontend library
+    /// The SQL frontend library could not be loaded, or does not speak a
+    /// protocol this dbt does.
+    FrontendLibraryUnavailable = 3600,
 
     InvalidDialect = 8998,
     RuntimeError = 8999,
@@ -431,6 +451,14 @@ pub enum ErrorCode {
 impl std::hash::Hash for ErrorCode {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         (*self as u16).hash(state)
+    }
+}
+
+impl TryFrom<u16> for ErrorCode {
+    type Error = u16;
+
+    fn try_from(value: u16) -> Result<Self, Self::Error> {
+        Self::from_repr(value).ok_or(value)
     }
 }
 
@@ -556,6 +584,14 @@ mod tests {
         assert_eq!(
             ErrorCode::StateServiceWarn.name_and_code(),
             "StateServiceWarn (dbt1410)"
+        );
+    }
+
+    #[test]
+    fn state_lock_unavailable_renders_name_and_code() {
+        assert_eq!(
+            ErrorCode::StateLockUnavailable.name_and_code(),
+            "StateLockUnavailable (dbt1411)"
         );
     }
 }

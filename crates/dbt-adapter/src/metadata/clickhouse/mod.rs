@@ -6,6 +6,7 @@ use crate::query_ctx::{node_id_from_state, query_ctx_from_state};
 use crate::record_batch::RecordBatchExt;
 use crate::relation::Relation;
 use crate::sql_types::{TypeOps, make_arrow_field_v2};
+use crate::value::columns_to_value;
 use crate::{AdapterResult, errors::AsyncAdapterResult, metadata::*};
 use arrow_schema::Schema;
 
@@ -1281,27 +1282,26 @@ pub(crate) fn validate_incremental_strategy(
 /// else a map; errors when the strategy cannot reconcile the changes.
 pub(crate) fn column_changes_value(
     on_schema_change: &str,
-    source: Vec<Column>,
-    target: Vec<Column>,
+    source: Vec<Arc<Column>>,
+    target: Vec<Arc<Column>>,
     materialization: &str,
 ) -> AdapterResult<Value> {
     let in_target = |name: &str| target.iter().any(|c| c.name() == name);
     let source_of = |name: &str| source.iter().find(|c| c.name() == name);
 
-    let columns_to_drop: Vec<Column> = source
-        .iter()
-        .filter(|c| !in_target(c.name()))
-        .cloned()
-        .collect();
-    let columns_to_add: Vec<Column> = target
+    let columns_to_add: Vec<Arc<Column>> = target
         .iter()
         .filter(|c| source_of(c.name()).is_none())
         .cloned()
         .collect();
-    let columns_to_modify: Vec<Column> = target
+    let columns_to_drop: Vec<Arc<Column>> = source
         .iter()
-        .filter(|c| source_of(c.name()).is_some_and(|s| s.dtype() != c.dtype()))
+        .filter(|c| !in_target(c.name()))
         .cloned()
+        .collect();
+    let columns_to_modify: Vec<Arc<Column>> = target
+        .into_iter()
+        .filter(|c| source_of(c.name()).is_some_and(|s| s.dtype() != c.dtype()))
         .collect();
 
     let has_schema_changes =
@@ -1312,7 +1312,7 @@ pub(crate) fn column_changes_value(
 
     if has_conflicting_changes {
         // Python list-repr of `[str(col), ...]` — tests assert on it.
-        let fmt = |cols: &[Column]| {
+        let fmt = |cols: &[Arc<Column>]| {
             if cols.is_empty() {
                 "[]".to_string()
             } else {
@@ -1359,11 +1359,22 @@ pub(crate) fn column_changes_value(
         "on_schema_change".to_string(),
         Value::from(on_schema_change),
     );
-    changes.insert("columns_to_add".to_string(), Value::from(columns_to_add));
-    changes.insert("columns_to_drop".to_string(), Value::from(columns_to_drop));
+    changes.insert(
+        "columns_to_add".to_string(),
+        columns_to_value(columns_to_add),
+    );
+    changes.insert(
+        "columns_to_drop".to_string(),
+        Value::from(
+            columns_to_drop
+                .into_iter()
+                .map(Arc::unwrap_or_clone)
+                .collect::<Vec<_>>(),
+        ),
+    );
     changes.insert(
         "columns_to_modify".to_string(),
-        Value::from(columns_to_modify),
+        columns_to_value(columns_to_modify),
     );
     Ok(Value::from(changes))
 }
@@ -1711,15 +1722,15 @@ mod tests {
         );
     }
 
-    fn ch_column(name: &str, dtype: &str) -> Column {
-        Column::new(
+    fn ch_column(name: &str, dtype: &str) -> Arc<Column> {
+        Arc::new(Column::new(
             AdapterType::ClickHouse,
             name.to_string(),
             dtype.to_string(),
             None,
             None,
             None,
-        )
+        ))
     }
 
     #[test]

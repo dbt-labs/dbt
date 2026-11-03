@@ -24,9 +24,9 @@ enum NodeType {
   NODE_TYPE_SEMANTIC_MODEL = 14;
   NODE_TYPE_FUNCTION = 15;
   NODE_TYPE_CHECK = 16;
-  // A node a plugin adds to the project. Its kind is in `plugin_type`. Numbered apart from the
-  // core node types; node types must fit in a byte (node-count metric keys pack them).
-  NODE_TYPE_PLUGIN = 100;
+  // A node an experimental adds to the project. Its kind is in `experimental_type`. Numbered apart
+  // from the core node types; node types must fit in a byte (node-count metric keys pack them).
+  NODE_TYPE_EXPERIMENTAL = 100;
 }
 
 // Core outcome for any node evaluation result within any phase.
@@ -216,6 +216,29 @@ enum MicrobatchBatchSize {
   MICROBATCH_BATCH_SIZE_YEAR = 4;
 }
 
+// Response of a node's `main` statement.
+message NodeAdapterResponse {
+  // Id the warehouse assigned to the statement's query.
+  // Unset when the adapter reported none.
+  optional string query_id = 1;
+  // Status code of the statement, as the adapter reports it (e.g. "SUCCESS", "INSERT").
+  // Unset when the adapter reported none.
+  optional string code = 2;
+  // Adapter-defined statement metrics.
+  // INTERNAL METRICS ONLY. DO NOT DEPEND ON THESE KEYS. THEY MAY CHANGE OR BE REMOVED WITHOUT NOTICE.
+  map<string, AdapterResponseValue> extra = 3;
+}
+
+// Value of an adapter-defined key in `NodeAdapterResponse.extra`.
+message AdapterResponseValue {
+  oneof value {
+    int64 int = 1;
+    double float = 2;
+    bool bool = 3;
+    string string = 4;
+  }
+}
+
 // Evaluation of one time window within a microbatch model's run phase.
 // Maps to dbt-core's LogStartBatch (Q045) and LogBatchResult (Q046).
 message MicrobatchEvaluated {
@@ -331,8 +354,12 @@ message NodeEvaluated {
   // Optional legacy dbt core event code (e.g. "Q018") if this event has a strict mapping to a dbt core event.
   optional string dbt_core_event_code = 40;
 
-  // Number of rows affected by this node evaluation, if available.
-  // Only set for successful outcomes where row count is known (e.g., models, seeds).
+  // Rows affected by the node's `main` statement. Other named statements are ignored.
+  // Set in the Run phase whenever the node recorded a `main` response, for the node types that
+  // set `adapter_response`. This includes a test that ran and failed.
+  // For a microbatch model: the sum across batches.
+  // Unset when the materialization failed before recording one, when a microbatch batch failed,
+  // and when the adapter reported no known (non-negative) count.
   optional uint64 rows_affected = 41;
 
   // Total time in milliseconds this node evaluation spent idle.
@@ -346,6 +373,17 @@ message NodeEvaluated {
   // run-phase execution. Only set when the dbt State service was consulted and
   // returned an execution decision.
   optional string state_decision_id = 43;
+
+  // Response of the node's `main` statement, as in run_results.json minus the row count and
+  // the free-text message.
+  // Set in the Run phase whenever a model, seed, snapshot, function, unit test or data test
+  // recorded a `main` response, including a test that ran and failed.
+  // For a microbatch model: `query_id` and `code` from the last batch, `extra` metrics summed
+  // across batches.
+  // Unset for other node types, for tests that share an aggregated query, for nodes that run
+  // outside the warehouse adapter (local or lake compute), when the materialization failed
+  // before recording a response, and when a microbatch batch failed.
+  NodeAdapterResponse adapter_response = 44;
 }
 
 // Span event tracking full processing of a node across all phases.
@@ -449,8 +487,8 @@ message NodeProcessed {
   // whether the node was in the selection set.
   bool in_selection = 42;
 
-  // Number of rows affected by this node processing, if available.
-  // Only set for successful outcomes where row count is known (e.g., models, seeds).
+  // Rows affected by the node's `main` statement.
+  // Rolled up from the Run phase `NodeEvaluated`; see its `rows_affected`.
   optional uint64 rows_affected = 43;
 
   // Group identifier for model level notifications
@@ -473,7 +511,12 @@ message NodeProcessed {
   // project can run nodes on more than one adapter.
   optional string adapter = 48;
 
-  // If node_type == NODE_TYPE_PLUGIN, the kind of node the plugin added
+  // If node_type == NODE_TYPE_EXPERIMENTAL, the kind of node the experimental added
   // (e.g. "widget").
-  optional string plugin_type = 49;
+  optional string experimental_type = 49;
+
+  // Response of the node's `main` statement.
+  // Rolled up from the Run phase `NodeEvaluated`; see its `adapter_response`.
+  // Unset when the Run phase did not run, or recorded none.
+  NodeAdapterResponse adapter_response = 50;
 }

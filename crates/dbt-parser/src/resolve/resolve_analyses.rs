@@ -53,7 +53,7 @@ pub async fn resolve_analyses(
     analysis_properties: &mut BTreeMap<String, MinimalPropertiesEntry>,
     database: &str,
     schema: &str,
-    parse_adapter_scopes: &ParseAdapterScopes,
+    parse_adapter_scopes: &Arc<ParseAdapterScopes>,
     // The target's default adapter.
     default_adapter: AdapterType,
     package_name: &str,
@@ -86,13 +86,17 @@ pub async fn resolve_analyses(
             )
         },
         default_adapter,
-    )?;
+    )?
+    .with_adapter_override(arg.adapter_override);
 
     let render_ctx = RenderCtx {
         inner: Arc::new(RenderCtxInner {
             args: arg.clone(),
             root_project_name: root_package.dbt_project.name.clone(),
             config_resolver,
+            adapter_hint: None,
+            parse_adapter_scopes: Some(parse_adapter_scopes.clone()),
+            adapter_quoting: root_project_configs.adapter_quoting.clone(),
             package_quoting,
             uses_snapshot_fqn: false,
             defer_render_errors_to_compile: true,
@@ -140,7 +144,9 @@ pub async fn resolve_analyses(
         asset: dbt_asset,
         sql_file_info,
         config: analysis_config,
+        adapter,
         raw_code,
+        macro_dependencies,
         rendered_sql,
         macro_spans,
         properties: maybe_properties,
@@ -166,11 +172,10 @@ pub async fn resolve_analyses(
         let unique_id = get_unique_id(analysis_name, package_name, None, "analysis");
         // An analysis is compiled rather than materialized, but it still renders
         // refs and dispatches macros, so which adapter it renders *as* is a real
-        // choice. Resolved the same way every other node type resolves it.
+        // choice.
         let selected_adapter = select_node_adapter(
-            arg,
             analysis_config.adapter,
-            None,
+            adapter,
             default_adapter,
             &dbt_asset.path,
         )?;
@@ -208,12 +213,14 @@ pub async fn resolve_analyses(
         )?;
 
         let is_enabled = status != ModelStatus::Disabled;
-        let macro_depends_on = all_depends_on
+        let mut macro_depends_on = all_depends_on
             .get(&format!("{package_name}.{analysis_name}"))
             .cloned()
-            .unwrap_or_default()
-            .into_iter()
-            .collect();
+            .unwrap_or_default();
+        if selected_adapter != default_adapter {
+            macro_depends_on.extend(macro_dependencies);
+        }
+        let macro_depends_on = macro_depends_on.into_iter().collect();
 
         let (node_database, node_schema) = node_starting_database_and_schema(
             Some(parse_adapter_scopes),

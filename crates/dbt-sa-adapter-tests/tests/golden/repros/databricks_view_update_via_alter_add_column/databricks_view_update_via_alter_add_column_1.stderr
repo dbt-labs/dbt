@@ -1,0 +1,1 @@
+[warning] [JinjaWarn (dbt1071)]: The following columns are specified in the schema but are not present in the database and will be skipped: foo_description

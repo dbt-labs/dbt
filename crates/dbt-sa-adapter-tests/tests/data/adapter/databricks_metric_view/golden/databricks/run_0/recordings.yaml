@@ -1,0 +1,162 @@
+85f3743c:
+- sequence: 0
+  type: execute
+  sql: SHOW SCHEMAS IN `e2e`
+c842adae:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists `e2e`.`adapters_databricks_metric_view`
+model.test.basic_metric_view:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace view `e2e`.`adapters_databricks_metric_view`.`basic_metric_view`
+    with metrics
+    language yaml
+    as $$
+    version: 0.1
+    source: "`e2e`.`adapters_databricks_metric_view`.`source_orders`"
+    dimensions:
+    - name: order_date
+    expr: order_date
+    - name: status
+    expr: status
+    measures:
+    - name: total_orders
+    expr: count(1)
+    - name: total_revenue
+    expr: sum(revenue)
+    $$
+model.test.metric_view_with_config:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace view `e2e`.`adapters_databricks_metric_view`.`metric_view_with_config`
+    with metrics
+    language yaml
+    as $$
+    version: 0.1
+    source: "`e2e`.`adapters_databricks_metric_view`.`source_orders`"
+    dimensions:
+    - name: status
+    expr: status
+    measures:
+    - name: order_count
+    expr: count(1)
+    $$
+- sequence: 1
+  type: execute
+  sql: |-
+    ALTER 
+    
+    VIEW
+    
+    `e2e`.`adapters_databricks_metric_view`.`metric_view_with_config` SET TAGS (
+    'team' = 'analytics', 'environment' = 'test'
+    )
+model.test.metric_view_with_filter:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace view `e2e`.`adapters_databricks_metric_view`.`metric_view_with_filter`
+    with metrics
+    language yaml
+    as $$
+    version: 0.1
+    source: "`e2e`.`adapters_databricks_metric_view`.`source_orders`"
+    filter: status = 'completed'
+    dimensions:
+    - name: order_date
+    expr: order_date
+    measures:
+    - name: completed_orders
+    expr: count(1)
+    - name: completed_revenue
+    expr: sum(revenue)
+    $$
+model.test.source_orders:
+- sequence: 0
+  type: execute
+  sql: |-
+    SELECT
+    table_name,
+    if(table_type IN ('EXTERNAL', 'MANAGED', 'MANAGED_SHALLOW_CLONE', 'EXTERNAL_SHALLOW_CLONE'), 'table', lower(table_type)) AS table_type,
+    lower(data_source_format) AS file_format,
+    table_schema,
+    table_owner,
+    table_catalog,
+    if(
+    table_type IN (
+    'EXTERNAL',
+    'MANAGED',
+    'MANAGED_SHALLOW_CLONE',
+    'EXTERNAL_SHALLOW_CLONE'
+    ),
+    lower(table_type),
+    NULL
+    ) AS databricks_table_type
+    FROM `system`.`information_schema`.`tables`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'adapters_databricks_metric_view'
+- sequence: 1
+  type: execute
+  sql: |-
+    create or replace temporary view `source_orders__dbt_tmp` as
+    select 1 as id, 100 as revenue, 'completed' as status, '2024-01-01' as order_date
+    union all
+    select 2 as id, 200 as revenue, 'pending' as status, '2024-01-02' as order_date
+    union all
+    select 3 as id, 150 as revenue, 'completed' as status, '2024-01-03' as order_date
+- sequence: 2
+  type: execute
+  sql: DESCRIBE TABLE EXTENDED `source_orders__dbt_tmp` AS JSON
+- sequence: 3
+  type: execute
+  sql: |-
+    SELECT
+    table_catalog,
+    table_schema,
+    table_name,
+    filter_name,
+    target_columns
+    FROM `e2e`.`information_schema`.`row_filters`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'adapters_databricks_metric_view'
+    AND table_name = 'source_orders'
+- sequence: 4
+  type: execute
+  sql: |-
+    create or replace table `e2e`.`adapters_databricks_metric_view`.`source_orders`
+    
+    (
+    
+    
+    
+    
+    `id` int,
+    
+    
+    
+    
+    `revenue` int,
+    
+    
+    
+    
+    `status` STRING,
+    
+    
+    
+    
+    `order_date` STRING
+    
+    
+    
+    )
+    
+    
+    
+    using delta
+- sequence: 5
+  type: execute
+  sql: insert into `e2e`.`adapters_databricks_metric_view`.`source_orders` by name select * from `source_orders__dbt_tmp`

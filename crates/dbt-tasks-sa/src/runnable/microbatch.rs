@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use crate::microbatch::BatchContext;
 use chrono_tz::Tz;
+use dbt_adapter::Adapter;
 use dbt_adapter::cast_util::downcast_value_to_dyn_base_relation;
 use dbt_adapter::formatter::SqlLiteralFormatter;
 use dbt_adapter::relation::create_relation_from_node;
@@ -288,14 +289,14 @@ pub fn build_event_time_mapping(
 pub async fn is_incremental(
     model: &DbtModel,
     full_refresh: bool,
-    adapter_type: AdapterType,
+    adapter: Arc<Adapter>,
     jinja_env: Arc<JinjaEnv>,
 ) -> bool {
     if full_refresh {
         return false;
     }
 
-    let relation = match create_relation_from_node(adapter_type, model, None) {
+    let relation = match create_relation_from_node(adapter.adapter_type(), model, None) {
         Ok(rel) => rel,
         Err(e) => {
             warn!(
@@ -314,9 +315,6 @@ pub async fn is_incremental(
     // it opens a connection and has to run on a `dbt-runtime` worker. The
     // `State` is built there too: it borrows the environment and is not `Send`.
     let existing_table = run_blocking_task_operation(move || {
-        let Some(adapter) = jinja_env.get_base_adapter() else {
-            return false;
-        };
         let state = jinja_env.new_state_with_context(BTreeMap::new());
         adapter
             .get_relation(&state, &database, &schema, &identifier, false)
