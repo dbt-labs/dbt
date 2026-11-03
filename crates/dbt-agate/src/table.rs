@@ -12,9 +12,9 @@ use crate::vec_of_rows::VecOfRows;
 use crate::{Tuple, adjusted_index};
 
 use arrow::array::StringViewBuilder;
-use arrow::compute::TakeOptions;
+use arrow::compute::{LexicographicalComparator, SortColumn, SortOptions, TakeOptions};
 use arrow::record_batch::RecordBatch;
-use arrow_array::{Array, ArrayRef, StringViewArray, UInt64Array};
+use arrow_array::{Array, BooleanArray, StringViewArray, UInt64Array};
 use arrow_schema::{ArrowError, Schema};
 use minijinja::arg_utils::ArgsIter;
 use minijinja::listener::RenderingEventListener;
@@ -27,48 +27,50 @@ use std::io;
 use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
 
-struct ColumnRows {
-    decoded: ArrayRef,
-    non_null: Vec<u64>,
-    null: Vec<u64>,
-}
+/// Prepare the Arrow array to sort it like Python does sorting.
+///
+/// `None`, `bool`, numbers, `str`, `bytes`, `date`, `datetime` or `timedelta`,
+/// are types that Python can compare. Everything else (maps, unions, lists,
+/// structs, run-end encoded arrays) is rejected even when arrow could order it:
+/// Python can't compare dicts, and mixed or nested values would raise `TypeError`
+/// or order differently.
+fn safe_to_sort(array: Arc<dyn Array>) -> Result<Arc<dyn Array>, ArrowError> {
+    use arrow::compute::CastOptions;
+    use arrow::compute::cast_with_options;
+    use arrow_schema::DataType::*;
 
-impl ColumnRows {
-    fn try_new(col: &TableRepr) -> Result<Self, ArrowError> {
-        debug_assert_eq!(col.num_columns(), 1);
-        let column = col.flat.inner().column(0);
-        let decoded = match column.data_type() {
-            arrow_schema::DataType::Dictionary(_, value_type) => {
-                let cast_options = arrow::compute::CastOptions {
-                    safe: false,
-                    ..Default::default()
-                };
-                arrow::compute::cast_with_options(column.as_ref(), value_type, &cast_options)?
-            }
-            _ => Arc::clone(column),
-        };
-        let nulls = decoded.logical_nulls();
-        let (non_null, null) = (0..decoded.len() as u64)
-            .partition(|&i| nulls.as_ref().is_none_or(|n| n.is_valid(i as usize)));
-        Ok(Self {
-            decoded,
-            non_null,
-            null,
-        })
-    }
-
-    fn sorted_non_null(&self) -> Result<Vec<u64>, ArrowError> {
-        if self.non_null.is_empty() {
-            return Ok(Vec::new());
+    let is_sortable_like_python = match array.data_type() {
+        Null | Boolean => true,
+        Int8 | Int16 | Int32 | Int64 | UInt8 | UInt16 | UInt32 | UInt64 => true,
+        Float16 | Float32 | Float64 => true,
+        Decimal32(_, _) | Decimal64(_, _) | Decimal128(_, _) | Decimal256(_, _) => true,
+        Date32 | Date64 | Timestamp(_, _) => true,
+        Time32(_) | Time64(_) | Duration(_) | Interval(_) => true,
+        Utf8 | LargeUtf8 | Utf8View => true,
+        Binary | LargeBinary | BinaryView | FixedSizeBinary(_) => true,
+        Dictionary(_, value_type) => {
+            // Dictionary-encoded arrays are not handled by the sort_to_indices()
+            // function yet, so we must decompress them before sorting.
+            let cast_options = CastOptions {
+                safe: false,
+                ..Default::default()
+            };
+            let values = cast_with_options(array.as_ref(), value_type.as_ref(), &cast_options)?;
+            return safe_to_sort(values);
         }
-        let indices = UInt64Array::from(self.non_null.clone());
-        let values = arrow::compute::take(self.decoded.as_ref(), &indices, None)?;
-        let order = arrow::compute::sort_to_indices(values.as_ref(), None, None)?;
-        Ok(order
-            .values()
-            .iter()
-            .map(|&i| self.non_null[i as usize])
-            .collect())
+        // XXX: consider supporting REE arrays in the future.
+        RunEndEncoded(_, _) => false,
+        List(_) | LargeList(_) | ListView(_) | LargeListView(_) | FixedSizeList(_, _) => false,
+        Struct(_) | Union(_, _) | Map(_, _) => false,
+    };
+
+    if is_sortable_like_python {
+        Ok(array)
+    } else {
+        Err(ArrowError::ComputeError(format!(
+            "Sort not supported for data type {}",
+            array.data_type()
+        )))
     }
 }
 
@@ -264,53 +266,50 @@ impl TableRepr {
         Some(Arc::new(repr))
     }
 
-    fn single_column_table_with_rows(&self, indices: Vec<u64>) -> Result<Arc<Self>, ArrowError> {
-        let repr = self.select_rows(&UInt64Array::from(indices), None)?;
-        Ok(Arc::new(repr))
+    pub fn column_distinct(&self, col_idx: isize) -> Result<Option<Arc<Self>>, ArrowError> {
+        self.single_column_table(col_idx)
+            .map(|repr| repr.distinct(&[0]))
+            .transpose()
     }
 
-    pub fn column_distinct(&self, col_idx: isize) -> Result<Arc<Self>, ArrowError> {
-        let col = self.single_column_table(col_idx).unwrap();
-        let rows = ColumnRows::try_new(&col)?;
-        let sorted = rows.sorted_non_null()?;
-        let mut indices: Vec<u64> = rows.null.first().copied().into_iter().collect();
-        if !sorted.is_empty() {
-            let sorted_indices = UInt64Array::from(sorted.clone());
-            let sorted_values = arrow::compute::take(rows.decoded.as_ref(), &sorted_indices, None)?;
-            let batch = RecordBatch::try_from_iter([("value", sorted_values)])?;
-            let grouper = Grouper::from_record_batch_columns(&batch, &[0])?;
-            let mut seen_groups = HashSet::new();
-            indices.extend(
-                grouper
-                    .iter()
-                    .zip(sorted)
-                    .filter_map(|(group_id, row_idx)| {
-                        seen_groups.insert(group_id).then_some(row_idx)
-                    }),
-            );
-        }
-        col.single_column_table_with_rows(indices)
+    pub fn column_without_nulls(&self, col_idx: isize) -> Result<Option<Arc<Self>>, ArrowError> {
+        let Some(col) = self.single_column_table(col_idx) else {
+            return Ok(None);
+        };
+        let arr = col.flat.inner().column(0);
+
+        // logical_nulls() also covers Null, Dictionary, RunEndEncoded and Union arrays.
+        let validity_filter = match arr.logical_nulls() {
+            Some(nulls) if nulls.null_count() > 0 => {
+                // Create a BooleanArray based on the logical nulls bitmap of the column.
+                BooleanArray::new(nulls.into_inner(), None)
+            }
+            // Nothing to remove: reuse the column as is.
+            _ => return Ok(Some(col)),
+        };
+        let filtered = arrow::compute::filter(arr.as_ref(), &validity_filter)?;
+
+        let repr = {
+            let schema = col.flat.inner().schema();
+            let batch = RecordBatch::try_new(schema, vec![filtered])?;
+            let flat = FlatRecordBatch::_from_flattened_record_batch(Arc::new(batch), None)?;
+            let repr = TableRepr::new(Arc::new(flat), None, None);
+            Arc::new(repr)
+        };
+        Ok(Some(repr))
     }
 
-    pub fn column_without_nulls(&self, col_idx: isize) -> Result<Arc<Self>, ArrowError> {
-        let col = self.single_column_table(col_idx).unwrap();
-        let rows = ColumnRows::try_new(&col)?;
-        col.single_column_table_with_rows(rows.non_null)
-    }
-
-    /// column values sorted in ascending order with nulls last
-    pub fn column_sorted(&self, col_idx: isize) -> Result<Arc<Self>, ArrowError> {
-        let col = self.single_column_table(col_idx).unwrap();
-        let rows = ColumnRows::try_new(&col)?;
-        let mut indices = rows.sorted_non_null()?;
-        indices.extend(rows.null);
-        col.single_column_table_with_rows(indices)
-    }
-
-    pub fn column_without_nulls_sorted(&self, col_idx: isize) -> Result<Arc<Self>, ArrowError> {
-        let col = self.single_column_table(col_idx).unwrap();
-        let rows = ColumnRows::try_new(&col)?;
-        col.single_column_table_with_rows(rows.sorted_non_null()?)
+    /// The column values sorted according to `options`.
+    pub fn column_sorted(
+        &self,
+        col_idx: isize,
+        options: SortOptions,
+    ) -> Result<Option<Arc<Self>>, ArrowError> {
+        let Some(col) = self.single_column_table(col_idx) else {
+            return Ok(None);
+        };
+        let indices = col.sort_to_indices(&[(0, options)])?;
+        Ok(Some(Arc::new(col.select_rows(&indices, None)?)))
     }
 
     pub fn count_occurrences_of_value_in_column(&self, needle: &Value, col_idx: isize) -> usize {
@@ -421,6 +420,7 @@ impl TableRepr {
         self.select_rows(&indices, None)
     }
 
+    #[cold]
     pub(crate) fn select_rows(
         &self,
         indices: &UInt64Array,
@@ -471,6 +471,74 @@ impl TableRepr {
         let flat = FlatRecordBatch::_from_flattened_record_batch(Arc::new(batch), None)?;
         let repr = TableRepr::new(Arc::new(flat), None, row_names);
         Ok(repr)
+    }
+
+    /// Row indices that sort the whole table by the `keys` columns.
+    ///
+    /// Rows are compared lexicographically: by the first key column and its
+    /// [SortOptions] (ascending/descending, nulls first/last), ties broken by
+    /// the next key, and so on. The sort is stable, like Python's `sorted()`,
+    /// so rows that compare equal on every key keep their original order.
+    ///
+    /// Stability matters because rows can have different names in a table and
+    /// a non-stable sorter could create non-determinism in the names of the
+    /// sorted rows.
+    #[cold]
+    pub(crate) fn sort_to_indices(
+        &self,
+        keys: &[(usize, SortOptions)],
+    ) -> Result<Box<UInt64Array>, ArrowError> {
+        let columns = self.flat.inner().columns();
+        let sort_columns = keys
+            .iter()
+            .map(|&(idx, options)| {
+                let values = safe_to_sort(Arc::clone(&columns[idx]))?;
+                let sort_column = SortColumn {
+                    values,
+                    options: Some(options),
+                };
+                Ok(sort_column)
+            })
+            .collect::<Result<Vec<_>, ArrowError>>()?;
+
+        let num_rows = self.num_rows();
+        let indices = {
+            let mut indices = (0..num_rows as u64).collect::<Vec<_>>();
+            if !sort_columns.is_empty() {
+                let comparator = LexicographicalComparator::try_new(&sort_columns)?;
+                indices.sort_by(|&a, &b| comparator.compare(a as usize, b as usize));
+            }
+            UInt64Array::from(indices)
+        };
+        Ok(Box::new(indices))
+    }
+
+    #[cold]
+    pub(crate) fn distinct(&self, column_indices: &[usize]) -> Result<Arc<Self>, ArrowError> {
+        // TODO: cast the values in `column` according to `key_type`, create a new
+        // table with the casted column, and use that table to create the grouper
+        let grouper = self.grouper(column_indices)?;
+
+        // Builds a selection vector with the first `row_idx` of every group.
+        // A "group" is the set of rows that are identical, so whenever the
+        // grouper emits a `group_id` we've already seen, we know we shouldn't
+        // emit that `row_idx` because it's not the index of a distinct row.
+        let mut seen_groups = HashSet::new();
+        let indices: Vec<u64> = grouper
+            .iter()
+            .enumerate()
+            .filter_map(|(row_idx, group_id)| {
+                if seen_groups.insert(group_id) {
+                    Some(row_idx as u64)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let selection_vector = UInt64Array::new(indices.into(), None);
+
+        let repr = self.select_rows(&selection_vector, None)?;
+        Ok(Arc::new(repr))
     }
 
     // Cells ------------------------------------------------------------------
@@ -1035,43 +1103,17 @@ impl AgateTable {
                 .collect(),
             None => self.column_names(),
         };
-        // TODO: cast the values in `column` according to `key_type`, create a new
-        // table with the casted column, and use that table to create the grouper
-        let grouper = self.grouper(&column_names).map_err(|e| {
-            Error::new(
-                ErrorKind::InvalidOperation,
-                format!("Table.distinct: error creating grouper: {e}"),
-            )
-        })?;
-
-        // Builds a selection vector with the first `row_idx` of every group.
-        // A "group" is the set of rows that are identical, so whenever the
-        // grouper emits a `group_id` we've already seen, we know we shouldn't
-        // emit that `row_idx` because it's not the index of a distinct row.
-        let mut seen_groups = HashSet::new();
-        let indices: Vec<u64> = grouper
-            .iter()
-            .enumerate()
-            .filter_map(|(row_idx, group_id)| {
-                if seen_groups.insert(group_id) {
-                    Some(row_idx as u64)
-                } else {
-                    None
-                }
-            })
-            .collect();
-        let selection_vector = UInt64Array::new(indices.into(), None);
+        let column_indices = self
+            .repr
+            .column_indices(&column_names)
+            .collect::<Vec<usize>>();
 
         let repr = self
             .repr
-            .select_rows(&selection_vector, None)
-            .map_err(|e| {
-                Error::new(
-                    ErrorKind::InvalidOperation,
-                    format!("Table.distinct: error selecting rows: {e}"),
-                )
-            })?;
-        Ok(AgateTable::from_repr(repr.into()))
+            .distinct(&column_indices)
+            .map_err(|e| Error::new(ErrorKind::InvalidOperation, format!("Table.distinct: {e}")))?;
+
+        Ok(AgateTable::from_repr(repr))
     }
 }
 
@@ -3241,7 +3283,7 @@ mod tests {
                 None,
             ])),
             [
-                "[none, 1, 2, 3]",
+                "[3, none, 1, 2]",
                 "[3, 1, 2, 1]",
                 "[1, 1, 2, 3, none, none]",
                 "[1, 1, 2, 3]",
@@ -3251,7 +3293,7 @@ mod tests {
             "utf8",
             Arc::new(StringArray::from(utf8_with_nulls())),
             [
-                "[none, 'a', 'b', 'c']",
+                "['b', none, 'a', 'c']",
                 "['b', 'a', 'c', 'a']",
                 "['a', 'a', 'b', 'c', none, none]",
                 "['a', 'a', 'b', 'c']",
@@ -3260,7 +3302,7 @@ mod tests {
         assert_column_values_methods(
             "int64 without nulls",
             Arc::new(arrow::array::Int64Array::from(vec![2, 1, 2])),
-            ["[1, 2]", "[2, 1, 2]", "[1, 2, 2]", "[1, 2, 2]"],
+            ["[2, 1]", "[2, 1, 2]", "[1, 2, 2]", "[1, 2, 2]"],
         );
         assert_column_values_methods(
             "empty int64",
@@ -3292,7 +3334,7 @@ mod tests {
             "dictionary with null values",
             Arc::new(keys_to_null_value),
             [
-                "[none, 'a', 'b']",
+                "['b', none, 'a']",
                 "['b', 'a', 'b']",
                 "['a', 'b', 'b', none, none]",
                 "['a', 'b', 'b']",
@@ -3303,7 +3345,7 @@ mod tests {
             "dictionary-encoded utf8",
             Arc::new(dictionary),
             [
-                "[none, 'a', 'b', 'c']",
+                "['b', none, 'a', 'c']",
                 "['b', 'a', 'c', 'a']",
                 "['a', 'a', 'b', 'c', none, none]",
                 "['a', 'a', 'b', 'c']",
