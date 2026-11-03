@@ -12,6 +12,7 @@ from dbt.task.deps import (
     _write_cachedir_tag,
 )
 from dbt_common.events.base_types import WarnLevel
+from dbt_common.events.types import Note
 
 
 def _write_tag(path, contents):
@@ -56,7 +57,8 @@ class TestWarnIfRemovingUnownedDir:
         fired.assert_called_once()
         event = fired.call_args.args[0]
         assert str(tmp_path) in event.msg
-        # Must not be a warning event, or `--warn-error` would make it fatal
+        # Must be a Note, not a warning, or `--warn-error` would make it fatal
+        assert isinstance(event, Note)
         assert not isinstance(event, WarnLevel)
 
     def test_warns_when_tag_invalid(self, tmp_path, fired):

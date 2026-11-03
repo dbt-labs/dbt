@@ -28,12 +28,11 @@ from dbt.events.types import (
     DepsStartPackageInstall,
     DepsUpdateAvailable,
     DepsUpToDate,
-    JinjaLogInfo,
 )
 from dbt.task.base import BaseTask, move_to_nearest_project_dir
 from dbt_common.clients import system
 from dbt_common.events.functions import fire_event
-from dbt_common.events.types import Formatting
+from dbt_common.events.types import Formatting, Note
 
 CACHEDIR_TAG_FILE_NAME = "CACHEDIR.TAG"
 CACHEDIR_TAG_SIGNATURE = "Signature: 8a477f597d28d172789f06886806bc55"
@@ -67,7 +66,7 @@ def _is_non_empty_dir(path: str) -> bool:
 def _warn_if_removing_unowned_dir(path: str) -> None:
     """Note when about to remove a non-empty directory that dbt did not create.
 
-    Fired as an info event, not a warning, so `--warn-error` cannot block the migration of
+    Fired as a Note, not a warning, so `--warn-error` cannot block the migration of
     existing untagged install directories: the tag is only written after a successful run.
     """
     if not _is_non_empty_dir(path):
@@ -75,11 +74,11 @@ def _warn_if_removing_unowned_dir(path: str) -> None:
     if _has_cachedir_tag(path):
         return
     fire_event(
-        JinjaLogInfo(
+        Note(
             msg=(
-                f"Warning: removing '{path}' before installing packages, but it is missing a "
-                f"valid '{CACHEDIR_TAG_FILE_NAME}' file, so dbt cannot confirm that it created "
-                "this directory."
+                f"Removing '{path}' before installing packages, but it is missing a valid "
+                f"'{CACHEDIR_TAG_FILE_NAME}' file, so dbt cannot confirm that it created this "
+                "directory."
             )
         )
     )
