@@ -132,7 +132,13 @@ impl GraphBuilder {
             .contains(&OptimizeTestsOptions::TestAggregation)
             && command_uses_generic_test_aggregation(self.arg.command)
         {
-            create_generic_test_aggregation(&self.arg.io, schedule, nodes, self.execute)?
+            create_generic_test_aggregation(
+                &self.arg.io,
+                schedule,
+                nodes,
+                self.execute,
+                resolver_state.dbt_profile.default_adapter,
+            )?
         } else {
             None
         };
