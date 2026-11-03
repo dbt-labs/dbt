@@ -1,0 +1,7 @@
+kind: Fixes
+body: Snowflake seeds now honor the `transient` config instead of silently creating a permanent table
+time: 2026-11-03T11:49:03.341929+05:30
+custom:
+    author: itsnamangoyal
+    issue: ""
+    project: dbt-core

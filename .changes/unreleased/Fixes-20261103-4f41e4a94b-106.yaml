@@ -1,0 +1,7 @@
+kind: Fixes
+body: Clarify the warning for a package-lock.yml written by an older dbt version and point to `dbt deps`
+time: 2026-11-03T11:49:03.443155+05:30
+custom:
+    author: akbog
+    issue: ""
+    project: dbt-core

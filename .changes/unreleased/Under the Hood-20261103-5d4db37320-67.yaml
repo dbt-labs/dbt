@@ -1,0 +1,7 @@
+kind: Under the Hood
+body: Time Machine replay pins the Jinja wall clock to the recording start, so wall-clock-derived SQL (e.g. a `utcnow()`-based var) matches the recorded text
+time: 2026-11-03T11:49:03.213236+05:30
+custom:
+    author: itsannbat
+    issue: ""
+    project: dbt-core

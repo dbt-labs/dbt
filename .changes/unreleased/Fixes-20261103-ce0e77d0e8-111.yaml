@@ -1,0 +1,7 @@
+kind: Fixes
+body: Convert Arrow FixedSizeList values to Jinja so Snowflake VECTOR columns do not panic when read into an agate table.
+time: 2026-11-03T11:49:03.480413+05:30
+custom:
+    author: will-sargent-dbtlabs
+    issue: ""
+    project: dbt-core

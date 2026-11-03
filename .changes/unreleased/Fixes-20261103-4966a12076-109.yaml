@@ -1,0 +1,7 @@
+kind: Fixes
+body: Fix nil pointer dereference panic in BigQuery foundry driver
+time: 2026-11-03T11:49:03.465182+05:30
+custom:
+    author: serramatutu
+    issue: ""
+    project: dbt-core

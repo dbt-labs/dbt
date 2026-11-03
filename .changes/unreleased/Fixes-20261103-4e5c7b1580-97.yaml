@@ -1,0 +1,7 @@
+kind: Fixes
+body: Correct the `dbt show --info` help text, which still said a prior `--generate-info-schema` run was required
+time: 2026-11-03T11:49:03.379649+05:30
+custom:
+    author: b-per
+    issue: ""
+    project: dbt-core

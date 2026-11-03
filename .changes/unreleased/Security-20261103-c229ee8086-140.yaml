@@ -1,0 +1,7 @@
+kind: Security
+body: Update BigQuery and Spark ADBC driver builds to Go 1.26.10.
+time: 2026-11-03T11:49:03.661933+05:30
+custom:
+    author: serramatutu
+    issue: ""
+    project: dbt-core

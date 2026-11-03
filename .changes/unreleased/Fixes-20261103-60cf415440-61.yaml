@@ -1,0 +1,7 @@
+kind: Fixes
+body: Retry transient Redshift query-execution errors (catalog races, serialization conflicts) on the same connection
+time: 2026-11-03T11:49:03.171115+05:30
+custom:
+    author: r-jais
+    issue: ""
+    project: dbt-core

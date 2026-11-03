@@ -1,0 +1,7 @@
+kind: Fixes
+body: 'Databricks: include all models in catalog.json for schemas with more than 50 relations'
+time: 2026-11-03T11:49:03.011657+05:30
+custom:
+    author: debrin-og
+    issue: "15795"
+    project: dbt-core

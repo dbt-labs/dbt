@@ -1,0 +1,7 @@
+kind: Fixes
+body: Populate complete query tags for Databricks seeds; fix materialization type for seeds to be `seed` rather than `table`
+time: 2026-11-03T11:49:02.934925+05:30
+custom:
+    author: debrin-og
+    issue: "15931"
+    project: dbt-core

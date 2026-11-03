@@ -1,0 +1,7 @@
+kind: Fixes
+body: Add ability to record seeds as transient table types for Snowflake
+time: 2026-11-03T11:49:03.472215+05:30
+custom:
+    author: toriwei
+    issue: ""
+    project: dbt-core

@@ -1,0 +1,7 @@
+kind: Fixes
+body: The environment variables behind `--generate-info-schema` and `--info-schema-dir` are now `DBT_ENGINE_GENERATE_INFO_SCHEMA` and `DBT_ENGINE_INFO_SCHEMA_DIR`. They were named `DBT_GENERATE_INFO_SCHEMA` and `DBT_INFO_SCHEMA_DIR`, outside the reserved `DBT_ENGINE_` prefix that the engine's other variables use. The flags themselves are unchanged.
+time: 2026-11-03T11:49:02.864655+05:30
+custom:
+    author: aahel
+    issue: ""
+    project: dbt-core

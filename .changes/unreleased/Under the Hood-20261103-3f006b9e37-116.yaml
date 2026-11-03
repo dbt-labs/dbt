@@ -1,0 +1,7 @@
+kind: Under the Hood
+body: 'Ignore `flags:` in installed packages'' `dbt_project.yml`: project flags, including behavior change and adapter behavior flags, only apply from the root project'
+time: 2026-11-03T11:49:03.522197+05:30
+custom:
+    author: akbog
+    issue: ""
+    project: dbt-core

@@ -1,0 +1,7 @@
+kind: Fixes
+body: Bring Databricks macros in line with dbt-databricks v1.12.4
+time: 2026-11-03T11:49:03.45754+05:30
+custom:
+    author: ajhlee-dbt
+    issue: ""
+    project: dbt-core

@@ -1,0 +1,7 @@
+kind: Fixes
+body: Repeating a single-value flag such as `--target` or `--debug` keeps the last value instead of failing with a usage error, matching dbt Core.
+time: 2026-11-03T11:49:03.506923+05:30
+custom:
+    author: itsannbat
+    issue: ""
+    project: dbt-core

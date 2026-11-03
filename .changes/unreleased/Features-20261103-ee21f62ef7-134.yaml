@@ -1,0 +1,7 @@
+kind: Features
+body: Report individual microbatch executions as MicrobatchEvaluated spans in telemetry, file logs, and Core-compatible JSON logs, and list them under their model in interactive output
+time: 2026-11-03T11:49:03.624917+05:30
+custom:
+    author: mishamsk
+    issue: ""
+    project: dbt-core

@@ -1,0 +1,7 @@
+kind: Under the Hood
+body: Log a warning naming the relation when no schema is returned for a dangling source during static analysis hydration, instead of skipping it silently.
+time: 2026-11-03T11:49:02.969293+05:30
+custom:
+    author: sadboy
+    issue: ""
+    project: dbt-core

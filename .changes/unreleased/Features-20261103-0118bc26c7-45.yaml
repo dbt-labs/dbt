@@ -1,0 +1,7 @@
+kind: Features
+body: Add state configuration to ignore external modifications on model target tables/views (only implemented for views to begin with)
+time: 2026-11-03T11:49:03.047147+05:30
+custom:
+    author: fivetran-vladimircvetanovic
+    issue: ""
+    project: dbt-core

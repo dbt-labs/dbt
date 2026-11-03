@@ -1,0 +1,7 @@
+kind: Features
+body: Support authenticated private S3 downloads for dbt update manifests and binaries.
+time: 2026-11-03T11:49:03.271386+05:30
+custom:
+    author: Oliver-Weng-Sorcerer
+    issue: ""
+    project: dbt-core

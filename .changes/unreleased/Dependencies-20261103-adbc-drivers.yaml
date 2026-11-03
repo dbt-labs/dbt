@@ -1,0 +1,7 @@
+kind: Dependencies
+body: Update ADBC drivers to Snowflake 0.21.21, BigQuery 0.21.23, BigQuery Foundry 0.1.11, Databricks 0.21.15, Redshift 0.18.11, Spark 0.1.4, DuckDB Extended 0.0.32, Lake Compute 0.1.13, and MSSQL 1.7.1 (dbt build suffixes).
+time: 2026-11-03T11:49:03.676292+05:30
+custom:
+    author: ""
+    issue: ""
+    project: dbt-core

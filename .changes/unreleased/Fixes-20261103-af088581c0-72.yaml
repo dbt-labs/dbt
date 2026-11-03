@@ -1,0 +1,7 @@
+kind: Fixes
+body: Fix DuckDB and Databricks incremental/snapshot builds panicking with an unhandled Arrow BinaryView type on BLOB/binary columns
+time: 2026-11-03T11:49:03.234918+05:30
+custom:
+    author: b-per
+    issue: "16364"
+    project: dbt-core

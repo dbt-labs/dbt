@@ -1,0 +1,7 @@
+kind: Fixes
+body: Process explainer GetExplainMessage requests in batches.
+time: 2026-11-03T11:49:03.365287+05:30
+custom:
+    author: fivetran-vladimircvetanovic
+    issue: ""
+    project: dbt-core

@@ -1,0 +1,7 @@
+kind: Fixes
+body: Recognize `$$...$$` dollar-quoted strings in the Databricks SQL lexer so a `;` inside a metric view's YAML body (e.g. in a `comment:` block) no longer truncates the compiled `create or replace view` DDL.
+time: 2026-11-03T11:49:03.429318+05:30
+custom:
+    author: r-jais
+    issue: "16385"
+    project: dbt-core

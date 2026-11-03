@@ -1,0 +1,7 @@
+kind: Fixes
+body: Add new STRUCT and ARRAY columns to BigQuery snapshot tables with their SQL types instead of `RECORD` or the array's element type
+time: 2026-11-03T11:49:03.102846+05:30
+custom:
+    author: ragesh-g
+    issue: "16350"
+    project: dbt-core

@@ -1,0 +1,7 @@
+kind: Features
+body: Add telemetry for state selector operations to track performance and usage of modified/new/unmodified node selection
+time: 2026-11-03T11:49:03.147935+05:30
+custom:
+    author: fivetran-vladimircvetanovic
+    issue: ""
+    project: dbt-core

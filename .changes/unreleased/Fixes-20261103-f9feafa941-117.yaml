@@ -1,0 +1,7 @@
+kind: Fixes
+body: Send allow_clones, is_defer_to_profile, and defer_enabled on dbt State submit requests for explainer parity
+time: 2026-11-03T11:49:03.529354+05:30
+custom:
+    author: toriwei
+    issue: ""
+    project: dbt-core

@@ -1,0 +1,7 @@
+kind: Fixes
+body: Support credential-independent profile metadata and scoped environment values while preserving secret access rules.
+time: 2026-11-03T11:49:02.879898+05:30
+custom:
+    author: eakmanrq
+    issue: ""
+    project: dbt-core
