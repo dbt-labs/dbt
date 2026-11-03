@@ -4,6 +4,7 @@ import os
 import pytest
 
 from dbt.tests.util import run_dbt_and_capture
+from tests.functional.utils import installed_package_dirs
 
 
 class TestSimpleDependencyWithDuplicates(object):
@@ -45,20 +46,17 @@ class TestSimpleDependencyWithDuplicates(object):
         _, stdout = run_dbt_and_capture(["deps"])
 
         # assert a package being downloaded
-        assert len(os.listdir("dbt_packages")) == 1
+        assert len(installed_package_dirs()) == 1
 
         # package-lock.yml contain private package and deduped
         with open("package-lock.yml") as fp:
             lock_file_content = fp.read()
-        assert (
-            lock_file_content
-            == """packages:
+        assert lock_file_content == """packages:
   - name: dbt_integration_project
     private: dbt-labs/dbt-integration-project
     revision: cb15ad066afa3cb5d75f82062e35d230da086371
 sha1_hash: bdd5bb1fe19294d5f5c14d347064da22bfa34657
 """
-        )
 
         # check that the token is not in the output
         assert "a_token" not in stdout
