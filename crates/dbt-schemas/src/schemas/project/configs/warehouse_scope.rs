@@ -307,9 +307,6 @@ mod tests {
     const KNOWN_DEPARTURES: &[(NodeType, &str)] = &[
         // Generic data tests synthesize config(description=...) from their YAML config.
         (NodeType::Test, "description"),
-        // ClickHouse seed materialization reads these resolved fields directly.
-        (NodeType::Seed, "engine"),
-        (NodeType::Seed, "order_by"),
         // Snapshots share adapter table-creation settings with models.
         (NodeType::Snapshot, "change_tracking"),
         (NodeType::Snapshot, "data_retention_time_in_days"),
@@ -317,12 +314,6 @@ mod tests {
         (NodeType::Snapshot, "storage_serialization_policy"),
         (NodeType::Snapshot, "target_file_size"),
         (NodeType::Snapshot, "iceberg_version"),
-        (NodeType::Snapshot, "engine"),
-        (NodeType::Snapshot, "order_by"),
-        (NodeType::Snapshot, "ttl"),
-        (NodeType::Snapshot, "settings"),
-        (NodeType::Snapshot, "query_settings"),
-        (NodeType::Snapshot, "projections"),
         (NodeType::Snapshot, "partition_by_config"),
         (NodeType::Snapshot, "distribute_by_config"),
         (NodeType::Snapshot, "primary_key_config"),
