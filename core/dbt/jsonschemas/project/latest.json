@@ -126,6 +126,19 @@
         "type": "string"
       }
     },
+    "experimental-paths": {
+      "description": "Directories whose files belong to an experimental, by experimental type. There is no default: an experimental reads only the paths a project names for it.",
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    },
     "exposures": {
       "anyOf": [
         {
@@ -252,19 +265,6 @@
         "string",
         "null"
       ]
-    },
-    "plugin-paths": {
-      "description": "Directories whose files belong to a plugin, by plugin type. There is no default: a plugin reads only the paths a project names for it.",
-      "type": [
-        "object",
-        "null"
-      ],
-      "additionalProperties": {
-        "type": "array",
-        "items": {
-          "type": "string"
-        }
-      }
     },
     "profile": {
       "type": [
