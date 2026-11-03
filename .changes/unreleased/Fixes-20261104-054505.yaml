@@ -1,0 +1,7 @@
+kind: Fixes
+body: Use dataset metadata for BigQuery location lookups with dataset-scoped permissions
+time: 2026-11-04T05:45:05.281701+09:00
+custom:
+    author: nosu23
+    issue: "17031"
+    project: dbt-core
