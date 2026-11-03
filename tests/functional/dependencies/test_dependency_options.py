@@ -77,12 +77,15 @@ class TestDepsOptions(object):
         run_dbt(["deps", "--add-package", "dbt-labs/audit_helper@0.9.0"])
         with open("packages.yml") as fp:
             contents = fp.read()
-        assert contents == """packages:
+        assert (
+            contents
+            == """packages:
   - package: fivetran/fivetran_utils
     version: 0.4.7
   - package: dbt-labs/audit_helper
     version: 0.9.0
 """
+        )
         assert len(installed_package_dirs()) == 3
 
     def test_deps_add_without_install(self, clean_start):
@@ -99,12 +102,15 @@ class TestDepsOptions(object):
         assert not os.path.exists("packages.yml")
         with open("dependencies.yml") as fp:
             contents = fp.read()
-        assert contents == """packages:
+        assert (
+            contents
+            == """packages:
   - package: fivetran/fivetran_utils
     version: 0.4.7
   - package: dbt-labs/audit_helper
     version: 0.9.0
 """
+        )
 
     def test_deps_upgrade(self, clean_start, mocker):
         run_dbt(["deps", "--lock"])
