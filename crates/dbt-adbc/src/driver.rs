@@ -86,6 +86,8 @@ pub enum Backend {
     Exasol,
     /// Trino driver implementation (ADBC).
     Trino,
+    /// SingleStore driver implementation (ADBC).
+    SingleStore,
     /// Generic ADBC driver implementation.
     ///
     /// This variant is fully dynamic and experimental. Features might not work reliably and fail
@@ -119,6 +121,7 @@ impl fmt::Display for Backend {
             Backend::ClickHouse => write!(f, "ClickHouse"),
             Backend::Exasol => write!(f, "Exasol"),
             Backend::Trino => write!(f, "Trino"),
+            Backend::SingleStore => write!(f, "SingleStore"),
             Backend::Generic { library_name, .. } => write!(f, "Generic({library_name})"),
         }
     }
@@ -141,6 +144,7 @@ impl Backend {
             Backend::ClickHouse => Some("adbc_clickhouse"),
             Backend::Exasol => Some("adbc_driver_exasol"),
             Backend::Trino => Some("adbc_driver_trino"),
+            Backend::SingleStore => Some("adbc_driver_singlestore"),
             Backend::Generic { library_name, .. } => Some(library_name),
         }
     }
@@ -473,7 +477,9 @@ impl AdbcDriver {
                 }
             }
             // CDN strategy for non-CDN drivers: just fall back to the system strategy.
-            (CdnCache | SystemThenCdnCache | Bridge, Athena | Exasol | Trino) => System(None),
+            (CdnCache | SystemThenCdnCache | Bridge, Athena | Exasol | Trino | SingleStore) => {
+                System(None)
+            }
             // Generic drivers can only be loaded from a file, so fallback to the System strategy.
             (CdnCache | SystemThenCdnCache | Bridge, Generic { library_name, .. }) => {
                 System(Some(library_name.to_string()))

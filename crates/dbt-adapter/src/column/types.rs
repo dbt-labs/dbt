@@ -288,6 +288,10 @@ impl ColumnStatic {
             // ClickHouseColumn.string_type ignores the size: always plain String,
             // never FixedString (would break contract comparisons and ALTERs).
             AdapterType::ClickHouse => "String".to_string(),
+            AdapterType::SingleStore => match size {
+                Some(size) => format!("varchar({size})"),
+                _ => "text".to_string(),
+            },
             _ => match size {
                 Some(size) => format!("character varying({size})"),
                 _ => "character varying".to_string(),
@@ -548,9 +552,8 @@ impl Column {
         original_sql_str: &str,
     ) -> (String, String) {
         match adapter_type {
-            AdapterType::Bigquery => {
-                let Ok((sql_type, _nullable)) =
-                    SqlType::parse(AdapterType::Bigquery, original_sql_str)
+            AdapterType::Bigquery | AdapterType::SingleStore => {
+                let Ok((sql_type, _nullable)) = SqlType::parse(adapter_type, original_sql_str)
                 else {
                     return (original_sql_str.to_string(), original_sql_str.to_string());
                 };
@@ -971,6 +974,10 @@ impl Column {
                         | "long"
                 )
             }
+            AdapterType::SingleStore => matches!(
+                self.core_dtype.to_lowercase().as_str(),
+                "tinyint" | "smallint" | "mediumint" | "int" | "integer" | "bigint"
+            ),
             _ => {
                 matches!(
                     self.core_dtype.to_lowercase().as_str(),
@@ -1970,5 +1977,69 @@ mod tests {
             enriched.render_for_create(),
             "`col_b` int NOT NULL COMMENT 'has a description'"
         );
+    }
+
+    #[test]
+    fn test_singlestore_column_dtype_normalization() {
+        let col1 = Column::new(
+            AdapterType::SingleStore,
+            "c1".to_string(),
+            "bigint".to_string(),
+            None,
+            None,
+            None,
+        );
+        assert_eq!(col1.dtype(), "BIGINT");
+
+        let col2 = Column::new(
+            AdapterType::SingleStore,
+            "c2".to_string(),
+            "BIGINT NOT NULL".to_string(),
+            None,
+            None,
+            None,
+        );
+        assert_eq!(col2.dtype(), "BIGINT");
+
+        let col3 = Column::new(
+            AdapterType::SingleStore,
+            "c3".to_string(),
+            "int(11)".to_string(),
+            None,
+            None,
+            None,
+        );
+        assert_eq!(col3.dtype(), "INT");
+
+        let col4 = Column::new(
+            AdapterType::SingleStore,
+            "c4".to_string(),
+            "decimal(15, 2)".to_string(),
+            None,
+            None,
+            None,
+        );
+        assert_eq!(col4.dtype(), "DECIMAL(15, 2)");
+
+        let col5 = Column::new(
+            AdapterType::SingleStore,
+            "c5".to_string(),
+            "DECIMAL(15,2)".to_string(),
+            None,
+            None,
+            None,
+        );
+        assert_eq!(col5.dtype(), "DECIMAL(15, 2)");
+
+        let col6 = Column::new(
+            AdapterType::SingleStore,
+            "c6".to_string(),
+            "decimal(10,0)".to_string(),
+            None,
+            None,
+            None,
+        );
+        assert_eq!(col6.dtype(), "DECIMAL(10, 0)");
+        assert_ne!(col4.dtype(), col6.dtype());
     }
 }

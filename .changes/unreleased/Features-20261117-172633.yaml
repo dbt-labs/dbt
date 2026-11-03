@@ -1,0 +1,7 @@
+kind: Features
+body: Create SingleStore indexes from the indexes config (columns, unique, type) on table, incremental, seed and snapshot materializations
+time: 2026-11-17T17:26:33.869716101+01:00
+custom:
+    author: jimvekemans
+    issue: "17082"
+    project: dbt-core

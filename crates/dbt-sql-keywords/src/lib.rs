@@ -10,6 +10,7 @@ pub mod duckdb;
 pub mod exasol;
 pub mod mssql;
 pub mod redshift;
+pub mod singlestore;
 pub mod snowflake;
 pub mod trino;
 
@@ -82,7 +83,7 @@ mod tests {
         pub non_reserved: &'a [&'static str],
     }
 
-    static KEYWORD_LISTS: [KeywordLists; 8] = [
+    static KEYWORD_LISTS: [KeywordLists; 9] = [
         KeywordLists {
             name: "bigquery",
             reserved: bigquery::RESERVED_KEYWORDS,
@@ -118,6 +119,12 @@ mod tests {
             reserved: redshift::RESERVED_KEYWORDS,
             strict_non_reserved: redshift::STRICT_NON_RESERVED_KEYWORDS,
             non_reserved: redshift::NON_RESERVED_KEYWORDS,
+        },
+        KeywordLists {
+            name: "singlestore",
+            reserved: singlestore::RESERVED_KEYWORDS,
+            strict_non_reserved: singlestore::STRICT_NON_RESERVED_KEYWORDS,
+            non_reserved: singlestore::NON_RESERVED_KEYWORDS,
         },
         KeywordLists {
             name: "snowflake",

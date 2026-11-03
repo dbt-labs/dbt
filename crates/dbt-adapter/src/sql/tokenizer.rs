@@ -277,7 +277,15 @@ pub(crate) fn abstract_tokenize(tokens: Vec<Token>) -> Vec<AbstractToken> {
                 }));
                 index += 1;
             }
-        } else if token.matches("--EPHEMERAL-SELECT-WRAPPER-START") {
+        } else if token.matches("--EPHEMERAL-SELECT-WRAPPER-START")
+            || (token.matches("--")
+                && tokens
+                    .get(index + 1)
+                    .is_some_and(|t| t.matches("EPHEMERAL-SELECT-WRAPPER-START")))
+        {
+            if token.matches("--") {
+                index += 1;
+            }
             assert!(tokens.get(index + 1).unwrap().matches("select"));
             assert!(tokens.get(index + 2).unwrap().matches("*"));
             assert!(tokens.get(index + 3).unwrap().matches("from"));
@@ -290,7 +298,15 @@ pub(crate) fn abstract_tokenize(tokens: Vec<Token>) -> Vec<AbstractToken> {
                     maybe_hash: false,
                 }));
             }
-        } else if token.matches("--EPHEMERAL-SELECT-WRAPPER-END") {
+        } else if token.matches("--EPHEMERAL-SELECT-WRAPPER-END")
+            || (token.matches("--")
+                && tokens
+                    .get(index + 1)
+                    .is_some_and(|t| t.matches("EPHEMERAL-SELECT-WRAPPER-END")))
+        {
+            if token.matches("--") {
+                index += 1;
+            }
             let paren_token = tokens.get(index + 1).unwrap();
             assert!(
                 paren_token.value.starts_with(')'),

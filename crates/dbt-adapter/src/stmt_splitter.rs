@@ -71,6 +71,7 @@ impl StmtSplitter for DefaultStmtSplitter {
             // `LakeCompute` defines no dialect of its own, so it falls back to DuckDB's
             DuckDB | LakeCompute => Dialect::Duckdb,
             ClickHouse => return clickhouse::split_statements(sql),
+            SingleStore => Dialect::SingleStore,
             Trino => Dialect::Trino,
             _ => Dialect::Trino,
         };
@@ -89,6 +90,7 @@ impl StmtSplitter for DefaultStmtSplitter {
             Databricks | Spark => by_dialect(Dialect::Databricks),
             Redshift => by_dialect(Dialect::Redshift),
             ClickHouse => clickhouse::is_empty_or_comment_only(sql),
+            SingleStore => by_dialect(Dialect::SingleStore),
             // fallback to the Trino lexer for unsupported lexer dialects
             _ => by_dialect(Dialect::Trino),
         }
