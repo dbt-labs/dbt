@@ -40,6 +40,19 @@
         "$ref": "#/definitions/DataTestProperties"
       }
     },
+    "experimental": {
+      "description": "Entries for experimentals, by experimental type. Experimentals are features in testing, off unless their feature flag is on; each reads the entries under its own type.",
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "$ref": "#/definitions/AnyValue"
+        }
+      }
+    },
     "exposures": {
       "type": [
         "array",
@@ -92,19 +105,6 @@
       ],
       "items": {
         "$ref": "#/definitions/ModelProperties"
-      }
-    },
-    "plugins": {
-      "description": "Entries for plugins, by plugin type. Plugins are features in testing, off unless their feature flag is on; each reads the entries under its own type.",
-      "type": [
-        "object",
-        "null"
-      ],
-      "additionalProperties": {
-        "type": "array",
-        "items": {
-          "$ref": "#/definitions/AnyValue"
-        }
       }
     },
     "saved_queries": {

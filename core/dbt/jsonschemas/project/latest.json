@@ -126,6 +126,19 @@
         "type": "string"
       }
     },
+    "experimental-paths": {
+      "description": "Directories whose files belong to an experimental, by experimental type. There is no default: an experimental reads only the paths a project names for it.",
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    },
     "exposures": {
       "anyOf": [
         {
@@ -252,19 +265,6 @@
         "string",
         "null"
       ]
-    },
-    "plugin-paths": {
-      "description": "Directories whose files belong to a plugin, by plugin type. There is no default: a plugin reads only the paths a project names for it.",
-      "type": [
-        "object",
-        "null"
-      ],
-      "additionalProperties": {
-        "type": "array",
-        "items": {
-          "type": "string"
-        }
-      }
     },
     "profile": {
       "type": [
@@ -2114,6 +2114,12 @@
             }
           ]
         },
+        "+engine": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "+error_if": {
           "type": [
             "string",
@@ -2352,6 +2358,16 @@
             "null"
           ]
         },
+        "+order_by": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrArrayOfStrings"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "+partition_by": {
           "anyOf": [
             {
@@ -2388,6 +2404,24 @@
               "type": "null"
             }
           ]
+        },
+        "+projections": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/definitions/AnyValue"
+          }
+        },
+        "+query_settings": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": {
+            "$ref": "#/definitions/AnyValue"
+          }
         },
         "+query_tag": {
           "anyOf": [
@@ -2506,6 +2540,15 @@
               "pattern": "^\\{.*\\}$"
             }
           ]
+        },
+        "+settings": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": {
+            "$ref": "#/definitions/AnyValue"
+          }
         },
         "+severity": {
           "anyOf": [
@@ -2695,6 +2738,12 @@
               "type": "string",
               "pattern": "^\\{.*\\}$"
             }
+          ]
+        },
+        "+ttl": {
+          "type": [
+            "string",
+            "null"
           ]
         },
         "+unlogged": {
@@ -5334,6 +5383,20 @@
             "null"
           ]
         },
+        "+disable_on_cluster": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "+dist": {
           "anyOf": [
             {
@@ -5394,6 +5457,12 @@
               "type": "string",
               "pattern": "^\\{.*\\}$"
             }
+          ]
+        },
+        "+engine": {
+          "type": [
+            "string",
+            "null"
           ]
         },
         "+event_time": {
@@ -5623,6 +5692,16 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "+order_by": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrArrayOfStrings"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "+partition_by": {
@@ -6404,6 +6483,12 @@
             }
           ]
         },
+        "+engine": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "+event_time": {
           "default": null,
           "type": [
@@ -6677,6 +6762,16 @@
             "null"
           ]
         },
+        "+order_by": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrArrayOfStrings"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "+partition_by": {
           "anyOf": [
             {
@@ -6759,6 +6854,15 @@
             }
           ]
         },
+        "+projections": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/definitions/AnyValue"
+          }
+        },
         "+propagate": {
           "anyOf": [
             {
@@ -6768,6 +6872,15 @@
               "type": "null"
             }
           ]
+        },
+        "+query_settings": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": {
+            "$ref": "#/definitions/AnyValue"
+          }
         },
         "+query_tag": {
           "anyOf": [
@@ -6910,6 +7023,15 @@
               "pattern": "^\\{.*\\}$"
             }
           ]
+        },
+        "+settings": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": {
+            "$ref": "#/definitions/AnyValue"
+          }
         },
         "+skip_matched_step": {
           "anyOf": [
@@ -7118,6 +7240,12 @@
               "type": "string",
               "pattern": "^\\{.*\\}$"
             }
+          ]
+        },
+        "+ttl": {
+          "type": [
+            "string",
+            "null"
           ]
         },
         "+unique_key": {
@@ -8391,6 +8519,15 @@
               "pattern": "^\\{.*\\}$"
             }
           ]
+        },
+        "+settings": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": {
+            "$ref": "#/definitions/AnyValue"
+          }
         },
         "+skip_matched_step": {
           "anyOf": [
