@@ -121,7 +121,7 @@ pub fn adapter_specific_behavior_flags(adapter_type: AdapterType) -> Vec<Behavio
         }
         Bigquery => {
             // https://github.com/dbt-labs/dbt-adapters/blob/b9ebd240e39882a8c43ed659de423c7504d4642a/dbt-bigquery/src/dbt/adapters/bigquery/impl.py#L109-L110
-            let flag = BehaviorFlag::new(
+            let noop_alter_relation_comment = BehaviorFlag::new(
                 "bigquery_noop_alter_relation_comment",
                 false,
                 Some(
@@ -130,7 +130,16 @@ pub fn adapter_specific_behavior_flags(adapter_type: AdapterType) -> Vec<Behavio
                 None,
                 None,
             );
-            vec![flag]
+            let enforce_maximum_bytes_billed = BehaviorFlag::new(
+                "bigquery_enforce_maximum_bytes_billed",
+                false,
+                Some(
+                    "Apply the profile's maximum_bytes_billed to each query job, so jobs that would bill more bytes fail, as in v1. v2 ignored this setting before.",
+                ),
+                None,
+                None,
+            );
+            vec![noop_alter_relation_comment, enforce_maximum_bytes_billed]
         }
         Fabric => {
             let flag = BehaviorFlag::new(
