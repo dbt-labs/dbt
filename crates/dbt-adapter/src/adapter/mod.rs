@@ -370,17 +370,18 @@ impl Adapter {
         let Some(metadata_adapter) = self.metadata_adapter() else {
             return Ok(());
         };
+        // report_progress: true — relation-cache hydration drives a progress bar.
         let collected_relations = metadata_adapter
-            .list_relations_in_parallel(db_schemas, self.cancellation_token())
+            .list_relations_in_parallel(db_schemas, self.cancellation_token(), true)
             .await
             .map_err(into_fs_error)
             .map(|r| {
                 r.into_iter()
-                    .filter_map(|(k, v)| {
-                        if let Ok(relations) = v {
-                            Some((k, relations))
-                        } else {
-                            // XXX: Warnings are not shown right now since this is purely for performance
+                    .filter_map(|(k, v)| match v {
+                        Ok(relations) => Some((k, relations)),
+                        Err(e) => {
+                            // Left uncached, so callers do a per-relation lookup instead.
+                            tracing::warn!("relation_cache: listing schema {k} failed: {e}");
                             None
                         }
                     })
@@ -1473,6 +1474,7 @@ impl Adapter {
                             let query_ctx = query_ctx_from_state(state)?
                                 .with_desc("get_relation > list_relations call");
                             let maybe_relations_list = adapter.list_relations(
+                                Some(state),
                                 &query_ctx,
                                 conn.as_mut(),
                                 &db_schema,
@@ -2499,6 +2501,7 @@ impl Adapter {
                 let mut conn =
                     adapter.borrow_tlocal_connection(Some(state), node_id_from_state(state))?;
                 let result = adapter.list_relations(
+                    Some(state),
                     &query_ctx,
                     conn.as_mut(),
                     &CatalogAndSchema::from(schema_relation.as_ref()),
@@ -4278,8 +4281,6 @@ impl Adapter {
                 let model = iter.next_arg::<Value>()?;
                 iter.finish()?;
 
-                // Extract seed file path from the model
-                // The seed file path is root_path + original_file_path
                 let seed =
                     minijinja_value_to_typed_struct::<dbt_schemas::schemas::nodes::DbtSeed>(model)
                         .map_err(|e| {
@@ -4289,9 +4290,9 @@ impl Adapter {
                             )
                         })?;
 
-                let root_path = seed.__seed_attr__.root_path.unwrap_or_default();
-                let original_file_path = &seed.__common_attr__.original_file_path;
-                let full_path = root_path.join(original_file_path);
+                let full_path = seed
+                    .file_path_from_root()
+                    .unwrap_or_else(|| seed.__common_attr__.original_file_path.to_path_buf());
                 Ok(Value::from(full_path.display().to_string()))
             }
             "external_root" => {

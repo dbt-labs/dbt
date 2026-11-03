@@ -593,6 +593,7 @@ impl<'a> CompilationPhasesExecutor<'a> {
                         compiled_code: Default::default(),
                     };
                     if self.arg.write_json {
+                        let project_state = loaded_project.dbt_state();
                         write_run_results_json_or_warn(
                             // TODO: should also be captured by the caller?
                             &build_run_results_artifact(
@@ -600,6 +601,8 @@ impl<'a> CompilationPhasesExecutor<'a> {
                                 // Adapter responses are not available during parse phase.
                                 &HashMap::new(),
                                 self.arg.as_ref(),
+                                project_state.warn_error,
+                                &project_state.warn_error_options,
                             ),
                             self.arg.as_ref(),
                         );
@@ -807,9 +810,10 @@ use crate::partial_parse::{
 };
 use dbt_compilation::traits::{CompilationCache, CompiledProject};
 use dbt_state::selector::RunCacheStateSelectorArgs;
+use dbt_state::telemetry::SharedEventOrder;
 
 impl DbtProjectCompilation {
-    fn dbt_state(&self) -> Arc<DbtState> {
+    pub(crate) fn dbt_state(&self) -> Arc<DbtState> {
         self.loaded_project.dbt_state()
     }
 
@@ -1068,9 +1072,10 @@ impl DbtProjectCompilation {
             (None, false)
         };
 
-        // partial-load fast path (also fires for state:dirty): if no file mtimes changed,
-        // skip WalkDir entirely and return prev as-is. Skip when --inline is set since the
-        // inline SQL node must be injected during load().
+        // Partial-load fast path (partial load or `--dirty`, unless `--no-partial-load`): if no
+        // recorded file changed or was deleted and none was added, reuse the loaded previous state
+        // without the loader's file walk or a parse. Skip when --inline is set since the inline
+        // SQL node must be injected during load().
         //
         // Also skip it when a `parse` was asked to write artifacts. `parse`'s metadata epochs
         // and information schema are written from `maybe_write_json_and_exit`, which returning
@@ -1095,7 +1100,12 @@ impl DbtProjectCompilation {
         // leaves it false and keeps the fast path.
         let parse_artifacts_requested =
             arg.command == FsCommand::Parse && (arg.write_metadata || arg.generate_info_schema);
-        if use_lazy_filter && !has_inline && !parse_artifacts_requested {
+        // --dirty sets use_lazy_filter on its own, so --no-partial-load is checked here too.
+        if use_lazy_filter
+            && !cli.common_args.no_partial_load
+            && !has_inline
+            && !parse_artifacts_requested
+        {
             // Skip the fast path when the --static-analysis level has changed since the
             // previous compilation. The fast path reuses nodes whose `base().static_analysis`
             // was stamped by the prior run; if the CLI arg changed (e.g. baseline→strict),
@@ -2041,6 +2051,7 @@ impl DbtProjectCompilation {
             let run_task_args_copy = run_task_args.clone();
             let adapter_type = resolved_state.adapter_type;
             let cloud_config = resolved_state.cloud_config.clone();
+            let dbt_profile = resolved_state.dbt_profile.clone();
 
             DeferState::load(
                 arg,
@@ -2057,6 +2068,7 @@ impl DbtProjectCompilation {
                         execute_mode,
                         adapter_type,
                         cloud_config.as_ref(),
+                        &dbt_profile,
                     )
                     .await
                 },
@@ -2247,6 +2259,7 @@ impl DbtProjectCompilation {
                 compiled_code: Default::default(),
             };
             if arg.write_json {
+                let project_state = self.dbt_state();
                 // TODO: should also be captured by the caller?
                 write_run_results_json(
                     &build_run_results_artifact(
@@ -2256,6 +2269,8 @@ impl DbtProjectCompilation {
                         // execution and add them here. We just have to wire it up.
                         &HashMap::new(),
                         arg,
+                        project_state.warn_error,
+                        &project_state.warn_error_options,
                     ),
                     arg,
                 )?;
@@ -2324,6 +2339,7 @@ impl DbtProjectCompilation {
             execute_mode,
             resolved_state.adapter_type,
             resolved_state.cloud_config.as_ref(),
+            &resolved_state.dbt_profile,
         )
         .await?;
 
@@ -2365,6 +2381,8 @@ impl DbtProjectCompilation {
                     .register_seeds_for_selected_ids(run_task_args.as_ref(), &schedule)
                     .await?;
 
+                let shared_event_order =
+                    run_cache_state_selector_args.map(|args| args.shared_event_order.clone());
                 let ctx = task_runner
                     .create_context(
                         Arc::clone(&run_task_args),
@@ -2373,6 +2391,7 @@ impl DbtProjectCompilation {
                         base_context.clone(),
                         schedule.clone(),
                         freshness_results,
+                        shared_event_order,
                     )
                     .await?;
 
@@ -2942,6 +2961,7 @@ async fn create_run_cache_state_selector_args(
         execute_mode,
         resolved_state.adapter_type,
         cloud_config,
+        &resolved_state.dbt_profile,
     )
     .await?;
 
@@ -2960,6 +2980,7 @@ async fn create_run_cache_state_selector_args(
         project_id,
         macros: resolved_state.macros.macros.clone(),
         project_root: DbtPath::from(project_root),
+        shared_event_order: SharedEventOrder::new(),
     }))
 }
 

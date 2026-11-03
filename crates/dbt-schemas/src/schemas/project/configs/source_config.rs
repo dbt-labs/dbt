@@ -637,6 +637,10 @@ impl ConfigKeys for SourceConfig {
     // extracting field names via serialization automatically
 }
 
+impl crate::schemas::project::configs::warehouse_scope::WarehouseConfigResource for SourceConfig {
+    const NODE_TYPE: dbt_telemetry::NodeType = dbt_telemetry::NodeType::Source;
+}
+
 #[cfg(test)]
 mod tests {
     use super::SourceConfig;

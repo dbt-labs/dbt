@@ -1,0 +1,7 @@
+kind: Fixes
+body: Bump lake compute driver to enable jwt authentication users to no longer need a background pat to be generated.
+time: 2026-11-03T11:49:03.497314+05:30
+custom:
+    author: versusfacit
+    issue: ""
+    project: dbt-core

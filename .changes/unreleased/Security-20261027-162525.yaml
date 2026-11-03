@@ -1,0 +1,7 @@
+kind: Security
+body: Pass git package URLs, revisions, and subdirectories to git after `--` in `dbt deps`
+time: 2026-10-27T16:25:25.915473-06:00
+custom:
+    author: fivetran-chadboyd
+    issue: ""
+    project: dbt-core

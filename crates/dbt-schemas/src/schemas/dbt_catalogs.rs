@@ -88,6 +88,16 @@ impl<'a> LoadedCatalogs<'a> {
             .catalog_names()?
             .is_some_and(|names| names.iter().any(|n| n == name)))
     }
+
+    /// Whether a named v2 catalog requires Snowflake destination handling for a Lake Compute node.
+    pub fn catalog_requires_snowflake_propagation(&self, name: Option<&str>) -> FsResult<bool> {
+        match (self, name) {
+            (LoadedCatalogs::V2(catalogs), Some(name)) => Ok(catalogs
+                .v2_catalog_type(name)?
+                .is_some_and(|catalog_type| catalog_type.requires_snowflake_propagation())),
+            _ => Ok(false),
+        }
+    }
 }
 
 const CATALOG_DATABASE_PLATFORMS: &[AdapterType] = &[

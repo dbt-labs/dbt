@@ -1,0 +1,7 @@
+kind: Features
+body: Read and publish AWS Databricks Unity Catalog tables through Lake Compute using profile PAT or OAuth M2M credentials. Use canonical lower-case relation names and full-refresh existing models when adopting propagation with mixed-case database or schema names.
+time: 2026-11-03T11:53:00.527199+05:30
+custom:
+    author: vchan
+    issue: ""
+    project: dbt-core

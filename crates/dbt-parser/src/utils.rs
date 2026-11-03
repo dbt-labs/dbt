@@ -10,7 +10,7 @@ use dbt_common::{ErrorCode, FsError, FsResult, fs_err, stdfs};
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::malformed_block_name::MalformedBlockNameListener;
 use dbt_jinja_utils::phases::parse::sql_resource::SqlResource;
-use dbt_jinja_utils::utils::{generate_component_name, generate_relation_name};
+use dbt_jinja_utils::utils::{generate_component_name, generate_relation_name_with_target};
 use dbt_schemas::schemas::InternalDbtNodeAttributes;
 use dbt_schemas::schemas::common::{DbtMaterialization, ResolvedQuoting, normalize_quoting};
 use dbt_schemas::schemas::project::{ResolvableConfig, ResolvedConfig};
@@ -188,6 +188,8 @@ pub fn get_node_fqn(
 ///
 ///   * Block-style (`{% snapshot %}` in a .sql file): `SnapshotParser.get_fqn`
 ///     keeps the original filename stem -> `[pkg, ..dirs, file_stem, block_name]`.
+///     Core does not strip a trailing jinja suffix here, so `a.sql.j2` contributes
+///     `a.sql` to the fqn even when `allow_jinja_file_extensions` is on.
 ///   * YAML-defined: the generic `get_fqn_prefix` drops the filename entirely ->
 ///     `[pkg, ..dirs, snapshot_name]`.
 ///
@@ -448,12 +450,13 @@ pub fn generate_relation_components(
     } else {
         &format!("{alias}_ephemeral")
     };
-    let relation_name = generate_relation_name(
+    let relation_name = generate_relation_name_with_target(
         parse_adapter,
         database_name,
         schema_name,
         alias_name,
         quoting,
+        node.base().effective_propagation_target,
     )?;
 
     Ok((database, schema, alias, relation_name, quoting))
@@ -563,12 +566,13 @@ fn generate_alias_and_relation_name(
     } else {
         &format!("{alias}_ephemeral")
     };
-    let relation_name = generate_relation_name(
+    let relation_name = generate_relation_name_with_target(
         parse_adapter,
         database_name,
         schema_name,
         alias_name,
         quoting,
+        node.base().effective_propagation_target,
     )?;
 
     Ok((alias, relation_name))
@@ -689,12 +693,32 @@ pub fn extract_resource_config_from_raw_project(
 /// Statically parses the raw (unrendered) kwargs from a `{{ config(...) }}` call in a SQL file.
 /// Uses the minijinja AST and byte-offset spans to extract the raw source text for each kwarg,
 /// preserving Jinja expressions as-is. Returns None if no config call is found.
+/// Parses `sql` itself; use [`extract_unrendered_config_from_ast`] if an AST already exists.
 /// Reference: https://github.com/dbt-labs/dbt-mantle/blob/da5abca4f829b167bd1b1d5c6666c12cd8c719c0/core/dbt/clients/jinja_static.py#L205
-///
-/// WARNING: This performs a duplicate AST parse. minijinja does not expose the AST after compilation, so we need to figure out a way to reuse the parsed AST instead of performing a full parse again.
 pub fn parse_unrendered_config(
     sql: &str,
     snapshot: bool,
+) -> Option<BTreeMap<String, dbt_yaml::Value>> {
+    let mut parser = Parser::new(
+        sql,
+        "",
+        false,
+        #[allow(clippy::default_constructed_unit_structs)]
+        SyntaxConfig::builder().build().unwrap(),
+        WhitespaceConfig::default(),
+    );
+    let ast = parser.parse().ok()?;
+    extract_unrendered_config_from_ast(&ast, snapshot, sql.as_bytes())
+}
+
+/// Extracts the raw (unrendered) kwargs from every `{{ config(...) }}` call in an already-parsed
+/// minijinja AST. See [`parse_unrendered_config`] for the string-parsing entry point; use this
+/// directly when the AST was already produced elsewhere (e.g. during Jinja compilation) to avoid
+/// a redundant parse.
+pub fn extract_unrendered_config_from_ast(
+    ast: &Stmt<'_>,
+    snapshot: bool,
+    sql_bytes: &[u8],
 ) -> Option<BTreeMap<String, dbt_yaml::Value>> {
     use minijinja::compiler::tokens::Span;
     use minijinja::value::ValueKind;
@@ -717,16 +741,6 @@ pub fn parse_unrendered_config(
             Expr::Const(s) => s.span,
         })
     }
-
-    let mut parser = Parser::new(
-        sql,
-        "",
-        false,
-        #[allow(clippy::default_constructed_unit_structs)]
-        SyntaxConfig::builder().build().unwrap(),
-        WhitespaceConfig::default(),
-    );
-    let ast = parser.parse().ok()?;
 
     // A SQL file may contain more than one `{{ config(...) }}` call (e.g. one for
     // `materialized`, a separate later one for `post_hook`). dbt-core's manifest
@@ -815,11 +829,10 @@ pub fn parse_unrendered_config(
     }
 
     let mut calls = Vec::new();
-    find_config_calls(&ast, snapshot, &mut calls);
+    find_config_calls(ast, snapshot, &mut calls);
     if calls.is_empty() {
         return None;
     }
-    let sql_bytes = sql.as_bytes();
 
     let mut map = BTreeMap::new();
     for args in calls {

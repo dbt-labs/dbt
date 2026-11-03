@@ -184,12 +184,14 @@ impl TypeOps for DefaultTypeOps {
         use AdapterType::*;
         let adapter_type = self.0;
         match adapter_type {
+            Bigquery => bigquery::try_format_type(data_type, nullable, out),
             Postgres | Salesforce => postgres::try_format_type(data_type, nullable, out),
             Fabric => fabric::try_format_type(data_type, nullable, out),
             ClickHouse => clickhouse::try_format_type(data_type, nullable, out),
             _ => {
-                // sdf-specific distinct types are encoded as FixedSizeList(field, 1).
-                // Render them as the uppercased field name (e.g. "variant" → "VARIANT").
+                // Logical types without native Arrow encodings use
+                // FixedSizeList(field, 1). Render the logical field name (for
+                // example, "json" → "JSON").
                 if let DataType::FixedSizeList(field, 1) = data_type {
                     out.push_str(&field.name().to_ascii_uppercase());
                     return Ok(());
@@ -699,7 +701,61 @@ pub mod bigquery {
     use arrow_schema::{DataType, Field};
     use dbt_adapter_core::AdapterType;
 
-    use crate::sql_types::get_field_sql_type_metadata_key;
+    use crate::AdapterResult;
+    use crate::sql_types::{DefaultTypeOps, get_field_sql_type_metadata_key};
+
+    pub fn try_format_type(
+        data_type: &DataType,
+        _nullable: bool,
+        out: &mut String,
+    ) -> AdapterResult<()> {
+        match data_type {
+            // Arrow width does not identify the BigQuery decimal family:
+            // BIGNUMERIC(P, S) can fit in Decimal128 when P <= 38.
+            DataType::Decimal32(precision, scale)
+            | DataType::Decimal64(precision, scale)
+            | DataType::Decimal128(precision, scale)
+            | DataType::Decimal256(precision, scale) => {
+                let integer_digits = i16::from(*precision) - i16::from(*scale);
+                let fits_numeric = (0..=9).contains(scale) && (1..=29).contains(&integer_digits);
+                out.push_str(if fits_numeric {
+                    "NUMERIC"
+                } else {
+                    "BIGNUMERIC"
+                });
+            }
+            // BigQuery TIMESTAMP represents an absolute instant, while
+            // DATETIME has no time-zone context. Arrow's time zone preserves
+            // that distinction.
+            DataType::Timestamp(_, Some(_)) => out.push_str("TIMESTAMP"),
+            // Logical types without native Arrow encodings use
+            // FixedSizeList(field, 1). Render the logical field name (for
+            // example, "json" → "JSON").
+            DataType::FixedSizeList(field, 1) => out.push_str(&field.name().to_ascii_uppercase()),
+            DataType::List(field) => {
+                out.push_str("ARRAY<");
+                try_format_type(field.data_type(), field.is_nullable(), out)?;
+                out.push('>');
+            }
+            DataType::Struct(fields) => {
+                let formatted_fields = fields
+                    .iter()
+                    .map(|field| {
+                        let mut field_type = String::new();
+                        try_format_type(field.data_type(), field.is_nullable(), &mut field_type)?;
+                        Ok(format!("{} {field_type}", field.name()))
+                    })
+                    .collect::<AdapterResult<Vec<_>>>()?;
+
+                out.push_str("STRUCT<");
+                out.push_str(&formatted_fields.join(", "));
+                out.push('>');
+            }
+            _ => DefaultTypeOps::new(AdapterType::Bigquery)
+                .write_sql_type_for_dbt_convert_functions(data_type, out)?,
+        }
+        Ok(())
+    }
 
     pub fn field_to_string<'a>(field: &'a Field) -> Option<Cow<'a, str>> {
         let type_key = get_field_sql_type_metadata_key(AdapterType::Bigquery);
@@ -1395,6 +1451,79 @@ mod tests {
             "timestamp without time zone"
         );
     }
+
+    #[test]
+    fn test_bigquery_logical_types_roundtrip_through_default_type_ops() {
+        let type_ops = DefaultTypeOps::new(Bigquery);
+
+        for (sql_type, expected) in [
+            ("GEOGRAPHY", "GEOGRAPHY"),
+            ("TIMESTAMP", "TIMESTAMP"),
+            ("DATETIME", "datetime"),
+            ("JSON", "JSON"),
+            ("NUMERIC", "NUMERIC"),
+            ("BIGNUMERIC", "BIGNUMERIC"),
+        ] {
+            let data_type = type_ops.parse_into_arrow_type(sql_type).unwrap();
+            let mut formatted = String::new();
+            type_ops
+                .format_arrow_type_as_sql(&data_type, true, &mut formatted)
+                .unwrap();
+            assert_eq!(formatted, expected, "failed to preserve {sql_type}");
+        }
+    }
+
+    #[test]
+    fn test_bigquery_formats_decimal_by_supported_range() {
+        let type_ops = DefaultTypeOps::new(Bigquery);
+
+        for (data_type, expected) in [
+            (DataType::Decimal128(38, 9), "NUMERIC"),
+            (DataType::Decimal128(29, 0), "NUMERIC"),
+            (DataType::Decimal128(30, 0), "BIGNUMERIC"),
+            (DataType::Decimal128(30, 20), "BIGNUMERIC"),
+            (DataType::Decimal256(10, 2), "NUMERIC"),
+        ] {
+            let mut formatted = String::new();
+            type_ops
+                .format_arrow_type_as_sql(&data_type, true, &mut formatted)
+                .unwrap();
+            assert_eq!(formatted, expected, "failed to format {data_type}");
+        }
+    }
+
+    #[test]
+    fn test_bigquery_formats_nested_logical_types() {
+        let geography =
+            DataType::FixedSizeList(Arc::new(Field::new("geography", DataType::Utf8, true)), 1);
+        let json = DataType::FixedSizeList(Arc::new(Field::new("json", DataType::Utf8, true)), 1);
+        let data_type = DataType::Struct(
+            vec![
+                Field::new("location", geography, true),
+                Field::new(
+                    "events",
+                    DataType::List(Arc::new(Field::new("item", json, true))),
+                    true,
+                ),
+                Field::new(
+                    "created_at",
+                    DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+                    true,
+                ),
+            ]
+            .into(),
+        );
+
+        let mut out = String::new();
+        DefaultTypeOps::new(Bigquery)
+            .format_arrow_type_as_sql(&data_type, true, &mut out)
+            .unwrap();
+        assert_eq!(
+            out,
+            "STRUCT<location GEOGRAPHY, events ARRAY<JSON>, created_at TIMESTAMP>"
+        );
+    }
+
     const ALL_ADAPTERS: [AdapterType; 5] = [Bigquery, Databricks, Postgres, Snowflake, Redshift];
 
     #[test]

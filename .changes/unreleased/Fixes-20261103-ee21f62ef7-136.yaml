@@ -1,0 +1,7 @@
+kind: Fixes
+body: A microbatch model's idle time and duration no longer overcount waits of its concurrent batches; the model is idle only while none of its batches runs
+time: 2026-11-03T11:49:03.639165+05:30
+custom:
+    author: mishamsk
+    issue: ""
+    project: dbt-core

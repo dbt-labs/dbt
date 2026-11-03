@@ -1,0 +1,7 @@
+kind: Fixes
+body: Fetch the tested model's schema for incremental unit tests with static analysis enabled instead of failing with dbt9002
+time: 2026-11-03T11:49:03.357913+05:30
+custom:
+    author: HannanNaeem
+    issue: ""
+    project: dbt-core

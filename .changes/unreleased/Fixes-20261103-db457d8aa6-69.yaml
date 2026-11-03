@@ -1,0 +1,7 @@
+kind: Fixes
+body: Finalize invocation telemetry when execution ends even if background workers retain descendant spans.
+time: 2026-11-03T11:49:03.228065+05:30
+custom:
+    author: mishamsk
+    issue: ""
+    project: dbt-core

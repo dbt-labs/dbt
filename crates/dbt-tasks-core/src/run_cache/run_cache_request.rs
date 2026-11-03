@@ -23,6 +23,7 @@ use dbt_schemas::schemas::{
     macros::DbtMacro,
 };
 use dbt_state::hash::node_state_hashes;
+use dbt_state::materialization;
 use dbt_state::proto::query_cache::{
     DbtNodeState, QueryDependency, StaleUpstreamPolicy, SubmitEnrichedSqlRequest,
     SubmitValuesRequest, TableModifiedInfo, TableProperties,
@@ -103,10 +104,14 @@ pub struct SqlRunCacheRequestContext {
     /// When set, the service first matches candidates on the unrendered node hashes carried in
     /// `dbt_node_state` and only falls back to the compiled-SQL hash if those differ.
     pub compare_unrendered_code: bool,
+    pub ignore_external_modifications: bool,
     pub full_refresh: bool,
     pub clone_time_travel_limit: Option<i64>,
     pub clone_table_properties: Option<TableProperties>,
     pub clone_chain_depth_limit: Option<i64>,
+    pub allow_clones: Option<bool>,
+    pub is_defer_to_profile: bool,
+    pub defer_enabled: bool,
     pub default_schema: String,
     /// How the service should aggregate per-dependency freshness checks for
     /// this request. Derived from the model's
@@ -131,6 +136,9 @@ pub struct SeedRunCacheRequestContext {
     pub clone_time_travel_limit: Option<i64>,
     pub clone_table_properties: Option<TableProperties>,
     pub clone_chain_depth_limit: Option<i64>,
+    pub allow_clones: Option<bool>,
+    pub is_defer_to_profile: bool,
+    pub defer_enabled: bool,
     pub dbt_project_info: DbtProjectInfo,
 }
 
@@ -342,6 +350,9 @@ pub fn build_seed_values_request<'a>(
         clone_chain_depth_limit: context.clone_chain_depth_limit,
         dbt_node_state: Some(node_state),
         table_namespace: context.dbt_project_info.table_namespace,
+        allow_clones: context.allow_clones,
+        is_defer_to_profile: context.is_defer_to_profile,
+        defer_enabled: context.defer_enabled,
     }
     .into_proto())
 }
@@ -361,6 +372,44 @@ pub fn target_table_for_node(
     Ok(create_relation_from_node(adapter_type, node, None)?.semantic_fqn())
 }
 
+/// Whether a model runs a user-defined materialization.
+///
+/// Custom by either test:
+///
+/// * by name — anything outside dbt's built-in materializations, or an
+///   incremental model with a user-defined incremental strategy.
+/// * by dispatch — the macro dbt would actually run is user-defined, which
+///   additionally catches a user macro that *shadows* a built-in name such as
+///   `table`/`incremental` (dbt-core#14486).
+///
+/// A name check alone cannot see the shadowing case, and a dispatch check alone
+/// misses adapter-specific names that resolve to a built-in macro, so both are
+/// required.
+pub fn model_is_custom_materialization(
+    model: &DbtModel,
+    materialization_resolver: &MaterializationResolver,
+) -> bool {
+    let materialization_name = model.base().materialized.to_string();
+    materialization::is_custom_by_name(
+        &materialization_name,
+        model_incremental_strategy(model).as_deref(),
+    ) || materialization_resolver
+        .is_custom_materialization(&materialization_name, model.node_adapter())
+}
+
+/// Whether a model takes the run-cache view path: view-like *and* actually
+/// built by dbt's own view materialization.
+///
+/// The view path skips dependency traversal entirely and asks the service to
+/// reuse on the target's own freshness and query hash. That is only sound when
+/// the relation really is a view. A user macro shadowing `view` or
+/// `materialized_view` runs code we cannot statically reason about and may not
+/// produce a view at all, so such a model is treated as custom instead.
+pub fn model_is_view(model: &DbtModel, materialization_resolver: &MaterializationResolver) -> bool {
+    materialization::is_view(&model.base().materialized.to_string())
+        && !model_is_custom_materialization(model, materialization_resolver)
+}
+
 pub fn model_execution_type_input(
     model: &DbtModel,
     full_refresh: bool,
@@ -369,17 +418,10 @@ pub fn model_execution_type_input(
     let materialized = &model.base().materialized;
     ExecutionTypeInput {
         resource_type: NodeType::Model,
-        is_view: matches!(
-            materialized,
-            DbtMaterialization::View | DbtMaterialization::MetricView
-        ),
-        // A model uses a custom materialization when the macro dbt would
-        // dispatch for its materialization is user-defined — a novel name or a
-        // user macro that shadows a built-in name (e.g. `table`/`incremental`).
-        // Matches the parse-time classification in `resolve_models` so the run
-        // cache treats such models as `DBT_CUSTOM` (dbt-core#14486).
-        is_custom_materialization: materialization_resolver
-            .is_custom_materialization(&materialized.to_string(), model.node_adapter()),
+        // Checked before `is_custom_materialization` when the execution type is
+        // derived, so a shadowed view must already be excluded here.
+        is_view: model_is_view(model, materialization_resolver),
+        is_custom_materialization: model_is_custom_materialization(model, materialization_resolver),
         is_incremental: materialized == &DbtMaterialization::Incremental,
         full_refresh,
         incremental_strategy: model_incremental_strategy(model),
@@ -518,6 +560,10 @@ fn build_sql_request_input(
         dbt_node_state: Some(node_state),
         compare_unrendered_code: context.compare_unrendered_code,
         table_namespace: context.dbt_project_info.table_namespace,
+        ignore_external_modifications: context.ignore_external_modifications,
+        allow_clones: context.allow_clones,
+        is_defer_to_profile: context.is_defer_to_profile,
+        defer_enabled: context.defer_enabled,
     })
 }
 
@@ -991,6 +1037,7 @@ mod tests {
             lenient_dependencies: vec![],
             tolerate_nondeterminism: true,
             compare_unrendered_code: false,
+            ignore_external_modifications: false,
             full_refresh,
             clone_time_travel_limit: None,
             clone_table_properties: None,
@@ -999,19 +1046,20 @@ mod tests {
             stale_upstream_policy: StaleUpstreamPolicy::Any,
             microbatch_window: None,
             dbt_project_info: make_project_info(),
+            allow_clones: Some(true),
+            is_defer_to_profile: false,
+            defer_enabled: false,
         }
     }
 
     #[test]
     fn model_request_uses_fusion_node_identity_target_and_semantic_extras() {
         let model = make_model(DbtMaterialization::Incremental);
-        let request = build_model_sql_request(
-            &model,
-            sql_context(false),
-            &test_materialization_resolver(),
-            |_| None,
-        )
-        .unwrap();
+        let mut context = sql_context(false);
+        context.ignore_external_modifications = true;
+        let request =
+            build_model_sql_request(&model, context, &test_materialization_resolver(), |_| None)
+                .unwrap();
 
         assert_eq!(
             request.target_table.as_deref(),
@@ -1019,6 +1067,7 @@ mod tests {
         );
         assert_eq!(request.default_catalog, "analytics");
         assert_eq!(request.execution_type, ModelExecutionType::Merge as i32);
+        assert!(request.ignore_external_modifications);
         assert_eq!(request.table_namespace(), "adapter-unique-id");
         assert_eq!(
             request.labels.get("dbt_node_unique_id").unwrap(),
@@ -1229,8 +1278,48 @@ mod tests {
     }
 
     #[test]
-    fn metric_view_uses_view_like_run_cache_path() {
-        let model = make_model(DbtMaterialization::MetricView);
+    fn user_macro_shadowing_view_loses_the_view_fast_path() {
+        // A root-project `materialization_view_default` wins dispatch over the
+        // built-in, so the model runs user code that may not produce a view at
+        // all. Taking the view path would let the service reuse it on the
+        // target's own freshness alone, without traversing its dependencies.
+        for materialization in [
+            DbtMaterialization::View,
+            DbtMaterialization::MaterializedView,
+        ] {
+            let model = make_model(materialization.clone());
+            let resolver = custom_materialization_resolver(&materialization.to_string());
+
+            assert!(
+                !model_is_view(&model, &resolver),
+                "shadowed {materialization} must not take the view path"
+            );
+
+            let request =
+                build_model_sql_request(&model, sql_context(false), &resolver, |_| None).unwrap();
+            assert_eq!(
+                request.execution_type,
+                ModelExecutionType::DbtCustom as i32,
+                "shadowed {materialization} should submit as DBT_CUSTOM"
+            );
+        }
+
+        // Without the shadowing macro both stay on the view path.
+        for materialization in [
+            DbtMaterialization::View,
+            DbtMaterialization::MaterializedView,
+        ] {
+            let model = make_model(materialization.clone());
+            assert!(model_is_view(&model, &test_materialization_resolver()));
+        }
+    }
+
+    #[test]
+    fn materialized_view_uses_the_view_run_cache_path() {
+        // `materialized_view` is view-like just as `view` is, so both take the
+        // cheap view path: own last_modified plus query hash, no dependency
+        // traversal.
+        let model = make_model(DbtMaterialization::MaterializedView);
         let request = build_model_sql_request(
             &model,
             sql_context(false),
@@ -1243,6 +1332,38 @@ mod tests {
         assert!(
             model_execution_type_input(&model, false, &test_materialization_resolver()).is_view
         );
+    }
+
+    #[test]
+    fn adapter_specific_materializations_map_to_custom_execution_type() {
+        // None of these is one of dbt's built-in materializations, so they are
+        // classified as custom and submitted as DBT_CUSTOM. They are still
+        // submitted: only views, ephemerals and semantic views are held back.
+        for materialization in [
+            DbtMaterialization::DynamicTable,
+            DbtMaterialization::MetricView,
+            DbtMaterialization::StreamingTable,
+        ] {
+            let model = make_model(materialization.clone());
+            let request = build_model_sql_request(
+                &model,
+                sql_context(false),
+                &test_materialization_resolver(),
+                |_| None,
+            )
+            .unwrap();
+
+            assert_eq!(
+                request.execution_type,
+                ModelExecutionType::DbtCustom as i32,
+                "{materialization} should submit as DBT_CUSTOM"
+            );
+            assert!(
+                !model_execution_type_input(&model, false, &test_materialization_resolver())
+                    .is_view,
+                "{materialization} is not a view"
+            );
+        }
     }
 
     #[test]
@@ -1303,7 +1424,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_request_uses_snapshot_execution_type_during_full_refresh() {
+    fn snapshot_request_uses_full_execution_type_during_full_refresh() {
         let snapshot = make_snapshot();
 
         let request = build_snapshot_sql_request(&snapshot, sql_context(false), |_| None).unwrap();
@@ -1313,8 +1434,10 @@ mod tests {
             Some(r#""analytics"."marts"."orders_snapshot""#)
         );
 
+        // A full-refreshed snapshot rewrites its target wholesale, so it is
+        // submitted as FULL rather than SNAPSHOT.
         let request = build_snapshot_sql_request(&snapshot, sql_context(true), |_| None).unwrap();
-        assert_eq!(request.execution_type, ModelExecutionType::Snapshot as i32);
+        assert_eq!(request.execution_type, ModelExecutionType::Full as i32);
     }
 
     #[test]
@@ -1384,6 +1507,9 @@ mod tests {
                 clone_table_properties: None,
                 clone_chain_depth_limit: Some(1),
                 dbt_project_info: project_info,
+                allow_clones: Some(true),
+                is_defer_to_profile: false,
+                defer_enabled: true,
             },
             |_| None,
         )
@@ -1448,6 +1574,9 @@ mod tests {
                     clone_table_properties: None,
                     clone_chain_depth_limit: None,
                     dbt_project_info: project_info,
+                    allow_clones: Some(true),
+                    is_defer_to_profile: false,
+                    defer_enabled: true,
                 },
                 |_| None,
             )

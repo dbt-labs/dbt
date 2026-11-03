@@ -11,7 +11,7 @@ use dbt_common::constants::{
 };
 use dbt_common::io_args::{InternalPackageMode, ReplayMode, TimeMachineMode};
 use dbt_common::once_cell_vars::DISPATCH_CONFIG;
-use dbt_common::path::DbtPath;
+use dbt_common::path::{DbtPath, resource_extension};
 use dbt_common::tracing::TracingConfigProvider;
 use dbt_common::tracing::dbt_emit::{
     emit_error_log_message, emit_warn_log_from_fs_error, emit_warn_log_message,
@@ -32,7 +32,6 @@ use dbt_yaml;
 use fs_deps::get_or_install_packages;
 use fs_deps::private_package::PrivatePackageResolver;
 use indexmap::IndexMap;
-use pathdiff::diff_paths;
 use serde::Deserialize;
 use std::borrow::Cow;
 use std::collections::BTreeSet;
@@ -52,7 +51,7 @@ use dbt_common::constants::{
 use dbt_common::error::LiftableResult;
 use project::DbtProject;
 
-use dbt_common::stdfs::last_modified;
+use dbt_common::stdfs::{diff_paths, last_modified};
 use dbt_common::{ErrorCode, create_debug_span, ectx, err, tokiofs};
 use dbt_common::{FsResult, fs_err};
 use dbt_jinja_vars::DbtVars;
@@ -208,6 +207,9 @@ pub async fn load(
     loader_hooks: Arc<dyn LoaderHooks>,
     private_package_resolver: Arc<dyn PrivatePackageResolver>,
 ) -> FsResult<DbtState> {
+    // Must run before any project Jinja is rendered.
+    dbt_adapter::time_machine::prepare_replay(iarg.replay.as_ref())?;
+
     let (simplified_dbt_project, mut dbt_profile, vars_from_file) =
         load_simplified_project_and_profiles(arg).await?;
 
@@ -309,6 +311,12 @@ pub async fn load(
         threads: final_threads,
         vars: merged_vars,
         root_vars_from_file: vars_from_file,
+        // Root-project-only, matching dbt-core where this is a global flag.
+        allow_jinja_file_extensions: resolve_bool_project_flag(
+            false,
+            simplified_dbt_project.flags.as_ref(),
+            "allow_jinja_file_extensions",
+        ),
         ..arg.clone()
     };
 
@@ -404,6 +412,7 @@ pub async fn load(
                 pkg_name,
                 &ResourcePathKind::ModelPaths,
                 &["sql", "py"],
+                arg.allow_jinja_file_extensions,
                 ap,
             );
             root.macro_files = find_files_by_kind_and_extension(
@@ -411,6 +420,7 @@ pub async fn load(
                 pkg_name,
                 &ResourcePathKind::MacroPaths,
                 &["sql"],
+                arg.allow_jinja_file_extensions,
                 ap,
             );
             root.test_files = find_files_by_kind_and_extension(
@@ -418,6 +428,7 @@ pub async fn load(
                 pkg_name,
                 &ResourcePathKind::TestPaths,
                 &["sql"],
+                arg.allow_jinja_file_extensions,
                 ap,
             );
             root.seed_files = find_files_by_kind_and_extension(
@@ -425,6 +436,7 @@ pub async fn load(
                 pkg_name,
                 &ResourcePathKind::SeedPaths,
                 &["csv", "parquet", "json"],
+                false,
                 ap,
             );
             root.snapshot_files = find_files_by_kind_and_extension(
@@ -432,6 +444,7 @@ pub async fn load(
                 pkg_name,
                 &ResourcePathKind::SnapshotPaths,
                 &["sql"],
+                arg.allow_jinja_file_extensions,
                 ap,
             );
             root
@@ -942,7 +955,7 @@ pub async fn load_inner(
     // make all paths relative to the project directory
     for (_, files) in all_files.iter_mut() {
         for (path, _) in files.iter_mut() {
-            *path = DbtPath::from(diff_paths(&path, package_path).unwrap());
+            *path = DbtPath::from(diff_paths(&path, package_path)?);
         }
         //
         // make deterministic: Sort files based on their relative paths
@@ -955,6 +968,7 @@ pub async fn load_inner(
         &dbt_project.name,
         &ResourcePathKind::ModelPaths,
         &["yml", "yaml"],
+        false,
         &all_files,
     );
     // additonal paths can have ym files (add generic tests etc)
@@ -963,6 +977,7 @@ pub async fn load_inner(
         &dbt_project.name,
         &ResourcePathKind::SeedPaths,
         &["yml", "yaml"],
+        false,
         &all_files,
     );
     let snapshot_ymls = find_files_by_kind_and_extension(
@@ -970,6 +985,7 @@ pub async fn load_inner(
         &dbt_project.name,
         &ResourcePathKind::SnapshotPaths,
         &["yml", "yaml"],
+        false,
         &all_files,
     );
     let analysis_ymls = find_files_by_kind_and_extension(
@@ -977,6 +993,7 @@ pub async fn load_inner(
         &dbt_project.name,
         &ResourcePathKind::AnalysisPaths,
         &["yml", "yaml"],
+        false,
         &all_files,
     );
 
@@ -985,6 +1002,7 @@ pub async fn load_inner(
         &dbt_project.name,
         &ResourcePathKind::TestPaths,
         &["yml", "yaml"],
+        false,
         &all_files,
     );
 
@@ -993,6 +1011,7 @@ pub async fn load_inner(
         &dbt_project.name,
         &ResourcePathKind::FunctionPaths,
         &["yml", "yaml"],
+        false,
         &all_files,
     );
 
@@ -1001,6 +1020,7 @@ pub async fn load_inner(
         &dbt_project.name,
         &ResourcePathKind::MacroPaths,
         &["yml", "yaml"],
+        false,
         &all_files,
     );
 
@@ -1009,6 +1029,7 @@ pub async fn load_inner(
         &dbt_project.name,
         &ResourcePathKind::CheckPaths,
         &["yml", "yaml"],
+        false,
         &all_files,
     );
 
@@ -1033,6 +1054,7 @@ pub async fn load_inner(
         &dbt_project.name,
         &ResourcePathKind::AnalysisPaths,
         &["sql"],
+        arg.allow_jinja_file_extensions,
         &all_files,
     );
     let check_files = find_files_by_kind_and_extension(
@@ -1040,6 +1062,7 @@ pub async fn load_inner(
         &dbt_project.name,
         &ResourcePathKind::CheckPaths,
         &["sql"],
+        false,
         &all_files,
     );
     let mut model_sql_files = find_files_by_kind_and_extension(
@@ -1047,6 +1070,7 @@ pub async fn load_inner(
         &dbt_project.name,
         &ResourcePathKind::ModelPaths,
         &["sql"],
+        arg.allow_jinja_file_extensions,
         &all_files,
     );
     let python_model_files = find_files_by_kind_and_extension(
@@ -1054,6 +1078,7 @@ pub async fn load_inner(
         &dbt_project.name,
         &ResourcePathKind::ModelPaths,
         &["py"],
+        false,
         &all_files,
     );
     if !python_model_files.is_empty() {
@@ -1065,6 +1090,7 @@ pub async fn load_inner(
         &dbt_project.name,
         &ResourcePathKind::FunctionPaths,
         &["sql", "py", "js"],
+        false,
         &all_files,
     );
     function_files.sort_by(|a, b| a.path.cmp(&b.path));
@@ -1074,6 +1100,7 @@ pub async fn load_inner(
         &dbt_project.name,
         &ResourcePathKind::MacroPaths,
         &["sql"],
+        arg.allow_jinja_file_extensions,
         &all_files,
     );
     let test_files = find_files_by_kind_and_extension(
@@ -1081,6 +1108,7 @@ pub async fn load_inner(
         &dbt_project.name,
         &ResourcePathKind::TestPaths,
         &["sql"],
+        arg.allow_jinja_file_extensions,
         &all_files,
     );
     let fixture_files = find_files_by_kind_and_extension(
@@ -1088,6 +1116,7 @@ pub async fn load_inner(
         &dbt_project.name,
         &ResourcePathKind::FixturePaths,
         &["csv", "sql"],
+        false,
         &all_files,
     );
     let seed_files = find_files_by_kind_and_extension(
@@ -1095,6 +1124,7 @@ pub async fn load_inner(
         &dbt_project.name,
         &ResourcePathKind::SeedPaths,
         &["csv", "parquet", "json"],
+        false,
         &all_files,
     );
     let docs_files = find_files_by_kind_and_extension(
@@ -1102,6 +1132,7 @@ pub async fn load_inner(
         &dbt_project.name,
         &ResourcePathKind::DocsPaths,
         &["md"],
+        arg.allow_jinja_file_extensions,
         &all_files,
     );
     let snapshot_files = find_files_by_kind_and_extension(
@@ -1109,6 +1140,7 @@ pub async fn load_inner(
         &dbt_project.name,
         &ResourcePathKind::SnapshotPaths,
         &["sql"],
+        arg.allow_jinja_file_extensions,
         &all_files,
     );
     let dependencies = if skip_dependencies {
@@ -1204,11 +1236,31 @@ fn should_exclude_path(kind: &ResourcePathKind, path: &Path) -> bool {
     }
 }
 
+/// Resource extensions that may carry a trailing Jinja template suffix
+/// (`model.sql.j2`). Mirrors dbt-core's file-type table.
+const JINJA_ALIASABLE_EXTENSIONS: &[&str] = &["sql", "md"];
+
+fn matches_extension(path: &Path, extensions: &[&str], allow_jinja: bool) -> bool {
+    let Some(ext) = path.extension().and_then(OsStr::to_str) else {
+        return false;
+    };
+    if extensions.contains(&ext.to_lowercase().as_str()) {
+        return true;
+    }
+    allow_jinja
+        && resource_extension(path).is_some_and(|base| {
+            let base = base.to_lowercase();
+            JINJA_ALIASABLE_EXTENSIONS.contains(&base.as_str())
+                && extensions.contains(&base.as_str())
+        })
+}
+
 fn find_files_by_kind_and_extension(
     in_dir: &Path,
     project_name: &str,
     path_kind: &ResourcePathKind,
     extensions: &[&str],
+    allow_jinja: bool,
     all_paths: &HashMap<ResourcePathKind, Vec<(DbtPath, SystemTime)>>,
 ) -> Vec<DbtAsset> {
     let default = vec![];
@@ -1220,17 +1272,16 @@ fn find_files_by_kind_and_extension(
 
     let mut paths = paths_to_filter
         .iter()
-        .filter_map(|(path, _)| {
-            path.extension()
-                .and_then(OsStr::to_str)
-                .filter(|ext| extensions.contains(&ext.to_lowercase().as_str()))
-                .filter(|_| !should_exclude_path(path_kind, path.as_path()))
-                .map(|_| DbtAsset {
-                    package_name: project_name.to_string(),
-                    base_path: in_dir.to_path_buf(),
-                    path: path.to_path_buf(),
-                    original_path: path.to_path_buf(),
-                })
+        // Keep non-excluded paths whose extension is in `extensions`, or a Jinja alias like `.sql.j2` when `allow_jinja`.
+        .filter(|(path, _)| {
+            !should_exclude_path(path_kind, path.as_path())
+                && matches_extension(path.as_path(), extensions, allow_jinja)
+        })
+        .map(|(path, _)| DbtAsset {
+            package_name: project_name.to_string(),
+            base_path: in_dir.to_path_buf(),
+            path: path.to_path_buf(),
+            original_path: path.to_path_buf(),
         })
         .collect::<HashSet<_>>()
         .into_iter()
@@ -1602,6 +1653,7 @@ mod tests {
             project_name,
             &ResourcePathKind::TestPaths,
             extensions,
+            false,
             &all_paths,
         );
 
@@ -1840,6 +1892,7 @@ mod tests {
             project_name,
             &ResourcePathKind::TestPaths,
             extensions,
+            false,
             &all_paths,
         );
 
@@ -1873,6 +1926,7 @@ mod tests {
             project_name,
             &ResourcePathKind::TestPaths,
             extensions,
+            false,
             &all_paths,
         );
 
@@ -1904,6 +1958,7 @@ mod tests {
             project_name,
             &ResourcePathKind::ModelPaths,
             extensions,
+            false,
             &all_paths,
         );
 
@@ -1917,6 +1972,98 @@ mod tests {
         let included_paths: Vec<&PathBuf> = result.iter().map(|asset| &asset.path).collect();
         assert!(included_paths.contains(&&PathBuf::from("models/generic/my_model.sql")));
         assert!(included_paths.contains(&&PathBuf::from("models/other/model.sql")));
+    }
+
+    #[test]
+    fn test_find_files_by_kind_and_extension_jinja_aliases() {
+        let in_dir = PathBuf::from("/project");
+        let project_name = "test_project";
+        let now = SystemTime::now();
+
+        let mut all_paths: HashMap<ResourcePathKind, Vec<(DbtPath, SystemTime)>> = HashMap::new();
+        all_paths.insert(
+            ResourcePathKind::ModelPaths,
+            vec![
+                (DbtPath::from("models/plain.sql"), now),
+                (DbtPath::from("models/templated.sql.j2"), now),
+                (DbtPath::from("models/templated.sql.jinja2"), now),
+                (DbtPath::from("models/templated.sql.jinja"), now),
+                (DbtPath::from("models/bare.j2"), now),
+                (DbtPath::from("models/templated.py.j2"), now),
+                (DbtPath::from("models/templated.yml.j2"), now),
+            ],
+        );
+        all_paths.insert(
+            ResourcePathKind::SeedPaths,
+            vec![(DbtPath::from("seeds/templated.csv.j2"), now)],
+        );
+        all_paths.insert(
+            ResourcePathKind::DocsPaths,
+            vec![
+                (DbtPath::from("models/doc.md"), now),
+                (DbtPath::from("models/doc.md.j2"), now),
+            ],
+        );
+
+        let find = |kind, extensions: &[&str], allow_jinja| {
+            find_files_by_kind_and_extension(
+                &in_dir,
+                project_name,
+                kind,
+                extensions,
+                allow_jinja,
+                &all_paths,
+            )
+            .into_iter()
+            .map(|asset| asset.path)
+            .collect::<Vec<_>>()
+        };
+
+        assert_eq!(
+            find(&ResourcePathKind::ModelPaths, &["sql"], false),
+            vec![PathBuf::from("models/plain.sql")],
+            "templated models must stay invisible when the flag is off"
+        );
+        assert_eq!(
+            find(&ResourcePathKind::ModelPaths, &["sql"], true),
+            vec![
+                PathBuf::from("models/plain.sql"),
+                PathBuf::from("models/templated.sql.j2"),
+                PathBuf::from("models/templated.sql.jinja"),
+                PathBuf::from("models/templated.sql.jinja2"),
+            ],
+        );
+        // Only `.sql`/`.md` are aliasable, and a bare `.j2` has no resource extension.
+        assert!(find(&ResourcePathKind::ModelPaths, &["py"], true).is_empty());
+        assert!(find(&ResourcePathKind::ModelPaths, &["yml", "yaml"], true).is_empty());
+        assert_eq!(
+            find(&ResourcePathKind::ModelPaths, &["sql", "py"], true),
+            vec![
+                PathBuf::from("models/plain.sql"),
+                PathBuf::from("models/templated.sql.j2"),
+                PathBuf::from("models/templated.sql.jinja"),
+                PathBuf::from("models/templated.sql.jinja2"),
+            ],
+        );
+        assert!(
+            find(
+                &ResourcePathKind::SeedPaths,
+                &["csv", "parquet", "json"],
+                true
+            )
+            .is_empty()
+        );
+        assert_eq!(
+            find(&ResourcePathKind::DocsPaths, &["md"], false),
+            vec![PathBuf::from("models/doc.md")],
+        );
+        assert_eq!(
+            find(&ResourcePathKind::DocsPaths, &["md"], true),
+            vec![
+                PathBuf::from("models/doc.md"),
+                PathBuf::from("models/doc.md.j2"),
+            ],
+        );
     }
 
     fn yaml_value(src: &str) -> dbt_yaml::Value {

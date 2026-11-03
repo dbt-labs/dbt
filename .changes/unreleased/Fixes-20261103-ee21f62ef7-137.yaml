@@ -1,0 +1,7 @@
+kind: Fixes
+body: After a concurrent microbatch batch fails, batches not yet started are canceled instead of running after their model has failed
+time: 2026-11-03T11:49:03.646684+05:30
+custom:
+    author: mishamsk
+    issue: ""
+    project: dbt-core

@@ -15,12 +15,13 @@ use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::listener::RenderingEventListenerFactory;
 use dbt_schema_store::{DataStoreTrait, SchemaStoreTrait};
 use dbt_schemas::schemas::profiles::Execute;
-use dbt_schemas::state::ResolverState;
+use dbt_schemas::state::{DbtProfile, ResolverState};
 use dbt_state::explain::{
     StateExplainLogRecord, StateExplainRunConfig, StateExplainRunStart,
     append_state_explain_log_record, new_state_explain_log_path, prune_state_explain_logs,
 };
 use dbt_state::service_config::RunCacheServiceConfig;
+use dbt_state::telemetry::SharedEventOrder;
 use dbt_state::view_traversal::ViewDefinitionTraverser;
 use petgraph::graph::DiGraph;
 
@@ -60,6 +61,7 @@ pub trait TaskRunnerCtxFactory: Send + Sync + 'static {
         adapter: Arc<Adapter>,
         adapter_store: Arc<AdapterStore>,
         run_cache_lifecycle: Arc<RunCacheLifecycle>,
+        shared_event_order: Option<SharedEventOrder>,
     ) -> Pin<Box<dyn Future<Output = Result<TaskRunnerCtx, Box<FsError>>> + Send>> {
         let rendering_listener_factory = self.rendering_listener_factory();
         let span_manager = Arc::new({
@@ -125,7 +127,12 @@ pub trait TaskRunnerCtxFactory: Send + Sync + 'static {
                 state_explain_log_path.as_ref(),
                 run_cache_service.config.as_ref(),
             ) {
-                write_state_explain_run_start(path, run_task_args.as_ref(), config);
+                write_state_explain_run_start(
+                    path,
+                    run_task_args.as_ref(),
+                    config,
+                    &resolver_state.dbt_profile,
+                );
                 prune_state_explain_logs(path, config);
             }
 
@@ -146,10 +153,11 @@ pub trait TaskRunnerCtxFactory: Send + Sync + 'static {
                 }),
                 heuristic_clock: std::sync::OnceLock::new(),
                 prefetch: Default::default(),
-                telemetry_event_order: std::sync::atomic::AtomicI64::new(0),
+                shared_event_order: shared_event_order.unwrap_or_default(),
                 telemetry_session_start: std::sync::OnceLock::new(),
                 telemetry_session_ended: std::sync::atomic::AtomicBool::new(false),
                 telemetry_dispatcher: std::sync::OnceLock::new(),
+                redshift_case_sensitivity_enabled: tokio::sync::OnceCell::new(),
             };
 
             Ok(TaskRunnerCtx {
@@ -217,12 +225,13 @@ fn write_state_explain_run_start(
     path: &Path,
     run_task_args: &RunTasksArgs,
     config: &RunCacheServiceConfig,
+    active_profile: &DbtProfile,
 ) {
     let record = StateExplainLogRecord::RunStart(StateExplainRunStart {
         start_timestamp_utc: chrono::Utc::now().to_rfc3339(),
         run_config: StateExplainRunConfig {
             org_id: config.org_id.clone(),
-            defer_to_target: config.defer_to.clone(),
+            defer_to_target: config.defer_to_target(active_profile),
             freshness_tolerance_seconds: config.freshness_tolerance_seconds,
             tolerate_nondeterminism: config.tolerate_nondeterminism,
             clone_incremental_in_dev: config.clone_incremental_in_dev.as_str().to_string(),
@@ -270,6 +279,26 @@ pub trait ExtendedTaskRunnerCtxFactory: Send + Sync {
 mod tests {
     use super::*;
     use dbt_common::node_selector::{MethodName, SelectExpression, SelectionCriteria};
+    use dbt_schemas::IndexMap;
+    use dbt_schemas::schemas::profiles::{DbConfig, DuckDbConfig};
+    use dbt_schemas::state::ProfileAdapter;
+
+    fn test_profile(target: &str, defer_to_target: Option<&str>) -> DbtProfile {
+        let db_config = DbConfig::DuckDB(Box::<DuckDbConfig>::default());
+        let default_adapter = db_config.adapter_type();
+        DbtProfile {
+            profile: "jaffle_shop".to_string(),
+            target: target.to_string(),
+            defer_to_target: defer_to_target.map(str::to_string),
+            allow_clones: true,
+            adapters: IndexMap::from([(default_adapter, ProfileAdapter::single(db_config))]),
+            default_adapter,
+            schema: "dbt_test".to_string(),
+            database: "db".to_string(),
+            relative_profile_path: PathBuf::new(),
+            threads: None,
+        }
+    }
 
     #[test]
     fn write_state_explain_run_start_captures_run_config() {
@@ -291,7 +320,7 @@ mod tests {
         config.defer_to = "prod".to_string();
         config.clone_incremental_in_dev = dbt_state::service_config::CloneIncrementalInDev::Always;
 
-        write_state_explain_run_start(&path, &args, &config);
+        write_state_explain_run_start(&path, &args, &config, &test_profile("dev", None));
 
         let log = dbt_state::explain::read_state_explain_log(&path).unwrap();
         let run_config = log.run_start.unwrap().run_config;
@@ -302,6 +331,26 @@ mod tests {
         assert_eq!(run_config.target_name, "dev");
         assert_eq!(run_config.select, ["fqn:orders", "fqn:customers"]);
         assert_eq!(run_config.exclude, ["fqn:customers"]);
+    }
+
+    #[test]
+    fn write_state_explain_run_start_prefers_profile_defer_to_target() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("state-explain.jsonl");
+        let mut args = RunTasksArgs {
+            resolved_profile: "jaffle_shop".to_string(),
+            resolved_target: "dev".to_string(),
+            ..Default::default()
+        };
+        args.io.in_dir = temp_dir.path().to_path_buf();
+        let mut config = RunCacheServiceConfig::disabled();
+        config.defer_to = "prod".to_string();
+
+        write_state_explain_run_start(&path, &args, &config, &test_profile("dev", Some("staging")));
+
+        let log = dbt_state::explain::read_state_explain_log(&path).unwrap();
+        let run_config = log.run_start.unwrap().run_config;
+        assert_eq!(run_config.defer_to_target, "staging");
     }
 
     #[test]

@@ -23,12 +23,12 @@ import { ResourceFilterTable } from './ResourceFilterTable';
 import { Button } from './ui/Button';
 import { Tooltip } from './ui/Tooltip';
 
-interface Props {
+interface SourceCollectionPageProps {
   nodes: NodeSummary[];
   onSelect: (uniqueId: string) => void;
 }
 
-export function SourceCollectionPage({ nodes, onSelect }: Props) {
+export function SourceCollectionPage({ nodes, onSelect }: SourceCollectionPageProps) {
   const { sourceName } = useParams<{ sourceName: string }>();
 
   const sources = useMemo(
@@ -63,6 +63,15 @@ export function SourceCollectionPage({ nodes, onSelect }: Props) {
   const detailError = results.find((r) => r.error)?.error?.message ?? null;
 
   const firstSource = sources[0] ?? null;
+
+  // The source block's own description, not any one table's — every table under
+  // the same source shares it, so the first detail to land is as good as any.
+  const sourceDescription = useMemo(
+    () =>
+      Array.from(detailMap.values()).find((d) => d.sourceDescription)
+        ?.sourceDescription ?? null,
+    [detailMap],
+  );
 
   const maxLoadedAt = useMemo(() => {
     const dates = Array.from(detailMap.values())
@@ -178,7 +187,7 @@ export function SourceCollectionPage({ nodes, onSelect }: Props) {
       />
 
       <DetailsSection heading="Description">
-        <DescriptionDisplay description={firstSource?.description} />
+        <DescriptionDisplay description={sourceDescription} />
       </DetailsSection>
 
       {firstSource && (

@@ -1,0 +1,7 @@
+kind: Fixes
+body: Fix dbt-dist recursion on version manager shims
+time: 2026-11-03T11:49:03.397162+05:30
+custom:
+    author: j-clemons
+    issue: "16537"
+    project: dbt-core

@@ -3,7 +3,8 @@ use crate::column::{BigqueryColumnMode, Column, ColumnBuilder};
 use crate::config::AdapterConfig;
 use crate::connection::{ConnectionGuard, borrow_tlocal_connection};
 use crate::engine::{
-    AdapterEngine, AdbcEngine, Options as ExecuteOptions, execute_query_with_retry,
+    AdapterEngine, AdbcEngine, Options as ExecuteOptions, databricks_statement_options,
+    execute_query_with_retry,
 };
 use crate::errors::{
     AdapterError, AdapterErrorKind, adbc_error_to_adapter_error, arrow_error_to_adapter_error,
@@ -86,8 +87,6 @@ use minijinja::dispatch_object::DispatchObject;
 use minijinja::value::{Object, ValueKind, ValueMap};
 use minijinja::{self, invalid_argument, invalid_argument_inner};
 use minijinja::{State, Value, args};
-use once_cell::sync::Lazy;
-use regex::Regex;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -100,13 +99,105 @@ use std::sync::{Arc, LazyLock};
 use AdapterType::*;
 use InnerAdapter::*;
 
-static CREDENTIAL_IN_COPY_INTO_REGEX: Lazy<Regex> = Lazy::new(|| {
-    // This is NOT the same as the Python regex used in dbt-databricks. Rust lacks lookaround.
-    // This achieves the same result for the proper structure.  See original at time of port:
-    // https://github.com/databricks/dbt-databricks/blob/66f513b960c62ee21c4c399264a41a56853f3d82/dbt/adapters/databricks/utils.py#L19
-    Regex::new(r"credential\s*(\(\s*'[\w\-]+'\s*=\s*'.*?'\s*(?:,\s*'[\w\-]+'\s*=\s*'.*?'\s*)*\))")
-        .expect("CREDENTIALS_IN_COPY_INTO_REGEX invalid")
+/// An option key inside a secret-bearing clause, e.g. `'fs.azure.account.key'`.
+const SECRET_OPTION_KEY: &str = r"'[^']+'";
+
+/// An option value. The alternatives are deliberately non-overlapping to keep matching
+/// linear on malformed input, and the trailing lookahead lets a lone `'` appear inside a
+/// value while still ending the value at a real delimiter.
+const SECRET_OPTION_VALUE: &str = r"'(?:\\.|''|[^'\\]|'(?!'|\s*[,)]))*'";
+
+/// Backtracking steps allowed before the clause scan gives up.
+const SECRET_CLAUSE_BACKTRACK_LIMIT: usize = 1_000_000;
+
+/// Matches one whole `credential (...)` / `encryption (...)` clause. Group 1 is the
+/// keyword, group 2 the option list.
+static SECRET_CLAUSE_IN_COPY_INTO_REGEX: LazyLock<fancy_regex::Regex> = LazyLock::new(|| {
+    let option = format!(r"{SECRET_OPTION_KEY}\s*=\s*{SECRET_OPTION_VALUE}");
+    fancy_regex::RegexBuilder::new(&format!(
+        r"(?i)(credential|encryption)\s*\(\s*({option}(?:\s*,\s*{option})*)\s*\)"
+    ))
+    .backtrack_limit(SECRET_CLAUSE_BACKTRACK_LIMIT)
+    .build()
+    .expect("SECRET_CLAUSE_IN_COPY_INTO_REGEX invalid")
 });
+
+/// Extracts option keys from an already-matched option list. Group 1 is the key.
+static SECRET_OPTION_KEY_REGEX: LazyLock<fancy_regex::Regex> = LazyLock::new(|| {
+    fancy_regex::Regex::new(&format!(
+        r"({SECRET_OPTION_KEY})\s*=\s*{SECRET_OPTION_VALUE}"
+    ))
+    .expect("SECRET_OPTION_KEY_REGEX invalid")
+});
+
+/// Pre-filter keeping ordinary statements off the much slower clause scan.
+static SECRET_CLAUSE_KEYWORD_REGEX: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r"(?i)credential|encryption").expect("SECRET_CLAUSE_KEYWORD_REGEX invalid")
+});
+
+/// Rewrite every secret-bearing clause in `sql`, preserving option keys and surrounding SQL.
+///
+/// Returns an error if the matcher could not run to completion, signalling the caller to
+/// fall back to the original statement. Never returns a partially redacted string: a
+/// bail-out discards the buffer built so far, since a half-redacted statement is a shape
+/// neither this nor the dbt-databricks implementation ever produces.
+fn redact_secret_clauses(sql: &str) -> AdapterResult<String> {
+    fn scan_failed(e: fancy_regex::Error) -> AdapterError {
+        AdapterError::new(
+            AdapterErrorKind::Internal,
+            format!("secret clause scan failed: {e}"),
+        )
+    }
+
+    fn missing_group(group: &str) -> AdapterError {
+        AdapterError::new(
+            AdapterErrorKind::Internal,
+            format!("secret clause match is missing its {group} capture group"),
+        )
+    }
+
+    if !SECRET_CLAUSE_KEYWORD_REGEX.is_match(sql) {
+        return Ok(sql.to_string());
+    }
+
+    let mut redacted = String::with_capacity(sql.len());
+    let mut clause_end = 0;
+
+    for clause_caps in SECRET_CLAUSE_IN_COPY_INTO_REGEX.captures_iter(sql) {
+        let clause_caps = clause_caps.map_err(scan_failed)?;
+        let clause = clause_caps.get(0).ok_or_else(|| missing_group("clause"))?;
+        let keyword = clause_caps
+            .get(1)
+            .ok_or_else(|| missing_group("keyword"))?
+            .as_str();
+        let options = clause_caps
+            .get(2)
+            .ok_or_else(|| missing_group("option list"))?
+            .as_str();
+
+        redacted.push_str(&sql[clause_end..clause.start()]);
+        redacted.push_str(keyword);
+        redacted.push_str(" (");
+        for (idx, key_caps) in SECRET_OPTION_KEY_REGEX.captures_iter(options).enumerate() {
+            if idx > 0 {
+                redacted.push_str(", ");
+            }
+            let key_caps = key_caps.map_err(scan_failed)?;
+            redacted.push_str(
+                key_caps
+                    .get(1)
+                    .ok_or_else(|| missing_group("option key"))?
+                    .as_str(),
+            );
+            redacted.push_str(" = '[REDACTED]'");
+        }
+        redacted.push(')');
+        clause_end = clause.end();
+    }
+
+    redacted.push_str(&sql[clause_end..]);
+    Ok(redacted)
+}
 
 /// Returns true if all non-null values in a Float64 column have zero fractional parts.
 /// Equivalent to Python adapter's `convert_number_type` implementation.
@@ -660,7 +751,7 @@ impl AdapterImpl {
 
     /// Redact credentials expressions from DDL statements
     ///
-    /// DatabricksAdapter https://github.com/databricks/dbt-databricks/blob/2f11abb306a400cde32b27891b766bf41a11fb1f/dbt/adapters/databricks/impl.py#L833
+    /// DatabricksUtils https://github.com/databricks/dbt-databricks/blob/bf41d4869f04e6d88a09e3b0107fe6f1e29a01c0/dbt/adapters/databricks/utils.py#L20-L50
     pub fn redact_credentials(&self, sql: &str) -> AdapterResult<String> {
         if self.adapter_type() != Databricks {
             return Err(AdapterError::new(
@@ -668,29 +759,9 @@ impl AdapterImpl {
                 "redact_credentials is a Databricks-specific function",
             ));
         }
-        let Some(caps) = CREDENTIAL_IN_COPY_INTO_REGEX.captures(sql) else {
-            // WARN: Malformed input by user means credentials may leak.
-            // However, this _is_ the fallback strategy implemented in Python.
-            return Ok(sql.to_string());
-        };
-
-        // Capture the full matched credential(...) string, including the surrounding parentheses.
-        // Then extract only the inner key-value content
-        let full_parens = caps.get(1).unwrap().as_str();
-        let inner = &full_parens[1..full_parens.len() - 1];
-
-        let redacted_pairs = inner
-            .split(',')
-            .map(|pair| {
-                let key = pair.split('=').next().unwrap_or("").trim();
-                format!("{key} = '[REDACTED]'")
-            })
-            .collect::<Vec<_>>()
-            .join(", ");
-
-        let redacted_sql = sql.replacen(full_parens, &format!("({redacted_pairs})"), 1);
-
-        Ok(redacted_sql)
+        Ok(redact_secret_clauses(sql)
+            .ok()
+            .unwrap_or_else(|| sql.to_string()))
     }
 
     /// BaseAdapter https://github.com/dbt-labs/dbt-adapters/blob/0efd8d3d1081e1ab43e38797d5104f7b424a6284/dbt-adapters/src/dbt/adapters/base/impl.py#L505
@@ -986,6 +1057,7 @@ impl AdapterImpl {
                 ))
             }
             Impl(_, engine) => {
+                let options = databricks_statement_options(self.adapter_type(), Some(state))?;
                 self.execute_inner(
                     Arc::clone(engine),
                     None,
@@ -995,7 +1067,7 @@ impl AdapterImpl {
                     auto_begin,
                     false,
                     None,
-                    None,
+                    Some(options),
                     token,
                 )?;
                 Ok(())
@@ -1384,9 +1456,15 @@ impl AdapterImpl {
             }
             Impl(adapter_type, engine) if engine.is_sidecar() => {
                 let client = engine.sidecar_client().unwrap();
+                let query_database = database.to_string();
                 let query_schema = schema.to_string();
                 let query_identifier = identifier.to_string();
-                let relation_type = client.get_relation_type(&query_schema, &query_identifier)?;
+                let relation_type = client.get_relation_type(
+                    &engine.quoting(),
+                    &query_database,
+                    &query_schema,
+                    &query_identifier,
+                )?;
                 match relation_type {
                     Some(rel_type) => {
                         let relation = crate::relation::do_create_relation(
@@ -2041,12 +2119,18 @@ impl AdapterImpl {
                     }
                 }
 
-                execute_macro_with_package(
+                let result = execute_macro_with_package(
                     state,
                     &[RelationObject::new(relation.to_owned()).into_value()],
                     "get_columns_comments",
                     "dbt_databricks",
-                )
+                );
+                match result {
+                    Err(ref e) if e.message().contains("[TABLE_OR_VIEW_NOT_FOUND]") => {
+                        return Ok(Vec::new());
+                    }
+                    _ => result,
+                }
             }
             // NOTE: This is the default behavior. If said adapter type does not
             // have a get_columns_in_relation() macro, it will fail with a
@@ -2068,7 +2152,6 @@ impl AdapterImpl {
                 // See https://github.com/dbt-labs/fs/pull/4267#discussion_r2182835729
                 let ignored_error = match self.adapter_type() {
                     Snowflake => Some("does not exist or not authorized"),
-                    Databricks => Some("[TABLE_OR_VIEW_NOT_FOUND]"),
                     _ => None,
                 };
 
@@ -2250,7 +2333,11 @@ impl AdapterImpl {
         // been cached or not
         let columns = match self.adapter_type() {
             Bigquery => {
-                columns.retain(|c| !BIGQUERY_PSEUDOCOLUMNS.contains(&c.name()));
+                columns.retain(|c| {
+                    !BIGQUERY_PSEUDOCOLUMNS
+                        .iter()
+                        .any(|pseudocolumn| pseudocolumn.eq_ignore_ascii_case(c.name()))
+                });
                 columns
             }
             _ => columns,
@@ -3545,16 +3632,6 @@ impl AdapterImpl {
         }
     }
 
-    /// This only supports non-nested columns additions
-    ///
-    /// Since internally this is only used by snapshot materialization macro where newly added
-    /// columns all have non-nested data types, Read from
-    /// [here](https://github.com/sdf-labs/fs/blob/9b87be839f6aa54cab1ab91cde2c77855758c396/crates/dbt-loader/src/dbt_macro_assets/dbt-adapters/macros/materializations/snapshots/snapshot.sql#L32-L33).
-    /// This builds sql that creates the snapshot relation, and this relation only adds non-nested
-    /// columns to the source relation it is supposed to work well for this use case due to
-    /// limitation:
-    /// https://cloud.google.com/bigquery/docs/managing-table-schemas#add_a_nested_column_to_a_record_column
-    ///
     /// BigQueryAdapter https://github.com/dbt-labs/dbt-adapters/blob/0efd8d3d1081e1ab43e38797d5104f7b424a6284/dbt-bigquery/src/dbt/adapters/bigquery/impl.py#L742
     pub fn alter_table_add_columns(
         &self,
@@ -3576,7 +3653,7 @@ impl AdapterImpl {
 
                 let add_columns: Vec<String> = columns
                     .iter()
-                    .map(|col| format!("ADD COLUMN {} {}", col.name(), &col.dtype()))
+                    .map(|col| format!("ADD COLUMN {} {}", col.name(), col.data_type()))
                     .collect();
 
                 let sql = format!(
@@ -4038,6 +4115,7 @@ impl AdapterImpl {
     /// BaseAdapter https://github.com/dbt-labs/dbt-adapters/blob/0efd8d3d1081e1ab43e38797d5104f7b424a6284/dbt-adapters/src/dbt/adapters/base/impl.py#L973
     pub fn list_relations(
         &self,
+        state: Option<&State>,
         query_ctx: &QueryCtx,
         conn: &'_ mut dyn Connection,
         db_schema: &CatalogAndSchema,
@@ -4064,8 +4142,10 @@ impl AdapterImpl {
             Replay(_, replay) => replay.replay_list_relations(query_ctx, conn, db_schema),
             Impl(adapter_type, engine) if engine.is_sidecar() => {
                 let client = engine.sidecar_client().unwrap();
+                let query_database = db_schema.resolved_catalog.clone();
                 let query_schema = db_schema.resolved_schema.clone();
-                let relation_infos = client.list_relations(&query_schema)?;
+                let relation_infos =
+                    client.list_relations(&engine.quoting(), &query_database, &query_schema)?;
                 let mut relations: Vec<Arc<dyn BaseRelation>> =
                     Vec::with_capacity(relation_infos.len());
                 for (database, schema, name, rel_type) in relation_infos {
@@ -4087,9 +4167,14 @@ impl AdapterImpl {
             Impl(Bigquery, engine) => {
                 bigquery::list_relations(engine.as_ref(), query_ctx, conn, db_schema, token)
             }
-            Impl(Databricks | Spark, engine) => {
-                databricks::list_relations(engine.as_ref(), query_ctx, conn, db_schema, token)
-            }
+            Impl(Databricks | Spark, engine) => databricks::list_relations(
+                engine.as_ref(),
+                state,
+                query_ctx,
+                conn,
+                db_schema,
+                token,
+            ),
             Impl(Redshift, engine) => {
                 redshift::list_relations(engine.as_ref(), query_ctx, conn, db_schema, token)
             }
@@ -4481,6 +4566,20 @@ impl AdapterImpl {
                     return Ok(false);
                 }
 
+                let use_catalogs_v2 = load_catalogs::fetch_use_catalogs_v2();
+
+                // DIVERGENCE: upstream raises for any non-table iceberg relation, but a v2
+                // model can't override its catalog's table_format.
+                // Upstream: https://github.com/databricks/dbt-databricks/blob/2f11abb306a400cde32b27891b766bf41a11fb1f/dbt/adapters/databricks/impl.py#L274
+                // Issue: https://github.com/dbt-labs/dbt/issues/16474
+                let is_non_storage_view = matches!(
+                    config.materialized,
+                    Some(DbtMaterialization::View | DbtMaterialization::MetricView)
+                );
+                if use_catalogs_v2 && is_non_storage_view {
+                    return Ok(false);
+                }
+
                 if self
                     .compare_dbr_version(state, conn, 14, 3, token)?
                     .as_i64()
@@ -4512,7 +4611,7 @@ impl AdapterImpl {
                 }
 
                 // v2: use_uniform from catalog spec is authoritative
-                if load_catalogs::fetch_use_catalogs_v2() {
+                if use_catalogs_v2 {
                     return Ok(catalog_relation
                         .adapter_properties
                         .get("use_uniform")
@@ -5175,6 +5274,13 @@ impl AdapterImpl {
                     options.push((QUERY_JOB_TIMEOUT.to_string(), OptionValue::Int(t * 1000)));
                 }
 
+                let reservation = bigquery_reservation_from_state(state)
+                    .or_else(|| self.get_db_config("reservation").map(|v| v.into_owned()));
+
+                if let Some(r) = reservation {
+                    options.push((QUERY_RESERVATION.to_string(), OptionValue::String(r)));
+                }
+
                 options
             }
             _ => Vec::new(),
@@ -5182,19 +5288,36 @@ impl AdapterImpl {
     }
 }
 
-/// Reads `job_execution_timeout_seconds` from the BigQuery adapter attr of the current
-/// model or snapshot in the Jinja state. Returns `None` if the state has no model or the
-/// model has no BigQuery timeout configured.
+/// Reads the BigQuery adapter attributes (`bigquery_attr`) of the current model or snapshot
+/// in the Jinja state. Returns `None` if the state has no model or the model has no
+/// BigQuery attributes configured.
 ///
 /// The `bigquery_attr` field lives at the top level of the model value because
 /// `dbt-yaml`'s `flatten_dunder` serialization merges `__adapter_attr__` into the parent.
-fn bigquery_job_timeout_from_state(state: &State) -> Option<i64> {
+fn bigquery_attr_from_state(state: &State) -> Option<Value> {
     let model = state.lookup("model", &[])?;
-    let bq_attr = model.get_attr("bigquery_attr").ok()?;
-    bq_attr
+    model.get_attr("bigquery_attr").ok()
+}
+
+/// Reads `job_execution_timeout_seconds` from the BigQuery adapter attr of the current
+/// model or snapshot in the Jinja state. Returns `None` if the state has no model or the
+/// model has no BigQuery timeout configured.
+fn bigquery_job_timeout_from_state(state: &State) -> Option<i64> {
+    bigquery_attr_from_state(state)?
         .get_attr("job_execution_timeout_seconds")
         .ok()?
         .as_i64()
+}
+
+/// Reads `reservation` from the BigQuery adapter attr of the current model or snapshot
+/// in the Jinja state. Returns `None` if the state has no model or the model has no
+/// BigQuery reservation configured.
+fn bigquery_reservation_from_state(state: &State) -> Option<String> {
+    bigquery_attr_from_state(state)?
+        .get_attr("reservation")
+        .ok()?
+        .as_str()
+        .map(|s| s.to_owned())
 }
 
 /// List of possible builtin strategies for adapters.
@@ -6043,6 +6166,63 @@ mod tests {
     use dbt_yaml::Mapping;
 
     use minijinja::{Environment, State, Value};
+
+    /// `is_uniform` for an iceberg Databricks model. Reads `use_catalogs_v2` from process
+    /// state -- safe because nextest runs each test in its own process.
+    fn databricks_is_uniform_for_iceberg(
+        materialized: DbtMaterialization,
+        use_catalogs_v2: bool,
+    ) -> AdapterResult<bool> {
+        use crate::engine::NoopConnection;
+        use crate::relation::databricks::config::test_helpers::{
+            TestModelConfig, create_mock_dbt_model,
+        };
+        use dbt_common::cancellation::never_cancels;
+
+        let flags: dbt_yaml::Value =
+            dbt_yaml::from_str(&format!("use_catalogs_v2: {use_catalogs_v2}\n"))
+                .expect("valid project flags");
+        load_catalogs::set_use_catalogs_v2_from_flags(Some(&flags));
+
+        let adapter = AdapterImpl::new(engine(Databricks), None);
+        let env = Environment::new();
+        let state = State::new_for_env(&env);
+        let mut model = create_mock_dbt_model(TestModelConfig::default());
+        // The catalog lookup reads the resolved model attribute, not the raw config.
+        model.__model_attr__.table_format = Some("iceberg".to_string());
+        let node = InternalDbtNodeWrapper::Model(Box::new(model));
+        let config = ModelConfig {
+            materialized: Some(materialized),
+            ..Default::default()
+        };
+
+        adapter.is_uniform(&state, &mut NoopConnection, config, &node, never_cancels())
+    }
+
+    #[test]
+    fn test_databricks_is_uniform_iceberg_non_storage_views_catalogs_v2_are_plain() {
+        // v2 can't override the catalog's table_format per model, so non-storage views must
+        // not error -- and must return before the DBR version probe needs a connection.
+        for materialized in [DbtMaterialization::View, DbtMaterialization::MetricView] {
+            assert!(
+                !databricks_is_uniform_for_iceberg(materialized.clone(), true)
+                    .unwrap_or_else(|e| panic!("{materialized:?} must not error in v2: {e}"))
+            );
+        }
+    }
+
+    #[test]
+    fn test_databricks_is_uniform_iceberg_view_catalogs_v1_keeps_upstream_checks() {
+        // v1 lets the model override table_format, so the bypass must not apply.
+        assert!(databricks_is_uniform_for_iceberg(DbtMaterialization::View, false).is_err());
+    }
+
+    #[test]
+    fn test_databricks_is_uniform_iceberg_table_catalogs_v2_keeps_uniform_checks() {
+        // Tables have a storage format, so v2 must still run the UniForm checks (which
+        // need a connection, hence the error here).
+        assert!(databricks_is_uniform_for_iceberg(DbtMaterialization::Table, true).is_err());
+    }
 
     #[test]
     fn test_databricks_describe_as_json_behavior_flag_registered_and_off_by_default() {
@@ -7486,6 +7666,94 @@ mod tests {
         assert!(find_job_timeout(&options).is_none());
     }
 
+    // -- BigQuery reservation tests -------------------------------------------
+
+    fn make_bigquery_model_with_reservation(reservation: &str) -> Value {
+        use std::collections::BTreeMap;
+        let bq_attr = BTreeMap::from([("reservation", reservation)]);
+        let model = BTreeMap::from([("bigquery_attr", bq_attr)]);
+        Value::from_serialize(&model)
+    }
+
+    fn find_reservation(options: &[(String, OptionValue)]) -> Option<String> {
+        options.iter().find_map(|(k, v)| {
+            if k == QUERY_RESERVATION {
+                if let OptionValue::String(r) = v {
+                    Some(r.clone())
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        })
+    }
+
+    #[test]
+    fn test_bigquery_adbc_options_no_reservation_when_not_configured() {
+        let adapter = AdapterImpl::new(engine(Bigquery), None);
+        let env = Environment::new();
+        let state = State::new_for_env(&env);
+        let options = adapter.get_adbc_execute_options(&state);
+        assert!(find_reservation(&options).is_none());
+    }
+
+    #[test]
+    fn test_bigquery_adbc_options_model_level_reservation() {
+        let adapter = AdapterImpl::new(engine(Bigquery), None);
+        let mut env = Environment::new();
+        env.add_global(
+            "model",
+            make_bigquery_model_with_reservation(
+                "projects/project1/locations/US/reservations/my-reservation",
+            ),
+        );
+        let state = State::new_for_env(&env);
+        let options = adapter.get_adbc_execute_options(&state);
+        assert_eq!(
+            find_reservation(&options),
+            Some("projects/project1/locations/US/reservations/my-reservation".to_string())
+        );
+    }
+
+    #[test]
+    fn test_bigquery_adbc_options_connection_level_reservation_fallback() {
+        let config = Mapping::from_iter([(
+            "reservation".into(),
+            "projects/project1/locations/US/reservations/conn-reservation".into(),
+        )]);
+        let adapter = AdapterImpl::new(build_engine(Bigquery, config), None);
+        let env = Environment::new();
+        let state = State::new_for_env(&env);
+        let options = adapter.get_adbc_execute_options(&state);
+        assert_eq!(
+            find_reservation(&options),
+            Some("projects/project1/locations/US/reservations/conn-reservation".to_string())
+        );
+    }
+
+    #[test]
+    fn test_bigquery_adbc_options_model_level_overrides_connection_level_reservation() {
+        let config = Mapping::from_iter([(
+            "reservation".into(),
+            "projects/project1/locations/US/reservations/conn-reservation".into(),
+        )]);
+        let adapter = AdapterImpl::new(build_engine(Bigquery, config), None);
+        let mut env = Environment::new();
+        env.add_global(
+            "model",
+            make_bigquery_model_with_reservation(
+                "projects/project1/locations/US/reservations/model-reservation",
+            ),
+        );
+        let state = State::new_for_env(&env);
+        let options = adapter.get_adbc_execute_options(&state);
+        assert_eq!(
+            find_reservation(&options),
+            Some("projects/project1/locations/US/reservations/model-reservation".to_string()),
+        );
+    }
+
     // Regression test for https://github.com/dbt-labs/dbt-fusion/issues/1733:
     // type:custom column constraints were silently dropped because get_constraint_support
     // returns NotSupported for Custom on all adapters, and the NotSupported guard ran
@@ -7715,5 +7983,291 @@ mod tests {
             ("dbt".to_string(), "check_schema_exists".to_string())
         );
         Ok(())
+    }
+
+    fn unterminated_secret_clause(option_count: usize) -> String {
+        format!(
+            "credential ({}",
+            vec!["'KEY' = 'VALUE'"; option_count].join(", ")
+        )
+    }
+
+    /// Cases ported from dbt-databricks `tests/unit/test_utils.py::TestDatabricksUtils`,
+    /// whose output this must stay byte-identical to. See the permalink on
+    /// [`AdapterImpl::redact_credentials`].
+    ///
+    /// Every value below is a placeholder; no real secret appears in this file.
+    #[test]
+    fn redact_secret_clauses_matches_upstream_contract() {
+        let cases: &[(&str, &str, &str)] = &[
+            (
+                "statement with no secret clause is returned unchanged",
+                "copy into target_table\nfrom source_table\nfileformat = parquet",
+                "copy into target_table\nfrom source_table\nfileformat = parquet",
+            ),
+            (
+                "single credential option",
+                "copy into target_table\nfrom source_table\n  WITH (\n    credential ('KEY' = 'VALUE')\n  )\nfileformat = parquet",
+                "copy into target_table\nfrom source_table\n  WITH (\n    credential ('KEY' = '[REDACTED]')\n  )\nfileformat = parquet",
+            ),
+            (
+                "several options in one clause",
+                "copy into target_table\n  WITH (credential ('KEY_1' = 'VALUE=1**asa!??sh', 'KEY_2' = 'VALUE2'))",
+                "copy into target_table\n  WITH (credential ('KEY_1' = '[REDACTED]', 'KEY_2' = '[REDACTED]'))",
+            ),
+            (
+                "keyword is matched case-insensitively",
+                "copy into target_table\nfrom source_table\n  WITH (CREDENTIAL ('KEY' = 'VALUE'))",
+                "copy into target_table\nfrom source_table\n  WITH (CREDENTIAL ('KEY' = '[REDACTED]'))",
+            ),
+            (
+                "encryption clauses are in scope too",
+                "copy into target_table\n  WITH (encryption ('TYPE' = 'AWS_SSE_C', 'MASTER_KEY' = 'VALUE'))",
+                "copy into target_table\n  WITH (encryption ('TYPE' = '[REDACTED]', 'MASTER_KEY' = '[REDACTED]'))",
+            ),
+            (
+                "every clause is redacted, not just the first",
+                "copy into target_table\n  WITH (credential ('KEY' = 'VALUE') encryption ('MASTER_KEY' = 'VALUE'))",
+                "copy into target_table\n  WITH (credential ('KEY' = '[REDACTED]') encryption ('MASTER_KEY' = '[REDACTED]'))",
+            ),
+            (
+                "value containing commas is not split on them",
+                "copy into target_table\n  WITH (credential ('KEY' = 'VALUE,WITH,COMMAS'))",
+                "copy into target_table\n  WITH (credential ('KEY' = '[REDACTED]'))",
+            ),
+            (
+                "value containing a newline",
+                "copy into target_table\n  WITH (credential ('KEY' = 'VALUE\nCONTINUED'))",
+                "copy into target_table\n  WITH (credential ('KEY' = '[REDACTED]'))",
+            ),
+            (
+                "value containing a bare quote",
+                "copy into target_table\n  WITH (credential ('KEY' = 'VALUE'WITH'QUOTES'))",
+                "copy into target_table\n  WITH (credential ('KEY' = '[REDACTED]'))",
+            ),
+            (
+                "value containing a backslash-escaped quote",
+                "copy into target_table\n  WITH (credential ('KEY' = 'VALUE\\'ESCAPED'))",
+                "copy into target_table\n  WITH (credential ('KEY' = '[REDACTED]'))",
+            ),
+            (
+                "doubled quote immediately before a comma delimiter",
+                "copy into target_table\n  WITH (credential ('KEY' = 'PREFIX'',SUFFIX'))",
+                "copy into target_table\n  WITH (credential ('KEY' = '[REDACTED]'))",
+            ),
+            (
+                "doubled quote immediately before a closing paren",
+                "copy into target_table\n  WITH (credential ('KEY' = 'PREFIX'')SUFFIX'))",
+                "copy into target_table\n  WITH (credential ('KEY' = '[REDACTED]'))",
+            ),
+            (
+                "escaped quote immediately before a comma delimiter",
+                "copy into target_table\n  WITH (credential ('KEY' = 'PREFIX\\',SUFFIX'))",
+                "copy into target_table\n  WITH (credential ('KEY' = '[REDACTED]'))",
+            ),
+            (
+                "escaped quote immediately before a closing paren",
+                "copy into target_table\n  WITH (credential ('KEY' = 'PREFIX\\')SUFFIX'))",
+                "copy into target_table\n  WITH (credential ('KEY' = '[REDACTED]'))",
+            ),
+            (
+                "malformed clause is left alone",
+                "copy into target_table\n  WITH (credential ('KEY' = 'PREFIX',SUFFIX')) trailing SQL",
+                "copy into target_table\n  WITH (credential ('KEY' = 'PREFIX',SUFFIX')) trailing SQL",
+            ),
+            (
+                "clause with no options is left alone",
+                "copy into target_table WITH (credential ())",
+                "copy into target_table WITH (credential ())",
+            ),
+            (
+                "keyword followed by a bare literal is not an option list",
+                "select credential('public literal') as x, 42 as y",
+                "select credential('public literal') as x, 42 as y",
+            ),
+            (
+                "keyword inside a longer name, with no option list, is left alone",
+                "select my_encryption('public literal') as x",
+                "select my_encryption('public literal') as x",
+            ),
+            (
+                "unquoted option key is left alone",
+                "copy into target_table WITH (credential (KEY = 'PLACEHOLDER')) trailing SQL",
+                "copy into target_table WITH (credential (KEY = 'PLACEHOLDER')) trailing SQL",
+            ),
+            (
+                "identifier containing the keyword is not a clause",
+                "select * from target_table where credential_id = 1",
+                "select * from target_table where credential_id = 1",
+            ),
+            (
+                "option key containing dots is preserved",
+                "copy into target_table\n  WITH (credential ('fs.azure.account.key' = 'VALUE'))",
+                "copy into target_table\n  WITH (credential ('fs.azure.account.key' = '[REDACTED]'))",
+            ),
+            (
+                "keyword inside a longer name still redacts when a well-formed option list follows",
+                "copy into target_table\n  WITH (storage_credential ('KEY' = 'VALUE'))",
+                "copy into target_table\n  WITH (storage_credential ('KEY' = '[REDACTED]'))",
+            ),
+            (
+                "whitespace around keys and values is normalized",
+                "credential('a'='x','b'='y')",
+                "credential ('a' = '[REDACTED]', 'b' = '[REDACTED]')",
+            ),
+            (
+                "values containing equals signs are not split on them",
+                "credential('client_id' = 'abc=123', 'client_secret' = 'placeholder==')",
+                "credential ('client_id' = '[REDACTED]', 'client_secret' = '[REDACTED]')",
+            ),
+            (
+                "keyword broken by whitespace is not a clause",
+                "c redential('client_id' = 'abc123', 'client_secret' = 'placeholder')",
+                "c redential('client_id' = 'abc123', 'client_secret' = 'placeholder')",
+            ),
+            (
+                "multi-line COPY INTO with extra spacing",
+                "COPY INTO sales_data\nFROM 's3://company-data/backups/2023/05/'\ncredential(   'client_id' = 'abc123',     'client_secret' = 'placeholder/value=='  )\nFILE_FORMAT = (TYPE = 'JSON')\nON_ERROR = 'SKIP_FILE';",
+                "COPY INTO sales_data\nFROM 's3://company-data/backups/2023/05/'\ncredential ('client_id' = '[REDACTED]', 'client_secret' = '[REDACTED]')\nFILE_FORMAT = (TYPE = 'JSON')\nON_ERROR = 'SKIP_FILE';",
+            ),
+        ];
+
+        for (description, before, after) in cases {
+            assert_eq!(
+                redact_secret_clauses(before).as_deref().ok(),
+                Some(*after),
+                "case: {description}"
+            );
+        }
+    }
+
+    #[test]
+    fn redact_secret_clauses_removes_every_matched_secret_value() {
+        let sql = "copy into target_table\n  WITH (\n    credential ('KEY_1' = 'FIRST_PLACEHOLDER', 'KEY_2' = 'SECOND_PLACEHOLDER')\n    encryption ('MASTER_KEY' = 'THIRD_PLACEHOLDER')\n  )";
+        let redacted = redact_secret_clauses(sql).expect("well-formed input must redact");
+
+        for value in [
+            "FIRST_PLACEHOLDER",
+            "SECOND_PLACEHOLDER",
+            "THIRD_PLACEHOLDER",
+        ] {
+            assert!(
+                !redacted.contains(value),
+                "{value} survived redaction in: {redacted}"
+            );
+        }
+        for kept in [
+            "'KEY_1'",
+            "'KEY_2'",
+            "'MASTER_KEY'",
+            "copy into target_table",
+        ] {
+            assert!(redacted.contains(kept), "{kept} was lost from: {redacted}");
+        }
+    }
+
+    /// Unlike the Python original this rebuilds the statement by slicing `sql` at byte
+    /// offsets, so a multibyte character next to a clause boundary would panic rather
+    /// than mis-redact. Every case below places one directly around and inside a clause.
+    #[test]
+    fn redact_secret_clauses_handles_multibyte_characters() {
+        let cases: &[(&str, &str)] = &[
+            (
+                "copy into t\u{e9} WITH (credential ('K\u{6f22}EY' = 'V\u{1f510}AL')) trailing\u{df}",
+                "copy into t\u{e9} WITH (credential ('K\u{6f22}EY' = '[REDACTED]')) trailing\u{df}",
+            ),
+            (
+                "\u{1f510}credential('\u{6f22}' = '\u{e9}', '\u{3a9}k' = '\u{df}v')\u{1f510}",
+                "\u{1f510}credential ('\u{6f22}' = '[REDACTED]', '\u{3a9}k' = '[REDACTED]')\u{1f510}",
+            ),
+            (
+                "select '\u{1f510}', credential ('\u{e9}KEY' = 'PLACEHOLDER\u{6f22}')",
+                "select '\u{1f510}', credential ('\u{e9}KEY' = '[REDACTED]')",
+            ),
+        ];
+
+        for (before, after) in cases {
+            assert_eq!(redact_secret_clauses(before).as_deref().ok(), Some(*after));
+        }
+    }
+
+    /// The backtrack limit must stay far enough above any realistic option count that a
+    /// well-formed clause is never logged unredacted. The Python original has no limit
+    /// and always redacts here, so lowering [`SECRET_CLAUSE_BACKTRACK_LIMIT`] enough to
+    /// break this case would leak secrets that upstream does not.
+    #[test]
+    fn redact_secret_clauses_still_redacts_a_large_well_formed_clause() {
+        let options = vec!["'KEY' = 'PLACEHOLDER'"; 10_000].join(", ");
+        let sql = format!("copy into target_table WITH (credential ({options}))");
+
+        let redacted = redact_secret_clauses(&sql).expect("well-formed input must redact");
+        assert!(!redacted.contains("PLACEHOLDER"));
+        assert_eq!(redacted.matches("[REDACTED]").count(), 10_000);
+    }
+
+    #[test]
+    fn redact_secret_clauses_skips_ordinary_statements() {
+        let ordinary = format!("select 1 -- {}", "x".repeat(100_000));
+        assert_eq!(
+            redact_secret_clauses(&ordinary).as_deref().ok(),
+            Some(&*ordinary)
+        );
+
+        assert_eq!(
+            redact_secret_clauses("copy into t WITH (CREDENTIAL ('K' = 'V'))")
+                .as_deref()
+                .ok(),
+            Some("copy into t WITH (CREDENTIAL ('K' = '[REDACTED]'))")
+        );
+        assert_eq!(
+            redact_secret_clauses("copy into t WITH (Encryption ('K' = 'V'))")
+                .as_deref()
+                .ok(),
+            Some("copy into t WITH (Encryption ('K' = '[REDACTED]'))")
+        );
+    }
+
+    #[test]
+    fn redact_secret_clauses_leaves_large_unterminated_clause_unchanged() {
+        // Below the backtrack limit the matcher simply finds nothing.
+        let small = unterminated_secret_clause(1_000);
+        assert_eq!(redact_secret_clauses(&small).as_deref().ok(), Some(&*small));
+
+        // Past SECRET_CLAUSE_BACKTRACK_LIMIT, matching fails and the redactor reports
+        // that it could not run. 50k options overruns the pinned limit by a wide margin.
+        let large = unterminated_secret_clause(50_000);
+        assert!(
+            redact_secret_clauses(&large).is_err(),
+            "exceeding the backtrack limit must be reported, not panic"
+        );
+    }
+
+    #[test]
+    fn redact_credentials_fails_open_without_rewriting_the_original() {
+        let adapter = AdapterImpl::new(engine(Databricks), None);
+
+        // A statement the matcher cannot handle still comes back intact, so that logging
+        // can never stop the statement from executing.
+        let large = unterminated_secret_clause(50_000);
+        assert_eq!(adapter.redact_credentials(&large).unwrap(), large);
+
+        // And the SQL handed in for execution is never rewritten in place.
+        let original = "copy into target_table WITH (credential ('KEY' = 'PLACEHOLDER'))";
+        let redacted = adapter.redact_credentials(original).unwrap();
+        assert_eq!(
+            original,
+            "copy into target_table WITH (credential ('KEY' = 'PLACEHOLDER'))"
+        );
+        assert!(redacted.contains("[REDACTED]"));
+        assert!(!redacted.contains("PLACEHOLDER"));
+    }
+
+    #[test]
+    fn redact_credentials_is_databricks_only() {
+        let adapter = AdapterImpl::new(engine(Snowflake), None);
+        let err = adapter
+            .redact_credentials("copy into target_table WITH (credential ('KEY' = 'V'))")
+            .expect_err("non-Databricks adapters must reject this");
+        assert_eq!(err.kind(), AdapterErrorKind::NotSupported);
     }
 }

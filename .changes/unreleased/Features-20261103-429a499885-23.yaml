@@ -1,0 +1,7 @@
+kind: Features
+body: Show a determinate progress bar for the parse phase in interactive terminals, matching the render/analyze/run experience, and name the stage in progress (building model nodes, resolving data tests, typechecking macros) during the stretches where no assets are being parsed, plus a progress indicator while the semantic manifest is validated, so the console no longer looks idle
+time: 2026-11-03T11:49:02.913728+05:30
+custom:
+    author: itsannbat
+    issue: ""
+    project: dbt-core

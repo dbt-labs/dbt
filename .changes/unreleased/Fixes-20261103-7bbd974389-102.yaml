@@ -1,0 +1,7 @@
+kind: Fixes
+body: Honor OS-assigned loopback ports in OAuth authorization and token-exchange callback URLs.
+time: 2026-11-03T11:49:03.421989+05:30
+custom:
+    author: eakmanrq
+    issue: ""
+    project: dbt-core

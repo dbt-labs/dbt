@@ -1,0 +1,7 @@
+kind: Security
+body: 'Checks and `dbt show --info`/`--inline` now run in a DuckDB database that can read only the project metadata: no other files, no network access, and no extension installs'
+time: 2026-11-03T11:49:03.154955+05:30
+custom:
+    author: akbog
+    issue: ""
+    project: dbt-core

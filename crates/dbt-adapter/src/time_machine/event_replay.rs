@@ -524,6 +524,14 @@ impl std::fmt::Display for ReplayMode {
     }
 }
 
+/// Read `header.json` from a recording directory.
+pub(crate) fn read_recording_header(recording_dir: &Path) -> Result<RecordingHeader, ReplayError> {
+    let header_path = recording_dir.join("header.json");
+    let header_content = std::fs::read_to_string(&header_path)
+        .map_err(|e| ReplayError::InvalidFormat(format!("Failed to read header.json: {}", e)))?;
+    Ok(serde_json::from_str(&header_content)?)
+}
+
 /// Errors that can occur during replay.
 #[derive(Debug)]
 pub enum ReplayError {
@@ -664,12 +672,7 @@ impl Recording {
             return Err(ReplayError::NotFound(path.display().to_string()));
         }
 
-        // Load header
-        let header_path = path.join("header.json");
-        let header_content = std::fs::read_to_string(&header_path).map_err(|e| {
-            ReplayError::InvalidFormat(format!("Failed to read header.json: {}", e))
-        })?;
-        let header: RecordingHeader = serde_json::from_str(&header_content)?;
+        let header = read_recording_header(path)?;
 
         // Load events
         let events_path = path.join("events.ndjson.gz");

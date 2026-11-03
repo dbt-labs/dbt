@@ -1,10 +1,10 @@
 use dbt_error::ErrorCode;
 use dbt_telemetry::{
-    AssetParsed, CompiledCode, CompiledCodeInline, ConnectionLimitWait, DepsAddPackage,
-    DepsAllPackagesInstalled, DepsPackageInstalled, GenericOpExecuted, GenericOpItemProcessed,
-    Invocation, ListItemOutput, LogMessage, NodeEvaluated, NodeOutcome, NodeProcessed, NodeType,
+    AssetParsed, CompiledCode, CompiledCodeInline, DepsAddPackage, DepsAllPackagesInstalled,
+    DepsPackageInstalled, GenericOpExecuted, GenericOpItemProcessed, Invocation, ListItemOutput,
+    LogMessage, MicrobatchEvaluated, NodeEvaluated, NodeOutcome, NodeProcessed, NodeType,
     PhaseExecuted, ProgressMessage, QueryExecuted, ShowDataOutput, ShowResult, StateModifiedDiff,
-    UserLogMessage,
+    ThreadPoolWait, UserLogMessage,
 };
 use std::{
     sync::atomic::{AtomicBool, Ordering},
@@ -25,9 +25,6 @@ use super::super::{
     event_classifiers::is_exit_with_status_log,
     formatters::{
         asset::format_asset_parsed_end,
-        connection_limit_wait::{
-            format_connection_limit_wait_end, format_connection_limit_wait_start,
-        },
         constants::SELECTED_NODES_TITLE,
         deps::{
             format_package_add_end, format_package_add_start, format_package_install_end,
@@ -44,13 +41,15 @@ use super::super::{
         log_message::format_log_message,
         meta::format_severity_fixed_width,
         node::{
-            format_compiled_code, format_compiled_inline_code, format_node_evaluated_end,
+            format_compiled_code, format_compiled_inline_code, format_microbatch_evaluated_end,
+            format_microbatch_evaluated_start, format_node_evaluated_end,
             format_node_evaluated_start, format_node_processed_end, format_node_processed_start,
         },
         phase::{format_phase_executed_end, format_phase_executed_start},
         progress::format_progress_message,
         state_mod_diff::format_state_modified_diff_lines,
         test_result::format_test_failure,
+        thread_pool_wait::{format_thread_pool_wait_end, format_thread_pool_wait_start},
     },
     fs_error_log::get_log_message,
 };
@@ -148,14 +147,20 @@ impl TelemetryConsumer for FileLogLayer {
             return;
         }
 
+        // Handle MicrobatchEvaluated start
+        if let Some(batch) = span.attributes.downcast_ref::<MicrobatchEvaluated>() {
+            self.handle_microbatch_evaluated_start(span, batch);
+            return;
+        }
+
         // Handle NodeProcessed start
         if let Some(node_processed) = span.attributes.downcast_ref::<NodeProcessed>() {
             self.handle_node_processed_start(span, node_processed);
             return;
         }
 
-        if let Some(wait) = span.attributes.downcast_ref::<ConnectionLimitWait>() {
-            self.handle_connection_limit_wait_start(span, wait);
+        if span.attributes.is::<ThreadPoolWait>() {
+            self.handle_thread_pool_wait_start(span);
             return;
         }
 
@@ -196,8 +201,8 @@ impl TelemetryConsumer for FileLogLayer {
             return;
         }
 
-        if let Some(wait) = span.attributes.downcast_ref::<ConnectionLimitWait>() {
-            self.handle_connection_limit_wait_end(span, wait);
+        if span.attributes.is::<ThreadPoolWait>() {
+            self.handle_thread_pool_wait_end(span);
             return;
         }
 
@@ -221,6 +226,12 @@ impl TelemetryConsumer for FileLogLayer {
         // Handle NodeEvaluated events
         if let Some(ne) = span.attributes.downcast_ref::<NodeEvaluated>() {
             self.handle_node_evaluated(span, ne);
+            return;
+        }
+
+        // Handle MicrobatchEvaluated events
+        if let Some(batch) = span.attributes.downcast_ref::<MicrobatchEvaluated>() {
+            self.handle_microbatch_evaluated(span, batch);
             return;
         }
 
@@ -336,8 +347,8 @@ impl FileLogLayer {
         );
     }
 
-    fn handle_connection_limit_wait_start(&self, span: &SpanStartInfo, wait: &ConnectionLimitWait) {
-        let formatted = format_connection_limit_wait_start(wait);
+    fn handle_thread_pool_wait_start(&self, span: &SpanStartInfo) {
+        let formatted = format_thread_pool_wait_start();
         self.write_log_lines(
             span.start_time_unix_nano,
             span.severity_number,
@@ -345,12 +356,12 @@ impl FileLogLayer {
         );
     }
 
-    fn handle_connection_limit_wait_end(&self, span: &SpanEndInfo, wait: &ConnectionLimitWait) {
+    fn handle_thread_pool_wait_end(&self, span: &SpanEndInfo) {
         let duration = span
             .end_time_unix_nano
             .duration_since(span.start_time_unix_nano)
             .unwrap_or_default();
-        let formatted = format_connection_limit_wait_end(wait, duration);
+        let formatted = format_thread_pool_wait_end(duration);
         self.write_log_lines(span.end_time_unix_nano, span.severity_number, &[formatted]);
     }
 
@@ -388,6 +399,29 @@ impl FileLogLayer {
             .unwrap_or_default();
         let formatted = format_node_evaluated_end(ne, duration, false);
         self.write_log_lines(span.end_time_unix_nano, span.severity_number, &[formatted]);
+    }
+
+    fn handle_microbatch_evaluated_start(&self, span: &SpanStartInfo, batch: &MicrobatchEvaluated) {
+        let formatted = format_microbatch_evaluated_start(batch, false);
+        self.write_log_lines(
+            span.start_time_unix_nano,
+            span.severity_number,
+            &[formatted],
+        );
+    }
+
+    fn handle_microbatch_evaluated(&self, span: &SpanEndInfo, batch: &MicrobatchEvaluated) {
+        let duration = span
+            .end_time_unix_nano
+            .duration_since(span.start_time_unix_nano)
+            .unwrap_or_default();
+        let severity = if batch.node_outcome() == NodeOutcome::Error {
+            SeverityNumber::Error
+        } else {
+            span.severity_number
+        };
+        let formatted = format_microbatch_evaluated_end(batch, duration, false);
+        self.write_log_lines(span.end_time_unix_nano, severity, &[formatted]);
     }
 
     fn handle_node_processed_start(&self, span: &SpanStartInfo, node: &NodeProcessed) {

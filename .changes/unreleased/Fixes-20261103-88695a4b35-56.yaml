@@ -1,0 +1,7 @@
+kind: Fixes
+body: Send Redshift's case-sensitive sqlglot dialect setting to the server when enable_case_sensitive_identifier is enabled
+time: 2026-11-03T11:49:03.13438+05:30
+custom:
+    author: toriwei
+    issue: ""
+    project: dbt-core

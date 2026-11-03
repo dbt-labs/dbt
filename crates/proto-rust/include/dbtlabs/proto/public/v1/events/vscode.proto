@@ -58,6 +58,11 @@ message ExtensionActivated {
     v1.public.fields.vscode_types.OAuthSessionFileActionAtActivation oauth_session_file_action = 16;
 
     v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 17;
+
+    // True when this workspace is running in dbt v1 compatibility mode. The
+    // V1CompatPrompt* events only fire at detection time, so without this the
+    // in-mode population is uncountable after the first session.
+    bool v1_compat_active = 18;
 }
 
 message ExtensionLspCompileStart {
@@ -187,6 +192,9 @@ message ExtensionLineageTabClicked {
     // the anonymous user id stored at ~/.dbt/.user.yml
     string dbt_local_cookie_user_id = 4;
     v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 5;
+
+    // which lineage UI became visible (graph panel vs. a launchpad tree view)
+    v1.public.fields.vscode_types.LineageSurface surface = 6;
 }
 
 message ExtensionColumnLineage {
@@ -235,6 +243,9 @@ message ExtensionLineageInteraction {
     // selected lens value; set only when interaction_type == LINEAGE_INTERACTION_TYPE_LENS_CHANGED
     string lens = 8;
     v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 9;
+
+    // which lineage UI the interaction occurred in (graph panel vs. a launchpad tree view)
+    v1.public.fields.vscode_types.LineageSurface surface = 10;
 }
 
 message ExtensionShowCompiledFile {
@@ -1011,4 +1022,432 @@ message ExtensionOAuthSessionPersisted {
     // True when this write created our slot for the first time (no prior slot existed).
     bool is_first_write = 7;
     v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 8;
+}
+
+// The server resolved a definition request to a non-empty result. The emit seam
+// is the provideDefinition middleware, which cannot observe navigation: Peek
+// Definition, the hover card's definition link and the ctrl/cmd-hover underline
+// preview all resolve a definition without the user going anywhere. So this
+// counts delivered definition resolutions, not F12 navigations.
+message ExtensionDefinitionResolved {
+    option (v1.public.common.vortex_enabled) = true;
+    option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+
+    v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+
+    v1.public.fields.vscode_types.Editor editor = 2;
+    v1.public.fields.vscode_types.User user = 3;
+
+    // the anonymous user id stored at ~/.dbt/.user.yml
+    string dbt_local_cookie_user_id = 4;
+
+    // md5 hash of the dbt project name (anonymized); identifies which project in
+    // a multi-root workspace this event came from
+    string project_id = 5;
+
+    // the type of adapter used in the project (snowflake, bigquery, etc)
+    string adapter_type = 6;
+
+    v1.public.fields.vscode_types.LspResourceType target_resource_type = 7;
+
+    v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 8;
+}
+
+// User ran Find References and got at least one result.
+message ExtensionReferencesViewed {
+    option (v1.public.common.vortex_enabled) = true;
+    option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+
+    v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+
+    v1.public.fields.vscode_types.Editor editor = 2;
+    v1.public.fields.vscode_types.User user = 3;
+
+    // the anonymous user id stored at ~/.dbt/.user.yml
+    string dbt_local_cookie_user_id = 4;
+
+    // md5 hash of the dbt project name (anonymized); identifies which project in
+    // a multi-root workspace this event came from
+    string project_id = 5;
+
+    // the type of adapter used in the project (snowflake, bigquery, etc)
+    string adapter_type = 6;
+
+    v1.public.fields.vscode_types.LspResourceType target_resource_type = 7;
+    // How many references were returned. A count, never the reference targets.
+    uint32 reference_count = 8;
+
+    v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 9;
+}
+
+// The server returned hover content and the user saw it. Throttled client-side
+// to at most one event per document per 60 seconds, so this measures hover
+// sessions rather than raw hover count and its rate is NOT comparable to the
+// unthrottled definition/references events.
+message ExtensionHoverShown {
+    option (v1.public.common.vortex_enabled) = true;
+    option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+
+    v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+
+    v1.public.fields.vscode_types.Editor editor = 2;
+    v1.public.fields.vscode_types.User user = 3;
+
+    // the anonymous user id stored at ~/.dbt/.user.yml
+    string dbt_local_cookie_user_id = 4;
+
+    // md5 hash of the dbt project name (anonymized); identifies which project in
+    // a multi-root workspace this event came from
+    string project_id = 5;
+
+    // the type of adapter used in the project (snowflake, bigquery, etc)
+    string adapter_type = 6;
+
+    // The resource type of the DOCUMENT the user hovered in -- NOT of whatever
+    // they hovered over. A `Hover` response carries no target location, so the
+    // hovered symbol is unknowable at this seam. Deliberately named differently
+    // from `target_resource_type` on ExtensionDefinitionResolved and
+    // ExtensionReferencesViewed: those describe a navigation target, this
+    // describes the file the cursor was in. Charting them together would
+    // silently mix two meanings. Expect this to be dominated by MODEL.
+    v1.public.fields.vscode_types.LspResourceType document_resource_type = 7;
+
+    v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 8;
+}
+
+// User accepted a completion item. Counted on acceptance, not on every
+// suggestion list, so this measures value delivered rather than keystrokes.
+message ExtensionCompletionAccepted {
+    option (v1.public.common.vortex_enabled) = true;
+    option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+
+    v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+
+    v1.public.fields.vscode_types.Editor editor = 2;
+    v1.public.fields.vscode_types.User user = 3;
+
+    // the anonymous user id stored at ~/.dbt/.user.yml
+    string dbt_local_cookie_user_id = 4;
+
+    // md5 hash of the dbt project name (anonymized); identifies which project in
+    // a multi-root workspace this event came from
+    string project_id = 5;
+
+    // the type of adapter used in the project (snowflake, bigquery, etc)
+    string adapter_type = 6;
+
+    v1.public.fields.vscode_types.CompletionCategory completion_category = 7;
+
+    v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 8;
+}
+
+// The set of diagnostics for a file changed. Emitted on a change of the count
+// signature, not once per publish and not once per diagnostic, and emitted on
+// clear as well as on appear so time-to-resolve is answerable. A row with all
+// four counts at zero means diagnostics were resolved for that file, so rows are
+// not a count of users hitting errors. Counts are bucketed from the numeric dbt
+// error code; no diagnostic message is ever sent. The four counts partition, so
+// each diagnostic increments exactly one and they can be summed without
+// double-counting.
+message ExtensionDiagnosticsChanged {
+    option (v1.public.common.vortex_enabled) = true;
+    option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+
+    v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+
+    v1.public.fields.vscode_types.Editor editor = 2;
+    v1.public.fields.vscode_types.User user = 3;
+
+    // the anonymous user id stored at ~/.dbt/.user.yml
+    string dbt_local_cookie_user_id = 4;
+
+    // md5 hash of the dbt project name (anonymized); identifies which project in
+    // a multi-root workspace this event came from
+    string project_id = 5;
+
+    // the type of adapter used in the project (snowflake, bigquery, etc)
+    string adapter_type = 6;
+
+    // Error-severity diagnostics carrying dbt code 1302 (DbSyntaxInvalid) or
+    // 1070 (BaselineIntrospectionSyntaxInvalid).
+    uint32 sql_syntax_error_count = 7;
+    // Error-severity diagnostics carrying a Jinja dbt code: 1501 (JinjaError),
+    // 1502 (MacroSyntaxInvalid), 1507 (JinjaTypeCheckFailed), 1508
+    // (JinjaTopLevelReturn), 1074 (JinjaWarnUpgradedToError). Codes are consulted
+    // only at error severity, so a plain Jinja warning (1071 JinjaWarn) is
+    // counted in warning_count, not here.
+    uint32 jinja_error_count = 8;
+    // Error-severity diagnostics carrying any other dbt code.
+    uint32 other_error_count = 9;
+    // Warning-severity diagnostics whatever their code, including Jinja and SQL
+    // warnings.
+    uint32 warning_count = 10;
+
+    v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 11;
+}
+
+// User restarted the dbt LSP for a specific project (dbt.restartLsp).
+message ExtensionRestartLsp {
+    option (v1.public.common.vortex_enabled) = true;
+    option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+
+    v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+
+    v1.public.fields.vscode_types.Editor editor = 2;
+    v1.public.fields.vscode_types.User user = 3;
+
+    // the anonymous user id stored at ~/.dbt/.user.yml
+    string dbt_local_cookie_user_id = 4;
+
+    // md5 hash of the dbt project name (anonymized); identifies which project in
+    // a multi-root workspace this event came from
+    string project_id = 5;
+
+    // the type of adapter used in the project (snowflake, bigquery, etc)
+    string adapter_type = 6;
+
+    v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 7;
+}
+
+// User restarted the dbt LSP for the active editor's project
+// (dbt.restartActiveLsp).
+message ExtensionRestartActiveLsp {
+    option (v1.public.common.vortex_enabled) = true;
+    option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+
+    v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+
+    v1.public.fields.vscode_types.Editor editor = 2;
+    v1.public.fields.vscode_types.User user = 3;
+
+    // the anonymous user id stored at ~/.dbt/.user.yml
+    string dbt_local_cookie_user_id = 4;
+
+    // md5 hash of the dbt project name (anonymized); identifies which project in
+    // a multi-root workspace this event came from
+    string project_id = 5;
+
+    // the type of adapter used in the project (snowflake, bigquery, etc)
+    string adapter_type = 6;
+
+    v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 7;
+}
+
+// User cleared the dbt target cache for the active editor's project
+// (dbt.clearTarget).
+message ExtensionClearTarget {
+    option (v1.public.common.vortex_enabled) = true;
+    option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+
+    v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+
+    v1.public.fields.vscode_types.Editor editor = 2;
+    v1.public.fields.vscode_types.User user = 3;
+
+    // the anonymous user id stored at ~/.dbt/.user.yml
+    string dbt_local_cookie_user_id = 4;
+
+    // md5 hash of the dbt project name (anonymized); identifies which project in
+    // a multi-root workspace this event came from
+    string project_id = 5;
+
+    // the type of adapter used in the project (snowflake, bigquery, etc)
+    string adapter_type = 6;
+
+    v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 7;
+}
+
+// User cleared the dbt target cache for a specific project
+// (dbt.clearTargetForProject).
+message ExtensionClearTargetForProject {
+    option (v1.public.common.vortex_enabled) = true;
+    option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+
+    v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+
+    v1.public.fields.vscode_types.Editor editor = 2;
+    v1.public.fields.vscode_types.User user = 3;
+
+    // the anonymous user id stored at ~/.dbt/.user.yml
+    string dbt_local_cookie_user_id = 4;
+
+    // md5 hash of the dbt project name (anonymized); identifies which project in
+    // a multi-root workspace this event came from
+    string project_id = 5;
+
+    // the type of adapter used in the project (snowflake, bigquery, etc)
+    string adapter_type = 6;
+
+    v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 7;
+}
+
+// The dbt v1 compatibility mode prompt was shown. The `evidence` prop carried
+// by the legacy Amplitude-only event is intentionally not reproduced here: it
+// is free text containing source names.
+message ExtensionV1CompatPromptShown {
+    option (v1.public.common.vortex_enabled) = true;
+    option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+
+    v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+
+    v1.public.fields.vscode_types.Editor editor = 2;
+    v1.public.fields.vscode_types.User user = 3;
+
+    // the anonymous user id stored at ~/.dbt/.user.yml
+    string dbt_local_cookie_user_id = 4;
+
+    // md5 hash of the dbt project name (anonymized); identifies which project in
+    // a multi-root workspace this event came from
+    string project_id = 5;
+
+    // the type of adapter used in the project (snowflake, bigquery, etc)
+    string adapter_type = 6;
+
+    v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 7;
+}
+
+// User accepted the dbt v1 compatibility mode prompt.
+message ExtensionV1CompatPromptAccepted {
+    option (v1.public.common.vortex_enabled) = true;
+    option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+
+    v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+
+    v1.public.fields.vscode_types.Editor editor = 2;
+    v1.public.fields.vscode_types.User user = 3;
+
+    // the anonymous user id stored at ~/.dbt/.user.yml
+    string dbt_local_cookie_user_id = 4;
+
+    // md5 hash of the dbt project name (anonymized); identifies which project in
+    // a multi-root workspace this event came from
+    string project_id = 5;
+
+    // the type of adapter used in the project (snowflake, bigquery, etc)
+    string adapter_type = 6;
+
+    v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 7;
+}
+
+// User declined the dbt v1 compatibility mode prompt.
+message ExtensionV1CompatPromptDeclined {
+    option (v1.public.common.vortex_enabled) = true;
+    option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+
+    v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+
+    v1.public.fields.vscode_types.Editor editor = 2;
+    v1.public.fields.vscode_types.User user = 3;
+
+    // the anonymous user id stored at ~/.dbt/.user.yml
+    string dbt_local_cookie_user_id = 4;
+
+    // md5 hash of the dbt project name (anonymized); identifies which project in
+    // a multi-root workspace this event came from
+    string project_id = 5;
+
+    // the type of adapter used in the project (snowflake, bigquery, etc)
+    string adapter_type = 6;
+
+    v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 7;
+}
+
+// User ran dbt.reinstallBinary, which clean-installs the dbt binary and
+// reloads the window. This is the only whole-extension restart; the Extension
+// Info "Restart" row is per-project and emits ExtensionRestartLsp instead.
+message ExtensionBinaryReinstalled {
+    option (v1.public.common.vortex_enabled) = true;
+    option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+
+    v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+
+    v1.public.fields.vscode_types.Editor editor = 2;
+    v1.public.fields.vscode_types.User user = 3;
+
+    // the anonymous user id stored at ~/.dbt/.user.yml
+    string dbt_local_cookie_user_id = 4;
+
+    // md5 hash of the dbt project name (anonymized); identifies which project in
+    // a multi-root workspace this event came from
+    string project_id = 5;
+
+    // the type of adapter used in the project (snowflake, bigquery, etc)
+    string adapter_type = 6;
+
+    // False when cleanInstall() threw. The window still reloads either way.
+    bool succeeded = 7;
+
+    v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 8;
+}
+
+// A dbt run/build/test/clean/deps invocation started. Pairs with
+// ExtensionDbtCommandFinished via command_id.
+//
+// The dbt selector is deliberately absent: it is a path relative to the project
+// root and therefore contains customer directory structure and model names. The
+// two boolean graph-operator flags capture the analytic question ("do people
+// use +model+") without transmitting any identifier.
+message ExtensionDbtCommandStarted {
+    option (v1.public.common.vortex_enabled) = true;
+    option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+
+    v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+
+    v1.public.fields.vscode_types.Editor editor = 2;
+    v1.public.fields.vscode_types.User user = 3;
+
+    // the anonymous user id stored at ~/.dbt/.user.yml
+    string dbt_local_cookie_user_id = 4;
+
+    // md5 hash of the dbt project name (anonymized); identifies which project in
+    // a multi-root workspace this event came from
+    string project_id = 5;
+
+    // the type of adapter used in the project (snowflake, bigquery, etc)
+    string adapter_type = 6;
+
+    // Correlates with the matching ExtensionDbtCommandFinished.
+    string command_id = 7;
+    v1.public.fields.vscode_types.DbtCommandKind dbt_command = 8;
+    v1.public.fields.vscode_types.DbtCommandScope scope = 9;
+    // True when the selector was prefixed with '+' (include parents).
+    bool select_parents = 10;
+    // True when the selector was suffixed with '+' (include children).
+    bool select_children = 11;
+
+    v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 12;
+}
+
+// A dbt run/build/test/clean/deps invocation ended.
+message ExtensionDbtCommandFinished {
+    option (v1.public.common.vortex_enabled) = true;
+    option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+
+    v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+
+    v1.public.fields.vscode_types.Editor editor = 2;
+    v1.public.fields.vscode_types.User user = 3;
+
+    // the anonymous user id stored at ~/.dbt/.user.yml
+    string dbt_local_cookie_user_id = 4;
+
+    // md5 hash of the dbt project name (anonymized); identifies which project in
+    // a multi-root workspace this event came from
+    string project_id = 5;
+
+    // the type of adapter used in the project (snowflake, bigquery, etc)
+    string adapter_type = 6;
+
+    // Correlates with the matching ExtensionDbtCommandStarted.
+    string command_id = 7;
+    v1.public.fields.vscode_types.DbtCommandKind dbt_command = 8;
+    v1.public.fields.vscode_types.DbtCommandOutcome outcome = 9;
+    // ONLY MEANINGFUL WHEN outcome != DBT_COMMAND_OUTCOME_CANCELLED. The
+    // cancelled case is an undefined exit code, which has no int32
+    // representation and serialises as 0 -- indistinguishable from success.
+    // Filter on `outcome`, not on `exit_code == 0`.
+    int32 exit_code = 10;
+    int64 duration_ms = 11;
+
+    v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 12;
 }

@@ -58,6 +58,9 @@ pub struct ResolveArgs {
     /// identically from there on -- rather than swapping the run's adapter
     /// afterwards.
     pub adapter_override: Option<AdapterType>,
+    /// Adapter types declared by the active profile, made available to node resolution for
+    /// target policy decisions. Credentials are intentionally not carried here.
+    pub profile_adapter_types: Option<Vec<AdapterType>>,
 }
 
 impl ResolveArgs {
@@ -104,6 +107,7 @@ impl ResolveArgs {
                     })
                 })
                 .transpose()?,
+            profile_adapter_types: None,
         })
     }
 }

@@ -235,6 +235,7 @@ pub fn run_model_event(
     table_format: Option<String>,
     catalog_name: Option<String>,
     catalog_type: Option<String>,
+    compute_mode: String,
 ) {
     let unique_id = node.unique_id();
     if !run_stats.contains_key(&unique_id) {
@@ -351,6 +352,7 @@ pub fn run_model_event(
         catalog_name: catalog_name.unwrap_or_default(),
         catalog_type: catalog_type.unwrap_or_default(),
         common_context: None,
+        compute_mode,
     };
 
     let _ = log_proto(message);

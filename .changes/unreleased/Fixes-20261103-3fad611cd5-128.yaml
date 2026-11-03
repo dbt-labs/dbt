@@ -1,0 +1,7 @@
+kind: Fixes
+body: Restore connection wait telemetry for runtime pool contention on task operations.
+time: 2026-11-03T11:49:03.591821+05:30
+custom:
+    author: mishamsk
+    issue: ""
+    project: dbt-core

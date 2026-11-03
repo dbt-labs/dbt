@@ -1,0 +1,7 @@
+kind: Fixes
+body: Fix `model.resource_type` returning model for all resource types during parse
+time: 2026-11-03T11:49:03.566453+05:30
+custom:
+    author: ajhlee-dbt
+    issue: "16637"
+    project: dbt-core

@@ -7,7 +7,9 @@ use dbt_jinja_utils::mock_object::MockJinjaObject;
 use dbt_schemas::dbt_types::RelationType;
 use minijinja::Value;
 
-use crate::macro_test_harness::{MacroTestHarness, assert_executed_contains, default_mock_config};
+use crate::macro_test_harness::{
+    MacroTestHarness, assert_executed_contains, default_mock_config, executed_sql,
+};
 
 // ---------------------------------------------------------------------------
 // Shared helpers
@@ -201,10 +203,18 @@ mod databricks {
     }
 
     #[test]
-    fn existing_table_dropped_before_create() {
+    fn existing_table_replaced_after_view_is_staged() {
         let h = run_existing_table(ADAPTER);
-        h.mock().observed_calls().assert_called("drop_relation");
-        assert_executed_contains(h.mock(), "create or replace");
+        let executed = executed_sql(h.mock());
+        let first = executed
+            .first()
+            .expect("view materialization should execute SQL");
+        assert!(
+            first.contains("create or replace view") && first.contains("my_view__dbt_stg"),
+            "view must be created at the staging relation before the table is touched: {executed:?}"
+        );
+        h.mock().observed_calls().assert_called("rename_relation");
+        assert_executed_contains(h.mock(), "rename to");
     }
 
     // -- use_materialization_v2 = true ----------------------------------
@@ -316,6 +326,34 @@ mod databricks {
                 .to_string()
                 .contains("Cannot update a view in the Hive metastore via ALTER VIEW")
         );
+    }
+
+    #[test]
+    fn v2_update_via_alter_replaces_metric_view_with_view() {
+        // Converting a metric view into an ordinary view must replace it, never
+        // take the in-place ALTER path, even with view_update_via_alter enabled:
+        // the relation types differ, so the type gate short-circuits ALTER.
+        let harness = build_view_harness(ADAPTER);
+        harness.set_behavior_flags([("use_materialization_v2", true)]);
+        let existing = harness.relation(
+            "TEST_DB",
+            "TEST_SCHEMA",
+            "my_view",
+            Some(RelationType::MetricView),
+        );
+        harness.mock().on("get_relation", move |_| {
+            Ok(RelationObject::new(Arc::clone(&existing)).into_value())
+        });
+
+        let ctx = harness
+            .materialization_context("my_view", "SELECT id, name FROM source_table")
+            .config(Value::from_dyn_object(v2_update_via_alter_config(false)))
+            .build();
+        render_view(&harness, ADAPTER, ctx)
+            .expect("metric_view to view must replace instead of ALTER");
+
+        // A recreate proves replacement; a broken gate would ALTER and skip it.
+        assert_executed_contains(harness.mock(), "create or replace view");
     }
 }
 

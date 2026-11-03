@@ -19,7 +19,7 @@ import { DagHopBar } from './DagHopBar';
 import { DagMinimapPanel } from './DagMinimapPanel';
 import { DAG_NODE_TYPES } from './DagNode';
 
-interface Props {
+interface BaseDagProps {
   rootUniqueId: string;
   /** Rendered on the far left of the hop bar's own holder -- see DagHopBar. */
   topBarLeft?: ReactNode;
@@ -63,7 +63,7 @@ const ABSOLUTE_MIN_ZOOM = 0.1;
 // in every direction.
 // const FIT_MIN_ZOOM_RATIO = 0.5;
 
-interface CanvasProps {
+interface BaseDagCanvasProps {
   upstreamHops: number;
   downstreamHops: number;
   onUpstreamChange: (hops: number) => void;
@@ -81,7 +81,7 @@ function BaseDagCanvas({
   topBarLeft,
   onRecenter,
   onNodeClick,
-}: CanvasProps) {
+}: BaseDagCanvasProps) {
   const { nodes, edges, onNodesChange, onEdgesChange, onConnect } = useLineageFlow();
   const { status, error, rootUniqueId } = useLineageStatus();
   const [ref, { width, height }] = useMeasure();
@@ -92,6 +92,9 @@ function BaseDagCanvas({
   // is a laid-out graph to frame, and a primitive doesn't change identity on every
   // drag frame.
   const isLaidOut = useLineageStore((s) => s.isLaidOut);
+  // Keeps its identity until the set of shown nodes really changes, so this wakes on a
+  // filter change but not on a drag.
+  const selectedNodeIds = useLineageStore((s) => s.selectedNodeIds);
   const { fitView } = useReactFlow();
   const setCompact = useLineageStore((s) => s.setCompact);
   const [view, setView] = useState<'groups' | 'dag'>('dag');
@@ -122,12 +125,14 @@ function BaseDagCanvas({
   // the latter changes on every drag and would yank the viewport out from under the
   // cursor. Before the layout there is nothing worth framing: the cards are stacked at
   // the origin waiting to be measured, and fitting on that would frame a single point
-  // and then have to jump.
+  // and then have to jump. A new `selectedNodeIds` re-frames too: the store has laid
+  // the graph out again around the nodes it now shows, e.g. after a resource-type
+  // filter change hid half of them.
   useEffect(() => {
     if (!isLaidOut) return;
     const frame = requestAnimationFrame(() => fitView({ padding: 0.2, duration: 200 }));
     return () => cancelAnimationFrame(frame);
-  }, [isLaidOut, rootUniqueId, fitView]);
+  }, [isLaidOut, selectedNodeIds, rootUniqueId, fitView]);
 
   if (status === 'error' && error) {
     return (
@@ -231,7 +236,12 @@ function BaseDagCanvas({
  *  a canvas that — like any other view of the same graph — reads it back out of the
  *  store rather than taking it as props. Also owns the hop-bar's upstream/downstream
  *  state, since both directions ultimately feed the one fetch below. */
-export function BaseDag({ rootUniqueId, topBarLeft, onRecenter, onNodeClick }: Props) {
+export function BaseDag({
+  rootUniqueId,
+  topBarLeft,
+  onRecenter,
+  onNodeClick,
+}: BaseDagProps) {
   const [upstreamHops, setUpstreamHops] = useState(DEFAULT_HOPS);
   const [downstreamHops, setDownstreamHops] = useState(DEFAULT_HOPS);
   // Recentering (from a Groups pill, or any other future "make this the root"

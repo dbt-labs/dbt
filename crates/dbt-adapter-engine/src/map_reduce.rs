@@ -426,11 +426,11 @@ where
         drop(tx);
 
         // A worker reports its connection before claiming a key, but the driver
-        // may not have observed that report yet: such a worker may already hold a
-        // key. Move every worker that already connected into `running` so its
-        // in-flight value is still reduced. Workers still opening a connection
-        // can no longer claim a key, so dropping their handles detaches them
-        // instead of waiting on a connection that may take arbitrarily long.
+        // may not have observed that report yet: such a worker may already hold
+        // a key. Move every worker that already connected into `running` so its
+        // in-flight value is still reduced -- see
+        // `map_reduce_does_not_drop_a_key_claimed_by_an_unobserved_worker` test
+        // case below.
         self.drain_connected_workers(&mut connecting, &mut running);
         drop(connecting);
 
@@ -649,9 +649,6 @@ mod tests {
         assert_eq!(acc, 3);
     }
 
-    /// A worker claims a key right after reporting its connection, so the driver
-    /// can reach the end of the loop without having observed that report. Such a
-    /// worker holds a key and its value must still be reduced.
     #[dbt_runtime::test]
     async fn map_reduce_does_not_drop_a_key_claimed_by_an_unobserved_worker() {
         struct ImmediateConnectionFactory;
@@ -669,15 +666,21 @@ mod tests {
             fn recycle_connection(&self, _conn: Box<dyn Connection>) {}
         }
 
-        // Whether the driver observes the second worker's report is a `select!`
-        // coin flip, so repeat enough times to make the losing side near certain.
-        for _ in 0..20 {
+        // The repro needs two ingredients:
+        //
+        // 1. the driver has to observe the second worker's report, governed by
+        // a random `select!` coin flip -- hence a loop to make the occurance
+        // near certain in a single test run:
+        for _ in 0..10 {
             let map_reduce = MapReduce::new(
                 Box::new(ImmediateConnectionFactory),
                 Box::new(|_conn: &mut dyn Connection, key: &u32| {
-                    // Runs on a blocking worker: sleep long enough that a detached
-                    // worker cannot send its value before the receiver is closed.
-                    std::thread::sleep(Duration::from_millis(5));
+                    // 2. the second worker's send must land after the driver
+                    // has awaited every observed worker and closed the
+                    // receiver, so the key it's likely to hold (the last claim)
+                    // must be a much slower task than the other:
+                    let delay_ms = if *key == 1 { 250 } else { 5 };
+                    std::thread::sleep(Duration::from_millis(delay_ms));
                     *key
                 }),
                 Box::new(|acc: &mut Vec<u32>, key: u32, _value: u32| {
@@ -687,8 +690,6 @@ mod tests {
                 None,
             );
 
-            // Two keys means two speculative workers, the configuration where both
-            // connections complete within microseconds of each other.
             let mut reduced = map_reduce
                 .run(
                     Arc::new(vec![0u32, 1u32]),

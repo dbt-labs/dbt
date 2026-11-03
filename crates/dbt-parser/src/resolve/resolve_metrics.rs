@@ -282,6 +282,7 @@ pub fn resolve_nested_model_metrics(
                         adapter: adapter_type,
                         // This node type has no `+propagate` config; nothing is published.
                         propagate: Vec::new(),
+                        effective_propagation_target: None,
                         database: "".to_string(),
                         schema: "".to_string(),
                         alias: "".to_string(),
@@ -574,6 +575,7 @@ pub fn resolve_top_level_metrics(
                 adapter: adapter_type,
                 // This node type has no `+propagate` config; nothing is published.
                 propagate: Vec::new(),
+                effective_propagation_target: None,
                 database: "".to_string(),
                 schema: "".to_string(),
                 alias: "".to_string(),

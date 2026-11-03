@@ -158,6 +158,7 @@ impl TokenRefresher {
         const BASE64_ENGINE: &general_purpose::GeneralPurpose = &general_purpose::STANDARD;
 
         let http_config = ureq::Agent::config_builder()
+            .tls_config(crate::install::build_tls_config())
             .timeout_global(Some(REFRESH_TOKEN_REQ_TIMEOUT))
             .build();
         let http_agent = ureq::Agent::new_with_config(http_config);

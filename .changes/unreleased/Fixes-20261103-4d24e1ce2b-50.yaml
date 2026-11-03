@@ -1,0 +1,7 @@
+kind: Fixes
+body: Exempt ad-hoc inline (preview) nodes from the model access check, so `dbt show --inline` and `dbt compile --inline` can `ref()` a private or protected model
+time: 2026-11-03T11:49:03.085819+05:30
+custom:
+    author: HannanNaeem
+    issue: ""
+    project: dbt-core

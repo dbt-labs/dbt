@@ -1,0 +1,7 @@
+kind: Fixes
+body: '`var.has_var` now also reports vars passed with `--vars`, matching dbt Core'
+time: 2026-10-08T12:23:32.864191-05:00
+custom:
+    author: HannanNaeem
+    issue: ""
+    project: dbt-core

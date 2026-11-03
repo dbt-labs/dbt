@@ -1,0 +1,7 @@
+kind: Fixes
+body: Return an empty column list when Databricks get_columns_in_relation targets a missing hive_metastore relation
+time: 2026-11-03T11:49:03.436046+05:30
+custom:
+    author: ragesh-g
+    issue: "16472"
+    project: dbt-core

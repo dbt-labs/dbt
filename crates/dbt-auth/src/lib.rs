@@ -10,12 +10,12 @@ mod config;
 // Database-specific auth implementations
 mod athena;
 mod bigquery;
+#[cfg(test)]
+mod bridge;
 mod clickhouse;
 mod databricks;
 mod duckdb;
 mod exasol;
-#[cfg(test)]
-mod flock;
 mod lake_compute;
 mod postgres;
 mod redshift;

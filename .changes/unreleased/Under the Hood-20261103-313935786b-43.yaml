@@ -1,0 +1,7 @@
+kind: Under the Hood
+body: Reuse the parsed Jinja AST when extracting unrendered config() arguments.
+time: 2026-11-03T11:49:03.033019+05:30
+custom:
+    author: itsannbat
+    issue: ""
+    project: dbt-core

@@ -36,14 +36,13 @@ pub mod serde_utils;
 pub mod status_reporter;
 pub mod time;
 pub mod tracing;
-pub mod url;
 pub mod user_defined_schema_registry;
 pub mod warn_error_options;
 
 // Re-export span creation functions that were previously exported as macros
 pub use tracing::{
     create_debug_span, create_debug_span_with_parent, create_info_span,
-    create_info_span_with_parent, create_root_info_span,
+    create_info_span_with_parent, create_root_info_span, force_close_span,
 };
 
 mod discrete_event_emitter;

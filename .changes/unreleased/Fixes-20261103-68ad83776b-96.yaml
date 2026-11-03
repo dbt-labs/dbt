@@ -1,0 +1,7 @@
+kind: Fixes
+body: Preserve BigQuery decimal and nested types in unit test fixtures
+time: 2026-11-03T11:49:03.372483+05:30
+custom:
+    author: mach-kernel
+    issue: "16440"
+    project: dbt-core

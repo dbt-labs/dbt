@@ -1,0 +1,7 @@
+kind: Fixes
+body: Preserve Snowflake nested JSON fixture escapes and heterogeneous array values during local execution.
+time: 2026-11-03T11:49:02.809792+05:30
+custom:
+    author: mach-kernel
+    issue: ""
+    project: dbt-core

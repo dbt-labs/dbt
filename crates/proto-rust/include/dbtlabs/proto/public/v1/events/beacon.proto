@@ -14,6 +14,7 @@ enum BeaconSplitPaneViewKind {
   BEACON_SPLIT_PANE_VIEW_KIND_UNSPECIFIED = 0;
   BEACON_SPLIT_PANE_VIEW_KIND_DIFF = 1;
   BEACON_SPLIT_PANE_VIEW_KIND_CANVAS = 2;
+  BEACON_SPLIT_PANE_VIEW_KIND_INSIGHT = 3;
 }
 
 // What surface triggered the side pane to open.

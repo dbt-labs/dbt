@@ -6,7 +6,7 @@ use crate::dbt_project_config::{
 };
 use crate::renderer::{
     RenderCtx, RenderCtxInner, SqlFileRenderResult, collect_adapter_identifiers_detect_unsafe,
-    render_unresolved_sql_files,
+    render_unresolved_sql_files, strip_deprecated_warehouse_keys_from_properties,
 };
 use crate::resolve::resolve_tests::persist_generic_data_tests::TestableNodeTrait;
 use crate::resolve::resolve_tests::persist_generic_data_tests::{
@@ -28,7 +28,7 @@ use dbt_common::cancellation::CancellationToken;
 use dbt_common::constants::DBT_SNAPSHOTS_DIR_NAME;
 use dbt_common::error::AbstractLocation;
 use dbt_common::io_args::{StaticAnalysisKind, StaticAnalysisOffReason};
-use dbt_common::path::DbtPath;
+use dbt_common::path::{DbtPath, node_name_from_path};
 use dbt_common::tokiofs;
 use dbt_common::tracing::dbt_emit::{emit_error_log_from_fs_error, emit_warn_log_from_fs_error};
 use dbt_common::{ErrorCode, FsResult, fs_err, stdfs, unexpected_fs_err};
@@ -47,6 +47,7 @@ use dbt_schemas::schemas::nodes::AdapterAttr;
 use dbt_schemas::schemas::project::SnapshotConfig;
 use dbt_schemas::schemas::properties::SnapshotProperties;
 use dbt_schemas::schemas::ref_and_source::{DbtRef, DbtSourceWrapper};
+use dbt_schemas::schemas::telemetry::NodeType;
 use dbt_schemas::schemas::{
     CommonAttributes, DbtSnapshot, DbtSnapshotAttr, InternalDbtNode, IntrospectionKind,
     NodeBaseAttributes, NodePathKind,
@@ -205,6 +206,12 @@ pub async fn resolve_snapshots(
         })
         .collect();
 
+    strip_deprecated_warehouse_keys_from_properties(
+        &mut snapshot_properties,
+        NodeType::Snapshot,
+        dependency_package_name,
+    );
+
     // Save snapshot from yml to the `snapshots` directory
     for (snapshot_name, mpe) in snapshot_properties.iter_mut() {
         // if mpe.schema_value
@@ -328,6 +335,7 @@ pub async fn resolve_snapshots(
                 .as_ref()
                 .unwrap_or(&default_snapshots_path)
                 .clone(),
+            resource_type: Some(NodeType::Snapshot),
         }),
         jinja_env: jinja_env.clone(),
         runtime_config: runtime_config.clone(),
@@ -373,7 +381,7 @@ pub async fn resolve_snapshots(
     {
         {
             let error_path = &dbt_asset.original_path;
-            let snapshot_name = dbt_asset.path.file_stem().unwrap().to_str().unwrap();
+            let snapshot_name = node_name_from_path(&dbt_asset.path).unwrap();
             if snapshot_name.contains(' ') {
                 return Err(err_resource_name_has_spaces(snapshot_name, error_path));
             }
@@ -540,6 +548,7 @@ pub async fn resolve_snapshots(
                 __base_attr__: NodeBaseAttributes {
                     adapter: selected_adapter,
                     propagate: selected_propagate,
+                    effective_propagation_target: None,
                     database: "".to_owned(), // will be updated below
                     schema: "".to_owned(),   // will be updated below
                     alias: "".to_owned(),    // will be updated below

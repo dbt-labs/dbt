@@ -43,7 +43,7 @@ use dbt_schemas::schemas::{
 };
 use dbt_schemas::state::ResolverState;
 use dbt_tasks_core::PreTaskRunData;
-use dbt_tasks_core::task::TaskOp;
+use dbt_tasks_core::task::run_blocking_task_operation;
 use dbt_telemetry::{
     ArtifactType, ArtifactWritten, NodeOutcome, NodeProcessed, NodeType, ProgressMessage,
     ShowResult, SourceFreshnessDetail, SourceFreshnessOutcome, node_processed,
@@ -56,6 +56,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
 };
+use tracing::Instrument;
 
 #[derive(Debug, Clone)]
 pub struct FreshnessResult {
@@ -336,7 +337,7 @@ pub async fn calculate_freshness_custom_sql(
     let rendered_query = {
         let jinja_env = Arc::clone(jinja_env);
         let loaded_at_query = loaded_at_query.to_owned();
-        TaskOp::Blocking(Box::new(move || -> FsResult<String> {
+        run_blocking_task_operation(move || -> FsResult<String> {
             jinja_env
                 .render_named_str(
                     &source_path.to_string_lossy(),
@@ -360,8 +361,7 @@ pub async fn calculate_freshness_custom_sql(
                     }
                     .into()
                 })
-        }))
-        .run()
+        })
         .await??
     };
     // Insert loaded_at_query as an escaped string
@@ -413,13 +413,12 @@ async fn calculate_freshness_common(
     let table = {
         let jinja_env = Arc::clone(jinja_env);
         let macro_expr = macro_expr.to_owned();
-        TaskOp::Blocking(Box::new(move || {
+        run_blocking_task_operation(move || {
             let expr = jinja_env.compile_expression(&macro_expr)?;
             expr.eval(&context, &[])?
                 .downcast_object::<AgateTable>()
                 .ok_or_else(|| unexpected_fs_err!("Agate table expected"))
-        }))
-        .run()
+        })
         .await??
     };
 
@@ -701,6 +700,7 @@ pub async fn run_freshness(
         resolver_state.defer_nodes.as_ref(),
         resolver_state.runtime_config.clone(),
         namespace_keys,
+        None,
     );
 
     let results = run_freshness_with_spans(
@@ -832,6 +832,10 @@ async fn run_freshness_with_spans(
     let sla_models_as_query_nodes = sla_models.iter().map(|node| *node as &dyn FreshnessNodeRef);
     let query_based_nodes = sources_as_query_nodes.chain(sla_models_as_query_nodes);
     for node in query_based_nodes {
+        let node_span = node_spans
+            .get(node.common().unique_id.as_str())
+            .cloned()
+            .unwrap_or_else(tracing::Span::current);
         match measure_query_based_freshness(
             node,
             resolver_state.adapter_type,
@@ -840,6 +844,7 @@ async fn run_freshness_with_spans(
             io_args,
             dependencies.clone(),
         )
+        .instrument(node_span)
         .await
         {
             Ok(Some(result)) => {

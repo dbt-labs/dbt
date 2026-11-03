@@ -100,7 +100,7 @@ pub fn install_package_skills(
                 format!(
                     "Found {} agent skill(s) in this project and its packages, but 'ai_provider' \
                      is not set, so none were installed. Set it in dbt_project.yml (flags: \
-                     {{ai_provider: claude}}), via --ai-provider, or with DBT_AI_PROVIDER. Known \
+                     {{ai_provider: claude}}), via --ai-provider, or with DBT_ENGINE_AI_PROVIDER. Known \
                      providers: {}.",
                     discovered.len(),
                     AiProvider::all_names()

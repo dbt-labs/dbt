@@ -32,7 +32,7 @@ import { SEARCHABLE_RESOURCE_TYPES } from '../types';
  *  `useSearch` server-side default. */
 const SEARCH_PAGE_SIZE = 50;
 
-interface Props {
+interface SearchProps {
   project: Project;
   /** Unused — kept so the existing /search route wiring in App.tsx still type-checks. */
   nodes: NodeSummary[];
@@ -114,7 +114,7 @@ function getActiveChips(filters: AssetFilters): ActiveChip[] {
   return chips;
 }
 
-export default function Search({ query, filters, onSetFilters }: Props) {
+export default function Search({ query, filters, onSetFilters }: SearchProps) {
   const searchArgs = useMemo<ListArgs<SearchFilter>>(
     () => ({
       filter: {

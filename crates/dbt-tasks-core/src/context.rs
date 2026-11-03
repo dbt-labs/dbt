@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicI64};
+use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
 use crate::run_cache::run_cache_service::{
@@ -37,6 +37,7 @@ use dbt_state::explain::StateExplainDevClone;
 use dbt_state::metadata_cache::RunCacheMetadataCache;
 use dbt_state::service_client::SharedRunCacheServiceClient;
 use dbt_state::service_config::RunCacheServiceConfig;
+use dbt_state::telemetry::SharedEventOrder;
 use dbt_state::view_traversal::ViewDefinitionTraverser;
 use minijinja::Value;
 
@@ -68,12 +69,20 @@ pub struct RunCacheCtx {
     /// Tracks the background dependency last-modified prefetch so per-node
     /// submits can observe its progress and await it on demand.
     pub prefetch: RunCachePrefetchState,
-    pub telemetry_event_order: AtomicI64,
+    /// Shared telemetry event order counter for monotonic ordering across
+    /// state selector (compilation phase) and task execution (run phase).
+    ///
+    /// Always initialized: when a state selector creates one during
+    /// compilation, the same counter is passed here so run-phase events
+    /// continue the sequence; otherwise a fresh counter is created at run
+    /// start.
+    pub shared_event_order: SharedEventOrder,
     pub telemetry_session_start: std::sync::OnceLock<Instant>,
     pub telemetry_session_ended: AtomicBool,
     /// Background telemetry batching worker, started lazily on the first
     /// event so runs with the dbt State service disabled never spawn it.
     pub telemetry_dispatcher: std::sync::OnceLock<TelemetryDispatcher>,
+    pub redshift_case_sensitivity_enabled: tokio::sync::OnceCell<bool>,
 }
 
 /// Lifecycle handle for the background dependency last-modified prefetch.

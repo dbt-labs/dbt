@@ -688,6 +688,10 @@ impl ConfigKeys for UnitTestConfig {
     // extracting field names via serialization automatically
 }
 
+impl crate::schemas::project::configs::warehouse_scope::WarehouseConfigResource for UnitTestConfig {
+    const NODE_TYPE: dbt_telemetry::NodeType = dbt_telemetry::NodeType::UnitTest;
+}
+
 #[cfg(test)]
 mod tests {
     use super::{ComputeArg, ProjectUnitTestConfig, UnitTestConfig};

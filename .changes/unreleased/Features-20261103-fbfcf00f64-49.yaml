@@ -1,0 +1,7 @@
+kind: Features
+body: Support the `allow_jinja_file_extensions` project flag, so resource files may carry a trailing Jinja suffix (`model.sql.j2`, `doc.md.j2`)
+time: 2026-11-03T11:49:03.077138+05:30
+custom:
+    author: HannanNaeem
+    issue: "16296"
+    project: dbt-core

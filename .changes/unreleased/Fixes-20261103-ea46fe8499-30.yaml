@@ -1,0 +1,7 @@
+kind: Fixes
+body: Replace deprecated DuckDB single-arrow lambdas with Python-style lambda syntax.
+time: 2026-11-03T11:49:02.962157+05:30
+custom:
+    author: mach-kernel
+    issue: ""
+    project: dbt-core

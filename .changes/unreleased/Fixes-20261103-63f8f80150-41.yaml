@@ -1,0 +1,7 @@
+kind: Fixes
+body: Report the effective dbt State defer-to target, honoring a target's `defer_to_target`, instead of always reporting the default.
+time: 2026-11-03T11:49:03.02612+05:30
+custom:
+    author: izeigerman
+    issue: ""
+    project: dbt-core

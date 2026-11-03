@@ -59,6 +59,7 @@ message RunResultMsg {
     float execution_time = 5;
     google.protobuf.Struct adapter_response = 6;
     int32 num_failures = 7;
+    optional string state_decision_id = 8;
 }
 
 //ColumnType

@@ -18,6 +18,7 @@ use minijinja::State;
 
 use crate::cache::RelationCache;
 use crate::engine::query_comment::QueryCommentConfig;
+use crate::engine::retry::QueryRetryPolicy;
 use crate::sql_types::TypeOps;
 use crate::stmt_splitter::StmtSplitter;
 
@@ -119,6 +120,10 @@ impl AdapterEngine for RecordReplayEngine {
 
     fn get_config(&self) -> &AdapterConfig {
         self.inner.get_config()
+    }
+
+    fn query_retry_policy(&self) -> &QueryRetryPolicy {
+        self.inner.query_retry_policy()
     }
 
     fn relation_cache(&self) -> &Arc<RelationCache> {
@@ -290,6 +295,17 @@ static SHOW_USER_PAT_IDENTIFIER: std::sync::LazyLock<regex::Regex> =
 static DEBUG_PROBE_TABLE: std::sync::LazyLock<regex::Regex> =
     std::sync::LazyLock::new(|| regex::Regex::new(r"__dbt_debug_probe_\d+").unwrap());
 
+/// Matches `dbt debug`'s Snowflake propagation probe table name
+/// (`__dbt_debug_propagation_<nanos>`, `debug_propagation.rs`). Same
+/// reasoning as `DEBUG_PROBE_TABLE` above: a fresh wall-clock nanosecond
+/// timestamp on every invocation, record or replay alike, so no two runs
+/// ever emit the literal same name -- mask it out for comparison. Mirrors
+/// `cleanup_debug_propagation_probe_table` in `adbc-record-replay`'s
+/// `naming.rs`, which does the same masking for the recording lookup key;
+/// this one is for the post-lookup text-equality check below.
+static DEBUG_PROPAGATION_PROBE_TABLE: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new(r"__dbt_debug_propagation_\d+").unwrap());
+
 impl adbc_record_replay::SqlNormalizer for DbtSqlNormalizer {
     fn normalize(&self, sql: &str) -> String {
         use crate::sql::normalize::normalize_dbt_tmp_name;
@@ -309,6 +325,9 @@ impl adbc_record_replay::SqlNormalizer for DbtSqlNormalizer {
             .into_owned();
         let collapsed = DEBUG_PROBE_TABLE
             .replace_all(&collapsed, "__dbt_debug_probe_[MASKED_ID]")
+            .into_owned();
+        let collapsed = DEBUG_PROPAGATION_PROBE_TABLE
+            .replace_all(&collapsed, "__dbt_debug_propagation_[MASKED_ID]")
             .into_owned();
         collapsed
             .replace("DBT_TESTING_ALT", "[MASKED_ALT_WH]")

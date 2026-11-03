@@ -24,7 +24,7 @@ use dbt_common::{
         DBT_CATALOG_JSON, DBT_COMPILED_DIR_NAME, DBT_MANIFEST_JSON, DBT_PROJECT_YML, ERROR,
         INSTALLING, VALIDATING, default_index_dir, default_metadata_dir,
     },
-    create_root_info_span, fs_err,
+    create_info_span, create_root_info_span, force_close_span, fs_err,
     io_args::{DisplayFormat, EvalArgs, ListOutputFormat, Phases, ShowOptions, SystemArgs},
     node_selector::IndirectSelection,
     path::get_target_write_path,
@@ -112,7 +112,10 @@ use crate::{
     },
     retry::{RETRIABLE_COMMANDS, RetryState},
     utils::{InvocationContext, write_catalog_stats_parquet, write_runtime_results_parquet},
-    vars::{validate_engine_env_vars, warn_unused_engine_env_vars},
+    vars::{
+        validate_engine_env_vars, warn_if_legacy_run_cache_mode_flag_used,
+        warn_unused_engine_env_vars,
+    },
 };
 
 // ------------------------------------------------------------------------------------------------
@@ -214,10 +217,10 @@ pub async fn setup_and_execute_fs(
         FsError::exit_with_status(1)
     })?;
 
-    // --dirty without --select: synthesize a `seed_id+ seed_id+ ...` selector so the
+    // --dirty without --select: synthesize a `seed_id+ path:<added_file>+ ...` selector so the
     // scheduler runs only the dirty nodes and their descendants — ancestors are loaded
-    // for dep closure but not scheduled.  Falls back to select=None (run all) when the
-    // cache doesn't exist yet or nothing is dirty.
+    // for dep closure but not scheduled. With no cache or nothing dirty, select stays None: the
+    // fast path loads (so runs) nothing, a full parse (e.g. a non-SQL file added) runs everything.
     if cli.common_args().dirty && eval_arg.select.is_none() {
         use dbt_metadata::partial_parse::dirty_select_expression;
         if let Some(expr) = dirty_select_expression(&eval_arg.io) {
@@ -300,7 +303,7 @@ is false. This should not happen."
             // are sent, so we run it as a blocking tokio task.
             invocation_end_event(invocation_id, result_string, dbt_distribution, shutdown);
         })
-        .instrument(invocation_span)
+        .instrument(invocation_span.clone())
         .await
         .map_err(|e| {
             if e.is_cancelled() {
@@ -311,6 +314,11 @@ is false. This should not happen."
         })
         .unwrap();
     }
+
+    // End the invocation span now, rather than when its last handle is dropped: abandoned
+    // workers (e.g. catalog fetch) may still hold its descendants, and the invocation end
+    // (final metrics, execution summary) must be delivered before telemetry shuts down.
+    force_close_span(invocation_span);
 
     // Hand the captured artifacts (if any) to the caller. Phase-checkpoint
     // commands (parse, list, ...) signal success via Err(exit_status == 0) — a
@@ -337,6 +345,8 @@ async fn do_execute_fs(
     use CoreCommand::*;
 
     warn_unused_engine_env_vars();
+    warn_if_legacy_run_cache_mode_flag_used();
+    install_feature_flags(&cli.common_args().features);
 
     // Current versions of rustls require us to explicitly install a default provider.
     // The default provider can only be installed once per process, so
@@ -605,6 +615,15 @@ pub async fn execute_setup_and_all_phases(
     *artifacts_sink = executor.captured_artifacts;
 
     result
+}
+
+/// Resolves this invocation's feature flags and makes them current.
+fn install_feature_flags(cli_features: &[String]) {
+    let snapshot = dbt_flags::FlagSnapshot::builder().cli(cli_features).build();
+    for warning in snapshot.warnings(dbt_flags::ALL) {
+        emit_warn_log_message(ErrorCode::InvalidConfig, warning);
+    }
+    dbt_flags::install(snapshot);
 }
 
 /// Emits version information as a progress message.
@@ -1517,10 +1536,13 @@ impl<'a> AllPhasesExecutor<'a> {
                                 batch_results: Default::default(),
                                 compiled_code: Default::default(),
                             };
+                            let project_state = compilation.dbt_state();
                             let mut artifact = build_run_results_artifact(
                                 &empty,
                                 &HashMap::new(),
                                 self.arg.as_ref(),
+                                project_state.warn_error,
+                                &project_state.warn_error_options,
                             );
                             artifact.results = std::mem::take(&mut check_result_rows);
                             // The graph never runs, so nothing else reports itself. Record what it
@@ -1656,11 +1678,14 @@ impl<'a> AllPhasesExecutor<'a> {
                             };
 
                             // Prepare artifact
+                            let project_state = compilation.dbt_state();
                             let run_results_artifact = build_run_results_artifact(
                                 &error_stats,
                                 // Adapter responses not available since we errored at compilation
                                 &HashMap::new(),
                                 self.arg.as_ref(),
+                                project_state.warn_error,
+                                &project_state.warn_error_options,
                             );
 
                             write_run_results_json_or_warn(
@@ -1701,10 +1726,13 @@ impl<'a> AllPhasesExecutor<'a> {
         let resolved_state = Arc::clone(&run_task_results.resolved_state);
 
         // Prepare artifact
+        let project_state = compilation.dbt_state();
         let run_results_artifact = build_run_results_artifact(
             &run_task_results.stats.run,
             &run_task_results.adapter_responses,
             self.arg.as_ref(),
+            project_state.warn_error,
+            &project_state.warn_error_options,
         );
 
         // Write run_results.json eagerly from real stats so that it persists
@@ -2192,6 +2220,7 @@ impl<'a> AllPhasesExecutor<'a> {
                     &compilation.dbt_cloud_config().cloned(),
                     &self.arg.io,
                     self.arg.write_catalog,
+                    !resolved_state.semantic_layer_spec_is_legacy,
                 )
                 .await?;
             }
@@ -2898,10 +2927,6 @@ async fn fetch_catalog_data(
     let concurrency = batches.max(1); // this means max of (1 or batches)
     let mut handles = Vec::new();
 
-    // An `Id`, not a `Span`: holds no refcount, so it cannot keep the invocation alive.
-    // Only used for the `follows_from` link below; a stale `Id` is a no-op there.
-    let invocation_span_id = tracing::Span::current().id();
-
     for worker_id in 0..concurrency {
         let task_queue_clone = task_queue.clone();
         let relations_map_clone = relations_map.clone();
@@ -2916,45 +2941,7 @@ async fn fetch_catalog_data(
         let shared_results_clone = shared_results.clone();
         let shared_errors_clone = shared_errors.clone();
         let progress_tracker_clone = progress_tracker.clone();
-        let invocation_span_id_clone = invocation_span_id.clone();
-
-        // `Handle::spawn_blocking`, not the free `dbt_runtime::spawn_blocking`,
-        // and deliberately NOT `Span::current().enter()`ed inside the worker.
-        // The free function clones and enters the current span for the task's
-        // whole life; the `Handle` method captures none. The poll loop below
-        // abandons workers that blow past `WORKER_TIMEOUT` without joining them,
-        // so a worker can outlive this function. A live worker holding a handle
-        // to the invocation span (or any of its descendants) keeps that span's
-        // refcount above zero, so the subscriber never fires `on_close` for it
-        // -- and the end-of-invocation Execution Summary, which is emitted from
-        // `handle_invocation_end`, is silently dropped. Users saw a
-        // `--write-index`/`--write-catalog` build print "Fetched partial
-        // catalog.json results" and then simply stop, with no summary and no
-        // result counts (dbt-labs/fs#14424). Abandonment has to be total: these
-        // workers must not participate in the invocation's span lifetime.
-        //
-        // Dropping a blocking `JoinHandle` detaches rather than cancels, so
-        // abandonment still works. The pool's threads are built with
-        // `FS_DEFAULT_STACK_SIZE` (8 MiB, `main_impl.rs`), which is the stack
-        // these workers used to ask for themselves.
-        //
-        // ############################################################################
-        // # DO NOT COPY THIS PATTERN.                                                #
-        // #                                                                          #
-        // # CLI code running outside the invocation span is NOT allowed -- a lot of  #
-        // # things depend on that invariant. These workers are a deliberate, short-  #
-        // # term exception, tolerated only because an abandoned one would otherwise  #
-        // # pin the invocation span open (dbt-labs/fs#14424).                        #
-        // #                                                                          #
-        // # TODO(dbt-labs/fs#14598): once dbt-tracing can force a root span to shut  #
-        // # down, put these workers back under the invocation and delete the         #
-        // # independent root below.                                                  #
-        // ############################################################################
-        //
-        // A root rather than nothing at all: with no span context, the adapter's first
-        // span becomes an unnamed root and trips the data layer's `debug_assert!`, which
-        // panics the worker in debug builds.
-        let handle = dbt_runtime::Handle::current().spawn_blocking(move || -> FsResult<()> {
+        let handle = dbt_runtime::spawn_blocking(move || -> FsResult<()> {
             // Worker loop: process tasks until queue is empty
             loop {
                 let task = task_queue_clone.lock().unwrap().pop();
@@ -3002,28 +2989,21 @@ async fn fetch_catalog_data(
                     .map(|r| RelationObject::new(Arc::clone(r)).into_value())
                     .collect::<Vec<Value>>();
 
-                let db_schema = RelationObject::new(Arc::from(
-                    create_relation(
-                        adapter_type,
-                        database.to_string(),
-                        schema.clone(),
-                        maybe_region_clone.clone(), // hack for BQ
-                        None,
-                        ResolvedQuoting::default(),
-                    )?,
-                ))
+                let db_schema = RelationObject::new(Arc::from(create_relation(
+                    adapter_type,
+                    database.to_string(),
+                    schema.clone(),
+                    maybe_region_clone.clone(), // hack for BQ
+                    None,
+                    ResolvedQuoting::default(),
+                )?))
                 .into_value();
 
-                // Independent root -- see the DO NOT COPY banner on the spawn above.
-                // Dropped at the end of this iteration so tasks do not nest in each other.
-                let catalog_fetch_span = create_root_info_span(GenericOpExecuted::new(
+                let catalog_fetch_span = create_info_span(GenericOpExecuted::new(
                     "catalog_fetch".to_string(),
                     "fetching catalog".to_string(),
                     Some(relation_as_values.len() as u64),
                 ));
-                // A link, not a parent: keeps the span correlatable to the run without
-                // pinning it open.
-                catalog_fetch_span.follows_from(invocation_span_id_clone.clone());
                 let _catalog_fetch_span_guard = catalog_fetch_span.clone().entered();
 
                 // To avoid blowing up the query, we use the get_catalog macro for batches with more than 50 relations
@@ -3061,14 +3041,18 @@ async fn fetch_catalog_data(
                             shared_results_clone.lock().unwrap().push(record_batch);
                         }
                         Err(e) => {
-                            let msg = format!("[Non-critical] Issue processing catalog for schema '{database}.{schema}': {e}");
+                            let msg = format!(
+                                "[Non-critical] Issue processing catalog for schema '{database}.{schema}': {e}"
+                            );
                             record_span_status(&catalog_fetch_span, Some(&msg));
                             emit_info_log_message(&msg);
                             shared_errors_clone.lock().unwrap().push(msg);
                         }
                     },
                     Err(e) => {
-                        let msg = format!("[Non-critical] Issue fetching catalog for schema '{database}.{schema}': {e}");
+                        let msg = format!(
+                            "[Non-critical] Issue fetching catalog for schema '{database}.{schema}': {e}"
+                        );
                         record_span_status(&catalog_fetch_span, Some(&msg));
                         emit_info_log_message(&msg);
                         shared_errors_clone.lock().unwrap().push(msg);

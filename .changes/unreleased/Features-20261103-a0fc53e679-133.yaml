@@ -1,0 +1,7 @@
+kind: Features
+body: Add the ThreadPoolWait telemetry span for runtime pool queue waits, superseding ConnectionLimitWait
+time: 2026-11-03T11:49:03.617251+05:30
+custom:
+    author: mishamsk
+    issue: ""
+    project: dbt-core

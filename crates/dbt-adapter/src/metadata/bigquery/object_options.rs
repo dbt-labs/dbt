@@ -185,37 +185,7 @@ pub(crate) fn get_table_options_value(
             );
         }
 
-        if catalog_relation.table_format.is_iceberg()
-            && catalog_relation.lakehouse_catalog.is_none()
-        {
-            opts.insert(
-                "table_format".to_string(),
-                Value::from(format!("'{}'", catalog_relation.table_format.as_str())),
-            );
-            let file_format = catalog_relation.file_format.ok_or_else(|| {
-                AdapterError::new(
-                    AdapterErrorKind::Internal,
-                    "file_format is not set in catalog",
-                )
-            })?;
-            opts.insert(
-                "file_format".to_string(),
-                Value::from(format!("'{}'", file_format)),
-            );
-            let storage_uri = catalog_relation
-                .adapter_properties
-                .get("storage_uri")
-                .ok_or_else(|| {
-                    AdapterError::new(
-                        AdapterErrorKind::Internal,
-                        "storage_uri is not set in catalog",
-                    )
-                })?;
-            opts.insert(
-                "storage_uri".to_string(),
-                Value::from(format!("'{}'", storage_uri)),
-            );
-        }
+        opts.extend(iceberg_table_options(&catalog_relation)?);
     }
 
     // Partition expiration applies only to the final table.
@@ -230,10 +200,52 @@ pub(crate) fn get_table_options_value(
     Ok(opts)
 }
 
+fn iceberg_table_options(
+    catalog_relation: &CatalogRelation,
+) -> AdapterResult<IndexMap<String, Value>> {
+    let mut opts = IndexMap::new();
+    if catalog_relation.table_format.is_iceberg() && catalog_relation.lakehouse_catalog.is_none() {
+        opts.insert(
+            "table_format".to_string(),
+            Value::from(format!("'{}'", catalog_relation.table_format.as_str())),
+        );
+
+        let file_format = catalog_relation.file_format.as_deref().ok_or_else(|| {
+            AdapterError::new(
+                AdapterErrorKind::Internal,
+                "file_format is not set in catalog",
+            )
+        })?;
+        opts.insert(
+            "file_format".to_string(),
+            Value::from(format!("'{file_format}'")),
+        );
+
+        let storage_uri = catalog_relation
+            .adapter_properties
+            .get("storage_uri")
+            .ok_or_else(|| {
+                AdapterError::new(
+                    AdapterErrorKind::Internal,
+                    "storage_uri is not set in catalog",
+                )
+            })?;
+        opts.insert(
+            "storage_uri".to_string(),
+            Value::from(format!("'{storage_uri}'")),
+        );
+    }
+
+    Ok(opts)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dbt_schemas::schemas::dbt_catalogs_v2::CatalogType;
+    use dbt_schemas::schemas::relations::base::TableFormat;
     use dbt_schemas::schemas::serde::StringOrInteger;
+    use std::collections::BTreeMap;
 
     fn expiration_for(hours: Option<StringOrInteger>, temporary: bool) -> Option<String> {
         let env = minijinja::Environment::new();
@@ -276,6 +288,55 @@ mod tests {
             expiration_for(Some(StringOrInteger::Integer(12)), true),
             None
         );
+    }
+
+    fn biglake_catalog_relation() -> CatalogRelation {
+        CatalogRelation {
+            adapter_type: AdapterType::Bigquery,
+            catalog_name: Some("BQ".to_string()),
+            integration_name: None,
+            catalog_type: CatalogType::BiglakeMetastore,
+            table_format: TableFormat::Iceberg,
+            adapter_properties: BTreeMap::from([(
+                "storage_uri".to_string(),
+                "gs://my-bucket/_dbt/analytics/events".to_string(),
+            )]),
+            is_transient: None,
+            external_volume: Some("gs://my-bucket".to_string()),
+            catalog_database: None,
+            lakehouse_catalog: None,
+            base_location: None,
+            file_format: Some("parquet".to_string()),
+        }
+    }
+
+    fn lrc_catalog_relation() -> CatalogRelation {
+        CatalogRelation {
+            lakehouse_catalog: Some("sales_catalog".to_string()),
+            ..biglake_catalog_relation()
+        }
+    }
+
+    #[test]
+    fn iceberg_options_for_plain_biglake_metastore_catalog() {
+        let opts = iceberg_table_options(&biglake_catalog_relation()).unwrap();
+        insta::assert_debug_snapshot!(opts);
+    }
+
+    #[test]
+    fn iceberg_options_empty_for_lrc_catalog() {
+        assert!(
+            iceberg_table_options(&lrc_catalog_relation())
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn iceberg_options_empty_for_non_iceberg_catalog() {
+        let mut catalog_relation = biglake_catalog_relation();
+        catalog_relation.table_format = TableFormat::Default;
+        assert!(iceberg_table_options(&catalog_relation).unwrap().is_empty());
     }
 
     fn table_options_with_partition_expiration(temporary: bool) -> IndexMap<String, Value> {

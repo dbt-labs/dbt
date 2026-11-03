@@ -129,6 +129,8 @@ export type SourceAsset = AssetBase & {
   freshness: FreshnessConfig | null;
   relation: Relation | null;
   columns: AssetColumn[];
+  /** The source block's own description, distinct from `description` (this table's). */
+  sourceDescription: string | null;
   /** Latest freshness run status (e.g. "pass", "warn", "error"). Source: docs-only. */
   freshnessStatus?: string | null;
   /** ISO timestamp of the most recent freshness check. Source: docs-only. */

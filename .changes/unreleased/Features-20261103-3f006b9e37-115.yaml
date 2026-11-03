@@ -1,0 +1,7 @@
+kind: Features
+body: Add a feature flag registry with `--feature NAME[=VALUE]` and `DBT_ENGINE_FEATURES` for setting unstable features; behavior flags and the git deps fast path now resolve through it with unchanged defaults
+time: 2026-11-03T11:49:03.514953+05:30
+custom:
+    author: akbog
+    issue: ""
+    project: dbt-core

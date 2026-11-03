@@ -2560,6 +2560,7 @@ mod tests {
                         pre_clone: None,
                         execute_hooks_on_any_reuse: None,
                         compare_unrendered_code: None,
+                        ignore_external_modifications: None,
                     })
                 }),
             ),
@@ -2835,6 +2836,7 @@ mod tests {
                         pre_clone: None,
                         execute_hooks_on_any_reuse: None,
                         compare_unrendered_code: None,
+                        ignore_external_modifications: None,
                     })
                 }),
             ),

@@ -121,6 +121,7 @@ const KNOWN_UNUSED_ENGINE_ENV_VARS: &[&str] = &[
 /// Engine-specific environment variables that ARE used by fusion.
 /// These are NOT aliases of DBT_* vars - they are unique to the engine.
 const USED_ENGINE_ENV_VARS: &[&str] = &[
+    "DBT_ENGINE_AI_PROVIDER",
     BATCH_TESTS_ENV,
     "DBT_ENGINE_BETA_PACKAGE_PARSING",
     "DBT_ENGINE_BETA_PARSING",
@@ -128,6 +129,9 @@ const USED_ENGINE_ENV_VARS: &[&str] = &[
     LOCAL_UNIT_TESTS_ENV,
     MULTI_ADAPTER_ENV,
     "DBT_ENGINE_EXPERIMENTAL_SNAPSHOT_COLUMNS",
+    dbt_flags::FEATURES_ENV,
+    "DBT_ENGINE_GENERATE_INFO_SCHEMA",
+    "DBT_ENGINE_INFO_SCHEMA_DIR",
     "DBT_ENGINE_MANAGE_STATE",
     "DBT_ENGINE_MANTLE_ARTIFACTS",
     "DBT_ENGINE_NO_WARN_SEMANTIC_MANIFEST_VALIDATION",
@@ -141,7 +145,6 @@ const USED_ENGINE_ENV_VARS: &[&str] = &[
     SKIP_REDUNDANT_TESTS_ENV,
     "DBT_ENGINE_STATE_API_URL",
     "DBT_ENGINE_STATE_AUTH_URL",
-    "DBT_ENGINE_STATE_EMIT_REUSED_STATUS",
     "DBT_ENGINE_STATE_HOME",
     "DBT_ENGINE_STATE_OAUTH_CLIENT_ID",
     "DBT_ENGINE_STATE_TOKEN_URL",
@@ -151,6 +154,7 @@ const USED_ENGINE_ENV_VARS: &[&str] = &[
 // 1. USED_ENGINE_ENV_VARS - engine-specific vars used by fusion
 // 2. KNOWN_UNUSED_ENGINE_ENV_VARS - dbt-core vars not supported by fusion
 // 3. Aliases derived from ALIASABLE_ENV_VARS (DBT_* -> DBT_ENGINE_*)
+// 4. Legacy env vars of registered feature flags
 static KNOWN_ENGINE_ENV_VARS: std::sync::LazyLock<std::collections::HashSet<String>> =
     std::sync::LazyLock::new(|| {
         let mut set = std::collections::HashSet::new();
@@ -169,6 +173,12 @@ static KNOWN_ENGINE_ENV_VARS: std::sync::LazyLock<std::collections::HashSet<Stri
         for dbt_var in ALIASABLE_ENV_VARS {
             if let Some(suffix) = dbt_var.strip_prefix("DBT_") {
                 set.insert(format!("DBT_ENGINE_{}", suffix));
+            }
+        }
+
+        for def in dbt_flags::ALL {
+            for var in def.legacy_env {
+                set.insert((*var).to_string());
             }
         }
 
@@ -263,6 +273,29 @@ pub fn warn_unused_engine_env_vars() -> Vec<String> {
     }
 
     unused
+}
+
+/// Warns when the deprecated `--run-cache-mode` CLI flag is used.
+///
+/// `--run-cache-mode` was renamed to `--state-mode` to match the `dbt State`
+/// terminology it configures. The old name is kept as a hidden alias so
+/// existing invocations keep working, but usage should nudge callers toward
+/// the new name.
+///
+/// TODO: remove `--run-cache-mode` (this alias and warning included) once v2
+/// has a policy for deprecating and removing CLI flags.
+pub fn warn_if_legacy_run_cache_mode_flag_used() {
+    let used_legacy_flag = std::env::args()
+        .any(|arg| arg == "--run-cache-mode" || arg.starts_with("--run-cache-mode="));
+
+    if used_legacy_flag {
+        emit_warn_log_message(
+            ErrorCode::DeprecatedOption,
+            "The `--run-cache-mode` flag has been renamed to `--state-mode` and will be \
+             removed in a future release. Please update your invocation to use `--state-mode` \
+             instead.",
+        );
+    }
 }
 
 /// Validates that no unknown environment variables use the reserved `DBT_ENGINE_` prefix.

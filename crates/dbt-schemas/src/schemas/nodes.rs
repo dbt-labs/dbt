@@ -1799,12 +1799,10 @@ impl InternalDbtNode for DbtSeed {
             // current seed with the legacy hash and compare to the previous checksum,
             // mirroring dbt-core's `same_seeds` fallback.
             if !same_body_result {
-                if let (DbtChecksum::Object(self_cs), Some(root_path)) = (
-                    &self.__common_attr__.checksum,
-                    self.__seed_attr__.root_path.as_ref(),
-                ) {
+                if let (DbtChecksum::Object(self_cs), Some(seed_path)) =
+                    (&self.__common_attr__.checksum, self.file_path_from_root())
+                {
                     if self_cs.name == "sha256" {
-                        let seed_path = root_path.join(&self.__common_attr__.path);
                         if let Ok(bytes) = std::fs::read(&seed_path) {
                             let legacy = DbtChecksum::seed_content_checksum_legacy(&bytes);
                             same_body_result = legacy == other_seed.__common_attr__.checksum;
@@ -5014,6 +5012,11 @@ pub struct NodeBaseAttributes {
     /// that serializes a node, to say nothing.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub propagate: Vec<AdapterType>,
+    /// The destination resolved during parsing, when this node's configuration and
+    /// active profile select one unambiguously. Execution consumes this value without needing
+    /// access to profile or project configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_propagation_target: Option<AdapterType>,
     pub static_analysis: Spanned<StaticAnalysisKind>,
     #[serde(skip_deserializing, default)]
     pub static_analysis_off_reason: Option<StaticAnalysisOffReason>,
@@ -5077,6 +5080,7 @@ impl Default for NodeBaseAttributes {
             materialized: DbtMaterialization::default(),
             adapter: AdapterType::Snowflake,
             propagate: Vec::new(),
+            effective_propagation_target: None,
             static_analysis: Spanned::default(),
             static_analysis_off_reason: None,
             compute: None,
@@ -5109,6 +5113,20 @@ pub struct DbtSeed {
     pub deprecated_config: SeedConfig,
 
     pub __other__: BTreeMap<String, YmlValue>,
+}
+
+impl DbtSeed {
+    /// Path of the seed file, when `root_path` is known.
+    ///
+    /// `root_path` is the seed's package root, so it is joined with the
+    /// package-relative `path`, not `original_file_path` (which is relative
+    /// to the root project).
+    pub fn file_path_from_root(&self) -> Option<PathBuf> {
+        self.__seed_attr__
+            .root_path
+            .as_ref()
+            .map(|root| root.join(&self.__common_attr__.path))
+    }
 }
 
 #[skip_serializing_none]

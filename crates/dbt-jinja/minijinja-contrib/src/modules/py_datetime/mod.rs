@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
+use std::sync::RwLock;
 
+use chrono::{DateTime, Local, Utc};
 use minijinja::Value;
 
 pub mod bound_method;
@@ -9,6 +11,33 @@ pub mod strptime;
 pub mod time;
 pub mod timedelta;
 pub mod tzinfo;
+
+/// Instant that `datetime.now()/utcnow()/today()`, `date.today()` and `time.now()` report instead
+/// of the system clock. `None` (the default) means the real wall clock.
+static FROZEN_NOW: RwLock<Option<DateTime<Utc>>> = RwLock::new(None);
+
+/// Pin the wall clock seen by the `modules.datetime` Jinja module, or unpin it with `None`.
+///
+/// Process-wide. Time Machine replay uses this to render wall-clock-derived SQL (for example a
+/// `utcnow() - timedelta(days=1)` var) exactly as it was rendered when the recording was made.
+pub fn freeze_now(at: Option<DateTime<Utc>>) {
+    // A poisoned lock still holds a valid `Option<DateTime>`; keep using it.
+    *FROZEN_NOW.write().unwrap_or_else(|e| e.into_inner()) = at;
+}
+
+/// Current instant: the pinned one if `freeze_now` was called, otherwise the system clock.
+pub(crate) fn now_utc() -> DateTime<Utc> {
+    let frozen = *FROZEN_NOW.read().unwrap_or_else(|e| e.into_inner());
+    match frozen {
+        Some(at) => at,
+        None => Utc::now(),
+    }
+}
+
+/// `now_utc` in the system's local timezone.
+pub(crate) fn now_local() -> DateTime<Local> {
+    now_utc().with_timezone(&Local)
+}
 
 /// Byte index of the first `%f` conversion in a `strftime` format string, or
 /// `None` if it contains none.

@@ -1,0 +1,7 @@
+kind: Features
+body: Add DBT_CLOUD_LOGIN_HOST (and optional DBT_CLOUD_LOGIN_ACCOUNT_ID) so dbt login can authenticate through an account host's /oauth/authorize instead of the registration page, for SSO accounts the registration page cannot route.
+time: 2026-11-03T11:49:03.34949+05:30
+custom:
+    author: jasonlin45
+    issue: ""
+    project: dbt-core

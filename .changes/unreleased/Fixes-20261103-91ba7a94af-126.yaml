@@ -1,0 +1,7 @@
+kind: Fixes
+body: Fix BigQuery table models being dropped before every rebuild when a cluster_by entry is backtick-quoted or differs in letter case from the stored column
+time: 2026-11-03T11:49:03.583288+05:30
+custom:
+    author: ragesh-g
+    issue: ""
+    project: dbt-core

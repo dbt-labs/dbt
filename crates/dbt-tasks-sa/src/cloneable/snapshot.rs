@@ -6,7 +6,7 @@ use dbt_common::stats::NodeStatus;
 use dbt_jinja_utils::utils::add_task_context;
 use dbt_schemas::schemas::{DbtSnapshot, InternalDbtNode, InternalDbtNodeAttributes};
 use dbt_tasks_core::context::TaskRunnerCtx;
-use dbt_tasks_core::task::TaskOp;
+use dbt_tasks_core::task::run_blocking_task_operation;
 
 use super::Cloneable;
 use crate::materialize::materialize_clone;
@@ -25,7 +25,7 @@ impl Cloneable for DbtSnapshot {
             let node = self.clone();
             let ctx_inner = ctx.clone();
 
-            let result = TaskOp::Blocking(Box::new(move || {
+            let result = run_blocking_task_operation(move || {
                 materialize_clone(
                     &node,
                     &node.deprecated_config,
@@ -38,8 +38,7 @@ impl Cloneable for DbtSnapshot {
                     &ctx_inner.inner.arg.io,
                     None,
                 )
-            }))
-            .run()
+            })
             .await??;
 
             let _ = cache_materialization_return_value(ctx.env.clone(), &result);

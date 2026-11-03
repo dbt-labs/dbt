@@ -3,6 +3,9 @@ use crate::schemas::dbt_cloud::DbtCloudConfig;
 use crate::schemas::packages::DbtPackages;
 use crate::schemas::profiles::DbtProfiles;
 use crate::schemas::project::DbtProject;
+use crate::schemas::project::{
+    KeyStatus, WarehouseSpecificNodeConfig, project_surface_key_status, resolved_surface_key_status,
+};
 use crate::schemas::properties::DbtPropertiesFile;
 use crate::schemas::selectors::SelectorFile;
 use dbt_common::ErrorCode;
@@ -11,6 +14,7 @@ use dbt_common::err;
 use dbt_common::io_args::EvalArgs;
 use dbt_common::io_args::JsonSchemaTypes;
 use dbt_common::tracing::dbt_emit::println;
+use dbt_telemetry::NodeType;
 use dbt_tracing::TelemetryRecord;
 
 use strum::IntoEnumIterator;
@@ -44,6 +48,7 @@ pub async fn execute_man_command(arg: &EvalArgs) -> FsResult<()> {
             JsonSchemaTypes::Project(_) => {
                 let mut schema = generator.into_root_schema_for::<DbtProject>();
                 deny_additional_properties_in_root(&mut schema);
+                restrict_project_warehouse_config_properties(&mut schema);
                 println(to_string_pretty(&schema)?);
             }
             JsonSchemaTypes::Selector(_) => {
@@ -54,6 +59,7 @@ pub async fn execute_man_command(arg: &EvalArgs) -> FsResult<()> {
             JsonSchemaTypes::Schema(_) => {
                 let mut schema = generator.into_root_schema_for::<DbtPropertiesFile>();
                 deny_additional_properties_in_root(&mut schema);
+                restrict_warehouse_config_properties(&mut schema);
                 println(to_string_pretty(&schema)?);
             }
             JsonSchemaTypes::DbtCloud(_) => {
@@ -85,6 +91,74 @@ pub async fn execute_man_command(arg: &EvalArgs) -> FsResult<()> {
     }
 
     Ok(())
+}
+
+fn restrict_warehouse_config_properties(root: &mut RootSchema) {
+    restrict_warehouse_config_properties_with(
+        root,
+        CONFIG_DEFINITIONS,
+        false,
+        resolved_surface_key_status,
+    );
+}
+
+fn restrict_project_warehouse_config_properties(root: &mut RootSchema) {
+    restrict_warehouse_config_properties_with(
+        root,
+        PROJECT_CONFIG_DEFINITIONS,
+        true,
+        project_surface_key_status,
+    );
+}
+
+const PROJECT_CONFIG_DEFINITIONS: &[(&str, NodeType)] = &[
+    ("ProjectModelConfig", NodeType::Model),
+    ("ProjectSeedConfig", NodeType::Seed),
+    ("ProjectSnapshotConfig", NodeType::Snapshot),
+    ("ProjectSourceConfig", NodeType::Source),
+    ("ProjectDataTestConfig", NodeType::Test),
+    ("ProjectUnitTestConfig", NodeType::UnitTest),
+    ("ProjectFunctionConfig", NodeType::Function),
+];
+
+const CONFIG_DEFINITIONS: &[(&str, NodeType)] = &[
+    ("ModelConfig", NodeType::Model),
+    ("SeedConfig", NodeType::Seed),
+    ("SnapshotConfig", NodeType::Snapshot),
+    ("SourceConfig", NodeType::Source),
+    ("DataTestConfig", NodeType::Test),
+    ("UnitTestConfig", NodeType::UnitTest),
+    ("FunctionConfig", NodeType::Function),
+];
+
+fn restrict_warehouse_config_properties_with(
+    root: &mut RootSchema,
+    definitions: &[(&str, NodeType)],
+    plus_prefixed: bool,
+    status_for: impl Fn(NodeType, &str) -> KeyStatus,
+) {
+    for (definition_name, resource) in definitions {
+        let Some(Schema::Object(schema)) = root.definitions.get_mut(*definition_name) else {
+            continue;
+        };
+        let Some(object) = schema.object.as_mut() else {
+            continue;
+        };
+        object.properties.retain(|key, _| {
+            let warehouse_key = if plus_prefixed {
+                key.strip_prefix('+')
+            } else {
+                Some(key.as_str())
+            };
+            match warehouse_key {
+                Some(warehouse_key) => {
+                    !WarehouseSpecificNodeConfig::all_keys().contains(&warehouse_key)
+                        || status_for(*resource, warehouse_key) != KeyStatus::Invalid
+                }
+                None => true,
+            }
+        });
+    }
 }
 
 /// Recursively modifies all object schemas in a `RootSchema`
@@ -168,5 +242,83 @@ fn deny_additional_properties(schema: &mut Schema, path: &mut Vec<String>) {
         }
 
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use schemars::r#gen::SchemaSettings;
+
+    fn assert_object_definitions(root: &RootSchema, definitions: &[(&str, NodeType)]) {
+        for (name, _) in definitions {
+            assert!(
+                matches!(root.definitions.get(*name), Some(Schema::Object(_))),
+                "missing object schema definition {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn schema_removes_invalid_warehouse_keys_per_resource() {
+        let generator = SchemaSettings::draft07().into_generator();
+        let mut root = generator.into_root_schema_for::<DbtPropertiesFile>();
+        assert_object_definitions(&root, CONFIG_DEFINITIONS);
+
+        restrict_warehouse_config_properties_with(
+            &mut root,
+            CONFIG_DEFINITIONS,
+            false,
+            |resource, key| {
+                if resource == NodeType::Source && key == "immutable_where" {
+                    KeyStatus::Invalid
+                } else {
+                    KeyStatus::Valid
+                }
+            },
+        );
+
+        let has_property = |definition: &str, property: &str| {
+            let Schema::Object(schema) = &root.definitions[definition] else {
+                panic!("{definition} must be an object schema");
+            };
+            schema
+                .object
+                .as_ref()
+                .is_some_and(|object| object.properties.contains_key(property))
+        };
+
+        assert!(!has_property("SourceConfig", "immutable_where"));
+        assert!(has_property("ModelConfig", "immutable_where"));
+    }
+
+    #[test]
+    fn project_schema_removes_invalid_warehouse_keys_per_resource() {
+        let generator = SchemaSettings::draft07().into_generator();
+        let mut root = generator.into_root_schema_for::<DbtProject>();
+        assert_object_definitions(&root, PROJECT_CONFIG_DEFINITIONS);
+
+        restrict_warehouse_config_properties_with(
+            &mut root,
+            PROJECT_CONFIG_DEFINITIONS,
+            true,
+            |resource, key| {
+                if resource == NodeType::Model && key == "partition_by" {
+                    KeyStatus::Invalid
+                } else {
+                    KeyStatus::Valid
+                }
+            },
+        );
+
+        let Schema::Object(schema) = &root.definitions["ProjectModelConfig"] else {
+            panic!("ProjectModelConfig must be an object schema");
+        };
+        assert!(
+            !schema
+                .object
+                .as_ref()
+                .is_some_and(|object| object.properties.contains_key("+partition_by"))
+        );
     }
 }

@@ -28,7 +28,7 @@ use super::adapter_engine::*;
 use super::databricks;
 use super::make_behavior;
 use super::noop_connection::NoopConnection;
-use super::retry::ConnectionRetryPolicy;
+use super::retry::{ConnectionRetryPolicy, QueryRetryPolicy};
 
 #[derive(Default)]
 pub struct DatabaseMap {
@@ -64,6 +64,8 @@ pub struct AdbcEngine {
     quoting: ResolvedQuoting,
     /// Query comment config
     query_comment: QueryCommentConfig,
+    /// Retry policy for transient query-execution errors (Redshift-only).
+    query_retry_policy: QueryRetryPolicy,
     /// Type operations (e.g. parsing, formatting) for the dialect this engine is for
     pub type_ops: Arc<dyn TypeOps>,
     /// Statement splitter
@@ -106,6 +108,7 @@ impl AdbcEngine {
         dbt_cloud_project_id: Option<String>,
     ) -> Self {
         let behavior = make_behavior(adapter_type, &behavior_flag_overrides);
+        let query_retry_policy = QueryRetryPolicy::new(adapter_type, &config);
         Self {
             adapter_type,
             auth,
@@ -115,6 +118,7 @@ impl AdbcEngine {
             type_ops,
             splitter,
             query_comment,
+            query_retry_policy,
             relation_cache,
             behavior_flag_overrides,
             behavior,
@@ -309,10 +313,7 @@ impl AdbcEngine {
         }
 
         builder.with_named_option("dbt_cloud.token", credential.token())?;
-        builder.with_named_option(
-            "dbt_cloud.host",
-            flock_driver_host(credential.account_host())?,
-        )?;
+        builder.with_named_option("dbt_cloud.host", credential.account_host())?;
         builder.with_named_option("dbt_cloud.account_id", credential.account_id().to_string())?;
         if let Some(project_id) = project_id {
             builder.with_named_option("dbt_cloud.project_id", project_id)?;
@@ -330,8 +331,11 @@ impl AdbcEngine {
         let mut all_stmts = dbt_auth::generate_duckdb_init_sql(config)
             .map_err(crate::errors::auth_error_to_adapter_error)?;
 
-        // Append v2 catalog-driven ATTACH statements for DuckDB REST catalogs
-        all_stmts.extend(self.generate_v2_catalog_attach_stmts()?);
+        // Append v2 catalog-driven ATTACH statements for DuckDB REST catalogs, unless the
+        // config opts out: a database that runs untrusted SQL must not see them.
+        if config.get_bool("attach_catalogs") != Some(false) {
+            all_stmts.extend(self.generate_v2_catalog_attach_stmts()?);
+        }
 
         if all_stmts.is_empty() {
             return Ok(());
@@ -381,18 +385,6 @@ impl AdbcEngine {
         };
         super::duckdb_attach::compose_v2_catalog_attach_stmts(&view, platform)
     }
-}
-
-/// The flock-adbc driver connects through a dedicated `dwg.` (data warehouse
-/// gateway) subdomain that only exists for flock traffic — every other
-/// consumer of `credential.account_host()` (Cloud Config gRPC, the identify
-/// service, `dbt_cloud.yml` matching, OAuth) must keep using the bare host.
-fn flock_driver_host(account_host: &str) -> Result<String, AuthError> {
-    if account_host.split('.').any(|label| label == "dwg") {
-        return Ok(account_host.to_string());
-    }
-    dbt_common::url::insert_gateway_label(account_host, "dwg")
-        .map_err(|e| AuthError::config(format!("invalid dbt Cloud host {account_host:?}: {e}")))
 }
 
 /// Ignored under dbt-platform brokered credentials — per-model routing
@@ -457,7 +449,7 @@ fn off_pool_connection_bug() -> ! {
          that is:\n\
          \n\
          - production code in an `async fn`: move the call into \
-         `dbt_runtime::spawn_blocking(..)` (or `TaskOp::Blocking`) and await it\n\
+         `dbt_runtime::spawn_blocking(..)` and await it\n\
          - a synchronous `#[test]`: use `#[dbt_runtime::worker_test]`\n\
          - an `async` test: keep `#[dbt_runtime::test]` and dispatch the adapter \
          call with `dbt_runtime::spawn_blocking(..).await`\n\
@@ -517,6 +509,10 @@ impl AdapterEngine for AdbcEngine {
 
     fn get_config(&self) -> &AdapterConfig {
         &self.config
+    }
+
+    fn query_retry_policy(&self) -> &QueryRetryPolicy {
+        &self.query_retry_policy
     }
 
     fn relation_cache(&self) -> &Arc<RelationCache> {
@@ -605,6 +601,18 @@ impl AdapterEngine for AdbcEngine {
         let mut conn = retry_policy
             .execute(config, connect)
             .map_err(|e| enrich_connection_error(self.adapter_type(), e, config))?;
+        // Relation listing only needs table names and types, which tables.list
+        // already returns. Without this, the driver issues one tables.get per
+        // table, which is slow for large datasets. Best-effort: drivers that
+        // predate the option reject it and keep listing with per-table lookups.
+        if self.adapter_type == AdapterType::Bigquery && !config.use_dbt_cloud_credentials() {
+            let _ = conn.set_option(
+                adbc_core::options::OptionConnection::Other(
+                    bigquery::GET_OBJECTS_SKIP_TABLE_METADATA.to_string(),
+                ),
+                adbc_core::options::OptionValue::String("true".to_string()),
+            );
+        }
         // Tag the connection with its config fingerprint and cache it on the
         // engine, so the pool reuses a connection only among engines with an
         // identical connection configuration.
@@ -825,7 +833,7 @@ mod cloud_credential_tests {
         );
         assert_eq!(
             opt_string(&opts, "dbt_cloud.host"),
-            Some("ab123.dwg.us1.dbt.com".to_string())
+            Some("ab123.us1.dbt.com".to_string())
         );
         assert_eq!(
             opt_string(&opts, "dbt_cloud.account_id"),
@@ -855,47 +863,18 @@ mod cloud_credential_tests {
     }
 
     #[test]
-    fn pat_credential_dbt_cloud_host_gets_dwg_label_without_mutating_account_host() {
+    fn pat_credential_dbt_cloud_host_uses_account_host_as_is() {
         let credential = Credential::Pat {
             token: "dbtu_pat_token".to_string(),
             account_host: "ab123.us1.dbt.com".to_string(),
             account_id: 99,
         };
-        // Confirm the credential's own account_host is left bare — only the
-        // driver option gets the flock-specific "dwg" gateway label inserted.
-        assert_eq!(credential.account_host(), "ab123.us1.dbt.com");
         let builder = AdbcEngine::apply_cloud_credential(Backend::Snowflake, Ok(credential), None)
             .expect("should succeed");
         let opts: Vec<_> = builder.into_iter().collect();
         assert_eq!(
             opt_string(&opts, "dbt_cloud.host"),
-            Some("ab123.dwg.us1.dbt.com".to_string())
-        );
-    }
-
-    #[test]
-    fn pat_credential_dbt_cloud_host_is_not_double_prefixed() {
-        let credential = Credential::Pat {
-            token: "dbtu_pat_token".to_string(),
-            account_host: "ab123.dwg.us1.dbt.com".to_string(),
-            account_id: 99,
-        };
-        let builder = AdbcEngine::apply_cloud_credential(Backend::Snowflake, Ok(credential), None)
-            .expect("should succeed");
-        let opts: Vec<_> = builder.into_iter().collect();
-        assert_eq!(
-            opt_string(&opts, "dbt_cloud.host"),
-            Some("ab123.dwg.us1.dbt.com".to_string())
-        );
-    }
-
-    #[test]
-    fn flock_driver_host_mc() {
-        // Representative account-prefixed case; exhaustive host-shape coverage
-        // for `insert_gateway_label` lives in `dbt_common::url`.
-        assert_eq!(
-            super::flock_driver_host("acme.dbt.com").unwrap(),
-            "acme.dwg.dbt.com"
+            Some("ab123.us1.dbt.com".to_string())
         );
     }
 
@@ -977,7 +956,7 @@ mod cloud_credential_tests {
         );
         assert_eq!(
             opt_string(&opts, "dbt_cloud.host"),
-            Some("seeded.dwg.us1.dbt.com".to_string())
+            Some("seeded.us1.dbt.com".to_string())
         );
         assert_eq!(
             opt_string(&opts, "dbt_cloud.account_id"),
