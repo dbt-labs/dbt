@@ -18,6 +18,7 @@ pub const BIGQUERY_METADATA_SQL_TYPE_KEY: &str = "Type";
 pub const SNOWFLAKE_METADATA_SQL_TYPE_KEY: &str = "DATA_TYPE";
 pub const FABRIC_METADATA_SQL_TYPE_KEY: &str = "DATA_TYPE";
 pub const CLICKHOUSE_METADATA_SQL_TYPE_KEY: &str = "data_type";
+pub const SINGLESTORE_METADATA_SQL_TYPE_KEY: &str = "SINGLESTORE:type";
 
 /// An Arrow schema containing SDF types
 #[derive(Clone)]
@@ -218,6 +219,7 @@ impl TypeOps for DefaultTypeOps {
             Postgres | Salesforce => postgres::try_format_type(data_type, nullable, out),
             Fabric => fabric::try_format_type(data_type, nullable, out),
             ClickHouse => clickhouse::try_format_type(data_type, nullable, out),
+            SingleStore => singlestore::try_format_type(data_type, nullable, out),
             _ => {
                 // Logical types without native Arrow encodings use
                 // FixedSizeList(field, 1). Render the logical field name (for
@@ -599,6 +601,7 @@ pub const fn get_field_sql_type_metadata_key(adapter_type: AdapterType) -> &'sta
         AdapterType::Dremio => todo!(),
         AdapterType::Oracle => todo!(),
         AdapterType::Datafusion => todo!(),
+        AdapterType::SingleStore => SINGLESTORE_METADATA_SQL_TYPE_KEY,
     }
 }
 
@@ -646,7 +649,7 @@ impl SdfSchemaBuilder {
             }
             // no evidence that these drivers store comments in metadata, but just in case
             Postgres | Snowflake | Salesforce | Fabric | ClickHouse | Exasol | Starburst
-            | Athena | Trino | Dremio | Oracle | Datafusion => {
+            | Athena | Trino | Dremio | Oracle | Datafusion | SingleStore => {
                 metadata.get(ARROW_FIELD_COMMENT_METADATA_KEY)
             }
         };
@@ -687,7 +690,8 @@ impl SdfSchemaBuilder {
         use AdapterType::*;
         match self.adapter_type {
             Bigquery | Redshift | Databricks | Spark | DuckDB | LakeCompute | Fabric
-            | ClickHouse | Exasol | Starburst | Athena | Trino | Dremio | Oracle | Datafusion => {
+            | ClickHouse | Exasol | Starburst | Athena | Trino | Dremio | Oracle | Datafusion
+            | SingleStore => {
                 let original_fields = self.original.fields();
                 let mut sdf_fields = Vec::with_capacity(original_fields.len());
                 for field in original_fields {
@@ -1017,6 +1021,8 @@ pub mod clickhouse {
     }
 }
 
+pub use crate::metadata::singlestore::sql_types as singlestore;
+
 pub mod fabric {
 
     use arrow_schema::DataType;
@@ -1105,7 +1111,8 @@ pub const fn max_varchar_size(adapter_type: AdapterType) -> Option<usize> {
         Snowflake => Some(16_777_216),
         Redshift => Some(256),
         Postgres | Bigquery | Databricks | Salesforce | Spark | DuckDB | LakeCompute | Fabric
-        | ClickHouse | Exasol | Starburst | Athena | Trino | Dremio | Oracle | Datafusion => None,
+        | ClickHouse | Exasol | Starburst | Athena | Trino | Dremio | Oracle | Datafusion
+        | SingleStore => None,
     }
 }
 
@@ -1116,7 +1123,8 @@ pub const fn max_varbinary_size(adapter_type: AdapterType) -> Option<usize> {
         Redshift => Some(65_535),
         // TODO: define limits for more systems
         Postgres | Bigquery | Databricks | Salesforce | Spark | DuckDB | LakeCompute | Fabric
-        | ClickHouse | Exasol | Starburst | Athena | Trino | Dremio | Oracle | Datafusion => None,
+        | ClickHouse | Exasol | Starburst | Athena | Trino | Dremio | Oracle | Datafusion
+        | SingleStore => None,
     }
 }
 
@@ -1316,6 +1324,13 @@ pub fn numeric_precision_scale(
 ) -> AdapterResult<Option<(u8, Option<i8>)>> {
     use AdapterType::*;
     let precision_scale = match (adapter_type, data_type) {
+        (
+            SingleStore,
+            DataType::Decimal32(precision, scale)
+            | DataType::Decimal64(precision, scale)
+            | DataType::Decimal128(precision, scale)
+            | DataType::Decimal256(precision, scale),
+        ) => Some((*precision, Some(*scale))),
         (_, DataType::Decimal128(precision, scale) | DataType::Decimal256(precision, scale)) => {
             // cap precision at 38 for Redshift
             if adapter_type == Redshift && *precision > 38 {

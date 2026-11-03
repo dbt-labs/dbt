@@ -50,6 +50,7 @@ fn include_policy(adapter_type: AdapterType, path: &RelationPath) -> Policy {
             true,
             true,
         ),
+        AdapterType::SingleStore => Policy::new(true, false, true),
         AdapterType::ClickHouse | AdapterType::Exasol => Policy::new(false, true, true),
         AdapterType::Salesforce => Policy::new(false, false, true),
         _ => Policy::trues(),
@@ -368,14 +369,36 @@ impl Relation {
         schema: impl Into<Option<String>>,
         identifier: impl Into<Option<String>>,
     ) -> Self {
+        let (database, schema) = match adapter_type {
+            // ClickHouse adapter does not normalize empty strings to None
+            // https://github.com/ClickHouse/dbt-clickhouse/blob/main/dbt/adapters/clickhouse/relation.py
+            AdapterType::ClickHouse => (Some(String::new()), schema.into()),
+            AdapterType::SingleStore => {
+                let db = database.into().filter(|s| !s.trim().is_empty());
+                let sch = schema.into().filter(|s| !s.trim().is_empty());
+                (db.clone().or_else(|| sch.clone()), sch.or(db))
+            }
+            AdapterType::Postgres
+            | AdapterType::Snowflake
+            | AdapterType::Bigquery
+            | AdapterType::Databricks
+            | AdapterType::Redshift
+            | AdapterType::Salesforce
+            | AdapterType::Spark
+            | AdapterType::DuckDB
+            | AdapterType::LakeCompute
+            | AdapterType::Fabric
+            | AdapterType::Exasol
+            | AdapterType::Starburst
+            | AdapterType::Athena
+            | AdapterType::Trino
+            | AdapterType::Datafusion
+            | AdapterType::Dremio
+            | AdapterType::Oracle => (database.into().filter(|s| !s.is_empty()), schema.into()),
+        };
         let path = RelationPath {
-            database: match adapter_type {
-                // ClickHouse adapter does not normalize empty strings to None
-                // https://github.com/ClickHouse/dbt-clickhouse/blob/main/dbt/adapters/clickhouse/relation.py
-                AdapterType::ClickHouse => Some(String::new()),
-                _ => database.into().filter(|s| !s.is_empty()),
-            },
-            schema: schema.into(),
+            database,
+            schema,
             identifier: identifier.into(),
         };
         let include_policy = include_policy(adapter_type, &path);
@@ -1255,7 +1278,7 @@ impl BaseRelation for Relation {
     fn normalize_component<'a>(&self, component: &'a str) -> Cow<'a, str> {
         use AdapterType::*;
         match self.adapter_type {
-            Salesforce | Bigquery | ClickHouse => Cow::Borrowed(component),
+            Salesforce | Bigquery | ClickHouse | SingleStore => Cow::Borrowed(component),
             Snowflake => uppercase(component.into()),
             _ => lowercase(component.into()),
         }

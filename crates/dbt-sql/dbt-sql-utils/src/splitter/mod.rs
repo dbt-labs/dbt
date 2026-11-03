@@ -12,6 +12,8 @@ use minijinja::machinery::WhitespaceConfig;
 use minijinja::syntax::SyntaxConfig;
 use std::borrow::Cow;
 
+pub mod singlestore;
+
 /// Returns the positions of all SQL statement-delimiting semicolons in the
 /// input string.
 pub fn sql_find_statement_spans(input: &str, dialect: Option<Dialect>) -> Vec<Span> {
@@ -42,6 +44,7 @@ fn do_sql_find_statement_delimiters<'input, 'arena>(
     }
 
     let (token_stream, semi_colon, unpaired_token) = match dialect {
+        Dialect::SingleStore => return singlestore::find_singlestore_statement_spans(input_stream),
         Dialect::Bigquery => dialect_dispatch!(dbt_lexer_bigquery, bigquerylexer),
         Dialect::Redshift => dialect_dispatch!(dbt_lexer_redshift, redshiftlexer),
         Dialect::Snowflake => dialect_dispatch!(dbt_lexer_snowflake, snowflakelexer),
@@ -370,6 +373,7 @@ pub fn is_empty_or_comment_only(statement: &str, dialect: Dialect) -> bool {
     }
 
     match dialect {
+        SingleStore => singlestore::is_singlestore_empty_or_comment_only(trimmed),
         Bigquery => dialect_dispatch!(dbt_lexer_bigquery, bigquerylexer),
         Redshift => dialect_dispatch!(dbt_lexer_redshift, redshiftlexer),
         Snowflake => dialect_dispatch!(dbt_lexer_snowflake, snowflakelexer),

@@ -10,6 +10,7 @@ mod exasol_config;
 mod fabric_config;
 mod postgres_config;
 mod redshift_config;
+mod singlestore_config;
 mod snowflake_config;
 
 pub mod common;
@@ -17,6 +18,7 @@ pub mod headless;
 pub mod profile;
 
 pub use headless::apply_values;
+pub use singlestore_config::setup_singlestore_profile;
 
 pub struct ProfileSetup {
     adapter_type: AdapterType,
@@ -122,6 +124,11 @@ impl ProfileSetup {
             }
             Oracle => {
                 todo!("setup_oracle_profile")
+            }
+            SingleStore => {
+                let c0 = unwrap_db_config!(SingleStore);
+                let c1 = setup_singlestore_profile(c0.map(Box::as_ref))?;
+                Ok(DbConfig::SingleStore(c1))
             }
             LakeCompute => {
                 // Nothing to ask: it signs in with a Fivetran token, read from

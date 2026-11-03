@@ -33,6 +33,127 @@ fn test_sql_split_statements() {
         do_sql_split_statements("/* before */ select 1 /* after */", None),
         vec!["/* before */ select 1 /* after */"]
     );
+
+    // SingleStore statement splitting with backticks and :> operator
+    assert_eq!(
+        do_sql_split_statements(
+            "SELECT `col;name` :> signed FROM `tab`; SELECT '42' :> int;",
+            Some(Dialect::SingleStore),
+        ),
+        vec![
+            "SELECT `col;name` :> signed FROM `tab`",
+            " SELECT '42' :> int"
+        ]
+    );
+}
+
+#[test]
+fn test_singlestore_mysql_splitter() {
+    // 1. # comments: semicolon inside # comment should not split
+    let hash_comment = "SELECT 1; # comment ; not split\nSELECT 2;";
+    assert_eq!(
+        do_sql_split_statements(hash_comment, Some(Dialect::SingleStore)),
+        vec!["SELECT 1", " # comment ; not split\nSELECT 2"]
+    );
+
+    // 2. --x not a comment: semicolon after --x should split
+    let minus_minus_x = "SELECT 1 --x;\nSELECT 2;";
+    assert_eq!(
+        do_sql_split_statements(minus_minus_x, Some(Dialect::SingleStore)),
+        vec!["SELECT 1 --x", "\nSELECT 2"]
+    );
+
+    // 3. /*! ... */ executable comments
+    let version_comment = "/*!40101 SET @saved_cs_client = @@character_set_client */; SELECT 2;";
+    assert_eq!(
+        do_sql_split_statements(version_comment, Some(Dialect::SingleStore)),
+        vec![
+            "/*!40101 SET @saved_cs_client = @@character_set_client */",
+            " SELECT 2"
+        ]
+    );
+
+    // 4. Semicolon inside "..." double quoted string
+    let double_quoted = "SELECT \"hello;world\"; SELECT 2;";
+    assert_eq!(
+        do_sql_split_statements(double_quoted, Some(Dialect::SingleStore)),
+        vec!["SELECT \"hello;world\"", " SELECT 2"]
+    );
+
+    // 5. Escaped characters: string containing escaped quote and semicolon '\';'
+    let escaped_quote_semi = "SELECT '\\';'; SELECT 2;";
+    assert_eq!(
+        do_sql_split_statements(escaped_quote_semi, Some(Dialect::SingleStore)),
+        vec!["SELECT '\\';'", " SELECT 2"]
+    );
+
+    // And literal trailing backslash inside string followed by closing quote and semicolon: '\\';
+    let escaped_slash = "SELECT '\\\\'; SELECT 2;";
+    assert_eq!(
+        do_sql_split_statements(escaped_slash, Some(Dialect::SingleStore)),
+        vec!["SELECT '\\\\'", " SELECT 2"]
+    );
+
+    // 6. Semicolon inside backticks
+    let backtick_semi = "SELECT `col;name` FROM t; SELECT 2;";
+    assert_eq!(
+        do_sql_split_statements(backtick_semi, Some(Dialect::SingleStore)),
+        vec!["SELECT `col;name` FROM t", " SELECT 2"]
+    );
+
+    // 7. -- comment at EOF without newline
+    let dash_eof = "SELECT 1; -- comment at eof";
+    assert_eq!(
+        do_sql_split_statements(dash_eof, Some(Dialect::SingleStore)),
+        vec!["SELECT 1", " -- comment at eof"]
+    );
+    assert!(is_empty_or_comment_only(
+        "-- comment at eof",
+        Dialect::SingleStore
+    ));
+
+    // 8. Unterminated string
+    let unterminated = "SELECT 'unterminated; SELECT 2;";
+    assert_eq!(
+        do_sql_split_statements(unterminated, Some(Dialect::SingleStore)),
+        vec!["SELECT 'unterminated; SELECT 2;"]
+    );
+
+    // 9. /*! ... */ containing semicolon
+    let version_with_semi = "SELECT /*!40101 1; */ + 2; SELECT 3;";
+    assert_eq!(
+        do_sql_split_statements(version_with_semi, Some(Dialect::SingleStore)),
+        vec!["SELECT /*!40101 1; */ + 2", " SELECT 3"]
+    );
+
+    // 10. DELIMITER command: not supported to change delimiter, splits on semicolon
+    let delimiter_cmd = "DELIMITER //;\nSELECT 1;\n//\nDELIMITER ;";
+    assert_eq!(
+        do_sql_split_statements(delimiter_cmd, Some(Dialect::SingleStore)),
+        vec!["DELIMITER //", "\nSELECT 1", "\n//\nDELIMITER "]
+    );
+
+    // Empty/comment-only checks for MySQL semantics
+    assert!(is_empty_or_comment_only(
+        "# hash comment",
+        Dialect::SingleStore
+    ));
+    assert!(is_empty_or_comment_only(
+        "-- space comment",
+        Dialect::SingleStore
+    ));
+    assert!(is_empty_or_comment_only(
+        "/* block comment */",
+        Dialect::SingleStore
+    ));
+    assert!(!is_empty_or_comment_only(
+        "--x not comment",
+        Dialect::SingleStore
+    ));
+    assert!(!is_empty_or_comment_only(
+        "/*!40101 SELECT 1 */",
+        Dialect::SingleStore
+    ));
 }
 
 fn is_empty(sql: &str, dialect: Dialect) -> bool {

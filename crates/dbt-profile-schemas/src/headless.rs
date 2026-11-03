@@ -10,7 +10,8 @@ use dbt_adapter_core::AdapterType;
 use dbt_common::{ErrorCode, FsResult, fs_err};
 use dbt_schemas::schemas::profiles::{
     BigqueryDbConfig, ClickHouseDbConfig, DatabricksDbConfig, DbConfig, DuckDbConfig,
-    ExasolDbConfig, FabricDbConfig, PostgresDbConfig, RedshiftDbConfig, SnowflakeDbConfig,
+    ExasolDbConfig, FabricDbConfig, PostgresDbConfig, RedshiftDbConfig, SingleStoreDbConfig,
+    SnowflakeDbConfig,
 };
 use dbt_schemas::schemas::serde::StringOrInteger;
 
@@ -33,6 +34,7 @@ pub fn supported_adapters() -> Vec<AdapterType> {
         AdapterType::Postgres,
         AdapterType::Redshift,
         AdapterType::Fabric,
+        AdapterType::SingleStore,
     ]
 }
 
@@ -48,6 +50,7 @@ pub fn adapter_fields(adapter: AdapterType) -> FsResult<Vec<ConfigField>> {
         AdapterType::Postgres => PostgresDbConfig::get_fields(),
         AdapterType::Redshift => RedshiftDbConfig::get_fields(),
         AdapterType::Fabric => FabricDbConfig::get_fields(),
+        AdapterType::SingleStore => SingleStoreDbConfig::get_fields(),
         other => {
             return Err(fs_err!(
                 ErrorCode::InvalidConfig,
@@ -259,6 +262,7 @@ pub fn build_profile_target(
             let config = apply_values(&default_fabric_config(), values)?;
             DbConfig::Fabric(Box::new(config))
         }
+        AdapterType::SingleStore => build_singlestore_profile_target(values)?,
         other => {
             return Err(fs_err!(
                 ErrorCode::InvalidConfig,
@@ -275,6 +279,22 @@ pub fn build_profile_target(
         target: target.to_string(),
         outputs,
     })
+}
+
+fn build_singlestore_profile_target(values: &HashMap<String, FieldValue>) -> FsResult<DbConfig> {
+    let mut config = apply_values(&SingleStoreDbConfig::default(), values)?;
+    for (k, v) in values {
+        if !config.is_field_set(k) {
+            let _ = config.set_field(k, v.clone());
+        }
+    }
+    if config.threads.is_none() {
+        config.threads = Some(StringOrInteger::Integer(16));
+    }
+    if config.schema.is_none() {
+        config.schema = config.database.clone();
+    }
+    Ok(DbConfig::SingleStore(Box::new(config)))
 }
 
 #[cfg(test)]
@@ -305,5 +325,73 @@ mod tests {
         assert_eq!(config.path.as_deref(), Some("dev.duckdb"));
         assert_eq!(config.schema.as_deref(), Some("main"));
         assert_eq!(config.threads, Some(StringOrInteger::Integer(4)));
+    }
+
+    #[test]
+    fn singlestore_is_a_supported_adapter() {
+        assert!(supported_adapters().contains(&AdapterType::SingleStore));
+        let fields = adapter_fields(AdapterType::SingleStore).unwrap();
+        let pw_field = fields.iter().find(|f| f.name == "password").unwrap();
+        assert!(
+            !pw_field.required,
+            "password should be optional for SingleStore"
+        );
+    }
+
+    #[test]
+    fn builds_singlestore_profile_target_without_password() {
+        let values = HashMap::from([
+            ("host".to_string(), FieldValue::String("127.0.0.1".into())),
+            ("user".to_string(), FieldValue::String("root".into())),
+            ("database".to_string(), FieldValue::String("dbt_ss".into())),
+        ]);
+        let profile = build_profile_target(AdapterType::SingleStore, "dev", &values).unwrap();
+        let Some(DbConfig::SingleStore(config)) = profile.outputs.get("dev") else {
+            panic!("expected a SingleStore config");
+        };
+        assert_eq!(config.host.as_deref(), Some("127.0.0.1"));
+        assert_eq!(config.user.as_deref(), Some("root"));
+        assert_eq!(config.database.as_deref(), Some("dbt_ss"));
+        assert_eq!(config.schema.as_deref(), Some("dbt_ss")); // defaults to database
+        assert_eq!(config.password, None);
+        assert_eq!(config.threads, Some(StringOrInteger::Integer(16)));
+    }
+
+    #[test]
+    fn builds_singlestore_profile_target_with_token_and_ssl() {
+        let values = HashMap::from([
+            (
+                "host".to_string(),
+                FieldValue::String("db.example.com".into()),
+            ),
+            ("user".to_string(), FieldValue::String("svc".into())),
+            (
+                "token".to_string(),
+                FieldValue::String("jwt.token.val".into()),
+            ),
+            (
+                "database".to_string(),
+                FieldValue::String("analytics".into()),
+            ),
+            (
+                "ssl_mode".to_string(),
+                FieldValue::String("verify_ca".into()),
+            ),
+            (
+                "ssl_ca".to_string(),
+                FieldValue::String("/etc/ssl/ca.pem".into()),
+            ),
+            ("connect_timeout".to_string(), FieldValue::Integer(10)),
+            ("retries".to_string(), FieldValue::Integer(3)),
+        ]);
+        let profile = build_profile_target(AdapterType::SingleStore, "prod", &values).unwrap();
+        let Some(DbConfig::SingleStore(config)) = profile.outputs.get("prod") else {
+            panic!("expected a SingleStore config");
+        };
+        assert_eq!(config.token.as_deref(), Some("jwt.token.val"));
+        assert_eq!(config.ssl_mode.as_deref(), Some("verify_ca"));
+        assert_eq!(config.ssl_ca.as_deref(), Some("/etc/ssl/ca.pem"));
+        assert_eq!(config.connect_timeout, Some(StringOrInteger::Integer(10)));
+        assert_eq!(config.retries, Some(StringOrInteger::Integer(3)));
     }
 }

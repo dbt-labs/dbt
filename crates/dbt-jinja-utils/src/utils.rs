@@ -178,6 +178,27 @@ pub fn inject_and_persist_ephemeral_models(
     is_current_model_ephemeral: bool,
     ephemeral_dir: &Path,
 ) -> FsResult<String> {
+    inject_and_persist_ephemeral_models_for_adapter(
+        sql,
+        macro_spans,
+        model_name,
+        is_current_model_ephemeral,
+        ephemeral_dir,
+        None,
+    )
+}
+
+/// [`inject_and_persist_ephemeral_models`] for a known adapter, so the
+/// injected SQL follows that adapter's dialect (e.g. SingleStore needs a
+/// space after `--` for the wrapper comments).
+pub fn inject_and_persist_ephemeral_models_for_adapter(
+    sql: String,
+    macro_spans: &mut MacroSpans,
+    model_name: &str,
+    is_current_model_ephemeral: bool,
+    ephemeral_dir: &Path,
+    adapter_type: Option<dbt_adapter_core::AdapterType>,
+) -> FsResult<String> {
     if !sql.contains(DBT_CTE_PREFIX) {
         // Write the ephemeral model to the ephemeral directory
         if is_current_model_ephemeral {
@@ -244,11 +265,22 @@ pub fn inject_and_persist_ephemeral_models(
         shift_macro_spans_after_insertion(macro_spans, insertion);
     } else {
         // Preserve the wrapper fallback for statements without a leading WITH clause.
+        let (wrapper_start, wrapper_end, added_offset) = match adapter_type {
+            Some(dbt_adapter_core::AdapterType::SingleStore) => (
+                "-- EPHEMERAL-SELECT-WRAPPER-START",
+                "-- EPHEMERAL-SELECT-WRAPPER-END",
+                ctes.len() + 24,
+            ),
+            _ => (
+                "--EPHEMERAL-SELECT-WRAPPER-START",
+                "--EPHEMERAL-SELECT-WRAPPER-END",
+                ctes.len() + 23,
+            ),
+        };
         final_sql = format!(
-            "with {ctes}\n--EPHEMERAL-SELECT-WRAPPER-START\nselect * from (\n{final_sql}\n--EPHEMERAL-SELECT-WRAPPER-END\n) as {model_name}"
+            "with {ctes}\n{wrapper_start}\nselect * from (\n{final_sql}\n{wrapper_end}\n) as {model_name}"
         );
         let added_lines = ctes.lines().count() + 2;
-        let added_offset = ctes.len() + 23;
         for span in macro_spans.items.iter_mut() {
             span.1.start_line += added_lines as u32;
             span.1.end_line += added_lines as u32;
@@ -1062,5 +1094,53 @@ mod tests {
                 span.macro_span.start.line == 2 && span.expanded_span.start.line == 2
             })
         );
+    }
+
+    #[test]
+    fn test_inject_ephemeral_wrapper_singlestore_spacing() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let ephemeral_dir = temp_dir.path();
+        let cte_model_path = ephemeral_dir.join("eph_model.sql");
+        std::fs::write(&cte_model_path, "__dbt__cte__eph_model as (select 1)").unwrap();
+
+        let sql = "select * from __dbt__cte__eph_model".to_string();
+        let mut spans_ss = MacroSpans::default();
+        let rendered_ss = super::inject_and_persist_ephemeral_models_for_adapter(
+            sql.clone(),
+            &mut spans_ss,
+            "final_model",
+            false,
+            ephemeral_dir,
+            Some(dbt_adapter_core::AdapterType::SingleStore),
+        )
+        .unwrap();
+        assert!(rendered_ss.contains("-- EPHEMERAL-SELECT-WRAPPER-START"));
+        assert!(rendered_ss.contains("-- EPHEMERAL-SELECT-WRAPPER-END"));
+
+        let mut spans_pg = MacroSpans::default();
+        let rendered_pg = super::inject_and_persist_ephemeral_models_for_adapter(
+            sql,
+            &mut spans_pg,
+            "final_model",
+            false,
+            ephemeral_dir,
+            Some(dbt_adapter_core::AdapterType::Postgres),
+        )
+        .unwrap();
+        assert!(rendered_pg.contains("--EPHEMERAL-SELECT-WRAPPER-START"));
+        assert!(rendered_pg.contains("--EPHEMERAL-SELECT-WRAPPER-END"));
+        assert!(!rendered_pg.contains("-- EPHEMERAL"));
+
+        // The adapter-agnostic entry point keeps its signature and output.
+        let mut spans_default = MacroSpans::default();
+        let rendered_default = super::inject_and_persist_ephemeral_models(
+            "select * from __dbt__cte__eph_model".to_string(),
+            &mut spans_default,
+            "final_model",
+            false,
+            ephemeral_dir,
+        )
+        .unwrap();
+        assert_eq!(rendered_default, rendered_pg);
     }
 }

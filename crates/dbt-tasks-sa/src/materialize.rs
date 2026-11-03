@@ -1110,6 +1110,7 @@ pub fn materialize_microbatch_model(
         jinja_env.clone(),
         &run_node_context,
         &io_args.out_dir,
+        Some(adapter_type),
     )?;
 
     let batch_sql = Value::from(body_for_materialization(
