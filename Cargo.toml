@@ -527,7 +527,6 @@ clean-path = "0.2.1"
 console = "0.16.3"
 csv = { version = "1.1", default-features = false }
 dialoguer = "0.12.0"
-diffy = { version = "0.4.2" }
 dirs = "6.0.0"
 dotenvy = "0.15"
 flate2 = "1.0.28"
@@ -636,7 +635,7 @@ fake = { version = "4.4.0", features = ["derive", "uuid", "time"] }
 indoc = "2.0.6"
 merge = { version = "0.2.0" }
 mockito = "1.2"
-pretty_assertions = { version = "1.4.1" }
+similar-asserts = "1.7.0"
 sqllogictest = "0.26.0"
 
 # protobuf

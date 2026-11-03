@@ -140,12 +140,12 @@ pub fn diff_goldie<P: Fn(String) -> String>(
         .to_string_lossy()
         .to_string();
 
-    let patch = diffy::DiffOptions::new()
-        .set_original_filename(original_filename)
-        .set_modified_filename(modified_filename)
-        .create_patch(&golden, &actual);
+    let patch = similar::TextDiff::from_lines(golden.as_str(), actual.as_str())
+        .unified_diff()
+        .header(&original_filename, &modified_filename)
+        .to_string();
 
-    Some(patch.to_string())
+    Some(patch)
 }
 
 pub struct CompareEnv {
