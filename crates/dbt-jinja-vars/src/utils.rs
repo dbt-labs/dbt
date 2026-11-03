@@ -1,7 +1,6 @@
-use std::collections::BTreeMap;
-
 use chrono::{FixedOffset, NaiveDate, NaiveTime, TimeZone as _};
 use dbt_yaml::Value as YmlValue;
+use indexmap::IndexMap;
 use minijinja::Value as MinijinjaValue;
 use minijinja_contrib::modules::py_datetime::{date::PyDate, datetime::PyDateTime};
 
@@ -72,7 +71,7 @@ pub fn yml_value_to_minijinja(value: &YmlValue) -> MinijinjaValue {
                     YmlValue::String(key, _) => Some((key.to_string(), yml_value_to_minijinja(v))),
                     _ => None,
                 })
-                .collect::<BTreeMap<String, MinijinjaValue>>();
+                .collect::<IndexMap<String, MinijinjaValue>>();
             MinijinjaValue::from_object(result)
         }
         YmlValue::Tagged(tagged, _) => {
