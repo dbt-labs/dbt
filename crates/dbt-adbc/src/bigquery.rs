@@ -98,6 +98,7 @@ pub const UPDATE_TABLE_COLUMNS_POLICY_TAGS: &str = "adbc.bigquery.table.update_c
 pub const UPDATE_TABLE_DESCRIPTION: &str = "adbc.bigquery.table.update_description";
 pub const UPDATE_DATASET_AUTHORIZE_VIEW_TO_DATASETS: &str =
     "adbc.bigquery.dataset.authorize_view_to_datasets";
+pub const GET_DATASET_METADATA: &str = "adbc.bigquery.dataset.get_metadata";
 
 pub const DATAPROC_REGION: &str = "adbc.bigquery.dataproc.compute_region";
 pub const DATAPROC_PROJECT: &str = "adbc.bigquery.dataproc.project";

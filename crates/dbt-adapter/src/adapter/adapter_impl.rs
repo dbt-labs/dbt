@@ -3547,16 +3547,14 @@ impl AdapterImpl {
         }
     }
 
-    /// Parse the single-row `location` result of the BigQuery SCHEMATA query.
+    /// Parse the single-row dataset metadata result returned by the BigQuery driver.
     ///
-    /// Returns `None` for an empty result without reading the column. This covers
-    /// the zero-column batch that replay returns for the SCHEMATA query, which is
-    /// never recorded by Mantle during `get_relation` (see dbt9002).
-    fn parse_dataset_location(batch: &RecordBatch) -> AdapterResult<Option<String>> {
+    /// Returns `None` for an empty result without reading the column.
+    fn parse_dataset_metadata(batch: &RecordBatch) -> AdapterResult<Option<serde_json::Value>> {
         debug_assert!(batch.num_rows() <= 1);
         if batch.num_rows() == 1 {
-            let location = batch.column_values::<StringArray>("location")?;
-            Ok(Some(location.value(0).to_owned()))
+            let metadata = batch.column_values::<StringArray>("metadata")?;
+            Ok(Some(serde_json::from_str(metadata.value(0))?))
         } else {
             Ok(None)
         }
@@ -3575,23 +3573,40 @@ impl AdapterImpl {
                 if let Replay(_, replay) = self.inner_adapter() {
                     return replay.replay_get_dataset_location(state, relation);
                 }
-                // https://cloud.google.com/bigquery/docs/information-schema-datasets-schemata
-                // https://github.com/dbt-labs/dbt-adapters/blob/main/dbt-bigquery/src/dbt/adapters/bigquery/impl.py#L853-L854
-                let sql = format!(
-                    "SELECT
-                location
-            FROM `{}.INFORMATION_SCHEMA.SCHEMATA` WHERE schema_name = '{}'",
-                    relation.database_as_str()?,
-                    relation.schema_as_str()?
-                );
+                let dataset = serde_json::json!({
+                    "project": relation.database_as_str()?,
+                    "dataset": relation.schema_as_str()?,
+                });
 
                 let ctx =
                     query_ctx_from_state(state)?.with_desc("get_dataset_location adapter call");
-                let batch = self
-                    .engine()
-                    .execute(Some(state), conn, &ctx, &sql, token)?;
+                let batch = self.engine().execute_with_options(
+                    Some(state),
+                    &ctx,
+                    conn,
+                    "", // Empty SQL - the driver will handle this via the option
+                    vec![(
+                        GET_DATASET_METADATA.to_string(),
+                        OptionValue::String(serde_json::to_string(&dataset)?),
+                    )],
+                    true,
+                    token,
+                )?;
 
-                Self::parse_dataset_location(&batch)
+                Self::parse_dataset_metadata(&batch)?
+                    .map(|metadata| {
+                        metadata
+                            .get("location")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_owned)
+                            .ok_or_else(|| {
+                                AdapterError::new(
+                                    AdapterErrorKind::UnexpectedResult,
+                                    "BigQuery dataset metadata is missing location",
+                                )
+                            })
+                    })
+                    .transpose()
             }
             Postgres | Snowflake | Databricks | Redshift | Salesforce | Spark | DuckDB
             | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
@@ -7815,32 +7830,36 @@ mod tests {
         assert!(result.unwrap().is_empty());
     }
 
-    // -- get_dataset_location parsing tests -----------------------------------
+    // -- get_dataset_metadata parsing tests -----------------------------------
 
     #[test]
-    fn test_parse_dataset_location_empty_batch_returns_none() {
+    fn test_parse_dataset_metadata_empty_batch_returns_none() {
         // Regression: `AdapterGetRelationRecord` is skipped in replay, so Fusion
         // re-executes its BigQuery `get_relation`, which calls `get_dataset_location`.
-        // That SCHEMATA query is never recorded by Mantle, so replay returns a
-        // zero-column batch. Parsing must return None instead of erroring with
-        // `expected column location not found, available are: []`.
+        // An empty batch has no metadata column; parsing must still return None.
         let batch = RecordBatch::new_empty(Arc::new(Schema::empty()));
-        let result = AdapterImpl::parse_dataset_location(&batch);
+        let result = AdapterImpl::parse_dataset_metadata(&batch);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), None);
     }
 
     #[test]
-    fn test_parse_dataset_location_single_row_returns_location() {
+    fn test_parse_dataset_metadata_single_row_returns_fields() {
         let schema = Arc::new(Schema::new(vec![Field::new(
-            "location",
+            "metadata",
             DataType::Utf8,
             true,
         )]));
-        let location = Arc::new(StringArray::from(vec!["US"])) as ArrayRef;
-        let batch = RecordBatch::try_new(schema, vec![location]).unwrap();
-        let result = AdapterImpl::parse_dataset_location(&batch).unwrap();
-        assert_eq!(result, Some("US".to_string()));
+        let metadata = Arc::new(StringArray::from(vec![
+            r#"{"name":"Marts","description":"Dataset for marts","location":"US"}"#,
+        ])) as ArrayRef;
+        let batch = RecordBatch::try_new(schema, vec![metadata]).unwrap();
+        let result = AdapterImpl::parse_dataset_metadata(&batch)
+            .unwrap()
+            .unwrap();
+        assert_eq!(result["location"], "US");
+        assert_eq!(result["name"], "Marts");
+        assert_eq!(result["description"], "Dataset for marts");
     }
 
     // -- BigQuery job_execution_timeout_seconds tests -------------------------
