@@ -44,6 +44,15 @@ impl ColumnHasher for TableHasher {
     }
 }
 
+/// Every value of a `Null` array is null, so all rows hash identically.
+struct NullColumnHasher;
+
+impl ColumnHasher for NullColumnHasher {
+    fn write_row(&self, hasher: &mut sip128::SipHasher13, _row_idx: usize) {
+        hasher.write_u32(0);
+    }
+}
+
 // Boolean, Integers, Floats, Date, and Time {{{
 struct BooleanColumnHasher {
     values: BooleanBuffer,
@@ -288,6 +297,28 @@ type StringViewColumnHasher = ByteViewColumnHasher<StringViewType>;
 type BinaryViewColumnHasher = ByteViewColumnHasher<BinaryViewType>;
 // }}}
 
+struct DictionaryColumnHasher<K: ArrowPrimitiveType> {
+    keys: PrimitiveArray<K>,
+    values: Box<dyn ColumnHasher>,
+}
+
+impl<K: ArrowPrimitiveType> DictionaryColumnHasher<K> {
+    pub fn new(keys: PrimitiveArray<K>, values: Box<dyn ColumnHasher>) -> Self {
+        Self { keys, values }
+    }
+}
+
+impl<K: ArrowPrimitiveType> ColumnHasher for DictionaryColumnHasher<K> {
+    fn write_row(&self, hasher: &mut sip128::SipHasher13, row_idx: usize) {
+        let is_valid_key = self.keys.is_valid(row_idx);
+        hasher.write_u32(is_valid_key as u32);
+        if is_valid_key {
+            let key = self.keys.value(row_idx).as_usize();
+            self.values.write_row(hasher, key);
+        }
+    }
+}
+
 /// Creates a new PrimitiveArray<U> by transmuting the underlying buffer of a PrimitiveArray<T>.
 ///
 /// This is useful when you have two primitive types with the same memory layout
@@ -318,8 +349,109 @@ fn transmuted_primitive<T: ArrowPrimitiveType, U: ArrowPrimitiveType>(
     PrimitiveArray::<U>::new(values, nulls)
 }
 
+fn cast_primitive<T: ArrowPrimitiveType>(
+    array: &dyn Array,
+    options: &arrow::compute::CastOptions,
+) -> Result<PrimitiveArray<T>, ArrowError> {
+    let value_type = T::DATA_TYPE;
+    let cast_array = arrow::compute::cast_with_options(array, &value_type, options)?;
+    let primitive_array = cast_array
+        .as_any()
+        .downcast_ref::<PrimitiveArray<T>>()
+        .expect("cast array");
+    Ok(primitive_array.clone())
+}
+
+/// Helper for situations where we can transmute from signed to unsigned and
+/// then cast to another unsigned integer (of higher width). Used well,
+/// this reduces the number of specializations of `transmuted_primitive` and
+/// `cast_primitive` that will be instantiated in the binary.
+fn transmute_and_cast<T: ArrowPrimitiveType, U: ArrowPrimitiveType, V: ArrowPrimitiveType>(
+    array: &dyn Array,
+    options: &arrow::compute::CastOptions,
+) -> Result<PrimitiveArray<V>, ArrowError> {
+    let transmuted = transmuted_primitive::<T, U>(array.as_primitive());
+    cast_primitive::<V>(&transmuted, options)
+}
+
 pub fn make_column_hasher(array: &dyn Array) -> Result<Box<dyn ColumnHasher>, ArrowError> {
+    use arrow::compute::CastOptions;
+
     let converter: Box<dyn ColumnHasher> = match array.data_type() {
+        DataType::Null => Box::new(NullColumnHasher),
+        DataType::Dictionary(_, _) => {
+            let cast_options = CastOptions::default();
+
+            // Creates the hasher with the given keys array of type T.
+            fn hasher0<T: ArrowPrimitiveType>(
+                keys: &dyn Array,
+                values_hasher: Box<dyn ColumnHasher>,
+            ) -> Result<Box<dyn ColumnHasher>, ArrowError> {
+                let keys = keys.as_primitive::<T>().clone();
+                let hasher = Box::new(DictionaryColumnHasher::<T>::new(keys, values_hasher));
+                Ok(hasher)
+            }
+
+            // Cast keys to T and make a hasher.
+            fn hasher1<T: ArrowDictionaryKeyType>(
+                keys: &dyn Array,
+                cast_options: &CastOptions,
+                values_hasher: Box<dyn ColumnHasher>,
+            ) -> Result<Box<dyn ColumnHasher>, ArrowError> {
+                let keys = cast_primitive::<T>(keys, cast_options)?;
+                let hasher = Box::new(DictionaryColumnHasher::new(keys, values_hasher));
+                Ok(hasher)
+            }
+
+            // Transmute keys from T to U and make a hasher.
+            fn hasher2<T: ArrowPrimitiveType, U: ArrowPrimitiveType>(
+                keys: &dyn Array,
+                values_hasher: Box<dyn ColumnHasher>,
+            ) -> Result<Box<dyn ColumnHasher>, ArrowError> {
+                let keys = transmuted_primitive::<T, U>(keys.as_primitive());
+                let hasher = Box::new(DictionaryColumnHasher::new(keys, values_hasher));
+                Ok(hasher)
+            }
+
+            // Transmute keys from T to U, cast to V, and make a hasher.
+            fn hasher3<T: ArrowPrimitiveType, U: ArrowPrimitiveType, V: ArrowPrimitiveType>(
+                keys: &dyn Array,
+                cast_options: &CastOptions,
+                values_hasher: Box<dyn ColumnHasher>,
+            ) -> Result<Box<dyn ColumnHasher>, ArrowError> {
+                let keys = transmute_and_cast::<T, U, V>(keys, cast_options)?;
+                let hasher = Box::new(DictionaryColumnHasher::new(keys, values_hasher));
+                Ok(hasher)
+            }
+
+            let dict = array.as_any_dictionary();
+            let keys = dict.keys();
+            let values_hasher = {
+                let values = dict.values();
+                make_column_hasher(values.as_ref())?
+            };
+
+            // Every signed key type can be transmuted to the corresponding unsigned type.
+            // Then we cast the unsigned type to either 32-bit or 64-bit unsigned integer.
+            let hasher: Box<dyn ColumnHasher> = match keys.data_type() {
+                DataType::UInt8 => hasher1::<UInt32Type>(keys, &cast_options, values_hasher)?,
+                DataType::UInt16 => hasher1::<UInt32Type>(keys, &cast_options, values_hasher)?,
+                DataType::UInt32 => hasher0::<UInt32Type>(keys, values_hasher)?,
+                DataType::UInt64 => hasher0::<UInt64Type>(keys, values_hasher)?,
+                DataType::Int8 => {
+                    hasher3::<Int8Type, UInt8Type, UInt32Type>(keys, &cast_options, values_hasher)?
+                }
+                DataType::Int16 => hasher3::<Int16Type, UInt16Type, UInt32Type>(
+                    keys,
+                    &cast_options,
+                    values_hasher,
+                )?,
+                DataType::Int32 => hasher2::<Int32Type, UInt32Type>(keys, values_hasher)?,
+                DataType::Int64 => hasher2::<Int64Type, UInt64Type>(keys, values_hasher)?,
+                _ => unreachable!("unexpected dictionary key type"),
+            };
+            hasher
+        }
         DataType::Boolean => Box::new(BooleanColumnHasher::new(array.as_boolean())),
         DataType::Int8 => {
             let typed = transmuted_primitive::<Int8Type, UInt8Type>(array.as_primitive());
@@ -473,15 +605,63 @@ impl BuildHasher for IdentityBuildHasher {
 mod tests {
     use super::*;
     use arrow_array::{
-        BinaryArray, BinaryViewArray, LargeBinaryArray, LargeStringArray, StringArray,
-        StringViewArray,
+        BinaryArray, BinaryViewArray, DictionaryArray, LargeBinaryArray, LargeStringArray,
+        StringArray, StringViewArray,
     };
+    use std::sync::Arc;
+
+    fn hash_row(column_hasher: &dyn ColumnHasher, row_idx: usize) -> u64 {
+        let mut hasher = sip128::SipHasher13::new();
+        column_hasher.write_row(&mut hasher, row_idx);
+        hasher.finish()
+    }
 
     fn hash_first_row(array: &dyn Array) -> u64 {
+        hash_row(make_column_hasher(array).unwrap().as_ref(), 0)
+    }
+
+    fn hash_rows(array: &dyn Array) -> Vec<u64> {
         let column_hasher = make_column_hasher(array).unwrap();
-        let mut hasher = sip128::SipHasher13::new();
-        column_hasher.write_row(&mut hasher, 0);
-        hasher.finish()
+        (0..array.len())
+            .map(|i| hash_row(column_hasher.as_ref(), i))
+            .collect()
+    }
+
+    /// Rows: "b", null (null value), "a", null (null key), "b" (another key).
+    fn dictionary<K: ArrowDictionaryKeyType>() -> DictionaryArray<K> {
+        let key = |i: usize| Some(K::Native::from_usize(i).unwrap());
+        let keys: PrimitiveArray<K> = [key(0), key(1), key(2), None, key(3)].into_iter().collect();
+        let values = StringArray::from(vec![Some("b"), None, Some("a"), Some("b")]);
+        DictionaryArray::try_new(keys, Arc::new(values)).unwrap()
+    }
+
+    fn assert_dictionary_hashes<K: ArrowDictionaryKeyType>() {
+        let name = K::DATA_TYPE;
+        let hashes = hash_rows(&dictionary::<K>());
+        assert_eq!(hashes[0], hashes[4], "{name}: equal values, different keys");
+        assert_ne!(hashes[0], hashes[2], "{name}: different values");
+        assert_ne!(hashes[0], hashes[1], "{name}: value vs null value");
+        assert_ne!(hashes[0], hashes[3], "{name}: value vs null key");
+    }
+
+    #[test]
+    fn dictionary_hashes_values_through_the_keys() {
+        assert_dictionary_hashes::<Int8Type>();
+        assert_dictionary_hashes::<Int16Type>();
+        assert_dictionary_hashes::<Int32Type>();
+        assert_dictionary_hashes::<Int64Type>();
+        assert_dictionary_hashes::<UInt8Type>();
+        assert_dictionary_hashes::<UInt16Type>();
+        assert_dictionary_hashes::<UInt32Type>();
+        assert_dictionary_hashes::<UInt64Type>();
+    }
+
+    #[test]
+    fn dictionary_hashes_are_independent_of_the_key_type() {
+        assert_eq!(
+            hash_rows(&dictionary::<Int8Type>()),
+            hash_rows(&dictionary::<UInt64Type>())
+        );
     }
 
     #[test]
