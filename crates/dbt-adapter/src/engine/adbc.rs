@@ -387,7 +387,7 @@ impl AdbcEngine {
         } else {
             AdapterType::DuckDB.as_ref()
         };
-        super::duckdb_attach::compose_catalog_attach_stmts(&view, platform)
+        super::duckdb::attach::compose_catalog_attach_stmts(&view, platform)
     }
 }
 
