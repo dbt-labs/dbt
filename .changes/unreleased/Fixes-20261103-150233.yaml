@@ -1,0 +1,6 @@
+kind: Fixes
+body: Avoid rmtree on non owned package path
+time: 2026-11-03T15:02:33.039461+05:30
+custom:
+    Author: ash2shukla
+    Issue: N/A

@@ -1,4 +1,5 @@
 import json
+import os
 from hashlib import sha1
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -27,16 +28,56 @@ from dbt.events.types import (
     DepsStartPackageInstall,
     DepsUpdateAvailable,
     DepsUpToDate,
+    JinjaLogWarning,
 )
 from dbt.task.base import BaseTask, move_to_nearest_project_dir
 from dbt_common.clients import system
 from dbt_common.events.functions import fire_event
 from dbt_common.events.types import Formatting
 
+CACHEDIR_TAG_FILE_NAME = "CACHEDIR.TAG"
+CACHEDIR_TAG_SIGNATURE = "Signature: 8a477f597d28d172789f06886806bc55"
+CACHEDIR_TAG_CONTENTS = (
+    f"{CACHEDIR_TAG_SIGNATURE}\n"
+    "# This file is a cache directory tag created by dbt.\n"
+    "# For information about cache directory tags see https://bford.info/cachedir/\n"
+)
+
 
 class dbtPackageDumper(yaml.Dumper):
     def increase_indent(self, flow=False, indentless=False):
         return super(dbtPackageDumper, self).increase_indent(flow, False)
+
+
+def _has_cachedir_tag(path: str) -> bool:
+    tag_path = os.path.join(path, CACHEDIR_TAG_FILE_NAME)
+    if os.path.islink(tag_path) or not os.path.isfile(tag_path):
+        return False
+    try:
+        with open(tag_path, "r") as f:
+            return f.read(len(CACHEDIR_TAG_SIGNATURE)) == CACHEDIR_TAG_SIGNATURE
+    except (OSError, UnicodeDecodeError):
+        return False
+
+
+def _warn_if_removing_unowned_dir(path: str) -> None:
+    """Warn when about to remove a non-empty directory that dbt did not create."""
+    if not os.path.isdir(path) or not os.listdir(path) or _has_cachedir_tag(path):
+        return
+    fire_event(
+        JinjaLogWarning(
+            msg=(
+                f"Removing '{path}' before installing packages, but it is missing a valid "
+                f"'{CACHEDIR_TAG_FILE_NAME}' file, so dbt cannot confirm that it created this "
+                "directory."
+            )
+        )
+    )
+
+
+def _write_cachedir_tag(path: str) -> None:
+    with open(os.path.join(path, CACHEDIR_TAG_FILE_NAME), "w") as f:
+        f.write(CACHEDIR_TAG_CONTENTS)
 
 
 def _create_sha1_hash(packages: List[PackageSpec]) -> str:
@@ -302,9 +343,11 @@ class DepsTask(BaseTask):
             return
 
         if system.path_exists(self.project.packages_install_path):
+            _warn_if_removing_unowned_dir(self.project.packages_install_path)
             system.rmtree(self.project.packages_install_path)
 
         system.make_directory(self.project.packages_install_path)
+        _write_cachedir_tag(self.project.packages_install_path)
 
         packages_lock_dict = load_yml_dict(f"{self.project.project_root}/{PACKAGE_LOCK_FILE_NAME}")
 
