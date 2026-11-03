@@ -16,6 +16,7 @@ use dbt_common::{ErrorCode, FsResult, MacroSpansOnly, err, io_args};
 use dbt_jinja_utils::utils::{macro_spans_to_macro_span_vec, render_sql};
 use dbt_pretty_table::{make_column_names, pretty_data_table};
 use dbt_scheduler::instructions::{Instruction, SqlInstruction};
+use dbt_schemas::schemas::Preview;
 use dbt_schemas::schemas::profiles::Execute;
 use dbt_schemas::schemas::telemetry::NodeType;
 use dbt_schemas::schemas::{InternalDbtNodeAttributes, Nodes};
@@ -164,11 +165,11 @@ where
         }
     };
 
-    // Capture for LSP preview path. No-op if no caller is reading preview_result.
-    {
-        let mut guard = ctx.inner.preview_results.lock();
-        *guard = Some((batches.clone(), schema.clone()));
-    }
+    // Captured for in-process callers, which collect it after the task loop.
+    *ctx.inner.preview_results.lock() = Some(Preview {
+        batches: batches.clone(),
+        schema: schema.clone(),
+    });
 
     if batches.is_empty() && schema.fields().is_empty() {
         emit_warn_log_message(

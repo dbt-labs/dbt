@@ -1894,6 +1894,9 @@ impl<'a> AllPhasesExecutor<'a> {
 
         // Save artifact for callers
         self.captured_artifacts.run_results = Some(run_results_artifact);
+        if let Some(Ok(preview)) = &run_task_results.preview {
+            self.captured_artifacts.preview = Some(preview.clone());
+        }
 
         if self.arg.write_metadata {
             write_runtime_results_parquet(
