@@ -1,3 +1,4 @@
+import dataclasses
 from copy import deepcopy
 from datetime import datetime
 from typing import List
@@ -24,11 +25,19 @@ from dbt.artifacts.resources import (
     Metric,
     MetricAggregationParams,
     MetricTypeParams,
+    SnapshotConfig,
     TestMetadata,
 )
 from dbt.artifacts.resources.v1.semantic_model import NodeRelation
 from dbt.contracts.graph.model_config import TestConfig
-from dbt.contracts.graph.nodes import ColumnInfo, ModelNode, ParsedNode, SemanticModel
+from dbt.contracts.graph.nodes import (
+    ColumnInfo,
+    ModelNode,
+    ParsedNode,
+    SemanticModel,
+    SnapshotNode,
+)
+from dbt.exceptions import CompilationError
 from dbt.node_types import NodeType
 from dbt_common.contracts.constraints import (
     ColumnLevelConstraint,
@@ -486,3 +495,45 @@ class TestParsedNode:
             write_path
             == "target_path/subdirectory/test_package/test_original_file_path/test_path/test_path_split.sql"
         )
+
+    def test_get_target_write_path_rejects_escape(self, parsed_node):
+        escaping_node = dataclasses.replace(parsed_node, original_file_path="../../etc")
+        with pytest.raises(CompilationError, match="must resolve to a path inside"):
+            escaping_node.get_target_write_path("target_path", "subdirectory")
+
+
+class TestSnapshotNode:
+    @pytest.fixture
+    def make_snapshot_node(self):
+        def _make(name: str) -> SnapshotNode:
+            return SnapshotNode(
+                resource_type=NodeType.Snapshot,
+                unique_id=f"snapshot.test_package.{name}",
+                name=name,
+                package_name="test_package",
+                schema="test_schema",
+                alias="test_alias",
+                fqn=["snapshots", name],
+                original_file_path="snapshots/s.yml",
+                checksum=FileHash.from_contents("checksum"),
+                path="s.yml",
+                database=None,
+                config=SnapshotConfig(strategy="check", unique_key="id", check_cols="all"),
+            )
+
+        return _make
+
+    def test_get_target_write_path(self, make_snapshot_node):
+        node = make_snapshot_node("legit_snap")
+        write_path = node.get_target_write_path("target_path", "subdirectory")
+        assert write_path == "target_path/subdirectory/test_package/snapshots/s.yml/legit_snap.sql"
+
+    def test_get_target_write_path_rejects_absolute_name(self, make_snapshot_node):
+        node = make_snapshot_node("/abs/elsewhere/snap")
+        with pytest.raises(CompilationError, match="must resolve to a path inside"):
+            node.get_target_write_path("target_path", "subdirectory")
+
+    def test_get_target_write_path_rejects_traversal_name(self, make_snapshot_node):
+        node = make_snapshot_node("../../../macros/elsewhere")
+        with pytest.raises(CompilationError, match="must resolve to a path inside"):
+            node.get_target_write_path("target_path", "subdirectory")
