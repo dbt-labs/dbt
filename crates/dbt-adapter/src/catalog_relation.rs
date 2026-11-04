@@ -366,9 +366,14 @@ impl CatalogRelation {
         .or_else(|| Self::get_model_config_value(model, "location_root", AdapterType::Databricks))
         .filter(|location_root| !location_root.trim().is_empty());
 
+        let file_format =
+            Self::get_model_config_value(model, "file_format", AdapterType::Databricks)
+                .unwrap_or_else(|| String::from(DELTA_TABLE_FORMAT));
+
         CatalogRelation {
             external_volume: location_root
                 .and_then(|root| Self::dbx_build_external_volume_for_location(model, &root)),
+            file_format: Some(file_format),
             ..Self::default_catalog_relation_databricks()
         }
     }
@@ -4829,6 +4834,25 @@ mod tests {
 
             assert_eq!(r.catalog_type, CatalogType::Unity);
             assert_eq!(r.external_volume.as_deref(), Some("s3://bucket/root/a"));
+        }
+    }
+
+    #[test]
+    fn dbx_default_relation_without_catalogs_honors_file_format() {
+        // Case is preserved to match dbt-databricks, which does not lowercase.
+        let conf = json!({ "file_format": "ICEBERG" });
+        let ms = [
+            model(AdapterType::Databricks, conf.clone()),
+            model_deprecated_config(conf),
+        ];
+        for m in ms {
+            let r =
+                CatalogRelation::from_model_config_and_catalogs(AdapterType::Databricks, &m, None)
+                    .unwrap();
+
+            assert_eq!(r.table_format, TableFormat::Default);
+            assert_eq!(r.catalog_type, CatalogType::Unity);
+            assert_eq!(r.file_format.as_deref(), Some("ICEBERG"));
         }
     }
 
