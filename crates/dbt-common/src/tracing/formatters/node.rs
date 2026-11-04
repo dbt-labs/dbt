@@ -41,9 +41,9 @@ pub fn get_node_display_alias<'a>(
 ) -> &'a str {
     match node_type {
         // Tests and unit tests always use `name` for display (contains original untruncated name).
-        // Checks and plugin nodes likewise: they have no relation, so `identifier` is empty and
-        // would display as nothing at all.
-        NodeType::Test | NodeType::UnitTest | NodeType::Check | NodeType::Plugin => name,
+        // Checks and experimental nodes likewise: they have no relation, so `identifier` is empty
+        // and would display as nothing at all.
+        NodeType::Test | NodeType::UnitTest | NodeType::Check | NodeType::Experimental => name,
         // Other nodes prefer `identifier` (database alias) with `name` as fallback
         _ => identifier.unwrap_or(name),
     }
@@ -517,10 +517,10 @@ impl<L: fmt::Display> fmt::Display for WithProgressField<L> {
 }
 
 /// Qualifier shown before a processed node's alias: schema for all nodes except sources,
-/// which use their source name, and plugin nodes, which write no relation, so their name
+/// which use their source name, and experimental nodes, which write no relation, so their name
 /// stands alone.
 fn node_processed_qualifier(node: &NodeProcessed, node_type: NodeType) -> &str {
-    if node_type == NodeType::Plugin {
+    if node_type == NodeType::Experimental {
         return "";
     }
     if node_type == NodeType::Source
@@ -575,10 +575,10 @@ impl fmt::Display for NodeProcessedStart<'_> {
     }
 }
 
-/// The node type a node's line shows: a plugin node's own kind, else its node type.
+/// The node type a node's line shows: an experimental node's own kind, else its node type.
 fn node_type_label(node: &NodeProcessed, pretty: bool) -> &str {
-    match node.plugin_type.as_deref() {
-        Some(kind) if node.node_type() == NodeType::Plugin => kind,
+    match node.experimental_type.as_deref() {
+        Some(kind) if node.node_type() == NodeType::Experimental => kind,
         _ if pretty => node.node_type().pretty(),
         _ => node.node_type().as_static_ref(),
     }
@@ -651,9 +651,9 @@ impl fmt::Display for NodeProcessedEnd<'_> {
         }
 
         // Get materialization string - use custom_materialization if materialization is Custom.
-        // Checks and plugin nodes materialize nothing, so they get no suffix — reporting one would
-        // claim a relation that is never written.
-        let materialization = if matches!(node_type, NodeType::Check | NodeType::Plugin) {
+        // Checks and experimental nodes materialize nothing, so they get no suffix — reporting one
+        // would claim a relation that is never written.
+        let materialization = if matches!(node_type, NodeType::Check | NodeType::Experimental) {
             None
         } else if node.materialization.is_some() {
             let mat = node.materialization();
@@ -1414,9 +1414,9 @@ mod tests {
         node
     }
 
-    /// A plugin node's lines name its own kind and show no schema or materialization.
+    /// An experimental node's lines name its own kind and show no schema or materialization.
     #[test]
-    fn plugin_node_lines_use_its_own_kind() {
+    fn experimental_node_lines_use_its_own_kind() {
         let mut node = NodeProcessed::start(
             "widget.project.orders_widget".to_string(),
             "orders_widget".to_string(),
@@ -1425,7 +1425,7 @@ mod tests {
             None,
             Some(NodeMaterialization::Analysis),
             None,
-            NodeType::Plugin,
+            NodeType::Experimental,
             Some(ExecutionPhase::Run),
             "models/widgets.yml".to_string(),
             None,
@@ -1434,7 +1434,7 @@ mod tests {
             true,
             None,
         );
-        node.plugin_type = Some("widget".to_string());
+        node.experimental_type = Some("widget".to_string());
         assert_eq!(
             NodeProcessedStart {
                 node: &node,
@@ -1452,7 +1452,7 @@ mod tests {
         }
         .to_string();
         assert!(line.contains("widget orders_widget"), "got {line}");
-        assert!(!line.contains("plugin"), "got {line}");
+        assert!(!line.contains("experimental"), "got {line}");
         assert!(!line.contains("analytics"), "got {line}");
         assert!(!line.contains("(analysis)"), "got {line}");
     }

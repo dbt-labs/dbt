@@ -9,8 +9,6 @@ use std::time::Instant;
 use crate::run_cache::run_cache_service::{
     CachedTestExecutionResult, HeuristicClock, TelemetryDispatcher,
 };
-use arrow::array::RecordBatch;
-use arrow_schema::SchemaRef;
 use dbt_adapter::relation::create_relation_from_node;
 use dbt_adapter::response::AdapterResponse;
 use dbt_adapter::{Adapter, AdapterStore};
@@ -48,6 +46,7 @@ use crate::task::Task;
 use crate::test_aggregation::{GenericTestRelationships, is_data_test_static_analysis_eligible};
 use crate::unit_test_schema::UnitTestSchemaState;
 use crate::visitor::SkipReason;
+use dbt_schemas::schemas::Preview;
 
 use dbt_schemas::schemas::common::DbtMaterialization;
 
@@ -202,8 +201,8 @@ pub struct TaskRunnerCtxInner {
     /// every task in this run.
     pub infer_schema_registry: Arc<dbt_common::infer_schema_registry::InferSchemaRegistry>,
     span_manager: Arc<SpanManager<FsResult<NodeStatus>, SkipReason>>,
-    /// Captured show batches for the LSP preview path; set by run_show, collected after the task loop.
-    pub preview_results: parking_lot::Mutex<Option<(Vec<RecordBatch>, SchemaRef)>>,
+    /// Captured show results; set by run_show, collected after the task loop.
+    pub preview_results: parking_lot::Mutex<Option<Preview>>,
     /// Error from a failed show query; set by run_show when execution fails, collected after the task loop.
     pub preview_error: parking_lot::Mutex<Option<String>>,
     /// Coordinates unit-test schema hydration and memoization for this invocation.

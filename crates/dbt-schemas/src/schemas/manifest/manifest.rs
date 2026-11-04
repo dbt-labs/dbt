@@ -2351,7 +2351,7 @@ mod tests {
             functions: BTreeMap::new(),
             checks: BTreeMap::new(),
             macros: BTreeMap::new(),
-            plugins: BTreeMap::new(),
+            experimentals: BTreeMap::new(),
             project_name: None,
         }
     }

@@ -63,9 +63,7 @@ pub fn convert_yml_to_scc_map(yml: YmlValue) -> SccHashMap<String, minijinja::Va
 }
 
 /// Converts a [dbt_yaml::Value] to a [minijinja::Value], preserving order of keys if the value is a mapping
-// TODO(anna): This now converts to an ordered map by using `ValueMap`, with the assertion that the key is a string.
-// But as I mentioned below, if we implement Object for IndexMap<String, minijinja::Value>, then we don't have to wrap the
-// key in a value.
+// TODO(anna): Clean this up by using IndexMap<String, Value>?
 // TODO: We are losing span info for error reporting
 fn convert_yml_value_ordered(yml: YmlValue) -> minijinja::Value {
     match yml {

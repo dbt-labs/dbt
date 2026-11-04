@@ -1273,9 +1273,9 @@ impl BuildArgs {
                 ClapResourceType::UnitTest,
                 ClapResourceType::Function,
                 ClapResourceType::Check,
-                // Plugin nodes are never selected by default, so this only keeps the ones
+                // Experimental nodes are never selected by default, so this only keeps the ones
                 // selected directly.
-                ClapResourceType::Plugin,
+                ClapResourceType::Experimental,
             ];
             if eval_args.export_saved_queries {
                 eval_args.resource_types.push(ClapResourceType::SavedQuery);
@@ -2847,6 +2847,7 @@ impl CommonArgs {
         });
         let show = resolve_show_arg(self.show.as_slice(), self.get_quiet());
         let replay = pick_replay_mode(self, arg.io.invocation_id, out_dir);
+        let send_anonymous_usage_stats = self.get_send_anonymous_usage_stats();
         EvalArgs {
             command: arg.command,
             io: IoArgs {
@@ -2858,7 +2859,7 @@ impl CommonArgs {
                 in_dir: in_dir.to_path_buf(),
                 out_dir: out_dir.to_path_buf(),
                 db_root: None,
-                send_anonymous_usage_stats: self.get_send_anonymous_usage_stats(),
+                send_anonymous_usage_stats,
                 status_reporter: arg.io.status_reporter.clone(),
                 log_format: self.log_format,
                 log_format_file: self.log_format_file,
@@ -2957,7 +2958,7 @@ impl CommonArgs {
             log_path: self.log_path.clone(),
             project_dir: self.project_dir.clone(),
             quiet: self.get_quiet(),
-            send_anonymous_usage_stats: self.get_send_anonymous_usage_stats(),
+            send_anonymous_usage_stats,
             write_json: if (self.write_metadata && !self.write_index) || self.no_write_json {
                 false
             } else {
@@ -3022,31 +3023,41 @@ impl CommonArgs {
         }
     }
 
-    pub fn get_send_anonymous_usage_stats(&self) -> bool {
-        if self.no_send_anonymous_usage_stats {
-            false
-        } else {
-            self.send_anonymous_usage_stats
-        }
-    }
-
-    /// Resolve send_anonymous_usage_stats with precedence:
-    /// `--no-send-anonymous-usage-stats` > DBT_SEND_ANONYMOUS_USAGE_STATS env > project yaml flags > true
+    /// Resolve send_anonymous_usage_stats like dbt Core, with precedence:
+    /// `DO_NOT_TRACK` > `--no-send-anonymous-usage-stats` > DBT_SEND_ANONYMOUS_USAGE_STATS env
+    /// > project yaml flags > true
+    ///
+    /// Finds `dbt_project.yml` like [`in_out_dir`], so callers that run before the project
+    /// directory is resolved get the same answer.
     ///
     /// Note: the clap flag has `default_value_t = true`, so an explicit
     /// `--send-anonymous-usage-stats=true` is indistinguishable from the default and will
     /// NOT override a YAML `false`. Only the explicit opt-out (`--no-`) and the env var are
     /// detectable here.
-    pub fn get_send_anonymous_usage_stats_for_project(&self, project_dir: &Path) -> bool {
-        if self.no_send_anonymous_usage_stats {
+    pub fn get_send_anonymous_usage_stats(&self) -> bool {
+        let env_bool = |name| {
+            env::var_os(name).and_then(|value| {
+                BoolishValueParser::new()
+                    .parse_ref(&clap::Command::new("dbt"), None, value.as_ref())
+                    .ok()
+            })
+        };
+        // `send_anonymous_usage_stats` is false only when the env var says so, or when the
+        // args were not parsed from the CLI (e.g. `CommonArgs::default()` for `dbt lsp`).
+        if env_bool("DO_NOT_TRACK") == Some(true)
+            || self.no_send_anonymous_usage_stats
+            || !self.send_anonymous_usage_stats
+        {
             return false;
         }
-        if let Some(value) = env::var_os("DBT_SEND_ANONYMOUS_USAGE_STATS") {
-            return BoolishValueParser::new()
-                .parse_ref(&clap::Command::new("dbt"), None, value.as_ref())
-                .unwrap_or(true);
+        if let Some(value) = env_bool("DBT_SEND_ANONYMOUS_USAGE_STATS") {
+            return value;
         }
-        send_anonymous_usage_stats_from_yaml(&project_dir.join(DBT_PROJECT_YML)).unwrap_or(true)
+        self.project_dir
+            .clone()
+            .or_else(|| determine_project_dir(&[], DBT_PROJECT_YML).ok())
+            .and_then(|dir| send_anonymous_usage_stats_from_yaml(&dir.join(DBT_PROJECT_YML)))
+            .unwrap_or(true)
     }
 
     pub fn get_introspect(&self) -> bool {
@@ -4157,9 +4168,31 @@ mod tests {
         assert!(send_anonymous_usage_stats_from_yaml(&path).is_none());
     }
 
-    /// Serializes tests that mutate `DBT_SEND_ANONYMOUS_USAGE_STATS`, since env vars are
-    /// process-global and Rust runs tests in parallel within a binary.
+    /// Serializes tests that mutate `DBT_SEND_ANONYMOUS_USAGE_STATS` or `DO_NOT_TRACK`, since
+    /// env vars are process-global and Rust runs tests in parallel within a binary.
     static SEND_STATS_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Takes the env lock and clears both consent env vars, so ambient values (CI sets
+    /// `DO_NOT_TRACK=1` in some jobs) don't leak in.
+    #[allow(clippy::disallowed_methods)]
+    fn lock_send_stats_env() -> std::sync::MutexGuard<'static, ()> {
+        let guard = SEND_STATS_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { env::remove_var("DBT_SEND_ANONYMOUS_USAGE_STATS") };
+        unsafe { env::remove_var("DO_NOT_TRACK") };
+        guard
+    }
+
+    /// `CommonArgs` as clap parses `--project-dir <dir>` with no other flags:
+    /// `send_anonymous_usage_stats` defaults to true.
+    fn cli_default_args(project_dir: &Path) -> CommonArgs {
+        CommonArgs {
+            send_anonymous_usage_stats: true,
+            project_dir: Some(project_dir.to_path_buf()),
+            ..Default::default()
+        }
+    }
 
     fn write_yaml_with_stats(dir: &Path, value: bool) -> PathBuf {
         let path = dir.join("dbt_project.yml");
@@ -4172,70 +4205,74 @@ mod tests {
     }
 
     #[test]
-    fn get_send_anonymous_usage_stats_for_project_opt_out_wins() {
+    fn get_send_anonymous_usage_stats_opt_out_wins() {
+        let _guard = lock_send_stats_env();
         let dir = tempfile::tempdir().unwrap();
         // yaml says true, but the explicit `--no-` opt-out wins.
         write_yaml_with_stats(dir.path(), true);
         let args = CommonArgs {
             no_send_anonymous_usage_stats: true,
-            ..Default::default()
+            ..cli_default_args(dir.path())
         };
-        assert!(!args.get_send_anonymous_usage_stats_for_project(dir.path()));
+        assert!(!args.get_send_anonymous_usage_stats());
     }
 
     #[test]
     #[allow(clippy::disallowed_methods)]
-    fn get_send_anonymous_usage_stats_for_project_env_false_overrides_yaml_true() {
-        let _guard = SEND_STATS_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+    fn get_send_anonymous_usage_stats_env_false_overrides_yaml_true() {
+        let _guard = lock_send_stats_env();
         let dir = tempfile::tempdir().unwrap();
         write_yaml_with_stats(dir.path(), true);
-        let args = CommonArgs::default();
+        let args = cli_default_args(dir.path());
         unsafe { env::set_var("DBT_SEND_ANONYMOUS_USAGE_STATS", "false") };
-        let result = args.get_send_anonymous_usage_stats_for_project(dir.path());
+        let result = args.get_send_anonymous_usage_stats();
         unsafe { env::remove_var("DBT_SEND_ANONYMOUS_USAGE_STATS") };
         assert!(!result);
     }
 
     #[test]
     #[allow(clippy::disallowed_methods)]
-    fn get_send_anonymous_usage_stats_for_project_env_true_overrides_yaml_false() {
-        let _guard = SEND_STATS_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+    fn get_send_anonymous_usage_stats_env_true_overrides_yaml_false() {
+        let _guard = lock_send_stats_env();
         let dir = tempfile::tempdir().unwrap();
         write_yaml_with_stats(dir.path(), false);
-        let args = CommonArgs::default();
+        let args = cli_default_args(dir.path());
         unsafe { env::set_var("DBT_SEND_ANONYMOUS_USAGE_STATS", "true") };
-        let result = args.get_send_anonymous_usage_stats_for_project(dir.path());
+        let result = args.get_send_anonymous_usage_stats();
         unsafe { env::remove_var("DBT_SEND_ANONYMOUS_USAGE_STATS") };
         assert!(result);
     }
 
     #[test]
-    fn get_send_anonymous_usage_stats_for_project_yaml_only_fallback() {
-        let _guard = SEND_STATS_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        // Ensure no ambient env var leaks in.
-        unsafe { env::remove_var("DBT_SEND_ANONYMOUS_USAGE_STATS") };
+    fn get_send_anonymous_usage_stats_yaml_only_fallback() {
+        let _guard = lock_send_stats_env();
         let dir = tempfile::tempdir().unwrap();
         write_yaml_with_stats(dir.path(), false);
-        let args = CommonArgs::default();
-        assert!(!args.get_send_anonymous_usage_stats_for_project(dir.path()));
+        let args = cli_default_args(dir.path());
+        assert!(!args.get_send_anonymous_usage_stats());
     }
 
     #[test]
-    fn get_send_anonymous_usage_stats_for_project_defaults_true() {
-        let _guard = SEND_STATS_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        unsafe { env::remove_var("DBT_SEND_ANONYMOUS_USAGE_STATS") };
+    fn get_send_anonymous_usage_stats_defaults_true() {
+        let _guard = lock_send_stats_env();
         // No yaml file, no env, no opt-out → default true.
         let dir = tempfile::tempdir().unwrap();
-        let args = CommonArgs::default();
-        assert!(args.get_send_anonymous_usage_stats_for_project(dir.path()));
+        let args = cli_default_args(dir.path());
+        assert!(args.get_send_anonymous_usage_stats());
+    }
+
+    #[test]
+    fn get_send_anonymous_usage_stats_unparsed_args_stay_off() {
+        let _guard = lock_send_stats_env();
+        // `dbt lsp`, `dbt wizard` and `dbt agent` build `CommonArgs::default()`, which must
+        // keep Vortex off whatever the project says.
+        let dir = tempfile::tempdir().unwrap();
+        write_yaml_with_stats(dir.path(), true);
+        let args = CommonArgs {
+            project_dir: Some(dir.path().to_path_buf()),
+            ..Default::default()
+        };
+        assert!(!args.get_send_anonymous_usage_stats());
     }
 
     fn parse_internal_args(args: &[&str]) -> Result<InternalArgs, clap::Error> {

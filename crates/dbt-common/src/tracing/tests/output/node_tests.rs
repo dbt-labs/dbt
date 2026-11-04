@@ -70,7 +70,7 @@ fn node_results(cases: &mut Vec<Case>) {
         SemanticModel,
         Function,
         Check,
-        Plugin,
+        Experimental,
     }) {
         match node_type {
             NodeType::Model => {
@@ -302,10 +302,10 @@ fn node_results(cases: &mut Vec<Case>) {
                         ),
                 );
             }
-            NodeType::Plugin => {
-                // Plugin nodes show their own kind, and write no relation.
+            NodeType::Experimental => {
+                // Experimental nodes show their own kind, and write no relation.
                 cases.push(
-                    node_case("plugin node succeeded", node(NodeType::Plugin))
+                    node_case("experimental node succeeded", node(NodeType::Experimental))
                         .expect(
                             DBT_LOG,
                             indoc! {"

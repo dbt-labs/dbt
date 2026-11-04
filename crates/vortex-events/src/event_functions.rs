@@ -464,11 +464,9 @@ pub fn resource_counts_event(
     let unit_test_count = resolved_state.nodes.unit_tests.len() as i32;
     let exposure_count = resolved_state.nodes.exposures.len() as i32;
     let check_count = resolved_state.nodes.checks.len() as i32;
-
-    // to-be-implemented
-    let metric_count = 0;
-    let semantic_model_count = 0;
-    let saved_query_count = 0;
+    let metric_count = resolved_state.nodes.metrics.len() as i32;
+    let semantic_model_count = resolved_state.nodes.semantic_models.len() as i32;
+    let saved_query_count = resolved_state.nodes.saved_queries.len() as i32;
 
     let message = ResourceCounts {
         // REQUIRED invocation_id - globally unique identifier

@@ -42,7 +42,7 @@ impl NodeType {
             Self::SemanticModel => "semantic_model",
             Self::Function => "function",
             Self::Check => "check",
-            Self::Plugin => "plugin",
+            Self::Experimental => "experimental",
         }
     }
 }
@@ -67,7 +67,7 @@ impl NodeType {
             Self::SemanticModel => "semantic model",
             Self::Function => "function",
             Self::Check => "check",
-            Self::Plugin => "plugin",
+            Self::Experimental => "experimental",
         }
     }
 }
@@ -535,7 +535,7 @@ impl NodeProcessed {
             None, // node_index assigned by the span builder at start of processing
             None, // node_count_total assigned by the span builder at start of processing
             None, // adapter
-            None, // plugin_type
+            None, // experimental_type
             None, // adapter_response
             None, // node_outcome_detail
         )

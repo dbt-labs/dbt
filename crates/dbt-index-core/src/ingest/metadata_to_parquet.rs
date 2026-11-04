@@ -675,7 +675,7 @@ pub fn extract_json_field_raw<'a>(json: &'a str, key: &str) -> Option<&'a str> {
 /// A model payload reduced to the fields the parse-node ingest reads.
 ///
 /// Model payloads are multi-KB — mostly `raw_code`, `compiled_code` and the
-/// per-column documentation — so rather than pay for a full `simd_json` parse of
+/// per-column documentation — so rather than pay for a full JSON parse of
 /// the whole thing this keeps two fields and drops the rest.
 ///
 /// Dropping `raw_code` from `__common_attr__` keeps the trim's point (model
@@ -1146,7 +1146,7 @@ fn write_parse_nodes(
         for batch in &batches {
             // Parse payloads selectively: models only have `config` in their payload
             // (no raw_code, meta, patch_path, etc.), so we avoid the expensive full
-            // simd_json parse for them and extract config as a raw JSON string instead.
+            // JSON parse for them and extract config as a raw JSON string instead.
             let payloads: Vec<Value> = timings::time(timings::Stage::PayloadParse, || {
                 let payload_col = str_col(batch, "payload");
                 let rt_col_inner = str_col(batch, "resource_type");
@@ -1165,10 +1165,7 @@ fn write_parse_nodes(
                             // Non-model nodes (macros, docs, sources, etc.): full parse needed.
                             payload_col
                                 .filter(|c| !c.is_null(i))
-                                .and_then(|c| {
-                                    let mut buf = c.value(i).as_bytes().to_vec();
-                                    simd_json::serde::from_slice::<Value>(&mut buf).ok()
-                                })
+                                .and_then(|c| serde_json::from_str::<Value>(c.value(i)).ok())
                                 .unwrap_or(Value::Null)
                         }
                     })

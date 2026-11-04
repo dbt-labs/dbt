@@ -37,7 +37,7 @@ use dbt_metadata::parse_cache::{
     determine_cache_state_from_previous_previous_resolved_nodes, drop_all_unchanged_nodes,
 };
 use dbt_parser::args::ResolveArgs;
-use dbt_parser::plugin::ResolvePlugins;
+use dbt_parser::experimental::ResolveExperimentals;
 use dbt_parser::resolver_hooks::ResolverHooks;
 use dbt_schema_store::SchemaStoreTrait;
 use dbt_schemas::{
@@ -128,7 +128,7 @@ async fn resolve_phase(
     token: &CancellationToken,
     jinja_type_checking_event_listener_factory: Arc<dyn JinjaTypeCheckingEventListenerFactory>,
     resolver_hooks: Arc<dyn ResolverHooks>,
-    plugins: ResolvePlugins,
+    experimentals: ResolveExperimentals,
 ) -> FsResult<(ResolverState, Arc<JinjaEnv>)> {
     use dbt_parser::resolver::resolve;
     use dbt_schemas::state::ResolvedNodes;
@@ -189,7 +189,7 @@ async fn resolve_phase(
         token,
         jinja_type_checking_event_listener_factory,
         resolver_hooks,
-        plugins,
+        experimentals,
         loaded_project.jinja_factory.clone(),
     )
     .await?;
@@ -584,7 +584,7 @@ impl DbtLoadedProject {
         token: &CancellationToken,
         jinja_type_checking_event_listener_factory: Arc<dyn JinjaTypeCheckingEventListenerFactory>,
         resolver_hooks: Arc<dyn ResolverHooks>,
-        plugins: ResolvePlugins,
+        experimentals: ResolveExperimentals,
     ) -> FsResult<(ResolverState, Arc<JinjaEnv>)> {
         resolve_phase(
             self,
@@ -594,7 +594,7 @@ impl DbtLoadedProject {
             token,
             jinja_type_checking_event_listener_factory,
             resolver_hooks,
-            plugins,
+            experimentals,
         )
         .await
     }

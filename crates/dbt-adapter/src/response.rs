@@ -144,6 +144,26 @@ impl AdapterResponse {
         }
     }
 
+    /// The response with its execution metrics replaced, e.g. by totals over microbatch batches.
+    pub fn with_execution_metrics(mut self, metrics: &ExecutionMetrics) -> Self {
+        for (key, value) in [
+            (KEY_ROWS_AFFECTED, metrics.rows_affected),
+            (KEY_BYTES_PROCESSED, metrics.bytes_processed),
+            (KEY_BYTES_BILLED, metrics.bytes_billed),
+            (KEY_SLOT_MS, metrics.slot_ms),
+        ] {
+            match value {
+                Some(value) => {
+                    self.0.insert(Value::from(key), Value::from(value));
+                }
+                None => {
+                    self.0.shift_remove(&Value::from(key));
+                }
+            }
+        }
+        self
+    }
+
     /// The response in its telemetry form, in one pass over its keys.
     ///
     /// `query_id` and `code` become typed fields when they are strings; an empty `code` is
@@ -865,6 +885,35 @@ mod from_record_batch_tests {
             ["bytes_billed", "bytes_processed", "slot_ms"]
         );
         assert_eq!(response.to_telemetry().query_id.as_deref(), Some("job-abc"));
+    }
+
+    #[test]
+    fn test_with_execution_metrics_replaces_the_telemetry_metrics() {
+        let response = bigquery(
+            2,
+            &[
+                ("BIGQUERY:Statistics:Query:StatementType", "SELECT"),
+                ("BIGQUERY:Statistics:Query:TotalBytesProcessed", "1536"),
+                ("BIGQUERY:Statistics:Query:TotalBytesBilled", "10485760"),
+                ("BIGQUERY:Statistics:Query:SlotMillis", "7167"),
+            ],
+        );
+        let totals = ExecutionMetrics {
+            rows_affected: Some(5),
+            bytes_processed: Some(3072),
+            bytes_billed: None,
+            slot_ms: Some(9000),
+        };
+
+        let response = response.with_execution_metrics(&totals);
+
+        assert_eq!(response.execution_metrics(), totals);
+        let telemetry = response.to_telemetry();
+        assert_eq!(telemetry.code.as_deref(), Some("SELECT"));
+        assert_eq!(
+            telemetry.extra.into_keys().collect::<Vec<_>>(),
+            ["bytes_processed", "slot_ms"]
+        );
     }
 
     #[test]

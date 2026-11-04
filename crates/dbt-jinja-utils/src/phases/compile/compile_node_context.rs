@@ -210,7 +210,10 @@ where
                     .unwrap(),
                 ))
                 .into_value()
-            } else if matches!(model.materialized(), DbtMaterialization::Ephemeral) {
+            } else if matches!(
+                model.materialized(),
+                DbtMaterialization::Ephemeral | DbtMaterialization::Inline
+            ) {
                 // Build `this` directly as the physical relation
                 // (database.schema.identifier) rather than using the relation the
                 // resolver stores for this node. The stored relation is typed so

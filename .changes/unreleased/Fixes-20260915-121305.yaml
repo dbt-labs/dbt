@@ -1,7 +1,0 @@
-kind: Fixes
-body: Set tags on operation nodes so on-run-start/on-run-end hooks are discoverable when running dbt-core with --use-v2-parser
-time: 2026-09-15T12:13:05.012732-06:00
-custom:
-    author: aiguofer
-    issue: "16310"
-    project: dbt-core

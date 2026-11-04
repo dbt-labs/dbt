@@ -13,6 +13,7 @@ edition.workspace = true
 workspace = true
 
 [dependencies]
+arrow = { workspace = true }
 blake3 = { workspace = true }
 chrono = { workspace = true }
 chrono-tz = { workspace = true }

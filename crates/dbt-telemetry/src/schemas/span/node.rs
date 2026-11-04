@@ -110,8 +110,8 @@ struct NodeProcessedJsonPayload {
     pub node_count_total: Option<u32>,
     /// Adapter type the node runs on.
     pub adapter: Option<String>,
-    /// Kind of node, for nodes a plugin adds.
-    pub plugin_type: Option<String>,
+    /// Kind of node, for nodes an experimental adds.
+    pub experimental_type: Option<String>,
     /// Response of the node's `main` statement.
     pub adapter_response: Option<NodeAdapterResponse>,
 }
@@ -504,7 +504,7 @@ impl ArrowSerializableTelemetryEvent for NodeProcessed {
                 node_index: self.node_index,
                 node_count_total: self.node_count_total,
                 adapter: self.adapter.clone(),
-                plugin_type: self.plugin_type.clone(),
+                experimental_type: self.experimental_type.clone(),
                 adapter_response: self.adapter_response.clone(),
             })
             .unwrap_or_else(|_| {
@@ -618,7 +618,7 @@ impl ArrowSerializableTelemetryEvent for NodeProcessed {
             node_index: json_payload.node_index,
             node_count_total: json_payload.node_count_total,
             adapter: json_payload.adapter,
-            plugin_type: json_payload.plugin_type,
+            experimental_type: json_payload.experimental_type,
             adapter_response: json_payload.adapter_response,
         })
     }

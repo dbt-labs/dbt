@@ -1894,6 +1894,9 @@ impl<'a> AllPhasesExecutor<'a> {
 
         // Save artifact for callers
         self.captured_artifacts.run_results = Some(run_results_artifact);
+        if let Some(Ok(preview)) = &run_task_results.preview {
+            self.captured_artifacts.preview = Some(preview.clone());
+        }
 
         if self.arg.write_metadata {
             write_runtime_results_parquet(
@@ -2286,17 +2289,13 @@ async fn run_docs_generate(
         });
     let providers = (feature_stack.index.providers_factory)(backend);
 
-    let project_dir = &eval_arg.io.in_dir;
     let options = dbt_docs_server::ExportOptions {
         info_schema_dir,
         output_dir,
         duckdb_cdn_base: generate_args.duckdb_cdn_base,
         // Consent is resolved here because the project and profile are only
         // readable on this machine; the browser reads the answer, not the inputs.
-        analytics_enabled: std::env::var("DO_NOT_TRACK").as_deref() != Ok("1")
-            && cli
-                .common_args()
-                .get_send_anonymous_usage_stats_for_project(project_dir),
+        analytics_enabled: cli.common_args().get_send_anonymous_usage_stats(),
     };
 
     let summary = match dbt_docs_server::export_site(&providers, &options) {
@@ -2514,8 +2513,7 @@ async fn run_docs_serve(
     common_args: &dbt_clap_core::CommonArgs,
 ) -> FsResult<()> {
     let has_dbt_state = common_args.get_manage_state(project_dir, false);
-    let send_anonymous_usage_stats =
-        common_args.get_send_anonymous_usage_stats_for_project(project_dir);
+    let send_anonymous_usage_stats = common_args.get_send_anonymous_usage_stats();
     let args = dbt_docs_server::DocsServeArgs {
         target_path: serve_args.target_path,
         host: serve_args.host,
@@ -2576,8 +2574,7 @@ async fn run_docs_serve(
             info_schema_dir: info_schema_dir.clone(),
             output_dir: site_dir.clone(),
             duckdb_cdn_base: None,
-            analytics_enabled: std::env::var("DO_NOT_TRACK").as_deref() != Ok("1")
-                && send_anonymous_usage_stats,
+            analytics_enabled: send_anonymous_usage_stats,
         };
         match dbt_docs_server::export_site(&providers, &options) {
             Ok(summary) => eprintln!(

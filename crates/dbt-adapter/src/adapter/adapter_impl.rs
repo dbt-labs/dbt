@@ -917,7 +917,7 @@ impl AdapterImpl {
             Databricks => {
                 let original = Arc::new(last_batch);
                 let display = original.as_ref().clone().jsonify_nested_columns();
-                AgateTable::from_record_batch_with_original(Arc::new(display), original)
+                AgateTable::from_record_batch_impl(Arc::new(display), Some(original), None)
             }
             _ => AgateTable::from_record_batch(Arc::new(last_batch)),
         };
@@ -2550,6 +2550,17 @@ impl AdapterImpl {
     ) -> bool {
         match self.inner_adapter() {
             Impl(..) => metadata::clickhouse::can_exchange(self, state, schema, rel_type, token),
+            Replay(..) => false,
+        }
+    }
+
+    /// ClickHouse `adapter.supports_atomic_exchange()` — see
+    /// [`metadata::clickhouse::ClickHouseCapabilities::atomic_exchange`].
+    pub fn supports_atomic_exchange(&self, state: &State, token: CancellationToken) -> bool {
+        match self.inner_adapter() {
+            Impl(..) => {
+                metadata::clickhouse::server_capabilities(self, state, token).atomic_exchange
+            }
             Replay(..) => false,
         }
     }
@@ -5484,9 +5495,15 @@ impl AdapterImpl {
                     ));
                 }
 
-                if let Some(max_bytes_billed) = self
-                    .get_db_config("maximum_bytes_billed")
-                    .and_then(|v| v.parse::<i64>().ok())
+                let enforce_max_bytes_billed = self
+                    .behavior_object()
+                    .get_value(&Value::from("bigquery_enforce_maximum_bytes_billed"))
+                    .is_some_and(|flag| flag.is_true());
+
+                if enforce_max_bytes_billed
+                    && let Some(max_bytes_billed) = self
+                        .get_db_config("maximum_bytes_billed")
+                        .and_then(|v| v.parse::<i64>().ok())
                 {
                     options.push((
                         QUERY_MAX_BYTES_BILLED.to_string(),
@@ -7784,9 +7801,14 @@ mod tests {
     }
 
     #[test]
-    fn test_bigquery_maximum_bytes_billed_is_applied() {
+    fn test_bigquery_maximum_bytes_billed_is_applied_when_flag_enabled() {
         let config = Mapping::from_iter([("maximum_bytes_billed".into(), 1_000_000_i64.into())]);
-        let adapter = AdapterImpl::new(build_engine(Bigquery, config), None);
+        let project_flags =
+            BTreeMap::from([("bigquery_enforce_maximum_bytes_billed".to_string(), true)]);
+        let adapter = AdapterImpl::new(
+            build_engine_with_behavior(Bigquery, config, project_flags),
+            None,
+        );
         let env = Environment::new();
         let state = State::new_for_env(&env);
         let options = adapter.get_adbc_execute_options(&state);
@@ -7796,6 +7818,16 @@ mod tests {
                 .any(|(k, v)| k == QUERY_MAX_BYTES_BILLED
                     && matches!(v, OptionValue::Int(1_000_000)))
         );
+    }
+
+    #[test]
+    fn test_bigquery_maximum_bytes_billed_is_not_applied_by_default() {
+        let config = Mapping::from_iter([("maximum_bytes_billed".into(), 1_000_000_i64.into())]);
+        let adapter = AdapterImpl::new(build_engine(Bigquery, config), None);
+        let env = Environment::new();
+        let state = State::new_for_env(&env);
+        let options = adapter.get_adbc_execute_options(&state);
+        assert!(!options.iter().any(|(k, _)| k == QUERY_MAX_BYTES_BILLED));
     }
 
     #[test]

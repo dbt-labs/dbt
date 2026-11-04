@@ -26,6 +26,7 @@ const ALL_PLATFORMS: &[&str] = &[
     "bigquery",
     "duckdb",
     "lakecompute",
+    "spark",
 ];
 
 const TARGET_FILE_SIZES: &[&str] = &["AUTO", "16MB", "32MB", "64MB", "128MB"];
@@ -297,6 +298,10 @@ const UNITY_LAKE_COMPUTE_FIELDS: &[FieldSpec] = &[
 const HIVE_METASTORE_DATABRICKS_FIELDS: &[FieldSpec] =
     &[FieldSpec::enumerated("file_format", HIVE_METASTORE_FILE_FORMATS).required()];
 
+const SPARK_ICEBERG_FIELDS: &[FieldSpec] = &[FieldSpec::string("catalog_database")
+    .non_empty()
+    .doc("Preconfigured Spark catalog name. Defaults to the logical catalog name.")];
+
 const BIGLAKE_BIGQUERY_FIELDS: &[FieldSpec] = &[
     FieldSpec::string("external_volume")
         .json_schema_required_unless("lakehouse_catalog")
@@ -379,23 +384,25 @@ const CATALOG_SCHEMAS: &[CatalogTypeSchema] = &[
     CatalogTypeSchema {
         catalog_type: CatalogType::Glue,
         table_format: "iceberg",
-        description: "AWS Glue catalog. Supports snowflake and/or duckdb connection blocks.",
+        description: "AWS Glue catalog. Supports snowflake, duckdb, lakecompute, and/or spark connection blocks.",
         presence: ConfigPresence::AtLeastOne,
         platforms: &[
             PlatformBlock::new("snowflake", LINKED_SNOWFLAKE_FIELDS),
             PlatformBlock::new("duckdb", DUCKDB_ICEBERG_FIELDS),
             PlatformBlock::new("lakecompute", GLUE_LAKE_COMPUTE_FIELDS),
+            PlatformBlock::new("spark", SPARK_ICEBERG_FIELDS),
         ],
     },
     CatalogTypeSchema {
         catalog_type: CatalogType::IcebergRest,
         table_format: "iceberg",
-        description: "Iceberg REST catalog. Supports snowflake and/or duckdb connection blocks.",
+        description: "Iceberg REST catalog. Supports snowflake, duckdb, lakecompute, and/or spark connection blocks.",
         presence: ConfigPresence::AtLeastOne,
         platforms: &[
             PlatformBlock::new("snowflake", LINKED_SNOWFLAKE_FIELDS),
             PlatformBlock::new("duckdb", DUCKDB_ICEBERG_FIELDS),
             PlatformBlock::new("lakecompute", DUCKDB_ICEBERG_FIELDS),
+            PlatformBlock::new("spark", SPARK_ICEBERG_FIELDS),
         ],
     },
     CatalogTypeSchema {
@@ -764,6 +771,7 @@ pub enum CatalogType {
     SnowflakeNative,
     BigqueryNative,
     DuckdbNative,
+    SparkNative,
 }
 
 impl CatalogType {
@@ -808,6 +816,7 @@ impl CatalogType {
             Self::SnowflakeNative => "INFO_SCHEMA",
             Self::BigqueryNative => "INFO_SCHEMA",
             Self::DuckdbNative => "duckdb",
+            Self::SparkNative => "spark",
         }
     }
 
@@ -836,7 +845,8 @@ impl CatalogType {
             Self::DuckLake
             | Self::LocalFilesystem
             | Self::BiglakeMetastore
-            | Self::HiveMetastore => false,
+            | Self::HiveMetastore
+            | Self::SparkNative => false,
             // Native platform storage is not readable by an external engine at all --
             // this is the warehouse-native case the check exists to catch.
             Self::SnowflakeNative | Self::BigqueryNative | Self::DuckdbNative => false,
@@ -864,7 +874,8 @@ impl CatalogType {
             | Self::SnowflakeBuiltIn
             | Self::SnowflakeNative
             | Self::BigqueryNative
-            | Self::DuckdbNative => false,
+            | Self::DuckdbNative
+            | Self::SparkNative => false,
         }
     }
 
@@ -882,6 +893,7 @@ impl CatalogType {
             "local_filesystem" => Self::LocalFilesystem,
             "BUILT_IN" => Self::SnowflakeBuiltIn,
             "duckdb" => Self::DuckdbNative,
+            "spark" => Self::SparkNative,
             "INFO_SCHEMA" => match adapter_type {
                 dbt_adapter_core::AdapterType::Bigquery => Self::BigqueryNative,
                 dbt_adapter_core::AdapterType::Snowflake => Self::SnowflakeNative,
@@ -984,7 +996,8 @@ pub trait PhysicalFormatResolver {
                 | CatalogType::SnowflakeBuiltIn
                 | CatalogType::SnowflakeNative
                 | CatalogType::BigqueryNative
-                | CatalogType::DuckdbNative => PhysicalTableFormat::Default,
+                | CatalogType::DuckdbNative
+                | CatalogType::SparkNative => PhysicalTableFormat::Default,
                 CatalogType::DuckLake => PhysicalTableFormat::DuckLake,
             },
             TableFormat::Iceberg => match self.catalog_type() {
@@ -998,7 +1011,8 @@ pub trait PhysicalFormatResolver {
                 | CatalogType::SnowflakeBuiltIn
                 | CatalogType::SnowflakeNative
                 | CatalogType::BigqueryNative
-                | CatalogType::DuckdbNative => PhysicalTableFormat::Iceberg,
+                | CatalogType::DuckdbNative
+                | CatalogType::SparkNative => PhysicalTableFormat::Iceberg,
                 CatalogType::DuckLake => PhysicalTableFormat::DuckLake,
             },
         }
@@ -1535,7 +1549,8 @@ impl CatalogRegistry {
             CatalogType::SnowflakeBuiltIn
             | CatalogType::SnowflakeNative
             | CatalogType::BigqueryNative
-            | CatalogType::DuckdbNative => {
+            | CatalogType::DuckdbNative
+            | CatalogType::SparkNative => {
                 unreachable!(
                     "catalogs.yml has no support for an explicit catalog type of {}",
                     catalog.catalog_type.as_str()
@@ -3690,5 +3705,54 @@ catalogs:
             msg.contains("Key 'meta' must be a mapping"),
             "unexpected error: {msg}"
         );
+    }
+
+    #[test]
+    fn spark_glue_catalog_is_valid() {
+        parse_and_validate(
+            r#"
+catalogs:
+  - name: glue_prod
+    type: glue
+    table_format: iceberg
+    config:
+      spark:
+        catalog_database: prod_glue
+"#,
+        )
+        .expect("Spark Glue catalog should validate");
+    }
+
+    #[test]
+    fn spark_iceberg_rest_catalog_is_valid() {
+        parse_and_validate(
+            r#"
+catalogs:
+  - name: polaris
+    type: iceberg_rest
+    table_format: iceberg
+    config:
+      spark: {}
+"#,
+        )
+        .expect("Spark Iceberg REST catalog should validate");
+    }
+
+    #[test]
+    fn spark_iceberg_catalog_rejects_inline_connection_fields() {
+        let result = parse_and_validate(
+            r#"
+catalogs:
+  - name: polaris
+    type: iceberg_rest
+    table_format: iceberg
+    config:
+      spark:
+        endpoint: https://example.com/api/catalog
+"#,
+        );
+        let message = format!("{result:?}");
+        assert!(result.is_err());
+        assert!(message.contains("Unknown key 'endpoint'"));
     }
 }

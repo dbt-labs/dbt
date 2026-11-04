@@ -205,6 +205,9 @@ struct DbtRunnerResult {
     /// `manifest`, `list`, `sources` or `run_results`; `None` if nothing was captured.
     result_kind: Option<String>,
     result_msgpack: Option<Py<PyBytes>>,
+    /// `show`'s previewed rows as one Arrow IPC stream, in chunks (schema, each batch, end
+    /// marker) so no single allocation holds it all. `None` unless a show ran to completion.
+    preview: Option<Vec<Py<PyBytes>>>,
     /// Kept off `result` so that stays dbt-core-compatible; `--write-catalog` is
     /// global, so any command can populate this.
     catalog_msgpack: Option<Py<PyBytes>>,
@@ -265,6 +268,24 @@ fn build_catalog_msgpack(
         .transpose()
 }
 
+fn build_preview(
+    py: Python<'_>,
+    exec: &mut DbtCommandExecutionArtifacts,
+) -> PyResult<Option<Vec<Py<PyBytes>>>> {
+    let Some(preview) = exec.preview.take() else {
+        return Ok(None);
+    };
+    let chunks = preview.to_ipc_chunks().map_err(|e| {
+        pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to encode show preview: {e}"))
+    })?;
+    Ok(Some(
+        chunks
+            .iter()
+            .map(|chunk| PyBytes::new(py, chunk).unbind())
+            .collect(),
+    ))
+}
+
 /// Runs dbt in-process — no subprocess fork.
 #[pyclass]
 struct DbtRunner {
@@ -291,12 +312,13 @@ impl DbtRunner {
         let cli_parser = &self.cli_parser;
         let (exit_code, command, exec, exception) =
             py.detach(|| invoke_inner(argv, cli_parser, distribution().feature_stack))?;
-        let (result, catalog_msgpack) = match exec {
+        let (result, catalog_msgpack, preview) = match exec {
             Some(mut exec) => (
                 build_result_msgpack(py, command, &mut exec)?,
                 build_catalog_msgpack(py, &mut exec)?,
+                build_preview(py, &mut exec)?,
             ),
-            None => (None, None),
+            None => (None, None, None),
         };
         let (result_kind, result_msgpack) = match result {
             Some((kind, bytes)) => (Some(kind.to_string()), Some(bytes)),
@@ -308,6 +330,7 @@ impl DbtRunner {
             result_kind,
             result_msgpack,
             catalog_msgpack,
+            preview,
             exception,
         })
     }
