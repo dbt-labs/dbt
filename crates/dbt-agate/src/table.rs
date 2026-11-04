@@ -24,6 +24,7 @@ use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::hint::unreachable_unchecked;
 use std::io;
+use std::num::NonZero;
 use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
 
@@ -72,6 +73,47 @@ fn safe_to_sort(array: Arc<dyn Array>) -> Result<Arc<dyn Array>, ArrowError> {
             array.data_type()
         )))
     }
+}
+
+/// The indices selected by the Python slice `[start:stop:step]` of a sequence
+/// of `len` elements.
+///
+/// This follows CPython's `slice.indices()`: missing bounds default to the
+/// whole sequence in the direction of `step`, negative bounds count from the
+/// end, and out-of-range bounds are clamped.
+fn slice_indices(
+    len: usize,
+    start: Option<i64>,
+    stop: Option<i64>,
+    step: Option<NonZero<i64>>,
+) -> UInt64Array {
+    // SAFETY: 1 is non-zero
+    let step = step.unwrap_or(unsafe { NonZero::new_unchecked(1) }).get();
+    let len = len as i64;
+    // Bounds of valid slice positions: [0, len] going forward and
+    // [-1, len - 1] going backward (-1 is "before the first element").
+    let (lower, upper) = if step > 0 { (0, len) } else { (-1, len - 1) };
+    let clamp = |bound: Option<i64>, default: i64| match bound {
+        None => default,
+        Some(b) if b < 0 => b.saturating_add(len).max(lower),
+        Some(b) => b.min(upper),
+    };
+    let (start, stop) = if step > 0 {
+        (clamp(start, lower), clamp(stop, upper))
+    } else {
+        (clamp(start, upper), clamp(stop, lower))
+    };
+
+    let mut indices = Vec::new();
+    let mut i = start;
+    while (step > 0 && i < stop) || (step < 0 && i > stop) {
+        indices.push(i as u64);
+        i = match i.checked_add(step) {
+            Some(next) => next,
+            None => break,
+        };
+    }
+    UInt64Array::from(indices)
 }
 
 /// Internal table representation.
@@ -409,14 +451,21 @@ impl TableRepr {
         todo!("index_of_value_in_row")
     }
 
-    pub(crate) fn limit(&self, n: i64) -> Result<TableRepr, ArrowError> {
-        if n < 0 {
-            return Err(ArrowError::ComputeError(
-                "Table.limit: count must be non-negative".to_string(),
-            ));
-        }
-        let take = (n as u64).min(self.num_rows() as u64);
-        let indices = UInt64Array::from_iter_values(0..take);
+    /// The rows selected by the Python slice `rows[start:stop:step]`.
+    pub(crate) fn slice(
+        &self,
+        start: Option<i64>,
+        stop: Option<i64>,
+        step: Option<i64>,
+    ) -> Result<TableRepr, ArrowError> {
+        let step = step
+            .map(|s| {
+                NonZero::new(s).ok_or_else(|| {
+                    ArrowError::InvalidArgumentError("slice step cannot be zero".to_owned())
+                })
+            })
+            .transpose()?;
+        let indices = slice_indices(self.num_rows(), start, stop, step);
         self.select_rows(&indices, None)
     }
 
@@ -730,9 +779,22 @@ impl AgateTable {
         AgateTable::from_repr(repr)
     }
 
-    /// Return a new table containing the first `n` rows.
+    /// A new table with the first `n` rows: Python's `table.limit(n)`.
+    ///
+    /// Like the slice `rows[:n]`, a negative `n` drops the last `-n` rows.
     pub fn limit(&self, n: i64) -> Result<AgateTable, ArrowError> {
-        let repr = self.repr.limit(n)?;
+        self.slice(None, Some(n), None)
+    }
+
+    /// A new table with the rows `rows[start:stop:step]`, with Python's slice
+    /// semantics. Row names, if any, are sliced the same way.
+    pub fn slice(
+        &self,
+        start: Option<i64>,
+        stop: Option<i64>,
+        step: Option<i64>,
+    ) -> Result<AgateTable, ArrowError> {
+        let repr = self.repr.slice(start, stop, step)?;
         Ok(AgateTable::from_repr(Arc::new(repr)))
     }
 
@@ -1186,6 +1248,10 @@ impl Object for AgateTable {
         args: &[Value],
         _listeners: &[Rc<dyn RenderingEventListener>],
     ) -> Result<Value, Error> {
+        fn invalid_operation(method: &str, e: &ArrowError) -> Error {
+            Error::new(ErrorKind::InvalidOperation, format!("{method}: {e}"))
+        }
+
         match name {
             // TODO: print_csv
             // TODO: print_json
@@ -1477,18 +1543,42 @@ impl Object for AgateTable {
             // ```python
             // def limit(self, start_or_stop=None, stop=None, step=None):
             //     """
-            //     Filter data to a subset of all rows.
-            //     """
-            // ```
+            //     Create a new table with fewer rows.
             //
-            // Only the single-arg `limit(n)` form is supported on the rust port.
+            //     See also: Python's builtin :func:`slice`.
+            //
+            //     :param start_or_stop:
+            //         If the only argument, then how many rows to include, otherwise,
+            //         the index of the first row to include.
+            //     :param stop:
+            //         The index of the last row to include.
+            //     :param step:
+            //         The size of the jump between rows to include. (`step=2` will return
+            //         every other row.)
+            //     :returns:
+            //         A new :class:`.Table`.
+            //     """
+            //     if stop or step:
+            //         s = slice(start_or_stop, stop, step)
+            //     else:
+            //         s = slice(start_or_stop)
+            // ```
             "limit" => {
-                let iter = ArgsIter::new("Table.limit", &["n"], args);
-                let n = iter.next_arg::<i64>()?;
+                let iter = ArgsIter::new("Table.limit", &[], args);
+                let start_or_stop = iter.next_kwarg::<Option<i64>>("start_or_stop")?;
+                let stop = iter.next_kwarg::<Option<i64>>("stop")?;
+                let step = iter.next_kwarg::<Option<i64>>("step")?;
                 iter.finish()?;
-                let table = self.as_ref().limit(n).map_err(|e| {
-                    Error::new(ErrorKind::InvalidOperation, format!("Table.limit: {e}"))
-                })?;
+
+                let is_truthy = |v: Option<i64>| v.is_some_and(|v| v != 0);
+                let table = {
+                    if is_truthy(stop) || is_truthy(step) {
+                        self.slice(start_or_stop, stop, step)
+                    } else {
+                        self.slice(None, start_or_stop, None)
+                    }
+                }
+                .map_err(|e| invalid_operation("Table.limit", &e))?;
                 Ok(Value::from_object(table))
             }
             // ```python
@@ -1921,54 +2011,93 @@ mod tests {
     }
 
     #[test]
-    fn test_limit_negative_errors() {
+    fn test_limit_negative_drops_rows_from_the_end() {
         let table = AgateTable::from_record_batch(simple_record_batch());
-        let err = table.limit(-1).unwrap_err();
-        assert!(err.to_string().contains("non-negative"));
+        let limited = table.limit(-1).unwrap();
+        assert_eq!(limited.num_rows(), 2);
+        assert_eq!(country_at(&limited, 0), "Brazil");
+        assert_eq!(country_at(&limited, 1), "USA");
+        assert_eq!(table.limit(-10).unwrap().num_rows(), 0);
+    }
+
+    /// A table with a single `id` column holding `0..5` and row names `r0..r4`.
+    fn five_row_table() -> Value {
+        let ids: ArrayRef = Arc::new(Int32Array::from_iter_values(0..5));
+        let batch = RecordBatch::try_from_iter([("id", ids)]).unwrap();
+        let row_names = {
+            let mut builder = StringViewBuilder::with_capacity(5);
+            for i in 0..5 {
+                builder.append_value(format!("r{i}"));
+            }
+            Arc::new(builder.finish())
+        };
+        AgateTable::new(Arc::new(batch), Some(row_names)).into_value()
+    }
+
+    fn render_limit(table: &Value, args: &str) -> Result<String, minijinja::Error> {
+        Environment::new().render_str(
+            &format!(
+                "{{% set l = t.limit({args}) %}}\
+                 {{% for r in l.rows %}}{{{{ r[0] }}}} {{% endfor %}}\
+                 | {{% for n in l.row_names %}}{{{{ n }}}} {{% endfor %}}"
+            ),
+            context! { t => table.clone() },
+            &[],
+        )
+    }
+
+    /// The expected ids are what Python agate's `limit()` returns for a table
+    /// with rows `0..5`, including its `if stop or step:` quirk.
+    #[test]
+    fn test_limit_follows_python_slice_semantics() {
+        let table = five_row_table();
+        let cases: &[(&str, &[i32])] = &[
+            ("", &[0, 1, 2, 3, 4]),
+            ("2", &[0, 1]),
+            ("-1", &[0, 1, 2, 3]),
+            ("-10", &[]),
+            ("10", &[0, 1, 2, 3, 4]),
+            ("0", &[]),
+            ("none", &[0, 1, 2, 3, 4]),
+            ("1, 3", &[1, 2]),
+            ("1, none, 2", &[1, 3]),
+            ("none, none, -1", &[4, 3, 2, 1, 0]),
+            ("-2, none, -2", &[3, 1]),
+            ("3, 1, -1", &[3, 2]),
+            // `stop` and `step` of 0 are falsy, so agate falls back to `slice(start_or_stop)`
+            ("2, 0", &[0, 1]),
+            ("1, none, 0", &[0]),
+            ("1, 0, 2", &[]),
+            ("start_or_stop=1, stop=4", &[1, 2, 3]),
+            ("1, step=2", &[1, 3]),
+            ("stop=3", &[0, 1, 2]),
+        ];
+        for (args, expected) in cases {
+            let ids: String = expected.iter().map(|i| format!("{i} ")).collect();
+            let names: String = expected.iter().map(|i| format!("r{i} ")).collect();
+            let actual = render_limit(&table, args).unwrap();
+            assert_eq!(actual, format!("{ids}| {names}"), "limit({args})");
+        }
     }
 
     #[test]
-    fn test_limit_via_jinja_call_method() {
-        let table = AgateTable::from_record_batch(simple_record_batch()).into_value();
+    fn test_limit_rejects_invalid_arguments() {
+        let table = five_row_table();
 
-        let env = Environment::new();
-        let state = env.empty_state();
+        let err = render_limit(&table, "1, 3, 0").unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+        assert!(
+            err.to_string().contains("slice step cannot be zero"),
+            "{err}"
+        );
 
-        // Single positional: limit(0) -> empty
-        let limited = table
-            .call_method(&state, "limit", &[Value::from(0)], &[])
-            .unwrap()
-            .downcast_object::<AgateTable>()
-            .unwrap();
-        assert_eq!(limited.num_rows(), 0);
-        assert_eq!(limited.num_columns(), 2);
+        let err = render_limit(&table, "1, 2, 3, 4").unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::TooManyArguments, "{err}");
 
-        // Single positional: limit(2) -> first two rows
-        let limited = table
-            .call_method(&state, "limit", &[Value::from(2)], &[])
-            .unwrap()
-            .downcast_object::<AgateTable>()
-            .unwrap();
-        assert_eq!(limited.num_rows(), 2);
+        let err = render_limit(&table, "n=2").unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::TooManyArguments, "{err}");
 
-        // Keyword: limit(n=2)
-        let limited = table
-            .call_method(
-                &state,
-                "limit",
-                &[Kwargs::from_iter([("n", Value::from(2))]).into()],
-                &[],
-            )
-            .unwrap()
-            .downcast_object::<AgateTable>()
-            .unwrap();
-        assert_eq!(limited.num_rows(), 2);
-
-        // Multi-arg form is not supported on the rust port.
-        let err = table
-            .call_method(&state, "limit", &[Value::from(1), Value::from(3)], &[])
-            .unwrap_err();
-        assert_eq!(err.kind(), ErrorKind::TooManyArguments);
+        assert!(render_limit(&table, "'2'").is_err());
     }
 
     #[test]
