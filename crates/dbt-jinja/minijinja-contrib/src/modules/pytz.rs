@@ -1,5 +1,6 @@
 use chrono::{DateTime, LocalResult, NaiveDateTime, TimeZone};
 use chrono_tz::{Tz, TZ_VARIANTS};
+use minijinja::arg_utils::ArgParser;
 use minijinja::{Error, ErrorKind, Value};
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
@@ -86,8 +87,10 @@ pub fn create_pytz_namespace() -> BTreeMap<String, Value> {
 
 /// The top-level function for `pytz.timezone("America/New_York")`.
 fn timezone(args: &[Value]) -> Result<Value, Error> {
-    // Must provide a string zone name.
-    let tz_name = args.first().and_then(|v| v.as_str()).ok_or_else(|| {
+    // Must provide a string zone name, either positionally or as `zone=...` like pytz.
+    let mut parser = ArgParser::new(args, None);
+    let zone: Option<Value> = parser.get_optional("zone");
+    let tz_name = zone.as_ref().and_then(|v| v.as_str()).ok_or_else(|| {
         Error::new(
             ErrorKind::MissingArgument,
             "timezone() requires a string name argument",
@@ -230,6 +233,7 @@ mod tests {
     use super::*;
     use crate::modules::py_datetime::datetime::{DateTimeState, PyDateTime};
     use chrono::{NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Timelike};
+    use minijinja::value::Kwargs;
 
     #[test]
     fn test_localize_naive_datetime() {
@@ -299,6 +303,19 @@ mod tests {
         // Should be aware with Pacific timezone
         assert!(result.tzinfo.is_some());
         assert_eq!(result.tzinfo.as_ref().unwrap().tz, chrono_tz::US::Pacific);
+    }
+
+    #[test]
+    fn test_timezone_accepts_zone_kwarg() {
+        let kwargs = Value::from(Kwargs::from_iter([("zone", Value::from("US/Eastern"))]));
+        let tz = timezone(&[kwargs]).unwrap();
+        let tz = tz.downcast_object_ref::<PytzTimezone>().unwrap();
+        assert_eq!(tz.tz, chrono_tz::US::Eastern);
+
+        // Positional argument still works
+        let tz = timezone(&[Value::from("US/Eastern")]).unwrap();
+        let tz = tz.downcast_object_ref::<PytzTimezone>().unwrap();
+        assert_eq!(tz.tz, chrono_tz::US::Eastern);
     }
 
     #[test]
