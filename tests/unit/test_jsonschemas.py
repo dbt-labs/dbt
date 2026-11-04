@@ -1,4 +1,5 @@
 import pytest
+from jsonschema.validators import Draft7Validator
 
 from dbt.deprecations import (
     CustomKeyInConfigDeprecation,
@@ -175,7 +176,7 @@ class TestStateConfigs:
         "evaluate_volatile_sql": False,
         "execute_hooks_on_any_reuse": True,
         "ignore_external_modifications": True,
-        "lag_tolerance": "5 days",
+        "lag_tolerance": {"count": 5, "period": "day"},
         "pre_clone": "always",
         "require_fresh_data_from": "any",
     }
@@ -199,6 +200,7 @@ class TestStateConfigs:
             "snapshots": {"+state": self.model_state},
             "data_tests": {"+state": self.data_test_state},
         }
+        assert not list(Draft7Validator(project_schema()).iter_errors(project_dict))
         jsonschema_validate(project_schema(), project_dict, "dbt_project.yml")
         assert active_deprecations == {}
 
@@ -214,5 +216,6 @@ class TestStateConfigs:
             "snapshots": [{"name": "my_snapshot", "config": {"state": self.model_state}}],
             "data_tests": [{"name": "my_data_test", "config": {"state": self.data_test_state}}],
         }
+        assert not list(Draft7Validator(resources_schema()).iter_errors(resources_dict))
         jsonschema_validate(resources_schema(), resources_dict, "properties.yml")
         assert active_deprecations == {}

@@ -450,7 +450,7 @@
       ]
     },
     "DataTestState": {
-      "description": "The dbt State configs supported on data tests: only `require_fresh_data_from`, `evaluate_volatile_sql` and `compare_unrendered_code` (snapshots reuse the full `ModelState`). Other keys are not fields here, so they are flagged as unknown keys at parse time.",
+      "description": "The dbt State configs supported on data tests",
       "type": "object",
       "properties": {
         "compare_unrendered_code": {
