@@ -1,4 +1,5 @@
 import pytest
+from jsonschema.validators import Draft7Validator
 
 from dbt.deprecations import (
     CustomKeyInConfigDeprecation,
@@ -9,6 +10,7 @@ from dbt.deprecations import (
 )
 from dbt.jsonschemas.jsonschemas import (
     jsonschema_validate,
+    project_schema,
     resources_schema,
     validate_model_config,
 )
@@ -166,3 +168,54 @@ class TestSourceBigQueryAliases:
 
         jsonschema_validate(resources_schema(), source_with_dataset, "test.yml")
         assert active_deprecations == {"custom-key-in-object-deprecation": 1}
+
+
+class TestStateConfigs:
+    model_state = {
+        "compare_unrendered_code": True,
+        "evaluate_volatile_sql": False,
+        "execute_hooks_on_any_reuse": True,
+        "ignore_external_modifications": True,
+        "lag_tolerance": {"count": 5, "period": "day"},
+        "pre_clone": "always",
+        "require_fresh_data_from": "any",
+    }
+    data_test_state = {
+        "compare_unrendered_code": True,
+        "evaluate_volatile_sql": False,
+        "require_fresh_data_from": "any",
+    }
+
+    def test_project_configs_no_warning(self):
+        reset_deprecations()
+
+        safe_set_invocation_context()
+        get_invocation_context().uses_adapter("bigquery")
+
+        project_dict = {
+            "name": "my_project",
+            "version": "1.0.0",
+            "profile": "my_project",
+            "models": {"+state": self.model_state},
+            "snapshots": {"+state": self.model_state},
+            "data_tests": {"+state": self.data_test_state},
+        }
+        assert not list(Draft7Validator(project_schema()).iter_errors(project_dict))
+        jsonschema_validate(project_schema(), project_dict, "dbt_project.yml")
+        assert active_deprecations == {}
+
+    def test_resource_configs_no_warning(self):
+        reset_deprecations()
+
+        safe_set_invocation_context()
+        get_invocation_context().uses_adapter("bigquery")
+
+        resources_dict = {
+            "version": 2,
+            "models": [{"name": "my_model", "config": {"state": self.model_state}}],
+            "snapshots": [{"name": "my_snapshot", "config": {"state": self.model_state}}],
+            "data_tests": [{"name": "my_data_test", "config": {"state": self.data_test_state}}],
+        }
+        assert not list(Draft7Validator(resources_schema()).iter_errors(resources_dict))
+        jsonschema_validate(resources_schema(), resources_dict, "properties.yml")
+        assert active_deprecations == {}
