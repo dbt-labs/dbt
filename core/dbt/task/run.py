@@ -4,7 +4,7 @@ import functools
 import threading
 import time
 from copy import deepcopy
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from dataclasses import replace as dataclass_replace
 from datetime import datetime, timezone
 from typing import (
@@ -21,6 +21,14 @@ from typing import (
     cast,
 )
 
+from dbt_common.clients.jinja import MacroProtocol
+from dbt_common.dataclass_schema import dbtClassMixin
+from dbt_common.events.base_types import EventLevel
+from dbt_common.events.contextvars import log_contextvars
+from dbt_common.events.functions import fire_event, get_invocation_id
+from dbt_common.events.types import Formatting
+from dbt_common.exceptions import DbtValidationError
+from dbt_common.invocation import get_invocation_started_at
 from opentelemetry.trace import StatusCode
 
 from dbt import tracking, utils
@@ -29,6 +37,7 @@ from dbt.adapters.capability import Capability
 from dbt.adapters.catalogs import DbtCatalogIntegrationNotFoundError
 from dbt.adapters.events.types import FinishedRunningStats
 from dbt.adapters.exceptions import MissingMaterializationError
+from dbt.adapters.planning import MaterializationPlan
 from dbt.artifacts.resources import Catalog, Hook
 from dbt.artifacts.schemas.batch_results import BatchResults, BatchType
 from dbt.artifacts.schemas.overload_results import OverloadResults
@@ -69,20 +78,13 @@ from dbt.graph import ResourceTypeSelector
 from dbt.graph.thread_pool import DbtThreadPool
 from dbt.hooks import get_hook_dict
 from dbt.materializations.incremental.microbatch import MicrobatchBuilder
+from dbt.materializations.runtime import MaterializationRuntime
 from dbt.node_types import NodeType, RunHookType
 from dbt.task import group_lookup
 from dbt.task.base import BaseRunner
 from dbt.task.compile import CompileRunner, CompileTask
 from dbt.task.printer import get_counts, print_run_end_messages
 from dbt.utils.artifact_upload import add_artifact_produced
-from dbt_common.clients.jinja import MacroProtocol
-from dbt_common.dataclass_schema import dbtClassMixin
-from dbt_common.events.base_types import EventLevel
-from dbt_common.events.contextvars import log_contextvars
-from dbt_common.events.functions import fire_event, get_invocation_id
-from dbt_common.events.types import Formatting
-from dbt_common.exceptions import DbtValidationError
-from dbt_common.invocation import get_invocation_started_at
 
 
 @functools.total_ordering
@@ -143,10 +145,16 @@ def _get_adapter_info(adapter, run_model_result) -> Dict[str, Any]:
     """Each adapter returns a dataclass with a flexible dictionary for
     adapter-specific fields. Only the non-'model_adapter_details' fields
     are guaranteed cross adapter."""
-    return asdict(adapter.get_adapter_run_info(run_model_result.node.config)) if adapter else {}
+    return (
+        asdict(adapter.get_adapter_run_info(run_model_result.node.config))
+        if adapter
+        else {}
+    )
 
 
-def _get_catalog_type(model_node_config: ModelConfig, adapter: BaseAdapter) -> Optional[str]:
+def _get_catalog_type(
+    model_node_config: ModelConfig, adapter: BaseAdapter
+) -> Optional[str]:
     catalog_name = model_node_config._extra.get("catalog_name")
     if catalog_name is None:
         return None
@@ -202,7 +210,9 @@ def track_model_run(index, num_nodes, run_model_result, adapter=None):
 
 
 # make sure that we got an ok result back from a materialization
-def _validate_materialization_relations_dict(inp: Dict[Any, Any], model) -> List[BaseRelation]:
+def _validate_materialization_relations_dict(
+    inp: Dict[Any, Any], model
+) -> List[BaseRelation]:
     try:
         relations_value = inp["relations"]
     except KeyError:
@@ -213,9 +223,8 @@ def _validate_materialization_relations_dict(inp: Dict[Any, Any], model) -> List
         raise CompilationError(msg, node=model) from None
 
     if not isinstance(relations_value, list):
-        msg = (
-            'Invalid return value from materialization, "relations" '
-            "not a list, got: {}".format(relations_value)
+        msg = 'Invalid return value from materialization, "relations" not a list, got: {}'.format(
+            relations_value
         )
         raise CompilationError(msg, node=model) from None
 
@@ -233,7 +242,53 @@ def _validate_materialization_relations_dict(inp: Dict[Any, Any], model) -> List
     return relations
 
 
+@dataclass(frozen=True)
+class NativeMaterializationExecution:
+    plan: MaterializationPlan
+
+
 class ModelRunner(CompileRunner[ModelNode]):
+    def _get_native_materialization(
+        self, model: ModelNode, materialization_macro: MacroProtocol
+    ) -> Optional[NativeMaterializationExecution]:
+        language = str(getattr(model, "language", "sql"))
+        if language != "sql":
+            return None
+        unique_id = getattr(materialization_macro, "unique_id", None)
+        if not isinstance(unique_id, str):
+            return None
+
+        for planner_name in (
+            "plan_table_materialization",
+            "plan_view_materialization",
+            "plan_incremental_materialization",
+            "plan_snapshot_materialization",
+        ):
+            planner = getattr(self.adapter, planner_name, None)
+            if not callable(planner):
+                continue
+            plan = planner(unique_id, language, model)
+            if plan is None:
+                continue
+            if not isinstance(plan, MaterializationPlan):
+                raise DbtInternalError(
+                    f"Adapter planner '{planner_name}' returned an invalid native plan"
+                )
+            return NativeMaterializationExecution(plan)
+        return None
+
+    def _execute_native_materialization(
+        self,
+        execution: NativeMaterializationExecution,
+        model: ModelNode,
+        context: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        runtime = MaterializationRuntime(self.adapter, model, context)
+        if not execution.plan.supports_native_execution(runtime):
+            return None
+        target = execution.plan.execute(runtime)
+        return {"relations": [target]}
+
     def _relation_identifier(self, relation: BaseRelation) -> str:
         identifier = getattr(relation, "identifier", None)
         if identifier is not None:
@@ -270,9 +325,9 @@ class ModelRunner(CompileRunner[ModelNode]):
             "generate_latest_version_pointer_alias", self.config.project_name, None
         )
         if alias_macro is not None:
-            return MacroGenerator(alias_macro, context, stack=context["context_macro_stack"])(
-                custom_alias_name, context["model"]
-            ).strip()
+            return MacroGenerator(
+                alias_macro, context, stack=context["context_macro_stack"]
+            )(custom_alias_name, context["model"]).strip()
         return custom_alias_name or model.name
 
     def _should_create_latest_version_pointer(self, model: ModelNode) -> bool:
@@ -303,7 +358,9 @@ class ModelRunner(CompileRunner[ModelNode]):
             return []
 
         source_relation = relations[0]
-        pointer_identifier = self._latest_version_pointer_identifier(model, manifest, context)
+        pointer_identifier = self._latest_version_pointer_identifier(
+            model, manifest, context
+        )
 
         if self._pointer_collides_with_source(source_relation, pointer_identifier):
             raise DbtRuntimeError(
@@ -331,13 +388,17 @@ class ModelRunner(CompileRunner[ModelNode]):
             ),
         )
 
-        pointer_context = generate_runtime_model_context(pointer_node, self.config, manifest)
+        pointer_context = generate_runtime_model_context(
+            pointer_node, self.config, manifest
+        )
 
         view_materialization = manifest.find_materialization_macro_by_name(
             self.config.project_name, "view", self.adapter.type()
         )
         if view_materialization is None:
-            raise DbtInternalError("Missing view materialization for latest version pointer")
+            raise DbtInternalError(
+                "Missing view materialization for latest version pointer"
+            )
 
         result = MacroGenerator(
             view_materialization,
@@ -413,7 +474,9 @@ class ModelRunner(CompileRunner[ModelNode]):
         if isinstance(result, str):
             msg = (
                 'The materialization ("{}") did not explicitly return a '
-                "list of relations to add to the cache.".format(str(model.get_materialization()))
+                "list of relations to add to the cache.".format(
+                    str(model.get_materialization())
+                )
             )
             raise CompilationError(msg, node=model)
 
@@ -437,12 +500,30 @@ class ModelRunner(CompileRunner[ModelNode]):
     ) -> RunResult:
         relations: List[BaseRelation] = []
         try:
-            result = MacroGenerator(
-                materialization_macro, context, stack=context["context_macro_stack"]
-            )()
+            native_execution = self._get_native_materialization(
+                model, materialization_macro
+            )
+            if native_execution is None:
+                result = MacroGenerator(
+                    materialization_macro, context, stack=context["context_macro_stack"]
+                )()
+            else:
+                result = self._execute_native_materialization(
+                    native_execution,
+                    model,
+                    context,
+                )
+                if result is None:
+                    result = MacroGenerator(
+                        materialization_macro,
+                        context,
+                        stack=context["context_macro_stack"],
+                    )()
             relations = self._materialization_relations(result, model)
             relations.extend(
-                self._materialize_latest_version_pointer(manifest, model, context, relations)
+                self._materialize_latest_version_pointer(
+                    manifest, model, context, relations
+                )
             )
         finally:
             self.adapter.post_model_hook(context_config, hook_ctx)
@@ -452,15 +533,20 @@ class ModelRunner(CompileRunner[ModelNode]):
 
         return self._build_run_model_result(model, context)
 
-    def _get_materialization_macro(self, model: ModelNode, manifest: Manifest) -> MacroProtocol:
+    def _get_materialization_macro(
+        self, model: ModelNode, manifest: Manifest
+    ) -> MacroProtocol:
         materialization_macro = manifest.find_materialization_macro_by_name(
             self.config.project_name, model.get_materialization(), self.adapter.type()
         )
         if materialization_macro is None:
             raise MissingMaterializationError(
-                materialization=model.get_materialization(), adapter_type=self.adapter.type()
+                materialization=model.get_materialization(),
+                adapter_type=self.adapter.type(),
             )
-        supported_languages = getattr(materialization_macro, "supported_languages", None)
+        supported_languages = getattr(
+            materialization_macro, "supported_languages", None
+        )
         if supported_languages is not None:
             if model.language not in supported_languages:
                 str_langs = [str(lang) for lang in supported_languages]
@@ -475,7 +561,9 @@ class ModelRunner(CompileRunner[ModelNode]):
 
         if "config" not in context:
             raise DbtInternalError(
-                "Invalid materialization context generated, missing config: {}".format(context)
+                "Invalid materialization context generated, missing config: {}".format(
+                    context
+                )
             )
 
         materialization_macro = self._get_materialization_macro(model, manifest)
@@ -831,7 +919,9 @@ class MicrobatchModelRunner(ModelRunner):
 
         # # If retrying, propagate previously successful batches into final result, even thoguh they were not run in this invocation
         if self.node.previous_batch_results is not None:
-            result.batch_results.successful += self.node.previous_batch_results.successful
+            result.batch_results.successful += (
+                self.node.previous_batch_results.successful
+            )
 
     def _update_result_with_unfinished_batches(
         self, result: RunResult, batches: Dict[int, BatchType]
@@ -841,7 +931,9 @@ class MicrobatchModelRunner(ModelRunner):
 
         if result.batch_results:
             # build list of finished batches
-            batches_finished = batches_finished.union(set(result.batch_results.successful))
+            batches_finished = batches_finished.union(
+                set(result.batch_results.successful)
+            )
             batches_finished = batches_finished.union(set(result.batch_results.failed))
         else:
             # instantiate `batch_results` if it was `None`
@@ -870,7 +962,8 @@ class MicrobatchModelRunner(ModelRunner):
         # During retry, use the original invocation time so that the same
         # batches are recomputed rather than batches relative to "now".
         default_end_time = (
-            self.parent_task.original_invocation_started_at or get_invocation_started_at()
+            self.parent_task.original_invocation_started_at
+            or get_invocation_started_at()
         )
 
         return MicrobatchBuilder(
@@ -980,8 +1073,9 @@ class MicrobatchModelRunner(ModelRunner):
         self.merge_batch_results(result, batch_results)
 
         pointer_relations: List[BaseRelation] = []
-        if result.status == RunStatus.Success and self._should_create_latest_version_pointer(
-            model
+        if (
+            result.status == RunStatus.Success
+            and self._should_create_latest_version_pointer(model)
         ):
             context = generate_runtime_model_context(model, self.config, manifest)
             source_relations = [self.adapter.Relation.create_from(self.config, model)]  # type: ignore[arg-type]
@@ -1042,7 +1136,9 @@ class RunTask(CompileTask):
         self._maybe_wait_for_microbatch(pool, runner)
         self._submit(pool, args, callback)
 
-    def _maybe_wait_for_microbatch(self, pool: DbtThreadPool, runner: BaseRunner) -> None:
+    def _maybe_wait_for_microbatch(
+        self, pool: DbtThreadPool, runner: BaseRunner
+    ) -> None:
         """
         Checks if the runner is a MicrobatchModelRunner, and waits until the
         number of microbatch models in progress is less than the max number
@@ -1055,7 +1151,9 @@ class RunTask(CompileTask):
                     msg=f"Waiting for microbatch model to be run: {runner.node.name}.\n\tpool.max_microbatch_models: {pool.max_microbatch_models}\n\tlen(self.job_queue.in_progress_microbatch): {len(self.job_queue.in_progress_microbatch)}"
                 )
             )
-            while pool.max_microbatch_models < len(self.job_queue.in_progress_microbatch):
+            while pool.max_microbatch_models < len(
+                self.job_queue.in_progress_microbatch
+            ):
                 time.sleep(0.1)
 
         return
@@ -1132,7 +1230,9 @@ class RunTask(CompileTask):
                 relation_exists = batch_runner.relation_exists
         else:
             batch_results.append(
-                batch_runner._build_failed_run_batch_result(node_copy, batches[batch_idx])
+                batch_runner._build_failed_run_batch_result(
+                    node_copy, batches[batch_idx]
+                )
             )
 
         return relation_exists
@@ -1155,7 +1255,10 @@ class RunTask(CompileTask):
         return hooks
 
     def safe_run_hooks(
-        self, adapter: BaseAdapter, hook_type: RunHookType, extra_context: Dict[str, Any]
+        self,
+        adapter: BaseAdapter,
+        hook_type: RunHookType,
+        extra_context: Dict[str, Any],
     ) -> RunStatus:
         ordered_hooks = self.get_hooks_by_type(hook_type)
 
@@ -1174,9 +1277,10 @@ class RunTask(CompileTask):
         with self._maybe_span(hook_type.value) as hook_span:
             hook_span.set_attribute("hook_type", hook_type.value)
             for idx, hook in enumerate(ordered_hooks, 1):
-                with log_contextvars(node_info=hook.node_info), self._maybe_span(
-                    hook.unique_id
-                ) as hook_node_span:
+                with (
+                    log_contextvars(node_info=hook.node_info),
+                    self._maybe_span(hook.unique_id) as hook_node_span,
+                ):
                     hook.index = idx
                     hook_name = f"{hook.package_name}.{hook_type}.{hook.index - 1}"
                     execution_time = 0.0
@@ -1189,11 +1293,12 @@ class RunTask(CompileTask):
                                 adapter, hook, hook.index, num_hooks, extra_context
                             )
 
-                        started_at = timing[0].started_at or datetime.now(timezone.utc).replace(
-                            tzinfo=None
-                        )
+                        started_at = timing[0].started_at or datetime.now(
+                            timezone.utc
+                        ).replace(tzinfo=None)
                         hook.update_event_status(
-                            started_at=started_at.isoformat(), node_status=RunningStatus.Started
+                            started_at=started_at.isoformat(),
+                            node_status=RunningStatus.Started,
                         )
 
                         fire_event(
@@ -1208,9 +1313,9 @@ class RunTask(CompileTask):
                         with collect_timing_info("execute", timing.append):
                             status, message = get_execution_status(sql, adapter)
 
-                        finished_at = timing[1].completed_at or datetime.now(timezone.utc).replace(
-                            tzinfo=None
-                        )
+                        finished_at = timing[1].completed_at or datetime.now(
+                            timezone.utc
+                        ).replace(tzinfo=None)
                         hook.update_event_status(finished_at=finished_at.isoformat())
                         execution_time = (finished_at - started_at).total_seconds()
                         failures = 0 if status == RunStatus.Success else 1
@@ -1305,7 +1410,9 @@ class RunTask(CompileTask):
                 if isinstance(node, FunctionNode):
                     node.previous_overload_results = self.overload_map[uid]
 
-    def before_run(self, adapter: BaseAdapter, selected_uids: AbstractSet[str]) -> RunStatus:
+    def before_run(
+        self, adapter: BaseAdapter, selected_uids: AbstractSet[str]
+    ) -> RunStatus:
         with adapter.connection_named("master"):
             self.defer_to_manifest()
             required_schemas = self.get_model_schemas(adapter, selected_uids)
@@ -1334,7 +1441,9 @@ class RunTask(CompileTask):
         extras = {
             "schemas": list({s for _, s in database_schema_set}),
             "results": [
-                r for r in results if r.thread_id != "main" or r.status == RunStatus.Error
+                r
+                for r in results
+                if r.thread_id != "main" or r.status == RunStatus.Error
             ],  # exclude that didn't fail to preserve backwards compatibility
             "database_schemas": list(database_schema_set),
         }
@@ -1359,7 +1468,9 @@ class RunTask(CompileTask):
 
     def get_node_selector(self) -> ResourceTypeSelector:
         if self.manifest is None or self.graph is None:
-            raise DbtInternalError("manifest and graph must be set to get perform node selection")
+            raise DbtInternalError(
+                "manifest and graph must be set to get perform node selection"
+            )
         return ResourceTypeSelector(
             graph=self.graph,
             manifest=self.manifest,
@@ -1370,12 +1481,16 @@ class RunTask(CompileTask):
 
     def get_runner_type(self, node) -> Optional[Type[BaseRunner]]:
         if self.manifest is None:
-            raise DbtInternalError("manifest must be set prior to calling get_runner_type")
+            raise DbtInternalError(
+                "manifest must be set prior to calling get_runner_type"
+            )
 
         if (
             node.config.materialized == "incremental"
             and node.config.incremental_strategy == "microbatch"
-            and self.manifest.use_microbatch_batches(project_name=self.config.project_name)
+            and self.manifest.use_microbatch_batches(
+                project_name=self.config.project_name
+            )
         ):
             return MicrobatchModelRunner
         else:
