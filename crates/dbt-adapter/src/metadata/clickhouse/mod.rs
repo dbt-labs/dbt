@@ -6,6 +6,7 @@ use crate::query_ctx::{node_id_from_state, query_ctx_from_state};
 use crate::record_batch::RecordBatchExt;
 use crate::relation::Relation;
 use crate::sql_types::{TypeOps, make_arrow_field_v2};
+use crate::value::columns_to_value;
 use crate::{AdapterResult, errors::AsyncAdapterResult, metadata::*};
 use arrow_schema::Schema;
 
@@ -596,6 +597,7 @@ pub fn relation_type_from_engine(engine_name: &str) -> RelationType {
     match engine_name {
         "View" | "LiveView" => RelationType::View,
         "MaterializedView" => RelationType::MaterializedView,
+        "Dictionary" => RelationType::Dictionary,
         // Anything else (MergeTree, ReplacingMergeTree, AggregatingMergeTree,
         // SummingMergeTree, CollapsingMergeTree, VersionedCollapsingMergeTree,
         // GraphiteMergeTree, Replicated*, Distributed, Memory, Log, etc.) is a table.
@@ -1357,12 +1359,7 @@ pub(crate) fn column_changes_value(
     );
     changes.insert(
         "columns_to_add".to_string(),
-        Value::from(
-            columns_to_add
-                .into_iter()
-                .map(Arc::unwrap_or_clone)
-                .collect::<Vec<_>>(),
-        ),
+        columns_to_value(columns_to_add),
     );
     changes.insert(
         "columns_to_drop".to_string(),
@@ -1375,12 +1372,7 @@ pub(crate) fn column_changes_value(
     );
     changes.insert(
         "columns_to_modify".to_string(),
-        Value::from(
-            columns_to_modify
-                .into_iter()
-                .map(Arc::unwrap_or_clone)
-                .collect::<Vec<_>>(),
-        ),
+        columns_to_value(columns_to_modify),
     );
     Ok(Value::from(changes))
 }
@@ -2100,6 +2092,34 @@ mod tests {
         assert_eq!(db_engine_clause(None), "");
         assert_eq!(db_engine_clause(Some("")), "");
         assert_eq!(db_engine_clause(Some("Replicated")), "ENGINE Replicated");
+    }
+
+    /// Mirrors the `type` column of v1's `clickhouse__list_relations_without_caching`.
+    #[test]
+    fn relation_type_from_engine_mirrors_list_relations_sql() {
+        assert_eq!(relation_type_from_engine("View"), RelationType::View);
+        assert_eq!(relation_type_from_engine("LiveView"), RelationType::View);
+        assert_eq!(
+            relation_type_from_engine("MaterializedView"),
+            RelationType::MaterializedView
+        );
+        assert_eq!(
+            relation_type_from_engine("Dictionary"),
+            RelationType::Dictionary
+        );
+        for engine in [
+            "MergeTree",
+            "ReplicatedReplacingMergeTree",
+            "Distributed",
+            "Memory",
+            "Log",
+        ] {
+            assert_eq!(
+                relation_type_from_engine(engine),
+                RelationType::Table,
+                "{engine}"
+            );
+        }
     }
 
     #[test]

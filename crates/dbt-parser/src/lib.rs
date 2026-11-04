@@ -29,10 +29,10 @@ pub mod dbt_project_config {
         recur_build_dbt_project_config, strip_resource_paths_from_ref_path,
     };
 }
+/// Experimentals that add their own kind of node to a project
+pub mod experimental;
 /// Parallel dispatch utilities
 pub mod parallel;
-/// Plugins that add their own kind of node to a project
-pub mod plugin;
 /// Python AST parsing utilities
 pub mod python_ast;
 /// Python file information collection

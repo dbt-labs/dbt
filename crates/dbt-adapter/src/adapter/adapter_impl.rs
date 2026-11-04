@@ -3,8 +3,7 @@ use crate::column::{BigqueryColumnMode, Column, ColumnBuilder};
 use crate::config::AdapterConfig;
 use crate::connection::{ConnectionGuard, borrow_tlocal_connection};
 use crate::engine::{
-    AdapterEngine, AdbcEngine, Options as ExecuteOptions, databricks_statement_options,
-    execute_query_with_retry,
+    AdapterEngine, AdbcEngine, Options as ExecuteOptions, execute_query_with_retry,
 };
 use crate::errors::{
     AdapterError, AdapterErrorKind, adbc_error_to_adapter_error, arrow_error_to_adapter_error,
@@ -56,6 +55,7 @@ use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{DataType, Field, Schema};
 use dbt_adapter_core::AdapterType;
 use dbt_adapter_engine::cow::lowercase;
+use dbt_adapter_engine::databricks::query_tags::databricks_statement_options;
 use dbt_adapter_sql::is_keyword_ignore_ascii_case;
 use dbt_adbc::bigquery::*;
 use dbt_adbc::salesforce::DATA_TRANSFORM_RUN_TIMEOUT;
@@ -917,7 +917,7 @@ impl AdapterImpl {
             Databricks => {
                 let original = Arc::new(last_batch);
                 let display = original.as_ref().clone().jsonify_nested_columns();
-                AgateTable::from_record_batch_with_original(Arc::new(display), original)
+                AgateTable::from_record_batch_impl(Arc::new(display), Some(original), None)
             }
             _ => AgateTable::from_record_batch(Arc::new(last_batch)),
         };
@@ -2410,10 +2410,10 @@ impl AdapterImpl {
             .into_iter()
             .map(|col| {
                 let comment = col.comment.filter(|s| !s.is_empty());
-                let column =
-                    Column::new(Databricks, col.name, col.type_.sql_type(), None, None, None)
-                        .with_comment(comment);
-                Arc::new(column)
+                let mut column =
+                    Column::new_boxed(Databricks, col.name, col.type_.sql_type(), None, None, None);
+                column.comment = comment;
+                Arc::from(column)
             })
             .collect();
         Some(Ok(columns))
@@ -2550,6 +2550,17 @@ impl AdapterImpl {
     ) -> bool {
         match self.inner_adapter() {
             Impl(..) => metadata::clickhouse::can_exchange(self, state, schema, rel_type, token),
+            Replay(..) => false,
+        }
+    }
+
+    /// ClickHouse `adapter.supports_atomic_exchange()` — see
+    /// [`metadata::clickhouse::ClickHouseCapabilities::atomic_exchange`].
+    pub fn supports_atomic_exchange(&self, state: &State, token: CancellationToken) -> bool {
+        match self.inner_adapter() {
+            Impl(..) => {
+                metadata::clickhouse::server_capabilities(self, state, token).atomic_exchange
+            }
             Replay(..) => false,
         }
     }
@@ -3733,7 +3744,7 @@ impl AdapterImpl {
                 }
 
                 if self.engine().is_replay() {
-                    crate::engine::duckdb_seed::copy_seed_csv(
+                    dbt_adapter_engine::duckdb::seed::copy_seed_csv(
                         conn.as_mut(),
                         database,
                         schema,
@@ -3769,7 +3780,7 @@ impl AdapterImpl {
                 }
 
                 if saas_mode_enabled {
-                    crate::engine::duckdb_seed::ingest_seed_csv(
+                    dbt_adapter_engine::duckdb::seed::ingest_seed_csv(
                         ctx,
                         conn.as_mut(),
                         database,
@@ -3779,7 +3790,7 @@ impl AdapterImpl {
                         field_delimiter,
                     )?;
                 } else {
-                    crate::engine::duckdb_seed::copy_seed_csv(
+                    dbt_adapter_engine::duckdb::seed::copy_seed_csv(
                         conn.as_mut(),
                         database,
                         schema,
@@ -3873,7 +3884,7 @@ impl AdapterImpl {
         for field in fields {
             // XXX: consider changing build() to return a Box<Column>
             let column = builder.build(field, type_formatter.as_ref())?;
-            columns.push(Arc::new(column));
+            columns.push(Arc::from(column));
         }
         Ok(columns)
     }
@@ -3906,7 +3917,7 @@ impl AdapterImpl {
                 let mut columns = Vec::<Arc<Column>>::with_capacity(fields.len());
                 for field in fields {
                     let column = builder.build(field, type_ops)?;
-                    columns.push(Arc::new(column));
+                    columns.push(Arc::from(column));
                 }
 
                 let flattened_columns = columns
@@ -4281,7 +4292,7 @@ impl AdapterImpl {
     ) -> AdapterResult<Value> {
         match self.adapter_type() {
             Bigquery => {
-                let result = Column::vec_from_jinja_value(Bigquery, &columns)?;
+                let mut result = Column::vec_from_jinja_value(Bigquery, &columns)?;
 
                 if result
                     .iter()
@@ -4290,10 +4301,6 @@ impl AdapterImpl {
                     return Ok(columns);
                 }
 
-                let mut result = result
-                    .into_iter()
-                    .map(Arc::unwrap_or_clone)
-                    .collect::<Vec<Column>>();
                 let column = Column::new_bigquery(
                     partition_config
                         .insertable_time_partitioning_field()?
@@ -4305,9 +4312,9 @@ impl AdapterImpl {
                     // TODO(serramatutu): proper mode
                     BigqueryColumnMode::Nullable,
                 );
-                result.push(column);
+                result.push(column.into());
 
-                Ok(Value::from(result))
+                Ok(columns_to_value(result))
             }
             Postgres | Snowflake | Databricks | Redshift | Salesforce | Spark | DuckDB
             | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
@@ -5488,9 +5495,15 @@ impl AdapterImpl {
                     ));
                 }
 
-                if let Some(max_bytes_billed) = self
-                    .get_db_config("maximum_bytes_billed")
-                    .and_then(|v| v.parse::<i64>().ok())
+                let enforce_max_bytes_billed = self
+                    .behavior_object()
+                    .get_value(&Value::from("bigquery_enforce_maximum_bytes_billed"))
+                    .is_some_and(|flag| flag.is_true());
+
+                if enforce_max_bytes_billed
+                    && let Some(max_bytes_billed) = self
+                        .get_db_config("maximum_bytes_billed")
+                        .and_then(|v| v.parse::<i64>().ok())
                 {
                     options.push((
                         QUERY_MAX_BYTES_BILLED.to_string(),
@@ -5557,169 +5570,6 @@ fn builtin_incremental_strategies() -> Vec<DbtIncrementalStrategy> {
         DbtIncrementalStrategy::Microbatch,
         DbtIncrementalStrategy::Legacy, // ClickHouse only — intermediate-table + swap
     ]
-}
-
-// https://github.com/dbt-labs/dbt-adapters/blob/3ed165d452a0045887a5032c621e605fd5c57447/dbt-adapters/src/dbt/adapters/base/impl.py#L117
-pub(crate) static DEFAULT_BASE_BEHAVIOR_FLAGS: LazyLock<[BehaviorFlag; 4]> = LazyLock::new(|| {
-    [
-        BehaviorFlag::new(
-            "require_batched_execution_for_custom_microbatch_strategy",
-            true,
-            Some("https://docs.getdbt.com/docs/build/incremental-microbatch"),
-            None,
-            None,
-        ),
-        BehaviorFlag::new("enable_truthy_nulls_equals_macro", false, None, None, None),
-        BehaviorFlag::new(
-            "use_catalogs_v2",
-            true,
-            None,
-            Some(
-                "Validate catalogs.yml against the v2 schema. Set to `false` to keep the deprecated v1 schema.",
-            ),
-            Some("https://github.com/dbt-labs/dbt-core/discussions/12723"),
-        ),
-        BehaviorFlag::new(
-            "require_resource_names_without_plus_prefix",
-            false,
-            None,
-            Some(
-                "When enabled, the + prefix in dbt_project.yml always indicates a configuration key. Folder and file names may not start with the + prefix.",
-            ),
-            None,
-        ),
-    ]
-});
-
-/// Get adapter-specific behavior flags for a given adapter type
-/// This is a standalone function to avoid needing to create adapter instances
-/// just to get the flags
-pub(crate) fn adapter_specific_behavior_flags(adapter_type: AdapterType) -> Vec<BehaviorFlag> {
-    match adapter_type {
-        Snowflake => {
-            // https://github.com/dbt-labs/dbt-adapters/blob/c4c04de76d5a6c56c95965041a93156fdeaf4641/dbt-snowflake/src/dbt/adapters/snowflake/impl.py#L46
-            let flag = BehaviorFlag::new(
-                "snowflake_default_transient_dynamic_tables",
-                false,
-                Some(
-                    "When enabled, dynamic tables default to transient (matching regular table behavior). This is a breaking change from previous behavior where dynamic tables were non-transient.",
-                ),
-                None,
-                None,
-            );
-            vec![flag]
-        }
-        Databricks => {
-            let use_user_folder_for_python = BehaviorFlag::new(
-                "use_user_folder_for_python",
-                true,
-                Some(
-                    "Use the user's home folder for uploading python notebooks. Shared folder use is deprecated due to governance concerns.",
-                ),
-                None,
-                None,
-            );
-
-            let use_materialization_v2 = BehaviorFlag::new(
-                "use_materialization_v2",
-                false,
-                Some(
-                    "Use revamped materializations based on separating create and insert. This allows more performant column comments, as well as new column features.",
-                ),
-                None,
-                None,
-            );
-
-            let use_replace_on_for_insert_overwrite = BehaviorFlag::new(
-                "use_replace_on_for_insert_overwrite",
-                true,
-                Some(
-                    "Use INSERT INTO ... REPLACE ON syntax for insert_overwrite on SQL Warehouses. When enabled, only matching partitions are overwritten; historical partitions are preserved.",
-                ),
-                None,
-                None,
-            );
-
-            let use_managed_iceberg = BehaviorFlag::new(
-                "use_managed_iceberg",
-                false,
-                Some(
-                    "Use managed Iceberg tables when table_format is iceberg. When this flag is disabled, UniForm is used instead.",
-                ),
-                None,
-                None,
-            );
-
-            // https://github.com/databricks/dbt-databricks/blob/3caad339bb3e60b7c795684374c3c8a1d9042279/dbt/adapters/databricks/impl.py#L160
-            let use_describe_as_json_for_relation_metadata = BehaviorFlag::new(
-                "use_describe_as_json_for_relation_metadata",
-                false,
-                Some(
-                    "Use DESCRIBE TABLE EXTENDED AS JSON when supported to fetch relation metadata like constraints, column masks, row filters, view definition, etc. When disabled, falls back to information_schema queries.",
-                ),
-                None,
-                None,
-            );
-
-            vec![
-                use_user_folder_for_python,
-                use_materialization_v2,
-                use_replace_on_for_insert_overwrite,
-                use_managed_iceberg,
-                use_describe_as_json_for_relation_metadata,
-            ]
-        }
-        Bigquery => {
-            // https://github.com/dbt-labs/dbt-adapters/blob/b9ebd240e39882a8c43ed659de423c7504d4642a/dbt-bigquery/src/dbt/adapters/bigquery/impl.py#L109-L110
-            let flag = BehaviorFlag::new(
-                "bigquery_noop_alter_relation_comment",
-                false,
-                Some(
-                    "Make bigquery__alter_relation_comment a no-op. This is useful when relation descriptions are already set in DDL (e.g. via OPTIONS(description=...)) to avoid an unnecessary update.",
-                ),
-                None,
-                None,
-            );
-            vec![flag]
-        }
-        Fabric => {
-            let flag = BehaviorFlag::new(
-                "empty",
-                false,
-                Some(
-                    "When enabled, table and view materializations will be created as empty structures (no data).",
-                ),
-                None,
-                None,
-            );
-            vec![flag]
-        }
-        Redshift => {
-            // TODO: https://github.com/dbt-labs/fs/issues/11871
-            let skip_autocommit_transaction_statements = BehaviorFlag::new(
-                "redshift_skip_autocommit_transaction_statements",
-                false,
-                Some(
-                    "When enabled, skip BEGIN/COMMIT wrapping so statements that cannot run in a transaction block (e.g. ALTER COLUMN TYPE for VARCHAR/VARBYTE size changes) can be issued.",
-                ),
-                None,
-                None,
-            );
-            // https://github.com/dbt-labs/dbt-adapters/blob/main/dbt-redshift/src/dbt/adapters/redshift/impl.py#L56-L66
-            let grants_extended = BehaviorFlag::new(
-                "redshift_grants_extended",
-                false,
-                Some(
-                    "Enable Redshift grants for groups and roles using 'user:', 'group:', and 'role:' prefixes. Unprefixed grantees remain users for backward compatibility.",
-                ),
-                None,
-                None,
-            );
-            vec![skip_autocommit_transaction_statements, grants_extended]
-        }
-        Postgres | Salesforce | Spark | DuckDB | LakeCompute | ClickHouse | Exasol | Starburst
-        | Athena | Trino | Datafusion | Dremio | Oracle => vec![],
-    }
 }
 
 /// The adapter implementation. All adapter methods live here.
@@ -6398,6 +6248,7 @@ mod tests {
     use crate::stmt_splitter::DefaultStmtSplitter;
 
     use dbt_adapter_core::AdapterType;
+    use dbt_adapter_engine::behavior::adapter_specific_behavior_flags;
     use dbt_auth::auth_for_backend;
     use dbt_common::AdapterResult;
     use dbt_schemas::schemas::dbt_column::{DbtColumn, DbtColumnRef};
@@ -7950,9 +7801,14 @@ mod tests {
     }
 
     #[test]
-    fn test_bigquery_maximum_bytes_billed_is_applied() {
+    fn test_bigquery_maximum_bytes_billed_is_applied_when_flag_enabled() {
         let config = Mapping::from_iter([("maximum_bytes_billed".into(), 1_000_000_i64.into())]);
-        let adapter = AdapterImpl::new(build_engine(Bigquery, config), None);
+        let project_flags =
+            BTreeMap::from([("bigquery_enforce_maximum_bytes_billed".to_string(), true)]);
+        let adapter = AdapterImpl::new(
+            build_engine_with_behavior(Bigquery, config, project_flags),
+            None,
+        );
         let env = Environment::new();
         let state = State::new_for_env(&env);
         let options = adapter.get_adbc_execute_options(&state);
@@ -7962,6 +7818,16 @@ mod tests {
                 .any(|(k, v)| k == QUERY_MAX_BYTES_BILLED
                     && matches!(v, OptionValue::Int(1_000_000)))
         );
+    }
+
+    #[test]
+    fn test_bigquery_maximum_bytes_billed_is_not_applied_by_default() {
+        let config = Mapping::from_iter([("maximum_bytes_billed".into(), 1_000_000_i64.into())]);
+        let adapter = AdapterImpl::new(build_engine(Bigquery, config), None);
+        let env = Environment::new();
+        let state = State::new_for_env(&env);
+        let options = adapter.get_adbc_execute_options(&state);
+        assert!(!options.iter().any(|(k, _)| k == QUERY_MAX_BYTES_BILLED));
     }
 
     #[test]

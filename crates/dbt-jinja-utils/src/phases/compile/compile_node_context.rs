@@ -210,7 +210,10 @@ where
                     .unwrap(),
                 ))
                 .into_value()
-            } else if matches!(model.materialized(), DbtMaterialization::Ephemeral) {
+            } else if matches!(
+                model.materialized(),
+                DbtMaterialization::Ephemeral | DbtMaterialization::Inline
+            ) {
                 // Build `this` directly as the physical relation
                 // (database.schema.identifier) rather than using the relation the
                 // resolver stores for this node. The stored relation is typed so
@@ -347,9 +350,15 @@ where
             MinijinjaValue::from(jinja_path.to_string_lossy().into_owned()),
         );
     }
+    // Unit tests have no batch window. Models still need the placeholder for
+    // their pre-batch render; microbatch execution installs the real window.
     model_map.insert(
         MinijinjaValue::from("batch"),
-        MinijinjaValue::from_object(init_batch_context()),
+        if model.resource_type() == NodeType::UnitTest {
+            MinijinjaValue::from(())
+        } else {
+            MinijinjaValue::from_object(init_batch_context())
+        },
     );
 
     let result_store = ResultStore::default();

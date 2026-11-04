@@ -132,6 +132,7 @@ model.hello_world.view_a:
     with multiple
     lines
     '
+    
     as (
     select * from `e2e`.`databricks_incremental_simple`.`model_a`
     )

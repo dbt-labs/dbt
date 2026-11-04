@@ -133,9 +133,8 @@ impl CompilationPipeline {
     /// executing set is known, so it is the first point this can be an error
     /// rather than a guess.
     ///
-    /// Only `selected_nodes` is checked. Frontier nodes are pulled in for schema
-    /// hydration rather than execution; a frontier node on an undeclared adapter is
-    /// a separate concern and would surface from hydration itself.
+    /// Only `selected_nodes` is checked. Frontier nodes are not executed: run and
+    /// build only hydrate their schemas, and Pull checks the relations it reads itself.
     fn check_scheduled_adapters_are_declared(
         nodes: &Nodes,
         schedule: &Schedule<String>,
@@ -457,6 +456,8 @@ pub async fn schedule_with_select(
         token,
         resolved_state.adapter_type,
     )?;
+    // Pull validates read ownership on the finished plan, including frontier entries,
+    // in its command handler.
     let execute = Execute::from_compute_flag(local_execution_backend);
     if matches!(execute, Execute::Sidecar | Execute::Service) {
         modify_schedule_for_sidecar_compute_boundaries(&mut schedule, &resolved_state.nodes);

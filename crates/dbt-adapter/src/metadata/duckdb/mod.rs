@@ -439,7 +439,8 @@ pub(crate) fn duckdb_attaches_via(catalog_type: CatalogType) -> Option<DuckDbAtt
         | CatalogType::SnowflakeBuiltIn
         | CatalogType::SnowflakeNative
         | CatalogType::BigqueryNative
-        | CatalogType::DuckdbNative => None,
+        | CatalogType::DuckdbNative
+        | CatalogType::SparkNative => None,
     }
 }
 
@@ -1171,7 +1172,7 @@ catalogs:
     #[test]
     fn duckdb_catalog_attached_database_agrees_with_composed_attach_alias() {
         with_view(ROUTING_CATALOGS, |view| {
-            let stmts = crate::engine::duckdb_attach::compose_catalog_attach_stmts(view, "duckdb")
+            let stmts = crate::engine::duckdb::attach::compose_catalog_attach_stmts(view, "duckdb")
                 .expect("fixture composes");
 
             for catalog in &view.catalogs {

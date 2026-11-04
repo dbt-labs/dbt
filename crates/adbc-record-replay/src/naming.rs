@@ -77,6 +77,12 @@ fn cleanup_debug_propagation_probe_table(input: &str) -> String {
         .to_string()
 }
 
+fn cleanup_query_comment_dbt_version(input: &str) -> String {
+    let re = Regex::new(r#""dbt_version"\s*:\s*"[^"]*""#).unwrap();
+    re.replace_all(input, r#""dbt_version": "DBT_VERSION""#)
+        .to_string()
+}
+
 fn checksum8(input: &str) -> String {
     let input = cleanup_schema_name(input);
     let input = cleanup_ephemeral_timestamps(&input);
@@ -85,6 +91,7 @@ fn checksum8(input: &str) -> String {
     let input = cleanup_exchange_probe_tables(&input);
     let input = cleanup_debug_probe_table(&input);
     let input = cleanup_debug_propagation_probe_table(&input);
+    let input = cleanup_query_comment_dbt_version(&input);
     let mut hasher = DefaultHasher::new();
     input.hash(&mut hasher);
     let hash = hasher.finish();

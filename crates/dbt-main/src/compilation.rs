@@ -38,6 +38,7 @@ use dbt_jinja_utils::{
 };
 use dbt_loader::args::*;
 use dbt_parser::args::ResolveArgs;
+use dbt_parser::resolver::unit_test_macro_override_warnings;
 use dbt_scheduler::args::SchedulerArgs;
 use dbt_schema_store::{
     SchemaStoreTrait,
@@ -89,8 +90,8 @@ use dbt_schemas::{
 };
 use dbt_tasks_core::task::TP;
 use dbt_tasks_core::task_runner_hooks::TaskRunnerHooksFactory;
+use dbt_tasks_sa::experimental::ExperimentalRuns;
 use dbt_tasks_sa::graph::command_phases;
-use dbt_tasks_sa::plugin::PluginRuns;
 use dbt_tasks_sa::utils::{
     update_columns_from_schemas, update_resolved_states_manifest_with_schemas_and_compiled_sql,
 };
@@ -613,6 +614,7 @@ impl<'a> CompilationPhasesExecutor<'a> {
                                     unique_id: uid.clone(),
                                     num_rows: None,
                                     rows_affected: None,
+                                    idle_time_ms: None,
                                     start_time: now,
                                     end_time: now,
                                     status: NodeStatus::Errored,
@@ -1475,7 +1477,10 @@ impl DbtProjectCompilation {
                     token,
                     jinja_type_checking_event_listener_factory.clone(),
                     feature_stack.resolver.hooks.clone(),
-                    feature_stack.plugins.plugins.resolve_plugins(),
+                    feature_stack
+                        .experimentals
+                        .experimentals
+                        .resolve_experimentals(),
                 )
                 .await?
         };
@@ -1827,6 +1832,23 @@ impl DbtProjectCompilation {
                     "Nothing to do. Try checking your model configs and model specification args",
                 );
             }
+        }
+
+        let dbt_dispatch_search_order = self
+            .root_project()
+            .dispatch
+            .as_ref()
+            .and_then(|entries| entries.iter().find(|entry| entry.macro_namespace == "dbt"))
+            .map(|entry| entry.search_order.as_slice());
+        for warning in unit_test_macro_override_warnings(
+            arg.command,
+            &self.resolved_state.nodes,
+            &schedule.selected_nodes,
+            &self.resolved_state.macros,
+            &jinja_env,
+            dbt_dispatch_search_order,
+        ) {
+            emit_warn_log_from_fs_error(warning);
         }
 
         // We may have elevated errors from selection
@@ -2385,13 +2407,13 @@ impl DbtProjectCompilation {
         let tasks_for_node_factory = Arc::clone(&feature_stack.task_runner.tasks_for_node_factory);
         let compare_task_graph_builder =
             feature_stack.task_runner.compare_task_graph_builder.clone();
-        // Start the plugins with selected nodes before the graph is built, so one that can't run
-        // stops the invocation before any node runs.
-        let plugins = feature_stack.plugins.plugins.clone();
-        let runs_nodes = command_phases(run_task_args.command, &plugins)
+        // Start the experimentals with selected nodes before the graph is built, so one that can't
+        // run stops the invocation before any node runs.
+        let experimentals = feature_stack.experimentals.experimentals.clone();
+        let runs_nodes = command_phases(run_task_args.command, &experimentals)
             .is_some_and(|phases| phases.contains(&TP::Run));
-        let plugin_runs = PluginRuns::start(
-            &plugins,
+        let experimental_runs = ExperimentalRuns::start(
+            &experimentals,
             &run_task_args,
             &resolved_state.nodes,
             &schedule,
@@ -2402,8 +2424,8 @@ impl DbtProjectCompilation {
             Arc::clone(&static_analysis_buckets),
             tasks_for_node_factory,
             compare_task_graph_builder,
-            plugins,
-            plugin_runs.clone(),
+            experimentals,
+            experimental_runs.clone(),
         );
 
         // Increment counters used in final run reporting.
@@ -2424,10 +2446,10 @@ impl DbtProjectCompilation {
             if node_type == NodeType::Check && !count_checks {
                 return;
             }
-            // A plugin node is graph work only while its plugin runs.
+            // An experimental node is graph work only while its experimental runs.
             if node
-                .plugin_type()
-                .is_some_and(|plugin_type| !plugin_runs.is_running(plugin_type))
+                .experimental_type()
+                .is_some_and(|experimental_type| !experimental_runs.is_running(experimental_type))
             {
                 return;
             }
@@ -2522,9 +2544,9 @@ impl DbtProjectCompilation {
                         token.clone(),
                     )
                     .await;
-                // Plugin runs finish whatever the graph's outcome. A run that fails to finish is
-                // reported without discarding the results.
-                plugin_runs.finish();
+                // Experimental runs finish whatever the graph's outcome. A run that fails to finish
+                // is reported without discarding the results.
+                experimental_runs.finish();
                 if run_result.is_err() {
                     run_cache_service_after_run_failed(
                         &run_cache_ctx_on_error,

@@ -6,7 +6,7 @@
 //! external) and maps them to their respective on-disk namespaces.
 
 use crate::{
-    CanonicalFqn, CanonicalIdentifier, DataStoreTrait, SchemaEntry, SchemaStoreResult,
+    CanonicalFqn, CanonicalIdentifier, DataStoreTrait, SchemaEntry, SchemaOwner, SchemaStoreResult,
     SchemaStoreTrait, parquet_cache::ParquetSchemaCache,
 };
 use arrow::array::RecordBatch;
@@ -633,6 +633,30 @@ impl SchemaStoreTrait for SchemaStore {
             self.state.exists_async(&entry).await
         } else {
             false
+        }
+    }
+
+    fn schema_owner(&self, cfqn: &CanonicalFqn) -> Option<SchemaOwner> {
+        match self.resolve_lookup_entry_by_cfqn(cfqn)? {
+            LookupEntry::Selected(unique_id) => Some(SchemaOwner::Current(unique_id)),
+            LookupEntry::Local(cfqn) => self
+                .local
+                .get_by_left(&cfqn)
+                .cloned()
+                .map(SchemaOwner::Current),
+            LookupEntry::Frontier(cfqn) => self
+                .frontier
+                .get_by_left(&cfqn)
+                .cloned()
+                .map(SchemaOwner::Current),
+            LookupEntry::Deferred(cfqn) => self
+                .deferred
+                .read()
+                .expect("deferred lock poisoned")
+                .get_by_left(&cfqn)
+                .cloned()
+                .map(SchemaOwner::Deferred),
+            LookupEntry::External(_) => None,
         }
     }
 

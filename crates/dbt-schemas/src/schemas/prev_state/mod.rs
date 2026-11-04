@@ -743,9 +743,9 @@ impl StateArtifacts {
             | NodeType::SavedQuery
             | NodeType::Check => !current_node.has_same_config(previous_node, adapter_type),
 
-            // Plugin nodes are not written to the manifest, so there is never a previous node to
-            // compare, and `state:` methods never select them. Listed for exhaustiveness.
-            NodeType::Plugin => !current_node.has_same_config(previous_node, adapter_type),
+            // Experimental nodes are not written to the manifest, so there is never a previous node
+            // to compare, and `state:` methods never select them. Listed for exhaustiveness.
+            NodeType::Experimental => !current_node.has_same_config(previous_node, adapter_type),
 
             // Never returned by any `InternalDbtNode::resource_type()` impl (see nodes.rs) —
             // `DocsMacro`/`Operation` describe non-node telemetry concepts and `Unspecified` is a

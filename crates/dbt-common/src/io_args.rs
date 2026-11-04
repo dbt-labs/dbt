@@ -960,8 +960,8 @@ pub enum ClapResourceType {
     SavedQuery,
     Check,
     Exposure,
-    /// Nodes added by plugins.
-    Plugin,
+    /// Nodes added by experimentals.
+    Experimental,
     All,
     /// Selects the resource types a command uses when no filter is given.
     Default,
@@ -990,7 +990,7 @@ impl ClapResourceType {
                     ClapResourceType::SavedQuery,
                     ClapResourceType::Check,
                     ClapResourceType::Exposure,
-                    ClapResourceType::Plugin,
+                    ClapResourceType::Experimental,
                 ]),
                 ClapResourceType::Default => resolved.extend_from_slice(defaults),
                 resource_type => resolved.push(*resource_type),
@@ -1016,7 +1016,7 @@ impl Display for ClapResourceType {
             ClapResourceType::SavedQuery => "saved_query",
             ClapResourceType::Check => "check",
             ClapResourceType::Exposure => "exposure",
-            ClapResourceType::Plugin => "plugin",
+            ClapResourceType::Experimental => "experimental",
             ClapResourceType::All => "all",
             ClapResourceType::Default => "default",
         };
@@ -1040,7 +1040,7 @@ impl From<&ClapResourceType> for NodeType {
             ClapResourceType::SavedQuery => NodeType::SavedQuery,
             ClapResourceType::Check => NodeType::Check,
             ClapResourceType::Exposure => NodeType::Exposure,
-            ClapResourceType::Plugin => NodeType::Plugin,
+            ClapResourceType::Experimental => NodeType::Experimental,
             // `all` and `default` are expanded by `resolve` before conversion.
             ClapResourceType::All | ClapResourceType::Default => {
                 unreachable!(
@@ -2066,7 +2066,7 @@ mod tests {
             ClapResourceType::SavedQuery,
             ClapResourceType::Check,
             ClapResourceType::Exposure,
-            ClapResourceType::Plugin,
+            ClapResourceType::Experimental,
         ] {
             assert!(all.contains(&resource_type), "{resource_type} missing");
         }

@@ -1626,7 +1626,7 @@ impl Adapter {
                 iter.finish()?;
 
                 let columns = adapter.get_missing_columns(state, &from_relation, &to_relation)?;
-                Ok(columns_to_value(columns))
+                Ok(columns_to_value_mut(columns))
             }
             Parse(_) => Ok(empty_mutable_vec_value()),
         }
@@ -1658,7 +1658,7 @@ impl Adapter {
                     )
                 } else {
                     let columns = adapter.get_columns_in_relation(state, relation)?;
-                    Ok(columns_to_value(columns))
+                    Ok(columns_to_value_mut(columns))
                 }
             }
             Parse(parse_adapter_state) => {
@@ -4358,6 +4358,16 @@ impl Adapter {
                         rel_type,
                         self.cancellation_token.clone(),
                     ))),
+                    Parse(_) => Ok(Value::from(false)),
+                }
+            }
+            "supports_atomic_exchange" => {
+                // (no args) -> bool (server passed the EXCHANGE TABLES probe)
+                ArgsIter::new("supports_atomic_exchange", &[], args).finish()?;
+                match &self.inner {
+                    Typed { adapter, .. } => Ok(Value::from(
+                        adapter.supports_atomic_exchange(state, self.cancellation_token.clone()),
+                    )),
                     Parse(_) => Ok(Value::from(false)),
                 }
             }

@@ -92,11 +92,18 @@ fn execute_unit_test_remote_inner(
         base_context,
         &ctx.inner.arg.io,
     ) {
-        Ok((is_test_succeed, diff_num_rows, diff)) => Ok(UnitTestExecutionResult {
-            passed: is_test_succeed,
-            diff_num_rows,
-            diff,
-        }),
+        Ok((is_test_succeed, diff_num_rows, diff, main_response)) => {
+            if let Some(main_response) = main_response {
+                ctx.inner
+                    .main_adapter_responses
+                    .upsert_sync(unique_id.to_string(), main_response);
+            }
+            Ok(UnitTestExecutionResult {
+                passed: is_test_succeed,
+                diff_num_rows,
+                diff,
+            })
+        }
         Err(e) => {
             // Collect the error and continue with other tests
             find_and_record_span_status_with_attrs(

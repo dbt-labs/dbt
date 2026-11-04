@@ -30,7 +30,7 @@ use dbt_schemas::{
         NodeBaseAttributes,
         common::DbtQuoting,
         manifest::DbtOperation,
-        serde::{NodeVersion, yml_value_to_minijinja},
+        serde::{NodeVersion, yml_value_to_minijinja_map},
     },
     state::DbtRuntimeConfig,
 };
@@ -264,13 +264,13 @@ pub fn build_resolve_model_context<T: ResolvableConfig<T> + Serialize + 'static>
     // are evaluated while rendering; macros must see the merged node config
     // (`properties_config` / `BaseConfig`), matching dbt-core (dbt-fusion#1414).
     //
-    // Use `dbt_yaml::to_value` + `yml_value_to_minijinja` — same pipeline as
+    // Use `dbt_yaml::to_value` + `yml_value_to_minijinja_map` — same pipeline as
     // `DbtModel::serialized_config()` — not `MinijinjaValue::from_serialize`, so later
     // `dbt_yaml::to_value(model)` → `InternalDbtNodeWrapper::deserialize` in adapter helpers
     // (`get_view_options`, `get_config_from_model`, …) round-trips correctly.
     model_map.insert(
         MinijinjaValue::from("config"),
-        yml_value_to_minijinja(&config_yml),
+        MinijinjaValue::from_object(yml_value_to_minijinja_map(config_yml)),
     );
     model_map.insert(
         MinijinjaValue::from("batch"),

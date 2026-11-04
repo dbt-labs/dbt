@@ -70,12 +70,14 @@ impl<'a> BigqueryAuthIR<'a> {
                 builder.with_named_option(bigquery::AUTH_TYPE, auth_type::DEFAULT)?;
             }
             Self::ServiceAccount { keyfile } => {
-                let expanded_path = shellexpand::tilde(keyfile).to_string();
-                if Path::new(&expanded_path).exists() {
+                let expanded_path = shellexpand::tilde(keyfile);
+                if Path::new(expanded_path.as_ref()).exists() {
                     builder
                         .with_named_option(bigquery::AUTH_TYPE, auth_type::JSON_CREDENTIAL_FILE)?;
-                    builder
-                        .with_named_option(bigquery::AUTH_CREDENTIALS, expanded_path.as_str())?;
+                    builder.with_named_option(
+                        bigquery::AUTH_CREDENTIALS,
+                        expanded_path.into_owned(),
+                    )?;
                 } else {
                     return Err(AuthError::config(format!(
                         "Keyfile '{keyfile}' does not exist"
@@ -342,7 +344,7 @@ fn apply_connection_args(
     }
 
     if let Some(quota_project) = config.get_string("quota_project") {
-        builder.with_named_option(bigquery::AUTH_QUOTA_PROJECT, quota_project)?;
+        builder.with_named_option(bigquery::AUTH_QUOTA_PROJECT, quota_project.into_owned())?;
     }
 
     let dataset_id = dataset_id(config)?;
@@ -350,7 +352,7 @@ fn apply_connection_args(
 
     if let Some(api_endpoint) = config.get_str("api_endpoint") {
         let api_endpoint = validate_api_endpoint(api_endpoint, warning_printer)?;
-        builder.with_named_option(bigquery::API_ENDPOINT, api_endpoint.as_ref())?;
+        builder.with_named_option(bigquery::API_ENDPOINT, api_endpoint.into_owned())?;
     }
 
     if let Some(location) = config.get_str("location") {
