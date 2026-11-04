@@ -16,9 +16,9 @@ pub use crate::impls::node::{
 };
 pub use crate::proto::v1::public::events::fusion::node::{
     AdapterResponseValue, MicrobatchBatchSize, MicrobatchEvaluated, NodeAdapterResponse,
-    NodeCacheDetail, NodeCacheReason, NodeCancelReason, NodeErrorType, NodeEvaluated,
-    NodeEvaluationDetail, NodeMaterialization, NodeOutcome, NodeProcessed, NodeSkipReason,
-    NodeSkipUpstreamDetail, NodeType, NodeWarningOutcome, SourceFreshnessDetail,
+    NodeCacheDetail, NodeCacheReason, NodeCancelReason, NodeComputeMode, NodeErrorType,
+    NodeEvaluated, NodeEvaluationDetail, NodeMaterialization, NodeOutcome, NodeProcessed,
+    NodeSkipReason, NodeSkipUpstreamDetail, NodeType, NodeWarningOutcome, SourceFreshnessDetail,
     SourceFreshnessOutcome, TestEvaluationDetail, TestOutcome, adapter_response_value,
     node_evaluated::NodeOutcomeDetail, node_processed,
 };
@@ -89,6 +89,10 @@ struct NodeEvaluatedJsonPayload {
     pub state_decision_id: Option<String>,
     /// Response of the node's `main` statement.
     pub adapter_response: Option<NodeAdapterResponse>,
+    /// Where the run phase executed.
+    pub compute_mode: Option<NodeComputeMode>,
+    /// Type of the catalog the node's catalog name resolves to.
+    pub catalog_type: Option<String>,
 }
 
 /// Internal struct used for serializing/deserializing subset of
@@ -114,6 +118,10 @@ struct NodeProcessedJsonPayload {
     pub experimental_type: Option<String>,
     /// Response of the node's `main` statement.
     pub adapter_response: Option<NodeAdapterResponse>,
+    /// Where the run phase executed.
+    pub compute_mode: Option<NodeComputeMode>,
+    /// Type of the catalog the node's catalog name resolves to.
+    pub catalog_type: Option<String>,
 }
 
 fn deserialize_node_evaluated_json_payload(
@@ -125,6 +133,8 @@ fn deserialize_node_evaluated_json_payload(
             idle_time_ms: None,
             state_decision_id: None,
             adapter_response: None,
+            compute_mode: None,
+            catalog_type: None,
         });
     };
 
@@ -141,6 +151,8 @@ fn deserialize_node_evaluated_json_payload(
             || obj.contains_key("idle_time_ms")
             || obj.contains_key("state_decision_id")
             || obj.contains_key("adapter_response")
+            || obj.contains_key("compute_mode")
+            || obj.contains_key("catalog_type")
     });
 
     if is_wrapped_payload {
@@ -165,6 +177,8 @@ fn deserialize_node_evaluated_json_payload(
             idle_time_ms: None,
             state_decision_id: None,
             adapter_response: None,
+            compute_mode: None,
+            catalog_type: None,
         })
     }
 }
@@ -198,13 +212,17 @@ impl ArrowSerializableTelemetryEvent for NodeEvaluated {
             json_payload: (self.node_outcome_detail.is_some()
                 || self.idle_time_ms.is_some()
                 || self.state_decision_id.is_some()
-                || self.adapter_response.is_some())
+                || self.adapter_response.is_some()
+                || self.compute_mode.is_some()
+                || self.catalog_type.is_some())
             .then(|| {
                 serde_json::to_string(&NodeEvaluatedJsonPayload {
                     node_outcome_detail: self.node_outcome_detail.clone(),
                     idle_time_ms: self.idle_time_ms,
                     state_decision_id: self.state_decision_id.clone(),
                     adapter_response: self.adapter_response.clone(),
+                    compute_mode: self.compute_mode.map(|_| self.compute_mode()),
+                    catalog_type: self.catalog_type.clone(),
                 })
                 .unwrap_or_else(|_| {
                     panic!(
@@ -261,6 +279,8 @@ impl ArrowSerializableTelemetryEvent for NodeEvaluated {
             sao_enabled: record.sao_enabled,
             state_decision_id: json_payload.state_decision_id,
             adapter_response: json_payload.adapter_response,
+            compute_mode: json_payload.compute_mode.map(|v| v as i32),
+            catalog_type: json_payload.catalog_type,
             dbt_core_event_code: record.dbt_core_event_code.as_deref().map(str::to_string),
             node_outcome_detail: json_payload.node_outcome_detail,
             relative_path: record
@@ -506,6 +526,8 @@ impl ArrowSerializableTelemetryEvent for NodeProcessed {
                 adapter: self.adapter.clone(),
                 experimental_type: self.experimental_type.clone(),
                 adapter_response: self.adapter_response.clone(),
+                compute_mode: self.compute_mode.map(|_| self.compute_mode()),
+                catalog_type: self.catalog_type.clone(),
             })
             .unwrap_or_else(|_| {
                 panic!(
@@ -620,6 +642,8 @@ impl ArrowSerializableTelemetryEvent for NodeProcessed {
             adapter: json_payload.adapter,
             experimental_type: json_payload.experimental_type,
             adapter_response: json_payload.adapter_response,
+            compute_mode: json_payload.compute_mode.map(|v| v as i32),
+            catalog_type: json_payload.catalog_type,
         })
     }
 }

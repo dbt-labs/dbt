@@ -941,6 +941,83 @@ impl<'de> serde::Deserialize<'de> for NodeCancelReason {
         deserializer.deserialize_any(GeneratedVisitor)
     }
 }
+impl serde::Serialize for NodeComputeMode {
+    #[allow(deprecated)]
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let variant = match self {
+            Self::Unspecified => "NODE_COMPUTE_MODE_UNSPECIFIED",
+            Self::Remote => "NODE_COMPUTE_MODE_REMOTE",
+            Self::Local => "NODE_COMPUTE_MODE_LOCAL",
+            Self::LakeCompute => "NODE_COMPUTE_MODE_LAKE_COMPUTE",
+        };
+        serializer.serialize_str(variant)
+    }
+}
+impl<'de> serde::Deserialize<'de> for NodeComputeMode {
+    #[allow(deprecated)]
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        const FIELDS: &[&str] = &[
+            "NODE_COMPUTE_MODE_UNSPECIFIED",
+            "NODE_COMPUTE_MODE_REMOTE",
+            "NODE_COMPUTE_MODE_LOCAL",
+            "NODE_COMPUTE_MODE_LAKE_COMPUTE",
+        ];
+
+        struct GeneratedVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for GeneratedVisitor {
+            type Value = NodeComputeMode;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(formatter, "expected one of: {:?}", &FIELDS)
+            }
+
+            fn visit_i64<E>(self, v: i64) -> std::result::Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                i32::try_from(v)
+                    .ok()
+                    .and_then(|x| x.try_into().ok())
+                    .ok_or_else(|| {
+                        serde::de::Error::invalid_value(serde::de::Unexpected::Signed(v), &self)
+                    })
+            }
+
+            fn visit_u64<E>(self, v: u64) -> std::result::Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                i32::try_from(v)
+                    .ok()
+                    .and_then(|x| x.try_into().ok())
+                    .ok_or_else(|| {
+                        serde::de::Error::invalid_value(serde::de::Unexpected::Unsigned(v), &self)
+                    })
+            }
+
+            fn visit_str<E>(self, value: &str) -> std::result::Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                match value {
+                    "NODE_COMPUTE_MODE_UNSPECIFIED" => Ok(NodeComputeMode::Unspecified),
+                    "NODE_COMPUTE_MODE_REMOTE" => Ok(NodeComputeMode::Remote),
+                    "NODE_COMPUTE_MODE_LOCAL" => Ok(NodeComputeMode::Local),
+                    "NODE_COMPUTE_MODE_LAKE_COMPUTE" => Ok(NodeComputeMode::LakeCompute),
+                    _ => Err(serde::de::Error::unknown_variant(value, FIELDS)),
+                }
+            }
+        }
+        deserializer.deserialize_any(GeneratedVisitor)
+    }
+}
 impl serde::Serialize for NodeErrorType {
     #[allow(deprecated)]
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
@@ -1092,6 +1169,12 @@ impl serde::Serialize for NodeEvaluated {
         if self.adapter_response.is_some() {
             len += 1;
         }
+        if self.compute_mode.is_some() {
+            len += 1;
+        }
+        if self.catalog_type.is_some() {
+            len += 1;
+        }
         if self.node_outcome_detail.is_some() {
             len += 1;
         }
@@ -1183,6 +1266,14 @@ impl serde::Serialize for NodeEvaluated {
         if let Some(v) = self.adapter_response.as_ref() {
             struct_ser.serialize_field("adapter_response", v)?;
         }
+        if let Some(v) = self.compute_mode.as_ref() {
+            let v = NodeComputeMode::try_from(*v)
+                .map_err(|_| serde::ser::Error::custom(format!("Invalid variant {}", *v)))?;
+            struct_ser.serialize_field("compute_mode", &v)?;
+        }
+        if let Some(v) = self.catalog_type.as_ref() {
+            struct_ser.serialize_field("catalog_type", v)?;
+        }
         if let Some(v) = self.node_outcome_detail.as_ref() {
             match v {
                 node_evaluated::NodeOutcomeDetail::NodeCacheDetail(v) => {
@@ -1252,6 +1343,10 @@ impl<'de> serde::Deserialize<'de> for NodeEvaluated {
             "stateDecisionId",
             "adapter_response",
             "adapterResponse",
+            "compute_mode",
+            "computeMode",
+            "catalog_type",
+            "catalogType",
             "node_cache_detail",
             "nodeCacheDetail",
             "node_test_detail",
@@ -1289,6 +1384,8 @@ impl<'de> serde::Deserialize<'de> for NodeEvaluated {
             IdleTimeMs,
             StateDecisionId,
             AdapterResponse,
+            ComputeMode,
+            CatalogType,
             NodeCacheDetail,
             NodeTestDetail,
             NodeFreshnessOutcome,
@@ -1339,6 +1436,8 @@ impl<'de> serde::Deserialize<'de> for NodeEvaluated {
                             "idleTimeMs" | "idle_time_ms" => Ok(GeneratedField::IdleTimeMs),
                             "stateDecisionId" | "state_decision_id" => Ok(GeneratedField::StateDecisionId),
                             "adapterResponse" | "adapter_response" => Ok(GeneratedField::AdapterResponse),
+                            "computeMode" | "compute_mode" => Ok(GeneratedField::ComputeMode),
+                            "catalogType" | "catalog_type" => Ok(GeneratedField::CatalogType),
                             "nodeCacheDetail" | "node_cache_detail" => Ok(GeneratedField::NodeCacheDetail),
                             "nodeTestDetail" | "node_test_detail" => Ok(GeneratedField::NodeTestDetail),
                             "nodeFreshnessOutcome" | "node_freshness_outcome" => Ok(GeneratedField::NodeFreshnessOutcome),
@@ -1386,6 +1485,8 @@ impl<'de> serde::Deserialize<'de> for NodeEvaluated {
                 let mut idle_time_ms__ = None;
                 let mut state_decision_id__ = None;
                 let mut adapter_response__ = None;
+                let mut compute_mode__ = None;
+                let mut catalog_type__ = None;
                 let mut node_outcome_detail__ = None;
                 while let Some(k) = map_.next_key()? {
                     match k {
@@ -1535,6 +1636,18 @@ impl<'de> serde::Deserialize<'de> for NodeEvaluated {
                             }
                             adapter_response__ = map_.next_value()?;
                         }
+                        GeneratedField::ComputeMode => {
+                            if compute_mode__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("computeMode"));
+                            }
+                            compute_mode__ = map_.next_value::<::std::option::Option<NodeComputeMode>>()?.map(|x| x as i32);
+                        }
+                        GeneratedField::CatalogType => {
+                            if catalog_type__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("catalogType"));
+                            }
+                            catalog_type__ = map_.next_value()?;
+                        }
                         GeneratedField::NodeCacheDetail => {
                             if node_outcome_detail__.is_some() {
                                 return Err(serde::de::Error::duplicate_field("nodeCacheDetail"));
@@ -1599,6 +1712,8 @@ impl<'de> serde::Deserialize<'de> for NodeEvaluated {
                     idle_time_ms: idle_time_ms__,
                     state_decision_id: state_decision_id__,
                     adapter_response: adapter_response__,
+                    compute_mode: compute_mode__,
+                    catalog_type: catalog_type__,
                     node_outcome_detail: node_outcome_detail__,
                 })
             }
@@ -2001,6 +2116,12 @@ impl serde::Serialize for NodeProcessed {
         if self.adapter_response.is_some() {
             len += 1;
         }
+        if self.compute_mode.is_some() {
+            len += 1;
+        }
+        if self.catalog_type.is_some() {
+            len += 1;
+        }
         if self.node_outcome_detail.is_some() {
             len += 1;
         }
@@ -2115,6 +2236,14 @@ impl serde::Serialize for NodeProcessed {
         if let Some(v) = self.adapter_response.as_ref() {
             struct_ser.serialize_field("adapter_response", v)?;
         }
+        if let Some(v) = self.compute_mode.as_ref() {
+            let v = NodeComputeMode::try_from(*v)
+                .map_err(|_| serde::ser::Error::custom(format!("Invalid variant {}", *v)))?;
+            struct_ser.serialize_field("compute_mode", &v)?;
+        }
+        if let Some(v) = self.catalog_type.as_ref() {
+            struct_ser.serialize_field("catalog_type", v)?;
+        }
         if let Some(v) = self.node_outcome_detail.as_ref() {
             match v {
                 node_processed::NodeOutcomeDetail::NodeCacheDetail(v) => {
@@ -2197,6 +2326,10 @@ impl<'de> serde::Deserialize<'de> for NodeProcessed {
             "experimentalType",
             "adapter_response",
             "adapterResponse",
+            "compute_mode",
+            "computeMode",
+            "catalog_type",
+            "catalogType",
             "node_cache_detail",
             "nodeCacheDetail",
             "node_test_detail",
@@ -2241,6 +2374,8 @@ impl<'de> serde::Deserialize<'de> for NodeProcessed {
             Adapter,
             ExperimentalType,
             AdapterResponse,
+            ComputeMode,
+            CatalogType,
             NodeCacheDetail,
             NodeTestDetail,
             NodeFreshnessOutcome,
@@ -2298,6 +2433,8 @@ impl<'de> serde::Deserialize<'de> for NodeProcessed {
                             "adapter" => Ok(GeneratedField::Adapter),
                             "experimentalType" | "experimental_type" => Ok(GeneratedField::ExperimentalType),
                             "adapterResponse" | "adapter_response" => Ok(GeneratedField::AdapterResponse),
+                            "computeMode" | "compute_mode" => Ok(GeneratedField::ComputeMode),
+                            "catalogType" | "catalog_type" => Ok(GeneratedField::CatalogType),
                             "nodeCacheDetail" | "node_cache_detail" => Ok(GeneratedField::NodeCacheDetail),
                             "nodeTestDetail" | "node_test_detail" => Ok(GeneratedField::NodeTestDetail),
                             "nodeFreshnessOutcome" | "node_freshness_outcome" => Ok(GeneratedField::NodeFreshnessOutcome),
@@ -2352,6 +2489,8 @@ impl<'de> serde::Deserialize<'de> for NodeProcessed {
                 let mut adapter__ = None;
                 let mut experimental_type__ = None;
                 let mut adapter_response__ = None;
+                let mut compute_mode__ = None;
+                let mut catalog_type__ = None;
                 let mut node_outcome_detail__ = None;
                 while let Some(k) = map_.next_key()? {
                     match k {
@@ -2549,6 +2688,18 @@ impl<'de> serde::Deserialize<'de> for NodeProcessed {
                             }
                             adapter_response__ = map_.next_value()?;
                         }
+                        GeneratedField::ComputeMode => {
+                            if compute_mode__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("computeMode"));
+                            }
+                            compute_mode__ = map_.next_value::<::std::option::Option<NodeComputeMode>>()?.map(|x| x as i32);
+                        }
+                        GeneratedField::CatalogType => {
+                            if catalog_type__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("catalogType"));
+                            }
+                            catalog_type__ = map_.next_value()?;
+                        }
                         GeneratedField::NodeCacheDetail => {
                             if node_outcome_detail__.is_some() {
                                 return Err(serde::de::Error::duplicate_field("nodeCacheDetail"));
@@ -2620,6 +2771,8 @@ impl<'de> serde::Deserialize<'de> for NodeProcessed {
                     adapter: adapter__,
                     experimental_type: experimental_type__,
                     adapter_response: adapter_response__,
+                    compute_mode: compute_mode__,
+                    catalog_type: catalog_type__,
                     node_outcome_detail: node_outcome_detail__,
                 })
             }

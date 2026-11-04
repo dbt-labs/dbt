@@ -1,4 +1,5 @@
 use std::future::Future;
+use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::mpsc;
@@ -32,9 +33,12 @@ use dbt_schemas::schemas::{
 };
 use dbt_tasks_core::context::{TaskRunnerCtx, node_execution_metrics};
 use dbt_tasks_core::run_task_hooks::RunTaskHooks;
+use dbt_tasks_core::span_manager::SpanTreeRequest;
 use dbt_tasks_core::task::TaskResult;
 use dbt_tasks_core::task::{TP, Task, run_blocking_task_operation, run_concurrent_task_operations};
-use dbt_telemetry::{NodeEvaluated, NodeSkipReason, NodeType};
+use dbt_tasks_core::task_spans::node_task_span_request;
+use dbt_tasks_core::visitor::SkipReason;
+use dbt_telemetry::{NodeComputeMode, NodeEvaluated, NodeSkipReason, NodeType};
 
 use tracing::Instrument;
 use vortex_events::run_model_event;
@@ -67,11 +71,11 @@ pub enum RunExecutionPath {
 }
 
 impl RunExecutionPath {
-    fn compute_mode(self) -> &'static str {
+    fn compute_mode(self) -> NodeComputeMode {
         match self {
-            Self::Remote => "remote",
-            Self::SideCar => "local",
-            Self::LakeCompute => "lake_compute",
+            Self::Remote => NodeComputeMode::Remote,
+            Self::SideCar => NodeComputeMode::Local,
+            Self::LakeCompute => NodeComputeMode::LakeCompute,
         }
     }
 }
@@ -180,6 +184,9 @@ impl Task for RunTask {
                 .as_ref()
                 .copied()
                 .unwrap_or(self.execution_path);
+            update_span_attrs(&task_span, |attrs: &mut NodeEvaluated| {
+                attrs.set_compute_mode(stats_execution_path.compute_mode());
+            });
             let result = match (statically_checked_test, effective_execution_path) {
                 // A test is never refused, so `_` drops no error.
                 (Some(test), _) => {
@@ -688,6 +695,23 @@ impl Task for RunTask {
     fn task_phase(&self) -> Option<TP> {
         Some(TP::Run)
     }
+
+    fn telemetry_request(
+        &self,
+        in_dir: &Path,
+        out_dir: &Path,
+        skip_reason: Option<&SkipReason>,
+    ) -> SpanTreeRequest<FsResult<NodeStatus>, SkipReason> {
+        node_task_span_request(self, in_dir, out_dir, skip_reason, |attrs| {
+            attrs.catalog_type = self
+                .node
+                .as_any()
+                .downcast_ref::<DbtModel>()
+                .and_then(|model| {
+                    resolve_catalog_type(model.__model_attr__.catalog_name.as_deref())
+                });
+        })
+    }
 }
 
 fn maybe_replay_remote_run(unique_id: &str) -> Option<RunCacheServiceDecision> {
@@ -1137,7 +1161,7 @@ fn emit_run_usage_stats(
         table_format,
         catalog_name,
         catalog_type,
-        execution_path.compute_mode().to_string(),
+        execution_path.compute_mode().as_static_ref().to_string(),
         execution_metrics,
     );
 }
@@ -1146,8 +1170,8 @@ fn emit_run_usage_stats(
 ///
 /// Mirrors how the adapter resolves catalog metadata at materialization time
 /// (`CatalogRelation::build_with_catalogs` and friends). The returned string is the
-/// catalog-type enum's stable form (`*::as_str`), which is the aggregatable value we
-/// want in telemetry.
+/// catalog-type enum's stable form (`*::as_str`), lowercased so that v1 and v2
+/// catalogs.yml report the same value.
 ///
 /// Two schemas are supported:
 /// - **v1**: `catalog_type` lives on the catalog's active write integration —
@@ -1182,7 +1206,7 @@ fn resolve_catalog_type(catalog_name: Option<&str>) -> Option<String> {
         .0
         .iter()
         .find(|write_integration| write_integration.integration_name == active_integration)?;
-    Some(write_integration.catalog_type.as_str().to_string())
+    Some(write_integration.catalog_type.as_str().to_lowercase())
 }
 
 fn node_runs_with_cache(node: &dyn InternalDbtNodeAttributes) -> bool {
@@ -1315,9 +1339,30 @@ mod tests {
 
     #[test]
     fn compute_mode_matches_execution_path() {
-        assert_eq!(RunExecutionPath::Remote.compute_mode(), "remote");
-        assert_eq!(RunExecutionPath::SideCar.compute_mode(), "local");
-        assert_eq!(RunExecutionPath::LakeCompute.compute_mode(), "lake_compute");
+        assert_eq!(
+            RunExecutionPath::Remote.compute_mode(),
+            NodeComputeMode::Remote
+        );
+        assert_eq!(
+            RunExecutionPath::SideCar.compute_mode(),
+            NodeComputeMode::Local
+        );
+        assert_eq!(
+            RunExecutionPath::LakeCompute.compute_mode(),
+            NodeComputeMode::LakeCompute
+        );
+        assert_eq!(
+            RunExecutionPath::Remote.compute_mode().as_static_ref(),
+            "remote"
+        );
+        assert_eq!(
+            RunExecutionPath::SideCar.compute_mode().as_static_ref(),
+            "local"
+        );
+        assert_eq!(
+            RunExecutionPath::LakeCompute.compute_mode().as_static_ref(),
+            "lake_compute"
+        );
     }
 
     fn lake_compute_snapshot_and_function() -> [Box<dyn InternalDbtNodeAttributes>; 2] {

@@ -124,6 +124,17 @@ enum NodeMaterialization {
   NODE_MATERIALIZATION_CUSTOM = 100;
 }
 
+// Where a node's run phase executed.
+enum NodeComputeMode {
+  NODE_COMPUTE_MODE_UNSPECIFIED = 0;
+  // On the node's warehouse.
+  NODE_COMPUTE_MODE_REMOTE = 1;
+  // On the local sidecar engine.
+  NODE_COMPUTE_MODE_LOCAL = 2;
+  // On lake compute.
+  NODE_COMPUTE_MODE_LAKE_COMPUTE = 3;
+}
+
 // Test-specific outcome details (only for TEST and UNITTEST node types).
 enum TestOutcome {
   // No failures found or below warning threshold.
@@ -384,6 +395,21 @@ message NodeEvaluated {
   // outside the warehouse adapter (local or lake compute), when the materialization failed
   // before recording a response, and when a microbatch batch failed.
   NodeAdapterResponse adapter_response = 44;
+
+  // Where the node's run executed: the path actually taken. Set in the Run phase when a
+  // regular node task (models, seeds, snapshots, tests, functions, unit tests) starts the
+  // node, before it executes, so errored nodes carry it too. A snapshot or function that
+  // `adapter: lakecompute` refuses reports LAKE_COMPUTE. Unset for a node skipped before it
+  // starts (e.g. an upstream node failed), for tests run as part of a batched (aggregated)
+  // test query, for clone and experimental-node tasks, and in other phases.
+  optional NodeComputeMode compute_mode = 45;
+
+  // Type of the catalog that the model's `catalog_name` resolves to in catalogs.yml
+  // (e.g. "horizon", "iceberg_rest"). Always lowercase.
+  // Set when the Run phase span is created by a regular node task, for models only. Unset for
+  // a node skipped when the span is created, when the model has no `catalog_name`, there is no
+  // catalogs.yml, or the name is not found.
+  optional string catalog_type = 46;
 }
 
 // Span event tracking full processing of a node across all phases.
@@ -519,4 +545,12 @@ message NodeProcessed {
   // Rolled up from the Run phase `NodeEvaluated`; see its `adapter_response`.
   // Unset when the Run phase did not run, or recorded none.
   NodeAdapterResponse adapter_response = 50;
+
+  // Where the node's run executed. Rolled up from the Run phase `NodeEvaluated`; see its
+  // `compute_mode` for when it is set.
+  optional NodeComputeMode compute_mode = 51;
+
+  // Type of the catalog that the model's `catalog_name` resolves to in catalogs.yml.
+  // Rolled up from the Run phase `NodeEvaluated`; see its `catalog_type` for when it is set.
+  optional string catalog_type = 52;
 }
