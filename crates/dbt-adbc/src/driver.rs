@@ -296,6 +296,7 @@ static BUNDLED_DRIVERS_CACHE_DIR: LazyLock<Option<PathBuf>> =
 /// This is the `~/.local/lib/dbt/` layout adopted by the installer that bundles
 /// drivers with the dbt distribution. We assume that the dbt/ subdir exists and
 /// let loading fail in case it doesn't.
+#[cold]
 fn find_adbc_libs_directory() -> Option<PathBuf> {
     // No. of dirs to walk is chosen for `dbt` to operate when the invoked dbt project is:
     // * a subdir of the fusion root but not past the crate level
@@ -350,6 +351,7 @@ pub fn set_libs_directory(dir: Option<PathBuf>) {
     );
 }
 
+#[inline]
 fn adbc_libs_directory() -> Option<&'static PathBuf> {
     ADBC_LIBS_DIRECTORY
         .get_or_init(find_adbc_libs_directory)

@@ -342,7 +342,14 @@ impl From<dbt_runtime::JoinError> for AdapterError {
 
 impl From<AdapterError> for Box<FsError> {
     fn from(err: AdapterError) -> Self {
-        let err_code = map_sqlstate_to_code(err.sqlstate()).unwrap_or_else(|| err.kind().into());
+        // NotFound and Authentication come from the driver's status, which is more specific
+        // than the SQLSTATE class: class 42 is "Syntax Error or Access Rule Violation"
+        // (https://docs.databricks.com/aws/en/error-messages/sqlstates), so it also covers
+        // missing objects and privilege failures.
+        let err_code = match err.kind() {
+            AdapterErrorKind::NotFound | AdapterErrorKind::Authentication => err.kind().into(),
+            kind => map_sqlstate_to_code(err.sqlstate()).unwrap_or_else(|| kind.into()),
+        };
         Box::new(FsError::new(err_code, format!("{err}")))
     }
 }
@@ -357,5 +364,56 @@ pub fn into_fs_error(err: Cancellable<AdapterError>) -> Box<FsError> {
             Box::new(e)
         }
         Cancellable::Error(err) => err.into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn code_for(kind: AdapterErrorKind, sqlstate: &str) -> ErrorCode {
+        let bytes = sqlstate.as_bytes();
+        assert_eq!(bytes.len(), 5, "SQLSTATE must be 5 bytes, got {sqlstate:?}");
+        let mut state = [b'0'; 5];
+        state.copy_from_slice(bytes);
+        let err =
+            AdapterError::new_with_sqlstate_and_vendor_code(kind, "boom".to_string(), state, None);
+        Box::<FsError>::from(err).code
+    }
+
+    #[test]
+    fn not_found_and_authentication_win_over_sqlstate_class() {
+        assert_eq!(
+            code_for(AdapterErrorKind::NotFound, "42P01"),
+            ErrorCode::DbNotFound
+        );
+        assert_eq!(
+            code_for(AdapterErrorKind::Authentication, "42501"),
+            ErrorCode::DbAuthFailed
+        );
+        assert_eq!(
+            code_for(AdapterErrorKind::NotFound, "28000"),
+            ErrorCode::DbNotFound
+        );
+        assert_eq!(
+            code_for(AdapterErrorKind::NotFound, "08006"),
+            ErrorCode::DbNotFound
+        );
+        assert_eq!(
+            code_for(AdapterErrorKind::Authentication, "08006"),
+            ErrorCode::DbAuthFailed
+        );
+    }
+
+    #[test]
+    fn other_kinds_still_use_sqlstate_class() {
+        assert_eq!(
+            code_for(AdapterErrorKind::Driver, "42601"),
+            ErrorCode::DbSyntaxInvalid
+        );
+        assert_eq!(
+            code_for(AdapterErrorKind::Driver, "99999"),
+            ErrorCode::DbDriverFailed
+        );
     }
 }

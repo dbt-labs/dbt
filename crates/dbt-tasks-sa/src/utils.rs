@@ -381,7 +381,7 @@ pub fn update_node_columns(
         if adapter_type == AdapterType::Bigquery {
             schema_columns.extend(column.flatten());
         } else {
-            schema_columns.push(Arc::new(column));
+            schema_columns.push(Arc::from(column));
         }
     }
 

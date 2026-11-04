@@ -42,6 +42,7 @@ impl Showable for DbtModel {
 
             run_show(
                 ctx,
+                self,
                 show_unique_id,
                 "model",
                 is_inline,

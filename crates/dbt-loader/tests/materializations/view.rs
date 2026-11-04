@@ -37,6 +37,7 @@ fn build_view_harness(adapter_type: AdapterType) -> MacroTestHarness {
     let mock = harness.mock();
     mock.on("rename_relation", |_| Ok(Value::UNDEFINED));
     mock.on("drop_relation", |_| Ok(Value::UNDEFINED));
+    mock.on("cache_dropped", |_| Ok(Value::UNDEFINED));
     mock.on("commit", |_| Ok(Value::UNDEFINED));
     mock.on("clean_sql", |args| {
         Ok(args.first().cloned().unwrap_or(Value::UNDEFINED))
@@ -142,9 +143,24 @@ fn run_existing_view(adapter_type: AdapterType) -> MacroTestHarness {
 /// Shorthand: build harness, mock get_relation → existing table, render with
 /// full_refresh config, assert success.
 fn run_existing_table(adapter_type: AdapterType) -> MacroTestHarness {
+    render_over_existing_table(build_view_harness(adapter_type), adapter_type, "TEST_DB")
+}
+
+/// Shorthand: existing Hive metastore table replaced by a view on the selected
+/// materialization version.
+fn run_existing_hive_metastore_table(adapter_type: AdapterType, v2: bool) -> MacroTestHarness {
     let harness = build_view_harness(adapter_type);
+    harness.set_behavior_flags([("use_materialization_v2", v2)]);
+    render_over_existing_table(harness, adapter_type, "hive_metastore")
+}
+
+fn render_over_existing_table(
+    harness: MacroTestHarness,
+    adapter_type: AdapterType,
+    database: &str,
+) -> MacroTestHarness {
     let existing = harness.relation(
-        "TEST_DB",
+        database,
         "TEST_SCHEMA",
         "my_view",
         Some(RelationType::Table),
@@ -160,6 +176,36 @@ fn run_existing_table(adapter_type: AdapterType) -> MacroTestHarness {
     render_view(&harness, adapter_type, ctx)
         .unwrap_or_else(|e| panic!("{adapter_type:?} view materialization failed: {e:?}"));
     harness
+}
+
+/// Databricks rejects renaming a Hive metastore managed Delta table on S3, so the
+/// table is dropped and only the staged view is renamed into place.
+fn assert_hive_metastore_table_not_renamed(harness: &MacroTestHarness) {
+    harness
+        .mock()
+        .observed_calls()
+        .assert_not_called("rename_relation");
+    harness
+        .mock()
+        .observed_calls()
+        .assert_called("cache_dropped");
+    let executed = executed_sql(harness.mock()).join("\n").to_lowercase();
+    let position = |needle: &str| {
+        executed
+            .find(needle)
+            .unwrap_or_else(|| panic!("expected SQL containing {needle:?}: {executed}"))
+    };
+    let stage = position("create or replace view");
+    let drop = position("drop table if exists `hive_metastore`");
+    let swap = position("alter view");
+    assert!(
+        stage < drop && drop < swap && executed[stage..drop].contains("my_view__dbt_stg"),
+        "view must be staged, then the table dropped, then the view renamed: {executed}"
+    );
+    assert!(
+        !executed.contains("alter table"),
+        "the Hive metastore table must not be renamed: {executed}"
+    );
 }
 
 mod snowflake {
@@ -221,6 +267,18 @@ mod databricks {
         );
         h.mock().observed_calls().assert_called("rename_relation");
         assert_executed_contains(h.mock(), "rename to");
+    }
+
+    #[test]
+    fn existing_hive_metastore_table_dropped_before_staged_view_is_renamed() {
+        let h = run_existing_hive_metastore_table(ADAPTER, false);
+        assert_hive_metastore_table_not_renamed(&h);
+    }
+
+    #[test]
+    fn v2_existing_hive_metastore_table_dropped_before_staged_view_is_renamed() {
+        let h = run_existing_hive_metastore_table(ADAPTER, true);
+        assert_hive_metastore_table_not_renamed(&h);
     }
 
     // -- use_materialization_v2 = true ----------------------------------
@@ -401,6 +459,141 @@ mod databricks {
             .observed_calls()
             .assert_not_called("get_config_from_model");
         assert_executed_contains(h.mock(), "create or replace view");
+    }
+
+    // -- ALTER path validation and column comments ---------------------------
+
+    fn update_via_alter_with_row_filter_config() -> Arc<MockJinjaObject> {
+        let mock = default_mock_config();
+        mock.on("get", |args| {
+            let key = args.first().and_then(|v| v.as_str());
+            let default = args.get(1).cloned().unwrap_or(Value::UNDEFINED);
+            match key {
+                Some("contract") => Ok(Value::from_serialize(BTreeMap::from([(
+                    "enforced".to_string(),
+                    Value::from(false),
+                )]))),
+                Some("view_update_via_alter") => Ok(Value::from(true)),
+                Some("row_filter") => Ok(Value::from_serialize(BTreeMap::from([
+                    ("function", Value::from("filter_id")),
+                    ("columns", Value::from_serialize(["id"])),
+                ]))),
+                _ => Ok(default),
+            }
+        });
+        mock
+    }
+
+    fn model_with_masked_column() -> Value {
+        Value::from_serialize(BTreeMap::from([
+            ("alias", Value::from("my_view")),
+            ("unique_id", Value::from("model.test_project.my_view")),
+            (
+                "columns",
+                Value::from_serialize(BTreeMap::from([(
+                    "msg",
+                    BTreeMap::from([("column_mask", BTreeMap::from([("function", "mask_msg")]))]),
+                )])),
+            ),
+        ]))
+    }
+
+    #[test]
+    fn v2_update_via_alter_rejects_unsupported_configs_without_changes() {
+        let cases = [
+            (
+                "row filter",
+                Value::from_dyn_object(update_via_alter_with_row_filter_config()),
+                None,
+                "Row filters are not supported for views.",
+            ),
+            (
+                "column mask",
+                Value::from_dyn_object(update_via_alter_config(false, None)),
+                Some(model_with_masked_column()),
+                "Column masks are not supported for views.",
+            ),
+        ];
+        for (case, config, model, expected) in cases {
+            let harness = existing_view_alter_harness(true);
+            let mut builder = harness
+                .materialization_context("my_view", "SELECT id, msg FROM source_table")
+                .config(config);
+            if let Some(model) = model {
+                builder = builder.with("model", model);
+            }
+            let error = render_view(&harness, ADAPTER, builder.build())
+                .expect_err("an existing view with no changes must still be validated");
+            assert!(
+                error.to_string().contains(expected),
+                "{case}: unexpected error {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn alter_view_query_change_reapplies_post_alter_comments_only() {
+        let harness = build_view_harness(ADAPTER);
+        harness
+            .mock()
+            .on("resolve_file_format", |_| Ok(Value::from("parquet")));
+        harness.mock().on("has_feature", |_| Ok(Value::from(true)));
+        harness.mock().on("quote", |args| {
+            let name = args.first().and_then(|v| v.as_str()).unwrap_or_default();
+            Ok(Value::from(format!("`{name}`")))
+        });
+        harness.mock().on("get_columns_in_relation", |_| {
+            Ok(Value::from(Vec::<Value>::new()))
+        });
+        let id_column = BTreeMap::from([(
+            "id",
+            BTreeMap::from([("name", "id"), ("description", "Updated id")]),
+        )]);
+        let persisted_columns = id_column.clone();
+        harness.mock().on("get_persist_doc_columns", move |_| {
+            Ok(Value::from_serialize(&persisted_columns))
+        });
+        let config = default_mock_config();
+        config.on("persist_column_docs", |_| Ok(Value::from(true)));
+        let changes = Value::from_serialize(BTreeMap::from([
+            (
+                "query",
+                Value::from_serialize(BTreeMap::from([("query", "select 1 as id")])),
+            ),
+            (
+                "column_comments",
+                Value::from_serialize(BTreeMap::from([(
+                    "comments",
+                    BTreeMap::from([("msg", "Stale msg")]),
+                )])),
+            ),
+        ]));
+        let model = Value::from_serialize(BTreeMap::from([
+            ("alias", Value::from("my_view")),
+            ("unique_id", Value::from("model.test_project.my_view")),
+            ("columns", Value::from_serialize(&id_column)),
+        ]));
+        let ctx = harness
+            .materialization_context("my_view", "select 1 as id")
+            .config(Value::from_dyn_object(config))
+            .with("model", model)
+            .with("changes", changes)
+            .build();
+        harness
+            .render("{{ alter_view(this, changes) }}", ctx)
+            .expect("alter_view should render");
+
+        let executed = executed_sql(harness.mock());
+        assert!(
+            executed
+                .iter()
+                .any(|sql| sql.contains("COMMENT ON COLUMN") && sql.contains("Updated id")),
+            "post-ALTER comment must be written regardless of file_format: {executed:?}"
+        );
+        assert!(
+            !executed.iter().any(|sql| sql.contains("Stale msg")),
+            "the pre-ALTER comment diff must not run after a query change: {executed:?}"
+        );
     }
 }
 

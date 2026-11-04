@@ -400,6 +400,9 @@ fn node_runtime_vars<'a>(
                 if let Some(source) = value.as_str() {
                     nested = Some(source.to_string());
                 }
+                // Hash stability depends on `serde_json::Map` being a `BTreeMap` here: it sorts
+                // keys, so project vars (`DbtVars::Vars` is an `IndexMap`) hash independent of
+                // declaration order. Enabling `serde_json/preserve_order` would change node hashes.
                 let json = serde_json::to_value(value.as_ref());
                 if requires_yaml_types(&value) || json.is_err() {
                     var_types.insert(name.clone(), typed_yaml_value(&value));
@@ -2213,6 +2216,30 @@ mod runtime_vars {
         assert_eq!(
             with_yaml("{a: 2026-08-03, b: 1}", true),
             with_yaml("{b: 1, a: 2026-08-03}", true)
+        );
+    }
+
+    #[test]
+    fn project_var_hash_ignores_nested_dict_key_order() {
+        let node = model("select {{ var('value') }}");
+        let hash_of = |source: &str| {
+            let mut cfg = config(&[], &[]);
+            Arc::make_mut(cfg.dependencies.get_mut("pkg").unwrap())
+                .inner
+                .vars
+                .insert(
+                    "value".into(),
+                    dbt_yaml::from_str::<DbtVars>(source).unwrap(),
+                );
+            hash(&node, Some(&cfg), &[])
+        };
+        assert_eq!(
+            hash_of("{zeta: 1, alpha: {y: 2, x: 3}, mid: [{b: 1, a: 2}]}"),
+            hash_of("{mid: [{a: 2, b: 1}], alpha: {x: 3, y: 2}, zeta: 1}")
+        );
+        assert_ne!(
+            hash_of("{zeta: 1, alpha: 2}"),
+            hash_of("{zeta: 1, alpha: 3}")
         );
     }
 

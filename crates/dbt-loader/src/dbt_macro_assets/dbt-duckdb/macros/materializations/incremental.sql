@@ -74,6 +74,23 @@
 
     {% set dest_columns = process_schema_changes(on_schema_change, temp_relation, existing_relation) %}
 
+    {% if on_schema_change == 'ignore' %}
+      {% set schema_changes = check_for_schema_changes(temp_relation, existing_relation) %}
+      {% set removed_columns = schema_changes['target_not_in_source'] | map(attribute='name') | list %}
+      {% if removed_columns | length > 0 %}
+        {% set fail_msg %}
+            The model no longer selects columns that exist in {{ existing_relation }}: {{ removed_columns }}
+            With `on_schema_change: 'ignore'` the incremental insert still writes every target column, so it would fail.
+            They can be reconciled in several ways:
+              - set the `on_schema_change` config to sync_all_columns to drop the removed columns from the target.
+              - Re-run the incremental model with `full_refresh: True` to rebuild the target.
+              - select the removed columns in the model again.
+        {% endset %}
+        {% do exceptions.raise_compiler_error(fail_msg) %}
+      {% endif %}
+      {% set dest_columns = schema_changes['target_columns'] %}
+    {% endif %}
+
     {% if not dest_columns %}
       {% set dest_columns = adapter.get_columns_in_relation(existing_relation) %}
     {% endif %}

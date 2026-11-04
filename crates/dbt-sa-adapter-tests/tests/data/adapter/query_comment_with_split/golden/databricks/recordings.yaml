@@ -1,15 +1,15 @@
-36930bcd:
+51d6e432:
 - sequence: 0
   type: execute
   sql: |-
-    /* {"app": "dbt", "dbt_version": "2.0.0", "node_id": "internal", "profile_name": "fusion_tests", "target_name": "databricks"} */
-    SHOW SCHEMAS IN `e2e`
-b47a2009:
-- sequence: 0
-  type: execute
-  sql: |-
-    /* {"app": "dbt", "dbt_version": "2.0.0", "node_id": "internal", "profile_name": "fusion_tests", "target_name": "databricks"} */
+    /* {"app": "dbt", "dbt_version": "DBT_VERSION", "node_id": "internal", "profile_name": "fusion_tests", "target_name": "databricks"} */
     create schema if not exists `e2e`.`adapters_databricks_query_comment_with_split`
+e677096b:
+- sequence: 0
+  type: execute
+  sql: |-
+    /* {"app": "dbt", "dbt_version": "DBT_VERSION", "node_id": "internal", "profile_name": "fusion_tests", "target_name": "databricks"} */
+    SHOW SCHEMAS IN `e2e`
 model.test.a:
 - sequence: 0
   type: execute
@@ -37,18 +37,19 @@ model.test.a:
 - sequence: 1
   type: execute
   sql: |-
-    /* {"app": "dbt", "dbt_version": "2.0.0", "node_id": "model.test.a", "node_name": "a", "package_name": "test", "profile_name": "fusion_tests", "relation": {"database": "e2e", "identifier": null, "schema": "adapters_databricks_query_comment_with_split"}, "resource_type": "model", "target_name": "databricks"} */
+    /* {"app": "dbt", "dbt_version": "DBT_VERSION", "node_id": "model.test.a", "node_name": "a", "package_name": "test", "profile_name": "fusion_tests", "relation": {"database": "e2e", "identifier": null, "schema": "adapters_databricks_query_comment_with_split"}, "resource_type": "model", "target_name": "databricks"} */
     select 1 as q1
 - sequence: 2
   type: execute
   sql: |-
-    /* {"app": "dbt", "dbt_version": "2.0.0", "node_id": "model.test.a", "node_name": "a", "package_name": "test", "profile_name": "fusion_tests", "relation": {"database": "e2e", "identifier": null, "schema": "adapters_databricks_query_comment_with_split"}, "resource_type": "model", "target_name": "databricks"} */
+    /* {"app": "dbt", "dbt_version": "DBT_VERSION", "node_id": "model.test.a", "node_name": "a", "package_name": "test", "profile_name": "fusion_tests", "relation": {"database": "e2e", "identifier": null, "schema": "adapters_databricks_query_comment_with_split"}, "resource_type": "model", "target_name": "databricks"} */
     select 2 as q2
 - sequence: 3
   type: execute
   sql: |-
-    /* {"app": "dbt", "dbt_version": "2.0.0", "node_id": "model.test.a", "node_name": "a", "package_name": "test", "profile_name": "fusion_tests", "relation": {"database": "e2e", "identifier": null, "schema": "adapters_databricks_query_comment_with_split"}, "resource_type": "model", "target_name": "databricks"} */
+    /* {"app": "dbt", "dbt_version": "DBT_VERSION", "node_id": "model.test.a", "node_name": "a", "package_name": "test", "profile_name": "fusion_tests", "relation": {"database": "e2e", "identifier": null, "schema": "adapters_databricks_query_comment_with_split"}, "resource_type": "model", "target_name": "databricks"} */
     create or replace view `e2e`.`adapters_databricks_query_comment_with_split`.`a`
+    
     
     as (
     select 1 as id

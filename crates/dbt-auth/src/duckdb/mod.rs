@@ -54,7 +54,7 @@ impl Auth for DuckDbAuth {
             | init::DuckDbTarget::MotherduckBrowserLogin { .. } => {}
             init::DuckDbTarget::MotherduckTokenAuth { token, .. } => {
                 builder
-                    .with_named_option("motherduck_token", token.clone())
+                    .with_named_option("motherduck_token", token.as_str())
                     .map_err(|e| AuthError::Config(e.to_string()))?;
             }
             init::DuckDbTarget::MotherduckSaasBrowserLogin { .. } => {
@@ -65,7 +65,7 @@ impl Auth for DuckDbAuth {
             }
             init::DuckDbTarget::MotherduckSaasTokenAuth { token, .. } => {
                 builder
-                    .with_named_option("motherduck_token", token.clone())
+                    .with_named_option("motherduck_token", token.as_str())
                     .map_err(|e| AuthError::Config(e.to_string()))?;
                 // this would normally be a SET GLOBAL
                 builder

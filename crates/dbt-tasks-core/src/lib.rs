@@ -37,6 +37,8 @@ use std::{fmt, io};
 pub use generate_run_results::generate_run_results;
 pub use run_tasks_args::RunTasksArgs;
 
+use arrow::array::RecordBatch;
+use arrow_schema::SchemaRef;
 use dbt_adapter::response::AdapterResponse;
 use dbt_common::cancellation::CancellationToken;
 use dbt_common::io_args::{EvalArgs, IoArgs};
@@ -45,18 +47,13 @@ use dbt_common::{CompiledSpans, FsResult, MacroSpan};
 use dbt_dag::schedule::Schedule;
 use dbt_frontend_common::span::ReclassifySpan;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
+use dbt_schemas::schemas::Preview;
 use dbt_schemas::schemas::common::DbtMaterialization;
 use dbt_schemas::schemas::{CommonAttributes, ContextRunResult};
 use dbt_schemas::state::ResolverState;
 use dbt_schemas::stats::Stats;
 
 use self::context::TaskRunnerCtx;
-
-/// Preview/show results produced during task execution.
-pub struct Preview {
-    pub columns: Vec<String>,
-    pub rows: Vec<serde_json::Value>,
-}
 
 /// Per-node data returned by pre-run hooks.
 pub trait PreTaskRunData: Send + Sync {
@@ -112,19 +109,15 @@ pub trait CompiledSqlCache: Send + Sync {
 
 /// Trait for executing ad-hoc SQL queries via dynamic dispatch.
 pub trait AdhocRunner: Send + Sync {
+    /// `adapter` executes the query; `None` uses the environment's adapter.
     fn run_adhoc<'a>(
         self: Arc<Self>,
         instruction: &'a dbt_scheduler::instructions::Instruction,
         rendered_sql: &'a str,
         unique_id: Option<&'a str>,
+        adapter: Option<Arc<dbt_adapter::Adapter>>,
         connection: &'a mut Option<Box<dyn dbt_adbc::Connection>>,
-    ) -> Pin<
-        Box<
-            dyn Future<Output = FsResult<(Vec<arrow::array::RecordBatch>, arrow_schema::SchemaRef)>>
-                + Send
-                + 'a,
-        >,
-    >;
+    ) -> Pin<Box<dyn Future<Output = FsResult<(Vec<RecordBatch>, SchemaRef)>> + Send + 'a>>;
 }
 
 pub struct TaskRunnerStats {

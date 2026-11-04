@@ -1,0 +1,5 @@
+---
+source: fs/sa/crates/dbt-adapter/src/engine/duckdb/attach.rs
+input_file: fs/sa/crates/dbt-adapter/src/engine/duckdb/attach_fixtures/empty_alias_error/catalogs.yml
+---
+error: Configuration: Configuration Error: Catalog 'bad_alias' duckdb attach alias is empty after sanitization

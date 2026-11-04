@@ -15,6 +15,11 @@
   {% else %}
     {{ log('Relation ' + target_relation.name + ' already exists, replacing it' )}}
     {{ clickhouse__drop_associated_mv_if_it_was_automatically_created(target_relation) }}
+    {% if not adapter.supports_atomic_exchange() %}
+      -- CREATE OR REPLACE over an existing object requires renameat2(RENAME_EXCHANGE), which is
+      -- unavailable on some filesystems (e.g. NFS). Fall back to a non-atomic drop + create.
+      {{ drop_relation_if_exists(existing_relation) }}
+    {% endif %}
   {% endif %}
 
   {% call statement('main') -%}

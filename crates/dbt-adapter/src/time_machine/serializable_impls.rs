@@ -1092,7 +1092,7 @@ mod tests {
         let original = crate::column::Column::new_bigquery(
             "events".to_string(),
             "ARRAY<STRUCT<`inner` INT64>>".to_string(),
-            vec![Arc::new(inner)],
+            [Arc::from(inner)],
             BigqueryColumnMode::Repeated,
         );
 
@@ -1102,7 +1102,7 @@ mod tests {
         }
         .into();
 
-        assert_reserialization_fixed_point(&minijinja::Value::from_object(original), &bq_ctx);
+        assert_reserialization_fixed_point(&minijinja::Value::from_object(*original), &bq_ctx);
     }
 
     #[test]
@@ -1127,7 +1127,7 @@ mod tests {
         let original = crate::column::Column::new_bigquery(
             "payload".to_string(),
             "STRUCT<`a` INT64, `b` STRING>".to_string(),
-            vec![Arc::new(a), Arc::new(b)],
+            vec![Arc::from(a), Arc::from(b)],
             BigqueryColumnMode::Nullable,
         );
 
@@ -1137,7 +1137,7 @@ mod tests {
         }
         .into();
 
-        assert_reserialization_fixed_point(&minijinja::Value::from_object(original), &bq_ctx);
+        assert_reserialization_fixed_point(&minijinja::Value::from_object(*original), &bq_ctx);
     }
 
     #[test]

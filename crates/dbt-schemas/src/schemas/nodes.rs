@@ -253,8 +253,8 @@ pub trait InternalDbtNode:
         None
     }
     fn resource_type(&self) -> NodeType;
-    /// For a node of type [`NodeType::Plugin`], the kind of node the plugin added.
-    fn plugin_type(&self) -> Option<&str> {
+    /// For a node of type [`NodeType::Experimental`], the kind of node the experimental added.
+    fn experimental_type(&self) -> Option<&str> {
         None
     }
     fn as_any(&self) -> &dyn Any;
@@ -624,7 +624,7 @@ pub trait InternalDbtNode:
         if multi_adapter_enabled() {
             event.adapter = Some(base.adapter.as_ref().to_string());
         }
-        event.plugin_type = self.plugin_type().map(str::to_string);
+        event.experimental_type = self.experimental_type().map(str::to_string);
         event
     }
 }
@@ -3437,7 +3437,7 @@ impl InternalDbtNodeAttributes for DbtCheck {
     }
 }
 
-impl InternalDbtNode for DbtPluginNode {
+impl InternalDbtNode for DbtExperimentalNode {
     fn into_jinja_fields(self: Arc<Self>) -> Arc<dyn crate::jinja_node::JinjaNodeFields> {
         self
     }
@@ -3457,10 +3457,10 @@ impl InternalDbtNode for DbtPluginNode {
         &mut self.__common_attr__
     }
     fn resource_type(&self) -> NodeType {
-        NodeType::Plugin
+        NodeType::Experimental
     }
-    fn plugin_type(&self) -> Option<&str> {
-        Some(&self.__plugin_attr__.plugin_type)
+    fn experimental_type(&self) -> Option<&str> {
+        Some(&self.__experimental_attr__.experimental_type)
     }
     fn as_any(&self) -> &dyn Any {
         self
@@ -3474,7 +3474,7 @@ impl InternalDbtNode for DbtPluginNode {
     fn has_same_config(&self, other: &dyn InternalDbtNode, _adapter_type: AdapterType) -> bool {
         other
             .as_any()
-            .downcast_ref::<DbtPluginNode>()
+            .downcast_ref::<DbtExperimentalNode>()
             .is_some_and(|other| {
                 self.__base_attr__.enabled == other.__base_attr__.enabled
                     && tags_eq_vec(&self.__common_attr__.tags, &other.__common_attr__.tags)
@@ -3485,18 +3485,19 @@ impl InternalDbtNode for DbtPluginNode {
     fn has_same_content(&self, other: &dyn InternalDbtNode, _adapter_type: AdapterType) -> bool {
         other
             .as_any()
-            .downcast_ref::<DbtPluginNode>()
+            .downcast_ref::<DbtExperimentalNode>()
             .is_some_and(|other| {
-                self.__plugin_attr__.plugin_type == other.__plugin_attr__.plugin_type
+                self.__experimental_attr__.experimental_type
+                    == other.__experimental_attr__.experimental_type
                     && self.__common_attr__.checksum == other.__common_attr__.checksum
             })
     }
     fn set_detected_introspection(&mut self, _introspection: IntrospectionKind) {
-        panic!("DbtPluginNode does not support setting detected_unsafe");
+        panic!("DbtExperimentalNode does not support setting detected_unsafe");
     }
 }
 
-impl InternalDbtNodeAttributes for DbtPluginNode {
+impl InternalDbtNodeAttributes for DbtExperimentalNode {
     fn materialized(&self) -> DbtMaterialization {
         self.__base_attr__.materialized.clone()
     }
@@ -4388,10 +4389,11 @@ pub struct Nodes {
     pub functions: BTreeMap<String, Arc<DbtFunction>>,
     pub checks: BTreeMap<String, Arc<DbtCheck>>,
     pub macros: BTreeMap<String, Arc<DbtMacro>>,
-    /// Nodes added by plugins, of any plugin type. Not in [`Nodes::materializable_keys`]: a plugin
-    /// node runs only when it is selected directly. Never serialized: plugin data is opaque.
+    /// Nodes added by experimentals, of any experimental type. Not in
+    /// [`Nodes::materializable_keys`]: an experimental node runs only when it is selected directly.
+    /// Never serialized: experimental data is opaque.
     #[serde(skip)]
-    pub plugins: BTreeMap<String, Arc<DbtPluginNode>>,
+    pub experimentals: BTreeMap<String, Arc<DbtExperimentalNode>>,
     /// The root project name. Used to resolve the `package:this` selector.
     pub project_name: Option<String>,
 }
@@ -4479,8 +4481,8 @@ impl Nodes {
             .iter()
             .map(|(id, node)| (id.clone(), Arc::new((**node).clone())))
             .collect();
-        let plugins = self
-            .plugins
+        let experimentals = self
+            .experimentals
             .iter()
             .map(|(id, node)| (id.clone(), Arc::new((**node).clone())))
             .collect();
@@ -4500,7 +4502,7 @@ impl Nodes {
             functions,
             checks,
             macros,
-            plugins,
+            experimentals,
             project_name: self.project_name.clone(),
         }
     }
@@ -4593,7 +4595,7 @@ impl Nodes {
                     .map(|n| Arc::as_ref(n) as &dyn InternalDbtNodeAttributes)
             })
             .or_else(|| {
-                self.plugins
+                self.experimentals
                     .get(unique_id)
                     .map(|n| Arc::as_ref(n) as &dyn InternalDbtNodeAttributes)
             })
@@ -4664,7 +4666,7 @@ impl Nodes {
                     .map(|n| n.clone() as Arc<dyn InternalDbtNodeAttributes>)
             })
             .or_else(|| {
-                self.plugins
+                self.experimentals
                     .get(unique_id)
                     .map(|n| n.clone() as Arc<dyn InternalDbtNodeAttributes>)
             })
@@ -4687,7 +4689,7 @@ impl Nodes {
             || self.functions.contains_key(unique_id)
             || self.checks.contains_key(unique_id)
             || self.saved_queries.contains_key(unique_id)
-            || self.plugins.contains_key(unique_id)
+            || self.experimentals.contains_key(unique_id)
     }
 
     /// Number of nodes yielded by [`Self::iter`].
@@ -4705,7 +4707,7 @@ impl Nodes {
             + self.semantic_models.len()
             + self.metrics.len()
             + self.saved_queries.len()
-            + self.plugins.len()
+            + self.experimentals.len()
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (&String, &dyn InternalDbtNodeAttributes)> + '_ {
@@ -4773,7 +4775,7 @@ impl Nodes {
                     .map(|(id, node)| (id, Arc::as_ref(node) as &dyn InternalDbtNodeAttributes)),
             )
             .chain(
-                self.plugins
+                self.experimentals
                     .iter()
                     .map(|(id, node)| (id, Arc::as_ref(node) as &dyn InternalDbtNodeAttributes)),
             )
@@ -4834,8 +4836,8 @@ impl Nodes {
             .saved_queries
             .iter()
             .map(|(id, node)| (id.clone(), upcast(node.clone())));
-        let plugins = self
-            .plugins
+        let experimentals = self
+            .experimentals
             .iter()
             .map(|(id, node)| (id.clone(), upcast(node.clone())));
 
@@ -4852,7 +4854,7 @@ impl Nodes {
             .chain(semantic_models)
             .chain(metrics)
             .chain(saved_queries)
-            .chain(plugins)
+            .chain(experimentals)
     }
 
     pub fn iter_values_mut(
@@ -4910,8 +4912,8 @@ impl Nodes {
             .saved_queries
             .values_mut()
             .map(|arc| Arc::make_mut(arc) as &mut dyn InternalDbtNodeAttributes);
-        let map_plugins = self
-            .plugins
+        let map_experimentals = self
+            .experimentals
             .values_mut()
             .map(|arc| Arc::make_mut(arc) as &mut dyn InternalDbtNodeAttributes);
 
@@ -4928,7 +4930,7 @@ impl Nodes {
             .chain(map_semantic_models)
             .chain(map_metrics)
             .chain(map_saved_queries)
-            .chain(map_plugins)
+            .chain(map_experimentals)
     }
 
     pub fn get_value_mut(&mut self, unique_id: &str) -> Option<&mut dyn InternalDbtNodeAttributes> {
@@ -4996,7 +4998,7 @@ impl Nodes {
                     .map(|arc| Arc::make_mut(arc) as &mut dyn InternalDbtNodeAttributes)
             })
             .or_else(|| {
-                self.plugins
+                self.experimentals
                     .get_mut(unique_id)
                     .map(|arc| Arc::make_mut(arc) as &mut dyn InternalDbtNodeAttributes)
             })
@@ -5106,7 +5108,7 @@ impl Nodes {
         self.groups.extend(other.groups);
         self.functions.extend(other.functions);
         self.checks.extend(other.checks);
-        self.plugins.extend(other.plugins);
+        self.experimentals.extend(other.experimentals);
     }
 
     pub fn warn_on_custom_materializations(&self) -> FsResult<()> {
@@ -5519,41 +5521,42 @@ pub struct DbtCheckAttr {
     pub compiled_sql: Option<String>,
 }
 
-/// A node a plugin adds to the project. Its kind is [`DbtPluginNodeAttr::plugin_type`].
+/// A node an experimental adds to the project. Its kind is
+/// [`DbtExperimentalNodeAttr::experimental_type`].
 ///
-/// The node holds what dbt needs to select, schedule and report it; the plugin's own data for it
-/// is opaque ([`PluginData`]).
+/// The node holds what dbt needs to select, schedule and report it; the experimental's own data for
+/// it is opaque ([`ExperimentalData`]).
 ///
-/// Plugin nodes write no relation. They are not part of the manifest, are never selected by
+/// Experimental nodes write no relation. They are not part of the manifest, are never selected by
 /// default, and are only ever selected directly (not through graph operators or `state:`).
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Default)]
 #[serde(rename_all = "snake_case")]
 #[derive(dbt_proc_macros::JinjaNodeFields)]
-pub struct DbtPluginNode {
+pub struct DbtExperimentalNode {
     pub __common_attr__: CommonAttributes,
 
     pub __base_attr__: NodeBaseAttributes,
 
-    pub __plugin_attr__: DbtPluginNodeAttr,
+    pub __experimental_attr__: DbtExperimentalNodeAttr,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
 #[serde(rename_all = "snake_case")]
 #[derive(dbt_proc_macros::JinjaNodeFields)]
-pub struct DbtPluginNodeAttr {
-    /// The kind of node, named by the plugin that added it (e.g. `widget`).
-    pub plugin_type: String,
-    /// The plugin's own data for this node. Never serialized.
+pub struct DbtExperimentalNodeAttr {
+    /// The kind of node, named by the experimental that added it (e.g. `widget`).
+    pub experimental_type: String,
+    /// The experimental's own data for this node. Never serialized.
     #[serde(skip)]
-    pub data: PluginData,
+    pub data: ExperimentalData,
 }
 
-/// A plugin's data for one of its nodes, of a type only the plugin knows.
+/// An experimental's data for one of its nodes, of a type only the experimental knows.
 #[derive(Clone)]
-pub struct PluginData(Arc<dyn Any + Send + Sync>);
+pub struct ExperimentalData(Arc<dyn Any + Send + Sync>);
 
-impl PluginData {
+impl ExperimentalData {
     pub fn new<T: Any + Send + Sync>(data: T) -> Self {
         Self(Arc::new(data))
     }
@@ -5564,22 +5567,22 @@ impl PluginData {
     }
 }
 
-impl Default for PluginData {
+impl Default for ExperimentalData {
     fn default() -> Self {
         Self::new(())
     }
 }
 
-impl fmt::Debug for PluginData {
+impl fmt::Debug for ExperimentalData {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("PluginData(..)")
+        f.write_str("ExperimentalData(..)")
     }
 }
 
-impl DbtPluginNode {
-    /// The plugin's data for this node, if it is a `T`.
-    pub fn plugin_data<T: Any>(&self) -> Option<&T> {
-        self.__plugin_attr__.data.get()
+impl DbtExperimentalNode {
+    /// The experimental's data for this node, if it is a `T`.
+    pub fn experimental_data<T: Any>(&self) -> Option<&T> {
+        self.__experimental_attr__.data.get()
     }
 }
 
@@ -8913,25 +8916,25 @@ mod model_same_ref_representation_tests {
 }
 
 #[cfg(test)]
-mod plugin_node_tests {
+mod experimental_node_tests {
     use super::*;
 
-    fn nodes_with_plugin_node() -> Nodes {
-        let mut node = DbtPluginNode::default();
+    fn nodes_with_experimental_node() -> Nodes {
+        let mut node = DbtExperimentalNode::default();
         node.__common_attr__.unique_id = "widget.shop.orders_widget".to_string();
-        node.__plugin_attr__.plugin_type = "widget".to_string();
+        node.__experimental_attr__.experimental_type = "widget".to_string();
         let mut nodes = Nodes::default();
         nodes
-            .plugins
+            .experimentals
             .insert(node.__common_attr__.unique_id.clone(), Arc::new(node));
         nodes
     }
 
-    /// A plugin node is found and iterated like any other node, but is not in the default
+    /// An experimental node is found and iterated like any other node, but is not in the default
     /// selection.
     #[test]
-    fn plugin_nodes_are_nodes_but_not_selected_by_default() {
-        let nodes = nodes_with_plugin_node();
+    fn experimental_nodes_are_nodes_but_not_selected_by_default() {
+        let nodes = nodes_with_experimental_node();
         let id = "widget.shop.orders_widget";
 
         assert!(nodes.contains(id));
@@ -8940,37 +8943,41 @@ mod plugin_node_tests {
         assert_eq!(nodes.into_iter().count(), 1);
         let node = nodes
             .get_node(id)
-            .expect("plugin node is found by unique id");
-        assert_eq!(node.resource_type(), NodeType::Plugin);
-        assert_eq!(node.plugin_type(), Some("widget"));
+            .expect("experimental node is found by unique id");
+        assert_eq!(node.resource_type(), NodeType::Experimental);
+        assert_eq!(node.experimental_type(), Some("widget"));
         assert!(nodes.get_node_owned(id).is_some());
         assert_eq!(nodes.materializable_keys().count(), 0);
     }
 
-    /// A plugin gets back the value it stored, by type; nothing else can read it.
+    /// An experimental gets back the value it stored, by type; nothing else can read it.
     #[test]
-    fn plugin_data_is_typed_and_opaque() {
+    fn experimental_data_is_typed_and_opaque() {
         #[derive(Debug, PartialEq)]
         struct Widget {
             size: u64,
         }
-        let node = DbtPluginNode {
-            __plugin_attr__: DbtPluginNodeAttr {
-                plugin_type: "widget".to_string(),
-                data: PluginData::new(Widget { size: 3 }),
+        let node = DbtExperimentalNode {
+            __experimental_attr__: DbtExperimentalNodeAttr {
+                experimental_type: "widget".to_string(),
+                data: ExperimentalData::new(Widget { size: 3 }),
             },
             ..Default::default()
         };
-        assert_eq!(node.plugin_data::<Widget>(), Some(&Widget { size: 3 }));
-        assert_eq!(node.plugin_data::<u64>(), None);
-        let serialized = dbt_yaml::to_string(&node.__plugin_attr__).unwrap();
+        assert_eq!(
+            node.experimental_data::<Widget>(),
+            Some(&Widget { size: 3 })
+        );
+        assert_eq!(node.experimental_data::<u64>(), None);
+        let serialized = dbt_yaml::to_string(&node.__experimental_attr__).unwrap();
         assert!(!serialized.contains("data"), "{serialized}");
     }
 
-    /// Dependency resolution fills in a plugin node's `depends_on` through `iter_values_mut`.
+    /// Dependency resolution fills in an experimental node's `depends_on` through
+    /// `iter_values_mut`.
     #[test]
-    fn plugin_nodes_are_mutable_in_place() {
-        let mut nodes = nodes_with_plugin_node();
+    fn experimental_nodes_are_mutable_in_place() {
+        let mut nodes = nodes_with_experimental_node();
         for node in nodes.iter_values_mut() {
             node.base_mut()
                 .depends_on
@@ -8978,7 +8985,7 @@ mod plugin_node_tests {
                 .push("model.shop.orders".to_string());
         }
         assert_eq!(
-            nodes.plugins["widget.shop.orders_widget"]
+            nodes.experimentals["widget.shop.orders_widget"]
                 .__base_attr__
                 .depends_on
                 .nodes,

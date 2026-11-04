@@ -29,6 +29,8 @@ use dbt_common::{
     tokiofs, unexpected_err,
 };
 use dbt_features::feature_stack::FeatureStack;
+use dbt_telemetry::CallTrace;
+use dbt_tracing::{SpanStartInfo, data_provider::DataProvider, layer::TelemetryMiddleware};
 
 // Pre-compiled regex patterns for optimal performance
 static SCHEMA_PATTERN: LazyLock<Regex> =
@@ -418,6 +420,26 @@ where
     )
 }
 
+/// Drops telemetry that tests cannot pin, before any consumer sees it. The
+/// data layer gives children of a dropped span the nearest kept ancestor as
+/// parent.
+struct NoiseFilter;
+
+impl TelemetryMiddleware for NoiseFilter {
+    fn on_span_start(
+        &self,
+        span: SpanStartInfo,
+        _data_provider: &mut DataProvider<'_>,
+    ) -> Option<SpanStartInfo> {
+        // The name, file and line of a CallTrace come from the instrumented fn,
+        // so a rename or move of that fn would change the goldens.
+        if span.attributes.is::<CallTrace>() {
+            return None;
+        }
+        Some(span)
+    }
+}
+
 // Util function to execute fusion commands in tests from an already-parsed
 // `Cli`. This is everything `exec_fs` does *after* argv parsing; `exec_fs`
 // delegates to it. It exists so callers whose argv does not parse into the
@@ -457,13 +479,14 @@ where
         .with_quiet(cli.common_args.get_quiet())
         .build();
     let tracing_config_provider = trace_config.create_config_provider();
-    let (middlewares, consumer_layers, mut shutdown_items) =
+    let (mut middlewares, consumer_layers, mut shutdown_items) =
         match trace_config.build_layers(Arc::clone(&tracing_config_provider)) {
             Ok(layers) => layers.into_parts(),
             Err(err) => {
                 return Box::pin(async move { Err(err) });
             }
         };
+    middlewares.push(Box::new(NoiseFilter));
 
     tracing_handle.with_tracing_consumer(middlewares, consumer_layers);
 
