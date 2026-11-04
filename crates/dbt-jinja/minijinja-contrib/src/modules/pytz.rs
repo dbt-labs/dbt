@@ -1,6 +1,7 @@
 use chrono::{DateTime, LocalResult, NaiveDateTime, TimeZone};
 use chrono_tz::{Tz, TZ_VARIANTS};
 use minijinja::value::mutable_set::MutableSet;
+use minijinja::value::{Enumerator, Object, ObjectRepr};
 use minijinja::{Error, ErrorKind, Value};
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
@@ -80,31 +81,79 @@ pub fn create_pytz_namespace() -> BTreeMap<String, Value> {
         "utc".to_string(),
         Value::from_object(PytzTimezone::new(chrono_tz::UTC)),
     );
-    // Like pytz, `all_timezones` is an alphabetized list of every timezone name
-    let mut all_timezones: Vec<&str> = TZ_VARIANTS.iter().map(|tz| tz.name()).collect();
-    all_timezones.sort_unstable();
-    pytz_module.insert(
-        "all_timezones_set".to_string(),
-        Value::from(
-            all_timezones
-                .iter()
-                .copied()
-                .map(Value::from)
-                .collect::<MutableSet>(),
-        ),
-    );
     pytz_module.insert(
         "all_timezones".to_string(),
-        Value::from(
-            all_timezones
-                .into_iter()
-                .map(Value::from)
-                .collect::<Vec<_>>(),
-        ),
+        Value::from_object(AllTimezones),
+    );
+    pytz_module.insert(
+        "all_timezones_set".to_string(),
+        Value::from_object(AllTimezonesSet::default()),
     );
     // You could also add "utc", "country", etc.
 
     pytz_module
+}
+
+/// `pytz.all_timezones`: a read-only list view over the static `TZ_VARIANTS`,
+/// which is already alphabetized like the pytz list.
+#[derive(Debug)]
+struct AllTimezones;
+
+impl Object for AllTimezones {
+    fn repr(self: &Arc<Self>) -> ObjectRepr {
+        ObjectRepr::Seq
+    }
+
+    // Reported as mutable so that it renders and concatenates as a list, not a tuple.
+    fn is_mutable(self: &Arc<Self>) -> bool {
+        true
+    }
+
+    fn get_value(self: &Arc<Self>, key: &Value) -> Option<Value> {
+        let tz = TZ_VARIANTS.get(key.as_usize()?)?;
+        Some(Value::from(tz.name()))
+    }
+
+    fn enumerate(self: &Arc<Self>) -> Enumerator {
+        Enumerator::Seq(TZ_VARIANTS.len())
+    }
+}
+
+/// `pytz.all_timezones_set`: like pytz, the set is only populated once it is used.
+#[derive(Debug, Default)]
+struct AllTimezonesSet {
+    set: OnceLock<Arc<MutableSet>>,
+}
+
+impl AllTimezonesSet {
+    fn set(&self) -> &Arc<MutableSet> {
+        self.set
+            .get_or_init(|| Arc::new(TZ_VARIANTS.iter().map(|tz| tz.name()).collect()))
+    }
+}
+
+impl Object for AllTimezonesSet {
+    fn repr(self: &Arc<Self>) -> ObjectRepr {
+        ObjectRepr::Seq
+    }
+
+    fn is_mutable(self: &Arc<Self>) -> bool {
+        true
+    }
+
+    fn enumerate(self: &Arc<Self>) -> Enumerator {
+        self.set().enumerate()
+    }
+
+    fn call_method(
+        self: &Arc<Self>,
+        state: &minijinja::State<'_, '_>,
+        method: &str,
+        args: &[Value],
+        listeners: &[std::rc::Rc<dyn minijinja::listener::RenderingEventListener>],
+    ) -> Result<Value, Error> {
+        self.set().call_method(state, method, args, listeners)
+    }
 }
 
 /// The top-level function for `pytz.timezone("America/New_York")`.
@@ -363,6 +412,62 @@ mod tests {
         assert_eq!(
             all_timezones.get_item(&Value::from(-1)).unwrap(),
             Value::from("Zulu")
+        );
+    }
+
+    #[test]
+    fn test_tz_variants_are_alphabetized() {
+        // `all_timezones` exposes `TZ_VARIANTS` as is and relies on this order.
+        assert!(TZ_VARIANTS.windows(2).all(|w| w[0].name() < w[1].name()));
+    }
+
+    #[test]
+    fn test_all_timezones_set_is_lazy() {
+        let lazy = Arc::new(AllTimezonesSet::default());
+        assert!(lazy.set.get().is_none());
+
+        assert_eq!(lazy.enumerator_len(), Some(TZ_VARIANTS.len()));
+        assert!(lazy.set.get().is_some());
+    }
+
+    #[test]
+    fn test_all_timezones_in_templates() {
+        let mut env = minijinja::Environment::new();
+        env.add_global("pytz", Value::from(create_pytz_namespace()));
+        let render = |template: &str| env.render_str(template, (), &[]).unwrap();
+        let total = TZ_VARIANTS.len();
+
+        // The list behaves like a Python list
+        assert_eq!(render("{{ pytz.all_timezones[0] }}"), "Africa/Abidjan");
+        assert_eq!(render("{{ pytz.all_timezones[-1] }}"), "Zulu");
+        assert_eq!(
+            render("{{ pytz.all_timezones[:2]|join(',') }}"),
+            "Africa/Abidjan,Africa/Accra"
+        );
+        assert_eq!(render("{{ pytz.all_timezones|length }}"), total.to_string());
+        assert_eq!(render("{{ 'UTC' in pytz.all_timezones }}"), "True");
+        assert_eq!(render("{{ 'Mars/Base' in pytz.all_timezones }}"), "False");
+        assert!(render("{{ pytz.all_timezones }}").starts_with("['Africa/Abidjan', "));
+        assert_eq!(
+            render("{{ (pytz.all_timezones + ['Mars/Base'])|length }}"),
+            (total + 1).to_string()
+        );
+        assert_eq!(
+            render("{% for tz in pytz.all_timezones %}{% if loop.first %}{{ tz }}{% endif %}{% endfor %}"),
+            "Africa/Abidjan"
+        );
+
+        // The set behaves like a Python set
+        let set = "pytz.all_timezones_set";
+        assert_eq!(
+            render(&format!("{{{{ {set}|length }}}}")),
+            total.to_string()
+        );
+        assert_eq!(render(&format!("{{{{ 'UTC' in {set} }}}}")), "True");
+        assert_eq!(render(&format!("{{{{ 'Mars/Base' in {set} }}}}")), "False");
+        assert_eq!(
+            render(&format!("{{{{ {set}.issuperset(['UTC']) }}}}")),
+            "True"
         );
     }
 
