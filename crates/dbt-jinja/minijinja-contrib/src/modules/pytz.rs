@@ -219,6 +219,14 @@ impl minijinja::value::Object for PytzTimezone {
         }
     }
 
+    fn get_value(self: &Arc<Self>, key: &Value) -> Option<Value> {
+        match key.as_str()? {
+            // pytz exposes the canonical zone name, e.g. `utc.zone` => 'UTC'
+            "zone" => Some(Value::from(self.tz.name())),
+            _ => None,
+        }
+    }
+
     fn render(self: &Arc<Self>, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // If you do {{ tz_obj }} in Jinja, it prints out the name
         write!(f, "{}", self.tz)
@@ -299,6 +307,22 @@ mod tests {
         // Should be aware with Pacific timezone
         assert!(result.tzinfo.is_some());
         assert_eq!(result.tzinfo.as_ref().unwrap().tz, chrono_tz::US::Pacific);
+    }
+
+    #[test]
+    fn test_zone_attribute() {
+        let utc = Value::from_object(PytzTimezone::new(chrono_tz::UTC));
+        assert_eq!(utc.get_attr("zone").unwrap(), Value::from("UTC"));
+
+        let eastern = timezone(&[Value::from("US/Eastern")]).unwrap();
+        assert_eq!(eastern.get_attr("zone").unwrap(), Value::from("US/Eastern"));
+
+        // Lookup is case-insensitive, but `zone` is the canonical name
+        let new_york = timezone(&[Value::from("america/new_york")]).unwrap();
+        assert_eq!(
+            new_york.get_attr("zone").unwrap(),
+            Value::from("America/New_York")
+        );
     }
 
     #[test]
