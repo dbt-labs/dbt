@@ -311,6 +311,9 @@ static DEBUG_PROBE_TABLE: std::sync::LazyLock<regex::Regex> =
 static DEBUG_PROPAGATION_PROBE_TABLE: std::sync::LazyLock<regex::Regex> =
     std::sync::LazyLock::new(|| regex::Regex::new(r"__dbt_debug_propagation_\d+").unwrap());
 
+static QUERY_COMMENT_DBT_VERSION: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new(r#""dbt_version"\s*:\s*"[^"]*""#).unwrap());
+
 impl adbc_record_replay::SqlNormalizer for DbtSqlNormalizer {
     fn normalize(&self, sql: &str) -> String {
         use crate::sql::normalize::normalize_dbt_tmp_name;
@@ -333,6 +336,9 @@ impl adbc_record_replay::SqlNormalizer for DbtSqlNormalizer {
             .into_owned();
         let collapsed = DEBUG_PROPAGATION_PROBE_TABLE
             .replace_all(&collapsed, "__dbt_debug_propagation_[MASKED_ID]")
+            .into_owned();
+        let collapsed = QUERY_COMMENT_DBT_VERSION
+            .replace_all(&collapsed, r#""dbt_version": "DBT_VERSION""#)
             .into_owned();
         collapsed
             .replace("DBT_TESTING_ALT", "[MASKED_ALT_WH]")

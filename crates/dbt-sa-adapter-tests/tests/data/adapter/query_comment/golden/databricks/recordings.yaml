@@ -1,15 +1,15 @@
-c6160af7:
-- sequence: 0
-  type: execute
-  sql: |-
-    SHOW SCHEMAS IN `e2e`
-    /* {"app": "dbt", "dbt_version": "2.0.0", "profile_name": "fusion_tests", "target_name": "databricks"} */
-f3a3d3f5:
+a48a56cc:
 - sequence: 0
   type: execute
   sql: |-
     create schema if not exists `e2e`.`adapters_databricks_query_comment`
-    /* {"app": "dbt", "dbt_version": "2.0.0", "profile_name": "fusion_tests", "target_name": "databricks"} */
+    /* {"app": "dbt", "dbt_version": "DBT_VERSION", "profile_name": "fusion_tests", "target_name": "databricks"} */
+cd5c8647:
+- sequence: 0
+  type: execute
+  sql: |-
+    SHOW SCHEMAS IN `e2e`
+    /* {"app": "dbt", "dbt_version": "DBT_VERSION", "profile_name": "fusion_tests", "target_name": "databricks"} */
 model.test.a:
 - sequence: 0
   type: execute
@@ -39,7 +39,8 @@ model.test.a:
   sql: |-
     create or replace view `e2e`.`adapters_databricks_query_comment`.`a`
     
+    
     as (
     select 1 as id
     )
-    /* {"app": "dbt", "dbt_version": "2.0.0", "profile_name": "fusion_tests", "target_name": "databricks"} */
+    /* {"app": "dbt", "dbt_version": "DBT_VERSION", "profile_name": "fusion_tests", "target_name": "databricks"} */

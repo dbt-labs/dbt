@@ -577,6 +577,14 @@ impl Task for SedTask {
                     |content: &str| -> String { canonicalize_dbt_tmp_identifiers(content) };
                 update_sqlite_recordings_sql_only(path, &tmp_name_replace)?;
 
+                let re_dbt_version = Regex::new(r#""dbt_version"\s*:\s*"[^"]*""#).unwrap();
+                let dbt_version_replace = |content: &str| -> String {
+                    re_dbt_version
+                        .replace_all(content, r#""dbt_version": "DBT_VERSION""#)
+                        .to_string()
+                };
+                update_sqlite_recordings_sql_only(path, &dbt_version_replace)?;
+
                 // Apply Time Elapsed regex removal
                 let re_time_elapsed = Regex::new(r"Time Elapsed:.*").unwrap();
                 let time_elapsed_replace = |content: &str| -> String {
