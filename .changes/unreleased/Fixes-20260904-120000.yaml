@@ -1,0 +1,8 @@
+kind: Fixes
+body: Fix a disabled package resource's own schema.yml patch being silently
+    reassigned to an unrelated, same-named resource in a different package
+    instead of the disabled resource itself
+time: 2026-09-04T12:00:00.000000+00:00
+custom:
+    Author: Kunal8954
+    Issue: "15562"

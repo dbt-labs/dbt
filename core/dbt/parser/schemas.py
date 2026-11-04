@@ -839,7 +839,28 @@ class NodePatchParser(PatchParser[NodeTarget, ParsedNodePatch], Generic[NodeTarg
         if patch.yaml_key in ["models", "seeds", "snapshots"]:
             unique_id = self.manifest.ref_lookup.get_unique_id(
                 patch.name, self.project.project_name, None
-            ) or self.manifest.ref_lookup.get_unique_id(patch.name, None, None)
+            )
+            if unique_id is None:
+                # A schema.yml entry describes a resource that lives in its
+                # own package. Before falling back to an unscoped,
+                # cross-package lookup (which can bind this patch to an
+                # unrelated resource in a different package that merely
+                # shares the same name), check whether *this* package has a
+                # disabled resource with this name -- if so, this patch
+                # describes that disabled resource and is handled by the
+                # "handle disabled nodes" branch below. See #15562: a
+                # package's own seed being disabled via `+enabled: false`
+                # in a dependent project must not cause its schema.yml
+                # patch to be silently reassigned to a same-named, already
+                # patched resource belonging to a different package.
+                resource_type = schema_file_keys_to_resource_types[patch.yaml_key]
+                has_disabled_in_own_package = bool(
+                    self.manifest.disabled_lookup.find(
+                        patch.name, patch.package_name, resource_types=[resource_type]
+                    )
+                )
+                if not has_disabled_in_own_package:
+                    unique_id = self.manifest.ref_lookup.get_unique_id(patch.name, None, None)
 
             if unique_id:
                 resource_type = NodeType(unique_id.split(".")[0])
