@@ -1,0 +1,6 @@
+kind: Under the Hood
+body: Run the built-in generic SQL table materialization lifecycle in typed Python while preserving Jinja fallback for overrides.
+time: 2026-08-23T19:24:30.807875-04:00
+custom:
+    Author: dataders
+    Issue: ""
