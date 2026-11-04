@@ -1875,3 +1875,24 @@ fn duckdb_renders_arrow_timestamp_units_as_its_own_types() {
         "TIMESTAMP WITH TIME ZONE"
     );
 }
+
+// PostGIS writes a geometry or geography type with its subtype and, optionally, its SRID.
+#[test]
+fn test_parse_postgis_subtype_and_srid() {
+    for (type_text, modifier) in [
+        ("geometry(Point,4326)", "Point,4326"),
+        ("geometry(MultiPolygonZ,3857)", "MultiPolygonZ,3857"),
+        ("geography(Point)", "Point"),
+    ] {
+        let (sql_type, _) = SqlType::parse(Postgres, type_text).unwrap();
+        let parsed_modifier = match &sql_type {
+            Geometry(m) | Geography(m) => m.as_deref(),
+            _ => panic!("{type_text} parsed as neither geometry nor geography"),
+        };
+        assert_eq!(parsed_modifier, Some(modifier), "{type_text}");
+        assert!(
+            sql_type.to_string(Postgres).eq_ignore_ascii_case(type_text),
+            "{type_text} round-trips"
+        );
+    }
+}
