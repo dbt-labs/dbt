@@ -107,9 +107,6 @@ members = [
   # COPYBARA-END-PRIVATE
 ]
 exclude = [
-  "wizard/wizard-app/src-tauri",
-  "wizard/dbt-codex",
-  "wizard/wizard-ui",
 ]
 
 resolver = "2"
