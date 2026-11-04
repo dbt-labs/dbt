@@ -44,6 +44,7 @@ from dbt.task.docs import DOCS_INDEX_FILE_PATH
 from dbt.utils.artifact_upload import add_artifact_produced
 from dbt_common.clients.system import load_file_contents
 from dbt_common.dataclass_schema import ValidationError
+from dbt_common.events.contextvars import task_contextvars
 from dbt_common.events.functions import fire_event
 from dbt_common.exceptions import DbtInternalError
 
@@ -226,6 +227,10 @@ class GenerateTask(CompileTask):
                     errors=None,
                     compile_results=compile_results,
                 )
+        elif not self.args.empty_catalog:
+            # Selection needs the linked graph and job queue; path selectors resolve against project_root.
+            with task_contextvars(project_root=self.config.project_root):
+                self._runtime_initialize()
 
         shutil.copyfile(
             DOCS_INDEX_FILE_PATH, os.path.join(self.config.project_target_path, "index.html")
