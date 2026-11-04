@@ -20,7 +20,16 @@ use std::hash::{BuildHasher, Hash as _, Hasher};
 /// It uses a 128-bit SipHasher with 1 compression step and 3 rounds
 /// (faster than the more common c=2 r=4 variant).
 pub trait ColumnHasher: Send + Sync {
+    /// Hashes the value of the column at the given row index.
     fn write_row(&self, hasher: &mut sip128::SipHasher13, row_idx: usize);
+
+    /// Produces the hash of a null row. `write_row(i)` should produce the same
+    /// hash as `write_null()` if the row at index `i` is null.
+    ///
+    /// This is necessary because from some nested types (e.g. DictionaryArray),
+    /// the data in the parent array can force a child array value to be logically
+    /// null even when it isn't
+    fn write_null(&self, hasher: &mut sip128::SipHasher13);
 }
 
 pub struct TableHasher {
@@ -42,6 +51,14 @@ impl ColumnHasher for TableHasher {
             hasher.write_u64(MARKER);
         }
     }
+
+    fn write_null(&self, hasher: &mut sip128::SipHasher13) {
+        const MARKER: u64 = 0xFFFFFFFFFFFFFFFFu64;
+        for column_hasher in self.column_hashers.iter() {
+            column_hasher.write_null(hasher);
+            hasher.write_u64(MARKER);
+        }
+    }
 }
 
 /// Every value of a `Null` array is null, so all rows hash identically.
@@ -49,6 +66,10 @@ struct NullColumnHasher;
 
 impl ColumnHasher for NullColumnHasher {
     fn write_row(&self, hasher: &mut sip128::SipHasher13, _row_idx: usize) {
+        hasher.write_u32(0);
+    }
+
+    fn write_null(&self, hasher: &mut sip128::SipHasher13) {
         hasher.write_u32(0);
     }
 }
@@ -71,14 +92,25 @@ impl BooleanColumnHasher {
     pub fn is_valid(&self, idx: usize) -> bool {
         self.nulls.as_ref().is_none_or(|nulls| nulls.is_valid(idx))
     }
+
+    #[inline(always)]
+    fn write_value(hasher: &mut sip128::SipHasher13, is_valid: bool, value: bool) {
+        let is_valid = is_valid as u32;
+        let value = value as u32;
+        let bu32: u32 = value | (is_valid << 8);
+        hasher.write_u32(bu32);
+    }
 }
 
 impl ColumnHasher for BooleanColumnHasher {
     fn write_row(&self, hasher: &mut sip128::SipHasher13, row_idx: usize) {
-        let is_valid = self.is_valid(row_idx) as u32;
-        let value = self.values.value(row_idx) as u32;
-        let buf4: u32 = (is_valid & value) | (is_valid << 8);
-        hasher.write_u32(buf4);
+        let is_valid = self.is_valid(row_idx);
+        let value = self.values.value(row_idx);
+        Self::write_value(hasher, is_valid, is_valid && value);
+    }
+
+    fn write_null(&self, hasher: &mut sip128::SipHasher13) {
+        Self::write_value(hasher, false, false);
     }
 }
 
@@ -104,21 +136,20 @@ impl<T: ArrowPrimitiveType> PrimitiveColumnHasher<T> {
 
 macro_rules! make_primitive_array_hasher {
     ($arrow_data_ty:ty) => {
-        impl ColumnHasher for PrimitiveColumnHasher<$arrow_data_ty> {
-            fn write_row(&self, hasher: &mut sip128::SipHasher13, row_idx: usize) {
-                let is_valid = self.is_valid(row_idx);
-                let value = self.values[row_idx];
+        impl PrimitiveColumnHasher<$arrow_data_ty> {
+            #[inline(always)]
+            fn write_value(
+                hasher: &mut sip128::SipHasher13,
+                is_valid: bool,
+                value: <$arrow_data_ty as ArrowPrimitiveType>::Native,
+            ) {
                 if mem::size_of_val(&value) == 8 {
-                    let value_as_u64: u64 = if is_valid {
-                        // hash f64 as u64 by transmuting the bits
-                        unsafe { core::mem::transmute_copy(&value) }
-                    } else {
-                        0u64
-                    };
+                    // hash f64 as u64 by transmuting the bits
+                    let value_as_u64: u64 = unsafe { core::mem::transmute_copy(&value) };
                     is_valid.hash(hasher);
                     value_as_u64.hash(hasher);
                 } else {
-                    let mut value_as_u64: u64 = if is_valid {
+                    let mut value_as_u64: u64 = {
                         // hash f32 as u64 by transmuting the bits and zero-extending
                         let mut extended = [0u8; 8];
                         let value_bytes = value.to_le_bytes();
@@ -131,13 +162,25 @@ macro_rules! make_primitive_array_hasher {
                             );
                         };
                         u64::from_le_bytes(extended)
-                    } else {
-                        0u64
                     };
                     // embed the is_valid boolean into the u64
                     value_as_u64 |= ((is_valid as u64) << 32);
                     value_as_u64.hash(hasher);
                 }
+            }
+        }
+
+        impl ColumnHasher for PrimitiveColumnHasher<$arrow_data_ty> {
+            fn write_row(&self, hasher: &mut sip128::SipHasher13, row_idx: usize) {
+                let zero = <$arrow_data_ty as ArrowPrimitiveType>::Native::ZERO;
+                let is_valid = self.is_valid(row_idx);
+                let value = if is_valid { self.values[row_idx] } else { zero };
+                Self::write_value(hasher, is_valid, value);
+            }
+
+            fn write_null(&self, hasher: &mut sip128::SipHasher13) {
+                let zero = <$arrow_data_ty as ArrowPrimitiveType>::Native::ZERO;
+                Self::write_value(hasher, false, zero);
             }
         }
     };
@@ -183,17 +226,9 @@ impl<T: DecimalType> DecimalColumnHasher<T> {
     pub fn is_valid(&self, idx: usize) -> bool {
         self.nulls.as_ref().is_none_or(|nulls| nulls.is_valid(idx))
     }
-}
 
-impl<T: DecimalType> ColumnHasher for DecimalColumnHasher<T> {
-    fn write_row(&self, hasher: &mut sip128::SipHasher13, idx: usize) {
-        let is_valid = self.is_valid(idx);
-        let value_bits = if is_valid {
-            self.values[idx]
-        } else {
-            T::Native::default()
-        };
-
+    #[inline(always)]
+    fn write_value(hasher: &mut sip128::SipHasher13, is_valid: bool, value_bits: T::Native) {
         is_valid.hash(hasher);
         match size_of::<T::Native>() {
             16 => {
@@ -216,9 +251,40 @@ impl<T: DecimalType> ColumnHasher for DecimalColumnHasher<T> {
         }
     }
 }
+
+impl<T: DecimalType> ColumnHasher for DecimalColumnHasher<T> {
+    fn write_row(&self, hasher: &mut sip128::SipHasher13, idx: usize) {
+        let is_valid = self.is_valid(idx);
+        let value = if is_valid {
+            self.values[idx]
+        } else {
+            T::Native::ZERO
+        };
+        Self::write_value(hasher, is_valid, value);
+    }
+
+    fn write_null(&self, hasher: &mut sip128::SipHasher13) {
+        Self::write_value(hasher, false, T::Native::ZERO);
+    }
+}
 // }}}
 
 // String and Binary {{{
+
+/// Shared by the string and string view hashers so both hash a value identically.
+#[inline(always)]
+fn write_str_value(hasher: &mut sip128::SipHasher13, is_valid: bool, value: &str) {
+    is_valid.hash(hasher);
+    value.hash(hasher);
+}
+
+/// Shared by the binary and binary view hashers so both hash a value identically.
+#[inline(always)]
+fn write_bytes_value(hasher: &mut sip128::SipHasher13, is_valid: bool, value: &[u8]) {
+    is_valid.hash(hasher);
+    value.hash(hasher);
+}
+
 struct GenericByteColumnHasher<T: ByteArrayType> {
     array: GenericByteArray<T>,
 }
@@ -234,20 +300,32 @@ impl<T: ByteArrayType> GenericByteColumnHasher<T> {
 impl<O: OffsetSizeTrait> ColumnHasher for GenericByteColumnHasher<GenericStringType<O>> {
     fn write_row(&self, hasher: &mut sip128::SipHasher13, row_idx: usize) {
         let is_valid = self.array.is_valid(row_idx);
-        let value = self.array.value(row_idx);
-        let str = if is_valid { value } else { "" };
-        is_valid.hash(hasher);
-        str.hash(hasher);
+        let value = if is_valid {
+            self.array.value(row_idx)
+        } else {
+            ""
+        };
+        write_str_value(hasher, is_valid, value);
+    }
+
+    fn write_null(&self, hasher: &mut sip128::SipHasher13) {
+        write_str_value(hasher, false, "");
     }
 }
 
 impl<O: OffsetSizeTrait> ColumnHasher for GenericByteColumnHasher<GenericBinaryType<O>> {
     fn write_row(&self, hasher: &mut sip128::SipHasher13, row_idx: usize) {
         let is_valid = self.array.is_valid(row_idx);
-        let value = self.array.value(row_idx);
-        let bytes = if is_valid { value } else { b"" };
-        is_valid.hash(hasher);
-        bytes.hash(hasher);
+        let value = if is_valid {
+            self.array.value(row_idx)
+        } else {
+            b""
+        };
+        write_bytes_value(hasher, is_valid, value);
+    }
+
+    fn write_null(&self, hasher: &mut sip128::SipHasher13) {
+        write_bytes_value(hasher, false, b"");
     }
 }
 
@@ -276,20 +354,32 @@ impl<T: ByteViewType> ByteViewColumnHasher<T> {
 impl ColumnHasher for ByteViewColumnHasher<StringViewType> {
     fn write_row(&self, hasher: &mut sip128::SipHasher13, row_idx: usize) {
         let is_valid = self.array.is_valid(row_idx);
-        let value = self.array.value(row_idx);
-        let str = if is_valid { value } else { "" };
-        is_valid.hash(hasher);
-        str.hash(hasher);
+        let value = if is_valid {
+            self.array.value(row_idx)
+        } else {
+            ""
+        };
+        write_str_value(hasher, is_valid, value);
+    }
+
+    fn write_null(&self, hasher: &mut sip128::SipHasher13) {
+        write_str_value(hasher, false, "");
     }
 }
 
 impl ColumnHasher for ByteViewColumnHasher<BinaryViewType> {
     fn write_row(&self, hasher: &mut sip128::SipHasher13, row_idx: usize) {
         let is_valid = self.array.is_valid(row_idx);
-        let value = self.array.value(row_idx);
-        let bytes = if is_valid { value } else { b"" };
-        is_valid.hash(hasher);
-        bytes.hash(hasher);
+        let value = if is_valid {
+            self.array.value(row_idx)
+        } else {
+            b""
+        };
+        write_bytes_value(hasher, is_valid, value);
+    }
+
+    fn write_null(&self, hasher: &mut sip128::SipHasher13) {
+        write_bytes_value(hasher, false, b"");
     }
 }
 
@@ -311,11 +401,16 @@ impl<K: ArrowPrimitiveType> DictionaryColumnHasher<K> {
 impl<K: ArrowPrimitiveType> ColumnHasher for DictionaryColumnHasher<K> {
     fn write_row(&self, hasher: &mut sip128::SipHasher13, row_idx: usize) {
         let is_valid_key = self.keys.is_valid(row_idx);
-        hasher.write_u32(is_valid_key as u32);
         if is_valid_key {
             let key = self.keys.value(row_idx).as_usize();
             self.values.write_row(hasher, key);
+        } else {
+            self.values.write_null(hasher);
         }
+    }
+
+    fn write_null(&self, hasher: &mut sip128::SipHasher13) {
+        self.values.write_null(hasher);
     }
 }
 
@@ -605,8 +700,11 @@ impl BuildHasher for IdentityBuildHasher {
 mod tests {
     use super::*;
     use arrow_array::{
-        BinaryArray, BinaryViewArray, DictionaryArray, LargeBinaryArray, LargeStringArray,
-        StringArray, StringViewArray,
+        ArrayRef, BinaryArray, BinaryViewArray, Date32Array, Decimal32Array, Decimal64Array,
+        Decimal128Array, Decimal256Array, DictionaryArray, Float32Array, Float64Array, Int8Array,
+        Int16Array, Int32Array, Int64Array, LargeBinaryArray, LargeStringArray, StringArray,
+        StringViewArray, TimestampMicrosecondArray, UInt8Array, UInt16Array, UInt32Array,
+        UInt64Array, make_array,
     };
     use std::sync::Arc;
 
@@ -627,21 +725,107 @@ mod tests {
             .collect()
     }
 
-    /// Rows: "b", null (null value), "a", null (null key), "b" (another key).
+    fn hash_null(array: &dyn Array) -> u64 {
+        let column_hasher = make_column_hasher(array).unwrap();
+        let mut hasher = sip128::SipHasher13::new();
+        column_hasher.write_null(&mut hasher);
+        hasher.finish()
+    }
+
+    /// Replaces the nulls buffer of `array` without touching its values, so
+    /// the rows that become null keep whatever (non-zero) value they had.
+    fn with_nulls(array: &dyn Array, validity: &[bool]) -> ArrayRef {
+        assert_eq!(array.null_count(), 0, "expected an array without nulls");
+        let data = array
+            .to_data()
+            .into_builder()
+            .nulls(Some(NullBuffer::from(validity.to_vec())))
+            .build()
+            .unwrap();
+        make_array(data)
+    }
+
+    /// `array` holds 5 values: `[value, garbage, zero, garbage, other value]`.
+    /// Rows 1 and 3 are made null without clearing the garbage under them.
+    fn assert_null_rows_ignore_the_values(array: ArrayRef) {
+        let name = array.data_type().clone();
+        let array = with_nulls(&array, &[true, false, true, false, true]);
+        let hashes = hash_rows(&array);
+        let null = hash_null(&array);
+        assert_eq!(hashes[1], null, "{name}: null row 1 vs write_null");
+        assert_eq!(hashes[3], null, "{name}: null row 3 vs write_null");
+        assert_ne!(hashes[0], null, "{name}: value vs null");
+        assert_ne!(hashes[2], null, "{name}: zero value vs null");
+        assert_ne!(hashes[0], hashes[4], "{name}: different values");
+    }
+
+    #[test]
+    fn null_rows_ignore_the_values_under_the_nulls_buffer() {
+        let long = "a string long enough to not be inlined in a view";
+        let arrays: Vec<ArrayRef> = vec![
+            Arc::new(BooleanArray::from(vec![true, true, false, true, false])),
+            Arc::new(Int8Array::from(vec![1, 7, 0, -3, 2])),
+            Arc::new(Int16Array::from(vec![1, 7, 0, -3, 2])),
+            Arc::new(Int32Array::from(vec![1, 7, 0, -3, 2])),
+            Arc::new(Int64Array::from(vec![1, 7, 0, -3, 2])),
+            Arc::new(UInt8Array::from(vec![1, 7, 0, 3, 2])),
+            Arc::new(UInt16Array::from(vec![1, 7, 0, 3, 2])),
+            Arc::new(UInt32Array::from(vec![1, 7, 0, 3, 2])),
+            Arc::new(UInt64Array::from(vec![1, 7, 0, 3, 2])),
+            Arc::new(Float32Array::from(vec![1.5, 7.25, 0.0, -3.0, 2.5])),
+            Arc::new(Float64Array::from(vec![1.5, 7.25, 0.0, -3.0, 2.5])),
+            Arc::new(Date32Array::from(vec![1, 7, 0, -3, 2])),
+            Arc::new(TimestampMicrosecondArray::from(vec![1, 7, 0, -3, 2])),
+            Arc::new(Decimal32Array::from(vec![1, 7, 0, -3, 2])),
+            Arc::new(Decimal64Array::from(vec![1, 7, 0, -3, 2])),
+            Arc::new(Decimal128Array::from(vec![1, 7, 0, -3, 2])),
+            Arc::new(Decimal256Array::from(
+                [1, 7, 0, -3, 2].map(i256::from_i128).to_vec(),
+            )),
+            Arc::new(StringArray::from(vec!["a", "garbage", "", long, "b"])),
+            Arc::new(LargeStringArray::from(vec!["a", "garbage", "", long, "b"])),
+            Arc::new(StringViewArray::from(vec!["a", "garbage", "", long, "b"])),
+            Arc::new(BinaryArray::from_iter_values([
+                "a", "garbage", "", long, "b",
+            ])),
+            Arc::new(LargeBinaryArray::from_iter_values([
+                "a", "garbage", "", long, "b",
+            ])),
+            Arc::new(BinaryViewArray::from_iter_values([
+                "a", "garbage", "", long, "b",
+            ])),
+        ];
+        for array in arrays {
+            assert_null_rows_ignore_the_values(array);
+        }
+    }
+
+    /// Rows: "b", null (null value), "a", null (null key over the key of "b"),
+    /// "b" (another key), null (null key over the key of "a").
+    ///
+    /// The null value and the null keys keep non-zero values under them.
     fn dictionary<K: ArrowDictionaryKeyType>() -> DictionaryArray<K> {
-        let key = |i: usize| Some(K::Native::from_usize(i).unwrap());
-        let keys: PrimitiveArray<K> = [key(0), key(1), key(2), None, key(3)].into_iter().collect();
-        let values = StringArray::from(vec![Some("b"), None, Some("a"), Some("b")]);
-        DictionaryArray::try_new(keys, Arc::new(values)).unwrap()
+        let keys = PrimitiveArray::<K>::from_iter_values(
+            [0, 1, 2, 0, 3, 2].map(|i| K::Native::from_usize(i).unwrap()),
+        );
+        let keys = with_nulls(&keys, &[true, true, true, false, true, false]);
+        let values = StringArray::from(vec!["b", "garbage", "a", "b"]);
+        let values = with_nulls(&values, &[true, false, true, true]);
+        DictionaryArray::try_new(keys.as_primitive::<K>().clone(), values).unwrap()
     }
 
     fn assert_dictionary_hashes<K: ArrowDictionaryKeyType>() {
         let name = K::DATA_TYPE;
-        let hashes = hash_rows(&dictionary::<K>());
+        let dict = dictionary::<K>();
+        let hashes = hash_rows(&dict);
+        let null = hash_null(&dict);
         assert_eq!(hashes[0], hashes[4], "{name}: equal values, different keys");
         assert_ne!(hashes[0], hashes[2], "{name}: different values");
-        assert_ne!(hashes[0], hashes[1], "{name}: value vs null value");
-        assert_ne!(hashes[0], hashes[3], "{name}: value vs null key");
+        assert_eq!(hashes[1], null, "{name}: null value vs write_null");
+        assert_eq!(hashes[3], null, "{name}: null key over \"b\" vs write_null");
+        assert_eq!(hashes[5], null, "{name}: null key over \"a\" vs write_null");
+        assert_ne!(hashes[0], null, "{name}: value vs null");
+        assert_ne!(hashes[2], null, "{name}: value vs null");
     }
 
     #[test]
