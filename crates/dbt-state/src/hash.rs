@@ -676,7 +676,11 @@ fn seed_node_body_hash(
 ) -> Result<String, NodeHashError> {
     // ref: https://github.com/fivetran/query-cache/blob/4ab87c72f2783c230905c5c75ec19eb76314069e/clients/dbt_state/src/dbt_state/node_hash_calculator.py#L203
     let seed_relative_path = &node.common().original_file_path;
-    let seed_full_path = project_root_path.join(seed_relative_path);
+    // Package seeds live under their package root, not the project root.
+    let seed_full_path = match node.file_path_from_root() {
+        Some(path) => path,
+        None => project_root_path.join(seed_relative_path).to_path_buf(),
+    };
 
     let mut reader = BufReader::new(File::open(seed_full_path)?);
     let mut ctx = md5::Context::new();
@@ -879,6 +883,34 @@ mod tests {
             assert_eq!(
                 seed_node_body_hash(&seed, &project_root).unwrap(),
                 expected_hash
+            );
+        }
+
+        #[test]
+        fn seed_node_body_hash_uses_root_path_for_package_seeds() {
+            let tmpdir = TempDir::new().unwrap();
+            let project_root: DbtPath = tmpdir.path().join("project").as_path().into();
+            let package_root = tmpdir.path().join("pkg");
+            fs::create_dir_all(package_root.join("seeds")).unwrap();
+            fs::write(
+                package_root.join("seeds/seed_data.csv"),
+                b"id,name\n1,Ada\n2,Grace\n",
+            )
+            .unwrap();
+
+            let mut seed = DbtSeed {
+                __common_attr__: CommonAttributes {
+                    path: "seeds/seed_data.csv".into(),
+                    original_file_path: "dbt_packages/pkg/seeds/seed_data.csv".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            seed.__seed_attr__.root_path = Some(package_root);
+
+            assert_eq!(
+                seed_node_body_hash(&seed, &project_root).unwrap(),
+                "e146991e1c07585745c5a65f06a517e9"
             );
         }
     }
@@ -1704,6 +1736,7 @@ mod tests {
                 ..Default::default()
             },
             __common_attr__: CommonAttributes {
+                path: "test_seed.csv".into(),
                 original_file_path: seed_file_path.get_relative_path(&project_root).unwrap(),
                 fqn: vec![
                     "project".to_string(),
