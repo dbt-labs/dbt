@@ -3581,21 +3581,31 @@ impl AdapterImpl {
                 if let Replay(_, replay) = self.inner_adapter() {
                     return replay.replay_get_dataset_location(state, relation);
                 }
-                // https://cloud.google.com/bigquery/docs/information-schema-datasets-schemata
-                // https://github.com/dbt-labs/dbt-adapters/blob/main/dbt-bigquery/src/dbt/adapters/bigquery/impl.py#L853-L854
+                // Read the location with datasets.get through the driver, like dbt-core's
+                // `client.get_dataset`: an INFORMATION_SCHEMA.SCHEMATA query per call counts
+                // against BigQuery's per-user INFORMATION_SCHEMA rate limit.
+                let database = relation.database_as_str()?;
+                let schema = relation.schema_as_str()?;
+                let payload = serde_json::json!({ "project": database, "dataset": schema });
+                // Not sent to BigQuery; it identifies the call in logs and recordings.
                 let sql = format!(
-                    "SELECT
-                location
-            FROM `{}.INFORMATION_SCHEMA.SCHEMATA` WHERE schema_name = '{}'",
-                    relation.database_as_str()?,
-                    relation.schema_as_str()?
+                    "-- adapter.get_dataset_location via BigQuery REST API on `{database}.{schema}`"
                 );
 
                 let ctx =
                     query_ctx_from_state(state)?.with_desc("get_dataset_location adapter call");
-                let batch = self
-                    .engine()
-                    .execute(Some(state), conn, &ctx, &sql, token)?;
+                let batch = self.engine().execute_with_options(
+                    Some(state),
+                    &ctx,
+                    conn,
+                    &sql,
+                    vec![(
+                        GET_DATASET_LOCATION.to_string(),
+                        OptionValue::String(payload.to_string()),
+                    )],
+                    true,
+                    token,
+                )?;
 
                 Self::parse_dataset_location(&batch)
             }
