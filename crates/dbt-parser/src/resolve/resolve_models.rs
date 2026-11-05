@@ -950,6 +950,32 @@ async fn build_model_nodes(
         model_config.quoting =
             resolve_node_quoting(model_config.quoting, adapter_quoting, selected_adapter);
 
+        let column_constraint_refs: Vec<DbtRef> = columns
+            .iter()
+            .flat_map(|col| col.constraints.iter())
+            .filter_map(|c| c.to.as_ref())
+            .filter_map(|spanned| {
+                parse_ref_from_constraint(spanned).map(|(pkg, name, version)| DbtRef {
+                    name,
+                    package: pkg,
+                    version,
+                    location: Some(CodeLocationWithFile::from(spanned.span().clone())),
+                })
+            })
+            .collect();
+
+        let column_constraint_sources: Vec<DbtSourceWrapper> = columns
+            .iter()
+            .flat_map(|col| col.constraints.iter())
+            .filter_map(|c| c.to.as_ref())
+            .filter_map(|spanned| {
+                parse_source_from_constraint(spanned).map(|(src, tbl)| DbtSourceWrapper {
+                    source: vec![src, tbl],
+                    location: Some(CodeLocationWithFile::from(spanned.span().clone())),
+                })
+            })
+            .collect();
+
         // Create the DbtModel with all properties already set
         let mut dbt_model = DbtModel {
             __common_attr__: CommonAttributes {
@@ -1028,26 +1054,7 @@ async fn build_model_nodes(
                                 })
                             }),
                     )
-                    .chain(
-                        properties
-                            .columns
-                            .iter()
-                            .flatten()
-                            .flat_map(|col| col.constraints.iter().flatten())
-                            .filter_map(|c| c.to.as_ref())
-                            .filter_map(|spanned| {
-                                parse_ref_from_constraint(spanned).map(|(pkg, name, version)| {
-                                    DbtRef {
-                                        name,
-                                        package: pkg,
-                                        version,
-                                        location: Some(CodeLocationWithFile::from(
-                                            spanned.span().clone(),
-                                        )),
-                                    }
-                                })
-                            }),
-                    )
+                    .chain(column_constraint_refs)
                     .collect(),
                 functions: sql_file_info
                     .functions
@@ -1081,24 +1088,7 @@ async fn build_model_nodes(
                                 })
                             }),
                     )
-                    .chain(
-                        properties
-                            .columns
-                            .iter()
-                            .flatten()
-                            .flat_map(|col| col.constraints.iter().flatten())
-                            .filter_map(|c| c.to.as_ref())
-                            .filter_map(|spanned| {
-                                parse_source_from_constraint(spanned).map(|(src, tbl)| {
-                                    DbtSourceWrapper {
-                                        source: vec![src, tbl],
-                                        location: Some(CodeLocationWithFile::from(
-                                            spanned.span().clone(),
-                                        )),
-                                    }
-                                })
-                            }),
-                    )
+                    .chain(column_constraint_sources)
                     .collect(),
                 metrics,
                 materialized,
@@ -2562,6 +2552,144 @@ catalogs:
     #[test]
     fn test_parse_source_missing_second_arg() {
         assert_eq!(parse_source_from_constraint("source('my_source')"), None);
+    }
+
+    #[test]
+    fn test_versioned_model_column_foreign_key_constraint_ref() {
+        use super::process_versioned_columns;
+        use dbt_common::CodeLocationWithFile;
+        use dbt_schemas::schemas::common::{Constraint, ConstraintType, Versions};
+        use dbt_schemas::schemas::dbt_column::{DbtColumn, VersionColumnProperties};
+        use dbt_schemas::schemas::project::ModelConfig;
+        use dbt_schemas::schemas::ref_and_source::DbtRef;
+        use dbt_yaml::{Span, Spanned, Verbatim};
+        use std::collections::HashMap;
+        use std::sync::Arc;
+
+        // Model-level column
+        let model_col = Arc::new(DbtColumn {
+            name: "id".to_string(),
+            data_type: Some("int".to_string()),
+            ..Default::default()
+        });
+
+        // Version-level column with foreign_key to: ref('primary')
+        let fk_constraint = Constraint {
+            type_: ConstraintType::ForeignKey,
+            to: Some(Spanned::new("ref('primary')".to_string())),
+            to_columns: Some(vec!["id".to_string()]),
+            ..Default::default()
+        };
+
+        let version_col = VersionColumnProperties {
+            name: Some("fk_id".to_string()),
+            data_type: Some("int".to_string()),
+            constraints: Some(vec![fk_constraint]),
+            ..Default::default()
+        };
+
+        let version = Versions {
+            v: dbt_yaml::Value::Number(dbt_yaml::Number::from(1), Span::zero()),
+            deprecation_date: None,
+            defined_in: None,
+            description: None,
+            access: None,
+            config: Verbatim::from(None),
+            constraints: None,
+            data_tests: None,
+            tests: None,
+            columns: Some(vec![version_col]),
+            __additional_properties__: Verbatim::from(HashMap::new()),
+        };
+
+        let model_config = ModelConfig::default();
+        let version_str = "1".to_string();
+        let resolved_columns = process_versioned_columns(
+            &model_config,
+            Some(&version_str),
+            &[version],
+            vec![model_col],
+        )
+        .expect("versioned columns processing should succeed");
+
+        // Extract column constraint refs as done in build_model_nodes
+        let column_constraint_refs: Vec<DbtRef> = resolved_columns
+            .iter()
+            .flat_map(|col| col.constraints.iter())
+            .filter_map(|c| c.to.as_ref())
+            .filter_map(|spanned| {
+                parse_ref_from_constraint(spanned).map(|(pkg, name, version)| DbtRef {
+                    name,
+                    package: pkg,
+                    version,
+                    location: Some(CodeLocationWithFile::from(spanned.span().clone())),
+                })
+            })
+            .collect();
+
+        assert_eq!(column_constraint_refs.len(), 1);
+        assert_eq!(column_constraint_refs[0].name, "primary");
+        assert_eq!(column_constraint_refs[0].package, None);
+        assert_eq!(column_constraint_refs[0].version, None);
+    }
+
+    #[test]
+    fn test_versioned_model_column_foreign_key_constraint_source() {
+        use super::process_versioned_columns;
+        use dbt_common::CodeLocationWithFile;
+        use dbt_schemas::schemas::common::{Constraint, ConstraintType, Versions};
+        use dbt_schemas::schemas::dbt_column::VersionColumnProperties;
+        use dbt_schemas::schemas::project::ModelConfig;
+        use dbt_schemas::schemas::ref_and_source::DbtSourceWrapper;
+        use dbt_yaml::{Span, Spanned, Verbatim};
+        use std::collections::HashMap;
+
+        let version_col = VersionColumnProperties {
+            name: Some("source_id".to_string()),
+            data_type: Some("int".to_string()),
+            constraints: Some(vec![Constraint {
+                type_: ConstraintType::ForeignKey,
+                to: Some(Spanned::new("source('raw', 'users')".to_string())),
+                to_columns: Some(vec!["id".to_string()]),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+
+        let version = Versions {
+            v: dbt_yaml::Value::Number(dbt_yaml::Number::from(1), Span::zero()),
+            deprecation_date: None,
+            defined_in: None,
+            description: None,
+            access: None,
+            config: Verbatim::from(None),
+            constraints: None,
+            data_tests: None,
+            tests: None,
+            columns: Some(vec![version_col]),
+            __additional_properties__: Verbatim::from(HashMap::new()),
+        };
+
+        let model_config = ModelConfig::default();
+        let version_str = "1".to_string();
+        let resolved_columns =
+            process_versioned_columns(&model_config, Some(&version_str), &[version], vec![])
+                .expect("versioned columns processing should succeed");
+
+        let column_constraint_sources: Vec<DbtSourceWrapper> = resolved_columns
+            .iter()
+            .flat_map(|col| col.constraints.iter())
+            .filter_map(|c| c.to.as_ref())
+            .filter_map(|spanned| {
+                parse_source_from_constraint(spanned).map(|(src, tbl)| DbtSourceWrapper {
+                    source: vec![src, tbl],
+                    location: Some(CodeLocationWithFile::from(spanned.span().clone())),
+                })
+            })
+            .collect();
+
+        assert_eq!(column_constraint_sources.len(), 1);
+        assert_eq!(column_constraint_sources[0].source, vec!["raw", "users"]);
     }
 }
 
