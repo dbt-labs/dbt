@@ -1831,7 +1831,7 @@ class MacroContext(ProviderContext):
         search_package: Optional[str],
     ) -> None:
         super().__init__(model, config, manifest, provider, None)
-        # override the model-based package with the given one
+        # overrideÂ the model-based package with the given one
         if search_package is None:
             # if the search package name isn't specified, use the root project
             self._search_package = config.project_name
@@ -1950,6 +1950,36 @@ class ModelContext(ProviderContext):
             )
         else:
             return None
+
+
+
+class UnitTestRelationProxy(str):
+    """A string subclass used as ``this`` in unit test context.
+
+    Renders as the ephemeral CTE name when used directly in Jinja templates
+    (so compiled SQL references the fixture CTE, not a real table), but also
+    delegates attribute access to the real model ``RelationProxy``
+    (so macros that call ``this.database``, ``this.schema``, or
+    ``this.identifier`` do not raise ``AttributeError``).
+
+    Fixes: https://github.com/dbt-labs/dbt-core/issues/12313
+    """
+
+    __slots__ = ("_real_relation",)
+
+    def __new__(cls, cte_name: str, real_relation=None) -> "UnitTestRelationProxy":
+        instance = super().__new__(cls, cte_name)
+        instance._real_relation = real_relation
+        return instance
+
+    def __getattr__(self, name: str):
+        real = object.__getattribute__(self, "_real_relation")
+        if real is not None:
+            try:
+                return getattr(real, name)
+            except AttributeError:
+                pass
+        raise AttributeError(f"'UnitTestRelationProxy' object has no attribute {name!r}")
 
 
 class UnitTestContext(ModelContext):
