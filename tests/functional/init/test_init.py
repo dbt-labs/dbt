@@ -471,6 +471,7 @@ class TestInitOutsideOfProject(TestInitOutsideOfProjectBase):
         project,
         project_name,
         unique_schema,
+        dbt_profile_data,
     ):
         manager = Mock()
         manager.attach_mock(mock_prompt, "prompt")
@@ -488,6 +489,8 @@ class TestInitOutsideOfProject(TestInitOutsideOfProjectBase):
         ]
         mock_get_adapter.return_value = [project.adapter.type()]
         run_dbt(["init"])
+        default2 = dbt_profile_data["test"]["outputs"]["default2"]
+        noaccess = dbt_profile_data["test"]["outputs"]["noaccess"]
 
         manager.assert_has_calls(
             [
@@ -538,19 +541,19 @@ class TestInitOutsideOfProject(TestInitOutsideOfProjectBase):
 test:
   outputs:
     default2:
-      dbname: dbt
+      dbname: {default2["dbname"]}
       host: localhost
-      pass: password
-      port: 5432
+      pass: {default2["pass"]}
+      port: {default2["port"]}
       schema: {unique_schema}
       threads: 4
       type: postgres
-      user: root
+      user: {default2["user"]}
     noaccess:
-      dbname: dbt
+      dbname: {noaccess["dbname"]}
       host: localhost
       pass: password
-      port: 5432
+      port: {noaccess["port"]}
       schema: {unique_schema}
       threads: 4
       type: postgres
