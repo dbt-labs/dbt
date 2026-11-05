@@ -28,6 +28,7 @@ use dbt_schemas::schemas::dbt_catalogs_deprecated::LoadedCatalogs;
 use dbt_schemas::schemas::dbt_column::process_columns;
 use dbt_schemas::schemas::project::WarningEmission;
 use dbt_schemas::schemas::properties::SeedProperties;
+use dbt_schemas::schemas::relations::relation_owner_adapter;
 use dbt_schemas::schemas::telemetry::NodeType;
 use dbt_schemas::schemas::{CommonAttributes, DbtSeed, DbtSeedAttr, NodeBaseAttributes};
 use dbt_schemas::state::{DbtPackage, GenericTestAsset};
@@ -352,12 +353,7 @@ pub async fn resolve_seeds(
         let original_file_path =
             stdfs::diff_paths(seed_file.base_path.join(&path), &io_args.in_dir)?;
 
-        // See `resolve_models`: both remaining layers depend on the node's
-        // `+adapter`, which the config merge cannot know. Written back so
-        // `deprecated_config` carries the resolved value too.
-        // `propagate` comes straight off the node's own config. Unlike
-        // `adapter` there is no target default to fall back to and nothing to
-        // inherit: an unset `+propagate` means "publish nowhere".
+        // An unset `+propagate` leaves target selection to the implicit rules.
         let selected_propagate: Vec<AdapterType> = properties_config
             .propagate
             .clone()
@@ -372,8 +368,13 @@ pub async fn resolve_seeds(
             &selected_propagate,
             catalog_requires_snowflake,
         );
-        properties_config.quoting =
-            resolve_node_quoting(properties_config.quoting, adapter_quoting, selected_adapter);
+        // Resolve quoting against the adapter that owns the relation, as in `resolve_models`.
+        // Write it back so `deprecated_config` carries the resolved value too.
+        properties_config.quoting = resolve_node_quoting(
+            properties_config.quoting,
+            adapter_quoting,
+            relation_owner_adapter(selected_adapter, effective_propagation_target),
+        );
 
         let (node_database, node_schema) = node_starting_database_and_schema(
             Some(parse_adapter_scopes),

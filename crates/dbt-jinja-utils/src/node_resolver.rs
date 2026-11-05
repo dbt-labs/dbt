@@ -163,16 +163,11 @@ impl NodeResolver {
             ..Default::default()
         };
         for (_, node) in nodes.iter() {
-            // A node's relation is rendered with *its own* adapter, not the
-            // target's default. `ref('x')` returns x's relation, and x lives in
-            // x's adapter's warehouse; `RefFunction` respells it for a caller on
-            // another adapter. Both inputs are per-node: the node carries its own
-            // quoting (resolved against its `+adapter` during resolve) and the
-            // adapter type decides `include_policy` -- DuckDB suppresses the
+            // A node's quoting resolves against the adapter that owns its relation.
+            // `ref('x')` keeps x's quote policy and takes the caller's quote character.
+            // The node's own adapter decides `include_policy`: DuckDB suppresses the
             // database component for `main`/`memory` while others do not.
-            //
-            // Each relation stays cached one-per-node; only the adapter type used
-            // to build it changes.
+            // Each relation stays cached one-per-node.
             if let Some(source) = node.as_any().downcast_ref::<DbtSource>() {
                 // Sources have no `+adapter`: they are external data, so they take
                 // the target's default.

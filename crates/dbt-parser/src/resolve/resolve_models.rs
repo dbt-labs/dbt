@@ -77,6 +77,7 @@ use dbt_schemas::schemas::properties::ModelConstraint;
 use dbt_schemas::schemas::properties::ModelFreshness;
 use dbt_schemas::schemas::properties::ModelProperties;
 use dbt_schemas::schemas::ref_and_source::{DbtRef, DbtSourceWrapper};
+use dbt_schemas::schemas::relations::relation_owner_adapter;
 use dbt_schemas::schemas::serde::NodeVersion;
 use dbt_schemas::state::DbtPackage;
 use dbt_schemas::state::DbtRuntimeConfig;
@@ -920,19 +921,7 @@ async fn build_model_nodes(
             true,
         )?;
 
-        // Quoting is resolved here rather than at the package seed, because both
-        // remaining layers depend on which adapter the node runs on, and that is
-        // only known after the config merge. At this point `model_config.quoting`
-        // holds just the `models:`-subtree and model-level `+quoting:` values; the
-        // adapter's own config and the adapter type's default go underneath.
-        //
-        // Written back into the config rather than used locally, so everything
-        // downstream sees the same fully-resolved value -- notably
-        // `deprecated_config`, which reaches the manifest and the run-cache hash.
-        // Leaving unset fields as `None` there would change both.
-        // `propagate` comes straight off the node's own config. Unlike
-        // `adapter` there is no target default to fall back to and nothing to
-        // inherit: an unset `+propagate` means "publish nowhere".
+        // An unset `+propagate` leaves target selection to the implicit rules.
         let selected_propagate: Vec<AdapterType> = model_config
             .propagate
             .clone()
@@ -947,8 +936,17 @@ async fn build_model_nodes(
             &selected_propagate,
             catalog_requires_snowflake,
         );
-        model_config.quoting =
-            resolve_node_quoting(model_config.quoting, adapter_quoting, selected_adapter);
+        // Quoting resolves against the adapter that owns the relation, which is known only
+        // after the config merge and target selection. `model_config.quoting` holds the
+        // `models:`-subtree and model-level `+quoting:` values; the owner's project quoting
+        // and adapter defaults fill the remaining fields.
+        // Write the resolved value back so `deprecated_config`, the manifest, and the
+        // run-cache hash all use the same policy without unset fields.
+        model_config.quoting = resolve_node_quoting(
+            model_config.quoting,
+            adapter_quoting,
+            relation_owner_adapter(selected_adapter, effective_propagation_target),
+        );
 
         // Create the DbtModel with all properties already set
         let mut dbt_model = DbtModel {
@@ -1105,7 +1103,7 @@ async fn build_model_nodes(
                 quoting: model_config
                     .quoting
                     .try_into()
-                    .expect("DbtQuoting -> QuotingConfig conversion"),
+                    .expect("DbtQuoting -> ResolvedQuoting conversion"),
                 quoting_ignore_case: model_config.quoting.snowflake_ignore_case.unwrap_or(false),
                 static_analysis_off_reason: (*static_analysis == StaticAnalysisKind::Off)
                     .then_some(StaticAnalysisOffReason::ConfiguredOff),

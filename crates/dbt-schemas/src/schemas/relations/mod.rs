@@ -64,6 +64,23 @@ pub fn default_dbt_quoting_for(adapter_type: AdapterType) -> DbtQuoting {
     }
 }
 
+/// Returns the adapter that owns the relation's name: BigQuery when
+/// `effective_propagation_target` is BigQuery, otherwise the node's own `adapter`.
+///
+/// The selected quoting layers come from the root project's `dbt_project.yml`: the adapter's
+/// entry under `adapters:`, plus top-level `quoting:` for the default adapter only.
+/// This does not own rendering for every target: Databricks keeps its canonical rendering in
+/// `render_effective_relation`.
+pub fn relation_owner_adapter(
+    adapter: AdapterType,
+    effective_propagation_target: Option<AdapterType>,
+) -> AdapterType {
+    match effective_propagation_target {
+        Some(AdapterType::Bigquery) => AdapterType::Bigquery,
+        _ => adapter,
+    }
+}
+
 /// See [`default_dbt_quoting_for`].
 #[inline]
 pub fn default_resolved_quoting_for(adapter_type: AdapterType) -> ResolvedQuoting {
