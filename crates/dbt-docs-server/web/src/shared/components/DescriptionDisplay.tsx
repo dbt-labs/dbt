@@ -2,6 +2,7 @@ import { FC } from 'react';
 import ReactMarkdown from 'react-markdown';
 import rehypeExternalLinks from 'rehype-external-links';
 import rehypeRaw from 'rehype-raw';
+import rehypeSanitize from 'rehype-sanitize';
 import remarkGfm from 'remark-gfm';
 import { twMerge } from 'tailwind-merge';
 
@@ -28,7 +29,11 @@ export const DescriptionDisplay: FC<DescriptionDisplayProps> = ({
     <ReactMarkdown
       className={twMerge(BASE_CLASS, className)}
       remarkPlugins={[remarkGfm]}
-      rehypePlugins={[rehypeRaw, [rehypeExternalLinks, { target: '_blank' }]]}
+      rehypePlugins={[
+        rehypeRaw,
+        rehypeSanitize,
+        [rehypeExternalLinks, { target: '_blank' }],
+      ]}
     >
       {description}
     </ReactMarkdown>

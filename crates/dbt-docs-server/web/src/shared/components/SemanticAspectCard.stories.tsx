@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
+import { expect, within } from 'storybook/test';
 
 import { SemanticAspectCard } from './SemanticAspectCard';
 
@@ -33,6 +34,18 @@ export const MarkdownDescription: Story = {
   args: {
     description:
       'Order **placement** time. See [the semantic layer docs](https://docs.getdbt.com).',
+  },
+};
+
+/** Untrusted inline HTML that loads a frame or runs a script must not reach the DOM. */
+export const ScriptPayload: Story = {
+  args: {
+    description: `<iframe srcdoc="&lt;script&gt;parent.document.documentElement.dataset.dbtPoc='executed'&lt;/script&gt;"></iframe>`,
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvasElement.querySelector('iframe')).toBeNull();
+    void canvas;
   },
 };
 

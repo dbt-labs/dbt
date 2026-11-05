@@ -2,6 +2,7 @@ import type { ComponentPropsWithoutRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import rehypeExternalLinks from 'rehype-external-links';
 import rehypeRaw from 'rehype-raw';
+import rehypeSanitize from 'rehype-sanitize';
 import remarkGfm from 'remark-gfm';
 
 // Type scale pulled from Figma (Catalog file, node 19522:6538): Heading/1 =
@@ -139,12 +140,9 @@ const markdownComponents = {
 /**
  * Render project-authored markdown.
  *
- * `rehypeRaw` is a deliberate divergence from dbt Docs v1, which rendered with
- * `marked` at `sanitize: true` and so displayed raw HTML as escaped text. Keeping
- * it matches what this app already does for node descriptions, and the bundled
- * default relies on HTML comments being invisible rather than printed. The trust
- * boundary is the same either way: anyone who can author a `{% docs %}` block can
- * already run arbitrary Jinja at parse time.
+ * `rehype-raw` parses HTML, then `rehype-sanitize` filters it with the default
+ * allow-list. Formatting tags render. Script, frames, and event handlers do not.
+ * dbt Docs v1 used `marked` with `sanitize: true` and showed raw HTML as escaped text.
  */
 export function Markdown({ children }: { children: string }) {
   if (!children.trim()) return null;
@@ -153,6 +151,7 @@ export function Markdown({ children }: { children: string }) {
       components={markdownComponents}
       rehypePlugins={[
         rehypeRaw,
+        rehypeSanitize,
         [rehypeExternalLinks, { target: '_blank', rel: ['noreferrer'] }],
       ]}
       remarkPlugins={[remarkGfm]}

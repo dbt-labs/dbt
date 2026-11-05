@@ -51,6 +51,7 @@
     "react-router-dom": "^7.0.0",
     "rehype-external-links": "^3.0.0",
     "rehype-raw": "^7.0.0",
+    "rehype-sanitize": "^6.0.0",
     "remark-gfm": "^4.0.1",
     "shiki": "^4.4.3",
     "tailwind-merge": "^2.2.1",
