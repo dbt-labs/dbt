@@ -925,7 +925,8 @@ impl AdapterImpl {
                     .jsonify_nested_columns(jsonify_column);
                 AgateTable::from_record_batch_impl(Arc::new(display), Some(original), None)
             }
-            _ => AgateTable::from_record_batch(Arc::new(last_batch)),
+            _ => AgateTable::try_from_record_batch(Arc::new(last_batch))
+                .map_err(arrow_error_to_adapter_error)?,
         };
 
         Ok((response, table))
