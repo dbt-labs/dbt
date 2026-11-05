@@ -46,7 +46,7 @@ pub fn backend_of(adapter_type: AdapterType) -> Backend {
         AdapterType::Exasol => Backend::Exasol,
         AdapterType::Starburst => todo!("Starburst"),
         AdapterType::Athena => Backend::Athena,
-        AdapterType::Trino => todo!("Trino"),
+        AdapterType::Trino => Backend::Trino,
         AdapterType::Dremio => todo!("Dremio"),
         AdapterType::Oracle => todo!("Oracle"),
         AdapterType::Datafusion => todo!("Datafusion"),

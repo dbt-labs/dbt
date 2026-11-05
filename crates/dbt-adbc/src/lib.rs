@@ -51,6 +51,7 @@ pub mod redshift;
 pub mod salesforce;
 pub mod snowflake;
 pub mod spark;
+pub mod trino;
 
 // REPL for ADBC drivers
 #[cfg(feature = "repl")]
