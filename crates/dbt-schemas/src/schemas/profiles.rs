@@ -1088,6 +1088,12 @@ pub struct TrinoDbConfig {
     /// Set to `false` for servers that cannot answer the credentials check.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub validate_connection: Option<bool>,
+    /// `method: certificate`: path to the PEM client certificate for mutual TLS.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_certificate: Option<String>,
+    /// `method: certificate`: path to the PEM private key of `client_certificate`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_private_key: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, DbtSchema, Merge)]
@@ -2627,6 +2633,22 @@ validate_connection: false
             Some("oauth")
         );
         assert!(mapping.get("roles").is_some());
+    }
+
+    #[test]
+    fn trino_profile_certificate() {
+        let yaml = "type: trino\nmethod: certificate\nhost: h\nclient_certificate: /c/client.pem\nclient_private_key: /c/client.key\n";
+        let config: DbConfig = dbt_yaml::from_str(yaml).unwrap();
+        let DbConfig::Trino(ref t) = config else {
+            panic!("Expected Trino config");
+        };
+        assert_eq!(t.client_certificate.as_deref(), Some("/c/client.pem"));
+        assert_eq!(t.client_private_key.as_deref(), Some("/c/client.key"));
+        let mapping = config.to_mapping().unwrap();
+        assert_eq!(
+            mapping.get("client_private_key").and_then(YmlValue::as_str),
+            Some("/c/client.key")
+        );
     }
 
     #[test]
