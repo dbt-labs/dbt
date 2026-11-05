@@ -226,6 +226,9 @@ pub enum ErrorCode {
     SidecarError = 1406,
     NoResultsToShow = 1407,
     SidecarUnsupportedFeature = 1408,
+    /// Local compute read the columns of a relation that does not exist in the
+    /// local database yet; no columns are returned.
+    SidecarRelationNotBuilt = 1409,
     /// dbt State service degraded into fail-open: config/init/decision/cache
     /// errors that don't abort the command but indicate degraded behavior.
     StateServiceWarn = 1410,

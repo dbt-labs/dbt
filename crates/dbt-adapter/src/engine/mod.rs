@@ -14,6 +14,7 @@ pub use dbt_adapter_engine::query_comment;
 pub use dbt_adapter_engine::retry;
 pub use dbt_adapter_engine::sidecar_client::ColumnInfo;
 pub use dbt_adapter_engine::sidecar_client::SidecarClient;
+pub use dbt_adapter_engine::sidecar_client::sidecar_relation_name;
 
 mod adapter_engine;
 pub use adapter_engine::AdapterEngine;

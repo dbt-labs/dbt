@@ -2350,7 +2350,31 @@ impl AdapterImpl {
             let database = relation.database_as_str()?;
             let schema = relation.schema_as_str()?;
             let identifier = relation.identifier_as_str()?;
-            let relation_name = format!("{}.{}.{}", database, schema, identifier);
+            let relation_name =
+                crate::engine::sidecar_relation_name(&database, &schema, &identifier);
+
+            // A relation that is not in the local database has no columns to
+            // read. dbt-core returns an empty list for a missing relation, and
+            // incremental / on_schema_change macros depend on that (`this`
+            // before its first build, `__dbt_tmp` temps, `api.Relation.create`).
+            // Warn and name the relation, so an unpulled source is visible
+            // (fs#17227).
+            // Local identifiers resolve without case sensitivity, including quoted names.
+            let exists = client
+                .get_relation_type(&ResolvedQuoting::falses(), &database, &schema, &identifier)?
+                .is_some();
+            if !exists {
+                emit_warn_log_message(
+                    ErrorCode::SidecarRelationNotBuilt,
+                    format!(
+                        "{relation_name} does not exist in the local compute database yet; \
+                         get_columns_in_relation returns no columns. If it is a source, run \
+                         `dbt pull` for it first."
+                    ),
+                );
+                return Ok(Vec::new());
+            }
+
             let column_infos = client.get_columns(&relation_name)?;
             let columns = column_infos
                 .into_iter()
@@ -8507,5 +8531,24 @@ mod tests {
                 .get_view_options(&state, config, &common_attr)
                 .is_ok()
         );
+    }
+}
+
+#[cfg(test)]
+mod sidecar_relation_name_tests {
+    use crate::engine::sidecar_relation_name;
+
+    #[test]
+    fn sidecar_relation_name_quotes_hyphenated_project() {
+        // fs#17227: an unquoted hyphenated BigQuery project id does not parse in DuckDB.
+        assert_eq!(
+            sidecar_relation_name("digital-arbor-400", "github_new_github", "github__issues"),
+            r#""digital-arbor-400".github_new_github.github__issues"#
+        );
+    }
+
+    #[test]
+    fn sidecar_relation_name_leaves_plain_identifiers_unchanged() {
+        assert_eq!(sidecar_relation_name("DB", "Sch_1", "t_x"), "DB.Sch_1.t_x");
     }
 }
