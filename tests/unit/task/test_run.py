@@ -136,6 +136,29 @@ class TestModelRunner:
         add_callback_to_manager(catcher.catch)
         return catcher
 
+    @pytest.mark.parametrize(
+        "unique_id,language,uses_python",
+        [
+            ("macro.dbt.materialization_table_default", "sql", True),
+            ("macro.project.materialization_table_default", "sql", False),
+            ("macro.dbt.materialization_table_postgres", "sql", False),
+            ("macro.dbt.materialization_table_default", "python", False),
+        ],
+    )
+    def test_python_materialization_executor_only_claims_exact_builtin_sql_table(
+        self,
+        model_runner: ModelRunner,
+        unique_id: str,
+        language: str,
+        uses_python: bool,
+    ) -> None:
+        model = mock.Mock(language=language)
+        materialization_macro = mock.Mock(unique_id=unique_id)
+
+        executor = model_runner._get_python_materialization_executor(model, materialization_macro)
+
+        assert (executor is not None) is uses_python
+
     def test_print_result_line(
         self,
         log_model_result_catcher: EventCatcher,
