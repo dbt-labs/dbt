@@ -1218,6 +1218,9 @@ pub struct LakeComputeConfig {
     /// (i.e. non-keypair auth on the native Snowflake target). Default: 30.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub snowflake_pat_duration_days: Option<i64>,
+    /// BigQuery connection, in `project.location.connection_id` form.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bigquery_connection: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
