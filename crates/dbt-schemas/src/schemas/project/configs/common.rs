@@ -28,7 +28,8 @@ use crate::schemas::serde::RefreshableConfig;
 use crate::schemas::serde::StringOrArrayOfStrings;
 use crate::schemas::serde::{
     IndexesConfig, OmissibleGrantConfig, PrimaryKeyConfig, StringOrInteger, bool_or_string_bool,
-    f64_or_string_f64, hours_to_expiration_or_string_omissible, u64_or_string_u64,
+    f64_or_string_f64, hours_to_expiration_or_string_omissible, string_map_from_scalars,
+    u64_or_string_u64,
 };
 
 #[track_caller]
@@ -457,6 +458,22 @@ pub struct WarehouseSpecificNodeConfig {
     pub distribute_by_config: Option<StringOrArrayOfStrings>,
     #[warehouse(valid(Model, Snapshot))]
     pub primary_key_config: Option<StringOrArrayOfStrings>,
+
+    // Trino (key names match the Python dbt-trino adapter).
+    // `properties` values are raw SQL literals, rendered as `WITH (key = value, ...)` in the
+    // order written. A child map replaces the parent's wholesale, as in dbt-core.
+    #[serde(default, deserialize_with = "string_map_from_scalars")]
+    #[warehouse(valid(Model, Seed, Snapshot))]
+    pub properties: Option<IndexMap<String, String>>,
+    #[warehouse(valid(Model))]
+    pub on_table_exists: Option<String>,
+    #[warehouse(valid(Model))]
+    pub view_security: Option<String>,
+    #[warehouse(valid(Model))]
+    pub grace_period: Option<String>,
+    #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(Model))]
+    pub views_enabled: Option<bool>,
 }
 
 impl ResolvedConfig for WarehouseSpecificNodeConfig {
@@ -820,6 +837,12 @@ pub fn same_warehouse_config(
     let mv_on_schema_change_eq = self_wh.mv_on_schema_change == other_wh.mv_on_schema_change;
     let repopulate_from_mvs_on_full_refresh_eq =
         self_wh.repopulate_from_mvs_on_full_refresh == other_wh.repopulate_from_mvs_on_full_refresh;
+    // Order-insensitive on purpose: Trino properties are named, and v1 compares them as dicts.
+    let properties_eq = self_wh.properties == other_wh.properties;
+    let on_table_exists_eq = self_wh.on_table_exists == other_wh.on_table_exists;
+    let view_security_eq = self_wh.view_security == other_wh.view_security;
+    let grace_period_eq = self_wh.grace_period == other_wh.grace_period;
+    let views_enabled_eq = self_wh.views_enabled == other_wh.views_enabled;
 
     let result = partition_by_eq
         && cluster_by_eq
@@ -924,7 +947,12 @@ pub fn same_warehouse_config(
         && refreshable_eq
         && catchup_eq
         && mv_on_schema_change_eq
-        && repopulate_from_mvs_on_full_refresh_eq;
+        && repopulate_from_mvs_on_full_refresh_eq
+        && properties_eq
+        && on_table_exists_eq
+        && view_security_eq
+        && grace_period_eq
+        && views_enabled_eq;
 
     if !result {
         log_state_mod_diff(
@@ -1761,6 +1789,46 @@ pub fn same_warehouse_config(
                     Some((
                         format!("{:?}", &self_wh.repopulate_from_mvs_on_full_refresh),
                         format!("{:?}", &other_wh.repopulate_from_mvs_on_full_refresh),
+                    )),
+                ),
+                (
+                    "properties",
+                    properties_eq,
+                    Some((
+                        format!("{:?}", &self_wh.properties),
+                        format!("{:?}", &other_wh.properties),
+                    )),
+                ),
+                (
+                    "on_table_exists",
+                    on_table_exists_eq,
+                    Some((
+                        format!("{:?}", &self_wh.on_table_exists),
+                        format!("{:?}", &other_wh.on_table_exists),
+                    )),
+                ),
+                (
+                    "view_security",
+                    view_security_eq,
+                    Some((
+                        format!("{:?}", &self_wh.view_security),
+                        format!("{:?}", &other_wh.view_security),
+                    )),
+                ),
+                (
+                    "grace_period",
+                    grace_period_eq,
+                    Some((
+                        format!("{:?}", &self_wh.grace_period),
+                        format!("{:?}", &other_wh.grace_period),
+                    )),
+                ),
+                (
+                    "views_enabled",
+                    views_enabled_eq,
+                    Some((
+                        format!("{:?}", &self_wh.views_enabled),
+                        format!("{:?}", &other_wh.views_enabled),
                     )),
                 ),
             ],

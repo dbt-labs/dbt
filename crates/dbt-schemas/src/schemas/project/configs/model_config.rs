@@ -46,8 +46,8 @@ use crate::schemas::serde::StringOrArrayOfStrings;
 use crate::schemas::serde::{
     IndexesConfig, PrimaryKeyConfig, RefreshableConfig, StringOrInteger, bool_or_string_bool,
     column_types_map, default_type, event_time_or_map_to_string, f64_or_string_f64,
-    hours_to_expiration_or_string_omissible, model_constraints_or_map, string_or_number_to_string,
-    u64_or_string_u64,
+    hours_to_expiration_or_string_omissible, model_constraints_or_map, string_map_from_scalars,
+    string_or_number_to_string, u64_or_string_u64,
 };
 use dbt_proc_macros::{DefaultTo, Resolvable};
 use dbt_yaml::ShouldBe;
@@ -476,6 +476,24 @@ pub struct ProjectModelConfig {
     pub query_tag: Option<QueryTag>,
     #[serde(rename = "+query_tags")]
     pub query_tags: Option<String>,
+    #[serde(
+        default,
+        rename = "+properties",
+        deserialize_with = "string_map_from_scalars"
+    )]
+    pub properties: Option<IndexMap<String, String>>,
+    #[serde(rename = "+on_table_exists")]
+    pub on_table_exists: Option<String>,
+    #[serde(rename = "+view_security")]
+    pub view_security: Option<String>,
+    #[serde(rename = "+grace_period")]
+    pub grace_period: Option<String>,
+    #[serde(
+        default,
+        rename = "+views_enabled",
+        deserialize_with = "bool_or_string_bool"
+    )]
+    pub views_enabled: Option<bool>,
     #[serde(rename = "+table_tag")]
     pub table_tag: Option<String>,
     #[serde(rename = "+row_access_policy")]
@@ -816,6 +834,11 @@ impl TypedRecursiveConfig for ProjectModelConfig {
             || self.pre_hook.is_some()
             || self.predicates.is_some()
             || self.query_tag.is_some()
+            || self.properties.is_some()
+            || self.on_table_exists.is_some()
+            || self.view_security.is_some()
+            || self.grace_period.is_some()
+            || self.views_enabled.is_some()
             || self.table_tag.is_some()
             || self.row_access_policy.is_some()
             || self.storage_serialization_policy.is_some()
@@ -1082,6 +1105,11 @@ impl From<ProjectModelConfig> for ModelConfig {
                 tmp_relation_type: config.tmp_relation_type,
                 query_tag: config.query_tag,
                 query_tags: config.query_tags,
+                properties: config.properties,
+                on_table_exists: config.on_table_exists,
+                view_security: config.view_security,
+                grace_period: config.grace_period,
+                views_enabled: config.views_enabled,
                 table_tag: config.table_tag,
                 row_access_policy: config.row_access_policy,
                 automatic_clustering: config.automatic_clustering,
@@ -1300,6 +1328,11 @@ impl From<ModelConfig> for ProjectModelConfig {
             tmp_relation_type: warehouse_specific.tmp_relation_type,
             query_tag: warehouse_specific.query_tag,
             query_tags: warehouse_specific.query_tags,
+            properties: warehouse_specific.properties,
+            on_table_exists: warehouse_specific.on_table_exists,
+            view_security: warehouse_specific.view_security,
+            grace_period: warehouse_specific.grace_period,
+            views_enabled: warehouse_specific.views_enabled,
             table_tag: warehouse_specific.table_tag,
             row_access_policy: warehouse_specific.row_access_policy,
             automatic_clustering: warehouse_specific.automatic_clustering,
@@ -2092,6 +2125,179 @@ mod tests {
     use crate::schemas::properties::StatePreClone;
     use crate::schemas::serde::{AdapterTypeOrArray, RefreshableConfig, StringOrArrayOfStrings};
     use dbt_adapter_core::AdapterType;
+
+    /// Resolves a node's own `model` YAML over a project level written with `+` keys.
+    fn trino_resolved_model(project_yaml: &str, node_yaml: &str) -> ModelConfig {
+        use super::{ModelConfig, ProjectModelConfig};
+        use crate::schemas::project::ResolvableConfig;
+
+        let project: ProjectModelConfig = dbt_yaml::from_str(&format!(
+            "{project_yaml}\n__additional_properties__: {{}}\n"
+        ))
+        .unwrap();
+        let project: ModelConfig = project.into();
+        let mut node: ModelConfig = dbt_yaml::from_str::<dbt_yaml::Value>(node_yaml)
+            .unwrap()
+            .into_typed(|_, _, _| {}, |_| Ok(None))
+            .unwrap();
+        node.default_to(&project);
+        node
+    }
+
+    /// A string key set at the project level reaches the node, and the node's own value
+    /// replaces it.
+    fn assert_model_string_key_propagates(key: &str, get: impl Fn(&ModelConfig) -> Option<String>) {
+        let inherited = trino_resolved_model(&format!("+{key}: parent"), "{}");
+        assert_eq!(
+            get(&inherited).as_deref(),
+            Some("parent"),
+            "`{key}` is inherited"
+        );
+        let own = trino_resolved_model(&format!("+{key}: parent"), &format!("{key}: child"));
+        assert_eq!(
+            get(&own).as_deref(),
+            Some("child"),
+            "the node's `{key}` wins"
+        );
+    }
+
+    /// `properties` replaces wholesale: a node map never keeps keys from the parent's map.
+    #[test]
+    fn test_model_properties_propagate_through_resolved_config() {
+        let inherited = trino_resolved_model(
+            "+properties: {format: \"'PARQUET'\", partitioning: \"ARRAY['id']\"}",
+            "{}",
+        );
+        let props = inherited
+            .__warehouse_specific_config__
+            .properties
+            .clone()
+            .unwrap();
+        assert_eq!(
+            props
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("format", "'PARQUET'"), ("partitioning", "ARRAY['id']")]
+        );
+        let own = trino_resolved_model(
+            "+properties: {format: \"'PARQUET'\"}",
+            "properties: {format: \"'ORC'\"}",
+        );
+        let props = own
+            .__warehouse_specific_config__
+            .properties
+            .clone()
+            .unwrap();
+        assert_eq!(props.get("format").map(String::as_str), Some("'ORC'"));
+    }
+
+    /// `properties` values are raw SQL; numbers and booleans keep their YAML text.
+    #[test]
+    fn test_model_properties_accept_scalar_values() {
+        let resolved = trino_resolved_model(
+            "+properties: {format_version: 2}",
+            "properties: {format_version: 2, orc_bloom_filter_fpp: 0.05, sorted: true}",
+        );
+        let props = resolved
+            .__warehouse_specific_config__
+            .properties
+            .clone()
+            .unwrap();
+        assert_eq!(
+            props.into_iter().collect::<Vec<_>>(),
+            vec![
+                ("format_version".to_string(), "2".to_string()),
+                ("orc_bloom_filter_fpp".to_string(), "0.05".to_string()),
+                ("sorted".to_string(), "true".to_string()),
+            ]
+        );
+    }
+
+    /// A `properties` value that is not a scalar is a parse error, never a string.
+    #[test]
+    fn test_model_properties_reject_non_scalar_values() {
+        use super::ModelConfig;
+
+        for (yaml, expected) in [
+            (
+                "properties: {partitioning: [id]}",
+                "properties.partitioning must be a string, number or boolean",
+            ),
+            (
+                "properties: {partitioning: null}",
+                "properties.partitioning must be a string, number or boolean, got null",
+            ),
+        ] {
+            let err = dbt_yaml::from_str::<dbt_yaml::Value>(yaml)
+                .unwrap()
+                .into_typed::<ModelConfig, _, _>(|_, _, _| {}, |_| Ok(None))
+                .expect_err(yaml)
+                .to_string();
+            assert!(err.contains(expected), "{yaml}: {err}");
+        }
+    }
+
+    /// A child `properties` map replaces the parent's: keys only the parent set are dropped
+    /// (as in dbt-core).
+    #[test]
+    fn properties_child_replaces_parent() {
+        let resolved = trino_resolved_model(
+            "+properties: {format: \"'PARQUET'\", partitioning: \"ARRAY['id']\"}",
+            "properties: {format_version: \"2\"}",
+        );
+        let props = resolved
+            .__warehouse_specific_config__
+            .properties
+            .clone()
+            .unwrap();
+        assert_eq!(
+            props.into_iter().collect::<Vec<_>>(),
+            vec![("format_version".to_string(), "2".to_string())]
+        );
+    }
+
+    #[test]
+    fn test_model_on_table_exists_propagate_through_resolved_config() {
+        assert_model_string_key_propagates("on_table_exists", |c| {
+            c.__warehouse_specific_config__.on_table_exists.clone()
+        });
+    }
+
+    #[test]
+    fn test_model_view_security_propagate_through_resolved_config() {
+        assert_model_string_key_propagates("view_security", |c| {
+            c.__warehouse_specific_config__.view_security.clone()
+        });
+    }
+
+    #[test]
+    fn test_model_grace_period_propagate_through_resolved_config() {
+        assert_model_string_key_propagates("grace_period", |c| {
+            c.__warehouse_specific_config__.grace_period.clone()
+        });
+    }
+
+    #[test]
+    fn test_model_table_format_propagate_through_resolved_config() {
+        assert_model_string_key_propagates("table_format", |c| c.table_format.clone());
+    }
+
+    #[test]
+    fn test_model_location_propagate_through_resolved_config() {
+        assert_model_string_key_propagates("location", |c| c.location.clone());
+    }
+
+    #[test]
+    fn test_model_views_enabled_propagate_through_resolved_config() {
+        let inherited = trino_resolved_model("+views_enabled: false", "{}");
+        assert_eq!(
+            inherited.__warehouse_specific_config__.views_enabled,
+            Some(false)
+        );
+        let own = trino_resolved_model("+views_enabled: false", "views_enabled: true");
+        assert_eq!(own.__warehouse_specific_config__.views_enabled, Some(true));
+    }
 
     /// `+propagate` rides the same project -> node -> project path `+adapter`
     /// does, in both its single-value and list forms.

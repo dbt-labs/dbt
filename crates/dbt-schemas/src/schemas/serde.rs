@@ -398,6 +398,33 @@ where
     }
 }
 
+/// A string map whose values may be any YAML scalar. Numbers and booleans keep their YAML
+/// text (`{format_version: 2}` becomes `"2"`), as dbt-core renders such values with `str()`.
+pub fn string_map_from_scalars<'de, D>(
+    deserializer: D,
+) -> Result<Option<IndexMap<String, String>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let Some(map) = Option::<IndexMap<String, dbt_yaml::Value>>::deserialize(deserializer)? else {
+        return Ok(None);
+    };
+    map.into_iter()
+        .map(|(key, value)| match value {
+            dbt_yaml::Value::Null(_) => Err(de::Error::custom(format!(
+                "properties.{key} must be a string, number or boolean, got null"
+            ))),
+            value => match yml_value_to_string(&value) {
+                Some(text) => Ok((key, text)),
+                None => Err(de::Error::custom(format!(
+                    "properties.{key} must be a string, number or boolean"
+                ))),
+            },
+        })
+        .collect::<Result<_, _>>()
+        .map(Some)
+}
+
 /// Accepts a mapping or sequence for `event_time`, matching Core's lack of validation
 /// (`event_time: Any` in dbt-core's `config.py`) so Fusion doesn't reject valid Core
 /// projects. The JSON-stringified result is a placeholder, not a real column name — Core

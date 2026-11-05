@@ -1572,6 +1572,7 @@ fn seed_configs_equal(left: &SeedConfig, right: &SeedConfig) -> bool {
     let pre_hook_eq = hooks_equal(&left.pre_hook, &right.pre_hook);
     // quoting_equal(&left.quoting, &right.quoting) && // TODO: re-enable when no longer using mantle/core manifests in IA
     let materialized_eq = seed_materialized_eq(&left.materialized, &right.materialized);
+    let location_eq = left.location == right.location;
     let warehouse_config_eq = same_warehouse_config(
         &left.__warehouse_specific_config__,
         &right.__warehouse_specific_config__,
@@ -1589,6 +1590,7 @@ fn seed_configs_equal(left: &SeedConfig, right: &SeedConfig) -> bool {
         && post_hook_eq
         && pre_hook_eq
         && materialized_eq
+        && location_eq
         && warehouse_config_eq;
 
     if !result {
@@ -1677,6 +1679,14 @@ fn seed_configs_equal(left: &SeedConfig, right: &SeedConfig) -> bool {
                     Some((
                         format!("{:?}", &left.materialized),
                         format!("{:?}", &right.materialized),
+                    )),
+                ),
+                (
+                    "location",
+                    location_eq,
+                    Some((
+                        format!("{:?}", &left.location),
+                        format!("{:?}", &right.location),
                     )),
                 ),
                 ("warehouse_config", warehouse_config_eq, None),
@@ -2862,6 +2872,7 @@ impl InternalDbtNode for DbtSnapshot {
             // dbt State configs (mirror `ModelConfig::same_config`).
             let state_eq = self_config.state == other_config.state;
             let table_format_eq = self_config.table_format == other_config.table_format;
+            let location_eq = self_config.location == other_config.location;
 
             // Adapter specific configs
             let warehouse_config_eq = same_warehouse_config(
@@ -2893,6 +2904,7 @@ impl InternalDbtNode for DbtSnapshot {
                 && invalidate_hard_deletes_eq
                 && state_eq
                 && table_format_eq
+                && location_eq
                 // Adapter specific configs
                 && warehouse_config_eq;
 
@@ -3076,6 +3088,14 @@ impl InternalDbtNode for DbtSnapshot {
                             Some((
                                 format!("{:?}", &self_config.table_format),
                                 format!("{:?}", &other_config.table_format),
+                            )),
+                        ),
+                        (
+                            "location",
+                            location_eq,
+                            Some((
+                                format!("{:?}", &self_config.location),
+                                format!("{:?}", &other_config.location),
                             )),
                         ),
                         ("warehouse_config", warehouse_config_eq, None),
@@ -7136,6 +7156,20 @@ mod tests {
     use dbt_telemetry::{ExecutionPhase, NodeAccess, NodeLanguage};
     use dbt_yaml::Verbatim;
     use std::sync::Arc;
+
+    /// Seeds compare `location` for `state:modified`.
+    #[test]
+    fn seed_configs_equal_detects_location() {
+        use crate::schemas::project::SeedConfig;
+
+        let base = SeedConfig::default();
+        assert!(super::seed_configs_equal(&base, &base.clone()));
+        let location = SeedConfig {
+            location: Some("s3://bucket/seed".to_string()),
+            ..Default::default()
+        };
+        assert!(!super::seed_configs_equal(&base, &location));
+    }
 
     type YmlValue = dbt_yaml::Value;
 

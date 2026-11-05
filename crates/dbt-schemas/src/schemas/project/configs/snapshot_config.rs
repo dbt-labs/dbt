@@ -41,6 +41,7 @@ use crate::schemas::properties::ModelState;
 use crate::schemas::serde::PartitionsConfig;
 use crate::schemas::serde::StringOrArrayOfStrings;
 use crate::schemas::serde::bool_or_string_bool;
+use crate::schemas::serde::string_map_from_scalars;
 use crate::schemas::serde::{
     IndexesConfig, PrimaryKeyConfig, StringOrInteger, event_time_or_map_to_string,
     f64_or_string_f64, hours_to_expiration_or_string_omissible, u64_or_string_u64,
@@ -157,6 +158,8 @@ pub struct ProjectSnapshotConfig {
     pub iceberg_version: Option<u64>,
     #[serde(rename = "+table_format")]
     pub table_format: Option<String>,
+    #[serde(rename = "+location")]
+    pub location: Option<String>,
     #[serde(
         default,
         rename = "+copy_grants",
@@ -179,6 +182,12 @@ pub struct ProjectSnapshotConfig {
     pub query_tag: Option<QueryTag>,
     #[serde(rename = "+query_tags")]
     pub query_tags: Option<String>,
+    #[serde(
+        default,
+        rename = "+properties",
+        deserialize_with = "string_map_from_scalars"
+    )]
+    pub properties: Option<IndexMap<String, String>>,
     #[serde(rename = "+table_tag")]
     pub table_tag: Option<String>,
     #[serde(rename = "+row_access_policy")]
@@ -473,12 +482,14 @@ impl TypedRecursiveConfig for ProjectSnapshotConfig {
             || self.base_location_subpath.is_some()
             || self.iceberg_version.is_some()
             || self.table_format.is_some()
+            || self.location.is_some()
             || self.copy_grants.is_some()
             || self.copy_tags.is_some()
             || self.external_volume.is_some()
             || self.initialize.is_some()
             || self.scheduler.is_some()
             || self.query_tag.is_some()
+            || self.properties.is_some()
             || self.table_tag.is_some()
             || self.row_access_policy.is_some()
             || self.refresh_mode.is_some()
@@ -616,6 +627,7 @@ pub struct SnapshotConfig {
     // dbt State configs (state-aware run-cache behavior)
     pub state: Option<ModelState>,
     pub table_format: Option<String>,
+    pub location: Option<String>,
     // Adapter specific configs
     #[schemars(with = "WarehouseSpecificNodeConfig")]
     pub __warehouse_specific_config__: LazyWarehouseSpecificNodeConfig,
@@ -774,6 +786,7 @@ impl From<ProjectSnapshotConfig> for SnapshotConfig {
             sync: config.sync,
             state: config.state,
             table_format: config.table_format,
+            location: config.location,
             __warehouse_specific_config__: WarehouseSpecificNodeConfig {
                 description: None, // Only for Bigquery models
                 adapter_properties: config.adapter_properties,
@@ -796,6 +809,11 @@ impl From<ProjectSnapshotConfig> for SnapshotConfig {
                 tmp_relation_type: config.tmp_relation_type,
                 query_tag: config.query_tag,
                 query_tags: config.query_tags,
+                properties: config.properties,
+                on_table_exists: None,
+                view_security: None,
+                grace_period: None,
+                views_enabled: None,
                 table_tag: config.table_tag,
                 row_access_policy: config.row_access_policy,
                 automatic_clustering: config.automatic_clustering,
@@ -964,6 +982,7 @@ impl From<SnapshotConfig> for ProjectSnapshotConfig {
             base_location_subpath: warehouse_specific.base_location_subpath,
             iceberg_version: warehouse_specific.iceberg_version,
             table_format: config.table_format,
+            location: config.location,
             target_lag: warehouse_specific.target_lag,
             snowflake_initialization_warehouse: warehouse_specific
                 .snowflake_initialization_warehouse,
@@ -976,6 +995,7 @@ impl From<SnapshotConfig> for ProjectSnapshotConfig {
             tmp_relation_type: warehouse_specific.tmp_relation_type,
             query_tag: warehouse_specific.query_tag,
             query_tags: warehouse_specific.query_tags,
+            properties: warehouse_specific.properties,
             table_tag: warehouse_specific.table_tag,
             row_access_policy: warehouse_specific.row_access_policy,
             automatic_clustering: warehouse_specific.automatic_clustering,
@@ -1175,6 +1195,85 @@ mod tests {
     };
     use crate::schemas::project::{ResolvableConfig, TypedRecursiveConfig};
     use crate::schemas::properties::{ModelState, StatePreClone};
+
+    /// Resolves a node's own `snapshot` YAML over a project level written with `+` keys.
+    fn trino_resolved_snapshot(project_yaml: &str, node_yaml: &str) -> SnapshotConfig {
+        use super::{ProjectSnapshotConfig, SnapshotConfig};
+        use crate::schemas::project::ResolvableConfig;
+
+        let project: ProjectSnapshotConfig = dbt_yaml::from_str(&format!(
+            "{project_yaml}\n__additional_properties__: {{}}\n"
+        ))
+        .unwrap();
+        let project: SnapshotConfig = project.into();
+        let mut node: SnapshotConfig = dbt_yaml::from_str::<dbt_yaml::Value>(node_yaml)
+            .unwrap()
+            .into_typed(|_, _, _| {}, |_| Ok(None))
+            .unwrap();
+        node.default_to(&project);
+        node
+    }
+
+    /// A string key set at the project level reaches the node, and the node's own value
+    /// replaces it.
+    fn assert_snapshot_string_key_propagates(
+        key: &str,
+        get: impl Fn(&SnapshotConfig) -> Option<String>,
+    ) {
+        let inherited = trino_resolved_snapshot(&format!("+{key}: parent"), "{}");
+        assert_eq!(
+            get(&inherited).as_deref(),
+            Some("parent"),
+            "`{key}` is inherited"
+        );
+        let own = trino_resolved_snapshot(&format!("+{key}: parent"), &format!("{key}: child"));
+        assert_eq!(
+            get(&own).as_deref(),
+            Some("child"),
+            "the node's `{key}` wins"
+        );
+    }
+
+    /// `properties` replaces wholesale: a node map never keeps keys from the parent's map.
+    #[test]
+    fn test_snapshot_properties_propagate_through_resolved_config() {
+        let inherited = trino_resolved_snapshot(
+            "+properties: {format: \"'PARQUET'\", partitioning: \"ARRAY['id']\"}",
+            "{}",
+        );
+        let props = inherited
+            .__warehouse_specific_config__
+            .properties
+            .clone()
+            .unwrap();
+        assert_eq!(
+            props
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("format", "'PARQUET'"), ("partitioning", "ARRAY['id']")]
+        );
+        let own = trino_resolved_snapshot(
+            "+properties: {format: \"'PARQUET'\"}",
+            "properties: {format: \"'ORC'\"}",
+        );
+        let props = own
+            .__warehouse_specific_config__
+            .properties
+            .clone()
+            .unwrap();
+        assert_eq!(props.get("format").map(String::as_str), Some("'ORC'"));
+    }
+
+    #[test]
+    fn test_snapshot_table_format_propagate_through_resolved_config() {
+        assert_snapshot_string_key_propagates("table_format", |c| c.table_format.clone());
+    }
+
+    #[test]
+    fn test_snapshot_location_propagate_through_resolved_config() {
+        assert_snapshot_string_key_propagates("location", |c| c.location.clone());
+    }
 
     #[test]
     fn test_snapshot_query_tags_propagate_through_resolved_config() {
