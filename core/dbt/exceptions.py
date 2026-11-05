@@ -856,12 +856,19 @@ class TestTypeError(ParsingError):
 
 # This is triggered across multiple files
 class EnvVarMissingError(ParsingError):
-    def __init__(self, var: str):
+    def __init__(self, var: str, node=None, source: Optional[str] = None):
+        # `node` lets the base error append the file location (e.g. the model
+        # that called env_var). For node-less contexts (profiles.yml,
+        # dbt_project.yml/schema.yml) there is no node, so `source` names where
+        # the env var was required instead.
         self.var = var
-        super().__init__(msg=self.get_message())
+        self.source = source
+        super().__init__(msg=self.get_message(), node=node)
 
     def get_message(self) -> str:
         msg = f"Env var required but not provided: '{self.var}'"
+        if self.source is not None:
+            msg += f" (required in {self.source})"
         return msg
 
 

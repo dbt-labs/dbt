@@ -1,0 +1,7 @@
+kind: Fixes
+body: Include the location (model file, or profiles.yml/dbt_project.yml) in the "Env
+  var required but not provided" error so it says where the env var was required
+time: 2026-06-27T16:57:05.000000000Z
+custom:
+    Author: nikolauspschuetz
+    Issue: "10803"
