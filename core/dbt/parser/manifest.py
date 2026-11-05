@@ -617,6 +617,11 @@ class ManifestLoader:
                     child_node = self.manifest.nodes.get(child_unique_id)
                     if not isinstance(child_node, ModelNode):
                         continue
+                    # A model that is itself already past its deprecation date is
+                    # on its way out, so nagging it to migrate off a deprecated
+                    # reference is pointless noise (#12888).
+                    if child_node.is_past_deprecation_date:
+                        continue
                     if node.is_past_deprecation_date:
                         event_cls = DeprecatedReference
                     else:
