@@ -1,0 +1,6 @@
+kind: Fixes
+body: Count unselected seeds as present under buildable indirect selection, so tests that read a seed are selected
+time: 2026-10-20T21:51:48.000000+03:00
+custom:
+    Author: akarazhev
+    Issue: "16807"
