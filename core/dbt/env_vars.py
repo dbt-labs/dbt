@@ -17,7 +17,6 @@ _ADDITIONAL_ENGINE_ENV_VARS: List[str] = [
     "DBT_DOWNLOAD_DIR",
     "DBT_PP_FILE_DIFF_TEST",  # TODO: This is testing related, should we do this differently?
     "DBT_PP_TEST",  # TODO: This is testing related, should we do this differently?
-    "DBT_ENGINE_STATE_EMIT_REUSED_STATUS",
     "DBT_ENGINE_STATE_OAUTH_CLIENT_ID",
     "DBT_ENGINE_STATE_AUTH_URL",
     "DBT_ENGINE_STATE_TOKEN_URL",
