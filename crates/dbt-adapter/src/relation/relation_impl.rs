@@ -855,6 +855,7 @@ impl BaseRelation for Relation {
         .with_is_shallow_clone(self.is_shallow_clone)
         .with_is_staging(self.is_staging)
         .with_temporary(self.temporary)
+        .with_table_format(self.table_format)
         .with_can_exchange(self.can_exchange)
         .with_can_on_cluster(self.can_on_cluster)
         .with_mvs_pointing_to_it(self.mvs_pointing_to_it.clone())
@@ -2486,6 +2487,14 @@ mod tests {
             let iceberg = snowflake_relation(RelationType::InteractiveTable, TableFormat::Iceberg);
             assert!(!iceberg.can_be_renamed());
             assert!(iceberg.can_be_replaced());
+        }
+
+        #[test]
+        fn quote_preserves_table_format() {
+            let iceberg = snowflake_relation(RelationType::Table, TableFormat::Iceberg);
+            let quoted = iceberg.quote(Some(true), Some(false), Some(true)).unwrap();
+            assert!(quoted.is_iceberg_format());
+            assert_eq!(quoted.quote_policy(), Policy::new(true, false, true));
         }
 
         #[test]

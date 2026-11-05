@@ -1422,6 +1422,26 @@ mod tests {
     }
 
     #[test]
+    fn relation_exposes_quote_policy() {
+        let relation = Relation::new(
+            AdapterType::Snowflake,
+            "db".to_string(),
+            "schema".to_string(),
+            "table".to_string(),
+        )
+        .with_quoting(ResolvedQuoting {
+            database: true,
+            schema: false,
+            identifier: true,
+        });
+        jinja_assert(
+            RelationObject::new(Arc::new(relation)),
+            "{{ obj.quote_policy.database }} {{ obj.quote_policy.schema }} {{ obj.quote_policy.identifier }}",
+            "True False True",
+        );
+    }
+
+    #[test]
     fn derived_relations_keep_microbatch_filter() {
         use chrono::{TimeZone, Utc};
         use dbt_schemas::filter::Sample;
