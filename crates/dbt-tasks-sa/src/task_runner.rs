@@ -528,6 +528,7 @@ impl TaskRunner {
                                 thread_id: "main".to_string(),
                                 message: None,
                                 assertion: false,
+                                result_status_override: None,
                             });
                             continue;
                         }
@@ -594,6 +595,7 @@ impl TaskRunner {
                             thread_id: "main".to_string(),
                             message: error_message,
                             assertion: false,
+                            result_status_override: None,
                         });
 
                         if let Err(e) = result {

@@ -11,14 +11,15 @@ use chrono::{DateTime, Utc};
 use dbt_adapter_core::AdapterType;
 use dbt_common::FsResult;
 use dbt_common::stats::NodeStatus;
+use dbt_common::tracing::dbt_emit::emit_error_log_from_fs_error;
 use dbt_common::tracing::span_info::{
     find_and_record_span_status_from_attrs, find_and_update_span_attrs,
 };
 use dbt_common::{ErrorCode, create_info_span, fs_err};
 use dbt_jinja_utils::phases::run::{build_run_node_context_from_arc, reset_result_store};
 use dbt_schemas::filter::RunFilter;
-use dbt_schemas::schemas::DbtModel;
 use dbt_schemas::schemas::common::{DbtBatchSize, DbtIncrementalStrategy, DbtMaterialization};
+use dbt_schemas::schemas::{BatchResults, DbtModel};
 use dbt_schemas::schemas::{InternalDbtNode, InternalDbtNodeAttributes};
 use dbt_tasks_core::context::{TaskRunnerCtx, record_microbatch_metrics};
 use dbt_telemetry::{
@@ -265,6 +266,52 @@ fn clamp_to_sample(
     (start_time, end_time)
 }
 
+/// `(event_time_start, event_time_end)` pair stored in `run_results.json` `batch_results`.
+pub fn batch_window(batch: &BatchContext) -> (String, String) {
+    let stamp = |ts: DateTime<Utc>| ts.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    (stamp(batch.event_time_start), stamp(batch.event_time_end))
+}
+
+/// Sort batch windows the way dbt-core does before writing `batch_results`.
+pub fn microbatch_batch_results(
+    mut successful: Vec<(String, String)>,
+    mut failed: Vec<(String, String)>,
+) -> BatchResults {
+    successful.sort();
+    failed.sort();
+    BatchResults { successful, failed }
+}
+
+/// Run-results message and status for a finished microbatch model.
+///
+/// A mix of outcomes is `partial success`. The node stays [`NodeStatus::Errored`]
+/// so downstreams skip; `None` leaves the status as `success` or `error`.
+pub fn microbatch_result_annotation(
+    batch_results: &BatchResults,
+) -> (Option<String>, Option<String>) {
+    let succeeded = batch_results.successful.len();
+    let failed = batch_results.failed.len();
+    if succeeded > 0 && failed > 0 {
+        let total = succeeded + failed;
+        (
+            Some(format!("PARTIAL SUCCESS ({succeeded}/{total})")),
+            Some("partial success".to_string()),
+        )
+    } else {
+        (None, None)
+    }
+}
+
+/// Outcome of one microbatch. A materialization failure is [`Self::Failed`], not
+/// an `Err`, so later batches still run.
+pub enum MicrobatchBatchOutcome {
+    Succeeded((String, String)),
+    Failed {
+        window: (String, String),
+        error: Box<dbt_common::FsError>,
+    },
+}
+
 /// Create the `MicrobatchEvaluated` span of one batch under the current span.
 pub fn create_microbatch_span(mb_unit: &MicrobatchExecUnit) -> tracing::Span {
     let model = mb_unit
@@ -300,17 +347,19 @@ pub fn create_microbatch_span(mb_unit: &MicrobatchExecUnit) -> tracing::Span {
 /// Execute a single microbatch task within its `MicrobatchEvaluated` span and
 /// record its outcome there.
 ///
-/// A `canceled` batch, e.g. one not yet started when another batch failed,
-/// skips execution and records a canceled outcome.
+/// A materialization failure is returned as [`MicrobatchBatchOutcome::Failed`]
+/// so the rest of the batches still run. `canceled` is set only when the run
+/// itself is stopping; that batch is skipped.
 pub fn execute_microbatch_batch(
     mb_unit: MicrobatchExecUnit,
     ctx: &TaskRunnerCtx,
     canceled: bool,
-) -> FsResult<()> {
+) -> FsResult<MicrobatchBatchOutcome> {
+    let window = batch_window(&mb_unit.batch_ctx);
     let result = if canceled {
         Err(fs_err!(
             ErrorCode::OperationCanceled,
-            "Batch {} canceled after another batch failed",
+            "Batch {} canceled",
             mb_unit.batch_ctx.id
         ))
     } else {
@@ -333,7 +382,24 @@ pub fn execute_microbatch_batch(
         });
         batch.dbt_core_event_code = Some("Q046".to_string());
     });
-    result
+
+    match result {
+        Ok(()) => Ok(MicrobatchBatchOutcome::Succeeded(window)),
+        Err(error)
+            if matches!(
+                error.code,
+                ErrorCode::OperationCanceled | ErrorCode::TaskCancelled
+            ) =>
+        {
+            Err(error)
+        }
+        Err(error) => {
+            // Logged here, inside the batch span. The model result records the
+            // window and must not log this error a second time.
+            emit_error_log_from_fs_error(error.clone_without_backtrace());
+            Ok(MicrobatchBatchOutcome::Failed { window, error })
+        }
+    }
 }
 
 fn materialize_microbatch_batch(mb_unit: MicrobatchExecUnit, ctx: &TaskRunnerCtx) -> FsResult<()> {
@@ -556,6 +622,58 @@ mod tests {
     fn cap_group_sizes_leaves_small_groups_untouched() {
         let groups = vec![vec![1], vec![2, 3], vec![4]];
         assert_eq!(cap_group_sizes(groups.clone(), 16), groups);
+    }
+
+    #[test]
+    fn batch_window_is_the_inclusive_start_and_exclusive_end() {
+        let batch = BatchContext::new("20200102".to_string(), dt(2020, 1, 2), dt(2020, 1, 3), 1, 3);
+        assert_eq!(
+            batch_window(&batch),
+            (
+                "2020-01-02T00:00:00Z".to_string(),
+                "2020-01-03T00:00:00Z".to_string(),
+            )
+        );
+    }
+
+    #[test]
+    fn mixed_batch_results_are_partial_success() {
+        let results = microbatch_batch_results(
+            vec![(
+                "2020-01-03T00:00:00Z".to_string(),
+                "2020-01-04T00:00:00Z".to_string(),
+            )],
+            vec![
+                (
+                    "2020-01-02T00:00:00Z".to_string(),
+                    "2020-01-03T00:00:00Z".to_string(),
+                ),
+                (
+                    "2020-01-01T00:00:00Z".to_string(),
+                    "2020-01-02T00:00:00Z".to_string(),
+                ),
+            ],
+        );
+        assert_eq!(results.failed[0].0, "2020-01-01T00:00:00Z");
+        assert_eq!(
+            microbatch_result_annotation(&results),
+            (
+                Some("PARTIAL SUCCESS (1/3)".to_string()),
+                Some("partial success".to_string()),
+            )
+        );
+    }
+
+    #[test]
+    fn every_batch_failing_stays_an_error() {
+        let results = microbatch_batch_results(
+            vec![],
+            vec![(
+                "2020-01-01T00:00:00Z".to_string(),
+                "2020-01-02T00:00:00Z".to_string(),
+            )],
+        );
+        assert_eq!(microbatch_result_annotation(&results), (None, None));
     }
 
     #[test]

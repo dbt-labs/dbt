@@ -48,8 +48,9 @@ use crate::materialize::{
 };
 use crate::runnable::cache::cache_materialization_return_value;
 use crate::runnable::model::{
-    create_microbatch_span, execute_microbatch_batch, execute_model_remote,
-    prepare_microbatch_batches, resolve_microbatch_window, try_get_microbatch_model,
+    MicrobatchBatchOutcome, create_microbatch_span, execute_microbatch_batch, execute_model_remote,
+    microbatch_batch_results, microbatch_result_annotation, prepare_microbatch_batches,
+    resolve_microbatch_window, try_get_microbatch_model,
 };
 use crate::runnable::seed::{execute_seed_remote, maybe_resolve_remote_seed_column_hint};
 use crate::runnable::unit_test::execute_unit_test_remote;
@@ -453,53 +454,98 @@ impl Task for RunTask {
                                 // dbt-core's `if not relations` guard: only create the
                                 // pointer view when at least one batch executed.
                                 let had_batches = !batch_groups.is_empty();
+                                let mut successful = Vec::new();
+                                let mut failed = Vec::new();
+                                let mut first_error = None;
                                 for group in batch_groups {
-                                    run_concurrent_task_operations(group.into_iter().map(|task| {
-                                        let ctx = ctx.clone();
-                                        (create_microbatch_span(&task), move |canceled| {
-                                            execute_microbatch_batch(task, &ctx, canceled)
+                                    // A batch failure is `Ok(Failed)`, so this `Err` is a
+                                    // canceled run. Stop submitting further groups, but
+                                    // return the error as a value so the model is still
+                                    // written to run_results.
+                                    match run_concurrent_task_operations(group.into_iter().map(
+                                        |task| {
+                                            let ctx = ctx.clone();
+                                            (create_microbatch_span(&task), move |canceled| {
+                                                execute_microbatch_batch(task, &ctx, canceled)
+                                            })
+                                        },
+                                    ))
+                                    .await
+                                    {
+                                        Ok(outcomes) => {
+                                            for outcome in outcomes {
+                                                match outcome {
+                                                    MicrobatchBatchOutcome::Succeeded(window) => {
+                                                        successful.push(window);
+                                                    }
+                                                    MicrobatchBatchOutcome::Failed {
+                                                        window,
+                                                        error,
+                                                    } => {
+                                                        failed.push(window);
+                                                        if first_error.is_none() {
+                                                            first_error = Some(error);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        Err(error) => {
+                                            if first_error.is_none() {
+                                                first_error = Some(error);
+                                            }
+                                            break;
+                                        }
+                                    }
+                                }
+
+                                if had_batches && (!successful.is_empty() || !failed.is_empty()) {
+                                    ctx.inner.batch_results_map.upsert_sync(
+                                        unique_id.clone(),
+                                        microbatch_batch_results(successful, failed),
+                                    );
+                                }
+
+                                if let Some(error) = first_error {
+                                    Err(error)
+                                } else {
+                                    // After all microbatch batches succeed, create the latest
+                                    // version pointer view if applicable. Skip when no batches
+                                    // executed (empty event window) — the source relation may
+                                    // not exist yet, so pointing at it would fail.
+                                    if had_batches
+                                        && let Some(model) =
+                                            self.node.as_any().downcast_ref::<DbtModel>()
+                                        && should_create_latest_version_pointer(
+                                            model,
+                                            ctx.runtime_config(),
+                                        )
+                                    {
+                                        let base_context = ctx.run_base_context(model)?;
+                                        let adapter = ctx.adapter_for(model)?;
+                                        let model_clone = model.clone();
+                                        let ctx_clone = ctx.clone();
+                                        run_blocking_task_operation(move || {
+                                            let relations_map = materialize_latest_version_pointer(
+                                                &model_clone,
+                                                model_clone.node_adapter(),
+                                                ctx_clone.runtime_config(),
+                                                &ctx_clone.inner.materialization_resolver,
+                                                ctx_clone.env.clone(),
+                                                &base_context,
+                                                &ctx_clone.inner.arg.io,
+                                            )?;
+                                            let _ = cache_materialization_return_value(
+                                                &adapter,
+                                                ctx_clone.env,
+                                                &relations_map,
+                                            );
+                                            Ok::<(), Box<dbt_common::FsError>>(())
                                         })
-                                    }))
-                                    .await?;
+                                        .await??;
+                                    }
+                                    Ok(NodeStatus::Succeeded)
                                 }
-
-                                // After all microbatch batches succeed, create the latest
-                                // version pointer view if applicable. Skip when no batches
-                                // executed (empty event window) — the source relation may
-                                // not exist yet, so pointing at it would fail.
-                                if had_batches
-                                    && let Some(model) =
-                                        self.node.as_any().downcast_ref::<DbtModel>()
-                                    && should_create_latest_version_pointer(
-                                        model,
-                                        ctx.runtime_config(),
-                                    )
-                                {
-                                    let base_context = ctx.run_base_context(model)?;
-                                    let adapter = ctx.adapter_for(model)?;
-                                    let model_clone = model.clone();
-                                    let ctx_clone = ctx.clone();
-                                    run_blocking_task_operation(move || {
-                                        let relations_map = materialize_latest_version_pointer(
-                                            &model_clone,
-                                            model_clone.node_adapter(),
-                                            ctx_clone.runtime_config(),
-                                            &ctx_clone.inner.materialization_resolver,
-                                            ctx_clone.env.clone(),
-                                            &base_context,
-                                            &ctx_clone.inner.arg.io,
-                                        )?;
-                                        let _ = cache_materialization_return_value(
-                                            &adapter,
-                                            ctx_clone.env,
-                                            &relations_map,
-                                        );
-                                        Ok::<(), Box<dbt_common::FsError>>(())
-                                    })
-                                    .await??;
-                                }
-
-                                Ok(NodeStatus::Succeeded)
                             // Node is Saved Query
                             } else if let Some(saved_query) =
                                 self.node.as_any().downcast_ref::<DbtSavedQuery>()
@@ -662,7 +708,20 @@ impl Task for RunTask {
                 Err(e) => {
                     // TODO: At some point, these should log as part of the same event
                     let node_status = NodeStatus::Errored;
-                    let error_message = e.to_string();
+                    // Microbatch batch failures are already logged inside each batch
+                    // span. The recorded windows decide partial success vs error.
+                    let batch_results = if try_get_microbatch_model(self.node.as_ref()).is_some() {
+                        ctx.inner
+                            .batch_results_map
+                            .read_sync(&unique_id, |_, batch_results| batch_results.clone())
+                    } else {
+                        None
+                    };
+                    let (annotation_message, result_status_override) = batch_results
+                        .as_ref()
+                        .map(microbatch_result_annotation)
+                        .unwrap_or((None, None));
+                    let error_message = annotation_message.unwrap_or_else(|| e.to_string());
                     report_completed(
                         &NodeStatus::Errored,
                         self.node.defined_at().cloned(),
@@ -671,12 +730,17 @@ impl Task for RunTask {
                         ctx.inner.arg.io.status_reporter.as_ref(),
                     );
 
-                    if matches!(
-                        self.execution_path,
-                        RunExecutionPath::Remote
-                            | RunExecutionPath::SideCar
-                            | RunExecutionPath::LakeCompute
-                    ) {
+                    let batches_already_logged = batch_results
+                        .as_ref()
+                        .is_some_and(|batch_results| !batch_results.failed.is_empty());
+                    if !batches_already_logged
+                        && matches!(
+                            self.execution_path,
+                            RunExecutionPath::Remote
+                                | RunExecutionPath::SideCar
+                                | RunExecutionPath::LakeCompute
+                        )
+                    {
                         emit_error_log_from_fs_error(*e);
                     }
 
@@ -690,6 +754,7 @@ impl Task for RunTask {
                         ctx.thread_id,
                     );
                     stat.idle_time_ms = span_idle_time_ms;
+                    stat.result_status_override = result_status_override;
                     ctx.inner.run_stats.upsert_sync(unique_id.clone(), stat);
 
                     node_status
