@@ -646,6 +646,44 @@ pub struct NodeProcessed {
     /// Rolled up from the Run phase `NodeEvaluated`; see its `catalog_type` for when it is set.
     #[prost(string, optional, tag = "52")]
     pub catalog_type: ::core::option::Option<::prost::alloc::string::String>,
+    /// Incremental strategy configured on the model (e.g. "merge").
+    /// Only set for models, and only when the model sets one.
+    #[prost(string, optional, tag = "53")]
+    pub incremental_strategy: ::core::option::Option<::prost::alloc::string::String>,
+    /// Strategy configured on the snapshot (e.g. "timestamp").
+    /// Only set for snapshots, and only when the snapshot sets one.
+    #[prost(string, optional, tag = "54")]
+    pub snapshot_strategy: ::core::option::Option<::prost::alloc::string::String>,
+    /// Language the node's code is written in.
+    /// Unset when the node has no language, e.g. seeds and sources.
+    #[prost(enumeration = "NodeLanguage", optional, tag = "55")]
+    #[cfg_attr(
+        any(test, feature = "test-utils"),
+        dummy(expr = "Some(::fake::Fake::fake::<NodeLanguage>(&::fake::Faker) as i32)")
+    )]
+    pub language: ::core::option::Option<i32>,
+    /// Whether the model's contract is enforced. Only set for models;
+    /// a model without a contract is not enforced.
+    #[prost(bool, optional, tag = "56")]
+    pub contract_enforced: ::core::option::Option<bool>,
+    /// Access level of the node. Only set for models and functions.
+    #[prost(enumeration = "NodeAccess", optional, tag = "57")]
+    #[cfg_attr(
+        any(test, feature = "test-utils"),
+        dummy(expr = "Some(::fake::Fake::fake::<NodeAccess>(&::fake::Faker) as i32)")
+    )]
+    pub access: ::core::option::Option<i32>,
+    /// Whether the model has a version. Only set for models.
+    #[prost(bool, optional, tag = "58")]
+    pub versioned: ::core::option::Option<bool>,
+    /// Table format configured on the model (e.g. "iceberg").
+    /// Only set for models, and only when the model sets one.
+    #[prost(string, optional, tag = "59")]
+    pub table_format: ::core::option::Option<::prost::alloc::string::String>,
+    /// Catalog the model is written to. Only set for models, and only when
+    /// the model sets one.
+    #[prost(string, optional, tag = "60")]
+    pub catalog_name: ::core::option::Option<::prost::alloc::string::String>,
     /// Node type specific details (e.g. test fail counts, cache use reasons).
     #[prost(oneof = "node_processed::NodeOutcomeDetail", tags = "30, 31, 32, 33, 34")]
     pub node_outcome_detail: ::core::option::Option<node_processed::NodeOutcomeDetail>,
@@ -973,6 +1011,76 @@ impl NodeCacheReason {
             "NODE_CACHE_REASON_CLONED_EXISTING_STILL_FRESH" => {
                 Some(Self::ClonedExistingStillFresh)
             }
+            _ => None,
+        }
+    }
+}
+/// Access level of a model or function.
+#[cfg_attr(any(test, feature = "test-utils"), derive(::fake::Dummy))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum NodeAccess {
+    Unspecified = 0,
+    Private = 1,
+    Protected = 2,
+    Public = 3,
+}
+impl NodeAccess {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "NODE_ACCESS_UNSPECIFIED",
+            Self::Private => "NODE_ACCESS_PRIVATE",
+            Self::Protected => "NODE_ACCESS_PROTECTED",
+            Self::Public => "NODE_ACCESS_PUBLIC",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "NODE_ACCESS_UNSPECIFIED" => Some(Self::Unspecified),
+            "NODE_ACCESS_PRIVATE" => Some(Self::Private),
+            "NODE_ACCESS_PROTECTED" => Some(Self::Protected),
+            "NODE_ACCESS_PUBLIC" => Some(Self::Public),
+            _ => None,
+        }
+    }
+}
+/// Language a node's code is written in.
+#[cfg_attr(any(test, feature = "test-utils"), derive(::fake::Dummy))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum NodeLanguage {
+    /// The node has a language that this enum does not list.
+    Unspecified = 0,
+    Sql = 1,
+    Python = 2,
+    /// Only for functions.
+    Javascript = 3,
+}
+impl NodeLanguage {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "NODE_LANGUAGE_UNSPECIFIED",
+            Self::Sql => "NODE_LANGUAGE_SQL",
+            Self::Python => "NODE_LANGUAGE_PYTHON",
+            Self::Javascript => "NODE_LANGUAGE_JAVASCRIPT",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "NODE_LANGUAGE_UNSPECIFIED" => Some(Self::Unspecified),
+            "NODE_LANGUAGE_SQL" => Some(Self::Sql),
+            "NODE_LANGUAGE_PYTHON" => Some(Self::Python),
+            "NODE_LANGUAGE_JAVASCRIPT" => Some(Self::Javascript),
             _ => None,
         }
     }

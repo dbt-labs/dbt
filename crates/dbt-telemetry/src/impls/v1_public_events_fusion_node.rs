@@ -553,6 +553,14 @@ impl NodeProcessed {
             None, // adapter_response
             None, // compute_mode
             None, // catalog_type
+            None, // incremental_strategy
+            None, // snapshot_strategy
+            None, // language
+            None, // contract_enforced
+            None, // access
+            None, // versioned
+            None, // table_format
+            None, // catalog_name
             None, // node_outcome_detail
         )
     }

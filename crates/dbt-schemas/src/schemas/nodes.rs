@@ -12,7 +12,9 @@ use dbt_common::io_args::{
 use dbt_common::path::{DbtPath, get_snapshot_write_path, get_target_write_path};
 use dbt_common::tracing::dbt_emit::{emit_error_log_message, emit_warn_log_message};
 use dbt_common::{ErrorCode, FsResult, Span, err};
-use dbt_telemetry::{ExecutionPhase, NodeEvaluated, NodeProcessed, NodeType};
+use dbt_telemetry::{
+    ExecutionPhase, NodeAccess, NodeEvaluated, NodeLanguage, NodeProcessed, NodeType,
+};
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
 type YmlValue = dbt_yaml::Value;
@@ -42,6 +44,7 @@ use crate::schemas::{
         SnapshotConfig, SnapshotMetaColumnNames, SourceConfig, UnitTestConfig,
     },
     properties::{
+        FUNCTION_LANGUAGE_JAVASCRIPT, FUNCTION_LANGUAGE_PYTHON, FUNCTION_LANGUAGE_SQL,
         FunctionArgument, FunctionReturnType, ModelConstraint, ModelFreshness, UnitTestOverrides,
     },
     ref_and_source::{
@@ -625,6 +628,9 @@ pub trait InternalDbtNode:
             event.adapter = Some(base.adapter.as_ref().to_string());
         }
         event.experimental_type = self.experimental_type().map(str::to_string);
+        if let Some(language) = &common.language {
+            event.set_language(node_language(language));
+        }
         event
     }
 }
@@ -808,6 +814,17 @@ pub trait InternalDbtNodeAttributes: InternalDbtNode {
 
     // TO BE DEPRECATED
     fn serialized_config(&self) -> YmlValue;
+}
+
+fn node_language(language: &str) -> NodeLanguage {
+    match language {
+        FUNCTION_LANGUAGE_SQL => NodeLanguage::Sql,
+        FUNCTION_LANGUAGE_PYTHON => NodeLanguage::Python,
+        FUNCTION_LANGUAGE_JAVASCRIPT => NodeLanguage::Javascript,
+        // Parse sets no other language: models and snapshots set their own, and
+        // `validate_function_config` rejects any other function language.
+        _ => NodeLanguage::Unspecified,
+    }
 }
 
 // Shared helper functions for has_same_content implementation across node types
@@ -1267,6 +1284,34 @@ fn same_database_representation_snapshot(
 }
 
 impl InternalDbtNode for DbtModel {
+    fn get_node_processed_event(
+        &self,
+        last_phase: Option<ExecutionPhase>,
+        in_dir: &Path,
+        out_dir: &Path,
+        in_selection: bool,
+    ) -> NodeProcessed {
+        let mut event =
+            self.get_node_processed_event_base(last_phase, in_dir, out_dir, in_selection);
+        let model_attr = &self.__model_attr__;
+        event.incremental_strategy = model_attr
+            .incremental_strategy
+            .as_ref()
+            .map(|strategy| strategy.to_string());
+        // A model without a contract is not enforced.
+        event.contract_enforced = Some(
+            model_attr
+                .contract
+                .as_ref()
+                .is_some_and(|contract| contract.enforced),
+        );
+        event.set_access(NodeAccess::from(&model_attr.access));
+        event.versioned = Some(self.is_versioned());
+        event.table_format = model_attr.table_format.clone();
+        event.catalog_name = model_attr.catalog_name.clone();
+        event
+    }
+
     fn into_jinja_fields(self: Arc<Self>) -> Arc<dyn crate::jinja_node::JinjaNodeFields> {
         self
     }
@@ -2611,6 +2656,19 @@ impl InternalDbtNodeAttributes for DbtSource {
 }
 
 impl InternalDbtNode for DbtSnapshot {
+    fn get_node_processed_event(
+        &self,
+        last_phase: Option<ExecutionPhase>,
+        in_dir: &Path,
+        out_dir: &Path,
+        in_selection: bool,
+    ) -> NodeProcessed {
+        let mut event =
+            self.get_node_processed_event_base(last_phase, in_dir, out_dir, in_selection);
+        event.snapshot_strategy = self.deprecated_config.strategy.clone();
+        event
+    }
+
     fn into_jinja_fields(self: Arc<Self>) -> Arc<dyn crate::jinja_node::JinjaNodeFields> {
         self
     }
@@ -4119,6 +4177,19 @@ impl InternalDbtNodeAttributes for DbtSavedQuery {
 }
 
 impl InternalDbtNode for DbtFunction {
+    fn get_node_processed_event(
+        &self,
+        last_phase: Option<ExecutionPhase>,
+        in_dir: &Path,
+        out_dir: &Path,
+        in_selection: bool,
+    ) -> NodeProcessed {
+        let mut event =
+            self.get_node_processed_event_base(last_phase, in_dir, out_dir, in_selection);
+        event.set_access(NodeAccess::from(&self.__function_attr__.access));
+        event
+    }
+
     fn into_jinja_fields(self: Arc<Self>) -> Arc<dyn crate::jinja_node::JinjaNodeFields> {
         self
     }
@@ -6877,13 +6948,13 @@ mod tests {
         persist_docs_configs_equal, quoting_equal, test_alias_config_equal,
     };
     use crate::schemas::common::{
-        FreshnessPeriod, FreshnessRules, Hooks, ModelFreshnessRules, PersistDocsConfig,
+        Access, FreshnessPeriod, FreshnessRules, Hooks, ModelFreshnessRules, PersistDocsConfig,
     };
     use crate::schemas::manifest::{DbtMetric, DbtOperation, DbtSavedQuery};
     use crate::schemas::project::SnapshotMetaColumnNames;
     use dbt_adapter_core::AdapterType;
     use dbt_common::path::{DbtPath, path_separator_eq};
-    use dbt_telemetry::ExecutionPhase;
+    use dbt_telemetry::{ExecutionPhase, NodeAccess, NodeLanguage};
     use dbt_yaml::Verbatim;
 
     type YmlValue = dbt_yaml::Value;
@@ -7045,6 +7116,22 @@ mod tests {
             path_separator_eq(&actual_run_path, expected_run_path),
             "left: {actual_run_path:?}\nright: {expected_run_path:?}"
         );
+    }
+
+    #[test]
+    fn function_node_processed_has_access_and_language() {
+        let mut function = function_with_paths("my_function", "functions/my_function.py");
+        function.__function_attr__.access = Access::Public;
+        function.__common_attr__.language = Some("python".to_string());
+
+        let event = function.get_node_processed_event(
+            None,
+            Path::new("/workspace"),
+            Path::new("/workspace/target"),
+            true,
+        );
+        assert_eq!(event.access(), NodeAccess::Public);
+        assert_eq!(event.language(), NodeLanguage::Python);
     }
 
     #[test]

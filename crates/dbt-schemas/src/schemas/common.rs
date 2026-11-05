@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use dbt_adapter_core::{AdapterType, quote_char};
 use dbt_common::{CodeLocationWithFile, ErrorCode, FsError, FsResult, err, fs_err};
-use dbt_telemetry::NodeMaterialization;
+use dbt_telemetry::{NodeAccess, NodeMaterialization};
 use dbt_yaml::{DbtSchema, Spanned, UntaggedEnumDeserialize, Verbatim};
 use hex;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -535,6 +535,16 @@ impl From<&DbtMaterialization> for NodeMaterialization {
             DbtMaterialization::Snapshot => Self::Snapshot,
             DbtMaterialization::Seed => Self::Seed,
             DbtMaterialization::Function => Self::Function,
+        }
+    }
+}
+
+impl From<&Access> for NodeAccess {
+    fn from(value: &Access) -> Self {
+        match value {
+            Access::Private => Self::Private,
+            Access::Protected => Self::Protected,
+            Access::Public => Self::Public,
         }
     }
 }
