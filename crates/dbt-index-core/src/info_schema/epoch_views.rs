@@ -32,7 +32,8 @@ use arrow_schema::{DataType, TimeUnit};
 use crate::IndexError;
 
 use super::epoch::{
-    self, BASE, ELEM, ELEM_REL, EPOCH_RELATIONS, EpochExpr, EpochJoin, JOINED, Origin, Unnest,
+    self, BASE, ELEM, ELEM_REL, EPOCH_RELATIONS, EpochExpr, EpochJoin, JOINED, LatestLookup,
+    Origin, Unnest,
 };
 use super::project::out_schema;
 use super::spec::{Filter, Src, TableSpec};
@@ -63,6 +64,11 @@ pub struct Generated {
 /// the output tables that read it, so a project that has only ever parsed gets a
 /// file covering the parse tables and nothing about runs.
 pub fn generate(metadata_dir: &Path) -> Result<Generated, IndexError> {
+    generate_with(metadata_dir, LatestLookup::Inline)
+}
+
+/// [`generate`], with each latest-row lookup computed where `lookup` says.
+pub fn generate_with(metadata_dir: &Path, lookup: LatestLookup) -> Result<Generated, IndexError> {
     let metadata_dir = &std::path::absolute(metadata_dir)
         .map_err(|e| IndexError::Other(format!("epoch views: {}: {e}", metadata_dir.display())))?;
     let mut sql = String::new();
@@ -88,9 +94,10 @@ pub fn generate(metadata_dir: &Path) -> Result<Generated, IndexError> {
         if !rel.has_files(metadata_dir) {
             continue;
         }
-        let stmt = rel.create_view_sql(metadata_dir);
-        sql.push_str(&format!("{stmt};\n\n"));
-        statements.push(stmt);
+        for stmt in rel.create_sql(metadata_dir, lookup) {
+            sql.push_str(&format!("{stmt};\n\n"));
+            statements.push(stmt);
+        }
         present.push(rel.view);
     }
 
@@ -258,7 +265,15 @@ fn empty_view_sql(spec: &TableSpec) -> Result<String, IndexError> {
         .cols
         .iter()
         .zip(out.fields())
-        .map(|(col, field)| column_sql(EpochExpr::Null, col.out, field.data_type(), None))
+        .map(|(col, field)| {
+            column_sql(
+                EpochExpr::Null,
+                col.out,
+                field.data_type(),
+                None,
+                &mut PayloadPaths::default(),
+            )
+        })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(format!(
         "CREATE OR REPLACE VIEW {} AS SELECT {} WHERE FALSE",
@@ -291,6 +306,84 @@ fn duckdb_type(ty: &DataType) -> Result<String, IndexError> {
     })
 }
 
+/// The node payload paths one view reads.
+///
+/// Each `json_extract` call parses the whole payload again, and a node view reads
+/// tens of paths. The view instead extracts every path in one multi-path call per
+/// function, beside the base relation's columns, and each column indexes into the
+/// resulting list.
+#[derive(Default)]
+struct PayloadPaths {
+    /// Read with `json_extract`, as JSON text.
+    json: Vec<&'static str>,
+    /// Read with `json_extract_string`, as scalars.
+    text: Vec<&'static str>,
+}
+
+impl PayloadPaths {
+    const JSON_COL: &'static str = "_payload_json";
+    const TEXT_COL: &'static str = "_payload_text";
+
+    fn json(&mut self, path: &'static str) -> String {
+        format!("{BASE}.{}[{}]", Self::JSON_COL, slot(&mut self.json, path))
+    }
+
+    fn text(&mut self, path: &'static str) -> String {
+        format!("{BASE}.{}[{}]", Self::TEXT_COL, slot(&mut self.text, path))
+    }
+
+    /// `dbt_internal.<view>` with the extracted lists beside its columns, over the
+    /// rows `filters` keeps, or `None` when the view reads no payload path.
+    ///
+    /// The filters go inside the subquery: outside it, DuckDB extracted every row
+    /// before filtering, including into the liveness semi-join's hash table.
+    fn relation(&self, view: &str, filters: &[String]) -> Option<String> {
+        let mut cols = vec!["*".to_string()];
+        if !self.json.is_empty() {
+            cols.push(format!(
+                "json_extract(payload, {}) AS {}",
+                path_list(&self.json),
+                Self::JSON_COL
+            ));
+        }
+        if !self.text.is_empty() {
+            cols.push(format!(
+                "json_extract_string(payload, {}) AS {}",
+                path_list(&self.text),
+                Self::TEXT_COL
+            ));
+        }
+        if cols.len() == 1 {
+            return None;
+        }
+        let wheres = if filters.is_empty() {
+            String::new()
+        } else {
+            format!(" WHERE {}", filters.join(" AND "))
+        };
+        Some(format!(
+            "(SELECT {} FROM dbt_internal.{view} {BASE}{wheres})",
+            cols.join(", ")
+        ))
+    }
+}
+
+/// The 1-based list index of `path`, added on first use.
+fn slot(paths: &mut Vec<&'static str>, path: &'static str) -> usize {
+    match paths.iter().position(|p| *p == path) {
+        Some(i) => i + 1,
+        None => {
+            paths.push(path);
+            paths.len()
+        }
+    }
+}
+
+fn path_list(paths: &[&str]) -> String {
+    let quoted: Vec<String> = paths.iter().map(|p| format!("'$.{p}'")).collect();
+    format!("[{}]", quoted.join(", "))
+}
+
 /// SQL for one output column, given the staging column it reads.
 ///
 /// Always cast, never inferred. The declared type is the contract — it comes
@@ -302,43 +395,70 @@ fn duckdb_type(ty: &DataType) -> Result<String, IndexError> {
 /// happened to match.
 /// `guard` is a row predicate the column is null outside of — the join-partner
 /// case described in [`table_view_sql`].
+///
+/// Payload paths are read through `payload`, which the view extracts once per
+/// row; see [`PayloadPaths`].
 fn column_sql(
     expr: EpochExpr,
     out_name: &str,
     ty: &DataType,
     guard: Option<&str>,
+    payload: &mut PayloadPaths,
 ) -> Result<String, IndexError> {
     let quoted = |s: &str| format!("\"{}\"", s.replace('"', "\"\""));
     let ty_sql = duckdb_type(ty)?;
     let body = match expr {
         EpochExpr::Same => format!("{BASE}.{}", quoted(out_name)),
         EpochExpr::Col(c) => format!("{BASE}.{}", quoted(c)),
-        EpochExpr::Json(path) => format!("json_extract_string({BASE}.payload, '$.{path}')"),
-        EpochExpr::JsonRaw(path) => format!("json_extract({BASE}.payload, '$.{path}')"),
+        EpochExpr::Json(path) => payload.text(path),
+        EpochExpr::JsonRaw(path) => payload.json(path),
         // The cast goes *inside* the COALESCE as well as around it: the extract
         // is always VARCHAR, so `COALESCE(<varchar>, TRUE)` is a binder error
         // rather than a defaulted boolean.
         EpochExpr::JsonOr(path, default) => format!(
-            "COALESCE(CAST(json_extract_string({BASE}.payload, '$.{path}') AS {ty_sql}), {default})"
+            "COALESCE(CAST({} AS {ty_sql}), {default})",
+            payload.text(path)
         ),
         EpochExpr::JsonFirst(paths, default) => {
             let mut args: Vec<String> = paths
                 .iter()
-                .map(|p| format!("CAST(json_extract_string({BASE}.payload, '$.{p}') AS {ty_sql})"))
+                .map(|p| format!("CAST({} AS {ty_sql})", payload.text(p)))
                 .collect();
             args.push(default.to_string());
             format!("COALESCE({})", args.join(", "))
         }
+        EpochExpr::JsonRawFirst(paths) => {
+            let args: Vec<String> = paths.iter().map(|p| payload.json(p)).collect();
+            format!("COALESCE({})", args.join(", "))
+        }
+        EpochExpr::ColThenJson(col, paths, default) => {
+            let mut args = vec![format!("{BASE}.{}", quoted(col))];
+            args.extend(
+                paths
+                    .iter()
+                    .map(|p| format!("CAST({} AS {ty_sql})", payload.text(p))),
+            );
+            args.push(default.to_string());
+            format!("COALESCE({})", args.join(", "))
+        }
+        EpochExpr::JsonFirstObjectField(objects, field, default) => {
+            let objects: Vec<String> = objects.iter().map(|p| payload.json(p)).collect();
+            format!(
+                "COALESCE(CAST(json_extract(COALESCE({}), '$.{field}') AS {ty_sql}), {default})",
+                objects.join(", ")
+            )
+        }
+        // A wildcard path cannot join a multi-path extract, so it keeps its own.
         EpochExpr::JsonList(path) => {
             format!("COALESCE(json_extract_string({BASE}.payload, '$.{path}[*]'), [])")
         }
         EpochExpr::TrimmedJson(path) => format!(
-            "CASE WHEN {BASE}.resource_type = 'model' THEN NULL \
-             ELSE json_extract_string({BASE}.payload, '$.{path}') END"
+            "CASE WHEN {BASE}.resource_type = 'model' THEN NULL ELSE {} END",
+            payload.text(path)
         ),
         EpochExpr::TrimmedJsonRaw(path) => format!(
-            "CASE WHEN {BASE}.resource_type = 'model' THEN NULL \
-             ELSE json_extract({BASE}.payload, '$.{path}') END"
+            "CASE WHEN {BASE}.resource_type = 'model' THEN NULL ELSE {} END",
+            payload.json(path)
         ),
         EpochExpr::Elem => ELEM.to_string(),
         EpochExpr::ElemJson(path) => format!("json_extract_string({ELEM}, '$.{path}')"),
@@ -550,7 +670,7 @@ fn own_sql(
         // come from the same `resolve_cols` every other table uses, since every
         // column of this spec is spec-declared null.
         "classifiers" => {
-            let cols = match resolve_cols(spec, false, &[])? {
+            let cols = match resolve_cols(spec, false, &[], &mut PayloadPaths::default())? {
                 Ok(cols) => cols,
                 Err(why) => return Err(IndexError::Other(why)),
             };
@@ -1027,7 +1147,8 @@ fn table_view_sql(
     // compiled columns unset. A parse-only project is the common case.
     let join = join.filter(|j| present.contains(&j.view));
 
-    let cols = match resolve_cols(spec, join.is_some(), &guards)? {
+    let mut payload = PayloadPaths::default();
+    let cols = match resolve_cols(spec, join.is_some(), &guards, &mut payload)? {
         Ok(cols) => cols,
         Err(why) => return Ok(Err(why)),
     };
@@ -1047,7 +1168,35 @@ fn table_view_sql(
         return Ok(Ok((format!("{header}WHERE FALSE"), None)));
     };
 
-    let mut sql = format!("{header}FROM dbt_internal.{view} {BASE}\n");
+    // Liveness is a semi-join on `parse/alive`, which only exists once a parse
+    // has written it. The Rust path treats a missing file as "prune nothing"
+    // (`load_alive_ids` returns `None`), so the join is omitted rather than
+    // emitted against a missing file — which would drop every row.
+    let mut row_filters: Vec<String> = Vec::new();
+    if let (Some(on), true) = (alive_on, alive_exists) {
+        row_filters.push(format!(
+            "{BASE}.{on} IN (SELECT unique_id FROM dbt_internal.epoch_parse_alive)"
+        ));
+    }
+    if let Some(k) = keep {
+        row_filters.push(k.to_string());
+    }
+    if let Filter::ResourceTypeIn(types) = spec.filter {
+        let list = types
+            .iter()
+            .map(|t| format!("'{t}'"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        row_filters.push(format!("{BASE}.resource_type IN ({list})"));
+    }
+    // These filters read only the base row, so they can run before the lateral
+    // and the join below.
+    let (from, mut wheres) = match payload.relation(view, &row_filters) {
+        Some(extracted) => (extracted, Vec::new()),
+        None => (format!("dbt_internal.{view}"), row_filters),
+    };
+
+    let mut sql = format!("{header}FROM {from} {BASE}\n");
     // The lateral goes between the base relation and the join, so the join's ON
     // clause is still attached to the join. No spec needs both today, and the
     // combination is refused rather than emitted untested: a comma-join followed
@@ -1071,32 +1220,11 @@ fn table_view_sql(
         ));
     }
 
-    // Liveness is a semi-join on `parse/alive`, which only exists once a parse
-    // has written it. The Rust path treats a missing file as "prune nothing"
-    // (`load_alive_ids` returns `None`), so the join is omitted rather than
-    // emitted against a missing file — which would drop every row.
-    let mut wheres: Vec<String> = Vec::new();
-    if let (Some(on), true) = (alive_on, alive_exists) {
-        wheres.push(format!(
-            "{BASE}.{on} IN (SELECT unique_id FROM dbt_internal.epoch_parse_alive)"
-        ));
-    }
-    if let Some(k) = keep {
-        wheres.push(k.to_string());
-    }
     // The element predicate filters the unnested rows, not the base rows, so it
-    // belongs in the same WHERE: a base row is already multiplied by the time
+    // belongs in the outer WHERE: a base row is already multiplied by the time
     // this is applied, and dropping one element leaves the others.
     if let Some(k) = unnest.and_then(|u| u.keep) {
         wheres.push(k.to_string());
-    }
-    if let Filter::ResourceTypeIn(types) = spec.filter {
-        let list = types
-            .iter()
-            .map(|t| format!("'{t}'"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        wheres.push(format!("{BASE}.resource_type IN ({list})"));
     }
     for (i, w) in wheres.iter().enumerate() {
         let lead = if i == 0 { "WHERE" } else { "  AND" };
@@ -1129,11 +1257,12 @@ struct ResolvedCol {
 /// `joined` is false when the join relation has no files on disk, in which case
 /// its columns degrade to what the Rust path produces from an empty lookup map.
 /// `guards` carries the per-staging-table row predicates described in
-/// [`table_view_sql`].
+/// [`table_view_sql`]. `payload` collects the payload paths the columns read.
 fn resolve_cols(
     spec: &TableSpec,
     joined: bool,
     guards: &[(&'static str, &'static str)],
+    payload: &mut PayloadPaths,
 ) -> Result<Result<Vec<ResolvedCol>, String>, IndexError> {
     let out = out_schema(spec)?;
     let mut resolved = Vec::with_capacity(spec.cols.len());
@@ -1141,7 +1270,7 @@ fn resolve_cols(
         // A spec-declared null column has no staging source on either path.
         if col.ty.is_some() {
             resolved.push(ResolvedCol {
-                sql: column_sql(EpochExpr::Null, col.out, field.data_type(), None)?,
+                sql: column_sql(EpochExpr::Null, col.out, field.data_type(), None, payload)?,
             });
             continue;
         }
@@ -1171,7 +1300,7 @@ fn resolve_cols(
         };
         let guard = guards.iter().find(|(t, _)| *t == table).map(|(_, g)| *g);
         resolved.push(ResolvedCol {
-            sql: column_sql(expr, col.out, field.data_type(), guard)?,
+            sql: column_sql(expr, col.out, field.data_type(), guard, payload)?,
         });
     }
     Ok(Ok(resolved))
@@ -1221,6 +1350,81 @@ mod tests {
             fixed.is_empty(),
             "these tables are now covered — remove them from SKIPPED: {fixed:?}"
         );
+    }
+
+    /// Payload columns index the view's shared lists, each path once. A wrong
+    /// index reads NULL rather than failing.
+    #[test]
+    fn payload_columns_index_one_list_per_extract() {
+        let mut payload = PayloadPaths::default();
+        let ty = DataType::Utf8;
+        let mut col = |expr| column_sql(expr, "c", &ty, None, &mut payload).expect("column_sql");
+        let first = col(EpochExpr::JsonFirst(&["a", "b"], "NULL"));
+        let again = col(EpochExpr::Json("b"));
+        let raw = col(EpochExpr::JsonRawFirst(&["c", "a"]));
+        let both = col(EpochExpr::ColThenJson("x", &["a"], "NULL"));
+
+        assert_eq!(payload.text, ["a", "b"]);
+        assert_eq!(payload.json, ["c", "a"]);
+        assert!(again.contains("t._payload_text[2]"), "{again}");
+        assert!(
+            raw.contains("t._payload_json[1], t._payload_json[2]"),
+            "{raw}"
+        );
+        assert!(both.contains("t._payload_text[1]"), "{both}");
+        for sql in [&first, &again, &raw, &both] {
+            assert!(
+                !sql.contains("t.payload"),
+                "parses the payload itself: {sql}"
+            );
+        }
+    }
+
+    /// The widest node view extracts the payload once per function.
+    #[test]
+    fn models_view_extracts_the_payload_once_per_function() {
+        let all: Vec<&'static str> = EPOCH_RELATIONS.iter().map(|r| r.view).collect();
+        let spec = crate::info_schema::schema::INFO_SCHEMA
+            .iter()
+            .find(|s| s.qualified_name() == "dbt.models")
+            .expect("dbt.models");
+        let (sql, _) = table_view_sql(spec, &all, true)
+            .expect("table_view_sql")
+            .expect("dbt.models is mappable");
+        assert_eq!(sql.matches("json_extract(payload, [").count(), 1, "{sql}");
+        assert_eq!(
+            sql.matches("json_extract_string(payload, [").count(),
+            1,
+            "{sql}"
+        );
+    }
+
+    /// A node view filters its rows before it extracts their payloads, so a table
+    /// that keeps a few nodes parses only those.
+    #[test]
+    fn node_views_filter_before_extracting_the_payload() {
+        let all: Vec<&'static str> = EPOCH_RELATIONS.iter().map(|r| r.view).collect();
+        for name in ["dbt.time_spines", "dbt.models"] {
+            let spec = crate::info_schema::schema::INFO_SCHEMA
+                .iter()
+                .find(|s| s.qualified_name() == name)
+                .expect(name);
+            let (sql, _) = table_view_sql(spec, &all, true)
+                .expect("table_view_sql")
+                .expect("mappable");
+            let from = sql
+                .lines()
+                .find(|l| l.starts_with("FROM ("))
+                .expect("extraction subquery");
+            let after = &sql[sql.find(from).expect("from line") + from.len()..];
+            assert!(
+                from.contains("FROM dbt_internal.epoch_parse_nodes t WHERE"),
+                "{sql}"
+            );
+            assert!(from.contains("t.resource_type"), "{sql}");
+            assert!(from.contains("epoch_parse_alive"), "{sql}");
+            assert!(!after.contains("WHERE"), "{sql}");
+        }
     }
 
     /// Scaffolding while the mapping is being filled in: print the generated
