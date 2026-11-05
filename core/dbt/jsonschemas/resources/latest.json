@@ -107,6 +107,19 @@
         "$ref": "#/definitions/ModelProperties"
       }
     },
+    "plugins": {
+      "description": "Entries for plugins, by plugin type. Plugins are features in testing, off unless their feature flag is on; each reads the entries under its own type.",
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "$ref": "#/definitions/AnyValue"
+        }
+      }
+    },
     "saved_queries": {
       "type": [
         "array",
