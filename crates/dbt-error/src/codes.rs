@@ -214,6 +214,7 @@ pub enum ErrorCode {
     ReplayDataInvalid = 1309,
     ReplayDataMissing = 1310,
     ShallowCloneCheckFailed = 1311,
+    BigqueryMaximumBytesBilledNotEnforced = 1312,
 
     // Execution/runtime [1400–1449]
     PlannerFailed = 1400,

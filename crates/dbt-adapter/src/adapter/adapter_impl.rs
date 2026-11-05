@@ -95,7 +95,7 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::str::FromStr;
-use std::sync::{Arc, LazyLock};
+use std::sync::{Arc, LazyLock, Once};
 
 use AdapterType::*;
 use InnerAdapter::*;
@@ -5520,15 +5520,35 @@ impl AdapterImpl {
                     .get_value(&Value::from("bigquery_enforce_maximum_bytes_billed"))
                     .is_some_and(|flag| flag.is_true());
 
-                if enforce_max_bytes_billed
-                    && let Some(max_bytes_billed) = self
-                        .get_db_config("maximum_bytes_billed")
-                        .and_then(|v| v.parse::<i64>().ok())
-                {
+                let max_bytes_billed = self
+                    .get_db_config("maximum_bytes_billed")
+                    .and_then(|v| v.parse::<i64>().ok());
+
+                if enforce_max_bytes_billed && let Some(max_bytes_billed) = max_bytes_billed {
                     options.push((
                         QUERY_MAX_BYTES_BILLED.to_string(),
                         OptionValue::Int(max_bytes_billed),
                     ));
+                }
+
+                if !enforce_max_bytes_billed
+                    && max_bytes_billed.is_some()
+                    && !self
+                        .engine()
+                        .behavior_flag_overrides()
+                        .contains_key("bigquery_enforce_maximum_bytes_billed")
+                {
+                    static WARN_NOT_ENFORCED: Once = Once::new();
+                    WARN_NOT_ENFORCED.call_once(|| {
+                        emit_warn_log_message(
+                            ErrorCode::BigqueryMaximumBytesBilledNotEnforced,
+                            "`maximum_bytes_billed` is set in your profile, but it is not \
+                             respected without the `bigquery_enforce_maximum_bytes_billed` \
+                             behavior flag. To enforce it, set \
+                             `flags: {bigquery_enforce_maximum_bytes_billed: true}` in \
+                             dbt_project.yml.",
+                        )
+                    });
                 }
 
                 let reservation = bigquery_reservation_from_state(state)
