@@ -962,6 +962,42 @@ pub enum ClapResourceType {
     Exposure,
     /// Nodes added by experimentals.
     Experimental,
+    All,
+    /// Selects the resource types a command uses when no filter is given.
+    Default,
+}
+
+impl ClapResourceType {
+    /// Expand the `all` and `default` shorthands into resource types.
+    ///
+    /// `defaults` is the calling command's own default set and is only used
+    /// when `default` was requested.
+    pub fn resolve(requested: &[ClapResourceType], defaults: &[ClapResourceType]) -> Vec<Self> {
+        let mut resolved = Vec::new();
+        for resource_type in requested {
+            match resource_type {
+                ClapResourceType::All => resolved.extend([
+                    ClapResourceType::Model,
+                    ClapResourceType::Source,
+                    ClapResourceType::Seed,
+                    ClapResourceType::Snapshot,
+                    ClapResourceType::Test,
+                    ClapResourceType::UnitTest,
+                    ClapResourceType::Analysis,
+                    ClapResourceType::Function,
+                    ClapResourceType::SemanticModel,
+                    ClapResourceType::Metric,
+                    ClapResourceType::SavedQuery,
+                    ClapResourceType::Check,
+                    ClapResourceType::Exposure,
+                    ClapResourceType::Experimental,
+                ]),
+                ClapResourceType::Default => resolved.extend_from_slice(defaults),
+                resource_type => resolved.push(*resource_type),
+            }
+        }
+        resolved
+    }
 }
 
 impl Display for ClapResourceType {
@@ -981,6 +1017,8 @@ impl Display for ClapResourceType {
             ClapResourceType::Check => "check",
             ClapResourceType::Exposure => "exposure",
             ClapResourceType::Experimental => "experimental",
+            ClapResourceType::All => "all",
+            ClapResourceType::Default => "default",
         };
         write!(f, "{s}")
     }
@@ -1003,6 +1041,12 @@ impl From<&ClapResourceType> for NodeType {
             ClapResourceType::Check => NodeType::Check,
             ClapResourceType::Exposure => NodeType::Exposure,
             ClapResourceType::Experimental => NodeType::Experimental,
+            // `all` and `default` are expanded by `resolve` before conversion.
+            ClapResourceType::All | ClapResourceType::Default => {
+                unreachable!(
+                    "{value} is not a NodeType; expand `all`/`default` with ClapResourceType::resolve first"
+                )
+            }
         }
     }
 }
@@ -2003,6 +2047,52 @@ mod tests {
             NodeType::from(&ClapResourceType::Exposure),
             NodeType::Exposure
         );
+    }
+
+    #[test]
+    fn resolve_all_expands_every_resource_type() {
+        let all = ClapResourceType::resolve(&[ClapResourceType::All], &[]);
+        for resource_type in [
+            ClapResourceType::Model,
+            ClapResourceType::Source,
+            ClapResourceType::Seed,
+            ClapResourceType::Snapshot,
+            ClapResourceType::Test,
+            ClapResourceType::UnitTest,
+            ClapResourceType::Analysis,
+            ClapResourceType::Function,
+            ClapResourceType::SemanticModel,
+            ClapResourceType::Metric,
+            ClapResourceType::SavedQuery,
+            ClapResourceType::Check,
+            ClapResourceType::Exposure,
+            ClapResourceType::Experimental,
+        ] {
+            assert!(all.contains(&resource_type), "{resource_type} missing");
+        }
+        assert!(!all.contains(&ClapResourceType::All));
+        assert!(!all.contains(&ClapResourceType::Default));
+    }
+
+    #[test]
+    fn resolve_default_uses_caller_defaults() {
+        let defaults = [ClapResourceType::Model, ClapResourceType::Seed];
+        assert_eq!(
+            ClapResourceType::resolve(&[ClapResourceType::Default], &defaults),
+            defaults
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "not a NodeType")]
+    fn converting_all_to_node_type_is_a_programming_error() {
+        let _ = NodeType::from(&ClapResourceType::All);
+    }
+
+    #[test]
+    #[should_panic(expected = "not a NodeType")]
+    fn converting_default_to_node_type_is_a_programming_error() {
+        let _ = NodeType::from(&ClapResourceType::Default);
     }
 
     #[test]
