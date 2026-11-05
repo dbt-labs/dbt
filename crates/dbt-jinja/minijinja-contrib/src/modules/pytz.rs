@@ -1,6 +1,8 @@
-use chrono::{DateTime, LocalResult, NaiveDateTime, TimeZone};
-use chrono_tz::{Tz, TZ_VARIANTS};
-use minijinja::{Error, ErrorKind, Value};
+use chrono::{DateTime, LocalResult, NaiveDateTime, Offset, TimeZone};
+use chrono_tz::{OffsetComponents, OffsetName, Tz, TZ_VARIANTS};
+use minijinja::{arg_utils::ArgsIter, Error, ErrorKind, Value};
+
+use crate::modules::py_datetime::timedelta::PyTimeDelta;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::sync::{Arc, OnceLock};
@@ -50,22 +52,23 @@ impl PytzTimezone {
         self.tz.from_utc_datetime(naive_utc)
     }
 
-    /// Return an offset from UTC as a `chrono::Duration` for the given local DateTime in this tz.
-    pub fn utcoffset(&self, _local_dt: &DateTime<Tz>) -> Value {
-        // Get the seconds offset directly from the datetime's offset
-        Value::from("TODO IMPLEMENT")
+    /// Return the offset from UTC in effect at the given DateTime in this tz.
+    pub fn utcoffset(&self, local_dt: &DateTime<Tz>) -> chrono::Duration {
+        chrono::Duration::seconds(local_dt.offset().fix().local_minus_utc() as i64)
     }
 
-    /// Return the DST offset if any. If you just want to return None or 0, do so.
-    pub fn dst(&self, _local_dt: &DateTime<Tz>) -> Option<chrono::Duration> {
-        // Real DST logic is more nuanced, and Chrono doesn't directly expose it.
-        // If you prefer to always return None or Some(0), do so:
-        None
+    /// Return the daylight saving part of the offset in effect at the given DateTime.
+    pub fn dst(&self, local_dt: &DateTime<Tz>) -> chrono::Duration {
+        local_dt.offset().dst_offset()
     }
 
-    /// Return the timezone name for the given local DateTime. This might be "EST", "EDT", or a raw offset, etc.
+    /// Return the abbreviation in effect at the given DateTime ("EST", "EDT", "UTC"),
+    /// or the numeric offset for zones without one.
     pub fn tzname(&self, local_dt: &DateTime<Tz>) -> String {
-        local_dt.offset().to_string()
+        match local_dt.offset().abbreviation() {
+            Some(name) => name.to_string(),
+            None => local_dt.offset().to_string(),
+        }
     }
 }
 
@@ -212,6 +215,51 @@ impl minijinja::value::Object for PytzTimezone {
 
                 Ok(Value::from_object(result))
             }
+            "utcoffset" | "dst" | "tzname" => {
+                let iter = ArgsIter::new(method, &["dt"], args);
+                let dt_val: &Value = iter.next_arg()?;
+                iter.finish()?;
+
+                // Like pytz, a None datetime answers None, None and the zone name.
+                if dt_val.is_none() {
+                    return Ok(match method {
+                        "tzname" => Value::from(self.tz.name()),
+                        _ => Value::from(()),
+                    });
+                }
+
+                let dt = dt_val
+                    .downcast_object_ref::<crate::modules::py_datetime::datetime::PyDateTime>()
+                    .ok_or_else(|| {
+                        Error::new(
+                            ErrorKind::InvalidArgument,
+                            format!("{method}() expects a datetime object"),
+                        )
+                    })?;
+
+                // A naive datetime is read as local time, like localize(); an aware
+                // one is converted so the answer describes the same instant.
+                use crate::modules::py_datetime::datetime::DateTimeState;
+                let local_dt = match &dt.state {
+                    DateTimeState::Naive(naive) => self.from_local(naive).ok_or_else(|| {
+                        Error::new(
+                            ErrorKind::InvalidOperation,
+                            format!("ambiguous or invalid local time for {method}()"),
+                        )
+                    })?,
+                    DateTimeState::Aware(aware) => aware.with_timezone(&self.tz),
+                    DateTimeState::FixedOffset(fixed) => fixed.with_timezone(&self.tz),
+                };
+
+                match method {
+                    "utcoffset" => Ok(Value::from_object(PyTimeDelta::new(
+                        self.utcoffset(&local_dt),
+                    ))),
+                    "dst" => Ok(Value::from_object(PyTimeDelta::new(self.dst(&local_dt)))),
+                    "tzname" => Ok(Value::from(self.tzname(&local_dt))),
+                    _ => unreachable!(),
+                }
+            }
             _ => Err(Error::new(
                 ErrorKind::UnknownMethod,
                 format!("Timezone object has no method named '{method}'"),
@@ -238,6 +286,7 @@ mod tests {
     use super::*;
     use crate::modules::py_datetime::datetime::{DateTimeState, PyDateTime};
     use chrono::{NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Timelike};
+    use minijinja::Environment;
 
     #[test]
     fn test_localize_naive_datetime() {
@@ -352,5 +401,96 @@ mod tests {
             other => panic!("expected aware datetime, got {other:?}"),
         }
         assert_eq!(result.tzinfo.as_ref().unwrap().tz, chrono_tz::US::Eastern);
+    }
+
+    fn naive(y: i32, m: u32, d: u32, h: u32, min: u32) -> Value {
+        let naive = NaiveDateTime::new(
+            NaiveDate::from_ymd_opt(y, m, d).unwrap(),
+            NaiveTime::from_hms_opt(h, min, 0).unwrap(),
+        );
+        Value::from_object(PyDateTime {
+            state: DateTimeState::Naive(naive),
+            tzinfo: None,
+        })
+    }
+
+    fn render_tz_methods(tz: PytzTimezone, dt: Value) -> Result<String, Error> {
+        let env = Environment::new();
+        let template = env
+            .template_from_str("{{ tz.utcoffset(dt) }}|{{ tz.dst(dt) }}|{{ tz.tzname(dt) }}")
+            .unwrap();
+        template.render(
+            minijinja::context!(tz => Value::from_object(tz), dt => dt),
+            &[],
+        )
+    }
+
+    #[test]
+    fn test_utcoffset_dst_tzname_in_summer() {
+        let tz = PytzTimezone::new(chrono_tz::America::New_York);
+        assert_eq!(
+            render_tz_methods(tz, naive(2024, 7, 4, 12, 0)).unwrap(),
+            "-1 day, 20:00:00|1:00:00|EDT"
+        );
+    }
+
+    #[test]
+    fn test_utcoffset_dst_tzname_in_winter() {
+        let tz = PytzTimezone::new(chrono_tz::America::New_York);
+        assert_eq!(
+            render_tz_methods(tz, naive(2024, 1, 4, 12, 0)).unwrap(),
+            "-1 day, 19:00:00|0:00:00|EST"
+        );
+    }
+
+    #[test]
+    fn test_utcoffset_dst_tzname_utc() {
+        let tz = PytzTimezone::new(chrono_tz::UTC);
+        assert_eq!(
+            render_tz_methods(tz, naive(2024, 7, 4, 12, 0)).unwrap(),
+            "0:00:00|0:00:00|UTC"
+        );
+    }
+
+    #[test]
+    fn test_utcoffset_rejects_ambiguous_local_time() {
+        // 01:30 on 2024-11-03 happens twice in New York (fall back).
+        let tz = PytzTimezone::new(chrono_tz::America::New_York);
+        let err = render_tz_methods(tz, naive(2024, 11, 3, 1, 30)).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("ambiguous or invalid local time for utcoffset()"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_aware_datetime_is_converted_to_the_timezone() {
+        // 12:00 EDT is 16:00 UTC; pytz.utc answers for the instant, not the wall time.
+        let eastern = chrono_tz::America::New_York
+            .with_ymd_and_hms(2024, 7, 4, 12, 0, 0)
+            .single()
+            .unwrap();
+        let aware = Value::from_object(PyDateTime {
+            state: DateTimeState::Aware(eastern),
+            tzinfo: Some(PytzTimezone::new(chrono_tz::America::New_York)),
+        });
+        assert_eq!(
+            render_tz_methods(PytzTimezone::new(chrono_tz::UTC), aware.clone()).unwrap(),
+            "0:00:00|0:00:00|UTC"
+        );
+        assert_eq!(
+            render_tz_methods(PytzTimezone::new(chrono_tz::America::New_York), aware).unwrap(),
+            "-1 day, 20:00:00|1:00:00|EDT"
+        );
+    }
+
+    #[test]
+    fn test_none_argument_matches_pytz() {
+        let tz = PytzTimezone::new(chrono_tz::America::New_York);
+        assert_eq!(
+            render_tz_methods(tz, Value::from(())).unwrap(),
+            "None|None|America/New_York"
+        );
     }
 }
