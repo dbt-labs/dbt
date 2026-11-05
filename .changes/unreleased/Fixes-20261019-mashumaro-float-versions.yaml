@@ -1,0 +1,6 @@
+kind: Fixes
+body: "Preserve unquoted YAML float model versions such as v: 4.1 by requiring mashumaro >= 3.15"
+time: 2026-10-19T10:14:00.000000+05:30
+custom:
+    Author: TensorDevLJ
+    Issue: "16284"
