@@ -6,7 +6,6 @@ use crate::metadata::freshness_overrides::{
     run_override_sql,
 };
 use crate::metadata::{CatalogAndSchema, *};
-use crate::record_batch::RecordBatchExt;
 use crate::relation::Relation;
 use crate::sql_types::{TypeOps, make_arrow_field};
 use crate::time_machine::{
@@ -15,6 +14,7 @@ use crate::time_machine::{
 };
 use crate::{AdapterEngine, AdapterResult, AdapterType};
 use dbt_adapter_engine::cow::uppercase;
+use dbt_adapter_engine::record_batch::RecordBatchExt;
 use dbt_adapter_sql::ident::{escape_string_literal, quote_identifier};
 
 use arrow_array::{

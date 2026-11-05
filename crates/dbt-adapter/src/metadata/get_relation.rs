@@ -20,10 +20,10 @@ use crate::metadata::bigquery;
 use crate::metadata::bigquery::is_bigquery_not_found_error;
 use crate::metadata::databricks::describe_table::DatabricksTableMetadata;
 use crate::metadata::{snowflake, try_canonicalize_bool_column_field};
-use crate::record_batch::RecordBatchExt;
 use crate::relation::Relation;
 use crate::relation::databricks::is_shallow_clone_type;
 use crate::relation::do_create_relation;
+use dbt_adapter_engine::record_batch::RecordBatchExt;
 use dbt_common::cancellation::CancellationToken;
 
 macro_rules! invalid_value {
@@ -1236,7 +1236,7 @@ fn clickhouse_get_relation(
         build_list_relations_sql, relation_type_from_engine, server_capabilities_over_connection,
         with_catalog_state,
     };
-    use crate::record_batch::RecordBatchExt;
+    use dbt_adapter_engine::record_batch::RecordBatchExt;
 
     // ClickHouse only has databases, not schemas — dbt `schema` maps to CH `database`.
     // dbt `database` is unused here.

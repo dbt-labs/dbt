@@ -34,7 +34,7 @@ use crate::metadata::salesforce::SalesforceMetadataAdapter;
 use crate::metadata::snowflake::SnowflakeMetadataAdapter;
 use crate::metadata::{self, CatalogAndSchema, MetadataAdapter};
 use crate::query_ctx::{node_id_from_state, query_ctx_from_state};
-use crate::record_batch::{RecordBatchExt, RenamedColumn, StructArrayExt};
+use crate::record_batch::{StructArrayExt, jsonify_column};
 use crate::relation::Relation;
 use crate::relation::RelationObject;
 use crate::relation::config_v2::{ComponentConfigLoader, RelationConfig};
@@ -47,6 +47,7 @@ use crate::sql_types::TypeOps;
 use crate::stmt_splitter::StmtSplitter;
 use crate::value::*;
 use crate::{AdapterResult, load_catalogs, python};
+use dbt_adapter_engine::record_batch::{RecordBatchExt, RenamedColumn};
 
 use adbc_core::options::OptionValue;
 use arrow::array::{BooleanArray, RecordBatch, StringArray};
@@ -916,7 +917,10 @@ impl AdapterImpl {
         let table = match self.adapter_type() {
             Databricks => {
                 let original = Arc::new(last_batch);
-                let display = original.as_ref().clone().jsonify_nested_columns();
+                let display = original
+                    .as_ref()
+                    .clone()
+                    .jsonify_nested_columns(jsonify_column);
                 AgateTable::from_record_batch_impl(Arc::new(display), Some(original), None)
             }
             _ => AgateTable::from_record_batch(Arc::new(last_batch)),
@@ -1395,7 +1399,8 @@ impl AdapterImpl {
         if self.adapter_type() == ClickHouse
             && !self.engine().is_mock()
             && let Some(dropped_schema) = dropped_schema
-            && crate::engine::clickhouse::target_schema(self.engine().get_config()).as_deref()
+            && dbt_adapter_engine::clickhouse::bootstrap::target_schema(self.engine().get_config())
+                .as_deref()
                 == Some(dropped_schema.as_str())
         {
             let mut conn = self.borrow_tlocal_connection(Some(state), node_id_from_state(state))?;
@@ -2564,8 +2569,6 @@ impl AdapterImpl {
         }
     }
 
-    /// ClickHouse `adapter.supports_atomic_exchange()` — see
-    /// [`metadata::clickhouse::ClickHouseCapabilities::atomic_exchange`].
     pub fn supports_atomic_exchange(&self, state: &State, token: CancellationToken) -> bool {
         match self.inner_adapter() {
             Impl(..) => {
@@ -5777,8 +5780,6 @@ impl AdapterImpl {
         }
     }
 
-    /// ClickHouse `adapter.is_before_version(version)` — see
-    /// [`metadata::clickhouse::ClickHouseCapabilities::is_before`].
     pub fn is_before_version(
         &self,
         state: &State,
@@ -5788,8 +5789,6 @@ impl AdapterImpl {
         metadata::clickhouse::server_capabilities(self, state, token).is_before(version)
     }
 
-    /// ClickHouse `adapter.is_at_or_after_version(version)` — see
-    /// [`metadata::clickhouse::ClickHouseCapabilities::is_at_or_after`].
     pub fn is_at_or_after_version(
         &self,
         state: &State,

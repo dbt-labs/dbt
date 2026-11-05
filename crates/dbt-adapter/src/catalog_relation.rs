@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use crate::errors::{AdapterError, AdapterErrorKind, AdapterResult};
 use crate::load_catalogs;
-use crate::metadata::duckdb::CatalogSpecDuckDbExt;
+use dbt_adapter_engine::duckdb::CatalogSpecDuckDbExt;
 
 mod catalog_relation_deprecated;
 

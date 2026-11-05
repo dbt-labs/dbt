@@ -23,8 +23,8 @@ use crate::column::Column;
 use crate::connection::ConnectionGuard;
 use crate::errors::AdapterResult;
 use crate::metadata::CatalogAndSchema;
-use crate::record_batch::RecordBatchExt;
 use crate::relation::Relation;
+use dbt_adapter_engine::record_batch::RecordBatchExt;
 
 /// Extracts the value of a `Key: value` line from `SHOW TABLE EXTENDED`'s
 /// `information` column.

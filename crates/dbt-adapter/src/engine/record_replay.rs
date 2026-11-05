@@ -19,9 +19,9 @@ use minijinja::State;
 use crate::cache::RelationCache;
 use crate::engine::query_comment::QueryCommentConfig;
 use crate::engine::retry::QueryRetryPolicy;
-use crate::metadata::clickhouse::ClickHouseCapabilities;
 use crate::sql_types::TypeOps;
 use crate::stmt_splitter::StmtSplitter;
+use dbt_adapter_engine::clickhouse::ClickHouseCapabilities;
 
 use super::adapter_engine::{AdapterEngine, Options};
 use super::adbc::assert_connection_on_pool_worker;

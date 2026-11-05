@@ -1,10 +1,10 @@
 use crate::AdapterResult;
 use crate::metadata::databricks::schemas::DatabricksDescribeTableExtended;
 use crate::metadata::*;
-use crate::record_batch::RecordBatchExt;
 use crate::sql_types::{TypeOps, make_arrow_field_v2};
 use arrow::array::{RecordBatch, StringArray};
 use arrow_schema::{Field, Schema};
+use dbt_adapter_engine::record_batch::RecordBatchExt;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

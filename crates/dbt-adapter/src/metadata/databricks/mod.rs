@@ -47,7 +47,6 @@ use crate::metadata::freshness_overrides::{
 use crate::metadata::get_relation::table_format_from_provider;
 use crate::metadata::*;
 use crate::query_ctx::query_ctx_from_state;
-use crate::record_batch::RecordBatchExt;
 use crate::relation::Relation;
 use crate::relation::config_v2::RelationConfig;
 use crate::relation::databricks::config::{
@@ -57,6 +56,7 @@ use crate::relation::databricks::is_shallow_clone_type;
 use crate::sql_types::{TypeOps, make_arrow_field_v2};
 use crate::time_machine::{args_freshness_with_overrides, with_time_machine_metadata_wrapper};
 use crate::{AdapterEngine, AdapterResponse};
+use dbt_adapter_engine::record_batch::RecordBatchExt;
 
 pub mod dbr_capabilities;
 pub mod describe_json;

@@ -29,9 +29,6 @@ pub use record_replay::RecordReplayEngine;
 mod sidecar;
 pub use sidecar::SidecarEngine;
 
-pub(crate) mod clickhouse;
-pub(crate) mod duckdb;
-
 /// Execute query and retry in case of an error. Retry is done (up to
 /// the given limit) regardless of the error encountered.
 ///

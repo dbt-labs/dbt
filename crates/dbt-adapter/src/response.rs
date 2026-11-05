@@ -14,8 +14,9 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::engine::AdapterEngine;
-use crate::record_batch::{RecordBatchExt, SNOWFLAKE_DML_COLUMNS, SchemaExt};
+use crate::record_batch::{SNOWFLAKE_DML_COLUMNS, SchemaExt};
 use crate::value::none_value;
+use dbt_adapter_engine::record_batch::RecordBatchExt;
 
 const KEY_MESSAGE: &str = "message";
 const KEY_MESSAGE_ALIAS: &str = "_message";
@@ -232,7 +233,7 @@ impl AdapterResponse {
             response = response.with_rows_affected(rows);
         }
 
-        let query_id = query_id_from_record_batch(batch, adapter_type);
+        let query_id = batch.query_id(adapter_type);
         if let Some(query_id) = query_id {
             response = response.with_query_id(query_id);
         }
@@ -297,21 +298,6 @@ impl AdapterResponse {
             self = self.with(KEY_PROJECT_ID, project_id.into_owned());
         }
         self
-    }
-}
-
-pub(crate) fn query_id_from_record_batch(
-    batch: &RecordBatch,
-    adapter_type: AdapterType,
-) -> Option<String> {
-    match adapter_type {
-        AdapterType::Snowflake => batch.meta_string(adbc::snowflake::schema_metadata::QUERY_ID),
-        AdapterType::Bigquery => batch.meta_string(adbc::bigquery::schema_metadata::QUERY_ID),
-        AdapterType::Databricks => batch.meta_string(adbc::databricks::schema_metadata::QUERY_ID),
-        AdapterType::LakeCompute => {
-            batch.meta_string(adbc::lake_compute::schema_metadata::QUERY_ID)
-        }
-        _ => None,
     }
 }
 

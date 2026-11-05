@@ -5,7 +5,6 @@ use crate::metadata::{
     RelationVec, create_schemas_if_not_exists, run_schema_cache_map_reduce,
     with_relation_list_item_span,
 };
-use crate::record_batch::RecordBatchExt;
 use crate::relation::Relation;
 use crate::sql_types::{TypeOps, make_arrow_field};
 use crate::{AdapterEngine, AdapterType};
@@ -14,6 +13,7 @@ use arrow_schema::Schema;
 use dbt_adapter_core::ExecutionPhase;
 use dbt_adapter_engine::MapReduce;
 use dbt_adapter_engine::cow::uppercase;
+use dbt_adapter_engine::record_batch::RecordBatchExt;
 use dbt_adbc::QueryCtx;
 use dbt_common::cancellation::CancellationToken;
 use dbt_common::{AdapterError, Cancellable};

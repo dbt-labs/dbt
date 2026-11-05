@@ -7,13 +7,14 @@ use crate::metadata::freshness_overrides::{
 };
 use crate::metadata::*;
 use crate::query_ctx::query_ctx_from_state;
-use crate::record_batch::{RecordBatchExt, StructArrayExt};
+use crate::record_batch::StructArrayExt;
 use crate::relation::Relation;
 use crate::time_machine::{
     args_freshness, args_freshness_with_overrides, global_replayer,
     with_time_machine_metadata_wrapper,
 };
 use crate::{AdapterEngine, AdapterResult};
+use dbt_adapter_engine::record_batch::RecordBatchExt;
 
 use arrow_array::*;
 use arrow_schema::*;

@@ -28,10 +28,10 @@ use dbt_adapter::errors::{AdapterError, AdapterErrorKind, Cancellable, into_fs_e
 use dbt_adapter::metadata::{
     FreshnessOverride, MetadataAdapter, MetadataFreshness, MetadataQueryOptions,
 };
-use dbt_adapter::record_batch::RecordBatchExt;
 use dbt_adapter::relation::{RelationObject, create_relation, create_relation_from_node};
 use dbt_adapter::sql_types::TypeOps;
 use dbt_adapter_core::AdapterType;
+use dbt_adapter_engine::record_batch::RecordBatchExt;
 use dbt_adbc::QueryCtx;
 use dbt_common::adapter::dialect_of;
 use dbt_common::cancellation::CancellationToken;

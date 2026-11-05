@@ -7,13 +7,15 @@ use adbc_core::options::OptionValue;
 
 pub mod behavior;
 
+pub mod clickhouse;
+pub mod databricks;
+pub mod duckdb;
+
 pub mod concat_batches;
 
 /// Cow module for managing copy-on-write data structures (mostly strings).
 pub mod cow;
 
-pub mod databricks;
-pub mod duckdb;
 pub mod errors;
 pub mod load_catalogs;
 
@@ -23,6 +25,7 @@ pub use map_reduce::MapReduce;
 
 pub mod noop_connection;
 pub mod query_comment;
+pub mod record_batch;
 pub mod retry;
 pub mod sidecar_client;
 pub mod statement;

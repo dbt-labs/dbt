@@ -2417,7 +2417,8 @@ mod compare_record_batches_tests {
         Schema, TimeUnit,
     };
     use arrow::util::pretty::pretty_format_batches;
-    use dbt_adapter::record_batch::RecordBatchExt;
+    use dbt_adapter::record_batch::jsonify_column;
+    use dbt_adapter_engine::record_batch::RecordBatchExt;
     use dbt_agate::AgateTable;
     use std::sync::Arc;
 
@@ -2426,7 +2427,7 @@ mod compare_record_batches_tests {
     }
 
     fn databricks_table(batch: arrow::array::RecordBatch) -> AgateTable {
-        let display = batch.clone().jsonify_nested_columns();
+        let display = batch.clone().jsonify_nested_columns(jsonify_column);
         AgateTable::from_record_batch_impl(Arc::new(display), Some(Arc::new(batch)), None)
     }
 
