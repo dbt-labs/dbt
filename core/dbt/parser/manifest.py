@@ -2251,7 +2251,7 @@ def _process_metric_node(
                         node=metric,
                     )
                 unique_id = (
-                    f"{NodeType.SemanticModel}.{current_project}.{semantic_model_dependency}"
+                    f"{NodeType.SemanticModel}.{metric.package_name}.{semantic_model_dependency}"
                 )
                 metric.depends_on.add_node(unique_id)
             if metric.type is MetricType.CUMULATIVE:
