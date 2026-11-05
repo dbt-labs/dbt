@@ -1,8 +1,10 @@
 use crate::{
     TelemetryOutputFlags,
-    emit::{create_root_info_span, emit_debug_event, emit_info_event},
+    emit::{create_debug_span, create_root_info_span, emit_debug_event, emit_info_event},
     error::TracingError,
-    init::create_tracing_subcriber_with_layer,
+    init::{
+        create_tracing_subcriber_with_layer, create_tracing_subscriber_with_layer_and_rust_log,
+    },
     layer::ConsumerLayer,
 };
 
@@ -102,4 +104,80 @@ fn generic_subscriber_rejects_invalid_directives() {
     };
 
     assert!(matches!(error, TracingError::InvalidFilterDirective(_)));
+}
+
+#[test]
+fn infrastructure_spans_remain_enabled_when_rust_log_filters_their_levels() {
+    for rust_log in ["warn", "info"] {
+        let trace_id = rand::random::<u128>();
+        let (test_layer, _, _, _) = TestLayer::new();
+        let subscriber = create_tracing_subscriber_with_layer_and_rust_log(
+            LevelFilter::DEBUG,
+            rust_log,
+            test_data_layer(
+                trace_id,
+                None,
+                false,
+                std::iter::empty(),
+                std::iter::once(Box::new(test_layer) as ConsumerLayer),
+            ),
+            &["dbt_tracing::emit=debug"],
+        )
+        .expect("test tracing filter directives must be valid");
+
+        tracing::subscriber::with_default(subscriber, || {
+            let process_span = tracing::info_span!(
+                target: "dbt_tracing::init",
+                "__tracing_process_span__"
+            );
+            assert!(process_span.id().is_some());
+
+            let structural_span = create_debug_span(MockDynSpanEvent {
+                name: "structural".to_string(),
+                flags: TelemetryOutputFlags::ALL,
+                ..Default::default()
+            });
+            assert!(structural_span.id().is_some());
+
+            let unrelated_span = tracing::debug_span!(target: "unrelated_target", "unrelated");
+            assert!(unrelated_span.id().is_none());
+        });
+    }
+}
+
+#[test]
+fn infrastructure_directives_override_explicit_rust_log_target_filters() {
+    let trace_id = rand::random::<u128>();
+    let (test_layer, _, _, _) = TestLayer::new();
+    let subscriber = create_tracing_subscriber_with_layer_and_rust_log(
+        LevelFilter::DEBUG,
+        "dbt_tracing::init=off,dbt_tracing::emit=off,unrelated_target=off",
+        test_data_layer(
+            trace_id,
+            None,
+            false,
+            std::iter::empty(),
+            std::iter::once(Box::new(test_layer) as ConsumerLayer),
+        ),
+        &["dbt_tracing::emit=debug"],
+    )
+    .expect("test tracing filter directives must be valid");
+
+    tracing::subscriber::with_default(subscriber, || {
+        let process_span = tracing::info_span!(
+            target: "dbt_tracing::init",
+            "__tracing_process_span__"
+        );
+        assert!(process_span.id().is_some());
+
+        let structural_span = create_debug_span(MockDynSpanEvent {
+            name: "structural".to_string(),
+            flags: TelemetryOutputFlags::ALL,
+            ..Default::default()
+        });
+        assert!(structural_span.id().is_some());
+
+        let unrelated_span = tracing::info_span!(target: "unrelated_target", "unrelated");
+        assert!(unrelated_span.id().is_none());
+    });
 }

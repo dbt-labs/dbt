@@ -29,6 +29,8 @@ const DBT_TRACING_FILTER_DIRECTIVES: &[&str] = &[
     "reqwest=off",
     "ureq=off",
     "opentelemetry=off",
+    // Keep structural spans alive for SpanManager; sink filters still control output.
+    "dbt_tracing::emit=debug",
 ];
 
 /// Maps dbt output verbosity to the base subscriber cap.

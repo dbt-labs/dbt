@@ -1,0 +1,7 @@
+kind: Fixes
+body: Prevent debug builds from panicking when RUST_LOG filters infrastructure tracing spans
+time: 2026-08-14T02:14:01+05:30
+custom:
+    author: ""
+    issue: ""
+    project: dbt-core
