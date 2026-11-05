@@ -1,5 +1,7 @@
 use chrono::{DateTime, LocalResult, NaiveDateTime, TimeZone};
 use chrono_tz::{Tz, TZ_VARIANTS};
+use minijinja::value::mutable_set::MutableSet;
+use minijinja::value::{Enumerator, Object, ObjectRepr};
 use minijinja::{Error, ErrorKind, Value};
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
@@ -79,9 +81,85 @@ pub fn create_pytz_namespace() -> BTreeMap<String, Value> {
         "utc".to_string(),
         Value::from_object(PytzTimezone::new(chrono_tz::UTC)),
     );
+    pytz_module.insert(
+        "all_timezones".to_string(),
+        Value::from_object(AllTimezones),
+    );
+    pytz_module.insert(
+        "all_timezones_set".to_string(),
+        Value::from_object(AllTimezonesSet::default()),
+    );
     // You could also add "utc", "country", etc.
 
     pytz_module
+}
+
+/// `pytz.all_timezones`: a read-only list view over the static `TZ_VARIANTS`,
+/// which is already alphabetized like the pytz list.
+///
+/// XXX: This implementation avoids copying `TZ_VARIANTS` into a new list, but it
+/// does mean that the list is read-only and does not support methods like `.pop()`.
+/// Since this is a pytz constant, we're considering this a preferable tradeoff.
+/// If users end up needing to mutate `pytz.all_timezones` for some reason, we can
+/// swap this implementation to match `AllTimezonesSet`.
+#[derive(Debug)]
+struct AllTimezones;
+
+impl Object for AllTimezones {
+    fn repr(self: &Arc<Self>) -> ObjectRepr {
+        ObjectRepr::Seq
+    }
+
+    // Reported as mutable so that it renders and concatenates as a list, not a tuple.
+    fn is_mutable(self: &Arc<Self>) -> bool {
+        true
+    }
+
+    fn get_value(self: &Arc<Self>, key: &Value) -> Option<Value> {
+        let tz = TZ_VARIANTS.get(key.as_usize()?)?;
+        Some(Value::from(tz.name()))
+    }
+
+    fn enumerate(self: &Arc<Self>) -> Enumerator {
+        Enumerator::Seq(TZ_VARIANTS.len())
+    }
+}
+
+/// `pytz.all_timezones_set`: like pytz, the set is only populated once it is used.
+#[derive(Debug, Default)]
+struct AllTimezonesSet {
+    set: OnceLock<Arc<MutableSet>>,
+}
+
+impl AllTimezonesSet {
+    fn set(&self) -> &Arc<MutableSet> {
+        self.set
+            .get_or_init(|| Arc::new(TZ_VARIANTS.iter().map(|tz| tz.name()).collect()))
+    }
+}
+
+impl Object for AllTimezonesSet {
+    fn repr(self: &Arc<Self>) -> ObjectRepr {
+        ObjectRepr::Seq
+    }
+
+    fn is_mutable(self: &Arc<Self>) -> bool {
+        true
+    }
+
+    fn enumerate(self: &Arc<Self>) -> Enumerator {
+        self.set().enumerate()
+    }
+
+    fn call_method(
+        self: &Arc<Self>,
+        state: &minijinja::State<'_, '_>,
+        method: &str,
+        args: &[Value],
+        listeners: &[std::rc::Rc<dyn minijinja::listener::RenderingEventListener>],
+    ) -> Result<Value, Error> {
+        self.set().call_method(state, method, args, listeners)
+    }
 }
 
 /// The top-level function for `pytz.timezone("America/New_York")`.
@@ -323,6 +401,21 @@ mod tests {
             new_york.get_attr("zone").unwrap(),
             Value::from("America/New_York")
         );
+    }
+
+    #[test]
+    fn test_tz_variants_are_alphabetized() {
+        // `all_timezones` exposes `TZ_VARIANTS` as is and relies on this order.
+        assert!(TZ_VARIANTS.windows(2).all(|w| w[0].name() < w[1].name()));
+    }
+
+    #[test]
+    fn test_all_timezones_set_is_lazy() {
+        let lazy = Arc::new(AllTimezonesSet::default());
+        assert!(lazy.set.get().is_none());
+
+        assert_eq!(lazy.enumerator_len(), Some(TZ_VARIANTS.len()));
+        assert!(lazy.set.get().is_some());
     }
 
     #[test]
