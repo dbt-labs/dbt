@@ -336,6 +336,9 @@ pub struct ResourceCounts {
     /// total count of checks (project quality checks under `checks/`) in the project.
     #[prost(int32, tag = "20")]
     pub checks: i32,
+    /// total count of enabled functions (user-defined functions) in the project.
+    #[prost(int32, tag = "21")]
+    pub functions: i32,
 }
 impl ::prost::Name for ResourceCounts {
     const NAME: &'static str = "ResourceCounts";
