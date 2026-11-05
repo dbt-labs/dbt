@@ -600,7 +600,21 @@ pub trait BaseRelation: BaseRelationProperties + Any + Send + Sync + fmt::Debug 
             }
             AdapterType::Starburst => todo!("Starburst"),
             AdapterType::Athena => todo!("Athena"),
-            AdapterType::Trino => todo!("Trino"),
+            // Trino does not coerce a string literal to a timestamp in a comparison, so the
+            // UTC boundary is cast explicitly. Its cast rejects the RFC 3339 `T` separator
+            // ("Value cannot be cast to timestamp"), so it is replaced by a space.
+            AdapterType::Trino => {
+                let to_trino_ts = |s: &str| {
+                    format!(
+                        "cast('{}' as timestamp(6) with time zone)",
+                        s.replacen('T', " ", 1)
+                    )
+                };
+                (
+                    start.map(|start| format!("{event_time} >= {}", to_trino_ts(&start))),
+                    end.map(|end| format!("{event_time} < {}", to_trino_ts(&end))),
+                )
+            }
             AdapterType::Datafusion => todo!("Datafusion"),
             AdapterType::Dremio => todo!("Dremio"),
             AdapterType::Oracle => todo!("Oracle"),

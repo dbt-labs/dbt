@@ -24,6 +24,10 @@ use crate::value::columns_to_value;
 static LOG_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"([^(]+)(\([^)]+\))?").expect("A valid regex"));
 
+/// The maximum length of a Trino varchar, `VarcharType.MAX_LENGTH`, as in dbt-trino.
+/// https://github.com/starburstdata/dbt-trino/blob/d7b73f6/dbt/adapters/trino/column.py#L9
+const TRINO_VARCHAR_MAX_LENGTH: u32 = 2_147_483_646;
+
 /// Matches a COLLATE clause such as `COLLATE 'en-ci'` (case-insensitive).
 static COLLATION_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)\s+COLLATE\s+'([^']+)'").expect("A valid regex"));
@@ -254,6 +258,13 @@ impl ColumnStatic {
                 "INTEGER" => "Int32",
                 _ => column_type,
             },
+            // TrinoColumn.TYPE_LABELS: Trino has no TEXT or FLOAT type.
+            // https://github.com/starburstdata/dbt-trino/blob/d7b73f6/dbt/adapters/trino/column.py#L15
+            AdapterType::Trino => match uppercase(column_type.into()).as_ref() {
+                "STRING" => "VARCHAR",
+                "FLOAT" => "DOUBLE",
+                _ => column_type,
+            },
             // https://github.com/dbt-labs/dbt-adapters/blob/fed0e2e7a2e252175dcc9caccbdd91d354ac6a9d/dbt-adapters/src/dbt/adapters/base/column.py#L24
             _ => match uppercase(column_type.into()).as_ref() {
                 "STRING" => "TEXT",
@@ -288,6 +299,11 @@ impl ColumnStatic {
             // ClickHouseColumn.string_type ignores the size: always plain String,
             // never FixedString (would break contract comparisons and ALTERs).
             AdapterType::ClickHouse => "String".to_string(),
+            // https://github.com/starburstdata/dbt-trino/blob/d7b73f6/dbt/adapters/trino/column.py#L52
+            AdapterType::Trino => match size {
+                Some(size) => format!("varchar({size})"),
+                _ => "varchar".to_string(),
+            },
             _ => match size {
                 Some(size) => format!("character varying({size})"),
                 _ => "character varying".to_string(),
@@ -302,12 +318,22 @@ impl ColumnStatic {
         name: &str,
         raw_data_type: &str,
     ) -> Result<Column, minijinja::Error> {
-        // TODO(serramatutu): why is this Snowflake specific in non-Snowflake specific trait?
-        // It seems like it is used by other adapters as well... (tested with BigQuery)
-        let mut col = Column::try_from_snowflake_raw_data_type(name, raw_data_type)
-            .map_err(|msg| minijinja::Error::new(minijinja::ErrorKind::InvalidArgument, msg))?;
-        col._adapter_type = self.0;
-        Ok(col)
+        match self.0 {
+            AdapterType::Trino => Ok(Column::from_trino_type(
+                name.to_string(),
+                raw_data_type.trim().to_string(),
+            )),
+            _ => {
+                // TODO(serramatutu): why is this Snowflake specific in non-Snowflake specific trait?
+                // It seems like it is used by other adapters as well... (tested with BigQuery)
+                let mut col = Column::try_from_snowflake_raw_data_type(name, raw_data_type)
+                    .map_err(|msg| {
+                        minijinja::Error::new(minijinja::ErrorKind::InvalidArgument, msg)
+                    })?;
+                col._adapter_type = self.0;
+                Ok(col)
+            }
+        }
     }
 
     /// https://github.com/databricks/dbt-databricks/blob/822b105b15e644676d9e1f47cbfd765cd4c1541f/dbt/adapters/databricks/column.py#L66
@@ -832,6 +858,48 @@ impl Column {
         })
     }
 
+    /// A Trino column in the shape dbt-trino's `TrinoColumn.from_description` gives it: the
+    /// dtype of `varchar`, `char` and `decimal` is the bare name, with the parameters of the
+    /// parsed type in `char_size`, `numeric_precision` and `numeric_scale`; every other type
+    /// keeps its full text, so `timestamp(3) with time zone` and `row(a integer)` keep their
+    /// parameters. `type_text`, the full type, is kept as the original SQL type.
+    ///
+    /// https://github.com/starburstdata/dbt-trino/blob/d7b73f6/dbt/adapters/trino/column.py#L63
+    pub(crate) fn from_trino_type(name: String, type_text: String) -> Self {
+        let char_size = |size: Option<usize>| size.and_then(|size| u32::try_from(size).ok());
+        let (core_dtype, char_size, numeric_precision, numeric_scale) =
+            match SqlType::parse(AdapterType::Trino, &type_text) {
+                Ok((SqlType::Varchar(size, _), _)) => {
+                    ("varchar".to_string(), char_size(size), None, None)
+                }
+                Ok((SqlType::Char(size), _)) => ("char".to_string(), char_size(size), None, None),
+                Ok((SqlType::Numeric(params), _)) => (
+                    "decimal".to_string(),
+                    None,
+                    params.map(|(precision, _)| u64::from(precision)),
+                    params
+                        .and_then(|(_, scale)| scale)
+                        .and_then(|scale| u64::try_from(scale).ok()),
+                ),
+                _ => (type_text.clone(), None, None, None),
+            };
+        Self {
+            _adapter_type: AdapterType::Trino,
+            _nullable: None,
+            _repeated: None,
+            _fields: Vec::new(),
+            original_sql_str: Some(type_text),
+            name,
+            comment: None,
+            core_data_type: core_dtype.clone(),
+            core_dtype,
+            char_size,
+            numeric_precision,
+            numeric_scale,
+            collation: None,
+        }
+    }
+
     pub fn mode(&self) -> BigqueryColumnMode {
         match (self._nullable, self._repeated) {
             (_, Some(true)) => BigqueryColumnMode::Repeated,
@@ -893,6 +961,16 @@ impl Column {
         if self.core_dtype == "text" || self.char_size.is_none() {
             let size = match self._adapter_type {
                 AdapterType::Snowflake => 16777216,
+                // A Trino dtype can carry its size; an unbounded varchar holds up to the
+                // maximum length and a bare char is `char(1)`, as in dbt-trino.
+                // https://github.com/starburstdata/dbt-trino/blob/d7b73f6/dbt/adapters/trino/column.py#L55
+                AdapterType::Trino => match self.sql_type() {
+                    Some(SqlType::Varchar(Some(size), _) | SqlType::Char(Some(size))) => {
+                        u32::try_from(size).unwrap_or(TRINO_VARCHAR_MAX_LENGTH)
+                    }
+                    Some(SqlType::Varchar(None, _)) => TRINO_VARCHAR_MAX_LENGTH,
+                    _ => 1,
+                },
                 _ => 256,
             };
             Ok(size)
@@ -918,8 +996,17 @@ impl Column {
             .to_lowercase()
     }
 
+    /// The dtype parsed as a SQL type of this column's adapter.
+    fn sql_type(&self) -> Option<SqlType> {
+        SqlType::parse(self._adapter_type, &self.core_dtype)
+            .ok()
+            .map(|(sql_type, _nullable)| sql_type)
+    }
+
     fn is_numeric(&self) -> bool {
         match self._adapter_type {
+            // https://github.com/starburstdata/dbt-trino/blob/d7b73f6/dbt/adapters/trino/column.py#L48
+            AdapterType::Trino => matches!(self.sql_type(), Some(SqlType::Numeric(_))),
             AdapterType::Bigquery => {
                 matches!(self.core_dtype.to_lowercase().as_str(), "numeric")
             }
@@ -954,6 +1041,10 @@ impl Column {
 
     fn is_integer(&self) -> bool {
         match self._adapter_type {
+            AdapterType::Trino => matches!(
+                self.sql_type(),
+                Some(SqlType::TinyInt | SqlType::SmallInt | SqlType::Integer | SqlType::BigInt)
+            ),
             AdapterType::Bigquery => {
                 matches!(self.core_dtype.to_lowercase().as_str(), "int64")
             }
@@ -993,6 +1084,10 @@ impl Column {
 
     fn is_float(&self) -> bool {
         match self._adapter_type {
+            AdapterType::Trino => matches!(
+                self.sql_type(),
+                Some(SqlType::Real | SqlType::Float(_) | SqlType::Double)
+            ),
             AdapterType::Bigquery => {
                 matches!(self.core_dtype.to_lowercase().as_str(), "float64")
             }
@@ -1023,6 +1118,11 @@ impl Column {
 
     fn is_string(&self) -> bool {
         match self._adapter_type {
+            // https://github.com/starburstdata/dbt-trino/blob/d7b73f6/dbt/adapters/trino/column.py#L29
+            AdapterType::Trino => matches!(
+                self.sql_type(),
+                Some(SqlType::Varchar(..) | SqlType::Char(_))
+            ),
             AdapterType::Bigquery | AdapterType::ClickHouse => {
                 matches!(
                     self.core_dtype.to_lowercase().as_str(),
@@ -1109,6 +1209,21 @@ impl Column {
             // turn Databricks strings into `character varying(256)`.
             // https://github.com/databricks/dbt-databricks/blob/6cc739d473043d4e1c94be9ca391850edd02e7fb/dbt/adapters/databricks/column.py#L140-L142
             AdapterType::Databricks => self.core_dtype.clone(),
+            // A type that carries its parameters renders as is. An unbounded varchar stays
+            // unbounded rather than becoming varchar(256), as in dbt-trino, and char keeps
+            // its type.
+            // https://github.com/starburstdata/dbt-trino/blob/d7b73f6/dbt/adapters/trino/column.py#L21
+            AdapterType::Trino => match (self.sql_type(), self.char_size) {
+                (Some(SqlType::Varchar(None, _) | SqlType::Char(None)), Some(size)) => {
+                    format!("{}({size})", self.core_dtype)
+                }
+                (Some(SqlType::Numeric(None)), _) => self.as_static().numeric_type(
+                    &self.core_dtype,
+                    self.numeric_precision,
+                    self.numeric_scale,
+                ),
+                _ => self.core_dtype.clone(),
+            },
             _ => {
                 if self.is_string() {
                     self.as_static().string_type(Some(
@@ -1537,6 +1652,192 @@ mod tests {
         );
         for dtype in ["string", "STRING", "decimal(10,2)", "int"] {
             assert_eq!(databricks_column(dtype).data_type(), dtype);
+        }
+    }
+
+    fn trino_column(
+        dtype: &str,
+        char_size: Option<u32>,
+        precision_scale: Option<(u64, u64)>,
+    ) -> Column {
+        Column::new(
+            AdapterType::Trino,
+            "col".to_string(),
+            dtype.to_string(),
+            char_size,
+            precision_scale.map(|(precision, _)| precision),
+            precision_scale.map(|(_, scale)| scale),
+        )
+    }
+
+    /// The type predicates of dbt-trino's `TrinoColumn`, for bare and parameterized dtypes.
+    #[test]
+    fn trino_type_predicates() {
+        let cases = [
+            ("varchar", "string"),
+            ("varchar(10)", "string"),
+            ("char(3)", "string"),
+            ("tinyint", "integer"),
+            ("integer", "integer"),
+            ("bigint", "integer"),
+            ("real", "float"),
+            ("double", "float"),
+            ("decimal", "numeric"),
+            ("decimal(10,2)", "numeric"),
+            ("DECIMAL(38, 0)", "numeric"),
+            ("boolean", "none"),
+            ("timestamp(3)", "none"),
+            ("timestamp(6) with time zone", "none"),
+            ("array(varchar)", "none"),
+            ("row(a varchar)", "none"),
+            ("map(varchar, integer)", "none"),
+        ];
+        for (dtype, category) in cases {
+            let column = trino_column(dtype, None, None);
+            let actual = (
+                column.is_string(),
+                column.is_integer(),
+                column.is_float(),
+                column.is_numeric(),
+            );
+            let expected = (
+                category == "string",
+                category == "integer",
+                category == "float",
+                category == "numeric",
+            );
+            assert_eq!(actual, expected, "dtype {dtype:?}");
+        }
+    }
+
+    #[test]
+    fn trino_columns_render_and_expand_like_dbt_trino() {
+        // An unbounded varchar stays unbounded instead of becoming character varying(256).
+        jinja_assert(
+            trino_column("varchar", None, None),
+            "{{ obj.is_string() }}|{{ obj.string_size() }}|{{ obj.data_type }}",
+            "True|2147483646|varchar",
+        );
+        jinja_assert(
+            trino_column("varchar", Some(10), None),
+            "{{ obj.is_string() }}|{{ obj.string_size() }}|{{ obj.data_type }}",
+            "True|10|varchar(10)",
+        );
+        jinja_assert(
+            trino_column("varchar(10)", None, None),
+            "{{ obj.is_string() }}|{{ obj.string_size() }}|{{ obj.data_type }}",
+            "True|10|varchar(10)",
+        );
+        jinja_assert(
+            trino_column("decimal", None, Some((10, 2))),
+            "{{ obj.is_numeric() }}|{{ obj.is_number() }}|{{ obj.data_type }}",
+            "True|True|decimal(10,2)",
+        );
+        jinja_assert(
+            trino_column("decimal(10,2)", None, None),
+            "{{ obj.is_numeric() }}|{{ obj.data_type }}",
+            "True|decimal(10,2)",
+        );
+        for dtype in [
+            "char(3)",
+            "timestamp(3)",
+            "timestamp(6) with time zone",
+            "row(a integer)",
+        ] {
+            assert_eq!(trino_column(dtype, None, None).data_type(), dtype);
+        }
+
+        let varchar = |dtype: &str, size| trino_column(dtype, size, None);
+        assert!(
+            varchar("varchar", Some(10))
+                .can_expand_to(&varchar("varchar", Some(20)))
+                .unwrap()
+        );
+        assert!(
+            varchar("varchar(10)", None)
+                .can_expand_to(&varchar("varchar(20)", None))
+                .unwrap()
+        );
+        assert!(
+            varchar("varchar(10)", None)
+                .can_expand_to(&varchar("varchar", None))
+                .unwrap()
+        );
+        assert!(
+            !varchar("varchar(20)", None)
+                .can_expand_to(&varchar("varchar(10)", None))
+                .unwrap()
+        );
+
+        let column = ColumnStatic::new(AdapterType::Trino);
+        assert_eq!(column.string_type(Some(20)), "varchar(20)");
+        assert_eq!(column.translate_type("string"), "VARCHAR");
+        assert_eq!(column.translate_type("float"), "DOUBLE");
+    }
+
+    /// `trino__get_columns_in_relation` builds columns with `Column.from_description` from
+    /// `information_schema.columns.data_type`.
+    #[test]
+    fn trino_from_description() {
+        let column = ColumnStatic::new(AdapterType::Trino);
+        for (data_type, dtype, char_size, precision, scale, rendered) in [
+            (
+                "varchar(10)",
+                "varchar",
+                Some(10),
+                None,
+                None,
+                "varchar(10)",
+            ),
+            ("varchar", "varchar", None, None, None, "varchar"),
+            ("char(3)", "char", Some(3), None, None, "char(3)"),
+            (
+                "decimal(10,2)",
+                "decimal",
+                None,
+                Some(10),
+                Some(2),
+                "decimal(10,2)",
+            ),
+            (
+                "timestamp(3)",
+                "timestamp(3)",
+                None,
+                None,
+                None,
+                "timestamp(3)",
+            ),
+            (
+                "timestamp(6) with time zone",
+                "timestamp(6) with time zone",
+                None,
+                None,
+                None,
+                "timestamp(6) with time zone",
+            ),
+            (
+                "row(a integer, b varchar(3))",
+                "row(a integer, b varchar(3))",
+                None,
+                None,
+                None,
+                "row(a integer, b varchar(3))",
+            ),
+        ] {
+            let parsed = column.from_description("col", data_type).unwrap();
+            // The full type stays the original SQL type, which unit tests parse.
+            assert_eq!(parsed.original_sql_str(), Some(data_type));
+            assert_eq!(
+                (
+                    parsed.dtype(),
+                    parsed.char_size(),
+                    parsed.numeric_precision(),
+                    parsed.numeric_scale(),
+                    parsed.data_type().as_str(),
+                ),
+                (dtype, char_size, precision, scale, rendered),
+                "{data_type}"
+            );
         }
     }
 

@@ -1,5 +1,5 @@
 use dbt_adapter_core::AdapterType;
-use dbt_common::FsResult;
+use dbt_common::{ErrorCode, FsResult, fs_err};
 use dbt_schemas::schemas::profiles::DbConfig;
 
 mod bigquery_config;
@@ -111,7 +111,10 @@ impl ProfileSetup {
             }
             Trino => {
                 let _c0 = unwrap_db_config!(Trino);
-                todo!("setup_trino_profile")
+                Err(fs_err!(
+                    ErrorCode::InvalidArgument,
+                    "dbt init does not support trino yet; write profiles.yml by hand"
+                ))
             }
             Datafusion => {
                 let _c0 = unwrap_db_config!(Datafusion);

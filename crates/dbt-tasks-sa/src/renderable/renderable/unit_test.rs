@@ -5883,6 +5883,96 @@ mod tests {
         );
     }
 
+    /// Trino columns keep their full type as the original SQL type, so the unit-test schema
+    /// keeps decimal and varchar parameters and timestamp precision.
+    #[test]
+    fn test_columns_to_schema_trino_keeps_type_parameters() {
+        let type_ops = DefaultTypeOps::new(AdapterType::Trino);
+        let field = |name: &str, data_type, metadata: &[(&str, &str)]| {
+            Arc::new(
+                Field::new(name, data_type, true).with_metadata(
+                    metadata
+                        .iter()
+                        .map(|(k, v)| (k.to_string(), v.to_string()))
+                        .collect(),
+                ),
+            )
+        };
+        let columns: Vec<Arc<Column>> = [
+            field(
+                "d",
+                DataType::Decimal64(10, 2),
+                &[
+                    ("sql.database_type_name", "DECIMAL"),
+                    ("sql.precision", "10"),
+                    ("sql.scale", "2"),
+                ],
+            ),
+            field(
+                "ts",
+                DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+                &[
+                    ("sql.database_type_name", "TIMESTAMP WITH TIME ZONE"),
+                    ("sql.fractional_seconds_precision", "6"),
+                ],
+            ),
+        ]
+        .iter()
+        .map(|field| {
+            ColumnBuilder::new(AdapterType::Trino)
+                .build(field, &type_ops)
+                .unwrap()
+                .into()
+        })
+        .collect();
+        let schema = columns_to_schema(&type_ops, &columns, "unit_test.p.t").unwrap();
+        assert_eq!(schema.field(0).data_type(), &DataType::Decimal128(10, 2));
+        assert_eq!(
+            schema.field(1).data_type(),
+            &DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()))
+        );
+    }
+
+    /// Trino fixture casts of nested columns use Trino's ARRAY(..), ROW(..) and MAP(..).
+    #[test]
+    fn test_columns_to_formatted_types_trino_nested_types() {
+        let type_ops = DefaultTypeOps::new(AdapterType::Trino);
+        let schema = Arc::new(Schema::new(vec![
+            make_arrow_field(&type_ops, "tags".to_string(), "array(varchar)", None, None).unwrap(),
+            make_arrow_field(
+                &type_ops,
+                "point".to_string(),
+                "row(x integer, labels array(varchar))",
+                None,
+                None,
+            )
+            .unwrap(),
+            make_arrow_field(
+                &type_ops,
+                "attrs".to_string(),
+                "map(varchar, integer)",
+                None,
+                None,
+            )
+            .unwrap(),
+        ]));
+
+        let formatted: Vec<String> = columns_to_formatted_types(&schema, &type_ops)
+            .unwrap()
+            .into_iter()
+            .map(|(_, _, formatted)| formatted)
+            .collect();
+
+        assert_eq!(
+            formatted,
+            vec![
+                "ARRAY(VARCHAR)",
+                "ROW(x INTEGER, labels ARRAY(VARCHAR))",
+                "MAP(VARCHAR, INTEGER)"
+            ]
+        );
+    }
+
     #[test]
     fn test_create_values_bigquery_preserves_inferred_logical_types() {
         let type_ops = DefaultTypeOps::new(AdapterType::Bigquery);
