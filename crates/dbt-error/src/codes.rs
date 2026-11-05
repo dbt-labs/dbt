@@ -357,6 +357,15 @@ pub enum ErrorCode {
     DocsGenerateWarning = 1705,
 
     // --------------------------------------------------------------------------------------------
+    // Format
+    /// `dbt format` left a file unchanged because its rendered SQL has a segment the parser
+    /// could not match. A warning, or an error under `--check`.
+    FormatSkippedUnparsable = 1750,
+    /// `dbt format` left a file unchanged because formatting did not converge within
+    /// `runaway_limit` passes. A warning, or an error under `--check`.
+    FormatSkippedLoopLimit = 1751,
+
+    // --------------------------------------------------------------------------------------------
     // Agent skills
     /// `ai_provider` names a harness dbt has no destination directory for.
     UnknownAiProvider = 1800,
