@@ -2606,7 +2606,11 @@ fn is_supported_type(adapter_type: AdapterType, ref_type: &DataType) -> bool {
             }
             AdapterType::DuckDB => {
                 // DuckDB distinct types are wrapped as FixedSizeList(Field(name, ..), 1)
-                matches!(ref_type, DataType::FixedSizeList(_, 1))
+                match ref_type {
+                    DataType::FixedSizeList(_, 1) => true,
+                    DataType::List(element) => is_supported_type(adapter_type, element.data_type()),
+                    _ => false,
+                }
             }
             _ => false,
         }
@@ -5238,6 +5242,65 @@ mod tests {
 
     fn struct_of(fields: Vec<Field>) -> DataType {
         DataType::Struct(fields.into())
+    }
+
+    #[test]
+    fn test_duckdb_list_fixture_element_types() {
+        let type_ops = DefaultTypeOps::new(AdapterType::DuckDB);
+        for element in [
+            struct_of(vec![Field::new("x", DataType::Int64, true)]),
+            map_type(DataType::Int64),
+        ] {
+            for data_type in [list_of(element.clone()), list_of(list_of(element))] {
+                let schema = Arc::new(Schema::new(vec![Field::new("items", data_type, true)]));
+                let rows = vec![BTreeMap::from([(
+                    "items".to_string(),
+                    yml_seq(vec![yml_map(vec![("x", YmlValue::number(1.into()))])]),
+                )])];
+                let error = create_values(
+                    &schema,
+                    &rows,
+                    AdapterType::DuckDB,
+                    &type_ops,
+                    None,
+                    "fixture_input",
+                    false,
+                )
+                .unwrap_err();
+                assert_contains!(error.to_string(), "Only primitive types");
+            }
+        }
+
+        for (data_type, value) in [
+            (
+                list_of(DataType::Int64),
+                yml_seq(vec![YmlValue::number(1.into())]),
+            ),
+            (
+                list_of(list_of(DataType::Int64)),
+                yml_seq(vec![yml_seq(vec![YmlValue::number(1.into())])]),
+            ),
+        ] {
+            let schema = Arc::new(Schema::new(vec![Field::new("items", data_type, true)]));
+            let rows = vec![BTreeMap::from([("items".to_string(), value)])];
+            let sql = create_values(
+                &schema,
+                &rows,
+                AdapterType::DuckDB,
+                &type_ops,
+                None,
+                "fixture_input",
+                false,
+            )
+            .unwrap();
+            let sql = sql
+                .strip_prefix("{% raw %}")
+                .unwrap()
+                .strip_suffix("{% endraw %}")
+                .unwrap();
+            sqlparser::parser::Parser::parse_sql(&sqlparser::dialect::DuckDbDialect {}, sql)
+                .expect("scalar list fixtures must produce valid DuckDB SQL");
+        }
     }
 
     #[test]
