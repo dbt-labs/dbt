@@ -1,0 +1,7 @@
+kind: Fixes
+body: Propagate a v2 semantic YAML metric's `fill_nulls_with` into `type_params.fill_nulls_with`
+  so it is no longer silently dropped from the manifest and semantic manifest
+time: 2026-08-05T00:00:00.000000+00:00
+custom:
+    Author: charlie-liner
+    Issue: "13037"
