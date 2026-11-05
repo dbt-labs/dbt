@@ -455,6 +455,22 @@ pub async fn resolve_data_tests(
             })
             .collect(),
     );
+    // A YAML `adapter` is known before the render, so the render picks it over the project tree.
+    // `raw_code_config` is the map the generated `config()` call is built from.
+    let adapter_layer = Some(
+        collected_generic_tests
+            .iter()
+            .filter_map(|test_asset| {
+                let adapter = test_asset.raw_code_config.get("adapter")?;
+                let adapter = dbt_yaml::from_value::<AdapterType>(adapter.clone()).ok()?;
+                let layer = DataTestConfig {
+                    adapter: Some(adapter),
+                    ..Default::default()
+                };
+                Some((test_asset.dbt_asset.path.clone(), layer))
+            })
+            .collect(),
+    );
 
     let render_ctx = RenderCtx {
         inner: Arc::new(RenderCtxInner {
@@ -462,6 +478,7 @@ pub async fn resolve_data_tests(
             root_project_name: root_package.dbt_project.name.clone(),
             config_resolver,
             adapter_hint,
+            adapter_layer,
             parse_adapter_scopes: Some(parse_adapter_scopes.clone()),
             adapter_quoting: root_project_configs.adapter_quoting.clone(),
             package_quoting,
@@ -938,6 +955,7 @@ pub async fn resolve_data_tests(
         package.dbt_project.name.as_str(),
         &root_package.dbt_project.name,
         runtime_config,
+        parse_adapter_scopes,
         token,
     )
     .await?;

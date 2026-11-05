@@ -38,7 +38,7 @@ use dbt_jinja_utils::{
 };
 use dbt_loader::args::*;
 use dbt_parser::args::ResolveArgs;
-use dbt_parser::resolver::unit_test_macro_override_warnings;
+use dbt_parser::resolver::{lake_compute_unit_test_warnings, unit_test_macro_override_warnings};
 use dbt_scheduler::args::SchedulerArgs;
 use dbt_schema_store::{
     SchemaStoreTrait,
@@ -1847,6 +1847,13 @@ impl DbtProjectCompilation {
             &self.resolved_state.macros,
             &jinja_env,
             dbt_dispatch_search_order,
+        ) {
+            emit_warn_log_from_fs_error(warning);
+        }
+        for warning in lake_compute_unit_test_warnings(
+            arg.command,
+            &self.resolved_state.nodes,
+            &schedule.selected_nodes,
         ) {
             emit_warn_log_from_fs_error(warning);
         }

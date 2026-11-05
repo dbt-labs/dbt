@@ -1,4 +1,4 @@
-//! Per-adapter identity a node resolves against during the parse phase.
+//! Per-adapter identity a node resolves against at parse, compile and run.
 
 use std::{
     borrow::Cow,
@@ -15,7 +15,7 @@ use serde::Serialize;
 
 use crate::phases::utils::{TargetGlobals, build_target_globals};
 
-/// What a node of one adapter type starts from at parse.
+/// What a node of one adapter type starts from at parse and renders with at compile and run.
 #[derive(Debug, Clone)]
 pub struct ParseAdapterScope {
     /// The adapter type of the nodes in this scope.
@@ -33,6 +33,20 @@ impl ParseAdapterScope {
     /// The overlay's dialect: `None` for the default, undeclared and LakeCompute adapters.
     pub fn dialect(&self) -> Option<&MinijinjaValue> {
         self.overlay.get(DIALECT)
+    }
+
+    /// Shadows the env's `target` and `env` in `ctx` with this adapter's.
+    pub fn insert_target(&self, ctx: &mut BTreeMap<String, MinijinjaValue>) {
+        for key in ["target", "env"] {
+            if let Some(value) = self.overlay.get(key) {
+                ctx.insert(key.to_string(), value.clone());
+            }
+        }
+    }
+
+    /// Shadows the env's `target`, `env`, `database`, `schema` and, when present, `dialect`.
+    pub(crate) fn insert_overlay(&self, ctx: &mut BTreeMap<String, MinijinjaValue>) {
+        ctx.extend(self.overlay.iter().map(|(k, v)| (k.clone(), v.clone())));
     }
 }
 
@@ -108,7 +122,7 @@ impl ParseAdapterScopes {
             return Ok(Cow::Borrowed(base));
         };
         let mut ctx = base.clone();
-        ctx.extend(scope.overlay.iter().map(|(k, v)| (k.clone(), v.clone())));
+        scope.insert_overlay(&mut ctx);
         Ok(Cow::Owned(ctx))
     }
 }
@@ -354,6 +368,35 @@ mod tests {
     }
 
     #[test]
+    fn insert_target_and_insert_overlay_shadow_the_scope_keys() {
+        let scopes =
+            ParseAdapterScopes::from_profile(&profile(vec![snowflake(), bigquery(Some("bq_ds"))]));
+        let scope = scopes.get(AdapterType::Bigquery).unwrap();
+        let mut ctx = BTreeMap::new();
+        scope.insert_target(&mut ctx);
+        assert_eq!(
+            ctx.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["env", "target"]
+        );
+        for key in ["target", "env"] {
+            assert_eq!(ctx[key], scope.overlay[key], "{key}");
+        }
+        let mut ctx = BTreeMap::new();
+        scope.insert_overlay(&mut ctx);
+        assert_eq!(ctx, scope.overlay);
+        assert_eq!(
+            ctx.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["database", "dialect", "env", "schema", "target"]
+        );
+
+        let mut ctx = BTreeMap::new();
+        let default = scopes.get(AdapterType::Snowflake).unwrap();
+        default.insert_target(&mut ctx);
+        default.insert_overlay(&mut ctx);
+        assert!(ctx.is_empty());
+    }
+
+    #[test]
     fn a_misconfigured_secondary_fails_only_for_itself() {
         let scopes = ParseAdapterScopes::from_profile(&profile(vec![snowflake(), bigquery(None)]));
         let err = scopes.get(AdapterType::Bigquery).unwrap_err();
@@ -416,5 +459,13 @@ mod tests {
         assert_eq!(scope.overlay["database"].as_str(), Some("ANALYTICS"));
         // No dialect: its naming macros resolve through the default's family.
         assert!(!scope.overlay.contains_key(DIALECT));
+        // Its own `target` still reaches the parse render.
+        let mut ctx = BTreeMap::new();
+        scope.insert_overlay(&mut ctx);
+        assert_eq!(
+            ctx["target"].get_attr("type").unwrap().as_str(),
+            Some("lakecompute")
+        );
+        assert!(!ctx.contains_key(DIALECT));
     }
 }
