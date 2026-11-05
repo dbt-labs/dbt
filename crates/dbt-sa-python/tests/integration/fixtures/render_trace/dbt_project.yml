@@ -1,0 +1,6 @@
+name: render_trace
+version: '1.0'
+config-version: 2
+profile: render_trace
+model-paths: [models]
+macro-paths: [macros]

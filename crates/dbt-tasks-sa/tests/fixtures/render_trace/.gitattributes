@@ -1,0 +1,3 @@
+# Preserve the exact bytes used by render-trace offsets.
+*.sql text eol=lf
+*.json text eol=lf

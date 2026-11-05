@@ -2,7 +2,7 @@ use std::{cell::RefCell, fmt, rc::Rc};
 
 /// Tracks the current location (line, column, byte index) in the output buffer.
 /// This is used for macro span tracking during rendering.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct OutputTrackerLocation {
     line: RefCell<u32>,
     col: RefCell<u32>,
@@ -23,6 +23,13 @@ impl OutputTrackerLocation {
             col: RefCell::new(1),
             index: RefCell::new(0),
         }
+    }
+
+    /// Restore a position after evaluating a buffer that has not been emitted yet.
+    pub(crate) fn restore(&self, saved: &Self) {
+        self.line.replace(saved.line());
+        self.col.replace(saved.col());
+        self.index.replace(saved.index());
     }
 
     /// Returns the current line number (1-based).

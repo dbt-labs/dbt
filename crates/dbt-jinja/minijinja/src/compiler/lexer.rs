@@ -780,7 +780,6 @@ impl<'s> Tokenizer<'s> {
         &mut self,
         ws_start: Whitespace,
     ) -> Result<ControlFlow<(Token<'s>, Span)>, Error> {
-        let old_loc = self.loc();
         let mut ptr = 0;
         while let Some(block) = memstr(&self.rest_bytes()[ptr..], self.block_start().as_bytes()) {
             ptr += block + self.block_start().len();
@@ -790,9 +789,6 @@ impl<'s> Tokenizer<'s> {
                 let ws = Whitespace::from_byte(self.rest_bytes().get(ptr).copied());
                 let end = ptr - self.block_start().len();
                 let mut result = &self.rest()[..end];
-                self.advance(end);
-                let span = self.span(old_loc);
-                self.advance(self.block_start().len() + endraw);
                 match ws_start {
                     Whitespace::Default if self.ws_config.trim_blocks => {
                         if result.starts_with('\r') {
@@ -807,11 +803,19 @@ impl<'s> Tokenizer<'s> {
                     }
                     _ => {}
                 }
+                let leading_trim = end - result.len();
                 result = match ws {
                     Whitespace::Default if self.ws_config.lstrip_blocks => lstrip_block(result),
                     Whitespace::Remove => result.trim_end(),
                     _ => result,
                 };
+                // The literal span covers only the emitted payload, including
+                // correct line/column positions after whitespace control.
+                self.advance(leading_trim);
+                let payload_start = self.loc();
+                self.advance(result.len());
+                let span = self.span(payload_start);
+                self.advance(end - leading_trim - result.len() + self.block_start().len() + endraw);
                 self.handle_tail_ws(ws_next);
                 return Ok(ControlFlow::Break((Token::TemplateData(result), span)));
             }
@@ -1150,6 +1154,43 @@ mod tests {
         while let Ok(Some((token, span))) = token_stream.next() {
             if let Token::BlockEnd = token {
                 assert_eq!(span.end_line, 3)
+            }
+        }
+    }
+
+    fn assert_raw_payload_span(source: &str, ws_config: WhitespaceConfig) {
+        for token in tokenize(source, false, SyntaxConfig::default(), ws_config) {
+            let (token, span) = token.unwrap();
+            let Token::TemplateData(raw) = token else {
+                continue;
+            };
+            assert_eq!(
+                &source[span.start_offset as usize..span.end_offset as usize],
+                raw
+            );
+            if raw == "λ 😀" {
+                assert_eq!((span.start_line, span.start_col), (3, 3));
+                assert_eq!((span.end_line, span.end_col), (3, 6));
+            }
+        }
+    }
+
+    #[test]
+    fn raw_payload_spans_follow_whitespace_control() {
+        for ws_config in [
+            WhitespaceConfig::default(),
+            WhitespaceConfig {
+                trim_blocks: true,
+                lstrip_blocks: true,
+                keep_trailing_newline: true,
+            },
+        ] {
+            for source in [
+                "{% raw -%} select 1 {%- endraw %}",
+                "pre\n{% raw -%}\r\n  λ 😀 \n {%- endraw %}tail",
+                "{% raw %}\r\n  λ\n    {% endraw %}",
+            ] {
+                assert_raw_payload_span(source, ws_config);
             }
         }
     }

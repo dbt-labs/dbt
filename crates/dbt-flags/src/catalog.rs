@@ -79,6 +79,20 @@ pub static LOCK_WITH_STATE: FlagDef = FlagDef {
     docs_url: None,
 };
 
+/// Export execution provenance from the real model Jinja render.
+pub static WRITE_RENDER_TRACE: FlagDef = FlagDef {
+    name: "write_render_trace",
+    description: "Write experimental model render-provenance artifacts.",
+    stage: Stage::Internal,
+    default: false,
+    remote: Remote::Never,
+    aliases: &[],
+    legacy_env: &[],
+    tracking: None,
+    remove_by: None,
+    docs_url: None,
+};
+
 /// Every flag declared in this crate.
 pub static ALL: &[&FlagDef] = &[
     &GIT_DEPS_FAST_PATH,
@@ -86,6 +100,7 @@ pub static ALL: &[&FlagDef] = &[
     &LATEST_VERSION_POINTER_ENABLED_BY_DEFAULT,
     &FRONTEND_LIBRARY,
     &LOCK_WITH_STATE,
+    &WRITE_RENDER_TRACE,
 ];
 
 #[cfg(test)]

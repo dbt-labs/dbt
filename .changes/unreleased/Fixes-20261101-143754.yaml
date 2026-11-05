@@ -1,0 +1,7 @@
+kind: Fixes
+body: Correct Jinja first-item break/else behaviour, super() expression bookkeeping, and buffered-output and raw-payload source positions.
+time: 2026-11-01T14:37:54.9141345Z
+custom:
+    author: alanmcruickshank
+    issue: ""
+    project: dbt-core
