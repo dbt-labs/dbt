@@ -164,6 +164,7 @@ fn create_merged_db_config(
                 keyfile_json: None,
                 execution_project: None,
                 api_endpoint: None,
+                storage_read_api_endpoint: None,
                 compute_region: None,
                 dataproc_batch: None,
                 dataproc_cluster_name: None,
@@ -271,6 +272,7 @@ fn create_merged_db_config(
                     retries: bigquery.retries.map(|r| r as i64),
                     scopes: bigquery.scopes.clone(),
                     api_endpoint: None,
+                    storage_read_api_endpoint: None,
                     // Authentication details - these could be used to construct keyfile_json
                     client_id: Some(bigquery.client_id.clone()),
                     token_uri: Some(bigquery.token_uri.clone()),
@@ -327,6 +329,7 @@ fn create_merged_db_config(
                     retries: bigquery_v1.retries.map(|r| r as i64),
                     scopes: bigquery_v1.scopes.clone(),
                     api_endpoint: None,
+                    storage_read_api_endpoint: None,
                     gcs_bucket: bigquery_v1.gcs_bucket.clone(),
                     dataproc_cluster_name: bigquery_v1.dataproc_cluster_name.clone(),
                     job_retry_deadline_seconds: bigquery_v1

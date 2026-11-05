@@ -3,7 +3,6 @@ use database::Builder as DatabaseBuilder;
 use dbt_adbc::bigquery::auth_type;
 use dbt_adbc::{Backend, bigquery, database};
 use serde::{Deserialize, Serialize};
-use std::borrow::Cow;
 use std::path::Path;
 use url::Url;
 
@@ -140,40 +139,40 @@ impl<'a> BigqueryAuthIR<'a> {
 /// Identity provider `type`s accepted in `token_endpoint` for `external-oauth-wif`.
 const SUPPORTED_TOKEN_ENDPOINT_TYPES: &[&str] = &["entra"];
 
-// The bigquery ADBC driver appends "bigquery/v2/" to the hostname provided
-// in `api_endpoint`.
-//
-// Here, we reject anything that can't be transformed into "http(s)://host[:port]/"
-// to fit that routine's preconditions.
-fn validate_api_endpoint<'a>(
-    endpoint: &'a str,
-    warning_printer: &dyn AuthWarningPrinter,
-) -> Result<Cow<'a, str>, AuthError> {
-    let url = Url::parse(endpoint).map_err(|_| {
-        AuthError::config(format!(
-            "'api_endpoint' must start with 'http://' or 'https://': {endpoint:?}"
-        ))
-    })?;
+/// An `http(s)://host[:port]/` URL with nothing after the host.
+struct HostEndpoint(Url);
 
-    if url.scheme() != "http" && url.scheme() != "https" {
-        return Err(AuthError::config(format!(
-            "'api_endpoint' must start with 'http://' or 'https://': {endpoint:?}"
-        )));
+impl HostEndpoint {
+    fn parse(key: &str, endpoint: &str) -> Result<Self, AuthError> {
+        let url = Url::parse(endpoint)
+            .ok()
+            .filter(|url| url.scheme() == "http" || url.scheme() == "https")
+            .ok_or_else(|| {
+                AuthError::config(format!(
+                    "'{key}' must start with 'http://' or 'https://': {endpoint:?}"
+                ))
+            })?;
+
+        if url.path() != "/" || url.query().is_some() || url.fragment().is_some() {
+            return Err(AuthError::config(format!(
+                "'{key}' must be a bare host (with optional port), e.g. 'https://your-proxy.example.com/': {endpoint:?}"
+            )));
+        }
+
+        Ok(Self(url))
     }
 
-    if url.path() != "/" || url.query().is_some() || url.fragment().is_some() {
-        return Err(AuthError::config(format!(
-            "'api_endpoint' must be a bare host (with optional port), e.g. 'https://your-proxy.example.com/': {endpoint:?}"
-        )));
+    /// `http(s)://host[:port]/`, which the driver appends "bigquery/v2/" to.
+    fn url(&self) -> &str {
+        self.0.as_str()
     }
 
-    if !endpoint.ends_with('/') {
-        warning_printer.warn(&format!(
-            "'api_endpoint' is missing a trailing '/', which dbt appends automatically. We suggest setting it to '{endpoint}/' instead."
-        ));
-        Ok(Cow::Owned(format!("{endpoint}/")))
-    } else {
-        Ok(Cow::Borrowed(endpoint))
+    /// `host:port`, which the gRPC client dials.
+    fn host_port(&self) -> String {
+        // An http(s) URL always has a host and a known default port.
+        let host = self.0.host_str().unwrap_or_default();
+        let port = self.0.port_or_known_default().unwrap_or(443);
+        format!("{host}:{port}")
     }
 }
 
@@ -350,9 +349,19 @@ fn apply_connection_args(
     let dataset_id = dataset_id(config)?;
     builder.with_named_option(bigquery::DATASET_ID, dataset_id)?;
 
-    if let Some(api_endpoint) = config.get_str("api_endpoint") {
-        let api_endpoint = validate_api_endpoint(api_endpoint, warning_printer)?;
-        builder.with_named_option(bigquery::API_ENDPOINT, api_endpoint.into_owned())?;
+    if let Some(raw) = config.get_str("api_endpoint") {
+        let endpoint = HostEndpoint::parse("api_endpoint", raw)?;
+        if !raw.ends_with('/') {
+            warning_printer.warn(&format!(
+                "'api_endpoint' is missing a trailing '/', which dbt appends automatically. We suggest setting it to '{raw}/' instead."
+            ));
+        }
+        builder.with_named_option(bigquery::API_ENDPOINT, endpoint.url())?;
+    }
+
+    if let Some(raw) = config.get_str("storage_read_api_endpoint") {
+        let endpoint = HostEndpoint::parse("storage_read_api_endpoint", raw)?;
+        builder.with_named_option(bigquery::STORAGE_READ_API_ENDPOINT, endpoint.host_port())?;
     }
 
     if let Some(location) = config.get_str("location") {
@@ -690,6 +699,86 @@ api_endpoint: definitely-not-bigquery.invalid/
         let config = dbt_yaml::from_str::<Mapping>(yaml_doc).unwrap();
         let err = try_configure(config).unwrap_err();
         assert_contains!(err.msg(), "http://' or 'https://'");
+    }
+
+    #[test]
+    fn test_builder_from_auth_config_storage_read_api_endpoint() {
+        let yaml_doc = r#"
+database: my_db
+schema: my_schema
+method: oauth
+storage_read_api_endpoint: https://definitely-not-bigquerystorage.invalid
+"#;
+        let config = dbt_yaml::from_str::<Mapping>(yaml_doc).unwrap();
+        let builder = try_configure(config).unwrap();
+        assert_eq!(
+            other_option_value(&builder, bigquery::STORAGE_READ_API_ENDPOINT).unwrap(),
+            "definitely-not-bigquerystorage.invalid:443"
+        );
+        assert!(other_option_value(&builder, bigquery::API_ENDPOINT).is_none());
+    }
+
+    #[test]
+    fn test_builder_from_auth_config_storage_read_api_endpoint_keeps_port() {
+        let yaml_doc = r#"
+database: my_db
+schema: my_schema
+method: oauth
+storage_read_api_endpoint: http://localhost:9060/
+"#;
+        let config = dbt_yaml::from_str::<Mapping>(yaml_doc).unwrap();
+        let builder = try_configure(config).unwrap();
+        assert_eq!(
+            other_option_value(&builder, bigquery::STORAGE_READ_API_ENDPOINT).unwrap(),
+            "localhost:9060"
+        );
+    }
+
+    #[test]
+    fn test_builder_from_auth_config_api_endpoint_and_storage_read_api_endpoint() {
+        let yaml_doc = r#"
+database: my_db
+schema: my_schema
+method: oauth
+api_endpoint: https://definitely-not-bigquery.invalid/
+storage_read_api_endpoint: https://definitely-not-bigquerystorage.invalid:8443/
+"#;
+        let config = dbt_yaml::from_str::<Mapping>(yaml_doc).unwrap();
+        let builder = try_configure(config).unwrap();
+        assert_eq!(
+            other_option_value(&builder, bigquery::API_ENDPOINT).unwrap(),
+            "https://definitely-not-bigquery.invalid/"
+        );
+        assert_eq!(
+            other_option_value(&builder, bigquery::STORAGE_READ_API_ENDPOINT).unwrap(),
+            "definitely-not-bigquerystorage.invalid:8443"
+        );
+    }
+
+    #[test]
+    fn test_builder_from_auth_config_storage_read_api_endpoint_rejects_path() {
+        let yaml_doc = r#"
+database: my_db
+schema: my_schema
+method: oauth
+storage_read_api_endpoint: https://bigquerystorage.googleapis.com/v1/
+"#;
+        let config = dbt_yaml::from_str::<Mapping>(yaml_doc).unwrap();
+        let err = try_configure(config).unwrap_err();
+        assert_contains!(err.msg(), "'storage_read_api_endpoint' must be a bare host");
+    }
+
+    #[test]
+    fn test_builder_from_auth_config_storage_read_api_endpoint_rejects_missing_scheme() {
+        let yaml_doc = r#"
+database: my_db
+schema: my_schema
+method: oauth
+storage_read_api_endpoint: bigquerystorage.googleapis.com:443
+"#;
+        let config = dbt_yaml::from_str::<Mapping>(yaml_doc).unwrap();
+        let err = try_configure(config).unwrap_err();
+        assert_contains!(err.msg(), "'storage_read_api_endpoint' must start with");
     }
 
     #[test]

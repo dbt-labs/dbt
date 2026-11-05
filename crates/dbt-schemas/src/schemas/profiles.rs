@@ -240,6 +240,7 @@ impl DbConfig {
                 "execution_project",
                 "schema",
                 "api_endpoint",
+                "storage_read_api_endpoint",
                 "location",
                 "priority",
                 "maximum_bytes_billed",
@@ -991,6 +992,8 @@ pub struct BigqueryDbConfig {
     pub execution_project: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub api_endpoint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub storage_read_api_endpoint: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub compute_region: Option<String>,
     // TODO: support this https://docs.getdbt.com/docs/core/connect-data-platform/bigquery-setup
