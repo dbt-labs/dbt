@@ -1,0 +1,7 @@
+kind: Fixes
+body: Make `TargetNotFoundError` and related compile exceptions picklable when raised
+  with keyword arguments, so they no longer hang `multiprocessing` pools
+time: 2026-10-04T21:48:00.000000-07:00
+custom:
+    Author: officialpm
+    Issue: "10527"
