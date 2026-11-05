@@ -5,6 +5,7 @@ use std::sync::Arc;
 use arrow::array::{Array as _, StringArray};
 use dbt_adapter_core::AdapterType;
 use dbt_adapter_engine::cow::uppercase;
+use dbt_adapter_sql::ident::{Ident, escape_string_literal};
 use dbt_adbc::QueryCtx;
 use dbt_common::tracing::dbt_emit::emit_warn_log_message;
 use dbt_common::{AdapterError, AdapterErrorKind, AdapterResult, ErrorCode};
@@ -19,6 +20,7 @@ use crate::formatter::SqlLiteralFormatter;
 use crate::metadata::bigquery;
 use crate::metadata::bigquery::is_bigquery_not_found_error;
 use crate::metadata::databricks::describe_table::DatabricksTableMetadata;
+use crate::metadata::databricks::{databricks_metadata_value, databricks_query_identifier};
 use crate::metadata::{snowflake, try_canonicalize_bool_column_field};
 use crate::relation::Relation;
 use crate::relation::databricks::is_shallow_clone_type;
@@ -136,16 +138,9 @@ fn snowflake_get_relation(
     identifier: &str,
     token: CancellationToken,
 ) -> AdapterResult<Option<Box<dyn BaseRelation>>> {
-    let quoted_database = if adapter.quoting().database {
-        adapter.quote(database)
-    } else {
-        database.to_string()
-    };
-    let quoted_schema = if adapter.quoting().schema {
-        adapter.quote(schema)
-    } else {
-        schema.to_string()
-    };
+    let quoted_database =
+        snowflake::snowflake_relation_identifier(database, adapter.quoting().database);
+    let quoted_schema = snowflake::snowflake_relation_identifier(schema, adapter.quoting().schema);
     let quoted_identifier = if adapter.quoting().identifier {
         identifier.to_string()
     } else {
@@ -487,28 +482,8 @@ fn spark_get_relation(
     identifier: &str,
     token: CancellationToken,
 ) -> AdapterResult<Option<Box<dyn BaseRelation>>> {
-    let query_schema = if adapter.quoting().schema {
-        adapter.quote(schema)
-    } else {
-        schema.to_string()
-    };
-    let query_identifier = if adapter.quoting().identifier {
-        adapter.quote(identifier)
-    } else {
-        identifier.to_string()
-    };
-    // Spark relations are usually 2-part, but schema-enabled Fabric
-    // lakehouses carry the lakehouse name in `database` (3-part).
-    let query_prefix = if database.is_empty() {
-        String::new()
-    } else if adapter.quoting().database {
-        format!("{}.", adapter.quote(database))
-    } else {
-        format!("{database}.")
-    };
-
     // Spark 3.5 does not support AS JSON
-    let sql = format!("DESCRIBE TABLE EXTENDED {query_prefix}{query_schema}.{query_identifier}");
+    let sql = spark_get_relation_sql(database, schema, identifier, adapter.quoting());
     let batch = adapter
         .engine()
         .execute(Some(state), conn.as_mut(), ctx, &sql, token);
@@ -543,6 +518,30 @@ fn spark_get_relation(
     )))
 }
 
+fn spark_get_relation_sql(
+    database: &str,
+    schema: &str,
+    identifier: &str,
+    quoting: dbt_schemas::schemas::common::ResolvedQuoting,
+) -> String {
+    let render = |value: &str, quote: bool| {
+        if quote {
+            dbt_adapter_sql::ident::quote_identifier(value, AdapterType::Spark)
+        } else {
+            Ident::new(value, AdapterType::Spark)
+                .display(AdapterType::Spark)
+                .to_string()
+        }
+    };
+    let mut parts = Vec::with_capacity(3);
+    if !database.is_empty() {
+        parts.push(render(database, quoting.database));
+    }
+    parts.push(render(schema, quoting.schema));
+    parts.push(render(identifier, quoting.identifier));
+    format!("DESCRIBE TABLE EXTENDED {}", parts.join("."))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn databricks_get_relation(
     adapter: &AdapterImpl,
@@ -561,21 +560,9 @@ fn databricks_get_relation(
 
     // This function is only called when full metadata is needed. See https://github.com/databricks/dbt-databricks/blob/822b105b15e644676d9e1f47cbfd765cd4c1541f/dbt/adapters/databricks/impl.py#L418
 
-    let query_catalog = if adapter.quoting().database {
-        adapter.quote(database)
-    } else {
-        database.to_string()
-    };
-    let query_schema = if adapter.quoting().schema {
-        adapter.quote(schema)
-    } else {
-        schema.to_string()
-    };
-    let query_identifier = if adapter.quoting().identifier {
-        adapter.quote(identifier)
-    } else {
-        identifier.to_string()
-    };
+    let query_catalog = databricks_query_identifier(database, adapter.quoting().database);
+    let query_schema = databricks_query_identifier(schema, adapter.quoting().schema);
+    let query_identifier = databricks_query_identifier(identifier, adapter.quoting().identifier);
 
     // Determine whether `DESCRIBE TABLE EXTENDED ... AS JSON` is supported.
     // This mirrors the safety checks in list_relations_schemas_inner:
@@ -698,6 +685,37 @@ fn databricks_get_relation(
     )))
 }
 
+fn redshift_get_relation_sql(schema: &str, identifier: &str) -> String {
+    let query_schema = escape_string_literal(schema, AdapterType::Redshift);
+    let query_identifier = escape_string_literal(identifier, AdapterType::Redshift);
+
+    format!(
+        "WITH materialized_views AS (
+    SELECT TRIM(name) AS object_name, 'materialized_view'::text AS object_type
+    FROM svv_mv_info
+    WHERE TRIM(schema_name) ILIKE '{query_schema}'
+        AND TRIM(name) ILIKE '{query_identifier}'
+),
+all_objects AS (
+    SELECT table_name AS object_name,
+        CASE
+            WHEN table_type ILIKE 'BASE TABLE' THEN 'table'::text
+            WHEN table_type ILIKE 'VIEW' THEN 'view'::text
+            ELSE 'table'
+        END AS object_type
+    FROM svv_tables
+    WHERE table_schema ILIKE '{query_schema}'
+        AND table_name ILIKE '{query_identifier}'
+)
+SELECT
+    COALESCE(mv.object_name, ao.object_name) AS object_name,
+    COALESCE(mv.object_type, ao.object_type) AS object_type
+FROM all_objects ao
+LEFT JOIN materialized_views mv
+    ON ao.object_name = mv.object_name"
+    )
+}
+
 /// Returns whether the table is a shallow clone, from `information_schema.tables.table_type`.
 /// Uses the relation cache when it has the table. Warns and returns `false` if the lookup fails.
 #[allow(clippy::too_many_arguments)]
@@ -740,12 +758,7 @@ fn databricks_is_shallow_clone(
     }
 
     // Unity Catalog stores identifiers in lowercase in information_schema.
-    let sql = format!(
-        "SELECT table_type FROM {query_catalog}.information_schema.tables \
-         WHERE table_schema = '{}' AND table_name = '{}'",
-        schema.to_lowercase(),
-        identifier.to_lowercase()
-    );
+    let sql = databricks_shallow_clone_sql(query_catalog, schema, identifier);
     let result = adapter
         .engine()
         .execute(Some(state), conn.as_mut(), ctx, &sql, token)
@@ -762,6 +775,15 @@ fn databricks_is_shallow_clone(
             false
         }
     }
+}
+
+fn databricks_shallow_clone_sql(query_catalog: &str, schema: &str, identifier: &str) -> String {
+    let schema = databricks_metadata_value(schema);
+    let identifier = databricks_metadata_value(identifier);
+    format!(
+        "SELECT table_type FROM {query_catalog}.information_schema.tables \
+         WHERE table_schema = {schema} AND table_name = {identifier}"
+    )
 }
 
 /// Reads `information_schema.tables.table_type` from a one-relation lookup; no row means
@@ -792,33 +814,7 @@ fn redshift_get_relation(
     } else {
         schema.to_lowercase()
     };
-
-    // determine table, view, or materialized view
-    let sql = format!(
-        "WITH materialized_views AS (
-    SELECT TRIM(name) AS object_name, 'materialized_view'::text AS object_type
-    FROM svv_mv_info
-    WHERE TRIM(schema_name) ILIKE '{query_schema}'
-        AND TRIM(name) ILIKE '{identifier}'
-),
-all_objects AS (
-    SELECT table_name AS object_name,
-        CASE
-            WHEN table_type ILIKE 'BASE TABLE' THEN 'table'::text
-            WHEN table_type ILIKE 'VIEW' THEN 'view'::text
-            ELSE 'table'
-        END AS object_type
-    FROM svv_tables
-    WHERE table_schema ILIKE '{query_schema}'
-        AND table_name ILIKE '{identifier}'
-)
-SELECT
-    COALESCE(mv.object_name, ao.object_name) AS object_name,
-    COALESCE(mv.object_type, ao.object_type) AS object_type
-FROM all_objects ao
-LEFT JOIN materialized_views mv
-    ON ao.object_name = mv.object_name"
-    );
+    let sql = redshift_get_relation_sql(&query_schema, identifier);
 
     let batch = adapter
         .engine()
@@ -882,24 +878,7 @@ fn postgres_get_relation(
         identifier.to_lowercase()
     };
 
-    let sql = format!(
-        r#"
-            select 'table' as type
-            from pg_tables
-            where schemaname = '{query_schema}'
-              and tablename = '{query_identifier}'
-            union all
-            select 'view' as type
-            from pg_views
-            where schemaname = '{query_schema}'
-              and viewname = '{query_identifier}'
-            union all
-            select 'materialized_view' as type
-            from pg_matviews
-            where schemaname = '{query_schema}'
-              and matviewname = '{query_identifier}'
-            "#,
-    );
+    let sql = postgres_get_relation_sql(&query_schema, &query_identifier);
 
     let batch = adapter
         .engine()
@@ -934,6 +913,39 @@ fn postgres_get_relation(
     .with_quoting(adapter.quoting())
     .validate()?;
     Ok(Some(Box::new(relation)))
+}
+
+fn postgres_get_relation_sql(schema: &str, identifier: &str) -> String {
+    let query_schema = postgres_string_literal(schema);
+    let query_identifier = postgres_string_literal(identifier);
+    format!(
+        r#"
+            select 'table' as type
+            from pg_tables
+            where schemaname = {query_schema}
+              and tablename = {query_identifier}
+            union all
+            select 'view' as type
+            from pg_views
+            where schemaname = {query_schema}
+              and viewname = {query_identifier}
+            union all
+            select 'materialized_view' as type
+            from pg_matviews
+            where schemaname = {query_schema}
+              and matviewname = {query_identifier}
+            "#,
+    )
+}
+
+fn postgres_string_literal(value: &str) -> String {
+    let escaped = escape_string_literal(value, AdapterType::Postgres);
+    // Backslash-escaped output from the Postgres arm requires an E'...' literal.
+    if value.contains('\\') {
+        format!("E'{escaped}'")
+    } else {
+        format!("'{escaped}'")
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1108,8 +1120,8 @@ fn duckdb_get_relation(
             WHERE table_schema = '{}'
               AND table_name = '{}'
         "#,
-        dbt_adapter_sql::ident::escape_string_literal(&query_schema, AdapterType::DuckDB),
-        dbt_adapter_sql::ident::escape_string_literal(&query_identifier, AdapterType::DuckDB),
+        escape_string_literal(&query_schema, AdapterType::DuckDB),
+        escape_string_literal(&query_identifier, AdapterType::DuckDB),
     );
 
     let batch = adapter
@@ -1281,6 +1293,7 @@ fn clickhouse_get_relation(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::stmt_splitter::{DefaultStmtSplitter, StmtSplitter};
     use arrow::array::StringArray;
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::record_batch::RecordBatch;
@@ -1300,6 +1313,76 @@ mod tests {
             ],
         )
         .unwrap()
+    }
+
+    #[test]
+    fn databricks_shallow_clone_sql_escapes_metadata_values() {
+        let sql = databricks_shallow_clone_sql("`catalog`", "SCHEMA'", "TABLE\\");
+        assert!(sql.contains("table_schema = decode(unhex('736368656D6127'), 'UTF-8')"));
+        assert!(sql.contains("table_name = decode(unhex('7461626C655C'), 'UTF-8')"));
+        assert_eq!(
+            DefaultStmtSplitter.split(&sql, AdapterType::Databricks),
+            vec![sql.as_str()]
+        );
+    }
+
+    #[test]
+    fn redshift_get_relation_sql_escapes_schema_and_identifier() {
+        let sql = redshift_get_relation_sql(r"schema\'; SELECT 1; --", r"table\'; SELECT 2; --");
+
+        assert!(sql.contains(r"ILIKE 'schema\\''; SELECT 1; --'"));
+        assert!(sql.contains(r"ILIKE 'table\\''; SELECT 2; --'"));
+        assert_eq!(
+            DefaultStmtSplitter.split(&sql, AdapterType::Redshift),
+            vec![sql.as_str()]
+        );
+    }
+
+    #[test]
+    fn spark_get_relation_sql_safely_honors_disabled_quoting() {
+        let safe_sql = spark_get_relation_sql(
+            "catalog",
+            "schema",
+            "table_name",
+            dbt_schemas::schemas::common::ResolvedQuoting::falses(),
+        );
+        assert_eq!(
+            safe_sql,
+            "DESCRIBE TABLE EXTENDED catalog.schema.table_name"
+        );
+
+        let adversarial_sql = spark_get_relation_sql(
+            "cat; SELECT 1; --",
+            "sch`ema",
+            "table.name",
+            dbt_schemas::schemas::common::ResolvedQuoting::falses(),
+        );
+        assert_eq!(
+            adversarial_sql,
+            "DESCRIBE TABLE EXTENDED `cat; SELECT 1; --`.`sch``ema`.`table.name`"
+        );
+        assert_eq!(
+            DefaultStmtSplitter.split(&adversarial_sql, AdapterType::Spark),
+            vec![adversarial_sql.as_str()]
+        );
+    }
+
+    #[test]
+    fn postgres_get_relation_sql_escapes_schema_and_identifier() {
+        let ordinary_sql = postgres_get_relation_sql("analytics", "orders");
+        assert!(ordinary_sql.contains("schemaname = 'analytics'"));
+        assert!(ordinary_sql.contains("tablename = 'orders'"));
+
+        let sql = postgres_get_relation_sql(r"schema\'; SELECT 1; --", r"table\'; SELECT 2; --");
+
+        assert!(sql.contains(r"schemaname = E'schema\\''; SELECT 1; --'"));
+        assert!(sql.contains(r"tablename = E'table\\''; SELECT 2; --'"));
+        assert!(sql.contains(r"viewname = E'table\\''; SELECT 2; --'"));
+        assert!(sql.contains(r"matviewname = E'table\\''; SELECT 2; --'"));
+        assert_eq!(
+            DefaultStmtSplitter.split(&sql, AdapterType::Postgres).len(),
+            1
+        );
     }
 
     #[test]
@@ -1409,7 +1492,7 @@ mod tests {
             BTreeMap::new(),
             dbt_schemas::schemas::relations::DEFAULT_RESOLVED_QUOTING,
             Arc::new(crate::sql_types::DefaultTypeOps::new(AdapterType::Bigquery)),
-            Arc::new(crate::stmt_splitter::DefaultStmtSplitter),
+            Arc::new(DefaultStmtSplitter),
         )
     }
 

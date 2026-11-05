@@ -15,6 +15,7 @@ use arrow_array::{Array, RecordBatch, StringArray, UInt64Array};
 use dbt_adapter_core::ExecutionPhase;
 use dbt_adapter_engine::MapReduce;
 use dbt_adapter_engine::clickhouse::ClickHouseCapabilities;
+use dbt_adapter_sql::ident::quote_identifier;
 use dbt_adbc::{Connection, QueryCtx};
 use dbt_common::cancellation::Cancellable;
 use dbt_common::cancellation::CancellationToken;
@@ -38,6 +39,16 @@ use std::sync::Arc;
 /// string literals (see <https://clickhouse.com/docs/en/sql-reference/syntax#string>).
 pub(crate) fn escape_clickhouse_string_literal(value: &str) -> String {
     value.replace('\\', "\\\\").replace('\'', "\\'")
+}
+
+fn clickhouse_relation_sql_name(schema: &str, identifier: &str) -> String {
+    let identifier = quote_identifier(identifier, AdapterType::ClickHouse);
+    if schema.is_empty() {
+        identifier
+    } else {
+        let schema = quote_identifier(schema, AdapterType::ClickHouse);
+        format!("{schema}.{identifier}")
+    }
 }
 
 /// Mirrors dbt-clickhouse util.py `engine_can_atomic_exchange`.
@@ -392,7 +403,7 @@ impl MetadataAdapter for ClickHouseMetadataAdapter {
 
         // ClickHouse is a 2-part name system: dbt `schema` maps to CH `database`,
         // and the dbt `database` field is unused/empty. The DESCRIBE TABLE SQL must
-        // use `schema.identifier` (unquoted), but the HashMap key that callers look
+        // use `schema.identifier`, but the HashMap key that callers look
         // up via `schemas.get(&semantic_fqn)` must match `relation.semantic_fqn()`.
         // These two are different strings, so we carry both through MapReduce as a
         // tuple `(semantic_fqn, sql_name)`.
@@ -402,11 +413,7 @@ impl MetadataAdapter for ClickHouseMetadataAdapter {
                 let semantic_fqn = relation.semantic_fqn();
                 let schema = relation.schema_as_str().unwrap_or_default();
                 let identifier = relation.identifier_as_str().unwrap_or_default();
-                let sql_name = if schema.is_empty() {
-                    identifier
-                } else {
-                    format!("{schema}.{identifier}")
-                };
+                let sql_name = clickhouse_relation_sql_name(&schema, &identifier);
                 (semantic_fqn, sql_name)
             })
             .collect();
@@ -1288,9 +1295,23 @@ pub(crate) fn column_changes_value(
 mod tests {
     use super::*;
     use crate::sql_types::DefaultTypeOps;
-    use crate::stmt_splitter::DefaultStmtSplitter;
+    use crate::stmt_splitter::{DefaultStmtSplitter, StmtSplitter};
     use arrow_schema::{DataType, Field};
     use dbt_schemas::schemas::relations::DEFAULT_RESOLVED_QUOTING;
+
+    #[test]
+    fn clickhouse_relation_sql_name_keeps_adversarial_values_in_one_statement() {
+        let sql = format!(
+            "DESCRIBE TABLE {};",
+            clickhouse_relation_sql_name(r#"schema\"; SELECT 1; --"#, r#"table\"; SELECT 2; --"#,)
+        );
+
+        assert!(sql.contains("\"schema\\\\\"\"; SELECT 1; --\".\"table\\\\\"\"; SELECT 2; --\""));
+        assert_eq!(
+            DefaultStmtSplitter.split(&sql, AdapterType::ClickHouse),
+            vec![sql.trim_end_matches(';')]
+        );
+    }
 
     #[test]
     fn test_build_settings_str_mirrors_python() {

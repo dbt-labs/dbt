@@ -297,8 +297,10 @@ pub(crate) fn get_bool_config(engine: &dyn AdapterEngine, key: &str) -> AdapterR
 }
 
 pub fn quote_ident(adapter_type: AdapterType, identifier: &str) -> String {
-    let q = dbt_adapter_core::quote_char(adapter_type);
-    format!("{q}{identifier}{q}")
+    let quote = dbt_adapter_core::quote_char(adapter_type);
+    let escaped =
+        dbt_adapter_sql::ident::escape_identifier_content(identifier, adapter_type, quote);
+    format!("{quote}{escaped}{quote}")
 }
 
 pub fn quote_component(
@@ -1574,17 +1576,15 @@ impl AdapterImpl {
 
                 let quoting = relation.quote_policy();
 
-                let schema = if quoting.schema {
-                    relation.schema_as_quoted_str()?
-                } else {
-                    relation.schema_as_str()?
-                };
+                let schema = metadata::snowflake::snowflake_relation_identifier(
+                    &relation.schema_as_str()?,
+                    quoting.schema,
+                );
 
-                let database = if quoting.database {
-                    relation.database_as_quoted_str()?
-                } else {
-                    relation.database_as_str()?
-                };
+                let database = metadata::snowflake::snowflake_relation_identifier(
+                    &relation.database_as_str()?,
+                    quoting.database,
+                );
 
                 let lit_fmt = SqlLiteralFormatter::new(adapter_type);
                 let show_sql = format!(
@@ -1687,17 +1687,15 @@ impl AdapterImpl {
 
                 let quoting = relation.quote_policy();
 
-                let schema = if quoting.schema {
-                    relation.schema_as_quoted_str()?
-                } else {
-                    relation.schema_as_str()?
-                };
+                let schema = metadata::snowflake::snowflake_relation_identifier(
+                    &relation.schema_as_str()?,
+                    quoting.schema,
+                );
 
-                let database = if quoting.database {
-                    relation.database_as_quoted_str()?
-                } else {
-                    relation.database_as_str()?
-                };
+                let database = metadata::snowflake::snowflake_relation_identifier(
+                    &relation.database_as_str()?,
+                    quoting.database,
+                );
 
                 let lit_fmt = SqlLiteralFormatter::new(adapter_type);
                 let show_sql = format!(
