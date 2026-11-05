@@ -1831,7 +1831,7 @@ class MacroContext(ProviderContext):
         search_package: Optional[str],
     ) -> None:
         super().__init__(model, config, manifest, provider, None)
-        # override the model-based package with the given one
+        # overrideÂ the model-based package with the given one
         if search_package is None:
             # if the search package name isn't specified, use the root project
             self._search_package = config.project_name
