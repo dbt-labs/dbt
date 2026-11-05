@@ -74,6 +74,9 @@
     {% set tags = config.get('databricks_tags') %}
 
     {{ execute_multiple_statements(build_sql) }}
+    {% if existing_relation is not none and existing_relation.type != target_relation.type %}
+      {% do cache_replaced_relation(target_relation) %}
+    {% endif %}
 
     {%- do apply_tags(target_relation, tags) -%}
 

@@ -3,6 +3,23 @@
   {% do return(adapter.dispatch('get_replace_sql', 'dbt')(existing_relation, target_relation, sql)) %}
 {% endmacro %}
 
+{#- Replacement SQL bypasses the relation cache, and dbt caches the target only after the model's post-hooks. -#}
+{#- A same-type entry is left alone so it keeps the server metadata loaded at the start of the run. -#}
+{% macro cache_replaced_relation(target_relation) %}
+  {% set cached_relation = adapter.get_relation(
+    database=target_relation.database,
+    schema=target_relation.schema,
+    identifier=target_relation.identifier
+  ) %}
+  {% if cached_relation is none or cached_relation.type != target_relation.type %}
+    {% if cached_relation is not none %}
+      {% do adapter.cache_dropped(cached_relation) %}
+    {% endif %}
+    {#- DIVERGENCE: upstream adds target_relation.incorporate(dbt_created=True); Fusion relations have no dbt_created. -#}
+    {% do adapter.cache_added(target_relation) %}
+  {% endif %}
+{% endmacro %}
+
 {% macro databricks__get_replace_sql(existing_relation, target_relation, sql) %}
   {# /* if safe_relation_replace, prefer renaming */ #}
   {% if target_relation.type == "table" %}

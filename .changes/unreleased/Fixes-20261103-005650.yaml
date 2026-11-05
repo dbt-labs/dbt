@@ -1,0 +1,7 @@
+kind: Fixes
+body: Databricks post-hooks see the model's new relation type in the relation cache after a model replaces a relation of another type
+time: 2026-11-03T00:56:50.5782+05:30
+custom:
+    author: sd-db
+    issue: "17012 17013"
+    project: dbt-core

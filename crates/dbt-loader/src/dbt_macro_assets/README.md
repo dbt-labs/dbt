@@ -5,6 +5,9 @@ All adapter macros are currently maintained in:
 
 ## Changelog
 
+### [2026-11-03]
+  - dbt-databricks: cache the replaced relation before post-hooks from PRs #1704 and #1708 (commit c6c503a38309dc0d98353430e3dc983e9150f323)
+
 ### [2026-10-11]
   - dbt-databricks: drop no-op create_indexes and commit from the snapshot materialization from PR #1691 (commit d6fefeb6ef601164ed76e2ce7d4049a756fec548)
 
