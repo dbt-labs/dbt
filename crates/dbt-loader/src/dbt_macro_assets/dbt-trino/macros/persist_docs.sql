@@ -15,11 +15,8 @@
       {% do run_query(alter_comment_sql) %}
     {% endif %}
   {% endif %}
-
-  {% if target.starburst_url %}
-    {% set starburst_model = {"description": model.description, "columns": documented_columns} %}
-    {% do adapter.persist_starburst_docs(relation, starburst_model, do_relation, do_columns) %}
-  {% endif %}
+  {# DIVERGENCE: upstream also sends the docs to a vendor service when a v1-only target field
+     is set. dbt v2 targets have no such field, so that block is removed. #}
 {%- endmacro %}
 
 

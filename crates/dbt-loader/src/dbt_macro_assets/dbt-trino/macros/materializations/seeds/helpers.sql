@@ -14,6 +14,11 @@
         {%- do values.append((none, match_type.group(1).upper() ~ " " ~ item)) -%}
       {%- elif item is not none and item is string and 'varchar' not in type.lower() -%}
         {%- do values.append((none, match_type.group(1).upper() ~ " '" ~ item ~ "'")) -%}
+      {#-- DIVERGENCE: seed rows carry dates and datetimes as objects, which upstream left to the
+           Python client's typed parameter binding. v2 inlines bindings as quoted strings that
+           Trino will not coerce, so render them as typed literals like the string case above. --#}
+      {%- elif item is not none and item is not number and item is not boolean and 'varchar' not in type.lower() -%}
+        {%- do values.append((none, match_type.group(1).upper() ~ " '" ~ item ~ "'")) -%}
       {%- elif item is not none and 'varchar' in type.lower() -%}
         {%- do values.append((get_binding_char(), item|string())) -%}
       {%- else -%}

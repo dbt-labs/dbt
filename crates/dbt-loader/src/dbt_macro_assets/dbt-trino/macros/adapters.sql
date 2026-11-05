@@ -6,7 +6,8 @@
 {% macro trino__get_columns_in_relation(relation) -%}
   {%- set sql -%}
     select column_name, data_type
-    from {{ relation.information_schema() }}.columns
+    {# DIVERGENCE: name the view; information_schema() without one renders a trailing `.`. #}
+    from {{ relation.information_schema('columns') }}
     where
       table_catalog = '{{ relation.database | lower }}'
       and table_schema = '{{ relation.schema | lower }}'
@@ -42,7 +43,8 @@
            when t.table_type = 'VIEW' then 'view'
            else t.table_type
       end as table_type
-    from {{ relation.information_schema() }}.tables t
+    {# DIVERGENCE: name the view; information_schema() without one renders a trailing `.`. #}
+    from {{ relation.information_schema('tables') }} t
     left join (
             select * from system.metadata.materialized_views
             where catalog_name = '{{ relation.database | lower }}'
@@ -87,13 +89,24 @@
 {% endmacro %}
 
 {% macro properties(temporary=False) %}
-  {%- set _properties = config.get('properties') -%}
+  {#-- DIVERGENCE: an explicit none default, so an unset key is none (as in v1) and not undefined. --#}
+  {%- set _properties = config.get('properties', none) -%}
   {%- set table_format = config.get('table_format') -%}
   {%- set file_format = config.get('file_format') -%}
-  {%- set catalog_relation = adapter.build_catalog_relation(config.model) -%}
-  {%- set catalog_table_format = catalog_relation.table_format -%}
-  {%- set catalog_file_format = catalog_relation.file_format -%}
-  {%- set catalog_storage_uri = catalog_relation.storage_uri -%}
+  {#-- DIVERGENCE: the Python build_catalog_relation falls back to the built-in
+       trino_default integration, which has no table or file format and takes
+       storage_uri from the model config. That fallback is rendered here in
+       Jinja; only a model naming a catalogs.yml integration calls the adapter. --#}
+  {%- if config.get('catalog_name') -%}
+    {%- set catalog_relation = adapter.build_catalog_relation(config.model) -%}
+    {%- set catalog_table_format = catalog_relation.table_format -%}
+    {%- set catalog_file_format = catalog_relation.file_format -%}
+    {%- set catalog_storage_uri = catalog_relation.storage_uri -%}
+  {%- else -%}
+    {%- set catalog_table_format = none -%}
+    {%- set catalog_file_format = none -%}
+    {%- set catalog_storage_uri = config.get('storage_uri') -%}
+  {%- endif -%}
 
   {%- if file_format -%}
     {%- if _properties -%}
@@ -215,7 +228,8 @@
   {%- if view_security not in ['definer', 'invoker'] -%}
       {%- set log_message = 'Invalid value for view_security (%s) specified. Setting default value (%s).' % (view_security, 'definer') -%}
       {% do log(log_message) %}
-      {%- set on_table_exists = 'definer' -%}
+      {#-- DIVERGENCE: upstream assigned on_table_exists here, so the invalid value reached the SQL. --#}
+      {%- set view_security = 'definer' -%}
   {% endif %}
   create or replace view
     {{ relation }}
@@ -255,27 +269,9 @@
 {% endmacro %}
 
 
-{#
-  Starburst Galaxy keeps catalog functions in the built-in galaxy.functions schema. It always
-  exists, no role can create it, and it is shared by the whole account.
-#}
-{% macro is_galaxy_functions_schema(relation) %}
-  {{ return(relation.database | lower == 'galaxy' and relation.schema | lower == 'functions') }}
-{% endmacro %}
-
-
-{#
-  Keep the custom schema name unprefixed for galaxy.functions, since that is the only schema Galaxy
-  can store functions in. Everything else uses dbt's default of <target schema>_<custom schema>.
-#}
-{% macro trino__generate_schema_name(custom_schema_name, node) -%}
-  {%- if custom_schema_name is not none and node is not none
-      and node.database | lower == 'galaxy' and custom_schema_name | trim | lower == 'functions' -%}
-    {{ custom_schema_name | trim }}
-  {%- else -%}
-    {{ dbt.default__generate_schema_name(custom_schema_name, node) }}
-  {%- endif -%}
-{%- endmacro %}
+{# DIVERGENCE: the upstream trino__generate_schema_name override, which kept one managed
+   service's built-in functions schema unprefixed, is removed with its helper macro, so dbt's
+   default generate_schema_name applies; the adapter targets Trino generically. #}
 
 
 {# On Trino, 'cascade' is not supported so we have to manually cascade. #}
@@ -326,17 +322,10 @@
 {% endmacro %}
 
 
-{#
-  Skip creating galaxy.functions instead of failing on permissions. The adapter commits after
-  this macro, which needs a transaction, hence the no-op query.
-#}
+{# DIVERGENCE: upstream skips that managed service's built-in functions schema here. #}
 {% macro trino__create_schema(relation) -%}
   {%- call statement('create_schema') -%}
-    {%- if is_galaxy_functions_schema(relation) -%}
-      select 1
-    {%- else -%}
-      create schema if not exists {{ relation.without_identifier() }}
-    {%- endif -%}
+    create schema if not exists {{ relation.without_identifier() }}
   {%- endcall -%}
 {% endmacro %}
 
