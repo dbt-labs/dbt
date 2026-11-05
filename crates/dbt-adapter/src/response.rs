@@ -201,12 +201,11 @@ impl AdapterResponse {
     /// Uses schema metadata to build adapter-specific fields.
     pub fn from_record_batch(batch: &RecordBatch, adapter_type: AdapterType) -> Self {
         let (code, known_rows) = code_and_rows(adapter_type, batch);
-        // Messages render an unreported count as 0, as dbt Core's do.
-        let rows = known_rows.unwrap_or(0);
 
         let message = match adapter_type {
             AdapterType::Bigquery => {
                 use adbc::bigquery::schema_metadata::*;
+                let rows = known_rows.unwrap_or(0);
                 let bytes_processed = batch
                     .meta_i64(QUERY_TOTAL_BYTES_PROCESSED)
                     .or_else(|| batch.meta_i64(JOB_TOTAL_BYTES_PROCESSED));
@@ -225,7 +224,10 @@ impl AdapterResponse {
                     })
                     .unwrap_or_else(|| format!("{code} ({} rows)", format_rows_number(rows),))
             }
-            _ => format!("{code} {rows}"),
+            _ => match known_rows {
+                Some(rows) => format!("{code} {rows}"),
+                None => code.clone(),
+            },
         };
 
         let mut response = Self::new().with_message(message).with_code(code);
@@ -301,20 +303,21 @@ impl AdapterResponse {
     }
 }
 
-fn rows_affected(batch: &RecordBatch, adapter_type: AdapterType) -> i64 {
+/// Rows the statement touched. An empty result without DML columns (CTAS, views) reports no
+/// count, so the count stays unknown instead of becoming a made-up 0.
+fn rows_affected(batch: &RecordBatch, adapter_type: AdapterType) -> Option<i64> {
     if let Some(rows) = batch.meta_i64(crate::record_batch::ROWS_AFFECTED_META) {
-        return rows;
-    }
-    if batch.num_rows() == 0 {
-        return 0;
+        return Some(rows);
     }
     if batch.schema().has_dml_columns(adapter_type) {
-        return SNOWFLAKE_DML_COLUMNS
-            .iter()
-            .filter_map(|col| batch.named_value_as_i64(col))
-            .sum();
+        return Some(
+            SNOWFLAKE_DML_COLUMNS
+                .iter()
+                .filter_map(|col| batch.named_value_as_i64(col))
+                .sum(),
+        );
     }
-    batch.num_rows() as i64
+    (batch.num_rows() > 0).then(|| batch.num_rows() as i64)
 }
 
 /// How to describe the statement the warehouse ran, and how many rows it touched.
@@ -327,12 +330,7 @@ fn code_and_rows(adapter_type: AdapterType, batch: &RecordBatch) -> (String, Opt
     let schema = batch.schema();
     let metadata = schema.metadata();
     let batch_rows = batch.num_rows() as i64;
-    let fallback = || {
-        (
-            "SUCCESS".to_string(),
-            Some(rows_affected(batch, adapter_type)),
-        )
-    };
+    let fallback = || ("SUCCESS".to_string(), rows_affected(batch, adapter_type));
 
     match adapter_type {
         AdapterType::Bigquery => {
@@ -626,6 +624,16 @@ mod from_record_batch_tests {
         );
         let response = AdapterResponse::from_record_batch(&batch, AdapterType::Snowflake);
         assert_eq!(response.known_rows_affected(), Some(50));
+    }
+
+    #[test]
+    fn test_empty_result_without_dml_columns_has_unknown_rows() {
+        let batch = RecordBatch::new_empty(Arc::new(Schema::empty()));
+        for adapter_type in [AdapterType::Snowflake, AdapterType::DuckDB] {
+            let response = AdapterResponse::from_record_batch(&batch, adapter_type);
+            assert_eq!(response.known_rows_affected(), None);
+            assert_eq!(response.message(), "SUCCESS");
+        }
     }
 
     #[test]
