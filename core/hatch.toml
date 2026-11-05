@@ -36,6 +36,10 @@ include = [
 "dbt/task/docs/index.html" = "dbt/task/docs/index.html"
 
 [envs.default]
+# Use uv to create the env and install dependencies (faster than virtualenv + pip).
+# Hatch provisions and manages uv itself via its internal `hatch-uv` env, so
+# contributors do not need uv on their PATH.
+installer = "uv"
 dependencies = [
     # Git dependencies for development against main branches
     "dbt-adapters @ git+https://github.com/dbt-labs/dbt-adapters.git@main#subdirectory=dbt-adapters",
@@ -84,8 +88,11 @@ dependencies = [
     "opentelemetry-sdk>=1.26,<2.0",
 ]
 
+# uv-created venvs do not ship pip, so install the editable project with uv.
+# {env:HATCH_UV} resolves to the uv binary Hatch is using for this env. This runs
+# before the dependency sync so local dbt-core wins over any git-dep that pulls it in.
 pre-install-commands = [
-    "pip install -e .",
+    "{env:HATCH_UV} pip install -e .",
 ]
 
 [envs.default.scripts]
@@ -95,7 +102,7 @@ setup = [
 ]
 
 dev-req = [
-    "pip install -e .",
+    "{env:HATCH_UV} pip install -e .",
 ]
 
 # Code quality commands
@@ -169,6 +176,7 @@ check-sdist = [
 
 # CI environment - isolated environment with test dependencies
 [envs.ci]
+installer = "uv"
 dependencies = [
     # Git dependencies for development against main branches
     "dbt-adapters @ git+https://github.com/dbt-labs/dbt-adapters.git@main#subdirectory=dbt-adapters",
@@ -192,8 +200,9 @@ dependencies = [
     "opentelemetry-sdk>=1.26,<2.0",
 ]
 
+# uv-created venvs do not ship pip; install the editable project via uv.
 pre-install-commands = [
-    "pip install -e .",
+    "{env:HATCH_UV} pip install -e .",
 ]
 
 [envs.ci.env-vars]
