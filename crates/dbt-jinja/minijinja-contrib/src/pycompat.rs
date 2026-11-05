@@ -294,6 +294,9 @@ fn string_methods(value: &Value, method: &str, args: &[Value]) -> Result<Value, 
         }
         "count" => {
             let (what,): (&str,) = from_args(args)?;
+            if what.is_empty() {
+                return Ok(Value::from(s.chars().count() + 1));
+            }
             let mut c = 0;
             let mut rest = s;
             while let Some(offset) = rest.find(what) {
