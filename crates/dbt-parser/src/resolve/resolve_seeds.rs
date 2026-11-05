@@ -3,7 +3,7 @@ use crate::dbt_project_config::{NodeLayers, ProjectConfigResolver, RootProjectCo
 use crate::renderer::strip_warehouse_keys_in_config_block;
 use crate::resolve::resolve_utils::{
     RawProjectConfigsByAdapter, err_resource_name_has_spaces, extract_config_map,
-    resolve_node_quoting, select_node_adapter,
+    node_effective_propagation_target, resolve_node_quoting, select_node_adapter,
 };
 use crate::utils::{
     RelationComponents, get_node_fqn, node_starting_database_and_schema,
@@ -30,7 +30,6 @@ use dbt_schemas::schemas::project::WarningEmission;
 use dbt_schemas::schemas::properties::SeedProperties;
 use dbt_schemas::schemas::telemetry::NodeType;
 use dbt_schemas::schemas::{CommonAttributes, DbtSeed, DbtSeedAttr, NodeBaseAttributes};
-use dbt_schemas::state::resolve_effective_propagation_target;
 use dbt_schemas::state::{DbtPackage, GenericTestAsset};
 use dbt_schemas::state::{ModelStatus, NodeResolverTracker};
 use indexmap::IndexMap;
@@ -366,17 +365,13 @@ pub async fn resolve_seeds(
             .unwrap_or_default();
         let catalog_requires_snowflake = catalogs_state
             .catalog_requires_snowflake_propagation(properties_config.catalog_name.as_deref())?;
-        let effective_propagation_target = (selected_adapter == AdapterType::LakeCompute)
-            .then(|| {
-                arg.profile_adapter_types.as_deref().and_then(|adapters| {
-                    resolve_effective_propagation_target(
-                        &selected_propagate,
-                        adapters,
-                        catalog_requires_snowflake,
-                    )
-                })
-            })
-            .flatten();
+        let effective_propagation_target = node_effective_propagation_target(
+            arg,
+            selected_adapter,
+            default_adapter,
+            &selected_propagate,
+            catalog_requires_snowflake,
+        );
         properties_config.quoting =
             resolve_node_quoting(properties_config.quoting, adapter_quoting, selected_adapter);
 

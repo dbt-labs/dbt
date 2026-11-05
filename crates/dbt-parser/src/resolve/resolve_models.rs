@@ -84,7 +84,6 @@ use dbt_schemas::state::GenericTestAsset;
 use dbt_schemas::state::ModelStatus;
 use dbt_schemas::state::NodeResolverTracker;
 use dbt_schemas::state::ResourcePathKind;
-use dbt_schemas::state::resolve_effective_propagation_target;
 use dbt_yaml::Spanned;
 use minijinja::MacroSpans;
 use minijinja::constants::CURRENT_PATH;
@@ -98,7 +97,9 @@ use super::resolve_tests::persist_generic_data_tests::TestableNodeTrait;
 use super::resolve_tests::persist_generic_data_tests::{
     TestUnrenderedConfigs, extract_test_unrendered_configs,
 };
-use super::resolve_utils::{resolve_node_quoting, select_node_adapter, validate_compute};
+use super::resolve_utils::{
+    node_effective_propagation_target, resolve_node_quoting, select_node_adapter, validate_compute,
+};
 use super::validate_models::validate_model;
 
 /// Parses `ref('name')`, `ref('pkg', 'name')`, `ref('name', version=N)`, or
@@ -939,17 +940,13 @@ async fn build_model_nodes(
             .unwrap_or_default();
         let catalog_requires_snowflake = catalogs_state
             .catalog_requires_snowflake_propagation(model_config.catalog_name.as_deref())?;
-        let effective_propagation_target = (selected_adapter == AdapterType::LakeCompute)
-            .then(|| {
-                arg.profile_adapter_types.as_deref().and_then(|adapters| {
-                    resolve_effective_propagation_target(
-                        &selected_propagate,
-                        adapters,
-                        catalog_requires_snowflake,
-                    )
-                })
-            })
-            .flatten();
+        let effective_propagation_target = node_effective_propagation_target(
+            arg,
+            selected_adapter,
+            default_adapter,
+            &selected_propagate,
+            catalog_requires_snowflake,
+        );
         model_config.quoting =
             resolve_node_quoting(model_config.quoting, adapter_quoting, selected_adapter);
 
