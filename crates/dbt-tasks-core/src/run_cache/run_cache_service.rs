@@ -6585,6 +6585,42 @@ mod tests {
         );
     }
 
+    /// Unlike `clear_stale_missing_last_modified_epoch_for_node` (which leaves a
+    /// valid cached epoch alone), `refresh_final_last_modified_epoch_for_node`
+    /// must not trust any previously cached value — it re-queries regardless of
+    /// what's cached. With no adapter wired into the test ctx, the re-query
+    /// fails open to `None`, so the previously cached epoch is overwritten
+    /// rather than preserved.
+    #[dbt_runtime::test]
+    async fn refresh_overwrites_a_previously_cached_epoch() {
+        let ctx = test_task_runner_ctx(None);
+        let model = make_model(
+            "model.test.user_name_model",
+            "db",
+            "dbt_test",
+            "user_name_model",
+            DbtMaterialization::Table,
+        );
+        let target_fqn = fqn_of("db", "dbt_test", "user_name_model");
+        ctx.inner
+            .run_cache_ctx
+            .run_cache_metadata
+            .insert_last_modified_epoch(&target_fqn, Some(1_700_000_000_000));
+
+        let refreshed = refresh_final_last_modified_epoch_for_node(&ctx, model.as_ref())
+            .await
+            .unwrap();
+
+        assert_eq!(refreshed, None);
+        assert_eq!(
+            ctx.inner
+                .run_cache_ctx
+                .run_cache_metadata
+                .last_modified_epoch(&target_fqn),
+            Some(None)
+        );
+    }
+
     #[test]
     fn evict_node_metadata_for_untracked_rebuild_clears_valid_epoch_and_existence() {
         let ctx = test_task_runner_ctx(None);

@@ -59,9 +59,11 @@ use dbt_tasks_core::run_cache::run_cache_service::{
     clear_stale_missing_last_modified_epoch_for_node, confirm_run_cache_service_execution,
     evict_node_metadata_for_untracked_rebuild, execute_run_cache_service_clone,
     insert_compiled_view_definition, record_run_cache_clone_decision,
-    record_run_cache_service_execution, replay_dev_clone_decision, replay_run_cache_clone_decision,
-    run_cache_service_before_execution, should_execute_hooks_for_skip_reuse,
+    record_run_cache_service_execution, refresh_final_last_modified_epoch_for_node,
+    replay_dev_clone_decision, replay_run_cache_clone_decision, run_cache_service_before_execution,
+    should_execute_hooks_for_skip_reuse,
 };
+use dbt_tasks_core::run_cache::state_lock::release_state_lock;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RunExecutionPath {
@@ -153,6 +155,9 @@ impl Task for RunTask {
 
             let execution_started_at = Instant::now();
             let mut after_success = RunCacheAfterSuccess::None;
+            // Held from before the dbt State decision until after its
+            // confirmation, so a waiter cannot be told "build" in between.
+            let mut state_lock = None;
             let statically_checked_test = match self.node.as_any().downcast_ref::<DbtTest>() {
                 Some(test) => ctx
                     .is_data_test_statically_skippable(unique_id.as_str())
@@ -215,7 +220,9 @@ impl Task for RunTask {
                     // `RunCacheServiceDecision`: the service path may emit
                     // Skip/Clone/Execute (with `after_success`); the SAO path may
                     // emit Skip (with `sao_stored_hash`), Execute (with
-                    // `sao_guard`), or Disabled.
+                    // `sao_guard`), or Disabled. The service path may also take
+                    // the per-node lock (`state_lock`), which rides outside the
+                    // decision because it outlives the SAO guard's release point.
                     let run_cache_service_requested =
                         ctx.inner.run_cache_ctx.run_cache_service_requested;
                     let decision = if let Some(decision) = replayed_cache_decision {
@@ -245,6 +252,35 @@ impl Task for RunTask {
                         // different SQL than what was actually recorded).
                         RunCacheServiceDecision::Clone { clone }
                     } else if run_cache_service_requested {
+                        state_lock = self
+                            .task_hooks
+                            .acquire_state_lock(ctx, Arc::clone(&self.node))
+                            .await;
+                        if state_lock.is_some() {
+                            // submit_seed/submit_model read the node's cached
+                            // last_modified_epoch directly, with no refetch path of
+                            // their own — so whatever's cached is what gets sent.
+                            // Holding the lock doesn't mean the cache is current:
+                            // an uncontended acquire only means nobody held the
+                            // lock *when we asked*, not that nobody rebuilt the
+                            // table since this node's epoch was last cached (which
+                            // can predate this run entirely, from an earlier batch
+                            // prefetch). Force a refetch whenever we actually hold
+                            // the lock, whether the cache reads as a real epoch or
+                            // as "missing".
+                            if let Err(e) =
+                                refresh_final_last_modified_epoch_for_node(ctx, self.node.as_ref())
+                                    .await
+                            {
+                                emit_warn_log_message(
+                                    ErrorCode::StateServiceWarn,
+                                    format!(
+                                        "Failed to refresh last_modified_epoch for node {} after acquiring the state lock: {e}",
+                                        self.node.unique_id()
+                                    ),
+                                );
+                            }
+                        }
                         insert_compiled_view_definition(ctx, self.node.as_ref(), &task_result);
                         // Microbatch models make one per-model cache decision keyed to
                         // the run's event-time window. Resolve it here (fail open: a
@@ -548,6 +584,9 @@ impl Task for RunTask {
                     Some(elapsed_millis(execution_started_at)),
                 )
                 .await;
+            }
+            if let Some(guard) = state_lock.take() {
+                release_state_lock(guard, &unique_id).await;
             }
 
             // The span carries what `RunModel` sends. A materialization that fails before

@@ -232,6 +232,16 @@ pub enum ErrorCode {
     /// The per-node Redis lock behind `lock_with_state` could not be created,
     /// taken, or released; the run continues without it.
     StateLockUnavailable = 1411,
+    /// A heartbeat write for a held `lock_with_state` lock failed; the holder
+    /// retries, but another worker may see the lock as stale in the meantime.
+    StateHeartbeatFailed = 1412,
+    /// A held `lock_with_state` lock was reclaimed by another owner; this
+    /// worker's heartbeat has stopped, but its build may still be running.
+    StateHeartbeatReclaimed = 1413,
+    /// A completed task's stop/info write was skipped because the start key
+    /// no longer matched the owner that ran it; a reclaim already overwrote
+    /// it, so the write would have clobbered the new owner's own result.
+    StateStopRejected = 1414,
 
     // Serialization [1450–1460]
     JsonInvalid = 1450,
@@ -603,6 +613,30 @@ mod tests {
         assert_eq!(
             ErrorCode::StateLockUnavailable.name_and_code(),
             "StateLockUnavailable (dbt1411)"
+        );
+    }
+
+    #[test]
+    fn state_heartbeat_failed_renders_name_and_code() {
+        assert_eq!(
+            ErrorCode::StateHeartbeatFailed.name_and_code(),
+            "StateHeartbeatFailed (dbt1412)"
+        );
+    }
+
+    #[test]
+    fn state_heartbeat_reclaimed_renders_name_and_code() {
+        assert_eq!(
+            ErrorCode::StateHeartbeatReclaimed.name_and_code(),
+            "StateHeartbeatReclaimed (dbt1413)"
+        );
+    }
+
+    #[test]
+    fn state_stop_rejected_renders_name_and_code() {
+        assert_eq!(
+            ErrorCode::StateStopRejected.name_and_code(),
+            "StateStopRejected (dbt1414)"
         );
     }
 }
