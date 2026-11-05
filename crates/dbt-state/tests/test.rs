@@ -60,7 +60,9 @@ mod tests {
         let hash = value_to_store.clone().unwrap_or_default();
 
         let on_contention = |c: Contention| match c {
-            Contention::Waiting => println!("[Worker {owner_id}] Waiting for Task: {node_id}"),
+            Contention::Waiting { .. } => {
+                println!("[Worker {owner_id}] Waiting for Task: {node_id}")
+            }
             Contention::Aborted => println!("[Worker {owner_id}] Task Aborted: {node_id}"),
         };
 
@@ -856,13 +858,16 @@ mod tests {
 
         let waiting_notify = Arc::new(tokio::sync::Notify::new());
         let notify_for_b = waiting_notify.clone();
+        let observed_blocking_run_id = Arc::new(std::sync::Mutex::new(None));
+        let observed_for_b = observed_blocking_run_id.clone();
         let cache_b_erased: Arc<dyn TaskCache> = cache_b.clone();
         let key_for_b = key.to_string();
         let b_handle = tokio::spawn(async move {
             let session_b =
                 NodeCacheSession::new(cache_b_erased, key_for_b, "456/invocation-b".to_string());
             let on_contention = move |c: Contention| {
-                if c == Contention::Waiting {
+                if let Contention::Waiting { blocking_run_id } = c {
+                    *observed_for_b.lock().unwrap() = Some(blocking_run_id);
                     notify_for_b.notify_one();
                 }
             };
@@ -874,6 +879,12 @@ mod tests {
             .expect(
                 "second acquirer should observe contention while the first still holds the lock",
             );
+
+        assert_eq!(
+            observed_blocking_run_id.lock().unwrap().clone(),
+            Some(Some("123".to_string())),
+            "the waiter should see the first acquirer's run ID, extracted from its <run_id>/<invocation_id> owner"
+        );
 
         let (state, (start, _, _)) = cache_a.get_task_state(key).await.unwrap();
         assert_eq!(state, TaskState::InProgress);

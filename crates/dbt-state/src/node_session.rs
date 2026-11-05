@@ -54,10 +54,16 @@ pub fn run_id_from_owner_id(owner_id: &str) -> Option<&str> {
 ///
 /// Surfaced through the `on_contention` callback so the caller can emit
 /// UI/telemetry without the cache crate knowing about either.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Contention {
     /// Another worker holds the slot; we're sleeping with backoff.
-    Waiting,
+    Waiting {
+        /// Run ID recorded in the holder's owner ID
+        /// ([`run_id_from_owner_id`]), if the holder's `start` value could be
+        /// read and has one. `None` for a local-run holder or when the read
+        /// failed.
+        blocking_run_id: Option<String>,
+    },
     /// A prior owner's heartbeat stopped; we're cleaning up their slot.
     Aborted,
 }
@@ -278,7 +284,11 @@ impl NodeCacheSession {
                 }
 
                 TaskState::InProgress => {
-                    on_contention(Contention::Waiting);
+                    let blocking_run_id = old_start_value
+                        .as_ref()
+                        .and_then(|v| run_id_from_owner_id(&v.owner_id))
+                        .map(str::to_string);
+                    on_contention(Contention::Waiting { blocking_run_id });
                     tokio::time::sleep(std::time::Duration::from_micros(
                         delay.num_microseconds().unwrap_or(1_000) as u64,
                     ))
@@ -384,7 +394,7 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-    use super::{Acquired, NodeCacheSession, lock_owner_id_from, run_id_from_owner_id};
+    use super::{Acquired, Contention, NodeCacheSession, lock_owner_id_from, run_id_from_owner_id};
     use crate::task_cache::{TaskCache, TaskInfo, TaskState, TaskValue, TaskValues};
 
     /// A slot that's free from the very first check.
@@ -628,6 +638,56 @@ mod tests {
         let Acquired::Execute(_guard) = session.acquire("hash", &|_| {}).await.unwrap() else {
             panic!("expected to win the slot once the holder freed it");
         };
+    }
+
+    #[dbt_runtime::test]
+    async fn waiting_contention_carries_the_blocking_run_id() {
+        let cache: Arc<dyn TaskCache> = Arc::new(HeldOnceThenFree {
+            holder: "999/invocation-holder".to_string(),
+            calls: AtomicUsize::new(0),
+        });
+        let session =
+            NodeCacheSession::new(cache, "model.pkg.orders".to_string(), "1/me".to_string());
+
+        let observed = std::sync::Mutex::new(None);
+        let on_contention = |c| {
+            if let Contention::Waiting { blocking_run_id } = c {
+                *observed.lock().unwrap() = Some(blocking_run_id);
+            }
+        };
+
+        session.acquire("hash", &on_contention).await.unwrap();
+
+        assert_eq!(
+            observed.into_inner().unwrap(),
+            Some(Some("999".to_string())),
+            "blocking_run_id should resolve to the holder's run ID, extracted from its <run_id>/<invocation_id> owner"
+        );
+    }
+
+    #[dbt_runtime::test]
+    async fn waiting_contention_has_no_blocking_run_id_for_a_local_run_holder() {
+        let cache: Arc<dyn TaskCache> = Arc::new(HeldOnceThenFree {
+            holder: "invocation-local-holder".to_string(),
+            calls: AtomicUsize::new(0),
+        });
+        let session =
+            NodeCacheSession::new(cache, "model.pkg.orders".to_string(), "1/me".to_string());
+
+        let observed = std::sync::Mutex::new(None);
+        let on_contention = |c| {
+            if let Contention::Waiting { blocking_run_id } = c {
+                *observed.lock().unwrap() = Some(blocking_run_id);
+            }
+        };
+
+        session.acquire("hash", &on_contention).await.unwrap();
+
+        assert_eq!(
+            observed.into_inner().unwrap(),
+            Some(None),
+            "a bare invocation-ID owner (local run) has no run ID to surface"
+        );
     }
 
     #[test]
