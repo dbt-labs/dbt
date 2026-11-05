@@ -48,4 +48,5 @@ class Exposure(GraphResource):
     refs: List[RefArgs] = field(default_factory=list)
     sources: List[List[str]] = field(default_factory=list)
     metrics: List[List[str]] = field(default_factory=list)
+    dimensions: List[str] = field(default_factory=list)
     created_at: float = field(default_factory=lambda: time.time())

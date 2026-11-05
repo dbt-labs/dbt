@@ -12,12 +12,15 @@ from dbt.artifacts.resources.types import BatchSize
 from dbt.context.providers import (
     BaseResolver,
     EventTimeFilter,
+    ExposureDimensionResolver,
     RuntimeRefResolver,
     RuntimeSourceResolver,
 )
 from dbt.contracts.graph.nodes import BatchContext, ModelNode, SnapshotNode
 from dbt.event_time.sample_window import SampleWindow
+from dbt.exceptions import DimensionArgsError
 from dbt.flags import set_from_args
+from tests.unit.utils.manifest import make_exposure
 
 
 class TestBaseResolver:
@@ -497,3 +500,27 @@ class TestRuntimeSourceResolver:
         # create limited relation
         relation = resolver.resolve("test", "test")
         assert relation.limit == expected_limit
+
+
+class TestExposureDimensionResolver:
+    @pytest.fixture
+    def exposure(self):
+        return make_exposure("test", "dash")
+
+    @pytest.fixture
+    def resolver(self, exposure):
+        return ExposureDimensionResolver(
+            db_wrapper=None, model=exposure, config=mock.Mock(), manifest=mock.Mock()
+        )
+
+    def test_records_string_as_written(self, resolver, exposure):
+        assert resolver("Customer__country") == ""
+        resolver("order__ordered_at__month")
+        assert exposure.dimensions == ["Customer__country", "order__ordered_at__month"]
+
+    @pytest.mark.parametrize("args", [(), ("a__b", "c__d"), (1,), (["a__b"],)])
+    def test_bad_arguments(self, resolver, exposure, args):
+        with pytest.raises(DimensionArgsError) as excinfo:
+            resolver(*args)
+        assert f"got {args!r}" in str(excinfo.value)
+        assert exposure.dimensions == []

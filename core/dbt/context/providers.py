@@ -80,6 +80,7 @@ from dbt.exceptions import (
     CompilationError,
     ConflictingConfigKeysError,
     DbtReferenceError,
+    DimensionArgsError,
     EnvVarMissingError,
     InlineModelConfigError,
     LoadAgateTableNotSeedError,
@@ -2140,6 +2141,14 @@ class ExposureMetricResolver(BaseResolver):
         return ""
 
 
+class ExposureDimensionResolver(BaseResolver):
+    def __call__(self, *args) -> str:
+        if len(args) != 1 or not isinstance(args[0], str):
+            raise DimensionArgsError(node=self.model, args=args)
+        self.model.dimensions.append(args[0])
+        return ""
+
+
 def generate_parse_exposure(
     exposure: Exposure,
     config: RuntimeConfig,
@@ -2161,6 +2170,12 @@ def generate_parse_exposure(
             manifest,
         ),
         "metric": ExposureMetricResolver(
+            None,
+            exposure,
+            project,
+            manifest,
+        ),
+        "dimension": ExposureDimensionResolver(
             None,
             exposure,
             project,
