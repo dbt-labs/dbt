@@ -527,6 +527,18 @@ async fn do_execute_fs(
             .will_init_project(eval_arg.io.invocation_id, &cli, init_args)
             .await?;
 
+        // An extension that supports a mode handles it in its hooks and exits.
+        if let Some(mode) = &init_args.mode {
+            emit_error_log_message(
+                ErrorCode::UnsupportedFusionFeature,
+                format!(
+                    "`dbt init {}` is not available in this build of dbt.",
+                    mode.name()
+                ),
+            );
+            return Err(FsError::exit_with_status(2));
+        }
+
         emit_info_progress_message(ProgressMessage::new_from_action_and_target(
             INSTALLING.to_string(),
             "dbt project and profile setup".to_string(),
@@ -616,6 +628,28 @@ async fn do_execute_fs(
         token,
     )
     .await
+}
+
+/// [`execute_setup_and_all_phases`] as a boxed future made in this crate: a
+/// caller in another crate polls it through the box, rather than compiling its
+/// own copy of the whole pipeline (an async fn's body is compiled where it is
+/// polled).
+pub fn execute_setup_and_all_phases_boxed<'a>(
+    eval_arg: &'a EvalArgs,
+    cli: &'a Cli,
+    artifacts_sink: &'a mut DbtCommandExecutionArtifacts,
+    feature_stack: Arc<FeatureStack>,
+    task_runner_hooks_factory: Arc<dyn TaskRunnerHooksFactory>,
+    token: &'a CancellationToken,
+) -> std::pin::Pin<Box<dyn Future<Output = FsResult<()>> + Send + 'a>> {
+    Box::pin(execute_setup_and_all_phases(
+        eval_arg,
+        cli,
+        artifacts_sink,
+        feature_stack,
+        task_runner_hooks_factory,
+        token,
+    ))
 }
 
 #[allow(clippy::cognitive_complexity)]

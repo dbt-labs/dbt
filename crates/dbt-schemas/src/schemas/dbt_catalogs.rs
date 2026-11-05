@@ -1127,6 +1127,25 @@ impl<'a> CatalogSpecView<'a> {
             .and_then(|v| v.as_mapping())
     }
 
+    /// Whether the `lakecompute` adapter can read tables in this catalog: its
+    /// type is one lakecompute reads, configured for a platform it reads through.
+    pub fn lake_compute_can_read(&self) -> bool {
+        if !self.catalog_type.lake_compute_can_read() {
+            return false;
+        }
+        match self.catalog_type {
+            CatalogType::Glue => {
+                self.config_block("lakecompute").is_some()
+                    || self.config_block("snowflake").is_some()
+            }
+            CatalogType::Unity => self.config_block("lakecompute").is_some(),
+            CatalogType::Horizon | CatalogType::IcebergRest | CatalogType::SnowflakeBuiltIn => {
+                self.config_block("snowflake").is_some()
+            }
+            _ => false,
+        }
+    }
+
     // ===== Post-hoc semantic validators =====
     // Called from CatalogRegistry::validate_semantic after structural validation passes.
 

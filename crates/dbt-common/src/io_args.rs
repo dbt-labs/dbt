@@ -681,6 +681,9 @@ pub struct EvalArgs {
     /// Mirrors the `--classify-with-warehouse-tags` CLI flag.
     pub classify_with_warehouse_tags: bool,
     pub skip_post_hooks: bool,
+    /// Don't run on-run-start hooks: for a caller that compiles only to read
+    /// the compiled nodes, with no warehouse to run them against.
+    pub skip_on_run_start_hooks: bool,
     /// Write metadata parquet epoch files (parse/nodes, compile/nodes, compile/columns, etc.)
     pub write_metadata: bool,
     /// Also write snapshot index parquet to target/private/index/ (implies write_metadata)

@@ -221,6 +221,8 @@ pub struct FrontendError {
     pub context: String,
     pub cause: Option<Box<WrappedError>>,
     pub backtrace: Backtrace,
+    /// What the error is about, when that's a name (see [ErrorSubject]).
+    subject: Option<ErrorSubject>,
 
     // Chain of errors, to allow returning multiple errors in a single
     // [FrontendResult]:
@@ -253,6 +255,7 @@ impl FrontendError {
             context: context.into(),
             cause: None,
             backtrace: Backtrace::capture(),
+            subject: None,
             next: None,
         }
     }
@@ -268,6 +271,7 @@ impl FrontendError {
             context: context.into(),
             cause: None,
             backtrace: Backtrace::force_capture(),
+            subject: None,
             next: None,
         }
     }
@@ -326,6 +330,25 @@ impl FrontendError {
         FrontendError { code, ..self }
     }
 
+    /// Records what the error is about (a function's or a type's name).
+    pub fn with_subject(self, subject: ErrorSubject) -> Self {
+        FrontendError {
+            subject: Some(subject),
+            ..self
+        }
+    }
+
+    /// What the error is about, when that's a name: its own, else its
+    /// cause's.
+    pub fn subject(&self) -> Option<&ErrorSubject> {
+        self.subject
+            .as_ref()
+            .or_else(|| match self.cause.as_deref() {
+                Some(WrappedError::Frontend(cause)) => cause.subject(),
+                _ => None,
+            })
+    }
+
     pub fn chain(self, next: Box<FrontendError>) -> Self {
         FrontendError {
             next: Some(next),
@@ -366,12 +389,17 @@ impl FrontendError {
         err: InternalError,
     ) -> Self {
         let msg = err.message();
+        // A wrapped error's subject, kept when the wrapped error is flattened.
+        let mut subject = err.subject;
         let cause = if let WrappedError::Frontend(e) = err.error {
             if e.code.is_bug() {
                 // For unexpected errors, we always propagate the original
                 // cause:
                 return e;
             } else {
+                if subject.is_none() {
+                    subject = e.subject().cloned();
+                }
                 Some(Box::new(WrappedError::Generic(e.context)))
             }
         } else {
@@ -399,6 +427,7 @@ impl FrontendError {
             },
             cause,
             backtrace: err.backtrace,
+            subject,
             next: None,
         }
     }
@@ -587,11 +616,23 @@ impl std::error::Error for WrappedError {
     }
 }
 
+/// What an error is about, when that's a name: lets callers act on it without
+/// reading the message.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ErrorSubject {
+    /// A function that couldn't be resolved, as called.
+    Function(String),
+    /// A type that isn't known, as written.
+    Type(String),
+}
+
 #[derive(Debug)]
 pub struct InternalError {
     error: WrappedError,
     pub location: Option<CodeLocation>,
     pub backtrace: Backtrace,
+    /// What the error is about, when that's a name (see [ErrorSubject]).
+    subject: Option<ErrorSubject>,
 }
 
 impl std::fmt::Display for InternalError {
@@ -625,6 +666,7 @@ impl From<String> for InternalError {
             error: WrappedError::Generic(e),
             location: None,
             backtrace: Backtrace::capture(),
+            subject: None,
         }
     }
 }
@@ -654,6 +696,7 @@ impl From<Box<FrontendError>> for InternalError {
             error: WrappedError::Frontend(*e),
             location,
             backtrace: Backtrace::capture(),
+            subject: None,
         }
     }
 }
@@ -670,6 +713,7 @@ impl From<SchemaError> for InternalError {
             error: WrappedError::Schema(e),
             location: None,
             backtrace: Backtrace::capture(),
+            subject: None,
         }
     }
 }
@@ -686,6 +730,7 @@ impl From<AliasedExprsError> for InternalError {
             error: WrappedError::AliasedExprs(e),
             location: None,
             backtrace: Backtrace::capture(),
+            subject: None,
         }
     }
 }
@@ -702,6 +747,7 @@ impl From<std::num::ParseFloatError> for InternalError {
             error: WrappedError::ParseFloat(e),
             location: None,
             backtrace: Backtrace::capture(),
+            subject: None,
         }
     }
 }
@@ -718,6 +764,7 @@ impl From<std::num::ParseIntError> for InternalError {
             error: WrappedError::ParseInt(e),
             location: None,
             backtrace: Backtrace::capture(),
+            subject: None,
         }
     }
 }
@@ -734,6 +781,7 @@ impl From<ANTLRError> for InternalError {
             error: WrappedError::Antlr(e),
             location: None,
             backtrace: Backtrace::capture(),
+            subject: None,
         }
     }
 }
@@ -750,6 +798,7 @@ impl From<arrow::error::ArrowError> for InternalError {
             error: WrappedError::Arrow(Box::new(e)),
             location: None,
             backtrace: Backtrace::capture(),
+            subject: None,
         }
     }
 }
@@ -766,6 +815,7 @@ impl From<serde_json::Error> for InternalError {
             error: WrappedError::SerdeJson(e),
             location: None,
             backtrace: Backtrace::capture(),
+            subject: None,
         }
     }
 }
@@ -782,6 +832,7 @@ impl From<DatafusionError> for InternalError {
             error: WrappedError::Datafusion(e),
             location: None,
             backtrace: Backtrace::capture(),
+            subject: None,
         }
     }
 }
@@ -798,6 +849,7 @@ impl From<std::fmt::Error> for InternalError {
             error: WrappedError::Generic(e.to_string()),
             location: None,
             backtrace: Backtrace::capture(),
+            subject: None,
         }
     }
 }
@@ -814,6 +866,7 @@ impl InternalError {
             error: WrappedError::Generic(context.into()),
             location: None,
             backtrace: Backtrace::capture(),
+            subject: None,
         }
     }
 
@@ -826,6 +879,15 @@ impl InternalError {
             error: WrappedError::Generic(context.into()),
             location: Some(location),
             backtrace: Backtrace::capture(),
+            subject: None,
+        }
+    }
+
+    /// Records what the error is about (a function's or a type's name).
+    pub fn with_subject(self, subject: ErrorSubject) -> InternalError {
+        InternalError {
+            subject: Some(subject),
+            ..self
         }
     }
 
@@ -1106,4 +1168,44 @@ mod private {
     impl<T> Sealed for InternalResult<T> {}
 
     impl<T, E> Sealed for Result<T, E> where E: Into<InternalError> {}
+}
+
+#[cfg(test)]
+mod subject_tests {
+    use super::*;
+
+    #[test]
+    fn the_subject_survives_lifting_and_wrapping() {
+        let lifted = InternalError::new("Failed to resolve function iff: no overload")
+            .with_subject(ErrorSubject::Function("iff".to_string()))
+            .lift(
+                ErrorCode::FunctionResolutionFailed,
+                CodeLocation::default(),
+                None::<String>,
+            );
+        assert_eq!(
+            lifted.subject(),
+            Some(&ErrorSubject::Function("iff".to_string()))
+        );
+        // Wrapped as another error's cause, it's still found.
+        let outer = InternalError {
+            error: WrappedError::Frontend(*lifted),
+            location: None,
+            backtrace: Backtrace::capture(),
+            subject: None,
+        }
+        .lift(
+            ErrorCode::InvalidColumnReference,
+            CodeLocation::default(),
+            Some("Column reference failed"),
+        );
+        assert_eq!(
+            outer.subject(),
+            Some(&ErrorSubject::Function("iff".to_string()))
+        );
+        assert_eq!(
+            FrontendError::new(ErrorCode::UnknownType, CodeLocation::default(), "x").subject(),
+            None
+        );
+    }
 }

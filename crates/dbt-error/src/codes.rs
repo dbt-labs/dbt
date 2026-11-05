@@ -360,6 +360,21 @@ pub enum ErrorCode {
     SchemaCacheEntryCorrupt = 1660,
 
     // --------------------------------------------------------------------------------------------
+    // Warehouse signals read during onboarding
+    /// A read-only query run on the warehouse to size models or price their builds failed. A
+    /// warning: what it would have told is missing (those models stay unsized), and the other
+    /// queries' answers still count.
+    WarehouseSignalQueryFailed = 1661,
+    /// The warehouse couldn't be queried at all (the target has no output for it, or its
+    /// connection couldn't be set up), so nothing was sized from it. Separate from
+    /// `WarehouseSignalQueryFailed`: silencing transient query failures shouldn't hide that
+    /// none ran.
+    WarehouseSignalsUnavailable = 1662,
+    /// The project being checked for onboarding didn't compile, so none of its models were
+    /// checked.
+    OnboardingCompileFailed = 1663,
+
+    // --------------------------------------------------------------------------------------------
     // CLI errors
     NoLongerSupportedOption = 1700,
     NotYetSupportedOption = 1701,

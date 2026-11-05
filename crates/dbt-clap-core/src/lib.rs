@@ -2708,15 +2708,29 @@ pub struct CommonArgs {
     pub antlr_parser_recursion_limit: Option<u32>,
 }
 
-fn resolve_show_arg(show_arg: &[ShowOptions], quiet: bool) -> HashSet<ShowOptions> {
+/// What an empty `--show` shows: progress and each completed node, except for a
+/// command whose output is a report of its own (`init <mode>`), where node
+/// results would bury it: progress only.
+fn default_show(cli: &Cli) -> &'static [ShowOptions] {
+    match &cli.command {
+        Command::Core(CoreCommand::Init(InitArgs { mode: Some(_), .. })) => {
+            &[ShowOptions::Progress]
+        }
+        _ => &[ShowOptions::Progress, ShowOptions::Completed],
+    }
+}
+
+fn resolve_show_arg(
+    show_arg: &[ShowOptions],
+    default: &[ShowOptions],
+    quiet: bool,
+) -> HashSet<ShowOptions> {
     let mut show = if show_arg.contains(&ShowOptions::All) {
         ShowOptions::iter().collect()
     } else if show_arg.contains(&ShowOptions::None) {
         HashSet::default()
     } else if show_arg.is_empty() {
-        [ShowOptions::Progress, ShowOptions::Completed]
-            .into_iter()
-            .collect()
+        default.iter().copied().collect()
     } else {
         show_arg
             .iter()
@@ -2940,7 +2954,11 @@ impl CommonArgs {
             }
             expr
         });
-        let show = resolve_show_arg(self.show.as_slice(), self.get_quiet());
+        let show = resolve_show_arg(
+            self.show.as_slice(),
+            &[ShowOptions::Progress, ShowOptions::Completed],
+            self.get_quiet(),
+        );
         let replay = pick_replay_mode(self, arg.io.invocation_id, out_dir);
         let send_anonymous_usage_stats = self.get_send_anonymous_usage_stats();
         EvalArgs {
@@ -3109,6 +3127,7 @@ impl CommonArgs {
             event_time_start: self.event_time_start.clone(),
             internal_package_mode: self.internal_package_mode.clone(),
             skip_post_hooks: false,
+            skip_on_run_start_hooks: false,
             skip_creating_generic_tests: false,
             write_lineage: self.write_lineage,
             force_enable_linter: false,
@@ -3227,6 +3246,111 @@ pub struct InitArgs {
     // Flattened Common args
     #[clap(flatten)]
     pub common_args: CommonArgs,
+
+    /// Set up an existing project for something, instead of creating a project
+    #[command(subcommand)]
+    pub mode: Option<InitMode>,
+}
+
+#[derive(clap::Subcommand, Debug, Clone, Serialize, Deserialize)]
+pub enum InitMode {
+    /// Find the models in this project that can run on Lake Compute
+    Lakecompute(InitLakecomputeArgs),
+}
+
+impl InitMode {
+    pub fn name(&self) -> &'static str {
+        match self {
+            InitMode::Lakecompute(_) => "lakecompute",
+        }
+    }
+}
+
+#[derive(clap::Args, Debug, Clone, Default, Serialize, Deserialize)]
+pub struct InitLakecomputeArgs {
+    /// Print the report as JSON (with --quiet, stdout is the report alone)
+    #[arg(long, default_value = "false")]
+    pub json: bool,
+
+    /// With --json, report counts, grouped blockers and the plan, not each model
+    #[arg(long, default_value = "false", requires = "json")]
+    pub summary: bool,
+
+    /// List every model, not just a summary
+    #[arg(long, default_value = "false")]
+    pub all: bool,
+
+    /// Don't rewrite SQL that Lake Compute rejects
+    #[arg(long, default_value = "false")]
+    pub no_rewrite: bool,
+
+    /// Switch the models that can move: show the diff, then edit config and SQL
+    #[arg(long, default_value = "false")]
+    pub switch: bool,
+
+    /// Compile on Snowflake (as dbt compile does), then size and price models from query history, EXPLAIN and table sizes (read-only queries)
+    #[arg(long, default_value = "false")]
+    pub snowflake: bool,
+
+    /// With --snowflake, the days of query history to read
+    #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u32).range(1..=365))]
+    pub history_days: u32,
+
+    /// Write nothing with --switch; print queries without running them with --snowflake
+    #[arg(long, default_value = "false")]
+    pub dry_run: bool,
+
+    /// With --switch or --snowflake, go ahead without asking
+    #[arg(long, short = 'y', default_value = "false")]
+    pub yes: bool,
+
+    /// With --switch, also convert views that block models from moving
+    #[arg(long, default_value = "false", requires = "switch")]
+    pub convert_views: bool,
+
+    /// Before switching, fingerprint each model's Snowflake table for --validate
+    #[arg(long, default_value = "false", conflicts_with = "validate")]
+    pub baseline: bool,
+
+    /// After switched models build on Lake Compute, compare their tables with --baseline's
+    #[arg(long, default_value = "false")]
+    pub validate: bool,
+
+    /// With --switch, also switch models whose SQL couldn't be checked
+    #[arg(long, default_value = "false", requires = "switch")]
+    pub include_unverified: bool,
+
+    /// Read build times from this run_results.json (of a `dbt run` or `dbt build`)
+    /// [default: <target-path>/run_results.json]
+    #[arg(long)]
+    pub run_results: Option<PathBuf>,
+
+    /// Warehouse size to price build times at
+    #[arg(long, value_enum, default_value_t = WarehouseSize::XSmall)]
+    pub warehouse_size: WarehouseSize,
+}
+
+/// A Snowflake warehouse size, smallest first.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
+pub enum WarehouseSize {
+    #[default]
+    #[value(name = "xsmall")]
+    XSmall,
+    Small,
+    Medium,
+    Large,
+    #[value(name = "xlarge")]
+    XLarge,
+    #[value(name = "2xlarge")]
+    X2Large,
+    #[value(name = "3xlarge")]
+    X3Large,
+    #[value(name = "4xlarge")]
+    X4Large,
+    #[value(name = "5xlarge")]
+    X5Large,
+    #[value(name = "6xlarge")]
+    X6Large,
 }
 
 impl InitArgs {
@@ -3296,7 +3420,11 @@ pub fn from_main(cli: &Cli) -> SystemArgs {
         io: IoArgs {
             invocation_id: common_args.invocation_id.unwrap_or_else(Uuid::now_v7),
             otel_parent_span_id: common_args.parent_span_id,
-            show: resolve_show_arg(common_args.show.as_slice(), common_args.get_quiet()),
+            show: resolve_show_arg(
+                common_args.show.as_slice(),
+                default_show(cli),
+                common_args.get_quiet(),
+            ),
             is_compile: command == FsCommand::Compile,
             debug: common_args.debug,
             in_dir: PathBuf::new(),
@@ -3346,7 +3474,11 @@ pub fn from_lib(cli: &Cli) -> SystemArgs {
         io: IoArgs {
             invocation_id: common_args.invocation_id.unwrap_or_else(Uuid::now_v7),
             otel_parent_span_id: common_args.parent_span_id,
-            show: resolve_show_arg(common_args.show.as_slice(), common_args.get_quiet()),
+            show: resolve_show_arg(
+                common_args.show.as_slice(),
+                default_show(cli),
+                common_args.get_quiet(),
+            ),
             is_compile: command == FsCommand::Compile,
             debug: common_args.debug,
             in_dir: PathBuf::new(),

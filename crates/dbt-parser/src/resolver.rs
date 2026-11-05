@@ -1378,8 +1378,6 @@ pub async fn resolve_inner(
 }
 
 fn catalog_is_lake_compute_reachable(catalogs: &DbtCatalogs, name: &str) -> FsResult<bool> {
-    use dbt_schemas::schemas::dbt_catalogs::CatalogType;
-
     let view = catalogs.view()?;
     // Catalog names are validated as unique before resolution, so this lookup
     // has at most one matching declaration.
@@ -1387,22 +1385,7 @@ fn catalog_is_lake_compute_reachable(catalogs: &DbtCatalogs, name: &str) -> FsRe
         // Preserve the historical permissive behavior for an unknown catalog.
         return Ok(true);
     };
-
-    if !catalog.catalog_type.lake_compute_can_read() {
-        return Ok(false);
-    }
-
-    Ok(match catalog.catalog_type {
-        CatalogType::Glue => {
-            catalog.config_block("lakecompute").is_some()
-                || catalog.config_block("snowflake").is_some()
-        }
-        CatalogType::Unity => catalog.config_block("lakecompute").is_some(),
-        CatalogType::Horizon | CatalogType::IcebergRest | CatalogType::SnowflakeBuiltIn => {
-            catalog.config_block("snowflake").is_some()
-        }
-        _ => false,
-    })
+    Ok(catalog.lake_compute_can_read())
 }
 
 /// Returns `true` if `upstream` is readable as an input for a node running on

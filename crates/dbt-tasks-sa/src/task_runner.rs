@@ -361,7 +361,7 @@ impl TaskRunner {
 
         // Create span for on-run-start phase if there are any hooks
         let on_run_start_span = if should_run_on_run_start_hooks(
-            run_task_args.infer_schemas_and_typeless,
+            run_task_args.infer_schemas_and_typeless || run_task_args.skip_on_run_start_hooks,
             !self.resolved_state.operations.on_run_start.is_empty(),
         ) {
             Some(create_info_span(PhaseExecuted::start_with_node_count(
