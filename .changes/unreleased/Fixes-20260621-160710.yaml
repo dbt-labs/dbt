@@ -1,0 +1,8 @@
+﻿kind: Fixes
+body: >-
+  Fix duplicate CTE name error in unit tests when two upstream models share the
+  same alias config but have different model names or schemas
+time: 2026-06-21T16:07:10.000000+00:00
+custom:
+    Author: kalluripradeep
+    Issue: "10740"
