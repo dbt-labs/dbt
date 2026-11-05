@@ -4,15 +4,13 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::OnceLock;
 
-use crate::connection::{AdapterConnectionFactory, ConnectionGuard};
-
-use crate::time_machine::{args_freshness_with_overrides, with_time_machine_metadata_wrapper};
 use arrow_array::*;
 use arrow_schema::{Field, Schema};
 use dbt_adapter_core::AdapterType;
 use dbt_adapter_core::ExecutionPhase;
 use dbt_adapter_engine::MapReduce;
 use dbt_adapter_engine::cow::uppercase;
+use dbt_adapter_engine::databricks::query_tags::QueryTags;
 use dbt_adbc::QueryCtx;
 use dbt_agate::AgateTable;
 use dbt_common::ErrorCode;
@@ -32,6 +30,7 @@ use regex::Regex;
 use std::sync::LazyLock;
 
 use crate::adapter::adapter_impl::AdapterImpl;
+use crate::connection::{AdapterConnectionFactory, ConnectionGuard};
 use crate::errors::{AdapterError, AdapterResult, AsyncAdapterResult};
 use crate::metadata::CatalogAndSchema;
 use crate::metadata::databricks::dbr_capabilities::DbrComputeContext;
@@ -56,8 +55,8 @@ use crate::relation::databricks::config::{
 };
 use crate::relation::databricks::is_shallow_clone_type;
 use crate::sql_types::{TypeOps, make_arrow_field_v2};
+use crate::time_machine::{args_freshness_with_overrides, with_time_machine_metadata_wrapper};
 use crate::{AdapterEngine, AdapterResponse};
-use dbt_adapter_engine::databricks::query_tags::databricks_statement_options;
 
 pub mod dbr_capabilities;
 pub mod describe_json;
@@ -105,7 +104,10 @@ WHERE table_catalog = '{}'
                             &db_schema.resolved_catalog.to_lowercase(),
                             &db_schema.resolved_schema.to_lowercase());
 
-    let options = databricks_statement_options(engine.adapter_type(), state)?;
+    let options = {
+        let query_tags = QueryTags::from_state(state)?;
+        query_tags.unwrap_or_default().into_stmt_options()
+    };
     let batch =
         engine.execute_with_options(None, ctx, conn.as_mut(), &sql, options, true, token)?;
 

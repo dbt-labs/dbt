@@ -12,6 +12,7 @@ pub mod man;
 pub mod materialization_resolver;
 pub mod state;
 pub mod stats;
+pub mod yml_view;
 
 pub mod schemas {
     pub mod common;

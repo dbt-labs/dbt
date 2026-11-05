@@ -1,6 +1,7 @@
 //! The dbt adapter layer.
 
 #![allow(clippy::let_and_return)]
+#![allow(clippy::single_match)]
 
 use dbt_common::ErrorCode;
 

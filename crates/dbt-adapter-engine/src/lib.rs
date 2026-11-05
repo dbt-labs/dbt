@@ -1,5 +1,8 @@
 //! The dbt Adapter Engine.
 
+#![allow(clippy::let_and_return)]
+#![allow(clippy::single_match)]
+
 use adbc_core::options::OptionValue;
 
 pub mod behavior;

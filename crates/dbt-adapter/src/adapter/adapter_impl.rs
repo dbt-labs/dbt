@@ -55,7 +55,7 @@ use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{DataType, Field, Schema};
 use dbt_adapter_core::AdapterType;
 use dbt_adapter_engine::cow::lowercase;
-use dbt_adapter_engine::databricks::query_tags::databricks_statement_options;
+use dbt_adapter_engine::databricks::query_tags::QueryTags;
 use dbt_adapter_sql::is_keyword_ignore_ascii_case;
 use dbt_adbc::bigquery::*;
 use dbt_adbc::salesforce::DATA_TRANSFORM_RUN_TIMEOUT;
@@ -1088,8 +1088,18 @@ impl AdapterImpl {
                     "bigquery.add_query",
                 ))
             }
-            Impl(_, engine) => {
-                let options = databricks_statement_options(self.adapter_type(), Some(state))?;
+            Impl(adapter_type, engine) => {
+                let mut options = IndexMap::new();
+                match adapter_type {
+                    Databricks => {
+                        let query_tags = QueryTags::from_state(Some(state))?;
+                        query_tags
+                            .unwrap_or_default()
+                            .extend_stmt_options(&mut options);
+                    }
+                    _ => (),
+                }
+                let options = options.into_iter().collect::<Vec<_>>();
                 self.execute_inner(
                     Arc::clone(engine),
                     None,
