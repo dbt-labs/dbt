@@ -1,5 +1,5 @@
 kind: Fixes
-body: Warn before removing non-empty package installation directories without a valid cache tag
+body: Log before removing non-empty package installation directories without a valid cache tag
 time: 2026-11-03T15:02:33.039461+05:30
 custom:
     Author: ash2shukla
