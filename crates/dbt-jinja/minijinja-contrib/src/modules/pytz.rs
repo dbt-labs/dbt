@@ -1,8 +1,7 @@
 use chrono::{DateTime, LocalResult, NaiveDateTime, Offset, TimeZone};
 use chrono_tz::{OffsetComponents, OffsetName, Tz, TZ_VARIANTS};
-use minijinja::{Error, ErrorKind, Value};
+use minijinja::{arg_utils::ArgsIter, Error, ErrorKind, Value};
 
-use crate::modules::py_datetime::datetime::{DateTimeState, PyDateTime};
 use crate::modules::py_datetime::timedelta::PyTimeDelta;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
@@ -71,58 +70,6 @@ impl PytzTimezone {
             None => local_dt.offset().to_string(),
         }
     }
-
-    /// Resolve the datetime argument of utcoffset(), dst() and tzname() in this tz.
-    /// `None` stays `None`; a naive datetime is read as local time, like localize();
-    /// an aware datetime is converted so the answer describes the same instant.
-    fn resolve_argument(
-        &self,
-        method: &str,
-        args: &[Value],
-    ) -> Result<Option<DateTime<Tz>>, Error> {
-        let dt_val = args.first().ok_or_else(|| {
-            Error::new(
-                ErrorKind::MissingArgument,
-                format!("{method}() requires a datetime argument"),
-            )
-        })?;
-        if dt_val.is_none() {
-            return Ok(None);
-        }
-        let dt = dt_val.downcast_object_ref::<PyDateTime>().ok_or_else(|| {
-            Error::new(
-                ErrorKind::InvalidArgument,
-                format!("{method}() expects a datetime object"),
-            )
-        })?;
-
-        let resolved = match &dt.state {
-            DateTimeState::Naive(naive) => self.from_local(naive).ok_or_else(|| {
-                Error::new(
-                    ErrorKind::InvalidOperation,
-                    format!("ambiguous or invalid local time for {method}()"),
-                )
-            })?,
-            DateTimeState::Aware(aware) => aware.with_timezone(&self.tz),
-            DateTimeState::FixedOffset(fixed) => fixed.with_timezone(&self.tz),
-        };
-        Ok(Some(resolved))
-    }
-
-    /// `tz.utcoffset(dt)`, `tz.dst(dt)` and `tz.tzname(dt)` from Jinja.
-    fn tzinfo_method(&self, method: &str, args: &[Value]) -> Result<Value, Error> {
-        let Some(dt) = self.resolve_argument(method, args)? else {
-            return Ok(match method {
-                "tzname" => Value::from(self.tz.name()),
-                _ => Value::from(()),
-            });
-        };
-        Ok(match method {
-            "utcoffset" => Value::from_object(PyTimeDelta::new(self.utcoffset(&dt))),
-            "dst" => Value::from_object(PyTimeDelta::new(self.dst(&dt))),
-            _ => Value::from(self.tzname(&dt)),
-        })
-    }
 }
 
 /// Build the "pytz" module namespace for your Jinja environment.
@@ -184,14 +131,17 @@ impl minijinja::value::Object for PytzTimezone {
                 })?;
 
                 // Get the PyDateTime object
-                let dt = dt_val.downcast_object_ref::<PyDateTime>().ok_or_else(|| {
-                    Error::new(
-                        ErrorKind::InvalidArgument,
-                        "localize() expects a datetime object",
-                    )
-                })?;
+                let dt = dt_val
+                    .downcast_object_ref::<crate::modules::py_datetime::datetime::PyDateTime>()
+                    .ok_or_else(|| {
+                        Error::new(
+                            ErrorKind::InvalidArgument,
+                            "localize() expects a datetime object",
+                        )
+                    })?;
 
                 // Get the naive datetime
+                use crate::modules::py_datetime::datetime::DateTimeState;
                 let naive_dt = match &dt.state {
                     DateTimeState::Naive(ndt) => *ndt,
                     DateTimeState::Aware(_) => {
@@ -221,7 +171,7 @@ impl minijinja::value::Object for PytzTimezone {
                         })?;
 
                 // Return a new PyDateTime object
-                let result = PyDateTime {
+                let result = crate::modules::py_datetime::datetime::PyDateTime {
                     state: DateTimeState::Aware(aware_dt),
                     tzinfo: Some(self.as_ref().clone()),
                 };
@@ -238,16 +188,19 @@ impl minijinja::value::Object for PytzTimezone {
                 })?;
 
                 // Get the PyDateTime object
-                let dt = dt_val.downcast_object_ref::<PyDateTime>().ok_or_else(|| {
-                    Error::new(
-                        ErrorKind::InvalidArgument,
-                        "normalize() expects a datetime object",
-                    )
-                })?;
+                let dt = dt_val
+                    .downcast_object_ref::<crate::modules::py_datetime::datetime::PyDateTime>()
+                    .ok_or_else(|| {
+                        Error::new(
+                            ErrorKind::InvalidArgument,
+                            "normalize() expects a datetime object",
+                        )
+                    })?;
 
                 // pytz.normalize() requires an aware datetime (it corrects the
                 // timezone information after arithmetic); a naive datetime has
                 // no tzinfo to normalize.
+                use crate::modules::py_datetime::datetime::DateTimeState;
                 if let DateTimeState::Naive(_) = &dt.state {
                     return Err(Error::new(
                         ErrorKind::InvalidOperation,
@@ -262,7 +215,51 @@ impl minijinja::value::Object for PytzTimezone {
 
                 Ok(Value::from_object(result))
             }
-            "utcoffset" | "dst" | "tzname" => self.tzinfo_method(method, args),
+            "utcoffset" | "dst" | "tzname" => {
+                let iter = ArgsIter::new(method, &["dt"], args);
+                let dt_val: &Value = iter.next_arg()?;
+                iter.finish()?;
+
+                // Like pytz, a None datetime answers None, None and the zone name.
+                if dt_val.is_none() {
+                    return Ok(match method {
+                        "tzname" => Value::from(self.tz.name()),
+                        _ => Value::from(()),
+                    });
+                }
+
+                let dt = dt_val
+                    .downcast_object_ref::<crate::modules::py_datetime::datetime::PyDateTime>()
+                    .ok_or_else(|| {
+                        Error::new(
+                            ErrorKind::InvalidArgument,
+                            format!("{method}() expects a datetime object"),
+                        )
+                    })?;
+
+                // A naive datetime is read as local time, like localize(); an aware
+                // one is converted so the answer describes the same instant.
+                use crate::modules::py_datetime::datetime::DateTimeState;
+                let local_dt = match &dt.state {
+                    DateTimeState::Naive(naive) => self.from_local(naive).ok_or_else(|| {
+                        Error::new(
+                            ErrorKind::InvalidOperation,
+                            format!("ambiguous or invalid local time for {method}()"),
+                        )
+                    })?,
+                    DateTimeState::Aware(aware) => aware.with_timezone(&self.tz),
+                    DateTimeState::FixedOffset(fixed) => fixed.with_timezone(&self.tz),
+                };
+
+                match method {
+                    "utcoffset" => Ok(Value::from_object(PyTimeDelta::new(
+                        self.utcoffset(&local_dt),
+                    ))),
+                    "dst" => Ok(Value::from_object(PyTimeDelta::new(self.dst(&local_dt)))),
+                    "tzname" => Ok(Value::from(self.tzname(&local_dt))),
+                    _ => unreachable!(),
+                }
+            }
             _ => Err(Error::new(
                 ErrorKind::UnknownMethod,
                 format!("Timezone object has no method named '{method}'"),
@@ -279,36 +276,77 @@ impl minijinja::value::Object for PytzTimezone {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::{NaiveDateTime, TimeZone, Timelike};
+    use crate::modules::py_datetime::datetime::{DateTimeState, PyDateTime};
+    use chrono::{NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Timelike};
     use minijinja::Environment;
-
-    fn naive(iso: &str) -> NaiveDateTime {
-        iso.parse().unwrap()
-    }
-
-    /// The localize() logic: interpret a naive datetime as local time in `tz`.
-    fn localize(tz: Tz, iso: &str) -> PyDateTime {
-        let aware_dt = tz.from_local_datetime(&naive(iso)).single().unwrap();
-        PyDateTime {
-            state: DateTimeState::Aware(aware_dt),
-            tzinfo: Some(PytzTimezone::new(tz)),
-        }
-    }
 
     #[test]
     fn test_localize_naive_datetime() {
-        // localize doesn't convert: the wall time stays 12:30, now in UTC
-        let result = localize(chrono_tz::UTC, "2023-06-15T12:30:00");
-        assert_eq!(result.chrono_dt().hour(), 12);
-        assert_eq!(result.chrono_dt().minute(), 30);
+        // Create a naive datetime
+        let naive = NaiveDateTime::new(
+            NaiveDate::from_ymd_opt(2023, 6, 15).unwrap(),
+            NaiveTime::from_hms_opt(12, 30, 0).unwrap(),
+        );
+
+        // Localize to UTC
+        let utc_tz = PytzTimezone::new(chrono_tz::UTC);
+
+        // Manually call localize logic
+        let aware_dt_result = utc_tz
+            .tz
+            .from_local_datetime(&naive)
+            .single()
+            .ok_or_else(|| Error::new(ErrorKind::InvalidOperation, "ambiguous"));
+
+        assert!(aware_dt_result.is_ok());
+        let aware_dt = aware_dt_result.unwrap();
+
+        // The time should be the same (localize doesn't convert)
+        assert_eq!(aware_dt.hour(), 12);
+        assert_eq!(aware_dt.minute(), 30);
+
+        // Create the result PyDateTime
+        let result = PyDateTime {
+            state: DateTimeState::Aware(aware_dt),
+            tzinfo: Some(utc_tz),
+        };
+
+        // Should be aware with UTC timezone
+        assert!(result.tzinfo.is_some());
         assert_eq!(result.tzinfo.as_ref().unwrap().tz, chrono_tz::UTC);
     }
 
     #[test]
     fn test_localize_different_timezone() {
-        // localize doesn't convert: the wall time stays 15:00, now in US/Pacific
-        let result = localize(chrono_tz::US::Pacific, "2023-12-01T15:00:00");
-        assert_eq!(result.chrono_dt().hour(), 15);
+        // Create a naive datetime
+        let naive = NaiveDateTime::new(
+            NaiveDate::from_ymd_opt(2023, 12, 1).unwrap(),
+            NaiveTime::from_hms_opt(15, 0, 0).unwrap(),
+        );
+
+        // Localize to US/Pacific
+        let pacific_tz = PytzTimezone::new(chrono_tz::US::Pacific);
+        let aware_dt_result = pacific_tz
+            .tz
+            .from_local_datetime(&naive)
+            .single()
+            .ok_or_else(|| Error::new(ErrorKind::InvalidOperation, "ambiguous"));
+
+        assert!(aware_dt_result.is_ok());
+        let aware_dt = aware_dt_result.unwrap();
+
+        // The time should remain 15:00 (localize doesn't convert, just adds timezone)
+        assert_eq!(aware_dt.hour(), 15);
+        assert_eq!(aware_dt.minute(), 0);
+
+        // Create the result PyDateTime
+        let result = PyDateTime {
+            state: DateTimeState::Aware(aware_dt),
+            tzinfo: Some(pacific_tz),
+        };
+
+        // Should be aware with Pacific timezone
+        assert!(result.tzinfo.is_some());
         assert_eq!(result.tzinfo.as_ref().unwrap().tz, chrono_tz::US::Pacific);
     }
 
@@ -341,9 +379,13 @@ mod tests {
         assert_eq!(result.tzinfo.as_ref().unwrap().tz, chrono_tz::US::Eastern);
     }
 
-    fn naive_value(iso: &str) -> Value {
+    fn naive(y: i32, m: u32, d: u32, h: u32, min: u32) -> Value {
+        let naive = NaiveDateTime::new(
+            NaiveDate::from_ymd_opt(y, m, d).unwrap(),
+            NaiveTime::from_hms_opt(h, min, 0).unwrap(),
+        );
         Value::from_object(PyDateTime {
-            state: DateTimeState::Naive(naive(iso)),
+            state: DateTimeState::Naive(naive),
             tzinfo: None,
         })
     }
@@ -363,7 +405,7 @@ mod tests {
     fn test_utcoffset_dst_tzname_in_summer() {
         let tz = PytzTimezone::new(chrono_tz::America::New_York);
         assert_eq!(
-            render_tz_methods(tz, naive_value("2024-07-04T12:00:00")).unwrap(),
+            render_tz_methods(tz, naive(2024, 7, 4, 12, 0)).unwrap(),
             "-1 day, 20:00:00|1:00:00|EDT"
         );
     }
@@ -372,7 +414,7 @@ mod tests {
     fn test_utcoffset_dst_tzname_in_winter() {
         let tz = PytzTimezone::new(chrono_tz::America::New_York);
         assert_eq!(
-            render_tz_methods(tz, naive_value("2024-01-04T12:00:00")).unwrap(),
+            render_tz_methods(tz, naive(2024, 1, 4, 12, 0)).unwrap(),
             "-1 day, 19:00:00|0:00:00|EST"
         );
     }
@@ -381,7 +423,7 @@ mod tests {
     fn test_utcoffset_dst_tzname_utc() {
         let tz = PytzTimezone::new(chrono_tz::UTC);
         assert_eq!(
-            render_tz_methods(tz, naive_value("2024-07-04T12:00:00")).unwrap(),
+            render_tz_methods(tz, naive(2024, 7, 4, 12, 0)).unwrap(),
             "0:00:00|0:00:00|UTC"
         );
     }
@@ -390,7 +432,7 @@ mod tests {
     fn test_utcoffset_rejects_ambiguous_local_time() {
         // 01:30 on 2024-11-03 happens twice in New York (fall back).
         let tz = PytzTimezone::new(chrono_tz::America::New_York);
-        let err = render_tz_methods(tz, naive_value("2024-11-03T01:30:00")).unwrap_err();
+        let err = render_tz_methods(tz, naive(2024, 11, 3, 1, 30)).unwrap_err();
         assert!(
             err.to_string()
                 .contains("ambiguous or invalid local time for utcoffset()"),
