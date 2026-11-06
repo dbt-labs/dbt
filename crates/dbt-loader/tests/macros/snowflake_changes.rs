@@ -53,7 +53,7 @@ fn discovery_starts_the_changes_now() {
             &[("_dbt_changes_discovery", Value::from(true))]
         )
         .unwrap(),
-        "DB.SC.ORDERS changes(information => DEFAULT) at(timestamp => current_timestamp()) as o"
+        "DB.SC.ORDERS changes(information => DEFAULT) at(offset => 0) as o"
     );
 }
 

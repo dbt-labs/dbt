@@ -636,7 +636,7 @@ fn render_ci(
 /// a temporary table.
 fn ci_discovery_sql() -> String {
     format!(
-        "create or replace temporary table {CI_TEMP_RELATION} as ( select * from ( select o.id, o.amount, o.METADATA$ACTION = 'DELETE' as is_deleted from RAW.PUBLIC.ORDERS changes(information => DEFAULT) at(timestamp => current_timestamp()) as o ) limit 0 ) ;"
+        "create or replace temporary table {CI_TEMP_RELATION} as ( select * from ( select o.id, o.amount, o.METADATA$ACTION = 'DELETE' as is_deleted from RAW.PUBLIC.ORDERS changes(information => DEFAULT) at(offset => 0) as o ) limit 0 ) ;"
     )
 }
 

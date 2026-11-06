@@ -6,8 +6,9 @@
 
     Renders `<relation> changes(information => DEFAULT|APPEND_ONLY)` with no bounds, which a CI DT
     refresh binds to its interval. While the materialization discovers the model's columns it
-    renders the same clause starting now, `at(timestamp => current_timestamp())`, which is
-    runnable and returns no rows but the same columns.
+    renders the same clause starting now, `at(offset => 0)`, which is runnable and returns no rows
+    but the same columns. (`at(timestamp => current_timestamp())` is rejected: change tracking
+    queries cannot time travel to a non-deterministic function, error 091928.)
 
     Args:
     - relation: the change source, usually `ref(...)` or `source(...)`
@@ -20,5 +21,5 @@
         ) %}
     {%- endif -%}
     {{ relation }} changes(information => {{ information }})
-    {%- if model is defined and model.get('_dbt_changes_discovery') %} at(timestamp => current_timestamp()){% endif -%}
+    {%- if model is defined and model.get('_dbt_changes_discovery') %} at(offset => 0){% endif -%}
 {%- endmacro %}
