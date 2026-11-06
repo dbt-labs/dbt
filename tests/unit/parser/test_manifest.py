@@ -1,3 +1,4 @@
+import pprint
 from argparse import Namespace
 from typing import Optional
 from unittest.mock import MagicMock, patch
@@ -20,6 +21,7 @@ from dbt.hints import HintType
 from dbt.parser.manifest import (
     LONG_PARSING_THRESHOLD_SECONDS,
     ManifestLoader,
+    ReparseReason,
     _check_function_language_support,
     _maybe_show_long_parsing_hint,
     _warn_for_unused_resource_config_paths,
@@ -29,6 +31,7 @@ from dbt.parser.manifest import (
 )
 from dbt.parser.read_files import FileDiff
 from dbt.tracking import User
+from dbt.version import __version__
 from dbt_common.events.event_catcher import EventCatcher
 from dbt_common.events.event_manager_client import add_callback_to_manager
 from tests.unit.fixtures import generic_test_node, model_node
@@ -59,6 +62,32 @@ class TestPartialParse:
         mock_project.credentials.connection_info.return_value = "test1"
         manifest = ManifestLoader(mock_project, {})
         assert manifest.manifest.state_check.profile_hash.checksum != profile_hash
+
+    @pytest.mark.parametrize("vars_from_file", [{}, {"my_var": "my_value"}])
+    @pytest.mark.parametrize("legacy_policy", [None, "raw-file-checksums"])
+    def test_partial_parse_rejects_old_checksum_policy(
+        self, mock_project, vars_from_file, legacy_policy
+    ):
+        mock_project.vars_from_file = vars_from_file
+        mock_project.get_metadata.return_value = Manifest().metadata
+        loader = ManifestLoader(mock_project, {})
+        legacy_manifest = loader.manifest.deepcopy()
+        # Reproduce the state hash saved before the file checksum algorithm changed.
+        legacy_vars = [
+            pprint.pformat(mock_project.cli_vars),
+            mock_project.profile_name,
+            mock_project.target_name,
+            __version__,
+        ]
+        if legacy_policy:
+            legacy_vars.append(legacy_policy)
+        if vars_from_file:
+            legacy_vars.append(pprint.pformat(vars_from_file))
+        legacy_manifest.state_check.vars_hash = FileHash.from_contents("\x00".join(legacy_vars))
+
+        assert legacy_manifest.metadata.dbt_version == __version__
+        assert loader.is_partial_parsable(legacy_manifest) == (False, ReparseReason.vars_changed)
+        assert loader.is_partial_parsable(loader.manifest) == (True, None)
 
     @patch("dbt.parser.manifest.ManifestLoader.build_manifest_state_check")
     @patch("dbt.parser.manifest.os.path.exists")

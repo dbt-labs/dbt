@@ -1164,6 +1164,9 @@ class ManifestLoader:
             config.profile_name,
             config.target_name,
             __version__,
+            # Reject caches from older checksum policies, including when running
+            # from source without a version change.
+            "conservative-sql-whitespace-v1",
         ]
 
         # We only add vars from `vars.yml` if it's present to prevent affecting users not using vars.yml from getting fully parsed.
