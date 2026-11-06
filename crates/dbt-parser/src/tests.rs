@@ -2689,7 +2689,7 @@ mod tests {
         );
 
         // No Jinja at all, but YAML 1.1: PyYAML resolves this to `True` before dbt-core ever
-        // renders it, so core walks the children; dbt-yaml's `yaml_11` feature does the same.
+        // renders it, so core walks the children; the YAML 1.1 bool resolver does the same.
         assert_eq!(selector_children_flag("yes", Value::from(true)), Ok(true));
     }
 
@@ -2815,8 +2815,8 @@ mod tests {
             Resolved(Some(false))
         );
 
-        // No Jinja at all, but YAML 1.1. The render pass leaves it alone, and dbt-yaml's
-        // `yaml_11` feature resolves it, as it does for the graph-walk flags.
+        // No Jinja at all, but YAML 1.1. The render pass leaves it alone, and the YAML 1.1
+        // bool resolver resolves it, as it does for the graph-walk flags.
         assert_eq!(
             selector_default("yes", Value::from(true)),
             Resolved(Some(true))

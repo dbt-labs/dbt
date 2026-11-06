@@ -450,8 +450,7 @@ mod tests {
         assert_eq!(children_flag("children: true"), Ok(true));
         assert_eq!(children_flag("children: false"), Ok(false));
 
-        // Unquoted YAML 1.1 tokens. dbt-yaml's `yaml_11` feature resolves them to real
-        // booleans, as PyYAML does for core.
+        // Unquoted YAML 1.1 tokens. PyYAML resolves them to real booleans for core.
         assert_eq!(children_flag("children: yes"), Ok(true));
         assert_eq!(children_flag("children: no"), Ok(false));
         assert_eq!(children_flag("children: on"), Ok(true));
@@ -567,8 +566,7 @@ mod tests {
         assert_eq!(selector_default(""), Resolved(None));
         assert_eq!(selector_default("default: null"), Resolved(None));
 
-        // Unquoted YAML 1.1 tokens. dbt-yaml's `yaml_11` feature resolves them to real
-        // booleans, as PyYAML does for core.
+        // Unquoted YAML 1.1 tokens. PyYAML resolves them to real booleans for core.
         assert_eq!(selector_default("default: yes"), Resolved(Some(true)));
         assert_eq!(selector_default("default: no"), Resolved(Some(false)));
         assert_eq!(selector_default("default: on"), Resolved(Some(true)));

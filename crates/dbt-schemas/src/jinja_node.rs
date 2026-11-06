@@ -496,9 +496,13 @@ fn stringify_mapping_keys(value: dbt_yaml::Value) -> dbt_yaml::Value {
         dbt_yaml::Value::Mapping(map, span) => dbt_yaml::Value::Mapping(
             map.into_iter()
                 .map(|(key, value)| {
-                    let key = match key.as_scalar_string() {
-                        Some(key) => dbt_yaml::Value::string(key.into_owned()),
-                        None => key,
+                    let key = match &key {
+                        dbt_yaml::Value::Bool(..) | dbt_yaml::Value::Number(..) => {
+                            dbt_yaml::Value::string(dbt_common::serde_utils::yml_key_to_string(
+                                &key,
+                            ))
+                        }
+                        _ => key,
                     };
                     (key, stringify_mapping_keys(value))
                 })
