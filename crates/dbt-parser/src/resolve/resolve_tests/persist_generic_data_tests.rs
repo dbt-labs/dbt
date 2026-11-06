@@ -2207,11 +2207,19 @@ mod tests {
         let v1 = make_version(1, make_columns("all", vec![]));
         // v2: include all, exclude cost_center_bkey — test must be absent
         let v2 = make_version(2, make_columns("all", vec!["cost_center_bkey"]));
+        // v3: empty include list — no tests should be inherited
+        let v3 = make_version(
+            3,
+            vec![VersionColumnProperties {
+                include: Some(StringOrArrayOfStrings::ArrayOfStrings(vec![])),
+                ..Default::default()
+            }],
+        );
 
         let result =
-            collect_versioned_model_tests(&base_config, &[v1, v2]).expect("should not fail");
+            collect_versioned_model_tests(&base_config, &[v1, v2, v3]).expect("should not fail");
 
-        assert_eq!(result.len(), 2, "expected one config per version");
+        assert_eq!(result.len(), 3, "expected one config per version");
 
         let v1_cfg = result
             .iter()
@@ -2237,6 +2245,19 @@ mod tests {
                 .map(|m| m.contains_key("cost_center_bkey"))
                 .unwrap_or(false),
             "v2 must not have a test for cost_center_bkey (it is excluded)"
+        );
+
+        let v3_cfg = result
+            .iter()
+            .find(|c| c.version_num.as_deref() == Some("3"))
+            .unwrap();
+        assert!(
+            !v3_cfg
+                .column_tests
+                .as_ref()
+                .map(|m| m.contains_key("cost_center_bkey"))
+                .unwrap_or(false),
+            "v3 must not have a test for cost_center_bkey (empty include list)"
         );
     }
 
