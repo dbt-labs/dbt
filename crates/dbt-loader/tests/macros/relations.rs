@@ -16,6 +16,73 @@ use crate::macro_test_harness::{MacroTestHarness, default_mock_config, executed_
 mod databricks {
     use super::*;
 
+    const INFERRED_QUERY_COLUMNS_STUB: &str = r#"
+{% macro get_columns_in_query(select_sql) -%}
+  {{ return(inferred_query_columns()) }}
+{%- endmacro %}
+"#;
+
+    #[test]
+    fn query_schema_drift_compares_ordered_lowercased_column_names() {
+        let cases: [(&[&str], &[&str], &str); 7] = [
+            (&["id", "name"], &["id", "name"], "False"),
+            (&["ID", "Name"], &["id", "name"], "False"),
+            (&["id", "name"], &["id", "name", "new_column"], "True"),
+            (&["id", "name", "gone"], &["id", "name"], "True"),
+            (&["id", "name"], &["name", "id"], "True"),
+            (&["id"], &[], "True"),
+            (&[], &[], "False"),
+        ];
+        for (existing, inferred, expected) in cases {
+            let mut harness = MacroTestHarness::for_adapter(AdapterType::Databricks)
+                .with_macro_at_path(
+                    "dbt_databricks",
+                    "dlt_inferred_query_schema_changed",
+                    include_str!(
+                        "../../src/dbt_macro_assets/dbt-databricks/macros/relations/schema_drift.sql"
+                    ),
+                    "dbt-databricks/macros/relations/schema_drift.sql",
+                )
+                .with_stub_functions()
+                .with_macro("dbt", "get_columns_in_query", INFERRED_QUERY_COLUMNS_STUB)
+                .build()
+                .expect("schema drift harness should build");
+            let existing_columns: Vec<Value> = existing
+                .iter()
+                .map(|name| Value::from_serialize(BTreeMap::from([("name", *name)])))
+                .collect();
+            harness.mock().on("get_columns_in_relation", move |_| {
+                Ok(Value::from(existing_columns.clone()))
+            });
+            let inferred_columns: Vec<Value> = inferred.iter().copied().map(Value::from).collect();
+            harness
+                .env_mut()
+                .env
+                .add_function("inferred_query_columns", move || {
+                    Ok(Value::from(inferred_columns.clone()))
+                });
+
+            let relation = RelationObject::new(harness.relation(
+                "TEST_DB",
+                "TEST_SCHEMA",
+                "my_mv",
+                Some(RelationType::MaterializedView),
+            ))
+            .into_value();
+            let drifted = harness
+                .render(
+                    "{{ dlt_inferred_query_schema_changed(relation, 'select * from upstream') }}",
+                    BTreeMap::from([("relation".to_string(), relation)]),
+                )
+                .expect("schema drift check should render");
+            assert_eq!(
+                drifted.trim(),
+                expected,
+                "existing {existing:?} vs inferred {inferred:?}"
+            );
+        }
+    }
+
     fn render_primary_key_constraint(expression: Option<&str>) -> String {
         let harness = MacroTestHarness::for_adapter(AdapterType::Databricks)
             .load_all_macros()

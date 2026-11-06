@@ -6,6 +6,11 @@ pub(crate) mod test_helpers;
 
 use dbt_agate::AgateTable;
 use indexmap::IndexMap;
+use minijinja::{
+    arg_utils::ArgParser,
+    value::{Value, ValueMap},
+};
+use minijinja_contrib::dyn_object::DynJinjaObject;
 
 // TODO: delete this and make it use RecordBatches instead
 #[derive(Debug, Eq, PartialEq, Hash)]
@@ -54,3 +59,26 @@ impl From<DatabricksRelationMetadataKey> for String {
 }
 
 pub(crate) type DatabricksRelationMetadata = IndexMap<DatabricksRelationMetadataKey, AgateTable>;
+
+/// Mirrors v1's pydantic `DatabricksRelationChangeSet`. Macros call `model_copy(update=...)` on it
+/// to override fields such as `requires_full_refresh`.
+pub(crate) fn databricks_changeset(fields: ValueMap) -> Value {
+    Value::from_object(
+        DynJinjaObject::<(), ValueMap>::new("DatabricksRelationChangeSet", (), fields).with_method(
+            "model_copy",
+            |obj, _state, args, _listeners| {
+                let mut fields = obj.repr_ref().clone();
+                if let Some(update) = ArgParser::new(args, None)
+                    .get_optional::<Value>("update")
+                    .filter(|update| !update.is_none())
+                {
+                    for key in update.try_iter()? {
+                        let value = update.get_item(&key)?;
+                        fields.insert(key, value);
+                    }
+                }
+                Ok(databricks_changeset(fields))
+            },
+        ),
+    )
+}
