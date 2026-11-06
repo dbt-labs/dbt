@@ -1,6 +1,7 @@
 // use serde_repr::{Deserialize_repr, Serialize_repr};
 use std::{collections::HashMap, fmt::Display};
 
+use dbt_proc_macros::DebugNoInline;
 use dbt_proc_macros::include_frontend_error_codes;
 use strum_macros::{EnumString, FromRepr, IntoStaticStr};
 
@@ -11,7 +12,9 @@ use strum_macros::{EnumString, FromRepr, IntoStaticStr};
 #[include_frontend_error_codes]
 #[repr(u16)]
 #[non_exhaustive]
-#[derive(Debug, Copy, Clone, Eq, PartialEq, FromRepr, EnumString, IntoStaticStr, Default)]
+#[derive(
+    DebugNoInline, Copy, Clone, Eq, PartialEq, FromRepr, EnumString, IntoStaticStr, Default,
+)]
 pub enum ErrorCode {
     // ----------------- Frontend errors [0, 999] -----------------------------
     //
