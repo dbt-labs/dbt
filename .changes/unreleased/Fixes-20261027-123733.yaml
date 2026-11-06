@@ -1,0 +1,7 @@
+kind: Fixes
+body: Stop reading a metadata parquet file on the first read error instead of retrying it forever, and write these files atomically
+time: 2026-10-27T12:37:33.239087665Z
+custom:
+    author: yashaggarwal85d
+    issue: "16871"
+    project: dbt-core
