@@ -1014,6 +1014,18 @@ pub async fn resolve_inner(
 
     let semantic_layer_spec_is_legacy = min_properties.semantic_layer_spec_is_legacy;
 
+    // TODO: this eager pass should not exist. Only semantic model and metric resolution read
+    // `typed_models_properties`, so it should be a lazy closure that types only the models
+    // with `semantic_model` or `metrics`, called by those two readers.
+    // It must stay eager over every model for now because of two side effects:
+    // - It is the only pass that renders the properties of SQL models with `CURRENT_PATH` set,
+    //   so it is the only emitter of their missing `doc()` warnings (see the TODO in
+    //   `DocMacro`). The render pass in `resolve_models` does not set the path, so it stays
+    //   silent for them.
+    // - It fails the parse on a hard Jinja or typing error in any model's YAML before other
+    //   resources resolve, including entries with no model file.
+    // Removing it means the parallel render pass must emit those warnings instead, and the
+    // errors surface later or not at all. That is a breaking change that needs explicit handling.
     for (model_name, minimal_model_props) in &min_properties.models {
         // Update base context with the relative yaml file path.
         // We do this for accurate error reporting.
@@ -1028,7 +1040,7 @@ pub async fn resolve_inner(
 
         // Legacy semantic layer projects use a different `metrics` spec, so drop the key
         // rather than deserializing it against the current schema.
-        let mut model_yml = minimal_model_props.clone().schema_value;
+        let mut model_yml = minimal_model_props.schema_value.clone();
         if semantic_layer_spec_is_legacy && let Some(m) = model_yml.as_mapping_mut() {
             m.remove("metrics");
         }
@@ -1045,7 +1057,11 @@ pub async fn resolve_inner(
             false,
         )?;
 
-        typed_models_properties.insert(model_name.clone(), typed_model_props);
+        // Only semantic model and metric resolution read this map, and both skip
+        // models that declare neither, so keep only the models they need.
+        if typed_model_props.semantic_model.is_some() || typed_model_props.metrics.is_some() {
+            typed_models_properties.insert(model_name.clone(), typed_model_props);
+        }
     }
 
     // Resolve sources based on the dbt_state, database, schema, and project name
