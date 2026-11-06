@@ -78,12 +78,13 @@ fn max_concurrent_microbatch_batches(adapter_type: AdapterType) -> Option<usize>
 ///   See: https://docs.getdbt.com/docs/build/parallel-batch-execution#how-parallel-batch-execution-works
 ///   The actual logic from dbt-core: https://github.com/dbt-labs/dbt-core/blob/2857d45cc02c0b01cb018ec26be1a9079e1634a0/core/dbt/task/run.py#L413-L427
 ///
-/// TODO(chasewalden): `dbt retry` can be used to re-process only the failed batches.
-///  Seems like the `retry` subcommand doesn't exist in `fs` though...
+/// `retry_windows` is the previous run's failed batches. When set, those windows
+/// are what runs, and every batch is incremental so a retry cannot replace the table.
 pub async fn prepare_microbatch_batches(
     node: Arc<dyn InternalDbtNodeAttributes>,
     ctx: &TaskRunnerCtx,
     task_result: &TaskResult,
+    retry_windows: Option<&[(String, String)]>,
 ) -> FsResult<Vec<Vec<MicrobatchExecUnit>>> {
     let base_context = ctx.run_base_context(node.as_ref())?;
 
@@ -105,24 +106,33 @@ pub async fn prepare_microbatch_batches(
         )
     })?);
 
-    let (batch_builder, start_time, end_time, is_incremental) =
-        resolve_batch_window(model, ctx).await?;
-    let batches = batch_builder.build_batches(start_time, end_time);
+    // A partial-success retry runs the saved failed windows, not the lookback
+    // window. Lookback would skip a failed day that is older than `lookback`.
+    let (batches, is_incremental) = if let Some(windows) = retry_windows {
+        let batch_builder = MicrobatchBuilder::from_config(
+            model.deprecated_config.batch_size.clone(),
+            model.deprecated_config.begin,
+            model.deprecated_config.lookback,
+        )?;
+        (batches_from_windows(&batch_builder, windows)?, true)
+    } else {
+        let (batch_builder, start_time, end_time, is_incremental) =
+            resolve_batch_window(model, ctx).await?;
+        (
+            batch_builder.build_batches(start_time, end_time),
+            is_incremental,
+        )
+    };
 
     if batches.is_empty() {
-        debug!(
-            "Microbatch model {} has no batches to process (start={}, end={})",
-            unique_id, start_time, end_time
-        );
+        debug!("Microbatch model {unique_id} has no batches to process");
         return Ok(vec![]);
     }
 
     debug!(
-        "Executing microbatch model {} with {} batches (start={}, end={})",
+        "Executing microbatch model {} with {} batches",
         unique_id,
         batches.len(),
-        start_time,
-        end_time
     );
 
     let event_time_mapping = Arc::new(build_event_time_mapping(model, ctx.nodes()));
@@ -282,6 +292,69 @@ pub fn microbatch_batch_results(
     BatchResults { successful, failed }
 }
 
+/// Failed windows from a partial-success run.
+///
+/// `None` when the last run had no successes: retry then rebuilds the normal
+/// window, so a full refresh can still start over from `begin`.
+pub fn retry_failed_windows(prior: &BatchResults) -> Option<&[(String, String)]> {
+    if prior.successful.is_empty() || prior.failed.is_empty() {
+        None
+    } else {
+        Some(prior.failed.as_slice())
+    }
+}
+
+/// Rebuild batch contexts from `run_results.json` windows.
+pub fn batches_from_windows(
+    builder: &MicrobatchBuilder,
+    windows: &[(String, String)],
+) -> FsResult<Vec<BatchContext>> {
+    let mut parsed = Vec::with_capacity(windows.len());
+    for (start, end) in windows {
+        let start = DateTime::parse_from_rfc3339(start)
+            .map_err(|error| {
+                fs_err!(
+                    ErrorCode::InvalidConfig,
+                    "Unable to parse batch start '{start}': {error}"
+                )
+            })?
+            .with_timezone(&Utc);
+        let end = DateTime::parse_from_rfc3339(end)
+            .map_err(|error| {
+                fs_err!(
+                    ErrorCode::InvalidConfig,
+                    "Unable to parse batch end '{end}': {error}"
+                )
+            })?
+            .with_timezone(&Utc);
+        parsed.push((start, end));
+    }
+    parsed.sort_by_key(|(start, _)| *start);
+    let total = parsed.len();
+    Ok(parsed
+        .into_iter()
+        .enumerate()
+        .map(|(index, (start, end))| {
+            BatchContext::new(builder.batch_id(start), start, end, index, total)
+        })
+        .collect())
+}
+
+/// This run's windows, plus successes carried from the partial run being retried.
+pub fn finalize_microbatch_results(
+    successful: Vec<(String, String)>,
+    failed: Vec<(String, String)>,
+    carried_successes: Option<&[(String, String)]>,
+) -> BatchResults {
+    let mut results = microbatch_batch_results(successful, failed);
+    if let Some(carried) = carried_successes {
+        results.successful.extend(carried.iter().cloned());
+        results.successful.sort();
+        results.successful.dedup();
+    }
+    results
+}
+
 /// Run-results message and status for a finished microbatch model.
 ///
 /// A mix of outcomes is `partial success`. The node stays [`NodeStatus::Errored`]
@@ -310,6 +383,9 @@ pub enum MicrobatchBatchOutcome {
         window: (String, String),
         error: Box<dbt_common::FsError>,
     },
+    /// The batch did not run because the invocation is stopping.
+    /// Kept as `Ok` so a sibling that already finished is not dropped.
+    Canceled((String, String)),
 }
 
 /// Create the `MicrobatchEvaluated` span of one batch under the current span.
@@ -391,7 +467,7 @@ pub fn execute_microbatch_batch(
                 ErrorCode::OperationCanceled | ErrorCode::TaskCancelled
             ) =>
         {
-            Err(error)
+            Ok(MicrobatchBatchOutcome::Canceled(window))
         }
         Err(error) => {
             // Logged here, inside the batch span. The model result records the
@@ -674,6 +750,57 @@ mod tests {
             )],
         );
         assert_eq!(microbatch_result_annotation(&results), (None, None));
+    }
+
+    #[test]
+    fn retry_reruns_only_the_failed_window_and_keeps_older_successes() {
+        let prior = BatchResults {
+            successful: vec![
+                (
+                    "2024-01-01T00:00:00Z".to_string(),
+                    "2024-01-02T00:00:00Z".to_string(),
+                ),
+                (
+                    "2024-01-03T00:00:00Z".to_string(),
+                    "2024-01-04T00:00:00Z".to_string(),
+                ),
+            ],
+            failed: vec![(
+                "2024-01-02T00:00:00Z".to_string(),
+                "2024-01-03T00:00:00Z".to_string(),
+            )],
+        };
+        let windows = retry_failed_windows(&prior).unwrap();
+        let builder = MicrobatchBuilder::new(DbtBatchSize::Day, dt(2024, 1, 1), 1);
+        let batches = batches_from_windows(&builder, windows).unwrap();
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].id, "20240102");
+        assert!(batches[0].is_first());
+
+        // The retried window succeeds. The January 1 and 3 successes stay in the artifact.
+        let results = finalize_microbatch_results(
+            vec![(
+                "2024-01-02T00:00:00Z".to_string(),
+                "2024-01-03T00:00:00Z".to_string(),
+            )],
+            vec![],
+            Some(&prior.successful),
+        );
+        assert!(results.failed.is_empty());
+        assert_eq!(results.successful.len(), 3);
+        assert_eq!(results.successful[0].0, "2024-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn every_batch_failing_does_not_narrow_the_retry() {
+        let prior = BatchResults {
+            successful: vec![],
+            failed: vec![(
+                "2024-01-02T00:00:00Z".to_string(),
+                "2024-01-03T00:00:00Z".to_string(),
+            )],
+        };
+        assert!(retry_failed_windows(&prior).is_none());
     }
 
     #[test]

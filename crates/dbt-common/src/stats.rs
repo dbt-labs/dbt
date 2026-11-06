@@ -169,6 +169,9 @@ impl Stat {
         datetime.format("%H:%M:%S").to_string()
     }
     pub fn status_string(&self) -> String {
+        if self.result_status_override.is_some() {
+            return "partial success".to_string();
+        }
         if self.status == NodeStatus::Succeeded
             && (self.unique_id.starts_with("test.") || self.unique_id.starts_with("unit_test."))
         {
@@ -377,6 +380,7 @@ mod tests {
         );
         stat.result_status_override = Some("partial success".to_string());
         assert_eq!(stat.result_status_string(), "partial success");
+        assert_eq!(stat.status_string(), "partial success");
     }
 
     #[test]
@@ -418,6 +422,7 @@ mod tests {
             thread_id: "Thread-1 (worker)".to_string(),
             message: None,
             assertion: false,
+            result_status_override: None,
         }
     }
 
