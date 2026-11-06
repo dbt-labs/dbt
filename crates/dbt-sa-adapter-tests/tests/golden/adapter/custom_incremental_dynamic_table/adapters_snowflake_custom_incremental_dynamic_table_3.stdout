@@ -1,0 +1,17 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/sources.yml
+   Parsing models/orders_merge.sql
+   Parsing models/stock_merge.sql
+   Parsing tests/orders_merge_matches_source.sql
+   Parsing tests/stock_merge_matches_source.sql
+ Rendering models/stock_merge.sql
+   Running models/stock_merge.sql
+    Warned model adapters_snowflake_custom_incremental_dynamic_table.stock_merge (dynamic_table) [1 of 2 in duration]
+ Rendering models/orders_merge.sql
+   Running models/orders_merge.sql
+    Warned model adapters_snowflake_custom_incremental_dynamic_table.orders_merge (dynamic_table) [2 of 2 in duration]
+==================== Execution Summary =====================
+Finished 'run' with 2 warnings for target 'snowflake' [duration]
+Processed: 2 models
+Summary: 2 total | 2 warn

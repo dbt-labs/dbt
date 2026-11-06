@@ -426,7 +426,6 @@ async fn adapters_snowflake_dynamic_table() -> FsResult<()> {
 }
 
 #[dbt_runtime::test]
-#[ignore = "not recorded yet: record with GOLDIE_UPDATE=1 ADAPTER_RECORD=1"]
 async fn adapters_snowflake_custom_incremental_dynamic_table() -> FsResult<()> {
     const ORDERS: &str = "models/orders_merge.sql";
     run_fs_record_replay_task_seq(

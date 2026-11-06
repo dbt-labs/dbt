@@ -1,0 +1,9 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/sources.yml
+   Parsing models/orders_merge.sql
+   Parsing models/stock_merge.sql
+   Parsing tests/orders_merge_matches_source.sql
+   Parsing tests/stock_merge_matches_source.sql
+==================== Execution Summary =====================
+Finished 'run-operation' successfully for target 'snowflake' [duration]
