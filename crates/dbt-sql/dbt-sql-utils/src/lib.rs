@@ -18,6 +18,7 @@ pub use tokens::{SqlToken, sql_lex_tokens};
 pub const SUPPORTED_DIALECTS: &[Dialect] = &[
     Dialect::Bigquery,
     Dialect::Databricks,
+    Dialect::Duckdb,
     Dialect::Redshift,
     Dialect::Snowflake,
     Dialect::Trino,

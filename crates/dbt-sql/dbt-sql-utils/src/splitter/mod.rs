@@ -46,6 +46,7 @@ fn do_sql_find_statement_delimiters<'input, 'arena>(
         Dialect::Redshift => dialect_dispatch!(dbt_lexer_redshift, redshiftlexer),
         Dialect::Snowflake => dialect_dispatch!(dbt_lexer_snowflake, snowflakelexer),
         Dialect::Databricks => dialect_dispatch!(dbt_lexer_databricks, databrickslexer),
+        Dialect::Duckdb => dialect_dispatch!(dbt_lexer_duckdb, duckdblexer),
         _ => dialect_dispatch!(dbt_lexer_trino, trinolexer),
     };
 
@@ -273,9 +274,7 @@ pub fn jinja_sql_find_statement_spans(input: &str, dialect: Option<Dialect>) -> 
 pub fn sql_split_statements(input: &str, dialect: Option<Dialect>) -> Vec<&str> {
     let sql_buf = input.trim();
     match dialect {
-        Some(dialect @ (Dialect::Duckdb | Dialect::Postgresql)) => {
-            split_respecting_dollar_quotes(sql_buf, dialect)
-        }
+        Some(dialect @ Dialect::Postgresql) => split_respecting_dollar_quotes(sql_buf, dialect),
         dialect => do_sql_split_statements(sql_buf, dialect),
     }
 }
@@ -284,10 +283,11 @@ pub fn sql_split_statements(input: &str, dialect: Option<Dialect>) -> Vec<&str> 
 /// it cannot split or merge statements. The masked copy is the same length, so
 /// statement slices map back onto `sql`.
 ///
-/// `Dialect::Duckdb` and `Dialect::Postgresql` fall through to the Trino lexer
+/// `Dialect::Postgresql` falls through to the Trino lexer
 /// (`do_sql_find_statement_delimiters`, `_ => dbt_lexer_trino`), which has no
-/// dollar-quote token. Tag bytes match DuckDB and Postgres: a letter, `_`, or
-/// any byte >= 0x80, then those or digits.
+/// dollar-quote token. `Dialect::Duckdb` uses `dbt-lexer-duckdb`. Tag bytes
+/// match DuckDB and Postgres: a letter, `_`, or any byte >= 0x80, then those
+/// or digits.
 /// <https://github.com/duckdb/duckdb/blob/master/src/parser/parser.cpp>
 /// (`IsValidDollarQuotedStringTagFirstChar`)
 fn split_respecting_dollar_quotes<'i>(sql: &'i str, dialect: Dialect) -> Vec<&'i str> {
@@ -512,6 +512,7 @@ pub fn is_empty_or_comment_only(statement: &str, dialect: Dialect) -> bool {
         Redshift => dialect_dispatch!(dbt_lexer_redshift, redshiftlexer),
         Snowflake => dialect_dispatch!(dbt_lexer_snowflake, snowflakelexer),
         Databricks => dialect_dispatch!(dbt_lexer_databricks, databrickslexer),
+        Duckdb => dialect_dispatch!(dbt_lexer_duckdb, duckdblexer),
         Trino => dialect_dispatch!(dbt_lexer_trino, trinolexer),
         _ => {
             // Fallback to Trino (in release builds) lexer for not fully supported dialects.

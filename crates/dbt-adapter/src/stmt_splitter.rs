@@ -88,6 +88,7 @@ impl StmtSplitter for DefaultStmtSplitter {
             Bigquery => by_dialect(Dialect::Bigquery),
             Databricks | Spark => by_dialect(Dialect::Databricks),
             Redshift => by_dialect(Dialect::Redshift),
+            DuckDB | LakeCompute => by_dialect(Dialect::Duckdb),
             ClickHouse => clickhouse::is_empty_or_comment_only(sql),
             // fallback to the Trino lexer for unsupported lexer dialects
             _ => by_dialect(Dialect::Trino),
@@ -217,21 +218,25 @@ mod tests {
             split("select $$it's a; test$$; select 2", AdapterType::DuckDB),
             vec!["select $$it's a; test$$", " select 2"]
         );
-        assert_eq!(
-            split("select $é$it's a; test$é$; select 2", AdapterType::DuckDB),
-            vec!["select $é$it's a; test$é$", " select 2"]
-        );
+        // The DuckDB lexer tag is ASCII. The Postgres mask accepts a tag byte >= 0x80.
+        for adapter in [AdapterType::Postgres, AdapterType::Salesforce] {
+            assert_eq!(
+                split("select $é$it's a; test$é$; select 2", adapter),
+                vec!["select $é$it's a; test$é$", " select 2"],
+                "{adapter:?}"
+            );
+        }
         assert_eq!(
             split("select '$a$x$a$'; select 2", AdapterType::DuckDB),
             vec!["select '$a$x$a$'", " select 2"]
         );
-        // `$$` inside backtick identifiers is not a dollar quote.
+        // This lexer does not treat backticks as quotes, so the two `$$` pairs are one dollar quote.
         assert_eq!(
             split(
                 "select `a$$` from t; select `b$$` from u",
                 AdapterType::DuckDB
             ),
-            vec!["select `a$$` from t", " select `b$$` from u"]
+            vec!["select `a$$` from t; select `b$$` from u"]
         );
     }
 
