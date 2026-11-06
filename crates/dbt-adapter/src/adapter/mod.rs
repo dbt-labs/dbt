@@ -1598,25 +1598,6 @@ impl Adapter {
         }
     }
 
-    /// https://github.com/dbt-labs/dbt-adapters/blob/1d97c39d2f763704a2a9d61d18513bbf1177874e/dbt-snowflake/src/dbt/adapters/snowflake/impl.py#L731
-    ///
-    /// ```python
-    /// def dynamic_table_create_or_alter_enabled(self, model: RelationConfig) -> bool
-    /// ```
-    pub fn dynamic_table_create_or_alter_enabled(
-        &self,
-        model: &Value,
-    ) -> Result<Value, minijinja::Error> {
-        match &self.inner {
-            Typed { adapter, .. } => {
-                let enabled = adapter.dynamic_table_create_or_alter_enabled(model)?;
-                Ok(Value::from(enabled))
-            }
-            // No behavior flags are resolved at parse time.
-            Parse(_) => Ok(Value::from(false)),
-        }
-    }
-
     /// https://github.com/dbt-labs/dbt-adapters/blob/main/dbt-adapters/src/dbt/adapters/base/impl.py#L852
     ///
     /// ```python
@@ -4005,12 +3986,6 @@ impl Adapter {
                 // Ex: minijinja_value_to_typed_struct::<DbtModel>(model.clone()).is_ok();
 
                 self.build_catalog_relation(state, model)
-            }
-            "dynamic_table_create_or_alter_enabled" => {
-                let iter = ArgsIter::new(name, &["model"], args);
-                let model = iter.next_arg::<&Value>()?;
-                iter.finish()?;
-                self.dynamic_table_create_or_alter_enabled(model)
             }
             "get_catalog_integration" => self.get_catalog_integration(state, args),
             "type" => Ok(Value::from(self.effective_adapter_type(state).to_string())),

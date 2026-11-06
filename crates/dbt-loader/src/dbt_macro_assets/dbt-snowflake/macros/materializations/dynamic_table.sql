@@ -42,10 +42,10 @@
         {% set build_sql = get_replace_sql(existing_relation, target_relation, sql) %}
     {% else %}
 
-        {#- Opt-in query-evolution path: a native (info schema) dynamic table syncs its definition
-            in place via CREATE OR ALTER, so SQL edits deploy without --full-refresh. When it does
-            not apply, fall through to the standard config-change handling below. -#}
-        {% if adapter.dynamic_table_create_or_alter_enabled(config.model) %}
+        {#- Opt-in query-evolution path: SQL edits deploy in place via CREATE OR ALTER, without
+            --full-refresh; otherwise fall through to the config-change handling below. DIVERGENCE:
+            v1 gates on adapter.dynamic_table_create_or_alter_enabled; Fusion uses a macro. -#}
+        {% if snowflake__dynamic_table_create_or_alter_enabled(config.model) %}
             {% set build_sql = snowflake__get_create_or_alter_dynamic_table_sql(existing_relation, target_relation, sql) %}
 
         {% else %}

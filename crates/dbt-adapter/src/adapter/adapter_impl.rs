@@ -1562,28 +1562,6 @@ impl AdapterImpl {
         )
     }
 
-    /// Whether the opt-in `CREATE OR ALTER` path applies to this dynamic table model: the
-    /// `snowflake_dynamic_table_create_or_alter` behavior flag is on and the model is a native
-    /// (info schema) or managed (built-in) Iceberg dynamic table. Dynamic tables in externally
-    /// owned catalogs keep create-or-replace behavior.
-    ///
-    /// SnowflakeAdapter https://github.com/dbt-labs/dbt-adapters/blob/1d97c39d2f763704a2a9d61d18513bbf1177874e/dbt-snowflake/src/dbt/adapters/snowflake/impl.py#L731
-    pub fn dynamic_table_create_or_alter_enabled(&self, model: &Value) -> AdapterResult<bool> {
-        // Read the flag without emitting a behavior-change event (jinja `.no_warn`).
-        let flag_enabled = self
-            .behavior_object()
-            .get_value(&Value::from("snowflake_dynamic_table_create_or_alter"))
-            .is_some_and(|flag| flag.is_true());
-        if !flag_enabled {
-            return Ok(false);
-        }
-        let catalog_relation = self.build_catalog_relation(model)?;
-        Ok(matches!(
-            catalog_relation.catalog_type,
-            CatalogType::SnowflakeNative | CatalogType::SnowflakeBuiltIn
-        ))
-    }
-
     /// SnowflakeAdapter https://github.com/dbt-labs/dbt-adapters/blob/0efd8d3d1081e1ab43e38797d5104f7b424a6284/dbt-snowflake/src/dbt/adapters/snowflake/impl.py#L559
     pub fn describe_dynamic_table(
         &self,
@@ -6415,89 +6393,6 @@ mod tests {
                 "{adapter_type:?} must not register the Snowflake-only flag"
             );
         }
-    }
-
-    /// Drive `dynamic_table_create_or_alter_enabled` with the behavior flag and a model's
-    /// `table_format` (the native vs Iceberg catalog discriminator).
-    fn create_or_alter_enabled(
-        adapter_type: AdapterType,
-        flag: Option<bool>,
-        table_format: Option<&str>,
-    ) -> bool {
-        let config = match adapter_type {
-            Snowflake => Mapping::from_iter([
-                ("user".into(), "U".into()),
-                ("password".into(), "P".into()),
-                ("account".into(), "A".into()),
-                ("database".into(), "D".into()),
-                ("schema".into(), "S".into()),
-                ("role".into(), "role".into()),
-                ("warehouse".into(), "warehouse".into()),
-            ]),
-            _ => Mapping::new(),
-        };
-        let overrides: BTreeMap<String, bool> = flag
-            .map(|f| (DT_CREATE_OR_ALTER_FLAG.to_string(), f))
-            .into_iter()
-            .collect();
-        let adapter = AdapterImpl::new(
-            build_engine_with_behavior(adapter_type, config, overrides),
-            None,
-        );
-
-        let mut model = serde_json::json!({"schema": "SCH", "identifier": "ID"});
-        if let Some(table_format) = table_format {
-            model["table_format"] = table_format.into();
-            // A managed Iceberg model also names its storage; mirror a realistic config.
-            model["config"] = serde_json::json!({
-                "table_format": table_format,
-                "external_volume": "VOL",
-                "base_location_root": "root",
-            });
-        }
-        adapter
-            .dynamic_table_create_or_alter_enabled(&Value::from_serialize(model))
-            .expect("the gate should not error")
-    }
-
-    #[test]
-    fn test_dynamic_table_create_or_alter_enabled_for_native_when_flag_on() {
-        // Only the flag and the native (info schema) catalog matter -- refresh_mode and
-        // scheduler do not factor in -- so one native model suffices.
-        assert!(create_or_alter_enabled(Snowflake, Some(true), None));
-    }
-
-    #[test]
-    fn test_dynamic_table_create_or_alter_disabled_when_flag_off_or_unset() {
-        assert!(!create_or_alter_enabled(Snowflake, Some(false), None));
-        assert!(!create_or_alter_enabled(Snowflake, None, None));
-    }
-
-    #[test]
-    fn test_dynamic_table_create_or_alter_enabled_for_managed_iceberg() {
-        // Snowflake supports CREATE OR ALTER DYNAMIC ICEBERG TABLE when Snowflake is the Iceberg
-        // catalog (built-in), so the gate follows the same flag as native tables.
-        assert!(create_or_alter_enabled(
-            Snowflake,
-            Some(true),
-            Some("ICEBERG")
-        ));
-    }
-
-    #[test]
-    fn test_dynamic_table_create_or_alter_iceberg_still_requires_the_flag() {
-        assert!(!create_or_alter_enabled(
-            Snowflake,
-            Some(false),
-            Some("ICEBERG")
-        ));
-        assert!(!create_or_alter_enabled(Snowflake, None, Some("ICEBERG")));
-    }
-
-    #[test]
-    fn test_dynamic_table_create_or_alter_disabled_for_other_adapters() {
-        // The flag is not registered outside Snowflake, so it can never resolve to on.
-        assert!(!create_or_alter_enabled(Databricks, Some(true), None));
     }
 
     fn engine(adapter_type: AdapterType) -> Arc<dyn AdapterEngine> {

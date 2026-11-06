@@ -973,26 +973,3 @@ mod execute_inner_txn {
         assert_eq!(session.executed, [FAILING_SQL]);
     }
 }
-
-// -- dynamic_table_create_or_alter_enabled tests ----------------------------
-
-#[test]
-fn test_dynamic_table_create_or_alter_enabled_is_false_in_parse_phase() {
-    // No behavior flags are resolved at parse time, so the gate must answer `false`.
-    let adapter = make_duckdb_parse_adapter();
-    let result = dispatch_test(
-        &adapter,
-        "dynamic_table_create_or_alter_enabled",
-        &[Value::from_serialize(
-            serde_json::json!({"schema": "SCH", "identifier": "ID"}),
-        )],
-    )
-    .unwrap();
-    assert!(!result.is_true());
-}
-
-#[test]
-fn test_dynamic_table_create_or_alter_enabled_requires_the_model_argument() {
-    let adapter = make_duckdb_parse_adapter();
-    assert!(dispatch_test(&adapter, "dynamic_table_create_or_alter_enabled", &[]).is_err());
-}

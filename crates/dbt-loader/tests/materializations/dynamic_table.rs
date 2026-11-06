@@ -255,8 +255,8 @@ fn strip_block_comments(sql: &str) -> String {
 /// Knobs for the adapter-level collaborators the materialization consults.
 #[derive(Default)]
 struct FixtureOptions {
-    /// What `adapter.dynamic_table_create_or_alter_enabled(config.model)` returns. The gate itself
-    /// (behavior flag + native catalog) is tested in `dbt-adapter`; here it is a given.
+    /// The `snowflake_dynamic_table_create_or_alter` behavior flag. The materialization's gate
+    /// (`snowflake__dynamic_table_create_or_alter_enabled`) combines it with the resolved catalog.
     create_or_alter: bool,
     /// The `snowflake_default_transient_dynamic_tables` behavior flag.
     default_transient: bool,
@@ -327,7 +327,7 @@ fn install_recorders(harness: &mut MacroTestHarness) -> Recorder {
     raw_results
 }
 
-/// The behavior flags the materialization reads, and the create-or-alter gate.
+/// The behavior flags the materialization reads.
 fn install_behavior(harness: &MacroTestHarness, options: &FixtureOptions) {
     harness.mock().set_attr(
         "behavior",
@@ -337,15 +337,12 @@ fn install_behavior(harness: &MacroTestHarness, options: &FixtureOptions) {
                 "snowflake_default_transient_dynamic_tables",
                 BTreeMap::from([("no_warn", options.default_transient)]),
             ),
+            (
+                "snowflake_dynamic_table_create_or_alter",
+                BTreeMap::from([("no_warn", options.create_or_alter)]),
+            ),
         ])),
     );
-
-    let create_or_alter = options.create_or_alter;
-    harness
-        .mock()
-        .on("dynamic_table_create_or_alter_enabled", move |_| {
-            Ok(Value::from(create_or_alter))
-        });
 }
 
 /// `build_catalog_relation`: the default native catalog, or (for an Iceberg target) the managed

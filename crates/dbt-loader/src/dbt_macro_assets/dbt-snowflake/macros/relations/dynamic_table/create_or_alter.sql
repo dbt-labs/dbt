@@ -1,9 +1,20 @@
 {#-
-    The gate for this path -- behavior flag on + native (info schema) catalog -- lives in Rust as
-    adapter.dynamic_table_create_or_alter_enabled(), so the decision is unit-testable without a
-    database. The materialization calls it; this file only renders the DDL once that gate has
-    passed. The gate admits native (INFO_SCHEMA) and managed Iceberg (BUILT_IN) dynamic tables.
+    The gate for this path: the `snowflake_dynamic_table_create_or_alter` behavior flag is on and
+    the model's catalog is native (INFO_SCHEMA) or a managed Iceberg one (BUILT_IN, Snowflake is
+    the Iceberg catalog). Dynamic tables in externally owned catalogs keep create-or-replace
+    behavior. The materialization checks it; the macros below only render the DDL once it has
+    passed. The flag is read through `.no_warn`, which does not emit a behavior-change event.
 -#}
+-- funcsign: (model) -> bool
+{% macro snowflake__dynamic_table_create_or_alter_enabled(model) -%}
+    {%- if not adapter.behavior.snowflake_dynamic_table_create_or_alter.no_warn -%}
+        {{ return(false) }}
+    {%- endif -%}
+    {%- set catalog_relation = adapter.build_catalog_relation(model) -%}
+    {{ return(catalog_relation.catalog_type in ['INFO_SCHEMA', 'BUILT_IN']) }}
+{%- endmacro %}
+
+
 -- funcsign: (relation, relation, string) -> string
 {% macro snowflake__get_create_or_alter_dynamic_table_sql(existing_relation, target_relation, sql) -%}
 {#-
