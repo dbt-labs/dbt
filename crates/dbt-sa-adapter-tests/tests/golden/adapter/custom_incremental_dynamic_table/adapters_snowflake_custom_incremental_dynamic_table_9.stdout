@@ -1,0 +1,15 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/sources.yml
+   Parsing models/orders_merge.sql
+   Parsing models/orders_transient.sql
+   Parsing models/stock_merge.sql
+   Parsing tests/orders_merge_matches_source.sql
+   Parsing tests/stock_merge_matches_source.sql
+ Rendering models/orders_merge.sql
+   Running models/orders_merge.sql
+ Succeeded model adapters_snowflake_custom_incremental_dynamic_table.orders_merge (dynamic_table) [1 of 1 in duration]
+==================== Execution Summary =====================
+Finished 'run' successfully for target 'snowflake' [duration]
+Processed: 1 model
+Summary: 1 total | 1 success

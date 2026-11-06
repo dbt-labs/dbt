@@ -4,7 +4,7 @@ dbbbff64:
   sql: |-
     show terse schemas in database development
     limit 10000
-model.test.orders_merge:
+model.test.stock_merge:
 - sequence: 0
   type: execute
   sql: use warehouse [MASKED_WH]
@@ -13,21 +13,58 @@ model.test.orders_merge:
   sql: SHOW OBJECTS IN SCHEMA "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_CUSTOM_INCREMENTAL_DYNAMIC_TABLE" LIMIT 10000
 - sequence: 2
   type: execute
-  sql: show dynamic tables like 'ORDERS_MERGE' in schema "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_CUSTOM_INCREMENTAL_DYNAMIC_TABLE"
+  sql: show dynamic tables like 'STOCK_MERGE' in schema "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_CUSTOM_INCREMENTAL_DYNAMIC_TABLE"
 - sequence: 3
   type: execute
   sql: |-
-    create or replace dynamic table development.adapters_snowflake_custom_incremental_dynamic_table.orders_merge
+    create or replace temporary table development.adapters_snowflake_custom_incremental_dynamic_table.stock_merge__dbt_tmp
+    as (
+    select * from (
     
+    
+    -- Starts with a CTE, which a refresh body cannot: the merge must wrap it in a subquery.
+    with stock_changes as (
+    select
+    s.warehouse_id,
+    s.sku,
+    s.quantity,
+    s.METADATA$ACTION as change_action,
+    s.METADATA$ISUPDATE as change_is_update
+    from development.adapters_snowflake_custom_incremental_dynamic_table.stock changes(information => DEFAULT) at(offset => 0) as s
+    )
+    
+    select
+    warehouse_id,
+    sku,
+    quantity,
+    change_action = 'DELETE' and not change_is_update as is_deleted
+    from stock_changes
+    qualify row_number() over (
+    partition by warehouse_id, sku
+    order by case when change_action = 'INSERT' then 0 else 1 end
+    ) = 1
+    ) limit 0
+    )
+- sequence: 4
+  type: execute
+  sql: describe table development.adapters_snowflake_custom_incremental_dynamic_table.stock_merge__dbt_tmp
+- sequence: 5
+  type: execute
+  sql: drop table if exists development.adapters_snowflake_custom_incremental_dynamic_table.stock_merge__dbt_tmp cascade
+- sequence: 6
+  type: execute
+  sql: |-
+    create or replace dynamic table development.adapters_snowflake_custom_incremental_dynamic_table.stock_merge ("WAREHOUSE_ID" NUMBER(38,0), "SKU" character varying(16), "QUANTITY" NUMBER(38,0), "IS_DELETED" BOOLEAN)
+    target_lag = '1 hour'
     warehouse = [MASKED_WH]
     
     
-    refresh_mode = AUTO
+    refresh_mode = CUSTOM_INCREMENTAL
     
     initialize = ON_CREATE
     
     
-    scheduler = 'DISABLE'
+    scheduler = 'ENABLE'
     
     
     
@@ -38,15 +75,38 @@ model.test.orders_merge:
     
     
     
-    as (
+    refresh using (
+    merge into SELF as DBT_INTERNAL_DEST
+    using (
     
     
-    select order_id, customer_id, amount, false as is_deleted
-    from development.adapters_snowflake_custom_incremental_dynamic_table.orders
+    -- Starts with a CTE, which a refresh body cannot: the merge must wrap it in a subquery.
+    with stock_changes as (
+    select
+    s.warehouse_id,
+    s.sku,
+    s.quantity,
+    s.METADATA$ACTION as change_action,
+    s.METADATA$ISUPDATE as change_is_update
+    from development.adapters_snowflake_custom_incremental_dynamic_table.stock changes(information => DEFAULT) as s
     )
-- sequence: 4
-  type: execute
-  sql: alter dynamic table development.adapters_snowflake_custom_incremental_dynamic_table.orders_merge refresh
-- sequence: 5
+    
+    select
+    warehouse_id,
+    sku,
+    quantity,
+    change_action = 'DELETE' and not change_is_update as is_deleted
+    from stock_changes
+    qualify row_number() over (
+    partition by warehouse_id, sku
+    order by case when change_action = 'INSERT' then 0 else 1 end
+    ) = 1
+    ) as DBT_INTERNAL_SOURCE
+    on DBT_INTERNAL_DEST.warehouse_id = DBT_INTERNAL_SOURCE.warehouse_id and DBT_INTERNAL_DEST.sku = DBT_INTERNAL_SOURCE.sku
+    when matched and coalesce(DBT_INTERNAL_SOURCE.is_deleted, false) then delete
+    when matched then update set "WAREHOUSE_ID" = DBT_INTERNAL_SOURCE."WAREHOUSE_ID", "SKU" = DBT_INTERNAL_SOURCE."SKU", "QUANTITY" = DBT_INTERNAL_SOURCE."QUANTITY", "IS_DELETED" = DBT_INTERNAL_SOURCE."IS_DELETED"
+    when not matched and not coalesce(DBT_INTERNAL_SOURCE.is_deleted, false) then insert ("WAREHOUSE_ID", "SKU", "QUANTITY", "IS_DELETED") values (DBT_INTERNAL_SOURCE."WAREHOUSE_ID", DBT_INTERNAL_SOURCE."SKU", DBT_INTERNAL_SOURCE."QUANTITY", DBT_INTERNAL_SOURCE."IS_DELETED")
+    )
+- sequence: 7
   type: execute
   sql: use warehouse [MASKED_WH]

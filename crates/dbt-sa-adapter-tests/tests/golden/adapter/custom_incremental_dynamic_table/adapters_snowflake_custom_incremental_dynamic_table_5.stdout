@@ -2,16 +2,20 @@
    Loading profiles.yml
    Parsing models/sources.yml
    Parsing models/orders_merge.sql
+   Parsing models/orders_transient.sql
    Parsing models/stock_merge.sql
    Parsing tests/orders_merge_matches_source.sql
    Parsing tests/stock_merge_matches_source.sql
  Rendering models/stock_merge.sql
    Running models/stock_merge.sql
- Succeeded model adapters_snowflake_custom_incremental_dynamic_table.stock_merge (dynamic_table) [1 of 2 in duration]
+ Succeeded model adapters_snowflake_custom_incremental_dynamic_table.stock_merge (dynamic_table) [1 of 3 in duration]
+ Rendering models/orders_transient.sql
+   Running models/orders_transient.sql
+ Succeeded model adapters_snowflake_custom_incremental_dynamic_table.orders_transient (dynamic_table) [2 of 3 in duration]
  Rendering models/orders_merge.sql
    Running models/orders_merge.sql
- Succeeded model adapters_snowflake_custom_incremental_dynamic_table.orders_merge (dynamic_table) [2 of 2 in duration]
+ Succeeded model adapters_snowflake_custom_incremental_dynamic_table.orders_merge (dynamic_table) [3 of 3 in duration]
 ==================== Execution Summary =====================
 Finished 'run' successfully for target 'snowflake' [duration]
-Processed: 2 models
-Summary: 2 total | 2 success
+Processed: 3 models
+Summary: 3 total | 3 success

@@ -444,19 +444,26 @@ async fn adapters_snowflake_custom_incremental_dynamic_table() -> FsResult<()> {
             AdapterRecordReplayTurn::new("run --full-refresh", &[]), // run_5: CREATE OR REPLACE
             AdapterRecordReplayTurn::new("test", &[]), // run_6: same rows after the rebuild
             AdapterRecordReplayTurn::new(
+                "run --select stock_merge",
+                &[FileOverride {
+                    original: "models/stock_merge.sql",
+                    overriding_file: "_project_overrides/stock_merge_target_lag.sql",
+                }],
+            ), // run_7: a CI DT config change replaces (only CREATE OR ALTER could alter it)
+            AdapterRecordReplayTurn::new(
                 "run --select orders_merge",
                 &[FileOverride {
                     original: ORDERS,
                     overriding_file: "_project_overrides/orders_merge_regular.sql",
                 }],
-            ), // run_7: CI DT -> regular DT replaces
+            ), // run_8: CI DT -> regular DT replaces
             AdapterRecordReplayTurn::new(
                 "run --select orders_merge",
                 &[FileOverride {
                     original: ORDERS,
                     overriding_file: "_project_overrides/orders_merge_custom_incremental.sql",
                 }],
-            ), // run_8: regular DT -> CI DT replaces
+            ), // run_9: regular DT -> CI DT replaces
         ],
         None,
         &[],

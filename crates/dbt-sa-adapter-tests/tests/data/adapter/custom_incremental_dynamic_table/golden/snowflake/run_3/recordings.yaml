@@ -17,6 +17,22 @@ model.test.orders_merge:
 - sequence: 3
   type: execute
   sql: use warehouse [MASKED_WH]
+model.test.orders_transient:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: show dynamic tables like 'ORDERS_TRANSIENT' in schema "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_CUSTOM_INCREMENTAL_DYNAMIC_TABLE"
+- sequence: 2
+  type: execute
+  sql: show tables like 'ORDERS_TRANSIENT' in schema "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_CUSTOM_INCREMENTAL_DYNAMIC_TABLE"
+- sequence: 3
+  type: execute
+  sql: alter dynamic table development.adapters_snowflake_custom_incremental_dynamic_table.orders_transient refresh
+- sequence: 4
+  type: execute
+  sql: use warehouse [MASKED_WH]
 model.test.stock_merge:
 - sequence: 0
   type: execute
