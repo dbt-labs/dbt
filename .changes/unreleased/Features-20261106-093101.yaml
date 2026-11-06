@@ -1,0 +1,7 @@
+kind: Features
+body: Add the `dynamic_table_create_or_alter` model config, which overrides the `snowflake_dynamic_table_create_or_alter` behavior flag for individual Snowflake dynamic table models.
+time: 2026-11-06T09:31:01.262474-08:00
+custom:
+    author: igorbelianski-cyber
+    issue: ""
+    project: dbt-core

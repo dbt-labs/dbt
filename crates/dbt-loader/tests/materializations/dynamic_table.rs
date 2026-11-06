@@ -94,6 +94,8 @@ struct LocalConfig {
     copy_grants: Option<bool>,
     table_tag: Option<String>,
     row_access_policy: Option<String>,
+    /// The model-level `dynamic_table_create_or_alter` config, which overrides the behavior flag.
+    dynamic_table_create_or_alter: Option<bool>,
     /// Configure a managed Iceberg table (`table_format`, `external_volume`, `base_location_root`,
     /// `iceberg_version`); the catalog relation is then resolved from this config for real.
     iceberg: bool,
@@ -140,6 +142,7 @@ fn serialized_model(config: &LocalConfig) -> Value {
         copy_grants: config.copy_grants,
         table_tag: config.table_tag.clone(),
         row_access_policy: config.row_access_policy.clone(),
+        dynamic_table_create_or_alter: config.dynamic_table_create_or_alter,
         external_volume: config.iceberg.then(|| "MY_VOLUME".to_string()),
         base_location_root: config.iceberg.then(|| "_dbt".to_string()),
         iceberg_version: config.iceberg.then_some(2),
@@ -177,6 +180,7 @@ fn dynamic_config(
     on_configuration_change: &'static str,
 ) -> Arc<MockJinjaObject> {
     let mock = default_mock_config();
+    let create_or_alter = local.dynamic_table_create_or_alter;
     mock.on("get", move |args| {
         let key = args.first().and_then(|v| v.as_str());
         // `default` may arrive positionally or as a keyword (`default=...`), which minijinja
@@ -194,6 +198,9 @@ fn dynamic_config(
             )]))),
             Some("full_refresh") => Ok(Value::from(full_refresh)),
             Some("on_configuration_change") => Ok(Value::from(on_configuration_change)),
+            Some("dynamic_table_create_or_alter") => {
+                Ok(create_or_alter.map(Value::from).unwrap_or(default))
+            }
             _ => Ok(default),
         }
     });
