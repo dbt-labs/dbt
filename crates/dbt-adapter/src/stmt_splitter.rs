@@ -1,8 +1,9 @@
-use std::borrow::Cow;
 use std::fmt::Debug;
 
 use dbt_frontend_common::Dialect;
-use dbt_sql_utils::{is_empty_or_comment_only, sql_split_statements};
+use dbt_sql_utils::{
+    is_empty_or_comment_only, split_respecting_dollar_quotes, sql_split_statements,
+};
 
 use crate::AdapterType;
 
@@ -59,8 +60,7 @@ impl StmtSplitter for DefaultStmtSplitter {
     fn split<'i>(&self, sql: &'i str, adapter_type: AdapterType) -> Vec<&'i str> {
         use AdapterType::*;
         let dialect = match adapter_type {
-            // Trino fallback has no dollar-quote token. persist_docs uses $tag$.
-            Postgres => return split_respecting_dollar_quotes(sql, Dialect::Postgresql),
+            Postgres => Dialect::Postgresql,
             Snowflake => Dialect::Snowflake,
             Bigquery => Dialect::Bigquery,
             // TODO(serramatutu): switch Spark to Spark dialect once frontend looks good
@@ -71,17 +71,17 @@ impl StmtSplitter for DefaultStmtSplitter {
             // falls back to Postgresql at the moment
             Salesforce => Dialect::Postgresql,
             // LakeCompute has no dialect of its own, so it uses DuckDB's.
-            // Trino fallback has no dollar-quote token. Mask `$tag$...$tag$` first.
-            DuckDB | LakeCompute => {
-                return split_respecting_dollar_quotes(sql, Dialect::Duckdb);
-            }
+            DuckDB | LakeCompute => Dialect::Duckdb,
             ClickHouse => return clickhouse::split_statements(sql),
             Trino => Dialect::Trino,
             _ => Dialect::Trino,
         };
-        sql_split_statements(sql, Some(dialect))
-            .into_iter()
-            .collect()
+        match adapter_type {
+            Postgres | DuckDB | LakeCompute => split_respecting_dollar_quotes(sql, dialect),
+            _ => sql_split_statements(sql, Some(dialect))
+                .into_iter()
+                .collect(),
+        }
     }
 
     fn is_empty(&self, sql: &str, adapter_type: AdapterType) -> bool {
@@ -98,134 +98,6 @@ impl StmtSplitter for DefaultStmtSplitter {
             _ => by_dialect(Dialect::Trino),
         }
     }
-}
-
-/// Split `sql`, treating `$tag$...$tag$` as a literal so a `;` or `'` inside
-/// it cannot split or merge statements. The masked copy is the same length, so
-/// statement slices map back onto `sql`.
-fn split_respecting_dollar_quotes<'i>(sql: &'i str, dialect: Dialect) -> Vec<&'i str> {
-    let masked = mask_dollar_quoted_blocks(sql);
-    if matches!(masked, Cow::Borrowed(_)) {
-        return sql_split_statements(sql, Some(dialect));
-    }
-    let masked = masked.as_ref();
-    let base = masked.as_ptr() as usize;
-    sql_split_statements(masked, Some(dialect))
-        .into_iter()
-        .map(|part| {
-            let start = (part.as_ptr() as usize) - base;
-            &sql[start..start + part.len()]
-        })
-        .collect()
-}
-
-/// Replace each closed dollar quote with a same-length single-quoted literal.
-/// Quotes, comments, backtick identifiers, and ordinary string literals are left alone.
-fn mask_dollar_quoted_blocks(sql: &str) -> Cow<'_, str> {
-    let bytes = sql.as_bytes();
-    let mut masks = Vec::new();
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'\'' | b'"' | b'`' => i = skip_quoted(bytes, i, bytes[i]),
-            b'-' if bytes.get(i + 1) == Some(&b'-') => {
-                i += 2;
-                while i < bytes.len() && bytes[i] != b'\n' {
-                    i += 1;
-                }
-            }
-            b'/' if bytes.get(i + 1) == Some(&b'*') => {
-                i += 2;
-                while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
-                    i += 1;
-                }
-                if i + 1 < bytes.len() {
-                    i += 2;
-                }
-            }
-            b'$' => match closed_dollar_quote(bytes, i) {
-                Some(end) => {
-                    masks.push((i, end));
-                    i = end;
-                }
-                None => i += 1,
-            },
-            _ => i += 1,
-        }
-    }
-    if masks.is_empty() {
-        return Cow::Borrowed(sql);
-    }
-
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut cursor = 0;
-    for (start, end) in masks {
-        out.extend_from_slice(&bytes[cursor..start]);
-        let width = end - start;
-        // Same byte length so split offsets still address `sql`.
-        out.push(b'\'');
-        out.extend(std::iter::repeat_n(b' ', width - 2));
-        out.push(b'\'');
-        cursor = end;
-    }
-    out.extend_from_slice(&bytes[cursor..]);
-    debug_assert_eq!(out.len(), bytes.len());
-    Cow::Owned(String::from_utf8(out).expect("dollar-quote mask stays valid utf-8"))
-}
-
-fn skip_quoted(bytes: &[u8], start: usize, quote: u8) -> usize {
-    let mut i = start + 1;
-    while i < bytes.len() {
-        if bytes[i] == quote {
-            if bytes.get(i + 1) == Some(&quote) {
-                i += 2;
-                continue;
-            }
-            return i + 1;
-        }
-        i += 1;
-    }
-    i
-}
-
-/// `$tag$...$tag$` or `$$...$$`. A tag is empty, or a letter, `_`, or any byte
-/// `>= 0x80`, then those or digits. Same rule as DuckDB and Postgres.
-fn closed_dollar_quote(bytes: &[u8], start: usize) -> Option<usize> {
-    if bytes.get(start) != Some(&b'$') {
-        return None;
-    }
-    let mut j = start + 1;
-    if bytes.get(j) != Some(&b'$') {
-        let first = *bytes.get(j)?;
-        if !is_dollar_tag_start(first) {
-            return None;
-        }
-        j += 1;
-        while j < bytes.len() && is_dollar_tag_cont(bytes[j]) {
-            j += 1;
-        }
-        if bytes.get(j) != Some(&b'$') {
-            return None;
-        }
-    }
-    j += 1;
-    let tag = &bytes[start..j];
-    let mut i = j;
-    while i + tag.len() <= bytes.len() {
-        if &bytes[i..i + tag.len()] == tag {
-            return Some(i + tag.len());
-        }
-        i += 1;
-    }
-    None
-}
-
-fn is_dollar_tag_start(byte: u8) -> bool {
-    byte.is_ascii_alphabetic() || byte == b'_' || byte >= 0x80
-}
-
-fn is_dollar_tag_cont(byte: u8) -> bool {
-    is_dollar_tag_start(byte) || byte.is_ascii_digit()
 }
 
 #[cfg(test)]
