@@ -303,6 +303,8 @@ pub struct WarehouseSpecificNodeConfig {
     #[warehouse(valid(materializing))]
     pub immutable_where: Option<String>,
     #[warehouse(valid(materializing))]
+    pub delete_condition: Option<String>,
+    #[warehouse(valid(materializing))]
     pub refresh_mode: Option<String>,
     #[warehouse(valid(materializing))]
     pub initialize: Option<String>,
@@ -679,6 +681,7 @@ pub fn same_warehouse_config(
         self_wh.snowflake_initialization_warehouse == other_wh.snowflake_initialization_warehouse;
     let refresh_warehouse_eq = self_wh.refresh_warehouse == other_wh.refresh_warehouse;
     let immutable_where_eq = self_wh.immutable_where == other_wh.immutable_where;
+    let delete_condition_eq = self_wh.delete_condition == other_wh.delete_condition;
     let refresh_mode_eq = self_wh.refresh_mode == other_wh.refresh_mode;
     let initialize_eq = self_wh.initialize == other_wh.initialize;
     let scheduler_eq = self_wh.scheduler == other_wh.scheduler;
@@ -788,6 +791,7 @@ pub fn same_warehouse_config(
         && snowflake_initialization_warehouse_eq
         && refresh_warehouse_eq
         && immutable_where_eq
+        && delete_condition_eq
         && refresh_mode_eq
         && initialize_eq
         && scheduler_eq
@@ -1280,6 +1284,14 @@ pub fn same_warehouse_config(
                     Some((
                         format!("{:?}", &self_wh.immutable_where),
                         format!("{:?}", &other_wh.immutable_where),
+                    )),
+                ),
+                (
+                    "delete_condition",
+                    delete_condition_eq,
+                    Some((
+                        format!("{:?}", &self_wh.delete_condition),
+                        format!("{:?}", &other_wh.delete_condition),
                     )),
                 ),
                 (
