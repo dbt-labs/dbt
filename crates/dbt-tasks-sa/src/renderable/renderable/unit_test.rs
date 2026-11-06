@@ -1358,6 +1358,13 @@ fn infer_schema_from_compiled_sql(
         original_file_path,
     )?;
 
+    reject_sidecar_snowflake_lambdas(
+        unit_test.node_adapter(),
+        effective_unit_test_execute(unit_test, ctx.inner.execute),
+        &compiled_model_sql,
+    )
+    .map_err(|error| error.with_location(original_file_path.to_path_buf()))?;
+
     infer_unit_test_expected_schema(
         ctx,
         unit_test,
@@ -2509,6 +2516,9 @@ WITH
     let rendered_sql =
         replace_subquery_refs_with_cte_names(adapter_type, type_ops, rendered_sql, &subqueries);
 
+    reject_sidecar_snowflake_lambdas(adapter_type, effective_execute, &rendered_sql)
+        .map_err(|error| error.with_location(original_file_path.to_path_buf()))?;
+
     stdfs::create_dir_all(absolute_path_unit_test.parent().unwrap())?;
     stdfs::write(&absolute_path_unit_test, &rendered_sql)?;
 
@@ -2532,6 +2542,31 @@ WITH
         },
         config_map,
     ))
+}
+
+/// The Sidecar translator replaces Snowflake lambda arguments (`FILTER`, `TRANSFORM`, ...)
+/// with a `'<lambda>'` binary literal, so local execution fails with an opaque binder error.
+/// In Snowflake SQL `->` only introduces a lambda, so an `Arrow` token is sufficient.
+/// Remove this guard once the translator supports lambdas.
+fn reject_sidecar_snowflake_lambdas(
+    adapter_type: AdapterType,
+    execute: schemas::profiles::Execute,
+    sql: &str,
+) -> FsResult<()> {
+    if adapter_type != AdapterType::Snowflake || execute != schemas::profiles::Execute::Sidecar {
+        return Ok(());
+    }
+    // SQL that cannot be tokenized keeps its existing error path.
+    let has_lambda = Tokenizer::new(sqlparser_dialect_for(adapter_type), sql)
+        .tokenize()
+        .is_ok_and(|tokens| tokens.contains(&Token::Arrow));
+    if has_lambda {
+        return err!(
+            ErrorCode::SidecarUnsupportedFeature,
+            "Snowflake lambda expressions (for example in FILTER or TRANSFORM) are not supported for local unit test execution. Set this unit test's compute configuration to remote to execute it in the warehouse."
+        );
+    }
+    Ok(())
 }
 
 fn format_unit_test_subquery(adapter_type: AdapterType, fqn: &str, values: &str) -> String {
@@ -3608,6 +3643,88 @@ mod tests {
     use dbt_tasks_core::context::adapter_type_outside_compute_platform;
     use dbt_test_primitives::assert_contains;
     use minijinja::dispatch_object::DispatchObject;
+
+    const LAMBDA_FIRST_MATCH_SQL: &str = "WITH events AS (
+            SELECT 1 AS event_id, PARSE_JSON('{}') AS metadata_json
+            UNION ALL SELECT 2, PARSE_JSON('{\"timelineInfo\": {\"steps\": []}}')
+            UNION ALL SELECT 3, PARSE_JSON('{\"timelineInfo\": {\"steps\": [{\"substate\": \"initiated\", \"occurredAt\": \"2026-10-20T12:00:00Z\"}]}}')
+            UNION ALL SELECT 4, PARSE_JSON('{\"timelineInfo\": {\"steps\": [{\"substate\": \"initiated\", \"occurredAt\": \"2026-10-20T12:00:00Z\"}, {\"substate\": \"initiated\", \"occurredAt\": \"2026-10-20T12:05:00Z\"}]}}')
+        )
+        SELECT event_id, TRY_TO_TIMESTAMP_TZ(GET(FILTER(
+            metadata_json['timelineInfo']['steps'],
+            s -> s:substate::STRING = 'initiated'
+        ), 0):occurredAt::STRING)::TIMESTAMP_NTZ AS initiated_at
+        FROM events";
+
+    #[test]
+    fn local_unit_test_lambda_rejects_lambda_arguments() {
+        for sql in [
+            LAMBDA_FIRST_MATCH_SQL,
+            "SELECT FILTER(ARRAY_CONSTRUCT(1, 2, 3), x -> x > 1)",
+            "SELECT FILTER(steps::ARRAY, s -> s:substate::STRING = 'initiated') FROM t",
+            "SELECT TRANSFORM(ARRAY_CONSTRUCT(1, 2), x INT -> x * 2)",
+            "SELECT REDUCE(ARRAY_CONSTRUCT(1, 2), 0, (acc, x) -> acc + x)",
+            "SELECT * FROM (SELECT FILTER(a, x->x IS NOT NULL) AS a FROM t) UNION ALL SELECT a FROM u",
+        ] {
+            let error =
+                reject_sidecar_snowflake_lambdas(AdapterType::Snowflake, Execute::Sidecar, sql)
+                    .unwrap_err();
+            assert_eq!(error.code, ErrorCode::SidecarUnsupportedFeature, "{sql}");
+            assert_contains!(error.to_string(), "compute configuration to remote");
+        }
+    }
+
+    #[test]
+    fn local_unit_test_lambda_allows_non_lambda_arrows() {
+        for sql in [
+            "SELECT 's -> s:x' AS message",
+            "SELECT $$x -> x > 1$$ AS message",
+            "SELECT 1 -- x -> x\n",
+            "SELECT 1 /* x -> x */",
+            "SELECT \"a->b\" FROM t",
+            "SELECT a - > b, a-1>b FROM t",
+            "SELECT FLATTEN(input => steps) FROM t",
+            "SELECT GET(steps, 0):occurredAt::STRING FROM t",
+            "SELECT 'unterminated",
+        ] {
+            reject_sidecar_snowflake_lambdas(AdapterType::Snowflake, Execute::Sidecar, sql)
+                .unwrap_or_else(|error| panic!("{sql}: {error}"));
+        }
+    }
+
+    #[test]
+    fn local_unit_test_lambda_preserves_other_execution_modes_and_adapters() {
+        for (adapter, execute) in [
+            (AdapterType::Snowflake, Execute::Remote),
+            (AdapterType::Snowflake, Execute::Service),
+            (AdapterType::DuckDB, Execute::Sidecar),
+            (AdapterType::Databricks, Execute::Sidecar),
+        ] {
+            reject_sidecar_snowflake_lambdas(adapter, execute, LAMBDA_FIRST_MATCH_SQL).unwrap();
+        }
+    }
+
+    #[test]
+    fn local_unit_test_lambda_respects_compute_overrides() {
+        let mut unit_test = DbtUnitTest::default();
+        for (invocation, compute, rejected) in [
+            (Execute::Remote, None, false),
+            (Execute::Sidecar, None, true),
+            (Execute::Remote, Some(ComputeArg::Sidecar), true),
+            (Execute::Sidecar, Some(ComputeArg::Remote), false),
+        ] {
+            unit_test.deprecated_config.compute = compute;
+            assert_eq!(
+                reject_sidecar_snowflake_lambdas(
+                    AdapterType::Snowflake,
+                    effective_unit_test_execute(&unit_test, invocation),
+                    LAMBDA_FIRST_MATCH_SQL,
+                )
+                .is_err(),
+                rejected,
+            );
+        }
+    }
 
     type YmlValue = dbt_yaml::Value;
 

@@ -1,0 +1,7 @@
+kind: Fixes
+body: Fail explicitly for Snowflake lambda expressions in local unit tests instead of executing SQL that replaces them with a binary literal.
+time: 2026-11-06T13:05:56.000000Z
+custom:
+    author: antonio-mendes
+    issue: ""
+    project: dbt-core
