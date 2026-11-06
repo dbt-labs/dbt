@@ -2066,6 +2066,14 @@ fn validate_local_unit_test_sql(
             "Unable to tokenize SQL for local unit test execution: {error}"
         )
     })?;
+    // The translator replaces lambda arguments (FILTER, TRANSFORM, REDUCE) with a
+    // '<lambda>' binary literal. In Snowflake SQL `->` only introduces a lambda.
+    if tokens.contains(&Token::Arrow) {
+        return Err(fs_err!(
+            ErrorCode::SidecarUnsupportedFeature,
+            "Snowflake lambda expressions (for example in FILTER or TRANSFORM) are not supported for local unit test execution. Set this unit test's compute configuration to remote to execute it in the warehouse."
+        ));
+    }
     if !has_asof_join_candidate(&tokens) {
         return Ok(());
     }
@@ -3156,6 +3164,86 @@ mod tests {
 
     type YmlValue = dbt_yaml::Value;
 
+    const LAMBDA_FIRST_MATCH_SQL: &str = "WITH events AS (
+            SELECT 1 AS event_id, PARSE_JSON('{}') AS metadata_json
+            UNION ALL SELECT 2, PARSE_JSON('{\"timelineInfo\": {\"steps\": []}}')
+            UNION ALL SELECT 3, PARSE_JSON('{\"timelineInfo\": {\"steps\": [{\"substate\": \"initiated\", \"occurredAt\": \"2026-10-20T12:00:00Z\"}]}}')
+            UNION ALL SELECT 4, PARSE_JSON('{\"timelineInfo\": {\"steps\": [{\"substate\": \"initiated\", \"occurredAt\": \"2026-10-20T12:00:00Z\"}, {\"substate\": \"initiated\", \"occurredAt\": \"2026-10-20T12:05:00Z\"}]}}')
+        )
+        SELECT event_id, TRY_TO_TIMESTAMP_TZ(GET(FILTER(
+            metadata_json['timelineInfo']['steps'],
+            s -> s:substate::STRING = 'initiated'
+        ), 0):occurredAt::STRING)::TIMESTAMP_NTZ AS initiated_at
+        FROM events";
+
+    #[test]
+    fn local_unit_test_lambda_rejects_lambda_arguments() {
+        for sql in [
+            LAMBDA_FIRST_MATCH_SQL,
+            "SELECT FILTER(ARRAY_CONSTRUCT(1, 2, 3), x -> x > 1)",
+            "SELECT FILTER(steps::ARRAY, s -> s:substate::STRING = 'initiated') FROM t",
+            "SELECT TRANSFORM(ARRAY_CONSTRUCT(1, 2), x INT -> x * 2)",
+            "SELECT REDUCE(ARRAY_CONSTRUCT(1, 2), 0, (acc, x) -> acc + x)",
+            "SELECT * FROM (SELECT FILTER(a, x->x IS NOT NULL) AS a FROM t) UNION ALL SELECT a FROM u",
+        ] {
+            let error = validate_local_unit_test_sql(AdapterType::Snowflake, Execute::Sidecar, sql)
+                .unwrap_err();
+            assert_eq!(error.code, ErrorCode::SidecarUnsupportedFeature, "{sql}");
+            assert_contains!(error.to_string(), "compute configuration to remote");
+        }
+    }
+
+    #[test]
+    fn local_unit_test_lambda_allows_non_lambda_arrows() {
+        for sql in [
+            "SELECT 's -> s:x' AS message",
+            "SELECT $$x -> x > 1$$ AS message",
+            "SELECT 1 -- x -> x\n",
+            "SELECT 1 /* x -> x */",
+            "SELECT \"a->b\" FROM t",
+            "SELECT a - > b, a-1>b FROM t",
+            "SELECT FLATTEN(input => steps) FROM t",
+            "SELECT GET(steps, 0):occurredAt::STRING FROM t",
+        ] {
+            validate_local_unit_test_sql(AdapterType::Snowflake, Execute::Sidecar, sql)
+                .unwrap_or_else(|error| panic!("{sql}: {error}"));
+        }
+    }
+
+    #[test]
+    fn local_unit_test_lambda_preserves_other_execution_modes_and_adapters() {
+        for (adapter, execute) in [
+            (AdapterType::Snowflake, Execute::Remote),
+            (AdapterType::Snowflake, Execute::Service),
+            (AdapterType::DuckDB, Execute::Sidecar),
+            (AdapterType::Databricks, Execute::Sidecar),
+        ] {
+            validate_local_unit_test_sql(adapter, execute, LAMBDA_FIRST_MATCH_SQL).unwrap();
+        }
+    }
+
+    #[test]
+    fn local_unit_test_lambda_respects_compute_overrides() {
+        let mut unit_test = DbtUnitTest::default();
+        for (invocation, compute, rejected) in [
+            (Execute::Remote, None, false),
+            (Execute::Sidecar, None, true),
+            (Execute::Remote, Some(ComputeArg::Sidecar), true),
+            (Execute::Sidecar, Some(ComputeArg::Remote), false),
+        ] {
+            unit_test.deprecated_config.compute = compute;
+            assert_eq!(
+                validate_local_unit_test_sql(
+                    AdapterType::Snowflake,
+                    effective_unit_test_execute(&unit_test, invocation),
+                    LAMBDA_FIRST_MATCH_SQL,
+                )
+                .is_err(),
+                rejected,
+            );
+        }
+    }
+
     #[test]
     fn local_unit_test_asof_rejects_matching_joins() {
         let join = "SELECT * FROM trades t ASOF JOIN actions a \
@@ -3329,18 +3417,15 @@ mod tests {
                     )],
                     false,
                 );
-                sqlparser::parser::Parser::parse_sql(
-                    sqlparser_dialect_for(adapter),
-                    &probe.query_sql,
-                )
-                .unwrap_or_else(|error| panic!("{adapter:?}: {error}: {}", probe.query_sql));
+                Parser::parse_sql(sqlparser_dialect_for(adapter), &probe.query_sql)
+                    .unwrap_or_else(|error| panic!("{adapter:?}: {error}: {}", probe.query_sql));
                 let wrapped = format!(
                     "WITH {} SELECT * FROM (\n{}\n) AS probe WHERE false",
                     probe.ctes,
                     DefaultStmtSplitter
                         .strip_trailing_statement_terminator(&probe.schema_sql, adapter)
                 );
-                sqlparser::parser::Parser::parse_sql(sqlparser_dialect_for(adapter), &wrapped)
+                Parser::parse_sql(sqlparser_dialect_for(adapter), &wrapped)
                     .expect("the warehouse header and wrapped model must remain valid SQL");
             }
         }
@@ -3653,7 +3738,7 @@ mod tests {
         );
 
         let sql = format!("WITH {result} SELECT * FROM \"database_schema_model_actual\"");
-        sqlparser::parser::Parser::parse_sql(&sqlparser::dialect::SnowflakeDialect {}, &sql)
+        Parser::parse_sql(&sqlparser::dialect::SnowflakeDialect {}, &sql)
             .expect("unit test CTE should remain valid after a trailing line comment");
     }
 

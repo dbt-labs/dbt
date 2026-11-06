@@ -1,5 +1,5 @@
 kind: Fixes
-body: Fail explicitly for Snowflake ASOF joins in local unit tests instead of executing SQL that loses matching predicates.
+body: Fail explicitly for Snowflake ASOF joins and lambda expressions in local unit tests instead of executing SQL that loses their semantics.
 time: 2026-11-02T14:55:44.483571Z
 custom:
     author: antonio-mendes
