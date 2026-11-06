@@ -7,8 +7,6 @@
 
     {% if snowflake__dynamic_table_is_custom_incremental() %}
         {% do snowflake__validate_custom_incremental_config() %}
-    {% elif config.get('incremental_strategy') is not none %}
-        {{ exceptions.warn("Dynamic table `" ~ target_relation ~ "` sets `incremental_strategy`, which only applies with refresh_mode='CUSTOM_INCREMENTAL'. Ignoring it.") }}
     {% endif %}
 
     {{ run_hooks(pre_hooks) }}
@@ -53,16 +51,25 @@
         {% set existing_dynamic_table = snowflake__describe_dynamic_table_for_changes(existing_relation, config) %}
         {% set configuration_changes = snowflake__get_dynamic_table_configuration_changes(existing_relation, config, existing_dynamic_table) %}
 
-        {% if snowflake__dynamic_table_kind_changed(existing_dynamic_table) %}
-            {{ log("Replacing " ~ target_relation ~ " because it switches between a custom incremental and a regular dynamic table.") }}
-            {% set build_sql = get_replace_sql(existing_relation, target_relation, sql) %}
+        {#- A switch between a custom incremental and a regular dynamic table is a change the
+            changeset can miss (a desired AUTO refresh_mode matches anything). -#}
+        {% set kind_changed = snowflake__dynamic_table_kind_changed(existing_dynamic_table) %}
 
-        {% elif configuration_changes is none %}
+        {% if configuration_changes is none and not kind_changed %}
             {% set build_sql = '' %}
             {{ exceptions.warn("No configuration changes were identified on: `" ~ target_relation ~ "`. Continuing.") }}
 
         {% elif on_configuration_change == 'apply' %}
-            {% set build_sql = snowflake__get_alter_dynamic_table_as_sql(existing_relation, configuration_changes, target_relation, sql) %}
+            {% if kind_changed %}
+                {{ log("Replacing " ~ target_relation ~ " because it switches between a custom incremental and a regular dynamic table.") }}
+                {% set build_sql = get_replace_sql(existing_relation, target_relation, sql) %}
+            {% elif snowflake__dynamic_table_is_custom_incremental() %}
+                {#- Only CREATE OR ALTER changes a custom incremental dynamic table's properties. -#}
+                {{ log("Replacing " ~ target_relation ~ " to apply configuration changes to a custom incremental dynamic table.") }}
+                {% set build_sql = get_replace_sql(existing_relation, target_relation, sql) %}
+            {% else %}
+                {% set build_sql = snowflake__get_alter_dynamic_table_as_sql(existing_relation, configuration_changes, target_relation, sql) %}
+            {% endif %}
         {% elif on_configuration_change == 'continue' %}
             {% set build_sql = '' %}
             {{ exceptions.warn("Configuration changes were identified and `on_configuration_change` was set to `continue` for `" ~ target_relation ~ "`") }}

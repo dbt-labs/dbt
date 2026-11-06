@@ -749,9 +749,7 @@ fn ci_regular_to_custom_incremental_switch_replaces() {
             ..matching_remote_state()
         },
     );
-    // `continue` would skip a config change; a kind switch replaces regardless.
-    render_sql(&fixture, &ci_local_config(), CI_SQL, false, "continue")
-        .expect("switch should render");
+    render_ci(&fixture, &ci_local_config(), false).expect("switch should render");
 
     assert_eq!(
         fixture.executed(),
@@ -764,6 +762,46 @@ fn ci_regular_to_custom_incremental_switch_replaces() {
         fixture.describe_calls(),
         1,
         "the switch reuses the changeset's describe"
+    );
+}
+
+#[test]
+fn ci_switch_respects_on_configuration_change() {
+    let regular = || RemoteState {
+        refresh_mode: Some("INCREMENTAL".to_string()),
+        ..matching_remote_state()
+    };
+
+    let fixture_continue = fixture(Some(RelationType::DynamicTable), regular());
+    render_sql(
+        &fixture_continue,
+        &ci_local_config(),
+        CI_SQL,
+        false,
+        "continue",
+    )
+    .expect("`continue` should render");
+    assert!(
+        fixture_continue.executed().is_empty(),
+        "got: {:?}",
+        fixture_continue.executed()
+    );
+    assert_eq!(
+        fixture_continue.raw_results(),
+        vec!["main=skip".to_string()]
+    );
+
+    let fixture_fail = fixture(Some(RelationType::DynamicTable), regular());
+    let result = render_sql(&fixture_fail, &ci_local_config(), CI_SQL, false, "fail");
+    assert!(result.is_err(), "`fail` must raise, got: {result:?}");
+    assert!(fixture_fail.executed().is_empty());
+
+    // CI DT -> regular: the changeset sees no change (desired AUTO), the kind check does.
+    let fixture_back = fixture(Some(RelationType::DynamicTable), ci_matching_remote_state());
+    let result = render(&fixture_back, &base_local_config(), false, "fail");
+    assert!(
+        result.is_err(),
+        "`fail` must raise on CI DT -> regular, got: {result:?}"
     );
 }
 
@@ -802,7 +840,9 @@ fn ci_unchanged_is_a_no_op_without_discovery() {
 }
 
 #[test]
-fn ci_target_lag_change_is_altered_in_place() {
+fn ci_config_change_replaces_rather_than_alters() {
+    // Only CREATE OR ALTER changes a CI DT's properties, so until that lands a config change
+    // rebuilds it.
     let fixture = fixture(Some(RelationType::DynamicTable), ci_matching_remote_state());
     let local = LocalConfig {
         target_lag: Some("5 minutes".to_string()),
@@ -810,11 +850,15 @@ fn ci_target_lag_change_is_altered_in_place() {
     };
     render_ci(&fixture, &local, false).expect("CI DT should render");
 
+    let body = ci_merge_body(CI_SQL);
     assert_eq!(
         fixture.executed(),
-        vec![format!(
-            "alter dynamic table {RENDERED_RELATION} set target_lag = '5 minutes'"
-        )]
+        vec![
+            ci_discovery_sql(),
+            format!(
+                "create or replace dynamic table {RENDERED_RELATION} {CI_COLUMNS_DDL} target_lag = '5 minutes' warehouse = WH refresh_mode = CUSTOM_INCREMENTAL initialize = ON_CREATE scheduler = 'ENABLE' refresh using ( {body} )"
+            )
+        ]
     );
 }
 
@@ -960,5 +1004,35 @@ fn ci_cannot_be_an_iceberg_table() {
         render_ci(&fixture, &ci_local_config(), false),
         &fixture,
         "dynamic Iceberg tables",
+    );
+}
+
+#[test]
+fn ci_strategy_is_case_insensitive() {
+    let fixture = fixture(None, RemoteState::default());
+    let local = LocalConfig {
+        incremental_strategy: Some("MERGE"),
+        ..ci_local_config()
+    };
+    render_ci(&fixture, &local, false).expect("'MERGE' should be accepted");
+    assert_eq!(
+        fixture.executed()[1],
+        ci_ddl("create", &ci_merge_body(CI_SQL))
+    );
+}
+
+#[test]
+fn ci_ephemeral_upstream_is_rejected_before_discovery_runs() {
+    let fixture = fixture(None, RemoteState::default());
+    let local = LocalConfig {
+        raw_code: Some(
+            "select o.* from {{ changes('RAW.PUBLIC.ORDERS') }} as o join __dbt__cte__dim as d on o.id = d.id",
+        ),
+        ..ci_local_config()
+    };
+    assert_render_error(
+        render_ci(&fixture, &local, false),
+        &fixture,
+        "refs an ephemeral model",
     );
 }

@@ -15,7 +15,7 @@
 
 -- funcsign: () -> string
 {% macro snowflake__validate_custom_incremental_config() -%}
-    {%- set strategy = config.get('incremental_strategy') -%}
+    {%- set strategy = (config.get('incremental_strategy') or '') | lower -%}
     {%- set unique_key = config.get('unique_key') -%}
     {%- set delete_condition = config.get('delete_condition') -%}
 
@@ -56,7 +56,7 @@
     them from DML. The model is rendered again with `changes()` in its discovery form (unbounded
     CHANGES only runs inside a refresh), run zero-row into a temporary table, and described.
 -#}
-    {%- set raw_code = model.get('raw_code') -%}
+    {%- set raw_code = model.get('raw_code') or '' -%}
     {%- if modules.re.search('changes\\s*\\(\\s*information\\s*=>', raw_code, modules.re.IGNORECASE) -%}
         {% do exceptions.raise_compiler_error(
             "Dynamic table `" ~ relation ~ "` reads CHANGES(INFORMATION => ...) directly. dbt cannot learn the columns of a custom incremental dynamic table from raw CHANGES; read the source with `{{ changes(ref('...')) }}` or `{{ changes(source('...', '...')) }}` instead."
@@ -66,6 +66,11 @@
     {%- do model.update({'_dbt_changes_discovery': true}) -%}
     {%- set discovery_sql = render(raw_code) -%}
     {%- do model.update({'_dbt_changes_discovery': false}) -%}
+    {%- if '__dbt__cte__' in discovery_sql -%}
+        {% do exceptions.raise_compiler_error(
+            "Dynamic table `" ~ relation ~ "` refs an ephemeral model, which custom incremental dynamic tables do not support yet. Materialize the upstream model as a view or table."
+        ) %}
+    {%- endif -%}
 
     {%- set tmp_relation = make_temp_relation(relation).incorporate(type='table') -%}
     {% call statement('custom_incremental_discovery') -%}
