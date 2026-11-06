@@ -65,6 +65,7 @@ pub use adapter::AdapterImpl;
 pub use adapter::store::{AdapterBuilder, AdapterStore};
 pub use column::{Column, ColumnBuilder};
 pub use dbt_adapter_core::AdapterType;
+pub use dbt_adapter_sql::ident::quote_identifier;
 pub use errors::AdapterResult;
 pub use macro_exec::{
     convert_macro_result_to_record_batch, execute_macro_with_package,
