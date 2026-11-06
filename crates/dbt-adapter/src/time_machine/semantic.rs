@@ -129,7 +129,6 @@ impl SemanticCategory {
             | "is_motherduck"
             | "disable_transactions"
             | "build_catalog_relation"
-            | "dynamic_table_create_or_alter_enabled"
             | "sync_struct_columns"
             | "resolve_file_format"
             | "get_seed_file_path"
