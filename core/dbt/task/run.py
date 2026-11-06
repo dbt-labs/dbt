@@ -489,6 +489,12 @@ class ModelRunner(CompileRunner[ModelNode]):
 class MicrobatchBatchRunner(ModelRunner):
     """Handles the running of individual batches"""
 
+    # Batches share the model's node_info, so NodeStart / NodeFinished per batch
+    # would look like the whole model starting / finishing. The parent
+    # MicrobatchModelRunner fires those once for the model; batches report via
+    # LogStartBatch / LogBatchResult instead.
+    fire_node_events = False
+
     def __init__(
         self,
         config,
