@@ -7,7 +7,7 @@ pub mod tokens;
 pub use input_streams::CaseInsensitiveInputStream;
 pub use splitter::{
     is_empty_or_comment_only, jinja_sql_find_statement_spans, snowflake_terminal_flow_statement,
-    split_respecting_dollar_quotes, sql_split_statements,
+    sql_split_statements,
 };
 pub use tokens::{SqlToken, sql_lex_tokens};
 

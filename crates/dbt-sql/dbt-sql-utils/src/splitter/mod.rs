@@ -272,7 +272,12 @@ pub fn jinja_sql_find_statement_spans(input: &str, dialect: Option<Dialect>) -> 
 /// Splits the input string into SQL statements using semicolons as delimiters.
 pub fn sql_split_statements(input: &str, dialect: Option<Dialect>) -> Vec<&str> {
     let sql_buf = input.trim();
-    do_sql_split_statements(sql_buf, dialect)
+    match dialect {
+        Some(dialect @ (Dialect::Duckdb | Dialect::Postgresql)) => {
+            split_respecting_dollar_quotes(sql_buf, dialect)
+        }
+        dialect => do_sql_split_statements(sql_buf, dialect),
+    }
 }
 
 /// Split `sql`, treating `$tag$...$tag$` as a literal so a `;` or `'` inside
@@ -285,14 +290,14 @@ pub fn sql_split_statements(input: &str, dialect: Option<Dialect>) -> Vec<&str> 
 /// any byte >= 0x80, then those or digits.
 /// <https://github.com/duckdb/duckdb/blob/master/src/parser/parser.cpp>
 /// (`IsValidDollarQuotedStringTagFirstChar`)
-pub fn split_respecting_dollar_quotes<'i>(sql: &'i str, dialect: Dialect) -> Vec<&'i str> {
+fn split_respecting_dollar_quotes<'i>(sql: &'i str, dialect: Dialect) -> Vec<&'i str> {
     let masked = mask_dollar_quoted_blocks(sql);
     if matches!(masked, Cow::Borrowed(_)) {
-        return sql_split_statements(sql, Some(dialect));
+        return do_sql_split_statements(sql, Some(dialect));
     }
     let masked = masked.as_ref();
     let base = masked.as_ptr() as usize;
-    sql_split_statements(masked, Some(dialect))
+    do_sql_split_statements(masked, Some(dialect))
         .into_iter()
         .map(|part| {
             let start = (part.as_ptr() as usize) - base;

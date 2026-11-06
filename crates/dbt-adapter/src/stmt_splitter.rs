@@ -1,9 +1,7 @@
 use std::fmt::Debug;
 
 use dbt_frontend_common::Dialect;
-use dbt_sql_utils::{
-    is_empty_or_comment_only, split_respecting_dollar_quotes, sql_split_statements,
-};
+use dbt_sql_utils::{is_empty_or_comment_only, sql_split_statements};
 
 use crate::AdapterType;
 
@@ -76,12 +74,9 @@ impl StmtSplitter for DefaultStmtSplitter {
             Trino => Dialect::Trino,
             _ => Dialect::Trino,
         };
-        match adapter_type {
-            Postgres | DuckDB | LakeCompute => split_respecting_dollar_quotes(sql, dialect),
-            _ => sql_split_statements(sql, Some(dialect))
-                .into_iter()
-                .collect(),
-        }
+        sql_split_statements(sql, Some(dialect))
+            .into_iter()
+            .collect()
     }
 
     fn is_empty(&self, sql: &str, adapter_type: AdapterType) -> bool {
@@ -214,6 +209,7 @@ mod tests {
             AdapterType::DuckDB,
             AdapterType::LakeCompute,
             AdapterType::Postgres,
+            AdapterType::Salesforce,
         ] {
             assert_eq!(split(sql, adapter), expected, "{adapter:?}");
         }
