@@ -15,7 +15,6 @@ use dbt_common::tracing::dbt_emit::emit_error_log_from_fs_error;
 use dbt_common::tracing::span_info::{SpanStatusRecorder, record_span_status_with_attrs};
 use dbt_dag::schedule::Schedule;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
-use dbt_jinja_utils::phases::insert_adapter_overlay;
 use dbt_jinja_utils::phases::run::reset_result_store;
 use dbt_scheduler::schedule::summarize_stats;
 use dbt_schema_store::DataStoreTrait;
@@ -260,6 +259,7 @@ impl TaskRunner {
 
     async fn register_schemas(
         &self,
+        ctx: &TaskRunnerCtx,
         schedule: &Schedule<String>,
         base_context: BTreeMap<String, minijinja::Value>,
     ) -> FsResult<()> {
@@ -274,7 +274,7 @@ impl TaskRunner {
         for (adapter_type, selected_catalog_schemas) in groups {
             let adapter = self.adapter_store.get(adapter_type)?;
             let mut group_context = base_context.clone();
-            insert_adapter_overlay(&mut group_context, adapter_type, &self.adapter_store)?;
+            ctx.insert_adapter_overlay(&mut group_context, adapter_type)?;
             self.register_adapter_schemas(adapter, selected_catalog_schemas, group_context)
                 .await?;
         }
@@ -347,7 +347,7 @@ impl TaskRunner {
 
         let registered_schemas = if self.should_register_schemas(run_task_args.as_ref(), &schedule)
         {
-            self.register_schemas(&schedule, base_context).await?;
+            self.register_schemas(&ctx, &schedule, base_context).await?;
             true
         } else {
             false

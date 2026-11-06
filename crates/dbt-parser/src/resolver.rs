@@ -781,6 +781,47 @@ pub fn unit_test_macro_override_warnings(
         .collect()
 }
 
+/// Report selected unit tests of LakeCompute models that run on another adapter.
+/// Call after scheduling, before running tasks, so promoted warnings stop the run.
+pub fn lake_compute_unit_test_warnings(
+    command: FsCommand,
+    nodes: &Nodes,
+    selected_nodes: &BTreeSet<String>,
+) -> Vec<FsError> {
+    if !matches!(command, FsCommand::Build | FsCommand::Test) {
+        return vec![];
+    }
+    nodes
+        .unit_tests
+        .iter()
+        .filter(|(id, _)| selected_nodes.contains(*id))
+        .filter_map(|(_, unit_test)| {
+            let model = nodes
+                .models
+                .get(unit_test.tested_node_unique_id.as_deref()?)?;
+            let adapter = unit_test.node_adapter();
+            if model.node_adapter() != AdapterType::LakeCompute
+                || adapter == AdapterType::LakeCompute
+            {
+                return None;
+            }
+            Some(
+                FsError::new(
+                    ErrorCode::LakeComputeUnitTestOnDefaultAdapter,
+                    format!(
+                        "Unit test '{}' tests the LakeCompute model '{}', but it runs on the \
+                         default adapter '{adapter}'. dbt renders the model as {adapter} SQL, with \
+                         {adapter}'s `target` and macros, and runs it on {adapter}, not as \
+                         LakeCompute SQL. The test does not check what LakeCompute runs.",
+                        unit_test.__common_attr__.name, model.__common_attr__.name,
+                    ),
+                )
+                .with_location(unit_test.__common_attr__.original_file_path.to_path_buf()),
+            )
+        })
+        .collect()
+}
+
 fn unit_test_sql_macro(
     env: &minijinja::Environment<'_>,
     adapter_type: AdapterType,
@@ -2254,6 +2295,75 @@ mod tests {
                 Path::new(displayed_path).ends_with("dbt_packages/dependency/macros/unit.sql"),
                 "wrong dependency warning path: {displayed_path}"
             );
+        }
+    }
+
+    mod lake_compute_unit_test_warnings {
+        use std::collections::BTreeSet;
+        use std::sync::Arc;
+
+        use dbt_adapter_core::AdapterType;
+        use dbt_common::{ErrorCode, io_args::FsCommand};
+        use dbt_schemas::schemas::{DbtModel, DbtUnitTest, Nodes};
+
+        use super::super::lake_compute_unit_test_warnings;
+
+        fn nodes() -> Nodes {
+            let mut nodes = Nodes::default();
+            for (name, adapter) in [
+                ("lc", AdapterType::LakeCompute),
+                ("sf", AdapterType::Snowflake),
+            ] {
+                let mut model = DbtModel::default();
+                model.__common_attr__.unique_id = format!("model.root.{name}");
+                model.__common_attr__.name = name.to_string();
+                model.__base_attr__.adapter = adapter;
+                nodes
+                    .models
+                    .insert(model.__common_attr__.unique_id.clone(), Arc::new(model));
+            }
+            for (name, adapter, tested) in [
+                ("lc_on_default", AdapterType::Snowflake, Some("lc")),
+                ("lc_on_lakecompute", AdapterType::LakeCompute, Some("lc")),
+                ("sf_on_default", AdapterType::Snowflake, Some("sf")),
+                ("untested", AdapterType::Snowflake, None),
+            ] {
+                let mut unit_test = DbtUnitTest::default();
+                unit_test.__common_attr__.unique_id = format!("unit_test.root.{name}");
+                unit_test.__common_attr__.name = name.to_string();
+                unit_test.__base_attr__.adapter = adapter;
+                unit_test.tested_node_unique_id = tested.map(|model| format!("model.root.{model}"));
+                nodes.unit_tests.insert(
+                    unit_test.__common_attr__.unique_id.clone(),
+                    Arc::new(unit_test),
+                );
+            }
+            nodes
+        }
+
+        #[test]
+        fn only_selected_lakecompute_subjects_off_lakecompute_warn() {
+            let nodes = nodes();
+            let all: BTreeSet<String> = nodes.unit_tests.keys().cloned().collect();
+            let mut unselected = all.clone();
+            unselected.remove("unit_test.root.lc_on_default");
+            for command in [FsCommand::Build, FsCommand::Test] {
+                let warnings = lake_compute_unit_test_warnings(command, &nodes, &all);
+                assert_eq!(warnings.len(), 1);
+                assert_eq!(
+                    warnings[0].code,
+                    ErrorCode::LakeComputeUnitTestOnDefaultAdapter
+                );
+                assert!(lake_compute_unit_test_warnings(command, &nodes, &unselected).is_empty());
+            }
+            for command in [
+                FsCommand::Run,
+                FsCommand::Compile,
+                FsCommand::Parse,
+                FsCommand::List,
+            ] {
+                assert!(lake_compute_unit_test_warnings(command, &nodes, &all).is_empty());
+            }
         }
     }
 

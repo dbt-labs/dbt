@@ -87,6 +87,7 @@ pub async fn resolve_checks(
             root_project_name: root_package.dbt_project.name.clone(),
             config_resolver,
             adapter_hint: None,
+            adapter_layer: None,
             // A check's adapter is always the default (`adapter` below), even under `--adapter`.
             parse_adapter_scopes: None,
             adapter_quoting: root_project_configs.adapter_quoting.clone(),

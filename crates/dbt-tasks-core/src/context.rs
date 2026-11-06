@@ -24,6 +24,7 @@ use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::phases::compile::{
     DependencyValidationConfig, build_compile_node_context_inner,
 };
+use dbt_jinja_utils::phases::parse::ParseAdapterScopes;
 use dbt_jinja_utils::utils::add_task_context;
 use dbt_schema_store::{DataStoreTrait, SchemaStoreTrait};
 use dbt_schemas::materialization_resolver::MaterializationResolver;
@@ -193,6 +194,8 @@ pub struct TaskRunnerCtxInner {
     /// executes it, rather than re-deriving one from the profile. Its
     /// `default_adapter_type()` is what an unannotated node runs on.
     pub adapter_store: Arc<AdapterStore>,
+    /// The `target` each declared non-default adapter's nodes render with.
+    adapter_scopes: ParseAdapterScopes,
     pub sources_extractor: Arc<dyn SourcesExtractor>,
     pub dbt_profile: Arc<DbtProfile>,
     pub runtime_config: Arc<DbtRuntimeConfig>,
@@ -283,6 +286,7 @@ impl TaskRunnerCtxInner {
             materialization_resolver: Arc::new(materialization_resolver),
             root_project_name: resolver_state.root_project_name.clone(),
             adapter_store,
+            adapter_scopes: ParseAdapterScopes::from_profile(&resolver_state.dbt_profile),
             sources_extractor,
             dbt_profile: Arc::new(resolver_state.dbt_profile.clone()),
             runtime_config: resolver_state.runtime_config.clone(),
@@ -493,13 +497,18 @@ impl TaskRunnerCtx {
         )
     }
 
-    /// [`dbt_jinja_utils::phases::insert_adapter_overlay`] with this run's store.
+    /// [`dbt_jinja_utils::phases::insert_adapter_overlay`] with this run's store and scopes.
     pub fn insert_adapter_overlay(
         &self,
         ctx: &mut BTreeMap<String, Value>,
         adapter_type: AdapterType,
     ) -> FsResult<()> {
-        dbt_jinja_utils::phases::insert_adapter_overlay(ctx, adapter_type, self.adapter_store())
+        dbt_jinja_utils::phases::insert_adapter_overlay(
+            ctx,
+            adapter_type,
+            self.adapter_store(),
+            &self.inner.adapter_scopes,
+        )
     }
 
     /// One node's run-phase base context: the run's base context, the node's task keys and its
