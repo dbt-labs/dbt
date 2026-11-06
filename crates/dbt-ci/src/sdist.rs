@@ -25,10 +25,18 @@ const SDIST_BACKEND_PKG: &str = "_dbt_sa_build";
 /// A prebuilt wheel pinned by the sdist manifest.
 #[derive(Debug)]
 pub(crate) struct WheelAsset {
+    pub(crate) sidecars: Vec<SidecarFile>,
     /// PyPI platform tag (e.g. `manylinux_2_28_x86_64`); the manifest key.
     pub(crate) platform_tag: String,
     pub(crate) filename: String,
     pub(crate) sha256_hex: String,
+}
+
+/// A library inside the pinned wheel.
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct SidecarFile {
+    filename: String,
+    sha256: String,
 }
 
 #[derive(serde::Serialize)]
@@ -45,6 +53,8 @@ struct AssetsManifest<'a> {
 
 #[derive(serde::Serialize)]
 struct AssetEntry<'a> {
+    #[serde(skip_serializing_if = "<[SidecarFile]>::is_empty")]
+    sidecars: &'a [SidecarFile],
     filename: &'a str,
     sha256: &'a str,
 }
@@ -119,7 +129,13 @@ pub(crate) async fn build_release_sdist(
         let digest = sha256_hex(bytes.as_ref());
         eprintln!("✓ {filename} ({} bytes, sha256={digest})", bytes.len());
         check_wheel_metadata_agrees(spec, &filename, bytes.as_ref())?;
+        let sidecars = if dist == "dbt" {
+            wheel_sidecar_files(triple, bytes.as_ref())?
+        } else {
+            Vec::new()
+        };
         wheels.push(WheelAsset {
+            sidecars,
             platform_tag,
             filename,
             sha256_hex: digest,
@@ -127,6 +143,37 @@ pub(crate) async fn build_release_sdist(
     }
 
     build_sdist(spec, &version_pep440, &wheels, base_url, out_dir)
+}
+
+fn wheel_sidecar_files(target: &str, bytes: &[u8]) -> Result<Vec<SidecarFile>> {
+    let manifest = dbt_dist::packages::PackageManifest::bundled()
+        .map_err(|error| anyhow!(error.to_string()))?;
+    let mut wheel = zip::ZipArchive::new(Cursor::new(bytes))?;
+    let mut files = Vec::new();
+    for package in manifest
+        .package
+        .iter()
+        .filter(|package| package.applies("pypi", target))
+    {
+        let suffix = format!(
+            ".data/data/{}/{}",
+            dbt_dist::packages::LIBRARY_DIRECTORY,
+            package.filename(target)
+        );
+        let filename = wheel
+            .file_names()
+            .find(|name| name.ends_with(&suffix))
+            .map(str::to_owned)
+            .with_context(|| format!("release wheel missing required sidecar *{suffix}"))?;
+        let mut entry = wheel.by_name(&filename)?;
+        let mut bytes = Vec::new();
+        entry.read_to_end(&mut bytes)?;
+        files.push(SidecarFile {
+            filename,
+            sha256: sha256_hex(&bytes),
+        });
+    }
+    Ok(files)
 }
 
 /// Fails the release when the sdist's static metadata disagrees with a wheel it
@@ -323,6 +370,7 @@ fn render_assets_json(
     let mut map: BTreeMap<&str, AssetEntry> = BTreeMap::new();
     for w in wheels {
         let entry = AssetEntry {
+            sidecars: &w.sidecars,
             filename: &w.filename,
             sha256: &w.sha256_hex,
         };
@@ -466,17 +514,41 @@ mod tests {
     }
 
     #[test]
+    fn wheel_sidecars_are_required_only_on_declared_targets() {
+        let mut wheel = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let options = zip::write::SimpleFileOptions::default();
+        wheel
+            .start_file(
+                "dbt-2.0.0.data/data/lib/dbt/libadbc_driver_bridge.dylib",
+                options,
+            )
+            .unwrap();
+        std::io::Write::write_all(&mut wheel, b"driver").unwrap();
+        let bytes = wheel.finish().unwrap().into_inner();
+        let sidecars = wheel_sidecar_files("aarch64-apple-darwin", &bytes).unwrap();
+        assert_eq!(sidecars[0].sha256, sha256_hex(b"driver"));
+        assert!(
+            wheel_sidecar_files("x86_64-apple-darwin", &bytes)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(wheel_sidecar_files("x86_64-unknown-linux-gnu", &bytes).is_err());
+    }
+
+    #[test]
     fn build_sdist_bundles_backend_and_manifest() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path();
         let spec = sample_spec(dir);
         let wheels = vec![
             WheelAsset {
+                sidecars: Vec::new(),
                 platform_tag: "manylinux_2_28_x86_64".to_string(),
                 filename: "dbt_sa_cli-2.0.0a1-py3-none-manylinux_2_28_x86_64.whl".to_string(),
                 sha256_hex: "aa".repeat(32),
             },
             WheelAsset {
+                sidecars: Vec::new(),
                 platform_tag: "macosx_11_0_arm64".to_string(),
                 filename: "dbt_sa_cli-2.0.0a1-py3-none-macosx_11_0_arm64.whl".to_string(),
                 sha256_hex: "bb".repeat(32),
@@ -543,6 +615,7 @@ mod tests {
         spec.requires_python = Some(">=3.10".to_string());
         spec.dependencies = vec!["mashumaro[msgpack]>=3.14".to_string()];
         let wheels = vec![WheelAsset {
+            sidecars: Vec::new(),
             platform_tag: "macosx_11_0_arm64".to_string(),
             filename: "dbt_oss-2.0.0a1-cp310-abi3-macosx_11_0_arm64.whl".to_string(),
             sha256_hex: "cc".repeat(32),
@@ -571,11 +644,13 @@ mod tests {
         // Both windows-msvc and windows-gnu map to win_amd64.
         let wheels = vec![
             WheelAsset {
+                sidecars: Vec::new(),
                 platform_tag: "win_amd64".to_string(),
                 filename: "a.whl".to_string(),
                 sha256_hex: "aa".repeat(32),
             },
             WheelAsset {
+                sidecars: Vec::new(),
                 platform_tag: "win_amd64".to_string(),
                 filename: "b.whl".to_string(),
                 sha256_hex: "bb".repeat(32),
@@ -591,6 +666,7 @@ mod tests {
         let dir = tmp.path();
         let spec = sample_spec(dir);
         let wheels = vec![WheelAsset {
+            sidecars: Vec::new(),
             platform_tag: "win_amd64".to_string(),
             filename: "a.whl".to_string(),
             sha256_hex: "aa".repeat(32),
@@ -631,6 +707,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path();
         let wheels = vec![WheelAsset {
+            sidecars: Vec::new(),
             platform_tag: "macosx_11_0_arm64".to_string(),
             filename: "dbt_core-2.0.0rc1-cp310-abi3-macosx_11_0_arm64.whl".to_string(),
             sha256_hex: "aa".repeat(32),

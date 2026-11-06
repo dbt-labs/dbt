@@ -1,0 +1,1 @@
+INSERT INTO adapters_snowflake_truncate_relation.a (val) VALUES (1), (2)

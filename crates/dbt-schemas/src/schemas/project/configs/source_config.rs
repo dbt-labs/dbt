@@ -158,6 +158,8 @@ pub struct ProjectSourceConfig {
     pub not_matched_condition: Option<String>,
     #[serde(rename = "+not_matched_by_source_condition")]
     pub not_matched_by_source_condition: Option<String>,
+    #[serde(rename = "+merge_actions_explicit")]
+    pub merge_actions_explicit: Option<String>,
     #[serde(rename = "+not_matched_by_source_action")]
     pub not_matched_by_source_action: Option<String>,
     #[serde(
@@ -287,6 +289,7 @@ impl TypedRecursiveConfig for ProjectSourceConfig {
             || self.matched_condition.is_some()
             || self.not_matched_condition.is_some()
             || self.not_matched_by_source_condition.is_some()
+            || self.merge_actions_explicit.is_some()
             || self.not_matched_by_source_action.is_some()
             || self.merge_with_schema_evolution.is_some()
             || self.skip_matched_step.is_some()
@@ -421,6 +424,7 @@ impl From<ProjectSourceConfig> for SourceConfig {
                 enable_change_history: None,
                 incremental_apply_config_changes: None,
                 persist_constraints: None,
+                use_materialization_v2: None,
                 use_safer_relation_operations: None,
                 view_update_via_alter: None,
 
@@ -445,6 +449,7 @@ impl From<ProjectSourceConfig> for SourceConfig {
                 matched_condition: config.matched_condition,
                 not_matched_condition: config.not_matched_condition,
                 not_matched_by_source_condition: config.not_matched_by_source_condition,
+                merge_actions_explicit: config.merge_actions_explicit,
                 not_matched_by_source_action: config.not_matched_by_source_action,
                 merge_with_schema_evolution: config.merge_with_schema_evolution,
                 skip_matched_step: config.skip_matched_step,
@@ -477,6 +482,8 @@ impl From<ProjectSourceConfig> for SourceConfig {
                 settings: None,
                 query_settings: None,
                 projections: None,
+                sharding_key: None,
+                disable_on_cluster: None,
                 inserts_only: None,
                 connection_overrides: None,
                 fields: None,
@@ -562,6 +569,7 @@ impl From<SourceConfig> for ProjectSourceConfig {
             not_matched_by_source_condition: config
                 .__warehouse_specific_config__
                 .not_matched_by_source_condition,
+            merge_actions_explicit: config.__warehouse_specific_config__.merge_actions_explicit,
             not_matched_by_source_action: config
                 .__warehouse_specific_config__
                 .not_matched_by_source_action,
@@ -630,7 +638,7 @@ impl ResolvableConfig<SourceConfig> for SourceConfig {
     // are per-table, authored as top-level `SourceProperties`/`Tables` keys in schema.yml
     // (`resolve_sources.rs`), not through this project-config pipeline. Canonicalized there
     // instead of here.
-    fn canonicalize_adapter_aliases(&mut self, _default_adapter: AdapterType) {}
+    fn canonicalize_adapter_aliases(&mut self, _alias_adapter: AdapterType) {}
 }
 
 impl ConfigKeys for SourceConfig {

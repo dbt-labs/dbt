@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { ChevronLeft, Copy, LayoutList, MoreHorizontal, X } from 'lucide-react';
 
 import { getColumns, toRelationshipItem } from '../../lib/assetView';
@@ -107,6 +107,7 @@ function PanelBody({
   // (it's fetched once, app-wide, so in practice this is already warm).
   const projectQuery = useProject();
   const [searchParams, setSearchParams] = useSearchParams();
+  const navigate = useNavigate();
   const tabParam = searchParams.get('tab');
   const activeTab: TabType = isTabType(tabParam) ? tabParam : 'general';
 
@@ -233,7 +234,7 @@ function PanelBody({
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
                 <DropdownMenuItem
-                  onSelect={() => window.location.assign(paths.details(asset.uniqueId))}
+                  onSelect={() => navigate(paths.details(asset.uniqueId))}
                 >
                   <span className="flex items-center gap-2">
                     <LayoutList className="size-4" /> Open in Catalog
@@ -241,7 +242,7 @@ function PanelBody({
                 </DropdownMenuItem>
                 <DropdownMenuItem
                   onSelect={() => {
-                    const adpUrl = `${window.location.origin}${paths.details(asset.uniqueId)}`;
+                    const adpUrl = `${window.location.href.split('#')[0]}#${paths.details(asset.uniqueId)}`;
                     navigator.clipboard.writeText(adpUrl).catch(() => {});
                   }}
                 >
@@ -320,14 +321,14 @@ function PanelBody({
                     <RelationshipSection
                       heading="Depends on"
                       items={dependsOn}
-                      onSelect={(id) => window.location.assign(paths.details(id))}
+                      onSelect={(id) => navigate(paths.details(id))}
                     />
                   )}
                   {referencedBy.length > 0 && (
                     <RelationshipSection
                       heading="Referenced by"
                       items={referencedBy}
-                      onSelect={(id) => window.location.assign(paths.details(id))}
+                      onSelect={(id) => navigate(paths.details(id))}
                     />
                   )}
                 </div>

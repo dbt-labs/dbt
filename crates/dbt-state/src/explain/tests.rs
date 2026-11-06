@@ -5,11 +5,11 @@ use super::select::{filter_explain_records, sort_explain_records};
 use super::service::{EXPLAIN_MAX_BATCH_SIZE, should_fetch_service_explain};
 use super::types::STATE_EXPLAIN_RECORD_VERSION;
 use super::{
-    StateExplainDevClone, StateExplainLog, StateExplainLogRecord, StateExplainNode,
-    StateExplainNodeInfo, StateExplainOptions, StateExplainRecord, StateExplainRunConfig,
-    StateExplainRunStart, StateExplainStatus, append_state_explain_log_record,
-    execution_decision_ids, new_state_explain_log_path, prune_state_explain_logs,
-    read_explain_records, read_state_explain_log, render_explain_records,
+    StateExplainDevClone, StateExplainExecutionConfirmed, StateExplainLog, StateExplainLogRecord,
+    StateExplainNode, StateExplainNodeInfo, StateExplainOptions, StateExplainRecord,
+    StateExplainRunConfig, StateExplainRunStart, StateExplainStatus,
+    append_state_explain_log_record, execution_decision_ids, new_state_explain_log_path,
+    prune_state_explain_logs, read_explain_records, read_state_explain_log, render_explain_records,
     render_merged_explain_records, render_service_explain_response,
     run_cache_service_config_for_state_explain, service_explain_response_with_client,
 };
@@ -19,6 +19,7 @@ use crate::proto::query_cache::{
 };
 use crate::service_client::{RunCacheServiceClient, RunCacheServiceError};
 use crate::service_config::{DEFAULT_LOG_PREFIX, RunCacheServiceConfig};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -127,7 +128,7 @@ fn render_explain_output_includes_structured_run_config_when_verbose() {
         ..Default::default()
     };
 
-    let output = render_explain_output(&records, None, Some(&run_start), &options);
+    let output = render_explain_output(&records, None, &HashMap::new(), Some(&run_start), &options);
 
     assert!(output.starts_with("Run configuration:\n"));
     assert!(output.contains("  - profile: jaffle_shop"));
@@ -135,6 +136,49 @@ fn render_explain_output_includes_structured_run_config_when_verbose() {
     assert!(output.contains("  - defer to target: prod"));
     assert!(output.contains("  - select: orders"));
     assert!(output.contains("HIT model.pkg.orders"));
+}
+
+#[test]
+fn render_explain_output_includes_upstream_dependency_changes_for_executed_nodes() {
+    let mut records = sample_records();
+    records[0].execution_decision_id = Some("decision-1".to_string());
+    records[0].execution_id = Some("execution-1".to_string());
+    records[1].execution_decision_id = Some("decision-2".to_string());
+    let service_response = GetExplainMessagesResponse {
+        messages: vec![
+            service_message("decision-1", "ready"),
+            service_message("decision-2", "ready"),
+        ],
+    };
+    let upstream_changes = HashMap::from([(
+        "execution-1".to_string(),
+        vec![ExplainLine {
+            text: r#""db"."dev"."root" - query changed"#.to_string(),
+            marker: Some(ExplainMarker::Fail as i32),
+            badge: None,
+            children: Vec::new(),
+        }],
+    )]);
+    let options = StateExplainOptions {
+        verbose: true,
+        ..Default::default()
+    };
+
+    let output = render_explain_output(
+        &records,
+        Some(&service_response),
+        &upstream_changes,
+        None,
+        &options,
+    );
+
+    assert_eq!(
+        output,
+        r#"READY_TO_EXECUTE model.pkg.orders - ready
+  - all upstream dependency changes
+    - "db"."dev"."root" - query changed [FAIL]
+READY_TO_EXECUTE model.pkg.customers - ready"#
+    );
 }
 
 #[test]
@@ -259,6 +303,7 @@ fn state_explain_log_record_round_trips_run_start_and_node() {
             ..Default::default()
         },
         execution_decision_id: Some("decision-1".to_string()),
+        execution_id: None,
     });
 
     let run_start_json = serde_json::to_string(&run_start).unwrap();
@@ -296,6 +341,48 @@ fn read_state_explain_log_parses_run_start_and_nodes() {
 }
 
 #[test]
+fn read_state_explain_log_attaches_confirmed_execution_id_to_node() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let path = temp_dir.path().join("state-explain.jsonl");
+    let confirmed = |execution_id: &str| {
+        serde_json::to_string(&StateExplainLogRecord::ExecutionConfirmed(
+            StateExplainExecutionConfirmed {
+                node_unique_id: "model.jaffle_shop.orders".to_string(),
+                execution_id: execution_id.to_string(),
+            },
+        ))
+        .unwrap()
+    };
+    let clone = confirmed("clone-1");
+    assert!(clone.contains(r#""entry_type":"execution_confirmed""#));
+
+    // a dev clone confirmation precedes its node record
+    std::fs::write(
+        &path,
+        format!("{clone}\n{}\n", sample_state_explain_log_jsonl()),
+    )
+    .unwrap();
+    let log = read_state_explain_log(&path).unwrap();
+    assert_eq!(log.nodes.len(), 1);
+    assert_eq!(log.nodes[0].execution_id.as_deref(), Some("clone-1"));
+    let records = fallback_records_from_log(log).unwrap();
+    assert_eq!(records[0].execution_id.as_deref(), Some("clone-1"));
+
+    // an execution confirmed after the node takes precedence over the clone
+    std::fs::write(
+        &path,
+        format!(
+            "{clone}\n{}\n{}\n",
+            sample_state_explain_log_jsonl(),
+            confirmed("execution-1")
+        ),
+    )
+    .unwrap();
+    let log = read_state_explain_log(&path).unwrap();
+    assert_eq!(log.nodes[0].execution_id.as_deref(), Some("execution-1"));
+}
+
+#[test]
 fn read_state_explain_log_reports_physical_line_number() {
     let temp_dir = tempfile::tempdir().unwrap();
     let path = temp_dir.path().join("state-explain.jsonl");
@@ -326,6 +413,7 @@ fn append_state_explain_log_record_writes_jsonl() {
             node_name: "orders".to_string(),
             node_info: StateExplainNodeInfo::default(),
             execution_decision_id: Some("decision-1".to_string()),
+            execution_id: None,
         }),
     )
     .unwrap();
@@ -355,6 +443,7 @@ fn append_state_explain_log_record_serializes_concurrent_writes() {
                         node_name: format!("node_{idx}"),
                         node_info: StateExplainNodeInfo::default(),
                         execution_decision_id: Some(format!("decision-{idx}")),
+                        execution_id: None,
                     }),
                 )
                 .unwrap();
@@ -462,6 +551,7 @@ fn state_explain_node_fallback_record_preserves_service_id() {
         node_name: "orders".to_string(),
         node_info: StateExplainNodeInfo::default(),
         execution_decision_id: Some("decision-1".to_string()),
+        execution_id: None,
     });
 
     assert_eq!(record.node_unique_id, "model.jaffle_shop.orders");
@@ -487,12 +577,13 @@ fn structured_fallback_renders_local_details_only_when_verbose() {
                 source_table_fqn: "\"db\".\"prod\".\"orders\"".to_string(),
                 target_table_fqn: "\"db\".\"analytics\".\"orders\"".to_string(),
             }),
-            deferrals: std::collections::HashMap::from([
+            deferrals: HashMap::from([
                 ("upstream_b".to_string(), "prod_b".to_string()),
                 ("upstream_a".to_string(), "prod_a".to_string()),
             ]),
         },
         execution_decision_id: None,
+        execution_id: None,
     });
 
     let normal = record.render(false);
@@ -526,6 +617,7 @@ fn structured_fallback_labels_ephemeral_node_without_a_relation() {
             ..Default::default()
         },
         execution_decision_id: None,
+        execution_id: None,
     });
 
     let verbose = record.render(true);
@@ -564,6 +656,7 @@ fn explain_record(node_unique_id: &str) -> StateExplainRecord {
         version: STATE_EXPLAIN_RECORD_VERSION,
         node_unique_id: node_unique_id.to_string(),
         execution_decision_id: None,
+        execution_id: None,
         status: StateExplainStatus::Unknown,
         reason: "dbt State explain details unavailable".to_string(),
         details: Vec::new(),
@@ -583,12 +676,14 @@ fn fallback_records_from_log_keeps_node_order() {
                 node_name: "orders".to_string(),
                 node_info: StateExplainNodeInfo::default(),
                 execution_decision_id: Some("decision-1".to_string()),
+                execution_id: None,
             },
             StateExplainNode {
                 node_unique_id: "model.pkg.customers".to_string(),
                 node_name: "customers".to_string(),
                 node_info: StateExplainNodeInfo::default(),
                 execution_decision_id: None,
+                execution_id: None,
             },
         ],
     };
@@ -982,6 +1077,7 @@ async fn service_explain_response_with_client_batches_decision_ids() {
             version: STATE_EXPLAIN_RECORD_VERSION,
             node_unique_id: format!("model.pkg.model_{idx}"),
             execution_decision_id: Some(format!("decision-{idx}")),
+            execution_id: None,
             status: StateExplainStatus::Hit,
             reason: "ok".to_string(),
             details: Vec::new(),
@@ -1023,6 +1119,7 @@ async fn service_explain_response_enforces_concurrency_limit() {
             version: STATE_EXPLAIN_RECORD_VERSION,
             node_unique_id: format!("model.pkg.model_{idx}"),
             execution_decision_id: Some(format!("decision-{idx}")),
+            execution_id: None,
             status: StateExplainStatus::Hit,
             reason: "ok".to_string(),
             details: Vec::new(),
@@ -1064,6 +1161,7 @@ fn sample_records() -> Vec<StateExplainRecord> {
             version: STATE_EXPLAIN_RECORD_VERSION,
             node_unique_id: "model.pkg.orders".to_string(),
             execution_decision_id: None,
+            execution_id: None,
             status: StateExplainStatus::Hit,
             reason: "fingerprint matched".to_string(),
             details: vec!["compiled SQL matched".to_string()],
@@ -1072,6 +1170,7 @@ fn sample_records() -> Vec<StateExplainRecord> {
             version: STATE_EXPLAIN_RECORD_VERSION,
             node_unique_id: "model.pkg.customers".to_string(),
             execution_decision_id: None,
+            execution_id: None,
             status: StateExplainStatus::Miss,
             reason: "relation changed".to_string(),
             details: Vec::new(),
@@ -1117,6 +1216,7 @@ fn sample_node_json() -> String {
         node_name: "orders".to_string(),
         node_info: StateExplainNodeInfo::default(),
         execution_decision_id: Some("decision-1".to_string()),
+        execution_id: None,
     }))
     .unwrap()
 }

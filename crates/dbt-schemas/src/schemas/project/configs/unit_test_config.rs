@@ -211,6 +211,8 @@ pub struct ProjectUnitTestConfig {
     pub not_matched_condition: Option<String>,
     #[serde(rename = "+not_matched_by_source_condition")]
     pub not_matched_by_source_condition: Option<String>,
+    #[serde(rename = "+merge_actions_explicit")]
+    pub merge_actions_explicit: Option<String>,
     #[serde(rename = "+not_matched_by_source_action")]
     pub not_matched_by_source_action: Option<String>,
     #[serde(
@@ -280,6 +282,10 @@ pub struct ProjectUnitTestConfig {
         deserialize_with = "bool_or_string_bool"
     )]
     pub unlogged: Option<bool>,
+
+    // ClickHouse
+    #[serde(rename = "+settings")]
+    pub settings: Option<BTreeMap<String, YmlValue>>,
 
     // Flattened fields
     pub __additional_properties__: BTreeMap<String, ShouldBe<ProjectUnitTestConfig>>,
@@ -354,6 +360,7 @@ impl TypedRecursiveConfig for ProjectUnitTestConfig {
             || self.matched_condition.is_some()
             || self.not_matched_condition.is_some()
             || self.not_matched_by_source_condition.is_some()
+            || self.merge_actions_explicit.is_some()
             || self.not_matched_by_source_action.is_some()
             || self.merge_with_schema_evolution.is_some()
             || self.skip_matched_step.is_some()
@@ -483,6 +490,7 @@ impl From<ProjectUnitTestConfig> for UnitTestConfig {
                 matched_condition: config.matched_condition,
                 not_matched_condition: config.not_matched_condition,
                 not_matched_by_source_condition: config.not_matched_by_source_condition,
+                merge_actions_explicit: config.merge_actions_explicit,
                 not_matched_by_source_action: config.not_matched_by_source_action,
                 merge_with_schema_evolution: config.merge_with_schema_evolution,
                 skip_matched_step: config.skip_matched_step,
@@ -492,6 +500,7 @@ impl From<ProjectUnitTestConfig> for UnitTestConfig {
                 row_filter: None,
                 incremental_apply_config_changes: None,
                 persist_constraints: None,
+                use_materialization_v2: None,
                 use_safer_relation_operations: None,
                 view_update_via_alter: None,
 
@@ -515,9 +524,11 @@ impl From<ProjectUnitTestConfig> for UnitTestConfig {
                 engine: None,
                 order_by: None,
                 ttl: None,
-                settings: None,
+                settings: config.settings,
                 query_settings: None,
                 projections: None,
+                sharding_key: None,
+                disable_on_cluster: None,
                 inserts_only: None,
                 connection_overrides: None,
                 fields: None,
@@ -621,6 +632,7 @@ impl From<UnitTestConfig> for ProjectUnitTestConfig {
             not_matched_by_source_condition: config
                 .__warehouse_specific_config__
                 .not_matched_by_source_condition,
+            merge_actions_explicit: config.__warehouse_specific_config__.merge_actions_explicit,
             not_matched_by_source_action: config
                 .__warehouse_specific_config__
                 .not_matched_by_source_action,
@@ -645,6 +657,8 @@ impl From<UnitTestConfig> for ProjectUnitTestConfig {
             // Postgres Fields
             indexes: config.__warehouse_specific_config__.indexes,
             unlogged: config.__warehouse_specific_config__.unlogged,
+            // ClickHouse fields
+            settings: config.__warehouse_specific_config__.settings,
             __additional_properties__: BTreeMap::new(),
         }
     }
@@ -681,7 +695,7 @@ impl ResolvableConfig<UnitTestConfig> for UnitTestConfig {
 
     // Unit tests have no `database`/`schema` field of their own -- they run against the model
     // under test's relation, so there is nothing to canonicalize a `catalog`-style alias into.
-    fn canonicalize_adapter_aliases(&mut self, _default_adapter: AdapterType) {}
+    fn canonicalize_adapter_aliases(&mut self, _alias_adapter: AdapterType) {}
 }
 
 impl ConfigKeys for UnitTestConfig {
@@ -711,6 +725,34 @@ __additional_properties__: {}
         assert_eq!(
             resolved.__warehouse_specific_config__.query_tags.as_deref(),
             Some(r#"{"team":"unit-test"}"#)
+        );
+    }
+
+    #[test]
+    fn test_unit_test_clickhouse_settings_propagate_through_resolved_config() {
+        let project: ProjectUnitTestConfig = dbt_yaml::from_str(
+            r#"
++settings:
+  allow_nullable_key: 1
+__additional_properties__: {}
+"#,
+        )
+        .unwrap();
+
+        let resolved: UnitTestConfig = project.into();
+        assert!(
+            resolved
+                .__warehouse_specific_config__
+                .settings
+                .as_ref()
+                .is_some_and(|s| s.contains_key("allow_nullable_key"))
+        );
+
+        let round_trip: ProjectUnitTestConfig = resolved.into();
+        assert!(
+            round_trip
+                .settings
+                .is_some_and(|s| s.contains_key("allow_nullable_key"))
         );
     }
 

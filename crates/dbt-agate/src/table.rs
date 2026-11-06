@@ -12,20 +12,109 @@ use crate::vec_of_rows::VecOfRows;
 use crate::{Tuple, adjusted_index};
 
 use arrow::array::StringViewBuilder;
-use arrow::compute::TakeOptions;
+use arrow::compute::{LexicographicalComparator, SortColumn, SortOptions, TakeOptions};
 use arrow::record_batch::RecordBatch;
-use arrow_array::{Array, StringViewArray, UInt64Array};
+use arrow_array::{Array, BooleanArray, StringViewArray, UInt64Array};
 use arrow_schema::{ArrowError, Schema};
 use minijinja::arg_utils::ArgsIter;
 use minijinja::listener::RenderingEventListener;
-use minijinja::value::{Enumerator, Kwargs, Object, ValueMap, mutable_map::MutableMap};
+use minijinja::value::{DynObject, Enumerator, Kwargs, Object, ValueMap, mutable_map::MutableMap};
 use minijinja::{Error, ErrorKind, State, Value};
 use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::hint::unreachable_unchecked;
 use std::io;
+use std::num::NonZero;
 use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
+
+/// Prepare the Arrow array to sort it like Python does sorting.
+///
+/// `None`, `bool`, numbers, `str`, `bytes`, `date`, `datetime` or `timedelta`,
+/// are types that Python can compare. Everything else (maps, unions, lists,
+/// structs, run-end encoded arrays) is rejected even when arrow could order it:
+/// Python can't compare dicts, and mixed or nested values would raise `TypeError`
+/// or order differently.
+fn safe_to_sort(array: Arc<dyn Array>) -> Result<Arc<dyn Array>, ArrowError> {
+    use arrow::compute::CastOptions;
+    use arrow::compute::cast_with_options;
+    use arrow_schema::DataType::*;
+
+    let is_sortable_like_python = match array.data_type() {
+        Null | Boolean => true,
+        Int8 | Int16 | Int32 | Int64 | UInt8 | UInt16 | UInt32 | UInt64 => true,
+        Float16 | Float32 | Float64 => true,
+        Decimal32(_, _) | Decimal64(_, _) | Decimal128(_, _) | Decimal256(_, _) => true,
+        Date32 | Date64 | Timestamp(_, _) => true,
+        Time32(_) | Time64(_) | Duration(_) | Interval(_) => true,
+        Utf8 | LargeUtf8 | Utf8View => true,
+        Binary | LargeBinary | BinaryView | FixedSizeBinary(_) => true,
+        Dictionary(_, value_type) => {
+            // Dictionary-encoded arrays are not handled by the sort_to_indices()
+            // function yet, so we must decompress them before sorting.
+            let cast_options = CastOptions {
+                safe: false,
+                ..Default::default()
+            };
+            let values = cast_with_options(array.as_ref(), value_type.as_ref(), &cast_options)?;
+            return safe_to_sort(values);
+        }
+        // XXX: consider supporting REE arrays in the future.
+        RunEndEncoded(_, _) => false,
+        List(_) | LargeList(_) | ListView(_) | LargeListView(_) | FixedSizeList(_, _) => false,
+        Struct(_) | Union(_, _) | Map(_, _) => false,
+    };
+
+    if is_sortable_like_python {
+        Ok(array)
+    } else {
+        Err(ArrowError::ComputeError(format!(
+            "Sort not supported for data type {}",
+            array.data_type()
+        )))
+    }
+}
+
+/// The indices selected by the Python slice `[start:stop:step]` of a sequence
+/// of `len` elements.
+///
+/// This follows CPython's `slice.indices()`: missing bounds default to the
+/// whole sequence in the direction of `step`, negative bounds count from the
+/// end, and out-of-range bounds are clamped.
+fn slice_indices(
+    len: usize,
+    start: Option<i64>,
+    stop: Option<i64>,
+    step: Option<NonZero<i64>>,
+) -> UInt64Array {
+    // SAFETY: 1 is non-zero
+    let step = step.unwrap_or(unsafe { NonZero::new_unchecked(1) }).get();
+    let len = len as i64;
+    // Bounds of valid slice positions: [0, len] going forward and
+    // [-1, len - 1] going backward (-1 is "before the first element").
+    let (lower, upper) = if step > 0 { (0, len) } else { (-1, len - 1) };
+    let clamp = |bound: Option<i64>, default: i64| match bound {
+        None => default,
+        Some(b) if b < 0 => b.saturating_add(len).max(lower),
+        Some(b) => b.min(upper),
+    };
+    let (start, stop) = if step > 0 {
+        (clamp(start, lower), clamp(stop, upper))
+    } else {
+        (clamp(start, upper), clamp(stop, lower))
+    };
+
+    let mut indices = Vec::new();
+    let mut i = start;
+    while (step > 0 && i < stop) || (step < 0 && i > stop) {
+        indices.push(i as u64);
+        i = match i.checked_add(step) {
+            Some(next) => next,
+            None => break,
+        };
+    }
+    UInt64Array::from(indices)
+}
 
 /// Internal table representation.
 ///
@@ -219,25 +308,50 @@ impl TableRepr {
         Some(Arc::new(repr))
     }
 
-    /// Return a single-column table with the distinct values in this column.
-    pub fn column_distinct(&self, col_idx: isize) -> Arc<Self> {
-        let _col = self.single_column_table(col_idx).unwrap();
-        todo!("column_distinct")
+    pub fn column_distinct(&self, col_idx: isize) -> Result<Option<Arc<Self>>, ArrowError> {
+        self.single_column_table(col_idx)
+            .map(|repr| repr.distinct(&[0]))
+            .transpose()
     }
 
-    pub fn column_without_nulls(&self, col_idx: isize) -> Arc<Self> {
-        let _col = self.single_column_table(col_idx).unwrap();
-        todo!("column_without_nulls")
+    pub fn column_without_nulls(&self, col_idx: isize) -> Result<Option<Arc<Self>>, ArrowError> {
+        let Some(col) = self.single_column_table(col_idx) else {
+            return Ok(None);
+        };
+        let arr = col.flat.inner().column(0);
+
+        // logical_nulls() also covers Null, Dictionary, RunEndEncoded and Union arrays.
+        let validity_filter = match arr.logical_nulls() {
+            Some(nulls) if nulls.null_count() > 0 => {
+                // Create a BooleanArray based on the logical nulls bitmap of the column.
+                BooleanArray::new(nulls.into_inner(), None)
+            }
+            // Nothing to remove: reuse the column as is.
+            _ => return Ok(Some(col)),
+        };
+        let filtered = arrow::compute::filter(arr.as_ref(), &validity_filter)?;
+
+        let repr = {
+            let schema = col.flat.inner().schema();
+            let batch = RecordBatch::try_new(schema, vec![filtered])?;
+            let flat = FlatRecordBatch::_from_flattened_record_batch(Arc::new(batch), None)?;
+            let repr = TableRepr::new(Arc::new(flat), None, None);
+            Arc::new(repr)
+        };
+        Ok(Some(repr))
     }
 
-    pub fn column_sorted(&self, col_idx: isize) -> Arc<Self> {
-        let _col = self.single_column_table(col_idx).unwrap();
-        todo!("column_sorted")
-    }
-
-    pub fn column_without_nulls_sorted(&self, col_idx: isize) -> Arc<Self> {
-        let _col = self.single_column_table(col_idx).unwrap();
-        todo!("column_without_nulls_sorted")
+    /// The column values sorted according to `options`.
+    pub fn column_sorted(
+        &self,
+        col_idx: isize,
+        options: SortOptions,
+    ) -> Result<Option<Arc<Self>>, ArrowError> {
+        let Some(col) = self.single_column_table(col_idx) else {
+            return Ok(None);
+        };
+        let indices = col.sort_to_indices(&[(0, options)])?;
+        Ok(Some(Arc::new(col.select_rows(&indices, None)?)))
     }
 
     pub fn count_occurrences_of_value_in_column(&self, needle: &Value, col_idx: isize) -> usize {
@@ -337,17 +451,25 @@ impl TableRepr {
         todo!("index_of_value_in_row")
     }
 
-    pub(crate) fn limit(&self, n: i64) -> Result<TableRepr, ArrowError> {
-        if n < 0 {
-            return Err(ArrowError::ComputeError(
-                "Table.limit: count must be non-negative".to_string(),
-            ));
-        }
-        let take = (n as u64).min(self.num_rows() as u64);
-        let indices = UInt64Array::from_iter_values(0..take);
+    /// The rows selected by the Python slice `rows[start:stop:step]`.
+    pub(crate) fn slice(
+        &self,
+        start: Option<i64>,
+        stop: Option<i64>,
+        step: Option<i64>,
+    ) -> Result<TableRepr, ArrowError> {
+        let step = step
+            .map(|s| {
+                NonZero::new(s).ok_or_else(|| {
+                    ArrowError::InvalidArgumentError("slice step cannot be zero".to_owned())
+                })
+            })
+            .transpose()?;
+        let indices = slice_indices(self.num_rows(), start, stop, step);
         self.select_rows(&indices, None)
     }
 
+    #[cold]
     pub(crate) fn select_rows(
         &self,
         indices: &UInt64Array,
@@ -400,6 +522,74 @@ impl TableRepr {
         Ok(repr)
     }
 
+    /// Row indices that sort the whole table by the `keys` columns.
+    ///
+    /// Rows are compared lexicographically: by the first key column and its
+    /// [SortOptions] (ascending/descending, nulls first/last), ties broken by
+    /// the next key, and so on. The sort is stable, like Python's `sorted()`,
+    /// so rows that compare equal on every key keep their original order.
+    ///
+    /// Stability matters because rows can have different names in a table and
+    /// a non-stable sorter could create non-determinism in the names of the
+    /// sorted rows.
+    #[cold]
+    pub(crate) fn sort_to_indices(
+        &self,
+        keys: &[(usize, SortOptions)],
+    ) -> Result<Box<UInt64Array>, ArrowError> {
+        let columns = self.flat.inner().columns();
+        let sort_columns = keys
+            .iter()
+            .map(|&(idx, options)| {
+                let values = safe_to_sort(Arc::clone(&columns[idx]))?;
+                let sort_column = SortColumn {
+                    values,
+                    options: Some(options),
+                };
+                Ok(sort_column)
+            })
+            .collect::<Result<Vec<_>, ArrowError>>()?;
+
+        let num_rows = self.num_rows();
+        let indices = {
+            let mut indices = (0..num_rows as u64).collect::<Vec<_>>();
+            if !sort_columns.is_empty() {
+                let comparator = LexicographicalComparator::try_new(&sort_columns)?;
+                indices.sort_by(|&a, &b| comparator.compare(a as usize, b as usize));
+            }
+            UInt64Array::from(indices)
+        };
+        Ok(Box::new(indices))
+    }
+
+    #[cold]
+    pub(crate) fn distinct(&self, column_indices: &[usize]) -> Result<Arc<Self>, ArrowError> {
+        // TODO: cast the values in `column` according to `key_type`, create a new
+        // table with the casted column, and use that table to create the grouper
+        let grouper = self.grouper(column_indices)?;
+
+        // Builds a selection vector with the first `row_idx` of every group.
+        // A "group" is the set of rows that are identical, so whenever the
+        // grouper emits a `group_id` we've already seen, we know we shouldn't
+        // emit that `row_idx` because it's not the index of a distinct row.
+        let mut seen_groups = HashSet::new();
+        let indices: Vec<u64> = grouper
+            .iter()
+            .enumerate()
+            .filter_map(|(row_idx, group_id)| {
+                if seen_groups.insert(group_id) {
+                    Some(row_idx as u64)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let selection_vector = UInt64Array::new(indices.into(), None);
+
+        let repr = self.select_rows(&selection_vector, None)?;
+        Ok(Arc::new(repr))
+    }
+
     // Cells ------------------------------------------------------------------
 
     pub fn cell(&self, row_idx: isize, col_idx: isize) -> Option<Value> {
@@ -445,14 +635,24 @@ impl AgateTable {
     /// `row_names` is an optional array of strings with the same length as the number
     /// of rows in the `RecordBatch`.
     pub fn new(batch: Arc<RecordBatch>, row_names: Option<Arc<StringViewArray>>) -> Self {
-        let flat = FlatRecordBatch::try_new(batch).unwrap();
-        let repr = TableRepr::new(Arc::new(flat), None, row_names);
-        Self::from_repr(Arc::new(repr))
+        Self::from_record_batch_impl(Arc::clone(&batch), Some(batch), row_names)
     }
 
     /// Create an AgateTable from an Arrow RecordBatch.
     pub fn from_record_batch(batch: Arc<RecordBatch>) -> Self {
-        Self::new(batch, None)
+        Self::from_record_batch_impl(Arc::clone(&batch), Some(batch), None)
+    }
+
+    /// Constructor for callers that do their own batch transformation but
+    /// still need to keep the original [RecordBatch] around.
+    pub fn from_record_batch_impl(
+        batch: Arc<RecordBatch>,
+        original: Option<Arc<RecordBatch>>,
+        row_names: Option<Arc<StringViewArray>>,
+    ) -> Self {
+        let flat = FlatRecordBatch::try_new_impl(batch, original).unwrap();
+        let repr = TableRepr::new(Arc::new(flat), None, row_names);
+        Self::from_repr(Arc::new(repr))
     }
 
     /// Create an [AgateTable] from an Arrow [RecordBatch] using a single row name for all rows.
@@ -579,9 +779,22 @@ impl AgateTable {
         AgateTable::from_repr(repr)
     }
 
-    /// Return a new table containing the first `n` rows.
+    /// A new table with the first `n` rows: Python's `table.limit(n)`.
+    ///
+    /// Like the slice `rows[:n]`, a negative `n` drops the last `-n` rows.
     pub fn limit(&self, n: i64) -> Result<AgateTable, ArrowError> {
-        let repr = self.repr.limit(n)?;
+        self.slice(None, Some(n), None)
+    }
+
+    /// A new table with the rows `rows[start:stop:step]`, with Python's slice
+    /// semantics. Row names, if any, are sliced the same way.
+    pub fn slice(
+        &self,
+        start: Option<i64>,
+        stop: Option<i64>,
+        step: Option<i64>,
+    ) -> Result<AgateTable, ArrowError> {
+        let repr = self.repr.slice(start, stop, step)?;
         Ok(AgateTable::from_repr(Arc::new(repr)))
     }
 
@@ -952,43 +1165,17 @@ impl AgateTable {
                 .collect(),
             None => self.column_names(),
         };
-        // TODO: cast the values in `column` according to `key_type`, create a new
-        // table with the casted column, and use that table to create the grouper
-        let grouper = self.grouper(&column_names).map_err(|e| {
-            Error::new(
-                ErrorKind::InvalidOperation,
-                format!("Table.distinct: error creating grouper: {e}"),
-            )
-        })?;
-
-        // Builds a selection vector with the first `row_idx` of every group.
-        // A "group" is the set of rows that are identical, so whenever the
-        // grouper emits a `group_id` we've already seen, we know we shouldn't
-        // emit that `row_idx` because it's not the index of a distinct row.
-        let mut seen_groups = HashSet::new();
-        let indices: Vec<u64> = grouper
-            .iter()
-            .enumerate()
-            .filter_map(|(row_idx, group_id)| {
-                if seen_groups.insert(group_id) {
-                    Some(row_idx as u64)
-                } else {
-                    None
-                }
-            })
-            .collect();
-        let selection_vector = UInt64Array::new(indices.into(), None);
+        let column_indices = self
+            .repr
+            .column_indices(&column_names)
+            .collect::<Vec<usize>>();
 
         let repr = self
             .repr
-            .select_rows(&selection_vector, None)
-            .map_err(|e| {
-                Error::new(
-                    ErrorKind::InvalidOperation,
-                    format!("Table.distinct: error selecting rows: {e}"),
-                )
-            })?;
-        Ok(AgateTable::from_repr(repr.into()))
+            .distinct(&column_indices)
+            .map_err(|e| Error::new(ErrorKind::InvalidOperation, format!("Table.distinct: {e}")))?;
+
+        Ok(AgateTable::from_repr(repr))
     }
 }
 
@@ -1042,6 +1229,18 @@ impl Object for AgateTable {
         Enumerator::Seq(self.num_rows())
     }
 
+    /// Compare tables by identity
+    ///
+    /// `agate.Table` defines no `__eq__`, so Python falls back to
+    /// `object.__eq__` and two tables holding identical data are never equal.
+    /// Note, `agate.Row`/`Column` do define value equality, which makes the
+    /// table case unintuitive
+    fn custom_cmp(self: &Arc<Self>, other: &DynObject) -> Option<Ordering> {
+        let this: *const AgateTable = Arc::as_ptr(self);
+        let other: *const AgateTable = other.downcast_ref::<AgateTable>()?;
+        Some(this.cmp(&other))
+    }
+
     fn call_method(
         self: &Arc<Self>,
         _state: &State,
@@ -1049,6 +1248,10 @@ impl Object for AgateTable {
         args: &[Value],
         _listeners: &[Rc<dyn RenderingEventListener>],
     ) -> Result<Value, Error> {
+        fn invalid_operation(method: &str, e: &ArrowError) -> Error {
+            Error::new(ErrorKind::InvalidOperation, format!("{method}: {e}"))
+        }
+
         match name {
             // TODO: print_csv
             // TODO: print_json
@@ -1340,18 +1543,42 @@ impl Object for AgateTable {
             // ```python
             // def limit(self, start_or_stop=None, stop=None, step=None):
             //     """
-            //     Filter data to a subset of all rows.
-            //     """
-            // ```
+            //     Create a new table with fewer rows.
             //
-            // Only the single-arg `limit(n)` form is supported on the rust port.
+            //     See also: Python's builtin :func:`slice`.
+            //
+            //     :param start_or_stop:
+            //         If the only argument, then how many rows to include, otherwise,
+            //         the index of the first row to include.
+            //     :param stop:
+            //         The index of the last row to include.
+            //     :param step:
+            //         The size of the jump between rows to include. (`step=2` will return
+            //         every other row.)
+            //     :returns:
+            //         A new :class:`.Table`.
+            //     """
+            //     if stop or step:
+            //         s = slice(start_or_stop, stop, step)
+            //     else:
+            //         s = slice(start_or_stop)
+            // ```
             "limit" => {
-                let iter = ArgsIter::new("Table.limit", &["n"], args);
-                let n = iter.next_arg::<i64>()?;
+                let iter = ArgsIter::new("Table.limit", &[], args);
+                let start_or_stop = iter.next_kwarg::<Option<i64>>("start_or_stop")?;
+                let stop = iter.next_kwarg::<Option<i64>>("stop")?;
+                let step = iter.next_kwarg::<Option<i64>>("step")?;
                 iter.finish()?;
-                let table = self.as_ref().limit(n).map_err(|e| {
-                    Error::new(ErrorKind::InvalidOperation, format!("Table.limit: {e}"))
-                })?;
+
+                let is_truthy = |v: Option<i64>| v.is_some_and(|v| v != 0);
+                let table = {
+                    if is_truthy(stop) || is_truthy(step) {
+                        self.slice(start_or_stop, stop, step)
+                    } else {
+                        self.slice(None, start_or_stop, None)
+                    }
+                }
+                .map_err(|e| invalid_operation("Table.limit", &e))?;
                 Ok(Value::from_object(table))
             }
             // ```python
@@ -1398,6 +1625,8 @@ impl Object for AgateTable {
                 })?;
                 Ok(Value::from_object(result))
             }
+            "__eq__" | "__ne__" => Err(Error::from(ErrorKind::UnknownMethod)),
+            // TODO: add handling for `__[lt | le | gt | ge]__`
             other => unimplemented!("AgateTable::{}", other),
         }
     }
@@ -1442,6 +1671,47 @@ mod tests {
         ]));
         let batch = RecordBatch::try_new(schema, vec![id_array, country_array]).unwrap();
         Arc::new(batch)
+    }
+
+    #[test]
+    fn retain_original_values_with_separate_display_batch() {
+        let original = simple_record_batch();
+        let display = Arc::new(
+            RecordBatch::try_from_iter(vec![
+                (
+                    "id",
+                    Arc::new(StringArray::from(vec!["42", "43", "44"])) as ArrayRef,
+                ),
+                ("country", original.column(1).clone()),
+            ])
+            .unwrap(),
+        );
+        let table =
+            AgateTable::from_record_batch_impl(display.clone(), Some(original.clone()), None);
+        assert!(Arc::ptr_eq(&table.original_record_batch(), &original));
+        assert_eq!(table.to_record_batch().column(0), display.column(0));
+        assert_eq!(
+            table
+                .to_record_batch()
+                .schema()
+                .field(0)
+                .metadata()
+                .get("AGATE:dtype")
+                .map(String::as_str),
+            Some("Text")
+        );
+        let native_display =
+            AgateTable::from_record_batch_impl(original.clone(), Some(original), None);
+        assert_eq!(
+            native_display
+                .to_record_batch()
+                .schema()
+                .field(0)
+                .metadata()
+                .get("AGATE:dtype")
+                .map(String::as_str),
+            Some("Number")
+        );
     }
 
     /// End-to-end regression test for dbt-labs/fs#15412.
@@ -1547,6 +1817,70 @@ mod tests {
                 "{name}",
             );
         }
+    }
+
+    #[test]
+    fn table_identity_same_object_is_equal() {
+        let a = Value::from_object(main_table(&[1, 2], &["a", "b"], &[None, Some(1)]));
+        let out = Environment::new()
+            .render_str("{{ a == a }} {{ a != a }}", context! { a => a }, &[])
+            .unwrap();
+        assert_eq!(out, "True False");
+    }
+
+    #[test]
+    fn table_identity_equal_data_is_not_equal() {
+        let a = Value::from_object(main_table(&[1, 2], &["a", "b"], &[None, Some(1)]));
+        let b = Value::from_object(main_table(&[1, 2], &["a", "b"], &[None, Some(1)]));
+        let out = Environment::new()
+            .render_str(
+                "{{ a == b }} {{ a != b }}",
+                context! { a => a, b => b },
+                &[],
+            )
+            .unwrap();
+        assert_eq!(out, "False True");
+    }
+
+    #[test]
+    fn table_identity_empty_tables_are_not_equal() {
+        let a = Value::from_object(main_table(&[], &[], &[]));
+        let b = Value::from_object(main_table(&[], &[], &[]));
+        let out = Environment::new()
+            .render_str(
+                "{{ a == b }} {{ a != b }}",
+                context! { a => a, b => b },
+                &[],
+            )
+            .unwrap();
+        assert_eq!(out, "False True");
+    }
+
+    #[test]
+    fn table_identity_holds_inside_containers() {
+        let a = Value::from_object(main_table(&[1, 2], &["a", "b"], &[None, Some(1)]));
+        let b = Value::from_object(main_table(&[1, 2], &["a", "b"], &[None, Some(1)]));
+        let out = Environment::new()
+            .render_str(
+                "{{ [a] == [b] }} {{ a in [b] }} {{ a in [a] }}",
+                context! { a => a, b => b },
+                &[],
+            )
+            .unwrap();
+        assert_eq!(out, "False False True");
+    }
+
+    #[test]
+    fn table_identity_non_table_operand_is_not_equal() {
+        let a = Value::from_object(main_table(&[1, 2], &["a", "b"], &[None, Some(1)]));
+        let out = Environment::new()
+            .render_str(
+                "{{ a == 1 }} {{ a != 1 }} {{ 1 == a }} {{ 1 != a }}",
+                context! { a => a },
+                &[],
+            )
+            .unwrap();
+        assert_eq!(out, "False True False True");
     }
 
     #[test]
@@ -1677,54 +2011,93 @@ mod tests {
     }
 
     #[test]
-    fn test_limit_negative_errors() {
+    fn test_limit_negative_drops_rows_from_the_end() {
         let table = AgateTable::from_record_batch(simple_record_batch());
-        let err = table.limit(-1).unwrap_err();
-        assert!(err.to_string().contains("non-negative"));
+        let limited = table.limit(-1).unwrap();
+        assert_eq!(limited.num_rows(), 2);
+        assert_eq!(country_at(&limited, 0), "Brazil");
+        assert_eq!(country_at(&limited, 1), "USA");
+        assert_eq!(table.limit(-10).unwrap().num_rows(), 0);
+    }
+
+    /// A table with a single `id` column holding `0..5` and row names `r0..r4`.
+    fn five_row_table() -> Value {
+        let ids: ArrayRef = Arc::new(Int32Array::from_iter_values(0..5));
+        let batch = RecordBatch::try_from_iter([("id", ids)]).unwrap();
+        let row_names = {
+            let mut builder = StringViewBuilder::with_capacity(5);
+            for i in 0..5 {
+                builder.append_value(format!("r{i}"));
+            }
+            Arc::new(builder.finish())
+        };
+        AgateTable::new(Arc::new(batch), Some(row_names)).into_value()
+    }
+
+    fn render_limit(table: &Value, args: &str) -> Result<String, minijinja::Error> {
+        Environment::new().render_str(
+            &format!(
+                "{{% set l = t.limit({args}) %}}\
+                 {{% for r in l.rows %}}{{{{ r[0] }}}} {{% endfor %}}\
+                 | {{% for n in l.row_names %}}{{{{ n }}}} {{% endfor %}}"
+            ),
+            context! { t => table.clone() },
+            &[],
+        )
+    }
+
+    /// The expected ids are what Python agate's `limit()` returns for a table
+    /// with rows `0..5`, including its `if stop or step:` quirk.
+    #[test]
+    fn test_limit_follows_python_slice_semantics() {
+        let table = five_row_table();
+        let cases: &[(&str, &[i32])] = &[
+            ("", &[0, 1, 2, 3, 4]),
+            ("2", &[0, 1]),
+            ("-1", &[0, 1, 2, 3]),
+            ("-10", &[]),
+            ("10", &[0, 1, 2, 3, 4]),
+            ("0", &[]),
+            ("none", &[0, 1, 2, 3, 4]),
+            ("1, 3", &[1, 2]),
+            ("1, none, 2", &[1, 3]),
+            ("none, none, -1", &[4, 3, 2, 1, 0]),
+            ("-2, none, -2", &[3, 1]),
+            ("3, 1, -1", &[3, 2]),
+            // `stop` and `step` of 0 are falsy, so agate falls back to `slice(start_or_stop)`
+            ("2, 0", &[0, 1]),
+            ("1, none, 0", &[0]),
+            ("1, 0, 2", &[]),
+            ("start_or_stop=1, stop=4", &[1, 2, 3]),
+            ("1, step=2", &[1, 3]),
+            ("stop=3", &[0, 1, 2]),
+        ];
+        for (args, expected) in cases {
+            let ids: String = expected.iter().map(|i| format!("{i} ")).collect();
+            let names: String = expected.iter().map(|i| format!("r{i} ")).collect();
+            let actual = render_limit(&table, args).unwrap();
+            assert_eq!(actual, format!("{ids}| {names}"), "limit({args})");
+        }
     }
 
     #[test]
-    fn test_limit_via_jinja_call_method() {
-        let table = AgateTable::from_record_batch(simple_record_batch()).into_value();
+    fn test_limit_rejects_invalid_arguments() {
+        let table = five_row_table();
 
-        let env = Environment::new();
-        let state = env.empty_state();
+        let err = render_limit(&table, "1, 3, 0").unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+        assert!(
+            err.to_string().contains("slice step cannot be zero"),
+            "{err}"
+        );
 
-        // Single positional: limit(0) -> empty
-        let limited = table
-            .call_method(&state, "limit", &[Value::from(0)], &[])
-            .unwrap()
-            .downcast_object::<AgateTable>()
-            .unwrap();
-        assert_eq!(limited.num_rows(), 0);
-        assert_eq!(limited.num_columns(), 2);
+        let err = render_limit(&table, "1, 2, 3, 4").unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::TooManyArguments, "{err}");
 
-        // Single positional: limit(2) -> first two rows
-        let limited = table
-            .call_method(&state, "limit", &[Value::from(2)], &[])
-            .unwrap()
-            .downcast_object::<AgateTable>()
-            .unwrap();
-        assert_eq!(limited.num_rows(), 2);
+        let err = render_limit(&table, "n=2").unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::TooManyArguments, "{err}");
 
-        // Keyword: limit(n=2)
-        let limited = table
-            .call_method(
-                &state,
-                "limit",
-                &[Kwargs::from_iter([("n", Value::from(2))]).into()],
-                &[],
-            )
-            .unwrap()
-            .downcast_object::<AgateTable>()
-            .unwrap();
-        assert_eq!(limited.num_rows(), 2);
-
-        // Multi-arg form is not supported on the rust port.
-        let err = table
-            .call_method(&state, "limit", &[Value::from(1), Value::from(3)], &[])
-            .unwrap_err();
-        assert_eq!(err.kind(), ErrorKind::TooManyArguments);
+        assert!(render_limit(&table, "'2'").is_err());
     }
 
     #[test]
@@ -2989,5 +3362,159 @@ mod tests {
                 .contains("Table.join: right_table must be a Table"),
             "{err}"
         );
+    }
+
+    const COLUMN_VALUES_METHODS: [&str; 4] = [
+        "values_distinct",
+        "values_without_nulls",
+        "values_sorted",
+        "values_without_nulls_sorted",
+    ];
+
+    fn single_column_table_value(array: ArrayRef) -> Value {
+        let batch = RecordBatch::try_from_iter([("c", array)]).unwrap();
+        Value::from_object(AgateTable::from_record_batch(Arc::new(batch)))
+    }
+
+    fn render_column_method(table: &Value, method: &str) -> Result<String, minijinja::Error> {
+        Environment::new().render_str(
+            &format!("{{{{ t.columns[0].{method}() | list }}}}"),
+            context! { t => table.clone() },
+            &[],
+        )
+    }
+
+    fn assert_column_values_methods(name: &str, array: ArrayRef, expected: [&str; 4]) {
+        let table = single_column_table_value(array);
+        for (method, expected) in COLUMN_VALUES_METHODS.iter().zip(expected) {
+            let actual = render_column_method(&table, method).unwrap();
+            let expected = Environment::new()
+                .render_str(&format!("{{{{ {expected} }}}}"), context! {}, &[])
+                .unwrap();
+            assert_eq!(actual, expected, "{name}: {method}");
+        }
+    }
+
+    fn utf8_with_nulls() -> Vec<Option<&'static str>> {
+        vec![Some("b"), None, Some("a"), Some("c"), Some("a"), None]
+    }
+
+    #[test]
+    fn test_column_values_methods() {
+        assert_column_values_methods(
+            "int64",
+            Arc::new(arrow::array::Int64Array::from(vec![
+                Some(3),
+                None,
+                Some(1),
+                Some(2),
+                Some(1),
+                None,
+            ])),
+            [
+                "[3, none, 1, 2]",
+                "[3, 1, 2, 1]",
+                "[1, 1, 2, 3, none, none]",
+                "[1, 1, 2, 3]",
+            ],
+        );
+        assert_column_values_methods(
+            "utf8",
+            Arc::new(StringArray::from(utf8_with_nulls())),
+            [
+                "['b', none, 'a', 'c']",
+                "['b', 'a', 'c', 'a']",
+                "['a', 'a', 'b', 'c', none, none]",
+                "['a', 'a', 'b', 'c']",
+            ],
+        );
+        assert_column_values_methods(
+            "int64 without nulls",
+            Arc::new(arrow::array::Int64Array::from(vec![2, 1, 2])),
+            ["[2, 1]", "[2, 1, 2]", "[1, 2, 2]", "[1, 2, 2]"],
+        );
+        assert_column_values_methods(
+            "empty int64",
+            Arc::new(arrow::array::Int64Array::from(Vec::<i64>::new())),
+            ["[]", "[]", "[]", "[]"],
+        );
+    }
+
+    #[test]
+    fn test_column_values_methods_logical_nulls() {
+        assert_column_values_methods(
+            "all-null int64",
+            Arc::new(arrow::array::Int64Array::from(Vec::<Option<i64>>::from([
+                None, None, None,
+            ]))),
+            ["[none]", "[]", "[none, none, none]", "[]"],
+        );
+        assert_column_values_methods(
+            "null array",
+            Arc::new(arrow::array::NullArray::new(3)),
+            ["[none]", "[]", "[none, none, none]", "[]"],
+        );
+        let keys_to_null_value = DictionaryArray::<Int32Type>::try_new(
+            Int32Array::from(vec![0, 1, 2, 0, 1]),
+            Arc::new(StringArray::from(vec![Some("b"), None, Some("a")])),
+        )
+        .unwrap();
+        assert_column_values_methods(
+            "dictionary with null values",
+            Arc::new(keys_to_null_value),
+            [
+                "['b', none, 'a']",
+                "['b', 'a', 'b']",
+                "['a', 'b', 'b', none, none]",
+                "['a', 'b', 'b']",
+            ],
+        );
+        let dictionary: DictionaryArray<Int32Type> = utf8_with_nulls().into_iter().collect();
+        assert_column_values_methods(
+            "dictionary-encoded utf8",
+            Arc::new(dictionary),
+            [
+                "['b', none, 'a', 'c']",
+                "['b', 'a', 'c', 'a']",
+                "['a', 'a', 'b', 'c', none, none]",
+                "['a', 'a', 'b', 'c']",
+            ],
+        );
+    }
+
+    #[test]
+    fn test_column_values_methods_unsupported_type() {
+        let mut builder = arrow::array::MapBuilder::new(
+            None,
+            StringBuilder::new(),
+            arrow::array::Int64Builder::new(),
+        );
+        for value in [1, 2] {
+            builder.keys().append_value("k");
+            builder.values().append_value(value);
+            builder.append(true).unwrap();
+        }
+        let table = single_column_table_value(Arc::new(builder.finish()));
+
+        for method in [
+            "values_distinct",
+            "values_sorted",
+            "values_without_nulls_sorted",
+        ] {
+            let err = render_column_method(&table, method).unwrap_err();
+            assert_eq!(err.kind(), ErrorKind::InvalidOperation, "{err}");
+            assert!(
+                err.to_string().contains(&format!("Column.{method}:")),
+                "{err}"
+            );
+        }
+        let out = Environment::new()
+            .render_str(
+                "{{ t.columns[0].values_without_nulls() | list | length }}",
+                context! { t => table },
+                &[],
+            )
+            .unwrap();
+        assert_eq!(out, "2");
     }
 }

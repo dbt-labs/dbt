@@ -1,0 +1,56 @@
+{# The test's first command: creates the table the rest of the test reads. #}
+{% macro seed_snowflake() %}
+  {% do run_query("create schema if not exists " ~ target.database ~ "." ~ target.schema) %}
+  {% do run_query("create or replace table " ~ target.schema ~ ".a (val int)") %}
+  {% set create_source %}
+    CREATE TABLE {{ target.schema }}.source AS SELECT
+      CAST(1 AS NUMBER(38,0)) as number_col,
+      CAST(1 AS INT) as int_col,
+      CAST(1 AS INTEGER) as integer_col,
+      CAST(1 AS BIGINT) as bigint_col,
+      CAST(1 AS SMALLINT) as smallint_col,
+      CAST(1 AS TINYINT) as tinyint_col,
+      CAST(1 AS BYTEINT) as byteint_col,
+      CAST(123.45 AS DECIMAL(10,2)) as decimal_col,
+      CAST(123.45 AS NUMERIC(10,2)) as numeric_col,
+      CAST(1.23 AS FLOAT) as float_col,
+      CAST(1.23 AS FLOAT4) as float4_col,
+      CAST(1.23 AS FLOAT8) as float8_col,
+      CAST(1.23 AS DOUBLE) as double_col,
+      CAST(1.23 AS REAL) as real_col,
+      CAST('test_string' AS VARCHAR(100)) as varchar_col,
+      CAST('test_char' AS CHAR(10)) as char_col,
+      CAST('test_string' AS STRING) as string_col,
+      CAST('test_text' AS TEXT) as text_col,
+      TO_BINARY('test_binary', 'UTF-8') as binary_col,
+      TO_BINARY('test_varbinary', 'UTF-8') as varbinary_col,
+      CAST(TRUE AS BOOLEAN) as boolean_col,
+      CAST('2023-01-01' AS DATE) as date_col,
+      CAST('12:30:00' AS TIME) as time_col,
+      CAST('2023-01-01 12:30:00' AS TIMESTAMP) as timestamp_col,
+      CAST('2023-01-01 12:30:00' AS TIMESTAMP_LTZ) as timestamp_ltz_col,
+      CAST('2023-01-01 12:30:00' AS TIMESTAMP_NTZ) as timestamp_ntz_col,
+      CAST('2023-01-01 12:30:00 +00:00' AS TIMESTAMP_TZ) as timestamp_tz_col,
+      TO_GEOGRAPHY('POINT(-122.35 37.55)') as geography_col,
+      TO_GEOMETRY('POINT(-122.35 37.55)') as geometry_col,
+      PARSE_JSON('{"key": "value", "number": 123}') as variant_col,
+      OBJECT_CONSTRUCT('key', 'value', 'number', 123) as object_col,
+      ARRAY_CONSTRUCT(1, 2, 3) as array_col,
+      OBJECT_CONSTRUCT(
+        'name', 'John',
+        'age', 30,
+        'active', TRUE,
+        'address', OBJECT_CONSTRUCT(
+          'street', '123 Main St',
+          'city', 'Anytown',
+          'state', 'CA'
+        ),
+        'scores', ARRAY_CONSTRUCT(95, 87, 92)
+      ) as nested_object_col,
+      ARRAY_CONSTRUCT(
+        OBJECT_CONSTRUCT('name', 'Alice', 'age', 25),
+        OBJECT_CONSTRUCT('name', 'Bob', 'age', 30)
+      ) as array_object_col
+  {% endset %}
+  {% do run_query(create_source) %}
+{% endmacro %}

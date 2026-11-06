@@ -9,13 +9,14 @@ use dbt_common::constants::{
     DBT_CATALOGS_YML, DBT_DEPENDENCIES_YML, DBT_PACKAGES_LOCK_FILE, DBT_PACKAGES_YML,
     DBT_PROFILES_YML, DBT_SELECTORS_YML, DBT_VARS_YML,
 };
-use dbt_common::io_args::{InternalPackageMode, ReplayMode, TimeMachineMode};
+use dbt_common::io_args::{FsCommand, InternalPackageMode, ReplayMode, TimeMachineMode};
 use dbt_common::once_cell_vars::DISPATCH_CONFIG;
 use dbt_common::path::{DbtPath, resource_extension};
 use dbt_common::tracing::TracingConfigProvider;
 use dbt_common::tracing::dbt_emit::{
     emit_error_log_message, emit_warn_log_from_fs_error, emit_warn_log_message,
 };
+use dbt_common::tracing::invocation::record_resolved_warn_error_options;
 use dbt_common::tracing::span_info::SpanStatusRecorder;
 use dbt_common::warn_error_options::{
     WarnErrorOptions, project_flags_get_value, resolve_warn_error_options,
@@ -32,7 +33,6 @@ use dbt_yaml;
 use fs_deps::get_or_install_packages;
 use fs_deps::private_package::PrivatePackageResolver;
 use indexmap::IndexMap;
-use pathdiff::diff_paths;
 use serde::Deserialize;
 use std::borrow::Cow;
 use std::collections::BTreeSet;
@@ -52,7 +52,7 @@ use dbt_common::constants::{
 use dbt_common::error::LiftableResult;
 use project::DbtProject;
 
-use dbt_common::stdfs::last_modified;
+use dbt_common::stdfs::{diff_paths, last_modified};
 use dbt_common::{ErrorCode, create_debug_span, ectx, err, tokiofs};
 use dbt_common::{FsResult, fs_err};
 use dbt_jinja_vars::DbtVars;
@@ -174,6 +174,7 @@ pub(crate) fn resolve_and_reload_weo_from_project(
     if let Some(tracing_handle) = tracing_features {
         tracing_handle.set_warn_error_options(warn_error_options.clone());
     }
+    record_resolved_warn_error_options(warn_error, &warn_error_options);
 
     Ok(ResolvedWarnErrorOptions {
         warn_error,
@@ -208,6 +209,9 @@ pub async fn load(
     loader_hooks: Arc<dyn LoaderHooks>,
     private_package_resolver: Arc<dyn PrivatePackageResolver>,
 ) -> FsResult<DbtState> {
+    // Must run before any project Jinja is rendered.
+    dbt_adapter::time_machine::prepare_replay(iarg.replay.as_ref())?;
+
     let (simplified_dbt_project, mut dbt_profile, vars_from_file) =
         load_simplified_project_and_profiles(arg).await?;
 
@@ -503,27 +507,56 @@ pub async fn load(
         )?;
     }
 
-    let (packages_lock, upstream_projects) = get_or_install_packages(
-        &arg.io,
-        arg.command,
-        &env,
-        &packages_install_path,
-        arg.install_deps,
-        arg.add_package.clone(),
-        arg.upgrade,
-        arg.lock,
-        arg.vars.clone(),
-        arg.version_check,
-        arg.skip_private_deps,
-        iarg.replay.as_ref(),
-        token,
-        use_v2_compatible_package_downloads,
-        require_hub_verified_downloads,
-        private_package_resolver,
-        dbt_state.cloud_config.clone(),
-        arg.ai_provider.as_deref(),
-    )
-    .await?;
+    if arg.no_deps && arg.command != FsCommand::Extension("lint") {
+        return err!(
+            ErrorCode::InvalidArgument,
+            "--no-deps is only supported by `dbt lint`"
+        );
+    }
+
+    // Rendered/turbo lint executes macros, which may live in packages we skip.
+    if arg.no_deps {
+        let mode = arg
+            .vars
+            .get("__lint_jinja_render_mode")
+            .and_then(|v| v.as_str())
+            .unwrap_or("symbolic");
+        if !mode.trim().eq_ignore_ascii_case("symbolic") {
+            return err!(
+                ErrorCode::InvalidArgument,
+                "--no-deps requires `--jinja-render-mode symbolic`, got `{}`",
+                mode
+            );
+        }
+    }
+
+    // `dbt lint --no-deps`: lint the files as they are, without resolving
+    // `packages.yml`/`dependencies.yml` (no installs, no cross-project refs).
+    let (packages_lock, upstream_projects) = if arg.no_deps {
+        Default::default()
+    } else {
+        get_or_install_packages(
+            &arg.io,
+            arg.command,
+            &env,
+            &packages_install_path,
+            arg.install_deps,
+            arg.add_package.clone(),
+            arg.upgrade,
+            arg.lock,
+            arg.vars.clone(),
+            arg.version_check,
+            arg.skip_private_deps,
+            iarg.replay.as_ref(),
+            token,
+            use_v2_compatible_package_downloads,
+            require_hub_verified_downloads,
+            private_package_resolver,
+            dbt_state.cloud_config.clone(),
+            arg.ai_provider.as_deref(),
+        )
+        .await?
+    };
 
     // Skip downloading publication artifacts in Time Machine replay mode
     // In replay mode, we're replaying a recorded session and don't need to download anything
@@ -953,7 +986,7 @@ pub async fn load_inner(
     // make all paths relative to the project directory
     for (_, files) in all_files.iter_mut() {
         for (path, _) in files.iter_mut() {
-            *path = DbtPath::from(diff_paths(&path, package_path).unwrap());
+            *path = DbtPath::from(diff_paths(&path, package_path)?);
         }
         //
         // make deterministic: Sort files based on their relative paths

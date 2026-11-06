@@ -310,6 +310,7 @@ mod tests {
             __test_attr__: DbtTestAttr {
                 column_name: None,
                 attached_node: Some("model.pkg.cust".to_string()),
+                test_subject_unique_id: Some("model.pkg.cust".to_string()),
                 test_metadata: Some(TestMetadata {
                     name: "unique".to_string(),
                     kwargs: {
@@ -336,6 +337,7 @@ mod tests {
             __test_attr__: DbtTestAttr {
                 column_name: None,
                 attached_node: Some("model.pkg.cust".to_string()),
+                test_subject_unique_id: Some("model.pkg.cust".to_string()),
                 test_metadata: Some(TestMetadata {
                     name: "not_null".to_string(),
                     kwargs: {

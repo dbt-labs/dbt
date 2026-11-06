@@ -64,6 +64,8 @@ impl SemanticCategory {
             | "get_missing_columns"
             | "is_replaceable"
             | "location_exists"
+            | "can_exchange"
+            | "supports_atomic_exchange"
             | "check_incremental_schema_changes" => SemanticCategory::MetadataRead,
 
             // Mutate database state (DDL/DML)
@@ -131,6 +133,8 @@ impl SemanticCategory {
             | "sync_struct_columns"
             | "resolve_file_format"
             | "get_seed_file_path"
+            | "convert_datetimes_to_strs"
+            | "get_binding_char"
             | "is_uniform"
             | "external_root"
             | "external_write_options"
@@ -143,8 +147,6 @@ impl SemanticCategory {
             | "is_before_version"
             | "is_at_or_after_version"
             | "format_columns"
-            | "supports_atomic_exchange"
-            | "can_exchange"
             | "should_on_cluster"
             | "calculate_incremental_strategy"
             | "validate_incremental_strategy"
@@ -156,6 +158,7 @@ impl SemanticCategory {
             | "s3source_clause"
             | "get_csv_data"
             | "table_format"
+            | "warn_once"
             | "strip_trailing_statement_terminator" => SemanticCategory::Pure,
 
             _ => {

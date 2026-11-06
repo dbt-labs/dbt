@@ -1,0 +1,12 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/snapshots.yml
+   Parsing models/snapshots.yml:2:11 (snapshot_of_source)
+   Parsing models/source_data.sql
+ Rendering models/source_data.sql
+   Running models/source_data.sql
+ Succeeded model adapters_bigquery_snapshot_new_record.source_data (table) [1 of 1 in duration]
+==================== Execution Summary =====================
+Finished 'run' successfully for target 'bigquery' [duration]
+Processed: 1 model
+Summary: 1 total | 1 success

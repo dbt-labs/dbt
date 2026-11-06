@@ -530,7 +530,7 @@ struct GenericListArrayConverter<O: OffsetSizeTrait> {
 }
 
 impl<O: OffsetSizeTrait> GenericListArrayConverter<O> {
-    pub fn new(list_array: &GenericListArray<O>) -> Result<Self, ArrowError> {
+    pub fn try_new(list_array: &GenericListArray<O>) -> Result<Self, ArrowError> {
         let child_array = list_array.values();
         let child = make_array_converter(child_array.as_ref())?;
         Ok(Self {
@@ -582,7 +582,7 @@ struct FixedSizeListArrayConverter {
 }
 
 impl FixedSizeListArrayConverter {
-    pub fn new(list_array: &FixedSizeListArray) -> Result<Self, ArrowError> {
+    pub fn try_new(list_array: &FixedSizeListArray) -> Result<Self, ArrowError> {
         // `values()` is already sliced to this array's window, so child positions are
         // relative to it and need no further offset adjustment.
         let child = make_array_converter(list_array.values().as_ref())?;
@@ -631,7 +631,7 @@ struct MapConverter {
 }
 
 impl MapConverter {
-    pub fn new(array: &MapArray) -> Result<Self, ArrowError> {
+    pub fn try_new(array: &MapArray) -> Result<Self, ArrowError> {
         let keys = make_array_converter(array.keys().as_ref())?;
         let values = make_array_converter(array.values().as_ref())?;
         Ok(Self {
@@ -681,7 +681,7 @@ struct StructConverter {
 }
 
 impl StructConverter {
-    pub fn new(array: &StructArray) -> Result<Self, ArrowError> {
+    pub fn try_new(array: &StructArray) -> Result<Self, ArrowError> {
         debug_assert_eq!(
             array.fields().len(),
             array.columns().len(),
@@ -689,7 +689,8 @@ impl StructConverter {
         );
         let mut field_converters = Vec::with_capacity(array.num_columns());
         for column in array.columns() {
-            field_converters.push(make_array_converter(column.as_ref())?);
+            let field_converter = make_array_converter(column.as_ref())?;
+            field_converters.push(field_converter);
         }
         Ok(Self {
             fields: array.fields().clone(),
@@ -820,15 +821,26 @@ pub fn make_array_converter(array: &dyn Array) -> Result<Box<dyn ArrayConverter>
                 maybe_tz.clone(),
             ))
         }
-        DataType::List(_field) => Box::new(ListArrayConverter::new(array.as_list::<i32>())?),
-        DataType::LargeList(_field) => {
-            Box::new(LargeListArrayConverter::new(array.as_list::<i64>())?)
+        DataType::List(_field) => {
+            let converter = ListArrayConverter::try_new(array.as_list::<i32>())?;
+            Box::new(converter)
         }
-        DataType::FixedSizeList(_field, _size) => Box::new(FixedSizeListArrayConverter::new(
-            array.as_fixed_size_list(),
-        )?),
-        DataType::Map(_field, _is_sorted) => Box::new(MapConverter::new(array.as_map())?),
-        DataType::Struct(_fields) => Box::new(StructConverter::new(array.as_struct())?),
+        DataType::LargeList(_field) => {
+            let converter = LargeListArrayConverter::try_new(array.as_list::<i64>())?;
+            Box::new(converter)
+        }
+        DataType::FixedSizeList(_field, _size) => {
+            let converter = FixedSizeListArrayConverter::try_new(array.as_fixed_size_list())?;
+            Box::new(converter)
+        }
+        DataType::Map(_field, _is_sorted) => {
+            let converter = MapConverter::try_new(array.as_map())?;
+            Box::new(converter)
+        }
+        DataType::Struct(_fields) => {
+            let converter = StructConverter::try_new(array.as_struct())?;
+            Box::new(converter)
+        }
         _ => {
             // FALLBACK: Turn every Arrow value into a [minijinja::Value] string.
             let format_options = FormatOptions::new().with_null("None");

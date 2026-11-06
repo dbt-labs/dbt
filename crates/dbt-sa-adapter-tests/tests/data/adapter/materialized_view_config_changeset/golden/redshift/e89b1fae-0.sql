@@ -1,0 +1,1 @@
+CREATE SCHEMA IF NOT EXISTS "adapters_redshift_materialized_view_config_changeset"

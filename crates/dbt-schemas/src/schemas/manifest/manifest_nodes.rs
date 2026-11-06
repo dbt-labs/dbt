@@ -140,6 +140,12 @@ pub struct ManifestMaterializableCommonAttributes {
     pub meta: IndexMap<String, YmlValue>,
 }
 
+/// The propagation target that a manifest records as `canonical_relation_adapter`. Only
+/// Databricks and BigQuery change how a node's relation is rendered, so other targets give `None`.
+pub(super) fn canonical_relation_marker(target: Option<AdapterType>) -> Option<AdapterType> {
+    target.filter(|target| matches!(target, AdapterType::Databricks | AdapterType::Bigquery))
+}
+
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -148,7 +154,8 @@ pub struct ManifestNodeBaseAttributes {
     #[serde(default)]
     pub alias: String,
     pub relation_name: Option<String>,
-    /// Marker for Databricks canonical relation rendering. Legacy manifests omit it.
+    /// The propagation target that the node uses for relation rendering, recorded only when it
+    /// is Databricks or BigQuery. Manifests written before this field omit it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub canonical_relation_adapter: Option<AdapterType>,
 
@@ -237,9 +244,9 @@ impl From<DbtSeed> for ManifestSeed {
             __base_attr__: ManifestNodeBaseAttributes {
                 alias: seed.__base_attr__.alias,
                 relation_name: seed.__base_attr__.relation_name,
-                canonical_relation_adapter: (seed.__base_attr__.effective_propagation_target
-                    == Some(AdapterType::Databricks))
-                .then_some(AdapterType::Databricks),
+                canonical_relation_adapter: canonical_relation_marker(
+                    seed.__base_attr__.effective_propagation_target,
+                ),
                 columns: seed.__base_attr__.columns,
                 depends_on: seed.__base_attr__.depends_on,
                 refs: seed.__base_attr__.refs,
@@ -509,6 +516,8 @@ pub struct ManifestSnapshotConfig {
     pub sync: Option<SyncConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub state: Option<ModelState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub table_format: Option<String>,
     pub __warehouse_specific_config__: WarehouseSpecificNodeConfig,
 }
 
@@ -554,6 +563,7 @@ impl From<SnapshotConfig> for ManifestSnapshotConfig {
             docs: config.docs,
             sync: config.sync,
             state: config.state,
+            table_format: config.table_format,
             __warehouse_specific_config__: config.__warehouse_specific_config__,
         }
     }
@@ -603,6 +613,7 @@ impl From<ManifestSnapshotConfig> for SnapshotConfig {
             docs: config.docs,
             sync: config.sync,
             state: config.state,
+            table_format: config.table_format,
             __warehouse_specific_config__: config.__warehouse_specific_config__,
         }
     }
@@ -893,7 +904,7 @@ pub struct ManifestModelConfig {
     pub incremental_predicates: Option<StringOrArrayOfStrings>,
     pub batch_size: Option<DbtBatchSize>,
     pub lookback: Option<i32>,
-    pub begin: Option<dbt_yaml::Timestamp>,
+    pub begin: Option<String>,
     #[serde(
         default,
         serialize_with = "crate::schemas::serde::serialize_none_as_default"
@@ -1051,6 +1062,9 @@ pub struct ManifestSeedConfig {
     #[serde(default, deserialize_with = "bool_or_string_bool")]
     pub quote_columns: Option<bool>,
     pub delimiter: Option<Spanned<String>>,
+    #[serde(default, deserialize_with = "bool_or_string_bool")]
+    pub all_varchar: Option<bool>,
+    pub fast: Option<bool>,
     pub event_time: Option<String>,
     pub full_refresh: Option<bool>,
     pub group: Option<String>,
@@ -1100,6 +1114,8 @@ impl From<SeedConfig> for ManifestSeedConfig {
             grants: config.grants,
             quote_columns: config.quote_columns,
             delimiter: config.delimiter,
+            all_varchar: config.all_varchar,
+            fast: config.fast,
             event_time: config.event_time,
             full_refresh: config.full_refresh,
             group: config.group,
@@ -1137,6 +1153,8 @@ impl From<ManifestSeedConfig> for SeedConfig {
             grants: config.grants,
             quote_columns: config.quote_columns,
             delimiter: config.delimiter,
+            all_varchar: config.all_varchar,
+            fast: config.fast,
             event_time: config.event_time,
             full_refresh: config.full_refresh,
             group: config.group,
@@ -1351,9 +1369,9 @@ impl From<DbtModel> for ManifestModel {
             __base_attr__: ManifestNodeBaseAttributes {
                 alias: model.__base_attr__.alias,
                 relation_name: model.__base_attr__.relation_name,
-                canonical_relation_adapter: (model.__base_attr__.effective_propagation_target
-                    == Some(AdapterType::Databricks))
-                .then_some(AdapterType::Databricks),
+                canonical_relation_adapter: canonical_relation_marker(
+                    model.__base_attr__.effective_propagation_target,
+                ),
                 columns: model.__base_attr__.columns,
                 depends_on: model.__base_attr__.depends_on,
                 refs: model.__base_attr__.refs,
@@ -1381,10 +1399,7 @@ impl From<DbtModel> for ManifestModel {
             version: model.__model_attr__.version,
             latest_version: model.__model_attr__.latest_version,
             constraints: Some(model.__model_attr__.constraints),
-            deprecation_date: model
-                .__model_attr__
-                .deprecation_date
-                .map(|ts| ts.with_defaults().to_string()),
+            deprecation_date: model.__model_attr__.deprecation_date,
             primary_key: Some(model.__model_attr__.primary_key),
             time_spine: model
                 .__model_attr__
@@ -2322,31 +2337,47 @@ mod node_adapter_manifest_round_trip_tests {
     };
 
     #[test]
-    fn databricks_canonical_relation_marker_round_trips_for_models_and_seeds() {
-        let model = DbtModel {
-            __base_attr__: NodeBaseAttributes {
-                effective_propagation_target: Some(AdapterType::Databricks),
+    fn canonical_relation_marker_round_trips_for_models_and_seeds() {
+        for target in [AdapterType::Databricks, AdapterType::Bigquery] {
+            let model = DbtModel {
+                __base_attr__: NodeBaseAttributes {
+                    effective_propagation_target: Some(target),
+                    ..Default::default()
+                },
                 ..Default::default()
-            },
-            ..Default::default()
-        };
-        let manifest_model: ManifestModel = model.into();
-        assert_eq!(
-            manifest_model.__base_attr__.canonical_relation_adapter,
-            Some(AdapterType::Databricks)
-        );
+            };
+            let manifest_model: ManifestModel = model.into();
+            assert_eq!(
+                manifest_model.__base_attr__.canonical_relation_adapter,
+                Some(target)
+            );
 
-        let seed = DbtSeed {
+            let seed = DbtSeed {
+                __base_attr__: NodeBaseAttributes {
+                    effective_propagation_target: Some(target),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let manifest_seed: super::ManifestSeed = seed.into();
+            assert_eq!(
+                manifest_seed.__base_attr__.canonical_relation_adapter,
+                Some(target)
+            );
+        }
+
+        let snowflake = DbtModel {
             __base_attr__: NodeBaseAttributes {
-                effective_propagation_target: Some(AdapterType::Databricks),
+                effective_propagation_target: Some(AdapterType::Snowflake),
                 ..Default::default()
             },
             ..Default::default()
         };
-        let manifest_seed: super::ManifestSeed = seed.into();
         assert_eq!(
-            manifest_seed.__base_attr__.canonical_relation_adapter,
-            Some(AdapterType::Databricks)
+            ManifestModel::from(snowflake)
+                .__base_attr__
+                .canonical_relation_adapter,
+            None
         );
     }
 
@@ -2368,14 +2399,31 @@ mod node_adapter_manifest_round_trip_tests {
     fn snapshot_config_adapter_round_trips_through_manifest_snapshot_config() {
         let snapshot_config = SnapshotConfig {
             adapter: Some(AdapterType::Bigquery),
+            table_format: Some("iceberg".to_string()),
+            __warehouse_specific_config__: super::WarehouseSpecificNodeConfig {
+                iceberg_version: Some(2),
+                ..Default::default()
+            },
             ..Default::default()
         };
 
         let manifest_config: ManifestSnapshotConfig = snapshot_config.into();
         assert_eq!(manifest_config.adapter, Some(AdapterType::Bigquery));
+        assert_eq!(manifest_config.table_format.as_deref(), Some("iceberg"));
+        assert_eq!(
+            manifest_config
+                .__warehouse_specific_config__
+                .iceberg_version,
+            Some(2)
+        );
 
         let round_tripped: SnapshotConfig = manifest_config.into();
         assert_eq!(round_tripped.adapter, Some(AdapterType::Bigquery));
+        assert_eq!(round_tripped.table_format.as_deref(), Some("iceberg"));
+        assert_eq!(
+            round_tripped.__warehouse_specific_config__.iceberg_version,
+            Some(2)
+        );
     }
 
     #[test]

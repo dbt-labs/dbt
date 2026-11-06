@@ -1,0 +1,3 @@
+packages:
+  - package: metaplane/dbt_expectations
+    version: 0.10.9

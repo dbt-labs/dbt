@@ -623,6 +623,21 @@ fn adapter_type_falls_back_on_an_unknown_dialect() {
 }
 
 #[test]
+fn adapter_quote_follows_the_nodes_selected_dialect() {
+    let adapter = make_duckdb_parse_adapter();
+    for (dialect, expected) in [
+        ("bigquery", "`x`"),
+        ("databricks", "`x`"),
+        ("snowflake", "\"x\""),
+        ("not_an_adapter", "\"x\""),
+    ] {
+        let quoted =
+            dispatch_test_with_dialect(&adapter, dialect, "quote", &[Value::from("x")]).unwrap();
+        assert_eq!(quoted.as_str(), Some(expected), "{dialect}");
+    }
+}
+
+#[test]
 fn test_statement_macro_does_not_crash_in_symbolic_lint_mode() {
     // Regression test: `JinjaRenderMode::Symbolic` forces `execute = true` so
     // macros guarded by `{% if not execute %}`/`{% if execute %}` take their
@@ -708,4 +723,253 @@ fn test_check_schema_exists_tolerates_none_database() {
         message.contains("template not found") || message.contains("check_schema_exists"),
         "expected a macro-lookup failure past arg parsing, got: {message}"
     );
+}
+
+/// A statement that fails after `BEGIN` leaves the session's transaction state unknown, so the
+/// connection must be discarded instead of being parked in the thread-local for the next node.
+mod execute_inner_txn {
+    use std::collections::BTreeMap;
+    use std::sync::{Arc, Mutex};
+
+    use adbc_core::PartitionedResult;
+    use adbc_core::error::{Error, Result, Status};
+    use adbc_core::options::{ObjectDepth, OptionStatement, OptionValue};
+    use arrow_array::{RecordBatchIterator, RecordBatchReader};
+    use arrow_schema::Schema;
+    use dbt_adapter_core::AdapterType;
+    use dbt_adbc::{Connection, QueryCtx, Statement};
+    use dbt_auth::auth_for_backend;
+    use dbt_common::AdapterResult;
+    use dbt_common::cancellation::CancellationToken;
+    use dbt_yaml::Mapping;
+
+    use crate::adapter::adapter_factory::backend_of;
+    use crate::adapter::adapter_impl::AdapterImpl;
+    use crate::cache::RelationCache;
+    use crate::config::AdapterConfig;
+    use crate::connection::{ConnectionGuard, drop_thread_local_connection, tlocal_slot_occupied};
+    use crate::engine::query_comment::QueryCommentConfig;
+    use crate::engine::{AdapterEngine, AdbcEngine};
+    use crate::sql_types::DefaultTypeOps;
+    use crate::stmt_splitter::DefaultStmtSplitter;
+    use dbt_schemas::schemas::relations::SNOWFLAKE_RESOLVED_QUOTING;
+
+    /// What the driver reports once the client gives up on a request.
+    const TIMEOUT_MESSAGE: &str = "timeout after 10m0s and 8 attempts. HTTP Status: 503";
+
+    /// SQL that makes [`ScriptedConnection`] fail with [`TIMEOUT_MESSAGE`].
+    const FAILING_SQL: &str = "select 'times out'";
+
+    #[derive(Default)]
+    struct Session {
+        executed: Vec<String>,
+        discarded: bool,
+    }
+
+    /// A connection that records the SQL it receives.
+    struct ScriptedConnection(Arc<Mutex<Session>>);
+
+    struct ScriptedStatement {
+        session: Arc<Mutex<Session>>,
+        sql: String,
+    }
+
+    impl Statement for ScriptedStatement {
+        fn execute<'a>(&'a mut self) -> Result<Box<dyn RecordBatchReader + Send + 'a>> {
+            let mut session = self.session.lock().unwrap();
+            session.executed.push(self.sql.clone());
+            if self.sql == FAILING_SQL {
+                return Err(Error::with_message_and_status(TIMEOUT_MESSAGE, Status::IO));
+            }
+            let schema = Arc::new(Schema::empty());
+            Ok(Box::new(RecordBatchIterator::new(
+                std::iter::empty(),
+                schema,
+            )))
+        }
+
+        fn set_sql_query(&mut self, sql: &str) -> Result<()> {
+            self.sql = sql.trim().to_string();
+            Ok(())
+        }
+
+        fn set_option(&mut self, _key: OptionStatement, _value: OptionValue) -> Result<()> {
+            Ok(())
+        }
+
+        fn cancel(&mut self) -> Result<()> {
+            Ok(())
+        }
+
+        fn bind(&mut self, _batch: arrow_array::RecordBatch) -> Result<()> {
+            unimplemented!()
+        }
+        fn bind_stream(&mut self, _reader: Box<dyn RecordBatchReader + Send>) -> Result<()> {
+            unimplemented!()
+        }
+        fn execute_update(&mut self) -> Result<Option<i64>> {
+            unimplemented!()
+        }
+        fn execute_schema(&mut self) -> Result<Schema> {
+            unimplemented!()
+        }
+        fn execute_partitions(&mut self) -> Result<PartitionedResult> {
+            unimplemented!()
+        }
+        fn get_parameter_schema(&self) -> Result<Schema> {
+            unimplemented!()
+        }
+        fn prepare(&mut self) -> Result<()> {
+            unimplemented!()
+        }
+        fn set_substrait_plan(&mut self, _plan: &[u8]) -> Result<()> {
+            unimplemented!()
+        }
+    }
+
+    impl Connection for ScriptedConnection {
+        fn new_statement(&mut self) -> Result<Box<dyn Statement>> {
+            Ok(Box::new(ScriptedStatement {
+                session: Arc::clone(&self.0),
+                sql: String::new(),
+            }))
+        }
+
+        fn cancel(&mut self) -> Result<()> {
+            Ok(())
+        }
+
+        fn commit(&mut self) -> Result<()> {
+            unimplemented!()
+        }
+
+        fn rollback(&mut self) -> Result<()> {
+            unimplemented!()
+        }
+
+        fn get_table_schema(
+            &self,
+            _catalog: Option<&str>,
+            _db_schema: Option<&str>,
+            _table_name: &str,
+        ) -> Result<Schema> {
+            unimplemented!()
+        }
+
+        fn get_objects<'a>(
+            &'a self,
+            _depth: ObjectDepth,
+            _catalog: Option<&'a str>,
+            _db_schema: Option<&'a str>,
+            _table_name: Option<&'a str>,
+            _table_type: Option<Vec<&'a str>>,
+            _column_name: Option<&'a str>,
+        ) -> Result<Box<dyn RecordBatchReader + Send + 'a>> {
+            unimplemented!()
+        }
+    }
+
+    fn snowflake_engine() -> Arc<dyn AdapterEngine> {
+        let config = Mapping::from_iter([
+            ("user".into(), "U".into()),
+            ("password".into(), "P".into()),
+            ("account".into(), "A".into()),
+            ("database".into(), "D".into()),
+            ("schema".into(), "S".into()),
+            ("role".into(), "role".into()),
+            ("warehouse".into(), "warehouse".into()),
+        ]);
+        let adapter_type = AdapterType::Snowflake;
+        Arc::new(AdbcEngine::new(
+            adapter_type,
+            auth_for_backend(backend_of(adapter_type)).into(),
+            AdapterConfig::new(config),
+            SNOWFLAKE_RESOLVED_QUOTING,
+            QueryCommentConfig::from_query_comment(None, adapter_type, false, None),
+            Arc::new(DefaultTypeOps::new(adapter_type)),
+            Arc::new(DefaultStmtSplitter),
+            Arc::new(RelationCache::default()),
+            BTreeMap::new(),
+            None,
+            None,
+        ))
+    }
+
+    /// Runs `sql` through `execute_inner` on a fresh [`ScriptedConnection`] and returns the result
+    /// together with the connection's final state.
+    fn run(sql: &str) -> (AdapterResult<()>, Session) {
+        let engine = snowflake_engine();
+        let adapter = AdapterImpl::new(Arc::clone(&engine), None);
+        let session = Arc::new(Mutex::new(Session::default()));
+        drop_thread_local_connection();
+        let mut conn = ConnectionGuard::new(Box::new(ScriptedConnection(Arc::clone(&session))));
+        let result = adapter.execute_inner(
+            engine,
+            None,
+            &mut conn,
+            &QueryCtx::new("test"),
+            sql,
+            true,
+            false,
+            None,
+            None,
+            CancellationToken::never_cancels(),
+        );
+        drop(conn);
+        let mut session = std::mem::take(&mut *session.lock().unwrap());
+        session.discarded = !tlocal_slot_occupied();
+        (result.map(|_| ()), session)
+    }
+
+    #[test]
+    fn statement_failing_inside_a_transaction_discards_the_connection() {
+        let (result, session) = run(&format!("begin; {FAILING_SQL}; commit;"));
+
+        let err = result.expect_err("the failing statement's error must still propagate");
+        assert!(
+            session.discarded,
+            "connection was parked for reuse inside an open transaction; executed: {:?}",
+            session.executed
+        );
+        assert!(err.message().contains(TIMEOUT_MESSAGE), "{}", err.message());
+        assert!(
+            err.message().contains("left uncommitted"),
+            "{}",
+            err.message()
+        );
+    }
+
+    #[test]
+    fn failing_commit_discards_the_connection() {
+        let (result, session) = run(&format!("begin; select 1; {FAILING_SQL}"));
+
+        assert!(result.is_err());
+        assert!(session.discarded);
+    }
+
+    #[test]
+    fn committed_transaction_keeps_the_connection() {
+        let (result, session) = run("begin; select 1; commit;");
+
+        assert!(result.is_ok());
+        assert!(!session.discarded);
+        assert_eq!(session.executed, ["begin", "select 1", "commit"]);
+    }
+
+    #[test]
+    fn failure_after_a_finished_transaction_keeps_the_connection() {
+        let (result, session) = run(&format!("begin; select 1; rollback; {FAILING_SQL}"));
+
+        assert!(result.is_err());
+        assert!(!session.discarded);
+    }
+
+    #[test]
+    fn failure_outside_a_transaction_keeps_the_connection() {
+        let (result, session) = run(FAILING_SQL);
+
+        assert!(result.is_err());
+        assert!(!session.discarded);
+        assert_eq!(session.executed, [FAILING_SQL]);
+    }
 }

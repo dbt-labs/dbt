@@ -13,6 +13,7 @@ use dbt_schemas::schemas::profiles::Execute;
 use dbt_schemas::schemas::properties::UnitTestOverrides;
 use dbt_schemas::schemas::relations::base::BaseRelation;
 use dbt_schemas::schemas::{DbtUnitTest, InternalDbtNodeAttributes, Nodes};
+use dbt_state::node_session::ExecutionGuard;
 use dbt_tasks_core::context::TaskRunnerCtx;
 use dbt_tasks_core::render_task_hooks::RenderTaskHooks;
 use dbt_tasks_core::run_cache::run_cache_service::RunCacheServiceDecision;
@@ -211,6 +212,14 @@ impl RunTaskHooks for DefaultRunTaskHooks {
         _sql: &str,
     ) -> FsResult<RunCacheServiceDecision> {
         Ok(RunCacheServiceDecision::Disabled)
+    }
+
+    async fn acquire_state_lock(
+        &self,
+        _ctx: &TaskRunnerCtx,
+        _node: Arc<dyn InternalDbtNodeAttributes>,
+    ) -> Option<ExecutionGuard> {
+        None
     }
 
     async fn run_lake_compute_sidecar(

@@ -556,9 +556,9 @@ impl StateArtifacts {
             // Macro modification is checked by iteraring through depends_on.macros
             // for each node and checking if the dependent macros are modified.
             Some(ModificationType::Macros) => self.check_modified_macros(node, current_nodes),
-            Some(ModificationType::Contract) => self.check_contract_modified(node),
+            Some(ModificationType::Contract) => self.check_contract_modified(node, adapter_type),
             Some(ModificationType::Any) | None => {
-                self.check_contract_modified(node)
+                self.check_contract_modified(node, adapter_type)
                     || self.check_configs_modified(node, adapter_type)
                     || self.check_relation_modified(node)
                     || self.check_persisted_descriptions_modified(node)
@@ -742,6 +742,10 @@ impl StateArtifacts {
             | NodeType::Metric
             | NodeType::SavedQuery
             | NodeType::Check => !current_node.has_same_config(previous_node, adapter_type),
+
+            // Experimental nodes are not written to the manifest, so there is never a previous node
+            // to compare, and `state:` methods never select them. Listed for exhaustiveness.
+            NodeType::Experimental => !current_node.has_same_config(previous_node, adapter_type),
 
             // Never returned by any `InternalDbtNode::resource_type()` impl (see nodes.rs) —
             // `DocsMacro`/`Operation` describe non-node telemetry concepts and `Unspecified` is a
@@ -934,7 +938,11 @@ impl StateArtifacts {
         )
     }
 
-    fn check_contract_modified(&self, current_node: &dyn InternalDbtNode) -> bool {
+    fn check_contract_modified(
+        &self,
+        current_node: &dyn InternalDbtNode,
+        adapter_type: AdapterType,
+    ) -> bool {
         // Get the previous node from the manifest (unique_id first, then test signature fallback).
         let Some(previous_node) = self.previous_node_for(current_node) else {
             // If previous node doesn't exist, consider it modified.
@@ -945,7 +953,7 @@ impl StateArtifacts {
             current_node.as_any().downcast_ref::<DbtModel>(),
             previous_node.as_any().downcast_ref::<DbtModel>(),
         ) {
-            let is_same_contract = current_model.same_contract(previous_model);
+            let is_same_contract = current_model.same_contract(previous_model, adapter_type);
             if !is_same_contract {
                 log_state_mod_diff(
                     &current_node.common().unique_id,
@@ -967,6 +975,20 @@ impl StateArtifacts {
     }
 
     fn check_body_modified(&self, current_node: &dyn InternalDbtNode) -> bool {
+        // Unit tests have no body comparison, in the same way they have no config comparison (see
+        // `check_configs_modified`). dbt-core's `UnitTestDefinition` extends `GraphNode` and
+        // defines no `same_body`, so `check_modified_factory("same_body")` takes its `hasattr`
+        // else-branch and returns False (dbt-mantle core/dbt/graph/selector_methods.py:759):
+        // `state:modified.body` never selects a unit test there.
+        //
+        // Without this guard, unit tests fall through to the default `has_same_body`, which
+        // compares `checksum`. Fusion leaves a unit test's checksum empty while dbt-core writes a
+        // sha256 over model/versions/given/expect/overrides, so every unit test looked body-modified
+        // against a state manifest written by dbt 1.x. See dbt-labs/dbt#16449.
+        if current_node.resource_type() == NodeType::UnitTest {
+            return false;
+        }
+
         // Get the previous node from the manifest (unique_id first, then test signature fallback).
         let Some(previous_node) = self.previous_node_for(current_node) else {
             // If previous node doesn't exist, consider it modified.
@@ -2564,6 +2586,11 @@ mod tests {
                     })
                 }),
             ),
+            (
+                "table_format",
+                ExcludeKind::Relevant,
+                Box::new(|n| n.deprecated_config.table_format = Some("iceberg".to_string())),
+            ),
             // --- parity-excludes: dbt-core's `CompareBehavior.Exclude` on `NodeAndTestConfig` ---
             (
                 "tags",
@@ -2674,7 +2701,7 @@ mod tests {
             (
                 "begin",
                 ExcludeKind::Relevant,
-                Box::new(|n| n.deprecated_config.begin = dbt_yaml::Timestamp::parse("2024-01-01")),
+                Box::new(|n| n.deprecated_config.begin = Some("2024-01-01".to_string())),
             ),
             (
                 "persist_docs",

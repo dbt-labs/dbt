@@ -6,10 +6,10 @@
 
 use std::path::Path;
 
+use crate::network_client::LazyHttpClient;
 use async_trait::async_trait;
 use dbt_common::tracing::dbt_emit::emit_debug_log_message;
 use dbt_common::{ErrorCode, FsResult, fs_err};
-use reqwest_middleware::ClientWithMiddleware;
 
 use super::auth::github_token_for_request;
 use super::traits::GitHostClient;
@@ -30,12 +30,12 @@ pub(super) fn is_gh_repo_valid_name(name: &str) -> bool {
 
 /// GitHub fast-path client (archive + GraphQL); repo/token come from `parsed`.
 pub struct GitHubClient {
-    http_client: ClientWithMiddleware,
+    http_client: LazyHttpClient,
     tarball_client: TarballClient,
 }
 
 impl GitHubClient {
-    pub fn new(http_client: ClientWithMiddleware, tarball_client: TarballClient) -> Self {
+    pub fn new(http_client: LazyHttpClient, tarball_client: TarballClient) -> Self {
         Self {
             http_client,
             tarball_client,
@@ -160,7 +160,7 @@ async fn download_archive(
 // ============================================================================
 
 async fn graphql_resolve(
-    http_client: &ClientWithMiddleware,
+    http_client: &LazyHttpClient,
     owner: &str,
     repo: &str,
     revision: &str,
@@ -192,12 +192,13 @@ async fn graphql_resolve(
 }
 
 async fn fire_graphql(
-    http_client: &ClientWithMiddleware,
+    http_client: &LazyHttpClient,
     query: &str,
     auth_token: Option<&str>,
 ) -> FsResult<serde_json::Value> {
     let mut req = http_client
         .post("https://api.github.com/graphql")
+        .await
         .header("Content-Type", "application/json")
         .header(
             "User-Agent",

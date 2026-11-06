@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use arrow_array::RecordBatch;
 use arrow_schema::Schema;
@@ -23,12 +23,13 @@ use crate::engine::query_comment::QueryCommentConfig;
 use crate::errors::{AdapterError, adbc_error_to_adapter_error};
 use crate::sql_types::TypeOps;
 use crate::stmt_splitter::StmtSplitter;
+use dbt_adapter_engine::clickhouse::ClickHouseCapabilities;
 
 use super::adapter_engine::*;
-use super::databricks;
-use super::make_behavior;
-use super::noop_connection::NoopConnection;
 use super::retry::{ConnectionRetryPolicy, QueryRetryPolicy};
+use dbt_adapter_engine::behavior::make_behavior;
+use dbt_adapter_engine::databricks;
+use dbt_adapter_engine::noop_connection::NoopConnection;
 
 #[derive(Default)]
 pub struct DatabaseMap {
@@ -89,6 +90,8 @@ pub struct AdbcEngine {
     /// `ResolvedCloudConfig::project_id`, forwarded as the `dbt_cloud.project_id`
     /// flock-adbc driver option alongside whichever credential is resolved.
     dbt_cloud_project_id: Option<String>,
+    /// See [`AdapterEngine::clickhouse_capabilities`].
+    clickhouse_capabilities: OnceLock<ClickHouseCapabilities>,
 }
 
 impl AdbcEngine {
@@ -126,6 +129,7 @@ impl AdbcEngine {
             threads,
             connection_fingerprint: std::sync::atomic::AtomicU64::new(0),
             dbt_cloud_project_id,
+            clickhouse_capabilities: OnceLock::new(),
         }
     }
 
@@ -213,7 +217,7 @@ impl AdbcEngine {
             })
             .map_err(crate::errors::auth_error_to_adapter_error)?;
         let load_strategy = match (use_cloud_credentials, self.adapter_type) {
-            (true, _) => LoadStrategy::Remote,
+            (true, _) => LoadStrategy::Bridge,
             (false, AdapterType::DuckDB) => LoadStrategy::SystemThenCdnCache,
             (false, _) => LoadStrategy::CdnCache,
         };
@@ -249,7 +253,10 @@ impl AdbcEngine {
                         let mut conn = database
                             .new_connection()
                             .map_err(adbc_error_to_adapter_error)?;
-                        super::clickhouse::ensure_database(conn.as_mut(), config)?
+                        dbt_adapter_engine::clickhouse::bootstrap::ensure_database(
+                            conn.as_mut(),
+                            config,
+                        )?
                     }
                     _ => {}
                 }
@@ -383,7 +390,7 @@ impl AdbcEngine {
         } else {
             AdapterType::DuckDB.as_ref()
         };
-        super::duckdb_attach::compose_catalog_attach_stmts(&view, platform)
+        dbt_adapter_engine::duckdb::attach::compose_catalog_attach_stmts(&view, platform)
     }
 }
 
@@ -519,6 +526,10 @@ impl AdapterEngine for AdbcEngine {
         &self.relation_cache
     }
 
+    fn clickhouse_capabilities(&self) -> Option<&OnceLock<ClickHouseCapabilities>> {
+        Some(&self.clickhouse_capabilities)
+    }
+
     fn new_connection(
         &self,
         state: Option<&State>,
@@ -588,7 +599,8 @@ impl AdapterEngine for AdbcEngine {
             // dbclient.py `_set_client_database` parity; ensure_database
             // guarantees it exists.
             if self.adapter_type == AdapterType::ClickHouse
-                && let Some(schema) = super::clickhouse::target_schema(config)
+                && let Some(schema) =
+                    dbt_adapter_engine::clickhouse::bootstrap::target_schema(config)
             {
                 builder.with_option(
                     adbc_core::options::OptionConnection::CurrentSchema,
@@ -601,17 +613,18 @@ impl AdapterEngine for AdbcEngine {
         let mut conn = retry_policy
             .execute(config, connect)
             .map_err(|e| enrich_connection_error(self.adapter_type(), e, config))?;
-        // Relation listing only needs table names and types, which tables.list
-        // already returns. Without this, the driver issues one tables.get per
-        // table, which is slow for large datasets. Best-effort: drivers that
-        // predate the option reject it and keep listing with per-table lookups.
+        // Relation listing only needs table names and types. We're also not using
+        // wildcards.
         if self.adapter_type == AdapterType::Bigquery && !config.use_dbt_cloud_credentials() {
-            let _ = conn.set_option(
-                adbc_core::options::OptionConnection::Other(
-                    bigquery::GET_OBJECTS_SKIP_TABLE_METADATA.to_string(),
-                ),
-                adbc_core::options::OptionValue::String("true".to_string()),
-            );
+            for key in [
+                bigquery::GET_OBJECTS_SKIP_TABLE_METADATA,
+                bigquery::GET_OBJECTS_DISABLE_WILDCARDS,
+            ] {
+                let _ = conn.set_option(
+                    adbc_core::options::OptionConnection::Other(key.to_string()),
+                    adbc_core::options::OptionValue::String("true".to_string()),
+                );
+            }
         }
         // Tag the connection with its config fingerprint and cache it on the
         // engine, so the pool reuses a connection only among engines with an

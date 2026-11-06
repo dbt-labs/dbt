@@ -7,10 +7,12 @@ pub mod constants;
 pub mod dbt_types;
 pub mod dbt_utils;
 pub mod filter;
+pub mod jinja_node;
 pub mod man;
 pub mod materialization_resolver;
 pub mod state;
 pub mod stats;
+pub mod yml_view;
 
 pub mod schemas {
     pub mod common;
@@ -43,7 +45,7 @@ pub mod schemas {
         ModificationType, OnManifestLoadFailure, StateArtifacts, config_excluded_keys,
     };
     pub use run_results::{
-        BatchResults, ContextRunResult, DbtCommandExecutionArtifacts, RunResultOutput,
+        BatchResults, ContextRunResult, DbtCommandExecutionArtifacts, Preview, RunResultOutput,
         RunResultsArgs, RunResultsArtifact, RunResultsMetadata, TimingInfo,
     };
     pub use user_settings::UserSettings;
@@ -51,9 +53,10 @@ pub mod schemas {
     pub mod nodes;
     pub use nodes::{
         AbsorbedOverload, AdapterAttr, CommonAttributes, DbtAnalysis, DbtAnalysisAttr, DbtCheck,
-        DbtCheckAttr, DbtExposure, DbtExposureAttr, DbtFunction, DbtFunctionAttr, DbtModel,
-        DbtModelAttr, DbtSeed, DbtSeedAttr, DbtSnapshot, DbtSnapshotAttr, DbtSource, DbtSourceAttr,
-        DbtTest, DbtTestAttr, DbtUnitTest, DbtUnitTestAttr, ExposureType, InternalDbtNode,
+        DbtCheckAttr, DbtExperimentalNode, DbtExperimentalNodeAttr, DbtExposure, DbtExposureAttr,
+        DbtFunction, DbtFunctionAttr, DbtModel, DbtModelAttr, DbtSeed, DbtSeedAttr, DbtSnapshot,
+        DbtSnapshotAttr, DbtSource, DbtSourceAttr, DbtTest, DbtTestAttr, DbtUnitTest,
+        DbtUnitTestAttr, ExperimentalData, ExposureType, InternalDbtNode,
         InternalDbtNodeAttributes, InternalDbtNodeWrapper, IntrospectionKind, NodeBaseAttributes,
         NodePathKind, Nodes, TestMetadata, TimeSpine, TimeSpinePrimaryColumn,
         deserialize_empty_string_as_none, serialize_none_as_empty_string,
@@ -144,6 +147,7 @@ pub mod schemas {
             pub mod config_merge;
             pub mod config_merge_tests;
             pub mod data_test_config;
+            pub mod experimental_node_config;
             pub mod exposure_config;
             pub mod function_config;
             pub mod metric_config;
@@ -159,10 +163,10 @@ pub mod schemas {
         }
 
         pub use config_tree::{
-            DbtProjectConfig, ProjectConfigResolver, RootProjectConfigs,
-            authored_quoting_per_adapter, build_root_project_configs,
-            disallow_plus_prefix_from_flags, init_project_config, recur_build_dbt_project_config,
-            strip_resource_paths_from_ref_path,
+            DbtProjectConfig, InlineConfigAliasing, NodeLayers, ProjectConfigResolver,
+            ResolvedNode, RootProjectConfigs, authored_quoting_per_adapter,
+            build_root_project_configs, disallow_plus_prefix_from_flags, init_project_config,
+            recur_build_dbt_project_config, strip_resource_paths_from_ref_path,
         };
         pub use configs::analysis_config::{
             AnalysesConfig, ProjectAnalysisConfig, ResolvedAnalysesConfig,
@@ -178,6 +182,9 @@ pub mod schemas {
             DEFAULT_DATA_TEST_ERROR_IF, DEFAULT_DATA_TEST_FAIL_CALC, DEFAULT_DATA_TEST_SEVERITY,
             DEFAULT_DATA_TEST_WARN_IF, DataTestConfig, ProjectDataTestConfig,
             ResolvedDataTestConfig,
+        };
+        pub use configs::experimental_node_config::{
+            ExperimentalNodeConfig, ResolvedExperimentalNodeConfig,
         };
         pub use configs::exposure_config::{
             ExposureConfig, ProjectExposureConfig, ResolvedExposureConfig,
@@ -253,8 +260,8 @@ pub mod schemas {
         pub use properties::GroupProperties;
         pub use properties::MacrosProperties;
         pub use properties::{
-            DbtPropertiesFile, DbtPropertiesFileValues, GetConfig, MinimalSchemaValue,
-            MinimalTableValue, MinimalUnitTestValue,
+            DbtPropertiesFile, DbtPropertiesFileValues, GetConfig, MinimalExperimentalEntryValue,
+            MinimalSchemaValue, MinimalTableValue, MinimalUnitTestValue,
         };
         pub use saved_queries_properties::SavedQueriesProperties;
         pub use seed_properties::SeedProperties;

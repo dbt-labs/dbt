@@ -106,7 +106,7 @@ impl<T: DecimalType> DecimalValue<T> {
     pub fn new(value: T::Native, precision: u8, scale: i8) -> Self {
         #[cfg(debug_assertions)]
         {
-            T::validate_decimal_precision(value, precision).unwrap();
+            T::validate_decimal_precision(value, precision, scale).unwrap();
         }
         Self {
             value,

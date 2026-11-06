@@ -202,7 +202,7 @@ fn precompile_ephemeral_models(
         // Build the per-node compile context — this binds `this`, the ref-graph,
         // adapter dispatch, etc. exactly as the normal pipeline does.
         let (compile_ctx, _) = build_compile_node_context(
-            model.as_ref(),
+            model.clone(),
             resolver_state,
             base_context,
             DependencyValidationConfig::new_unvalidated(),
@@ -433,7 +433,11 @@ pub async fn run_operation_on_run_with_ctx(
     // Build operation-specific context with static_analysis=unsafe
     // This ensures refs/sources in operations use deferred relations
     let (mut operation_ctx, _) = ctx.build_compile_node_context(
-        &**operation,
+        // We are forced to clone here, cause jinja engine requires an owned (static) object as value,
+        // while operations are coming from shared resolver state and thus by reference.
+        // We accept the clone cost here under assumption that number of operations are very small
+        // in practice and doesn't (yet) worth the cost of building workarounds
+        Arc::new((**operation).clone()),
         &ctx.inner.base_context,
         DependencyValidationConfig::new_unvalidated(),
     )?;

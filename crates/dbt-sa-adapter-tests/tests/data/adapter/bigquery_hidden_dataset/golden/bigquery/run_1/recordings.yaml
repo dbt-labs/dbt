@@ -1,0 +1,75 @@
+efe5b108:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists `dbt-test-env`.`_adapters_bigquery_hidden_dataset`
+model.test.incremental_hidden_schema:
+- sequence: 0
+  type: execute
+  sql: |-
+    create table `dbt-test-env`.`_adapters_bigquery_hidden_dataset`.`incremental_hidden_schema`
+    
+    
+    
+    
+    
+    OPTIONS()
+    as (
+    
+    
+    with source as (
+    select id, current_timestamp() as updated_at
+    from unnest([1, 2, 3]) as id
+    )
+    
+    select * from source
+    
+    
+    );
+model.test.materialized_view_hidden_schema:
+- sequence: 0
+  type: execute
+  sql: |-
+    create materialized view if not exists `dbt-test-env`.`_adapters_bigquery_hidden_dataset`.`materialized_view_hidden_schema`
+    
+    
+    OPTIONS(
+    enable_refresh=True,
+    
+    refresh_interval_minutes=30.0
+    )
+    as 
+    
+    select id, value from `dbt-test-env`.`_adapters_bigquery_hidden_dataset`.`table_hidden_schema`
+- sequence: 1
+  type: execute
+  sql: |-
+    drop materialized view if exists `dbt-test-env`.`_adapters_bigquery_hidden_dataset`.`materialized_view_hidden_schema__dbt_backup`
+- sequence: 2
+  type: execute
+  sql: |-
+    drop materialized view if exists `dbt-test-env`.`_adapters_bigquery_hidden_dataset`.`materialized_view_hidden_schema__dbt_tmp`
+model.test.table_hidden_schema:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace table `dbt-test-env`.`_adapters_bigquery_hidden_dataset`.`table_hidden_schema`
+    
+    
+    
+    
+    
+    OPTIONS()
+    as (
+    
+    
+    select 1 as id, 'hello' as value
+    );
+model.test.view_hidden_schema:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace view `dbt-test-env`.`_adapters_bigquery_hidden_dataset`.`view_hidden_schema`
+    OPTIONS()
+    as 
+    
+    select 1 as id, 'hello' as value;

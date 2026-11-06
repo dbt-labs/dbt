@@ -1,0 +1,7 @@
+kind: Fixes
+body: 'Databricks: avoid synchronous OPTIMIZE when only automatic liquid clustering is configured.'
+time: 2026-10-01T12:14:17.057344+05:30
+custom:
+    author: sd-db
+    issue: "16539"
+    project: dbt-core

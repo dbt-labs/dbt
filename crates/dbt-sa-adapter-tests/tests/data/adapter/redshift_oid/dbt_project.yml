@@ -1,0 +1,6 @@
+name: "redshift_oid"
+
+profile: "fusion_tests"
+
+vars:
+  send_anonymous_usage_stats: false

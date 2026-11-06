@@ -1,0 +1,8 @@
+# This is not a valid profiles.yml but a segment that provides overrides to the universal one.
+# Sets execution_project to a different value than the target project to verify that
+# create_schema generates SQL targeting the correct project, not the execution project.
+fusion_tests:
+  outputs:
+    bigquery:
+      type: bigquery
+      execution_project: 'foo'

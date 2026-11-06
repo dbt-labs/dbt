@@ -1,0 +1,48 @@
+model.BigQueryPartitionConfigRender.model:
+- sequence: 0
+  type: execute
+  sql: |-
+    select * from (
+    
+    
+    SELECT
+    id,
+    name,
+    species,
+    age,
+    created_at
+    FROM `dbt-test-env`.`bigquery_incremental_partition`.`animal`
+    ) as __dbt_sbq
+    where false
+    limit 0
+- sequence: 1
+  type: execute
+  sql: |-
+    create table `dbt-test-env`.`bigquery_incremental_partition`.`model`(`id` INT64, `name` STRING, `species` STRING, `age` INT64)
+    
+    partition by _PARTITIONDATE
+    
+    
+    
+    OPTIONS()
+- sequence: 2
+  type: execute
+  sql: |-
+    insert into `dbt-test-env`.`bigquery_incremental_partition`.`model` (_PARTITIONTIME, `id`, `name`, `species`, `age`)
+    
+    
+    select TIMESTAMP(created_at) as _PARTITIONTIME, * EXCEPT(created_at) from (
+    
+    
+    SELECT
+    id,
+    name,
+    species,
+    age,
+    created_at
+    FROM `dbt-test-env`.`bigquery_incremental_partition`.`animal`
+    );
+model.BigQueryPartitionConfigRender.model.get_table_schema.86abb661:
+- sequence: 0
+  type: get_table_schema
+  table_name: 86abb661

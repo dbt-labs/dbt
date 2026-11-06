@@ -1,0 +1,11 @@
+6454c3d7:
+- sequence: 0
+  type: execute
+  sql: |-
+    SELECT
+    table_schema,
+    table_name,
+    last_altered,
+    (table_type = 'VIEW' OR table_type = 'MATERIALIZED VIEW') AS is_view
+    FROM "DEVELOPMENT".INFORMATION_SCHEMA.TABLES
+    WHERE table_schema = 'ADAPTERS_SNOWFLAKE_METADATA_SOURCE_FRESHNESS' and table_name = 'SOURCE'

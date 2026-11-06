@@ -1,0 +1,34 @@
+b1d58681:
+- sequence: 0
+  type: execute
+  sql: |-
+    SELECT
+    table_name,
+    if(table_type IN ('EXTERNAL', 'MANAGED', 'MANAGED_SHALLOW_CLONE', 'EXTERNAL_SHALLOW_CLONE'), 'table', lower(table_type)) AS table_type,
+    lower(data_source_format) AS file_format,
+    table_schema,
+    table_owner,
+    table_catalog,
+    if(
+    table_type IN (
+    'EXTERNAL',
+    'MANAGED',
+    'MANAGED_SHALLOW_CLONE',
+    'EXTERNAL_SHALLOW_CLONE'
+    ),
+    lower(table_type),
+    NULL
+    ) AS databricks_table_type
+    FROM `system`.`information_schema`.`tables`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'adapters_databricks_get_relation_from_cache'
+model.test.c:
+- sequence: 0
+  type: execute
+  sql: DROP SCHEMA IF EXISTS adapters_databricks_get_relation_from_cache CASCADE
+- sequence: 1
+  type: execute
+  sql: CREATE SCHEMA adapters_databricks_get_relation_from_cache
+- sequence: 2
+  type: execute
+  sql: CREATE TABLE adapters_databricks_get_relation_from_cache.a (val int)

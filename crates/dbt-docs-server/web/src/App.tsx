@@ -1,7 +1,7 @@
 import type { ComponentType } from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
-import { Search as SearchIcon } from 'lucide-react';
+import { Search as SearchIcon, Share2 } from 'lucide-react';
 
 import { AnalysisFilterView } from './components/AnalysisFilterView';
 import { FullLineagePageV2 } from './components/LineageV2/FullLineagePage';
@@ -21,6 +21,7 @@ import {
 import { SourceCollectionPage } from './components/SourceCollectionPage';
 import { SourceFilterView } from './components/SourceFilterView';
 import { TestFilterView } from './components/TestFilterView';
+import { Button } from './components/ui/Button';
 import { Input } from './components/ui/Input';
 import { useAllNodes } from './hooks/useAllNodes';
 import { deriveUpgradeCapabilities } from './hooks/useCapabilities';
@@ -292,6 +293,9 @@ export default function App() {
   //  - a free-text search is active: only /search/ renders `query`, so any
   //    filter tweak has to stay there or the typed text would be silently
   //    dropped.
+  //  - the Filter tab is open: its results live on /search/ for any selection,
+  //    including a single asset type. Jumping to the typed list page would flip
+  //    the pane back to Assets and drop layer/materialization narrowing.
   //  - otherwise, when the asset-type filter narrows to exactly one value,
   //    mirror it into the URL so the link is shareable; 0 or 2+ values land
   //    on /search/, which owns the multi-select narrowing.
@@ -299,6 +303,10 @@ export default function App() {
     (next: AssetFilters) => {
       setFilters(next);
       if (search.trim()) {
+        if (location.pathname !== paths.search()) navigate(paths.search());
+        return;
+      }
+      if (mode === 'filter') {
         if (location.pathname !== paths.search()) navigate(paths.search());
         return;
       }
@@ -310,7 +318,7 @@ export default function App() {
         navigate(paths.search());
       }
     },
-    [navigate, view, search, location.pathname],
+    [navigate, view, search, location.pathname, mode],
   );
 
   const onSubmitTopbarSearch = useCallback(() => {
@@ -590,6 +598,7 @@ function Topbar({
   onResetHome?: () => void;
   onSubmitSearch?: () => void;
 }) {
+  const navigate = useNavigate();
   return (
     <header className="topbar-v2">
       <div className="topbar-v2__left">
@@ -628,6 +637,18 @@ function Topbar({
         aria-label={project ? `Search ${project.name}` : 'Search project'}
         className="w-full"
       />
+      <div className="flex items-center justify-end">
+        {project && (
+          <Button
+            variant="outline"
+            size="sm"
+            icon={<Share2 className="size-4" />}
+            text="Global Lineage"
+            tooltip="Open full project lineage"
+            onClick={() => navigate(paths.projectLineage())}
+          />
+        )}
+      </div>
     </header>
   );
 }

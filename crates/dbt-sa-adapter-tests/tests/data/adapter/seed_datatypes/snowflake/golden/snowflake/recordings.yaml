@@ -1,0 +1,58 @@
+dbbbff64:
+- sequence: 0
+  type: execute
+  sql: |-
+    show terse schemas in database development
+    limit 10000
+ef67a559:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists development.adapters_snowflake_seed_datatypes
+seed.test.mixed_dtypes:
+- sequence: 0
+  type: execute
+  sql: create transient table development.adapters_snowflake_seed_datatypes.mixed_dtypes (ID integer,FIRST_NAME text,LAST_NAME text,CREATED_AT timestamp without time zone,BIRTH_DATE date,IS_COOL boolean,NET_WORTH integer,NUM_EMPLOYEES integer,REVENUE float8,DISCOUNT_PCT integer,SCORE integer)
+- sequence: 1
+  type: execute
+  sql: BEGIN
+- sequence: 2
+  type: execute
+  sql: |-
+    insert overwrite into development.adapters_snowflake_seed_datatypes.mixed_dtypes (ID, FIRST_NAME, LAST_NAME, CREATED_AT, BIRTH_DATE, IS_COOL, NET_WORTH, NUM_EMPLOYEES, REVENUE, DISCOUNT_PCT, SCORE) values
+    (2,'Arthur','Aardvark','2024-01-15T10:30:00','1990-05-20',true,100.0,1.0,1000.0,10.0,9.0),(3,'Rachel','Bean','2024-01-16T14:45:30','1985-12-03',false,150.0,2.0,500.5,25.0,8.0)
+- sequence: 3
+  type: execute
+  sql: COMMIT
+seed.test.mixed_dtypes_w_schema:
+- sequence: 0
+  type: execute
+  sql: create transient table development.adapters_snowflake_seed_datatypes.mixed_dtypes_w_schema (ID INT,FIRST_NAME TEXT,LAST_NAME VARCHAR(50),CREATED_AT TIMESTAMP_NTZ(8),BIRTH_DATE TIMESTAMP_NTZ(7),IS_COOL BOOLEAN,NET_WORTH NUMBER,NUM_EMPLOYEES INT,REVENUE FLOAT,DISCOUNT_PCT INT,SCORE FLOAT)
+- sequence: 1
+  type: execute
+  sql: BEGIN
+- sequence: 2
+  type: execute
+  sql: |-
+    insert overwrite into development.adapters_snowflake_seed_datatypes.mixed_dtypes_w_schema (ID, FIRST_NAME, LAST_NAME, CREATED_AT, BIRTH_DATE, IS_COOL, NET_WORTH, NUM_EMPLOYEES, REVENUE, DISCOUNT_PCT, SCORE) values
+    ('2','Arthur','Aardvark','2024-01-15 10:30:00','1990-05-20','true','100.00','1.00','1000','10','9.0'),('3','Rachel','Bean','2024-01-16 14:45:30','1985-12-03','false','150.00','2.0','500.50','25','8.0')
+- sequence: 3
+  type: execute
+  sql: COMMIT
+seed.test.timestamps:
+- sequence: 0
+  type: execute
+  sql: SHOW OBJECTS IN SCHEMA "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_SEED_DATATYPES" LIMIT 10000
+- sequence: 1
+  type: execute
+  sql: create transient table development.adapters_snowflake_seed_datatypes.timestamps (TIMESTAMP_WITHOUT_TIMEZONE TIMESTAMP_NTZ)
+- sequence: 2
+  type: execute
+  sql: BEGIN
+- sequence: 3
+  type: execute
+  sql: |-
+    insert overwrite into development.adapters_snowflake_seed_datatypes.timestamps (TIMESTAMP_WITHOUT_TIMEZONE) values
+    ('2014-05-08 04:08:00'),('2023-12-25 15:30:45'),('1999-12-31 23:59:59'),('2000-01-01 00:00:00'),('2024-02-29 12:00:00')
+- sequence: 4
+  type: execute
+  sql: COMMIT

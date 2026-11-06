@@ -1,8 +1,8 @@
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 
 use adbc_record_replay::{RecordConnection, RecordingContext, ReplayConnection};
 use arrow_array::RecordBatch;
@@ -21,6 +21,7 @@ use crate::engine::query_comment::QueryCommentConfig;
 use crate::engine::retry::QueryRetryPolicy;
 use crate::sql_types::TypeOps;
 use crate::stmt_splitter::StmtSplitter;
+use dbt_adapter_engine::clickhouse::ClickHouseCapabilities;
 
 use super::adapter_engine::{AdapterEngine, Options};
 use super::adbc::assert_connection_on_pool_worker;
@@ -136,6 +137,10 @@ impl AdapterEngine for RecordReplayEngine {
 
     fn behavior_flag_overrides(&self) -> &BTreeMap<String, bool> {
         self.inner.behavior_flag_overrides()
+    }
+
+    fn clickhouse_capabilities(&self) -> Option<&OnceLock<ClickHouseCapabilities>> {
+        self.inner.clickhouse_capabilities()
     }
 
     fn is_replay(&self) -> bool {
@@ -306,6 +311,9 @@ static DEBUG_PROBE_TABLE: std::sync::LazyLock<regex::Regex> =
 static DEBUG_PROPAGATION_PROBE_TABLE: std::sync::LazyLock<regex::Regex> =
     std::sync::LazyLock::new(|| regex::Regex::new(r"__dbt_debug_propagation_\d+").unwrap());
 
+static QUERY_COMMENT_DBT_VERSION: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new(r#""dbt_version"\s*:\s*"[^"]*""#).unwrap());
+
 impl adbc_record_replay::SqlNormalizer for DbtSqlNormalizer {
     fn normalize(&self, sql: &str) -> String {
         use crate::sql::normalize::normalize_dbt_tmp_name;
@@ -328,6 +336,9 @@ impl adbc_record_replay::SqlNormalizer for DbtSqlNormalizer {
             .into_owned();
         let collapsed = DEBUG_PROPAGATION_PROBE_TABLE
             .replace_all(&collapsed, "__dbt_debug_propagation_[MASKED_ID]")
+            .into_owned();
+        let collapsed = QUERY_COMMENT_DBT_VERSION
+            .replace_all(&collapsed, r#""dbt_version": "DBT_VERSION""#)
             .into_owned();
         collapsed
             .replace("DBT_TESTING_ALT", "[MASKED_ALT_WH]")

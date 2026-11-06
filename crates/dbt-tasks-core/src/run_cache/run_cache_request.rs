@@ -22,6 +22,7 @@ use dbt_schemas::schemas::{
     DbtModel, DbtSeed, DbtSnapshot, DbtTest, InternalDbtNode, InternalDbtNodeAttributes,
     macros::DbtMacro,
 };
+use dbt_schemas::state::DbtRuntimeConfig;
 use dbt_state::hash::node_state_hashes;
 use dbt_state::materialization;
 use dbt_state::proto::query_cache::{
@@ -36,6 +37,7 @@ use dbt_state::request_builder::{
 use dbt_telemetry::NodeType;
 use serde::Serialize;
 use serde_json::Value;
+use std::sync::Arc;
 
 use crate::context::TaskRunnerCtx;
 
@@ -61,6 +63,9 @@ pub struct DbtProjectInfo {
     pub project_id: Option<String>, // dbt cloud project id; only present if dbt cloud is in use
     pub project_root: DbtPath,
     pub table_namespace: Option<String>,
+    /// Source of the `var()` values folded into the configs hash for nodes that compare
+    /// unrendered code.
+    pub runtime_config: Arc<DbtRuntimeConfig>,
 }
 
 impl From<&TaskRunnerCtx> for DbtProjectInfo {
@@ -82,6 +87,7 @@ impl From<&TaskRunnerCtx> for DbtProjectInfo {
             project_id,
             project_root,
             table_namespace: profile.default_db_config().get_adapter_unique_id(),
+            runtime_config: value.inner.runtime_config.clone(),
         }
     }
 }
@@ -139,6 +145,7 @@ pub struct SeedRunCacheRequestContext {
     pub allow_clones: Option<bool>,
     pub is_defer_to_profile: bool,
     pub defer_enabled: bool,
+    pub compare_unrendered_code: bool,
     pub dbt_project_info: DbtProjectInfo,
 }
 
@@ -172,8 +179,13 @@ pub fn build_model_sql_request<'a>(
         );
     }
 
-    let node_state = build_node_state(model, &context.dbt_project_info, macro_resolver)
-        .map_err(request_build_error)?;
+    let node_state = build_node_state(
+        model,
+        &context.dbt_project_info,
+        context.compare_unrendered_code,
+        macro_resolver,
+    )
+    .map_err(request_build_error)?;
     semantic_extras.extend(node_state_semantic_extras(&node_state));
 
     Ok(
@@ -185,6 +197,7 @@ pub fn build_model_sql_request<'a>(
 fn build_node_state<'a, 'b>(
     node: &'a dyn InternalDbtNodeAttributes,
     project_info: &'b DbtProjectInfo,
+    include_runtime_vars: bool,
     macro_resolver: impl Fn(&str) -> Option<&'a DbtMacro>,
 ) -> Result<DbtNodeState, RequestBuildError> {
     // this is to match what Python submits
@@ -199,7 +212,12 @@ fn build_node_state<'a, 'b>(
         _ => "unspecified",
     };
 
-    let hashes = node_state_hashes(node, &project_info.project_root, macro_resolver)?;
+    let hashes = node_state_hashes(
+        node,
+        &project_info.project_root,
+        macro_resolver,
+        include_runtime_vars.then(|| project_info.runtime_config.as_ref()),
+    )?;
 
     let node_state = DbtNodeState {
         node_unique_id: node.common().unique_id.clone(),
@@ -277,8 +295,13 @@ pub fn build_snapshot_sql_request<'a>(
     )
     .map_err(request_build_error)?;
 
-    let node_state = build_node_state(snapshot, &context.dbt_project_info, macro_resolver)
-        .map_err(request_build_error)?;
+    let node_state = build_node_state(
+        snapshot,
+        &context.dbt_project_info,
+        context.compare_unrendered_code,
+        macro_resolver,
+    )
+    .map_err(request_build_error)?;
     semantic_extras.extend(node_state_semantic_extras(&node_state));
 
     Ok(build_sql_request_input(
@@ -305,8 +328,13 @@ pub fn build_test_sql_request<'a>(
     )
     .map_err(request_build_error)?;
 
-    let node_state = build_node_state(test, &context.dbt_project_info, macro_resolver)
-        .map_err(request_build_error)?;
+    let node_state = build_node_state(
+        test,
+        &context.dbt_project_info,
+        context.compare_unrendered_code,
+        macro_resolver,
+    )
+    .map_err(request_build_error)?;
     semantic_extras.extend(node_state_semantic_extras(&node_state));
 
     // Mirrors dbt-core's `_build_submit_enriched_sql_request` (run_cache.py
@@ -332,8 +360,13 @@ pub fn build_seed_values_request<'a>(
         seed_semantic_extras(&seed_semantic_extra_config(seed).map_err(request_build_error)?)
             .map_err(request_build_error)?;
 
-    let node_state = build_node_state(seed, &context.dbt_project_info, macro_resolver)
-        .map_err(request_build_error)?;
+    let node_state = build_node_state(
+        seed,
+        &context.dbt_project_info,
+        context.compare_unrendered_code,
+        macro_resolver,
+    )
+    .map_err(request_build_error)?;
     semantic_extras.extend(node_state_semantic_extras(&node_state));
     let values_hash = node_state.node_hash.clone();
 
@@ -908,6 +941,7 @@ mod tests {
             project_id: None,
             project_root: "dummy-project-root".into(),
             table_namespace: Some("adapter-unique-id".to_owned()),
+            runtime_config: Arc::new(DbtRuntimeConfig::default()),
         }
     }
 
@@ -1510,6 +1544,7 @@ mod tests {
                 allow_clones: Some(true),
                 is_defer_to_profile: false,
                 defer_enabled: true,
+                compare_unrendered_code: false,
             },
             |_| None,
         )
@@ -1523,7 +1558,7 @@ mod tests {
                 .exists()
         );
 
-        let node_state_hashes = node_state_hashes(&seed, &project_root, |_| None).unwrap();
+        let node_state_hashes = node_state_hashes(&seed, &project_root, |_| None, None).unwrap();
 
         assert_eq!(request.target_table, r#""analytics"."marts"."cities""#);
         assert_eq!(request.default_catalog, "analytics");
@@ -1577,6 +1612,7 @@ mod tests {
                     allow_clones: Some(true),
                     is_defer_to_profile: false,
                     defer_enabled: true,
+                    compare_unrendered_code: false,
                 },
                 |_| None,
             )

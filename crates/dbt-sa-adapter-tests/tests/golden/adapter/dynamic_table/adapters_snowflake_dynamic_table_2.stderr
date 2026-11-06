@@ -1,0 +1,10 @@
+[warning] [JinjaWarn (dbt1071)]: No configuration changes were identified on: `development.adapters_snowflake_dynamic_table.refresh_full`. Continuing.
+  --> dbt_internal_packages/dbt-snowflake/macros/materializations/dynamic_table.sql:34:1
+[warning] [JinjaWarn (dbt1071)]: No configuration changes were identified on: `development.adapters_snowflake_dynamic_table.init_wh`. Continuing.
+  --> dbt_internal_packages/dbt-snowflake/macros/materializations/dynamic_table.sql:34:1
+[warning] [JinjaWarn (dbt1071)]: No configuration changes were identified on: `development.adapters_snowflake_dynamic_table.init_on_schedule`. Continuing.
+  --> dbt_internal_packages/dbt-snowflake/macros/materializations/dynamic_table.sql:34:1
+[warning] [JinjaWarn (dbt1071)]: No configuration changes were identified on: `development.adapters_snowflake_dynamic_table.init_default`. Continuing.
+  --> dbt_internal_packages/dbt-snowflake/macros/materializations/dynamic_table.sql:34:1
+[warning] [JinjaWarn (dbt1071)]: No configuration changes were identified on: `development.adapters_snowflake_dynamic_table.dt_copy_grants1`. Continuing.
+  --> dbt_internal_packages/dbt-snowflake/macros/materializations/dynamic_table.sql:34:1

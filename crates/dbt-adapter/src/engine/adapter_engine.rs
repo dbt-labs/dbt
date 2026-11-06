@@ -1,10 +1,17 @@
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use adbc_core::options::{OptionStatement, OptionValue};
 use arrow_array::RecordBatch;
 use arrow_schema::Schema;
+use indexmap::IndexMap;
+use minijinja::State;
+use tracy_client::span;
+
+use dbt_adapter_engine::concat_batches::concat_batches_widened;
+use dbt_adapter_engine::databricks::query_tags::QueryTags;
+use dbt_adapter_engine::sidecar_client::SidecarClient;
 use dbt_adbc::bigquery::QUERY_LABELS;
 use dbt_adbc::{Backend, Connection, QueryCtx, Statement};
 use dbt_auth::AdapterConfig;
@@ -19,26 +26,21 @@ use dbt_schemas::schemas::common::ResolvedQuoting;
 use dbt_sql_utils::snowflake_terminal_flow_statement;
 use dbt_telemetry::{QueryExecuted, QueryOutcome};
 use dbt_tracked_stmt::TrackedStatement;
-use indexmap::IndexMap;
-use minijinja::State;
-use tracy_client::span;
 
 use crate::AdapterType;
 use crate::cache::RelationCache;
-use crate::engine::concat_batches::concat_batches_widened;
-use crate::engine::databricks_query_tags::query_tags_from_state;
 use crate::engine::query_comment::QueryCommentConfig;
 use crate::engine::retry::QueryRetryPolicy;
-use crate::engine::sidecar_client::SidecarClient;
 use crate::errors::adbc_error_to_adapter_error;
-use crate::record_batch::{ROWS_AFFECTED_META, RecordBatchExt, SchemaExt};
-use crate::response::query_id_from_record_batch;
+use crate::record_batch::{ROWS_AFFECTED_META, SchemaExt};
 use crate::sql::normalize::strip_sql_comments;
 use crate::sql_types::TypeOps;
 use crate::statement::*;
 use crate::stmt_splitter::StmtSplitter;
+use dbt_adapter_engine::clickhouse::ClickHouseCapabilities;
+use dbt_adapter_engine::record_batch::RecordBatchExt;
 
-pub type Options = Vec<(String, OptionValue)>;
+pub use dbt_adapter_engine::Options;
 
 /// Normalize result column names for Snowflake commands whose output schema is
 /// defined as lowercase.
@@ -220,6 +222,12 @@ pub trait AdapterEngine: Send + Sync {
         None
     }
 
+    /// Per-engine cache for [`crate::metadata::clickhouse::server_capabilities`], if this
+    /// engine keeps one.
+    fn clickhouse_capabilities(&self) -> Option<&OnceLock<ClickHouseCapabilities>> {
+        None
+    }
+
     /// Execute the given SQL query or statement (convenience wrapper).
     fn execute(
         &self,
@@ -274,11 +282,13 @@ pub(crate) fn adbc_execute_with_options(
     let adapter_type = engine.adapter_type();
     let mut options = options;
     match (state, adapter_type) {
-        (_, AdapterType::Databricks) => {
-            options.extend(query_tags_from_state(state)?.into_statement_options())
-        }
+        (_, AdapterType::Databricks) => QueryTags::from_state(state)?
+            .unwrap_or_default()
+            .for_each_stmt_option(|name, value| {
+                options.push((name, value));
+            }),
         (_, AdapterType::ClickHouse) => {
-            options.extend(crate::metadata::clickhouse::statement_options())
+            options.extend(crate::metadata::clickhouse::statement_options(engine))
         }
         (Some(state), AdapterType::Bigquery) => {
             let mut job_labels =
@@ -607,7 +617,7 @@ pub(crate) fn adbc_execute_with_options(
         if let Some(attrs) = attrs.downcast_mut::<QueryExecuted>() {
             attrs.dbt_core_event_code = "E017".to_string();
             attrs.set_query_outcome(QueryOutcome::Success);
-            attrs.query_id = query_id_from_record_batch(&total_batch, adapter_type);
+            attrs.query_id = total_batch.query_id(adapter_type);
         }
     });
     log_step_duration("record_current_span_status_from_attrs", t_status.elapsed());

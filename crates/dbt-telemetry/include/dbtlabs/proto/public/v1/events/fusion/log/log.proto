@@ -115,6 +115,11 @@ message ProgressMessage {
 
   // Execution phase (if known) during which this log was emitted.
   optional v1.public.events.fusion.phase.ExecutionPhase phase = 8;
+
+  // Run ID of the worker currently blocking this action, if this message
+  // reports contention on a resource (e.g. a dbt State per-node lock) held by
+  // another run.
+  optional string blocking_run_id = 9;
 }
 
 // Event emitted when comparing nodes/configs for state modification details.

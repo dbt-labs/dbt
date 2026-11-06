@@ -1,0 +1,20 @@
+f5f5b714:
+- sequence: 0
+  type: execute
+  sql: SHOW OBJECTS IN SCHEMA "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_DROP_RELATION" LIMIT 10000
+  error: |-
+    Internal: [Snowflake] 002043 (02000): SQL compilation error:
+    Object does not exist, or operation cannot be performed. (sqlstate: 02000, vendor_code: 2043)
+model.test.c:
+- sequence: 0
+  type: execute
+  sql: USE DATABASE development
+- sequence: 1
+  type: execute
+  sql: ' CREATE OR REPLACE SCHEMA adapters_snowflake_drop_relation'
+- sequence: 2
+  type: execute
+  sql: CREATE OR REPLACE TABLE adapters_snowflake_drop_relation.a (val int)
+- sequence: 3
+  type: execute
+  sql: drop table if exists development.adapters_snowflake_drop_relation.a cascade

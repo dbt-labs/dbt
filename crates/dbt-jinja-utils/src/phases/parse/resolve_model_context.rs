@@ -1,7 +1,6 @@
 //! This module contains the scope guard for resolving models.
 
 use dbt_adapter_core::AdapterType;
-use indexmap::IndexMap;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt::Debug,
@@ -13,26 +12,25 @@ use std::{
 use chrono::TimeZone;
 use chrono_tz::{Europe::London, Tz};
 use dbt_adapter::{cast_util::THIS_RELATION_KEY, load_store::ResultStore};
-use dbt_common::{
-    io_args::StaticAnalysisKind, path::DbtPath, serde_utils::convert_yml_to_value_map,
-};
+use dbt_common::{io_args::StaticAnalysisKind, path::DbtPath};
 use dbt_frontend_common::error::CodeLocation;
 use dbt_schemas::schemas::{
-    DbtModelAttr, InternalDbtNode, IntrospectionKind,
-    common::{Access, ResolvedQuoting},
-    nodes::AdapterAttr,
+    InternalDbtNode,
+    common::ResolvedQuoting,
     project::{
-        ModelConfig, ResolvableConfig, WarningEmission, resolved_surface_key_status,
-        warn_and_strip_deprecated_warehouse_keys,
+        InlineConfigAliasing, KeyStatus, ModelConfig, ResolvableConfig, WarningEmission,
+        resolved_surface_key_status, warn_and_strip_deprecated_warehouse_keys,
     },
     telemetry::NodeType,
 };
 use dbt_schemas::{
     dbt_types::RelationType,
     schemas::{
-        CommonAttributes, DbtModel, NodeBaseAttributes,
-        common::{DbtChecksum, DbtQuoting, NodeDependsOn},
-        serde::{NodeVersion, yml_value_to_minijinja},
+        CommonAttributes, DbtAnalysis, DbtCheck, DbtFunction, DbtModel, DbtSnapshot, DbtTest,
+        NodeBaseAttributes,
+        common::DbtQuoting,
+        manifest::DbtOperation,
+        serde::{NodeVersion, yml_value_to_minijinja_map},
     },
     state::DbtRuntimeConfig,
 };
@@ -50,15 +48,13 @@ use minijinja::{
 use minijinja_contrib::modules::{py_datetime::datetime::PyDateTime, pytz::PytzTimezone};
 use serde::Serialize;
 
-use dbt_jinja_ctx::{
-    JinjaObject, ParseExecute, ResolveModelCtx, to_jinja_btreemap, to_model_context_map,
-};
+use dbt_jinja_ctx::{JinjaObject, ParseExecute, ResolveModelCtx, to_jinja_btreemap};
 
 use crate::{
     invocation_graph::invocation_graph, phases::MacroLookupContext, serde::into_typed_with_error,
 };
 
-use super::sql_resource::SqlResource;
+use super::{adapter_scope::ParseAdapterScope, sql_resource::SqlResource};
 
 /// Builds a context for resolving models
 #[allow(clippy::too_many_arguments)]
@@ -68,6 +64,10 @@ pub fn build_resolve_model_context<T: ResolvableConfig<T> + Serialize + 'static>
     adapter_type: AdapterType,
     database: &str,
     schema: &str,
+    // The node's target, dialect and starting relation, when known before rendering.
+    node_scope: Option<&ParseAdapterScope>,
+    // Picks the alias table the in-SQL config() applies.
+    config_aliasing: InlineConfigAliasing,
     model_name: &str,
     fqn: Vec<String>,
     package_name: &str,
@@ -82,6 +82,19 @@ pub fn build_resolve_model_context<T: ResolvableConfig<T> + Serialize + 'static>
     global_static_analysis: Option<StaticAnalysisKind>,
     resource_type: Option<NodeType>,
 ) -> BTreeMap<String, MinijinjaValue> {
+    let config_yml = dbt_yaml::to_value(config)
+        .expect("Failed to serialize merged node config for parse model.config");
+    // Upstream relations are unknown here. Keep their existing placeholders.
+    let (default_adapter, default_database, default_schema) = (adapter_type, database, schema);
+    let (adapter_type, database, schema) =
+        node_scope.map_or((adapter_type, database, schema), |scope| {
+            (
+                scope.adapter_type,
+                scope.database.as_str(),
+                scope.schema.as_str(),
+            )
+        });
+
     // Create a relation for 'this' using config values
     let sql_resources_clone = sql_resources.clone();
     let this_relation = ResolveThisFunction {
@@ -109,9 +122,9 @@ pub fn build_resolve_model_context<T: ResolvableConfig<T> + Serialize + 'static>
     // Create ref function
     let sql_resources_clone = sql_resources.clone();
     let ref_function = ResolveRefFunction {
-        database: database.to_string(),
-        schema: schema.to_string(),
-        adapter_type,
+        database: default_database.to_string(),
+        schema: default_schema.to_string(),
+        adapter_type: default_adapter,
         sql_resources: sql_resources_clone,
         root_runtime_config: root_runtime_config.clone(),
         package_quoting,
@@ -121,11 +134,11 @@ pub fn build_resolve_model_context<T: ResolvableConfig<T> + Serialize + 'static>
 
     // Create source function
     let source_function = ResolveSourceFunction {
-        database: database.to_string(),
-        schema: schema.to_string(),
+        database: default_database.to_string(),
+        schema: default_schema.to_string(),
         sql_resources: sql_resources.clone(),
         root_runtime_config: root_runtime_config.clone(),
-        adapter_type,
+        adapter_type: default_adapter,
         package_quoting,
     };
     let source_value = MinijinjaValue::from_object(source_function);
@@ -133,11 +146,11 @@ pub fn build_resolve_model_context<T: ResolvableConfig<T> + Serialize + 'static>
 
     // Create function function
     let function_function = ResolveFunctionFunction {
-        database: database.to_string(),
-        schema: schema.to_string(),
+        database: default_database.to_string(),
+        schema: default_schema.to_string(),
         sql_resources: sql_resources.clone(),
         root_runtime_config: root_runtime_config.clone(),
-        adapter_type,
+        adapter_type: default_adapter,
         package_quoting,
     };
     let function_value = MinijinjaValue::from_object(function_function);
@@ -164,7 +177,7 @@ pub fn build_resolve_model_context<T: ResolvableConfig<T> + Serialize + 'static>
         sql_resources: sql_resources.clone(),
         package_dependency: package_dependency.clone(),
         error_path: Some(display_path.to_path_buf()),
-        adapter_type,
+        aliasing: config_aliasing.clone(),
         resource_type,
     });
     builtins.insert(
@@ -175,101 +188,92 @@ pub fn build_resolve_model_context<T: ResolvableConfig<T> + Serialize + 'static>
             sql_resources,
             package_dependency,
             error_path: Some(display_path.to_path_buf()),
-            adapter_type,
+            aliasing: config_aliasing,
             resource_type,
         }),
     );
 
-    // TODO (Ani): Make this more extensible and depending on the resouce it could be model, macro, or source
-    let model = DbtModel {
-        __common_attr__: CommonAttributes {
-            name: model_name.to_owned(),
-            package_name: package_name.to_owned(),
-            path: DbtPath::from(model_path),
-            name_span: dbt_common::Span::default(),
-            original_file_path: DbtPath::from(display_path),
-            patch_path: None,
-            unique_id: format!("{package_name}.{model_name}"),
-            fqn,
-            description: None,
-            raw_code: None,
-            checksum: DbtChecksum::default(),
-            language: None,
-            tags: vec![],
-            classifiers: vec![],
-            meta: IndexMap::new(),
-        },
-        __base_attr__: NodeBaseAttributes {
-            database: database.to_string(),
-            schema: schema.to_string(),
-            alias: model_name.to_string(),
-            relation_name: None,
-            // A placeholder node built during parse, before `+adapter` is resolved;
-            // the target default is the only answer available here.
-            adapter: adapter_type,
-            propagate: Vec::new(),
-            effective_propagation_target: None,
-            materialized: ModelConfig::default_materialized(),
-            static_analysis: global_static_analysis.unwrap_or_default().into(),
-            static_analysis_off_reason: None,
-            compute: None,
-            enabled: true,
-            extended_model: false,
-            persist_docs: None,
-            quoting: ResolvedQuoting::trues(),
-            quoting_ignore_case: false,
-            columns: vec![],
-            depends_on: NodeDependsOn {
-                macros: vec![],
-                nodes: vec![],
-                nodes_with_ref_location: vec![],
-            },
-            refs: vec![],
-            sources: vec![],
-            functions: vec![],
-            metrics: vec![],
-            unrendered_config: Default::default(),
-        },
-        __model_attr__: DbtModelAttr {
-            introspection: IntrospectionKind::None,
-            version: None,
-            latest_version: None,
-            constraints: vec![],
-            deprecation_date: None,
-            primary_key: vec![],
-            time_spine: None,
-            access: Access::default(),
-            group: None,
-            incremental_strategy: None,
-            freshness: None,
-            state: None,
-            contract: None,
-            event_time: None,
-            catalog_name: None,
-            table_format: None,
-            sync: None,
-            compiled_code: None,
-        },
-        __adapter_attr__: AdapterAttr::default(),
-        __other__: BTreeMap::new(),
-        deprecated_config: ModelConfig::default(),
+    let common_attr = CommonAttributes {
+        name: model_name.to_owned(),
+        package_name: package_name.to_owned(),
+        path: DbtPath::from(model_path),
+        original_file_path: DbtPath::from(display_path),
+        unique_id: format!("{package_name}.{model_name}"),
+        fqn,
+        ..Default::default()
+    };
+    let base_attr = NodeBaseAttributes {
+        database: database.to_string(),
+        schema: schema.to_string(),
+        alias: model_name.to_string(),
+        // A placeholder node built during parse, before the inline `config()` is merged;
+        // `adapter_type` is the adapter known up front.
+        adapter: adapter_type,
+        materialized: ModelConfig::default_materialized(),
+        static_analysis: global_static_analysis.unwrap_or_default().into(),
+        enabled: true,
+        quoting: ResolvedQuoting::trues(),
+        ..Default::default()
     };
 
-    let mut model_map = convert_yml_to_value_map(InternalDbtNode::serialize(&model));
-    // Stub `DbtModel` uses `ModelConfig::default()` for `config` in YAML serialization. At parse
-    // time, kwargs to `config(...)` (e.g. `post_hook=my_macro(model)`) are evaluated while
-    // rendering; macros must see the merged node config (`properties_config` / `BaseConfig`),
-    // matching dbt-core (dbt-fusion#1414).
+    let node: Arc<dyn InternalDbtNode> = match resource_type {
+        Some(NodeType::Snapshot) => Arc::new(DbtSnapshot {
+            __common_attr__: common_attr,
+            __base_attr__: base_attr,
+            ..Default::default()
+        }),
+        Some(NodeType::Test) => Arc::new(DbtTest {
+            __common_attr__: common_attr,
+            __base_attr__: base_attr,
+            ..Default::default()
+        }),
+        Some(NodeType::Analysis) => Arc::new(DbtAnalysis {
+            __common_attr__: common_attr,
+            __base_attr__: base_attr,
+            ..Default::default()
+        }),
+        Some(NodeType::Function) => Arc::new(DbtFunction {
+            __common_attr__: common_attr,
+            __base_attr__: base_attr,
+            ..Default::default()
+        }),
+        Some(NodeType::Check) => Arc::new(DbtCheck {
+            __common_attr__: common_attr,
+            __base_attr__: base_attr,
+            ..Default::default()
+        }),
+        Some(NodeType::Operation) => Arc::new(DbtOperation {
+            __common_attr__: common_attr,
+            __base_attr__: base_attr,
+            ..Default::default()
+        }),
+        _ => Arc::new(DbtModel {
+            __common_attr__: common_attr,
+            __base_attr__: base_attr,
+            ..Default::default()
+        }),
+    };
+    let model_map = dbt_schemas::jinja_node::LazyNodeContext::from_node(
+        node,
+        dbt_schemas::schemas::serialization_utils::SerializationMode::OmitNone,
+    )
+    // TODO(LazyNodeContext): See `with_eager_nested_maps`.
+    .with_eager_nested_maps();
+    // Each stub uses its respective `<Resource>Config::default()` for `config` in YAML
+    // serialization. At parse time, kwargs to `config(...)` (e.g. `post_hook=my_macro(model)`)
+    // are evaluated while rendering; macros must see the merged node config
+    // (`properties_config` / `BaseConfig`), matching dbt-core (dbt-fusion#1414).
     //
-    // Use `dbt_yaml::to_value` + `yml_value_to_minijinja` — same pipeline as
+    // Use `dbt_yaml::to_value` + `yml_value_to_minijinja_map` — same pipeline as
     // `DbtModel::serialized_config()` — not `MinijinjaValue::from_serialize`, so later
     // `dbt_yaml::to_value(model)` → `InternalDbtNodeWrapper::deserialize` in adapter helpers
     // (`get_view_options`, `get_config_from_model`, …) round-trips correctly.
-    let config_yml = dbt_yaml::to_value(config)
-        .expect("Failed to serialize merged node config to dbt_yaml::Value for parse model.config");
-    model_map.insert("config".to_owned(), yml_value_to_minijinja(&config_yml));
     model_map.insert(
-        "batch".to_owned(),
+        MinijinjaValue::from("config"),
+        MinijinjaValue::from_object(yml_value_to_minijinja_map(config_yml)),
+    );
+    model_map.insert(
+        MinijinjaValue::from("batch"),
         MinijinjaValue::from_object(init_batch_context()),
     );
 
@@ -290,7 +294,7 @@ pub fn build_resolve_model_context<T: ResolvableConfig<T> + Serialize + 'static>
         function: function_value,
         metric: metric_value,
         config: config_value,
-        model: MinijinjaValue::from_dyn_object(to_model_context_map(model_map)),
+        model: MinijinjaValue::from_object(model_map),
         builtins: MinijinjaValue::from_object(builtins),
         // The invocation-wide `graph` mapping, empty at this point — matching
         // dbt-core, where parse-time `graph` is `manifest.flat_graph` before
@@ -320,7 +324,49 @@ pub fn build_resolve_model_context<T: ResolvableConfig<T> + Serialize + 'static>
     debug_assert_eq!(CURRENT_PATH, "__minijinja_current_path");
     debug_assert_eq!(CURRENT_SPAN, "__minijinja_current_span");
 
-    to_jinja_btreemap(&ctx)
+    let mut ctx = to_jinja_btreemap(&ctx);
+    // The node connection's `target`, `env`, `database`, `schema` and, except LakeCompute, dialect.
+    if let Some(scope) = node_scope {
+        scope.insert_overlay(&mut ctx);
+    }
+    ctx
+}
+
+/// Replaces the node's own relation without changing upstream placeholders.
+pub fn update_resolve_model_relation<T: ResolvableConfig<T> + 'static>(
+    context: &mut BTreeMap<String, MinijinjaValue>,
+    relation: MinijinjaValue,
+) {
+    let this = context["this"]
+        .downcast_object_ref::<ResolveThisFunction<T>>()
+        .expect("parse this object");
+    let resources = this.sql_resources.clone();
+    let model = context["model"]
+        .downcast_object_ref::<dbt_schemas::jinja_node::LazyNodeContext>()
+        .expect("parse model object");
+    for (field, attribute) in [
+        ("database", "database"),
+        ("schema", "schema"),
+        ("alias", "identifier"),
+    ] {
+        model.insert(
+            MinijinjaValue::from(field),
+            relation.get_attr(attribute).expect("relation attribute"),
+        );
+    }
+    for field in ["database", "schema"] {
+        context.insert(
+            field.to_string(),
+            relation.get_attr(field).expect("relation attribute"),
+        );
+    }
+    context.insert(
+        "this".to_string(),
+        MinijinjaValue::from_object(ResolveThisFunction::<T> {
+            relation,
+            sql_resources: resources,
+        }),
+    );
 }
 
 /// Batch Context (stubbing this on the fly for now. We'll need to implement this in the future)
@@ -711,9 +757,9 @@ pub struct ParseConfig<T: ResolvableConfig<T> + 'static> {
     pub package_dependency: Option<String>,
     /// Error path to be used for error reporting
     pub error_path: Option<PathBuf>,
-    /// The target's adapter type, used to canonicalize adapter config-key aliases.
+    /// Whose alias table canonicalizes adapter config-key aliases.
     /// [dbt-core's `credentials.translate_aliases`]
-    pub adapter_type: AdapterType,
+    pub aliasing: InlineConfigAliasing,
     /// `None` for resource types without warehouse fields.
     pub resource_type: Option<NodeType>,
 }
@@ -736,20 +782,28 @@ impl<T: ResolvableConfig<T>> ParseConfig<T> {
         } else {
             kwargs.get("enabled").unwrap().is_true()
         };
-        // Canonicalize adapter config-key aliases
-        let kwargs =
-            dbt_adapter_core::config_aliases::canonicalize_config_keys(self.adapter_type, kwargs)
-                .map_err(|dup| {
-                MinijinjaError::new(
-                    MinijinjaErrorKind::InvalidOperation,
-                    format!(
-                        "Config keys `{}` and `{}` both resolve to `{}` for adapter '{}'; a \
+        // Canonicalize adapter config-key aliases; deferred ones go to the typed hook later.
+        let call_adapter = kwargs
+            .get("adapter")
+            .and_then(|adapter| adapter.as_str()?.parse::<AdapterType>().ok());
+        let alias_adapter = self.aliasing.alias_adapter(call_adapter);
+        let deferred_keys = self.aliasing.deferred_alias_keys::<T>();
+        let kwargs = dbt_adapter_core::config_aliases::canonicalize_config_keys_except(
+            alias_adapter,
+            kwargs,
+            deferred_keys,
+        )
+        .map_err(|dup| {
+            MinijinjaError::new(
+                MinijinjaErrorKind::InvalidOperation,
+                format!(
+                    "Config keys `{}` and `{}` both resolve to `{}` for adapter '{}'; a \
                      project cannot set the same underlying config key two different ways in \
                      the same place.",
-                        dup.key_a, dup.key_b, dup.canonical, self.adapter_type,
-                    ),
-                )
-            })?;
+                    dup.key_a, dup.key_b, dup.canonical, alias_adapter,
+                ),
+            )
+        })?;
         // TODO: propgate span info for individual args
         let span = {
             let Span {
@@ -814,7 +868,13 @@ impl<T: ResolvableConfig<T>> ParseConfig<T> {
                 None,
                 resource_type,
                 WarningEmission::Emit,
-                |key| resolved_surface_key_status(resource_type, key),
+                |key| {
+                    if deferred_keys.contains(&key) {
+                        KeyStatus::Valid
+                    } else {
+                        resolved_surface_key_status(resource_type, key)
+                    }
+                },
             );
         }
 
@@ -1031,6 +1091,105 @@ mod test {
     use dbt_schemas::schemas::common::DbtMaterialization;
     use dbt_schemas::schemas::relations::DEFAULT_DBT_QUOTING;
     use dbt_test_primitives::assert_contains;
+
+    #[test]
+    fn previewed_relation_controls_database_and_schema_ref_branches() {
+        use crate::phases::parse::ParseAdapterScopes;
+        use dbt_schemas::state::{DbtProfile, ProfileAdapter};
+
+        let mut profile: DbtProfile = dbt_yaml::from_str(
+            "profile: p\ntarget: dev\nallow_clones: true\nadapters: {}\ndefault_adapter: snowflake\ndatabase: analytics\nschema: dbt_x\nrelative_profile_path: profiles.yml\n",
+        )
+        .unwrap();
+        let snowflake = dbt_yaml::from_str(
+            "type: snowflake\naccount: acct\ndatabase: analytics\nschema: dbt_x\n",
+        )
+        .unwrap();
+        profile
+            .adapters
+            .insert(AdapterType::Snowflake, ProfileAdapter::single(snowflake));
+        let bigquery =
+            dbt_yaml::from_str("type: bigquery\nmethod: oauth\nproject: bq-proj\ndataset: bq_ds\n")
+                .unwrap();
+        profile
+            .adapters
+            .insert(AdapterType::Bigquery, ProfileAdapter::single(bigquery));
+        let scopes = ParseAdapterScopes::from_profile(&profile);
+        let resources = Arc::new(Mutex::new(Vec::new()));
+        let config: ModelConfig =
+            crate::serde::from_yaml_raw("database: analytics\nschema: marts\n", None, false, None)
+                .unwrap();
+        let mut ctx = build_resolve_model_context(
+            &config,
+            false,
+            AdapterType::Snowflake,
+            "analytics",
+            "dbt_x",
+            Some(scopes.get(AdapterType::Bigquery).unwrap()),
+            InlineConfigAliasing::fixed(AdapterType::Bigquery),
+            "branch",
+            vec!["root".to_string(), "branch".to_string()],
+            "root",
+            "root",
+            DEFAULT_DBT_QUOTING,
+            Arc::new(DbtRuntimeConfig::default()),
+            Arc::new(DbtRuntimeConfig::default()),
+            resources.clone(),
+            Arc::new(AtomicBool::new(false)),
+            Path::new("models/branch.sql"),
+            Path::new("branch.sql"),
+            None,
+            Some(NodeType::Model),
+        );
+        let relation = dbt_adapter::relation::do_create_relation(
+            AdapterType::Bigquery,
+            "analytics".to_string(),
+            "bq_ds_marts".to_string(),
+            Some("branch".to_string()),
+            None,
+            ResolvedQuoting::trues(),
+        )
+        .unwrap();
+        update_resolve_model_relation::<ModelConfig>(
+            &mut ctx,
+            dbt_adapter::relation::RelationObject::new(Arc::from(relation)).into_value(),
+        );
+
+        let sql = "{% if database == 'analytics' and schema == 'bq_ds_marts' %}{{ ref('configured') }}{% else %}{{ ref('connection') }}{% endif %}";
+        minijinja::Environment::new()
+            .render_str(sql, &ctx, &[])
+            .unwrap();
+        let refs = resources
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|resource| match resource {
+                SqlResource::Ref((name, ..)) => Some(name.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(refs, ["configured"]);
+        for key in ["database", "schema"] {
+            assert_eq!(ctx[key], ctx["this"].get_attr(key).unwrap());
+            assert_eq!(ctx[key], ctx["model"].get_attr(key).unwrap());
+        }
+        for key in ["target", "env"] {
+            assert_eq!(
+                ctx[key].get_attr("type").unwrap().as_str(),
+                Some("bigquery")
+            );
+            assert_eq!(
+                ctx[key].get_attr("project").unwrap().as_str(),
+                Some("bq-proj")
+            );
+            assert_eq!(
+                ctx[key].get_attr("dataset").unwrap().as_str(),
+                Some("bq_ds")
+            );
+        }
+        assert_eq!(ctx["dialect"].as_str(), Some("bigquery"));
+    }
+
     #[test]
     fn test_resolve_source_function_rendering() {
         let sql_resources = Arc::new(Mutex::new(Vec::new()));
@@ -1070,7 +1229,7 @@ mod test {
             root_overlay_forces_enabled: false,
             package_dependency: None,
             error_path: None,
-            adapter_type: AdapterType::Postgres,
+            aliasing: InlineConfigAliasing::fixed(AdapterType::Postgres),
             resource_type: None,
         }
     }
@@ -1228,7 +1387,7 @@ mod test {
             root_overlay_forces_enabled: false,
             package_dependency: None,
             error_path: None,
-            adapter_type: AdapterType::Databricks,
+            aliasing: InlineConfigAliasing::fixed(AdapterType::Databricks),
             resource_type: None,
         };
 
@@ -1259,7 +1418,7 @@ mod test {
             root_overlay_forces_enabled: false,
             package_dependency: None,
             error_path: None,
-            adapter_type: AdapterType::Snowflake,
+            aliasing: InlineConfigAliasing::fixed(AdapterType::Snowflake),
             resource_type: Some(NodeType::Snapshot),
         };
 
@@ -1291,7 +1450,7 @@ mod test {
             root_overlay_forces_enabled: false,
             package_dependency: None,
             error_path: None,
-            adapter_type: AdapterType::Snowflake,
+            aliasing: InlineConfigAliasing::fixed(AdapterType::Snowflake),
             resource_type: None,
         };
 
@@ -1320,7 +1479,7 @@ mod test {
             root_overlay_forces_enabled: false,
             package_dependency: Some("some_dependency".to_string()),
             error_path: None,
-            adapter_type: AdapterType::Snowflake,
+            aliasing: InlineConfigAliasing::fixed(AdapterType::Snowflake),
             resource_type: Some(NodeType::Snapshot),
         };
 
@@ -1353,7 +1512,7 @@ mod test {
             root_overlay_forces_enabled: false,
             package_dependency: None,
             error_path: None,
-            adapter_type: AdapterType::Postgres,
+            aliasing: InlineConfigAliasing::fixed(AdapterType::Postgres),
             resource_type: None,
         };
 
@@ -1388,7 +1547,7 @@ mod test {
             root_overlay_forces_enabled: false,
             package_dependency: None,
             error_path: None,
-            adapter_type: AdapterType::Databricks,
+            aliasing: InlineConfigAliasing::fixed(AdapterType::Databricks),
             resource_type: None,
         };
 
@@ -1401,5 +1560,75 @@ mod test {
             .render(minijinja::context!(), &[])
             .expect_err("`catalog` and `database` both resolving to `database` must error");
         assert_contains!(err.to_string(), "database");
+    }
+
+    /// While a call can still pick another adapter's table, an inline `catalog` is left for the
+    /// typed hook, which translates it with the node's final alias table.
+    #[test]
+    fn test_parse_config_inline_catalog_left_to_resolver_on_databricks() {
+        let sql_resources = Arc::new(Mutex::new(Vec::new()));
+        let config = ParseConfig::<ModelConfig> {
+            sql_resources: sql_resources.clone(),
+            enabled: true,
+            root_overlay_forces_enabled: false,
+            package_dependency: None,
+            error_path: None,
+            aliasing: InlineConfigAliasing::selectable(
+                AdapterType::Databricks,
+                vec![AdapterType::Snowflake],
+            ),
+            resource_type: None,
+        };
+
+        let mut env = minijinja::Environment::new();
+        env.add_global("config", MinijinjaValue::from_object(config));
+        let template = env
+            .template_from_str("{{ config(catalog='cat1') }}")
+            .unwrap();
+        template.render(minijinja::context!(), &[]).unwrap();
+
+        let resources = sql_resources.lock().unwrap();
+        let SqlResource::ConfigCall(cfg) = resources.last().expect("config call recorded") else {
+            panic!("expected a ConfigCall resource");
+        };
+        assert_eq!(
+            cfg.__warehouse_specific_config__.catalog,
+            Some("cat1".to_string())
+        );
+        assert!(cfg.database.is_omitted());
+    }
+
+    /// A type without the typed `catalog` hook keeps the raw rename, so `catalog` is not kept;
+    /// the renamed `database` key is unknown on this type.
+    #[test]
+    fn test_parse_config_inline_catalog_not_kept_where_type_has_no_hook() {
+        use dbt_schemas::schemas::project::UnitTestConfig;
+
+        let sql_resources = Arc::new(Mutex::new(Vec::new()));
+        let config = ParseConfig::<UnitTestConfig> {
+            sql_resources: sql_resources.clone(),
+            enabled: true,
+            root_overlay_forces_enabled: false,
+            package_dependency: None,
+            error_path: None,
+            aliasing: InlineConfigAliasing::selectable(
+                AdapterType::Databricks,
+                vec![AdapterType::Snowflake],
+            ),
+            resource_type: None,
+        };
+
+        let mut env = minijinja::Environment::new();
+        env.add_global("config", MinijinjaValue::from_object(config));
+        let template = env
+            .template_from_str("{{ config(catalog='cat1') }}")
+            .unwrap();
+        template.render(minijinja::context!(), &[]).unwrap();
+
+        let resources = sql_resources.lock().unwrap();
+        let SqlResource::ConfigCall(cfg) = resources.last().expect("config call recorded") else {
+            panic!("expected a ConfigCall resource");
+        };
+        assert_eq!(cfg.__warehouse_specific_config__.catalog, None);
     }
 }

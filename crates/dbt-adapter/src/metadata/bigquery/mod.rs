@@ -1,5 +1,5 @@
 use crate::adapter::adapter_impl::AdapterImpl;
-use crate::connection::AdapterConnectionFactory;
+use crate::connection::{AdapterConnectionFactory, ConnectionGuard};
 use crate::errors::*;
 use crate::metadata::CatalogAndSchema;
 use crate::metadata::freshness_overrides::{
@@ -7,19 +7,22 @@ use crate::metadata::freshness_overrides::{
 };
 use crate::metadata::*;
 use crate::query_ctx::query_ctx_from_state;
-use crate::record_batch::{RecordBatchExt, StructArrayExt};
+use crate::record_batch::StructArrayExt;
 use crate::relation::Relation;
 use crate::time_machine::{
     args_freshness, args_freshness_with_overrides, global_replayer,
     with_time_machine_metadata_wrapper,
 };
 use crate::{AdapterEngine, AdapterResult};
+use dbt_adapter_engine::record_batch::RecordBatchExt;
 
 use arrow_array::*;
 use arrow_schema::*;
 use dbt_adapter_core::AdapterType;
 use dbt_adapter_core::ExecutionPhase;
 use dbt_adapter_engine::MapReduce;
+use dbt_adapter_engine::cow::uppercase;
+use dbt_adapter_sql::ident::Ident;
 use dbt_adbc::*;
 use dbt_common::cancellation::Cancellable;
 use dbt_common::cancellation::CancellationToken;
@@ -55,7 +58,7 @@ pub const BIGQUERY_PSEUDOCOLUMNS: [&str; 7] = [
 pub fn list_relations(
     engine: &dyn AdapterEngine,
     ctx: &QueryCtx,
-    conn: &'_ mut dyn Connection,
+    conn: &mut ConnectionGuard<'_>,
     db_schema: &CatalogAndSchema,
     token: CancellationToken,
 ) -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
@@ -77,7 +80,7 @@ pub fn list_relations(
 fn list_relations_via_information_schema(
     engine: &dyn AdapterEngine,
     ctx: &QueryCtx,
-    conn: &'_ mut dyn Connection,
+    conn: &mut ConnectionGuard<'_>,
     db_schema: &CatalogAndSchema,
     token: CancellationToken,
 ) -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
@@ -91,7 +94,7 @@ FROM
     {db_schema}.INFORMATION_SCHEMA.TABLES"
     );
 
-    let batch = engine.execute(None, conn, ctx, &sql, token)?;
+    let batch = engine.execute(None, conn.as_mut(), ctx, &sql, token)?;
     let table_names = batch.column_values::<StringArray>("table_name")?;
     let table_schemas = batch.column_values::<StringArray>("table_schema")?;
     let table_catalogs = batch.column_values::<StringArray>("table_catalog")?;
@@ -122,7 +125,7 @@ FROM
 pub fn list_routines(
     engine: &dyn AdapterEngine,
     ctx: &QueryCtx,
-    conn: &'_ mut dyn Connection,
+    conn: &mut ConnectionGuard<'_>,
     db_schema: &CatalogAndSchema,
     token: CancellationToken,
 ) -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
@@ -138,7 +141,7 @@ WHERE
     routine_type != 'PROCEDURE'"
     );
 
-    let batch = engine.execute(None, conn, ctx, &sql, token)?;
+    let batch = engine.execute(None, conn.as_mut(), ctx, &sql, token)?;
     let table_names = batch.column_values::<StringArray>("table_name")?;
     let table_schemas = batch.column_values::<StringArray>("table_schema")?;
     let table_catalogs = batch.column_values::<StringArray>("table_catalog")?;
@@ -193,7 +196,7 @@ where
 
 fn list_relations_via_adbc(
     engine: &dyn AdapterEngine,
-    conn: &'_ mut dyn Connection,
+    conn: &mut ConnectionGuard<'_>,
     db_schema: &CatalogAndSchema,
 ) -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
     // The driver expects unquoted values, so regardless of the adapter's config
@@ -680,30 +683,46 @@ pub(crate) fn generate_system_table_fqn(
     view_name: &str,
     user_preferred_region: Option<&str>,
 ) -> String {
-    let sys_identifier = view_name.to_uppercase();
+    let sys_identifier = uppercase(view_name.into());
+    let rendered_sys_identifier = if sys_identifier
+        .chars()
+        .all(|c| c == '_' || c.is_ascii_uppercase())
+    {
+        sys_identifier.to_string()
+    } else {
+        dbt_adapter_sql::ident::quote_identifier(&sys_identifier, AdapterType::Bigquery)
+    };
 
     match qualifier_options_for_info_schema_view(&sys_identifier) {
         Some(qualifier_option) => match qualifier_option.requirement {
             QualifierRequirement::RegionOnly => {
                 let region = user_preferred_region.unwrap_or("us");
-                format!("`region-{region}`.INFORMATION_SCHEMA.{sys_identifier}")
+                let region = dbt_adapter_sql::ident::quote_identifier(
+                    &format!("region-{region}"),
+                    AdapterType::Bigquery,
+                );
+                format!("{region}.INFORMATION_SCHEMA.{rendered_sys_identifier}")
             }
             QualifierRequirement::DatasetOnly => {
-                format!("{dataset}.INFORMATION_SCHEMA.{sys_identifier}")
+                format!("{dataset}.INFORMATION_SCHEMA.{rendered_sys_identifier}")
             }
             QualifierRequirement::DatasetOrRegion => {
                 // respect user's location preferences by querying the region directly if
                 // possible
                 match user_preferred_region {
-                    None => format!("{dataset}.INFORMATION_SCHEMA.{sys_identifier}"),
+                    None => format!("{dataset}.INFORMATION_SCHEMA.{rendered_sys_identifier}"),
                     Some(region) => {
-                        format!("`region-{region}`.INFORMATION_SCHEMA.{sys_identifier}")
+                        let region = dbt_adapter_sql::ident::quote_identifier(
+                            &format!("region-{region}"),
+                            AdapterType::Bigquery,
+                        );
+                        format!("{region}.INFORMATION_SCHEMA.{rendered_sys_identifier}")
                     }
                 }
             }
         },
         // This is technically an error, but we'll just let it fail when querying BQ
-        None => format!("INFORMATION_SCHEMA.{sys_identifier}"),
+        None => format!("INFORMATION_SCHEMA.{rendered_sys_identifier}"),
     }
 }
 
@@ -718,9 +737,12 @@ pub fn build_relation_clauses_bigquery(
         let dataset = rel.schema_as_resolved_str()?;
         let table = rel.identifier_as_resolved_str()?;
 
-        // Backtick-quote the project so dotted/dashed project IDs parse as
-        // a single identifier in `<db>.__TABLES__`.
-        let db_key = format!("`{project}`.{dataset}");
+        let project = dbt_adapter_sql::ident::quote_identifier(&project, AdapterType::Bigquery);
+        let dataset = Ident::new(dataset, AdapterType::Bigquery)
+            .display(AdapterType::Bigquery)
+            .to_string();
+        let table = dbt_adapter_sql::ident::escape_string_literal(&table, AdapterType::Bigquery);
+        let db_key = format!("{project}.{dataset}");
 
         where_by_db
             .entry(db_key.clone())
@@ -753,9 +775,11 @@ fn build_tables_freshness_query(database: &str, where_clauses: &[String]) -> Str
 }
 
 fn build_schema_freshness_query(database: &str, schema: &str) -> String {
+    let database = dbt_adapter_sql::ident::quote_identifier(database, AdapterType::Bigquery);
+    let schema = dbt_adapter_sql::ident::quote_identifier(schema, AdapterType::Bigquery);
     build_external_table_freshness_query(
-        &format!("`{database}`.`{schema}`.__TABLES__"),
-        &format!("`{database}`.`{schema}`.INFORMATION_SCHEMA.TABLES"),
+        &format!("{database}.{schema}.__TABLES__"),
+        &format!("{database}.{schema}.INFORMATION_SCHEMA.TABLES"),
         "",
     )
 }
@@ -780,7 +804,7 @@ fn build_external_table_freshness_query(
 
 fn query_tables_freshness(
     adapter: &AdapterImpl,
-    conn: &mut dyn Connection,
+    conn: &mut ConnectionGuard<'_>,
     database: &str,
     where_clauses: &[String],
     token: CancellationToken,
@@ -822,7 +846,7 @@ fn accumulate_tables_freshness_from_batch(
 
 fn run_bulk_tables_freshness(
     adapter: &AdapterImpl,
-    conn: &mut dyn Connection,
+    conn: &mut ConnectionGuard<'_>,
     relations: &[Arc<dyn BaseRelation>],
     token: CancellationToken,
 ) -> AdapterResult<BTreeMap<String, MetadataFreshness>> {
@@ -858,7 +882,7 @@ fn bulk_freshness_tasks_from_relations(
 
 fn run_freshness_task(
     adapter: &AdapterImpl,
-    conn: &mut dyn Connection,
+    conn: &mut ConnectionGuard<'_>,
     task: &FreshnessTask,
     token: CancellationToken,
 ) -> AdapterResult<FreshnessTaskResult> {
@@ -876,16 +900,17 @@ fn run_freshness_task(
 /// Render the SQL for fetching view definitions from
 /// `<project>.<dataset>.INFORMATION_SCHEMA.VIEWS` for a list of table identifiers.
 ///
-/// Both `project` and `dataset` are wrapped in backticks unconditionally — BQ
-/// requires them for identifiers containing `-`, and unconditional quoting is
-/// simpler than detecting the "needs quotes" case.
-///
-/// Identifiers are interpolated into a `IN ('...', '...')` list with `'`
-/// escaped to `''` defensively.
 fn build_views_query(project: &str, dataset: &str, identifiers: &[String]) -> String {
+    let project = dbt_adapter_sql::ident::quote_identifier(project, AdapterType::Bigquery);
+    let dataset = dbt_adapter_sql::ident::quote_identifier(dataset, AdapterType::Bigquery);
     let literals = identifiers
         .iter()
-        .map(|id| format!("'{}'", id.replace('\'', "''")))
+        .map(|id| {
+            format!(
+                "'{}'",
+                dbt_adapter_sql::ident::escape_string_literal(id, AdapterType::Bigquery)
+            )
+        })
         .collect::<Vec<_>>()
         .join(", ");
 
@@ -895,7 +920,7 @@ fn build_views_query(project: &str, dataset: &str, identifiers: &[String]) -> St
     table_schema,
     table_name,
     view_definition
-FROM `{project}`.`{dataset}`.INFORMATION_SCHEMA.VIEWS
+FROM {project}.{dataset}.INFORMATION_SCHEMA.VIEWS
 WHERE table_name IN ({literals})"
     )
 }
@@ -920,7 +945,7 @@ impl BigqueryMetadataAdapter {
         let factory = Box::new(AdapterConnectionFactory::new(self.adapter.engine().clone()));
         let adapter_for_map = self.adapter.clone();
         let token_clone = token.clone();
-        let map_f = move |conn: &mut dyn Connection, task: &FreshnessTask| {
+        let map_f = move |conn: &mut ConnectionGuard<'_>, task: &FreshnessTask| {
             run_freshness_task(&adapter_for_map, conn, task, token_clone.clone())
         };
         let reduce_f = move |acc: &mut Acc,
@@ -1294,7 +1319,7 @@ impl MetadataAdapter for BigqueryMetadataAdapter {
 
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
-        let map_f = move |conn: &'_ mut dyn Connection,
+        let map_f = move |conn: &mut ConnectionGuard<'_>,
                           relation: &Arc<dyn BaseRelation>|
               -> AdapterResult<Arc<Schema>> {
             let project = relation.database_as_resolved_str()?;
@@ -1446,7 +1471,7 @@ impl MetadataAdapter for BigqueryMetadataAdapter {
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
 
-        let map_f = move |conn: &'_ mut dyn Connection,
+        let map_f = move |conn: &mut ConnectionGuard<'_>,
                           db_schema: &CatalogAndSchema|
               -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
             // Deviation from core: we cannot use `list_tables` as this is not supported from ADBC
@@ -1504,9 +1529,10 @@ impl MetadataAdapter for BigqueryMetadataAdapter {
             return Box::pin(async { Ok(ViewDefinitionFetchResult::default()) });
         }
 
-        let mut by_triple: HashMap<(String, String, String), Arc<dyn BaseRelation>> =
-            HashMap::new();
-        let mut by_dataset: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
+        type Triple = (String, String, String);
+        type Dataset = (String, String);
+        let mut by_triple: HashMap<Triple, Arc<dyn BaseRelation>> = HashMap::new();
+        let mut by_dataset: BTreeMap<Dataset, Vec<String>> = BTreeMap::new();
 
         for rel in relations {
             let project = match rel.database_as_resolved_str() {
@@ -1537,19 +1563,19 @@ impl MetadataAdapter for BigqueryMetadataAdapter {
                     dataset.to_lowercase(),
                     table.to_lowercase(),
                 ),
-                rel.clone(),
+                Arc::clone(rel),
             );
             by_dataset
-                .entry((project, dataset))
+                .entry((project.into_owned(), dataset.into_owned()))
                 .or_default()
-                .push(table);
+                .push(table.into());
         }
 
         let factory = Box::new(AdapterConnectionFactory::new(self.adapter.engine().clone()));
 
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
-        let map_f = move |conn: &'_ mut dyn Connection,
+        let map_f = move |conn: &mut ConnectionGuard<'_>,
                           key: &((String, String), Vec<String>)|
               -> AdapterResult<Arc<RecordBatch>> {
             let ((project, dataset), identifiers) = key;
@@ -1692,7 +1718,9 @@ impl MetadataAdapter for BigqueryMetadataAdapter {
         type Acc = BTreeMap<String, MetadataFreshness>;
 
         let token_clone = token.clone();
-        let map_f = move |conn: &mut dyn Connection, _: &()| -> AdapterResult<Arc<RecordBatch>> {
+        let map_f = move |conn: &mut ConnectionGuard<'_>,
+                          _: &()|
+              -> AdapterResult<Arc<RecordBatch>> {
             let ctx = QueryCtx::default().with_desc("Extracting freshness from information schema");
             let (_, agate) = adapter.query(&ctx, &mut *conn, &sql, None, token_clone.clone())?;
             Ok(agate.original_record_batch())
@@ -1799,48 +1827,48 @@ fn classify_listing_failure(e: &AdapterError) -> ListingFailure {
 }
 
 /// Fallback when object is not found in `INFORMATION_SCHEMA.TABLES`
+fn bigquery_routine_fallback_sql(database: &str, schema: &str, identifier: &str) -> String {
+    let database = dbt_adapter_sql::ident::quote_identifier(database, AdapterType::Bigquery);
+    let schema = dbt_adapter_sql::ident::quote_identifier(schema, AdapterType::Bigquery);
+    let identifier =
+        dbt_adapter_sql::ident::escape_string_literal(identifier, AdapterType::Bigquery);
+    format!(
+        "SELECT routine_catalog AS table_catalog,
+                    routine_schema AS table_schema,
+                    routine_name AS table_name,
+                    routine_type AS table_type
+                FROM {database}.{schema}.INFORMATION_SCHEMA.ROUTINES
+                 WHERE routine_name = '{identifier}'
+                    AND routine_type != 'PROCEDURE';"
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn get_relation_routine_fallback(
     adapter: &AdapterImpl,
     state: &State,
-    conn: &'_ mut dyn Connection,
+    conn: &mut ConnectionGuard<'_>,
     database: &str,
     schema: &str,
     identifier: &str,
     token: CancellationToken,
 ) -> AdapterResult<Option<Box<dyn BaseRelation>>> {
-    let query_database = if adapter.quoting().database {
-        adapter.quote(database)
-    } else {
-        database.to_string()
-    };
-    let query_schema = if adapter.quoting().schema {
-        adapter.quote(schema)
-    } else {
-        schema.to_string()
-    };
     let query_identifier = if adapter.quoting().identifier {
         identifier.to_string()
     } else {
         identifier.to_lowercase()
     };
 
-    let escaped_identifier =
-        dbt_adapter_sql::ident::escape_string_literal(&query_identifier, AdapterType::Bigquery);
-    let routines_sql = format!(
-        "SELECT routine_catalog AS table_catalog,
-                    routine_schema AS table_schema,
-                    routine_name AS table_name,
-                    routine_type AS table_type
-                FROM {query_database}.{query_schema}.INFORMATION_SCHEMA.ROUTINES
-                 WHERE routine_name = '{escaped_identifier}'
-                    AND routine_type != 'PROCEDURE';"
-    );
+    let routines_sql = bigquery_routine_fallback_sql(database, schema, &query_identifier);
 
     let ctx = query_ctx_from_state(state)?.with_desc("get_relation routines fallback");
-    let result = adapter
-        .engine()
-        .execute(Some(state), conn, &ctx, &routines_sql, token.clone());
+    let result = adapter.engine().execute(
+        Some(state),
+        conn.as_mut(),
+        &ctx,
+        &routines_sql,
+        token.clone(),
+    );
     let batch = match result {
         Ok(batch) => batch,
         Err(err)
@@ -1858,7 +1886,7 @@ pub fn get_relation_routine_fallback(
     };
 
     // BigQuery-only metadata not covered by the generic fallback.
-    let location = adapter.get_dataset_location(state, conn, &relation, token)?;
+    let location = adapter.get_dataset_location(state, conn.as_mut(), &relation, token)?;
     relation.location = location;
     Ok(Some(Box::new(relation)))
 }
@@ -1881,6 +1909,7 @@ fn is_bigquery_permission_error(e: &AdapterError) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::stmt_splitter::{DefaultStmtSplitter, StmtSplitter};
 
     fn bq_rel(project: &str, dataset: &str, table: &str) -> Arc<dyn BaseRelation> {
         use crate::relation::Relation;
@@ -2175,6 +2204,30 @@ mod tests {
     }
 
     #[test]
+    fn generate_system_table_fqn_quotes_unknown_view_and_region() {
+        let fqn = generate_system_table_fqn(
+            "`dataset`",
+            r"unknown\`; SELECT 1; --",
+            Some(r"eu\`; SELECT 2; --"),
+        );
+        let sql = format!("SELECT * FROM {fqn} LIMIT 0");
+
+        assert!(fqn.contains(r"INFORMATION_SCHEMA.`UNKNOWN\\\`; SELECT 1; --`"));
+        assert_eq!(
+            DefaultStmtSplitter.split(&sql, AdapterType::Bigquery),
+            vec![sql.as_str()]
+        );
+
+        let region_fqn =
+            generate_system_table_fqn("`dataset`", "JOBS", Some(r"eu\`; SELECT 2; --"));
+        let region_sql = format!("SELECT * FROM {region_fqn} LIMIT 0");
+        assert_eq!(
+            DefaultStmtSplitter.split(&region_sql, AdapterType::Bigquery),
+            vec![region_sql.as_str()]
+        );
+    }
+
+    #[test]
     fn test_format_top_level_columns_data_types() {
         // Test case 1: Simple primitive types
         {
@@ -2318,8 +2371,20 @@ mod tests {
 
     #[test]
     fn build_views_query_escapes_single_quotes_in_identifiers() {
-        let sql = build_views_query("p", "d", &["weird'name".to_string()]);
-        assert!(sql.contains("'weird''name'"), "got: {sql}");
+        let sql = build_views_query(
+            r"p\`roject",
+            r"d\`ataset",
+            &[r"weird\'; SELECT 1; --".to_string()],
+        );
+        assert!(
+            sql.contains(r"FROM `p\\\`roject`.`d\\\`ataset`"),
+            "got: {sql}"
+        );
+        assert!(sql.contains(r"'weird\\\'; SELECT 1; --'"), "got: {sql}");
+        assert_eq!(
+            DefaultStmtSplitter.split(&sql, AdapterType::Bigquery),
+            vec![sql.as_str()]
+        );
     }
 
     /// https://github.com/dbt-labs/dbt-fusion/issues/1450:
@@ -2344,6 +2409,38 @@ mod tests {
     }
 
     #[test]
+    fn build_relation_clauses_bigquery_escapes_identifiers_and_table_literal() {
+        let rel = bq_rel(r"project\`id", r"dataset\`id", r"T\'; SELECT 1; --");
+
+        let (where_by_db, _) = build_relation_clauses_bigquery(std::slice::from_ref(&rel)).unwrap();
+        let (db_key, predicates) = where_by_db.first_key_value().unwrap();
+        let sql = build_tables_freshness_query(db_key, predicates);
+
+        assert_eq!(db_key, r"`project\\\`id`.`dataset\\\`id`");
+        assert!(sql.contains(r"table_id = 'T\\\'; SELECT 1; --'"));
+        assert_eq!(
+            DefaultStmtSplitter.split(&sql, AdapterType::Bigquery),
+            vec![sql.trim_end_matches(';')]
+        );
+    }
+
+    #[test]
+    fn bigquery_routine_fallback_sql_escapes_identifiers_and_name_literal() {
+        let sql = bigquery_routine_fallback_sql(
+            r"project\`id",
+            r"dataset\`id",
+            r"routine\'; SELECT 1; --",
+        );
+
+        assert!(sql.contains(r"FROM `project\\\`id`.`dataset\\\`id`.INFORMATION_SCHEMA"));
+        assert!(sql.contains(r"routine_name = 'routine\\\'; SELECT 1; --'"));
+        assert_eq!(
+            DefaultStmtSplitter.split(&sql, AdapterType::Bigquery),
+            vec![sql.trim_end_matches(';')]
+        );
+    }
+
+    #[test]
     fn tables_freshness_query_nulls_external_last_altered() {
         let sql =
             build_tables_freshness_query("`my-project`.analytics", &["table_id = 'orders'".into()]);
@@ -2359,11 +2456,20 @@ mod tests {
 
     #[test]
     fn schema_freshness_query_nulls_external_last_altered() {
-        let sql = build_schema_freshness_query("my-project", "analytics");
+        let sql = build_schema_freshness_query(
+            r"my\`project; SELECT 1; --",
+            r"ana\`lytics; SELECT 2; --",
+        );
 
         assert!(
-            sql.contains("`my-project`.`analytics`.INFORMATION_SCHEMA.TABLES"),
+            sql.contains(
+                r"`my\\\`project; SELECT 1; --`.`ana\\\`lytics; SELECT 2; --`.INFORMATION_SCHEMA.TABLES"
+            ),
             "got: {sql}"
+        );
+        assert_eq!(
+            DefaultStmtSplitter.split(&sql, AdapterType::Bigquery),
+            vec![sql.as_str()]
         );
         assert!(sql.contains("table_type = 'EXTERNAL'"), "got: {sql}");
         assert!(
@@ -2504,7 +2610,7 @@ mod tests {
 
         let column = batch.column_by_name("table_type").unwrap();
         let string_array = column.as_any().downcast_ref::<StringArray>().unwrap();
-        let relation_type_name = string_array.value(0).to_uppercase();
+        let relation_type_name = uppercase(string_array.value(0).into());
         let relation_type =
             RelationType::from_adapter_type(AdapterType::Bigquery, &relation_type_name);
 

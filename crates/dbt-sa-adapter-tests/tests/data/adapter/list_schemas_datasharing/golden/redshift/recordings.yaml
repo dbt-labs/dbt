@@ -1,0 +1,19 @@
+model.test.model:
+- sequence: 0
+  type: execute
+  sql: DROP SCHEMA IF EXISTS adapters_redshift_list_schemas_datasharing_1 CASCADE
+- sequence: 1
+  type: execute
+  sql: DROP SCHEMA IF EXISTS adapters_redshift_list_schemas_datasharing_2 CASCADE
+- sequence: 2
+  type: execute
+  sql: CREATE SCHEMA adapters_redshift_list_schemas_datasharing_1
+- sequence: 3
+  type: execute
+  sql: CREATE SCHEMA adapters_redshift_list_schemas_datasharing_2
+- sequence: 4
+  type: execute
+  sql: SHOW SCHEMAS FROM DATABASE "ci"
+- sequence: 5
+  type: execute
+  sql: SHOW SCHEMAS FROM DATABASE "ci"

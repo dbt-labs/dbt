@@ -1,0 +1,20 @@
+5463001e:
+- sequence: 0
+  type: execute
+  sql: insert into adapters_redshift_metadata_source_freshness.source (id, name, amount) values ('1', 'Name1', 100.50)
+615465f5:
+- sequence: 0
+  type: execute
+  sql: drop table if exists adapters_redshift_metadata_source_freshness.a
+9b6ab364:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists adapters_redshift_metadata_source_freshness
+b04fe0d1:
+- sequence: 0
+  type: execute
+  sql: create table adapters_redshift_metadata_source_freshness.source (id VARCHAR(255), name VARCHAR(255), amount DECIMAL(10,2))
+ff8756f1:
+- sequence: 0
+  type: execute
+  sql: create table adapters_redshift_metadata_source_freshness.a (val int)

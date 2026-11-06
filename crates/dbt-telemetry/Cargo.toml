@@ -16,7 +16,6 @@ workspace = true
 arrow-schema = { workspace = true, features = ["canonical_extension_types"] }
 dbt-fusion-workspace-hack = { version = "0.1" }
 dbt-tracing = { workspace = true }
-dbt-yaml = { workspace = true }
 pbjson = { workspace = true }
 prost = { workspace = true }
 prost-types = { workspace = true }

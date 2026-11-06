@@ -95,12 +95,7 @@ expression: schema
       "description": "`{{ load_result(...) }}` — `ResultStore`-backed closure."
     },
     "model": {
-      "description": "`{{ model.* }}` — `LazyModelWrapper` Object that lazy-loads `compiled_code` from the on-disk compiled SQL on first attribute access. Shadows the base.",
-      "allOf": [
-        {
-          "$ref": "#/definitions/JinjaObject<dbt_jinja_ctx::objects::run::LazyModelWrapper>"
-        }
-      ]
+      "description": "`{{ model.* }}` — node-backed Object that reads `compiled_code` from the on-disk compiled SQL. Shadows the base."
     },
     "node": {
       "description": "`{{ node }}` — `Value::NONE` at base scope; populated per-node."
@@ -144,12 +139,6 @@ expression: schema
       "type": "object",
       "x-jinja-object": true,
       "x-jinja-object-type": "dbt_jinja_ctx::objects::lookup::MacroLookupContext"
-    },
-    "JinjaObject<dbt_jinja_ctx::objects::run::LazyModelWrapper>": {
-      "description": "Opaque Jinja-callable object backed by `dbt_jinja_ctx::objects::run::LazyModelWrapper`.",
-      "type": "object",
-      "x-jinja-object": true,
-      "x-jinja-object-type": "dbt_jinja_ctx::objects::run::LazyModelWrapper"
     }
   }
 }

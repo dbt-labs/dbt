@@ -20,6 +20,8 @@ pub struct StateExplainOptions {
     pub manage_state: bool,
     /// Whether to include lower-level decision details.
     pub verbose: bool,
+    /// Whether to also include all upstream dependency changes.
+    pub very_verbose: bool,
 }
 
 /// One entry in a Fusion-native dbt State explain log.
@@ -30,6 +32,16 @@ pub enum StateExplainLogRecord {
     RunStart(StateExplainRunStart),
     /// Node-level context written after a node's state decision is known.
     Node(StateExplainNode),
+    /// Service-side execution id written after a node's execution is confirmed.
+    ExecutionConfirmed(StateExplainExecutionConfirmed),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StateExplainExecutionConfirmed {
+    /// Unique id for the node.
+    pub node_unique_id: String,
+    /// Service-side execution id returned by the confirmation.
+    pub execution_id: String,
 }
 
 /// Run-level context for dbt State explain output.
@@ -81,6 +93,9 @@ pub struct StateExplainNode {
     pub node_info: StateExplainNodeInfo,
     /// Optional service-side decision id for fetching detailed explain output.
     pub execution_decision_id: Option<String>,
+    /// Service-side execution id, set from a later `ExecutionConfirmed` entry.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub execution_id: Option<String>,
 }
 
 /// Node attributes captured in a dbt State explain log.
@@ -153,6 +168,8 @@ pub struct StateExplainRecord {
     /// Optional service-side decision id for fetching detailed explain output.
     #[serde(default)]
     pub execution_decision_id: Option<String>,
+    /// Optional service-side execution id for fetching upstream dependency changes.
+    pub execution_id: Option<String>,
     /// Decision status, such as `hit` or `miss`.
     pub status: StateExplainStatus,
     /// Human-readable reason for the decision.
@@ -195,6 +212,7 @@ impl StateExplainRecord {
             version: STATE_EXPLAIN_RECORD_VERSION,
             node_unique_id: node.node_unique_id,
             execution_decision_id: node.execution_decision_id,
+            execution_id: node.execution_id,
             status: StateExplainStatus::Unknown,
             reason: "dbt State explain details unavailable".to_string(),
             details,

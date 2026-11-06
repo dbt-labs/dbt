@@ -1,0 +1,18 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/a.sql
+   Parsing models/b.sql
+databricks
+before truncate_relation
+after truncate_relation
+ Rendering models/b.sql
+databricks
+before truncate_relation
+{<agate.Row: (1)>: undefined, <agate.Row: (2)>: undefined}
+after truncate_relation
+{}
+ Rendering models/a.sql
+==================== Execution Summary =====================
+Finished 'compile' successfully for target 'databricks' [duration]
+Processed: 2 models
+Summary: 2 total | 2 success

@@ -1,0 +1,28 @@
+dbbbff64:
+- sequence: 0
+  type: execute
+  sql: |-
+    show terse schemas in database development
+    limit 10000
+model.test.format_change:
+- sequence: 0
+  type: execute
+  sql: SHOW OBJECTS IN SCHEMA "DEVELOPMENT"."adapters_snowflake_catalog_v2_format_change_drop" LIMIT 10000
+- sequence: 1
+  type: execute
+  sql: drop table if exists "DEVELOPMENT"."adapters_snowflake_catalog_v2_format_change_drop"."format_change" cascade
+- sequence: 2
+  type: execute
+  sql: |-
+    create or replace transient  table development."adapters_snowflake_catalog_v2_format_change_drop"."format_change"
+    
+    
+    
+    
+    as (
+    
+    select
+    1 as id,
+    'test' as name,
+    cast(current_timestamp() as timestamp_ntz(6)) as created_at
+    )

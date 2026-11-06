@@ -30,7 +30,7 @@ use crate::schemas::manifest::GrantAccessToTarget;
 use crate::schemas::project::ResolvableConfig;
 use crate::schemas::project::TypedRecursiveConfig;
 use crate::schemas::project::configs::common::{
-    WarehouseSpecificNodeConfig, take_databricks_catalog_alias,
+    TYPED_ALIAS_KEYS, WarehouseSpecificNodeConfig, take_databricks_catalog_alias,
 };
 use crate::schemas::project::configs::config_merge::{Tags, TblProperties};
 use crate::schemas::serde::PartitionsConfig;
@@ -111,6 +111,14 @@ pub struct ProjectSeedConfig {
     pub quoting: Option<DbtQuoting>,
     #[serde(rename = "+delimiter")]
     pub delimiter: Option<Spanned<String>>,
+    #[serde(
+        default,
+        rename = "+all_varchar",
+        deserialize_with = "bool_or_string_bool"
+    )]
+    pub all_varchar: Option<bool>,
+    #[serde(default, rename = "+fast", deserialize_with = "bool_or_string_bool")]
+    pub fast: Option<bool>,
     #[serde(rename = "+external_volume")]
     pub external_volume: Option<String>,
     #[serde(rename = "+adapter_properties")]
@@ -261,6 +269,8 @@ pub struct ProjectSeedConfig {
     pub not_matched_condition: Option<String>,
     #[serde(rename = "+not_matched_by_source_condition")]
     pub not_matched_by_source_condition: Option<String>,
+    #[serde(rename = "+merge_actions_explicit")]
+    pub merge_actions_explicit: Option<String>,
     #[serde(rename = "+not_matched_by_source_action")]
     pub not_matched_by_source_action: Option<String>,
     #[serde(
@@ -322,6 +332,18 @@ pub struct ProjectSeedConfig {
     #[serde(rename = "+schedule")]
     pub schedule: Option<Schedule>,
 
+    // ClickHouse
+    #[serde(rename = "+engine")]
+    pub engine: Option<String>,
+    #[serde(rename = "+order_by")]
+    pub order_by: Option<StringOrArrayOfStrings>,
+    #[serde(
+        default,
+        rename = "+disable_on_cluster",
+        deserialize_with = "bool_or_string_bool"
+    )]
+    pub disable_on_cluster: Option<bool>,
+
     pub __additional_properties__: BTreeMap<String, ShouldBe<ProjectSeedConfig>>,
 }
 
@@ -361,6 +383,8 @@ impl TypedRecursiveConfig for ProjectSeedConfig {
             || self.transient.is_some()
             || self.quoting.is_some()
             || self.delimiter.is_some()
+            || self.all_varchar.is_some()
+            || self.fast.is_some()
             || self.external_volume.is_some()
             || self.adapter_properties.is_some()
             || self.base_location_root.is_some()
@@ -412,6 +436,7 @@ impl TypedRecursiveConfig for ProjectSeedConfig {
             || self.matched_condition.is_some()
             || self.not_matched_condition.is_some()
             || self.not_matched_by_source_condition.is_some()
+            || self.merge_actions_explicit.is_some()
             || self.not_matched_by_source_action.is_some()
             || self.merge_with_schema_evolution.is_some()
             || self.skip_matched_step.is_some()
@@ -460,6 +485,9 @@ pub struct SeedConfig {
     #[serde(default, deserialize_with = "bool_or_string_bool")]
     pub quote_columns: Option<bool>,
     pub delimiter: Option<Spanned<String>>,
+    #[serde(default, deserialize_with = "bool_or_string_bool")]
+    pub all_varchar: Option<bool>,
+    pub fast: Option<bool>,
     #[serde(default, deserialize_with = "event_time_or_map_to_string")]
     pub event_time: Option<String>,
     pub full_refresh: Option<bool>,
@@ -496,6 +524,8 @@ impl From<ProjectSeedConfig> for SeedConfig {
             grants: config.grants,
             quote_columns: config.quote_columns,
             delimiter: config.delimiter,
+            all_varchar: config.all_varchar,
+            fast: config.fast,
             event_time: config.event_time,
             full_refresh: config.full_refresh,
             group: config.group,
@@ -590,6 +620,7 @@ impl From<ProjectSeedConfig> for SeedConfig {
                 matched_condition: config.matched_condition,
                 not_matched_condition: config.not_matched_condition,
                 not_matched_by_source_condition: config.not_matched_by_source_condition,
+                merge_actions_explicit: config.merge_actions_explicit,
                 not_matched_by_source_action: config.not_matched_by_source_action,
                 merge_with_schema_evolution: config.merge_with_schema_evolution,
                 skip_matched_step: config.skip_matched_step,
@@ -599,6 +630,7 @@ impl From<ProjectSeedConfig> for SeedConfig {
                 row_filter: None,
                 incremental_apply_config_changes: None,
                 persist_constraints: None,
+                use_materialization_v2: None,
                 use_safer_relation_operations: None,
                 view_update_via_alter: None,
 
@@ -620,12 +652,14 @@ impl From<ProjectSeedConfig> for SeedConfig {
                 primary_key: PrimaryKeyConfig::default(),
                 category: None,
 
-                engine: None,
-                order_by: None,
+                engine: config.engine,
+                order_by: config.order_by,
                 ttl: None,
                 settings: None,
                 query_settings: None,
                 projections: None,
+                sharding_key: None,
+                disable_on_cluster: config.disable_on_cluster,
                 inserts_only: None,
                 connection_overrides: None,
                 fields: None,
@@ -663,6 +697,8 @@ impl From<SeedConfig> for ProjectSeedConfig {
             grants: config.grants,
             quote_columns: config.quote_columns,
             delimiter: config.delimiter,
+            all_varchar: config.all_varchar,
+            fast: config.fast,
             event_time: config.event_time,
             full_refresh: config.full_refresh,
             group: config.group,
@@ -747,6 +783,7 @@ impl From<SeedConfig> for ProjectSeedConfig {
             not_matched_by_source_condition: config
                 .__warehouse_specific_config__
                 .not_matched_by_source_condition,
+            merge_actions_explicit: config.__warehouse_specific_config__.merge_actions_explicit,
             not_matched_by_source_action: config
                 .__warehouse_specific_config__
                 .not_matched_by_source_action,
@@ -768,6 +805,10 @@ impl From<SeedConfig> for ProjectSeedConfig {
             indexes: config.__warehouse_specific_config__.indexes,
             unlogged: config.__warehouse_specific_config__.unlogged,
             schedule: config.__warehouse_specific_config__.schedule,
+            // ClickHouse fields
+            engine: config.__warehouse_specific_config__.engine,
+            order_by: config.__warehouse_specific_config__.order_by,
+            disable_on_cluster: config.__warehouse_specific_config__.disable_on_cluster,
             __additional_properties__: BTreeMap::new(),
         }
     }
@@ -780,6 +821,10 @@ impl ResolvableConfig<SeedConfig> for SeedConfig {
 
     fn get_enabled_with_default(&self) -> bool {
         self.enabled.unwrap_or(true)
+    }
+
+    fn get_adapter(&self) -> Option<AdapterType> {
+        self.adapter
     }
 
     fn disable(&mut self) {
@@ -806,9 +851,13 @@ impl ResolvableConfig<SeedConfig> for SeedConfig {
         self.default_to_fields(parent);
     }
 
-    fn canonicalize_adapter_aliases(&mut self, default_adapter: AdapterType) {
+    fn typed_alias_keys() -> &'static [&'static str] {
+        TYPED_ALIAS_KEYS
+    }
+
+    fn canonicalize_adapter_aliases(&mut self, alias_adapter: AdapterType) {
         if let Some(catalog) = take_databricks_catalog_alias(
-            default_adapter,
+            alias_adapter,
             &mut self.__warehouse_specific_config__,
             self.database.is_some(),
         ) {
@@ -870,6 +919,29 @@ __additional_properties__: {}
             resolved.__warehouse_specific_config__.query_tags.as_deref(),
             Some(r#"{"team":"seed"}"#)
         );
+    }
+
+    #[test]
+    fn test_seed_clickhouse_table_options_propagate_through_resolved_config() {
+        let project: ProjectSeedConfig = dbt_yaml::from_str(
+            r#"
++engine: ReplacingMergeTree()
++order_by: id
++disable_on_cluster: "true"
+__additional_properties__: {}
+"#,
+        )
+        .unwrap();
+
+        let resolved: SeedConfig = project.into();
+        let wh = &resolved.__warehouse_specific_config__;
+        assert_eq!(wh.engine.as_deref(), Some("ReplacingMergeTree()"));
+        assert!(wh.order_by.is_some());
+        assert_eq!(wh.disable_on_cluster, Some(true));
+
+        let round_trip: ProjectSeedConfig = resolved.into();
+        assert_eq!(round_trip.engine.as_deref(), Some("ReplacingMergeTree()"));
+        assert_eq!(round_trip.disable_on_cluster, Some(true));
     }
 
     #[test]

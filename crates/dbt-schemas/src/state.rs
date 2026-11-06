@@ -332,6 +332,7 @@ impl DbtProfile {
         hex::encode(&hash.as_bytes()[..16])
     }
 }
+
 /// A propagation target selection failed validation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PropagationTargetError {
@@ -345,6 +346,13 @@ pub enum PropagationTargetError {
     DatabricksCatalogConflict,
     /// A catalog requires Snowflake propagation, but the profile has no Snowflake adapter.
     SnowflakeTargetRequired,
+    /// An explicit BigQuery target needs BigQuery as the profile's default adapter.
+    BigqueryTargetRequiresBigqueryDefault { default: AdapterType },
+    /// An explicit Snowflake target is not supported when the default adapter is BigQuery.
+    SnowflakeTargetUnderBigqueryDefault,
+    /// The write catalog requires Snowflake, which is not supported when the default
+    /// adapter is BigQuery.
+    SnowflakeCatalogUnderBigqueryDefault,
 }
 
 impl fmt::Display for PropagationTargetError {
@@ -369,6 +377,18 @@ impl fmt::Display for PropagationTargetError {
                 f,
                 "catalog requires Snowflake propagation, but the active profile has no usable Snowflake target"
             ),
+            Self::BigqueryTargetRequiresBigqueryDefault { default } => write!(
+                f,
+                "an explicit BigQuery target requires BigQuery as the profile's default adapter, which is '{default}'"
+            ),
+            Self::SnowflakeTargetUnderBigqueryDefault => write!(
+                f,
+                "an explicit Snowflake target is not supported when the profile's default adapter is BigQuery"
+            ),
+            Self::SnowflakeCatalogUnderBigqueryDefault => write!(
+                f,
+                "the write catalog requires Snowflake propagation, which is not supported when the profile's default adapter is BigQuery"
+            ),
         }
     }
 }
@@ -381,26 +401,49 @@ impl std::error::Error for PropagationTargetError {}
 /// target selection. Parsing can use [`resolve_effective_propagation_target`] when
 /// it must preserve its existing best-effort behavior for unselected nodes;
 /// execution should use this fallible function to report configuration errors.
+///
+/// `default_adapter` is the profile's default adapter. An explicit BigQuery target is accepted
+/// only when the default adapter is BigQuery. Under a BigQuery default adapter, an explicit
+/// Snowflake target and a write catalog that requires Snowflake (`catalog_requires_snowflake`)
+/// are rejected.
 pub fn resolve_propagation_target(
     explicit: &[AdapterType],
     profile_adapters: &[AdapterType],
+    default_adapter: AdapterType,
     catalog_requires_snowflake: bool,
 ) -> Result<Option<AdapterType>, PropagationTargetError> {
     if explicit.len() > 1 {
         return Err(PropagationTargetError::MultipleTargets(explicit.len()));
     }
 
-    if let Some(explicit) = explicit.first() {
-        if !matches!(explicit, AdapterType::Snowflake | AdapterType::Databricks) {
-            return Err(PropagationTargetError::UnsupportedTarget(*explicit));
+    if default_adapter == AdapterType::Bigquery && catalog_requires_snowflake {
+        return Err(PropagationTargetError::SnowflakeCatalogUnderBigqueryDefault);
+    }
+
+    if let Some(&explicit) = explicit.first() {
+        if !matches!(
+            explicit,
+            AdapterType::Snowflake | AdapterType::Databricks | AdapterType::Bigquery
+        ) {
+            return Err(PropagationTargetError::UnsupportedTarget(explicit));
         }
-        if !profile_adapters.contains(explicit) {
-            return Err(PropagationTargetError::TargetNotInProfile(*explicit));
+        if !profile_adapters.contains(&explicit) {
+            return Err(PropagationTargetError::TargetNotInProfile(explicit));
         }
-        if catalog_requires_snowflake && *explicit == AdapterType::Databricks {
+        if explicit == AdapterType::Bigquery && default_adapter != AdapterType::Bigquery {
+            return Err(
+                PropagationTargetError::BigqueryTargetRequiresBigqueryDefault {
+                    default: default_adapter,
+                },
+            );
+        }
+        if default_adapter == AdapterType::Bigquery && explicit == AdapterType::Snowflake {
+            return Err(PropagationTargetError::SnowflakeTargetUnderBigqueryDefault);
+        }
+        if catalog_requires_snowflake && explicit == AdapterType::Databricks {
             return Err(PropagationTargetError::DatabricksCatalogConflict);
         }
-        return Ok(Some(*explicit));
+        return Ok(Some(explicit));
     }
 
     let has_lake_compute = profile_adapters.contains(&AdapterType::LakeCompute);
@@ -428,11 +471,17 @@ pub fn resolve_propagation_target(
 pub fn resolve_effective_propagation_target(
     explicit: &[AdapterType],
     profile_adapters: &[AdapterType],
+    default_adapter: AdapterType,
     catalog_requires_snowflake: bool,
 ) -> Option<AdapterType> {
-    resolve_propagation_target(explicit, profile_adapters, catalog_requires_snowflake)
-        .ok()
-        .flatten()
+    resolve_propagation_target(
+        explicit,
+        profile_adapters,
+        default_adapter,
+        catalog_requires_snowflake,
+    )
+    .ok()
+    .flatten()
 }
 
 impl fmt::Display for DbtProfile {
@@ -575,14 +624,12 @@ pub trait NodeResolverTracker: fmt::Debug + Send + Sync {
     fn insert_ref(
         &mut self,
         node: &dyn InternalDbtNodeAttributes,
-        adapter_type: AdapterType,
         model_status: ModelStatus,
         overwrite: bool,
     ) -> FsResult<()>;
     fn insert_function(
         &mut self,
         node: &dyn InternalDbtNodeAttributes,
-        adapter_type: AdapterType,
         model_status: ModelStatus,
     ) -> FsResult<()>;
     fn insert_source(
@@ -663,7 +710,6 @@ impl NodeResolverTracker for DummyNodeResolverTracker {
     fn insert_ref(
         &mut self,
         _node: &dyn InternalDbtNodeAttributes,
-        _adapter_type: AdapterType,
         _model_status: ModelStatus,
         _overwrite: bool,
     ) -> FsResult<()> {
@@ -674,7 +720,6 @@ impl NodeResolverTracker for DummyNodeResolverTracker {
     fn insert_function(
         &mut self,
         _node: &dyn InternalDbtNodeAttributes,
-        _adapter_type: AdapterType,
         _model_status: ModelStatus,
     ) -> FsResult<()> {
         // No-op for dummy
@@ -854,7 +899,7 @@ pub struct ResolverState {
     pub operations: Operations,
     pub dbt_profile: DbtProfile,
     pub cloud_config: Option<ResolvedCloudConfig>,
-    pub render_results: RenderResults,
+    pub render_results: Arc<RenderResults>,
     pub node_resolver: Arc<dyn NodeResolverTracker>,
     pub get_relation_calls: GetRelationCalls,
     pub get_columns_in_relation_calls: GetColumnsInRelationCalls,
@@ -917,7 +962,7 @@ pub fn hydrate_user_defined_schema_registry(
             ),
         };
         let relation =
-            datafusion_common::TableReference::full(database, schema, alias).to_quoted_string();
+            dbt_common::user_defined_schema_registry::relation_key(&database, &schema, &alias);
         for column in &base.columns {
             let name = match adapter_type {
                 AdapterType::Snowflake => column.name.to_uppercase(),
@@ -1142,6 +1187,32 @@ fn global_runtime_configs() -> &'static SharedRuntimeConfigMap {
 pub fn register_global_runtime_config(package_name: String, cfg: Arc<DbtRuntimeConfig>) {
     let mut map = global_runtime_configs().write().expect("poisoned lock");
     map.insert(package_name, cfg);
+}
+
+/// Canonical absolute `seed-paths` of every registered package (the root project
+/// included), each prefixed with that package's project root. Directories that
+/// don't exist are skipped.
+pub fn canonical_seed_dirs() -> Vec<String> {
+    let Some(configs) = snapshot_global_runtime_configs() else {
+        return Vec::new();
+    };
+    let mut dirs: Vec<String> = configs
+        .values()
+        .flat_map(|config| {
+            let inner = &config.inner;
+            inner
+                .seed_paths
+                .iter()
+                .filter_map(|path| {
+                    dbt_common::stdfs::canonicalize(inner.project_root.join(path)).ok()
+                })
+                .filter_map(|dir| dir.to_str().map(str::to_owned))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    dirs.sort();
+    dirs.dedup();
+    dirs
 }
 
 fn snapshot_global_runtime_configs() -> Option<RuntimeConfigMap> {
@@ -1590,6 +1661,7 @@ mod dbt_profile_adapter_tests {
                 resolve_effective_propagation_target(
                     explicit,
                     &profile_adapters,
+                    default_adapter,
                     catalog_requires_snowflake,
                 ),
                 expected
@@ -1598,14 +1670,86 @@ mod dbt_profile_adapter_tests {
     }
 
     #[test]
-    fn propagation_target_resolution_reports_invalid_explicit_selection() {
-        let profile_adapters = vec![AdapterType::LakeCompute];
-        assert_eq!(
-            resolve_propagation_target(&[AdapterType::Databricks], &profile_adapters, false,),
-            Err(PropagationTargetError::TargetNotInProfile(
-                AdapterType::Databricks,
-            ))
-        );
+    fn propagation_target_resolution_reports_selection_errors() {
+        use AdapterType::{Bigquery, Databricks, LakeCompute, Snowflake};
+        use PropagationTargetError::*;
+        let bq_and_snowflake: &[AdapterType] = &[Bigquery, LakeCompute, Snowflake];
+        let bq_and_databricks: &[AdapterType] = &[Bigquery, LakeCompute, Databricks];
+        let cases: &[(&[AdapterType], AdapterType, &[AdapterType], bool, _)] = &[
+            (
+                &[LakeCompute],
+                LakeCompute,
+                &[Databricks],
+                false,
+                Err(TargetNotInProfile(Databricks)),
+            ),
+            (
+                bq_and_snowflake,
+                Bigquery,
+                &[Bigquery],
+                false,
+                Ok(Some(Bigquery)),
+            ),
+            (
+                bq_and_snowflake,
+                Snowflake,
+                &[Bigquery],
+                false,
+                Err(BigqueryTargetRequiresBigqueryDefault { default: Snowflake }),
+            ),
+            (
+                bq_and_snowflake,
+                Bigquery,
+                &[Snowflake],
+                false,
+                Err(SnowflakeTargetUnderBigqueryDefault),
+            ),
+            // Implicit selection remains unchanged here. BigQuery publishing changes this case
+            // to select BigQuery.
+            (bq_and_snowflake, Bigquery, &[], false, Ok(Some(Snowflake))),
+            (
+                bq_and_snowflake,
+                Bigquery,
+                &[],
+                true,
+                Err(SnowflakeCatalogUnderBigqueryDefault),
+            ),
+            (
+                bq_and_snowflake,
+                Bigquery,
+                &[Bigquery],
+                true,
+                Err(SnowflakeCatalogUnderBigqueryDefault),
+            ),
+            // Under a BigQuery default adapter, the Snowflake catalog error takes precedence
+            // over `DatabricksCatalogConflict`.
+            (
+                bq_and_databricks,
+                Bigquery,
+                &[Databricks],
+                true,
+                Err(SnowflakeCatalogUnderBigqueryDefault),
+            ),
+            (
+                bq_and_databricks,
+                Bigquery,
+                &[Databricks],
+                false,
+                Ok(Some(Databricks)),
+            ),
+        ];
+        for &(adapters, default_adapter, explicit, catalog_requires_snowflake, expected) in cases {
+            assert_eq!(
+                resolve_propagation_target(
+                    explicit,
+                    adapters,
+                    default_adapter,
+                    catalog_requires_snowflake
+                ),
+                expected,
+                "{explicit:?} / default {default_adapter} / catalog {catalog_requires_snowflake}"
+            );
+        }
     }
 
     /// `default_db_config()` must follow `default_adapter`, not insertion order — the
@@ -1737,8 +1881,7 @@ mod user_defined_schema_registry_tests {
             ..Default::default()
         };
         let registry = hydrate_user_defined_schema_registry(&nodes, AdapterType::Snowflake);
-        let relation =
-            datafusion_common::TableReference::full("DB", "SCH", "TBL").to_quoted_string();
+        let relation = dbt_common::user_defined_schema_registry::relation_key("DB", "SCH", "TBL");
         assert!(registry.columns_for(&relation).unwrap().contains("COL"));
     }
 
@@ -1754,8 +1897,7 @@ mod user_defined_schema_registry_tests {
             ..Default::default()
         };
         let registry = hydrate_user_defined_schema_registry(&nodes, AdapterType::DuckDB);
-        let relation =
-            datafusion_common::TableReference::full("db", "sch", "tbl").to_quoted_string();
+        let relation = dbt_common::user_defined_schema_registry::relation_key("db", "sch", "tbl");
         assert!(registry.columns_for(&relation).unwrap().contains("col"));
     }
 
@@ -1771,8 +1913,7 @@ mod user_defined_schema_registry_tests {
             ..Default::default()
         };
         let registry = hydrate_user_defined_schema_registry(&nodes, AdapterType::Snowflake);
-        let relation =
-            datafusion_common::TableReference::full("DB", "SCH", "TBL").to_quoted_string();
+        let relation = dbt_common::user_defined_schema_registry::relation_key("DB", "SCH", "TBL");
         assert!(registry.columns_for(&relation).is_none());
     }
 
@@ -1826,7 +1967,7 @@ mod user_defined_schema_registry_tests {
         let registry = hydrate_user_defined_schema_registry(&nodes, AdapterType::DuckDB);
 
         let source_relation =
-            datafusion_common::TableReference::full("db", "sch", "src_tbl").to_quoted_string();
+            dbt_common::user_defined_schema_registry::relation_key("db", "sch", "src_tbl");
         assert!(
             registry
                 .columns_for(&source_relation)
@@ -1835,7 +1976,7 @@ mod user_defined_schema_registry_tests {
         );
 
         let seed_relation =
-            datafusion_common::TableReference::full("db", "sch", "seed_tbl").to_quoted_string();
+            dbt_common::user_defined_schema_registry::relation_key("db", "sch", "seed_tbl");
         assert!(
             registry
                 .columns_for(&seed_relation)
@@ -1844,7 +1985,7 @@ mod user_defined_schema_registry_tests {
         );
 
         let snapshot_relation =
-            datafusion_common::TableReference::full("db", "sch", "snap_tbl").to_quoted_string();
+            dbt_common::user_defined_schema_registry::relation_key("db", "sch", "snap_tbl");
         assert!(
             registry
                 .columns_for(&snapshot_relation)

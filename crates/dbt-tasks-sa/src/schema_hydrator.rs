@@ -11,7 +11,8 @@ use dbt_common::tracing::dbt_emit::emit_warn_log_message;
 use dbt_common::{ErrorCode, FsResult};
 use dbt_compilation::config::CompilationConfig;
 use dbt_compilation::schema_hydration::{
-    SchemaHydrationState, SchemaHydrator, SchemaHydratorFactory,
+    SchemaHydrationScope, SchemaHydrationState, SchemaHydrator, SchemaHydratorFactory,
+    hydrate_selected_get_relations, should_hydrate_schemas,
 };
 use dbt_dag::schedule::Schedule;
 use dbt_defer::DeferState;
@@ -138,7 +139,7 @@ impl SchemaHydrator for DefaultSchemaHydrator {
         arg: &EvalArgs,
         schedule: &Schedule<String>,
         resolved_state: &mut ResolverState,
-        _schema_hydration_state: &mut SchemaHydrationState,
+        schema_hydration_state: &mut SchemaHydrationState,
         defer_state: &mut DeferState,
         token: CancellationToken,
     ) -> FsResult<Box<dyn StaticAnalysisBuckets>> {
@@ -169,6 +170,18 @@ impl SchemaHydrator for DefaultSchemaHydrator {
                 resolved_state,
                 &relation_remap,
             );
+        }
+
+        if should_hydrate_schemas(arg) {
+            hydrate_selected_get_relations(
+                &self.adapter,
+                schedule,
+                resolved_state,
+                schema_hydration_state,
+                SchemaHydrationScope::Full,
+                arg.infer_schemas_and_typeless,
+            )
+            .await;
         }
 
         Ok(Box::new(DefaultStaticAnalysisBuckets::new(

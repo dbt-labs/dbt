@@ -1,0 +1,19 @@
+[package]
+name = "dbt-datafusion-errors"
+authors.workspace = true
+description = "Conversions between DataFusion errors and dbt errors"
+edition.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+license.workspace = true
+repository.workspace = true
+version.workspace = true
+
+[dependencies]
+dbt-error = { workspace = true }
+
+datafusion-common = { workspace = true }
+dbt-fusion-workspace-hack = { version = "0.1" }
+
+[lints]
+workspace = true

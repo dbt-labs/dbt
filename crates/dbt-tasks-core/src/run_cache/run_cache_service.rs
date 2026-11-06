@@ -11,6 +11,7 @@
 //! adapter relation rendering, warehouse metadata lookups, and skip policy.
 //! Stable service DTO construction lives in `dbt-state::request_builder`.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -27,10 +28,10 @@ use dbt_adapter::errors::{AdapterError, AdapterErrorKind, Cancellable, into_fs_e
 use dbt_adapter::metadata::{
     FreshnessOverride, MetadataAdapter, MetadataFreshness, MetadataQueryOptions,
 };
-use dbt_adapter::record_batch::RecordBatchExt;
 use dbt_adapter::relation::{RelationObject, create_relation, create_relation_from_node};
 use dbt_adapter::sql_types::TypeOps;
 use dbt_adapter_core::AdapterType;
+use dbt_adapter_engine::record_batch::RecordBatchExt;
 use dbt_adbc::QueryCtx;
 use dbt_common::adapter::dialect_of;
 use dbt_common::cancellation::CancellationToken;
@@ -53,14 +54,17 @@ use dbt_schemas::schemas::profiles::DbConfig;
 use dbt_schemas::schemas::properties::ModelState;
 use dbt_schemas::schemas::relations::base::BaseRelation;
 use dbt_schemas::schemas::{
-    DbtModel, DbtSeed, DbtSnapshot, DbtSource, DbtTest, InternalDbtNode, InternalDbtNodeAttributes,
+    DbtModel, DbtSeed, DbtSnapshot, DbtSource, DbtTest, FreshnessNodeRef, InternalDbtNode,
+    InternalDbtNodeAttributes,
 };
 use dbt_state::explain::{
-    StateExplainLogRecord, StateExplainNode, StateExplainNodeInfo, append_state_explain_log_record,
+    StateExplainExecutionConfirmed, StateExplainLogRecord, StateExplainNode, StateExplainNodeInfo,
+    append_state_explain_log_record,
 };
 use dbt_state::materialization;
 use dbt_state::metadata_cache::{MetadataPrefetchGuard, RunCacheMetadataCache};
 use dbt_state::node_session::ExecutionGuard;
+use dbt_state::node_state_config::resolve_compare_unrendered_code;
 use dbt_state::proto::query_cache::{
     ClientTelemetryEvent, ConfirmExecutionRequest, ExplainedDecision, NodeFuncMapping,
     QueryDependency, RecordExecutionsRequest, SkipExecutionResponse, Struct,
@@ -92,8 +96,8 @@ pub fn collect_upstream_hashes(ctx: &TaskRunnerCtx, unique_id: &str) -> HashMap<
                 .filter_map(|dep| {
                     ctx.inner
                         .node_hashes
-                        .get(dep)
-                        .map(|hash| (dep.clone(), hash.value().clone()))
+                        .read_sync(dep, |_, hash| hash.clone())
+                        .map(|hash| (dep.clone(), hash))
                 })
                 .collect()
         })
@@ -1186,16 +1190,14 @@ pub async fn run_cache_service_start_telemetry(ctx: &TaskRunnerCtx) {
 pub async fn run_cache_service_after_run(ctx: &TaskRunnerCtx, cancelled: bool) {
     let result = if cancelled {
         SessionEndResult::Cancelled
-    } else if ctx
+    } else if !ctx
         .inner
         .run_stats
-        .iter()
-        .any(|stat| stat.status == NodeStatus::Errored)
-        || ctx
+        .iter_sync(|_, stat| stat.status != NodeStatus::Errored)
+        || !ctx
             .inner
             .analyze_stats
-            .iter()
-            .any(|stat| stat.status == NodeStatus::Errored)
+            .iter_sync(|_, stat| stat.status != NodeStatus::Errored)
     {
         SessionEndResult::Failure
     } else {
@@ -1566,7 +1568,7 @@ pub async fn run_cache_service_before_execution(
                 .inner
                 .run_cache_ctx
                 .run_cache_dev_cloned_nodes
-                .contains_key(node.unique_id().as_str());
+                .contains_sync(node.unique_id().as_str());
             let decision = relabel_skip_for_dev_cloned_node(is_dev_cloned, decision);
             let execution_decision_id =
                 state_explain_execution_decision_id(Some(&outcome.response), &decision);
@@ -1639,11 +1641,32 @@ fn write_state_explain_node(
         node_name: node.name(),
         node_info: state_explain_node_info(ctx, node),
         execution_decision_id,
+        execution_id: None,
     });
     if let Err(err) = append_state_explain_log_record(path, &record) {
         emit_warn_log_message(
             ErrorCode::StateServiceWarn,
             format!("Failed to write dbt State explain node record: {err}"),
+        );
+    }
+}
+
+fn write_state_explain_execution_confirmed(
+    ctx: &TaskRunnerCtx,
+    node: &dyn InternalDbtNodeAttributes,
+    execution_id: String,
+) {
+    let Some(path) = ctx.inner.run_cache_ctx.state_explain_log_path.as_ref() else {
+        return;
+    };
+    let record = StateExplainLogRecord::ExecutionConfirmed(StateExplainExecutionConfirmed {
+        node_unique_id: node.unique_id(),
+        execution_id,
+    });
+    if let Err(err) = append_state_explain_log_record(path, &record) {
+        emit_warn_log_message(
+            ErrorCode::StateServiceWarn,
+            format!("Failed to write dbt State explain execution record: {err}"),
         );
     }
 }
@@ -1674,8 +1697,7 @@ fn state_explain_node_info(
         .inner
         .run_cache_ctx
         .run_cache_dev_cloned_nodes
-        .get(node.unique_id().as_str())
-        .map(|entry| entry.value().clone());
+        .read_sync(node.unique_id().as_str(), |_, dev_clone| dev_clone.clone());
     node_info.deferrals = state_explain_deferrals(ctx, node);
     node_info
 }
@@ -1837,33 +1859,46 @@ pub async fn confirm_run_cache_service_execution(
     };
 
     let request_id = request.request_id.clone();
-    if let Err(err) = client.confirm_execution(request).await {
-        let unique_id = node.unique_id();
-        match err {
-            RunCacheServiceError::Disabled => {}
-            err if err.is_transient_transport_rpc() => {
+    match client.confirm_execution(request).await {
+        Err(err) => {
+            let unique_id = node.unique_id();
+            match err {
+                RunCacheServiceError::Disabled => {}
+                err if err.is_transient_transport_rpc() => {
+                    emit_trace_log_message(|| {
+                        format!(
+                            "dbt State service confirmation transport failed for node {unique_id} (request_id {request_id}): {err}; command remains successful"
+                        )
+                    });
+                }
+                err => {
+                    emit_warn_log_message(
+                        ErrorCode::StateServiceWarn,
+                        format!(
+                            "dbt State service confirmation failed for node {unique_id} (request_id {request_id}): {err}; command remains successful"
+                        ),
+                    );
+                }
+            }
+        }
+        Ok(response) => {
+            let unique_id = node.unique_id();
+            if response.success {
                 emit_trace_log_message(|| {
                     format!(
-                        "dbt State service confirmation transport failed for node {unique_id} (request_id {request_id}): {err}; command remains successful"
+                        "dbt State service execution confirmed for node {unique_id} (request_id {request_id})"
+                    )
+                });
+                // The response request_id is the execution id, which differs from request_id for clones.
+                write_state_explain_execution_confirmed(ctx, node, response.request_id);
+            } else {
+                emit_trace_log_message(|| {
+                    format!(
+                        "dbt State service execution confirmation failed for node {unique_id} (request_id {request_id})"
                     )
                 });
             }
-            err => {
-                emit_warn_log_message(
-                    ErrorCode::StateServiceWarn,
-                    format!(
-                        "dbt State service confirmation failed for node {unique_id} (request_id {request_id}): {err}; command remains successful"
-                    ),
-                );
-            }
         }
-    } else {
-        let unique_id = node.unique_id();
-        emit_trace_log_message(|| {
-            format!(
-                "dbt State service execution confirmed for node {unique_id} (request_id {request_id})"
-            )
-        });
     }
 }
 
@@ -2317,6 +2352,8 @@ fn collect_source_freshness_overrides(
 /// The source-freshness override a source declares via `loaded_at_query` /
 /// `loaded_at_field`, if any. Query takes precedence over field (matching the
 /// dbt-core plugin); empty strings from the deserializer are treated as unset.
+/// `freshness.filter` is only meaningful for `Field` — `loaded_at_query` is
+/// the user's own full SQL, same as `dbt-core`.
 fn source_freshness_override(source: &DbtSource) -> Option<FreshnessOverride> {
     let trimmed_nonempty = |s: &str| {
         let t = s.trim();
@@ -2334,7 +2371,10 @@ fn source_freshness_override(source: &DbtSource) -> Option<FreshnessOverride> {
                 .loaded_at_field
                 .as_deref()
                 .and_then(trimmed_nonempty)
-                .map(FreshnessOverride::Field)
+                .map(|field| FreshnessOverride::Field {
+                    field,
+                    filter: source.get_freshness_filter().and_then(trimmed_nonempty),
+                })
         })
 }
 
@@ -2994,6 +3034,14 @@ async fn prepare_write_only_execution_record(
                 allow_clones: Some(ctx.dbt_profile().allow_clones),
                 is_defer_to_profile,
                 defer_enabled,
+                compare_unrendered_code: resolve_compare_unrendered_code(
+                    seed,
+                    ctx.inner
+                        .run_cache_ctx
+                        .run_cache_service_config
+                        .as_ref()
+                        .is_some_and(|config| config.compare_unrendered_code),
+                ),
                 dbt_project_info: DbtProjectInfo::from(ctx),
             },
             create_macro_resolver(ctx),
@@ -3089,6 +3137,14 @@ async fn submit_seed(
             allow_clones: Some(ctx.dbt_profile().allow_clones),
             is_defer_to_profile,
             defer_enabled,
+            compare_unrendered_code: resolve_compare_unrendered_code(
+                seed,
+                ctx.inner
+                    .run_cache_ctx
+                    .run_cache_service_config
+                    .as_ref()
+                    .is_some_and(|config| config.compare_unrendered_code),
+            ),
             dbt_project_info: DbtProjectInfo::from(ctx),
         },
         create_macro_resolver(ctx),
@@ -3310,44 +3366,6 @@ fn evaluate_volatile_sql_for_node(node: &dyn InternalDbtNodeAttributes) -> Optio
         .downcast_ref::<DbtTest>()
         .and_then(|test| test.__test_attr__.state.as_ref())
         .and_then(|state| state.evaluate_volatile_sql)
-}
-
-/// `compare_unrendered_code`, honored by models and snapshots (via `ModelState`) and data tests
-/// (via `DataTestState`).
-fn compare_unrendered_code_for_node(node: &dyn InternalDbtNodeAttributes) -> Option<bool> {
-    if let Some(state) = model_state_for_node(node) {
-        return state.compare_unrendered_code;
-    }
-    node.as_any()
-        .downcast_ref::<DbtTest>()
-        .and_then(|test| test.__test_attr__.state.as_ref())
-        .and_then(|state| state.compare_unrendered_code)
-}
-
-/// Per-node override for the service's `compare_unrendered_code` wire flag. Unlike
-/// `tolerate_nondeterminism` there is no inversion and no legacy `meta` form: the node config
-/// wins over the service default, otherwise the default stands.
-fn resolve_compare_unrendered_code(
-    node: &dyn InternalDbtNodeAttributes,
-    service_default: bool,
-) -> bool {
-    let node_override = compare_unrendered_code_for_node(node);
-    let resolved = node_override.unwrap_or(service_default);
-
-    // Logs the override separately from the result so a surprising `false` distinguishes
-    // "the node never set it" from "the service default lost to an explicit node value".
-    emit_trace_log_message(|| {
-        format!(
-            "dbt State compare_unrendered_code={resolved} for node {} (node config {}, service default {service_default})",
-            node.unique_id(),
-            match node_override {
-                Some(v) => v.to_string(),
-                None => "unset".to_owned(),
-            },
-        )
-    });
-
-    resolved
 }
 
 /// Per-model override for ignoring external / out of band changes.
@@ -4525,8 +4543,11 @@ fn group_relations_by_database_and_schema(
     for (name, relation) in relations {
         grouped
             .entry((
-                relation.database_as_resolved_str().ok(),
-                relation.schema_as_resolved_str().ok(),
+                relation
+                    .database_as_resolved_str()
+                    .ok()
+                    .map(Cow::into_owned),
+                relation.schema_as_resolved_str().ok().map(Cow::into_owned),
             ))
             .or_insert_with(BTreeMap::new)
             .insert(name.clone(), Arc::clone(relation));
@@ -5250,8 +5271,9 @@ mod tests {
         EventReplayer, args_freshness_with_overrides, get_or_init_recording, get_or_init_replayer,
         reset_time_machine_globals, with_time_machine_metadata_wrapper,
     };
-    use dbt_adapter::{Adapter, AdapterBuilder, AdapterImpl, AdapterStore};
+    use dbt_adapter::{Adapter, AdapterStore};
     use dbt_common::path::DbtPath;
+    use dbt_schemas::schemas::common::FreshnessDefinition;
     use dbt_schemas::state::ProfileAdapter;
     use dbt_state::telemetry::SharedEventOrder;
     use indexmap::IndexMap;
@@ -5270,11 +5292,10 @@ mod tests {
 
     static TIME_MACHINE_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     use dbt_adapter::sql_types::DefaultTypeOps;
-    use dbt_adapter::stmt_splitter::DefaultStmtSplitter;
     use dbt_adapter_core::ExecutionPhase;
     use dbt_common::AsyncAdapterResult;
     use dbt_common::cancellation::never_cancels;
-    use dbt_common::collections::DashMap;
+    use dbt_common::collections::SccHashMap;
     use dbt_common::io_args::RunCacheMode;
     use dbt_common::sources_extractor::SourcesExtractor;
     use dbt_common::{CompiledSpans, MacroSpan};
@@ -6561,6 +6582,42 @@ mod tests {
                 .run_cache_metadata
                 .last_modified_epoch(&target_fqn),
             Some(Some(1_700_000_000_000))
+        );
+    }
+
+    /// Unlike `clear_stale_missing_last_modified_epoch_for_node` (which leaves a
+    /// valid cached epoch alone), `refresh_final_last_modified_epoch_for_node`
+    /// must not trust any previously cached value — it re-queries regardless of
+    /// what's cached. With no adapter wired into the test ctx, the re-query
+    /// fails open to `None`, so the previously cached epoch is overwritten
+    /// rather than preserved.
+    #[dbt_runtime::test]
+    async fn refresh_overwrites_a_previously_cached_epoch() {
+        let ctx = test_task_runner_ctx(None);
+        let model = make_model(
+            "model.test.user_name_model",
+            "db",
+            "dbt_test",
+            "user_name_model",
+            DbtMaterialization::Table,
+        );
+        let target_fqn = fqn_of("db", "dbt_test", "user_name_model");
+        ctx.inner
+            .run_cache_ctx
+            .run_cache_metadata
+            .insert_last_modified_epoch(&target_fqn, Some(1_700_000_000_000));
+
+        let refreshed = refresh_final_last_modified_epoch_for_node(&ctx, model.as_ref())
+            .await
+            .unwrap();
+
+        assert_eq!(refreshed, None);
+        assert_eq!(
+            ctx.inner
+                .run_cache_ctx
+                .run_cache_metadata
+                .last_modified_epoch(&target_fqn),
+            Some(None)
         );
     }
 
@@ -8267,6 +8324,7 @@ mod tests {
             _instruction: &'a dbt_scheduler::instructions::Instruction,
             _rendered_sql: &'a str,
             _unique_id: Option<&'a str>,
+            _adapter: Option<Arc<Adapter>>,
             _connection: &'a mut Option<Box<dyn dbt_adbc::Connection>>,
         ) -> Pin<Box<dyn Future<Output = FsResult<(Vec<RecordBatch>, SchemaRef)>> + Send + 'a>>
         {
@@ -8376,7 +8434,7 @@ mod tests {
                 sql: sql.to_string(),
                 ..Default::default()
             },
-            config_map: Arc::new(DashMap::default()),
+            config_map: Arc::new(SccHashMap::default()),
             lp_instruction: None,
         }
     }
@@ -8458,7 +8516,7 @@ mod tests {
             "worker-0".to_string(),
             schedule,
             BTreeMap::new(),
-            DashMap::default(),
+            SccHashMap::default(),
             Box::new(TestExtendedCtx),
             Arc::new(TestCompiledSqlCache),
             Arc::new(TestAdhocRunner),
@@ -8470,7 +8528,7 @@ mod tests {
             sources_extractor,
             RunCacheCtx {
                 run_cache_metadata: Arc::new(RunCacheMetadataCache::new()),
-                run_cache_dev_cloned_nodes: DashMap::default(),
+                run_cache_dev_cloned_nodes: SccHashMap::default(),
                 run_cache_deferred_fqns: BTreeSet::new(),
                 run_cache_service_requested: true,
                 run_cache_service_config: Some(RunCacheServiceConfig::disabled()),
@@ -8511,21 +8569,7 @@ mod tests {
     }
 
     fn test_adapter_store_for(adapter_type: AdapterType) -> Arc<AdapterStore> {
-        let build: AdapterBuilder = Box::new(|adapter_type| {
-            let adapter = AdapterImpl::new_mock(
-                adapter_type,
-                BTreeMap::new(),
-                DEFAULT_RESOLVED_QUOTING,
-                Arc::new(DefaultTypeOps::new(adapter_type)),
-                Arc::new(DefaultStmtSplitter),
-            );
-            Ok(Arc::new(Adapter::new(
-                Arc::new(adapter),
-                None,
-                never_cancels(),
-            )))
-        });
-        Arc::new(AdapterStore::new(vec![adapter_type], adapter_type, build).expect("valid store"))
+        Arc::new(AdapterStore::new_mock(vec![adapter_type], adapter_type).expect("valid store"))
     }
 
     #[dbt_runtime::test]
@@ -8846,7 +8890,7 @@ mod tests {
                 }
             },
             cloud_config: None,
-            render_results: RenderResults::default(),
+            render_results: Arc::new(RenderResults::default()),
             node_resolver: Arc::new(DummyNodeResolverTracker),
             get_relation_calls: Default::default(),
             get_columns_in_relation_calls: Default::default(),
@@ -9240,8 +9284,60 @@ mod tests {
             "source with loaded_at_field should produce an override"
         );
         assert!(
-            matches!(overrides[&source_fqn], FreshnessOverride::Field(_)),
+            matches!(overrides[&source_fqn], FreshnessOverride::Field { .. }),
             "override kind should be Field"
+        );
+    }
+
+    // Regression #15796: a source's `freshness.filter` must reach the run-cache
+    // clone-verification override query, not just the plain `source freshness`
+    // command's macro-based query.
+    #[test]
+    fn prefetch_source_freshness_override_includes_filter() {
+        let model = make_model(
+            "model.pkg.fact",
+            "db",
+            "analytics",
+            "fact",
+            DbtMaterialization::Incremental,
+        );
+        let mut source = DbtSource::default();
+        source.__common_attr__.unique_id = "source.pkg.raw.users".to_string();
+        source.__base_attr__.database = "db".to_string();
+        source.__base_attr__.schema = "raw".to_string();
+        source.__base_attr__.alias = "users".to_string();
+        source.__base_attr__.materialized = DbtMaterialization::View;
+        source.__source_attr__.loaded_at_field = Some("updated_at".to_string());
+        source.__source_attr__.freshness = Some(FreshnessDefinition {
+            filter: Some("deleted_at is null".to_string()),
+            ..Default::default()
+        });
+        let source = Arc::new(source);
+
+        let runnable_set: BTreeSet<String> = ["model.pkg.fact".to_string()].into_iter().collect();
+        let runtime_deps: BTreeMap<String, BTreeSet<String>> = [(
+            "model.pkg.fact".to_string(),
+            ["source.pkg.raw.users".to_string()].into_iter().collect(),
+        )]
+        .into_iter()
+        .collect();
+        let nodes = nodes_from(vec![model], vec![source]);
+
+        let (_, overrides) = collect_global_prefetch_relations(
+            AdapterType::Snowflake,
+            &runnable_set,
+            &runtime_deps,
+            &nodes,
+        );
+
+        let source_fqn = fqn_of("db", "raw", "users");
+        assert!(
+            matches!(
+                &overrides[&source_fqn],
+                FreshnessOverride::Field { field, filter: Some(filter) }
+                    if field == "updated_at" && filter == "deleted_at is null"
+            ),
+            "freshness.filter should be threaded into the Field override"
         );
     }
 
@@ -9297,13 +9393,18 @@ mod tests {
 
         // Field overrides are passed through untouched.
         let rendered = render_freshness_override(
-            FreshnessOverride::Field("updated_at".to_string()),
+            FreshnessOverride::Field {
+                field: "updated_at".to_string(),
+                filter: None,
+            },
             &relation,
             &jinja_env,
             &base_context,
         )
         .unwrap();
-        assert!(matches!(rendered, FreshnessOverride::Field(f) if f == "updated_at"));
+        assert!(
+            matches!(rendered, FreshnessOverride::Field { field, .. } if field == "updated_at")
+        );
 
         // A relation missing a required component (here, identifier) errors
         // rather than rendering an unqualified name into the warehouse SQL.
@@ -9479,7 +9580,10 @@ mod tests {
         };
         let overrides = BTreeMap::from([(
             fqn.clone(),
-            FreshnessOverride::Field("loaded_at".to_string()),
+            FreshnessOverride::Field {
+                field: "loaded_at".to_string(),
+                filter: None,
+            },
         )]);
 
         apply_unresolvable_last_modified_overrides(
@@ -10333,7 +10437,10 @@ mod tests {
         let relations = BTreeMap::from([(name.clone(), relation)]);
         let overrides = BTreeMap::from([(
             name.clone(),
-            FreshnessOverride::Field("loaded_at".to_string()),
+            FreshnessOverride::Field {
+                field: "loaded_at".to_string(),
+                filter: None,
+            },
         )]);
         let adapter = MockMetadataAdapter::with_response(MockFreshnessResponse::Ok(Vec::new()));
         let prefetch_guards = begin_last_modified_prefetches(cache, &relations).await;
@@ -10353,7 +10460,7 @@ mod tests {
         assert_eq!(recorded.len(), 1);
         assert_eq!(recorded[0].len(), 1);
         match recorded[0].get(&name) {
-            Some(FreshnessOverride::Field(field)) => assert_eq!(field, "loaded_at"),
+            Some(FreshnessOverride::Field { field, .. }) => assert_eq!(field, "loaded_at"),
             other => panic!("expected a Field override for {name}, got {other:?}"),
         }
     }

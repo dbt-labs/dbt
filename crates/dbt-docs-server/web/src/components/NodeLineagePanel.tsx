@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Compass, Share2, X } from 'lucide-react';
 
 import { getColumns, toRelationshipItem } from '../lib/assetView';
@@ -68,6 +68,7 @@ function PanelBody({ uniqueId, onClose }: { uniqueId: string; onClose: () => voi
   const isPending = assetQuery.isPending;
   const notFound = !assetQuery.isPending && assetQuery.data === null;
   const [searchParams, setSearchParams] = useSearchParams();
+  const navigate = useNavigate();
   const tabParam = searchParams.get('tab');
   const activeTab: TabType = isTabType(tabParam) ? tabParam : 'general';
 
@@ -152,7 +153,7 @@ function PanelBody({ uniqueId, onClose }: { uniqueId: string; onClose: () => voi
               icon={<Compass className="size-4" />}
               ariaLabel="Open full details"
               tooltip="Open full details"
-              onClick={() => window.location.assign(paths.details(asset.uniqueId))}
+              onClick={() => navigate(paths.details(asset.uniqueId))}
             />
             <Button
               variant="ghost"
@@ -222,14 +223,14 @@ function PanelBody({ uniqueId, onClose }: { uniqueId: string; onClose: () => voi
                     <RelationshipSection
                       heading="Depends on"
                       items={dependsOn}
-                      onSelect={(id) => window.location.assign(paths.details(id))}
+                      onSelect={(id) => navigate(paths.details(id))}
                     />
                   )}
                   {referencedBy.length > 0 && (
                     <RelationshipSection
                       heading="Referenced by"
                       items={referencedBy}
-                      onSelect={(id) => window.location.assign(paths.details(id))}
+                      onSelect={(id) => navigate(paths.details(id))}
                     />
                   )}
                 </div>
