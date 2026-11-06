@@ -93,6 +93,51 @@ fn create_or_alter_gate_off_still_alters_config_changes() {
     );
 }
 
+/// Run a normal sync over a matching live table with the project flag set to `project_flag` and
+/// the model-level `dynamic_table_create_or_alter` set to `model_setting`.
+fn sync_with_model_setting(project_flag: bool, model_setting: Option<bool>) -> Fixture {
+    let fixture = fixture_with(
+        Some(RelationType::DynamicTable),
+        matching_remote_state(),
+        FixtureOptions {
+            create_or_alter: project_flag,
+            ..Default::default()
+        },
+    );
+    let local = LocalConfig {
+        dynamic_table_create_or_alter: model_setting,
+        ..base_local_config()
+    };
+    render_ok(&fixture, &local, false, "apply");
+    fixture
+}
+
+#[test]
+fn create_or_alter_model_setting_opts_in_when_the_project_flag_is_off() {
+    let fixture = sync_with_model_setting(false, Some(true));
+    assert_eq!(fixture.executed(), vec![base_create_or_alter_sql()]);
+}
+
+#[test]
+fn create_or_alter_model_setting_opts_out_when_the_project_flag_is_on() {
+    let fixture = sync_with_model_setting(true, Some(false));
+    assert!(
+        fixture.executed().is_empty(),
+        "an opted-out model must take the legacy path, got: {:?}",
+        fixture.executed()
+    );
+    assert_eq!(fixture.raw_results(), vec!["main=skip".to_string()]);
+}
+
+#[test]
+fn create_or_alter_unset_model_setting_follows_the_project_flag() {
+    assert_eq!(
+        sync_with_model_setting(true, None).executed(),
+        vec![base_create_or_alter_sql()]
+    );
+    assert!(sync_with_model_setting(false, None).executed().is_empty());
+}
+
 #[test]
 fn create_or_alter_deploys_the_definition_when_nothing_else_changed() {
     // The changeset cannot see the query, so "no config changes" means "query-only edit (or no
