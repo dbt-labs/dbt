@@ -37,7 +37,7 @@ use dbt_schemas::{
 use minijinja::{
     Error as MinijinjaError, ErrorKind as MinijinjaErrorKind, State,
     arg_utils::ArgParser,
-    constants::{CURRENT_PATH, CURRENT_SPAN, DIALECT, TARGET_UNIQUE_ID},
+    constants::{CURRENT_PATH, CURRENT_SPAN, TARGET_UNIQUE_ID},
     listener::RenderingEventListener,
     machinery::Span,
     value::{
@@ -64,7 +64,7 @@ pub fn build_resolve_model_context<T: ResolvableConfig<T> + Serialize + 'static>
     adapter_type: AdapterType,
     database: &str,
     schema: &str,
-    // The node's dialect and starting relation, when known before rendering.
+    // The node's target, dialect and starting relation, when known before rendering.
     node_scope: Option<&ParseAdapterScope>,
     // Picks the alias table the in-SQL config() applies.
     config_aliasing: InlineConfigAliasing,
@@ -325,9 +325,9 @@ pub fn build_resolve_model_context<T: ResolvableConfig<T> + Serialize + 'static>
     debug_assert_eq!(CURRENT_SPAN, "__minijinja_current_span");
 
     let mut ctx = to_jinja_btreemap(&ctx);
-    // Only the scope's dialect: target and env stay the default's, as at compile.
-    if let Some(dialect) = node_scope.and_then(ParseAdapterScope::dialect) {
-        ctx.insert(DIALECT.to_string(), dialect.clone());
+    // The node connection's `target`, `env`, `database`, `schema` and, except LakeCompute, dialect.
+    if let Some(scope) = node_scope {
+        scope.insert_overlay(&mut ctx);
     }
     ctx
 }
@@ -352,6 +352,12 @@ pub fn update_resolve_model_relation<T: ResolvableConfig<T> + 'static>(
         model.insert(
             MinijinjaValue::from(field),
             relation.get_attr(attribute).expect("relation attribute"),
+        );
+    }
+    for field in ["database", "schema"] {
+        context.insert(
+            field.to_string(),
+            relation.get_attr(field).expect("relation attribute"),
         );
     }
     context.insert(
@@ -1085,6 +1091,105 @@ mod test {
     use dbt_schemas::schemas::common::DbtMaterialization;
     use dbt_schemas::schemas::relations::DEFAULT_DBT_QUOTING;
     use dbt_test_primitives::assert_contains;
+
+    #[test]
+    fn previewed_relation_controls_database_and_schema_ref_branches() {
+        use crate::phases::parse::ParseAdapterScopes;
+        use dbt_schemas::state::{DbtProfile, ProfileAdapter};
+
+        let mut profile: DbtProfile = dbt_yaml::from_str(
+            "profile: p\ntarget: dev\nallow_clones: true\nadapters: {}\ndefault_adapter: snowflake\ndatabase: analytics\nschema: dbt_x\nrelative_profile_path: profiles.yml\n",
+        )
+        .unwrap();
+        let snowflake = dbt_yaml::from_str(
+            "type: snowflake\naccount: acct\ndatabase: analytics\nschema: dbt_x\n",
+        )
+        .unwrap();
+        profile
+            .adapters
+            .insert(AdapterType::Snowflake, ProfileAdapter::single(snowflake));
+        let bigquery =
+            dbt_yaml::from_str("type: bigquery\nmethod: oauth\nproject: bq-proj\ndataset: bq_ds\n")
+                .unwrap();
+        profile
+            .adapters
+            .insert(AdapterType::Bigquery, ProfileAdapter::single(bigquery));
+        let scopes = ParseAdapterScopes::from_profile(&profile);
+        let resources = Arc::new(Mutex::new(Vec::new()));
+        let config: ModelConfig =
+            crate::serde::from_yaml_raw("database: analytics\nschema: marts\n", None, false, None)
+                .unwrap();
+        let mut ctx = build_resolve_model_context(
+            &config,
+            false,
+            AdapterType::Snowflake,
+            "analytics",
+            "dbt_x",
+            Some(scopes.get(AdapterType::Bigquery).unwrap()),
+            InlineConfigAliasing::fixed(AdapterType::Bigquery),
+            "branch",
+            vec!["root".to_string(), "branch".to_string()],
+            "root",
+            "root",
+            DEFAULT_DBT_QUOTING,
+            Arc::new(DbtRuntimeConfig::default()),
+            Arc::new(DbtRuntimeConfig::default()),
+            resources.clone(),
+            Arc::new(AtomicBool::new(false)),
+            Path::new("models/branch.sql"),
+            Path::new("branch.sql"),
+            None,
+            Some(NodeType::Model),
+        );
+        let relation = dbt_adapter::relation::do_create_relation(
+            AdapterType::Bigquery,
+            "analytics".to_string(),
+            "bq_ds_marts".to_string(),
+            Some("branch".to_string()),
+            None,
+            ResolvedQuoting::trues(),
+        )
+        .unwrap();
+        update_resolve_model_relation::<ModelConfig>(
+            &mut ctx,
+            dbt_adapter::relation::RelationObject::new(Arc::from(relation)).into_value(),
+        );
+
+        let sql = "{% if database == 'analytics' and schema == 'bq_ds_marts' %}{{ ref('configured') }}{% else %}{{ ref('connection') }}{% endif %}";
+        minijinja::Environment::new()
+            .render_str(sql, &ctx, &[])
+            .unwrap();
+        let refs = resources
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|resource| match resource {
+                SqlResource::Ref((name, ..)) => Some(name.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(refs, ["configured"]);
+        for key in ["database", "schema"] {
+            assert_eq!(ctx[key], ctx["this"].get_attr(key).unwrap());
+            assert_eq!(ctx[key], ctx["model"].get_attr(key).unwrap());
+        }
+        for key in ["target", "env"] {
+            assert_eq!(
+                ctx[key].get_attr("type").unwrap().as_str(),
+                Some("bigquery")
+            );
+            assert_eq!(
+                ctx[key].get_attr("project").unwrap().as_str(),
+                Some("bq-proj")
+            );
+            assert_eq!(
+                ctx[key].get_attr("dataset").unwrap().as_str(),
+                Some("bq_ds")
+            );
+        }
+        assert_eq!(ctx["dialect"].as_str(), Some("bigquery"));
+    }
+
     #[test]
     fn test_resolve_source_function_rendering() {
         let sql_resources = Arc::new(Mutex::new(Vec::new()));

@@ -184,6 +184,10 @@ pub enum ErrorCode {
     /// dispatches through either, so the override has no effect.
     UnitTestMacroOverrideIgnored = 1161,
     DepsInstalledPackagesFallback = 1162,
+    /// A selected unit test of a LakeCompute model runs on another adapter, as that adapter's SQL.
+    LakeComputeUnitTestOnDefaultAdapter = 1163,
+    /// An inline `config(adapter=...)` changed a node's adapter after its parse render.
+    InlineAdapterParseTargetMismatch = 1164,
 
     // Network/HTTP [1200–1249]
     NetworkError = 1200,
