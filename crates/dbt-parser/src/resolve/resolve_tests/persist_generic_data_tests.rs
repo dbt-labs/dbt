@@ -2207,19 +2207,11 @@ mod tests {
         let v1 = make_version(1, make_columns("all", vec![]));
         // v2: include all, exclude cost_center_bkey — test must be absent
         let v2 = make_version(2, make_columns("all", vec!["cost_center_bkey"]));
-        // v3: empty include list — no tests should be inherited
-        let v3 = make_version(
-            3,
-            vec![VersionColumnProperties {
-                include: Some(StringOrArrayOfStrings::ArrayOfStrings(vec![])),
-                ..Default::default()
-            }],
-        );
 
         let result =
-            collect_versioned_model_tests(&base_config, &[v1, v2, v3]).expect("should not fail");
+            collect_versioned_model_tests(&base_config, &[v1, v2]).expect("should not fail");
 
-        assert_eq!(result.len(), 3, "expected one config per version");
+        assert_eq!(result.len(), 2, "expected one config per version");
 
         let v1_cfg = result
             .iter()
@@ -2246,11 +2238,55 @@ mod tests {
                 .unwrap_or(false),
             "v2 must not have a test for cost_center_bkey (it is excluded)"
         );
+    }
 
-        let v3_cfg = result
-            .iter()
-            .find(|c| c.version_num.as_deref() == Some("3"))
-            .unwrap();
+    #[test]
+    fn test_version_column_empty_include_suppresses_inherited_tests() {
+        use dbt_schemas::schemas::common::Versions;
+        use dbt_schemas::schemas::serde::StringOrArrayOfStrings;
+        use dbt_yaml::Verbatim;
+
+        let unique_test = DataTests::String(Spanned::from("unique".to_string()));
+        let mut base_col_tests = BTreeMap::new();
+        base_col_tests.insert(
+            "cost_center_bkey".to_string(),
+            ColumnTestEntry {
+                quote: false,
+                tests: vec![unique_test],
+                tags: vec![],
+                legacy_syntax_handling: LegacyTestSyntaxHandling::Strict,
+            },
+        );
+        let base_config = GenericTestConfig {
+            resource_type: "model".to_string(),
+            resource_name: "cost_centers".to_string(),
+            version_num: None,
+            model_tests: None,
+            column_tests: Some(base_col_tests),
+            source_name: None,
+        };
+
+        // v3: empty include list — no tests should be inherited
+        let v3 = Versions {
+            v: dbt_yaml::Value::Number(dbt_yaml::Number::from(3), Span::zero()),
+            deprecation_date: None,
+            defined_in: None,
+            description: None,
+            access: None,
+            config: Verbatim::from(None),
+            constraints: None,
+            data_tests: None,
+            tests: None,
+            columns: Some(vec![VersionColumnProperties {
+                include: Some(StringOrArrayOfStrings::ArrayOfStrings(vec![])),
+                ..Default::default()
+            }]),
+            __additional_properties__: Verbatim::from(HashMap::new()),
+        };
+
+        let result = collect_versioned_model_tests(&base_config, &[v3]).expect("should not fail");
+        assert_eq!(result.len(), 1);
+        let v3_cfg = &result[0];
         assert!(
             !v3_cfg
                 .column_tests

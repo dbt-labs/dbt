@@ -253,6 +253,20 @@ impl Default for ColumnInheritanceRules {
     }
 }
 
+fn is_wildcard_name(name: &str) -> bool {
+    matches!(name, "*" | "all")
+}
+
+fn is_wildcard_directive(include: &StringOrArrayOfStrings) -> bool {
+    match include {
+        StringOrArrayOfStrings::String(s) => is_wildcard_name(s),
+        StringOrArrayOfStrings::ArrayOfStrings(names) => match names.as_slice() {
+            [s] => is_wildcard_name(s),
+            _ => false,
+        },
+    }
+}
+
 impl ColumnInheritanceRules {
     /// Given the `columns:` list of a versioned model, return the include/exclude directive it
     /// carries, or `None` when it carries none (in which case callers must use [`Default`], i.e.
@@ -267,12 +281,7 @@ impl ColumnInheritanceRules {
 
         let includes = match directive.include.as_ref() {
             // `all` / `*` means include everything, represented as `None`.
-            Some(StringOrArrayOfStrings::String(s)) if s == "*" || s == "all" => None,
-            Some(StringOrArrayOfStrings::ArrayOfStrings(names))
-                if names.len() == 1 && (names[0] == "*" || names[0] == "all") =>
-            {
-                None
-            }
+            Some(include) if is_wildcard_directive(include) => None,
             Some(StringOrArrayOfStrings::String(s)) => Some(vec![s.clone()]),
             Some(StringOrArrayOfStrings::ArrayOfStrings(names)) => Some(names.clone()),
             // `exclude` without `include` behaves as include-all-except.
