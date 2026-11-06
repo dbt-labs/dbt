@@ -1,6 +1,7 @@
 kind: Fixes
-body: Translate contract `data_type` aliases (e.g. `string`, `float`) in the microbatch
-  batch context, so contracted microbatch models no longer fail with an untranslated type
+body: Stop overriding `model`, `sql` and `compiled_code` in the microbatch batch context, so
+  contract `data_type` aliases (e.g. `string`, `float`) are translated and contracted microbatch
+  models no longer fail with an untranslated type
 time: 2026-10-15T11:48:03.000000+02:00
 custom:
     Author: mWekking
