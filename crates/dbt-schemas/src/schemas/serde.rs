@@ -933,6 +933,11 @@ pub struct DuckDbExtensionObject {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub repo: Option<String>,
+    /// Any other fields. Kept so that DuckDB auth rejects them instead of a misspelled
+    /// `repo` being silently dropped (`deny_unknown_fields` has no effect under
+    /// `UntaggedEnumDeserialize`, which diverts unknown keys to a callback).
+    #[serde(flatten)]
+    pub unknown_fields: BTreeMap<String, dbt_yaml::Value>,
 }
 
 /// Wrapper that serializes `StringOrArrayOfStrings` as an array without allocation.

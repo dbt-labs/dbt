@@ -194,79 +194,141 @@ impl<'a> DuckDbTarget<'a> {
     }
 }
 
+/// The repository an extension is installed from.
+enum ExtensionRepository<'a> {
+    /// Bare `INSTALL`, which uses DuckDB's default repository.
+    Default,
+    /// `INSTALL ... FROM "<name>"`, e.g. `community` or `core_nightly`.
+    Named(&'a str),
+}
+
+struct Extension<'a> {
+    name: &'a str,
+    repository: ExtensionRepository<'a>,
+}
+
+impl<'a> Extension<'a> {
+    const OBJECT_FIELDS: &'static [&'static str] = &["name", "repo"];
+
+    /// Parses `extensions[i]`: a bare name, or a `{name, repo?}` mapping as in dbt-duckdb.
+    // https://github.com/duckdb/dbt-duckdb/blob/6c010fc97bd5bba793f7132991edd001362e756b/dbt/adapters/duckdb/environments/__init__.py#L166-L177
+    fn from_item(i: usize, item: &'a YmlValue) -> Result<Self, AuthError> {
+        let map = match item {
+            // Bare names keep their legacy handling: sanitized at render, skipped if empty.
+            YmlValue::String(name, _) => {
+                return Ok(Extension {
+                    name,
+                    repository: ExtensionRepository::Default,
+                });
+            }
+            YmlValue::Mapping(map, _) => map,
+            _ => {
+                return Err(AuthError::config(format!(
+                    "extensions[{i}]: expected an extension name or a mapping with 'name' and optional 'repo'"
+                )));
+            }
+        };
+        if let Some(unknown) = map
+            .keys()
+            .find(|k| !k.as_str().is_some_and(|k| Self::OBJECT_FIELDS.contains(&k)))
+        {
+            return Err(AuthError::config(match unknown.as_str() {
+                Some(key) => format!("extensions[{i}]: unknown field '{key}'"),
+                None => format!("extensions[{i}]: field names must be strings"),
+            }));
+        }
+
+        let name = match map.get("name") {
+            Some(YmlValue::String(name, _)) if is_extension_name(name) => name,
+            Some(_) => {
+                return Err(AuthError::config(format!(
+                    "extensions[{i}].name: expected a non-empty string of ASCII letters, digits and '_'"
+                )));
+            }
+            None => {
+                return Err(AuthError::config(format!(
+                    "extensions[{i}]: missing required field 'name'"
+                )));
+            }
+        };
+        // `repo: null` is the same as omitting it, matching `DuckDbExtensionObject::repo`.
+        let repository = match map.get("repo") {
+            None | Some(YmlValue::Null(_)) => ExtensionRepository::Default,
+            Some(YmlValue::String(repo, _)) if is_repository_name(repo) => {
+                ExtensionRepository::Named(repo)
+            }
+            Some(_) => {
+                return Err(AuthError::config(format!(
+                    "extensions[{i}].repo: expected a repository name of ASCII letters, digits, '_' and '-'"
+                )));
+            }
+        };
+        Ok(Extension { name, repository })
+    }
+
+    /// `INSTALL` (unless `install` is false) and `LOAD` for this extension.
+    fn render(&self, install: bool, out: &mut Vec<String>) {
+        let name = sanitize_identifier(self.name);
+        if name.is_empty() {
+            return;
+        }
+        if install {
+            out.push(match self.repository {
+                ExtensionRepository::Default => format!("INSTALL {name}"),
+                ExtensionRepository::Named(repo) => format!("INSTALL {name} FROM \"{repo}\""),
+            });
+        }
+        // A bare `LOAD` finds extensions installed from the built-in and community repositories.
+        // https://github.com/duckdb/duckdb/blob/d54cbbe3df17e8e5ce68312f483b4155836112aa/src/main/extension/extension_load.cpp#L485-L487
+        out.push(format!("LOAD {name}"));
+    }
+}
+
 struct Extensions<'a> {
-    names: Vec<&'a str>,
+    items: Vec<Extension<'a>>,
 }
 
 impl<'a> Extensions<'a> {
     fn from_config(config: &'a AdapterConfig) -> Result<Self, AuthError> {
         match config.get("extensions") {
             Some(YmlValue::Sequence(seq, _)) => {
-                let names = seq
+                let items = seq
                     .iter()
                     .enumerate()
-                    .map(|(i, item)| {
-                        item.as_str().ok_or_else(|| {
-                            AuthError::config(format!(
-                                "extensions: item {i} must be a string, got {item:?}"
-                            ))
-                        })
-                    })
+                    .map(|(i, item)| Extension::from_item(i, item))
                     .collect::<Result<_, _>>()?;
-                Ok(Extensions { names })
+                Ok(Extensions { items })
             }
-            None => Ok(Extensions { names: vec![] }),
+            None => Ok(Extensions { items: vec![] }),
             Some(other) => Err(AuthError::config(format!(
                 "extensions: expected a sequence, got {other:?}"
             ))),
         }
     }
 
-    /// `INSTALL`/`LOAD` for the configured extensions (local/memory paths).
-    fn render(&self) -> Vec<String> {
-        let names: Vec<String> = self
-            .names
-            .iter()
-            .map(|s| sanitize_identifier(s))
-            .filter(|s| !s.is_empty())
-            .collect();
-
-        let mut out = Vec::with_capacity(names.len() * 2);
-        for name in &names {
-            out.push(format!("INSTALL {name}"));
-            out.push(format!("LOAD {name}"));
-        }
-        out
-    }
-
-    /// Same as [`Self::render`], with `motherduck` auto-injected if absent.
-    /// `install` is false under SaaS, where file access is locked at open and only `LOAD` can run.
-    fn render_with_motherduck(&self, target: &DuckDbTarget<'_>) -> Vec<String> {
-        let has_motherduck = self
-            .names
-            .iter()
-            .any(|s| s.eq_ignore_ascii_case("motherduck"));
-
-        let mut names: Vec<String> = if has_motherduck {
-            vec![]
-        } else {
-            vec!["motherduck".to_owned()]
+    /// `INSTALL`/`LOAD` for the configured extensions. MotherDuck targets get `motherduck`
+    /// auto-injected if absent; under SaaS, file access is locked at open and only `LOAD` can run.
+    fn render(&self, target: &DuckDbTarget<'_>) -> Vec<String> {
+        let (is_motherduck, install) = match target {
+            DuckDbTarget::Plain { .. } => (false, true),
+            DuckDbTarget::MotherduckBrowserLogin { .. }
+            | DuckDbTarget::MotherduckTokenAuth { .. } => (true, true),
+            DuckDbTarget::MotherduckSaasBrowserLogin { .. }
+            | DuckDbTarget::MotherduckSaasTokenAuth { .. } => (true, false),
         };
-        for ext in &self.names {
-            let sanitized = sanitize_identifier(ext);
-            if !sanitized.is_empty() {
-                names.push(sanitized);
-            }
-        }
+        let motherduck = (is_motherduck
+            && !self
+                .items
+                .iter()
+                .any(|ext| ext.name.eq_ignore_ascii_case("motherduck")))
+        .then_some(Extension {
+            name: "motherduck",
+            repository: ExtensionRepository::Default,
+        });
 
-        let mut out = Vec::with_capacity(names.len() * 2);
-        for name in &names {
-            match target {
-                DuckDbTarget::MotherduckSaasBrowserLogin { .. }
-                | DuckDbTarget::MotherduckSaasTokenAuth { .. } => {}
-                _ => out.push(format!("INSTALL {name}")),
-            }
-            out.push(format!("LOAD {name}"));
+        let mut out = Vec::with_capacity((self.items.len() + 1) * 2);
+        for ext in motherduck.iter().chain(&self.items) {
+            ext.render(install, &mut out);
         }
         out
     }
@@ -542,11 +604,7 @@ pub fn generate_duckdb_init_sql(config: &AdapterConfig) -> Result<Vec<String>, A
     let settings = Settings::from_config(config)?;
     let attachments = Attachments::from_config(config)?;
 
-    let mut out = Vec::new();
-    out.extend(match target {
-        DuckDbTarget::Plain { .. } => extensions.render(),
-        _ => extensions.render_with_motherduck(&target),
-    });
+    let mut out = extensions.render(&target);
     out.extend(secrets.render());
     out.extend(settings.render());
     out.extend(attachments.render());
@@ -562,6 +620,21 @@ fn sanitize_identifier(name: &str) -> String {
     name.chars()
         .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
         .collect()
+}
+
+/// Whether `name` is non-empty and unchanged by [`sanitize_identifier`].
+fn is_extension_name(name: &str) -> bool {
+    !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Whether `name` is a valid extension repository name, which never needs escaping inside
+/// double quotes. DuckDB applies the same rule to user-provided repository names:
+// https://github.com/duckdb/duckdb/blob/d54cbbe3df17e8e5ce68312f483b4155836112aa/src/main/extension/extension_repository_manager.cpp#L252-L263
+fn is_repository_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
 /// Escape single quotes for SQL string literals (`'` → `''`).
@@ -986,6 +1059,221 @@ extensions:
         // Semicolons and spaces stripped by sanitize_identifier
         assert_eq!(stmts[0], "INSTALL httpfsDROPTABLEusers");
         assert_eq!(stmts[1], "LOAD httpfsDROPTABLEusers");
+    }
+
+    #[test]
+    fn test_extension_dictionaries_mixed_with_strings() {
+        let config = config_from_yaml(
+            r#"
+extensions:
+  - httpfs
+  - name: parquet
+  - name: jev
+    repo: community
+  - name: uc_catalog
+    repo: core_nightly
+"#,
+        );
+        assert_eq!(
+            generate_duckdb_init_sql(&config).unwrap(),
+            vec![
+                "INSTALL httpfs",
+                "LOAD httpfs",
+                "INSTALL parquet",
+                "LOAD parquet",
+                "INSTALL jev FROM \"community\"",
+                "LOAD jev",
+                "INSTALL uc_catalog FROM \"core_nightly\"",
+                "LOAD uc_catalog",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_extension_null_repo_uses_default_repository() {
+        let config = config_from_yaml(
+            r#"
+extensions:
+  - name: jev
+    repo: null
+"#,
+        );
+        assert_eq!(
+            generate_duckdb_init_sql(&config).unwrap(),
+            vec!["INSTALL jev", "LOAD jev"]
+        );
+    }
+
+    #[test]
+    fn test_extension_repository_name_is_quoted_verbatim() {
+        let config = config_from_yaml(
+            r#"
+extensions:
+  - name: a5
+    repo: query-farm_2
+  - name: jev
+    repo: Community
+"#,
+        );
+        // Case is left for DuckDB to resolve, as with `INSTALL ... FROM` in SQL.
+        assert_eq!(
+            generate_duckdb_init_sql(&config).unwrap(),
+            vec![
+                "INSTALL a5 FROM \"query-farm_2\"",
+                "LOAD a5",
+                "INSTALL jev FROM \"Community\"",
+                "LOAD jev",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_extension_dictionary_errors_name_the_field() {
+        for (item, expected) in [
+            (
+                "{repo: community}",
+                "extensions[1]: missing required field 'name'",
+            ),
+            ("{name: 7}", "extensions[1].name: expected"),
+            ("{name: null}", "extensions[1].name: expected"),
+            ("{name: ''}", "extensions[1].name: expected"),
+            (
+                "{name: 'jev; DROP TABLE t'}",
+                "extensions[1].name: expected",
+            ),
+            ("{name: [jev]}", "extensions[1].name: expected"),
+            ("{name: jev, repo: ''}", "extensions[1].repo: expected"),
+            ("{name: jev, repo: 7}", "extensions[1].repo: expected"),
+            ("{name: jev, repo: true}", "extensions[1].repo: expected"),
+            (
+                "{name: jev, repo: [community]}",
+                "extensions[1].repo: expected",
+            ),
+            (
+                "{name: jev, repo: 'community; DROP TABLE t'}",
+                "extensions[1].repo: expected",
+            ),
+            (
+                "{name: jev, repo: 'comm\"unity'}",
+                "extensions[1].repo: expected",
+            ),
+            (
+                "{name: jev, repo: 'https://extensions.invalid'}",
+                "extensions[1].repo: expected",
+            ),
+            (
+                "{name: jev, repo: \"'https://extensions.invalid'\"}",
+                "extensions[1].repo: expected",
+            ),
+            (
+                "{name: jev, version: v1}",
+                "extensions[1]: unknown field 'version'",
+            ),
+            (
+                "{name: jev, 1: x}",
+                "extensions[1]: field names must be strings",
+            ),
+            (
+                "7",
+                "extensions[1]: expected an extension name or a mapping",
+            ),
+            (
+                "null",
+                "extensions[1]: expected an extension name or a mapping",
+            ),
+            (
+                "[jev]",
+                "extensions[1]: expected an extension name or a mapping",
+            ),
+        ] {
+            let config = config_from_yaml(&format!("extensions: [httpfs, {item}]"));
+            let err = generate_duckdb_init_sql(&config).err().unwrap();
+            assert!(err.msg().starts_with(expected), "{item}: {}", err.msg());
+            assert!(!err.msg().contains("DROP"), "{item}: {}", err.msg());
+            assert!(!err.msg().contains("invalid'"), "{item}: {}", err.msg());
+        }
+    }
+
+    #[test]
+    fn test_motherduck_dictionary_counts_as_present() {
+        for entry in ["{name: motherduck}", "{name: MotherDuck, repo: core}"] {
+            let config =
+                config_from_yaml(&format!("path: 'md:my_db'\nextensions: [httpfs, {entry}]"));
+            let stmts = generate_duckdb_init_sql(&config).unwrap();
+            let motherduck_loads = stmts
+                .iter()
+                .filter(|s| s.eq_ignore_ascii_case("LOAD motherduck"))
+                .count();
+            assert_eq!(motherduck_loads, 1, "{entry}: {stmts:?}");
+            assert_eq!(stmts[0], "INSTALL httpfs", "{entry}");
+        }
+    }
+
+    #[test]
+    fn test_motherduck_auto_injected_once_before_dictionaries() {
+        let config = config_from_yaml(
+            r#"
+path: "md:my_db"
+extensions:
+  - name: jev
+    repo: community
+"#,
+        );
+        assert_eq!(
+            generate_duckdb_init_sql(&config).unwrap(),
+            vec![
+                "INSTALL motherduck",
+                "LOAD motherduck",
+                "INSTALL jev FROM \"community\"",
+                "LOAD jev",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_saas_mode_skips_install_for_dictionaries() {
+        let config = config_from_yaml(
+            r#"
+path: "md:my_db"
+settings:
+  motherduck_saas_mode: true
+extensions:
+  - httpfs
+  - name: jev
+    repo: community
+"#,
+        );
+        assert_eq!(
+            generate_duckdb_init_sql(&config).unwrap(),
+            vec!["LOAD motherduck", "LOAD httpfs", "LOAD jev"]
+        );
+    }
+
+    #[test]
+    fn test_dictionary_extensions_precede_secrets_settings_and_attachments() {
+        let config = config_from_yaml(
+            r#"
+extensions:
+  - name: jev
+    repo: community
+secrets:
+  - type: s3
+settings:
+  threads: 4
+attach:
+  - path: /data/other.db
+"#,
+        );
+        assert_eq!(
+            generate_duckdb_init_sql(&config).unwrap(),
+            vec![
+                "INSTALL jev FROM \"community\"",
+                "LOAD jev",
+                "CREATE OR REPLACE SECRET __dbt_secret_0 (TYPE s3)",
+                "SET threads = 4",
+                "ATTACH IF NOT EXISTS '/data/other.db'",
+            ]
+        );
     }
 
     #[test]
