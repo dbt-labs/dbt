@@ -68,7 +68,7 @@ impl StmtSplitter for DefaultStmtSplitter {
             // https://developer.salesforce.com/docs/data/data-cloud-query-guide/references/data-cloud-query-api-reference/c360a-api-query-v2-call-overview.html
             // falls back to Postgresql at the moment
             Salesforce => Dialect::Postgresql,
-            // LakeCompute has no dialect of its own, so it uses DuckDB's.
+            // `LakeCompute` defines no dialect of its own, so it falls back to DuckDB's
             DuckDB | LakeCompute => Dialect::Duckdb,
             ClickHouse => return clickhouse::split_statements(sql),
             Trino => Dialect::Trino,
