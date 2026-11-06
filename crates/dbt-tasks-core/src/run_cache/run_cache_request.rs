@@ -691,6 +691,11 @@ fn warehouse_specific_semantic_extra_config(
     insert_json(&mut extras, "target_lag", whc.target_lag.as_ref())?;
     insert_json(&mut extras, "refresh_mode", whc.refresh_mode.as_ref())?;
     insert_json(&mut extras, "immutable_where", whc.immutable_where.as_ref())?;
+    insert_json(
+        &mut extras,
+        "delete_condition",
+        whc.delete_condition.as_ref(),
+    )?;
     insert_json(&mut extras, "copy_grants", whc.copy_grants.as_ref())?;
     insert_json(
         &mut extras,
