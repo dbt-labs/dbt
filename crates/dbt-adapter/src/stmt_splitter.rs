@@ -59,7 +59,8 @@ impl StmtSplitter for DefaultStmtSplitter {
     fn split<'i>(&self, sql: &'i str, adapter_type: AdapterType) -> Vec<&'i str> {
         use AdapterType::*;
         let dialect = match adapter_type {
-            Postgres => Dialect::Postgresql,
+            // Trino fallback has no dollar-quote token. persist_docs uses $tag$.
+            Postgres => return split_respecting_dollar_quotes(sql, Dialect::Postgresql),
             Snowflake => Dialect::Snowflake,
             Bigquery => Dialect::Bigquery,
             // TODO(serramatutu): switch Spark to Spark dialect once frontend looks good
@@ -69,17 +70,15 @@ impl StmtSplitter for DefaultStmtSplitter {
             // https://developer.salesforce.com/docs/data/data-cloud-query-guide/references/data-cloud-query-api-reference/c360a-api-query-v2-call-overview.html
             // falls back to Postgresql at the moment
             Salesforce => Dialect::Postgresql,
-            // `LakeCompute` defines no dialect of its own, so it falls back to DuckDB's
-            // DuckDB's lexer has no dollar-quote token. Mask `$tag$...$tag$`
-            // before the fallback lexer splits.
-            DuckDB | LakeCompute => Dialect::Duckdb,
+            // LakeCompute has no dialect of its own, so it uses DuckDB's.
+            // Trino fallback has no dollar-quote token. Mask `$tag$...$tag$` first.
+            DuckDB | LakeCompute => {
+                return split_respecting_dollar_quotes(sql, Dialect::Duckdb);
+            }
             ClickHouse => return clickhouse::split_statements(sql),
             Trino => Dialect::Trino,
             _ => Dialect::Trino,
         };
-        if matches!(adapter_type, AdapterType::DuckDB | AdapterType::LakeCompute) {
-            return split_respecting_dollar_quotes(sql, dialect);
-        }
         sql_split_statements(sql, Some(dialect))
             .into_iter()
             .collect()
@@ -121,14 +120,14 @@ fn split_respecting_dollar_quotes<'i>(sql: &'i str, dialect: Dialect) -> Vec<&'i
 }
 
 /// Replace each closed dollar quote with a same-length single-quoted literal.
-/// Quotes, comments, and ordinary string literals are left alone.
+/// Quotes, comments, backtick identifiers, and ordinary string literals are left alone.
 fn mask_dollar_quoted_blocks(sql: &str) -> Cow<'_, str> {
     let bytes = sql.as_bytes();
     let mut masks = Vec::new();
     let mut i = 0;
     while i < bytes.len() {
         match bytes[i] {
-            b'\'' | b'"' => i = skip_quoted(bytes, i, bytes[i]),
+            b'\'' | b'"' | b'`' => i = skip_quoted(bytes, i, bytes[i]),
             b'-' if bytes.get(i + 1) == Some(&b'-') => {
                 i += 2;
                 while i < bytes.len() && bytes[i] != b'\n' {
@@ -189,7 +188,8 @@ fn skip_quoted(bytes: &[u8], start: usize, quote: u8) -> usize {
     i
 }
 
-/// `$tag$...$tag$` or `$$...$$`. `tag` is an ASCII identifier or empty.
+/// `$tag$...$tag$` or `$$...$$`. A tag is empty, or a letter, `_`, or any byte
+/// `>= 0x80`, then those or digits. Same rule as DuckDB and Postgres.
 fn closed_dollar_quote(bytes: &[u8], start: usize) -> Option<usize> {
     if bytes.get(start) != Some(&b'$') {
         return None;
@@ -221,11 +221,11 @@ fn closed_dollar_quote(bytes: &[u8], start: usize) -> Option<usize> {
 }
 
 fn is_dollar_tag_start(byte: u8) -> bool {
-    byte.is_ascii_alphabetic() || byte == b'_'
+    byte.is_ascii_alphabetic() || byte == b'_' || byte >= 0x80
 }
 
 fn is_dollar_tag_cont(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || byte == b'_'
+    is_dollar_tag_start(byte) || byte.is_ascii_digit()
 }
 
 #[cfg(test)]
@@ -330,17 +330,40 @@ mod tests {
     }
 
     /// A `;` must not split a statement, and a `'` must not merge the next one,
-    /// when both sit inside a DuckDB dollar quote.
+    /// when both sit inside a dollar quote.
     #[test]
     fn test_split_duckdb_dollar_quoted_strings() {
         let sql = "comment on column t.c is $dbt_comment_literal_block$it's a; test$dbt_comment_literal_block$; select 2";
-        let statements = split(sql, AdapterType::DuckDB);
-        assert_eq!(statements.len(), 2, "{statements:?}");
-        assert!(statements[0].contains("it's a; test"), "{statements:?}");
-        assert!(statements[1].contains("select 2"), "{statements:?}");
+        let expected = vec![
+            "comment on column t.c is $dbt_comment_literal_block$it's a; test$dbt_comment_literal_block$",
+            " select 2",
+        ];
+        for adapter in [
+            AdapterType::DuckDB,
+            AdapterType::LakeCompute,
+            AdapterType::Postgres,
+        ] {
+            assert_eq!(split(sql, adapter), expected, "{adapter:?}");
+        }
+        assert_eq!(
+            split("select $$it's a; test$$; select 2", AdapterType::DuckDB),
+            vec!["select $$it's a; test$$", " select 2"]
+        );
+        assert_eq!(
+            split("select $é$it's a; test$é$; select 2", AdapterType::DuckDB),
+            vec!["select $é$it's a; test$é$", " select 2"]
+        );
         assert_eq!(
             split("select '$a$x$a$'; select 2", AdapterType::DuckDB),
             vec!["select '$a$x$a$'", " select 2"]
+        );
+        // `$$` inside backtick identifiers is not a dollar quote.
+        assert_eq!(
+            split(
+                "select `a$$` from t; select `b$$` from u",
+                AdapterType::DuckDB
+            ),
+            vec!["select `a$$` from t", " select `b$$` from u"]
         );
     }
 
