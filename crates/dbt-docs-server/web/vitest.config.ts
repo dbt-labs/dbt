@@ -30,6 +30,11 @@ const dirname = path.dirname(fileURLToPath(import.meta.url));
  */
 export default defineConfig({
   test: {
+    // Browser tests need happy-dom storage, not Node 25+ process-global storage.
+    poolOptions: {
+      forks: { execArgv: ['--no-experimental-webstorage'] },
+      threads: { execArgv: ['--no-experimental-webstorage'] },
+    },
     projects: [
       {
         plugins: [react()],
