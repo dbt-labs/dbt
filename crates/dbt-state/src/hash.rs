@@ -1,7 +1,7 @@
 use dbt_common::path::DbtPath;
 use dbt_schemas::schemas::{
-    DbtModel, DbtSeed, DbtTest, InternalDbtNode, InternalDbtNodeAttributes,
-    common::DbtMaterialization, config_excluded_keys, macros::DbtMacro,
+    DbtModel, DbtSeed, DbtTest, InternalDbtNode, InternalDbtNodeAttributes, config_excluded_keys,
+    macros::DbtMacro,
 };
 use dbt_schemas::state::{DbtRuntimeConfig, DbtVars};
 use md5;
@@ -593,12 +593,7 @@ fn build_contract_checksum(node: &DbtModel) -> Option<String> {
     }
 
     let materialization = &node.__base_attr__.materialized;
-    let materialization_enforces_constraints = matches!(
-        materialization,
-        DbtMaterialization::Table | DbtMaterialization::Incremental
-    );
-
-    if materialization_enforces_constraints {
+    if materialization.enforces_constraints() {
         contract_state.push_str(&materialization.to_string());
         let constraints_str =
             to_string(&node.__model_attr__.constraints).unwrap_or_else(|_| "[]".to_owned());

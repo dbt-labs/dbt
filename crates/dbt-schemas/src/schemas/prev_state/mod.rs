@@ -556,9 +556,9 @@ impl StateArtifacts {
             // Macro modification is checked by iteraring through depends_on.macros
             // for each node and checking if the dependent macros are modified.
             Some(ModificationType::Macros) => self.check_modified_macros(node, current_nodes),
-            Some(ModificationType::Contract) => self.check_contract_modified(node),
+            Some(ModificationType::Contract) => self.check_contract_modified(node, adapter_type),
             Some(ModificationType::Any) | None => {
-                self.check_contract_modified(node)
+                self.check_contract_modified(node, adapter_type)
                     || self.check_configs_modified(node, adapter_type)
                     || self.check_relation_modified(node)
                     || self.check_persisted_descriptions_modified(node)
@@ -938,7 +938,11 @@ impl StateArtifacts {
         )
     }
 
-    fn check_contract_modified(&self, current_node: &dyn InternalDbtNode) -> bool {
+    fn check_contract_modified(
+        &self,
+        current_node: &dyn InternalDbtNode,
+        adapter_type: AdapterType,
+    ) -> bool {
         // Get the previous node from the manifest (unique_id first, then test signature fallback).
         let Some(previous_node) = self.previous_node_for(current_node) else {
             // If previous node doesn't exist, consider it modified.
@@ -949,7 +953,7 @@ impl StateArtifacts {
             current_node.as_any().downcast_ref::<DbtModel>(),
             previous_node.as_any().downcast_ref::<DbtModel>(),
         ) {
-            let is_same_contract = current_model.same_contract(previous_model);
+            let is_same_contract = current_model.same_contract(previous_model, adapter_type);
             if !is_same_contract {
                 log_state_mod_diff(
                     &current_node.common().unique_id,

@@ -708,7 +708,7 @@ async fn build_model_nodes(
             .contract
             .as_ref()
             .is_some_and(|contract| contract.enforced)
-            && !materialization_enforces_constraints(&materialized)
+            && !materialized.enforces_constraints()
             && has_warn_unsupported_constraints(&model_constraints, &columns)
         {
             emit_warn_log_message(
@@ -1377,13 +1377,6 @@ fn process_versioned_columns(
     }
 
     Ok(columns)
-}
-
-fn materialization_enforces_constraints(materialized: &DbtMaterialization) -> bool {
-    matches!(
-        materialized,
-        DbtMaterialization::Table | DbtMaterialization::Incremental
-    )
 }
 
 fn has_warn_unsupported_constraints(
