@@ -30,6 +30,7 @@ impl ColumnBuilder {
             Postgres | Salesforce => Self::build_postgres_like(field, type_ops),
             DuckDB | LakeCompute => Self::build_duckdb(field, type_ops),
             Fabric => Ok(Self::build_fabric(field, type_ops)),
+            SqlServer => Ok(Self::build_sqlserver(field, type_ops)),
             ClickHouse => Self::build_clickhouse(field, type_ops),
             Exasol => Ok(Self::build_exasol(field, type_ops)),
             Starburst => todo!("Starburst"),
@@ -127,6 +128,14 @@ impl ColumnBuilder {
             Datafusion => todo!("Datafusion"),
             Fabric => Column::new_boxed(
                 Fabric,
+                name,
+                dtype,
+                char_size,
+                numeric_precision,
+                numeric_scale,
+            ),
+            SqlServer => Column::new_boxed(
+                SqlServer,
                 name,
                 dtype,
                 char_size,
@@ -263,6 +272,39 @@ impl ColumnBuilder {
 
         Column::new_boxed(
             Fabric,
+            field.name().to_string(),
+            type_name_or_formatted,
+            char_size.map(|p| p as u32),
+            numeric_precision.map(|p| p as u64),
+            numeric_scale.map(|s| s as u64),
+        )
+    }
+
+    fn build_sqlserver(field: &FieldRef, type_ops: &dyn TypeOps) -> Box<Column> {
+        use AdapterType::SqlServer;
+        let data_type = field.data_type();
+        let char_size = sql_types::var_size(SqlServer, data_type);
+        let (numeric_precision, numeric_scale) = {
+            let precision_scale = sql_types::numeric_precision_scale(SqlServer, data_type)
+                .ok()
+                .flatten();
+            match precision_scale {
+                Some((p, Some(s))) => (Some(p), Some(s)),
+                Some((p, None)) => (Some(p), None),
+                None => (None, None),
+            }
+        };
+
+        let mut type_name_or_formatted = String::new();
+        if type_ops
+            .format_arrow_type_as_sql(data_type, field.is_nullable(), &mut type_name_or_formatted)
+            .is_err()
+        {
+            type_name_or_formatted = data_type.to_string();
+        }
+
+        Column::new_boxed(
+            SqlServer,
             field.name().to_string(),
             type_name_or_formatted,
             char_size.map(|p| p as u32),

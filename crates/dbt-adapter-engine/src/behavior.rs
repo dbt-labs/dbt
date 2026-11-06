@@ -176,8 +176,8 @@ pub fn adapter_specific_behavior_flags(adapter_type: AdapterType) -> Vec<Behavio
             );
             vec![skip_autocommit_transaction_statements, grants_extended]
         }
-        Postgres | Salesforce | Spark | DuckDB | LakeCompute | ClickHouse | Exasol | Starburst
-        | Athena | Trino | Datafusion | Dremio | Oracle => vec![],
+        Postgres | Salesforce | Spark | DuckDB | LakeCompute | SqlServer | ClickHouse | Exasol
+        | Starburst | Athena | Trino | Datafusion | Dremio | Oracle => vec![],
     }
 }
 

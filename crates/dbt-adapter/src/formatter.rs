@@ -20,7 +20,7 @@ impl SqlLiteralFormatter {
 
     pub fn format_bool(&self, b: bool) -> String {
         match self.adapter_type {
-            AdapterType::Fabric => {
+            AdapterType::Fabric | AdapterType::SqlServer => {
                 if b {
                     "1".to_string()
                 } else {
@@ -152,11 +152,11 @@ pub fn push_value_as_sql_literal(adapter_type: AdapterType, value: &Value, resul
     }
 }
 
-/// The placeholder the dialect uses for bound parameters: `?` for Fabric and
+/// The placeholder the dialect uses for bound parameters: `?` for T-SQL and
 /// DuckDB, `%s` otherwise. Backs the `get_binding_char` adapter method.
 pub fn binding_char(adapter_type: AdapterType) -> &'static str {
     match adapter_type {
-        AdapterType::Fabric | AdapterType::DuckDB => "?",
+        AdapterType::Fabric | AdapterType::SqlServer | AdapterType::DuckDB => "?",
         _ => "%s",
     }
 }

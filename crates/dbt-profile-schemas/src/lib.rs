@@ -15,6 +15,7 @@ mod snowflake_config;
 pub mod common;
 pub mod headless;
 pub mod profile;
+pub mod sqlserver_config;
 
 pub use headless::apply_values;
 
@@ -92,6 +93,11 @@ impl ProfileSetup {
                 let c0 = unwrap_db_config!(Fabric);
                 let c1 = fabric_config::setup_fabric_profile(c0.map(Box::as_ref))?;
                 Ok(DbConfig::Fabric(c1))
+            }
+            SqlServer => {
+                let c0 = unwrap_db_config!(SqlServer);
+                let c1 = sqlserver_config::setup_sqlserver_profile(c0.map(Box::as_ref))?;
+                Ok(DbConfig::SqlServer(c1))
             }
             ClickHouse => {
                 let c0 = unwrap_db_config!(ClickHouse);

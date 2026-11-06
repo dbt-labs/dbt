@@ -11,16 +11,29 @@ use dbt_adbc::{
 
 const DEFAULT_AUTH: &str = "ActiveDirectoryServicePrincipal";
 const DEFAULT_PORT: &str = "1433";
+const DEFAULT_ENCRYPT: bool = true;
+const DEFAULT_TRUST_CERT: bool = false;
 
-/// Parsed Microsoft Entra authentication settings for SQL Server / Fabric.
+/// Parsed authentication settings for SQL Server / Fabric.
 ///
 /// Each variant maps profile fields onto [`go-mssqldb`](https://github.com/microsoft/go-mssqldb)
 /// connection URI query parameters consumed by the MSSQL ADBC driver. See upstream
 /// [dbt-fabric `fabric_credentials.py`](https://github.com/microsoft/dbt-fabric/blob/main/dbt/adapters/fabric/fabric_credentials.py)
 /// for supported `authentication` profile values.
 #[derive(Debug)]
-#[allow(clippy::enum_variant_names)]
 enum SQLServerAuthIR<'a> {
+    /// Native SQL Server login — a login defined on the server itself, no Entra token.
+    ///
+    /// Profile: `authentication: sql`, `UID`, `PWD`.
+    ///
+    /// URI: `user id={UID}`, `password={PWD}`, no `fedauth`.
+    SqlLogin {
+        /// SQL Server login name (`UID` in profile).
+        user: &'a str,
+        /// SQL Server login password (`PWD` in profile).
+        password: &'a str,
+    },
+
     /// Unattended service-principal auth (default for Fabric).
     ///
     /// Profile: `authentication: ActiveDirectoryServicePrincipal` (alias: `ServicePrincipal`),
@@ -94,6 +107,14 @@ impl<'a> SQLServerAuthIR<'a> {
         // There are quite a few parameters that can be set
         // See: https://github.com/microsoft/go-mssqldb/tree/main?tab=readme-ov-file#connection-parameters-and-dsn
         match self {
+            Self::SqlLogin { user, password } => {
+                if let Some(uri) = builder.uri.as_mut() {
+                    uri.query_pairs_mut()
+                        .append_pair("user id", user)
+                        .append_pair("password", password)
+                        .finish();
+                }
+            }
             Self::ActiveDirectoryServicePrincipal {
                 tenant_id,
                 client_id,
@@ -157,6 +178,8 @@ fn parse_auth<'a>(
     // https://github.com/microsoft/dbt-fabric/blob/0de219082282724a789b0d1b18509d39899da8e1/dbt/adapters/fabric/fabric_credentials.py#L78-L79
     if authentication.eq_ignore_ascii_case("serviceprincipal") {
         authentication = "ActiveDirectoryServicePrincipal";
+    } else if authentication.eq_ignore_ascii_case("sql") {
+        authentication = "sql";
     }
 
     // dbt-fabric matches this method case-insensitively:
@@ -166,6 +189,10 @@ fn parse_auth<'a>(
     }
 
     match authentication {
+        "sql" => Ok(SQLServerAuthIR::SqlLogin {
+            user: config.require_str("UID")?,
+            password: config.require_str("PWD")?,
+        }),
         "ActiveDirectoryServicePrincipal" => Ok(SQLServerAuthIR::ActiveDirectoryServicePrincipal {
             tenant_id: config.get_str("tenant_id"),
             client_id: config.require_str("client_id")?,
@@ -193,8 +220,22 @@ fn parse_auth<'a>(
             unimplemented!("authentication method {} not implemented", authentication)
         }
         _ => Err(AuthError::config(format!(
-            "Invalid authentication method: {authentication} must be one of: [ActiveDirectoryServicePrincipal, ActiveDirectoryAccessToken, ActiveDirectoryPassword, environment]"
+            "Invalid authentication method: {authentication} must be one of: [sql, ActiveDirectoryServicePrincipal, ActiveDirectoryAccessToken, ActiveDirectoryPassword, environment]"
         ))),
+    }
+}
+
+/// Reads a profile field that may arrive as a YAML boolean or as its string spelling.
+fn get_flag(config: &AdapterConfig, field: &str, default: bool) -> bool {
+    let Some(value) = config.get_string(field) else {
+        return default;
+    };
+    if value.eq_ignore_ascii_case("true") || value == "1" {
+        true
+    } else if value.eq_ignore_ascii_case("false") || value == "0" {
+        false
+    } else {
+        default
     }
 }
 
@@ -214,21 +255,36 @@ fn apply_connection_args(
     // See: https://github.com/microsoft/go-mssqldb?tab=readme-ov-file#deprecated
     //
     // TODO: we probably want to be a bit smarter about constructing the URI, but this is a start
+    // TODO: named instances (`host\instance`) are rejected here as an invalid domain
     builder.with_parse_uri(format!("sqlserver://{host}:{port}"))?;
 
+    let encrypt = get_flag(config, "encrypt", DEFAULT_ENCRYPT);
+    let trust_cert = get_flag(config, "trust_cert", DEFAULT_TRUST_CERT);
+    let login_timeout = config
+        .get_string("login_timeout")
+        .and_then(|value| value.parse::<i64>().ok())
+        .unwrap_or_default();
+
     if let Some(uri) = builder.uri.as_mut() {
-        uri.query_pairs_mut()
+        let mut pairs = uri.query_pairs_mut();
+        pairs
             .append_pair("database", config.require_str("database")?)
-            .finish();
+            .append_pair("encrypt", if encrypt { "true" } else { "false" })
+            .append_pair(
+                "TrustServerCertificate",
+                if trust_cert { "true" } else { "false" },
+            );
+        // 0 means "driver default", which go-mssqldb spells as an absent parameter.
+        if login_timeout > 0 {
+            pairs.append_pair("connection timeout", &login_timeout.to_string());
+        }
+        pairs.finish();
     }
 
     // TODO: other parameters, i.e.
-    // - connection timeout
     // - dial timeout
-    // - encrypt
     // - app name
     // - log
-    // - retries
     //
     // See: https://github.com/microsoft/go-mssqldb/tree/main?tab=readme-ov-file#less-common-parameters
     Ok(builder)
@@ -261,6 +317,7 @@ impl Auth for SQLServerAuth {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::YmlValue;
     use crate::test_options::uri_value;
     use dbt_test_primitives::assert_contains;
     use dbt_yaml::Mapping;
@@ -269,6 +326,172 @@ mod tests {
         AdapterConfig::new(Mapping::from_iter(
             pairs.into_iter().map(|(k, v)| (k.into(), v.into())),
         ))
+    }
+
+    fn make_typed_config(
+        pairs: impl IntoIterator<Item = (&'static str, YmlValue)>,
+    ) -> AdapterConfig {
+        AdapterConfig::new(Mapping::from_iter(
+            pairs.into_iter().map(|(k, v)| (k.into(), v)),
+        ))
+    }
+
+    #[test]
+    fn test_sql_login() {
+        let config = make_config([
+            ("authentication", "sql"),
+            ("host", "localhost"),
+            ("database", "mydb"),
+            ("UID", "sa"),
+            ("PWD", "hunter2"),
+        ]);
+
+        let outcome = SQLServerAuth::new(Box::new(crate::NoopAuthWarningPrinter))
+            .configure(&config)
+            .expect("configure");
+        let uri = uri_value(&outcome);
+
+        assert_contains!(&uri, "sqlserver://localhost:1433");
+        assert_contains!(&uri, "user+id=sa");
+        assert_contains!(&uri, "password=hunter2");
+        assert!(!uri.contains("fedauth"), "SQL logins carry no Entra token");
+    }
+
+    #[test]
+    fn test_sql_login_is_case_insensitive() {
+        let config = make_config([
+            ("authentication", "SQL"),
+            ("host", "localhost"),
+            ("database", "mydb"),
+            ("UID", "sa"),
+            ("PWD", "hunter2"),
+        ]);
+
+        let outcome = SQLServerAuth::new(Box::new(crate::NoopAuthWarningPrinter))
+            .configure(&config)
+            .expect("configure");
+        assert_contains!(&uri_value(&outcome), "user+id=sa");
+    }
+
+    #[test]
+    fn test_sql_login_requires_credentials() {
+        let config = make_config([
+            ("authentication", "sql"),
+            ("host", "localhost"),
+            ("database", "mydb"),
+            ("UID", "sa"),
+        ]);
+
+        SQLServerAuth::new(Box::new(crate::NoopAuthWarningPrinter))
+            .configure(&config)
+            .expect_err("a missing PWD is an error, not an empty password");
+    }
+
+    /// Passwords reach the driver through a query parameter, so the reserved
+    /// characters a SQL Server login may legally contain have to survive it.
+    #[test]
+    fn test_sql_login_password_is_encoded() {
+        let config = make_config([
+            ("authentication", "sql"),
+            ("host", "localhost"),
+            ("database", "mydb"),
+            ("UID", "sa"),
+            ("PWD", "p@ss:w/rd?&=#"),
+        ]);
+
+        let outcome = SQLServerAuth::new(Box::new(crate::NoopAuthWarningPrinter))
+            .configure(&config)
+            .expect("configure");
+        let uri = uri_value(&outcome);
+
+        assert_contains!(&uri, "password=p%40ss%3Aw%2Frd%3F%26%3D%23");
+    }
+
+    #[test]
+    fn test_tls_defaults_to_encrypted_and_verified() {
+        let config = make_config([
+            ("authentication", "environment"),
+            ("host", "myserver.database.windows.net"),
+            ("database", "mydb"),
+        ]);
+
+        let outcome = SQLServerAuth::new(Box::new(crate::NoopAuthWarningPrinter))
+            .configure(&config)
+            .expect("configure");
+        let uri = uri_value(&outcome);
+
+        assert_contains!(&uri, "encrypt=true");
+        assert_contains!(&uri, "TrustServerCertificate=false");
+    }
+
+    #[test]
+    fn test_tls_settings_from_yaml_booleans() {
+        let config = make_typed_config([
+            ("authentication", "environment".into()),
+            ("host", "localhost".into()),
+            ("database", "mydb".into()),
+            ("encrypt", false.into()),
+            ("trust_cert", true.into()),
+        ]);
+
+        let outcome = SQLServerAuth::new(Box::new(crate::NoopAuthWarningPrinter))
+            .configure(&config)
+            .expect("configure");
+        let uri = uri_value(&outcome);
+
+        assert_contains!(&uri, "encrypt=false");
+        assert_contains!(&uri, "TrustServerCertificate=true");
+    }
+
+    #[test]
+    fn test_tls_settings_from_string_booleans() {
+        let config = make_config([
+            ("authentication", "environment"),
+            ("host", "localhost"),
+            ("database", "mydb"),
+            ("encrypt", "false"),
+            ("trust_cert", "true"),
+        ]);
+
+        let outcome = SQLServerAuth::new(Box::new(crate::NoopAuthWarningPrinter))
+            .configure(&config)
+            .expect("configure");
+        let uri = uri_value(&outcome);
+
+        assert_contains!(&uri, "encrypt=false");
+        assert_contains!(&uri, "TrustServerCertificate=true");
+    }
+
+    #[test]
+    fn test_login_timeout_is_applied() {
+        let config = make_typed_config([
+            ("authentication", "environment".into()),
+            ("host", "localhost".into()),
+            ("database", "mydb".into()),
+            ("login_timeout", YmlValue::number(30i64.into())),
+        ]);
+
+        let outcome = SQLServerAuth::new(Box::new(crate::NoopAuthWarningPrinter))
+            .configure(&config)
+            .expect("configure");
+        assert_contains!(&uri_value(&outcome), "connection+timeout=30");
+    }
+
+    #[test]
+    fn test_login_timeout_zero_is_omitted() {
+        let config = make_typed_config([
+            ("authentication", "environment".into()),
+            ("host", "localhost".into()),
+            ("database", "mydb".into()),
+            ("login_timeout", YmlValue::number(0i64.into())),
+        ]);
+
+        let outcome = SQLServerAuth::new(Box::new(crate::NoopAuthWarningPrinter))
+            .configure(&config)
+            .expect("configure");
+        let uri = uri_value(&outcome);
+
+        assert!(!uri.contains("timeout"), "{uri}");
     }
 
     #[test]
