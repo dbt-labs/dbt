@@ -426,6 +426,46 @@ async fn adapters_snowflake_dynamic_table() -> FsResult<()> {
 }
 
 #[dbt_runtime::test]
+#[ignore = "not recorded yet: record with GOLDIE_UPDATE=1 ADAPTER_RECORD=1"]
+async fn adapters_snowflake_custom_incremental_dynamic_table() -> FsResult<()> {
+    const ORDERS: &str = "models/orders_merge.sql";
+    run_fs_record_replay_task_seq(
+        env!("CARGO_MANIFEST_DIR"),
+        &FS_RUNNER,
+        current_function_name!(),
+        "tests/data/adapter/custom_incremental_dynamic_table",
+        AdapterType::Snowflake.as_ref(),
+        None,
+        &[
+            AdapterRecordReplayTurn::new("run-operation set_up", &[]), // run_0: source tables
+            AdapterRecordReplayTurn::new("run", &[]), // run_1: CREATE, columns discovered
+            AdapterRecordReplayTurn::new("run-operation apply_changes", &[]), // run_2
+            AdapterRecordReplayTurn::new("run", &[]), // run_3: no-op build, manual refresh
+            AdapterRecordReplayTurn::new("test", &[]), // run_4: updates and deletes merged
+            AdapterRecordReplayTurn::new("run --full-refresh", &[]), // run_5: CREATE OR REPLACE
+            AdapterRecordReplayTurn::new("test", &[]), // run_6: same rows after the rebuild
+            AdapterRecordReplayTurn::new(
+                "run --select orders_merge",
+                &[FileOverride {
+                    original: ORDERS,
+                    overriding_file: "_project_overrides/orders_merge_regular.sql",
+                }],
+            ), // run_7: CI DT -> regular DT replaces
+            AdapterRecordReplayTurn::new(
+                "run --select orders_merge",
+                &[FileOverride {
+                    original: ORDERS,
+                    overriding_file: "_project_overrides/orders_merge_custom_incremental.sql",
+                }],
+            ), // run_8: regular DT -> CI DT replaces
+        ],
+        None,
+        &[],
+    )
+    .await
+}
+
+#[dbt_runtime::test]
 async fn adapters_snowflake_seed_datatypes() -> FsResult<()> {
     run_fs_record_replay_task_seq(
         env!("CARGO_MANIFEST_DIR"),

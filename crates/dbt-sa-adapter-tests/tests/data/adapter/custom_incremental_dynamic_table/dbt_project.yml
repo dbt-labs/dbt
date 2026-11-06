@@ -1,0 +1,11 @@
+flags:
+  send_anonymous_usage_stats: false
+name: test
+profile: fusion_tests
+
+macro-paths: ["macros"]
+
+models:
+  test:
+    # Fusion's analyzer is not known to accept CHANGES(...) and METADATA$ columns.
+    +static_analysis: off
