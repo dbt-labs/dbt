@@ -1,4 +1,5 @@
 import os
+from argparse import Namespace
 from typing import Any, Dict, Set
 from unittest import mock
 
@@ -577,6 +578,10 @@ def _mbp_with_adapter_override(manifest_fx):
     return mbp, dbt_macro, pg_macro
 
 
+PREFER_OVERRIDES_ON = Namespace(builtin_macros_prefer_overrides=True)
+
+
+@pytest.mark.parametrize("args_for_flags", [PREFER_OVERRIDES_ON])
 @pytest.mark.parametrize("search_package", ["dbt", "dbt_postgres"])
 def test_macro_namespace_internal_search_package_prefers_adapter(
     config_postgres, manifest_fx, search_package
@@ -593,6 +598,7 @@ def test_macro_namespace_internal_search_package_prefers_adapter(
     assert namespace["dbt"]["statement"].macro is pg_macro
 
 
+@pytest.mark.parametrize("args_for_flags", [PREFER_OVERRIDES_ON])
 @pytest.mark.parametrize("search_package", ["dbt", "dbt_postgres"])
 def test_macro_namespace_internal_search_package_root_override_wins(
     config_postgres, manifest_fx, search_package
@@ -610,6 +616,25 @@ def test_macro_namespace_internal_search_package_root_override_wins(
     assert namespace["statement"].macro is root_macro
 
 
+@pytest.mark.parametrize("search_package", ["dbt", "dbt_postgres"])
+def test_macro_namespace_internal_search_package_searched_first_by_default(
+    config_postgres, manifest_fx, search_package
+):
+    mbp, dbt_macro, pg_macro = _mbp_with_adapter_override(manifest_fx)
+    mbp["root"]["statement"] = mock_macro("statement", "root")
+    mn = macros.MacroNamespaceBuilder(
+        "root", search_package, MacroStack(), ["dbt_postgres", "dbt"]
+    )
+
+    namespace = mn.build_namespace(mbp, {})
+
+    expected = dbt_macro if search_package == "dbt" else pg_macro
+    assert namespace["statement"].macro is expected
+    # the `dbt` sub-namespace always follows adapter order
+    assert namespace["dbt"]["statement"].macro is pg_macro
+
+
+@pytest.mark.parametrize("args_for_flags", [PREFER_OVERRIDES_ON])
 def test_runtime_macro_context_for_global_macro_prefers_adapter(
     config_postgres, get_adapter, get_include_paths
 ):
@@ -625,6 +650,31 @@ def test_runtime_macro_context_for_global_macro_prefers_adapter(
     )
 
     assert ctx["statement"].macro is pg_statement
+
+
+@pytest.mark.parametrize(
+    "args_for_flags,prefer_overrides",
+    [(Namespace(), False), (PREFER_OVERRIDES_ON, True)],
+    ids=["default", "prefer_overrides"],
+)
+def test_runtime_macro_context_for_global_macro_root_builtin_override(
+    config_postgres, get_adapter, get_include_paths, prefer_overrides
+):
+    # By default, a root-project macro sharing a builtin's name must not hijack
+    # bare calls inside dbt's own macros.
+    drop_relation = mock_macro("drop_relation", "dbt")
+    dbt_drop_table = mock_macro("drop_table", "dbt")
+    root_drop_table = mock_macro("drop_table", config_postgres.project_name)
+    manifest = mock_manifest(
+        config_postgres, additional_macros=[drop_relation, dbt_drop_table, root_drop_table]
+    )
+
+    ctx = providers.generate_runtime_macro_context(
+        macro=drop_relation, config=config_postgres, manifest=manifest, package_name=None
+    )
+
+    expected = root_drop_table if prefer_overrides else dbt_drop_table
+    assert ctx["drop_table"].macro is expected
 
 
 def test_dbt_metadata_envs(
