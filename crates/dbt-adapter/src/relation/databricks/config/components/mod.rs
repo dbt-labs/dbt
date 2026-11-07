@@ -20,7 +20,7 @@ pub(crate) mod partition_by;
 pub(crate) use partition_by::PartitionByLoader;
 
 pub(crate) mod query;
-pub(crate) use query::QueryLoader;
+pub(crate) use query::{QueryLoader, ViewQueryLoader};
 
 pub(crate) mod refresh;
 pub(crate) use refresh::RefreshLoader;
