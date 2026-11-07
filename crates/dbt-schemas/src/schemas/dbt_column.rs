@@ -233,7 +233,7 @@ pub struct ColumnConfig {
 /// Represents column inheritance rules for a model version
 #[derive(Debug, Clone)]
 pub struct ColumnInheritanceRules {
-    includes: Vec<String>, // Empty vec means include all
+    includes: Option<Vec<String>>, // None means wildcard / include all
     excludes: Vec<String>,
 }
 
@@ -247,9 +247,23 @@ pub struct ColumnInheritanceRules {
 impl Default for ColumnInheritanceRules {
     fn default() -> Self {
         Self {
-            includes: Vec::new(), // empty == include all
+            includes: None, // None == include all
             excludes: Vec::new(),
         }
+    }
+}
+
+fn is_wildcard_name(name: &str) -> bool {
+    matches!(name, "*" | "all")
+}
+
+fn is_wildcard_directive(include: &StringOrArrayOfStrings) -> bool {
+    match include {
+        StringOrArrayOfStrings::String(s) => is_wildcard_name(s),
+        StringOrArrayOfStrings::ArrayOfStrings(names) => match names.as_slice() {
+            [s] => is_wildcard_name(s),
+            _ => false,
+        },
     }
 }
 
@@ -266,12 +280,12 @@ impl ColumnInheritanceRules {
             .find(|col| col.include.is_some() || col.exclude.is_some())?;
 
         let includes = match directive.include.as_ref() {
-            // `all` / `*` means include everything, represented as an empty `includes`.
-            Some(StringOrArrayOfStrings::String(s)) if s == "*" || s == "all" => Vec::new(),
-            Some(StringOrArrayOfStrings::String(s)) => vec![s.clone()],
-            Some(StringOrArrayOfStrings::ArrayOfStrings(names)) => names.clone(),
+            // `all` / `*` means include everything, represented as `None`.
+            Some(include) if is_wildcard_directive(include) => None,
+            Some(StringOrArrayOfStrings::String(s)) => Some(vec![s.clone()]),
+            Some(StringOrArrayOfStrings::ArrayOfStrings(names)) => Some(names.clone()),
             // `exclude` without `include` behaves as include-all-except.
-            None => Vec::new(),
+            None => None,
         };
         let excludes = directive.exclude.clone().unwrap_or_default();
 
@@ -280,13 +294,12 @@ impl ColumnInheritanceRules {
 
     /// given a column name, return true if it should be included in the tests based on the includes and excludes and inheritance rules
     pub fn should_include_column(&self, column_name: &str) -> bool {
-        if self.includes.is_empty() {
-            // Empty includes means include all except excluded
-            !self.excludes.contains(&column_name.to_string())
-        } else {
-            // Specific includes: must be in includes and not in excludes
-            self.includes.contains(&column_name.to_string())
-                && !self.excludes.contains(&column_name.to_string())
+        match &self.includes {
+            None => !self.excludes.iter().any(|e| e == column_name),
+            Some(includes) => {
+                includes.iter().any(|i| i == column_name)
+                    && !self.excludes.iter().any(|e| e == column_name)
+            }
         }
     }
 }
@@ -591,6 +604,81 @@ policy_tags: governance.tags.PII
             StringOrMap::StringValue(s) => assert_eq!(s, "governance.tags.PII"),
             StringOrMap::MapValue(_) => panic!("expected StringValue"),
         }
+    }
+
+    #[test]
+    fn test_column_inheritance_rules_empty_include() {
+        let columns = vec![
+            VersionColumnProperties {
+                include: Some(StringOrArrayOfStrings::ArrayOfStrings(vec![])),
+                ..Default::default()
+            },
+            VersionColumnProperties {
+                name: Some("id".to_string()),
+                ..Default::default()
+            },
+        ];
+
+        let rules = ColumnInheritanceRules::from_version_column_props(&columns)
+            .expect("should find inheritance directive");
+
+        assert!(!rules.should_include_column("id"));
+        assert!(!rules.should_include_column("color"));
+        assert!(!rules.should_include_column("legacy_code"));
+    }
+
+    #[test]
+    fn test_column_inheritance_rules_wildcard_and_specific() {
+        // Wildcard include ("*") with exclude
+        let columns_wildcard = vec![VersionColumnProperties {
+            include: Some(StringOrArrayOfStrings::String("*".to_string())),
+            exclude: Some(vec!["color".to_string()]),
+            ..Default::default()
+        }];
+        let rules_wildcard = ColumnInheritanceRules::from_version_column_props(&columns_wildcard)
+            .expect("directive present");
+        assert!(rules_wildcard.should_include_column("id"));
+        assert!(!rules_wildcard.should_include_column("color"));
+
+        // Specific include list
+        let columns_specific = vec![VersionColumnProperties {
+            include: Some(StringOrArrayOfStrings::ArrayOfStrings(vec![
+                "id".to_string(),
+                "status".to_string(),
+            ])),
+            ..Default::default()
+        }];
+        let rules_specific = ColumnInheritanceRules::from_version_column_props(&columns_specific)
+            .expect("directive present");
+        assert!(rules_specific.should_include_column("id"));
+        assert!(rules_specific.should_include_column("status"));
+        assert!(!rules_specific.should_include_column("color"));
+
+        // Default (no directive) inherits all
+        let rules_default = ColumnInheritanceRules::default();
+        assert!(rules_default.should_include_column("id"));
+        assert!(rules_default.should_include_column("color"));
+    }
+
+    #[test]
+    fn test_version_column_properties_yaml_empty_include() {
+        let yaml = "\
+- include: []
+- name: id
+  data_type: UInt8
+- name: status
+  data_type: String
+";
+        let columns: Vec<VersionColumnProperties> = dbt_yaml::from_str(yaml).unwrap();
+        assert_eq!(columns.len(), 3);
+        assert!(columns[0].name.is_none());
+        assert!(columns[0].include.is_some());
+
+        let rules = ColumnInheritanceRules::from_version_column_props(&columns)
+            .expect("should find inheritance directive");
+        assert!(!rules.should_include_column("id"));
+        assert!(!rules.should_include_column("color"));
+        assert!(!rules.should_include_column("legacy_code"));
     }
 }
 
