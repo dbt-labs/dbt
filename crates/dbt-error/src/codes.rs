@@ -391,6 +391,9 @@ pub enum ErrorCode {
     /// No longer emitted. Retained so an existing `warn_error_options` entry naming it
     /// keeps resolving instead of failing as an unknown code.
     DocsGenerateWarning = 1705,
+    /// A node's column facts could not be inferred, so tests that they would
+    /// have let dbt skip run instead.
+    TestFactsInferenceFailed = 1706,
 
     // --------------------------------------------------------------------------------------------
     // Format
