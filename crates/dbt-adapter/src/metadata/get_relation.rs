@@ -554,68 +554,30 @@ fn databricks_get_relation(
     token: CancellationToken,
 ) -> AdapterResult<Option<Box<dyn BaseRelation>>> {
     use crate::metadata::MetadataProcessor as _;
-    use crate::metadata::databricks::DatabricksMetadataAdapter;
-    use crate::metadata::databricks::version::EngineVersion;
-    use crate::relation::databricks::{INFORMATION_SCHEMA_SCHEMA, SYSTEM_DATABASE};
-
-    // This function is only called when full metadata is needed. See https://github.com/databricks/dbt-databricks/blob/822b105b15e644676d9e1f47cbfd765cd4c1541f/dbt/adapters/databricks/impl.py#L418
 
     let query_catalog = databricks_query_identifier(database, adapter.quoting().database);
-    let query_schema = databricks_query_identifier(schema, adapter.quoting().schema);
-    let query_identifier = databricks_query_identifier(identifier, adapter.quoting().identifier);
-
-    // Determine whether `DESCRIBE TABLE EXTENDED ... AS JSON` is supported.
-    // This mirrors the safety checks in list_relations_schemas_inner:
-    // - External system tables (system.information_schema.*) don't support AS JSON
-    // - DBR versions < 16.2 don't support AS JSON
-    // - Spark adapter: skip version check (no DBR version concept)
-    // See also: https://github.com/databricks/dbt-databricks/blob/822b105b15e644676d9e1f47cbfd765cd4c1541f/dbt/adapters/databricks/impl.py#L423
-    let dbr_version = match adapter.adapter_type() {
-        AdapterType::Spark => None,
-        AdapterType::Databricks => Some(DatabricksMetadataAdapter::get_engine_version(
-            adapter,
-            ctx,
-            conn,
-            token.clone(),
-        )?),
-        _ => unreachable!(),
-    };
-
-    let is_external_system = database.eq_ignore_ascii_case(SYSTEM_DATABASE)
-        && schema.eq_ignore_ascii_case(INFORMATION_SCHEMA_SCHEMA);
-
-    let as_json_unsupported = is_external_system
-        || dbr_version
-            .map(|v| v < EngineVersion::Full(16, 2))
-            .unwrap_or(false);
-
-    let fqn = if database.is_empty() {
-        format!("{query_schema}.{query_identifier}")
-    } else {
-        format!("{query_catalog}.{query_schema}.{query_identifier}")
-    };
-
-    let sql = if as_json_unsupported {
-        format!("DESCRIBE TABLE EXTENDED {fqn}")
-    } else {
-        format!("DESCRIBE TABLE EXTENDED {fqn} AS JSON")
-    };
-
-    let batch = adapter
-        .engine()
-        .execute(Some(state), conn.as_mut(), ctx, &sql, token.clone());
+    let batch = super::databricks::describe_relation_batch(
+        adapter,
+        state,
+        ctx,
+        conn,
+        database,
+        schema,
+        identifier,
+        token.clone(),
+    );
     if let Err(e) = &batch
         && (e.to_string().contains("cannot be found")
             || e.to_string().contains("TABLE_OR_VIEW_NOT_FOUND"))
     {
         return Ok(None);
     }
-    let batch = batch?;
+    let (batch, used_plain_describe) = batch?;
     if batch.num_rows() == 0 {
         return Ok(None);
     }
 
-    let (relation_type, is_delta, table_format, metadata) = if as_json_unsupported {
+    let (relation_type, is_delta, table_format, metadata) = if used_plain_describe {
         let (relation_type, is_delta, _, table_format, metadata_map) =
             parse_describe_table_extended(adapter.adapter_type(), &batch)?;
         (

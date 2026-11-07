@@ -904,7 +904,7 @@ pub struct ManifestModelConfig {
     pub incremental_predicates: Option<StringOrArrayOfStrings>,
     pub batch_size: Option<DbtBatchSize>,
     pub lookback: Option<i32>,
-    pub begin: Option<dbt_yaml::Timestamp>,
+    pub begin: Option<String>,
     #[serde(
         default,
         serialize_with = "crate::schemas::serde::serialize_none_as_default"
@@ -1399,10 +1399,7 @@ impl From<DbtModel> for ManifestModel {
             version: model.__model_attr__.version,
             latest_version: model.__model_attr__.latest_version,
             constraints: Some(model.__model_attr__.constraints),
-            deprecation_date: model
-                .__model_attr__
-                .deprecation_date
-                .map(|ts| ts.with_defaults().to_string()),
+            deprecation_date: model.__model_attr__.deprecation_date,
             primary_key: Some(model.__model_attr__.primary_key),
             time_spine: model
                 .__model_attr__

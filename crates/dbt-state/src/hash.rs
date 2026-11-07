@@ -1,7 +1,7 @@
 use dbt_common::path::DbtPath;
 use dbt_schemas::schemas::{
-    DbtModel, DbtSeed, DbtTest, InternalDbtNode, InternalDbtNodeAttributes,
-    common::DbtMaterialization, config_excluded_keys, macros::DbtMacro,
+    DbtModel, DbtSeed, DbtTest, InternalDbtNode, InternalDbtNodeAttributes, config_excluded_keys,
+    macros::DbtMacro,
 };
 use dbt_schemas::state::{DbtRuntimeConfig, DbtVars};
 use md5;
@@ -136,13 +136,13 @@ fn project_var_value(value: &DbtVars) -> dbt_yaml::Value {
     }
 }
 
-// JSON collapses timestamps into strings, non-finite numbers into null, and
+// JSON collapses non-finite numbers into null and
 // non-string map keys into strings. Keep a separate typed representation for
 // those values; ordinary JSON-compatible values retain their existing hash bytes.
 fn requires_yaml_types(value: &dbt_yaml::Value) -> bool {
     use dbt_yaml::Value;
     match value {
-        Value::Timestamp(..) | Value::Tagged(..) => true,
+        Value::Tagged(..) => true,
         Value::Number(number, _) => number.as_f64().is_some_and(|value| !value.is_finite()),
         Value::Sequence(values, _) => values.iter().any(requires_yaml_types),
         Value::Mapping(values, _) => values
@@ -160,7 +160,6 @@ fn typed_yaml_value(value: &dbt_yaml::Value) -> JsonValue {
         Value::Bool(value, _) => json!(["bool", value]),
         Value::String(value, _) => json!(["string", value]),
         Value::Number(value, _) => json!(["number", value.to_string()]),
-        Value::Timestamp(value, _) => json!(["timestamp", value.to_string()]),
         Value::Tagged(value, _) => {
             json!(["tag", value.tag.to_string(), typed_yaml_value(&value.value)])
         }
@@ -593,12 +592,7 @@ fn build_contract_checksum(node: &DbtModel) -> Option<String> {
     }
 
     let materialization = &node.__base_attr__.materialized;
-    let materialization_enforces_constraints = matches!(
-        materialization,
-        DbtMaterialization::Table | DbtMaterialization::Incremental
-    );
-
-    if materialization_enforces_constraints {
+    if materialization.enforces_constraints() {
         contract_state.push_str(&materialization.to_string());
         let constraints_str =
             to_string(&node.__model_attr__.constraints).unwrap_or_else(|_| "[]".to_owned());
@@ -661,9 +655,8 @@ fn model_node_ref_representation_hash(node: &DbtModel) -> Result<String, NodeHas
         JsonValue::from(
             node.__model_attr__
                 .deprecation_date
-                .as_ref()
-                .map(|ts| ts.with_defaults().to_string())
-                .unwrap_or_else(|| "None".to_owned()),
+                .as_deref()
+                .unwrap_or("None"),
         ),
     );
 
@@ -1495,7 +1488,7 @@ mod tests {
             let mut node = model_node(&["project", "models", "test_model"]);
             node.__model_attr__.latest_version = Some(StringOrInteger::Integer(2));
             node.__model_attr__.access = Access::Public;
-            node.__model_attr__.deprecation_date = dbt_yaml::Timestamp::parse("2025-12-31");
+            node.__model_attr__.deprecation_date = Some("2025-12-31".to_string());
 
             assert_eq!(model_node_ref_representation_hash(&node).unwrap().len(), 32);
         }
@@ -2229,9 +2222,6 @@ mod runtime_vars {
             hash(&node, Some(&cfg), &[])
         };
         for (typed, plain) in [
-            ("2026-08-03", "'2026-08-03'"),
-            ("[2026-08-03]", "['2026-08-03']"),
-            ("{date: 2026-08-03}", "{date: '2026-08-03'}"),
             (".nan", "null"),
             (".inf", "-.inf"),
             ("{1: x}", "{'1': x}"),

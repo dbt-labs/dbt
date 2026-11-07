@@ -28,6 +28,7 @@ use crate::schemas::semantic_layer::semantic_manifest::SemanticLayerElementConfi
 use super::relations::base::ComponentName;
 use super::serde::{
     StringOrArrayOfStrings, bool_or_string_bool, bool_or_string_bool_default, i64_or_string_i64,
+    yaml_11_bool_default,
 };
 
 /// Indicates where schema metadata originates from.
@@ -427,6 +428,12 @@ pub enum DbtMaterialization {
     #[serde(untagged)]
     Unknown(String),
 }
+impl DbtMaterialization {
+    /// Constraints are only enforced for table and incremental materializations.
+    pub fn enforces_constraints(&self) -> bool {
+        matches!(self, Self::Table | Self::Incremental)
+    }
+}
 impl FromStr for DbtMaterialization {
     type Err = ();
 
@@ -781,10 +788,9 @@ impl<'de> Deserialize<'de> for DbtCheckColsSpec {
             YmlValue::Sequence(col_list, _) => {
                 let cols: Result<Vec<_>, D::Error> = col_list
                     .into_iter()
-                    .map(|v| {
-                        v.as_scalar_string()
-                            .map(|s| s.into_owned())
-                            .ok_or_else(|| serde::de::Error::custom("Expected array of strings"))
+                    .map(|v| match v {
+                        YmlValue::String(s, _) => Ok(s),
+                        _ => Err(serde::de::Error::custom("Expected array of strings")),
                     })
                     .collect();
                 match cols {
@@ -811,9 +817,12 @@ pub enum DbtBatchSize {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, DbtSchema)]
 pub struct DbtContract {
-    #[serde(default = "default_alias_types")]
+    #[serde(
+        default = "default_alias_types",
+        deserialize_with = "yaml_11_bool_default"
+    )]
     pub alias_types: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "yaml_11_bool_default")]
     pub enforced: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub checksum: Option<YmlValue>,
@@ -951,7 +960,9 @@ pub struct Constraint {
         serialize_with = "crate::schemas::serde::serialize_none_as_empty_vec"
     )]
     pub to_columns: Option<Vec<String>>,
+    #[serde(default = "crate::schemas::serde::default_true")]
     pub warn_unsupported: Option<bool>,
+    #[serde(default = "crate::schemas::serde::default_true")]
     pub warn_unenforced: Option<bool>,
 }
 
@@ -986,6 +997,116 @@ impl ConstraintType {
             ConstraintType::Custom => "custom",
         }
     }
+}
+
+/// The adapter's `CONSTRAINT_SUPPORT` table, or `None` for adapters without a table here.
+/// https://github.com/dbt-labs/dbt-adapters/blob/5379513bad9c75661b990a5ed5f32ac9c62a0758/dbt-adapters/src/dbt/adapters/base/impl.py#L293
+///
+/// This drives the unenforced/unsupported constraint warnings, constraint DDL rendering and
+/// `state:modified.contract` breaking-change detection, which only reports removed `Enforced`
+/// constraints. Known differences from the Python adapters, not yet audited for whether they are
+/// intentional. Where they apply, dbt-core reports a removed constraint and Fusion does not:
+/// - Postgres and DuckDB: dbt-postgres and dbt-duckdb mark every type `ENFORCED`.
+/// - Trino, Starburst and Oracle return `None`, but their Python adapters enforce some types
+///   (dbt-trino enforces `not_null`).
+///
+/// In dbt-core, an adapter that doesn't override the table gets the base table above. Spark,
+/// Athena and Dremio override it and enforce nothing, so `None` matches them.
+pub fn constraint_support(
+    adapter_type: AdapterType,
+    ct: ConstraintType,
+) -> Option<ConstraintSupport> {
+    use AdapterType::*;
+    use ConstraintSupport::*;
+    use ConstraintType::*;
+
+    let support = match (adapter_type, ct) {
+        // Postgres
+        (Postgres, NotNull) => Enforced,
+        (Postgres, ForeignKey) => Enforced,
+        (Postgres, Unique) => NotEnforced,
+        (Postgres, PrimaryKey) => NotEnforced,
+        (Postgres, Check) => NotSupported,
+        (Postgres, Custom) => NotSupported,
+
+        // Snowflake
+        // https://github.com/dbt-labs/dbt-adapters/blob/aa1de3d16267a456326a36045701fb48a61a6b6c/dbt-snowflake/src/dbt/adapters/snowflake/impl.py#L74
+        (Snowflake, NotNull) => Enforced,
+        (Snowflake, ForeignKey) => NotEnforced,
+        (Snowflake, Unique) => NotEnforced,
+        (Snowflake, PrimaryKey) => NotEnforced,
+        (Snowflake, Check) => NotSupported,
+        (Snowflake, Custom) => NotSupported,
+
+        // BigQuery
+        // https://github.com/dbt-labs/dbt-adapters/blob/4a00354a497214d9043bf4122810fe2d04de17bb/dbt-bigquery/src/dbt/adapters/bigquery/impl.py#L132
+        (Bigquery, NotNull) => Enforced,
+        (Bigquery, Unique) => NotSupported,
+        (Bigquery, PrimaryKey) => NotEnforced,
+        (Bigquery, ForeignKey) => NotEnforced,
+        (Bigquery, Check) => NotSupported,
+        (Bigquery, Custom) => NotSupported,
+
+        // Databricks
+        // https://github.com/databricks/dbt-databricks/blob/822b105b15e644676d9e1f47cbfd765cd4c1541f/dbt/adapters/databricks/constraints.py#L17
+        (Databricks, NotNull) => Enforced,
+        (Databricks, Unique) => NotSupported,
+        (Databricks, PrimaryKey) => NotEnforced,
+        (Databricks, ForeignKey) => NotEnforced,
+        (Databricks, Check) => Enforced,
+        (Databricks, Custom) => NotSupported,
+
+        // Redshift
+        // https://github.com/dbt-labs/dbt-adapters/blob/2a94cc75dba1f98fa5caff1f396f5af7ee444598/dbt-redshift/src/dbt/adapters/redshift/impl.py#L53
+        (Redshift, NotNull) => Enforced,
+        (Redshift, Unique) => NotEnforced,
+        (Redshift, PrimaryKey) => NotEnforced,
+        (Redshift, ForeignKey) => NotEnforced,
+        (Redshift, Check) => NotSupported,
+        (Redshift, Custom) => NotSupported,
+
+        // DuckDB - follows Postgres
+        (DuckDB, NotNull) => Enforced,
+        (DuckDB, ForeignKey) => Enforced,
+        (DuckDB, Unique) => NotEnforced,
+        (DuckDB, PrimaryKey) => NotEnforced,
+        (DuckDB, Check) => NotSupported,
+        (DuckDB, Custom) => NotSupported,
+
+        // Lake compute - follows DuckDB
+        (LakeCompute, NotNull) => Enforced,
+        (LakeCompute, ForeignKey) => Enforced,
+        (LakeCompute, Unique) => NotEnforced,
+        (LakeCompute, PrimaryKey) => NotEnforced,
+        (LakeCompute, Check) => NotSupported,
+        (LakeCompute, Custom) => NotSupported,
+
+        // Fabric
+        (Fabric, Check) => NotSupported,
+        (Fabric, NotNull) => Enforced,
+        (Fabric, Unique) => Enforced,
+        (Fabric, PrimaryKey) => Enforced,
+        (Fabric, ForeignKey) => Enforced,
+        (Fabric, Custom) => NotSupported,
+
+        // Exasol (verified on Exasol 8)
+        (Exasol, NotNull) => Enforced,
+        (Exasol, PrimaryKey) => Enforced,
+        (Exasol, ForeignKey) => Enforced,
+        (Exasol, Unique) => NotSupported,
+        (Exasol, Check) => NotSupported,
+        (Exasol, Custom) => NotSupported,
+
+        // ClickHouse (dbt-clickhouse impl.py CONSTRAINT_SUPPORT)
+        (ClickHouse, Check) => Enforced,
+        (ClickHouse, NotNull | Unique | PrimaryKey | ForeignKey | Custom) => NotSupported,
+
+        // Salesforce
+        (Salesforce | Spark | Starburst | Athena | Trino | Datafusion | Dremio | Oracle, _) => {
+            return None;
+        }
+    };
+    Some(support)
 }
 
 #[derive(Debug, Clone, Serialize, UntaggedEnumDeserialize)]
@@ -1212,7 +1333,7 @@ pub enum Rows {
 #[skip_serializing_none]
 #[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq, DbtSchema)]
 pub struct DocsConfig {
-    #[serde(default = "default_show")]
+    #[serde(default = "default_show", deserialize_with = "yaml_11_bool_default")]
     pub show: bool,
     pub node_color: Option<String>,
 }
@@ -1548,47 +1669,60 @@ pub enum Severity {
     Warn,
 }
 
-/// Converts a YAML 1.1 timestamp to a timezone-aware datetime, applying the
-/// spec's defaults of midnight for a missing time-of-day and UTC for a missing
-/// zone. An offset-aware timestamp keeps its authored offset.
-///
-/// Note: this operation is _fallible_! Yaml `Timestamp` is an unvalidated
-/// container, whereas `chrono::DateTime` is fully validated -- in the case when
-/// `ts` is an invalid `DateTime` this method returns `None`.
-pub fn timestamp_to_fixed_offset(
-    ts: &dbt_yaml::Timestamp,
-) -> Option<chrono::DateTime<chrono::FixedOffset>> {
-    use chrono::TimeZone;
-    let (year, month, day) = ts.date();
-    let date = chrono::NaiveDate::from_ymd_opt(year, u32::from(month), u32::from(day))?;
-    let tod = ts.time().unwrap_or(dbt_yaml::TimeOfDay::MIDNIGHT);
-    let time = chrono::NaiveTime::from_hms_nano_opt(
-        u32::from(tod.hour),
-        u32::from(tod.minute),
-        u32::from(tod.second),
-        tod.nanosecond,
-    )?;
-    let offset = chrono::FixedOffset::east_opt(ts.tz_minutes().unwrap_or(0) * 60)?;
-    offset.from_local_datetime(&date.and_time(time)).single()
+/// Parses a `deprecation_date` string in any of the documented input formats
+/// (bare date, or a full datetime with or without a UTC offset -- see
+/// https://docs.getdbt.com/reference/resource-properties/deprecation_date)
+/// into a timezone-aware timestamp. An already offset-aware input keeps its
+/// original offset; a naive (offset-less) datetime is assumed to be UTC.
+pub fn parse_deprecation_date(raw: &str) -> Option<chrono::DateTime<chrono::FixedOffset>> {
+    let raw = raw.trim();
+
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(raw) {
+        return Some(dt);
+    }
+    for format in ["%Y-%m-%d %H:%M:%S%.f%z", "%Y-%m-%d %H:%M:%S%z"] {
+        if let Ok(dt) = chrono::DateTime::parse_from_str(raw, format) {
+            return Some(dt);
+        }
+    }
+
+    let naive_utc_to_fixed = |naive: chrono::NaiveDateTime| {
+        chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(naive, chrono::Utc)
+            .fixed_offset()
+    };
+    for format in [
+        "%Y-%m-%dT%H:%M:%S%.f",
+        "%Y-%m-%d %H:%M:%S%.f",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%d %H:%M:%S",
+    ] {
+        if let Ok(naive) = chrono::NaiveDateTime::parse_from_str(raw, format) {
+            return Some(naive_utc_to_fixed(naive));
+        }
+    }
+    if let Ok(date) = chrono::NaiveDate::parse_from_str(raw, "%Y-%m-%d") {
+        let naive = date.and_hms_opt(0, 0, 0).unwrap();
+        return Some(naive_utc_to_fixed(naive));
+    }
+
+    None
 }
 
-/// Converts a YAML 1.1 timestamp to a UTC datetime, applying the spec's
-/// defaults of midnight for a missing time-of-day and UTC for a missing zone.
-///
-/// Note: this operation is _fallible_! Yaml `Timestamp` is an unvalidated
-/// container, whereas `chrono::DateTime` is fully validated -- in the case when
-/// `ts` is an invalid `DateTime` this method returns `None`.
-pub fn timestamp_to_datetime_utc(
-    ts: &dbt_yaml::Timestamp,
-) -> Option<chrono::DateTime<chrono::Utc>> {
-    timestamp_to_fixed_offset(ts).map(|dt| dt.with_timezone(&chrono::Utc))
+/// Normalizes a raw `deprecation_date` string (as authored in YAML) to an
+/// RFC 3339 string with an explicit UTC offset, matching dbt-core's manifest
+/// output. Falls back to the original string if it doesn't match any
+/// documented format.
+pub fn normalize_deprecation_date(raw: &str) -> String {
+    parse_deprecation_date(raw)
+        .map(|dt| dt.to_rfc3339())
+        .unwrap_or_else(|| raw.to_string())
 }
 
 #[skip_serializing_none]
 #[derive(Deserialize, Serialize, Debug, Clone, DbtSchema)]
 pub struct Versions {
     pub v: YmlValue,
-    pub deprecation_date: Option<dbt_yaml::Timestamp>,
+    pub deprecation_date: Option<String>,
     pub defined_in: Option<String>,
     pub description: Option<String>,
     pub access: Option<String>,
@@ -3029,11 +3163,65 @@ period: hour
         );
     }
 
-    // ---- timestamp conversion ----
+    // ---- deprecation_date normalization (dbt-core#14563) ----
 
-    /// Unquoted YAML 1.1 boolean tokens resolve the way PyYAML (and so dbt-core) resolves them:
-    /// `yes` must resolve to `true`, while a token outside the set, a bare `y`, or a quoted
-    /// `"no"` must error rather than silently become a boolean.
+    #[test]
+    fn test_normalize_deprecation_date_bare_date() {
+        assert_eq!(
+            normalize_deprecation_date("2025-10-31"),
+            "2025-10-31T00:00:00+00:00"
+        );
+    }
+
+    #[test]
+    fn test_normalize_deprecation_date_naive_t_separator() {
+        assert_eq!(
+            normalize_deprecation_date("2025-10-31T00:00:00"),
+            "2025-10-31T00:00:00+00:00"
+        );
+    }
+
+    #[test]
+    fn test_normalize_deprecation_date_naive_space_separator() {
+        assert_eq!(
+            normalize_deprecation_date("2025-10-31 00:00:00"),
+            "2025-10-31T00:00:00+00:00"
+        );
+    }
+
+    #[test]
+    fn test_normalize_deprecation_date_z_suffix() {
+        assert_eq!(
+            normalize_deprecation_date("2025-10-31T00:00:00Z"),
+            "2025-10-31T00:00:00+00:00"
+        );
+    }
+
+    #[test]
+    fn test_normalize_deprecation_date_with_offset_preserved() {
+        assert_eq!(
+            normalize_deprecation_date("2025-10-31T00:00:00-05:00"),
+            "2025-10-31T00:00:00-05:00"
+        );
+    }
+
+    #[test]
+    fn test_normalize_deprecation_date_space_separator_with_offset_and_fraction() {
+        // Exact example from the docs page for `deprecation_date`.
+        assert_eq!(
+            normalize_deprecation_date("1999-01-01 00:00:00.00+00:00"),
+            "1999-01-01T00:00:00+00:00"
+        );
+    }
+
+    #[test]
+    fn test_normalize_deprecation_date_unparseable_passes_through() {
+        assert_eq!(normalize_deprecation_date("not-a-date"), "not-a-date");
+    }
+
+    /// PyYAML (and so dbt-core) resolves the YAML 1.1 boolean tokens that Fusion's YAML 1.2
+    /// reader hands to serde as strings. `yes` must resolve to `true`, and a token outside the
+    /// set must still error rather than silently become `false`.
     #[test]
     fn test_dbt_contract_resolves_yaml_11_boolean_tokens() {
         for field in ["enforced", "alias_types"] {
@@ -3055,7 +3243,7 @@ period: hour
                 assert_eq!(resolved, expected, "{field}: {token}");
             }
 
-            for token in ["maybe", "1", "y", "'no'", r#""yes""#] {
+            for token in ["maybe", "1"] {
                 let result: Result<DbtContract, _> =
                     dbt_yaml::from_str(&format!("{field}: {token}\n"));
                 assert!(result.is_err(), "{field}: {token}");
@@ -3063,7 +3251,7 @@ period: hour
         }
     }
 
-    /// `docs: { show: no }` resolves the same YAML 1.1 boolean tokens as `contract.enforced`;
+    /// `docs: { show: no }` is the same YAML 1.1 boolean divergence as `contract.enforced`;
     /// `show` defaults to `true`, so a silently wrong value would be invisible.
     #[test]
     fn test_docs_config_show_resolves_yaml_11_boolean_tokens() {

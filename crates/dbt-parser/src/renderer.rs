@@ -298,7 +298,7 @@ fn preview_node_relation<T: ResolvableConfig<T> + 'static>(
     naming_config["quoting"] = dbt_yaml::to_value(quoting).expect("resolved node quoting config");
     node.insert(
         "config".to_string(),
-        dbt_schemas::schemas::serde::yml_value_to_minijinja(&naming_config),
+        dbt_schemas::schemas::serde::yml_value_to_minijinja(naming_config),
     );
     let quoting: ResolvedQuoting = quoting.try_into().expect("resolved node quoting");
     let (database, schema) = {

@@ -202,6 +202,11 @@ pub trait SchemaStoreTrait: std::fmt::Debug + Send + Sync {
         false
     }
 
+    /// Returns a transient lookup error for this relation, if metadata could not be loaded.
+    fn lookup_error(&self, _cfqn: &CanonicalFqn) -> Option<String> {
+        None
+    }
+
     /// Retrieves a schema entry by its dbt `unique_id`.
     fn get_schema_by_unique_id(&self, unique_id: &str) -> Option<SchemaEntry>;
 

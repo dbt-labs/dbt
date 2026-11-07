@@ -1,10 +1,13 @@
-use dbt_cancel::Cancellable;
-use minijinja::{Error as MinijinjaError, ErrorKind as MinijinjaErrorKind};
 use std::future::Future;
 use std::io::{self};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::{fmt, panic};
+
+use minijinja::{Error as MinijinjaError, ErrorKind as MinijinjaErrorKind};
+
+use dbt_cancel::Cancellable;
+use dbt_proc_macros::DebugNoInline;
 
 use super::{ErrorCode, types::FsError};
 
@@ -14,7 +17,7 @@ pub type AdapterResult<T> = Result<T, AdapterError>;
 pub type AsyncAdapterResult<'a, T, E = AdapterError> =
     Pin<Box<dyn Future<Output = Result<T, Cancellable<E>>> + Send + 'a>>;
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[derive(DebugNoInline, Copy, Clone, Eq, PartialEq)]
 pub enum AdapterErrorKind {
     /// Internal error
     Internal,
@@ -63,6 +66,7 @@ pub enum AdapterErrorKind {
 impl fmt::Display for AdapterErrorKind {
     /// For a string representation of the error kind
     /// For a description/explanation, use [AdapterErrorKind::description]
+    #[inline(never)]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
@@ -145,7 +149,7 @@ fn map_sqlstate_to_code(sqlstate: &str) -> Option<ErrorCode> {
 }
 
 /// Adapter error.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct AdapterError {
     kind: AdapterErrorKind,
     message: String,
@@ -157,6 +161,19 @@ pub struct AdapterError {
     vendor_code: Option<i32>,
     /// Source of this error
     source: Option<Arc<dyn std::error::Error + Send + Sync>>,
+}
+
+impl fmt::Debug for AdapterError {
+    #[inline(never)]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AdapterError")
+            .field("kind", &self.kind)
+            .field("message", &self.message)
+            .field("sqlstate", &self.sqlstate)
+            .field("vendor_code", &self.vendor_code)
+            .field("source", &self.source)
+            .finish()
+    }
 }
 
 impl AdapterError {
@@ -238,6 +255,7 @@ impl AdapterError {
 }
 
 impl fmt::Display for AdapterError {
+    #[inline(never)]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let message = self.message();
         if message.is_empty() {
