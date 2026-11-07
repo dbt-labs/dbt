@@ -1,8 +1,4 @@
-use crate::{
-    args::LoadArgs,
-    dbt_project_yml_loader::{collect_protected_paths, load_project_yml},
-    load_for_clean,
-};
+use crate::{args::LoadArgs, dbt_project_yml_loader::collect_protected_paths, load_for_clean};
 use std::{
     collections::{BTreeMap, HashSet},
     path::Path,
@@ -11,9 +7,9 @@ use std::{
 use dbt_common::{
     ErrorCode, FsResult,
     cancellation::CancellationToken,
-    constants::{DBT_INDEX_DIR_NAME, DBT_METADATA_DIR_NAME, DBT_PROJECT_YML, DBT_TARGET_DIR_NAME},
+    constants::{DBT_INDEX_DIR_NAME, DBT_METADATA_DIR_NAME, DBT_TARGET_DIR_NAME},
     err, fs_err,
-    io_args::{EvalArgs, EvalArgsBuilder},
+    io_args::EvalArgs,
     lease,
     path::DbtPath,
     stdfs,
@@ -26,9 +22,7 @@ use dbt_common::{
         event_info::store_event_attributes,
     },
 };
-use dbt_jinja_utils::{
-    invocation_args::InvocationArgs, phases::load::init::initialize_load_jinja_environment,
-};
+use dbt_jinja_utils::invocation_args::InvocationArgs;
 use dbt_schemas::schemas::project::DbtProject;
 use dbt_telemetry::{ExecutionPhase, PhaseExecuted, ProgressMessage};
 
@@ -44,30 +38,16 @@ pub async fn execute_clean_command(
     _token: &CancellationToken,
 ) -> FsResult<()> {
     let load_args = LoadArgs::from_eval_args(arg);
-    let dbt_state = load_for_clean(&load_args).await?;
     let invocation_args = InvocationArgs::from_eval_args(arg);
     let flags: BTreeMap<String, minijinja::Value> = invocation_args.to_dict();
 
-    let arg = EvalArgsBuilder::from_eval_args(arg)
-        .with_threads(dbt_state.dbt_profile.threads)
-        .build();
-
-    let env = initialize_load_jinja_environment(
-        &dbt_state.dbt_profile.profile,
-        &dbt_state.dbt_profile.target,
-        dbt_state.dbt_profile.default_db_config().adapter_type(),
-        dbt_state.dbt_profile.default_db_config().clone(),
-        dbt_state.run_started_at,
+    let dbt_project = load_for_clean(
+        &load_args,
         &flags,
         invocation_args.warn_error_options.clone(),
-        arg.io.clone(),
-        dbt_state.catalogs,
     )?;
 
-    let dbt_project_path = arg.io.in_dir.join(DBT_PROJECT_YML);
-    let (dbt_project, _) = load_project_yml(&env, &dbt_project_path, None, arg.vars.clone())?;
-
-    clean_project(&arg, files, &dbt_project, /* clean_targets */ true).await?;
+    clean_project(arg, files, &dbt_project, /* clean_targets */ true).await?;
 
     error_count_checkpoint()
 }

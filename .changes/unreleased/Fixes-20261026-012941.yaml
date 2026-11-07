@@ -1,0 +1,7 @@
+kind: Fixes
+body: 'dbt clean no longer reads profiles.yml, matching dbt-core: a missing or invalid profile is not an error, and `target` renders as empty in dbt_project.yml'
+time: 2026-10-26T01:29:41.275446796-07:00
+custom:
+    author: akbog
+    issue: "16534"
+    project: dbt-core

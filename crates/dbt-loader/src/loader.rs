@@ -24,6 +24,7 @@ use dbt_common::warn_error_options::{
 use dbt_jinja_utils::invocation_args::InvocationArgs;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::phases::load::init::initialize_load_jinja_environment;
+use dbt_jinja_utils::phases::load::init::initialize_load_jinja_environment_without_profile;
 use dbt_jinja_utils::phases::load::init::initialize_load_profile_jinja_environment;
 use dbt_schemas::schemas::serde::{StringOrInteger, yaml_to_fs_error};
 use dbt_schemas::schemas::telemetry::{ExecutionPhase, PhaseExecuted};
@@ -655,48 +656,38 @@ pub async fn load(
 
 /// Lightweight load function for the `clean` command.
 ///
-/// This function loads only the minimal state needed for cleaning
+/// Like dbt-core, `clean` does not read `profiles.yml`: `dbt_project.yml` is
+/// rendered without a profile, so `target` is empty.
 #[tracing::instrument(
     skip_all,
     fields(
         _e = ?store_event_attributes(PhaseExecuted::start_general(ExecutionPhase::LoadProject)),
     )
 )]
-pub async fn load_for_clean(arg: &LoadArgs) -> FsResult<DbtState> {
-    let (simplified_dbt_project, dbt_profile, vars_from_file) =
-        load_simplified_project_and_profiles(arg).await?;
+pub fn load_for_clean(
+    arg: &LoadArgs,
+    flags: &BTreeMap<String, minijinja::Value>,
+    warn_error_options: WarnErrorOptions,
+) -> FsResult<DbtProject> {
+    let (simplified_dbt_project, _vars_from_file) = load_simplified_project(arg)?;
 
-    let original_cli_vars = arg.vars.clone();
-    let arg = LoadArgs {
-        vars: merge_vars(&vars_from_file, &arg.vars),
-        root_vars_from_file: vars_from_file,
-        ..arg.clone()
-    };
-
-    let resolved_warn_error_options = resolve_and_reload_weo_from_project(
+    resolve_and_reload_weo_from_project(
         &simplified_dbt_project,
         arg.cli_warn_error,
         arg.cli_warn_error_options.as_ref(),
         None,
     )?;
 
-    let env = initialize_load_profile_jinja_environment();
-    load_catalogs(&arg, &env, simplified_dbt_project.flags.as_ref()).await?;
+    let env = initialize_load_jinja_environment_without_profile(
+        run_started_at(),
+        flags,
+        warn_error_options,
+        arg.io.clone(),
+    );
+    let dbt_project_path = arg.io.in_dir.join(DBT_PROJECT_YML);
+    let (dbt_project, _) = load_project_yml(&env, &dbt_project_path, None, arg.vars.clone())?;
 
-    // Create minimal DbtState - no packages, no vars
-    let dbt_state = DbtState {
-        dbt_profile,
-        run_started_at: run_started_at(),
-        packages: vec![],
-        vars: BTreeMap::new(),
-        cli_vars: original_cli_vars,
-        catalogs: load_catalogs::fetch_catalogs(),
-        cloud_config: None,
-        warn_error: resolved_warn_error_options.warn_error,
-        warn_error_options: resolved_warn_error_options.warn_error_options,
-    };
-
-    Ok(dbt_state)
+    Ok(dbt_project)
 }
 
 pub async fn load_catalogs(
@@ -823,6 +814,16 @@ pub async fn load_simplified_project_and_profiles(
     DbtProfile,
     BTreeMap<String, dbt_yaml::Value>,
 )> {
+    let (simplified_dbt_project, vars_from_file) = load_simplified_project(arg)?;
+    let dbt_profile = load_profiles(arg, &simplified_dbt_project)?;
+
+    Ok((simplified_dbt_project, dbt_profile, vars_from_file))
+}
+
+/// Parse `dbt_project.yml` (and `vars.yml`) without reading `profiles.yml`.
+fn load_simplified_project(
+    arg: &LoadArgs,
+) -> FsResult<(DbtProjectSimplified, BTreeMap<String, dbt_yaml::Value>)> {
     // Read the input file
     let dbt_project_path = arg.io.in_dir.join(DBT_PROJECT_YML);
 
@@ -887,9 +888,7 @@ pub async fn load_simplified_project_and_profiles(
         );
     }
 
-    let dbt_profile = load_profiles(arg, &simplified_dbt_project)?;
-
-    Ok((simplified_dbt_project, dbt_profile, vars_from_file))
+    Ok((simplified_dbt_project, vars_from_file))
 }
 
 #[allow(clippy::too_many_arguments)]
