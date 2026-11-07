@@ -13,25 +13,32 @@
 {%- endmacro %}
 
 
+-- funcsign: () -> list[string]
+{% macro snowflake__custom_incremental_strategies() -%}
+    {#- Each strategy has a `snowflake__validate_custom_incremental_<strategy>_config` check and a
+        branch in `snowflake__custom_incremental_refresh_using_sql`. -#}
+    {{ return(['merge']) }}
+{%- endmacro %}
+
+
+-- funcsign: () -> string
+{% macro snowflake__custom_incremental_strategy() -%}
+    {{ return((config.get('incremental_strategy') or '') | lower) }}
+{%- endmacro %}
+
+
 -- funcsign: () -> string
 {% macro snowflake__validate_custom_incremental_config() -%}
-    {%- set strategy = (config.get('incremental_strategy') or '') | lower -%}
-    {%- set unique_key = config.get('unique_key') -%}
-    {%- set delete_condition = config.get('delete_condition') -%}
+    {%- set strategy = snowflake__custom_incremental_strategy() -%}
+    {%- set strategies = snowflake__custom_incremental_strategies() -%}
 
     {%- if not strategy -%}
         {% do exceptions.raise_compiler_error(
-            "Dynamic table `" ~ this ~ "` has refresh_mode='CUSTOM_INCREMENTAL' but no `incremental_strategy`. Set incremental_strategy='merge'."
+            "Dynamic table `" ~ this ~ "` has refresh_mode='CUSTOM_INCREMENTAL' but no `incremental_strategy`. Supported strategies: '" ~ strategies | join("', '") ~ "'."
         ) %}
-    {%- elif strategy != 'merge' -%}
+    {%- elif strategy not in strategies -%}
         {% do exceptions.raise_compiler_error(
-            "Dynamic table `" ~ this ~ "` has refresh_mode='CUSTOM_INCREMENTAL' with unsupported incremental_strategy '" ~ strategy ~ "'. Supported strategies: 'merge'."
-        ) %}
-    {%- endif -%}
-
-    {%- if not unique_key -%}
-        {% do exceptions.raise_compiler_error(
-            "Dynamic table `" ~ this ~ "` uses incremental_strategy='merge' with refresh_mode='CUSTOM_INCREMENTAL', which requires `unique_key`."
+            "Dynamic table `" ~ this ~ "` has refresh_mode='CUSTOM_INCREMENTAL' with unsupported incremental_strategy '" ~ strategy ~ "'. Supported strategies: '" ~ strategies | join("', '") ~ "'."
         ) %}
     {%- endif -%}
 
@@ -41,9 +48,24 @@
         ) %}
     {%- endif -%}
 
+    {%- if strategy == 'merge' -%}
+        {% do snowflake__validate_custom_incremental_merge_config() %}
+    {%- endif -%}
+{%- endmacro %}
+
+
+-- funcsign: () -> string
+{% macro snowflake__validate_custom_incremental_merge_config() -%}
+    {%- if not config.get('unique_key') -%}
+        {% do exceptions.raise_compiler_error(
+            "Dynamic table `" ~ this ~ "` uses incremental_strategy='merge' with refresh_mode='CUSTOM_INCREMENTAL', which requires `unique_key`."
+        ) %}
+    {%- endif -%}
+
+    {%- set delete_condition = config.get('delete_condition') -%}
     {%- if delete_condition and 'dbt_internal_dest' in delete_condition | lower -%}
         {% do exceptions.raise_compiler_error(
-            "Dynamic table `" ~ this ~ "`: `delete_condition` is tested against the incoming row, so it must reference DBT_INTERNAL_SOURCE, not DBT_INTERNAL_DEST."
+            "Dynamic table `" ~ this ~ "`: with incremental_strategy='merge', `delete_condition` is tested against the incoming row, so it must reference DBT_INTERNAL_SOURCE, not DBT_INTERNAL_DEST."
         ) %}
     {%- endif -%}
 {%- endmacro %}
@@ -101,21 +123,30 @@
 
 -- funcsign: (string, list[base_column]) -> string
 {% macro snowflake__custom_incremental_refresh_using_sql(sql, columns) -%}
-    {{ snowflake__custom_incremental_merge_sql(sql, columns) }}
+    {%- set strategy = snowflake__custom_incremental_strategy() -%}
+    {%- if strategy == 'merge' -%}
+        {{ snowflake__custom_incremental_merge_sql(sql, columns) }}
+    {%- else -%}
+        {% do exceptions.raise_compiler_error("Unexpected custom incremental strategy '" ~ strategy ~ "' for " ~ this) %}
+    {%- endif -%}
 {%- endmacro %}
 
 
 -- funcsign: (string, list[base_column]) -> string
 {% macro snowflake__custom_incremental_merge_sql(sql, columns) -%}
 {#-
-    The model SQL is wrapped in a subquery: a CI DT body cannot start with WITH.
+    The model SQL is wrapped in a subquery: a CI DT body cannot start with WITH (a syntax error),
+    while a WITH inside the USING subquery is accepted.
     `delete_condition` is tested against the incoming row: a matched row it holds for is deleted,
     and an unmatched one is not inserted.
+    `merge_update_columns` / `merge_exclude_columns` narrow the updated columns, as in the
+    incremental merge.
 -#}
     {%- set unique_key = config.get('unique_key') -%}
     {%- set unique_keys = [unique_key] if unique_key is string else unique_key -%}
     {%- set delete_condition = config.get('delete_condition') -%}
     {%- set column_names = columns | map(attribute='quoted') | list -%}
+    {%- set update_columns = get_merge_update_columns(config.get('merge_update_columns'), config.get('merge_exclude_columns'), columns) -%}
 merge into SELF as DBT_INTERNAL_DEST
 using (
 {{ sql }}
@@ -124,7 +155,7 @@ on {% for key in unique_keys %}DBT_INTERNAL_DEST.{{ key }} = DBT_INTERNAL_SOURCE
 {%- if delete_condition %}
 when matched and coalesce({{ delete_condition }}, false) then delete
 {%- endif %}
-when matched then update set {% for name in column_names %}{{ name }} = DBT_INTERNAL_SOURCE.{{ name }}{% if not loop.last %}, {% endif %}{% endfor %}
+when matched then update set {% for name in update_columns %}{{ name }} = DBT_INTERNAL_SOURCE.{{ name }}{% if not loop.last %}, {% endif %}{% endfor %}
 when not matched{% if delete_condition %} and not coalesce({{ delete_condition }}, false){% endif %} then insert ({{ column_names | join(', ') }}) values ({% for name in column_names %}DBT_INTERNAL_SOURCE.{{ name }}{% if not loop.last %}, {% endif %}{% endfor %})
 {%- endmacro %}
 

@@ -302,6 +302,9 @@ pub struct WarehouseSpecificNodeConfig {
     pub refresh_warehouse: Option<String>,
     #[warehouse(valid(materializing))]
     pub immutable_where: Option<String>,
+    /// Snowflake custom incremental dynamic tables: which rows to delete. Its meaning depends on
+    /// `incremental_strategy`: for `merge` it is tested against the incoming row
+    /// (`DBT_INTERNAL_SOURCE`), deleting a matched target row and skipping an unmatched one.
     #[warehouse(valid(materializing))]
     pub delete_condition: Option<String>,
     #[warehouse(valid(materializing))]

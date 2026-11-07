@@ -1,6 +1,6 @@
-[warning] [JinjaWarn (dbt1071)]: No configuration changes were identified on: `development.adapters_snowflake_custom_incremental_dynamic_table.stock_merge`. Continuing.
+[warning] [JinjaWarn (dbt1071)]: No configuration changes were identified on: `development.adapters_snowflake_custom_incremental_dynamic_table.stock_merge`. Continuing. Changes to the model SQL of a custom incremental dynamic table are only deployed with --full-refresh.
   --> dbt_internal_packages/dbt-snowflake/macros/materializations/dynamic_table.sql:38:1
-[warning] [JinjaWarn (dbt1071)]: No configuration changes were identified on: `development.adapters_snowflake_custom_incremental_dynamic_table.orders_transient`. Continuing.
+[warning] [JinjaWarn (dbt1071)]: No configuration changes were identified on: `development.adapters_snowflake_custom_incremental_dynamic_table.orders_transient`. Continuing. Changes to the model SQL of a custom incremental dynamic table are only deployed with --full-refresh.
   --> dbt_internal_packages/dbt-snowflake/macros/materializations/dynamic_table.sql:38:1
-[warning] [JinjaWarn (dbt1071)]: No configuration changes were identified on: `development.adapters_snowflake_custom_incremental_dynamic_table.orders_merge`. Continuing.
+[warning] [JinjaWarn (dbt1071)]: No configuration changes were identified on: `development.adapters_snowflake_custom_incremental_dynamic_table.orders_merge`. Continuing. Changes to the model SQL of a custom incremental dynamic table are only deployed with --full-refresh.
   --> dbt_internal_packages/dbt-snowflake/macros/materializations/dynamic_table.sql:38:1

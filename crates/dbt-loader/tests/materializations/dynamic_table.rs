@@ -97,6 +97,8 @@ struct LocalConfig {
     incremental_strategy: Option<&'static str>,
     unique_key: Option<Value>,
     delete_condition: Option<&'static str>,
+    merge_update_columns: Option<Value>,
+    merge_exclude_columns: Option<Value>,
     /// The model's template. When set, `model` is a run-time `LazyNodeContext` carrying it as
     /// `raw_code`, which CI DT column discovery re-renders.
     raw_code: Option<&'static str>,
@@ -175,6 +177,8 @@ fn dynamic_config(
     let incremental_strategy = local.incremental_strategy;
     let unique_key = local.unique_key.clone();
     let delete_condition = local.delete_condition;
+    let merge_update_columns = local.merge_update_columns.clone();
+    let merge_exclude_columns = local.merge_exclude_columns.clone();
     mock.on("get", move |args| {
         let key = args.first().and_then(|v| v.as_str());
         // `default` may arrive positionally or as a keyword (`default=...`), which minijinja
@@ -196,6 +200,8 @@ fn dynamic_config(
             Some("incremental_strategy") => Ok(incremental_strategy.map_or(default, Value::from)),
             Some("unique_key") => Ok(unique_key.clone().unwrap_or(default)),
             Some("delete_condition") => Ok(delete_condition.map_or(default, Value::from)),
+            Some("merge_update_columns") => Ok(merge_update_columns.clone().unwrap_or(default)),
+            Some("merge_exclude_columns") => Ok(merge_exclude_columns.clone().unwrap_or(default)),
             _ => Ok(default),
         }
     });
@@ -653,14 +659,13 @@ fn ci_ddl(verb: &str, body: &str) -> String {
     )
 }
 
-/// The DML inside `refresh using (...)` as rendered, before whitespace normalization.
+/// `refresh using (...)`, through its closing paren, as rendered: no whitespace normalization.
 fn raw_refresh_using_body(ddl: &str) -> String {
     let start = ddl
         .find("refresh using (")
-        .expect("a CI DT DDL has a refresh using body")
-        + "refresh using (".len();
+        .expect("a CI DT DDL has a refresh using body");
     let end = ddl.rfind(')').expect("the refresh using body is closed");
-    ddl[start..end].trim_end().to_string()
+    ddl[start..=end].to_string()
 }
 
 fn assert_render_error(result: dbt_common::FsResult<String>, fixture: &Fixture, needle: &str) {
@@ -1034,5 +1039,50 @@ fn ci_ephemeral_upstream_is_rejected_before_discovery_runs() {
         render_ci(&fixture, &local, false),
         &fixture,
         "refs an ephemeral model",
+    );
+}
+
+#[test]
+fn ci_merge_update_columns_narrow_the_update() {
+    let fixture = fixture(None, RemoteState::default());
+    let local = LocalConfig {
+        merge_update_columns: Some(Value::from(vec!["amount"])),
+        ..ci_local_config()
+    };
+    render_ci(&fixture, &local, false).expect("CI DT should render");
+
+    let body = format!(
+        "merge into SELF as DBT_INTERNAL_DEST using ( {CI_SQL} ) as DBT_INTERNAL_SOURCE on DBT_INTERNAL_DEST.id = DBT_INTERNAL_SOURCE.id when matched then update set amount = DBT_INTERNAL_SOURCE.amount when not matched then {CI_INSERT}"
+    );
+    assert_eq!(fixture.executed()[1], ci_ddl("create", &body));
+}
+
+#[test]
+fn ci_merge_exclude_columns_are_not_updated() {
+    let fixture = fixture(None, RemoteState::default());
+    let local = LocalConfig {
+        merge_exclude_columns: Some(Value::from(vec!["is_deleted"])),
+        ..ci_local_config()
+    };
+    render_ci(&fixture, &local, false).expect("CI DT should render");
+
+    let body = format!(
+        r#"merge into SELF as DBT_INTERNAL_DEST using ( {CI_SQL} ) as DBT_INTERNAL_SOURCE on DBT_INTERNAL_DEST.id = DBT_INTERNAL_SOURCE.id when matched then update set "ID" = DBT_INTERNAL_SOURCE."ID", "AMOUNT" = DBT_INTERNAL_SOURCE."AMOUNT" when not matched then {CI_INSERT}"#
+    );
+    assert_eq!(fixture.executed()[1], ci_ddl("create", &body));
+}
+
+#[test]
+fn ci_merge_update_and_exclude_columns_together_raise() {
+    let fixture = fixture(None, RemoteState::default());
+    let local = LocalConfig {
+        merge_update_columns: Some(Value::from(vec!["amount"])),
+        merge_exclude_columns: Some(Value::from(vec!["is_deleted"])),
+        ..ci_local_config()
+    };
+    let err = render_ci(&fixture, &local, false).expect_err("must raise");
+    assert!(
+        format!("{err:?}").contains("merge_update_columns and merge_exclude_columns"),
+        "got: {err:?}"
     );
 }

@@ -471,6 +471,24 @@ async fn adapters_snowflake_custom_incremental_dynamic_table() -> FsResult<()> {
     .await
 }
 
+/// Column discovery reads the source's CHANGES before the dynamic table, whose creation would
+/// enable change tracking, exists. Pins the error a source without change tracking gives.
+#[dbt_runtime::test]
+async fn adapters_snowflake_custom_incremental_dynamic_table_no_change_tracking() -> FsResult<()> {
+    run_fs_record_replay_task_seq(
+        env!("CARGO_MANIFEST_DIR"),
+        &FS_RUNNER,
+        current_function_name!(),
+        "tests/data/adapter/custom_incremental_dynamic_table_no_change_tracking",
+        AdapterType::Snowflake.as_ref(),
+        None,
+        &["run-operation set_up", "run"],
+        None,
+        &[],
+    )
+    .await
+}
+
 #[dbt_runtime::test]
 async fn adapters_snowflake_seed_datatypes() -> FsResult<()> {
     run_fs_record_replay_task_seq(

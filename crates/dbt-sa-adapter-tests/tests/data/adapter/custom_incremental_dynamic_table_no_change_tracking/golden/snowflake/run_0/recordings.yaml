@@ -1,0 +1,16 @@
+84bdc9d1:
+- sequence: 0
+  type: execute
+  sql: USE DATABASE development
+a7a62e7f:
+- sequence: 0
+  type: execute
+  sql: CREATE OR REPLACE TABLE development.adapters_snowflake_custom_incremental_dynamic_table_no_change_tracking.orders (order_id int, amount number(10,2))
+abcb42ea:
+- sequence: 0
+  type: execute
+  sql: CREATE OR ALTER SCHEMA development.adapters_snowflake_custom_incremental_dynamic_table_no_change_tracking
+cf5c9125:
+- sequence: 0
+  type: execute
+  sql: INSERT INTO development.adapters_snowflake_custom_incremental_dynamic_table_no_change_tracking.orders VALUES (1, 10.00)
