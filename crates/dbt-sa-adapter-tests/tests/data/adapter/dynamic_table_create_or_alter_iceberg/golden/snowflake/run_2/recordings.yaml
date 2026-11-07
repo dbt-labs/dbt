@@ -1,0 +1,96 @@
+11ccf682:
+- sequence: 0
+  type: execute
+  sql: INSERT INTO development.adapters_snowflake_dynamic_table_create_or_alter_iceberg.coa_marks VALUES ('ice_identity_change', 'Mon, 02 Nov 2026 01:04:44 -0800')
+2142cc88:
+- sequence: 0
+  type: execute
+  sql: show dynamic tables like 'ice_refresh_mode_replace' in schema development.adapters_snowflake_dynamic_table_create_or_alter_iceberg
+27dd0ea5:
+- sequence: 0
+  type: execute
+  sql: INSERT INTO development.adapters_snowflake_dynamic_table_create_or_alter_iceberg.coa_marks VALUES ('ice_idempotent', 'Mon, 02 Nov 2026 01:04:46 -0800')
+3a4e4278:
+- sequence: 0
+  type: execute
+  sql: show dynamic tables like 'ice_identity_change' in schema development.adapters_snowflake_dynamic_table_create_or_alter_iceberg
+52faa6e8:
+- sequence: 0
+  type: execute
+  sql: INSERT INTO development.adapters_snowflake_dynamic_table_create_or_alter_iceberg.coa_marks VALUES ('ice_evolve', 'Mon, 02 Nov 2026 01:04:48 -0800')
+68e7b6d1:
+- sequence: 0
+  type: execute
+  sql: show dynamic tables like 'native_to_ice' in schema development.adapters_snowflake_dynamic_table_create_or_alter_iceberg
+- sequence: 1
+  type: execute
+  sql: show dynamic tables like 'native_to_ice' in schema development.adapters_snowflake_dynamic_table_create_or_alter_iceberg
+6e194268:
+- sequence: 0
+  type: execute
+  sql: select "created_on"::varchar, "text", "refresh_mode", "target_lag", "is_iceberg" from table(result_scan(last_query_id())) where upper("name") = upper('ice_idempotent')
+6e2aa6db:
+- sequence: 0
+  type: execute
+  sql: show dynamic tables like 'ice_to_native' in schema development.adapters_snowflake_dynamic_table_create_or_alter_iceberg
+- sequence: 1
+  type: execute
+  sql: show dynamic tables like 'ice_to_native' in schema development.adapters_snowflake_dynamic_table_create_or_alter_iceberg
+7e4a757d:
+- sequence: 0
+  type: execute
+  sql: select "created_on"::varchar, "text", "refresh_mode", "target_lag", "is_iceberg" from table(result_scan(last_query_id())) where upper("name") = upper('ice_to_native')
+- sequence: 1
+  type: execute
+  sql: select "created_on"::varchar, "text", "refresh_mode", "target_lag", "is_iceberg" from table(result_scan(last_query_id())) where upper("name") = upper('ice_to_native')
+8399651e:
+- sequence: 0
+  type: execute
+  sql: show dynamic tables like 'ice_evolve' in schema development.adapters_snowflake_dynamic_table_create_or_alter_iceberg
+- sequence: 1
+  type: execute
+  sql: show dynamic tables like 'ice_evolve' in schema development.adapters_snowflake_dynamic_table_create_or_alter_iceberg
+- sequence: 2
+  type: execute
+  sql: show dynamic tables like 'ice_evolve' in schema development.adapters_snowflake_dynamic_table_create_or_alter_iceberg
+88059d42:
+- sequence: 0
+  type: execute
+  sql: select "created_on"::varchar, "text", "refresh_mode", "target_lag", "is_iceberg" from table(result_scan(last_query_id())) where upper("name") = upper('native_to_ice')
+- sequence: 1
+  type: execute
+  sql: select "created_on"::varchar, "text", "refresh_mode", "target_lag", "is_iceberg" from table(result_scan(last_query_id())) where upper("name") = upper('native_to_ice')
+8b5f35dd:
+- sequence: 0
+  type: execute
+  sql: INSERT INTO development.adapters_snowflake_dynamic_table_create_or_alter_iceberg.coa_marks VALUES ('ice_refresh_mode_replace', 'Mon, 02 Nov 2026 01:04:41 -0800')
+8c76baea:
+- sequence: 0
+  type: execute
+  sql: show dynamic tables like 'ice_idempotent' in schema development.adapters_snowflake_dynamic_table_create_or_alter_iceberg
+a452b0ae:
+- sequence: 0
+  type: execute
+  sql: select "created_on"::varchar, "text", "refresh_mode", "target_lag", "is_iceberg" from table(result_scan(last_query_id())) where upper("name") = upper('ice_identity_change')
+cc469d5a:
+- sequence: 0
+  type: execute
+  sql: select "created_on"::varchar, "text", "refresh_mode", "target_lag", "is_iceberg" from table(result_scan(last_query_id())) where upper("name") = upper('ice_refresh_mode_replace')
+d640f918:
+- sequence: 0
+  type: execute
+  sql: INSERT INTO development.adapters_snowflake_dynamic_table_create_or_alter_iceberg.coa_marks VALUES ('ice_to_native', 'Mon, 02 Nov 2026 01:04:39 -0800')
+d9a3984c:
+- sequence: 0
+  type: execute
+  sql: INSERT INTO development.adapters_snowflake_dynamic_table_create_or_alter_iceberg.coa_marks VALUES ('native_to_ice', 'Mon, 02 Nov 2026 01:04:37 -0800')
+ec0afa0d:
+- sequence: 0
+  type: execute
+  sql: select "created_on"::varchar, "text", "refresh_mode", "target_lag", "is_iceberg" from table(result_scan(last_query_id())) where upper("name") = upper('ice_evolve')
+- sequence: 1
+  type: execute
+  sql: select "created_on"::varchar, "text", "refresh_mode", "target_lag", "is_iceberg" from table(result_scan(last_query_id())) where upper("name") = upper('ice_evolve')
+- sequence: 2
+  type: execute
+  sql: select "created_on"::varchar, "text", "refresh_mode", "target_lag", "is_iceberg" from table(result_scan(last_query_id())) where upper("name") = upper('ice_evolve')
