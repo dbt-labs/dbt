@@ -457,6 +457,9 @@ pub enum ErrorCode {
     // --------------------------------------------------------------------------------------------
     // Lineage
     InvalidLineageSchema = 3500,
+    /// A column whose relation `--infer-schemas` inferred matches more than one
+    /// candidate relation, so column lineage through it is incomplete.
+    AmbiguousInferredColumn = 3501,
 
     // --------------------------------------------------------------------------------------------
     // SQL frontend library
