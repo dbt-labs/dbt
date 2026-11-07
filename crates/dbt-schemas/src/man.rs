@@ -290,6 +290,7 @@ mod tests {
 
         assert!(!has_property("SourceConfig", "immutable_where"));
         assert!(has_property("ModelConfig", "immutable_where"));
+        assert!(has_property("ModelConfig", "delete_condition"));
     }
 
     #[test]

@@ -374,6 +374,7 @@ impl From<ProjectSourceConfig> for SourceConfig {
                 target_lag: None,
                 snowflake_initialization_warehouse: None,
                 immutable_where: None,
+                delete_condition: None,
                 snowflake_warehouse: None,
                 refresh_warehouse: None,
                 refresh_mode: None,
