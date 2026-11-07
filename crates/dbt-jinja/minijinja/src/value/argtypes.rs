@@ -282,7 +282,7 @@ impl<'a> From<&'a str> for Value {
     fn from(val: &'a str) -> Self {
         SmallStr::try_new(val)
             .map(|small_str| Value(ValueRepr::SmallStr(small_str)))
-            .unwrap_or_else(|| Value::from(val.to_string()))
+            .unwrap_or_else(|| Value(ValueRepr::String(val.into(), StringType::Normal)))
     }
 }
 
@@ -296,7 +296,9 @@ impl<'a> From<&'a String> for Value {
 impl From<String> for Value {
     #[inline(always)]
     fn from(val: String) -> Self {
-        ValueRepr::String(Arc::from(val), StringType::Normal).into()
+        // There is no benefit here of "reusing" the string allocation. The reason
+        // is that From<String> for Arc<str> copies the bytes over anyways.
+        Value::from(val.as_str())
     }
 }
 
