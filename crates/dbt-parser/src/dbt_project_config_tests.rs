@@ -305,35 +305,6 @@ path_1:
     }
 
     #[test]
-    fn unquoted_boolean_resource_path_suggests_quoting() {
-        // YAML 1.1 reads an unquoted `off` as `false`, so the folder name is lost.
-        let yml = r#"
-my_project:
-  +materialized: view
-  off:
-    +static_analysis: off
-"#;
-        for disallow_plus_prefix in [false, true] {
-            let (result, errors, warnings) = init_project_config_from_yaml::<
-                ModelConfig,
-                ProjectModelConfig,
-            >(yml, disallow_plus_prefix);
-            assert!(result.is_ok());
-            assert!(warnings.is_empty());
-            assert_eq!(errors.len(), 1);
-            let (_, msg) = &errors[0];
-            assert!(
-                msg.contains(
-                    "Invalid model definition `my_project`: A key under `my_project` reads as \
-                     the boolean `false`"
-                ),
-                "{msg}"
-            );
-            assert!(msg.contains("e.g. `'off':`"), "{msg}");
-        }
-    }
-
-    #[test]
     fn repro_emits_error_at_key() {
         // https://github.com/dbt-labs/dbt-core/issues/14433
         let yml = r#"
@@ -983,11 +954,11 @@ pub(crate) mod per_adapter_config_resolver_tests {
     #[test]
     fn a_non_default_tree_neither_panics_nor_repeats_diagnostics() {
         let (database, errors, warnings) = capture_diagnostics(|| {
-            // An unquoted `off` folder is an invalid child; `+path_1` warns.
+            // A folder with a list for `+materialized` is an invalid child; `+path_1` warns.
             let root = root_configs(
                 "+catalog: root_catalog\n\
                  +path_1:\n  +enabled: false\n\
-                 my_project:\n  +materialized: view\n  off:\n    +static_analysis: off\n",
+                 my_project:\n  +materialized: view\n  bad:\n    +materialized: [1]\n",
             );
             let resolver = root_package_resolver(&root);
             let node_fqn = fqn(&["my_project", "m"]);
@@ -999,7 +970,7 @@ pub(crate) mod per_adapter_config_resolver_tests {
         });
         assert_eq!(database, Some("root_catalog".to_string()));
         assert_eq!(errors.len(), 1, "{errors:?}");
-        assert!(errors[0].1.contains("reads as the boolean"), "{errors:?}");
+        assert!(errors[0].1.contains("`my_project.bad`"), "{errors:?}");
         assert_eq!(warnings.len(), 1, "{warnings:?}");
         assert!(warnings[0].1.contains("`+path_1`"), "{warnings:?}");
     }

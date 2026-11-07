@@ -65,6 +65,107 @@ pub mod describe_table;
 pub mod schemas;
 pub(crate) mod version;
 
+/// Only this Databricks driver error permits a plain DESCRIBE retry.
+pub(crate) fn is_unsupported_json_describe(error: &AdapterError) -> bool {
+    error.kind() == AdapterErrorKind::Driver
+        && error
+            .message()
+            .to_ascii_uppercase()
+            .contains("UNSUPPORTED_FEATURE.DESC_JSON_TABLE_TYPE")
+}
+
+pub(crate) fn describe_fallback_error(
+    json_error: AdapterError,
+    plain_error: AdapterError,
+) -> AdapterError {
+    AdapterError::new_with_sqlstate_and_vendor_code(
+        json_error.kind(),
+        format!(
+            "{}; plain DESCRIBE fallback also failed: {plain_error}",
+            json_error.message()
+        ),
+        json_error
+            .sqlstate()
+            .as_bytes()
+            .try_into()
+            .unwrap_or([b'0'; 5]),
+        json_error.vendor_code(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn describe_relation_batch(
+    adapter: &AdapterImpl,
+    state: &State,
+    ctx: &QueryCtx,
+    conn: &mut ConnectionGuard<'_>,
+    database: &str,
+    schema: &str,
+    identifier: &str,
+    token: CancellationToken,
+) -> AdapterResult<(RecordBatch, bool)> {
+    use crate::relation::databricks::{INFORMATION_SCHEMA_SCHEMA, SYSTEM_DATABASE};
+
+    // This function is called when relation lookup needs full metadata.
+    // See https://github.com/databricks/dbt-databricks/blob/822b105b15e644676d9e1f47cbfd765cd4c1541f/dbt/adapters/databricks/impl.py#L418
+    let query_catalog = databricks_query_identifier(database, adapter.quoting().database);
+    let query_schema = databricks_query_identifier(schema, adapter.quoting().schema);
+    let query_identifier = databricks_query_identifier(identifier, adapter.quoting().identifier);
+
+    // Known system tables and older runtimes cannot use JSON describe. Spark
+    // has no Databricks runtime version to check.
+    let dbr_version = match adapter.adapter_type() {
+        AdapterType::Spark => None,
+        AdapterType::Databricks => Some(DatabricksMetadataAdapter::get_engine_version(
+            adapter,
+            ctx,
+            conn,
+            token.clone(),
+        )?),
+        _ => unreachable!(),
+    };
+    let is_external_system = database.eq_ignore_ascii_case(SYSTEM_DATABASE)
+        && schema.eq_ignore_ascii_case(INFORMATION_SCHEMA_SCHEMA);
+    let as_json_unsupported = is_external_system
+        || dbr_version
+            .map(|v| v < EngineVersion::Full(16, 2))
+            .unwrap_or(false);
+
+    let fqn = if database.is_empty() {
+        format!("{query_schema}.{query_identifier}")
+    } else {
+        format!("{query_catalog}.{query_schema}.{query_identifier}")
+    };
+    let plain_sql = format!("DESCRIBE TABLE EXTENDED {fqn}");
+    if as_json_unsupported {
+        return adapter
+            .engine()
+            .execute(Some(state), conn.as_mut(), ctx, &plain_sql, token)
+            .map(|batch| (batch, true));
+    }
+
+    let json_sql = format!("{plain_sql} AS JSON");
+    if adapter.adapter_type() != AdapterType::Databricks {
+        return adapter
+            .engine()
+            .execute(Some(state), conn.as_mut(), ctx, &json_sql, token)
+            .map(|batch| (batch, false));
+    }
+
+    match adapter
+        .engine()
+        .execute(Some(state), conn.as_mut(), ctx, &json_sql, token.clone())
+    {
+        Ok(batch) => Ok((batch, false)),
+        Err(json_error) if is_unsupported_json_describe(&json_error) => adapter
+            .engine()
+            .execute(Some(state), conn.as_mut(), ctx, &plain_sql, token)
+            .map(|batch| (batch, true))
+            .map_err(|plain_error| describe_fallback_error(json_error, plain_error)),
+        Err(error) => Err(error),
+    }
+}
+
 fn databricks_string_value(value: &str) -> String {
     if !value
         .bytes()
@@ -1501,10 +1602,30 @@ impl MetadataAdapter for DatabricksMetadataAdapter {
                 ctx = ctx.with_phase(phase.as_str());
             }
 
-            let (_, table) = adapter.query(&ctx, conn, &sql, None, token_clone.clone())?;
+            let (table, used_plain_describe) = if as_json_unsupported {
+                let (_, table) = adapter.query(&ctx, conn, &sql, None, token_clone.clone())?;
+                (table, true)
+            } else if adapter.adapter_type() == AdapterType::Databricks {
+                let plain_sql = format!("DESCRIBE TABLE {fqn};");
+                match adapter.query(&ctx, conn, &sql, None, token_clone.clone()) {
+                    Ok((_, table)) => (table, false),
+                    Err(json_error) if is_unsupported_json_describe(&json_error) => {
+                        let (_, table) = adapter
+                            .query(&ctx, conn, &plain_sql, None, token_clone.clone())
+                            .map_err(|plain_error| {
+                                describe_fallback_error(json_error, plain_error)
+                            })?;
+                        (table, true)
+                    }
+                    Err(error) => return Err(error),
+                }
+            } else {
+                let (_, table) = adapter.query(&ctx, conn, &sql, None, token_clone.clone())?;
+                (table, false)
+            };
             let batch = table.original_record_batch();
 
-            let schema = if as_json_unsupported {
+            let schema = if used_plain_describe {
                 build_schema_from_basic_describe_table(batch, adapter.engine().type_ops().as_ref())?
             } else {
                 let json_metadata = DatabricksTableMetadata::from_record_batch(batch)?;
@@ -2023,6 +2144,70 @@ fn extract_dbr_version(version_str: &str) -> AdapterResult<EngineVersion> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn json_describe_unsupported_is_retryable() {
+        let error = AdapterError::new(
+            AdapterErrorKind::Driver,
+            "[UNSUPPORTED_FEATURE.DESC_JSON_TABLE_TYPE] DESCRIBE AS JSON not supported for table type of view",
+        );
+        assert!(is_unsupported_json_describe(&error));
+    }
+
+    #[test]
+    fn plain_describe_fallback_hydrates_columns() {
+        let batch = Arc::new(
+            RecordBatch::try_new(
+                Arc::new(Schema::new(vec![
+                    Field::new("col_name", DataType::Utf8, false),
+                    Field::new("data_type", DataType::Utf8, false),
+                    Field::new("comment", DataType::Utf8, true),
+                ])),
+                vec![
+                    Arc::new(StringArray::from(vec!["id", "name"])),
+                    Arc::new(StringArray::from(vec!["bigint", "string"])),
+                    Arc::new(StringArray::from(vec!["", "customer name"])),
+                ],
+            )
+            .unwrap(),
+        );
+        let schema = build_schema_from_basic_describe_table(
+            batch,
+            &crate::sql_types::DefaultTypeOps::new(AdapterType::Databricks),
+        )
+        .unwrap();
+        assert_eq!(schema.fields().len(), 2);
+        assert_eq!(schema.field(0).name(), "id");
+        assert_eq!(schema.field(1).name(), "name");
+    }
+
+    #[test]
+    fn json_describe_other_failures_are_not_retryable() {
+        for (kind, message) in [
+            (AdapterErrorKind::Authentication, "permission denied"),
+            (AdapterErrorKind::Driver, "connection refused"),
+            (
+                AdapterErrorKind::Driver,
+                "[UNSUPPORTED_FEATURE] unrelated operation",
+            ),
+            (AdapterErrorKind::Driver, "[TABLE_OR_VIEW_NOT_FOUND] view"),
+        ] {
+            let error = AdapterError::new(kind, message);
+            assert!(!is_unsupported_json_describe(&error));
+        }
+    }
+
+    #[test]
+    fn json_describe_failed_fallback_preserves_original_error() {
+        let json_error = AdapterError::new(
+            AdapterErrorKind::Driver,
+            "[UNSUPPORTED_FEATURE.DESC_JSON_TABLE_TYPE] DESCRIBE AS JSON not supported for table type of view",
+        );
+        let plain_error = AdapterError::new(AdapterErrorKind::Authentication, "permission denied");
+        let err = describe_fallback_error(json_error, plain_error);
+        assert!(err.message().contains("UNSUPPORTED_FEATURE"));
+        assert!(err.message().contains("permission denied"));
+    }
     use crate::relation::Relation;
     use crate::stmt_splitter::{DefaultStmtSplitter, StmtSplitter};
     use dbt_schemas::dbt_types::RelationType;
