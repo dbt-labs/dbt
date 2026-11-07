@@ -1,0 +1,7 @@
+kind: Fixes
+body: Quote Redshift identifiers whose casing would otherwise be lost, matching the existing Snowflake behaviour
+time: 2026-09-10T21:52:02.039196+02:00
+custom:
+    author: dylanpulver
+    issue: ""
+    project: dbt-core
