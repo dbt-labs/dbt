@@ -5,14 +5,19 @@
    Parsing models/orders_transient.sql
    Parsing models/stock_merge.sql
    Parsing tests/orders_merge_matches_source.sql
+   Parsing tests/orders_transient_after_full_refresh.sql
+   Parsing tests/orders_transient_after_refresh.sql
    Parsing tests/stock_merge_matches_source.sql
  Rendering tests/stock_merge_matches_source.sql
    Running ../scratch/target/run/test/tests/stock_merge_matches_source.sql
-    Passed test  stock_merge_matches_source [1 of 2 in duration]
+    Passed test  stock_merge_matches_source [1 of 3 in duration]
+ Rendering tests/orders_transient_after_refresh.sql
+   Running ../scratch/target/run/test/tests/orders_transient_after_refresh.sql
+    Passed test  orders_transient_after_refresh [2 of 3 in duration]
  Rendering tests/orders_merge_matches_source.sql
    Running ../scratch/target/run/test/tests/orders_merge_matches_source.sql
-    Passed test  orders_merge_matches_source [2 of 2 in duration]
+    Passed test  orders_merge_matches_source [3 of 3 in duration]
 ==================== Execution Summary =====================
 Finished 'test' successfully for target 'snowflake' [duration]
-Processed: 2 tests
-Summary: 2 total | 2 success
+Processed: 3 tests
+Summary: 3 total | 3 success

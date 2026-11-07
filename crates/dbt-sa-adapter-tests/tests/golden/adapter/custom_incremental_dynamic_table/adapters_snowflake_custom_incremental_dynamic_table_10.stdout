@@ -1,0 +1,17 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/sources.yml
+   Parsing models/orders_merge.sql
+   Parsing models/orders_transient.sql
+   Parsing models/stock_merge.sql
+   Parsing tests/orders_merge_matches_source.sql
+   Parsing tests/orders_transient_after_full_refresh.sql
+   Parsing tests/orders_transient_after_refresh.sql
+   Parsing tests/stock_merge_matches_source.sql
+ Rendering tests/orders_merge_matches_source.sql
+   Running ../scratch/target/run/test/tests/orders_merge_matches_source.sql
+    Passed test  orders_merge_matches_source [1 of 1 in duration]
+==================== Execution Summary =====================
+Finished 'test' successfully for target 'snowflake' [duration]
+Processed: 1 test
+Summary: 1 total | 1 success

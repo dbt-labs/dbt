@@ -5,6 +5,8 @@
    Parsing models/orders_transient.sql
    Parsing models/stock_merge.sql
    Parsing tests/orders_merge_matches_source.sql
+   Parsing tests/orders_transient_after_full_refresh.sql
+   Parsing tests/orders_transient_after_refresh.sql
    Parsing tests/stock_merge_matches_source.sql
  Rendering models/stock_merge.sql
    Running models/stock_merge.sql
