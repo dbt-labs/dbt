@@ -1839,6 +1839,7 @@ impl<'a> AllPhasesExecutor<'a> {
                                         thread_id: "main".to_string(),
                                         message: Some("Compilation Error".to_string()),
                                         assertion: false,
+                                        result_status_override: None,
                                     })
                                     .collect(),
                                 nodes: Some(compilation.nodes().clone()),
