@@ -1,0 +1,6 @@
+[error] [JinjaError (dbt1501)]: Error executing materialization macro 'dbt_snowflake.materialization_dynamic_table_snowflake' for model model.test.err_fail_fast: Failed to eval the compiled Jinja expression invalid operation: FailFast Error for model.test.err_fail_fast from models/err_fail_fast.sql: Configuration changes were identified and `on_configuration_change` was set to `fail` for `development.adapters_snowflake_dynamic_table_create_or_alter_errors.err_fail_fast`
+(in run/test/models/err_fail_fast.sql)
+(in dbt_internal_packages/dbt-snowflake/macros/materializations/dynamic_table.sql:10:24)
+(in dbt_internal_packages/dbt-snowflake/macros/materializations/dynamic_table.sql:49:32)
+(in dbt_internal_packages/dbt-snowflake/macros/relations/dynamic_table/create_or_alter.sql:77:9)
+  --> run/test/models/err_fail_fast.sql

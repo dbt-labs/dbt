@@ -308,6 +308,9 @@ pub struct WarehouseSpecificNodeConfig {
     pub initialize: Option<String>,
     #[warehouse(valid(materializing))]
     pub scheduler: Option<String>,
+    #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(Model))]
+    pub dynamic_table_create_or_alter: Option<bool>,
     #[warehouse(valid(materializing))]
     pub tmp_relation_type: Option<String>,
     #[warehouse(valid(materializing))]
@@ -682,6 +685,8 @@ pub fn same_warehouse_config(
     let refresh_mode_eq = self_wh.refresh_mode == other_wh.refresh_mode;
     let initialize_eq = self_wh.initialize == other_wh.initialize;
     let scheduler_eq = self_wh.scheduler == other_wh.scheduler;
+    let dynamic_table_create_or_alter_eq =
+        self_wh.dynamic_table_create_or_alter == other_wh.dynamic_table_create_or_alter;
     let tmp_relation_type_eq = self_wh.tmp_relation_type == other_wh.tmp_relation_type;
     let query_tag_eq = self_wh.query_tag == other_wh.query_tag;
     let automatic_clustering_eq = self_wh.automatic_clustering == other_wh.automatic_clustering;
@@ -788,6 +793,7 @@ pub fn same_warehouse_config(
         && refresh_mode_eq
         && initialize_eq
         && scheduler_eq
+        && dynamic_table_create_or_alter_eq
         && tmp_relation_type_eq
         && query_tag_eq
         && automatic_clustering_eq
@@ -1301,6 +1307,14 @@ pub fn same_warehouse_config(
                     Some((
                         format!("{:?}", &self_wh.scheduler),
                         format!("{:?}", &other_wh.scheduler),
+                    )),
+                ),
+                (
+                    "dynamic_table_create_or_alter",
+                    dynamic_table_create_or_alter_eq,
+                    Some((
+                        format!("{:?}", &self_wh.dynamic_table_create_or_alter),
+                        format!("{:?}", &other_wh.dynamic_table_create_or_alter),
                     )),
                 ),
                 (

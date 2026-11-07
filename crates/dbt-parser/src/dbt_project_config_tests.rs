@@ -485,6 +485,43 @@ my_project:
         );
     }
 
+    #[test]
+    fn dynamic_table_create_or_alter_is_valid_and_inherits_with_nested_override() {
+        let yml = r#"
+my_project:
+  synced:
+    +dynamic_table_create_or_alter: true
+    expensive:
+      +dynamic_table_create_or_alter: "false"
+  unset:
+    +enabled: true
+"#;
+
+        let (result, errors, warnings) =
+            init_project_config_from_yaml::<ModelConfig, ProjectModelConfig>(yml, false);
+        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+        assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
+
+        let config = result.unwrap();
+        let create_or_alter = |path: &[&str]| {
+            let fqn: Vec<String> = path.iter().map(|s| s.to_string()).collect();
+            config
+                .get_config_for_fqn(&fqn)
+                .__warehouse_specific_config__
+                .dynamic_table_create_or_alter
+        };
+        assert_eq!(
+            create_or_alter(&["my_project", "synced", "model"]),
+            Some(true)
+        );
+        assert_eq!(
+            create_or_alter(&["my_project", "synced", "expensive", "model"]),
+            Some(false)
+        );
+        // Unset must stay `None` so the macro falls back to the project behavior flag.
+        assert_eq!(create_or_alter(&["my_project", "unset", "model"]), None);
+    }
+
     /// Residual (fs#13424): Databricks' `target_catalog` -> `target_database`
     /// alias has no dedicated field the way `catalog` -> `database` does (there is no
     /// `target_catalog` field on `SnapshotConfig`/`ProjectSnapshotConfig` to canonicalize),

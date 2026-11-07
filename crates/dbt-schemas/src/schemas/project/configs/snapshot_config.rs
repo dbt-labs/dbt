@@ -867,6 +867,7 @@ impl From<ProjectSnapshotConfig> for SnapshotConfig {
                 row_filter: None,
                 incremental_apply_config_changes: None,
                 use_materialization_v2: None,
+                dynamic_table_create_or_alter: None,
                 use_safer_relation_operations: None,
                 view_update_via_alter: None,
 
