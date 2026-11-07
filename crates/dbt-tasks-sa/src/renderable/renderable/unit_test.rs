@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Debug;
 use std::future::Future;
 use std::io::Cursor;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{Arc, LazyLock, Weak};
 
@@ -23,7 +23,7 @@ use dbt_common::io_args::{ReplayMode, TimeMachineMode};
 use dbt_common::static_analysis::is_static_analysis_off_or_baseline;
 use dbt_common::stats::NodeStatus;
 use dbt_common::stdfs;
-use dbt_common::{ErrorCode, FsResult, MacroSpansOnly, err, fs_err};
+use dbt_common::{ErrorCode, FsResult, MacroSpan, MacroSpansOnly, err, fs_err};
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::phases::compile::DependencyValidationConfig;
 use dbt_jinja_utils::phases::run::build_run_node_context;
@@ -61,7 +61,11 @@ use minijinja::listener::RenderingEventListener;
 use minijinja::value::Object;
 use minijinja::{CodeLocation, State, Value, Value as MinijinjaValue};
 use regex::Regex;
+use sqlparser::ast::{JoinOperator, Query, SetExpr, TableFactor, Visit, Visitor};
+use sqlparser::keywords::Keyword;
+use sqlparser::parser::Parser;
 use sqlparser::tokenizer::{Token, Tokenizer, Whitespace};
+use std::ops::ControlFlow;
 
 type YmlValue = dbt_yaml::Value;
 
@@ -1358,6 +1362,13 @@ fn infer_schema_from_compiled_sql(
         original_file_path,
     )?;
 
+    validate_local_unit_test_sql(
+        unit_test.node_adapter(),
+        effective_unit_test_execute(unit_test, ctx.inner.execute),
+        &compiled_model_sql,
+    )
+    .map_err(|error| error.with_location(original_file_path.to_path_buf()))?;
+
     infer_unit_test_expected_schema(
         ctx,
         unit_test,
@@ -2053,8 +2064,6 @@ fn render_unit_test(
         ctx.inner.arg.io.in_dir.as_path(),
         ctx.inner.arg.io.out_dir.as_path(),
     );
-    let new_macro_span_name = format!("{}.macro_spans.json", node.__common_attr__.name);
-    let absolute_path_macro_span = absolute_path_unit_test.with_file_name(&new_macro_span_name);
     let relative_path_unit_test = absolute_path_unit_test
         .strip_prefix(&ctx.inner.arg.io.out_dir)
         .map(Path::to_path_buf)
@@ -2509,29 +2518,154 @@ WITH
     let rendered_sql =
         replace_subquery_refs_with_cte_names(adapter_type, type_ops, rendered_sql, &subqueries);
 
-    stdfs::create_dir_all(absolute_path_unit_test.parent().unwrap())?;
-    stdfs::write(&absolute_path_unit_test, &rendered_sql)?;
-
     // todo: the macro spans are off: render the whole query, not just the actual sql model
     let macro_spans = macro_spans_to_macro_span_vec(&macro_spans);
+    write_unit_test_artifacts(
+        effective_execute,
+        rendered_sql,
+        original_file_path,
+        &absolute_path_unit_test,
+        node,
+        relative_path_unit_test,
+        macro_spans,
+    )
+    .map(|instruction| (instruction, config_map))
+}
+
+fn write_unit_test_artifacts(
+    execute: schemas::profiles::Execute,
+    sql: String,
+    original_file_path: &Path,
+    compiled_path: &Path,
+    unit_test: &DbtUnitTest,
+    relative_path: PathBuf,
+    macro_spans: Vec<MacroSpan>,
+) -> FsResult<SqlInstruction> {
+    validate_local_unit_test_sql(unit_test.node_adapter(), execute, &sql)
+        .map_err(|error| error.with_location(original_file_path.to_path_buf()))?;
+    stdfs::create_dir_all(compiled_path.parent().unwrap())?;
+    stdfs::write(compiled_path, &sql)?;
     stdfs::write(
-        absolute_path_macro_span,
+        compiled_path.with_file_name(format!(
+            "{}.macro_spans.json",
+            unit_test.__common_attr__.name
+        )),
         serde_json::to_string_pretty(&macro_spans).unwrap(),
     )?;
+    Ok(SqlInstruction {
+        fqn: vec![
+            unit_test.__base_attr__.database.clone(),
+            unit_test.__base_attr__.schema.clone(),
+            unit_test.__common_attr__.name.clone(),
+        ],
+        sql,
+        original_path: relative_path,
+        spans: Box::new(MacroSpansOnly { macro_spans }),
+    })
+}
 
-    Ok((
-        SqlInstruction {
-            fqn: vec![
-                node.__base_attr__.database.clone(),
-                node.__base_attr__.schema.clone(),
-                node.__common_attr__.name.clone(),
-            ],
-            sql: rendered_sql,
-            original_path: relative_path_unit_test,
-            spans: Box::new(MacroSpansOnly { macro_spans }),
-        },
-        config_map,
-    ))
+fn has_asof_join_candidate(tokens: &[Token]) -> bool {
+    let mut previous_asof = false;
+    tokens
+        .iter()
+        .filter(|token| !matches!(token, Token::Whitespace(_)))
+        .any(|token| {
+            let is_join = matches!(token, Token::Word(word) if word.keyword == Keyword::JOIN);
+            let candidate = previous_asof && is_join;
+            previous_asof = matches!(token, Token::Word(word) if word.keyword == Keyword::ASOF);
+            candidate
+        })
+}
+
+struct AsOfJoinVisitor;
+
+impl AsOfJoinVisitor {
+    fn visit_body(body: &SetExpr) -> ControlFlow<()> {
+        match body {
+            SetExpr::Select(select) => {
+                if select.from.iter().any(|table| {
+                    table
+                        .joins
+                        .iter()
+                        .any(|join| matches!(join.join_operator, JoinOperator::AsOf { .. }))
+                }) {
+                    return ControlFlow::Break(());
+                }
+            }
+            SetExpr::SetOperation { left, right, .. } => {
+                Self::visit_body(left)?;
+                Self::visit_body(right)?;
+            }
+            _ => {}
+        }
+        ControlFlow::Continue(())
+    }
+}
+
+impl Visitor for AsOfJoinVisitor {
+    type Break = ();
+
+    fn pre_visit_query(&mut self, query: &Query) -> ControlFlow<Self::Break> {
+        Self::visit_body(&query.body)
+    }
+
+    fn pre_visit_table_factor(&mut self, table: &TableFactor) -> ControlFlow<Self::Break> {
+        if let TableFactor::NestedJoin {
+            table_with_joins, ..
+        } = table
+            && table_with_joins
+                .joins
+                .iter()
+                .any(|join| matches!(join.join_operator, JoinOperator::AsOf { .. }))
+        {
+            return ControlFlow::Break(());
+        }
+        ControlFlow::Continue(())
+    }
+}
+
+fn validate_local_unit_test_sql(
+    adapter_type: AdapterType,
+    execute: schemas::profiles::Execute,
+    sql: &str,
+) -> FsResult<()> {
+    if adapter_type != AdapterType::Snowflake || execute != schemas::profiles::Execute::Sidecar {
+        return Ok(());
+    }
+
+    let dialect = sqlparser_dialect_for(adapter_type);
+    let tokens = Tokenizer::new(dialect, sql).tokenize().map_err(|error| {
+        fs_err!(
+            ErrorCode::SyntaxInvalid,
+            "Unable to tokenize SQL for local unit test execution: {error}"
+        )
+    })?;
+    // The translator replaces lambda arguments (FILTER, TRANSFORM, REDUCE) with a
+    // '<lambda>' binary literal. In Snowflake SQL `->` only introduces a lambda.
+    if tokens.contains(&Token::Arrow) {
+        return Err(fs_err!(
+            ErrorCode::SidecarUnsupportedFeature,
+            "Snowflake lambda expressions (for example in FILTER or TRANSFORM) are not supported for local unit test execution. Set this unit test's compute configuration to remote to execute it in the warehouse."
+        ));
+    }
+    if !has_asof_join_candidate(&tokens) {
+        return Ok(());
+    }
+
+    // Confirm the join operator: a relation named `asof` followed by JOIN is legal.
+    let statements = Parser::parse_sql(dialect, sql).map_err(|error| {
+        fs_err!(
+            ErrorCode::SyntaxInvalid,
+            "Unable to check ASOF JOIN support for local unit test execution: {error}"
+        )
+    })?;
+    if statements.visit(&mut AsOfJoinVisitor).is_break() {
+        return Err(fs_err!(
+            ErrorCode::SidecarUnsupportedFeature,
+            "Snowflake ASOF JOIN is not supported for local unit test execution because its matching predicates are not preserved. Set this unit test's compute configuration to remote to execute it in the warehouse."
+        ));
+    }
+    Ok(())
 }
 
 fn format_unit_test_subquery(adapter_type: AdapterType, fqn: &str, values: &str) -> String {
@@ -3606,6 +3740,181 @@ mod tests {
     use minijinja::dispatch_object::DispatchObject;
 
     type YmlValue = dbt_yaml::Value;
+
+    const LAMBDA_FIRST_MATCH_SQL: &str = "WITH events AS (
+            SELECT 1 AS event_id, PARSE_JSON('{}') AS metadata_json
+            UNION ALL SELECT 2, PARSE_JSON('{\"timelineInfo\": {\"steps\": []}}')
+            UNION ALL SELECT 3, PARSE_JSON('{\"timelineInfo\": {\"steps\": [{\"substate\": \"initiated\", \"occurredAt\": \"2026-10-20T12:00:00Z\"}]}}')
+            UNION ALL SELECT 4, PARSE_JSON('{\"timelineInfo\": {\"steps\": [{\"substate\": \"initiated\", \"occurredAt\": \"2026-10-20T12:00:00Z\"}, {\"substate\": \"initiated\", \"occurredAt\": \"2026-10-20T12:05:00Z\"}]}}')
+        )
+        SELECT event_id, TRY_TO_TIMESTAMP_TZ(GET(FILTER(
+            metadata_json['timelineInfo']['steps'],
+            s -> s:substate::STRING = 'initiated'
+        ), 0):occurredAt::STRING)::TIMESTAMP_NTZ AS initiated_at
+        FROM events";
+
+    #[test]
+    fn local_unit_test_lambda_rejects_lambda_arguments() {
+        for sql in [
+            LAMBDA_FIRST_MATCH_SQL,
+            "SELECT FILTER(ARRAY_CONSTRUCT(1, 2, 3), x -> x > 1)",
+            "SELECT FILTER(steps::ARRAY, s -> s:substate::STRING = 'initiated') FROM t",
+            "SELECT TRANSFORM(ARRAY_CONSTRUCT(1, 2), x INT -> x * 2)",
+            "SELECT REDUCE(ARRAY_CONSTRUCT(1, 2), 0, (acc, x) -> acc + x)",
+            "SELECT * FROM (SELECT FILTER(a, x->x IS NOT NULL) AS a FROM t) UNION ALL SELECT a FROM u",
+        ] {
+            let error = validate_local_unit_test_sql(AdapterType::Snowflake, Execute::Sidecar, sql)
+                .unwrap_err();
+            assert_eq!(error.code, ErrorCode::SidecarUnsupportedFeature, "{sql}");
+            assert_contains!(error.to_string(), "compute configuration to remote");
+        }
+    }
+
+    #[test]
+    fn local_unit_test_lambda_allows_non_lambda_arrows() {
+        for sql in [
+            "SELECT 's -> s:x' AS message",
+            "SELECT $$x -> x > 1$$ AS message",
+            "SELECT 1 -- x -> x\n",
+            "SELECT 1 /* x -> x */",
+            "SELECT \"a->b\" FROM t",
+            "SELECT a - > b, a-1>b FROM t",
+            "SELECT FLATTEN(input => steps) FROM t",
+            "SELECT GET(steps, 0):occurredAt::STRING FROM t",
+        ] {
+            validate_local_unit_test_sql(AdapterType::Snowflake, Execute::Sidecar, sql)
+                .unwrap_or_else(|error| panic!("{sql}: {error}"));
+        }
+    }
+
+    #[test]
+    fn local_unit_test_lambda_preserves_other_execution_modes_and_adapters() {
+        for (adapter, execute) in [
+            (AdapterType::Snowflake, Execute::Remote),
+            (AdapterType::Snowflake, Execute::Service),
+            (AdapterType::DuckDB, Execute::Sidecar),
+            (AdapterType::Databricks, Execute::Sidecar),
+        ] {
+            validate_local_unit_test_sql(adapter, execute, LAMBDA_FIRST_MATCH_SQL).unwrap();
+        }
+    }
+
+    #[test]
+    fn local_unit_test_lambda_respects_compute_overrides() {
+        let mut unit_test = DbtUnitTest::default();
+        for (invocation, compute, rejected) in [
+            (Execute::Remote, None, false),
+            (Execute::Sidecar, None, true),
+            (Execute::Remote, Some(ComputeArg::Sidecar), true),
+            (Execute::Sidecar, Some(ComputeArg::Remote), false),
+        ] {
+            unit_test.deprecated_config.compute = compute;
+            assert_eq!(
+                validate_local_unit_test_sql(
+                    AdapterType::Snowflake,
+                    effective_unit_test_execute(&unit_test, invocation),
+                    LAMBDA_FIRST_MATCH_SQL,
+                )
+                .is_err(),
+                rejected,
+            );
+        }
+    }
+
+    #[test]
+    fn local_unit_test_asof_rejects_matching_joins() {
+        let join = "SELECT * FROM trades t ASOF JOIN actions a \
+            MATCH_CONDITION (t.traded_at >= a.action_at) \
+            ON t.device_id = a.device_id AND t.token_id = a.token_id";
+        for sql in [
+            join.to_string(),
+            join.replace("ASOF JOIN", "aSoF /* comment */\n JoIn"),
+            format!("WITH matched AS ({join}) SELECT * FROM matched"),
+            format!("SELECT * FROM ({join}) matched"),
+            format!("SELECT 1 UNION ALL {join}"),
+            format!("{join} UNION ALL SELECT 1"),
+            "SELECT * FROM (trades t ASOF JOIN actions a \
+                MATCH_CONDITION (t.traded_at >= a.action_at) ON t.id = a.id)"
+                .to_string(),
+            format!(
+                "{join} ASOF JOIN prices p MATCH_CONDITION (t.traded_at >= p.at) ON t.token_id = p.token_id"
+            ),
+        ] {
+            let error =
+                validate_local_unit_test_sql(AdapterType::Snowflake, Execute::Sidecar, &sql)
+                    .unwrap_err();
+            assert_eq!(error.code, ErrorCode::SidecarUnsupportedFeature);
+            assert_contains!(error.to_string(), "compute configuration to remote");
+        }
+    }
+
+    #[test]
+    fn local_unit_test_asof_allows_non_join_mentions() {
+        for sql in [
+            "SELECT 'ASOF JOIN' AS message",
+            "SELECT $$ASOF JOIN$$ AS message",
+            "SELECT 1 -- ASOF JOIN\n",
+            "SELECT 1 /* ASOF JOIN */",
+            "SELECT * FROM \"ASOF\" JOIN actions ON true",
+            "SELECT * FROM asof JOIN actions ON true",
+            "SELECT * FROM trades AS asof JOIN actions ON true",
+            "SELECT * FROM trades JOIN actions ON true",
+            "SELECT asof, join_column FROM trades",
+        ] {
+            validate_local_unit_test_sql(AdapterType::Snowflake, Execute::Sidecar, sql)
+                .unwrap_or_else(|error| panic!("{sql}: {error}"));
+        }
+    }
+
+    #[test]
+    fn local_unit_test_asof_preserves_other_execution_modes_and_adapters() {
+        for (adapter, execute) in [
+            (AdapterType::Snowflake, Execute::Remote),
+            (AdapterType::Snowflake, Execute::Service),
+            (AdapterType::DuckDB, Execute::Sidecar),
+            (AdapterType::Bigquery, Execute::Sidecar),
+        ] {
+            for sql in [
+                "SELECT * FROM trades ASOF JOIN actions MATCH_CONDITION (trades.at >= actions.at)",
+                "SELECT 'unterminated",
+            ] {
+                validate_local_unit_test_sql(adapter, execute, sql).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn local_unit_test_asof_respects_compute_overrides() {
+        let sql = "SELECT * FROM trades ASOF JOIN actions \
+            MATCH_CONDITION (trades.at >= actions.at)";
+        let mut unit_test = DbtUnitTest::default();
+        for (invocation, compute, rejected) in [
+            (Execute::Remote, None, false),
+            (Execute::Sidecar, None, true),
+            (Execute::Remote, Some(ComputeArg::Sidecar), true),
+            (Execute::Sidecar, Some(ComputeArg::Remote), false),
+        ] {
+            unit_test.deprecated_config.compute = compute;
+            assert_eq!(
+                validate_local_unit_test_sql(
+                    AdapterType::Snowflake,
+                    effective_unit_test_execute(&unit_test, invocation),
+                    sql,
+                )
+                .is_err(),
+                rejected,
+            );
+        }
+    }
+
+    #[test]
+    fn local_unit_test_asof_does_not_ignore_invalid_sql() {
+        for sql in ["SELECT 'unterminated", "SELECT * FROM trades ASOF JOIN"] {
+            let error = validate_local_unit_test_sql(AdapterType::Snowflake, Execute::Sidecar, sql)
+                .unwrap_err();
+            assert_eq!(error.code, ErrorCode::SyntaxInvalid);
+        }
+    }
 
     #[test]
     fn fetched_relation_schemas_are_adapter_scoped() {
@@ -4855,18 +5164,15 @@ mod tests {
                     )],
                     false,
                 );
-                sqlparser::parser::Parser::parse_sql(
-                    sqlparser_dialect_for(adapter),
-                    &probe.query_sql,
-                )
-                .unwrap_or_else(|error| panic!("{adapter:?}: {error}: {}", probe.query_sql));
+                Parser::parse_sql(sqlparser_dialect_for(adapter), &probe.query_sql)
+                    .unwrap_or_else(|error| panic!("{adapter:?}: {error}: {}", probe.query_sql));
                 let wrapped = format!(
                     "WITH {} SELECT * FROM (\n{}\n) AS probe WHERE false",
                     probe.ctes,
                     DefaultStmtSplitter
                         .strip_trailing_statement_terminator(&probe.schema_sql, adapter)
                 );
-                sqlparser::parser::Parser::parse_sql(sqlparser_dialect_for(adapter), &wrapped)
+                Parser::parse_sql(sqlparser_dialect_for(adapter), &wrapped)
                     .expect("the warehouse header and wrapped model must remain valid SQL");
             }
         }
@@ -5158,7 +5464,7 @@ mod tests {
         );
 
         let sql = format!("WITH {result} SELECT * FROM \"database_schema_model_actual\"");
-        sqlparser::parser::Parser::parse_sql(&sqlparser::dialect::SnowflakeDialect {}, &sql)
+        Parser::parse_sql(&sqlparser::dialect::SnowflakeDialect {}, &sql)
             .expect("unit test CTE should remain valid after a trailing line comment");
     }
 
