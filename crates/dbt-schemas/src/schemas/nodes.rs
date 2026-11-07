@@ -5371,6 +5371,7 @@ pub struct CommonAttributes {
     pub fqn: Vec<String>,
 
     // Paths
+    #[jinja_node(disable_cache, allow_uncached_transform)]
     pub path: DbtPath,
 
     /// The original file path where this node was defined
@@ -5378,6 +5379,7 @@ pub struct CommonAttributes {
     /// **NOTE**: For [DbtTest] nodes, this is currently the path to the
     /// generated SQL file, *NOT* the path to the YAML file where the test was
     /// defined!
+    #[jinja_node(disable_cache)]
     pub original_file_path: DbtPath,
 
     #[serde(
@@ -5385,7 +5387,9 @@ pub struct CommonAttributes {
         serialize_with = "serialize_none_as_empty_string",
         deserialize_with = "deserialize_empty_string_as_none"
     )]
+    #[jinja_node(disable_cache)]
     pub raw_code: Option<String>,
+    #[jinja_node(disable_cache)]
     pub patch_path: Option<DbtPath>,
     pub name_span: Span,
 
@@ -5394,6 +5398,7 @@ pub struct CommonAttributes {
     pub language: Option<String>,
 
     // Meta
+    #[jinja_node(allow_uncached_transform)]
     pub description: Option<String>,
 
     // Tags, Classifiers, and Meta

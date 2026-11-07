@@ -21,6 +21,32 @@ pub trait JinjaNodeFields: Send + Sync + std::fmt::Debug {
     fn get(&self, key: &str, mode: SerializationMode) -> Option<dbt_yaml::Value>;
     fn keys(&self, mode: SerializationMode) -> Vec<&str>;
     fn contains_key(&self, key: &str, mode: SerializationMode) -> bool;
+    /// How [`LazyNodeContext`] serves `key`, from the field's type and `#[jinja_node(...)]`
+    /// attributes.
+    fn field_kind(&self, _key: &str) -> FieldKind {
+        FieldKind::Cached
+    }
+    /// [`get`](Self::get) as a Jinja value. The derive converts uncached fields (see
+    /// [`FieldKind`]) directly, without the intermediate YAML value.
+    fn get_jinja_value(&self, key: &str, mode: SerializationMode) -> Option<Value> {
+        self.get(key, mode).map(Value::from_serialize)
+    }
+}
+
+/// How [`LazyNodeContext`] serves a node field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FieldKind {
+    /// Cached after its first read, so writes to its nested maps and lists persist.
+    Cached,
+    /// Serializes to a string, number, bool or none: a field of a scalar type, or one with
+    /// `#[jinja_node(disable_cache)]`. Jinja can't change such a value in place, and `is sameas`
+    /// compares it by value, so caching it has no observable effect; the field is serialized again
+    /// on every read instead. Templates can still replace or remove the field, as writes go to the
+    /// overlay. It can't be transformed.
+    Uncached,
+    /// An uncached field with `#[jinja_node(allow_uncached_transform)]`. Its transform runs on
+    /// every read.
+    UncachedTransformable,
 }
 
 /// Serialize a single field with the same null handling as a whole node.
@@ -96,7 +122,8 @@ impl Overlay {
 /// field is serialized on its first read and kept in `cache`. Caching is needed for behavior,
 /// not only speed: a field's nested maps and lists are mutable Jinja objects, so
 /// `model.config.update(...)` and `model.tags.append(...)` persist only if later reads return the
-/// same objects.
+/// same objects. Fields that [`FieldKind`] classifies as uncached (scalar-typed fields, or ones
+/// marked `disable_cache`) are not cached; each read serializes them again.
 ///
 /// Written keys and served fields are kept apart because views of one dictionary treat them
 /// differently:
@@ -108,10 +135,11 @@ impl Overlay {
 /// * [`fork`](Self::fork), one per microbatch batch, copies the written keys when it is created.
 ///   It copies a served field's nested maps when it first reads that field, from the
 ///   serialization in `forked_from`. Batches thus keep their map writes local but share lists,
-///   and the node is serialized once for all of them.
+///   and each cached field is serialized once for all of them.
 ///
 /// Serialization runs outside the overlay lock. A write or deletion made meanwhile wins over the
-/// value just served.
+/// value just served, except for an uncached field: nothing is stored for it, so its read orders
+/// before the write.
 ///
 /// While nothing has reordered keys, their order is derived: node keys in serde order, then
 /// newly written keys. A written node key keeps its node position. Three operations can't be
@@ -133,19 +161,19 @@ pub struct LazyNodeContext {
     // Writes and masks over node keys. Shared with aliases, so each alias is another name for the
     // same dictionary.
     overlay: Arc<Mutex<Overlay>>,
-    // Each node field as served by this dictionary, so nested mutations persist. Shared with
-    // aliases.
+    // Each cached node field as served by this dictionary, so nested mutations persist. Shared
+    // with aliases.
     cache: Arc<Mutex<ValueMap>>,
-    // For a `fork`: the shared cache that keeps each field as first serialized. `cache` then
-    // holds this fork's copies of those fields' nested maps.
+    // For a `fork`: the shared cache that keeps each cached field as first serialized.
+    // `cache` then holds this fork's copies of those fields' nested maps.
     forked_from: Option<Arc<Mutex<ValueMap>>>,
     // With `with_original_view`: each cached field as first serialized, with its nested maps
     // copied. `original_alias` reads these instead of `cache`.
     original: Option<Arc<Mutex<ValueMap>>>,
     // Set by `original_alias`: served fields come from `original` instead of `cache`.
     reads_original: bool,
-    // Applied to a field when it is first served, since the node itself can't change, for
-    // example stripping the `path` prefix.
+    // Applied to a field when served (once if cached, every read if not), for example
+    // stripping the `path` prefix.
     transforms: HashMap<String, FieldTransform>,
     // Run phase: the file that serves `compiled_code` and `compiled_sql` when the node has none.
     compiled_path: Option<PathBuf>,
@@ -218,10 +246,11 @@ impl LazyNodeContext {
     /// map whose lists were mutable and whose nested maps were read-only. So list appends through
     /// `model` (`model.tags.append(...)`, `model.config.tags.append(...)`) were visible through
     /// `config.model`, and templates may rely on that. Keeping it means both views must hold the
-    /// same list objects, so they must come from one serialization. Each field is therefore
-    /// serialized once, and the original view gets a copy of its maps, made before either view can
-    /// mutate them, that still holds the same lists. This costs one structural copy of the nested
-    /// maps of every field read at run time (lists, strings and other values are shared).
+    /// same list objects, so they must come from one serialization. Each cached field is
+    /// therefore serialized once, and the original view gets a copy of its maps, made before either
+    /// view can mutate them, that still holds the same lists. This costs one structural copy of the
+    /// nested maps of every cached field read at run time (lists, strings and other values are
+    /// shared).
     ///
     /// TODO(LazyNodeContext): dbt-core gives `config.model` an independent copy of the node, so it sees no list
     /// appends made through `model`. If that change is accepted, drop this, `copy_nested_maps` and
@@ -231,12 +260,18 @@ impl LazyNodeContext {
         self
     }
 
-    /// Transform one field on first access, before caching its mutable Jinja containers.
+    /// Transform one field on first access, before caching its mutable Jinja containers. A
+    /// [`FieldKind::UncachedTransformable`] field isn't cached, so its transform runs on every
+    /// read. A [`FieldKind::Uncached`] field can't be transformed.
     pub fn transform(
         &mut self,
         key: &str,
         transform: impl Fn(dbt_yaml::Value) -> dbt_yaml::Value + Send + Sync + 'static,
     ) {
+        debug_assert!(
+            self.node.field_kind(key) != FieldKind::Uncached,
+            "`{key}` is uncached; mark it `#[jinja_node(allow_uncached_transform)]` to transform it"
+        );
         self.transforms.insert(key.to_string(), Arc::new(transform));
     }
 
@@ -291,6 +326,22 @@ impl LazyNodeContext {
         let disk_backed = self.compiled_path.is_some()
             && matches!(name, "compiled_code" | "compiled_sql")
             && !self.node.contains_key(name, self.mode);
+        if !disk_backed && self.node.field_kind(name) != FieldKind::Cached {
+            // Not cached, so unlike cached fields below, no second overlay check is needed: a write
+            // that races with this read just counts as happening after it.
+            let value = if self.transforms.contains_key(name) {
+                self.serialize_node_field(name)
+            } else {
+                self.node.get_jinja_value(name, self.mode)
+            };
+            debug_assert!(
+                value
+                    .as_ref()
+                    .is_none_or(|value| value.as_object().is_none()),
+                "uncached field `{name}` was served as an object"
+            );
+            return value;
+        }
         let read_cache = match &self.original {
             Some(original) if self.reads_original => original,
             _ => &self.cache,
@@ -305,19 +356,7 @@ impl LazyNodeContext {
                 .then(|| self.compiled_fallback(key))
                 .flatten()
         } else {
-            self.node.get(name, self.mode).map(|value| {
-                let value = match self.transforms.get(name) {
-                    Some(transform) => transform(value),
-                    None => value,
-                };
-                if self.eager_nested_maps {
-                    let value = Value::from_serialize(stringify_mapping_keys(value));
-                    set_copy_on_store(&value);
-                    value
-                } else {
-                    Value::from_serialize(value)
-                }
-            })
+            self.serialize_node_field(name)
         };
         // Serialization runs outside the lock. A concurrent write or deletion wins.
         let overlay = self.overlay.lock().expect("poisoned node overlay");
@@ -363,6 +402,22 @@ impl LazyNodeContext {
             return Some(live);
         }
         value
+    }
+
+    fn serialize_node_field(&self, name: &str) -> Option<Value> {
+        self.node.get(name, self.mode).map(|value| {
+            let value = match self.transforms.get(name) {
+                Some(transform) => transform(value),
+                None => value,
+            };
+            if self.eager_nested_maps {
+                let value = Value::from_serialize(stringify_mapping_keys(value));
+                set_copy_on_store(&value);
+                value
+            } else {
+                Value::from_serialize(value)
+            }
+        })
     }
 
     pub fn keys(&self) -> Vec<Value> {
@@ -687,9 +742,12 @@ mod tests {
     #[derive(Debug, Default, Serialize, dbt_proc_macros::JinjaNodeFields)]
     struct Fields {
         name: String,
+        #[jinja_node(allow_uncached_transform)]
         group: Option<String>,
         nested: IndexMap<String, Option<String>>,
+        tags: Vec<String>,
         #[serde(rename = "renamed")]
+        #[jinja_node(allow_uncached_transform)]
         original: String,
         #[serde(skip)]
         hidden: String,
@@ -700,6 +758,20 @@ mod tests {
         null_value: dbt_yaml::Value,
         #[serde(serialize_with = "serialize_as_null")]
         custom_null: Option<String>,
+        #[serde(with = "string_as_map")]
+        wrapped: String,
+    }
+
+    mod string_as_map {
+        pub fn serialize<S: ::serde::Serializer>(
+            value: &str,
+            serializer: S,
+        ) -> Result<S::Ok, S::Error> {
+            ::serde::Serialize::serialize(
+                &std::collections::BTreeMap::from([("value", value)]),
+                serializer,
+            )
+        }
     }
 
     fn serialize_as_null<S: ::serde::Serializer>(
@@ -714,6 +786,9 @@ mod tests {
         name: String,
         #[serde(flatten)]
         fields: Fields,
+        // A cached field that shadows the flattened scalar `group`.
+        #[serde(rename = "group")]
+        groups: Vec<String>,
         #[serde(flatten)]
         __other__: std::collections::BTreeMap<String, dbt_yaml::Value>,
     }
@@ -736,9 +811,35 @@ mod tests {
                     serialized.get(key),
                     "{key} {mode:?}"
                 );
+                let expected = serialized.get(key).map(Value::from_serialize);
+                let actual = node.get_jinja_value(key, mode);
+                assert_eq!(
+                    actual
+                        .as_ref()
+                        .map(|value| (value.kind(), value.is_integer())),
+                    expected
+                        .as_ref()
+                        .map(|value| (value.kind(), value.is_integer())),
+                    "{key} {mode:?}"
+                );
+                assert_eq!(actual, expected, "{key} {mode:?}");
+                if node.field_kind(key) != FieldKind::Cached {
+                    assert!(
+                        !matches!(
+                            serialized.get(key),
+                            Some(
+                                dbt_yaml::Value::Mapping(..)
+                                    | dbt_yaml::Value::Sequence(..)
+                                    | dbt_yaml::Value::Tagged(..)
+                            )
+                        ),
+                        "uncached {key} {mode:?}"
+                    );
+                }
             }
             assert!(!node.contains_key("missing_field", mode));
             assert!(node.get("missing_field", mode).is_none());
+            assert!(node.get_jinja_value("missing_field", mode).is_none());
         }
     }
 
@@ -769,9 +870,14 @@ mod tests {
             let mut flattened = Flattened {
                 name: "outer".into(),
                 fields,
+                groups: vec!["outer".into()],
                 ..Default::default()
             };
             assert_serde_parity(&flattened);
+            assert_eq!(flattened.field_kind("name"), FieldKind::Uncached);
+            assert_eq!(flattened.field_kind("group"), FieldKind::Cached);
+            assert_eq!(flattened.field_kind("custom_null"), FieldKind::Cached);
+            assert_eq!(flattened.field_kind("wrapped"), FieldKind::Cached);
             flattened
                 .__other__
                 .insert("name".into(), dbt_yaml::Value::string("override".into()));
@@ -782,6 +888,12 @@ mod tests {
                 .__other__
                 .insert("extra".into(), dbt_yaml::Value::string("extra".into()));
             assert_serde_parity(&flattened);
+            assert_eq!(flattened.field_kind("name"), FieldKind::Cached);
+            assert_eq!(
+                flattened.field_kind("renamed"),
+                FieldKind::UncachedTransformable
+            );
+            assert_eq!(flattened.field_kind("nested"), FieldKind::Cached);
         }
     }
 
@@ -805,6 +917,11 @@ mod tests {
         model.__common_attr__.name = "populated".into();
         model.__common_attr__.description = Some("description".into());
         model.__common_attr__.raw_code = Some("select 1".into());
+        model.__common_attr__.unique_id = "model.populated_package.populated_model".into();
+        model.__common_attr__.path = "models/populated/populated_model.sql".into();
+        model.__common_attr__.original_file_path = "models/populated/populated_model.sql".into();
+        model.__common_attr__.patch_path = Some("models/populated/schema.yml".into());
+        model.__common_attr__.language = Some("sql".into());
         model
             .__other__
             .insert("name".into(), dbt_yaml::Value::string("override".into()));
@@ -817,6 +934,8 @@ mod tests {
     fn compare_dicts(template: &str, mode: SerializationMode) {
         let fields = Arc::new(Fields {
             name: "original".into(),
+            nested: IndexMap::from([("key".into(), Some("value".into()))]),
+            tags: vec!["a".into()],
             ..Default::default()
         });
         let eager = Value::from_serialize(serialize_with_mode(&fields, mode));
@@ -867,6 +986,11 @@ mod tests {
             "{% do node.clear() %}{{ node.popitem() }}",
             "{{ node.update(none) }}",
             "{{ node.update(1, 2) }}",
+            "{{ node.name is sameas node.name }}|{{ node.group is sameas node.group }}|{{ node.nested is sameas node.nested }}|{{ node.tags is sameas node.tags }}",
+            "{{ node.name }}|{% do node.update({'name': 'changed'}) %}{{ node.name }}|{{ node.pop('name') }}|{{ node.get('name', 'gone') }}|{{ node.name }}|{% do node.update({'name': 'again'}) %}{{ node.name }}|{{ node }}",
+            "{{ node.name }}|{{ node.popitem() }}|{{ node.pop('name', 'gone') }}|{% do node.clear() %}{{ node.get('name', 'cleared') }}|{{ node.setdefault('name', 'new') }}|{{ node.name }}",
+            "{% do node.tags.append('b') %}{% do node.nested.update({'key': 'changed'}) %}{{ node.name }}|{{ node.tags }}|{{ node.nested }}|{{ node.name }}|{{ node }}",
+            "{{ node.group }}|{{ node.group is none }}|{{ node.get('group', 'fallback') }}|{{ node.null_value is none }}|{{ node.get('custom_null', 'fallback') }}|{{ node.setdefault('group', 'default') }}|{{ node.group }}",
         ];
         for mode in [SerializationMode::KeepNone, SerializationMode::OmitNone] {
             for template in templates {
@@ -893,6 +1017,9 @@ mod tests {
             fn contains_key(&self, key: &str, mode: SerializationMode) -> bool {
                 self.fields.contains_key(key, mode)
             }
+            fn field_kind(&self, key: &str) -> FieldKind {
+                self.fields.field_kind(key)
+            }
         }
         let fields = Arc::new(CountingFields {
             fields: Fields {
@@ -916,17 +1043,106 @@ mod tests {
         assert_eq!(fields.reads.load(Ordering::Relaxed), 0);
         assert_eq!(node.get("name"), Some(Value::from("model")));
         assert_eq!(node.get("name"), Some(Value::from("model")));
-        assert_eq!(fields.reads.load(Ordering::Relaxed), 1);
+        assert_eq!(fields.reads.load(Ordering::Relaxed), 2);
+        assert!(node.cache.lock().unwrap().is_empty());
         let fork = node.fork();
         fork.get("nested").unwrap();
         node.get("nested").unwrap();
-        assert_eq!(fields.reads.load(Ordering::Relaxed), 2);
+        node.get("nested").unwrap();
+        assert_eq!(fields.reads.load(Ordering::Relaxed), 3);
+    }
+
+    #[test]
+    fn transforms_apply_to_every_scalar_read_and_once_per_cached_object() {
+        let scalar_reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let object_reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut node = LazyNodeContext::new(
+            Arc::new(Fields {
+                original: "models/model.sql".into(),
+                ..Default::default()
+            }),
+            SerializationMode::KeepNone,
+        );
+        let count = scalar_reads.clone();
+        node.transform("renamed", move |value| {
+            count.fetch_add(1, Ordering::Relaxed);
+            let path = value.as_str().unwrap();
+            dbt_yaml::Value::string(path.strip_prefix("models/").unwrap_or(path).to_string())
+        });
+        node.transform("group", |value| {
+            if value.as_str().is_some() {
+                value
+            } else {
+                dbt_yaml::Value::string(String::new())
+            }
+        });
+        let count = object_reads.clone();
+        node.transform("nested", move |value| {
+            count.fetch_add(1, Ordering::Relaxed);
+            value
+        });
+        let node = Value::from_object(node);
+        let env = Environment::new();
+        assert_eq!(
+            env.render_str(
+                "{{ node.renamed }}|{{ node.renamed }}|{{ node.group == '' }}|{{ node.group is sameas node.group }}|\
+                 {% do node.nested.update({'key': 'value'}) %}{{ node.nested }}|\
+                 {% do node.update({'renamed': 'written'}) %}{{ node.renamed }}",
+                std::collections::BTreeMap::from([("node", node)]),
+                &[]
+            )
+            .unwrap(),
+            "model.sql|model.sql|True|True|{'key': 'value'}|written"
+        );
+        assert_eq!(scalar_reads.load(Ordering::Relaxed), 2);
+        assert_eq!(object_reads.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "`name` is uncached")]
+    fn uncached_fields_reject_transforms() {
+        LazyNodeContext::new(Arc::new(Fields::default()), SerializationMode::KeepNone)
+            .transform("name", |value| value);
+    }
+
+    #[test]
+    fn original_alias_shares_scalar_writes_and_lists_but_not_nested_map_writes() {
+        let node = LazyNodeContext::new(
+            Arc::new(Fields {
+                name: "model".into(),
+                nested: IndexMap::from([("key".into(), Some("value".into()))]),
+                tags: vec!["a".into()],
+                ..Default::default()
+            }),
+            SerializationMode::KeepNone,
+        )
+        .with_original_view();
+        let ctx = std::collections::BTreeMap::from([
+            ("original", Value::from_object(node.original_alias())),
+            ("node", Value::from_object(node)),
+        ]);
+        let env = Environment::new();
+        assert_eq!(
+            env.render_str(
+                "{{ original.name }}|{{ original.name is sameas node.name }}|\
+                 {% do node.nested.update({'key': 'node'}) %}{% do node.tags.append('b') %}\
+                 {{ original.nested.key }}|{{ node.nested.key }}|{{ original.tags }}|\
+                 {% do original.update({'name': 'written'}) %}{{ node.name }}|\
+                 {{ node.pop('name') }}|{{ original.get('name', 'gone') }}|{{ original.name is sameas node.name }}",
+                ctx,
+                &[]
+            )
+            .unwrap(),
+            "model|True|value|node|['a', 'b']|written|written|gone|True"
+        );
     }
 
     #[test]
     fn forks_keep_nested_map_writes_local_but_share_lists() {
         let node = LazyNodeContext::new(
             Arc::new(Fields {
+                name: "model".into(),
                 nested: IndexMap::from([("key".into(), Some("value".into()))]),
                 ..Default::default()
             }),
@@ -947,12 +1163,14 @@ mod tests {
                 "{% do first.nested.update({'key': 'first'}) %}{% do first.extra.update({'x': 1}) %}\
                  {% do first.tags.append('b') %}\
                  {{ second.nested.key }}|{{ node.nested.key }}|{{ second.extra }}|{{ node.extra }}|\
-                 {{ second.tags }}|{{ first.nested.key }}",
+                 {{ second.tags }}|{{ first.nested.key }}|\
+                 {{ first.name }}|{{ first.name is sameas node.name }}|{% do first.update({'name': 'first'}) %}\
+                 {% do second.pop('name') %}{{ first.name }}|{{ second.get('name', 'gone') }}|{{ node.name }}",
                 ctx,
                 &[]
             )
             .unwrap(),
-            "value|value|{}|{}|['a', 'b']|first"
+            "value|value|{}|{}|['a', 'b']|first|model|True|first|gone|model"
         );
     }
 }
