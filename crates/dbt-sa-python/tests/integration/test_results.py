@@ -83,7 +83,6 @@ def test_source_freshness_returns_freshness_results(built_project, invoke):
     assert res.exit_code == 0
     assert isinstance(res.result, FreshnessResultsArtifact), type(res.result)
     assert [r.unique_id for r in res.result] == ["source.freshness.raw.fresh_events"]
-    # Capitalised, unlike run_results' statuses.
     assert res.result[0].status == FreshnessStatus.PASS
     assert res.result[0].criteria.warn_after.count == 1
 
