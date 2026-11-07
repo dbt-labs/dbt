@@ -205,8 +205,14 @@ mod tests {
             "comment on column t.c is $dbt_comment_literal_block$it's a; test$dbt_comment_literal_block$",
             " select 2",
         ];
-        // LakeCompute uses the DuckDB dialect, so it takes the same lexer.
-        for adapter in [AdapterType::DuckDB, AdapterType::LakeCompute] {
+        // LakeCompute uses the DuckDB dialect. Postgres and Salesforce use
+        // Dialect::Postgresql, which splits with the Redshift lexer.
+        for adapter in [
+            AdapterType::DuckDB,
+            AdapterType::LakeCompute,
+            AdapterType::Postgres,
+            AdapterType::Salesforce,
+        ] {
             assert_eq!(split(sql, adapter), expected, "{adapter:?}");
         }
         assert_eq!(
