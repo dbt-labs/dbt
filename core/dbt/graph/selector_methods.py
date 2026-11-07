@@ -984,21 +984,27 @@ class SelectorSelectorMethod(SelectorMethod):
         *,
         get_selected_callback: Callable[..., Set[UniqueId]],
         selectors: Optional[Dict[str, Any]] = None,
+        get_selection_callback: Optional[Callable[["SelectionSpec"], Any]] = None,
     ) -> None:
         super().__init__(manifest, previous_state, arguments)
         self._selectors = selectors
         self._get_selected_callback = get_selected_callback
-
-    def _search_for_matched_selector(
-        self, included_nodes: Set[UniqueId], selection_spec: "SelectionSpec"
-    ) -> Iterator[UniqueId]:
-        selected = self._get_selected_callback(selection_spec)
-        for unique_id in selected:
-            if unique_id in included_nodes:
-                yield unique_id
+        self._get_selection_callback = get_selection_callback
 
     def search(self, included_nodes: Set[UniqueId], selector: str) -> Iterator[UniqueId]:
-        if self._selectors is None or self._get_selected_callback is None:
+        for selected in self._resolve(selector, self._get_selected_callback):
+            for unique_id in selected:
+                if unique_id in included_nodes:
+                    yield unique_id
+
+    def resolve(self, selector: str) -> List[Any]:
+        """Return the full selection result of every selector matching `selector`."""
+        return list(self._resolve(selector, self._get_selection_callback))
+
+    def _resolve(
+        self, selector: str, callback: Optional[Callable[["SelectionSpec"], Any]]
+    ) -> Iterator[Any]:
+        if self._selectors is None or callback is None:
             raise DbtSelectorsError("Cannot use selector: method if selectors.yml is not provided")
         matched_selector_dfns = []
 
@@ -1025,9 +1031,7 @@ class SelectorSelectorMethod(SelectorMethod):
             sys.setrecursionlimit(effective_limit)
             for matched_selector_dfn in matched_selector_dfns:
                 try:
-                    yield from self._search_for_matched_selector(
-                        included_nodes, matched_selector_dfn
-                    )
+                    yield callback(matched_selector_dfn)
                 except RecursionError as e:
                     raise DbtRecursionError(
                         f"Circular dependency detected in selector: {matched_selector_dfn.raw}"
