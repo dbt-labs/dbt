@@ -405,7 +405,8 @@ impl std::error::Error for PropagationTargetError {}
 /// `default_adapter` is the profile's default adapter. An explicit BigQuery target is accepted
 /// only when the default adapter is BigQuery. Under a BigQuery default adapter, an explicit
 /// Snowflake target and a write catalog that requires Snowflake (`catalog_requires_snowflake`)
-/// are rejected.
+/// are rejected; implicit selection uses Databricks if declared, otherwise BigQuery,
+/// never Snowflake.
 pub fn resolve_propagation_target(
     explicit: &[AdapterType],
     profile_adapters: &[AdapterType],
@@ -448,7 +449,6 @@ pub fn resolve_propagation_target(
 
     let has_lake_compute = profile_adapters.contains(&AdapterType::LakeCompute);
     let has_snowflake = profile_adapters.contains(&AdapterType::Snowflake);
-    let has_databricks = profile_adapters.contains(&AdapterType::Databricks);
 
     if catalog_requires_snowflake {
         return if has_snowflake {
@@ -457,12 +457,19 @@ pub fn resolve_propagation_target(
             Err(PropagationTargetError::SnowflakeTargetRequired)
         };
     }
-    if has_lake_compute && has_snowflake {
-        Ok(Some(AdapterType::Snowflake))
-    } else if has_lake_compute && has_databricks {
-        Ok(Some(AdapterType::Databricks))
-    } else {
-        Ok(None)
+    if !has_lake_compute {
+        return Ok(None);
+    }
+    // A declared output is a capability, not an intent. Without an explicit
+    // target, publish to the profile's default adapter when Lake Compute can
+    // publish to it, and publish nowhere when the default is Lake Compute
+    // itself. Reading a declared output as intent made an unused Databricks
+    // output capture every Lake Compute node.
+    match default_adapter {
+        AdapterType::Snowflake | AdapterType::Databricks | AdapterType::Bigquery => {
+            Ok(Some(default_adapter))
+        }
+        _ => Ok(None),
     }
 }
 
@@ -1596,19 +1603,36 @@ mod dbt_profile_adapter_tests {
     #[test]
     fn databricks_propagation_policy_tests() {
         let cases = [
+            // A declared output is not an intent: with Lake Compute as the default
+            // adapter nothing publishes unless the node asks for it.
             (
                 IndexMap::from([one(lake_compute()), one(databricks())]),
                 AdapterType::LakeCompute,
                 &[][..],
                 false,
-                Some(AdapterType::Databricks),
+                None,
             ),
             (
                 IndexMap::from([one(lake_compute()), one(snowflake()), one(databricks())]),
                 AdapterType::LakeCompute,
                 &[][..],
                 false,
+                None,
+            ),
+            // Publish to the default adapter when Lake Compute can publish there.
+            (
+                IndexMap::from([one(lake_compute()), one(snowflake())]),
+                AdapterType::Snowflake,
+                &[][..],
+                false,
                 Some(AdapterType::Snowflake),
+            ),
+            (
+                IndexMap::from([one(lake_compute()), one(databricks())]),
+                AdapterType::Databricks,
+                &[][..],
+                false,
+                Some(AdapterType::Databricks),
             ),
             (
                 IndexMap::from([one(lake_compute()), one(databricks())]),
@@ -1676,6 +1700,16 @@ mod dbt_profile_adapter_tests {
         let bq_and_snowflake: &[AdapterType] = &[Bigquery, LakeCompute, Snowflake];
         let bq_and_databricks: &[AdapterType] = &[Bigquery, LakeCompute, Databricks];
         let cases: &[(&[AdapterType], AdapterType, &[AdapterType], bool, _)] = &[
+            (&[Bigquery], Bigquery, &[], false, Ok(None)),
+            (
+                &[Bigquery, LakeCompute],
+                Bigquery,
+                &[],
+                false,
+                Ok(Some(Bigquery)),
+            ),
+            (bq_and_snowflake, Bigquery, &[], false, Ok(Some(Bigquery))),
+            (bq_and_databricks, Bigquery, &[], false, Ok(Some(Bigquery))),
             (
                 &[LakeCompute],
                 LakeCompute,
@@ -1704,9 +1738,6 @@ mod dbt_profile_adapter_tests {
                 false,
                 Err(SnowflakeTargetUnderBigqueryDefault),
             ),
-            // Implicit selection remains unchanged here. BigQuery publishing changes this case
-            // to select BigQuery.
-            (bq_and_snowflake, Bigquery, &[], false, Ok(Some(Snowflake))),
             (
                 bq_and_snowflake,
                 Bigquery,
