@@ -1,0 +1,56 @@
+1485f432:
+- sequence: 0
+  type: execute
+  sql: show dynamic tables like 'err_fail_fast' in schema development.adapters_snowflake_dynamic_table_create_or_alter_errors
+14e7d9d0:
+- sequence: 0
+  type: execute
+  sql: select "kind" from table(result_scan(last_query_id())) where upper("name") = upper('err_transient_drift')
+59bd1caf:
+- sequence: 0
+  type: execute
+  sql: select "created_on"::varchar, "text", "refresh_mode", "cluster_by", "warehouse", "initialization_warehouse", "configured_refresh_mode" from table(result_scan(last_query_id())) where upper("name") = upper('err_type_change')
+6aa2c9f6:
+- sequence: 0
+  type: execute
+  sql: show dynamic tables like 'err_type_change' in schema development.adapters_snowflake_dynamic_table_create_or_alter_errors
+785479a3:
+- sequence: 0
+  type: execute
+  sql: show dynamic tables like 'err_transient_drift' in schema development.adapters_snowflake_dynamic_table_create_or_alter_errors
+838f499d:
+- sequence: 0
+  type: execute
+  sql: show tables like 'err_transient_drift' in schema development.adapters_snowflake_dynamic_table_create_or_alter_errors
+88d5e1a8:
+- sequence: 0
+  type: execute
+  sql: select "created_on"::varchar, "text", "refresh_mode", "cluster_by", "warehouse", "initialization_warehouse", "configured_refresh_mode" from table(result_scan(last_query_id())) where upper("name") = upper('err_reorder')
+aca57956:
+- sequence: 0
+  type: execute
+  sql: select "created_on"::varchar, "text", "refresh_mode", "cluster_by", "warehouse", "initialization_warehouse", "configured_refresh_mode" from table(result_scan(last_query_id())) where upper("name") = upper('err_fail_fast')
+c03a9bc7:
+- sequence: 0
+  type: execute
+  sql: select "created_on"::varchar, "text", "refresh_mode", "cluster_by", "warehouse", "initialization_warehouse", "configured_refresh_mode" from table(result_scan(last_query_id())) where upper("name") = upper('err_transient_drift')
+c42a34ad:
+- sequence: 0
+  type: execute
+  sql: show dynamic tables like 'err_reorder' in schema development.adapters_snowflake_dynamic_table_create_or_alter_errors
+c457ae2f:
+- sequence: 0
+  type: execute
+  sql: select "created_on"::varchar, "text", "refresh_mode", "cluster_by", "warehouse", "initialization_warehouse", "configured_refresh_mode" from table(result_scan(last_query_id())) where upper("name") = upper('err_type_narrow')
+c7ba957b:
+- sequence: 0
+  type: execute
+  sql: show dynamic tables like 'err_type_narrow' in schema development.adapters_snowflake_dynamic_table_create_or_alter_errors
+c9f1e933:
+- sequence: 0
+  type: execute
+  sql: show dynamic tables like 'ok_evolve' in schema development.adapters_snowflake_dynamic_table_create_or_alter_errors
+cac0dbb2:
+- sequence: 0
+  type: execute
+  sql: select "created_on"::varchar, "text", "refresh_mode", "cluster_by", "warehouse", "initialization_warehouse", "configured_refresh_mode" from table(result_scan(last_query_id())) where upper("name") = upper('ok_evolve')

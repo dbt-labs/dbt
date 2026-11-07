@@ -1,0 +1,30 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/ice_evolve.sql
+   Parsing models/ice_idempotent.sql
+   Parsing models/ice_identity_change.sql
+   Parsing models/ice_refresh_mode_replace.sql
+   Parsing models/ice_to_native.sql
+   Parsing models/native_to_ice.sql
+ Rendering models/native_to_ice.sql
+   Running models/native_to_ice.sql
+ Succeeded model adapters_snowflake_dynamic_table_create_or_alter_iceberg.native_to_ice (dynamic_table) [1 of 6 in duration]
+ Rendering models/ice_to_native.sql
+   Running models/ice_to_native.sql
+ Succeeded model adapters_snowflake_dynamic_table_create_or_alter_iceberg.ice_to_native (dynamic_table) [2 of 6 in duration]
+ Rendering models/ice_refresh_mode_replace.sql
+   Running models/ice_refresh_mode_replace.sql
+ Succeeded model adapters_snowflake_dynamic_table_create_or_alter_iceberg.ice_refresh_mode_replace (dynamic_table) [3 of 6 in duration]
+ Rendering models/ice_identity_change.sql
+   Running models/ice_identity_change.sql
+ Succeeded model adapters_snowflake_dynamic_table_create_or_alter_iceberg.ice_identity_change (dynamic_table) [4 of 6 in duration]
+ Rendering models/ice_idempotent.sql
+   Running models/ice_idempotent.sql
+ Succeeded model adapters_snowflake_dynamic_table_create_or_alter_iceberg.ice_idempotent (dynamic_table) [5 of 6 in duration]
+ Rendering models/ice_evolve.sql
+   Running models/ice_evolve.sql
+ Succeeded model adapters_snowflake_dynamic_table_create_or_alter_iceberg.ice_evolve (dynamic_table) [6 of 6 in duration]
+==================== Execution Summary =====================
+Finished 'run' successfully for target 'snowflake' [duration]
+Processed: 6 models
+Summary: 6 total | 6 success

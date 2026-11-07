@@ -1,0 +1,1 @@
+{% if var('evolved', false) %}select id, cast(value as varchar(5)) as value{% else %}select id, cast(value as varchar(100)) as value{% endif %} from {{ target.database }}.{{ target.schema }}.source_table

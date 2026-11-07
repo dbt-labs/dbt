@@ -425,6 +425,7 @@ impl From<ProjectSourceConfig> for SourceConfig {
                 incremental_apply_config_changes: None,
                 persist_constraints: None,
                 use_materialization_v2: None,
+                dynamic_table_create_or_alter: None,
                 use_safer_relation_operations: None,
                 view_update_via_alter: None,
 

@@ -1,0 +1,10 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/ice_evolve.sql
+   Parsing models/ice_idempotent.sql
+   Parsing models/ice_identity_change.sql
+   Parsing models/ice_refresh_mode_replace.sql
+   Parsing models/ice_to_native.sql
+   Parsing models/native_to_ice.sql
+==================== Execution Summary =====================
+Finished 'run-operation' successfully for target 'snowflake' [duration]

@@ -896,7 +896,7 @@ impl AdapterImpl {
                             err.vendor_code(),
                         ));
                     }
-                    return Err(err);
+                    return Err(with_create_or_alter_hint(adapter_type, sql, err));
                 }
             }
         }
@@ -5595,6 +5595,53 @@ fn transaction_boundary(sql: &str) -> Option<TransactionBoundary> {
     }
 }
 
+/// Appended to a failed Snowflake `CREATE OR ALTER`: it declares the whole desired end state in
+/// place, and Snowflake rejects the ones it cannot apply (column reorders, type narrowing, a
+/// changed `transient` setting, ...). `CREATE OR REPLACE` always can.
+const CREATE_OR_ALTER_FAILURE_HINT: &str = "Hint: this statement was a CREATE OR ALTER, which cannot apply every change in place. \
+     If the error above is a change CREATE OR ALTER does not support, re-run with `--full-refresh` \
+     to rebuild the object with CREATE OR REPLACE.";
+
+/// Whether `sql` is a (Snowflake) `CREATE OR ALTER` statement, ignoring leading comments.
+fn is_create_or_alter(sql: &str) -> bool {
+    static CREATE_OR_ALTER: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r"(?is)^\s*(?:(?:/\*.*?\*/|--[^\n]*)\s*)*create\s+or\s+alter\b")
+            .expect("valid regex")
+    });
+    CREATE_OR_ALTER.is_match(sql)
+}
+
+/// Adds [`CREATE_OR_ALTER_FAILURE_HINT`] to a database error raised by a Snowflake `CREATE OR ALTER`.
+///
+/// Only errors whose own text names `CREATE OR ALTER` get the hint, so a failure that has nothing
+/// to do with the statement form (permissions, a suspended warehouse, a dropped connection)
+/// is passed through unchanged.
+fn with_create_or_alter_hint(
+    adapter_type: AdapterType,
+    sql: &str,
+    err: AdapterError,
+) -> AdapterError {
+    if adapter_type != Snowflake || err.kind() != AdapterErrorKind::Driver {
+        return err;
+    }
+    if !is_create_or_alter(sql) {
+        return err;
+    }
+    if !err
+        .message()
+        .to_ascii_lowercase()
+        .contains("create or alter")
+    {
+        return err;
+    }
+    AdapterError::new_with_sqlstate_and_vendor_code(
+        err.kind(),
+        format!("{}\n{CREATE_OR_ALTER_FAILURE_HINT}", err.message()),
+        err.sqlstate().as_bytes().try_into().unwrap_or([b'0'; 5]),
+        err.vendor_code(),
+    )
+}
+
 impl AdapterImpl {
     pub fn new(
         engine: Arc<dyn AdapterEngine>,
@@ -6318,6 +6365,36 @@ mod tests {
         );
     }
 
+    const DT_CREATE_OR_ALTER_FLAG: &str = "snowflake_dynamic_table_create_or_alter";
+
+    #[test]
+    fn test_snowflake_dynamic_table_create_or_alter_flag_registered_and_off_by_default() {
+        let flags = adapter_specific_behavior_flags(Snowflake);
+        let flag = flags
+            .iter()
+            .find(|f| f.name == DT_CREATE_OR_ALTER_FLAG)
+            .expect("snowflake_dynamic_table_create_or_alter should be registered for Snowflake");
+
+        // The name is the public API users type under `flags:` in dbt_project.yml. Enabling it
+        // changes query-evolution behavior for every native dynamic table, so it must stay opt-in.
+        assert!(
+            !Arc::new(flag.clone()).is_true(),
+            "snowflake_dynamic_table_create_or_alter should default to off"
+        );
+    }
+
+    #[test]
+    fn test_dynamic_table_create_or_alter_flag_is_snowflake_only() {
+        for adapter_type in [Databricks, Bigquery, Redshift, Postgres, DuckDB] {
+            assert!(
+                adapter_specific_behavior_flags(adapter_type)
+                    .iter()
+                    .all(|f| f.name != DT_CREATE_OR_ALTER_FLAG),
+                "{adapter_type:?} must not register the Snowflake-only flag"
+            );
+        }
+    }
+
     fn engine(adapter_type: AdapterType) -> Arc<dyn AdapterEngine> {
         let config = match adapter_type {
             Snowflake => Mapping::from_iter([
@@ -6379,6 +6456,71 @@ mod tests {
             None,
             None,
         ))
+    }
+
+    fn driver_error(message: &str) -> AdapterError {
+        AdapterError::new_with_sqlstate_and_vendor_code(
+            AdapterErrorKind::Driver,
+            message.to_string(),
+            *b"22000",
+            Some(2108),
+        )
+    }
+
+    #[test]
+    fn is_create_or_alter_matches_the_statement_header_only() {
+        let cases = [
+            ("create or alter dynamic table t as (select 1)", true),
+            ("  CREATE   OR\n ALTER TABLE t (id int)", true),
+            (
+                "/* {\"app\": \"dbt\"} */ -- note\ncreate or alter table t (id int)",
+                true,
+            ),
+            ("create or replace dynamic table t as (select 1)", false),
+            ("create dynamic table t as (select 1)", false),
+            ("select 'create or alter' from t -- create or alter", false),
+        ];
+        for (sql, expected) in cases {
+            assert_eq!(is_create_or_alter(sql), expected, "for {sql:?}");
+        }
+    }
+
+    const CREATE_OR_ALTER_SQL: &str = "create or alter dynamic table t as (select 1)";
+
+    /// Whether the hint was added to `err` for a `sql` statement run on `adapter_type`.
+    fn gets_hint(adapter_type: AdapterType, sql: &str, err: AdapterError) -> bool {
+        with_create_or_alter_hint(adapter_type, sql, err)
+            .message()
+            .contains("--full-refresh")
+    }
+
+    #[test]
+    fn create_or_alter_failure_gets_a_full_refresh_hint() {
+        let msg = "[Snowflake] 002108 (22000): CREATE OR ALTER execution failed.";
+        let hinted = with_create_or_alter_hint(Snowflake, CREATE_OR_ALTER_SQL, driver_error(msg));
+        assert!(hinted.message().starts_with(msg) && hinted.message().contains("--full-refresh"));
+        let code = (hinted.kind(), hinted.sqlstate(), hinted.vendor_code());
+        assert_eq!(code, (AdapterErrorKind::Driver, "22000", Some(2108)));
+    }
+
+    #[test]
+    fn unrelated_failures_are_not_given_the_hint() {
+        let named = "[Snowflake] CREATE OR ALTER execution failed";
+        // The error says nothing about CREATE OR ALTER: permissions, warehouse, network, ...
+        let permission = driver_error("[Snowflake] 003001 (42501): Insufficient privileges");
+        assert!(!gets_hint(Snowflake, CREATE_OR_ALTER_SQL, permission));
+        // Not a CREATE OR ALTER statement, even if the error text mentions it.
+        let replace = "create or replace dynamic table t as (select 1)";
+        assert!(!gets_hint(Snowflake, replace, driver_error(named)));
+        // Not Snowflake.
+        assert!(!gets_hint(
+            Postgres,
+            CREATE_OR_ALTER_SQL,
+            driver_error(named)
+        ));
+        // Not a driver (database) error.
+        let config = AdapterError::new(AdapterErrorKind::Configuration, "CREATE OR ALTER");
+        assert!(!gets_hint(Snowflake, CREATE_OR_ALTER_SQL, config));
     }
 
     #[test]
