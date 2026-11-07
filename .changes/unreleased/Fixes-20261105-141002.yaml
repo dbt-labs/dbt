@@ -1,5 +1,5 @@
 kind: Fixes
-body: Keep semicolons and apostrophes inside dollar quotes from splitting or merging statements.
+body: Keep semicolons and apostrophes inside DuckDB dollar quotes from splitting or merging statements.
 time: 2026-11-05T14:10:02.005566-08:00
 custom:
     author: colin-k-rogers
