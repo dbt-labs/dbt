@@ -1,0 +1,7 @@
+kind: Fixes
+body: Show the underlying network cause when a `dbt deps` package or tarball download fails before a response, instead of a status 500 message.
+time: 2026-10-17T21:23:22.133673+09:00
+custom:
+    author: yu-iskw
+    issue: "16620"
+    project: dbt-core
