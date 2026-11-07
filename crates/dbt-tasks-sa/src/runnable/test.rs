@@ -534,8 +534,15 @@ impl Task for AggregatedTestRunRemoteTask {
 
             let status = self.run_task_inner(ctx, start, &mut spans_by_id).await;
 
-            if status.is_err() {
-                for (_, span) in spans_by_id.into_values() {
+            if let Err(e) = &status {
+                // The aggregated query failed, so every member not reported yet
+                // errored too. Record each one so it appears in run_results.json.
+                let error_message = e.to_string();
+                for (unique_id, (_, span)) in spans_by_id {
+                    ctx.inner.run_stats.upsert_sync(
+                        unique_id.clone(),
+                        Stat::errored(unique_id, start, error_message.clone(), ctx.thread_id),
+                    );
                     ctx.inner.span_manager().handle_task_finished(span, &status);
                 }
             }
