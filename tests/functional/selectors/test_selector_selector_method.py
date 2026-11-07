@@ -131,6 +131,13 @@ def assert_result_set(actual: Any, expected: set[str]):
     assert set(actual) == expected
 
 
+def assert_reference_matches_inline(
+    inline: str, referenced: str, args: list[str], expected: set[str]
+):
+    assert_result_set(run_dbt(["ls", "--select", inline, *args]), expected)
+    assert_result_set(run_dbt(["ls", "--select", referenced, *args]), expected)
+
+
 class TestSelectorSelectorMethod:
     def test_ls_with_selector_returns_model_a(self, project):
         result = run_dbt(["ls", "--select", "selector:model_a_selector"])
@@ -403,3 +410,342 @@ class TestSelectExcludeIgnoredWithSelectorWarning:
                 run_dbt([*command, "--selector", "model_a_explicit_selector"], expect_pass=True)
             else:
                 run_dbt([command, "--selector", "model_a_explicit_selector"], expect_pass=True)
+
+
+graph_operator_models__schema_yml = """
+version: 2
+models:
+  - name: model_a
+    columns:
+      - name: id
+        tests:
+          - not_null
+  - name: model_a_plus_1
+    columns:
+      - name: id
+        tests:
+          - not_null
+"""
+
+graph_operator_seed_child_sql = """
+SELECT * FROM {{ ref('my_seed') }}
+"""
+
+graph_operator_selectors__yml = """
+selectors:
+  - name: sel_a
+    definition: 'model_a'
+
+  - name: sel_a_plus_1
+    definition: 'model_a_plus_1'
+
+  - name: sel_seed
+    definition: 'my_seed'
+
+  - name: sel_a_plus_1_without_not_null
+    definition:
+      union:
+        - method: fqn
+          value: model_a_plus_1
+        - exclude:
+            - method: test_name
+              value: not_null
+"""
+
+
+class TestSelectorReferenceWithGraphOperatorAndResourceType:
+    """A `selector:` reference with a graph operator must select the same nodes as
+    the equivalent inline selection, whatever resource types the command keeps.
+    The resource-type filter applies once, after graph operators.
+    """
+
+    @pytest.fixture(scope="class")
+    def models(self):
+        return {
+            "schema.yml": graph_operator_models__schema_yml,
+            "model_a.sql": models__model_a_sql,
+            "model_a_plus_1.sql": models_model_a_plus_1_sql,
+            "model_seed_child.sql": graph_operator_seed_child_sql,
+        }
+
+    @pytest.fixture(scope="class")
+    def seeds(self):
+        return {"my_seed.csv": "id\n1\n"}
+
+    @pytest.fixture(scope="class")
+    def selectors(self):
+        return graph_operator_selectors__yml
+
+    @pytest.mark.parametrize(
+        "case",
+        [
+            (
+                "model_a+1",
+                "selector:sel_a+1",
+                ["--resource-type", "test"],
+                {"test.not_null_model_a_id", "test.not_null_model_a_plus_1_id"},
+            ),
+            (
+                "+model_a_plus_1",
+                "+selector:sel_a_plus_1",
+                ["--resource-type", "test"],
+                {"test.not_null_model_a_id", "test.not_null_model_a_plus_1_id"},
+            ),
+            (
+                "my_seed+1",
+                "selector:sel_seed+1",
+                ["--resource-type", "model"],
+                {"test.model_seed_child"},
+            ),
+        ],
+        ids=["children_tests", "parents_tests", "seed_children"],
+    )
+    def test_matches_inline(self, project, case):
+        assert_reference_matches_inline(*case)
+
+    def test_referenced_exclusions_kept_with_parents_operator(self, project):
+        # The referenced selector's not_null exclusion still applies to its own
+        # model, while the parent reached by `+` gets its tests.
+        result = run_dbt(
+            [
+                "ls",
+                "--select",
+                "+selector:sel_a_plus_1_without_not_null",
+                "--resource-type",
+                "test",
+            ]
+        )
+        assert_result_set(result, {"test.not_null_model_a_id"})
+
+
+multi_parent_models__schema_yml = """
+version: 2
+models:
+  - name: model_x
+    columns:
+      - name: id
+        tests:
+          - not_null
+  - name: model_a
+    columns:
+      - name: id
+        tests:
+          - relationships:
+              arguments:
+                to: ref('model_x')
+                field: id
+  - name: model_b
+    columns:
+      - name: id
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('model_a')
+                field: id
+"""
+
+multi_parent_selectors__yml = """
+selectors:
+  - name: sel_a
+    definition: 'model_a'
+
+  - name: sel_x
+    definition: 'model_x'
+
+  - name: sel_x_and_relationships
+    definition:
+      union:
+        - 'model_x'
+        - 'relationships_model_a_id__id__ref_model_x_'
+
+  - name: all_but_b
+    definition:
+      union:
+        - method: fqn
+          value: '*'
+        - exclude:
+            - method: fqn
+              value: model_b
+
+  - name: tests_of_a
+    definition:
+      intersection:
+        - 'model_a'
+        - 'resource_type:test'
+
+  - name: sel_a_empty
+    definition:
+      method: fqn
+      value: model_a
+      indirect_selection: empty
+
+  - name: sel_a_without_relationships
+    definition:
+      union:
+        - method: fqn
+          value: model_a
+        - exclude:
+            - method: test_name
+              value: relationships
+
+  - name: sel_b_without_relationships
+    definition:
+      union:
+        - method: fqn
+          value: model_b
+        - exclude:
+            - method: test_name
+              value: relationships
+"""
+
+
+class MultiParentProject:
+    @pytest.fixture(scope="class")
+    def models(self):
+        return {
+            "schema.yml": multi_parent_models__schema_yml,
+            "model_x.sql": "select 1 as id",
+            "model_a.sql": "select 1 as id",
+            "model_b.sql": "select id from {{ ref('model_a') }}",
+        }
+
+    @pytest.fixture(scope="class")
+    def selectors(self):
+        return multi_parent_selectors__yml
+
+
+class TestSelectorReferenceWithMultiParentTests(MultiParentProject):
+    """Tests attached by a referenced selector must not act as a starting point for
+    graph operators, and tests it excluded must stay excluded, also when they touch
+    a node the operator adds.
+    """
+
+    def test_excluded_test_touching_added_parent_stays_excluded(self, project):
+        result = run_dbt(
+            [
+                "ls",
+                "--select",
+                "+selector:sel_b_without_relationships",
+                "--resource-type",
+                "test",
+            ]
+        )
+        assert_result_set(
+            result,
+            {"test.not_null_model_b_id", "test.relationships_model_a_id__id__ref_model_x_"},
+        )
+
+    def test_excluded_test_is_not_selected_as_child(self, project):
+        result = run_dbt(
+            [
+                "ls",
+                "--select",
+                "selector:sel_a_without_relationships+1",
+                "--resource-type",
+                "test",
+            ]
+        )
+        assert_result_set(result, {"test.not_null_model_b_id"})
+
+
+REL_A_X = "test.relationships_model_a_id__id__ref_model_x_"
+REL_B_A = "test.relationships_model_b_id__id__ref_model_a_"
+
+
+class TestSelectorReferenceMatchesInline(MultiParentProject):
+    """A `selector:` reference selects the same nodes as the equivalent inline
+    selection: operators start from the nodes the referenced selector matched (not
+    the tests it attached), and tests it holds back under cautious selection are
+    selected once their parents are.
+    """
+
+    @pytest.mark.parametrize(
+        "case",
+        [
+            (
+                "+model_a",
+                "+selector:sel_a",
+                ["--resource-type", "model"],
+                {"test.model_a"},
+            ),
+            (
+                "model_a+1",
+                "selector:sel_a+1",
+                ["--resource-type", "test", "--indirect-selection", "cautious"],
+                {"test.not_null_model_b_id", REL_A_X, REL_B_A},
+            ),
+            (
+                "model_a model_x",
+                "selector:sel_a selector:sel_x",
+                ["--resource-type", "test", "--indirect-selection", "cautious"],
+                {"test.not_null_model_x_id", REL_A_X},
+            ),
+            (
+                "model_a+1",
+                "selector:sel_a+1",
+                ["--indirect-selection", "empty"],
+                {"test.model_a", "test.model_b", REL_A_X, REL_B_A},
+            ),
+            (
+                "@model_a",
+                "@selector:sel_a",
+                [],
+                {
+                    "test.model_a",
+                    "test.model_b",
+                    "test.model_x",
+                    "test.not_null_model_b_id",
+                    "test.not_null_model_x_id",
+                    REL_A_X,
+                    REL_B_A,
+                },
+            ),
+            (
+                "+model_x +relationships_model_a_id__id__ref_model_x_",
+                "+selector:sel_x_and_relationships",
+                ["--resource-type", "model"],
+                {"test.model_x", "test.model_a"},
+            ),
+            (
+                "model_a+1",
+                "selector:sel_a_empty+1",
+                ["--resource-type", "test"],
+                {"test.not_null_model_b_id", REL_A_X, REL_B_A},
+            ),
+            (
+                "model_a+1 model_x+1",
+                "selector:all_but_b+1",
+                ["--resource-type", "test"],
+                {"test.not_null_model_b_id", "test.not_null_model_x_id", REL_A_X, REL_B_A},
+            ),
+            (
+                "+relationships_model_a_id__id__ref_model_x_ "
+                "+relationships_model_b_id__id__ref_model_a_",
+                "+selector:tests_of_a",
+                [],
+                {
+                    "test.model_a",
+                    "test.model_b",
+                    "test.model_x",
+                    "test.not_null_model_b_id",
+                    "test.not_null_model_x_id",
+                    REL_A_X,
+                    REL_B_A,
+                },
+            ),
+        ],
+        ids=[
+            "parents_skip_attached_tests",
+            "cautious_children",
+            "cautious_union",
+            "empty_mode_children",
+            "at_operator",
+            "directly_selected_test_is_a_starting_point",
+            "empty_mode_reference_under_eager_selection",
+            "excluded_model_brought_back_gets_its_tests",
+            "intersection_tests_are_starting_points",
+        ],
+    )
+    def test_matches_inline(self, project, case):
+        assert_reference_matches_inline(*case)
