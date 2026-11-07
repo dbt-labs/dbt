@@ -1319,6 +1319,7 @@
         "warn_unenforced": {
           "anyOf": [
             {
+              "default": true,
               "type": [
                 "boolean",
                 "null"
@@ -1333,6 +1334,7 @@
         "warn_unsupported": {
           "anyOf": [
             {
+              "default": true,
               "type": [
                 "boolean",
                 "null"
