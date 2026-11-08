@@ -1146,6 +1146,14 @@ impl<'a> CatalogSpecView<'a> {
         }
     }
 
+    /// Returns true for a BigLake metastore catalog with BigQuery config and no Lakehouse Runtime Catalog.
+    pub fn is_bigquery_managed_iceberg(&self) -> bool {
+        self.catalog_type == CatalogType::BiglakeMetastore
+            && self.config_block("bigquery").is_some_and(|block| {
+                get_str(block, "lakehouse_catalog").is_ok_and(|name| name.is_none())
+            })
+    }
+
     // ===== Post-hoc semantic validators =====
     // Called from CatalogRegistry::validate_semantic after structural validation passes.
 
@@ -2160,6 +2168,31 @@ catalogs:
         connection_id: "cool_connection"
 "#;
         parse_and_validate(yaml).expect("v2 bigquery should validate");
+    }
+
+    #[test]
+    fn biglake_managed_iceberg_requires_bigquery_block() {
+        for (config, expected) in [
+            ("duckdb:\n        endpoint: http://localhost:8181", false),
+            (
+                "bigquery:\n        external_volume: gs://bucket\n        file_format: parquet",
+                true,
+            ),
+            ("bigquery:\n        lakehouse_catalog: sales_catalog", false),
+            ("bigquery:\n        lakehouse_catalog: 1", false),
+        ] {
+            let yaml = format!(
+                "catalogs:\n  - name: cat1\n    type: biglake_metastore\n    table_format: iceberg\n    config:\n      {config}\n"
+            );
+            let value: yml::Value = yml::from_str(&yaml).unwrap();
+            let view =
+                DbtCatalogsView::from_mapping(value.as_mapping().unwrap(), value.span()).unwrap();
+            assert_eq!(
+                view.catalogs[0].is_bigquery_managed_iceberg(),
+                expected,
+                "{config}"
+            );
+        }
     }
 
     #[test]

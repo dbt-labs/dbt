@@ -6097,6 +6097,32 @@ pub struct DbtModel {
 }
 
 impl DbtModel {
+    /// Whether this is a BigQuery table or incremental model stored as Iceberg in a
+    /// resolved `biglake_metastore` catalog without `lakehouse_catalog`.
+    pub fn is_bigquery_managed_iceberg_table(
+        &self,
+        catalogs: Option<&crate::schemas::dbt_catalogs::DbtCatalogs>,
+    ) -> FsResult<bool> {
+        if self.node_adapter() != AdapterType::Bigquery
+            || !matches!(
+                self.base().materialized,
+                DbtMaterialization::Table | DbtMaterialization::Incremental
+            )
+        {
+            return Ok(false);
+        }
+        let Some(catalogs) = catalogs else {
+            return Ok(false);
+        };
+        // A malformed catalog is an error, not evidence that this table is
+        // unmanaged: the neighbouring parse checks propagate the same failure.
+        let view = catalogs.view()?;
+        Ok(view.catalogs.iter().any(|catalog| {
+            Some(catalog.name) == self.__model_attr__.catalog_name.as_deref()
+                && catalog.is_bigquery_managed_iceberg()
+        }))
+    }
+
     /// Transcribes dbt-core's `ModelNode.same_ref_representation` (dbt-mantle
     /// `core/dbt/contracts/graph/nodes.py:684-691`), which is ANDed into `ModelNode.same_contents`
     /// at `:677-682`:
@@ -8040,6 +8066,82 @@ mod tests {
         if let Err(err) = config {
             panic!("Could not deserialize and failed with the following error: {err}");
         }
+    }
+
+    /// Parse and run both consult this predicate, so its matrix lives here and nowhere else.
+    #[test]
+    fn bigquery_managed_iceberg_table_classification() {
+        use crate::schemas::common::DbtMaterialization;
+        use crate::schemas::dbt_catalogs::DbtCatalogs;
+
+        let value: dbt_yaml::Value = dbt_yaml::from_str(
+            r#"
+catalogs:
+  - name: bq
+    type: biglake_metastore
+    table_format: iceberg
+    config:
+      bigquery:
+        external_volume: gs://example-bucket
+        file_format: parquet
+  - name: runtime
+    type: biglake_metastore
+    table_format: iceberg
+    config:
+      bigquery:
+        lakehouse_catalog: example-catalog
+        file_format: parquet
+"#,
+        )
+        .unwrap();
+        let catalogs = DbtCatalogs::new(value.as_mapping().unwrap().clone(), value.span().clone());
+
+        for (name, format, materialized, readable) in [
+            (Some("bq"), None, DbtMaterialization::Table, true),
+            (Some("bq"), None, DbtMaterialization::Incremental, true),
+            (
+                Some("bq"),
+                None,
+                DbtMaterialization::MaterializedView,
+                false,
+            ),
+            (Some("runtime"), None, DbtMaterialization::Table, false),
+            (None, None, DbtMaterialization::Table, false),
+            (None, Some("iceberg"), DbtMaterialization::Table, false),
+            (Some("unknown"), None, DbtMaterialization::Table, false),
+            (Some("bq"), Some("iceberg"), DbtMaterialization::View, false),
+            (
+                Some("bq"),
+                Some("iceberg"),
+                DbtMaterialization::Ephemeral,
+                false,
+            ),
+        ] {
+            let mut model = DbtModel::default();
+            model.__base_attr__.adapter = AdapterType::Bigquery;
+            model.__model_attr__.catalog_name = name.map(str::to_string);
+            model.__model_attr__.table_format = format.map(str::to_string);
+            model.__base_attr__.materialized = materialized.clone();
+            assert_eq!(
+                model
+                    .is_bigquery_managed_iceberg_table(Some(&catalogs))
+                    .unwrap(),
+                readable,
+                "{name:?} {format:?} {materialized:?}"
+            );
+        }
+
+        // The adapter is part of the predicate: a Snowflake model declaring the same Iceberg
+        // catalog is not a BigQuery-managed table.
+        let mut snowflake = DbtModel::default();
+        snowflake.__base_attr__.adapter = AdapterType::Snowflake;
+        snowflake.__model_attr__.catalog_name = Some("bq".into());
+        snowflake.__base_attr__.materialized = DbtMaterialization::Table;
+        assert!(
+            !snowflake
+                .is_bigquery_managed_iceberg_table(Some(&catalogs))
+                .unwrap()
+        );
     }
 
     fn model_with_freshness(freshness: Option<ModelFreshness>) -> DbtModel {

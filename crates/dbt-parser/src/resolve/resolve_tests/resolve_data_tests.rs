@@ -766,8 +766,7 @@ pub async fn resolve_data_tests(
             },
             __base_attr__: NodeBaseAttributes {
                 adapter: selected_adapter,
-                // A data test never runs on lake compute (see `inherited_adapter` above), so
-                // it has nothing to publish: no `+propagate` config exists for this node type.
+                // Data tests inherit their attached node's adapter but have no propagation config.
                 propagate: Vec::new(),
                 effective_propagation_target: None,
                 database: node_database.to_owned(),
