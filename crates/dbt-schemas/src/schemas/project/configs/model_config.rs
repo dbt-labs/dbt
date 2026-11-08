@@ -702,12 +702,6 @@ impl TypedRecursiveConfig for ProjectModelConfig {
     }
 
     fn has_set_fields(&self) -> bool {
-        self.has_any_set_field()
-    }
-}
-
-impl ProjectModelConfig {
-    fn has_any_set_field(&self) -> bool {
         self.access.is_some()
             || self.adapter_properties.is_some()
             || self.alias.is_some()
@@ -753,7 +747,7 @@ impl ProjectModelConfig {
             || self.incremental_apply_config_changes.is_some()
             || self.persist_constraints.is_some()
             || self.use_materialization_v2.is_some()
-            || self.dynamic_table_create_or_alter.is_some()
+            || self.has_set_snowflake_dt_sync_fields()
             || self.use_safer_relation_operations.is_some()
             || self.view_update_via_alter.is_some()
             || self.description.is_some()
@@ -777,8 +771,6 @@ impl ProjectModelConfig {
             || self.include_full_name_in_path.is_some()
             || self.incremental_predicates.is_some()
             || self.incremental_strategy.is_some()
-            || self.initialize.is_some()
-            || self.scheduler.is_some()
             || self.data_retention_time_in_days.is_some()
             || self.kms_key_name.is_some()
             || self.labels.is_some()
@@ -832,7 +824,6 @@ impl ProjectModelConfig {
             || self.row_access_policy.is_some()
             || self.storage_serialization_policy.is_some()
             || self.quoting.is_some()
-            || self.refresh_mode.is_some()
             || self.refresh_interval_minutes.is_some()
             || self.resource_tags.is_some()
             || self.require_partition_filter.is_some()
@@ -867,6 +858,15 @@ impl ProjectModelConfig {
             || self.primary_key.is_some()
             || self.category.is_some()
             || self.sync.is_some()
+    }
+}
+
+impl ProjectModelConfig {
+    fn has_set_snowflake_dt_sync_fields(&self) -> bool {
+        self.dynamic_table_create_or_alter.is_some()
+            || self.refresh_mode.is_some()
+            || self.initialize.is_some()
+            || self.scheduler.is_some()
     }
 }
 
@@ -1003,14 +1003,174 @@ pub struct ModelConfig {
     pub meta_keys_defaults: Option<Vec<minijinja::value::Value>>,
 }
 
-impl From<ProjectModelConfig> for ModelConfig {
-    fn from(config: ProjectModelConfig) -> Self {
-        model_config_from_project(config)
+fn warehouse_from_project_model(config: &ProjectModelConfig) -> WarehouseSpecificNodeConfig {
+    let mut warehouse = snowflake_warehouse_from_project_model(config);
+    copy_bigquery_warehouse_from_project_model(&mut warehouse, config);
+    copy_databricks_warehouse_from_project_model(&mut warehouse, config);
+    copy_remaining_warehouse_from_project_model(&mut warehouse, config);
+    warehouse
+}
+
+fn snowflake_warehouse_from_project_model(
+    config: &ProjectModelConfig,
+) -> WarehouseSpecificNodeConfig {
+    WarehouseSpecificNodeConfig {
+        adapter_properties: config.adapter_properties.clone(),
+        external_volume: config.external_volume.clone(),
+        base_location_root: config.base_location_root.clone(),
+        base_location_subpath: config.base_location_subpath.clone(),
+        change_tracking: config.change_tracking,
+        data_retention_time_in_days: config.data_retention_time_in_days,
+        max_data_extension_time_in_days: config.max_data_extension_time_in_days,
+        storage_serialization_policy: config.storage_serialization_policy.clone(),
+        target_file_size: config.target_file_size.clone(),
+        target_lag: config.target_lag.clone(),
+        snowflake_initialization_warehouse: config.snowflake_initialization_warehouse.clone(),
+        snowflake_warehouse: config.snowflake_warehouse.clone(),
+        refresh_warehouse: config.refresh_warehouse.clone(),
+        immutable_where: config.immutable_where.clone(),
+        refresh_mode: config.refresh_mode.clone(),
+        initialize: config.initialize.clone(),
+        scheduler: config.scheduler.clone(),
+        tmp_relation_type: config.tmp_relation_type.clone(),
+        query_tag: config.query_tag.clone(),
+        query_tags: config.query_tags.clone(),
+        table_tag: config.table_tag.clone(),
+        row_access_policy: config.row_access_policy.clone(),
+        automatic_clustering: config.automatic_clustering,
+        copy_grants: config.copy_grants,
+        copy_tags: config.copy_tags,
+        secure: config.secure,
+        transient: config.transient,
+        iceberg_version: config.iceberg_version,
+        dynamic_table_create_or_alter: config.dynamic_table_create_or_alter,
+        ..Default::default()
     }
 }
 
-fn model_config_from_project(config: ProjectModelConfig) -> ModelConfig {
-    ModelConfig {
+fn copy_bigquery_warehouse_from_project_model(
+    warehouse: &mut WarehouseSpecificNodeConfig,
+    config: &ProjectModelConfig,
+) {
+    warehouse.description = config.description.clone();
+    warehouse.partition_by = config.partition_by.clone();
+    warehouse.partition_by_config = config.partition_by_config.clone();
+    warehouse.distribute_by_config = config.distribute_by_config.clone();
+    warehouse.primary_key_config = config.primary_key_config.clone();
+    warehouse.cluster_by = config.cluster_by.clone();
+    warehouse.hours_to_expiration = config.hours_to_expiration.clone();
+    warehouse.job_execution_timeout_seconds = config.job_execution_timeout_seconds;
+    warehouse.reservation = config.reservation.clone();
+    warehouse.labels = config.labels.clone();
+    warehouse.labels_from_meta = config.labels_from_meta;
+    warehouse.kms_key_name = config.kms_key_name.clone();
+    warehouse.require_partition_filter = config.require_partition_filter;
+    warehouse.partition_expiration_days = config.partition_expiration_days;
+    warehouse.grant_access_to = config.grant_access_to.clone();
+    warehouse.partitions = config.partitions.clone();
+    warehouse.enable_refresh = config.enable_refresh;
+    warehouse.resource_tags = config.resource_tags.clone();
+    warehouse.refresh_interval_minutes = config.refresh_interval_minutes;
+    warehouse.max_staleness = config.max_staleness.clone();
+    warehouse.jar_file_uri = config.jar_file_uri.clone();
+    warehouse.timeout = config.timeout;
+    warehouse.batch_id = config.batch_id.clone();
+    warehouse.dataproc_cluster_name = config.dataproc_cluster_name.clone();
+    warehouse.notebook_template_id = config.notebook_template_id;
+    warehouse.enable_list_inference = config.enable_list_inference;
+    warehouse.intermediate_format = config.intermediate_format.clone();
+    warehouse.storage_uri = config.storage_uri.clone();
+    warehouse.enable_change_history = config.enable_change_history;
+}
+
+fn copy_databricks_warehouse_from_project_model(
+    warehouse: &mut WarehouseSpecificNodeConfig,
+    config: &ProjectModelConfig,
+) {
+    warehouse.incremental_apply_config_changes = config.incremental_apply_config_changes;
+    warehouse.persist_constraints = config.persist_constraints;
+    warehouse.use_materialization_v2 = config.use_materialization_v2;
+    warehouse.use_safer_relation_operations = config.use_safer_relation_operations;
+    warehouse.view_update_via_alter = config.view_update_via_alter;
+    warehouse.file_format = config.file_format.clone();
+    warehouse.catalog_name = config.catalog_name.clone();
+    warehouse.location_root = config.location_root.clone();
+    warehouse.use_uniform = config.use_uniform;
+    warehouse.tblproperties = config.tblproperties.clone();
+    warehouse.include_full_name_in_path = config.include_full_name_in_path;
+    warehouse.liquid_clustered_by = config.liquid_clustered_by.clone();
+    warehouse.auto_liquid_cluster = config.auto_liquid_cluster;
+    warehouse.zorder = config.zorder.clone();
+    warehouse.clustered_by = config.clustered_by.clone();
+    warehouse.buckets = config.buckets;
+    warehouse.catalog = config.catalog.clone();
+    warehouse.databricks_tags = config.databricks_tags.clone();
+    warehouse.compression = config.compression.clone();
+    warehouse.databricks_compute = config.databricks_compute.clone();
+    warehouse.target_alias = config.target_alias.clone();
+    warehouse.source_alias = config.source_alias.clone();
+    warehouse.matched_condition = config.matched_condition.clone();
+    warehouse.not_matched_condition = config.not_matched_condition.clone();
+    warehouse.not_matched_by_source_condition = config.not_matched_by_source_condition.clone();
+    warehouse.merge_actions_explicit = config.merge_actions_explicit.clone();
+    warehouse.not_matched_by_source_action = config.not_matched_by_source_action.clone();
+    warehouse.merge_with_schema_evolution = config.merge_with_schema_evolution;
+    warehouse.skip_matched_step = config.skip_matched_step;
+    warehouse.skip_not_matched_step = config.skip_not_matched_step;
+    warehouse.skip_optimize = config.skip_optimize;
+    warehouse.unique_tmp_table_suffix = config.unique_tmp_table_suffix;
+    warehouse.schedule = config.schedule.clone();
+    warehouse.row_filter = config.row_filter.clone();
+}
+
+fn copy_remaining_warehouse_from_project_model(
+    warehouse: &mut WarehouseSpecificNodeConfig,
+    config: &ProjectModelConfig,
+) {
+    warehouse.auto_refresh = config.auto_refresh;
+    warehouse.backup = config.backup;
+    warehouse.bind = config.bind;
+    warehouse.dist = config.dist.clone();
+    warehouse.sort = config.sort.clone();
+    warehouse.sort_type = config.sort_type.clone();
+    warehouse.as_columnstore = config.as_columnstore;
+    warehouse.table_type = config.table_type.clone();
+    warehouse.indexes = config.indexes.clone();
+    warehouse.unlogged = config.unlogged;
+    warehouse.primary_key = config.primary_key.clone();
+    warehouse.category = config.category.clone();
+    warehouse.engine = config.engine.clone();
+    warehouse.order_by = config.order_by.clone();
+    warehouse.ttl = config.ttl.clone();
+    warehouse.settings = config.settings.clone();
+    warehouse.query_settings = config.query_settings.clone();
+    warehouse.projections = config.projections.clone();
+    warehouse.sharding_key = config.sharding_key.clone();
+    warehouse.disable_on_cluster = config.disable_on_cluster;
+    warehouse.inserts_only = config.inserts_only;
+    warehouse.connection_overrides = config.connection_overrides.clone();
+    warehouse.fields = config.fields.clone();
+    warehouse.source_type = config.source_type.clone();
+    warehouse.url = config.url.clone();
+    warehouse.format = config.format.clone();
+    warehouse.layout = config.layout.clone();
+    warehouse.lifetime = config.lifetime.clone();
+    warehouse.range = config.range.clone();
+    warehouse.table = config.table.clone();
+    warehouse.update_field = config.update_field.clone();
+    warehouse.update_lag = config.update_lag.clone();
+    warehouse.definer = config.definer.clone();
+    warehouse.sql_security = config.sql_security.clone();
+    warehouse.refreshable = config.refreshable.clone();
+    warehouse.catchup = config.catchup;
+    warehouse.mv_on_schema_change = config.mv_on_schema_change.clone();
+    warehouse.repopulate_from_mvs_on_full_refresh = config.repopulate_from_mvs_on_full_refresh;
+}
+
+impl From<ProjectModelConfig> for ModelConfig {
+    fn from(config: ProjectModelConfig) -> Self {
+        let warehouse = warehouse_from_project_model(&config);
+        Self {
             access: config.access,
             alias: config.alias,
             batch_size: config.batch_size,
@@ -1076,168 +1236,27 @@ fn model_config_from_project(config: ProjectModelConfig) -> ModelConfig {
             tags: Tags(config.tags.into_inner()),
             classifiers: Classifiers(config.classifiers.into_inner()),
             unique_key: config.unique_key,
-            __warehouse_specific_config__: WarehouseSpecificNodeConfig {
-                description: config.description,
-                adapter_properties: config.adapter_properties,
-                external_volume: config.external_volume,
-                base_location_root: config.base_location_root,
-                base_location_subpath: config.base_location_subpath,
-                change_tracking: config.change_tracking,
-                data_retention_time_in_days: config.data_retention_time_in_days,
-                max_data_extension_time_in_days: config.max_data_extension_time_in_days,
-                storage_serialization_policy: config.storage_serialization_policy,
-                target_file_size: config.target_file_size,
-                target_lag: config.target_lag,
-                snowflake_initialization_warehouse: config.snowflake_initialization_warehouse,
-                snowflake_warehouse: config.snowflake_warehouse,
-                refresh_warehouse: config.refresh_warehouse,
-                immutable_where: config.immutable_where,
-                refresh_mode: config.refresh_mode,
-                initialize: config.initialize,
-                scheduler: config.scheduler,
-                tmp_relation_type: config.tmp_relation_type,
-                query_tag: config.query_tag,
-                query_tags: config.query_tags,
-                table_tag: config.table_tag,
-                row_access_policy: config.row_access_policy,
-                automatic_clustering: config.automatic_clustering,
-                copy_grants: config.copy_grants,
-                copy_tags: config.copy_tags,
-                secure: config.secure,
-                transient: config.transient,
-                iceberg_version: config.iceberg_version,
-
-                partition_by: config.partition_by,
-                partition_by_config: config.partition_by_config,
-                distribute_by_config: config.distribute_by_config,
-                primary_key_config: config.primary_key_config,
-                cluster_by: config.cluster_by,
-                hours_to_expiration: config.hours_to_expiration,
-                job_execution_timeout_seconds: config.job_execution_timeout_seconds,
-                reservation: config.reservation,
-                labels: config.labels,
-                labels_from_meta: config.labels_from_meta,
-                kms_key_name: config.kms_key_name,
-                require_partition_filter: config.require_partition_filter,
-                partition_expiration_days: config.partition_expiration_days,
-                grant_access_to: config.grant_access_to,
-                partitions: config.partitions,
-                enable_refresh: config.enable_refresh,
-                resource_tags: config.resource_tags,
-                refresh_interval_minutes: config.refresh_interval_minutes,
-                max_staleness: config.max_staleness,
-                jar_file_uri: config.jar_file_uri,
-                timeout: config.timeout,
-                batch_id: config.batch_id,
-                dataproc_cluster_name: config.dataproc_cluster_name,
-                notebook_template_id: config.notebook_template_id,
-                enable_list_inference: config.enable_list_inference,
-                intermediate_format: config.intermediate_format,
-                storage_uri: config.storage_uri,
-                enable_change_history: config.enable_change_history,
-                incremental_apply_config_changes: config.incremental_apply_config_changes,
-                persist_constraints: config.persist_constraints,
-                use_materialization_v2: config.use_materialization_v2,
-                dynamic_table_create_or_alter: config.dynamic_table_create_or_alter,
-                use_safer_relation_operations: config.use_safer_relation_operations,
-                view_update_via_alter: config.view_update_via_alter,
-
-                file_format: config.file_format,
-                catalog_name: config.catalog_name,
-                location_root: config.location_root,
-                use_uniform: config.use_uniform,
-                tblproperties: config.tblproperties,
-                include_full_name_in_path: config.include_full_name_in_path,
-                liquid_clustered_by: config.liquid_clustered_by,
-                auto_liquid_cluster: config.auto_liquid_cluster,
-                zorder: config.zorder,
-                clustered_by: config.clustered_by,
-                buckets: config.buckets,
-                catalog: config.catalog,
-                databricks_tags: config.databricks_tags,
-                compression: config.compression,
-                databricks_compute: config.databricks_compute,
-                target_alias: config.target_alias,
-                source_alias: config.source_alias,
-                matched_condition: config.matched_condition,
-                not_matched_condition: config.not_matched_condition,
-                not_matched_by_source_condition: config.not_matched_by_source_condition,
-                merge_actions_explicit: config.merge_actions_explicit,
-                not_matched_by_source_action: config.not_matched_by_source_action,
-                merge_with_schema_evolution: config.merge_with_schema_evolution,
-                skip_matched_step: config.skip_matched_step,
-                skip_not_matched_step: config.skip_not_matched_step,
-                skip_optimize: config.skip_optimize,
-                unique_tmp_table_suffix: config.unique_tmp_table_suffix,
-                schedule: config.schedule,
-                row_filter: config.row_filter,
-
-                auto_refresh: config.auto_refresh,
-                backup: config.backup,
-                bind: config.bind,
-                dist: config.dist,
-                sort: config.sort,
-                sort_type: config.sort_type,
-
-                as_columnstore: config.as_columnstore,
-
-                table_type: config.table_type,
-                indexes: config.indexes,
-                unlogged: config.unlogged,
-
-                primary_key: config.primary_key,
-                category: config.category,
-
-                engine: config.engine,
-                order_by: config.order_by,
-                ttl: config.ttl,
-                settings: config.settings,
-                query_settings: config.query_settings,
-                projections: config.projections,
-                sharding_key: config.sharding_key,
-                disable_on_cluster: config.disable_on_cluster,
-                inserts_only: config.inserts_only,
-                connection_overrides: config.connection_overrides,
-                fields: config.fields,
-                source_type: config.source_type,
-                url: config.url,
-                format: config.format,
-                layout: config.layout,
-                lifetime: config.lifetime,
-                range: config.range,
-                table: config.table,
-                update_field: config.update_field,
-                update_lag: config.update_lag,
-                definer: config.definer,
-                sql_security: config.sql_security,
-                refreshable: config.refreshable,
-                catchup: config.catchup,
-                mv_on_schema_change: config.mv_on_schema_change,
-                repopulate_from_mvs_on_full_refresh: config.repopulate_from_mvs_on_full_refresh,
-            },
+            __warehouse_specific_config__: warehouse,
             // Python-specific fields - initialized to None here, set during Python AST analysis
             config_keys_used: None,
             config_keys_defaults: None,
             meta_keys_used: None,
             meta_keys_defaults: None,
         }
+    }
 }
 
 impl From<ModelConfig> for ProjectModelConfig {
     fn from(config: ModelConfig) -> Self {
-        project_model_config_from_model(config)
-    }
-}
-
-fn project_model_config_from_model(config: ModelConfig) -> ProjectModelConfig {
-    ProjectModelConfig {
+        let warehouse = config.__warehouse_specific_config__;
+        Self {
             access: config.access,
             alias: config.alias,
-            auto_refresh: config.__warehouse_specific_config__.auto_refresh,
-            backup: config.__warehouse_specific_config__.backup,
+            auto_refresh: warehouse.auto_refresh,
+            backup: warehouse.backup,
             batch_size: config.batch_size,
             begin: config.begin,
-            bind: config.__warehouse_specific_config__.bind,
+            bind: warehouse.bind,
             catalog_name: config.catalog_name,
             adapter: config.adapter,
             propagate: config.propagate,
@@ -1246,7 +1265,7 @@ fn project_model_config_from_model(config: ModelConfig) -> ProjectModelConfig {
             concurrent_batches: config.concurrent_batches,
             contract: config.contract,
             database: config.database,
-            description: config.__warehouse_specific_config__.description,
+            description: warehouse.description,
             docs: config.docs,
             enabled: config.enabled,
             event_time: config.event_time,
@@ -1298,167 +1317,136 @@ fn project_model_config_from_model(config: ModelConfig) -> ProjectModelConfig {
             table_format: config.table_format,
             tags: config.tags.into_inner().into(),
             classifiers: config.classifiers.into_inner().into(),
-            transient: config.__warehouse_specific_config__.transient,
+            transient: warehouse.transient,
             unique_key: config.unique_key,
-            adapter_properties: config.__warehouse_specific_config__.adapter_properties,
-            external_volume: config.__warehouse_specific_config__.external_volume,
-            base_location_root: config.__warehouse_specific_config__.base_location_root,
-            base_location_subpath: config.__warehouse_specific_config__.base_location_subpath,
-            iceberg_version: config.__warehouse_specific_config__.iceberg_version,
-            change_tracking: config.__warehouse_specific_config__.change_tracking,
-            data_retention_time_in_days: config
-                .__warehouse_specific_config__
-                .data_retention_time_in_days,
-            target_lag: config.__warehouse_specific_config__.target_lag,
-            snowflake_initialization_warehouse: config
-                .__warehouse_specific_config__
-                .snowflake_initialization_warehouse,
-            snowflake_warehouse: config.__warehouse_specific_config__.snowflake_warehouse,
-            refresh_warehouse: config.__warehouse_specific_config__.refresh_warehouse,
-            immutable_where: config.__warehouse_specific_config__.immutable_where,
-            refresh_mode: config.__warehouse_specific_config__.refresh_mode,
-            initialize: config.__warehouse_specific_config__.initialize,
-            scheduler: config.__warehouse_specific_config__.scheduler,
-            tmp_relation_type: config.__warehouse_specific_config__.tmp_relation_type,
-            query_tag: config.__warehouse_specific_config__.query_tag,
-            query_tags: config.__warehouse_specific_config__.query_tags,
-            table_tag: config.__warehouse_specific_config__.table_tag,
-            row_access_policy: config.__warehouse_specific_config__.row_access_policy,
-            automatic_clustering: config.__warehouse_specific_config__.automatic_clustering,
-            jar_file_uri: config.__warehouse_specific_config__.jar_file_uri,
-            timeout: config.__warehouse_specific_config__.timeout,
-            batch_id: config.__warehouse_specific_config__.batch_id,
-            dataproc_cluster_name: config.__warehouse_specific_config__.dataproc_cluster_name,
-            notebook_template_id: config.__warehouse_specific_config__.notebook_template_id,
-            enable_list_inference: config.__warehouse_specific_config__.enable_list_inference,
-            intermediate_format: config.__warehouse_specific_config__.intermediate_format,
-            storage_uri: config.__warehouse_specific_config__.storage_uri,
-            enable_change_history: config.__warehouse_specific_config__.enable_change_history,
-            copy_grants: config.__warehouse_specific_config__.copy_grants,
-            copy_tags: config.__warehouse_specific_config__.copy_tags,
-            secure: config.__warehouse_specific_config__.secure,
-            partition_by: config.__warehouse_specific_config__.partition_by,
-            partition_by_config: config.__warehouse_specific_config__.partition_by_config,
-            distribute_by_config: config.__warehouse_specific_config__.distribute_by_config,
-            primary_key_config: config.__warehouse_specific_config__.primary_key_config,
-            cluster_by: config.__warehouse_specific_config__.cluster_by,
-            hours_to_expiration: config.__warehouse_specific_config__.hours_to_expiration,
-            job_execution_timeout_seconds: config
-                .__warehouse_specific_config__
-                .job_execution_timeout_seconds,
-            reservation: config.__warehouse_specific_config__.reservation,
-            labels: config.__warehouse_specific_config__.labels,
-            labels_from_meta: config.__warehouse_specific_config__.labels_from_meta,
-            resource_tags: config.__warehouse_specific_config__.resource_tags,
-            kms_key_name: config.__warehouse_specific_config__.kms_key_name,
-            require_partition_filter: config
-                .__warehouse_specific_config__
-                .require_partition_filter,
-            partition_expiration_days: config
-                .__warehouse_specific_config__
-                .partition_expiration_days,
-            grant_access_to: config.__warehouse_specific_config__.grant_access_to,
-            partitions: config.__warehouse_specific_config__.partitions,
-            enable_refresh: config.__warehouse_specific_config__.enable_refresh,
-            refresh_interval_minutes: config
-                .__warehouse_specific_config__
-                .refresh_interval_minutes,
-            max_staleness: config.__warehouse_specific_config__.max_staleness,
-            max_data_extension_time_in_days: config
-                .__warehouse_specific_config__
-                .max_data_extension_time_in_days,
-            file_format: config.__warehouse_specific_config__.file_format,
-            location_root: config.__warehouse_specific_config__.location_root,
-            use_uniform: config.__warehouse_specific_config__.use_uniform,
-            tblproperties: config.__warehouse_specific_config__.tblproperties,
-            include_full_name_in_path: config
-                .__warehouse_specific_config__
-                .include_full_name_in_path,
-            liquid_clustered_by: config.__warehouse_specific_config__.liquid_clustered_by,
-            auto_liquid_cluster: config.__warehouse_specific_config__.auto_liquid_cluster,
-            zorder: config.__warehouse_specific_config__.zorder,
-            clustered_by: config.__warehouse_specific_config__.clustered_by,
-            buckets: config.__warehouse_specific_config__.buckets,
-            catalog: config.__warehouse_specific_config__.catalog,
-            databricks_tags: config.__warehouse_specific_config__.databricks_tags,
-            compression: config.__warehouse_specific_config__.compression,
-            databricks_compute: config.__warehouse_specific_config__.databricks_compute,
-            dist: config.__warehouse_specific_config__.dist,
-            sort: config.__warehouse_specific_config__.sort,
-            sort_type: config.__warehouse_specific_config__.sort_type,
-            matched_condition: config.__warehouse_specific_config__.matched_condition,
-            merge_with_schema_evolution: config
-                .__warehouse_specific_config__
-                .merge_with_schema_evolution,
-            not_matched_by_source_action: config
-                .__warehouse_specific_config__
-                .not_matched_by_source_action,
-            not_matched_by_source_condition: config
-                .__warehouse_specific_config__
-                .not_matched_by_source_condition,
-            merge_actions_explicit: config.__warehouse_specific_config__.merge_actions_explicit,
-            not_matched_condition: config.__warehouse_specific_config__.not_matched_condition,
-            source_alias: config.__warehouse_specific_config__.source_alias,
-            target_alias: config.__warehouse_specific_config__.target_alias,
-            skip_matched_step: config.__warehouse_specific_config__.skip_matched_step,
-            skip_not_matched_step: config.__warehouse_specific_config__.skip_not_matched_step,
-            skip_optimize: config.__warehouse_specific_config__.skip_optimize,
-            storage_serialization_policy: config
-                .__warehouse_specific_config__
-                .storage_serialization_policy,
-            target_file_size: config.__warehouse_specific_config__.target_file_size,
-            as_columnstore: config.__warehouse_specific_config__.as_columnstore,
-            table_type: config.__warehouse_specific_config__.table_type,
-            indexes: config.__warehouse_specific_config__.indexes,
-            unlogged: config.__warehouse_specific_config__.unlogged,
-            schedule: config.__warehouse_specific_config__.schedule,
-            row_filter: config.__warehouse_specific_config__.row_filter,
-            incremental_apply_config_changes: config
-                .__warehouse_specific_config__
-                .incremental_apply_config_changes,
-            persist_constraints: config.__warehouse_specific_config__.persist_constraints,
-            use_materialization_v2: config.__warehouse_specific_config__.use_materialization_v2,
-            dynamic_table_create_or_alter: config
-                .__warehouse_specific_config__
-                .dynamic_table_create_or_alter,
-            use_safer_relation_operations: config
-                .__warehouse_specific_config__
-                .use_safer_relation_operations,
-            view_update_via_alter: config.__warehouse_specific_config__.view_update_via_alter,
-            unique_tmp_table_suffix: config.__warehouse_specific_config__.unique_tmp_table_suffix,
-            primary_key: config.__warehouse_specific_config__.primary_key,
-            category: config.__warehouse_specific_config__.category,
+            adapter_properties: warehouse.adapter_properties,
+            external_volume: warehouse.external_volume,
+            base_location_root: warehouse.base_location_root,
+            base_location_subpath: warehouse.base_location_subpath,
+            iceberg_version: warehouse.iceberg_version,
+            change_tracking: warehouse.change_tracking,
+            data_retention_time_in_days: warehouse.data_retention_time_in_days,
+            target_lag: warehouse.target_lag,
+            snowflake_initialization_warehouse: warehouse.snowflake_initialization_warehouse,
+            snowflake_warehouse: warehouse.snowflake_warehouse,
+            refresh_warehouse: warehouse.refresh_warehouse,
+            immutable_where: warehouse.immutable_where,
+            refresh_mode: warehouse.refresh_mode,
+            initialize: warehouse.initialize,
+            scheduler: warehouse.scheduler,
+            tmp_relation_type: warehouse.tmp_relation_type,
+            query_tag: warehouse.query_tag,
+            query_tags: warehouse.query_tags,
+            table_tag: warehouse.table_tag,
+            row_access_policy: warehouse.row_access_policy,
+            automatic_clustering: warehouse.automatic_clustering,
+            jar_file_uri: warehouse.jar_file_uri,
+            timeout: warehouse.timeout,
+            batch_id: warehouse.batch_id,
+            dataproc_cluster_name: warehouse.dataproc_cluster_name,
+            notebook_template_id: warehouse.notebook_template_id,
+            enable_list_inference: warehouse.enable_list_inference,
+            intermediate_format: warehouse.intermediate_format,
+            storage_uri: warehouse.storage_uri,
+            enable_change_history: warehouse.enable_change_history,
+            copy_grants: warehouse.copy_grants,
+            copy_tags: warehouse.copy_tags,
+            secure: warehouse.secure,
+            partition_by: warehouse.partition_by,
+            partition_by_config: warehouse.partition_by_config,
+            distribute_by_config: warehouse.distribute_by_config,
+            primary_key_config: warehouse.primary_key_config,
+            cluster_by: warehouse.cluster_by,
+            hours_to_expiration: warehouse.hours_to_expiration,
+            job_execution_timeout_seconds: warehouse.job_execution_timeout_seconds,
+            reservation: warehouse.reservation,
+            labels: warehouse.labels,
+            labels_from_meta: warehouse.labels_from_meta,
+            resource_tags: warehouse.resource_tags,
+            kms_key_name: warehouse.kms_key_name,
+            require_partition_filter: warehouse.require_partition_filter,
+            partition_expiration_days: warehouse.partition_expiration_days,
+            grant_access_to: warehouse.grant_access_to,
+            partitions: warehouse.partitions,
+            enable_refresh: warehouse.enable_refresh,
+            refresh_interval_minutes: warehouse.refresh_interval_minutes,
+            max_staleness: warehouse.max_staleness,
+            max_data_extension_time_in_days: warehouse.max_data_extension_time_in_days,
+            file_format: warehouse.file_format,
+            location_root: warehouse.location_root,
+            use_uniform: warehouse.use_uniform,
+            tblproperties: warehouse.tblproperties,
+            include_full_name_in_path: warehouse.include_full_name_in_path,
+            liquid_clustered_by: warehouse.liquid_clustered_by,
+            auto_liquid_cluster: warehouse.auto_liquid_cluster,
+            zorder: warehouse.zorder,
+            clustered_by: warehouse.clustered_by,
+            buckets: warehouse.buckets,
+            catalog: warehouse.catalog,
+            databricks_tags: warehouse.databricks_tags,
+            compression: warehouse.compression,
+            databricks_compute: warehouse.databricks_compute,
+            dist: warehouse.dist,
+            sort: warehouse.sort,
+            sort_type: warehouse.sort_type,
+            matched_condition: warehouse.matched_condition,
+            merge_with_schema_evolution: warehouse.merge_with_schema_evolution,
+            not_matched_by_source_action: warehouse.not_matched_by_source_action,
+            not_matched_by_source_condition: warehouse.not_matched_by_source_condition,
+            merge_actions_explicit: warehouse.merge_actions_explicit,
+            not_matched_condition: warehouse.not_matched_condition,
+            source_alias: warehouse.source_alias,
+            target_alias: warehouse.target_alias,
+            skip_matched_step: warehouse.skip_matched_step,
+            skip_not_matched_step: warehouse.skip_not_matched_step,
+            skip_optimize: warehouse.skip_optimize,
+            storage_serialization_policy: warehouse.storage_serialization_policy,
+            target_file_size: warehouse.target_file_size,
+            as_columnstore: warehouse.as_columnstore,
+            table_type: warehouse.table_type,
+            indexes: warehouse.indexes,
+            unlogged: warehouse.unlogged,
+            schedule: warehouse.schedule,
+            row_filter: warehouse.row_filter,
+            incremental_apply_config_changes: warehouse.incremental_apply_config_changes,
+            persist_constraints: warehouse.persist_constraints,
+            use_materialization_v2: warehouse.use_materialization_v2,
+            dynamic_table_create_or_alter: warehouse.dynamic_table_create_or_alter,
+            use_safer_relation_operations: warehouse.use_safer_relation_operations,
+            view_update_via_alter: warehouse.view_update_via_alter,
+            unique_tmp_table_suffix: warehouse.unique_tmp_table_suffix,
+            primary_key: warehouse.primary_key,
+            category: warehouse.category,
             sync: config.sync,
-            engine: config.__warehouse_specific_config__.engine,
-            order_by: config.__warehouse_specific_config__.order_by,
-            ttl: config.__warehouse_specific_config__.ttl,
-            settings: config.__warehouse_specific_config__.settings,
-            query_settings: config.__warehouse_specific_config__.query_settings,
-            projections: config.__warehouse_specific_config__.projections,
-            sharding_key: config.__warehouse_specific_config__.sharding_key,
-            disable_on_cluster: config.__warehouse_specific_config__.disable_on_cluster,
-            inserts_only: config.__warehouse_specific_config__.inserts_only,
-            connection_overrides: config.__warehouse_specific_config__.connection_overrides,
-            fields: config.__warehouse_specific_config__.fields,
-            source_type: config.__warehouse_specific_config__.source_type,
-            url: config.__warehouse_specific_config__.url,
-            format: config.__warehouse_specific_config__.format,
-            layout: config.__warehouse_specific_config__.layout,
-            lifetime: config.__warehouse_specific_config__.lifetime,
-            range: config.__warehouse_specific_config__.range,
-            table: config.__warehouse_specific_config__.table,
-            update_field: config.__warehouse_specific_config__.update_field,
-            update_lag: config.__warehouse_specific_config__.update_lag,
-            definer: config.__warehouse_specific_config__.definer,
-            sql_security: config.__warehouse_specific_config__.sql_security,
-            refreshable: config.__warehouse_specific_config__.refreshable,
-            catchup: config.__warehouse_specific_config__.catchup,
-            mv_on_schema_change: config.__warehouse_specific_config__.mv_on_schema_change,
-            repopulate_from_mvs_on_full_refresh: config
-                .__warehouse_specific_config__
-                .repopulate_from_mvs_on_full_refresh,
+            engine: warehouse.engine,
+            order_by: warehouse.order_by,
+            ttl: warehouse.ttl,
+            settings: warehouse.settings,
+            query_settings: warehouse.query_settings,
+            projections: warehouse.projections,
+            sharding_key: warehouse.sharding_key,
+            disable_on_cluster: warehouse.disable_on_cluster,
+            inserts_only: warehouse.inserts_only,
+            connection_overrides: warehouse.connection_overrides,
+            fields: warehouse.fields,
+            source_type: warehouse.source_type,
+            url: warehouse.url,
+            format: warehouse.format,
+            layout: warehouse.layout,
+            lifetime: warehouse.lifetime,
+            range: warehouse.range,
+            table: warehouse.table,
+            update_field: warehouse.update_field,
+            update_lag: warehouse.update_lag,
+            definer: warehouse.definer,
+            sql_security: warehouse.sql_security,
+            refreshable: warehouse.refreshable,
+            catchup: warehouse.catchup,
+            mv_on_schema_change: warehouse.mv_on_schema_change,
+            repopulate_from_mvs_on_full_refresh: warehouse.repopulate_from_mvs_on_full_refresh,
             __additional_properties__: BTreeMap::new(),
         }
+    }
 }
 
 impl ResolvableConfig<ModelConfig> for ModelConfig {

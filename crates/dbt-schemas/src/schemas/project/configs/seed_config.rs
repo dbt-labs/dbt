@@ -37,9 +37,8 @@ use crate::schemas::serde::PartitionsConfig;
 use crate::schemas::serde::StringOrArrayOfStrings;
 use crate::schemas::serde::bool_or_string_bool;
 use crate::schemas::serde::{
-    IndexesConfig, PrimaryKeyConfig, StringOrInteger, column_types_map,
-    event_time_or_map_to_string, f64_or_string_f64, hours_to_expiration_or_string_omissible,
-    u64_or_string_u64,
+    IndexesConfig, StringOrInteger, column_types_map, event_time_or_map_to_string,
+    f64_or_string_f64, hours_to_expiration_or_string_omissible, u64_or_string_u64,
 };
 use dbt_common::serde_utils::Omissible;
 use dbt_proc_macros::DefaultTo;
@@ -499,12 +498,7 @@ pub struct SeedConfig {
 
 impl From<ProjectSeedConfig> for SeedConfig {
     fn from(config: ProjectSeedConfig) -> Self {
-        seed_config_from_project(config)
-    }
-}
-
-fn seed_config_from_project(config: ProjectSeedConfig) -> SeedConfig {
-    SeedConfig {
+        Self {
             column_types: config.column_types,
             database: config.database,
             schema: config.schema,
@@ -531,16 +525,10 @@ fn seed_config_from_project(config: ProjectSeedConfig) -> SeedConfig {
             quoting: config.quoting,
             materialized: Some(DbtMaterialization::Seed),
             __warehouse_specific_config__: WarehouseSpecificNodeConfig {
-                description: None, // Only for BigQuery models
                 adapter_properties: config.adapter_properties,
                 external_volume: config.external_volume,
                 base_location_root: config.base_location_root,
                 base_location_subpath: config.base_location_subpath,
-                change_tracking: None,
-                data_retention_time_in_days: None,
-                max_data_extension_time_in_days: None,
-                storage_serialization_policy: None,
-                target_file_size: None,
                 target_lag: config.target_lag,
                 snowflake_initialization_warehouse: config.snowflake_initialization_warehouse,
                 immutable_where: config.immutable_where,
@@ -559,15 +547,7 @@ fn seed_config_from_project(config: ProjectSeedConfig) -> SeedConfig {
                 copy_tags: config.copy_tags,
                 secure: config.secure,
                 transient: config.transient,
-                iceberg_version: None,
-
                 partition_by: config.partition_by,
-
-                partition_by_config: None,
-
-                distribute_by_config: None,
-
-                primary_key_config: None,
                 cluster_by: config.cluster_by,
                 hours_to_expiration: config.hours_to_expiration,
                 job_execution_timeout_seconds: config.job_execution_timeout_seconds,
@@ -583,25 +563,14 @@ fn seed_config_from_project(config: ProjectSeedConfig) -> SeedConfig {
                 refresh_interval_minutes: config.refresh_interval_minutes,
                 resource_tags: config.resource_tags,
                 max_staleness: config.max_staleness,
-                jar_file_uri: None,
-                timeout: None,
-                batch_id: None,
-                dataproc_cluster_name: None,
-                notebook_template_id: None,
-                enable_list_inference: None,
-                intermediate_format: None,
-                storage_uri: None,
                 enable_change_history: config.enable_change_history,
                 file_format: config.file_format,
                 catalog_name: config.catalog_name,
                 location_root: config.location_root,
-                use_uniform: None,
                 tblproperties: config.tblproperties,
                 include_full_name_in_path: config.include_full_name_in_path,
                 liquid_clustered_by: config.liquid_clustered_by,
                 auto_liquid_cluster: config.auto_liquid_cluster,
-                zorder: None,
-                skip_optimize: None,
                 clustered_by: config.clustered_by,
                 buckets: config.buckets,
                 catalog: config.catalog,
@@ -618,62 +587,21 @@ fn seed_config_from_project(config: ProjectSeedConfig) -> SeedConfig {
                 merge_with_schema_evolution: config.merge_with_schema_evolution,
                 skip_matched_step: config.skip_matched_step,
                 skip_not_matched_step: config.skip_not_matched_step,
-                unique_tmp_table_suffix: None,
                 schedule: config.schedule,
-                row_filter: None,
-                incremental_apply_config_changes: None,
-                persist_constraints: None,
-                use_materialization_v2: None,
-                dynamic_table_create_or_alter: None,
-                use_safer_relation_operations: None,
-                view_update_via_alter: None,
-
                 auto_refresh: config.auto_refresh,
                 backup: config.backup,
                 bind: config.bind,
                 dist: config.dist,
                 sort: config.sort,
                 sort_type: config.sort_type,
-
                 as_columnstore: config.as_columnstore,
-
                 table_type: config.table_type,
-
                 indexes: config.indexes,
                 unlogged: config.unlogged,
-
-                // seed is unsupported for Salesforce yet
-                primary_key: PrimaryKeyConfig::default(),
-                category: None,
-
-                engine: None,
-                order_by: None,
-                ttl: None,
-                settings: None,
-                query_settings: None,
-                projections: None,
-                sharding_key: None,
-                disable_on_cluster: None,
-                inserts_only: None,
-                connection_overrides: None,
-                fields: None,
-                source_type: None,
-                url: None,
-                format: None,
-                layout: None,
-                lifetime: None,
-                range: None,
-                table: None,
-                update_field: None,
-                update_lag: None,
-                definer: None,
-                sql_security: None,
-                refreshable: None,
-                catchup: None,
-                mv_on_schema_change: None,
-                repopulate_from_mvs_on_full_refresh: None,
+                ..Default::default()
             },
         }
+    }
 }
 
 impl From<SeedConfig> for ProjectSeedConfig {

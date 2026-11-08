@@ -608,13 +608,6 @@ pub fn same_warehouse_config(
     self_wh: &WarehouseSpecificNodeConfig,
     other_wh: &WarehouseSpecificNodeConfig,
 ) -> bool {
-    warehouse_configs_match(self_wh, other_wh)
-}
-
-fn warehouse_configs_match(
-    self_wh: &WarehouseSpecificNodeConfig,
-    other_wh: &WarehouseSpecificNodeConfig,
-) -> bool {
     let partition_by_eq = self_wh.partition_by == other_wh.partition_by;
     let cluster_by_eq = self_wh.cluster_by == other_wh.cluster_by;
     let hours_to_expiration_eq = self_wh.hours_to_expiration == other_wh.hours_to_expiration;
@@ -794,10 +787,7 @@ fn warehouse_configs_match(
         && snowflake_initialization_warehouse_eq
         && refresh_warehouse_eq
         && immutable_where_eq
-        && refresh_mode_eq
-        && initialize_eq
-        && scheduler_eq
-        && dynamic_table_create_or_alter_eq
+        && snowflake_dynamic_table_sync_eq(self_wh, other_wh)
         && tmp_relation_type_eq
         && query_tag_eq
         && automatic_clustering_eq
@@ -1694,6 +1684,16 @@ fn warehouse_configs_match(
     }
 
     result
+}
+
+fn snowflake_dynamic_table_sync_eq(
+    self_wh: &WarehouseSpecificNodeConfig,
+    other_wh: &WarehouseSpecificNodeConfig,
+) -> bool {
+    self_wh.dynamic_table_create_or_alter == other_wh.dynamic_table_create_or_alter
+        && self_wh.refresh_mode == other_wh.refresh_mode
+        && self_wh.initialize == other_wh.initialize
+        && self_wh.scheduler == other_wh.scheduler
 }
 
 /// Equality for optional free-form YAML values, delegating to [`YmlValue::lenient_eq`]: a
