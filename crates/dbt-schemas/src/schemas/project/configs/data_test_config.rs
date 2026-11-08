@@ -495,7 +495,12 @@ pub struct DataTestConfig {
 
 impl From<ProjectDataTestConfig> for DataTestConfig {
     fn from(config: ProjectDataTestConfig) -> Self {
-        Self {
+        data_test_config_from_project(config)
+    }
+}
+
+fn data_test_config_from_project(config: ProjectDataTestConfig) -> DataTestConfig {
+    DataTestConfig {
             adapter: config.adapter,
             alias: config.alias,
             compute: config.compute,
@@ -665,7 +670,6 @@ impl From<ProjectDataTestConfig> for DataTestConfig {
                 repopulate_from_mvs_on_full_refresh: None,
             },
         }
-    }
 }
 
 impl From<DataTestConfig> for ProjectDataTestConfig {

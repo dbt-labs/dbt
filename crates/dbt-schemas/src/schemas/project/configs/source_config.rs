@@ -347,7 +347,12 @@ pub struct SourceConfig {
 
 impl From<ProjectSourceConfig> for SourceConfig {
     fn from(config: ProjectSourceConfig) -> Self {
-        Self {
+        source_config_from_project(config)
+    }
+}
+
+fn source_config_from_project(config: ProjectSourceConfig) -> SourceConfig {
+    SourceConfig {
             enabled: config.enabled,
             event_time: config.event_time,
             meta: config.meta,
@@ -505,7 +510,6 @@ impl From<ProjectSourceConfig> for SourceConfig {
                 repopulate_from_mvs_on_full_refresh: None,
             },
         }
-    }
 }
 
 impl From<SourceConfig> for ProjectSourceConfig {

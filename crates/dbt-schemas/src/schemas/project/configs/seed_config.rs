@@ -499,7 +499,12 @@ pub struct SeedConfig {
 
 impl From<ProjectSeedConfig> for SeedConfig {
     fn from(config: ProjectSeedConfig) -> Self {
-        Self {
+        seed_config_from_project(config)
+    }
+}
+
+fn seed_config_from_project(config: ProjectSeedConfig) -> SeedConfig {
+    SeedConfig {
             column_types: config.column_types,
             database: config.database,
             schema: config.schema,
@@ -669,7 +674,6 @@ impl From<ProjectSeedConfig> for SeedConfig {
                 repopulate_from_mvs_on_full_refresh: None,
             },
         }
-    }
 }
 
 impl From<SeedConfig> for ProjectSeedConfig {

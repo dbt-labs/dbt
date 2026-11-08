@@ -702,6 +702,12 @@ impl TypedRecursiveConfig for ProjectModelConfig {
     }
 
     fn has_set_fields(&self) -> bool {
+        self.has_any_set_field()
+    }
+}
+
+impl ProjectModelConfig {
+    fn has_any_set_field(&self) -> bool {
         self.access.is_some()
             || self.adapter_properties.is_some()
             || self.alias.is_some()
@@ -999,7 +1005,12 @@ pub struct ModelConfig {
 
 impl From<ProjectModelConfig> for ModelConfig {
     fn from(config: ProjectModelConfig) -> Self {
-        Self {
+        model_config_from_project(config)
+    }
+}
+
+fn model_config_from_project(config: ProjectModelConfig) -> ModelConfig {
+    ModelConfig {
             access: config.access,
             alias: config.alias,
             batch_size: config.batch_size,
@@ -1210,12 +1221,16 @@ impl From<ProjectModelConfig> for ModelConfig {
             meta_keys_used: None,
             meta_keys_defaults: None,
         }
-    }
 }
 
 impl From<ModelConfig> for ProjectModelConfig {
     fn from(config: ModelConfig) -> Self {
-        Self {
+        project_model_config_from_model(config)
+    }
+}
+
+fn project_model_config_from_model(config: ModelConfig) -> ProjectModelConfig {
+    ProjectModelConfig {
             access: config.access,
             alias: config.alias,
             auto_refresh: config.__warehouse_specific_config__.auto_refresh,
@@ -1444,7 +1459,6 @@ impl From<ModelConfig> for ProjectModelConfig {
                 .repopulate_from_mvs_on_full_refresh,
             __additional_properties__: BTreeMap::new(),
         }
-    }
 }
 
 impl ResolvableConfig<ModelConfig> for ModelConfig {

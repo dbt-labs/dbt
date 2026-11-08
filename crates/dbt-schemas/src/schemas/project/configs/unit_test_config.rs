@@ -396,7 +396,12 @@ pub struct UnitTestConfig {
 
 impl From<ProjectUnitTestConfig> for UnitTestConfig {
     fn from(config: ProjectUnitTestConfig) -> Self {
-        Self {
+        unit_test_config_from_project(config)
+    }
+}
+
+fn unit_test_config_from_project(config: ProjectUnitTestConfig) -> UnitTestConfig {
+    UnitTestConfig {
             enabled: config.enabled,
             compute: config.compute,
             static_analysis: config.static_analysis,
@@ -546,7 +551,6 @@ impl From<ProjectUnitTestConfig> for UnitTestConfig {
                 repopulate_from_mvs_on_full_refresh: None,
             },
         }
-    }
 }
 
 impl From<UnitTestConfig> for ProjectUnitTestConfig {

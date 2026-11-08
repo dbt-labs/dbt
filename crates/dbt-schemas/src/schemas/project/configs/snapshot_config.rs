@@ -723,7 +723,12 @@ impl SnapshotMetaColumnNames {
 
 impl From<ProjectSnapshotConfig> for SnapshotConfig {
     fn from(config: ProjectSnapshotConfig) -> Self {
-        Self {
+        snapshot_config_from_project(config)
+    }
+}
+
+fn snapshot_config_from_project(config: ProjectSnapshotConfig) -> SnapshotConfig {
+    SnapshotConfig {
             database: config.database,
             schema: config.schema,
             alias: config.alias,
@@ -903,7 +908,6 @@ impl From<ProjectSnapshotConfig> for SnapshotConfig {
                 repopulate_from_mvs_on_full_refresh: None,
             },
         }
-    }
 }
 
 impl From<SnapshotConfig> for ProjectSnapshotConfig {

@@ -608,6 +608,13 @@ pub fn same_warehouse_config(
     self_wh: &WarehouseSpecificNodeConfig,
     other_wh: &WarehouseSpecificNodeConfig,
 ) -> bool {
+    warehouse_configs_match(self_wh, other_wh)
+}
+
+fn warehouse_configs_match(
+    self_wh: &WarehouseSpecificNodeConfig,
+    other_wh: &WarehouseSpecificNodeConfig,
+) -> bool {
     let partition_by_eq = self_wh.partition_by == other_wh.partition_by;
     let cluster_by_eq = self_wh.cluster_by == other_wh.cluster_by;
     let hours_to_expiration_eq = self_wh.hours_to_expiration == other_wh.hours_to_expiration;
