@@ -2,6 +2,7 @@ import os
 from functools import partial
 from typing import Callable, List
 
+from dbt.exceptions import DbtRuntimeError
 from dbt.tracking import track_behavior_change_warn
 from dbt_common.events.base_types import EventLevel, EventMsg
 from dbt_common.events.event_manager_client import (
@@ -67,7 +68,6 @@ def _logfile_filter(log_cache_events: bool, line_format: LineFormat, msg: EventM
 
 def setup_event_logger(flags, callbacks: List[Callable[[EventMsg], None]] = []) -> None:
     cleanup_event_logger()
-    make_log_dir_if_missing(flags.LOG_PATH)
     event_manager = get_event_manager()
     event_manager.callbacks = callbacks.copy()
     add_callback_to_manager(track_behavior_change_warn)
@@ -93,6 +93,16 @@ def setup_event_logger(flags, callbacks: List[Callable[[EventMsg], None]] = []) 
         add_logger_to_manager(console_config)
 
     if flags.LOG_LEVEL_FILE != "none":
+        # Create the log directory only once the console logger is set up, so that a
+        # failure here is reported to the user instead of exiting without any output.
+        try:
+            make_log_dir_if_missing(flags.LOG_PATH)
+        except OSError as exc:
+            raise DbtRuntimeError(
+                f"Could not create the log directory '{flags.LOG_PATH}': {exc}. "
+                "Use --log-path (or DBT_LOG_PATH) to point dbt at a writable directory."
+            ) from exc
+
         # create and add the file logger to the event manager
         log_file = os.path.join(flags.LOG_PATH, "dbt.log")
         log_file_format = _line_format_from_str(flags.LOG_FORMAT_FILE, LineFormat.DebugText)
