@@ -33,7 +33,7 @@ on:
         type: choice
         options:
           - "ubuntu-latest"
-          - "macos-14"
+          - "macos-15"
           - "windows-latest"
       num_runs_per_batch:
         description: "Max number of times to run the test per batch.  We always run 10 batches."

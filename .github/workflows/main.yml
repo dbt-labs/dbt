@@ -146,7 +146,7 @@ jobs:
       - name: generate include
         id: generate-include
         run: |
-          INCLUDE=('"python-version":"3.11","os":"windows-latest"' '"python-version":"3.11","os":"macos-14"' )
+          INCLUDE=('"python-version":"3.11","os":"windows-latest"' '"python-version":"3.11","os":"macos-15"' )
           INCLUDE_GROUPS="["
           for include in ${INCLUDE[@]}; do
               for group in $(seq 1 ${{ env.PYTHON_INTEGRATION_TEST_WORKERS }}); do
