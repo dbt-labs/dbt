@@ -91,7 +91,10 @@ jobs:
           python-version: "${{ inputs.python_version }}"
 
       - name: "Install hatch"
-        uses: pypa/hatch@257e27e51a6a5616ed08a39a408a21c35c9931bc # pypa/hatch@install
+        run: |
+          # From PyPI: pypa/hatch@install curls a GitHub release asset with no retry,
+          # and has been failing intermittently with "gzip: stdin: not in gzip format".
+          python -m pip install hatch==1.18.2
 
       - name: "Setup Dev Environment"
         run: |
