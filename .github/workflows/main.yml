@@ -146,6 +146,8 @@ jobs:
       - name: generate include
         id: generate-include
         run: |
+          # macOS is pinned to macos-15, not macos-latest: GitHub retired macos-14 (2026-11-02) and
+          # macos-latest has moved to a newer image, so a fixed label keeps the image from changing under CI.
           INCLUDE=('"python-version":"3.11","os":"windows-latest"' '"python-version":"3.11","os":"macos-15"' )
           INCLUDE_GROUPS="["
           for include in ${INCLUDE[@]}; do

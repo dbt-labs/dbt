@@ -33,6 +33,7 @@ on:
         type: choice
         options:
           - "ubuntu-latest"
+          # Pinned, not macos-latest: GitHub retired macos-14, and a fixed label keeps the image stable.
           - "macos-15"
           - "windows-latest"
       num_runs_per_batch:
