@@ -235,6 +235,7 @@ pub(crate) mod merge_object;
 pub(crate) mod namespace_object;
 mod object;
 pub(crate) mod ops;
+mod overlay_map;
 mod serialize;
 #[cfg(feature = "key_interning")]
 mod string_interning;
@@ -242,6 +243,7 @@ mod string_interning;
 #[cfg(feature = "deserialization")]
 pub use self::deserialize::ViaDeserialize;
 use self::mutable_map::MutableMap;
+pub use self::overlay_map::OverlayMap;
 
 // We use in-band signalling to roundtrip some internal values.  This is
 // not ideal but unfortunately there is no better system in serde today.

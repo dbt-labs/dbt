@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::future::Future;
 use std::path::Path;
 use std::pin::Pin;
@@ -230,11 +230,8 @@ impl AggregatedTestRunRemoteTask {
         )
     }
 
-    fn build_base_context(
-        &self,
-        ctx: &TaskRunnerCtx,
-    ) -> FsResult<BTreeMap<String, MinijinjaValue>> {
-        let mut base_context = ctx.inner.base_context.clone();
+    fn build_base_context(&self, ctx: &TaskRunnerCtx) -> FsResult<MinijinjaValue> {
+        let mut base_context = ctx.base_context_overlay();
         base_context.insert(
             TARGET_PACKAGE_NAME.to_string(),
             MinijinjaValue::from(self.group.aggregated_test.common().package_name.clone()),
@@ -251,7 +248,7 @@ impl AggregatedTestRunRemoteTask {
             &mut base_context,
             ctx.adapter_type_for(self.group.aggregated_test.as_ref()),
         )?;
-        Ok(base_context)
+        Ok(MinijinjaValue::from(base_context))
     }
 
     async fn receive_sql_instruction(&self) -> FsResult<SqlInstruction> {
@@ -616,7 +613,7 @@ fn execute_test_remote_inner(
     test: &DbtTest,
     ctx: &TaskRunnerCtx,
     sql_instruction: &SqlInstruction,
-    base_context: &BTreeMap<String, MinijinjaValue>,
+    base_context: &MinijinjaValue,
 ) -> FsResult<TestReportedResult> {
     // Any render/execution error (including database errors) surfaces as a
     // hard error, independent of severity — matching dbt Core and the sidecar

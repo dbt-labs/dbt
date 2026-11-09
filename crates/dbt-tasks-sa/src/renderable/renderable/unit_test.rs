@@ -29,7 +29,6 @@ use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::phases::compile::DependencyValidationConfig;
 use dbt_jinja_utils::phases::run::build_run_node_context;
 use dbt_jinja_utils::serde::single_expression_body;
-use dbt_jinja_utils::utils::add_task_context;
 use dbt_jinja_utils::utils::macro_spans_to_macro_span_vec;
 use dbt_jinja_utils::utils::render_sql;
 use dbt_jinja_utils::{ConfiguredVar, env_var};
@@ -59,7 +58,7 @@ use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use csv::ReaderBuilder;
 use itertools::Itertools;
 use minijinja::listener::RenderingEventListener;
-use minijinja::value::Object;
+use minijinja::value::{Object, OverlayMap};
 use minijinja::{CodeLocation, State, Value, Value as MinijinjaValue};
 use regex::Regex;
 use sqlparser::tokenizer::{Token, Tokenizer, Whitespace};
@@ -1071,7 +1070,7 @@ fn infer_unit_test_expected_schema(
         &unit_test.deprecated_config,
         unit_test.node_adapter(),
         None,
-        &ctx.inner.base_context,
+        &Value::from_dyn_object(Arc::clone(&ctx.inner.base_context)),
         &ctx.inner.arg.io,
         TelemetryExecutionPhase::Render,
         None,
@@ -1326,7 +1325,7 @@ fn infer_schema_from_compiled_sql(
     ctx: &TaskRunnerCtx,
     unit_test: &DbtUnitTest,
     raw_model_sql: &str,
-    compile_context: &BTreeMap<String, Value>,
+    compile_context: &OverlayMap,
     original_file_path: &Path,
     subqueries: &[(String, String)],
     fixture_shape_subqueries: &[(String, String)],
@@ -1359,7 +1358,7 @@ fn infer_schema_from_compiled_sql(
 /// resulting `Value` directly.
 fn bind_run_started_at_override(
     macro_value: &YmlValue,
-    compile_context: &BTreeMap<String, Value>,
+    compile_context: &OverlayMap,
     env: &JinjaEnv,
 ) -> Value {
     macro_value
@@ -1376,7 +1375,7 @@ fn bind_run_started_at_override(
 
 fn bind_override_macros(
     macros: &BTreeMap<String, YmlValue>,
-    compile_context: &mut BTreeMap<String, Value>,
+    compile_context: &mut OverlayMap,
     env: &JinjaEnv,
 ) {
     for (macro_name, macro_value) in macros.iter() {
@@ -1393,14 +1392,11 @@ fn bind_override_macros(
         // If a package already exists, merge the override in
         if let Some((pkg, attr)) = macro_name.split_once(".") {
             let object_stub = Value::from(BTreeMap::from([(attr, fn_stub)]));
-            let new_pkg = if let Some(og) = compile_context.remove(pkg) {
+            compile_context.update(pkg, |og| match og {
                 // Check `object_stub` first
-                Value::from_object(ObjectOverlay(vec![object_stub, og]))
-            } else {
-                object_stub
-            };
-
-            compile_context.insert(pkg.to_string(), new_pkg);
+                Some(og) => Value::from_object(ObjectOverlay(vec![object_stub, og])),
+                None => object_stub,
+            });
         } else {
             compile_context.insert(macro_name.to_string(), fn_stub);
         }
@@ -1409,7 +1405,7 @@ fn bind_override_macros(
 
 /// Apply overrides to the compile context for unit tests
 pub fn apply_unit_test_overrides(
-    compile_context: &mut BTreeMap<String, MinijinjaValue>,
+    compile_context: &mut OverlayMap,
     overrides: &UnitTestOverrides,
     ctx: &TaskRunnerCtx,
 ) -> FsResult<()> {
@@ -1693,8 +1689,7 @@ fn discover_given_relations(
         .as_any()
         .downcast_ref::<DbtUnitTest>()
         .expect("run_unit_test_render called on non-DbtUnitTest");
-    let mut base_context = ctx.inner.base_context.clone();
-    add_task_context(&mut base_context, ut.common(), &ctx.thread_id);
+    let base_context = ctx.run_base_context(ut)?;
 
     let (compile_context, _config_map) = ctx.build_compile_node_context(
         node.clone(),
@@ -2071,9 +2066,7 @@ fn render_unit_test(
         given_relation_ids,
         ..
     } = given_relations;
-    let mut base_context = ctx.inner.base_context.clone();
-
-    add_task_context(&mut base_context, node.common(), &ctx.thread_id);
+    let base_context = ctx.run_base_context(node)?;
 
     // Compiled path lives at target/compiled/<package>/<dir-of-yaml>/<unit_test_name>.sql.
     let absolute_path_unit_test = node.get_node_path_abs(
@@ -2370,9 +2363,8 @@ fn render_unit_test(
             && !schema_policy.preserve_recorded_probe_sql)
             .then(|| {
                 compile_context
-                    .get("this")
-                    .and_then(Value::as_object)
-                    .and_then(|object| object.downcast_ref::<RelationObject>())
+                    .get("this")?
+                    .downcast_object_ref::<RelationObject>()
                     .map(|relation| relation.render_self_as_str())
             })
             .flatten(),
@@ -5040,7 +5032,7 @@ mod tests {
         let mut macros = BTreeMap::new();
         macros.insert("run_started_at".to_string(), value);
 
-        let mut compile_context: BTreeMap<String, Value> = BTreeMap::new();
+        let mut compile_context = OverlayMap::new(Value::from(BTreeMap::<String, Value>::new()));
         bind_override_macros(&macros, &mut compile_context, &env);
 
         env.render_str(template, &compile_context, &[])
@@ -5145,10 +5137,10 @@ mod tests {
         let env = JinjaEnv::new(raw_env);
 
         let macros = BTreeMap::from([(macro_name.to_string(), value)]);
-        let mut compile_context = BTreeMap::from([(
+        let mut compile_context = OverlayMap::new(Value::from(BTreeMap::from([(
             "my_project".to_string(),
             Value::from_object(PackageNamespace("my_project")),
-        )]);
+        )])));
         bind_override_macros(&macros, &mut compile_context, &env);
 
         env.render_str("{{ my_project.pick_label() }}", &compile_context, &[])

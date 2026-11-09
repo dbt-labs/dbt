@@ -881,7 +881,7 @@ fn hooks_are_configured(hooks: &Option<dbt_schemas::schemas::common::Hooks>) -> 
 fn execute_hook_node_blocking(
     hook_node: &RunCacheReuseHookNode,
     ctx: &TaskRunnerCtx,
-    base_context: &std::collections::BTreeMap<String, minijinja::Value>,
+    base_context: &minijinja::Value,
     sql: Option<&str>,
     phase: RunCacheReuseHookPhase,
 ) -> FsResult<()> {

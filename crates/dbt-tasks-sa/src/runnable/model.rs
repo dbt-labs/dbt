@@ -27,6 +27,7 @@ use dbt_telemetry::{
 };
 
 use minijinja::Value;
+use minijinja::value::OverlayMap;
 use tracing::debug;
 
 use dbt_tasks_core::task::TaskResult;
@@ -49,7 +50,7 @@ pub struct MicrobatchExecUnit {
     pub batch_ctx: BatchContext,
     pub raw_sql: Arc<String>,
     pub node: Arc<dyn InternalDbtNodeAttributes>,
-    pub run_node_context: Arc<std::collections::BTreeMap<String, Value>>,
+    pub run_node_context: Arc<OverlayMap>,
     pub event_time_mapping: Arc<std::collections::BTreeMap<String, String>>,
     pub is_incremental: bool,
 }

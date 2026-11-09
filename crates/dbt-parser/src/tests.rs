@@ -452,7 +452,7 @@ mod tests {
         let rendered = render_sql(
             sql,
             &env,
-            &BTreeMap::new(),
+            &BTreeMap::<String, Value>::new(),
             &DefaultRenderingEventListenerFactory::default(),
             &PathBuf::from("test"),
         )
@@ -474,7 +474,7 @@ mod tests {
         let rendered = render_sql(
             sql,
             &env,
-            &BTreeMap::new(),
+            &BTreeMap::<String, Value>::new(),
             &DefaultRenderingEventListenerFactory::default(),
             &PathBuf::from("test"),
         )
@@ -497,7 +497,7 @@ mod tests {
         let rendered = render_sql(
             sql,
             &env,
-            &BTreeMap::new(),
+            &BTreeMap::<String, Value>::new(),
             &DefaultRenderingEventListenerFactory::default(),
             &PathBuf::from("test"),
         )
@@ -520,7 +520,7 @@ mod tests {
         let rendered = render_sql(
             sql,
             &env,
-            &BTreeMap::new(),
+            &BTreeMap::<String, Value>::new(),
             &DefaultRenderingEventListenerFactory::default(),
             &PathBuf::from("test"),
         )
@@ -546,7 +546,7 @@ mod tests {
         let rendered = render_sql(
             sql,
             &env,
-            &BTreeMap::new(),
+            &BTreeMap::<String, Value>::new(),
             &DefaultRenderingEventListenerFactory::default(),
             &PathBuf::from("test"),
         )
@@ -569,7 +569,7 @@ mod tests {
         let rendered = render_sql(
             sql,
             &env,
-            &BTreeMap::new(),
+            &BTreeMap::<String, Value>::new(),
             &DefaultRenderingEventListenerFactory::default(),
             &PathBuf::from("test"),
         )
@@ -593,7 +593,7 @@ mod tests {
         let rendered = render_sql(
             sql,
             &env,
-            &BTreeMap::new(),
+            &BTreeMap::<String, Value>::new(),
             &DefaultRenderingEventListenerFactory::default(),
             &PathBuf::from("test"),
         )
@@ -618,7 +618,7 @@ mod tests {
         let result = render_sql(
             sql_error,
             &env,
-            &BTreeMap::new(),
+            &BTreeMap::<String, Value>::new(),
             &DefaultRenderingEventListenerFactory::default(),
             &PathBuf::from("test"),
         );
@@ -638,7 +638,7 @@ mod tests {
         let rendered = render_sql(
             sql,
             &env,
-            &BTreeMap::new(),
+            &BTreeMap::<String, Value>::new(),
             &DefaultRenderingEventListenerFactory::default(),
             &PathBuf::from("test"),
         )
@@ -1065,7 +1065,7 @@ mod tests {
         let rendered = render_sql(
             sql,
             &env,
-            &BTreeMap::new(),
+            &BTreeMap::<String, Value>::new(),
             &DefaultRenderingEventListenerFactory::default(),
             &PathBuf::from("test"),
         )
