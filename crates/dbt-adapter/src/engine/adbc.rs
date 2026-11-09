@@ -21,9 +21,9 @@ use parking_lot::RwLock;
 use crate::cache::RelationCache;
 use crate::engine::query_comment::QueryCommentConfig;
 use crate::errors::{AdapterError, adbc_error_to_adapter_error};
-use crate::metadata::clickhouse::ClickHouseCapabilities;
 use crate::sql_types::TypeOps;
 use crate::stmt_splitter::StmtSplitter;
+use dbt_adapter_engine::clickhouse::ClickHouseCapabilities;
 
 use super::adapter_engine::*;
 use super::retry::{ConnectionRetryPolicy, QueryRetryPolicy};
@@ -253,7 +253,10 @@ impl AdbcEngine {
                         let mut conn = database
                             .new_connection()
                             .map_err(adbc_error_to_adapter_error)?;
-                        super::clickhouse::ensure_database(conn.as_mut(), config)?
+                        dbt_adapter_engine::clickhouse::bootstrap::ensure_database(
+                            conn.as_mut(),
+                            config,
+                        )?
                     }
                     _ => {}
                 }
@@ -387,7 +390,7 @@ impl AdbcEngine {
         } else {
             AdapterType::DuckDB.as_ref()
         };
-        super::duckdb_attach::compose_catalog_attach_stmts(&view, platform)
+        dbt_adapter_engine::duckdb::attach::compose_catalog_attach_stmts(&view, platform)
     }
 }
 
@@ -596,7 +599,8 @@ impl AdapterEngine for AdbcEngine {
             // dbclient.py `_set_client_database` parity; ensure_database
             // guarantees it exists.
             if self.adapter_type == AdapterType::ClickHouse
-                && let Some(schema) = super::clickhouse::target_schema(config)
+                && let Some(schema) =
+                    dbt_adapter_engine::clickhouse::bootstrap::target_schema(config)
             {
                 builder.with_option(
                     adbc_core::options::OptionConnection::CurrentSchema,

@@ -10,7 +10,7 @@ use std::sync::Arc;
 use dbt_agate::AgateTable;
 use minijinja::Value;
 
-use crate::record_batch::RecordBatchExt;
+use dbt_adapter_engine::record_batch::RecordBatchExt;
 
 /// Deserialization target for macros snowflake__describe_dynamic_table and
 /// snowflake__describe_interactive_table — both return the same shape, just under different

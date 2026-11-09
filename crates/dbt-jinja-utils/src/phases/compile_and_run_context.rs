@@ -10,6 +10,7 @@ use crate::functions::build_flat_graph;
 use crate::invocation_graph::invocation_graph;
 use crate::jinja_environment::{JinjaEnv, adapter_api_value};
 use crate::phases::compile::DependencyValidationConfig;
+use crate::phases::parse::ParseAdapterScopes;
 use dbt_adapter::load_store::ResultStore;
 use dbt_adapter::relation::RelationObject;
 use dbt_adapter::{Adapter, AdapterStore, AdapterType};
@@ -38,23 +39,30 @@ pub fn configure_compile_and_run_jinja_environment(env: &mut JinjaEnv, adapter: 
     env.set_undefined_behavior(UndefinedBehavior::Lenient);
 }
 
-/// Shadows the env's `adapter`, `api` and `dialect` globals in `ctx` with
-/// `adapter_type`'s. Inserts nothing for the store's default adapter.
+/// Shadows the env's `adapter`, `api`, `dialect`, `target` and `env` globals in `ctx`
+/// with `adapter_type`'s. Inserts nothing for the store's default adapter.
 pub fn insert_adapter_overlay(
-    ctx: &mut BTreeMap<String, MinijinjaValue>,
+    ctx: &mut impl Extend<(String, MinijinjaValue)>,
     adapter_type: AdapterType,
     store: &AdapterStore,
+    scopes: &ParseAdapterScopes,
 ) -> FsResult<()> {
     if adapter_type == store.default_adapter_type() {
         return Ok(());
     }
     let adapter = store.get(adapter_type)?;
-    ctx.insert("api".to_string(), adapter_api_value(&adapter));
-    ctx.insert("adapter".to_string(), adapter.as_value());
-    ctx.insert(
-        DIALECT.to_string(),
-        MinijinjaValue::from(adapter_type.as_ref()),
-    );
+    let scope = scopes.declared(adapter_type)?;
+    ctx.extend([
+        ("api".to_string(), adapter_api_value(&adapter)),
+        ("adapter".to_string(), adapter.as_value()),
+        (
+            DIALECT.to_string(),
+            MinijinjaValue::from(adapter_type.as_ref()),
+        ),
+    ]);
+    if let Some(scope) = scope {
+        scope.insert_target(ctx);
+    }
     Ok(())
 }
 
@@ -1155,11 +1163,48 @@ mod tests {
         .expect("valid store")
     }
 
+    /// The scopes of a Snowflake-default target that also declares BigQuery.
+    fn snowflake_default_scopes() -> ParseAdapterScopes {
+        use dbt_schemas::schemas::profiles::{DbConfig, SnowflakeDbConfig};
+        use dbt_schemas::state::{DbtProfile, ProfileAdapter};
+        let snowflake: DbConfig = SnowflakeDbConfig {
+            account: Some("acct".to_string()),
+            database: Some("ANALYTICS".to_string()),
+            schema: Some("DBT_X".to_string()),
+            ..Default::default()
+        }
+        .into();
+        let bigquery: DbConfig =
+            dbt_yaml::from_str("type: bigquery\nmethod: oauth\nproject: bq-proj\ndataset: bq_ds\n")
+                .expect("bigquery config");
+        ParseAdapterScopes::from_profile(&DbtProfile {
+            profile: "p".to_string(),
+            target: "dev".to_string(),
+            defer_to_target: None,
+            allow_clones: true,
+            adapters: [snowflake, bigquery]
+                .into_iter()
+                .map(|config| (config.adapter_type(), ProfileAdapter::single(config)))
+                .collect(),
+            default_adapter: AdapterType::Snowflake,
+            database: "ANALYTICS".to_string(),
+            schema: "DBT_X".to_string(),
+            relative_profile_path: "profiles.yml".into(),
+            threads: None,
+        })
+    }
+
     #[test]
     fn adapter_overlay_inserts_nothing_for_the_default() {
         let store = snowflake_default_store();
         let mut ctx = BTreeMap::from([("dialect".to_string(), MinijinjaValue::from("unchanged"))]);
-        insert_adapter_overlay(&mut ctx, AdapterType::Snowflake, &store).expect("default overlay");
+        insert_adapter_overlay(
+            &mut ctx,
+            AdapterType::Snowflake,
+            &store,
+            &snowflake_default_scopes(),
+        )
+        .expect("default overlay");
         assert_eq!(
             ctx.keys().map(String::as_str).collect::<Vec<_>>(),
             ["dialect"]
@@ -1171,14 +1216,31 @@ mod tests {
     }
 
     #[test]
-    fn adapter_overlay_shadows_adapter_api_and_dialect() {
+    fn adapter_overlay_shadows_adapter_api_dialect_and_target() {
         let store = snowflake_default_store();
         let mut ctx = BTreeMap::new();
-        insert_adapter_overlay(&mut ctx, AdapterType::Bigquery, &store).expect("bigquery overlay");
+        insert_adapter_overlay(
+            &mut ctx,
+            AdapterType::Bigquery,
+            &store,
+            &snowflake_default_scopes(),
+        )
+        .expect("bigquery overlay");
+        // No `database`/`schema`: node contexts already hold the node's own. `show --inline` and
+        // `register_schemas` start from the base context, so they keep the default's.
         assert_eq!(
             ctx.keys().map(String::as_str).collect::<Vec<_>>(),
-            ["adapter", "api", "dialect"]
+            ["adapter", "api", "dialect", "env", "target"]
         );
+        assert_eq!(
+            ctx["target"].get_attr("type").unwrap().as_str(),
+            Some("bigquery")
+        );
+        assert_eq!(
+            ctx["target"].get_attr("database").unwrap().as_str(),
+            Some("bq-proj")
+        );
+        assert_eq!(ctx["env"], ctx["target"]);
         let adapter = ctx["adapter"]
             .downcast_object::<Adapter>()
             .expect("adapter object");
@@ -1203,7 +1265,15 @@ mod tests {
     fn adapter_overlay_errors_for_an_undeclared_adapter() {
         let store = snowflake_default_store();
         let mut ctx = BTreeMap::new();
-        assert!(insert_adapter_overlay(&mut ctx, AdapterType::Databricks, &store).is_err());
+        assert!(
+            insert_adapter_overlay(
+                &mut ctx,
+                AdapterType::Databricks,
+                &store,
+                &snowflake_default_scopes()
+            )
+            .is_err()
+        );
         assert!(ctx.is_empty());
     }
 }

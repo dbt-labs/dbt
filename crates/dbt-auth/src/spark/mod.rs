@@ -133,10 +133,8 @@ impl<'a> SessionParamsView<'a> {
 
     fn apply(self, builder: &mut database::Builder) -> Result<(), AuthError> {
         for (key, value) in self.0 {
-            builder.with_named_option(
-                spark::SESSION_CONFIG_PREFIX.to_owned() + key,
-                yml_value_to_string(value),
-            )?;
+            let full_key = format!("{}{key}", spark::SESSION_CONFIG_PREFIX);
+            builder.with_named_option(full_key, yml_value_to_string(value).into_owned())?;
         }
         Ok(())
     }

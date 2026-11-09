@@ -15,7 +15,6 @@ use dbt_common::tracing::dbt_emit::emit_error_log_from_fs_error;
 use dbt_common::tracing::span_info::{SpanStatusRecorder, record_span_status_with_attrs};
 use dbt_dag::schedule::Schedule;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
-use dbt_jinja_utils::phases::insert_adapter_overlay;
 use dbt_jinja_utils::phases::run::reset_result_store;
 use dbt_scheduler::schedule::summarize_stats;
 use dbt_schema_store::DataStoreTrait;
@@ -260,8 +259,8 @@ impl TaskRunner {
 
     async fn register_schemas(
         &self,
+        ctx: &TaskRunnerCtx,
         schedule: &Schedule<String>,
-        base_context: BTreeMap<String, minijinja::Value>,
     ) -> FsResult<()> {
         // Walking the schedule is pure in-memory work; only the adapter calls
         // below talk to the warehouse and need the blocking pool.
@@ -273,8 +272,11 @@ impl TaskRunner {
         // One adapter at a time, so a recorded run keeps its order.
         for (adapter_type, selected_catalog_schemas) in groups {
             let adapter = self.adapter_store.get(adapter_type)?;
-            let mut group_context = base_context.clone();
-            insert_adapter_overlay(&mut group_context, adapter_type, &self.adapter_store)?;
+            // TODO: copies the base context per adapter, and `register_adapter_schemas` copies
+            // it per schema. Layer over the shared base once `new_state_with_context` takes an
+            // `OverlayMap`.
+            let mut group_context = BTreeMap::clone(&ctx.inner.base_context);
+            ctx.insert_adapter_overlay(&mut group_context, adapter_type)?;
             self.register_adapter_schemas(adapter, selected_catalog_schemas, group_context)
                 .await?;
         }
@@ -337,7 +339,6 @@ impl TaskRunner {
         mut self,
         run_task_args: Arc<RunTasksArgs>,
         schedule: Schedule<String>,
-        base_context: BTreeMap<String, minijinja::Value>,
         mut ctx: TaskRunnerCtx,
         graph: Graph<Arc<dyn Task>, ()>,
         has_dynamic_closure: bool,
@@ -347,7 +348,7 @@ impl TaskRunner {
 
         let registered_schemas = if self.should_register_schemas(run_task_args.as_ref(), &schedule)
         {
-            self.register_schemas(&schedule, base_context).await?;
+            self.register_schemas(&ctx, &schedule).await?;
             true
         } else {
             false
@@ -361,7 +362,7 @@ impl TaskRunner {
 
         // Create span for on-run-start phase if there are any hooks
         let on_run_start_span = if should_run_on_run_start_hooks(
-            run_task_args.infer_schemas_and_typeless,
+            run_task_args.infer_schemas_and_typeless || run_task_args.skip_on_run_start_hooks,
             !self.resolved_state.operations.on_run_start.is_empty(),
         ) {
             Some(create_info_span(PhaseExecuted::start_with_node_count(

@@ -514,4 +514,60 @@ mod tests {
             "{err}"
         );
     }
+
+    // Records #17394. The fix for #17394 flips this assertion.
+    #[test]
+    fn seed_load_list_column_records_type_rendering_gap() {
+        let (_database, _conn, result) =
+            load_seed("list.csv", "tags\n\"[a, b]\"\n", "tags VARCHAR[]", ",");
+        // The target type `VARCHAR[]` is read as `ARRAY`.
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains(r#"Value "ARRAY" can not be converted to a DuckDB Type"#),
+            "{err}"
+        );
+    }
+
+    // Records #17394. The fix for #17394 flips this assertion.
+    #[test]
+    fn seed_load_ubigint_column_records_type_rendering_gap() {
+        let (_database, conn, result) = load_seed(
+            "ubigint.csv",
+            "big\n18446744073709551615\n",
+            "big UBIGINT",
+            ",",
+        );
+        // The target type `UBIGINT` is read as `BIGINT`, which cannot hold the value.
+        let target = conn
+            .get_table_schema(Some("memory"), Some("main"), "raw")
+            .unwrap();
+        assert_eq!(target.field(0).data_type(), &arrow_schema::DataType::UInt64);
+        assert_eq!(
+            SqlType::from_arrow_type(AdapterType::DuckDB, target.field(0).data_type())
+                .to_string(AdapterType::DuckDB),
+            "BIGINT"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("Conversion Error: CSV Error on Line: 2"),
+            "{err}"
+        );
+    }
+
+    // Records #17394. The fix for #17394 flips this assertion.
+    #[test]
+    fn seed_load_struct_column_records_type_rendering_gap() {
+        let (_database, _conn, result) = load_seed(
+            "struct.csv",
+            "s\n\"{'a': 1, 'b': x}\"\n",
+            "s STRUCT(a BIGINT, b VARCHAR)",
+            ",",
+        );
+        // The target type is read as `(a BIGINT, b VARCHAR)`, without `STRUCT`.
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains(r#"Value "(a BIGINT, b VARCHAR)" can not be converted to a DuckDB Type"#),
+            "{err}"
+        );
+    }
 }

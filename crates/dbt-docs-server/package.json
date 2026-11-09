@@ -1,0 +1,34 @@
+{
+  "name": "dbt-docs-server",
+  "version": "0.0.0",
+  "description": "Workspace for the dbt docs v2 SPA (web) and its component library (dbt-docs-lib)",
+  "private": true,
+  "packageManager": "pnpm@10.11.1",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo watch dev --filter=dbt-docs-web",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test"
+  },
+  "devDependencies": {
+    "@typescript-eslint/parser": "^8.28.0",
+    "eslint": "^9.23.0",
+    "eslint-config-prettier": "^10.1.1",
+    "eslint-plugin-jsx-a11y": "^6.10.2",
+    "eslint-plugin-prettier": "^5.2.5",
+    "eslint-plugin-react": "^7.37.4",
+    "eslint-plugin-react-hooks": "^7.0.0",
+    "eslint-plugin-simple-import-sort": "^12.1.1",
+    "eslint-plugin-storybook": "^0.12.0",
+    "prettier": "^3.6.2",
+    "prettier-plugin-tailwindcss": "^0.5.9",
+    "tailwindcss": "^3.4.0",
+    "turbo": "^2.11.10",
+    "typescript": "5.9.2",
+    "typescript-eslint": "^8.28.0"
+  }
+}

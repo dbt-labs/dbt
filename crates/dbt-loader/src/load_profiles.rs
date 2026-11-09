@@ -405,6 +405,8 @@ mod tests {
             msg.contains("DBT_ALLOW_EXPERIMENTAL_ADAPTERS=true"),
             "expected env-var hint, got: {msg}"
         );
+        // Not experimental: loads without the env var.
+        assert!(enforce_adapter_gating(AdapterType::LakeCompute, false).is_ok());
     }
 
     #[test]

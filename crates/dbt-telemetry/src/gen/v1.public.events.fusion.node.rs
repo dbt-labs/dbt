@@ -386,8 +386,12 @@ pub struct NodeEvaluated {
     /// Optional legacy dbt core event code (e.g. "Q018") if this event has a strict mapping to a dbt core event.
     #[prost(string, optional, tag = "40")]
     pub dbt_core_event_code: ::core::option::Option<::prost::alloc::string::String>,
-    /// Number of rows affected by this node evaluation, if available.
-    /// Only set for successful outcomes where row count is known (e.g., models, seeds).
+    /// Rows affected by the node's `main` statement. Other named statements are ignored.
+    /// Set in the Run phase whenever the node recorded a `main` response, for the node types that
+    /// set `adapter_response`. This includes a test that ran and failed.
+    /// For a microbatch model: the sum across batches.
+    /// Unset when the materialization failed before recording one, when a microbatch batch failed,
+    /// and when the adapter reported no known (non-negative) count.
     #[prost(uint64, optional, tag = "41")]
     pub rows_affected: ::core::option::Option<u64>,
     /// Total time in milliseconds this node evaluation spent idle.
@@ -404,13 +408,36 @@ pub struct NodeEvaluated {
     pub state_decision_id: ::core::option::Option<::prost::alloc::string::String>,
     /// Response of the node's `main` statement, as in run_results.json minus the row count and
     /// the free-text message.
-    /// Set in the Run phase when a model, seed, snapshot or data test succeeds. For a microbatch
-    /// model: the last batch's response.
-    /// Unset for other node types (e.g. functions, unit tests), for tests that share an aggregated
-    /// query, for nodes that run outside the warehouse adapter (local or lake compute), and when
-    /// the node did not succeed.
+    /// Set in the Run phase whenever a model, seed, snapshot, function, unit test or data test
+    /// recorded a `main` response, including a test that ran and failed.
+    /// For a microbatch model: `query_id` and `code` from the last batch, `extra` metrics summed
+    /// across batches.
+    /// Unset for other node types, for tests that share an aggregated query, for nodes that run
+    /// outside the warehouse adapter (local or lake compute), when the materialization failed
+    /// before recording a response, and when a microbatch batch failed.
     #[prost(message, optional, tag = "44")]
     pub adapter_response: ::core::option::Option<NodeAdapterResponse>,
+    /// Where the node's run executed: the path actually taken. Set in the Run phase when a
+    /// regular node task (models, seeds, snapshots, tests, functions, unit tests) starts the
+    /// node, before it executes, so errored nodes carry it too. A snapshot or function that
+    /// `adapter: lakecompute` refuses reports LAKE_COMPUTE. Unset for a node skipped before it
+    /// starts (e.g. an upstream node failed), for tests run as part of a batched (aggregated)
+    /// test query, for clone and experimental-node tasks, and in other phases.
+    #[prost(enumeration = "NodeComputeMode", optional, tag = "45")]
+    #[cfg_attr(
+        any(test, feature = "test-utils"),
+        dummy(
+            expr = "Some(::fake::Fake::fake::<NodeComputeMode>(&::fake::Faker) as i32)"
+        )
+    )]
+    pub compute_mode: ::core::option::Option<i32>,
+    /// Type of the catalog that the model's `catalog_name` resolves to in catalogs.yml
+    /// (e.g. "horizon", "iceberg_rest"). Always lowercase.
+    /// Set when the Run phase span is created by a regular node task, for models only. Unset for
+    /// a node skipped when the span is created, when the model has no `catalog_name`, there is no
+    /// catalogs.yml, or the name is not found.
+    #[prost(string, optional, tag = "46")]
+    pub catalog_type: ::core::option::Option<::prost::alloc::string::String>,
     /// Node type specific details (e.g. test fail counts, cache use reasons).
     #[prost(oneof = "node_evaluated::NodeOutcomeDetail", tags = "30, 31, 32, 33, 34")]
     pub node_outcome_detail: ::core::option::Option<node_evaluated::NodeOutcomeDetail>,
@@ -572,8 +599,8 @@ pub struct NodeProcessed {
     /// whether the node was in the selection set.
     #[prost(bool, tag = "42")]
     pub in_selection: bool,
-    /// Number of rows affected by this node processing, if available.
-    /// Only set for successful outcomes where row count is known (e.g., models, seeds).
+    /// Rows affected by the node's `main` statement.
+    /// Rolled up from the Run phase `NodeEvaluated`; see its `rows_affected`.
     #[prost(uint64, optional, tag = "43")]
     pub rows_affected: ::core::option::Option<u64>,
     /// Group identifier for model level notifications
@@ -596,15 +623,67 @@ pub struct NodeProcessed {
     /// project can run nodes on more than one adapter.
     #[prost(string, optional, tag = "48")]
     pub adapter: ::core::option::Option<::prost::alloc::string::String>,
-    /// If node_type == NODE_TYPE_PLUGIN, the kind of node the plugin added
+    /// If node_type == NODE_TYPE_EXPERIMENTAL, the kind of node the experimental added
     /// (e.g. "widget").
     #[prost(string, optional, tag = "49")]
-    pub plugin_type: ::core::option::Option<::prost::alloc::string::String>,
+    pub experimental_type: ::core::option::Option<::prost::alloc::string::String>,
     /// Response of the node's `main` statement.
     /// Rolled up from the Run phase `NodeEvaluated`; see its `adapter_response`.
     /// Unset when the Run phase did not run, or recorded none.
     #[prost(message, optional, tag = "50")]
     pub adapter_response: ::core::option::Option<NodeAdapterResponse>,
+    /// Where the node's run executed. Rolled up from the Run phase `NodeEvaluated`; see its
+    /// `compute_mode` for when it is set.
+    #[prost(enumeration = "NodeComputeMode", optional, tag = "51")]
+    #[cfg_attr(
+        any(test, feature = "test-utils"),
+        dummy(
+            expr = "Some(::fake::Fake::fake::<NodeComputeMode>(&::fake::Faker) as i32)"
+        )
+    )]
+    pub compute_mode: ::core::option::Option<i32>,
+    /// Type of the catalog that the model's `catalog_name` resolves to in catalogs.yml.
+    /// Rolled up from the Run phase `NodeEvaluated`; see its `catalog_type` for when it is set.
+    #[prost(string, optional, tag = "52")]
+    pub catalog_type: ::core::option::Option<::prost::alloc::string::String>,
+    /// Incremental strategy configured on the model (e.g. "merge").
+    /// Only set for models, and only when the model sets one.
+    #[prost(string, optional, tag = "53")]
+    pub incremental_strategy: ::core::option::Option<::prost::alloc::string::String>,
+    /// Strategy configured on the snapshot (e.g. "timestamp").
+    /// Only set for snapshots, and only when the snapshot sets one.
+    #[prost(string, optional, tag = "54")]
+    pub snapshot_strategy: ::core::option::Option<::prost::alloc::string::String>,
+    /// Language the node's code is written in.
+    /// Unset when the node has no language, e.g. seeds and sources.
+    #[prost(enumeration = "NodeLanguage", optional, tag = "55")]
+    #[cfg_attr(
+        any(test, feature = "test-utils"),
+        dummy(expr = "Some(::fake::Fake::fake::<NodeLanguage>(&::fake::Faker) as i32)")
+    )]
+    pub language: ::core::option::Option<i32>,
+    /// Whether the model's contract is enforced. Only set for models;
+    /// a model without a contract is not enforced.
+    #[prost(bool, optional, tag = "56")]
+    pub contract_enforced: ::core::option::Option<bool>,
+    /// Access level of the node. Only set for models and functions.
+    #[prost(enumeration = "NodeAccess", optional, tag = "57")]
+    #[cfg_attr(
+        any(test, feature = "test-utils"),
+        dummy(expr = "Some(::fake::Fake::fake::<NodeAccess>(&::fake::Faker) as i32)")
+    )]
+    pub access: ::core::option::Option<i32>,
+    /// Whether the model has a version. Only set for models.
+    #[prost(bool, optional, tag = "58")]
+    pub versioned: ::core::option::Option<bool>,
+    /// Table format configured on the model (e.g. "iceberg").
+    /// Only set for models, and only when the model sets one.
+    #[prost(string, optional, tag = "59")]
+    pub table_format: ::core::option::Option<::prost::alloc::string::String>,
+    /// Catalog the model is written to. Only set for models, and only when
+    /// the model sets one.
+    #[prost(string, optional, tag = "60")]
+    pub catalog_name: ::core::option::Option<::prost::alloc::string::String>,
     /// Node type specific details (e.g. test fail counts, cache use reasons).
     #[prost(oneof = "node_processed::NodeOutcomeDetail", tags = "30, 31, 32, 33, 34")]
     pub node_outcome_detail: ::core::option::Option<node_processed::NodeOutcomeDetail>,
@@ -676,9 +755,9 @@ pub enum NodeType {
     SemanticModel = 14,
     Function = 15,
     Check = 16,
-    /// A node a plugin adds to the project. Its kind is in `plugin_type`. Numbered apart from the
-    /// core node types; node types must fit in a byte (node-count metric keys pack them).
-    Plugin = 100,
+    /// A node an experimental adds to the project. Its kind is in `experimental_type`. Numbered apart
+    /// from the core node types; node types must fit in a byte (node-count metric keys pack them).
+    Experimental = 100,
 }
 impl NodeType {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -704,7 +783,7 @@ impl NodeType {
             Self::SemanticModel => "NODE_TYPE_SEMANTIC_MODEL",
             Self::Function => "NODE_TYPE_FUNCTION",
             Self::Check => "NODE_TYPE_CHECK",
-            Self::Plugin => "NODE_TYPE_PLUGIN",
+            Self::Experimental => "NODE_TYPE_EXPERIMENTAL",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -727,7 +806,7 @@ impl NodeType {
             "NODE_TYPE_SEMANTIC_MODEL" => Some(Self::SemanticModel),
             "NODE_TYPE_FUNCTION" => Some(Self::Function),
             "NODE_TYPE_CHECK" => Some(Self::Check),
-            "NODE_TYPE_PLUGIN" => Some(Self::Plugin),
+            "NODE_TYPE_EXPERIMENTAL" => Some(Self::Experimental),
             _ => None,
         }
     }
@@ -936,6 +1015,76 @@ impl NodeCacheReason {
         }
     }
 }
+/// Access level of a model or function.
+#[cfg_attr(any(test, feature = "test-utils"), derive(::fake::Dummy))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum NodeAccess {
+    Unspecified = 0,
+    Private = 1,
+    Protected = 2,
+    Public = 3,
+}
+impl NodeAccess {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "NODE_ACCESS_UNSPECIFIED",
+            Self::Private => "NODE_ACCESS_PRIVATE",
+            Self::Protected => "NODE_ACCESS_PROTECTED",
+            Self::Public => "NODE_ACCESS_PUBLIC",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "NODE_ACCESS_UNSPECIFIED" => Some(Self::Unspecified),
+            "NODE_ACCESS_PRIVATE" => Some(Self::Private),
+            "NODE_ACCESS_PROTECTED" => Some(Self::Protected),
+            "NODE_ACCESS_PUBLIC" => Some(Self::Public),
+            _ => None,
+        }
+    }
+}
+/// Language a node's code is written in.
+#[cfg_attr(any(test, feature = "test-utils"), derive(::fake::Dummy))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum NodeLanguage {
+    /// The node has a language that this enum does not list.
+    Unspecified = 0,
+    Sql = 1,
+    Python = 2,
+    /// Only for functions.
+    Javascript = 3,
+}
+impl NodeLanguage {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "NODE_LANGUAGE_UNSPECIFIED",
+            Self::Sql => "NODE_LANGUAGE_SQL",
+            Self::Python => "NODE_LANGUAGE_PYTHON",
+            Self::Javascript => "NODE_LANGUAGE_JAVASCRIPT",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "NODE_LANGUAGE_UNSPECIFIED" => Some(Self::Unspecified),
+            "NODE_LANGUAGE_SQL" => Some(Self::Sql),
+            "NODE_LANGUAGE_PYTHON" => Some(Self::Python),
+            "NODE_LANGUAGE_JAVASCRIPT" => Some(Self::Javascript),
+            _ => None,
+        }
+    }
+}
 #[cfg_attr(any(test, feature = "test-utils"), derive(::fake::Dummy))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -1011,6 +1160,43 @@ impl NodeMaterialization {
             "NODE_MATERIALIZATION_INTERACTIVE_TABLE" => Some(Self::InteractiveTable),
             "NODE_MATERIALIZATION_METRIC_VIEW" => Some(Self::MetricView),
             "NODE_MATERIALIZATION_CUSTOM" => Some(Self::Custom),
+            _ => None,
+        }
+    }
+}
+/// Where a node's run phase executed.
+#[cfg_attr(any(test, feature = "test-utils"), derive(::fake::Dummy))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum NodeComputeMode {
+    Unspecified = 0,
+    /// On the node's warehouse.
+    Remote = 1,
+    /// On the local sidecar engine.
+    Local = 2,
+    /// On lake compute.
+    LakeCompute = 3,
+}
+impl NodeComputeMode {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "NODE_COMPUTE_MODE_UNSPECIFIED",
+            Self::Remote => "NODE_COMPUTE_MODE_REMOTE",
+            Self::Local => "NODE_COMPUTE_MODE_LOCAL",
+            Self::LakeCompute => "NODE_COMPUTE_MODE_LAKE_COMPUTE",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "NODE_COMPUTE_MODE_UNSPECIFIED" => Some(Self::Unspecified),
+            "NODE_COMPUTE_MODE_REMOTE" => Some(Self::Remote),
+            "NODE_COMPUTE_MODE_LOCAL" => Some(Self::Local),
+            "NODE_COMPUTE_MODE_LAKE_COMPUTE" => Some(Self::LakeCompute),
             _ => None,
         }
     }

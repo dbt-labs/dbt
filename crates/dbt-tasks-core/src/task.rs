@@ -15,11 +15,8 @@ use tokio::task::JoinSet;
 use tracing::Instrument;
 
 use crate::context::TaskRunnerCtx;
-use crate::span_manager::{SpanLevel, SpanTreeRequest};
-use crate::task_spans::{
-    node_processed_span_key, phase_span_key, task_span_on_close, task_span_on_skip,
-    update_node_outcome_from_skip_reason,
-};
+use crate::span_manager::SpanTreeRequest;
+use crate::task_spans::node_task_span_request;
 use crate::visitor::SkipReason;
 
 use dbt_common::collections::SccHashMap;
@@ -380,6 +377,9 @@ pub trait Task: Send + Sync {
     /// mapping used on span skip-close callbacks so `NodeEvaluated` starts with a skipped
     /// outcome already set.
     ///
+    /// A task that only adds task-runtime attributes to the default span overrides this and
+    /// calls `node_task_span_request` with its own closure.
+    ///
     /// # Panics
     /// - If task reports zero nodes but doesn't override this method.
     /// - If task reports has no phase but doesn't override this method.
@@ -389,50 +389,7 @@ pub trait Task: Send + Sync {
         out_dir: &Path,
         skip_reason: Option<&SkipReason>,
     ) -> SpanTreeRequest<FsResult<NodeStatus>, SkipReason> {
-        let mut nodes = self.dbt_nodes().into_iter();
-
-        let Some(node) = nodes.next() else {
-            unreachable!("Task should always operate on at least a single node");
-        };
-
-        if nodes.next().is_some() {
-            // task for multiple nodes use current span as task span.
-            // Task inner code should create actual spans for themselves.
-            return SpanTreeRequest::use_current();
-        }
-
-        let Some(task_phase) = self.task_phase() else {
-            unreachable!(
-                "Task that doesn't belong to a phase should override telemetry_tree method"
-            );
-        };
-
-        let phase = task_phase.into();
-        let mut attrs = node.get_node_evaluated_event(phase, in_dir, out_dir);
-        if let Some(skip_reason) = skip_reason {
-            update_node_outcome_from_skip_reason(&mut attrs, skip_reason);
-        }
-
-        let task_span_level = match phase {
-            ExecutionPhase::Run | ExecutionPhase::Compare => SpanLevel::Info,
-            _ => SpanLevel::Debug,
-        };
-        let mut builder = SpanTreeRequest::builder(
-            task_span_level,
-            attrs.into(),
-            Some(Box::new(task_span_on_close)),
-            Some(Box::new(task_span_on_skip)),
-        );
-
-        // Reference Phase span as direct parent (must be pre-registered)
-        builder.with_parent(SpanLevel::Info, phase_span_key(phase));
-
-        // Reference NodeProcessed span as direct related span (must be pre-registered)
-        // Span manager will automatically create its parent (TuiAllProcessingNodesGroup)
-        let node_key = node_processed_span_key(&node.unique_id());
-        builder.add_related_span(SpanLevel::Info, &node_key);
-
-        builder.build()
+        node_task_span_request(self, in_dir, out_dir, skip_reason, |_| {})
     }
 }
 

@@ -107,9 +107,6 @@ members = [
   # COPYBARA-END-PRIVATE
 ]
 exclude = [
-  "wizard/wizard-app/src-tauri",
-  "wizard/dbt-codex",
-  "wizard/wizard-ui",
 ]
 
 resolver = "2"
@@ -122,7 +119,7 @@ homepage = "https://getdbt.com"
 keywords = ["sql", "parquet", "json", "csv", "dbt"]
 license = "Apache-2.0"
 repository = "https://github.com/dbt-labs/dbt-core"
-version = "2.0.8"
+version = "2.0.11"
 
 [patch.crates-io]
 
@@ -144,10 +141,10 @@ ring = { git = "https://github.com/sdf-labs/ring.git", rev = "3c35ce0b7e1bd9fe83
 # However, note that we declare dependencies in our crates with the same version
 # numbers as crates.io / the upstream repository.
 # See https://doc.rust-lang.org/cargo/reference/overriding-dependencies.html#the-patch-section
-datafusion-common = { git = "https://github.com/sdf-labs/datafusion", rev = "6952f98190ba192446936ed0534b397d92adc62f" } # @ sdf/53_1
-datafusion-expr = { git = "https://github.com/sdf-labs/datafusion", rev = "6952f98190ba192446936ed0534b397d92adc62f" } # @ sdf/53_1
-datafusion = { git = "https://github.com/sdf-labs/datafusion", rev = "6952f98190ba192446936ed0534b397d92adc62f" } # @ sdf/53_1
-datafusion-catalog = { git = "https://github.com/sdf-labs/datafusion", rev = "6952f98190ba192446936ed0534b397d92adc62f" } # @ sdf/53_1
+datafusion-common = { git = "https://github.com/sdf-labs/datafusion", rev = "78ad604c76ab205ae6c410f1f8403e853446bd13" } # @ sdf/53_1
+datafusion-expr = { git = "https://github.com/sdf-labs/datafusion", rev = "78ad604c76ab205ae6c410f1f8403e853446bd13" } # @ sdf/53_1
+datafusion = { git = "https://github.com/sdf-labs/datafusion", rev = "78ad604c76ab205ae6c410f1f8403e853446bd13" } # @ sdf/53_1
+datafusion-catalog = { git = "https://github.com/sdf-labs/datafusion", rev = "78ad604c76ab205ae6c410f1f8403e853446bd13" } # @ sdf/53_1
 
 
 # sqlparser
@@ -358,7 +355,7 @@ minijinja-contrib = { path = "crates/dbt-jinja/minijinja-contrib", features = [
 snowflake-api = { path = "crates/snowflake-rs/snowflake-api" }
 
 # serde
-dbt-yaml = { version = "0.10.6", features = [
+dbt-yaml = { version = "0.9.6", features = [
   "filename",
   "yaml_11",
   "schemars",
@@ -396,7 +393,16 @@ arrow-ipc = { version = "=58.4.0" }
 arrow-json = { version = "=58.4.0" }
 arrow-schema = { version = "=58.4.0", features = ["serde"] }
 arrow-select = { version = "=58.4.0" }
-parquet = { version = "=58.4.0" }
+# parquet's defaults minus brotli: we only write snappy and zstd
+parquet = { version = "=58.4.0", default-features = false, features = [
+  "arrow",
+  "base64",
+  "flate2-zlib-rs",
+  "lz4",
+  "simdutf8",
+  "snap",
+  "zstd",
+] }
 serde_arrow = { version = "0.14.2", features = ["arrow-58"] }
 
 # adbc
@@ -516,12 +522,16 @@ scopeguard = { version = "1.2.0" }
 # io stuff
 clean-path = "0.2.1"
 console = "0.16.3"
+crossterm = { version = "0.29", default-features = false, features = [
+  "events",
+  "windows",
+] }
 csv = { version = "1.1", default-features = false }
 dialoguer = "0.12.0"
-diffy = { version = "0.4.2" }
 dirs = "6.0.0"
 dotenvy = "0.15"
 flate2 = "1.0.28"
+getrandom = { version = "0.3", features = ["std"] }
 gix = { version = "0.84.0", default-features = false, features = [
   "revision",
   "sha1",
@@ -538,6 +548,7 @@ strsim = "0.11.1"
 tar = "0.4.40"
 tempfile = "3.2.0"
 walkdir = "2.4.0"
+windows-sys = "0.61"
 xshell = "0.2.7"
 zip = "8.3.0"
 zstd = "0.13"
@@ -627,7 +638,7 @@ fake = { version = "4.4.0", features = ["derive", "uuid", "time"] }
 indoc = "2.0.6"
 merge = { version = "0.2.0" }
 mockito = "1.2"
-pretty_assertions = { version = "1.4.1" }
+similar-asserts = "1.7.0"
 sqllogictest = "0.26.0"
 
 # protobuf

@@ -1,4 +1,5 @@
 use std::future::Future;
+use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::mpsc;
@@ -12,6 +13,7 @@ use crate::runnable::test::{
     process_statically_checked_test_result, record_test_metric, record_test_span_with_detail,
     reported_test_verdict_from_components, status_with_warn_error_overrides,
 };
+use dbt_adapter::response::AdapterResponse;
 use dbt_adapter::time_machine::{
     RecordedCachedTestResult, SaoStatus, global_recorder, global_replayer, is_replaying,
 };
@@ -31,9 +33,12 @@ use dbt_schemas::schemas::{
 };
 use dbt_tasks_core::context::{TaskRunnerCtx, node_execution_metrics};
 use dbt_tasks_core::run_task_hooks::RunTaskHooks;
+use dbt_tasks_core::span_manager::SpanTreeRequest;
 use dbt_tasks_core::task::TaskResult;
 use dbt_tasks_core::task::{TP, Task, run_blocking_task_operation, run_concurrent_task_operations};
-use dbt_telemetry::{NodeEvaluated, NodeSkipReason, NodeType};
+use dbt_tasks_core::task_spans::node_task_span_request;
+use dbt_tasks_core::visitor::SkipReason;
+use dbt_telemetry::{NodeComputeMode, NodeEvaluated, NodeSkipReason, NodeType};
 
 use tracing::Instrument;
 use vortex_events::run_model_event;
@@ -54,9 +59,11 @@ use dbt_tasks_core::run_cache::run_cache_service::{
     clear_stale_missing_last_modified_epoch_for_node, confirm_run_cache_service_execution,
     evict_node_metadata_for_untracked_rebuild, execute_run_cache_service_clone,
     insert_compiled_view_definition, record_run_cache_clone_decision,
-    record_run_cache_service_execution, replay_dev_clone_decision, replay_run_cache_clone_decision,
-    run_cache_service_before_execution, should_execute_hooks_for_skip_reuse,
+    record_run_cache_service_execution, refresh_final_last_modified_epoch_for_node,
+    replay_dev_clone_decision, replay_run_cache_clone_decision, run_cache_service_before_execution,
+    should_execute_hooks_for_skip_reuse,
 };
+use dbt_tasks_core::run_cache::state_lock::release_state_lock;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RunExecutionPath {
@@ -66,11 +73,11 @@ pub enum RunExecutionPath {
 }
 
 impl RunExecutionPath {
-    fn compute_mode(self) -> &'static str {
+    fn compute_mode(self) -> NodeComputeMode {
         match self {
-            Self::Remote => "remote",
-            Self::SideCar => "local",
-            Self::LakeCompute => "lake_compute",
+            Self::Remote => NodeComputeMode::Remote,
+            Self::SideCar => NodeComputeMode::Local,
+            Self::LakeCompute => NodeComputeMode::LakeCompute,
         }
     }
 }
@@ -148,6 +155,9 @@ impl Task for RunTask {
 
             let execution_started_at = Instant::now();
             let mut after_success = RunCacheAfterSuccess::None;
+            // Held from before the dbt State decision until after its
+            // confirmation, so a waiter cannot be told "build" in between.
+            let mut state_lock = None;
             let statically_checked_test = match self.node.as_any().downcast_ref::<DbtTest>() {
                 Some(test) => ctx
                     .is_data_test_statically_skippable(unique_id.as_str())
@@ -167,25 +177,30 @@ impl Task for RunTask {
             // test downgraded to `Remote` would silently run with nothing
             // attached beyond the connection's own baseline -- fine by
             // accident for objects in the default MDLS namespace, wrong for
-            // anything needing a declared catalog. Every other node type that
-            // resolves onto `lakecompute` (a snapshot, ...) still has no
-            // bypass to offer and is downgraded as before.
-            let effective_execution_path = if self.execution_path == RunExecutionPath::LakeCompute
-                && !(self.node.as_any().is::<DbtModel>()
-                    || self.node.as_any().is::<DbtSeed>()
-                    || self.node.as_any().is::<DbtTest>())
-            {
-                RunExecutionPath::Remote
+            // anything needing a declared catalog. Every other node type has no
+            // bypass: it errors, or is downgraded on a `lakecompute` default.
+            let effective_execution_path = if self.execution_path == RunExecutionPath::LakeCompute {
+                lake_compute_execution_path(self.node.as_ref(), ctx.default_adapter_type())
             } else {
-                self.execution_path
+                Ok(self.execution_path)
             };
+            // A refused node still reports `LakeCompute` in usage stats.
+            let stats_execution_path = effective_execution_path
+                .as_ref()
+                .copied()
+                .unwrap_or(self.execution_path);
+            update_span_attrs(&task_span, |attrs: &mut NodeEvaluated| {
+                attrs.set_compute_mode(stats_execution_path.compute_mode());
+            });
             let result = match (statically_checked_test, effective_execution_path) {
+                // A test is never refused, so `_` drops no error.
                 (Some(test), _) => {
                     let node_status =
                         process_statically_checked_test_result(test, ctx, start_time.into());
                     Ok(node_status)
                 }
-                (None, RunExecutionPath::Remote) => {
+                (None, Err(e)) => Err(e),
+                (None, Ok(RunExecutionPath::Remote)) => {
                     // Step 0: Replay a cached result if one was recorded.
                     let replayed_cache_decision = maybe_replay_remote_run(&self.node.unique_id());
 
@@ -205,7 +220,9 @@ impl Task for RunTask {
                     // `RunCacheServiceDecision`: the service path may emit
                     // Skip/Clone/Execute (with `after_success`); the SAO path may
                     // emit Skip (with `sao_stored_hash`), Execute (with
-                    // `sao_guard`), or Disabled.
+                    // `sao_guard`), or Disabled. The service path may also take
+                    // the per-node lock (`state_lock`), which rides outside the
+                    // decision because it outlives the SAO guard's release point.
                     let run_cache_service_requested =
                         ctx.inner.run_cache_ctx.run_cache_service_requested;
                     let decision = if let Some(decision) = replayed_cache_decision {
@@ -235,6 +252,35 @@ impl Task for RunTask {
                         // different SQL than what was actually recorded).
                         RunCacheServiceDecision::Clone { clone }
                     } else if run_cache_service_requested {
+                        state_lock = self
+                            .task_hooks
+                            .acquire_state_lock(ctx, Arc::clone(&self.node))
+                            .await;
+                        if state_lock.is_some() {
+                            // submit_seed/submit_model read the node's cached
+                            // last_modified_epoch directly, with no refetch path of
+                            // their own — so whatever's cached is what gets sent.
+                            // Holding the lock doesn't mean the cache is current:
+                            // an uncontended acquire only means nobody held the
+                            // lock *when we asked*, not that nobody rebuilt the
+                            // table since this node's epoch was last cached (which
+                            // can predate this run entirely, from an earlier batch
+                            // prefetch). Force a refetch whenever we actually hold
+                            // the lock, whether the cache reads as a real epoch or
+                            // as "missing".
+                            if let Err(e) =
+                                refresh_final_last_modified_epoch_for_node(ctx, self.node.as_ref())
+                                    .await
+                            {
+                                emit_warn_log_message(
+                                    ErrorCode::StateServiceWarn,
+                                    format!(
+                                        "Failed to refresh last_modified_epoch for node {} after acquiring the state lock: {e}",
+                                        self.node.unique_id()
+                                    ),
+                                );
+                            }
+                        }
                         insert_compiled_view_definition(ctx, self.node.as_ref(), &task_result);
                         // Microbatch models make one per-model cache decision keyed to
                         // the run's event-time window. Resolve it here (fail open: a
@@ -518,12 +564,12 @@ impl Task for RunTask {
                         }
                     }
                 }
-                (None, RunExecutionPath::SideCar) => {
+                (None, Ok(RunExecutionPath::SideCar)) => {
                     self.task_hooks
                         .run_lake_compute_sidecar(ctx, Arc::clone(&self.node), task_result.clone())
                         .await
                 }
-                (None, RunExecutionPath::LakeCompute) => {
+                (None, Ok(RunExecutionPath::LakeCompute)) => {
                     self.task_hooks
                         .run_on_lake_compute(ctx, Arc::clone(&self.node), task_result.clone())
                         .await
@@ -539,17 +585,37 @@ impl Task for RunTask {
                 )
                 .await;
             }
-
-            // A node that errored, or was reported as errored, leaves it unset.
-            if matches!(&result, Ok(status) if !matches!(status, NodeStatus::Errored)) {
-                let adapter_response = ctx
-                    .inner
-                    .main_adapter_responses
-                    .read_sync(&unique_id, |_, response| response.to_telemetry());
-                update_span_attrs(&task_span, |attrs: &mut NodeEvaluated| {
-                    attrs.adapter_response = adapter_response;
-                });
+            if let Some(guard) = state_lock.take() {
+                release_state_lock(guard, &unique_id).await;
             }
+
+            // The span carries what `RunModel` sends. A materialization that fails before
+            // recording a `main` response leaves both unset. A failed microbatch batch returns
+            // above before this runs, so that model reports neither, even when an earlier
+            // batch recorded a response.
+            let is_microbatch = try_get_microbatch_model(self.node.as_ref()).is_some();
+            let metrics = node_execution_metrics(
+                is_microbatch,
+                &unique_id,
+                &ctx.inner.microbatch_execution_metrics,
+                &ctx.inner.main_adapter_responses,
+            );
+            // A negative count is an adapter's unknown sentinel.
+            let rows_affected = metrics
+                .and_then(|metrics| metrics.rows_affected)
+                .and_then(|rows| u64::try_from(rows).ok());
+            let mut response = ctx
+                .inner
+                .main_adapter_responses
+                .read_sync(&unique_id, |_, response| response.clone());
+            // A microbatch model reports the metric totals over its batches.
+            if let (true, Some(metrics)) = (is_microbatch, metrics) {
+                response = response.map(|response| response.with_execution_metrics(&metrics));
+            }
+            update_span_attrs(&task_span, |attrs: &mut NodeEvaluated| {
+                attrs.rows_affected = rows_affected;
+                attrs.adapter_response = response.as_ref().map(AdapterResponse::to_telemetry);
+            });
 
             let mut span_rows_affected: Option<i64> = None;
             let mut span_idle_time_ms: Option<u64> = None;
@@ -641,7 +707,7 @@ impl Task for RunTask {
             // TODO: migrate this to Vortex tracing layer
             // TODO: migrate this to structured logger
             if ctx.inner.arg.io.send_anonymous_usage_stats {
-                emit_run_usage_stats(self.node.as_ref(), ctx, effective_execution_path);
+                emit_run_usage_stats(self.node.as_ref(), ctx, stats_execution_path);
             }
 
             Ok(node_status)
@@ -667,6 +733,23 @@ impl Task for RunTask {
 
     fn task_phase(&self) -> Option<TP> {
         Some(TP::Run)
+    }
+
+    fn telemetry_request(
+        &self,
+        in_dir: &Path,
+        out_dir: &Path,
+        skip_reason: Option<&SkipReason>,
+    ) -> SpanTreeRequest<FsResult<NodeStatus>, SkipReason> {
+        node_task_span_request(self, in_dir, out_dir, skip_reason, |attrs| {
+            attrs.catalog_type = self
+                .node
+                .as_any()
+                .downcast_ref::<DbtModel>()
+                .and_then(|model| {
+                    resolve_catalog_type(model.__model_attr__.catalog_name.as_deref())
+                });
+        })
     }
 }
 
@@ -798,7 +881,7 @@ fn hooks_are_configured(hooks: &Option<dbt_schemas::schemas::common::Hooks>) -> 
 fn execute_hook_node_blocking(
     hook_node: &RunCacheReuseHookNode,
     ctx: &TaskRunnerCtx,
-    base_context: &std::collections::BTreeMap<String, minijinja::Value>,
+    base_context: &minijinja::Value,
     sql: Option<&str>,
     phase: RunCacheReuseHookPhase,
 ) -> FsResult<()> {
@@ -916,6 +999,8 @@ fn elapsed_millis(started_at: Instant) -> i64 {
 struct CachedDataTestStatus {
     failures: usize,
     status: TestExecutionStatus,
+    /// `status` before `--warn-error-options` overrides.
+    verdict: TestExecutionStatus,
     stat_status: NodeStatus,
     final_status: NodeStatus,
 }
@@ -925,6 +1010,10 @@ impl CachedDataTestStatus {
         TestReportedResult {
             failures: self.failures,
             status: self.status,
+            verdict: self.verdict,
+            // Unused: the cached path stores its own `NO-OP` message instead of `message()`.
+            error_if: None,
+            warn_if: None,
             diff: None,
             execution_result: None,
         }
@@ -944,12 +1033,12 @@ fn cached_data_test_status(
     warn_error_options: &WarnErrorOptions,
 ) -> CachedDataTestStatus {
     let failures = result.failures.max(0) as usize;
-    let status = reported_test_verdict_from_components(
+    let verdict = reported_test_verdict_from_components(
         Some(&severity),
         result.should_warn,
         result.should_error,
     );
-    let status = status_with_warn_error_overrides(status, warn_error_options);
+    let status = status_with_warn_error_overrides(verdict, warn_error_options);
     let stat_status = match status.node_status() {
         NodeStatus::TestPassed => {
             NodeStatus::ReusedNoChanges("No new changes on any upstreams".to_string())
@@ -965,6 +1054,7 @@ fn cached_data_test_status(
     CachedDataTestStatus {
         failures,
         status,
+        verdict,
         stat_status,
         final_status,
     }
@@ -1117,7 +1207,7 @@ fn emit_run_usage_stats(
         table_format,
         catalog_name,
         catalog_type,
-        execution_path.compute_mode().to_string(),
+        execution_path.compute_mode().as_static_ref().to_string(),
         execution_metrics,
     );
 }
@@ -1126,8 +1216,8 @@ fn emit_run_usage_stats(
 ///
 /// Mirrors how the adapter resolves catalog metadata at materialization time
 /// (`CatalogRelation::build_with_catalogs` and friends). The returned string is the
-/// catalog-type enum's stable form (`*::as_str`), which is the aggregatable value we
-/// want in telemetry.
+/// catalog-type enum's stable form (`*::as_str`), lowercased so that v1 and v2
+/// catalogs.yml report the same value.
 ///
 /// Two schemas are supported:
 /// - **v1**: `catalog_type` lives on the catalog's active write integration —
@@ -1162,7 +1252,7 @@ fn resolve_catalog_type(catalog_name: Option<&str>) -> Option<String> {
         .0
         .iter()
         .find(|write_integration| write_integration.integration_name == active_integration)?;
-    Some(write_integration.catalog_type.as_str().to_string())
+    Some(write_integration.catalog_type.as_str().to_lowercase())
 }
 
 fn node_runs_with_cache(node: &dyn InternalDbtNodeAttributes) -> bool {
@@ -1170,6 +1260,30 @@ fn node_runs_with_cache(node: &dyn InternalDbtNodeAttributes) -> bool {
         || node.as_any().is::<DbtSnapshot>()
         || node.as_any().is::<DbtSeed>()
         || node.as_any().is::<DbtUnitTest>()
+}
+
+/// Where a node on the `LakeCompute` path runs, given the target's default adapter, or the
+/// error that refuses it.
+fn lake_compute_execution_path(
+    node: &dyn InternalDbtNodeAttributes,
+    default_adapter: AdapterType,
+) -> FsResult<RunExecutionPath> {
+    if node.as_any().is::<DbtModel>()
+        || node.as_any().is::<DbtSeed>()
+        || node.as_any().is::<DbtTest>()
+    {
+        Ok(RunExecutionPath::LakeCompute)
+    } else if default_adapter == AdapterType::LakeCompute {
+        Ok(RunExecutionPath::Remote)
+    } else {
+        Err(fs_err!(
+            ErrorCode::InvalidConfig,
+            "node '{}' is configured with adapter 'lakecompute', which runs only models, seeds \
+             and tests. Remove `adapter: lakecompute` from its config or set another adapter \
+             the target declares.",
+            node.unique_id()
+        ))
+    }
 }
 
 fn execute_remote_node(
@@ -1271,9 +1385,76 @@ mod tests {
 
     #[test]
     fn compute_mode_matches_execution_path() {
-        assert_eq!(RunExecutionPath::Remote.compute_mode(), "remote");
-        assert_eq!(RunExecutionPath::SideCar.compute_mode(), "local");
-        assert_eq!(RunExecutionPath::LakeCompute.compute_mode(), "lake_compute");
+        assert_eq!(
+            RunExecutionPath::Remote.compute_mode(),
+            NodeComputeMode::Remote
+        );
+        assert_eq!(
+            RunExecutionPath::SideCar.compute_mode(),
+            NodeComputeMode::Local
+        );
+        assert_eq!(
+            RunExecutionPath::LakeCompute.compute_mode(),
+            NodeComputeMode::LakeCompute
+        );
+        assert_eq!(
+            RunExecutionPath::Remote.compute_mode().as_static_ref(),
+            "remote"
+        );
+        assert_eq!(
+            RunExecutionPath::SideCar.compute_mode().as_static_ref(),
+            "local"
+        );
+        assert_eq!(
+            RunExecutionPath::LakeCompute.compute_mode().as_static_ref(),
+            "lake_compute"
+        );
+    }
+
+    fn lake_compute_snapshot_and_function() -> [Box<dyn InternalDbtNodeAttributes>; 2] {
+        let mut snapshot = DbtSnapshot::default();
+        snapshot.__common_attr__.unique_id = "snapshot.p.snap".to_string();
+        snapshot.__base_attr__.adapter = AdapterType::LakeCompute;
+        let mut function = DbtFunction::default();
+        function.__common_attr__.unique_id = "function.p.f".to_string();
+        function.__base_attr__.adapter = AdapterType::LakeCompute;
+        [Box::new(snapshot), Box::new(function)]
+    }
+
+    #[test]
+    fn lake_compute_refuses_a_snapshot_or_function_on_another_default() {
+        for node in lake_compute_snapshot_and_function() {
+            let err = lake_compute_execution_path(node.as_ref(), AdapterType::Snowflake)
+                .expect_err("only models, seeds and tests run on lakecompute");
+            assert_eq!(err.code, ErrorCode::InvalidConfig, "{err}");
+            assert!(err.to_string().contains(node.unique_id().as_str()), "{err}");
+        }
+    }
+
+    #[test]
+    fn lake_compute_runs_models_seeds_and_tests_on_another_default() {
+        let mut model = DbtModel::default();
+        model.__base_attr__.adapter = AdapterType::LakeCompute;
+        let mut seed = DbtSeed::default();
+        seed.__base_attr__.adapter = AdapterType::LakeCompute;
+        let mut test = DbtTest::default();
+        test.__base_attr__.adapter = AdapterType::LakeCompute;
+        for node in [&model as &dyn InternalDbtNodeAttributes, &seed, &test] {
+            assert_eq!(
+                lake_compute_execution_path(node, AdapterType::Snowflake).unwrap(),
+                RunExecutionPath::LakeCompute
+            );
+        }
+    }
+
+    #[test]
+    fn lake_compute_default_downgrades_a_snapshot_or_function_to_remote() {
+        for node in lake_compute_snapshot_and_function() {
+            assert_eq!(
+                lake_compute_execution_path(node.as_ref(), AdapterType::LakeCompute).unwrap(),
+                RunExecutionPath::Remote
+            );
+        }
     }
 
     fn model_with_pre_hook_and_reuse_hook_config(

@@ -1,16 +1,16 @@
-2d5b4a57:
+f57c0fb7:
+- sequence: 0
+  type: execute
+  sql: |-
+    create schema if not exists development.adapters_snowflake_query_comment_with_split
+    /* {"app": "dbt", "dbt_version": "DBT_VERSION", "node_id": "internal", "profile_name": "fusion_tests", "target_name": "snowflake"} */
+ffd229ae:
 - sequence: 0
   type: execute
   sql: |-
     show terse schemas in database development
     limit 10000
-    /* {"app": "dbt", "dbt_version": "2.0.0", "node_id": "internal", "profile_name": "fusion_tests", "target_name": "snowflake"} */
-ea48a80e:
-- sequence: 0
-  type: execute
-  sql: |-
-    create schema if not exists development.adapters_snowflake_query_comment_with_split
-    /* {"app": "dbt", "dbt_version": "2.0.0", "node_id": "internal", "profile_name": "fusion_tests", "target_name": "snowflake"} */
+    /* {"app": "dbt", "dbt_version": "DBT_VERSION", "node_id": "internal", "profile_name": "fusion_tests", "target_name": "snowflake"} */
 model.test.a:
 - sequence: 0
   type: execute
@@ -19,12 +19,12 @@ model.test.a:
   type: execute
   sql: |-
     select 1 as q1
-    /* {"app": "dbt", "dbt_version": "2.0.0", "node_id": "model.test.a", "node_name": "a", "package_name": "test", "profile_name": "fusion_tests", "relation": {"database": "development", "identifier": null, "schema": "adapters_snowflake_query_comment_with_split"}, "resource_type": "model", "target_name": "snowflake"} */
+    /* {"app": "dbt", "dbt_version": "DBT_VERSION", "node_id": "model.test.a", "node_name": "a", "package_name": "test", "profile_name": "fusion_tests", "relation": {"database": "development", "identifier": null, "schema": "adapters_snowflake_query_comment_with_split"}, "resource_type": "model", "target_name": "snowflake"} */
 - sequence: 2
   type: execute
   sql: |-
     select 2 as q2
-    /* {"app": "dbt", "dbt_version": "2.0.0", "node_id": "model.test.a", "node_name": "a", "package_name": "test", "profile_name": "fusion_tests", "relation": {"database": "development", "identifier": null, "schema": "adapters_snowflake_query_comment_with_split"}, "resource_type": "model", "target_name": "snowflake"} */
+    /* {"app": "dbt", "dbt_version": "DBT_VERSION", "node_id": "model.test.a", "node_name": "a", "package_name": "test", "profile_name": "fusion_tests", "relation": {"database": "development", "identifier": null, "schema": "adapters_snowflake_query_comment_with_split"}, "resource_type": "model", "target_name": "snowflake"} */
 - sequence: 3
   type: execute
   sql: |-
@@ -38,4 +38,4 @@ model.test.a:
     
     select 1 as id
     )
-    /* {"app": "dbt", "dbt_version": "2.0.0", "node_id": "model.test.a", "node_name": "a", "package_name": "test", "profile_name": "fusion_tests", "relation": {"database": "development", "identifier": null, "schema": "adapters_snowflake_query_comment_with_split"}, "resource_type": "model", "target_name": "snowflake"} */
+    /* {"app": "dbt", "dbt_version": "DBT_VERSION", "node_id": "model.test.a", "node_name": "a", "package_name": "test", "profile_name": "fusion_tests", "relation": {"database": "development", "identifier": null, "schema": "adapters_snowflake_query_comment_with_split"}, "resource_type": "model", "target_name": "snowflake"} */

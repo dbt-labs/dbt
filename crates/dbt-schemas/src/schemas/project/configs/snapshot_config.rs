@@ -408,6 +408,20 @@ pub struct ProjectSnapshotConfig {
     #[serde(rename = "+state")]
     pub state: Option<ModelState>,
 
+    // ClickHouse
+    #[serde(rename = "+engine")]
+    pub engine: Option<String>,
+    #[serde(rename = "+order_by")]
+    pub order_by: Option<StringOrArrayOfStrings>,
+    #[serde(rename = "+ttl")]
+    pub ttl: Option<String>,
+    #[serde(rename = "+settings")]
+    pub settings: Option<BTreeMap<String, YmlValue>>,
+    #[serde(rename = "+query_settings")]
+    pub query_settings: Option<BTreeMap<String, YmlValue>>,
+    #[serde(rename = "+projections")]
+    pub projections: Option<Vec<YmlValue>>,
+
     // Flattened field:
     pub __additional_properties__: BTreeMap<String, ShouldBe<ProjectSnapshotConfig>>,
 }
@@ -874,12 +888,12 @@ impl From<ProjectSnapshotConfig> for SnapshotConfig {
                 primary_key: PrimaryKeyConfig::default(),
                 category: None,
 
-                engine: None,
-                order_by: None,
-                ttl: None,
-                settings: None,
-                query_settings: None,
-                projections: None,
+                engine: config.engine,
+                order_by: config.order_by,
+                ttl: config.ttl,
+                settings: config.settings,
+                query_settings: config.query_settings,
+                projections: config.projections,
                 sharding_key: None,
                 disable_on_cluster: None,
                 inserts_only: None,
@@ -1044,6 +1058,13 @@ impl From<SnapshotConfig> for ProjectSnapshotConfig {
             unlogged: config.__warehouse_specific_config__.unlogged,
             // Schedule (Databricks streaming tables)
             schedule: config.__warehouse_specific_config__.schedule,
+            // ClickHouse fields
+            engine: config.__warehouse_specific_config__.engine,
+            order_by: config.__warehouse_specific_config__.order_by,
+            ttl: config.__warehouse_specific_config__.ttl,
+            settings: config.__warehouse_specific_config__.settings,
+            query_settings: config.__warehouse_specific_config__.query_settings,
+            projections: config.__warehouse_specific_config__.projections,
             sync: config.sync,
             state: config.state,
             __additional_properties__: BTreeMap::new(),
@@ -1176,6 +1197,43 @@ __additional_properties__: {}
             resolved.__warehouse_specific_config__.query_tags.as_deref(),
             Some(r#"{"team":"snapshot"}"#)
         );
+    }
+
+    #[test]
+    fn test_snapshot_clickhouse_table_options_propagate_through_resolved_config() {
+        let project: ProjectSnapshotConfig = dbt_yaml::from_str(
+            r#"
++engine: ReplacingMergeTree()
++order_by: [id, ts]
++ttl: ts + INTERVAL 1 DAY
++settings:
+  allow_nullable_key: 1
++query_settings:
+  max_insert_threads: 1
++projections:
+  - name: p
+    query: SELECT id ORDER BY ts
+__additional_properties__: {}
+"#,
+        )
+        .unwrap();
+
+        let resolved: SnapshotConfig = project.into();
+        let wh = &resolved.__warehouse_specific_config__;
+        assert_eq!(wh.engine.as_deref(), Some("ReplacingMergeTree()"));
+        assert!(wh.order_by.is_some());
+        assert_eq!(wh.ttl.as_deref(), Some("ts + INTERVAL 1 DAY"));
+        assert!(
+            wh.settings
+                .as_ref()
+                .is_some_and(|s| s.contains_key("allow_nullable_key"))
+        );
+        assert!(wh.query_settings.is_some());
+        assert_eq!(wh.projections.as_ref().map(Vec::len), Some(1));
+
+        let round_trip: ProjectSnapshotConfig = resolved.into();
+        assert_eq!(round_trip.engine.as_deref(), Some("ReplacingMergeTree()"));
+        assert_eq!(round_trip.ttl.as_deref(), Some("ts + INTERVAL 1 DAY"));
     }
 
     #[test]

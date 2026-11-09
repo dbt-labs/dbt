@@ -54,6 +54,7 @@ use std::sync::Arc;
 
 pub mod adapter_factory;
 pub mod adapter_impl;
+pub mod fixture_columns;
 pub mod store;
 pub use adapter_factory::*;
 pub use adapter_impl::{AdapterImpl, alias_types_from_state, quote_component, quote_ident};
@@ -80,6 +81,9 @@ enum InnerAdapter {
 }
 
 use InnerAdapter::*;
+
+/// Per-render column metadata for mocked unit-test relations.
+pub const UNIT_TEST_FIXTURE_COLUMNS: &str = "__dbt_unit_test_fixture_columns";
 
 /// Per-node connection state that must be reset after materialization.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1648,6 +1652,15 @@ impl Adapter {
     ) -> Result<Value, minijinja::Error> {
         match &self.inner {
             Typed { adapter, .. } => {
+                if let Some(fixtures) = state.lookup(UNIT_TEST_FIXTURE_COLUMNS, &[]) {
+                    let lookup = fixtures.get_item(&Value::from(relation.semantic_fqn()))?;
+                    if !lookup.is_undefined() {
+                        let columns = lookup.call(state, &[], &[])?;
+                        if !columns.is_undefined() {
+                            return Ok(columns);
+                        }
+                    }
+                }
                 // Replay Mode: Re-use recordings and compare with cache result
                 if let Some(replay_adapter) = adapter.as_replay() {
                     let cached = adapter.get_columns_in_relation_via_cache(state, relation)?;
@@ -2911,9 +2924,11 @@ impl Adapter {
                     _ => config
                         .__warehouse_specific_config__
                         .tblproperties
-                        .iter()
-                        .flat_map(|tp| tp.0.iter())
-                        .map(|(k, v)| (k.to_string(), yml_value_to_minijinja(v)))
+                        .clone()
+                        .unwrap_or_default()
+                        .0
+                        .into_iter()
+                        .map(|(k, v)| (k, yml_value_to_minijinja(v)))
                         .collect(),
                 };
 
@@ -4358,6 +4373,16 @@ impl Adapter {
                         rel_type,
                         self.cancellation_token.clone(),
                     ))),
+                    Parse(_) => Ok(Value::from(false)),
+                }
+            }
+            "supports_atomic_exchange" => {
+                // (no args) -> bool (server passed the EXCHANGE TABLES probe)
+                ArgsIter::new("supports_atomic_exchange", &[], args).finish()?;
+                match &self.inner {
+                    Typed { adapter, .. } => Ok(Value::from(
+                        adapter.supports_atomic_exchange(state, self.cancellation_token.clone()),
+                    )),
                     Parse(_) => Ok(Value::from(false)),
                 }
             }

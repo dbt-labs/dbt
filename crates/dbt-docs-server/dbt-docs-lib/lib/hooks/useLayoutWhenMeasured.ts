@@ -1,8 +1,8 @@
 import { useEffect } from 'react';
 import { useNodesInitialized } from '@xyflow/react';
 
-import { allMeasured } from '../utils/dagreLayout';
 import { type LineageState, useLineageStore } from '../stores/lineageStore';
+import { allMeasured } from '../utils/dagreLayout';
 
 /** Whether the measurements have reached the store's own nodes. A primitive, so this
  *  subscription wakes only when the answer flips rather than on every store write. */

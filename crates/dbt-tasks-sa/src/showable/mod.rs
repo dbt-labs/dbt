@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -16,6 +15,7 @@ use dbt_common::{ErrorCode, FsResult, MacroSpansOnly, err, io_args};
 use dbt_jinja_utils::utils::{macro_spans_to_macro_span_vec, render_sql};
 use dbt_pretty_table::{make_column_names, pretty_data_table};
 use dbt_scheduler::instructions::{Instruction, SqlInstruction};
+use dbt_schemas::schemas::Preview;
 use dbt_schemas::schemas::profiles::Execute;
 use dbt_schemas::schemas::telemetry::NodeType;
 use dbt_schemas::schemas::{InternalDbtNodeAttributes, Nodes};
@@ -28,6 +28,7 @@ use dbt_tasks_core::task::{TP, Task};
 use dbt_telemetry::{ShowDataOutput, ShowDataOutputFormat};
 
 use minijinja::Value as MinijinjaValue;
+use minijinja::value::OverlayMap;
 
 mod analysis;
 mod model;
@@ -164,11 +165,11 @@ where
         }
     };
 
-    // Capture for LSP preview path. No-op if no caller is reading preview_result.
-    {
-        let mut guard = ctx.inner.preview_results.lock();
-        *guard = Some((batches.clone(), schema.clone()));
-    }
+    // Captured for in-process callers, which collect it after the task loop.
+    *ctx.inner.preview_results.lock() = Some(Preview {
+        batches: batches.clone(),
+        schema: schema.clone(),
+    });
 
     if batches.is_empty() && schema.fields().is_empty() {
         emit_warn_log_message(
@@ -271,8 +272,8 @@ pub(super) fn rendered_sql_for(
 fn make_show_compile_context(
     ctx: &TaskRunnerCtx,
     adapter_type: AdapterType,
-) -> FsResult<BTreeMap<String, MinijinjaValue>> {
-    let mut compile_ctx = ctx.inner.base_context.clone();
+) -> FsResult<OverlayMap> {
+    let mut compile_ctx = ctx.base_context_overlay();
     ctx.insert_adapter_overlay(&mut compile_ctx, adapter_type)?;
     Ok(compile_ctx)
 }

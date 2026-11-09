@@ -3,17 +3,18 @@ use crate::adapter::adapter_impl::{AdapterImpl, InnerAdapter};
 use crate::column::Column;
 use crate::connection::{AdapterConnectionFactory, ConnectionGuard};
 use crate::query_ctx::{node_id_from_state, query_ctx_from_state};
-use crate::record_batch::RecordBatchExt;
 use crate::relation::Relation;
 use crate::sql_types::{TypeOps, make_arrow_field_v2};
 use crate::value::columns_to_value;
 use crate::{AdapterResult, errors::AsyncAdapterResult, metadata::*};
 use arrow_schema::Schema;
+use dbt_adapter_engine::record_batch::RecordBatchExt;
 
 use arrow_array::{Array, RecordBatch, StringArray, UInt64Array};
 
 use dbt_adapter_core::ExecutionPhase;
 use dbt_adapter_engine::MapReduce;
+use dbt_adapter_engine::clickhouse::ClickHouseCapabilities;
 use dbt_adapter_sql::ident::quote_identifier;
 use dbt_adbc::{Connection, QueryCtx};
 use dbt_common::cancellation::Cancellable;
@@ -38,6 +39,16 @@ use std::sync::Arc;
 /// string literals (see <https://clickhouse.com/docs/en/sql-reference/syntax#string>).
 pub(crate) fn escape_clickhouse_string_literal(value: &str) -> String {
     value.replace('\\', "\\\\").replace('\'', "\\'")
+}
+
+fn clickhouse_relation_sql_name(schema: &str, identifier: &str) -> String {
+    let identifier = quote_identifier(identifier, AdapterType::ClickHouse);
+    if schema.is_empty() {
+        identifier
+    } else {
+        let schema = quote_identifier(schema, AdapterType::ClickHouse);
+        format!("{schema}.{identifier}")
+    }
 }
 
 /// Mirrors dbt-clickhouse util.py `engine_can_atomic_exchange`.
@@ -392,7 +403,7 @@ impl MetadataAdapter for ClickHouseMetadataAdapter {
 
         // ClickHouse is a 2-part name system: dbt `schema` maps to CH `database`,
         // and the dbt `database` field is unused/empty. The DESCRIBE TABLE SQL must
-        // use `schema.identifier` (unquoted), but the HashMap key that callers look
+        // use `schema.identifier`, but the HashMap key that callers look
         // up via `schemas.get(&semantic_fqn)` must match `relation.semantic_fqn()`.
         // These two are different strings, so we carry both through MapReduce as a
         // tuple `(semantic_fqn, sql_name)`.
@@ -402,11 +413,7 @@ impl MetadataAdapter for ClickHouseMetadataAdapter {
                 let semantic_fqn = relation.semantic_fqn();
                 let schema = relation.schema_as_str().unwrap_or_default();
                 let identifier = relation.identifier_as_str().unwrap_or_default();
-                let sql_name = if schema.is_empty() {
-                    identifier
-                } else {
-                    format!("{schema}.{identifier}")
-                };
+                let sql_name = clickhouse_relation_sql_name(&schema, &identifier);
                 (semantic_fqn, sql_name)
             })
             .collect();
@@ -597,6 +604,7 @@ pub fn relation_type_from_engine(engine_name: &str) -> RelationType {
     match engine_name {
         "View" | "LiveView" => RelationType::View,
         "MaterializedView" => RelationType::MaterializedView,
+        "Dictionary" => RelationType::Dictionary,
         // Anything else (MergeTree, ReplacingMergeTree, AggregatingMergeTree,
         // SummingMergeTree, CollapsingMergeTree, VersionedCollapsingMergeTree,
         // GraphiteMergeTree, Replicated*, Distributed, Memory, Log, etc.) is a table.
@@ -658,69 +666,6 @@ fn build_schema_from_clickhouse_describe(
 
     let schema = Schema::new(fields);
     Ok(Arc::new(schema))
-}
-
-/// ClickHouse server capabilities, probed once per engine and reused for every
-/// model/thread of that invocation (as the Python client does at connection
-/// init, and for `atomic_exchange` behind a process-global lock).
-#[derive(Debug, Clone)]
-pub struct ClickHouseCapabilities {
-    /// `SELECT version()` result; empty when the probe failed (callers treat
-    /// unknown as "modern server").
-    pub server_version: String,
-    /// Whether atomic `EXCHANGE TABLES` works on this server/database
-    /// (dbclient.py `_check_atomic_exchange`).
-    pub atomic_exchange: bool,
-    /// Whether lightweight deletes are usable. Mirrors dbclient.py
-    /// `_check_lightweight_deletes`.
-    pub has_lw_deletes: bool,
-    /// `has_lw_deletes` gated by the profile `use_lw_deletes` flag; picks the
-    /// default incremental strategy.
-    pub use_lw_deletes: bool,
-    /// The ND-mutation setting is disabled server-side but overridable; see
-    /// [`statement_options`].
-    pub nd_mutation_override: bool,
-}
-
-impl ClickHouseCapabilities {
-    /// Whether the connected server is older than `version`; an unknown
-    /// server version is treated as modern (false).
-    pub fn is_before(&self, version: &str) -> AdapterResult<bool> {
-        if self.server_version.is_empty() {
-            return Ok(false);
-        }
-        Ok(compare_versions(version, &self.server_version)? > 0)
-    }
-
-    /// Inclusive counterpart of [`ClickHouseCapabilities::is_before`]; an
-    /// unknown server version is treated as modern (true).
-    pub fn is_at_or_after(&self, version: &str) -> AdapterResult<bool> {
-        if self.server_version.is_empty() {
-            return Ok(true);
-        }
-        Ok(compare_versions(&self.server_version, version)? >= 0)
-    }
-}
-
-/// Mirrors dbt-clickhouse util.py `compare_versions`: 1/-1/0 comparing dotted
-/// numeric versions segment by segment; errors on non-numeric segments.
-fn compare_versions(v1: &str, v2: &str) -> AdapterResult<i32> {
-    for (part1, part2) in v1.split('.').zip(v2.split('.')) {
-        match (part1.parse::<i64>(), part2.parse::<i64>()) {
-            (Ok(a), Ok(b)) => {
-                if a != b {
-                    return Ok(if a > b { 1 } else { -1 });
-                }
-            }
-            _ => {
-                return Err(AdapterError::new(
-                    AdapterErrorKind::Configuration,
-                    "Version must consist of only numbers separated by '.'",
-                ));
-            }
-        }
-    }
-    Ok(0)
 }
 
 /// Read a dict-valued key (e.g. `settings`, `query_settings`) from
@@ -1117,36 +1062,6 @@ fn probe_atomic_exchange(run: &mut impl FnMut(&str) -> Option<RecordBatch>) -> b
 /// dbclient.py `ND_MUTATION_SETTING`.
 const ND_MUTATION_SETTING: &str = "allow_nondeterministic_mutations";
 
-/// dbclient.py `_ensure_database` parity (incl. its clause spacing).
-/// Divergence: identifiers are double-quoted via the shared ident helper
-/// instead of query.py's backtick quoting — equivalent for ClickHouse.
-pub(crate) fn exists_database_sql(database: &str) -> String {
-    format!(
-        "EXISTS DATABASE {}",
-        quote_identifier(database, AdapterType::ClickHouse)
-    )
-}
-
-/// See [`exists_database_sql`].
-pub(crate) fn create_database_sql(
-    database: &str,
-    database_engine: Option<&str>,
-    cluster: Option<&str>,
-) -> String {
-    let engine_clause = match database_engine {
-        Some(engine) if !engine.is_empty() => format!(" ENGINE {engine} "),
-        _ => String::new(),
-    };
-    let cluster_clause = match cluster {
-        Some(cluster) if !cluster.trim().is_empty() => format!(" ON CLUSTER \"{cluster}\" "),
-        _ => String::new(),
-    };
-    format!(
-        "CREATE DATABASE IF NOT EXISTS {}{cluster_clause}{engine_clause}",
-        quote_identifier(database, AdapterType::ClickHouse)
-    )
-}
-
 /// See [`probe_lightweight_deletes`].
 struct LwDeletesProbe {
     has_lw_deletes: bool,
@@ -1380,9 +1295,23 @@ pub(crate) fn column_changes_value(
 mod tests {
     use super::*;
     use crate::sql_types::DefaultTypeOps;
-    use crate::stmt_splitter::DefaultStmtSplitter;
+    use crate::stmt_splitter::{DefaultStmtSplitter, StmtSplitter};
     use arrow_schema::{DataType, Field};
     use dbt_schemas::schemas::relations::DEFAULT_RESOLVED_QUOTING;
+
+    #[test]
+    fn clickhouse_relation_sql_name_keeps_adversarial_values_in_one_statement() {
+        let sql = format!(
+            "DESCRIBE TABLE {};",
+            clickhouse_relation_sql_name(r#"schema\"; SELECT 1; --"#, r#"table\"; SELECT 2; --"#,)
+        );
+
+        assert!(sql.contains("\"schema\\\\\"\"; SELECT 1; --\".\"table\\\\\"\"; SELECT 2; --\""));
+        assert_eq!(
+            DefaultStmtSplitter.split(&sql, AdapterType::ClickHouse),
+            vec![sql.trim_end_matches(';')]
+        );
+    }
 
     #[test]
     fn test_build_settings_str_mirrors_python() {
@@ -1598,36 +1527,6 @@ mod tests {
             err.message()
                 .contains("S3 external_id specified without role_arn")
         );
-    }
-
-    #[test]
-    fn test_ensure_database_sql_mirrors_python() {
-        assert_eq!(exists_database_sql("my_db"), "EXISTS DATABASE \"my_db\"");
-        // '"' doubling in quoted identifiers verified against ClickHouse 26.3
-        assert_eq!(
-            exists_database_sql("we\"ird"),
-            "EXISTS DATABASE \"we\"\"ird\""
-        );
-        assert_eq!(
-            create_database_sql("my_db", None, None),
-            "CREATE DATABASE IF NOT EXISTS \"my_db\""
-        );
-        assert_eq!(
-            create_database_sql("my_db", Some(""), Some("  ")),
-            "CREATE DATABASE IF NOT EXISTS \"my_db\""
-        );
-        assert_eq!(
-            create_database_sql("my_db", Some("Replicated"), Some("test_shard")),
-            "CREATE DATABASE IF NOT EXISTS \"my_db\" ON CLUSTER \"test_shard\"  ENGINE Replicated "
-        );
-    }
-
-    #[test]
-    fn test_compare_versions_mirrors_python() {
-        assert_eq!(compare_versions("26.6", "26.3.12.3").unwrap(), 1);
-        assert_eq!(compare_versions("22.7.1.2484", "26.3.12.3").unwrap(), -1);
-        assert_eq!(compare_versions("26.3", "26.3.12.3").unwrap(), 0); // zip stops at shorter
-        assert!(compare_versions("26.x", "26.3").is_err());
     }
 
     #[test]
@@ -2091,6 +1990,34 @@ mod tests {
         assert_eq!(db_engine_clause(None), "");
         assert_eq!(db_engine_clause(Some("")), "");
         assert_eq!(db_engine_clause(Some("Replicated")), "ENGINE Replicated");
+    }
+
+    /// Mirrors the `type` column of v1's `clickhouse__list_relations_without_caching`.
+    #[test]
+    fn relation_type_from_engine_mirrors_list_relations_sql() {
+        assert_eq!(relation_type_from_engine("View"), RelationType::View);
+        assert_eq!(relation_type_from_engine("LiveView"), RelationType::View);
+        assert_eq!(
+            relation_type_from_engine("MaterializedView"),
+            RelationType::MaterializedView
+        );
+        assert_eq!(
+            relation_type_from_engine("Dictionary"),
+            RelationType::Dictionary
+        );
+        for engine in [
+            "MergeTree",
+            "ReplicatedReplacingMergeTree",
+            "Distributed",
+            "Memory",
+            "Log",
+        ] {
+            assert_eq!(
+                relation_type_from_engine(engine),
+                RelationType::Table,
+                "{engine}"
+            );
+        }
     }
 
     #[test]

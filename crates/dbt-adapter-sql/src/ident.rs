@@ -91,21 +91,13 @@ impl fmt::Display for IdentDisplay<'_> {
 fn _render_ident_in_quotes(
     quote: QuotingStyle,
     s: &str,
-    _backend: AdapterType,
+    backend: AdapterType,
     f: &mut fmt::Formatter<'_>,
 ) -> fmt::Result {
-    // TODO: use backend to determine how to escape the quote character
     write!(f, "{}", quote.opening())?;
     let closing: &str = quote.closing();
     let q = closing.chars().next().unwrap(); // `, ", or '
-    for c in s.chars() {
-        if c == q {
-            // Escape the quote character by doubling it
-            write!(f, "{closing}{closing}")?;
-        } else {
-            write!(f, "{c}")?;
-        }
-    }
+    write!(f, "{}", escape_identifier_content(s, backend, q))?;
     write!(f, "{closing}")
 }
 
@@ -248,11 +240,27 @@ pub fn sanitize_identifier(name: &str, backend: AdapterType) -> String {
     }
 }
 
+/// Escape the contents of an identifier delimited by `quote`, without adding
+/// the delimiters themselves.
+pub fn escape_identifier_content(id: &str, backend: AdapterType, quote: char) -> String {
+    // Keep these rules in sync with `dbt-schemas`' `BaseRelation::quoted`.
+    match backend {
+        AdapterType::Bigquery => id
+            .replace('\\', "\\\\")
+            .replace(quote, &format!("\\{quote}")),
+        AdapterType::ClickHouse => id
+            .replace('\\', "\\\\")
+            .replace(quote, &format!("{quote}{quote}")),
+        _ => id.replace(quote, &format!("{quote}{quote}")),
+    }
+}
+
 /// Render `id` as an unconditionally quoted identifier for `backend`, escaping
-/// embedded quote characters by doubling. Unlike [`Ident::new`], which quotes
-/// only when required, this always quotes — for composing SQL over identifiers
-/// of unknown provenance (e.g. DuckDB `DESCRIBE "db"."schema"."table"`), where
-/// an unquoted rendering could re-interpret case or special characters.
+/// embedded delimiters using the backend's identifier rules. Unlike
+/// [`Ident::new`], which quotes only when required, this always quotes — for
+/// composing SQL over identifiers of unknown provenance (e.g. DuckDB
+/// `DESCRIBE "db"."schema"."table"`), where an unquoted rendering could
+/// re-interpret case or special characters.
 pub fn quote_identifier(id: &str, backend: AdapterType) -> String {
     Ident::unquoted(canonical_quote(backend), id)
         .display(backend)
@@ -263,16 +271,68 @@ pub fn quote_identifier(id: &str, backend: AdapterType) -> String {
 /// value can never terminate the literal early. The literal-value member of
 /// the family next to [`sanitize_identifier`] (strip) and [`quote_identifier`]
 /// (quote), which handle identifiers.
-pub fn escape_string_literal(s: &str, _backend: AdapterType) -> String {
-    // ANSI '' doubling — correct for every currently supported backend.
-    // Dialects with different literal-escape rules (e.g. backslash-escaped
-    // strings) grow a match arm on `_backend` when they arrive.
-    s.replace('\'', "''")
+pub fn escape_string_literal(s: &str, backend: AdapterType) -> String {
+    match backend {
+        AdapterType::Snowflake | AdapterType::Redshift | AdapterType::Postgres => {
+            s.replace('\\', "\\\\").replace('\'', "''")
+        }
+        AdapterType::Bigquery
+        | AdapterType::Databricks
+        | AdapterType::Spark
+        | AdapterType::ClickHouse => s.replace('\\', "\\\\").replace('\'', "\\'"),
+        AdapterType::Salesforce
+        | AdapterType::DuckDB
+        | AdapterType::Fabric
+        | AdapterType::Exasol
+        | AdapterType::Athena
+        | AdapterType::Starburst
+        | AdapterType::Trino
+        | AdapterType::Datafusion
+        | AdapterType::Dremio
+        | AdapterType::Oracle
+        | AdapterType::LakeCompute => s.replace('\'', "''"),
+    }
+}
+
+/// Render `s` as a single-quoted SQL string literal, escaped with
+/// [`escape_string_literal`].
+pub fn quote_string_literal(s: &str, backend: AdapterType) -> String {
+    format!("'{}'", escape_string_literal(s, backend))
 }
 
 #[cfg(test)]
 mod sanitize_tests {
     use super::*;
+
+    fn unescape_doubled_quote_and_backslash(value: &str) -> String {
+        let mut chars = value.chars().peekable();
+        let mut result = String::new();
+        while let Some(c) = chars.next() {
+            if c == '\\' && chars.peek() == Some(&'\\') {
+                chars.next();
+                result.push('\\');
+            } else if c == '\'' && chars.peek() == Some(&'\'') {
+                chars.next();
+                result.push('\'');
+            } else {
+                result.push(c);
+            }
+        }
+        result
+    }
+
+    fn unescape_backslash_literal(value: &str) -> String {
+        let mut chars = value.chars();
+        let mut result = String::new();
+        while let Some(c) = chars.next() {
+            if c == '\\' {
+                result.push(chars.next().expect("escaped character"));
+            } else {
+                result.push(c);
+            }
+        }
+        result
+    }
 
     #[test]
     fn snowflake_hyphen_must_be_quoted() {
@@ -291,6 +351,26 @@ mod sanitize_tests {
             "\"od\"\"d\""
         );
         assert_eq!(quote_identifier("col", AdapterType::Bigquery), "`col`");
+        assert_eq!(
+            quote_identifier(r"odd\`name", AdapterType::Bigquery),
+            r"`odd\\\`name`"
+        );
+        assert_eq!(
+            quote_identifier(r#"we\"ird"#, AdapterType::ClickHouse),
+            r#""we\\""ird""#
+        );
+        assert_eq!(
+            quote_identifier("trail\\", AdapterType::ClickHouse),
+            r#""trail\\""#
+        );
+    }
+
+    #[test]
+    fn quote_string_literal_wraps_and_escapes() {
+        let q = |s: &str| quote_string_literal(s, AdapterType::DuckDB);
+        assert_eq!(q("plain"), "'plain'");
+        assert_eq!(q("o'brien"), "'o''brien'");
+        assert_eq!(q(""), "''");
     }
 
     #[test]
@@ -299,6 +379,79 @@ mod sanitize_tests {
         assert_eq!(e("o'brien"), "o''brien");
         assert_eq!(e("'; DROP TABLE x; --"), "''; DROP TABLE x; --");
         assert_eq!(e("plain"), "plain");
+    }
+
+    #[test]
+    fn escape_string_literal_escapes_snowflake_backslashes() {
+        assert_eq!(
+            escape_string_literal(r"a\b'c", AdapterType::Snowflake),
+            r"a\\b''c"
+        );
+    }
+
+    #[test]
+    fn escape_string_literal_uses_backslash_escapes_for_hive_style_literals() {
+        assert_eq!(
+            escape_string_literal(r"a\b'c", AdapterType::Databricks),
+            r"a\\b\'c"
+        );
+    }
+
+    #[test]
+    fn escape_string_literal_uses_backslash_escapes_for_bigquery_and_clickhouse() {
+        for backend in [AdapterType::Bigquery, AdapterType::ClickHouse] {
+            assert_eq!(escape_string_literal(r"a\b'c", backend), r"a\\b\'c");
+        }
+    }
+
+    #[test]
+    fn escape_string_literal_doubles_redshift_backslashes_and_quotes() {
+        assert_eq!(
+            escape_string_literal(r"a\b'c", AdapterType::Redshift),
+            r"a\\b''c"
+        );
+    }
+
+    #[test]
+    fn escape_string_literal_round_trips_adversarial_values() {
+        let values = [
+            "'",
+            "\\",
+            "$$",
+            "; --",
+            "/* comment */",
+            "line\nbreak",
+            r"\' ; SELECT 1; --",
+            r"'\'\\''",
+        ];
+
+        for backend in [
+            AdapterType::Snowflake,
+            AdapterType::Redshift,
+            AdapterType::Postgres,
+        ] {
+            for value in values {
+                let escaped = escape_string_literal(value, backend);
+                assert_eq!(unescape_doubled_quote_and_backslash(&escaped), value);
+                let escaped_twice = escape_string_literal(&escaped, backend);
+                assert_eq!(
+                    unescape_doubled_quote_and_backslash(&escaped_twice),
+                    escaped
+                );
+            }
+        }
+
+        for backend in [
+            AdapterType::Bigquery,
+            AdapterType::Databricks,
+            AdapterType::Spark,
+            AdapterType::ClickHouse,
+        ] {
+            for value in values {
+                let escaped = escape_string_literal(value, backend);
+                assert_eq!(unescape_backslash_literal(&escaped), value);
+            }
+        }
     }
 
     #[test]

@@ -16,6 +16,7 @@ use minijinja::{
     value::{Rest, Value as MinijinjaValue, ValueKind},
 };
 use regex::Regex;
+use serde::Serialize;
 use sqlparser::dialect::GenericDialect;
 use sqlparser::keywords::Keyword;
 use sqlparser::tokenizer::{Location, Token, Tokenizer};
@@ -37,7 +38,12 @@ use crate::{jinja_environment::JinjaEnv, phases::parse::sql_resource::SqlResourc
 pub use dbt_jinja_vars::{DBT_INTERNAL_ENV_VAR_PREFIX, SECRET_ENV_VAR_PREFIX};
 
 /// The version of dbt used in this crate
-pub const DBT_VERSION: &str = "2.0.0"; // easter egg jokes for now
+///
+/// See: fs/sa/crates/dbt-main/src/dbt_lib.rs:660
+pub const DBT_VERSION: &str = match option_env!("DBT_VERSION") {
+    Some(version) => version,
+    None => env!("CARGO_PKG_VERSION"),
+};
 
 /// A lazy initialized mutex-protected hash map for storing environment variables
 pub static ENV_VARS: LazyLock<Mutex<HashMap<String, String>>> =
@@ -418,7 +424,7 @@ fn extract_local_ephemeral_cte_names(sql: &str) -> HashSet<&str> {
 pub fn render_sql(
     sql: &str,
     env: &JinjaEnv,
-    ctx: &BTreeMap<String, Value>,
+    ctx: &impl Serialize,
     listener_factory: &dyn RenderingEventListenerFactory,
     filename: &Path,
 ) -> FsResult<String> {
@@ -452,7 +458,7 @@ pub fn render_sql(
 pub fn render_sql_with_listeners(
     sql: &str,
     env: &JinjaEnv,
-    ctx: &BTreeMap<String, Value>,
+    ctx: &impl Serialize,
     listeners: &[Rc<dyn RenderingEventListener>],
     tokenizer_listeners: &[Rc<dyn minijinja::listener::TokenizerEventListener>],
     filename: &Path,
@@ -820,22 +826,24 @@ pub fn dependency_package_name_from_ctx<'a>(
 
 /// Add common context vars for tasks
 pub fn add_task_context(
-    base_context: &mut BTreeMap<String, Value>,
+    base_context: &mut impl Extend<(String, Value)>,
     common: &CommonAttributes,
     thread_id: &i32,
 ) {
-    base_context.insert(
-        TARGET_PACKAGE_NAME.to_string(),
-        MinijinjaValue::from(common.package_name.clone()),
-    );
-    base_context.insert(
-        TARGET_UNIQUE_ID.to_string(),
-        MinijinjaValue::from(common.unique_id.clone()),
-    );
-    base_context.insert(
-        THREAD_ID.to_string(),
-        MinijinjaValue::from(format!("Thread-{}", thread_id)),
-    );
+    base_context.extend([
+        (
+            TARGET_PACKAGE_NAME.to_string(),
+            MinijinjaValue::from(common.package_name.clone()),
+        ),
+        (
+            TARGET_UNIQUE_ID.to_string(),
+            MinijinjaValue::from(common.unique_id.clone()),
+        ),
+        (
+            THREAD_ID.to_string(),
+            MinijinjaValue::from(format!("Thread-{}", thread_id)),
+        ),
+    ]);
 }
 
 #[cfg(test)]

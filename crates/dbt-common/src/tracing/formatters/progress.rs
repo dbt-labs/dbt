@@ -45,11 +45,79 @@ impl fmt::Display for ProgressMessageLine<'_> {
             write!(f, "{}", MaybeColored::new(style, action, self.colorize))?;
         }
 
-        match progress.description.as_ref() {
-            Some(desc) if !desc.is_empty() => {
-                write!(f, " {} ({})", progress.target, desc)
-            }
-            _ => write!(f, " {}", progress.target),
+        let parenthetical = match progress.description.as_deref() {
+            Some(desc) if !desc.is_empty() => Some(desc.to_string()),
+            _ => progress
+                .blocking_run_id
+                .as_deref()
+                .map(|id| format!("blocked by run {id}")),
+        };
+
+        match parenthetical {
+            Some(text) => write!(f, " {} ({})", progress.target, text),
+            None => write!(f, " {}", progress.target),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn render(progress: &ProgressMessage) -> String {
+        ProgressMessageLine {
+            progress,
+            severity: SeverityNumber::Info,
+            pad_action: false,
+            colorize: false,
+        }
+        .to_string()
+    }
+
+    #[test]
+    fn renders_plain_target_with_no_description_or_blocking_run_id() {
+        let progress = ProgressMessage {
+            action: "Waiting".to_string(),
+            target: "model.a".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(render(&progress), "Waiting model.a");
+    }
+
+    #[test]
+    fn renders_description_when_set() {
+        let progress = ProgressMessage {
+            action: "Loading".to_string(),
+            target: "project".to_string(),
+            description: Some("from cache".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(render(&progress), "Loading project (from cache)");
+    }
+
+    #[test]
+    fn derives_parenthetical_from_blocking_run_id_when_description_is_unset() {
+        let progress = ProgressMessage {
+            action: "Waiting".to_string(),
+            target: "model.a".to_string(),
+            blocking_run_id: Some("run-123".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            render(&progress),
+            "Waiting model.a (blocked by run run-123)"
+        );
+    }
+
+    #[test]
+    fn prefers_description_over_blocking_run_id_when_both_are_set() {
+        let progress = ProgressMessage {
+            action: "Waiting".to_string(),
+            target: "model.a".to_string(),
+            description: Some("custom note".to_string()),
+            blocking_run_id: Some("run-123".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(render(&progress), "Waiting model.a (custom note)");
     }
 }

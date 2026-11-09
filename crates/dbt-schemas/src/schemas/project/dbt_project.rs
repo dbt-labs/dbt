@@ -152,10 +152,10 @@ pub struct DbtProject {
     pub docs_paths: Option<Vec<String>>,
     #[serde(rename = "skill-paths")]
     pub skill_paths: Option<Vec<String>>,
-    /// Directories whose files belong to a plugin, by plugin type. There is no default: a plugin
-    /// reads only the paths a project names for it.
-    #[serde(rename = "plugin-paths")]
-    pub plugin_paths: Option<BTreeMap<String, Vec<String>>>,
+    /// Directories whose files belong to an experimental, by experimental type. There is no
+    /// default: an experimental reads only the paths a project names for it.
+    #[serde(rename = "experimental-paths")]
+    pub experimental_paths: Option<BTreeMap<String, Vec<String>>>,
     #[serde(rename = "target-path")]
     pub target_path: Option<TargetPath>,
     #[serde(rename = "log-path")]
@@ -231,7 +231,7 @@ impl Default for DbtProject {
             check_paths: None,
             docs_paths: None,
             skill_paths: None,
-            plugin_paths: None,
+            experimental_paths: None,
             target_path: None,
             log_path: None,
             packages_install_path: None,
@@ -270,6 +270,14 @@ impl Default for DbtProject {
 }
 
 impl DbtProject {
+    /// Deserializes a `dbt_project.yml` value with no Jinja rendering.
+    ///
+    /// Non-generic on purpose: crates that call this share one compiled copy
+    /// of `DbtProject`'s deserializer instead of each instantiating their own.
+    pub fn from_yml_value(value: dbt_yaml::Value) -> Result<Self, dbt_yaml::Error> {
+        value.into_typed(|_, _, _| {}, |_| Ok(None))
+    }
+
     pub fn get_project_id(&self) -> String {
         /*
         Returns the hash of the project name. Can be used for telemetry.
@@ -530,7 +538,7 @@ mod tests {
             check_paths: Some(vec![]),
             docs_paths: Some(vec![]),
             skill_paths: Some(vec![]),
-            plugin_paths: None,
+            experimental_paths: None,
             target_path: Some(TargetPath::Target),
             log_path: Some(LogPath::Logs),
             packages_install_path: Some("packages".to_string()),

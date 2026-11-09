@@ -29,6 +29,25 @@ pub enum DateTimeState {
     FixedOffset(DateTime<chrono::FixedOffset>), // Add this variant
 }
 
+/// In `pytz`, date arithmetic on local times does not update the timezone if
+/// it crosses a daylight savings boundary until `normalize` is called.
+///
+/// To match existing dbt v1 behavior, we perform the addition explicitly
+/// and preserve the offset.
+pub(crate) fn add_preserving_offset(
+    adt: &DateTime<Tz>,
+    dur: Duration,
+) -> Result<DateTime<Tz>, Error> {
+    let shifted = adt
+        .naive_utc()
+        .checked_add_signed(dur)
+        .ok_or_else(|| Error::new(ErrorKind::InvalidOperation, "datetime value out of range"))?;
+    Ok(DateTime::<Tz>::from_naive_utc_and_offset(
+        shifted,
+        *adt.offset(),
+    ))
+}
+
 /// The user-facing "datetime" constructor object (Python's `datetime.datetime`).
 #[derive(Clone, Debug)]
 pub struct PyDateTime {
@@ -629,14 +648,6 @@ impl PyDateTime {
         }
     }
 
-    // convenience "fixed offset" constructor
-    pub fn new_fixed_offset(dt: DateTime<chrono::FixedOffset>) -> Self {
-        PyDateTime {
-            state: DateTimeState::FixedOffset(dt),
-            tzinfo: None,
-        }
-    }
-
     /// Return naive or aware's .year
     pub fn year(&self) -> Option<Value> {
         Some(Value::from(self.chrono_dt().year()))
@@ -815,14 +826,16 @@ impl PyDateTime {
 
             match &self.state {
                 DateTimeState::Naive(ndt) => {
-                    let new_naive = *ndt + dur;
+                    let new_naive = ndt.checked_add_signed(dur).ok_or_else(|| {
+                        Error::new(ErrorKind::InvalidOperation, "datetime value out of range")
+                    })?;
                     Ok(Value::from_object(PyDateTime {
                         state: DateTimeState::Naive(new_naive),
                         tzinfo: self.tzinfo.clone(),
                     }))
                 }
                 DateTimeState::Aware(adt) => {
-                    let new_aware = *adt + dur;
+                    let new_aware = add_preserving_offset(adt, dur)?;
                     // same tzinfo
                     Ok(Value::from_object(PyDateTime {
                         state: DateTimeState::Aware(new_aware),
@@ -830,7 +843,9 @@ impl PyDateTime {
                     }))
                 }
                 DateTimeState::FixedOffset(fdt) => {
-                    let new_fdt = *fdt + dur;
+                    let new_fdt = fdt.checked_add_signed(dur).ok_or_else(|| {
+                        Error::new(ErrorKind::InvalidOperation, "datetime value out of range")
+                    })?;
                     Ok(Value::from_object(PyDateTime {
                         state: DateTimeState::FixedOffset(new_fdt),
                         tzinfo: self.tzinfo.clone(),
@@ -912,6 +927,9 @@ impl PyDateTime {
             (DateTimeState::Naive(l), DateTimeState::Naive(r)) => Some(l.cmp(r)),
             (DateTimeState::Aware(l), DateTimeState::Aware(r)) => Some(l.cmp(r)),
             (DateTimeState::FixedOffset(l), DateTimeState::FixedOffset(r)) => Some(l.cmp(r)),
+            // chrono compares datetimes with different timezone types by their UTC instant, so partial_cmp is safe here.
+            (DateTimeState::Aware(l), DateTimeState::FixedOffset(r)) => l.partial_cmp(r),
+            (DateTimeState::FixedOffset(l), DateTimeState::Aware(r)) => l.partial_cmp(r),
             _ => None,
         });
 

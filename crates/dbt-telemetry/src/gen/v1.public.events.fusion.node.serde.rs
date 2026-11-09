@@ -519,6 +519,83 @@ impl<'de> serde::Deserialize<'de> for MicrobatchEvaluated {
         deserializer.deserialize_struct("v1.public.events.fusion.node.MicrobatchEvaluated", FIELDS, GeneratedVisitor)
     }
 }
+impl serde::Serialize for NodeAccess {
+    #[allow(deprecated)]
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let variant = match self {
+            Self::Unspecified => "NODE_ACCESS_UNSPECIFIED",
+            Self::Private => "NODE_ACCESS_PRIVATE",
+            Self::Protected => "NODE_ACCESS_PROTECTED",
+            Self::Public => "NODE_ACCESS_PUBLIC",
+        };
+        serializer.serialize_str(variant)
+    }
+}
+impl<'de> serde::Deserialize<'de> for NodeAccess {
+    #[allow(deprecated)]
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        const FIELDS: &[&str] = &[
+            "NODE_ACCESS_UNSPECIFIED",
+            "NODE_ACCESS_PRIVATE",
+            "NODE_ACCESS_PROTECTED",
+            "NODE_ACCESS_PUBLIC",
+        ];
+
+        struct GeneratedVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for GeneratedVisitor {
+            type Value = NodeAccess;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(formatter, "expected one of: {:?}", &FIELDS)
+            }
+
+            fn visit_i64<E>(self, v: i64) -> std::result::Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                i32::try_from(v)
+                    .ok()
+                    .and_then(|x| x.try_into().ok())
+                    .ok_or_else(|| {
+                        serde::de::Error::invalid_value(serde::de::Unexpected::Signed(v), &self)
+                    })
+            }
+
+            fn visit_u64<E>(self, v: u64) -> std::result::Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                i32::try_from(v)
+                    .ok()
+                    .and_then(|x| x.try_into().ok())
+                    .ok_or_else(|| {
+                        serde::de::Error::invalid_value(serde::de::Unexpected::Unsigned(v), &self)
+                    })
+            }
+
+            fn visit_str<E>(self, value: &str) -> std::result::Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                match value {
+                    "NODE_ACCESS_UNSPECIFIED" => Ok(NodeAccess::Unspecified),
+                    "NODE_ACCESS_PRIVATE" => Ok(NodeAccess::Private),
+                    "NODE_ACCESS_PROTECTED" => Ok(NodeAccess::Protected),
+                    "NODE_ACCESS_PUBLIC" => Ok(NodeAccess::Public),
+                    _ => Err(serde::de::Error::unknown_variant(value, FIELDS)),
+                }
+            }
+        }
+        deserializer.deserialize_any(GeneratedVisitor)
+    }
+}
 impl serde::Serialize for NodeAdapterResponse {
     #[allow(deprecated)]
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
@@ -941,6 +1018,83 @@ impl<'de> serde::Deserialize<'de> for NodeCancelReason {
         deserializer.deserialize_any(GeneratedVisitor)
     }
 }
+impl serde::Serialize for NodeComputeMode {
+    #[allow(deprecated)]
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let variant = match self {
+            Self::Unspecified => "NODE_COMPUTE_MODE_UNSPECIFIED",
+            Self::Remote => "NODE_COMPUTE_MODE_REMOTE",
+            Self::Local => "NODE_COMPUTE_MODE_LOCAL",
+            Self::LakeCompute => "NODE_COMPUTE_MODE_LAKE_COMPUTE",
+        };
+        serializer.serialize_str(variant)
+    }
+}
+impl<'de> serde::Deserialize<'de> for NodeComputeMode {
+    #[allow(deprecated)]
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        const FIELDS: &[&str] = &[
+            "NODE_COMPUTE_MODE_UNSPECIFIED",
+            "NODE_COMPUTE_MODE_REMOTE",
+            "NODE_COMPUTE_MODE_LOCAL",
+            "NODE_COMPUTE_MODE_LAKE_COMPUTE",
+        ];
+
+        struct GeneratedVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for GeneratedVisitor {
+            type Value = NodeComputeMode;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(formatter, "expected one of: {:?}", &FIELDS)
+            }
+
+            fn visit_i64<E>(self, v: i64) -> std::result::Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                i32::try_from(v)
+                    .ok()
+                    .and_then(|x| x.try_into().ok())
+                    .ok_or_else(|| {
+                        serde::de::Error::invalid_value(serde::de::Unexpected::Signed(v), &self)
+                    })
+            }
+
+            fn visit_u64<E>(self, v: u64) -> std::result::Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                i32::try_from(v)
+                    .ok()
+                    .and_then(|x| x.try_into().ok())
+                    .ok_or_else(|| {
+                        serde::de::Error::invalid_value(serde::de::Unexpected::Unsigned(v), &self)
+                    })
+            }
+
+            fn visit_str<E>(self, value: &str) -> std::result::Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                match value {
+                    "NODE_COMPUTE_MODE_UNSPECIFIED" => Ok(NodeComputeMode::Unspecified),
+                    "NODE_COMPUTE_MODE_REMOTE" => Ok(NodeComputeMode::Remote),
+                    "NODE_COMPUTE_MODE_LOCAL" => Ok(NodeComputeMode::Local),
+                    "NODE_COMPUTE_MODE_LAKE_COMPUTE" => Ok(NodeComputeMode::LakeCompute),
+                    _ => Err(serde::de::Error::unknown_variant(value, FIELDS)),
+                }
+            }
+        }
+        deserializer.deserialize_any(GeneratedVisitor)
+    }
+}
 impl serde::Serialize for NodeErrorType {
     #[allow(deprecated)]
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
@@ -1092,6 +1246,12 @@ impl serde::Serialize for NodeEvaluated {
         if self.adapter_response.is_some() {
             len += 1;
         }
+        if self.compute_mode.is_some() {
+            len += 1;
+        }
+        if self.catalog_type.is_some() {
+            len += 1;
+        }
         if self.node_outcome_detail.is_some() {
             len += 1;
         }
@@ -1183,6 +1343,14 @@ impl serde::Serialize for NodeEvaluated {
         if let Some(v) = self.adapter_response.as_ref() {
             struct_ser.serialize_field("adapter_response", v)?;
         }
+        if let Some(v) = self.compute_mode.as_ref() {
+            let v = NodeComputeMode::try_from(*v)
+                .map_err(|_| serde::ser::Error::custom(format!("Invalid variant {}", *v)))?;
+            struct_ser.serialize_field("compute_mode", &v)?;
+        }
+        if let Some(v) = self.catalog_type.as_ref() {
+            struct_ser.serialize_field("catalog_type", v)?;
+        }
         if let Some(v) = self.node_outcome_detail.as_ref() {
             match v {
                 node_evaluated::NodeOutcomeDetail::NodeCacheDetail(v) => {
@@ -1252,6 +1420,10 @@ impl<'de> serde::Deserialize<'de> for NodeEvaluated {
             "stateDecisionId",
             "adapter_response",
             "adapterResponse",
+            "compute_mode",
+            "computeMode",
+            "catalog_type",
+            "catalogType",
             "node_cache_detail",
             "nodeCacheDetail",
             "node_test_detail",
@@ -1289,6 +1461,8 @@ impl<'de> serde::Deserialize<'de> for NodeEvaluated {
             IdleTimeMs,
             StateDecisionId,
             AdapterResponse,
+            ComputeMode,
+            CatalogType,
             NodeCacheDetail,
             NodeTestDetail,
             NodeFreshnessOutcome,
@@ -1339,6 +1513,8 @@ impl<'de> serde::Deserialize<'de> for NodeEvaluated {
                             "idleTimeMs" | "idle_time_ms" => Ok(GeneratedField::IdleTimeMs),
                             "stateDecisionId" | "state_decision_id" => Ok(GeneratedField::StateDecisionId),
                             "adapterResponse" | "adapter_response" => Ok(GeneratedField::AdapterResponse),
+                            "computeMode" | "compute_mode" => Ok(GeneratedField::ComputeMode),
+                            "catalogType" | "catalog_type" => Ok(GeneratedField::CatalogType),
                             "nodeCacheDetail" | "node_cache_detail" => Ok(GeneratedField::NodeCacheDetail),
                             "nodeTestDetail" | "node_test_detail" => Ok(GeneratedField::NodeTestDetail),
                             "nodeFreshnessOutcome" | "node_freshness_outcome" => Ok(GeneratedField::NodeFreshnessOutcome),
@@ -1386,6 +1562,8 @@ impl<'de> serde::Deserialize<'de> for NodeEvaluated {
                 let mut idle_time_ms__ = None;
                 let mut state_decision_id__ = None;
                 let mut adapter_response__ = None;
+                let mut compute_mode__ = None;
+                let mut catalog_type__ = None;
                 let mut node_outcome_detail__ = None;
                 while let Some(k) = map_.next_key()? {
                     match k {
@@ -1535,6 +1713,18 @@ impl<'de> serde::Deserialize<'de> for NodeEvaluated {
                             }
                             adapter_response__ = map_.next_value()?;
                         }
+                        GeneratedField::ComputeMode => {
+                            if compute_mode__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("computeMode"));
+                            }
+                            compute_mode__ = map_.next_value::<::std::option::Option<NodeComputeMode>>()?.map(|x| x as i32);
+                        }
+                        GeneratedField::CatalogType => {
+                            if catalog_type__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("catalogType"));
+                            }
+                            catalog_type__ = map_.next_value()?;
+                        }
                         GeneratedField::NodeCacheDetail => {
                             if node_outcome_detail__.is_some() {
                                 return Err(serde::de::Error::duplicate_field("nodeCacheDetail"));
@@ -1599,6 +1789,8 @@ impl<'de> serde::Deserialize<'de> for NodeEvaluated {
                     idle_time_ms: idle_time_ms__,
                     state_decision_id: state_decision_id__,
                     adapter_response: adapter_response__,
+                    compute_mode: compute_mode__,
+                    catalog_type: catalog_type__,
                     node_outcome_detail: node_outcome_detail__,
                 })
             }
@@ -1702,6 +1894,83 @@ impl<'de> serde::Deserialize<'de> for NodeEvaluationDetail {
             }
         }
         deserializer.deserialize_struct("v1.public.events.fusion.node.NodeEvaluationDetail", FIELDS, GeneratedVisitor)
+    }
+}
+impl serde::Serialize for NodeLanguage {
+    #[allow(deprecated)]
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let variant = match self {
+            Self::Unspecified => "NODE_LANGUAGE_UNSPECIFIED",
+            Self::Sql => "NODE_LANGUAGE_SQL",
+            Self::Python => "NODE_LANGUAGE_PYTHON",
+            Self::Javascript => "NODE_LANGUAGE_JAVASCRIPT",
+        };
+        serializer.serialize_str(variant)
+    }
+}
+impl<'de> serde::Deserialize<'de> for NodeLanguage {
+    #[allow(deprecated)]
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        const FIELDS: &[&str] = &[
+            "NODE_LANGUAGE_UNSPECIFIED",
+            "NODE_LANGUAGE_SQL",
+            "NODE_LANGUAGE_PYTHON",
+            "NODE_LANGUAGE_JAVASCRIPT",
+        ];
+
+        struct GeneratedVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for GeneratedVisitor {
+            type Value = NodeLanguage;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(formatter, "expected one of: {:?}", &FIELDS)
+            }
+
+            fn visit_i64<E>(self, v: i64) -> std::result::Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                i32::try_from(v)
+                    .ok()
+                    .and_then(|x| x.try_into().ok())
+                    .ok_or_else(|| {
+                        serde::de::Error::invalid_value(serde::de::Unexpected::Signed(v), &self)
+                    })
+            }
+
+            fn visit_u64<E>(self, v: u64) -> std::result::Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                i32::try_from(v)
+                    .ok()
+                    .and_then(|x| x.try_into().ok())
+                    .ok_or_else(|| {
+                        serde::de::Error::invalid_value(serde::de::Unexpected::Unsigned(v), &self)
+                    })
+            }
+
+            fn visit_str<E>(self, value: &str) -> std::result::Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                match value {
+                    "NODE_LANGUAGE_UNSPECIFIED" => Ok(NodeLanguage::Unspecified),
+                    "NODE_LANGUAGE_SQL" => Ok(NodeLanguage::Sql),
+                    "NODE_LANGUAGE_PYTHON" => Ok(NodeLanguage::Python),
+                    "NODE_LANGUAGE_JAVASCRIPT" => Ok(NodeLanguage::Javascript),
+                    _ => Err(serde::de::Error::unknown_variant(value, FIELDS)),
+                }
+            }
+        }
+        deserializer.deserialize_any(GeneratedVisitor)
     }
 }
 impl serde::Serialize for NodeMaterialization {
@@ -1995,10 +2264,40 @@ impl serde::Serialize for NodeProcessed {
         if self.adapter.is_some() {
             len += 1;
         }
-        if self.plugin_type.is_some() {
+        if self.experimental_type.is_some() {
             len += 1;
         }
         if self.adapter_response.is_some() {
+            len += 1;
+        }
+        if self.compute_mode.is_some() {
+            len += 1;
+        }
+        if self.catalog_type.is_some() {
+            len += 1;
+        }
+        if self.incremental_strategy.is_some() {
+            len += 1;
+        }
+        if self.snapshot_strategy.is_some() {
+            len += 1;
+        }
+        if self.language.is_some() {
+            len += 1;
+        }
+        if self.contract_enforced.is_some() {
+            len += 1;
+        }
+        if self.access.is_some() {
+            len += 1;
+        }
+        if self.versioned.is_some() {
+            len += 1;
+        }
+        if self.table_format.is_some() {
+            len += 1;
+        }
+        if self.catalog_name.is_some() {
             len += 1;
         }
         if self.node_outcome_detail.is_some() {
@@ -2109,11 +2408,47 @@ impl serde::Serialize for NodeProcessed {
         if let Some(v) = self.adapter.as_ref() {
             struct_ser.serialize_field("adapter", v)?;
         }
-        if let Some(v) = self.plugin_type.as_ref() {
-            struct_ser.serialize_field("plugin_type", v)?;
+        if let Some(v) = self.experimental_type.as_ref() {
+            struct_ser.serialize_field("experimental_type", v)?;
         }
         if let Some(v) = self.adapter_response.as_ref() {
             struct_ser.serialize_field("adapter_response", v)?;
+        }
+        if let Some(v) = self.compute_mode.as_ref() {
+            let v = NodeComputeMode::try_from(*v)
+                .map_err(|_| serde::ser::Error::custom(format!("Invalid variant {}", *v)))?;
+            struct_ser.serialize_field("compute_mode", &v)?;
+        }
+        if let Some(v) = self.catalog_type.as_ref() {
+            struct_ser.serialize_field("catalog_type", v)?;
+        }
+        if let Some(v) = self.incremental_strategy.as_ref() {
+            struct_ser.serialize_field("incremental_strategy", v)?;
+        }
+        if let Some(v) = self.snapshot_strategy.as_ref() {
+            struct_ser.serialize_field("snapshot_strategy", v)?;
+        }
+        if let Some(v) = self.language.as_ref() {
+            let v = NodeLanguage::try_from(*v)
+                .map_err(|_| serde::ser::Error::custom(format!("Invalid variant {}", *v)))?;
+            struct_ser.serialize_field("language", &v)?;
+        }
+        if let Some(v) = self.contract_enforced.as_ref() {
+            struct_ser.serialize_field("contract_enforced", v)?;
+        }
+        if let Some(v) = self.access.as_ref() {
+            let v = NodeAccess::try_from(*v)
+                .map_err(|_| serde::ser::Error::custom(format!("Invalid variant {}", *v)))?;
+            struct_ser.serialize_field("access", &v)?;
+        }
+        if let Some(v) = self.versioned.as_ref() {
+            struct_ser.serialize_field("versioned", v)?;
+        }
+        if let Some(v) = self.table_format.as_ref() {
+            struct_ser.serialize_field("table_format", v)?;
+        }
+        if let Some(v) = self.catalog_name.as_ref() {
+            struct_ser.serialize_field("catalog_name", v)?;
         }
         if let Some(v) = self.node_outcome_detail.as_ref() {
             match v {
@@ -2193,10 +2528,27 @@ impl<'de> serde::Deserialize<'de> for NodeProcessed {
             "node_count_total",
             "nodeCountTotal",
             "adapter",
-            "plugin_type",
-            "pluginType",
+            "experimental_type",
+            "experimentalType",
             "adapter_response",
             "adapterResponse",
+            "compute_mode",
+            "computeMode",
+            "catalog_type",
+            "catalogType",
+            "incremental_strategy",
+            "incrementalStrategy",
+            "snapshot_strategy",
+            "snapshotStrategy",
+            "language",
+            "contract_enforced",
+            "contractEnforced",
+            "access",
+            "versioned",
+            "table_format",
+            "tableFormat",
+            "catalog_name",
+            "catalogName",
             "node_cache_detail",
             "nodeCacheDetail",
             "node_test_detail",
@@ -2239,8 +2591,18 @@ impl<'de> serde::Deserialize<'de> for NodeProcessed {
             NodeIndex,
             NodeCountTotal,
             Adapter,
-            PluginType,
+            ExperimentalType,
             AdapterResponse,
+            ComputeMode,
+            CatalogType,
+            IncrementalStrategy,
+            SnapshotStrategy,
+            Language,
+            ContractEnforced,
+            Access,
+            Versioned,
+            TableFormat,
+            CatalogName,
             NodeCacheDetail,
             NodeTestDetail,
             NodeFreshnessOutcome,
@@ -2296,8 +2658,18 @@ impl<'de> serde::Deserialize<'de> for NodeProcessed {
                             "nodeIndex" | "node_index" => Ok(GeneratedField::NodeIndex),
                             "nodeCountTotal" | "node_count_total" => Ok(GeneratedField::NodeCountTotal),
                             "adapter" => Ok(GeneratedField::Adapter),
-                            "pluginType" | "plugin_type" => Ok(GeneratedField::PluginType),
+                            "experimentalType" | "experimental_type" => Ok(GeneratedField::ExperimentalType),
                             "adapterResponse" | "adapter_response" => Ok(GeneratedField::AdapterResponse),
+                            "computeMode" | "compute_mode" => Ok(GeneratedField::ComputeMode),
+                            "catalogType" | "catalog_type" => Ok(GeneratedField::CatalogType),
+                            "incrementalStrategy" | "incremental_strategy" => Ok(GeneratedField::IncrementalStrategy),
+                            "snapshotStrategy" | "snapshot_strategy" => Ok(GeneratedField::SnapshotStrategy),
+                            "language" => Ok(GeneratedField::Language),
+                            "contractEnforced" | "contract_enforced" => Ok(GeneratedField::ContractEnforced),
+                            "access" => Ok(GeneratedField::Access),
+                            "versioned" => Ok(GeneratedField::Versioned),
+                            "tableFormat" | "table_format" => Ok(GeneratedField::TableFormat),
+                            "catalogName" | "catalog_name" => Ok(GeneratedField::CatalogName),
                             "nodeCacheDetail" | "node_cache_detail" => Ok(GeneratedField::NodeCacheDetail),
                             "nodeTestDetail" | "node_test_detail" => Ok(GeneratedField::NodeTestDetail),
                             "nodeFreshnessOutcome" | "node_freshness_outcome" => Ok(GeneratedField::NodeFreshnessOutcome),
@@ -2350,8 +2722,18 @@ impl<'de> serde::Deserialize<'de> for NodeProcessed {
                 let mut node_index__ = None;
                 let mut node_count_total__ = None;
                 let mut adapter__ = None;
-                let mut plugin_type__ = None;
+                let mut experimental_type__ = None;
                 let mut adapter_response__ = None;
+                let mut compute_mode__ = None;
+                let mut catalog_type__ = None;
+                let mut incremental_strategy__ = None;
+                let mut snapshot_strategy__ = None;
+                let mut language__ = None;
+                let mut contract_enforced__ = None;
+                let mut access__ = None;
+                let mut versioned__ = None;
+                let mut table_format__ = None;
+                let mut catalog_name__ = None;
                 let mut node_outcome_detail__ = None;
                 while let Some(k) = map_.next_key()? {
                     match k {
@@ -2537,17 +2919,77 @@ impl<'de> serde::Deserialize<'de> for NodeProcessed {
                             }
                             adapter__ = map_.next_value()?;
                         }
-                        GeneratedField::PluginType => {
-                            if plugin_type__.is_some() {
-                                return Err(serde::de::Error::duplicate_field("pluginType"));
+                        GeneratedField::ExperimentalType => {
+                            if experimental_type__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("experimentalType"));
                             }
-                            plugin_type__ = map_.next_value()?;
+                            experimental_type__ = map_.next_value()?;
                         }
                         GeneratedField::AdapterResponse => {
                             if adapter_response__.is_some() {
                                 return Err(serde::de::Error::duplicate_field("adapterResponse"));
                             }
                             adapter_response__ = map_.next_value()?;
+                        }
+                        GeneratedField::ComputeMode => {
+                            if compute_mode__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("computeMode"));
+                            }
+                            compute_mode__ = map_.next_value::<::std::option::Option<NodeComputeMode>>()?.map(|x| x as i32);
+                        }
+                        GeneratedField::CatalogType => {
+                            if catalog_type__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("catalogType"));
+                            }
+                            catalog_type__ = map_.next_value()?;
+                        }
+                        GeneratedField::IncrementalStrategy => {
+                            if incremental_strategy__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("incrementalStrategy"));
+                            }
+                            incremental_strategy__ = map_.next_value()?;
+                        }
+                        GeneratedField::SnapshotStrategy => {
+                            if snapshot_strategy__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("snapshotStrategy"));
+                            }
+                            snapshot_strategy__ = map_.next_value()?;
+                        }
+                        GeneratedField::Language => {
+                            if language__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("language"));
+                            }
+                            language__ = map_.next_value::<::std::option::Option<NodeLanguage>>()?.map(|x| x as i32);
+                        }
+                        GeneratedField::ContractEnforced => {
+                            if contract_enforced__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("contractEnforced"));
+                            }
+                            contract_enforced__ = map_.next_value()?;
+                        }
+                        GeneratedField::Access => {
+                            if access__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("access"));
+                            }
+                            access__ = map_.next_value::<::std::option::Option<NodeAccess>>()?.map(|x| x as i32);
+                        }
+                        GeneratedField::Versioned => {
+                            if versioned__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("versioned"));
+                            }
+                            versioned__ = map_.next_value()?;
+                        }
+                        GeneratedField::TableFormat => {
+                            if table_format__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("tableFormat"));
+                            }
+                            table_format__ = map_.next_value()?;
+                        }
+                        GeneratedField::CatalogName => {
+                            if catalog_name__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("catalogName"));
+                            }
+                            catalog_name__ = map_.next_value()?;
                         }
                         GeneratedField::NodeCacheDetail => {
                             if node_outcome_detail__.is_some() {
@@ -2618,8 +3060,18 @@ impl<'de> serde::Deserialize<'de> for NodeProcessed {
                     node_index: node_index__,
                     node_count_total: node_count_total__,
                     adapter: adapter__,
-                    plugin_type: plugin_type__,
+                    experimental_type: experimental_type__,
                     adapter_response: adapter_response__,
+                    compute_mode: compute_mode__,
+                    catalog_type: catalog_type__,
+                    incremental_strategy: incremental_strategy__,
+                    snapshot_strategy: snapshot_strategy__,
+                    language: language__,
+                    contract_enforced: contract_enforced__,
+                    access: access__,
+                    versioned: versioned__,
+                    table_format: table_format__,
+                    catalog_name: catalog_name__,
                     node_outcome_detail: node_outcome_detail__,
                 })
             }
@@ -2830,7 +3282,7 @@ impl serde::Serialize for NodeType {
             Self::SemanticModel => "NODE_TYPE_SEMANTIC_MODEL",
             Self::Function => "NODE_TYPE_FUNCTION",
             Self::Check => "NODE_TYPE_CHECK",
-            Self::Plugin => "NODE_TYPE_PLUGIN",
+            Self::Experimental => "NODE_TYPE_EXPERIMENTAL",
         };
         serializer.serialize_str(variant)
     }
@@ -2859,7 +3311,7 @@ impl<'de> serde::Deserialize<'de> for NodeType {
             "NODE_TYPE_SEMANTIC_MODEL",
             "NODE_TYPE_FUNCTION",
             "NODE_TYPE_CHECK",
-            "NODE_TYPE_PLUGIN",
+            "NODE_TYPE_EXPERIMENTAL",
         ];
 
         struct GeneratedVisitor;
@@ -2917,7 +3369,7 @@ impl<'de> serde::Deserialize<'de> for NodeType {
                     "NODE_TYPE_SEMANTIC_MODEL" => Ok(NodeType::SemanticModel),
                     "NODE_TYPE_FUNCTION" => Ok(NodeType::Function),
                     "NODE_TYPE_CHECK" => Ok(NodeType::Check),
-                    "NODE_TYPE_PLUGIN" => Ok(NodeType::Plugin),
+                    "NODE_TYPE_EXPERIMENTAL" => Ok(NodeType::Experimental),
                     _ => Err(serde::de::Error::unknown_variant(value, FIELDS)),
                 }
             }

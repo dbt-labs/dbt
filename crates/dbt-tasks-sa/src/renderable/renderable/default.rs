@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -11,8 +10,7 @@ use dbt_common::tracing::emit::emit_debug_event;
 use dbt_common::{FsResult, MacroSpansOnly, stdfs};
 use dbt_jinja_utils::phases::compile::DependencyValidationConfig;
 use dbt_jinja_utils::utils::{
-    add_task_context, inject_and_persist_ephemeral_models, macro_spans_to_macro_span_vec,
-    render_sql,
+    inject_and_persist_ephemeral_models, macro_spans_to_macro_span_vec, render_sql,
 };
 use dbt_scheduler::instructions::SqlInstruction;
 use dbt_schemas::schemas::common::DbtMaterialization;
@@ -83,9 +81,7 @@ fn render_default(
         ));
     }
 
-    let mut base_context = ctx.inner.base_context.clone();
-
-    add_task_context(&mut base_context, node.common(), &ctx.thread_id);
+    let base_context = ctx.run_base_context(node.as_ref())?;
 
     // For snapshots, `path` is the generated SQL artifact used as render input.
     // Display/error locations still use the definition path via `get_node_path`.
@@ -222,7 +218,7 @@ fn render_python_model(
     node: &Arc<dyn InternalDbtNodeAttributes>,
     ctx: &mut TaskRunnerCtx,
     raw_python: &str,
-    base_context: &BTreeMap<String, MinijinjaValue>,
+    base_context: &MinijinjaValue,
 ) -> FsResult<(SqlInstruction, Arc<SccHashMap<String, MinijinjaValue>>)> {
     let (compile_context, config_map) = ctx.build_compile_node_context(
         node.clone(),

@@ -514,13 +514,17 @@ fn emit_arch_blocks(
 
 /// Homebrew accepts SPDX identifiers as `license "SPDX"`. Anything that doesn't
 /// look like a clean SPDX (whitespace, newlines, or empty) gets the escape
-/// hatch `:cannot_represent`.
+/// hatch `:cannot_represent`. So does an SPDX custom reference (`LicenseRef-*`):
+/// it is valid SPDX syntax, but Homebrew only accepts IDs from the SPDX list.
 fn render_license(license: Option<&str>) -> String {
     let Some(raw) = license else {
         return ":cannot_represent".to_string();
     };
     let trimmed = raw.trim();
     if trimmed.is_empty() || trimmed.chars().any(|c| c.is_whitespace()) {
+        return ":cannot_represent".to_string();
+    }
+    if trimmed.starts_with("LicenseRef-") {
         return ":cannot_represent".to_string();
     }
     if trimmed
@@ -823,6 +827,14 @@ mod tests {
         );
         assert_eq!(render_license(Some("")), ":cannot_represent");
         assert_eq!(render_license(None), ":cannot_represent");
+    }
+
+    #[test]
+    fn render_license_falls_back_for_spdx_custom_reference() {
+        assert_eq!(
+            render_license(Some("LicenseRef-Proprietary")),
+            ":cannot_represent"
+        );
     }
 
     fn fixture_ctx_dbt() -> FormulaCtx {
