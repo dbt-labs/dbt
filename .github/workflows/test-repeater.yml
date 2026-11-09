@@ -27,7 +27,6 @@ on:
         description: "Version of Python to Test Against"
         type: choice
         options:
-          - "3.10"
           - "3.11"
       os:
         description: "OS to run test in"

@@ -1,0 +1,6 @@
+kind: Breaking Changes
+body: Drop support for Python 3.10, which has reached end-of-life
+time: 2026-11-02T13:55:57.924062+05:30
+custom:
+    Author: tauhid621
+    Issue: TBD

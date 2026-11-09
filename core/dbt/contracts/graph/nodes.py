@@ -1,6 +1,5 @@
 import hashlib
 import os
-import sys
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -13,18 +12,13 @@ from typing import (
     Literal,
     NoReturn,
     Optional,
+    Self,
     Sequence,
     Tuple,
     Type,
     Union,
     get_args,
 )
-
-# TODO: Collapse into just using the >3.11 case once we drop support for python 3.10
-if sys.version_info >= (3, 11):
-    from typing import Self
-else:
-    from typing_extensions import Self
 
 from mashumaro.types import SerializableType
 
