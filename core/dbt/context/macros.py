@@ -4,6 +4,7 @@ from typing import Any, Dict, List, MutableMapping, Optional
 from dbt.clients.jinja import MacroGenerator, MacroStack
 from dbt.contracts.graph.nodes import Macro
 from dbt.exceptions import PackageNotFoundForMacroError
+from dbt.flags import get_flags
 from dbt.include.global_project import PROJECT_NAME as GLOBAL_PROJECT_NAME
 
 
@@ -84,14 +85,19 @@ class MacroNamespaceBuilder:
             ]
         )
 
+        # With the flag on, an internal search package (e.g. `dbt` for macros run via
+        # adapter.execute_macro) is skipped so adapter and root-project overrides win.
+        skip_search_package = self.search_package in self.internal_packages and getattr(
+            get_flags(), "builtin_macros_prefer_overrides", False
+        )
+
         # The virtual namespace will attempt to resolve names into either macros
         # or sub-namespaces by checking the dictionaries in the following list
         # in order.
         search_dicts: List[MutableMapping] = [
             (
                 macros_by_package[self.search_package]
-                if self.search_package in macros_by_package
-                and self.search_package not in self.internal_packages
+                if self.search_package in macros_by_package and not skip_search_package
                 else {}
             ),
             macros_by_package[self.root_package] if self.root_package in macros_by_package else {},
