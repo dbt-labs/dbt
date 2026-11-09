@@ -1154,6 +1154,11 @@ pub static SORTED_CDN_DRIVER_CHECKSUMS: &[(
         "3ee7d9d7d6989ebfafd6ad61fed021d0a1846a2b5975faac381f3d18c121664e",
     ),
     (
+        ("dbt", "apple-darwin", "aarch64", "0.4.0+dbt0.1.16.gce336c2"),
+        "48b52a6c844af39247d007c3e4e851d7b5f521dd376285578e6d993af866a33d",
+        "c6068c4e879ccfa475b6cda17c8a26e582ea7f2200d7443c9279a452bd0d9c99",
+    ),
+    (
         ("dbt", "apple-darwin", "aarch64", "0.4.0+dbt0.1.2.gd85701a"),
         "09e99a6d365bd5549cafc35a48e151551938668fdb6988a6df31a0f17d5a2d70",
         "e35da70b685076528b4cbd5e3461ef5926973d36f92fb87728752787012e273e",
@@ -1227,6 +1232,11 @@ pub static SORTED_CDN_DRIVER_CHECKSUMS: &[(
         ("dbt", "apple-darwin", "x86_64", "0.4.0+dbt0.1.15.gb825f39"),
         "f6aa4e2c926e95cd7f06033fe9b28af244ad645cb005f1824be12c1749d3cc84",
         "919aa0d4d4eb9c119e7c17c4e81ad42f66a51dccc483dbdcf5845061a50c9026",
+    ),
+    (
+        ("dbt", "apple-darwin", "x86_64", "0.4.0+dbt0.1.16.gce336c2"),
+        "fbb9e758617a114e07d27937f9dc9e08d436daeb32c07160f12cbe23d753ecfd",
+        "ec4bf63f6f3238e07a662d30c0d1c92d49dfd011f82688b4e171f2b65e24c49d",
     ),
     (
         ("dbt", "apple-darwin", "x86_64", "0.4.0+dbt0.1.2.gd85701a"),
@@ -1304,6 +1314,11 @@ pub static SORTED_CDN_DRIVER_CHECKSUMS: &[(
         "837e109ef8489ce18d410cb1f43b0457cbca3aac60aa05bb2b3ff92f23ca11ed",
     ),
     (
+        ("dbt", "manylinux_2_28-linux-gnu", "aarch64", "0.4.0+dbt0.1.16.gce336c2"),
+        "d7888d32f8a347b808120dff763bc026e01dc2536078a054b56fc84973f57216",
+        "f464872e2d6207811441715082b4db76f723aa6ff998a383a3288a0cbb484617",
+    ),
+    (
         ("dbt", "manylinux_2_28-linux-gnu", "aarch64", "0.4.0+dbt0.1.2.gd85701a"),
         "0c4eebb307a2bd35d269848e327d5a78aaabcbf0b7938969c39add7c94d02a1f",
         "c3c4b88cc5c13cfa57f67205d86d3bd76df1fa202d468f8469a18bee21605aa7",
@@ -1379,6 +1394,11 @@ pub static SORTED_CDN_DRIVER_CHECKSUMS: &[(
         "e906fa47b1486ad3c42beb3a3eba287d4ade2d99da5be3090c4ac479dc38d191",
     ),
     (
+        ("dbt", "manylinux_2_28-linux-gnu", "x86_64", "0.4.0+dbt0.1.16.gce336c2"),
+        "d390d28cca5f8c1c3a5d3f455019e566fa490cf407d177c3fc834981f0c9346b",
+        "3d13016255949f04d3b85c42bcbed02ad7dbc81ecc44998a8a02d19c4d628925",
+    ),
+    (
         ("dbt", "manylinux_2_28-linux-gnu", "x86_64", "0.4.0+dbt0.1.2.gd85701a"),
         "c0681921eb23ac203d50ffebfde527f46ca8632b9b73b716f4fb67bd65eb31e6",
         "b321f991289a7ac08a6309f7628e4103cde22cd4d5e2a357b9fdb4954467b022",
@@ -1452,6 +1472,11 @@ pub static SORTED_CDN_DRIVER_CHECKSUMS: &[(
         ("dbt", "pc-windows-msvc", "x86_64", "0.4.0+dbt0.1.15.gb825f39"),
         "89769aa6f842206bf2490bd2786b376809a65f09661694ba08e3c73d9ec6a10a",
         "a5441deae85fade9cf08ac92a4652f8c5295b69a0d46b4d9ace7f1383741d009",
+    ),
+    (
+        ("dbt", "pc-windows-msvc", "x86_64", "0.4.0+dbt0.1.16.gce336c2"),
+        "740e07d5956b8025b7eefea20fcdc073e7dc2163e86d8e2ddd5b63239d62814d",
+        "dff5d971bfaa5fe8bc7b0ea857d6835e577bafa913fb19d6b4dabe97300906f6",
     ),
     (
         ("dbt", "pc-windows-msvc", "x86_64", "0.4.0+dbt0.1.2.gd85701a"),
