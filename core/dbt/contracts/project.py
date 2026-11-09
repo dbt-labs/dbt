@@ -390,6 +390,7 @@ class ProjectFlags(ExtensibleDbtClassMixin):
     enable_grouped_warn_error_parser_logs: bool = False
     use_catalogs_v2: bool = False
     latest_version_pointer_enabled_by_default: bool = False
+    builtin_macros_prefer_overrides: bool = False
 
     @property
     def project_only_flags(self) -> Dict[str, Any]:
@@ -417,6 +418,7 @@ class ProjectFlags(ExtensibleDbtClassMixin):
             "enable_grouped_warn_error_parser_logs": self.enable_grouped_warn_error_parser_logs,
             "use_catalogs_v2": self.use_catalogs_v2,
             "latest_version_pointer_enabled_by_default": self.latest_version_pointer_enabled_by_default,
+            "builtin_macros_prefer_overrides": self.builtin_macros_prefer_overrides,
         }
 
 
