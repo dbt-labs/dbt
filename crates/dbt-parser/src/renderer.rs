@@ -581,9 +581,7 @@ where
         (Some(adapter), Some(scopes)) => scopes.declared(adapter).ok().flatten(),
         _ => None,
     };
-    let render_adapter = scope
-        .filter(|scope| scope.dialect().is_some())
-        .map_or(*adapter_type, |scope| scope.adapter_type);
+    let render_adapter = scope.map_or(*adapter_type, |scope| scope.adapter_type);
 
     let mut resolve_model_context = base_ctx.clone();
     resolve_model_context.extend(build_resolve_model_context(

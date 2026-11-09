@@ -325,7 +325,7 @@ pub fn build_resolve_model_context<T: ResolvableConfig<T> + Serialize + 'static>
     debug_assert_eq!(CURRENT_SPAN, "__minijinja_current_span");
 
     let mut ctx = to_jinja_btreemap(&ctx);
-    // The node connection's `target`, `env`, `database`, `schema` and, except LakeCompute, dialect.
+    // The node connection's `target`, `env`, `database`, `schema` and dialect.
     if let Some(scope) = node_scope {
         scope.insert_overlay(&mut ctx);
     }

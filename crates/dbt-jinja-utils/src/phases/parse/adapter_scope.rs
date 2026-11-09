@@ -30,7 +30,7 @@ pub struct ParseAdapterScope {
 }
 
 impl ParseAdapterScope {
-    /// The overlay's dialect: `None` for the default, undeclared and LakeCompute adapters.
+    /// The overlay's dialect: `None` for the default and undeclared adapters.
     pub fn dialect(&self) -> Option<&MinijinjaValue> {
         self.overlay.get(DIALECT)
     }
@@ -111,8 +111,8 @@ impl ParseAdapterScopes {
         }
     }
 
-    /// `base` with the overlay of `adapter_type` applied. Borrows `base` when there
-    /// is nothing to overlay.
+    /// `base` with the overlay the naming macros of `adapter_type` see. Borrows `base` when
+    /// there is nothing to overlay.
     pub fn ctx_for<'a>(
         &self,
         adapter_type: AdapterType,
@@ -122,7 +122,15 @@ impl ParseAdapterScopes {
             return Ok(Cow::Borrowed(base));
         };
         let mut ctx = base.clone();
-        scope.insert_overlay(&mut ctx);
+        // LakeCompute names with the default's macros, so its naming keeps the env's dialect.
+        let keep_dialect = adapter_type != AdapterType::LakeCompute;
+        ctx.extend(
+            scope
+                .overlay
+                .iter()
+                .filter(|(key, _)| keep_dialect || key.as_str() != DIALECT)
+                .map(|(k, v)| (k.clone(), v.clone())),
+        );
         Ok(Cow::Owned(ctx))
     }
 }
@@ -160,13 +168,10 @@ fn declared_scope(
         database: overlay_database,
         schema: overlay_schema,
     });
-    // A LakeCompute node keeps the default's dialect, so its naming macros stay the default's.
-    if adapter_type != AdapterType::LakeCompute {
-        overlay.insert(
-            DIALECT.to_string(),
-            MinijinjaValue::from(adapter_type.as_ref()),
-        );
-    }
+    overlay.insert(
+        DIALECT.to_string(),
+        MinijinjaValue::from(adapter_type.as_ref()),
+    );
     Ok(ParseAdapterScope {
         adapter_type,
         database,
@@ -365,6 +370,7 @@ mod tests {
         let base = BTreeMap::new();
         let ctx = scopes.ctx_for(AdapterType::Bigquery, &base).unwrap();
         assert_eq!(ctx["database"].as_str(), Some("bq-proj"));
+        assert_eq!(ctx[DIALECT].as_str(), Some("bigquery"));
     }
 
     #[test]
@@ -440,7 +446,7 @@ mod tests {
     }
 
     #[test]
-    fn a_lake_compute_secondary_keeps_the_default_dialect() {
+    fn a_lake_compute_secondary_names_with_the_default_dialect() {
         // `database`/`schema` as `load_profiles` inherits them from the default connection.
         let lake_compute = DbConfig::LakeCompute(Box::new(LakeComputeConfig {
             path: Some("lake.duckdb".to_string()),
@@ -457,15 +463,21 @@ mod tests {
         assert_eq!(target_field(scope, "database").as_str(), Some("ANALYTICS"));
         assert_eq!(target_field(scope, "schema").as_str(), Some("DBT_X"));
         assert_eq!(scope.overlay["database"].as_str(), Some("ANALYTICS"));
-        // No dialect: its naming macros resolve through the default's family.
-        assert!(!scope.overlay.contains_key(DIALECT));
-        // Its own `target` still reaches the parse render.
+        // Its body renders with its own `target` and dialect, as at compile.
+        assert_eq!(
+            scope.dialect().and_then(MinijinjaValue::as_str),
+            Some("lakecompute")
+        );
         let mut ctx = BTreeMap::new();
         scope.insert_overlay(&mut ctx);
         assert_eq!(
             ctx["target"].get_attr("type").unwrap().as_str(),
             Some("lakecompute")
         );
+        // Its naming context keeps the env's dialect, so naming uses the default's macros.
+        let base = BTreeMap::new();
+        let ctx = scopes.ctx_for(AdapterType::LakeCompute, &base).unwrap();
         assert!(!ctx.contains_key(DIALECT));
+        assert_eq!(ctx["database"].as_str(), Some("ANALYTICS"));
     }
 }
