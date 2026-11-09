@@ -3296,7 +3296,10 @@ fn eliminate_comments(s: &str) -> String {
         // Line comment: preserve EPHEMERAL markers; skip everything else to EOL.
         if ch == '-' && i + 1 < bytes.len() && bytes[i + 1] as char == '-' {
             const EPHEMERAL: &str = "--EPHEMERAL-SELECT-WRAPPER";
-            if bytes[i..].starts_with(EPHEMERAL.as_bytes()) {
+            const EPHEMERAL_SPACED: &str = "-- EPHEMERAL-SELECT-WRAPPER";
+            if bytes[i..].starts_with(EPHEMERAL.as_bytes())
+                || bytes[i..].starts_with(EPHEMERAL_SPACED.as_bytes())
+            {
                 // Emit up to (but not including) the newline.
                 while i < bytes.len() && bytes[i] as char != '\n' {
                     out.push(bytes[i] as char);

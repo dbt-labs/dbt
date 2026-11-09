@@ -138,6 +138,7 @@ pub(crate) mod metadata_adapter;
 pub(crate) mod postgres;
 pub(crate) mod redshift;
 pub(crate) mod salesforce;
+pub(crate) mod singlestore;
 pub mod snowflake; // XXX: temporarily pub before the refactor is complete
 pub(crate) mod spark;
 pub(crate) mod view_definition;
@@ -209,14 +210,33 @@ impl fmt::Display for CatalogAndSchema {
 
 impl From<&dyn BaseRelation> for CatalogAndSchema {
     fn from(relation: &dyn BaseRelation) -> Self {
-        let resolved_catalog = relation.database_as_resolved_str().unwrap_or_default();
+        // Only SingleStore drops components its include_policy excludes. Other
+        // adapters with exclusions (ClickHouse and Exasol exclude the database,
+        // Salesforce the database and schema) still key the relation cache by every
+        // component.
+        let (include_catalog, include_schema) = match relation.adapter_type() {
+            AdapterType::SingleStore => {
+                let include_policy = relation.include_policy();
+                (include_policy.database, include_policy.schema)
+            }
+            _ => (true, true),
+        };
+        let resolved_catalog = if !include_catalog {
+            Cow::Borrowed("")
+        } else {
+            relation.database_as_resolved_str().unwrap_or_default()
+        };
         let rendered_catalog = if resolved_catalog.is_empty() {
             "".to_string()
         } else {
             relation.quoted(&resolved_catalog)
         };
 
-        let resolved_schema = relation.schema_as_resolved_str().unwrap_or_default();
+        let resolved_schema = if !include_schema {
+            Cow::Borrowed("")
+        } else {
+            relation.schema_as_resolved_str().unwrap_or_default()
+        };
         let rendered_schema = if resolved_schema.is_empty() {
             "".to_string()
         } else {

@@ -1093,7 +1093,8 @@ mod relation_components_tests {
     use dbt_jinja_utils::jinja_environment::JinjaEnv;
     use dbt_jinja_utils::phases::parse::ParseAdapterScopes;
     use dbt_jinja_utils::phases::parse::init::initialize_parse_jinja_environment;
-    use dbt_schemas::schemas::profiles::{DbConfig, SnowflakeDbConfig};
+    use dbt_schemas::schemas::InternalDbtNodeAttributes;
+    use dbt_schemas::schemas::profiles::{DbConfig, SingleStoreDbConfig, SnowflakeDbConfig};
     use dbt_schemas::schemas::relations::DEFAULT_DBT_QUOTING;
     use dbt_schemas::schemas::{CommonAttributes, DbtModel, NodeBaseAttributes};
     use dbt_schemas::state::{DbtProfile, ProfileAdapter};
@@ -1267,5 +1268,165 @@ mod relation_components_tests {
         assert_eq!(err.location.as_ref().map(|l| l.file.as_path()), Some(path));
 
         assert_eq!(start(AdapterType::Snowflake).unwrap(), ("db", "sch"));
+    }
+
+    #[test]
+    fn test_singlestore_alias_prefixing_custom_database_and_schema() {
+        let singlestore_alias_macro = concat!(
+            "{%- set base_alias = custom_name | trim if custom_name else node.name -%}",
+            "{%- set raw_schema = node.schema | default('', true) | trim -%}",
+            "{%- set node_db = node.database | default('', true) | trim -%}",
+            "{%- set target_db = target.database | default('', true) | trim -%}",
+            "{%- set target_schema = target.schema | default('', true) | trim -%}",
+            "{%- if raw_schema | length > 0 and raw_schema != node_db and raw_schema != target_db and raw_schema != target_schema -%}",
+            "{{ raw_schema }}_{{ base_alias }}",
+            "{%- else -%}",
+            "{{ base_alias }}",
+            "{%- endif -%}",
+        );
+        let macros = vec![
+            naming_macro(
+                "database",
+                "{% if custom_name %}{{ custom_name }}{% else %}{{ target.database }}{% endif %}",
+            ),
+            naming_macro(
+                "schema",
+                "{% if custom_name %}{{ target.schema }}_{{ custom_name }}{% else %}{{ target.schema }}{% endif %}",
+            ),
+            naming_macro("alias", singlestore_alias_macro),
+        ];
+
+        let env = initialize_parse_jinja_environment(
+            "common",
+            "profile",
+            "target",
+            AdapterType::SingleStore,
+            SingleStoreDbConfig {
+                user: Some("root".to_string()),
+                host: Some("127.0.0.1".to_string()),
+                port: None,
+                database: Some("dbt_ss_oss".to_string()),
+                schema: Some("dbt_ss_oss".to_string()),
+                ..Default::default()
+            }
+            .into(),
+            vec![AdapterType::SingleStore],
+            DEFAULT_DBT_QUOTING,
+            BTreeMap::from([("common".to_string(), macros)]),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            chrono::Utc::now().with_timezone(&chrono_tz::Tz::UTC),
+            &InvocationArgs::default(),
+            BTreeSet::new(),
+            IoArgs::default(),
+            None,
+        )
+        .unwrap();
+
+        let base_model = model(AdapterType::SingleStore);
+
+        // Case 1: Custom database (dbt_ss_oss_aux), no custom schema.
+        // Should NOT be prefixed with dbt_ss_oss_!
+        let aux_components = RelationComponents {
+            database: Some("dbt_ss_oss_aux".to_string()),
+            schema: None,
+            alias: None,
+            store_failures: None,
+        };
+        let updated_aux = update_node_relation_components(
+            base_model.clone(),
+            &env,
+            "common",
+            "common",
+            &BTreeMap::new(),
+            &aux_components,
+            None,
+        )
+        .unwrap();
+        assert_eq!(updated_aux.alias(), "orders");
+        assert_eq!(
+            updated_aux.__base_attr__.relation_name.as_deref(),
+            Some("`dbt_ss_oss_aux`.`orders`")
+        );
+
+        // Case 2: Custom schema `audit`.
+        // Should be prefixed with dbt_ss_oss_audit_!
+        let schema_components = RelationComponents {
+            database: None,
+            schema: Some("audit".to_string()),
+            alias: None,
+            store_failures: None,
+        };
+        let updated_schema = update_node_relation_components(
+            base_model.clone(),
+            &env,
+            "common",
+            "common",
+            &BTreeMap::new(),
+            &schema_components,
+            None,
+        )
+        .unwrap();
+        assert_eq!(updated_schema.alias(), "dbt_ss_oss_audit_orders");
+        assert_eq!(
+            updated_schema.__base_attr__.relation_name.as_deref(),
+            Some("`dbt_ss_oss`.`dbt_ss_oss_audit_orders`")
+        );
+
+        // Case 3: Project-level generate_alias_name override is honoured (no forced Rust prefix).
+        let override_macros = vec![
+            naming_macro(
+                "database",
+                "{% if custom_name %}{{ custom_name }}{% else %}{{ target.database }}{% endif %}",
+            ),
+            naming_macro(
+                "schema",
+                "{% if custom_name %}{{ target.schema }}_{{ custom_name }}{% else %}{{ target.schema }}{% endif %}",
+            ),
+            naming_macro("alias", "custom_{{ node.name }}"),
+        ];
+        let override_env = initialize_parse_jinja_environment(
+            "common",
+            "profile",
+            "target",
+            AdapterType::SingleStore,
+            SingleStoreDbConfig {
+                user: Some("root".to_string()),
+                host: Some("127.0.0.1".to_string()),
+                port: None,
+                database: Some("dbt_ss_oss".to_string()),
+                schema: Some("dbt_ss_oss".to_string()),
+                ..Default::default()
+            }
+            .into(),
+            vec![AdapterType::SingleStore],
+            DEFAULT_DBT_QUOTING,
+            BTreeMap::from([("common".to_string(), override_macros)]),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            chrono::Utc::now().with_timezone(&chrono_tz::Tz::UTC),
+            &InvocationArgs::default(),
+            BTreeSet::new(),
+            IoArgs::default(),
+            None,
+        )
+        .unwrap();
+        let updated_override = update_node_relation_components(
+            base_model,
+            &override_env,
+            "common",
+            "common",
+            &BTreeMap::new(),
+            &schema_components,
+            None,
+        )
+        .unwrap();
+        assert_eq!(updated_override.alias(), "custom_orders");
+        assert_eq!(
+            updated_override.__base_attr__.relation_name.as_deref(),
+            Some("`dbt_ss_oss`.`custom_orders`")
+        );
     }
 }

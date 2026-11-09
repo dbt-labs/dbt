@@ -11,8 +11,8 @@ use dbt_common::tracing::emit::emit_debug_event;
 use dbt_common::{FsResult, MacroSpansOnly, stdfs};
 use dbt_jinja_utils::phases::compile::DependencyValidationConfig;
 use dbt_jinja_utils::utils::{
-    add_task_context, inject_and_persist_ephemeral_models, macro_spans_to_macro_span_vec,
-    render_sql,
+    add_task_context, inject_and_persist_ephemeral_models_for_adapter,
+    macro_spans_to_macro_span_vec, render_sql,
 };
 use dbt_scheduler::instructions::SqlInstruction;
 use dbt_schemas::schemas::common::DbtMaterialization;
@@ -136,12 +136,13 @@ fn render_default(
     let mut macro_spans = ctx
         .rendering_listener_factory
         .drain_macro_spans(&render_file_path);
-    let rendered_sql_maybe_with_cte = inject_and_persist_ephemeral_models(
+    let rendered_sql_maybe_with_cte = inject_and_persist_ephemeral_models_for_adapter(
         rendered_sql,
         &mut macro_spans,
         &node.base().alias,
         node.materialized() == DbtMaterialization::Ephemeral,
         &ctx.inner.arg.io.out_dir.join(DBT_EPHEMERAL_DIR_NAME),
+        Some(ctx.adapter_type_for(node.as_ref())),
     )
     .map_err(|e| e.with_location(render_file_path.clone()))?;
 

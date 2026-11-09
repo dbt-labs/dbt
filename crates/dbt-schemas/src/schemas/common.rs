@@ -1101,6 +1101,15 @@ pub fn constraint_support(
         (ClickHouse, Check) => Enforced,
         (ClickHouse, NotNull | Unique | PrimaryKey | ForeignKey | Custom) => NotSupported,
 
+        // SingleStore
+        // https://github.com/singlestore-labs/dbt-singlestore/blob/main/dbt/adapters/singlestore/impl.py#L75-L81
+        (SingleStore, NotNull) => Enforced,
+        (SingleStore, PrimaryKey) => NotEnforced,
+        (SingleStore, Unique) => NotEnforced,
+        (SingleStore, ForeignKey) => NotSupported,
+        (SingleStore, Check) => NotSupported,
+        (SingleStore, Custom) => NotSupported,
+
         // Salesforce
         (Salesforce | Spark | Starburst | Athena | Trino | Datafusion | Dremio | Oracle, _) => {
             return None;

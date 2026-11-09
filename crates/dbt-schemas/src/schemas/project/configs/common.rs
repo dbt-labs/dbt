@@ -454,6 +454,25 @@ pub struct WarehouseSpecificNodeConfig {
     pub distribute_by_config: Option<StringOrArrayOfStrings>,
     #[warehouse(valid(Model, Snapshot))]
     pub primary_key_config: Option<StringOrArrayOfStrings>,
+
+    // SingleStore
+    #[warehouse(valid(Model))]
+    pub storage_type: Option<String>,
+    #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(Model))]
+    pub reference: Option<bool>,
+    #[warehouse(valid(Model))]
+    pub shard_key: Option<StringOrArrayOfStrings>,
+    #[warehouse(valid(Model))]
+    pub sort_key: Option<StringOrArrayOfStrings>,
+    #[warehouse(valid(Model))]
+    pub unique_table_key: Option<StringOrArrayOfStrings>,
+    #[warehouse(valid(Model))]
+    pub fulltext_key: Option<StringOrArrayOfStrings>,
+    #[warehouse(valid(Model))]
+    pub charset: Option<String>,
+    #[warehouse(valid(Model))]
+    pub collation: Option<String>,
 }
 
 impl ResolvedConfig for WarehouseSpecificNodeConfig {
@@ -728,6 +747,7 @@ pub fn same_warehouse_config(
     let mv_on_schema_change_eq = self_wh.mv_on_schema_change == other_wh.mv_on_schema_change;
     let repopulate_from_mvs_on_full_refresh_eq =
         self_wh.repopulate_from_mvs_on_full_refresh == other_wh.repopulate_from_mvs_on_full_refresh;
+    let (singlestore_eq, singlestore_diffs) = singlestore_config_diff(self_wh, other_wh);
 
     let result = partition_by_eq
         && cluster_by_eq
@@ -832,7 +852,8 @@ pub fn same_warehouse_config(
         && refreshable_eq
         && catchup_eq
         && mv_on_schema_change_eq
-        && repopulate_from_mvs_on_full_refresh_eq;
+        && repopulate_from_mvs_on_full_refresh_eq
+        && singlestore_eq;
 
     if !result {
         log_state_mod_diff(
@@ -1671,11 +1692,104 @@ pub fn same_warehouse_config(
                         format!("{:?}", &other_wh.repopulate_from_mvs_on_full_refresh),
                     )),
                 ),
-            ],
+            ]
+            .into_iter()
+            .chain(singlestore_diffs),
         );
     }
 
     result
+}
+
+type ConfigDiffEntry = (&'static str, bool, Option<(String, String)>);
+
+fn singlestore_config_diff(
+    self_wh: &WarehouseSpecificNodeConfig,
+    other_wh: &WarehouseSpecificNodeConfig,
+) -> (bool, [ConfigDiffEntry; 8]) {
+    let storage_type_eq = self_wh.storage_type == other_wh.storage_type;
+    let reference_eq = self_wh.reference == other_wh.reference;
+    let shard_key_eq = self_wh.shard_key == other_wh.shard_key;
+    let sort_key_eq = self_wh.sort_key == other_wh.sort_key;
+    let unique_table_key_eq = self_wh.unique_table_key == other_wh.unique_table_key;
+    let fulltext_key_eq = self_wh.fulltext_key == other_wh.fulltext_key;
+    let charset_eq = self_wh.charset == other_wh.charset;
+    let collation_eq = self_wh.collation == other_wh.collation;
+    let eq = storage_type_eq
+        && reference_eq
+        && shard_key_eq
+        && sort_key_eq
+        && unique_table_key_eq
+        && fulltext_key_eq
+        && charset_eq
+        && collation_eq;
+    let diffs = [
+        (
+            "storage_type",
+            storage_type_eq,
+            Some((
+                format!("{:?}", &self_wh.storage_type),
+                format!("{:?}", &other_wh.storage_type),
+            )),
+        ),
+        (
+            "reference",
+            reference_eq,
+            Some((
+                format!("{:?}", &self_wh.reference),
+                format!("{:?}", &other_wh.reference),
+            )),
+        ),
+        (
+            "shard_key",
+            shard_key_eq,
+            Some((
+                format!("{:?}", &self_wh.shard_key),
+                format!("{:?}", &other_wh.shard_key),
+            )),
+        ),
+        (
+            "sort_key",
+            sort_key_eq,
+            Some((
+                format!("{:?}", &self_wh.sort_key),
+                format!("{:?}", &other_wh.sort_key),
+            )),
+        ),
+        (
+            "unique_table_key",
+            unique_table_key_eq,
+            Some((
+                format!("{:?}", &self_wh.unique_table_key),
+                format!("{:?}", &other_wh.unique_table_key),
+            )),
+        ),
+        (
+            "fulltext_key",
+            fulltext_key_eq,
+            Some((
+                format!("{:?}", &self_wh.fulltext_key),
+                format!("{:?}", &other_wh.fulltext_key),
+            )),
+        ),
+        (
+            "charset",
+            charset_eq,
+            Some((
+                format!("{:?}", &self_wh.charset),
+                format!("{:?}", &other_wh.charset),
+            )),
+        ),
+        (
+            "collation",
+            collation_eq,
+            Some((
+                format!("{:?}", &self_wh.collation),
+                format!("{:?}", &other_wh.collation),
+            )),
+        ),
+    ];
+    (eq, diffs)
 }
 
 /// Compare two `unrendered_config` values, treating absent/`null`/empty as equivalent and

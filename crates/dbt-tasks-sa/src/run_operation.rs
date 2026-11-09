@@ -17,7 +17,7 @@ use dbt_jinja_utils::{
         compile::{DependencyValidationConfig, build_compile_node_context},
         run::{WriteConfig, extend_base_context_stateful_fn},
     },
-    utils::{inject_and_persist_ephemeral_models, render_sql},
+    utils::{inject_and_persist_ephemeral_models_for_adapter, render_sql},
 };
 use dbt_schemas::schemas::{
     ContextRunResult, InternalDbtNode, InternalDbtNodeAttributes, NodePathKind, TimingInfo,
@@ -115,12 +115,13 @@ pub async fn run_operation_inline_sql(
             .map_err(|e| fs_err!(ErrorCode::Generic, "spawn_blocking join error: {}", e))??;
         }
         let mut macro_spans = MacroSpans::default();
-        inject_and_persist_ephemeral_models(
+        inject_and_persist_ephemeral_models_for_adapter(
             rendered_user_sql,
             &mut macro_spans,
             INLINE_SQL_NAME,
             /* is_current_model_ephemeral = */ false,
             &io_args.out_dir.join(DBT_EPHEMERAL_DIR_NAME),
+            Some(resolver_state.adapter_type),
         )?
     } else {
         rendered_user_sql
@@ -222,12 +223,13 @@ fn precompile_ephemeral_models(
         )?;
 
         let mut macro_spans = MacroSpans::default();
-        inject_and_persist_ephemeral_models(
+        inject_and_persist_ephemeral_models_for_adapter(
             rendered,
             &mut macro_spans,
             &model.__base_attr__.alias,
             /* is_current_model_ephemeral = */ true,
             &ephemeral_dir,
+            Some(resolver_state.adapter_type),
         )?;
     }
 

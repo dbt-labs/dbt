@@ -27,6 +27,7 @@ impl ColumnBuilder {
             Bigquery => Ok(Self::build_bigquery(field, type_ops)),
             Databricks | Spark => Self::build_databricks(field, type_ops),
             Redshift => Ok(Self::build_redshift(field, type_ops)),
+            SingleStore => Self::build_singlestore(field, type_ops),
             Postgres | Salesforce => Self::build_postgres_like(field, type_ops),
             DuckDB | LakeCompute => Self::build_duckdb(field, type_ops),
             Fabric => Ok(Self::build_fabric(field, type_ops)),
@@ -54,6 +55,14 @@ impl ColumnBuilder {
         match self.adapter_type {
             Postgres => Column::new_boxed(
                 Postgres,
+                name,
+                dtype,
+                char_size,
+                numeric_precision,
+                numeric_scale,
+            ),
+            SingleStore => Column::new_boxed(
+                SingleStore,
                 name,
                 dtype,
                 char_size,
@@ -475,6 +484,38 @@ impl ColumnBuilder {
             None, // char_size
             None, // numeric_precision
             None, // numeric_scale
+        ))
+    }
+
+    fn build_singlestore(field: &FieldRef, type_ops: &dyn TypeOps) -> AdapterResult<Box<Column>> {
+        let data_type_ref = field.data_type();
+        let mut rendered_type = String::new();
+        type_ops.format_arrow_type_as_sql(
+            data_type_ref,
+            field.is_nullable(),
+            &mut rendered_type,
+        )?;
+
+        let (numeric_precision, numeric_scale) = {
+            let precision_scale =
+                sql_types::numeric_precision_scale(AdapterType::SingleStore, data_type_ref)
+                    .ok()
+                    .flatten();
+            match precision_scale {
+                Some((p, Some(s))) => (Some(p as u64), Some(s as u64)),
+                Some((p, None)) => (Some(p as u64), None),
+                None => (None, None),
+            }
+        };
+        let char_size =
+            sql_types::var_size(AdapterType::SingleStore, data_type_ref).map(|s| s as u32);
+        Ok(Column::new_boxed(
+            AdapterType::SingleStore,
+            field.name().to_string(),
+            rendered_type,
+            char_size,
+            numeric_precision,
+            numeric_scale,
         ))
     }
 

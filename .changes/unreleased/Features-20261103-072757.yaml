@@ -1,0 +1,7 @@
+kind: Features
+body: Add native SingleStore adapter support with ADBC driver, contract enforcement, and embedded macros
+time: 2026-11-03T07:27:57.555871182+01:00
+custom:
+    author: jimvekemans
+    issue: "17082"
+    project: dbt-core

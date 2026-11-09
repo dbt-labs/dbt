@@ -3,12 +3,15 @@ use dbt_adapter_core::AdapterType;
 use crate::tokenizer::{Token, Tokenizer};
 
 pub fn clean_sql(sql: &str, adapter_type: AdapterType) -> String {
+    use AdapterType::*;
     match adapter_type {
-        AdapterType::Databricks => {
+        Databricks => {
             let sql = sql.trim();
             sql.strip_suffix(';').unwrap_or(sql).to_string()
         }
-        _ => sql.to_string(),
+        Postgres | Snowflake | Bigquery | Redshift | Salesforce | Spark | DuckDB | LakeCompute
+        | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino | Datafusion | Dremio
+        | Oracle | SingleStore => sql.to_string(),
     }
 }
 
@@ -82,7 +85,8 @@ pub fn is_update_statement(sql: &str, adapter_type: AdapterType) -> bool {
         | AdapterType::Datafusion
         | AdapterType::Dremio
         | AdapterType::Oracle
-        | AdapterType::LakeCompute => false,
+        | AdapterType::LakeCompute
+        | AdapterType::SingleStore => false,
     }
 }
 

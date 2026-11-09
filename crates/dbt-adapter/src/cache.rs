@@ -658,6 +658,104 @@ mod tests {
     }
 
     #[test]
+    fn test_singlestore_relation_cache_keys_match_across_custom_schemas_and_casing() {
+        use crate::metadata::CatalogAndSchema;
+        use crate::relation::do_create_relation;
+
+        let cache = RelationCache::default();
+        let quoting = ResolvedQuoting {
+            database: true,
+            schema: false,
+            identifier: true,
+        };
+
+        // Relation produced by list_relations (database and schema are the SingleStore database name)
+        let rel_listed: Arc<dyn BaseRelation> = do_create_relation(
+            AdapterType::SingleStore,
+            "dbt_ss_oss".to_string(),
+            "dbt_ss_oss".to_string(),
+            Some("audit_mrt_orders".to_string()),
+            None,
+            quoting,
+        )
+        .unwrap()
+        .into();
+
+        // Relation representing the model `this` (schema is the logical/custom schema)
+        let rel_model: Arc<dyn BaseRelation> = do_create_relation(
+            AdapterType::SingleStore,
+            "dbt_ss_oss".to_string(),
+            "audit".to_string(),
+            Some("audit_mrt_orders".to_string()),
+            None,
+            quoting,
+        )
+        .unwrap()
+        .into();
+
+        // 1. Schema cache keys match because SingleStore ignores non-rendered schema
+        assert_eq!(
+            CatalogAndSchema::from(rel_listed.as_ref()).to_string(),
+            CatalogAndSchema::from(rel_model.as_ref()).to_string(),
+        );
+
+        // 2. Relation semantic FQNs match
+        assert_eq!(rel_listed.semantic_fqn(), rel_model.semantic_fqn());
+
+        // 3. Insert via listed relation is retrieved via model relation
+        cache.insert_relation(rel_listed.clone(), None);
+        assert!(cache.get_relation(rel_model.as_ref()).is_some());
+
+        // 4. Mixed-case identifier casing is preserved in SingleStore semantic_fqn
+        let rel_mixed: Arc<dyn BaseRelation> = do_create_relation(
+            AdapterType::SingleStore,
+            "dbt_ss_oss".to_string(),
+            "dbt_ss_oss".to_string(),
+            Some("MixedCase_Table".to_string()),
+            None,
+            ResolvedQuoting {
+                database: true,
+                schema: false,
+                identifier: false,
+            },
+        )
+        .unwrap()
+        .into();
+        assert!(rel_mixed.semantic_fqn().contains("MixedCase_Table"));
+
+        // 5. Only SingleStore drops non-rendered components from cache keys: other
+        //    adapters with a partial include_policy keep every component.
+        let make =
+            |adapter_type: AdapterType, database: &str, schema: &str| -> Arc<dyn BaseRelation> {
+                do_create_relation(
+                    adapter_type,
+                    database.to_string(),
+                    schema.to_string(),
+                    Some("audit_mrt_orders".to_string()),
+                    None,
+                    quoting,
+                )
+                .unwrap()
+                .into()
+            };
+        // Exasol and ClickHouse exclude the database from rendering.
+        let exasol_a = make(AdapterType::Exasol, "dbt_ss_oss", "dbt_ss_oss");
+        let exasol_b = make(AdapterType::Exasol, "other_db", "dbt_ss_oss");
+        assert_ne!(
+            CatalogAndSchema::from(exasol_a.as_ref()).to_string(),
+            CatalogAndSchema::from(exasol_b.as_ref()).to_string(),
+        );
+        // Salesforce excludes database and schema from rendering.
+        let salesforce_a = make(AdapterType::Salesforce, "dbt_ss_oss", "dbt_ss_oss");
+        let salesforce_b = make(AdapterType::Salesforce, "dbt_ss_oss", "audit");
+        assert_ne!(
+            CatalogAndSchema::from(salesforce_a.as_ref()).to_string(),
+            CatalogAndSchema::from(salesforce_b.as_ref()).to_string(),
+        );
+        assert_ne!(salesforce_a.semantic_fqn(), salesforce_b.semantic_fqn());
+    }
+
+    #[test]
     fn test_concurrent_mixed_operations_no_race_condition() {
         use crate::metadata::CatalogAndSchema;
         use crate::relation::do_create_relation;

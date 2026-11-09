@@ -572,6 +572,22 @@ impl From<ProjectDataTestConfig> for DataTestConfig {
                 distribute_by_config: None,
 
                 primary_key_config: None,
+
+                storage_type: None,
+
+                reference: None,
+
+                shard_key: None,
+
+                sort_key: None,
+
+                unique_table_key: None,
+
+                fulltext_key: None,
+
+                charset: None,
+
+                collation: None,
                 cluster_by: config.cluster_by,
                 hours_to_expiration: config.hours_to_expiration,
                 job_execution_timeout_seconds: config.job_execution_timeout_seconds,

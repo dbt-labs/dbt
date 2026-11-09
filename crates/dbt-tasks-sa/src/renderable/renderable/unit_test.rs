@@ -2734,7 +2734,12 @@ fn yml_sequence_to_sql_literal(
                 if supports_hlist || element_field.data_type().is_nested() {
                     Ok(literal)
                 } else {
-                    Ok(format!("CAST({} AS {})", literal, element_type_literal))
+                    match adapter_type {
+                        AdapterType::SingleStore => {
+                            Ok(format!("({literal} :> {element_type_literal})"))
+                        }
+                        _ => Ok(format!("CAST({literal} AS {element_type_literal})")),
+                    }
                 }
             }
         })
@@ -3384,6 +3389,7 @@ fn create_select_with_union_all(
                 };
 
                 match adapter_type {
+                    AdapterType::SingleStore => Ok(format!("(NULL :> {ty}) AS {formatted_name}")),
                     AdapterType::Snowflake if SnowflakeTyping::is_geography(df_type) => {
                         Ok(format!("TO_GEOGRAPHY(NULL) AS {formatted_name}"))
                     }
@@ -3456,6 +3462,9 @@ fn create_select_with_union_all(
                     };
 
                     match adapter_type {
+                        AdapterType::SingleStore => {
+                            Ok(format!("({sql_literal} :> {ty}) AS {formatted_name}"))
+                        }
                         AdapterType::Snowflake if SnowflakeTyping::is_geography(df_type) =>
                             Ok(format!("TO_GEOGRAPHY({sql_literal}) AS {formatted_name}")),
                         AdapterType::Snowflake if SnowflakeTyping::is_geometry(df_type) =>
@@ -6157,6 +6166,53 @@ mod tests {
         assert_contains!(result, "WHERE FALSE"); // Empty case returns 0 rows
         assert!(!result.contains("UNION ALL")); // Empty case shouldn't have UNION ALL
         assert!(!result.contains("VALUES")); // No VALUES clause
+    }
+
+    #[test]
+    fn test_create_select_with_union_all_singlestore() {
+        let id = "id".to_string();
+        let name = "name".to_string();
+        let columns = vec![
+            (&id, &DataType::Int64, "BIGINT".to_string()),
+            (&name, &DataType::Utf8, "TEXT".to_string()),
+        ];
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("name", DataType::Utf8, false),
+        ]));
+
+        let single_row = vec![vec![
+            YmlValue::number(1.into()),
+            YmlValue::string("Alice".to_string()),
+        ]];
+
+        let result = create_select_with_union_all(
+            AdapterType::SingleStore,
+            &DefaultTypeOps::new(AdapterType::SingleStore),
+            single_row,
+            &schema,
+            &columns,
+            "",
+        )
+        .unwrap();
+
+        assert_contains!(result, "(1 :> BIGINT) AS id");
+        assert_contains!(result, "('Alice' :> TEXT) AS name");
+        assert!(!result.contains("CAST("));
+
+        let result_empty = create_select_with_union_all(
+            AdapterType::SingleStore,
+            &DefaultTypeOps::new(AdapterType::SingleStore),
+            vec![],
+            &schema,
+            &columns,
+            "",
+        )
+        .unwrap();
+
+        assert_contains!(result_empty, "(NULL :> BIGINT) AS id");
+        assert_contains!(result_empty, "(NULL :> TEXT) AS name");
+        assert_contains!(result_empty, "WHERE FALSE");
     }
 
     #[test]

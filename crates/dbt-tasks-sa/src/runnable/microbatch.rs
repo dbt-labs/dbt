@@ -20,7 +20,7 @@ use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::phases::compile::DependencyValidationConfig;
 use dbt_jinja_utils::phases::run::RunConfig;
 use dbt_jinja_utils::phases::{MicrobatchRefContext, RefFunction, SourceFunction};
-use dbt_jinja_utils::utils::inject_and_persist_ephemeral_models;
+use dbt_jinja_utils::utils::inject_and_persist_ephemeral_models_for_adapter;
 use dbt_schemas::schemas::{DbtModel, InternalDbtNode};
 use dbt_schemas::state::{DbtRuntimeConfig, NodeResolverTracker};
 use dbt_tasks_core::task::run_blocking_task_operation;
@@ -241,6 +241,7 @@ pub fn render_batch_sql(
     jinja_env: Arc<JinjaEnv>,
     jinja_context: &BTreeMap<String, Value>,
     out_dir: &Path,
+    adapter_type: Option<AdapterType>,
 ) -> FsResult<String> {
     // Render the raw SQL through Jinja
     // The context already contains config from build_run_node_context
@@ -253,12 +254,13 @@ pub fn render_batch_sql(
 
     // BUG(chasewalden): the microbatch-aware {{ ref(...) }} does not correctly render upstream `ephemeral` models
     let mut macro_spans = Default::default(); // create dummy MacroSpans
-    let rendered = inject_and_persist_ephemeral_models(
+    let rendered = inject_and_persist_ephemeral_models_for_adapter(
         rendered,
         &mut macro_spans,
         "microbatch_not_persisted", // can be anything; only used to persist an ephemeral model
         false,                      // a microbatch model cannot be ephemeral
         &out_dir.join(DBT_EPHEMERAL_DIR_NAME),
+        adapter_type,
     )?;
 
     tracing::debug!("Rendered batch SQL w/ injected CTE (first 200 chars): {rendered:.200}...",);

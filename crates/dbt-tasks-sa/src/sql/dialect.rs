@@ -3,7 +3,8 @@
 use dbt_adapter_core::AdapterType;
 use sqlparser::dialect::{
     BigQueryDialect, ClickHouseDialect, DatabricksDialect, Dialect, DuckDbDialect, GenericDialect,
-    HiveDialect, MsSqlDialect, PostgreSqlDialect, RedshiftSqlDialect, SnowflakeDialect,
+    HiveDialect, MsSqlDialect, MySqlDialect, PostgreSqlDialect, RedshiftSqlDialect,
+    SnowflakeDialect,
 };
 
 static SNOWFLAKE: SnowflakeDialect = SnowflakeDialect {};
@@ -15,6 +16,7 @@ static DUCKDB: DuckDbDialect = DuckDbDialect {};
 static HIVE: HiveDialect = HiveDialect {};
 static MSSQL: MsSqlDialect = MsSqlDialect {};
 static CLICKHOUSE: ClickHouseDialect = ClickHouseDialect {};
+static MYSQL: MySqlDialect = MySqlDialect {};
 static GENERIC: GenericDialect = GenericDialect {};
 
 /// Maps a dbt [`AdapterType`] to the closest `sqlparser` [`Dialect`].
@@ -33,6 +35,7 @@ pub fn sqlparser_dialect_for(adapter_type: AdapterType) -> &'static dyn Dialect 
         Spark => &HIVE,
         Fabric => &MSSQL,
         ClickHouse => &CLICKHOUSE,
+        SingleStore => &MYSQL,
         // No close sqlparser match — generic SQL tokenizer is permissive enough
         // for statement splitting.
         Trino | Athena | Starburst | Datafusion | Dremio | Oracle | Salesforce | Exasol => &GENERIC,

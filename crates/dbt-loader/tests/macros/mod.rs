@@ -12,6 +12,7 @@ mod multi_adapter;
 mod persist_docs;
 mod python;
 mod relations;
+mod singlestore;
 mod snowflake;
 mod snowflake_clone;
 mod snowflake_drop_table;

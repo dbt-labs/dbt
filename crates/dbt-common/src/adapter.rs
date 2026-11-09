@@ -17,6 +17,7 @@ pub fn dialect_of(adapter_type: AdapterType) -> Option<Dialect> {
         // `LakeCompute` defines no dialect of its own, so it falls back to DuckDB's
         DuckDB | LakeCompute => Dialect::Duckdb,
         Trino => Dialect::Trino,
+        SingleStore => Dialect::SingleStore,
         _ => return None,
     };
     Some(dialect)
