@@ -5,8 +5,8 @@ import {
   type ResourceGroup,
   useLineageGroupPartitions,
 } from '../../hooks/useLineageGroupPartitions';
-import { iconForType, RESOURCE_TYPE_LABEL } from '../../utils/resourceType';
 import { useLineageStore } from '../../stores/lineageStore';
+import { iconForType, RESOURCE_TYPE_LABEL } from '../../utils/resourceType';
 import { Tooltip } from '../ui/Tooltip';
 import type { DagNodeData } from './DagNode';
 import { dagResourceColor } from './dagResourceColors';

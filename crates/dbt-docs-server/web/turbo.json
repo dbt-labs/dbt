@@ -1,0 +1,12 @@
+{
+  "$schema": "https://turborepo.com/schema.json",
+  "extends": ["//"],
+  "tasks": {
+    "build": {
+      // `dist/` is committed and embedded in the dbt binary, so always run the real
+      // build, which empties `dist/` first. A cache restore writes the cached files
+      // over `dist/` but leaves any the build no longer emits.
+      "cache": false
+    }
+  }
+}

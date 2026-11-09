@@ -27,7 +27,8 @@
  * column matched. That is one join here.
  */
 
-import type { ResourceType } from '../../typings/domain/asset';
+import type { ResourceType } from 'dbt-docs-lib/domain';
+
 import { modelingLayerPredicate } from './layers';
 import { sqlStr } from './sql';
 

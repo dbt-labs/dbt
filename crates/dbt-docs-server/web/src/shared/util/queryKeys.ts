@@ -1,3 +1,5 @@
+import type { SearchFilter } from 'dbt-docs-lib/domain';
+
 import type {
   AssetArgs,
   AssetFilter,
@@ -5,7 +7,6 @@ import type {
   LineageArgs,
   ListArgs,
 } from '../typings/args';
-import type { SearchFilter } from '../typings/domain/search';
 
 /**
  * react-query key for a single asset. Single source of truth shared by
