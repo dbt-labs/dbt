@@ -1,0 +1,7 @@
+kind: Fixes
+body: Don't parse unit test fixtures or generic tests as singular data tests when one
+  test-path is nested inside another
+time: 2026-11-09T12:00:00.000000+05:30
+custom:
+    Author: itsnamangoyal
+    Issue: "16507"
