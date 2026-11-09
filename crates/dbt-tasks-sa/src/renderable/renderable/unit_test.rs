@@ -14,7 +14,7 @@ use dbt_adapter::metadata::BIGQUERY_PSEUDOCOLUMNS;
 use dbt_adapter::relation::{RelationObject, create_relation_from_node};
 use dbt_adapter::sql_types::{TypeOps, make_arrow_field};
 use dbt_adapter::stmt_splitter::{DefaultStmtSplitter, StmtSplitter};
-use dbt_adapter::{Adapter, Column};
+use dbt_adapter::{Adapter, Column, ColumnBuilder};
 use dbt_adapter_core::{AdapterType, ExecutionPhase, quote_char};
 use dbt_common::cancellation::Cancellable;
 use dbt_common::collections::SccHashMap;
@@ -23,6 +23,7 @@ use dbt_common::io_args::{ReplayMode, TimeMachineMode};
 use dbt_common::static_analysis::is_static_analysis_off_or_baseline;
 use dbt_common::stats::NodeStatus;
 use dbt_common::stdfs;
+use dbt_common::tracing::dbt_emit::emit_trace_log_message;
 use dbt_common::{ErrorCode, FsResult, MacroSpansOnly, err, fs_err};
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::phases::compile::DependencyValidationConfig;
@@ -50,7 +51,7 @@ use dbt_tasks_core::unit_test_schema::{
 use dbt_telemetry::{ExecutionPhase as TelemetryExecutionPhase, NodeType};
 
 use crate::renderable::unit_test_typing::{BigqueryTyping, DatabricksTyping, SnowflakeTyping};
-use crate::task::effective_unit_test_execute;
+use crate::task::{effective_unit_test_execute, is_replay_active};
 
 use super::common::handle_render_result;
 use crate::sql::dialect::sqlparser_dialect_for;
@@ -594,16 +595,6 @@ fn schema_policy_for_recording(
     }
 }
 
-fn is_replay_active(ctx: &TaskRunnerCtx) -> bool {
-    ctx.inner.arg.replay.as_ref().is_some_and(|mode| {
-        matches!(mode, ReplayMode::MantleReplay(_) | ReplayMode::FsReplay(_))
-            || mode.is_time_machine_replay()
-    }) || ctx
-        .env
-        .get_base_adapter()
-        .is_some_and(|adapter| adapter.as_replay().is_some())
-}
-
 /// Small utility for merging objects: a key resolves in the first object that
 /// defines it.
 #[derive(Debug, Clone)]
@@ -704,7 +695,7 @@ pub(crate) async fn run_unit_test_render(
     // Phase 3 — Render (uses fetched schemas + discovered relations)
     run_blocking_task_operation(move || {
         let mut ctx = ctx;
-        let res = render_unit_test(&node, &mut ctx, given_relations, task_hooks.as_ref());
+        let res = render_unit_test(&node, &mut ctx, given_relations, task_hooks);
         handle_render_result(
             res,
             &node.unique_id(),
@@ -820,15 +811,7 @@ async fn hydrate_unit_test_relation_schema(
             &relation,
             adapter.engine().type_ops(),
         )
-        .await
-        .map_err(|e| {
-            fs_err!(
-                ErrorCode::Generic,
-                "Failed to query schema for {}: {}",
-                err_subject(),
-                e.message()
-            )
-        })?;
+        .await?;
 
     // `fetched` tracks fqns whose schemas are already populated in `schema_cache`
     // during this call. On repeat, short-circuit to the cache.
@@ -2027,11 +2010,56 @@ fn check_defer_relation(
         .map(|r| Arc::from(r) as Arc<dyn BaseRelation>)
 }
 
+/// Columns of a SQL `given` fixture for `adapter.get_columns_in_relation`.
+/// Inference runs only when model Jinja asks for them. An undefined result
+/// keeps the ordinary metadata lookup. Fixture columns are optional: an
+/// inference or column-build error also returns undefined, so it cannot fail
+/// a render that the ordinary lookup can serve.
+fn sql_fixture_columns(
+    ctx: Arc<TaskRunnerCtx>,
+    unit_test: Arc<DbtUnitTest>,
+    task_hooks: Arc<dyn RenderTaskHooks>,
+    type_ops: Arc<dyn TypeOps>,
+    fixture_sql: String,
+) -> Value {
+    dbt_adapter::adapter::fixture_columns::lazy_fixture_columns(move || {
+        let columns = task_hooks
+            .try_infer_unit_test_fixture_schema(&ctx, &unit_test, &fixture_sql)
+            .map_err(|error| error.to_string())
+            .and_then(|schema| {
+                let Some(schema) = schema else {
+                    return Ok(None);
+                };
+                let builder = ColumnBuilder::new(unit_test.node_adapter());
+                schema
+                    .fields()
+                    .iter()
+                    .map(|field| builder.build(field, type_ops.as_ref()).map(Arc::from))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map(Some)
+                    .map_err(|error| error.to_string())
+            });
+        match columns {
+            Ok(Some(columns)) => Ok(dbt_adapter::value::columns_to_value_mut(columns)),
+            Ok(None) => Ok(Value::UNDEFINED),
+            Err(error) => {
+                emit_trace_log_message(|| {
+                    format!(
+                        "SQL fixture columns are unavailable for '{}': {error}",
+                        unit_test.__common_attr__.unique_id
+                    )
+                });
+                Ok(Value::UNDEFINED)
+            }
+        }
+    })
+}
+
 fn render_unit_test(
     unit_test: &Arc<dyn InternalDbtNodeAttributes>,
     ctx: &mut TaskRunnerCtx,
     given_relations: DiscoveredGivenRelations,
-    task_hooks: &dyn RenderTaskHooks,
+    task_hooks: Arc<dyn RenderTaskHooks>,
 ) -> FsResult<(SqlInstruction, Arc<SccHashMap<String, MinijinjaValue>>)> {
     let node = unit_test
         .as_any()
@@ -2126,6 +2154,14 @@ fn render_unit_test(
     // schemas (now cached from Fetch phase).
     let mut subqueries = Vec::new();
     let mut fixture_shape_subqueries = Vec::new();
+    let mut fixture_columns = BTreeMap::new();
+    let has_sql_given = node
+        .__unit_test_attr__
+        .given
+        .iter()
+        .any(|given| given.format == schemas::common::Formats::Sql);
+    let fixture_owner = (cache_expected_schema && has_sql_given)
+        .then(|| (Arc::new(ctx.clone()), Arc::new(node.clone())));
     for (given_idx, ((fqn_string, relation), given)) in given_relations
         .iter()
         .zip(&node.__unit_test_attr__.given)
@@ -2239,10 +2275,33 @@ fn render_unit_test(
             }
         };
 
+        // Model Jinja can inspect an input before fixture CTE substitution.
+        // Keep these columns in this render's context, never the shared schema
+        // cache: another test may mock the same relation with different types.
+        if let Some((fixture_ctx, fixture_test)) = &fixture_owner
+            && given.format == schemas::common::Formats::Sql
+        {
+            fixture_columns.insert(
+                relation.semantic_fqn(),
+                sql_fixture_columns(
+                    Arc::clone(fixture_ctx),
+                    Arc::clone(fixture_test),
+                    Arc::clone(&task_hooks),
+                    Arc::clone(adapter.engine().type_ops()),
+                    given_values.clone(),
+                ),
+            );
+        }
         subqueries.push((fqn_string.clone(), given_values));
         if let Some(fixture_shape_values) = fixture_shape_values {
             fixture_shape_subqueries.push((fqn_string.clone(), fixture_shape_values));
         }
+    }
+    if !fixture_columns.is_empty() {
+        compile_context.insert(
+            dbt_adapter::adapter::UNIT_TEST_FIXTURE_COLUMNS.to_string(),
+            Value::from_iter(fixture_columns),
+        );
     }
     // create a subquery for expect...
     // todo: updating the model with a unique id should be done already in parse?
@@ -2328,7 +2387,7 @@ fn render_unit_test(
             &subqueries,
             &fixture_shape_subqueries,
             schema_inference_options.clone(),
-            task_hooks,
+            task_hooks.as_ref(),
         )
     };
 
@@ -7018,7 +7077,7 @@ mod tests {
     #[test]
     fn columns_to_schema_preserves_snowflake_decimal_round_trip() {
         let type_ops = DefaultTypeOps::new(AdapterType::Snowflake);
-        let builder = dbt_adapter::column::ColumnBuilder::new(AdapterType::Snowflake);
+        let builder = ColumnBuilder::new(AdapterType::Snowflake);
 
         for (precision, scale) in [(11, 4), (38, 0), (38, 37), (4, 4)] {
             let data_type = DataType::Decimal128(precision, scale);
