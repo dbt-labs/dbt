@@ -103,16 +103,12 @@ class MicrobatchBuilder:
     @staticmethod
     def build_jinja_context_for_batch(model: ModelNode, incremental_batch: bool) -> Dict[str, Any]:
         """
-        Create context with entries that reflect microbatch model + incremental execution state
+        Create context with entries that reflect the incremental execution state of a batch
 
-        Assumes self.model has been (re)-compiled with necessary batch filters applied.
+        The model properties (`model`, `sql`, `compiled_code`) come from the runtime model context,
+        which is generated after the model has been (re)-compiled with the batch filters applied.
         """
         jinja_context: Dict[str, Any] = {}
-
-        # Microbatch model properties
-        jinja_context["model"] = model.to_dict()
-        jinja_context["sql"] = model.compiled_code
-        jinja_context["compiled_code"] = model.compiled_code
 
         # Add incremental context variables for batches running incrementally
         if incremental_batch:
