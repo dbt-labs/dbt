@@ -1,0 +1,7 @@
+kind: Features
+body: Add the dbt-trino macro package for Trino.
+time: 2026-11-09T19:14:39.400396+01:00
+custom:
+    author: lucargir
+    issue: "17101"
+    project: dbt-core
