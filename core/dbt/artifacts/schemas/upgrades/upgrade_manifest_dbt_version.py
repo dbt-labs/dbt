@@ -30,11 +30,32 @@ def upgrade_unrendered_config(manifest: dict) -> dict:
                 new_unrendered_config_from_code = (
                     statically_parse_unrendered_config(node.get("raw_code", "")) or {}
                 )
-                manifest["nodes"][unique_id]["unrendered_config"].update(
-                    new_unrendered_config_from_code
+                unrendered_config = manifest["nodes"][unique_id]["unrendered_config"]
+                _remove_other_hook_key_spellings(
+                    unrendered_config, new_unrendered_config_from_code
                 )
+                unrendered_config.update(new_unrendered_config_from_code)
 
     return manifest
+
+
+# pre_hook/pre-hook and post_hook/post-hook are two spellings of the same config
+_HOOK_KEY_SPELLINGS = (("pre_hook", "pre-hook"), ("post_hook", "post-hook"))
+
+
+def _remove_other_hook_key_spellings(unrendered_config: dict, new_unrendered_config: dict) -> None:
+    """Remove a hook key from unrendered_config when new_unrendered_config sets the same hook
+    under its other spelling.
+
+    Without the flag, dbt stored hooks under the translated keys (pre-hook, post-hook), while
+    statically_parse_unrendered_config returns the config() kwarg names (pre_hook, post_hook).
+    Merging with update() alone would leave both keys, so an unchanged node would compare as modified.
+    """
+    for underscore_key, hyphen_key in _HOOK_KEY_SPELLINGS:
+        if underscore_key in new_unrendered_config:
+            unrendered_config.pop(hyphen_key, None)
+        if hyphen_key in new_unrendered_config:
+            unrendered_config.pop(underscore_key, None)
 
 
 def _node_is_simple_builtin_generic_test(node: dict) -> bool:
