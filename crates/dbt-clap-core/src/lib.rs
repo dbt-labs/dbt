@@ -3033,7 +3033,8 @@ impl CommonArgs {
             no_parallel: self.no_parallel,
             select: select_option,
             exclude: exclude_option,
-            indirect_selection,
+            // CLI/env only: selectors.yml modes are overridden by this field, so the project default must stay out.
+            indirect_selection: self.indirect_selection,
             replay,
             long_living: false,
             skip_semantic_manifest_validation: self.skip_semantic_manifest_validation,
@@ -4747,6 +4748,30 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let args = CommonArgs::default();
         assert!(args.resolve_indirect_selection(dir.path()).is_none());
+    }
+
+    #[test]
+    fn project_indirect_selection_applies_to_cli_select_only() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(DBT_PROJECT_YML),
+            "flags:\n  indirect_selection: cautious\n",
+        )
+        .unwrap();
+        let args = CommonArgs {
+            select: Some(vec!["model_a".to_string()]),
+            ..Default::default()
+        };
+        let eval_args =
+            args.to_eval_args(test_system_args(FsCommand::Build), dir.path(), dir.path());
+
+        // resolve_final_selectors applies Some(..) over selectors.yml modes; the project default must not reach it.
+        assert_eq!(eval_args.indirect_selection, None);
+        let Some(dbt_common::node_selector::SelectExpression::Atom(criteria)) = eval_args.select
+        else {
+            panic!("expected a single atom, got {:?}", eval_args.select);
+        };
+        assert_eq!(criteria.indirect, Some(IndirectSelection::Cautious));
     }
 
     fn parse_internal_args(args: &[&str]) -> Result<InternalArgs, clap::Error> {
