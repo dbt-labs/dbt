@@ -881,7 +881,7 @@ fn hooks_are_configured(hooks: &Option<dbt_schemas::schemas::common::Hooks>) -> 
 fn execute_hook_node_blocking(
     hook_node: &RunCacheReuseHookNode,
     ctx: &TaskRunnerCtx,
-    base_context: &std::collections::BTreeMap<String, minijinja::Value>,
+    base_context: &minijinja::Value,
     sql: Option<&str>,
     phase: RunCacheReuseHookPhase,
 ) -> FsResult<()> {
@@ -999,6 +999,8 @@ fn elapsed_millis(started_at: Instant) -> i64 {
 struct CachedDataTestStatus {
     failures: usize,
     status: TestExecutionStatus,
+    /// `status` before `--warn-error-options` overrides.
+    verdict: TestExecutionStatus,
     stat_status: NodeStatus,
     final_status: NodeStatus,
 }
@@ -1008,6 +1010,10 @@ impl CachedDataTestStatus {
         TestReportedResult {
             failures: self.failures,
             status: self.status,
+            verdict: self.verdict,
+            // Unused: the cached path stores its own `NO-OP` message instead of `message()`.
+            error_if: None,
+            warn_if: None,
             diff: None,
             execution_result: None,
         }
@@ -1027,12 +1033,12 @@ fn cached_data_test_status(
     warn_error_options: &WarnErrorOptions,
 ) -> CachedDataTestStatus {
     let failures = result.failures.max(0) as usize;
-    let status = reported_test_verdict_from_components(
+    let verdict = reported_test_verdict_from_components(
         Some(&severity),
         result.should_warn,
         result.should_error,
     );
-    let status = status_with_warn_error_overrides(status, warn_error_options);
+    let status = status_with_warn_error_overrides(verdict, warn_error_options);
     let stat_status = match status.node_status() {
         NodeStatus::TestPassed => {
             NodeStatus::ReusedNoChanges("No new changes on any upstreams".to_string())
@@ -1048,6 +1054,7 @@ fn cached_data_test_status(
     CachedDataTestStatus {
         failures,
         status,
+        verdict,
         stat_status,
         final_status,
     }

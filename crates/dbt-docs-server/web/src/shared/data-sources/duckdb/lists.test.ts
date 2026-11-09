@@ -1,6 +1,6 @@
+import type { ResourceType } from 'dbt-docs-lib/domain';
 import { describe, expect, it } from 'vitest';
 
-import type { ResourceType } from '../../typings/domain/asset';
 import {
   buildListQuery,
   constantFacets,

@@ -976,14 +976,14 @@ pub async fn resolve_inner(
         .get_macro_namespace_registry()
         .map(|r| r.keys().map(|k| k.to_string()).collect())
         .unwrap_or_default();
-    let base_ctx = build_resolve_context(
+    let base_ctx = Arc::new(build_resolve_context(
         root_package_name,
         package.dbt_project.name.as_str(),
         &macros.docs_macros,
         DISPATCH_CONFIG.get().unwrap().read().unwrap().clone(),
         namespace_keys,
         Some(root_runtime_config.clone()),
-    );
+    ));
     // Resolve the dbt properties (schema.yml) files
     let mut min_properties = resolve_minimal_properties(
         arg,
@@ -1029,8 +1029,11 @@ pub async fn resolve_inner(
     for (model_name, minimal_model_props) in &min_properties.models {
         // Update base context with the relative yaml file path.
         // We do this for accurate error reporting.
+        // TODO: this copies the package base context for every model, and
+        // `into_typed_with_jinja` copies it again for every YAML span. Layer the path and
+        // span over the shared base with an `OverlayMap` instead.
         let base_ctx = {
-            let mut base_ctx = base_ctx.clone();
+            let mut base_ctx = BTreeMap::clone(&base_ctx);
             base_ctx.insert(
                 CURRENT_PATH.to_string(),
                 minijinja::Value::from(minimal_model_props.relative_path.to_string_lossy()),

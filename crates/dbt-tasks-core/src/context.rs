@@ -40,6 +40,7 @@ use dbt_state::service_config::RunCacheServiceConfig;
 use dbt_state::telemetry::SharedEventOrder;
 use dbt_state::view_traversal::ViewDefinitionTraverser;
 use minijinja::Value;
+use minijinja::value::OverlayMap;
 
 use crate::RunTasksArgs;
 use crate::span_manager::SpanManager;
@@ -169,7 +170,7 @@ pub struct TaskRunnerCtxInner {
     pub worker_id: String,
     pub schedule: Schedule<String>,
     pub runtime_deps: BTreeMap<String, BTreeSet<String>>,
-    pub base_context: BTreeMap<String, Value>,
+    pub base_context: Arc<BTreeMap<String, Value>>,
     pub analyze_stats: SccHashMap<String, Stat>,
     pub run_stats: SccHashMap<String, Stat>,
     pub data_test_execution_results: SccHashMap<String, CachedTestExecutionResult>,
@@ -267,7 +268,7 @@ impl TaskRunnerCtxInner {
             worker_id,
             schedule,
             runtime_deps,
-            base_context,
+            base_context: Arc::new(base_context),
             analyze_stats: SccHashMap::default(),
             run_stats: SccHashMap::default(),
             data_test_execution_results: SccHashMap::default(),
@@ -500,7 +501,7 @@ impl TaskRunnerCtx {
     /// [`dbt_jinja_utils::phases::insert_adapter_overlay`] with this run's store and scopes.
     pub fn insert_adapter_overlay(
         &self,
-        ctx: &mut BTreeMap<String, Value>,
+        ctx: &mut impl Extend<(String, Value)>,
         adapter_type: AdapterType,
     ) -> FsResult<()> {
         dbt_jinja_utils::phases::insert_adapter_overlay(
@@ -511,16 +512,13 @@ impl TaskRunnerCtx {
         )
     }
 
-    /// One node's run-phase base context: the run's base context, the node's task keys and its
-    /// adapter overlay.
-    pub fn run_base_context(
-        &self,
-        node: &dyn InternalDbtNodeAttributes,
-    ) -> FsResult<BTreeMap<String, Value>> {
-        let mut ctx = self.inner.base_context.clone();
+    /// One node's run-phase base context: the node's task keys and its adapter overlay
+    /// layered over the run's base context.
+    pub fn run_base_context(&self, node: &dyn InternalDbtNodeAttributes) -> FsResult<Value> {
+        let mut ctx = self.base_context_overlay();
         add_task_context(&mut ctx, node.common(), &self.thread_id);
         self.insert_adapter_overlay(&mut ctx, self.adapter_type_for(node))?;
-        Ok(ctx)
+        Ok(Value::from(ctx))
     }
 
     pub fn extended_ctx<T: ExtendedCtx + 'static>(&self) -> Option<&T> {
@@ -585,13 +583,19 @@ impl TaskRunnerCtx {
         self.resolver_state.node_resolver.clone()
     }
 
+    /// An empty overlay over the shared base context, to add a context's own
+    /// entries without copying the base.
+    pub fn base_context_overlay(&self) -> OverlayMap {
+        OverlayMap::new(Value::from_dyn_object(Arc::clone(&self.inner.base_context)))
+    }
+
     #[allow(clippy::type_complexity, clippy::too_many_arguments)]
     pub fn build_compile_node_context<T>(
         &self,
         model: Arc<T>,
-        base_context: &BTreeMap<String, Value>,
+        base_context: &Value,
         ref_validation_config: DependencyValidationConfig,
-    ) -> FsResult<(BTreeMap<String, Value>, Arc<SccHashMap<String, Value>>)>
+    ) -> FsResult<(OverlayMap, Arc<SccHashMap<String, Value>>)>
     where
         T: InternalDbtNodeAttributes + ?Sized,
     {

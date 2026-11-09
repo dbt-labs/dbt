@@ -2270,7 +2270,7 @@ impl DbtProjectCompilation {
             }
         }
 
-        let base_context = build_base_context(&resolved_state, &jinja_env);
+        let base_context = Arc::new(build_base_context(&resolved_state, &jinja_env));
         token.check_cancellation()?;
 
         render_all_model_constraint_refs_in_place(&mut resolved_state, &jinja_env, &base_context)?;
@@ -2528,7 +2528,7 @@ impl DbtProjectCompilation {
                         Arc::clone(&run_task_args),
                         generic_test_relationships,
                         &graph,
-                        base_context.clone(),
+                        Arc::unwrap_or_clone(base_context),
                         schedule.clone(),
                         freshness_results,
                         shared_event_order,
@@ -2544,7 +2544,6 @@ impl DbtProjectCompilation {
                     .run(
                         Arc::clone(&run_task_args),
                         schedule,
-                        base_context,
                         ctx,
                         graph,
                         has_dynamic_closure,

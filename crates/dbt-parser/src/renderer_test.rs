@@ -110,7 +110,7 @@ mod tests {
         let render_ctx = RenderCtx {
             inner: Arc::new(RenderCtxInner {
                 args: args.clone(),
-                base_ctx,
+                base_ctx: Arc::new(base_ctx),
                 root_project_name: "root_project".to_string(),
                 package_name: "test_package".to_string(), // Different from root - this triggers the override logic
                 adapter_type: AdapterType::Postgres,
@@ -293,7 +293,7 @@ mod tests {
         let render_ctx = RenderCtx {
             inner: Arc::new(RenderCtxInner {
                 args: args.clone(),
-                base_ctx,
+                base_ctx: Arc::new(base_ctx),
                 root_project_name: "test_package".to_string(),
                 package_name: "test_package".to_string(),
                 adapter_type: AdapterType::Postgres,
