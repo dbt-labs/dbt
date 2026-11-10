@@ -14,6 +14,7 @@ use regex::Regex;
 use similar::{ChangeTag, TextDiff};
 
 use crate::AdapterType;
+use crate::sql::complex_types::canonicalize_complex_types_for;
 use crate::sql::diff::PrivilegeStatement;
 use crate::sql::normalize::strip_sql_comments;
 use crate::time_machine::event::AdapterCallEvent;
@@ -369,7 +370,9 @@ impl TimeMachineEventValidationEngine {
         match (incoming_sql, recorded_sql) {
             (Some(inc), Some(rec)) => {
                 // Compare using fully sanitized SQL
-                if inc.sanitized_sql == rec.sanitized_sql {
+                if canonicalize_complex_types_for(&inc.sanitized_sql, self.adapter_type)
+                    == canonicalize_complex_types_for(&rec.sanitized_sql, self.adapter_type)
+                {
                     ValidationResult::Match
                 } else {
                     // Format the sanitized SQL for readable diff display
@@ -1181,6 +1184,41 @@ mod tests {
         assert!(
             matches!(result, ValidationResult::Mismatch(_)),
             "Expected mismatch when the predicate differs, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_engine_matches_complex_type_spelling_on_databricks() {
+        let cast = |ty: &str| serde_json::json!([format!("select cast(null as {ty}) as payload")]);
+        let recorded = make_recorded_event(
+            "unit_test.p.m.t",
+            "execute",
+            cast("struct<id:string,tags:array<string>>"),
+        );
+        let incoming_args = cast("STRUCT<`id` string, `tags` ARRAY<string>>");
+        let incoming = IncomingEvent::new("unit_test.p.m.t", "execute", &incoming_args);
+
+        let databricks =
+            TimeMachineEventValidationEngine::new().with_adapter_type(AdapterType::Databricks);
+        let result = databricks.validate(&incoming, &recorded);
+        assert!(
+            matches!(result, ValidationResult::Match),
+            "Expected match on Databricks, got {result:?}"
+        );
+
+        let snowflake = TimeMachineEventValidationEngine::new();
+        let result = snowflake.validate(&incoming, &recorded);
+        assert!(
+            matches!(result, ValidationResult::Mismatch(_)),
+            "Expected mismatch on Snowflake, got {result:?}"
+        );
+
+        let incoming_args = cast("STRUCT<`id` string, `tags` ARRAY<int>>");
+        let incoming = IncomingEvent::new("unit_test.p.m.t", "execute", &incoming_args);
+        let result = databricks.validate(&incoming, &recorded);
+        assert!(
+            matches!(result, ValidationResult::Mismatch(_)),
+            "Expected mismatch when a field type differs, got {result:?}"
         );
     }
 

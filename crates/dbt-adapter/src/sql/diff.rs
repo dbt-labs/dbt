@@ -6,6 +6,7 @@ use dbt_common::{AdapterError, AdapterErrorKind, AdapterResult};
 use dbt_frontend_common::Dialect;
 use dbt_sql_utils::{SqlToken as DialectToken, sql_lex_tokens, sql_split_statements};
 
+use super::complex_types::canonicalize_complex_types_for;
 use super::tokenizer::{AbstractToken, Token, abstract_tokenize, tokenize};
 use regex::Regex;
 
@@ -87,6 +88,8 @@ pub fn compare_sql(actual: &str, expected: &str, adapter_type: AdapterType) -> A
     let expected = canonicalize_privilege_statement_order(&expected);
     let actual = canonicalize_numeric_to_decimal(&actual);
     let expected = canonicalize_numeric_to_decimal(&expected);
+    let actual = canonicalize_complex_types_for(&actual, adapter_type).into_owned();
+    let expected = canonicalize_complex_types_for(&expected, adapter_type).into_owned();
     let actual = canonicalize_alter_table_set_tblproperties_order(&actual);
     let expected = canonicalize_alter_table_set_tblproperties_order(&expected);
     let actual = canonicalize_alter_set_tags_order(&actual);
@@ -1464,7 +1467,7 @@ fn is_word_char(b: char) -> bool {
     b.is_ascii_alphanumeric() || b == '_'
 }
 
-fn is_word_byte(b: u8) -> bool {
+pub(super) fn is_word_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
 }
 
