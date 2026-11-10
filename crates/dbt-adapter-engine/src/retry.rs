@@ -7,6 +7,7 @@ use dbt_adbc::Connection;
 use dbt_adbc::duration::parse_duration;
 use dbt_auth::AdapterConfig;
 use dbt_common::Cancellable;
+use dbt_common::tracing::dbt_emit::emit_info_log_message;
 
 #[derive(Debug)]
 pub enum BackoffStrategy {
@@ -43,6 +44,7 @@ fn retry_loop<T, E>(
     mut attempt_fn: impl FnMut() -> Result<T, E>,
     is_retryable: impl Fn(&E) -> bool,
     delay_for: impl Fn(u32) -> Duration,
+    on_retry: impl Fn(u32, Duration, &E),
 ) -> Result<T, E> {
     let mut attempt: u32 = 0;
     loop {
@@ -53,6 +55,7 @@ fn retry_loop<T, E>(
                     return Err(err);
                 }
                 let delay = delay_for(attempt + 1);
+                on_retry(attempt + 1, delay, &err);
                 if !delay.is_zero() {
                     std::thread::sleep(delay);
                 }
@@ -145,7 +148,7 @@ impl ConnectionRetryPolicy {
         config: &AdapterConfig,
         connect_fn: impl FnMut() -> adbc_core::error::Result<Box<dyn Connection>>,
     ) -> adbc_core::error::Result<Box<dyn Connection>> {
-        // XXX: consider printing the error as a warning before hanging on the user
+        let total_attempts = self.max_retries.saturating_add(1);
         retry_loop(
             self.max_retries,
             connect_fn,
@@ -153,6 +156,15 @@ impl ConnectionRetryPolicy {
             |attempt| match self.retry_sleep {
                 Some(t) => t,
                 None => self.backoff.delay_before_next_attempt(attempt),
+            },
+            |attempt, delay, err| {
+                // INFO, not WARN: a coded warning can be promoted to an error under
+                // `--warn-error`, which would fail a run whose connection recovered.
+                emit_info_log_message(format!(
+                    "{} connection attempt {attempt} of {total_attempts} failed, \
+                     retrying in {delay:?}: {}",
+                    self.adapter_type, err.message
+                ));
             },
         )
     }
@@ -197,6 +209,55 @@ fn matches_go_net_transient(msg_lowercase: &str) -> bool {
     GO_NET_TRANSIENT_PATTERNS
         .iter()
         .any(|p| msg_lowercase.contains(p))
+}
+
+/// The Snowflake error number, from the ADBC vendor code when the driver sets
+/// it, otherwise from the leading `NNNNNN (SQLSTATE):`
+fn snowflake_error_number(err: &adbc_core::error::Error) -> Option<i32> {
+    if err.vendor_code > 0 {
+        return Some(err.vendor_code);
+    }
+    let msg = err.message.trim_start().trim_start_matches("[Snowflake] ");
+    let (number, rest) = msg.split_once(' ')?;
+    if number.len() == 6 && rest.starts_with('(') {
+        number.parse().ok()
+    } else {
+        None
+    }
+}
+
+/// A login or SSO endpoint answered with a non-200 status, which the message
+/// carries as `HTTP: <status>`. These four gosnowflake codes are contiguous:
+/// `ErrFailedToAuth`, `ErrFailedToAuthSAML`, `ErrFailedToAuthOKTA` and
+/// `ErrFailedToGetSSO`.
+///
+/// https://github.com/dbt-labs/gosnowflake/blob/v1.17.11/errors.go#L161-L168
+const SNOWFLAKE_ERR_FAILED_TO_AUTH: i32 = 261004;
+const SNOWFLAKE_ERR_FAILED_TO_GET_SSO: i32 = 261007;
+
+/// Snowflake answered the login request and refused it: bad credentials, SSO
+/// not configured on the account, and the rest of the `390xxx` family.
+const SNOWFLAKE_LOGIN_REFUSED_FIRST: i32 = 390000;
+const SNOWFLAKE_LOGIN_REFUSED_LAST: i32 = 390999;
+
+fn is_retryable_http_status(status: u16) -> bool {
+    const REQUEST_TIMEOUT: u16 = 408;
+    const TOO_MANY_REQUESTS: u16 = 429;
+    const SERVER_ERROR_FIRST: u16 = 500;
+    const SERVER_ERROR_LAST: u16 = 599;
+    matches!(
+        status,
+        REQUEST_TIMEOUT | TOO_MANY_REQUESTS | SERVER_ERROR_FIRST..=SERVER_ERROR_LAST
+    )
+}
+
+/// The status in gosnowflake's `... HTTP: <status>, URL: ...` login errors.
+fn http_status_in_message(msg: &str) -> Option<u16> {
+    let tail = msg.split_once("HTTP: ")?.1;
+    let end = tail
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(tail.len());
+    tail[..end].parse().ok()
 }
 
 /// Retries a transient query-*execution* failure (as opposed to
@@ -244,6 +305,7 @@ impl QueryRetryPolicy {
                 Cancellable::Error(e) => self.is_retryable(e),
             },
             |attempt| BackoffStrategy::Exponential.delay_before_next_attempt(attempt),
+            |_, _, _| {},
         )
     }
 
@@ -320,6 +382,27 @@ fn is_retryable_snowflake_login_error(
     ];
     if SNOWFLAKE_TRANSIENT_PATTERNS.iter().any(|p| msg.contains(p)) {
         return true;
+    }
+
+    // The driver reports every connect failure as `Status::IO`, so the Snowflake
+    // error number is the only thing separating permanent from transient below.
+    match snowflake_error_number(err) {
+        Some(SNOWFLAKE_ERR_FAILED_TO_AUTH..=SNOWFLAKE_ERR_FAILED_TO_GET_SSO) => {
+            return http_status_in_message(&err.message).is_some_and(is_retryable_http_status);
+        }
+        Some(SNOWFLAKE_LOGIN_REFUSED_FIRST..=SNOWFLAKE_LOGIN_REFUSED_LAST) => {
+            return config.get_bool("retry_on_database_errors").unwrap_or(false);
+        }
+        _ => {}
+    }
+
+    // gosnowflake blocks external-browser sign-in for 60s after a failure, so a retry
+    // inside that window always fails, and one past it opens another browser tab.
+    // This error carries no Snowflake number, so the message is the only handle.
+    //
+    // https://github.com/dbt-labs/gosnowflake/blob/v1.17.11/auth.go#L760-L995
+    if msg.contains("external browser sign-in failed recently") {
+        return false;
     }
 
     // Network-level failures.
@@ -686,6 +769,167 @@ mod tests {
             &cfg_retry_on_database_errors(),
             &e
         ));
+    }
+
+    #[test]
+    fn snowflake_skips_saml_404() {
+        let e = adbc_err(
+            Status::IO,
+            "[Snowflake] 261005 (08004): failed to auth via SAML for unknown reason. \
+             HTTP: 404, URL: https://acct.snowflakecomputing.com:443/session/authenticator-request?requestId=x",
+        );
+        assert!(!is_retryable_snowflake_login_error(&cfg_default(), &e));
+        assert!(is_retryable_snowflake_login_error(&cfg_retry_all(), &e));
+    }
+
+    #[test]
+    fn snowflake_skips_login_404() {
+        let e = adbc_err(
+            Status::IO,
+            "261004 (08004): failed to auth for unknown reason. \
+             HTTP: 404, URL: https://acct.snowflakecomputing.com:443/session/v1/login-request",
+        );
+        assert!(!is_retryable_snowflake_login_error(&cfg_default(), &e));
+    }
+
+    #[test]
+    fn snowflake_skips_get_sso_4xx() {
+        let forbidden = adbc_err(
+            Status::IO,
+            "261007 (08004): failed to auth via OKTA for unknown reason. HTTP: 403, URL: https://x",
+        );
+        assert!(!is_retryable_snowflake_login_error(
+            &cfg_default(),
+            &forbidden
+        ));
+
+        let unavailable = adbc_err(
+            Status::IO,
+            "261007 (08004): failed to auth via OKTA for unknown reason. HTTP: 503, URL: https://x",
+        );
+        assert!(is_retryable_snowflake_login_error(
+            &cfg_default(),
+            &unavailable
+        ));
+    }
+
+    #[test]
+    fn snowflake_retries_auth_5xx_and_throttling() {
+        for status in [408, 429, 500, 503] {
+            let e = adbc_err(
+                Status::IO,
+                &format!(
+                    "261004 (08004): failed to auth for unknown reason. HTTP: {status}, URL: https://x"
+                ),
+            );
+            assert!(
+                is_retryable_snowflake_login_error(&cfg_default(), &e),
+                "expected retry for HTTP {status}"
+            );
+        }
+    }
+
+    #[test]
+    fn snowflake_login_rejection_follows_retry_on_database_errors() {
+        let e = adbc_err(
+            Status::IO,
+            "390190 (08004): There was an error related to the SAML Identity Provider account parameter.",
+        );
+        assert!(!is_retryable_snowflake_login_error(&cfg_default(), &e));
+        assert!(is_retryable_snowflake_login_error(
+            &cfg_retry_on_database_errors(),
+            &e
+        ));
+    }
+
+    #[test]
+    fn snowflake_skips_external_browser_backoff() {
+        let e = adbc_err(
+            Status::IO,
+            "External browser sign-in failed recently due to an unrecoverable \
+             authentication failure (e.g., IP restriction, IDP error)",
+        );
+        assert!(!is_retryable_snowflake_login_error(&cfg_default(), &e));
+        assert!(is_retryable_snowflake_login_error(&cfg_retry_all(), &e));
+    }
+
+    #[test]
+    fn snowflake_error_number_prefers_vendor_code() {
+        let mut e = adbc_err(Status::IO, "connection failed with no numeric prefix");
+        e.vendor_code = 390100;
+        assert_eq!(snowflake_error_number(&e), Some(390100));
+        assert!(!is_retryable_snowflake_login_error(&cfg_default(), &e));
+    }
+
+    #[test]
+    fn snowflake_still_retries_uncoded_failures() {
+        for msg in [
+            "timeout after 5s and 3 attempts. HTTP Status: 503. Hanging?",
+            "dial tcp 1.2.3.4:443: connect: connection refused",
+        ] {
+            let e = adbc_err(Status::IO, msg);
+            assert!(
+                is_retryable_snowflake_login_error(&cfg_default(), &e),
+                "expected retry for {msg:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn retry_loop_calls_on_retry_only_before_another_attempt() {
+        use std::cell::Cell;
+
+        let attempts = Cell::new(0u32);
+        let retries = Cell::new(0u32);
+        let exhausted: Result<(), &str> = retry_loop(
+            2,
+            || {
+                attempts.set(attempts.get() + 1);
+                Err("boom")
+            },
+            |_| true,
+            |_| Duration::ZERO,
+            |_, _, _| retries.set(retries.get() + 1),
+        );
+        assert!(exhausted.is_err());
+        assert_eq!(attempts.get(), 3);
+        assert_eq!(retries.get(), 2);
+
+        let attempts = Cell::new(0u32);
+        let retries = Cell::new(0u32);
+        let permanent: Result<(), &str> = retry_loop(
+            2,
+            || {
+                attempts.set(attempts.get() + 1);
+                Err("boom")
+            },
+            |_| false,
+            |_| Duration::ZERO,
+            |_, _, _| retries.set(retries.get() + 1),
+        );
+        assert!(permanent.is_err());
+        assert_eq!(attempts.get(), 1);
+        assert_eq!(retries.get(), 0);
+
+        let attempts = Cell::new(0u32);
+        let reported = Cell::new(0u32);
+        let recovered: Result<u8, &str> = retry_loop(
+            2,
+            || {
+                attempts.set(attempts.get() + 1);
+                if attempts.get() == 1 {
+                    Err("boom")
+                } else {
+                    Ok(7)
+                }
+            },
+            |_| true,
+            |_| Duration::ZERO,
+            |attempt, _, _| reported.set(attempt),
+        );
+        assert_eq!(recovered, Ok(7));
+        assert_eq!(attempts.get(), 2);
+        assert_eq!(reported.get(), 1);
     }
 
     // -- Databricks retryable-error classifier ---------------------------------
