@@ -18,6 +18,8 @@
 
 {% macro bq_copy_partitions(tmp_relation, target_relation, partitions, partition_by) %}
 
+  {% set concurrency = partition_by.copy_partitions_concurrency or 1 %}
+  {% set partition_copies = [] %}
   {% for partition in partitions %}
     {% if partition_by.data_type == 'int64' %}
       {% set partition = partition | as_text %}
@@ -32,8 +34,15 @@
     {% endif %}
     {% set tmp_relation_partitioned = api.Relation.create(database=tmp_relation.database, schema=tmp_relation.schema, identifier=tmp_relation.table ~ '$' ~ partition, type=tmp_relation.type) %}
     {% set target_relation_partitioned = api.Relation.create(database=target_relation.database, schema=target_relation.schema, identifier=target_relation.table ~ '$' ~ partition, type=target_relation.type) %}
-    {% do adapter.copy_table(tmp_relation_partitioned, target_relation_partitioned, "table") %}
+    {% if concurrency > 1 %}
+      {% do partition_copies.append([tmp_relation_partitioned, target_relation_partitioned]) %}
+    {% else %}
+      {% do adapter.copy_table(tmp_relation_partitioned, target_relation_partitioned, "table") %}
+    {% endif %}
   {% endfor %}
+  {% if concurrency > 1 %}
+    {% do adapter.copy_partitions(partition_copies, "table", concurrency) %}
+  {% endif %}
 
 {% endmacro %}
 

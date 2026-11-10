@@ -98,7 +98,7 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::str::FromStr;
-use std::sync::{Arc, LazyLock, Once};
+use std::sync::{Arc, Condvar, LazyLock, Mutex, Once};
 
 use AdapterType::*;
 use InnerAdapter::*;
@@ -5132,52 +5132,7 @@ impl AdapterImpl {
                 if let Replay(_, replay) = self.inner_adapter() {
                     return replay.replay_copy_table(state, source, dest, &materialization);
                 }
-                let append = materialization == "incremental";
-                let truncate = materialization == "table";
-                if !append && !truncate {
-                    return Err(AdapterError::new(
-                        AdapterErrorKind::Configuration,
-                        "copy_table 'materialization' must be either 'table' or 'incremental'"
-                            .to_string(),
-                    ));
-                }
-
-                let source_fqn = format!(
-                    "{}.{}.{}",
-                    source.database_as_str()?,
-                    source.schema_as_str()?,
-                    source.identifier_as_str()?
-                );
-                let dest_fqn = format!(
-                    "{}.{}.{}",
-                    dest.database_as_str()?,
-                    dest.schema_as_str()?,
-                    dest.identifier_as_str()?
-                );
-
-                // Determine write disposition based on materialization
-                // WRITE_TRUNCATE for table materialization, WRITE_APPEND for incremental
-                let write_disposition = if truncate {
-                    "WRITE_TRUNCATE"
-                } else {
-                    "WRITE_APPEND"
-                };
-
-                let mut options = self.get_adbc_execute_options(state);
-                options.extend(vec![
-                    (
-                        COPY_TABLE_SOURCE.to_string(),
-                        OptionValue::String(source_fqn),
-                    ),
-                    (
-                        COPY_TABLE_DESTINATION.to_string(),
-                        OptionValue::String(dest_fqn),
-                    ),
-                    (
-                        COPY_TABLE_WRITE_DISPOSITION.to_string(),
-                        OptionValue::String(write_disposition.to_string()),
-                    ),
-                ]);
+                let options = self.copy_table_options(state, source, dest, &materialization)?;
 
                 let ctx = query_ctx_from_state(state)?.with_desc("copy_table adapter call");
                 self.engine().execute_with_options(
@@ -5191,6 +5146,101 @@ impl AdapterImpl {
                 )?;
 
                 Ok(())
+            }
+            Postgres | Snowflake | Databricks | Redshift | Salesforce | Spark | DuckDB
+            | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
+            | Datafusion | Dremio | Oracle => {
+                unimplemented!("only available with BigQuery adapter")
+            }
+        }
+    }
+
+    /// ADBC statement options that make BigQuery run a copy job from `source` to `dest`.
+    fn copy_table_options(
+        &self,
+        state: &State,
+        source: &Arc<dyn BaseRelation>,
+        dest: &Arc<dyn BaseRelation>,
+        materialization: &str,
+    ) -> AdapterResult<ExecuteOptions> {
+        // WRITE_TRUNCATE for table materialization, WRITE_APPEND for incremental
+        let write_disposition = match materialization {
+            "table" => "WRITE_TRUNCATE",
+            "incremental" => "WRITE_APPEND",
+            _ => {
+                return Err(AdapterError::new(
+                    AdapterErrorKind::Configuration,
+                    "copy_table 'materialization' must be either 'table' or 'incremental'"
+                        .to_string(),
+                ));
+            }
+        };
+        let fqn = |relation: &Arc<dyn BaseRelation>| -> AdapterResult<String> {
+            Ok(format!(
+                "{}.{}.{}",
+                relation.database_as_str()?,
+                relation.schema_as_str()?,
+                relation.identifier_as_str()?
+            ))
+        };
+
+        let mut options = self.get_adbc_execute_options(state);
+        options.extend([
+            (
+                COPY_TABLE_SOURCE.to_string(),
+                OptionValue::String(fqn(source)?),
+            ),
+            (
+                COPY_TABLE_DESTINATION.to_string(),
+                OptionValue::String(fqn(dest)?),
+            ),
+            (
+                COPY_TABLE_WRITE_DISPOSITION.to_string(),
+                OptionValue::String(write_disposition.to_string()),
+            ),
+        ]);
+        Ok(options)
+    }
+
+    /// Like [AdapterImpl::copy_table] for many `(source, dest)` partitions, running up to
+    /// `concurrency` copy jobs at a time.
+    ///
+    /// The calling thread copies on its own connection, so progress never waits on the pool.
+    /// Idle `dbt_runtime` workers join in, which keeps the total bounded by `--threads`.
+    pub fn copy_partitions(
+        &self,
+        state: &State,
+        conn: &'_ mut dyn Connection,
+        partitions: &[PartitionCopy],
+        materialization: &str,
+        concurrency: usize,
+        token: CancellationToken,
+    ) -> AdapterResult<()> {
+        match self.adapter_type() {
+            Bigquery => {
+                if let Replay(..) = self.inner_adapter() {
+                    return partitions.iter().try_for_each(|(source, dest)| {
+                        let materialization = materialization.to_string();
+                        self.copy_table(state, conn, source, dest, materialization, token.clone())
+                    });
+                }
+
+                let jobs = partitions
+                    .iter()
+                    .map(|(source, dest)| {
+                        self.copy_table_options(state, source, dest, materialization)
+                    })
+                    .collect::<AdapterResult<Vec<_>>>()?;
+                let helpers = concurrency.min(jobs.len()).saturating_sub(1);
+                let queue = Arc::new(CopyJobQueue::new(jobs));
+                let engine = self.engine();
+                let ctx = query_ctx_from_state(state)?.with_desc("copy_partitions adapter call");
+                for _ in 0..helpers {
+                    let node_id = node_id_from_state(state);
+                    spawn_copy_helper(&queue, engine, &ctx, node_id, &token);
+                }
+                queue.run(|options| execute_copy_job(engine.as_ref(), &ctx, conn, options, &token));
+                queue.wait()
             }
             Postgres | Snowflake | Databricks | Redshift | Salesforce | Spark | DuckDB
             | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
@@ -5927,6 +5977,131 @@ impl AdapterImpl {
 impl fmt::Debug for AdapterImpl {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.adapter_type())
+    }
+}
+
+/// The `(source, dest)` relations of one partition copy.
+pub type PartitionCopy = (Arc<dyn BaseRelation>, Arc<dyn BaseRelation>);
+
+/// Run copy jobs from `queue` on a `dbt_runtime` worker, if one becomes free in time.
+fn spawn_copy_helper(
+    queue: &Arc<CopyJobQueue>,
+    engine: &Arc<dyn AdapterEngine>,
+    ctx: &QueryCtx,
+    node_id: Option<String>,
+    token: &CancellationToken,
+) {
+    let (queue, engine) = (Arc::clone(queue), Arc::clone(engine));
+    let (ctx, token) = (ctx.clone(), token.clone());
+    // detached: a helper that never gets a pool thread must not hold the copy up
+    drop(dbt_runtime::spawn_blocking(move || {
+        // a helper that cannot connect leaves its share to the other threads
+        if !queue.is_drained()
+            && let Ok(mut conn) = borrow_tlocal_connection(engine.as_ref(), None, node_id)
+        {
+            queue.run(|options| {
+                execute_copy_job(engine.as_ref(), &ctx, conn.as_mut(), options, &token)
+            });
+        }
+    }));
+}
+
+fn execute_copy_job(
+    engine: &dyn AdapterEngine,
+    ctx: &QueryCtx,
+    conn: &mut dyn Connection,
+    options: &ExecuteOptions,
+    token: &CancellationToken,
+) -> AdapterResult<()> {
+    engine.execute_with_options(None, ctx, conn, "", options.clone(), false, token.clone())?;
+    Ok(())
+}
+
+/// Copy jobs shared between the threads of one [AdapterImpl::copy_partitions] call.
+struct CopyJobQueue {
+    jobs: Vec<ExecuteOptions>,
+    progress: Mutex<CopyProgress>,
+    all_idle: Condvar,
+}
+
+#[derive(Default)]
+struct CopyProgress {
+    next: usize,
+    in_flight: usize,
+    error: Option<AdapterError>,
+}
+
+impl CopyJobQueue {
+    fn new(jobs: Vec<ExecuteOptions>) -> Self {
+        Self {
+            jobs,
+            progress: Mutex::default(),
+            all_idle: Condvar::new(),
+        }
+    }
+
+    /// The next job to run, or `None` once every job is claimed or one has failed.
+    fn claim(&self) -> Option<&ExecuteOptions> {
+        let mut progress = self.progress.lock().unwrap();
+        if progress.error.is_some() {
+            return None;
+        }
+        let job = self.jobs.get(progress.next)?;
+        progress.next += 1;
+        progress.in_flight += 1;
+        Some(job)
+    }
+
+    fn finish(&self, result: AdapterResult<()>) {
+        let mut progress = self.progress.lock().unwrap();
+        progress.in_flight -= 1;
+        if let Err(err) = result {
+            progress.error.get_or_insert(err);
+        }
+        if progress.in_flight == 0 {
+            self.all_idle.notify_all();
+        }
+    }
+
+    fn is_drained(&self) -> bool {
+        let progress = self.progress.lock().unwrap();
+        progress.error.is_some() || progress.next >= self.jobs.len()
+    }
+
+    /// Run jobs through `copy` until none are left to claim.
+    fn run(&self, mut copy: impl FnMut(&ExecuteOptions) -> AdapterResult<()>) {
+        while let Some(options) = self.claim() {
+            // finishes on drop, so a job that panics cannot leave wait() hanging
+            let mut job = ClaimedCopyJob {
+                queue: self,
+                result: Err(AdapterError::new(
+                    AdapterErrorKind::Internal,
+                    "copy job panicked",
+                )),
+            };
+            job.result = copy(options);
+        }
+    }
+
+    /// Wait for the jobs still running on other threads, then report the first failure.
+    fn wait(&self) -> AdapterResult<()> {
+        let mut progress = self.progress.lock().unwrap();
+        while progress.in_flight > 0 {
+            progress = self.all_idle.wait(progress).unwrap();
+        }
+        progress.error.take().map_or(Ok(()), Err)
+    }
+}
+
+struct ClaimedCopyJob<'a> {
+    queue: &'a CopyJobQueue,
+    result: AdapterResult<()>,
+}
+
+impl Drop for ClaimedCopyJob<'_> {
+    fn drop(&mut self) {
+        self.queue
+            .finish(std::mem::replace(&mut self.result, Ok(())));
     }
 }
 
@@ -8467,6 +8642,128 @@ mod tests {
                 .get_view_options(&state, config, &common_attr)
                 .is_ok()
         );
+    }
+
+    fn bigquery_relation(identifier: &str) -> Arc<dyn BaseRelation> {
+        Arc::new(Relation::new(
+            Bigquery,
+            "db".to_string(),
+            "schema".to_string(),
+            identifier.to_string(),
+        ))
+    }
+
+    fn copy_jobs(count: usize) -> Vec<ExecuteOptions> {
+        (0..count)
+            .map(|i| vec![("job".to_string(), OptionValue::Int(i as i64))])
+            .collect()
+    }
+
+    #[test]
+    fn test_copy_table_options() {
+        let adapter = AdapterImpl::new(engine(Bigquery), None);
+        let env = Environment::new();
+        let state = State::new_for_env(&env);
+        let source = bigquery_relation("events__dbt_tmp$20250101");
+        let dest = bigquery_relation("events$20250101");
+        let options = |materialization| {
+            adapter
+                .copy_table_options(&state, &source, &dest, materialization)
+                .map(|options| {
+                    options
+                        .into_iter()
+                        .filter_map(|(name, value)| match value {
+                            OptionValue::String(value) if name.contains("copy_table") => {
+                                Some((name, value))
+                            }
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                })
+        };
+
+        assert_eq!(
+            options("table").unwrap(),
+            [
+                (
+                    COPY_TABLE_SOURCE.to_string(),
+                    "db.schema.events__dbt_tmp$20250101".to_string()
+                ),
+                (
+                    COPY_TABLE_DESTINATION.to_string(),
+                    "db.schema.events$20250101".to_string()
+                ),
+                (
+                    COPY_TABLE_WRITE_DISPOSITION.to_string(),
+                    "WRITE_TRUNCATE".to_string()
+                ),
+            ]
+        );
+        assert_eq!(options("incremental").unwrap()[2].1, "WRITE_APPEND");
+        assert_eq!(
+            options("view").unwrap_err().kind(),
+            AdapterErrorKind::Configuration
+        );
+    }
+
+    #[test]
+    fn test_copy_job_queue_runs_every_job_once_across_threads() {
+        let queue = CopyJobQueue::new(copy_jobs(200));
+        let seen = Mutex::new(Vec::new());
+        let copy = |options: &ExecuteOptions| {
+            let OptionValue::Int(job) = options[0].1 else {
+                unreachable!("test jobs are numbered")
+            };
+            seen.lock().unwrap().push(job);
+            Ok(())
+        };
+
+        std::thread::scope(|scope| {
+            for _ in 0..7 {
+                scope.spawn(|| queue.run(copy));
+            }
+            queue.run(copy);
+            queue.wait().unwrap();
+            // nothing is still running once wait() returns
+            assert_eq!(seen.lock().unwrap().len(), 200);
+        });
+
+        let mut seen = seen.into_inner().unwrap();
+        seen.sort_unstable();
+        assert!(seen.into_iter().eq(0..200));
+        assert!(queue.is_drained());
+    }
+
+    #[test]
+    fn test_copy_job_queue_does_not_hang_on_a_panicking_job() {
+        let queue = CopyJobQueue::new(copy_jobs(10));
+
+        std::thread::scope(|scope| {
+            let helper = scope.spawn(|| queue.run(|_| panic!("driver bug")));
+            assert!(helper.join().is_err());
+        });
+        queue.run(|_| Ok(()));
+
+        assert_eq!(queue.wait().unwrap_err().message(), "copy job panicked");
+    }
+
+    #[test]
+    fn test_copy_job_queue_stops_after_the_first_failure() {
+        let queue = CopyJobQueue::new(copy_jobs(10));
+        let mut attempts = 0;
+
+        queue.run(|_| {
+            attempts += 1;
+            if attempts == 3 {
+                Err(AdapterError::new(AdapterErrorKind::Internal, "copy failed"))
+            } else {
+                Ok(())
+            }
+        });
+
+        assert_eq!(attempts, 3);
+        assert!(queue.is_drained());
+        assert_eq!(queue.wait().unwrap_err().message(), "copy failed");
     }
 }
 
