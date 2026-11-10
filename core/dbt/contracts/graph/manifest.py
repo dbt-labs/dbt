@@ -1055,20 +1055,20 @@ class Manifest(MacroMethods, dbtClassMixin):
         Make sure you don't call this until you're done with building your
         manifest!
         """
+        resources: Dict[str, Mapping[str, BaseNode]] = {
+            "exposures": self.exposures,
+            "functions": self.functions,
+            "groups": self.groups,
+            "metrics": self.metrics,
+            "nodes": self.nodes,
+            "sources": self.sources,
+            "semantic_models": self.semantic_models,
+            "saved_queries": self.saved_queries,
+            "unit_tests": self.unit_tests,
+        }
         self.flat_graph = {
-            "exposures": {k: v.to_dict(omit_none=False) for k, v in self.exposures.items()},
-            "functions": {k: v.to_dict(omit_none=False) for k, v in self.functions.items()},
-            "groups": {k: v.to_dict(omit_none=False) for k, v in self.groups.items()},
-            "metrics": {k: v.to_dict(omit_none=False) for k, v in self.metrics.items()},
-            "nodes": {k: v.to_dict(omit_none=False) for k, v in self.nodes.items()},
-            "sources": {k: v.to_dict(omit_none=False) for k, v in self.sources.items()},
-            "semantic_models": {
-                k: v.to_dict(omit_none=False) for k, v in self.semantic_models.items()
-            },
-            "saved_queries": {
-                k: v.to_dict(omit_none=False) for k, v in self.saved_queries.items()
-            },
-            "unit_tests": {k: v.to_dict(omit_none=False) for k, v in self.unit_tests.items()},
+            key: {k: v.to_dict(omit_none=False) for k, v in nodes.items()}
+            for key, nodes in resources.items()
         }
 
     def build_disabled_by_file_id(self) -> Dict[str, GraphMemberNode]:
