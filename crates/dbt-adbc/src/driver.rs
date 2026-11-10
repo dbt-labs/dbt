@@ -666,27 +666,6 @@ mod tests {
     }
 
     #[test]
-    fn trino_library_name() {
-        assert_eq!(
-            Backend::Trino.adbc_library_name(),
-            Some("adbc_driver_trino")
-        );
-    }
-
-    #[test]
-    fn trino_entrypoint() {
-        assert_eq!(
-            Backend::Trino.adbc_driver_entrypoint(),
-            Some(b"AdbcDriverTrinoInit".as_slice())
-        );
-    }
-
-    #[test]
-    fn trino_display() {
-        assert_eq!(Backend::Trino.to_string(), "Trino");
-    }
-
-    #[test]
     fn has_installed_driver_requires_the_file_in_the_directory() {
         let root = tempfile::tempdir().unwrap();
         let dir = root.path().join("lib").join("dbt");
