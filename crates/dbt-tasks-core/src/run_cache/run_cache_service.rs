@@ -4890,8 +4890,19 @@ async fn collect_query_dependencies_from_relations(
     };
 
     let relation_values = relations.values().cloned().collect::<Vec<_>>();
+    // A source with a freshness override (`loaded_at_field` / `loaded_at_query`)
+    // determines its own last-modified time, so keep it as a dependency but
+    // don't expand it into its underlying tables; otherwise the override, keyed
+    // by the source's relation, would never be applied.
+    let terminal_fqns: BTreeSet<String> = collect_source_freshness_overrides(ctx, node)
+        .into_keys()
+        .collect();
     let traversal = match traverser
-        .traverse(&relation_values, adapter.cancellation_token())
+        .traverse(
+            &relation_values,
+            &terminal_fqns,
+            adapter.cancellation_token(),
+        )
         .await
     {
         Ok(traversal) => traversal,
