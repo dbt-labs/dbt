@@ -973,7 +973,8 @@ mod tests {
                 __warehouse_specific_config__: WarehouseSpecificNodeConfig {
                     partition_expiration_days: Some(7),
                     ..Default::default()
-                },
+                }
+                .into(),
                 ..Default::default()
             },
             ..Default::default()

@@ -564,7 +564,7 @@ impl From<SnapshotConfig> for ManifestSnapshotConfig {
             sync: config.sync,
             state: config.state,
             table_format: config.table_format,
-            __warehouse_specific_config__: config.__warehouse_specific_config__,
+            __warehouse_specific_config__: config.__warehouse_specific_config__.into_inner(),
         }
     }
 }
@@ -614,7 +614,7 @@ impl From<ManifestSnapshotConfig> for SnapshotConfig {
             sync: config.sync,
             state: config.state,
             table_format: config.table_format,
-            __warehouse_specific_config__: config.__warehouse_specific_config__,
+            __warehouse_specific_config__: config.__warehouse_specific_config__.into(),
         }
     }
 }
@@ -2403,7 +2403,8 @@ mod node_adapter_manifest_round_trip_tests {
             __warehouse_specific_config__: super::WarehouseSpecificNodeConfig {
                 iceberg_version: Some(2),
                 ..Default::default()
-            },
+            }
+            .into(),
             ..Default::default()
         };
 
