@@ -422,6 +422,17 @@ impl minijinja::value::Object for PytzTimezone {
         }
     }
 
+    // pytz keeps one timezone object per zone name, so two timezones are equal
+    // only when they name the same zone: `US/Eastern` != `America/New_York`.
+    fn custom_cmp(
+        self: &Arc<Self>,
+        other: &minijinja::value::DynObject,
+    ) -> Option<std::cmp::Ordering> {
+        other
+            .downcast_ref::<Self>()
+            .map(|other| self.tz.name().cmp(other.tz.name()))
+    }
+
     fn get_value(self: &Arc<Self>, key: &Value) -> Option<Value> {
         match key.as_str()? {
             // pytz exposes the canonical zone name, e.g. `utc.zone` => 'UTC'
