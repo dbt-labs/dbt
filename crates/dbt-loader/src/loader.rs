@@ -428,11 +428,7 @@ pub async fn load(
             root.test_files = find_test_files_by_extension(
                 in_dir,
                 pkg_name,
-                prev_root_package
-                    .dbt_project
-                    .test_paths
-                    .as_deref()
-                    .unwrap_or_default(),
+                prev_root_package.dbt_project.test_paths.as_deref(),
                 &["sql"],
                 arg.allow_jinja_file_extensions,
                 ap,
@@ -1035,7 +1031,7 @@ pub async fn load_inner(
     let test_ymls = find_test_files_by_extension(
         package_path,
         &dbt_project.name,
-        dbt_project.test_paths.as_deref().unwrap_or_default(),
+        dbt_project.test_paths.as_deref(),
         &["yml", "yaml"],
         false,
         &all_files,
@@ -1141,7 +1137,7 @@ pub async fn load_inner(
     let test_files = find_test_files_by_extension(
         package_path,
         &dbt_project.name,
-        dbt_project.test_paths.as_deref().unwrap_or_default(),
+        dbt_project.test_paths.as_deref(),
         &["sql"],
         arg.allow_jinja_file_extensions,
         &all_files,
@@ -1263,16 +1259,14 @@ fn drop_nested_project_config_files(properties: &mut Vec<DbtAsset>) {
 /// `<test-path>/generic` and `<test-path>/fixtures` for every test-path. Files there are
 /// generic tests and unit-test fixtures, not singular tests. Checked against all test-paths
 /// so nested ones (e.g. `["tests", "tests/dbt"]`) still skip `tests/dbt/fixtures/`.
-fn non_singular_test_dirs(test_paths: &[String]) -> Vec<PathBuf> {
+fn non_singular_test_dirs(in_dir: &Path, test_paths: &[String]) -> Vec<PathBuf> {
     test_paths
         .iter()
-        .flat_map(|test_path| {
-            let test_path: PathBuf = Path::new(test_path)
-                .components()
-                .filter(|c| !matches!(c, std::path::Component::CurDir))
-                .collect();
-            [test_path.join("generic"), test_path.join("fixtures")]
-        })
+        // Spell each test-path like the collected files are (`load_inner`): normalized and
+        // relative to `in_dir`, so `./tests`, `tests/../tests` and absolute paths all match.
+        .filter_map(|test_path| diff_paths(DbtPath::from(in_dir.join(test_path)), in_dir).ok())
+        .map(|test_path| DbtPath::from(test_path).to_path_buf())
+        .flat_map(|test_path| [test_path.join("generic"), test_path.join("fixtures")])
         .collect()
 }
 
@@ -1280,12 +1274,12 @@ fn non_singular_test_dirs(test_paths: &[String]) -> Vec<PathBuf> {
 fn find_test_files_by_extension(
     in_dir: &Path,
     project_name: &str,
-    test_paths: &[String],
+    test_paths: Option<&[String]>,
     extensions: &[&str],
     allow_jinja: bool,
     all_paths: &HashMap<ResourcePathKind, Vec<(DbtPath, SystemTime)>>,
 ) -> Vec<DbtAsset> {
-    let excluded_dirs = non_singular_test_dirs(test_paths);
+    let excluded_dirs = non_singular_test_dirs(in_dir, test_paths.unwrap_or_default());
     let mut files = find_files_by_kind_and_extension(
         in_dir,
         project_name,
@@ -1683,13 +1677,24 @@ mod tests {
     /// Walks a temp project with the given test-paths the way `load_inner` does and
     /// returns the singular test `.sql` files, relative to the project root.
     fn singular_test_files(test_paths: &[&str], files: &[&str]) -> Vec<PathBuf> {
+        singular_test_files_with(
+            |_| test_paths.iter().map(|p| p.to_string()).collect(),
+            files,
+        )
+    }
+
+    /// Like `singular_test_files`, with test-paths built from the project root.
+    fn singular_test_files_with(
+        test_paths: impl FnOnce(&Path) -> Vec<String>,
+        files: &[&str],
+    ) -> Vec<PathBuf> {
         let dir = tempfile::tempdir().unwrap();
         for file in files {
             let path = dir.path().join(file);
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             File::create(path).unwrap();
         }
-        let test_paths: Vec<String> = test_paths.iter().map(|p| p.to_string()).collect();
+        let test_paths = test_paths(dir.path());
         let all_dirs = HashMap::from([(ResourcePathKind::TestPaths, test_paths.clone())]);
         let mut all_paths = collect_all_files(all_dirs, dir.path()).unwrap();
         for files in all_paths.values_mut() {
@@ -1700,7 +1705,7 @@ mod tests {
         find_test_files_by_extension(
             dir.path(),
             "test_project",
-            &test_paths,
+            Some(&test_paths),
             &["sql"],
             false,
             &all_paths,
@@ -1753,6 +1758,30 @@ mod tests {
     }
 
     #[test]
+    fn test_singular_tests_skip_generic_tests_in_parent_dir_and_absolute_test_paths() {
+        let files = [
+            "tests/real_test.sql",
+            "tests/generic/my_generic.sql",
+            "tests/dbt/generic/inner_generic.sql",
+        ];
+        let expected = vec![PathBuf::from("tests/real_test.sql")];
+        assert_eq!(
+            singular_test_files(&["tests/../tests", "tests/dbt"], &files),
+            expected
+        );
+        assert_eq!(
+            singular_test_files_with(
+                |root| vec![
+                    root.join("tests").to_string_lossy().to_string(),
+                    "tests/dbt".to_string(),
+                ],
+                &files
+            ),
+            expected
+        );
+    }
+
+    #[test]
     fn test_singular_tests_keep_dirs_named_generic_that_are_not_generic_test_paths() {
         // `data/generic` is the test-path itself, not `<test-path>/generic`.
         assert_eq!(
@@ -1791,7 +1820,7 @@ mod tests {
         let result = find_test_files_by_extension(
             &in_dir,
             project_name,
-            &["tests".to_string(), "data-tests".to_string()],
+            Some(&["tests".to_string(), "data-tests".to_string()]),
             extensions,
             false,
             &all_paths,
@@ -1871,7 +1900,7 @@ mod tests {
     fn test_non_singular_test_dirs() {
         let test_paths = ["tests/".to_string(), "./data/tests".to_string()];
         assert_eq!(
-            non_singular_test_dirs(&test_paths),
+            non_singular_test_dirs(Path::new("/project"), &test_paths),
             vec![
                 PathBuf::from("tests/generic"),
                 PathBuf::from("tests/fixtures"),
