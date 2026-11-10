@@ -3,7 +3,11 @@ import os
 import pytest
 
 from dbt.contracts.files import ParseFileType
-from dbt.parser.read_files import get_source_files, normalize_file_contents
+from dbt.parser.read_files import (
+    get_source_files,
+    normalize_file_contents,
+    read_files_for_parser,
+)
 
 
 @pytest.mark.parametrize(
@@ -66,3 +70,30 @@ def test_singular_tests_skip_fixtures_and_generic_tests_in_nested_test_paths(tmp
         os.path.join("tests", "real_singular_test.sql"),
         os.path.join("tests", "dbt", "nested_singular_test.sql"),
     }
+
+
+@pytest.mark.parametrize(
+    "test_paths,expected_relative_path",
+    [
+        (["tests", "tests/dbt"], os.path.join("dbt", "inner_test.sql")),
+        (["tests/dbt", "tests"], "inner_test.sql"),
+    ],
+)
+def test_read_files_for_parser_registers_nested_file_once_from_first_test_path(
+    tmp_path, test_paths, expected_relative_path
+):
+    _write(tmp_path / "tests" / "dbt" / "inner_test.sql")
+    project = _FakeProject(tmp_path, test_paths)
+    files = {}
+
+    parser_files = read_files_for_parser(
+        project,
+        files,
+        ParseFileType.SingularTest,
+        {"paths": project.test_paths, "extensions": [".sql"]},
+        {},
+        None,
+    )
+
+    assert parser_files == ["repro://tests/dbt/inner_test.sql"]
+    assert files[parser_files[0]].path.relative_path == expected_relative_path

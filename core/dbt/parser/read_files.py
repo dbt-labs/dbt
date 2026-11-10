@@ -191,11 +191,18 @@ def get_source_files(project, paths, extension, parse_file_type, saved_files, ig
 def read_files_for_parser(project, files, parse_ft, file_type_info, saved_files, ignore_spec):
     dirs = file_type_info["paths"]
     parser_files = []
+    seen_file_ids = set()
     for extension in file_type_info["extensions"]:
         source_files = get_source_files(
             project, dirs, extension, parse_ft, saved_files, ignore_spec
         )
         for sf in source_files:
+            # With nested paths (e.g. ["tests", "tests/dbt"]) a file is found once per
+            # path containing it. Keep the first, so its path (and fqn) comes from the
+            # first configured path, matching dbt v2, and it isn't parsed twice.
+            if sf.file_id in seen_file_ids:
+                continue
+            seen_file_ids.add(sf.file_id)
             files[sf.file_id] = sf
             parser_files.append(sf.file_id)
     return parser_files

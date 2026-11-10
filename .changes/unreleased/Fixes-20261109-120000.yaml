@@ -1,6 +1,7 @@
 kind: Fixes
 body: Don't parse unit test fixtures or generic tests as singular data tests when one
-  test-path is nested inside another
+  test-path is nested inside another, and register files under nested resource paths
+  once, taking their fqn from the first configured path (matching dbt v2)
 time: 2026-11-09T12:00:00.000000+05:30
 custom:
     Author: itsnamangoyal
