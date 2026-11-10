@@ -150,30 +150,37 @@ def load_seed_source_file(match: FilePath, project_name) -> SourceFile:
 
 # Use the FilesystemSearcher to get a bunch of FilePaths, then turn
 # them into a bunch of FileSource objects
-def get_source_files(project, paths, extension, parse_file_type, saved_files, ignore_spec):
-    # file path list
-    fp_list = filesystem_search(project, paths, extension, ignore_spec)
+def _excluded_dirs_for_parse_type(project, parse_file_type) -> List[pathlib.PurePath]:
     # singular tests live in /tests but only generic tests live
     # in /tests/generic and fixtures in /tests/fixtures so we want to skip those.
     # Compare against every configured generic test and fixture path, not just the
     # path relative to the searched test path, so nested test paths (e.g.
     # ["tests", "tests/dbt"]) don't pick up tests/dbt/fixtures as singular tests.
-    excluded_dirs = []
-    if parse_file_type == ParseFileType.SingularTest:
-        excluded_dirs = [
-            pathlib.PurePath(os.path.normpath(p))
-            for p in project.generic_test_paths + project.fixture_paths
-        ]
+    if parse_file_type != ParseFileType.SingularTest:
+        return []
+    return [
+        pathlib.PurePath(os.path.normpath(p))
+        for p in project.generic_test_paths + project.fixture_paths
+    ]
+
+
+def _is_in_any_dir(fp: FilePath, dirs: List[pathlib.PurePath]) -> bool:
+    path = pathlib.PurePath(os.path.normpath(fp.original_file_path))
+    return any(path.is_relative_to(d) for d in dirs)
+
+
+def get_source_files(project, paths, extension, parse_file_type, saved_files, ignore_spec):
+    # file path list
+    fp_list = filesystem_search(project, paths, extension, ignore_spec)
+    excluded_dirs = _excluded_dirs_for_parse_type(project, parse_file_type)
     # file block list
     fb_list = []
     for fp in fp_list:
         if parse_file_type == ParseFileType.Seed:
             fb_list.append(load_seed_source_file(fp, project.project_name))
         else:
-            if excluded_dirs:
-                path = pathlib.PurePath(os.path.normpath(fp.original_file_path))
-                if any(path.is_relative_to(d) for d in excluded_dirs):
-                    continue
+            if _is_in_any_dir(fp, excluded_dirs):
+                continue
             file = load_source_file(fp, parse_file_type, project.project_name, saved_files)
             # only append the list if it has contents. added to fix #3568
             if file:

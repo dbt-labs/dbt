@@ -51,8 +51,8 @@ class TestNestedTestPathsFixturesAreNotSingularTests:
         run_dbt(["parse"])
         manifest = get_manifest(project.project_root)
 
-        test_node_ids = [node_id for node_id in manifest.nodes if node_id.startswith("test.")]
-        assert test_node_ids == ["test.test.real_singular_test"]
+        test_node_ids = {node_id for node_id in manifest.nodes if node_id.startswith("test.")}
+        assert test_node_ids == {"test.test.real_singular_test"}
         assert "unit_test.test.my_model.test_my_model" in manifest.unit_tests
 
         results = run_dbt(["ls", "--select", "foo", "--output", "name"])
