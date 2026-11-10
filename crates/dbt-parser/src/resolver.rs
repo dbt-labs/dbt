@@ -2956,7 +2956,7 @@ catalogs:
             model.__model_attr__.table_format = table_format.map(str::to_string);
             // Parsing under a Databricks default adapter resolves Databricks attrs.
             model.__adapter_attr__ =
-                AdapterAttr::default().with_databricks_attr(Some(Box::new(DatabricksAttr {
+                AdapterAttr::default().with_databricks_attr(Some(Arc::new(DatabricksAttr {
                     file_format: file_format.map(str::to_string),
                     ..Default::default()
                 })));
