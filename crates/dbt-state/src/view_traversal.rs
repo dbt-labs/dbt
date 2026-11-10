@@ -15,13 +15,13 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::Arc;
 
-use dashmap::DashMap;
 use dbt_adapter::AdapterType;
 use dbt_adapter::errors::{AdapterError, AdapterErrorKind, AdapterResult};
 use dbt_adapter::metadata::{MetadataAdapter, ViewDefinition};
 use dbt_common::cancellation::{Cancellable, CancellationToken};
+use dbt_common::collections::SccHashMap;
+use dbt_common::sources_extractor::SourcesExtractor;
 use dbt_frontend_common::FullyQualifiedName;
-use dbt_frontend_common::sources_extractor::SourcesExtractor;
 use dbt_schemas::schemas::relations::base::BaseRelation;
 use tokio::task::JoinSet;
 use tracing::Instrument as _;
@@ -70,7 +70,7 @@ pub struct ViewDefinitionTraverser {
 
     /// Long-lived deduplication cache. Lives for the lifetime of the
     /// traverser; reused across every `traverse()` call.
-    cache: Arc<DashMap<String, CachedViewLookup>>,
+    cache: Arc<SccHashMap<String, CachedViewLookup>>,
 }
 
 #[derive(Clone, Debug)]
@@ -91,7 +91,7 @@ impl ViewDefinitionTraverser {
         Self {
             adapter,
             sources_extractor,
-            cache: Arc::new(DashMap::new()),
+            cache: Arc::new(SccHashMap::default()),
         }
     }
 
@@ -102,7 +102,7 @@ impl ViewDefinitionTraverser {
     /// Intended for selected view models in the current run, whose
     /// compiled SQL is locally available and authoritative.
     pub fn insert_view_definition(&self, view_def: ViewDefinition) {
-        self.cache.insert(
+        self.cache.upsert_sync(
             view_def.fqn.clone(),
             CachedViewLookup::View(Arc::new(view_def)),
         );
@@ -141,7 +141,7 @@ impl ViewDefinitionTraverser {
                 seen_relations
                     .entry(fqn.clone())
                     .or_insert_with(|| Arc::clone(&rel));
-                let cached = self.cache.get(&fqn).map(|e| e.value().clone());
+                let cached = self.cache.read_sync(&fqn, |_, e| e.clone());
                 match cached {
                     Some(CachedViewLookup::View(view_def)) => record_and_enqueue(
                         adapter_type,
@@ -180,13 +180,23 @@ impl ViewDefinitionTraverser {
                                 for fqn in fqns {
                                     if let Some(view_def) = by_fqn.remove(&fqn) {
                                         let arc = Arc::new(view_def);
-                                        cache.insert(fqn, CachedViewLookup::View(Arc::clone(&arc)));
+                                        cache
+                                            .upsert_async(
+                                                fqn,
+                                                CachedViewLookup::View(Arc::clone(&arc)),
+                                            )
+                                            .await;
                                         fetched_views.push(arc);
                                     } else if view_defs.unresolvable.contains(&fqn) {
-                                        cache.insert(fqn.clone(), CachedViewLookup::Unresolvable);
+                                        cache
+                                            .upsert_async(
+                                                fqn.clone(),
+                                                CachedViewLookup::Unresolvable,
+                                            )
+                                            .await;
                                         unresolvable.insert(fqn);
                                     } else {
-                                        cache.insert(fqn, CachedViewLookup::NotView);
+                                        cache.upsert_async(fqn, CachedViewLookup::NotView).await;
                                     }
                                 }
                                 Ok((fetched_views, unresolvable))
@@ -439,6 +449,7 @@ mod tests {
             _: Option<String>,
             _: Option<ExecutionPhase>,
             _: &[Arc<dyn BaseRelation>],
+            _: Option<&str>,
             _: CancellationToken,
         ) -> AsyncAdapterResult<'_, HashMap<String, AdapterResult<Arc<arrow_schema::Schema>>>>
         {
@@ -462,6 +473,7 @@ mod tests {
             &self,
             _: &[CatalogAndSchema],
             _: CancellationToken,
+            _: bool,
         ) -> AsyncAdapterResult<'_, BTreeMap<CatalogAndSchema, AdapterResult<RelationVec>>>
         {
             Box::pin(async { Ok(Default::default()) })
@@ -539,7 +551,7 @@ mod tests {
         Arc::from(b)
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn extract_referenced_tables_returns_empty_for_constant_select() {
         let v = ViewDefinition {
             fqn: r#""DB"."S"."V""#.to_string(),
@@ -553,7 +565,7 @@ mod tests {
         assert!(refs.is_empty(), "expected no upstream refs, got {refs:?}");
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn extract_referenced_tables_finds_qualified_ref() {
         let v = ViewDefinition {
             fqn: r#""DB"."S"."V""#.to_string(),
@@ -574,7 +586,7 @@ mod tests {
         assert_eq!(only.table().name(), "UPSTREAM_T");
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn single_view_no_deps_yields_one_view_zero_tables() {
         let mut graph = HashMap::new();
         let v_fqn = rel("V").semantic_fqn();
@@ -598,7 +610,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn linear_chain_v1_to_v2_to_t1() {
         let v1 = rel("V1").semantic_fqn();
         let v2 = rel("V2").semantic_fqn();
@@ -625,7 +637,7 @@ mod tests {
         assert!(result.seen_tables.contains(&t1));
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn synthetic_relation_round_trips_through_fqn_parts() {
         // Build a relation, parse a SQL "SELECT * FROM <its-name>", and
         // assert that the synthetic relation built from the parsed FQN parts
@@ -648,7 +660,7 @@ mod tests {
         assert_eq!(original_fqn, r2.semantic_fqn());
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn diamond_t1_fetched_once() {
         let v1 = rel("V1").semantic_fqn();
         let v2 = rel("V2").semantic_fqn();
@@ -680,7 +692,7 @@ mod tests {
         assert_eq!(mock.count_for(&t1), 1, "t1 fetched more than once");
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn cycle_v1_to_v2_to_v1_terminates() {
         let v1 = rel("V1").semantic_fqn();
         let v2 = rel("V2").semantic_fqn();
@@ -708,7 +720,7 @@ mod tests {
         assert_eq!(mock.count_for(&v2), 1);
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn cross_call_dedup() {
         let v1 = rel("V1").semantic_fqn();
 
@@ -732,7 +744,7 @@ mod tests {
         assert_eq!(mock.count_for(&v1), 1);
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn unresolvable_relation_is_preserved_on_cache_hit() {
         let secure_view = rel("SECURE_VIEW").semantic_fqn();
         let graph = HashMap::new();
@@ -757,7 +769,7 @@ mod tests {
         assert_eq!(mock.count_for(&secure_view), 1);
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn fetch_error_propagates() {
         let v1 = rel("V1").semantic_fqn();
         let mut graph = HashMap::new();
@@ -775,7 +787,7 @@ mod tests {
         assert!(err.to_string().contains("boom"), "got: {err}");
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn insert_view_definition_skips_remote_fetch() {
         let v1 = rel("V1").semantic_fqn();
         let mock =
@@ -801,7 +813,7 @@ mod tests {
         assert_eq!(mock.count_for(&v1), 0, "must not fetch primed view");
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn insert_view_definition_overrides_existing_entry() {
         let v1 = rel("V1").semantic_fqn();
         let mut graph = HashMap::new();
@@ -833,7 +845,7 @@ mod tests {
         assert_eq!(mock.count_for(&v1), 1, "must not refetch after insert");
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn insert_view_definition_supplies_upstreams_to_downstream_traverse() {
         let v = rel("V").semantic_fqn();
         let t = rel("T").semantic_fqn();
@@ -868,7 +880,7 @@ mod tests {
         assert_eq!(mock.count_for(&t), 1, "T fetched once as leaf");
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[dbt_runtime::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cancellation_returns_promptly() {
         let v1 = rel("V1").semantic_fqn();
         let mut graph = HashMap::new();

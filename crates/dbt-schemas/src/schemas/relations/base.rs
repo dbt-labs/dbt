@@ -2,7 +2,7 @@
 use crate::dbt_types::RelationType;
 use crate::filter::RunFilter;
 use crate::schemas::common::ResolvedQuoting;
-pub use crate::schemas::dbt_catalogs_v2::TableFormat;
+pub use crate::schemas::dbt_catalogs::TableFormat;
 
 use chrono::format::SecondsFormat;
 use dbt_adapter_core::{AdapterType, quote_char};
@@ -16,6 +16,7 @@ use strum::{Display, EnumString};
 
 use core::fmt;
 use std::any::Any;
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::option::Option;
 use std::sync::Arc;
@@ -156,13 +157,13 @@ pub trait BaseRelation: BaseRelationProperties + Any + Send + Sync + fmt::Debug 
     /// Get the database name as a string literal
     /// the same as how a database provider resolves and stores a database component for a relation
     /// given how it's quoted
-    fn database_as_resolved_str(&self) -> Result<String, MinijinjaError> {
+    fn database_as_resolved_str(&self) -> Result<Cow<'_, str>, MinijinjaError> {
         match self.database() {
             Some(val) => {
                 if !self.quote_policy().database {
                     Ok(self.normalize_component(val))
                 } else {
-                    Ok(val.to_string())
+                    Ok(Cow::Borrowed(val))
                 }
             }
             None => jinja_err!(
@@ -209,13 +210,13 @@ pub trait BaseRelation: BaseRelationProperties + Any + Send + Sync + fmt::Debug 
     /// Get the schema name as a string literal
     /// the same as how a database provider resolves and stores a schema component for a relation
     /// given how it's quoted
-    fn schema_as_resolved_str(&self) -> Result<String, MinijinjaError> {
+    fn schema_as_resolved_str<'a>(&'a self) -> Result<Cow<'a, str>, MinijinjaError> {
         match self.schema() {
             Some(val) => {
                 if !self.quote_policy().schema {
                     Ok(self.normalize_component(val))
                 } else {
-                    Ok(val.to_string())
+                    Ok(Cow::Borrowed(val))
                 }
             }
             None => jinja_err!(
@@ -242,13 +243,13 @@ pub trait BaseRelation: BaseRelationProperties + Any + Send + Sync + fmt::Debug 
     /// Get the identifier as a string literal
     /// the same as how a database provider resolves and stores an identifier component for a relation
     /// given how it's quoted
-    fn identifier_as_resolved_str(&self) -> Result<String, MinijinjaError> {
+    fn identifier_as_resolved_str<'a>(&'a self) -> Result<Cow<'a, str>, MinijinjaError> {
         match self.identifier() {
             Some(val) => {
                 if !self.quote_policy().identifier {
                     Ok(self.normalize_component(val))
                 } else {
-                    Ok(val.to_string())
+                    Ok(Cow::Borrowed(val))
                 }
             }
             None => jinja_err!(
@@ -266,13 +267,13 @@ pub trait BaseRelation: BaseRelationProperties + Any + Send + Sync + fmt::Debug 
         Ok(self.location().map(|s| s.to_string()))
     }
 
-    fn location_as_resolved_str(&self) -> Result<Option<String>, MinijinjaError> {
+    fn location_as_resolved_str<'a>(&'a self) -> Result<Option<Cow<'a, str>>, MinijinjaError> {
         match self.location() {
             Some(val) => {
                 if !self.quote_policy().database {
                     Ok(Some(self.normalize_component(val)))
                 } else {
-                    Ok(Some(val.to_string()))
+                    Ok(Some(Cow::Borrowed(val)))
                 }
             }
             None => Ok(None),
@@ -298,6 +299,16 @@ pub trait BaseRelation: BaseRelationProperties + Any + Send + Sync + fmt::Debug 
     }
 
     fn set_is_delta(&mut self, is_delta: Option<bool>);
+
+    /// Helper: check if the relation is a Databricks shallow clone
+    fn is_shallow_clone(&self) -> bool {
+        false
+    }
+
+    fn set_is_shallow_clone(&mut self, is_shallow_clone: Option<bool>);
+
+    /// Set the relation's table format, when the adapter tracks one.
+    fn set_table_format(&mut self, table_format: Option<TableFormat>);
 
     /// Helper: check if the relation is a CTE
     fn is_cte(&self) -> bool {
@@ -325,6 +336,16 @@ pub trait BaseRelation: BaseRelationProperties + Any + Send + Sync + fmt::Debug 
     /// Helper: check if the relation is a dynamic table
     fn is_dynamic_table(&self) -> bool {
         matches!(self.relation_type(), Some(RelationType::DynamicTable))
+    }
+
+    /// Helper: check if the relation is an interactive table
+    fn is_interactive_table(&self) -> bool {
+        matches!(self.relation_type(), Some(RelationType::InteractiveTable))
+    }
+
+    /// Helper: check if the relation is a metric view
+    fn is_metric_view(&self) -> bool {
+        matches!(self.relation_type(), Some(RelationType::MetricView))
     }
 
     /// Helper: check if the relation is for a pointer table
@@ -389,7 +410,18 @@ pub trait BaseRelation: BaseRelationProperties + Any + Send + Sync + fmt::Debug 
 
     /// Quote a relation component (database, schema, or identifier)
     fn quoted(&self, s: &str) -> String {
-        format!("{}{}{}", self.quote_character(), s, self.quote_character())
+        let quote = self.quote_character();
+        // Keep these rules in sync with `dbt_adapter_sql::ident::escape_identifier_content`.
+        let escaped = match self.adapter_type() {
+            AdapterType::Bigquery => s
+                .replace('\\', "\\\\")
+                .replace(quote, &format!("\\{quote}")),
+            AdapterType::ClickHouse => s
+                .replace('\\', "\\\\")
+                .replace(quote, &format!("{quote}{quote}")),
+            _ => s.replace(quote, &format!("{quote}{quote}")),
+        };
+        format!("{quote}{escaped}{quote}")
     }
 
     /// Get the semantic name fully qualified for a Relation
@@ -440,7 +472,7 @@ pub trait BaseRelation: BaseRelationProperties + Any + Send + Sync + fmt::Debug 
     ///
     /// This is how a specific database provider resolve and store an object's name if quoting is not used
     /// For example, they'll be upper case in Snowflake https://docs.snowflake.com/en/sql-reference/identifiers-syntax#unquoted-identifiers
-    fn normalize_component(&self, component: &str) -> String;
+    fn normalize_component<'a>(&self, component: &'a str) -> Cow<'a, str>;
 
     /// Render this relation as a string.
     fn render_self_as_str(&self) -> String {
@@ -501,7 +533,7 @@ pub trait BaseRelation: BaseRelationProperties + Any + Send + Sync + fmt::Debug 
         let rendered = self.render_self_as_str();
 
         let rendered = if run_filter.empty {
-            format!("(select * from {rendered} limit 0)")
+            format!("(select * from {rendered} where false limit 0)")
         } else {
             rendered
         };
@@ -545,7 +577,7 @@ pub trait BaseRelation: BaseRelationProperties + Any + Send + Sync + fmt::Debug 
             | AdapterType::Salesforce
             | AdapterType::Spark
             | AdapterType::DuckDB
-            | AdapterType::Alt
+            | AdapterType::LakeCompute
             | AdapterType::Fabric => (
                 start.map(|start| format!("{event_time} >= '{start}'")),
                 end.map(|end| format!("{event_time} < '{end}'")),
@@ -558,7 +590,21 @@ pub trait BaseRelation: BaseRelationProperties + Any + Send + Sync + fmt::Debug 
                 }),
                 end.map(|end| format!("{event_time} < parseDateTime64BestEffort('{end}', 9)")),
             ),
-            AdapterType::Exasol => todo!("Exasol"),
+            // Exasol TIMESTAMP literals take no time-zone offset; strip the
+            // (always +00:00) offset and 'T' from the UTC rfc3339 boundary.
+            AdapterType::Exasol => {
+                let to_exasol_ts = |s: &str| {
+                    let s = s
+                        .trim_end_matches("+00:00")
+                        .trim_end_matches('Z')
+                        .replace('T', " ");
+                    format!("TIMESTAMP '{s}'")
+                };
+                (
+                    start.map(|start| format!("{event_time} >= {}", to_exasol_ts(&start))),
+                    end.map(|end| format!("{event_time} < {}", to_exasol_ts(&end))),
+                )
+            }
             AdapterType::Starburst => todo!("Starburst"),
             AdapterType::Athena => todo!("Athena"),
             AdapterType::Trino => todo!("Trino"),
@@ -730,6 +776,34 @@ pub trait BaseRelation: BaseRelationProperties + Any + Send + Sync + fmt::Debug 
         Ok(self.to_owned())
     }
 
+    /// Derive a new relation from this one by appending `suffix` to the identifier
+    /// (or, when `interpret_suffix_as_full_identifier` is set, using `suffix` as the
+    /// whole identifier), keeping the same schema and optionally overriding the type.
+    ///
+    /// Called from the ClickHouse materialized-view and snapshot macros, e.g.
+    /// `target_relation.derivative('_mv', 'materialized_view')`.
+    /// Ref: dbt-clickhouse `relation.py::ClickHouseRelation.derivative`.
+    fn derivative(
+        &self,
+        suffix: &str,
+        relation_type: Option<RelationType>,
+        interpret_suffix_as_full_identifier: bool,
+    ) -> Result<Arc<dyn BaseRelation>, MinijinjaError> {
+        let new_identifier = if interpret_suffix_as_full_identifier {
+            suffix.to_string()
+        } else {
+            format!("{}{}", self.identifier_as_str()?, suffix)
+        };
+        let relation_type = relation_type.or_else(|| self.relation_type());
+        self.create_relation(
+            self.database().map(|s| s.to_string()),
+            Some(self.schema_as_str()?),
+            Some(new_identifier),
+            relation_type,
+            self.quote_policy(),
+        )
+    }
+
     /// Create a new relation with the specified components and policies.
     ///
     /// This method is used to create a new relation instance with the given database, schema,
@@ -827,6 +901,33 @@ pub trait BaseRelation: BaseRelationProperties + Any + Send + Sync + fmt::Debug 
 
     /// Whether the relation is a temporary view (session-scoped).
     fn is_temporary(&self) -> bool {
+        false
+    }
+
+    /// ClickHouse relation state, stamped from the catalog (dbt-clickhouse
+    /// `ClickHouseRelation.can_exchange`).
+    fn can_exchange(&self) -> bool {
+        false
+    }
+
+    /// `ClickHouseRelation.can_on_cluster`: whether DDL for this relation carries `ON CLUSTER`.
+    fn can_on_cluster(&self) -> bool {
+        false
+    }
+
+    /// dbt-managed MVs writing into this relation, `{schema, name, sql}` entries
+    /// (`ClickHouseRelation.mvs_pointing_to_it`).
+    fn mvs_pointing_to_it(&self) -> &[BTreeMap<String, String>] {
+        &[]
+    }
+
+    /// `ClickHouseRelation.is_refreshable`
+    fn is_refreshable(&self) -> bool {
+        false
+    }
+
+    /// `ClickHouseRelation.refreshable_append`
+    fn refreshable_append(&self) -> bool {
         false
     }
 

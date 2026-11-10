@@ -5,7 +5,7 @@ use std::rc::Rc;
 
 use crate::compiler::tokens::{Span, Token};
 use crate::error::{Error, ErrorKind};
-use crate::listener::TokenizerEventListener;
+use crate::listener::{BlockNameKind, TokenizerEventListener};
 use crate::syntax::SyntaxConfig;
 use crate::utils::{memchr, memstr, unescape};
 
@@ -393,6 +393,21 @@ impl<'s> Tokenizer<'s> {
         }
     }
 
+    pub fn notify_malformed_block_name(&self, kind: BlockNameKind, name: &str, span: &Span) {
+        for listener in &self.source_listeners {
+            listener.on_malformed_block_name(kind, name, span);
+        }
+    }
+
+    fn notify_trimmed_whitespace(&self, span: &Span) {
+        if span.start_offset == span.end_offset {
+            return;
+        }
+        for listener in &self.source_listeners {
+            listener.on_trimmed_whitespace(span);
+        }
+    }
+
     // This is specifically because doc macros can have random
     // tokens, characters, spaces, etc. in the names
     // (i.e. {% doc package.doc_name %%% $$$$ hehehe %} is valid)
@@ -647,7 +662,9 @@ impl<'s> Tokenizer<'s> {
         }
         if self.trim_leading_whitespace {
             self.trim_leading_whitespace = false;
+            let trim_start = self.loc();
             self.skip_whitespace();
+            self.notify_trimmed_whitespace(&self.span(trim_start));
         }
         let old_loc = self.loc();
         let (lead, span) =
@@ -662,7 +679,9 @@ impl<'s> Tokenizer<'s> {
                             let trimmed = lstrip_block(peeked);
                             let lead = self.advance(trimmed.len());
                             let span = self.span(old_loc);
+                            let trim_start = self.loc();
                             self.advance(peeked.len() - trimmed.len());
+                            self.notify_trimmed_whitespace(&self.span(trim_start));
                             (lead, span)
                         }
                         Whitespace::Default | Whitespace::Preserve => {
@@ -673,7 +692,9 @@ impl<'s> Tokenizer<'s> {
                             let trimmed = peeked.trim_end();
                             let lead = self.advance(trimmed.len());
                             let span = self.span(old_loc);
+                            let trim_start = self.loc();
                             self.advance(peeked.len() - trimmed.len());
+                            self.notify_trimmed_whitespace(&self.span(trim_start));
                             (lead, span)
                         }
                     }

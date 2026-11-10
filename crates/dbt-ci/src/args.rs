@@ -28,9 +28,15 @@ pub struct PypiPublishArgs {
 
     /// Dir holding the `pyproject.toml` whose `[project]` metadata drives the
     /// wheel name and sdist. Defaults to the cargo workspace root (the `dbt` CLI);
-    /// point at `fs/sa/crates/dbt-python` for the `dbt-core` extension package.
+    /// point at `fs/sa/crates/dbt-sa-python` for the `dbt-core` extension package.
     #[arg(long, value_name = "DIR")]
     pub project_dir: Option<PathBuf>,
+
+    /// Dir whose `pyproject.toml` supplies the sdist's `requires-python` and
+    /// `dependencies` — the one describing the referenced wheels. Point at
+    /// `crates/dbt-python` for the maturin extension build.
+    #[arg(long, value_name = "DIR", requires = "download_base_url")]
+    pub runtime_metadata_from: Option<PathBuf>,
 
     /// Interpreter tag of the referenced wheels (sdist mode). `py3` for the binary
     /// CLI wheel, `cp310` for the maturin abi3 extension wheel.
@@ -80,6 +86,12 @@ pub struct BumpCargoVersionArgs {
 
 #[derive(Args, Debug)]
 pub struct HomebrewRenderArgs {
+    /// Per-target release package JSON manifests (repeatable).
+    #[arg(long)]
+    pub sidecar_manifest: Vec<PathBuf>,
+    /// Base URL for the sidecar resource archives.
+    #[arg(long, requires = "sidecar_manifest")]
+    pub sidecar_base_url: Option<String>,
     /// Directory of release tarballs, one per cargo target triple.
     /// Filename pattern: `{tarball-prefix}{version}-{target}.tar.gz`.
     /// SHA256 of each tarball is computed in-process.

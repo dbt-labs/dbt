@@ -5,7 +5,7 @@ use dbt_tracing::{
 };
 
 pub use crate::proto::v1::public::events::fusion::invocation::{
-    Invocation, InvocationEvalArgs, InvocationMetrics,
+    Invocation, InvocationEvalArgs, InvocationMetrics, InvocationWarnErrorOptions,
 };
 pub use crate::proto::v1::public::events::fusion::process::Process;
 use prost::Name;
@@ -20,7 +20,7 @@ impl StaticTelemetryEvent for Invocation {
             self.process_info
                 .as_ref()
                 .map(|p| p.package.as_ref())
-                .unwrap_or("dbt-fusion"),
+                .unwrap_or("dbt"),
             self.invocation_id
         )
     }

@@ -68,7 +68,7 @@ impl ColumnMasks {
                     using_columns_val.as_str(),
                 ) {
                     let using_columns_opt =
-                        using_columns.is_empty().then(|| using_columns.to_string());
+                        (!using_columns.is_empty()).then(|| using_columns.to_string());
                     set_column_masks.insert(
                         column_name.to_string(),
                         ColumnMask {
@@ -181,6 +181,12 @@ impl ColumnMasksLoader {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::metadata::databricks::describe_json::*;
+    use crate::metadata::databricks::*;
+    use arrow::array::*;
+    use arrow_schema::*;
+    use dbt_agate::AgateTable;
+    use std::sync::Arc;
 
     #[test]
     fn test_diff_update_column_mask() {
@@ -310,5 +316,46 @@ mod tests {
         let diff = diff.as_any().downcast_ref::<ColumnMasks>().unwrap();
         assert!(diff.set_column_masks.is_empty());
         assert_eq!(diff.unset_column_masks, vec!["col1"]);
+    }
+
+    #[test]
+    fn test_as_json_path_produces_no_false_diff_vs_info_schema_path() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("column_name", DataType::Utf8, false),
+            Field::new("mask_name", DataType::Utf8, false),
+            Field::new("using_columns", DataType::Utf8, true),
+        ]));
+        let info_schema_batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec!["phone_number"])) as ArrayRef,
+                Arc::new(StringArray::from(vec!["main.db.mask_phone"])) as ArrayRef,
+                Arc::new(StringArray::from(vec!["city"])) as ArrayRef,
+            ],
+        )
+        .unwrap();
+        let info_schema_results = IndexMap::from([(
+            DatabricksRelationMetadataKey::ColumnMasks,
+            AgateTable::from_record_batch(Arc::new(info_schema_batch)),
+        )]);
+        let info_schema_config = ColumnMasks::from_remote_state(&info_schema_results);
+
+        let rows = vec![ColumnMaskRow {
+            column_name: "phone_number".to_string(),
+            mask_name: "main.db.mask_phone".to_string(),
+            using_columns: Some("city".to_string()),
+        }];
+        let as_json_results = IndexMap::from([(
+            DatabricksRelationMetadataKey::ColumnMasks,
+            column_masks_to_agate(&rows).unwrap(),
+        )]);
+        let as_json_config = ColumnMasks::from_remote_state(&as_json_results);
+
+        assert!(
+            as_json_config
+                .diff_from(Some(&info_schema_config))
+                .is_none(),
+            "AS-JSON path should not produce a diff against the info_schema path for identical column masks"
+        );
     }
 }

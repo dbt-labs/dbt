@@ -1,0 +1,483 @@
+{
+  "detail": {
+    "unique_id": "semantic_model.jaffle_shop.warehouses_8",
+    "name": "warehouses_8",
+    "resource_type": "semantic_model",
+    "package_name": null,
+    "description": null,
+    "original_file_path": null,
+    "file_path": null,
+    "tags": [],
+    "fqn": [],
+    "meta": null,
+    "group_name": null,
+    "label": null,
+    "model": {
+      "unique_id": "ref('warehouses_8')",
+      "name": "ref('warehouses_8')",
+      "access_level": null,
+      "alias": null
+    },
+    "node_relation": {
+      "alias": "warehouses_8",
+      "database": "analytics",
+      "relation_name": "analytics.public.warehouses_8",
+      "schema_name": "public"
+    },
+    "primary_entity": null,
+    "defaults": {
+      "agg_time_dimension": "created_at"
+    },
+    "entities": [
+      {
+        "name": "active_customer",
+        "type": "primary",
+        "description": null,
+        "label": null,
+        "expr": "order_id",
+        "role": null
+      }
+    ],
+    "dimensions": [
+      {
+        "name": "created_at",
+        "type": "time",
+        "description": null,
+        "label": null,
+        "expr": "order_id",
+        "is_partition": false,
+        "time_granularity": "day",
+        "validity_params": null
+      },
+      {
+        "name": "is_active",
+        "type": "categorical",
+        "description": null,
+        "label": null,
+        "expr": "order_id",
+        "is_partition": false,
+        "time_granularity": null,
+        "validity_params": null
+      }
+    ],
+    "measures": [
+      {
+        "name": "warehouses_8",
+        "agg": "sum",
+        "description": "Synthetic fixture description. Structure is what this fixture exists to pin down; the prose is deliberately not real.",
+        "label": "Order Conversions",
+        "expr": "case when order_id is not null then 1 else 0 end",
+        "create_metric": true,
+        "agg_time_dimension": "created_at",
+        "agg_params": null,
+        "non_additive_dimension": null
+      }
+    ],
+    "depends_on": [
+      {
+        "unique_id": "model.jaffle_shop.warehouses_8",
+        "edge_type": "ref"
+      }
+    ],
+    "referenced_by": [
+      {
+        "unique_id": "metric.jaffle_shop.warehouses_8",
+        "edge_type": "ref"
+      }
+    ],
+    "created_at": 1780422801.0
+  },
+  "lineage": {
+    "status": 200,
+    "body": {
+      "root": "semantic_model.jaffle_shop.warehouses_8",
+      "max_depth": 3,
+      "nodes": [
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "tickets_9",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.tickets_9"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "base_order_items_5",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.base_order_items_5"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "dim_promotions_9",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.dim_promotions_9"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "dim_taxes_5",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.dim_taxes_5"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "cohorts_7",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.cohorts_7"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "fct_invoices_8",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.fct_invoices_8"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "fct_taxes_7",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.fct_taxes_7"
+        },
+        {
+          "depth": -3,
+          "materialized": "incremental",
+          "name": "fct_regions_8",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.fct_regions_8"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "fct_warehouses_5",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.fct_warehouses_5"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "fct_invoices_6",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.fct_invoices_6"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "fct_taxes_8",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.fct_taxes_8"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "int_locations_4",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.int_locations_4"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "int_warehouses_2",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.int_warehouses_2"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "int_segments_2",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.int_segments_2"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "int_warehouses_3",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.int_warehouses_3"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "int_orders_2",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.int_orders_2"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "int_events_3",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.int_events_3"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "int_refunds_4",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.int_refunds_4"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "features_7",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.features_7"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "stg_plans_8",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.stg_plans_8"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "stg_events_7",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.stg_events_7"
+        },
+        {
+          "depth": -2,
+          "materialized": "table",
+          "name": "dim_revenue_7",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.dim_revenue_7"
+        },
+        {
+          "depth": -2,
+          "materialized": "table",
+          "name": "fct_trials_8",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.fct_trials_8"
+        },
+        {
+          "depth": -2,
+          "materialized": "table",
+          "name": "fct_products_3",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.fct_products_3"
+        },
+        {
+          "depth": -2,
+          "materialized": "table",
+          "name": "stg_channels_3",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.stg_channels_3"
+        },
+        {
+          "depth": -1,
+          "materialized": "view",
+          "name": "warehouses_8",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.warehouses_8"
+        },
+        {
+          "depth": 0,
+          "name": "warehouses_8",
+          "resource_type": "semantic_model",
+          "unique_id": "semantic_model.jaffle_shop.warehouses_8"
+        },
+        {
+          "depth": 1,
+          "name": "warehouses_8",
+          "resource_type": "metric",
+          "unique_id": "metric.jaffle_shop.warehouses_8"
+        }
+      ],
+      "edges": [
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.warehouses_8",
+          "to_id": "semantic_model.jaffle_shop.warehouses_8"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.tickets_9",
+          "to_id": "model.jaffle_shop.stg_channels_3"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.base_order_items_5",
+          "to_id": "model.jaffle_shop.stg_channels_3"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.dim_promotions_9",
+          "to_id": "model.jaffle_shop.fct_trials_8"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.dim_promotions_9",
+          "to_id": "model.jaffle_shop.int_segments_2"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.dim_taxes_5",
+          "to_id": "model.jaffle_shop.fct_trials_8"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.dim_taxes_5",
+          "to_id": "model.jaffle_shop.int_segments_2"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.dim_revenue_7",
+          "to_id": "model.jaffle_shop.warehouses_8"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.cohorts_7",
+          "to_id": "model.jaffle_shop.dim_revenue_7"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.fct_invoices_8",
+          "to_id": "model.jaffle_shop.dim_revenue_7"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.fct_trials_8",
+          "to_id": "model.jaffle_shop.warehouses_8"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.fct_taxes_7",
+          "to_id": "model.jaffle_shop.fct_trials_8"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.fct_products_3",
+          "to_id": "model.jaffle_shop.warehouses_8"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.fct_regions_8",
+          "to_id": "model.jaffle_shop.fct_trials_8"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.fct_warehouses_5",
+          "to_id": "model.jaffle_shop.fct_trials_8"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.fct_invoices_6",
+          "to_id": "model.jaffle_shop.fct_trials_8"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.fct_taxes_8",
+          "to_id": "model.jaffle_shop.fct_trials_8"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_locations_4",
+          "to_id": "model.jaffle_shop.fct_products_3"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_locations_4",
+          "to_id": "model.jaffle_shop.int_warehouses_2"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_warehouses_2",
+          "to_id": "model.jaffle_shop.fct_products_3"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_segments_2",
+          "to_id": "model.jaffle_shop.fct_trials_8"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_segments_2",
+          "to_id": "model.jaffle_shop.int_warehouses_3"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_warehouses_3",
+          "to_id": "model.jaffle_shop.fct_trials_8"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_orders_2",
+          "to_id": "model.jaffle_shop.fct_trials_8"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_events_3",
+          "to_id": "model.jaffle_shop.dim_revenue_7"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_refunds_4",
+          "to_id": "model.jaffle_shop.dim_revenue_7"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_refunds_4",
+          "to_id": "model.jaffle_shop.int_segments_2"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_refunds_4",
+          "to_id": "model.jaffle_shop.int_events_3"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.features_7",
+          "to_id": "model.jaffle_shop.fct_trials_8"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.stg_plans_8",
+          "to_id": "model.jaffle_shop.dim_taxes_5"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.stg_plans_8",
+          "to_id": "model.jaffle_shop.fct_trials_8"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.stg_plans_8",
+          "to_id": "model.jaffle_shop.int_segments_2"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.stg_channels_3",
+          "to_id": "model.jaffle_shop.warehouses_8"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.stg_channels_3",
+          "to_id": "model.jaffle_shop.int_warehouses_2"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.stg_events_7",
+          "to_id": "model.jaffle_shop.fct_trials_8"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "semantic_model.jaffle_shop.warehouses_8",
+          "to_id": "metric.jaffle_shop.warehouses_8"
+        }
+      ]
+    }
+  },
+  "columnLineage": {
+    "status": 412,
+    "body": {
+      "code": "column_lineage_unavailable",
+      "message": "Column-level lineage is not available in this distribution + artifact set.",
+      "upgrade_path": "Run `dbt --use-index <run|build|compile>` with static analysis enabled, in a distribution that ships the column-lineage provider."
+    }
+  }
+}

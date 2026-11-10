@@ -24,7 +24,7 @@ mod tests {
     ///
     /// Parser parallelism is gated solely by `no_parallel`; `num_threads`
     /// carries the connection-pool size and must not affect render concurrency.
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn test_render_unresolved_sql_files_config_override() {
         // Set up a temporary directory and create a test SQL file
         let temp_dir = tempfile::TempDir::new().unwrap();
@@ -91,8 +91,11 @@ mod tests {
             sample_config: RunFilter::default(),
             sample_renaming: BTreeMap::new(),
             static_analysis: Some(dbt_common::io_args::StaticAnalysisKind::Strict),
+            default_static_analysis: None,
             store_failures: false,
             skip_creating_generic_tests: false,
+            adapter_override: None,
+            profile_adapter_types: None,
             maximum_seed_size_mib: 1,
         };
 
@@ -107,13 +110,21 @@ mod tests {
         let render_ctx = RenderCtx {
             inner: Arc::new(RenderCtxInner {
                 args: args.clone(),
-                base_ctx,
+                base_ctx: Arc::new(base_ctx),
                 root_project_name: "root_project".to_string(),
                 package_name: "test_package".to_string(), // Different from root - this triggers the override logic
                 adapter_type: AdapterType::Postgres,
                 database: "test_db".to_string(),
                 schema: "default_schema".to_string(),
-                config_resolver: ProjectConfigResolver::for_dependency(package_config, root_config),
+                config_resolver: ProjectConfigResolver::for_dependency(
+                    package_config,
+                    root_config,
+                    AdapterType::Postgres,
+                ),
+                adapter_hint: None,
+                adapter_layer: None,
+                parse_adapter_scopes: None,
+                adapter_quoting: Default::default(),
                 resource_paths: vec!["models".to_string()],
                 package_quoting: DbtQuoting {
                     database: Some(true),
@@ -122,9 +133,12 @@ mod tests {
                     snowflake_ignore_case: Some(false),
                 },
                 uses_snapshot_fqn: false,
+                defer_render_errors_to_compile: false,
+                resource_type: None,
             }),
             jinja_env: jinja_env.clone(),
             runtime_config: Arc::new(DbtRuntimeConfig::default()),
+            root_runtime_config: Arc::new(DbtRuntimeConfig::default()),
         };
 
         // Create a cancellation token
@@ -205,7 +219,7 @@ mod tests {
     /// branch that evaluates to false during the `execute=false` parse render
     /// must still be discovered (via static AST analysis) so that its schema
     /// is fetched into `sourced_remote` and the model can compile.
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn test_source_in_false_branch_is_statically_discovered() {
         let temp_dir = tempfile::TempDir::new().unwrap();
         let base_path = temp_dir.path().to_path_buf();
@@ -262,8 +276,11 @@ mod tests {
             sample_config: RunFilter::default(),
             sample_renaming: BTreeMap::new(),
             static_analysis: Some(dbt_common::io_args::StaticAnalysisKind::Strict),
+            default_static_analysis: None,
             store_failures: false,
             skip_creating_generic_tests: false,
+            adapter_override: None,
+            profile_adapter_types: None,
             maximum_seed_size_mib: 1,
         };
 
@@ -276,13 +293,20 @@ mod tests {
         let render_ctx = RenderCtx {
             inner: Arc::new(RenderCtxInner {
                 args: args.clone(),
-                base_ctx,
+                base_ctx: Arc::new(base_ctx),
                 root_project_name: "test_package".to_string(),
                 package_name: "test_package".to_string(),
                 adapter_type: AdapterType::Postgres,
                 database: "test_db".to_string(),
                 schema: "default_schema".to_string(),
-                config_resolver: ProjectConfigResolver::for_root(root_config),
+                config_resolver: ProjectConfigResolver::for_root(
+                    root_config,
+                    AdapterType::Postgres,
+                ),
+                adapter_hint: None,
+                adapter_layer: None,
+                parse_adapter_scopes: None,
+                adapter_quoting: Default::default(),
                 resource_paths: vec!["models".to_string()],
                 package_quoting: DbtQuoting {
                     database: Some(true),
@@ -291,9 +315,12 @@ mod tests {
                     snowflake_ignore_case: Some(false),
                 },
                 uses_snapshot_fqn: false,
+                defer_render_errors_to_compile: false,
+                resource_type: None,
             }),
             jinja_env: jinja_env.clone(),
             runtime_config: Arc::new(DbtRuntimeConfig::default()),
+            root_runtime_config: Arc::new(DbtRuntimeConfig::default()),
         };
 
         use dbt_common::cancellation::CancellationToken;
@@ -378,7 +405,7 @@ mod tests {
             config: root_config,
             children: IndexMap::new(),
         };
-        let resolver = ProjectConfigResolver::for_dependency(local, root);
+        let resolver = ProjectConfigResolver::for_dependency(local, root, AdapterType::Snowflake);
         let fqn = vec!["pkg".to_string(), "my_model".to_string()];
 
         // Root overlay has highest precedence
@@ -395,14 +422,17 @@ mod tests {
         }
 
         // Without root overlay, inline wins over properties
-        let root_resolver = ProjectConfigResolver::for_root(DbtProjectConfig::<ModelConfig> {
-            config: ModelConfig {
-                schema: Omissible::Present(Some("project_schema".to_string())),
-                quoting,
-                ..Default::default()
+        let root_resolver = ProjectConfigResolver::for_root(
+            DbtProjectConfig::<ModelConfig> {
+                config: ModelConfig {
+                    schema: Omissible::Present(Some("project_schema".to_string())),
+                    quoting,
+                    ..Default::default()
+                },
+                children: IndexMap::new(),
             },
-            children: IndexMap::new(),
-        });
+            AdapterType::Snowflake,
+        );
         let resolved_no_root = root_resolver.resolve_with_configs(
             &fqn,
             &fqn,

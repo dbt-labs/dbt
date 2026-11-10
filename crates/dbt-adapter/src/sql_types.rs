@@ -56,8 +56,12 @@ pub trait TypeOps: Send + Sync {
     /// Picks a SQL type for a given Arrow DataType and renders it as SQL.
     ///
     /// The implementation is dialect-specific.
-    fn format_arrow_type_as_sql(&self, data_type: &DataType, out: &mut String)
-    -> AdapterResult<()>;
+    fn format_arrow_type_as_sql(
+        &self,
+        data_type: &DataType,
+        nullable: bool,
+        out: &mut String,
+    ) -> AdapterResult<()>;
 
     /// Renders a given SqlType as SQL.
     ///
@@ -78,9 +82,36 @@ pub trait TypeOps: Send + Sync {
             .map(Ok)
             .unwrap_or_else(|| {
                 let mut out = String::new();
-                self.format_arrow_type_as_sql(field.data_type(), &mut out)
+                self.format_arrow_type_as_sql(field.data_type(), field.is_nullable(), &mut out)
                     .map(|_| Cow::Owned(out))
             })
+    }
+
+    /// Format a CAST target from retained SQL metadata when available.
+    fn format_field_as_cast_type(&self, field: &Field, out: &mut String) -> AdapterResult<()> {
+        let Some(original) = original_type_string(self.adapter_type(), field) else {
+            return self.format_arrow_type_as_sql(field.data_type(), field.is_nullable(), out);
+        };
+        let parsed = SqlType::parse(self.adapter_type(), original.as_ref()).map(|(ty, _)| ty);
+        let mut sql_type = match self.adapter_type() {
+            AdapterType::Bigquery => match parsed.ok().filter(SqlType::is_complete) {
+                Some(sql_type) => sql_type,
+                // Legacy metadata can omit type arguments. Keep the Arrow fallback
+                // used by schema conversion instead of emitting an invalid CAST.
+                None => {
+                    return self.format_arrow_type_as_sql(
+                        field.data_type(),
+                        field.is_nullable(),
+                        out,
+                    );
+                }
+            },
+            _ => {
+                parsed.map_err(|error| AdapterError::new(AdapterErrorKind::NotSupported, error))?
+            }
+        };
+        sql_type.normalize_for_cast(self.adapter_type());
+        self.format_sql_type(sql_type, out)
     }
 
     /// Return internal type representation for the given source type inferred from seed data.
@@ -131,6 +162,9 @@ pub trait TypeOps: Send + Sync {
 
                 is_struct || is_geography
             }
+            // String fixtures for ARRAY/STRUCT/MAP columns are SQL expressions injected verbatim,
+            // e.g. `named_struct(...)`. Data types: https://docs.databricks.com/aws/en/sql/language-manual/sql-ref-datatypes
+            Databricks => databricks::is_complex_type(data_type),
             _ => false,
         }
     }
@@ -174,17 +208,20 @@ impl TypeOps for DefaultTypeOps {
     fn format_arrow_type_as_sql(
         &self,
         data_type: &DataType,
+        nullable: bool,
         out: &mut String,
     ) -> AdapterResult<()> {
         use AdapterType::*;
         let adapter_type = self.0;
         match adapter_type {
-            Postgres | Salesforce => postgres::try_format_type(data_type, true, out),
-            Fabric => fabric::try_format_type(data_type, true, out),
-            ClickHouse => clickhouse::try_format_type(data_type, true, out),
+            Bigquery => bigquery::try_format_type(data_type, nullable, out),
+            Postgres | Salesforce => postgres::try_format_type(data_type, nullable, out),
+            Fabric => fabric::try_format_type(data_type, nullable, out),
+            ClickHouse => clickhouse::try_format_type(data_type, nullable, out),
             _ => {
-                // sdf-specific distinct types are encoded as FixedSizeList(field, 1).
-                // Render them as the uppercased field name (e.g. "variant" → "VARIANT").
+                // Logical types without native Arrow encodings use
+                // FixedSizeList(field, 1). Render the logical field name (for
+                // example, "json" → "JSON").
                 if let DataType::FixedSizeList(field, 1) = data_type {
                     out.push_str(&field.name().to_ascii_uppercase());
                     return Ok(());
@@ -195,7 +232,7 @@ impl TypeOps for DefaultTypeOps {
                         out.push_str("ARRAY");
                     } else {
                         out.push_str("ARRAY<");
-                        self.format_arrow_type_as_sql(field.data_type(), out)?;
+                        self.format_arrow_type_as_sql(field.data_type(), field.is_nullable(), out)?;
                         out.push('>');
                     }
                     return Ok(());
@@ -209,7 +246,7 @@ impl TypeOps for DefaultTypeOps {
                         }
                         out.push_str(field.name());
                         out.push(' ');
-                        self.format_arrow_type_as_sql(field.data_type(), out)?;
+                        self.format_arrow_type_as_sql(field.data_type(), field.is_nullable(), out)?;
                     }
                     out.push('>');
                     return Ok(());
@@ -331,26 +368,30 @@ impl DefaultTypeOps {
                 _,
             ) => match adapter_type {
                 Bigquery => "int64",
-                Databricks => "bigint",
+                Databricks | Spark => "bigint",
                 _ => "integer",
             },
 
             // ## convert_number_type() - Float32
             (SqlType::Real | SqlType::HalfFloat, _) => match adapter_type {
                 Bigquery => "float64",
-                Databricks => "float",
+                Databricks | Spark => "float",
                 Fabric => "real",
+                // Exasol float type is DOUBLE PRECISION (no float8 alias).
+                Exasol => "DOUBLE PRECISION",
                 _ => "float8",
             },
 
             // ## convert_number_type() - Float64
             (SqlType::Double | SqlType::Float(_), _) => match adapter_type {
                 Bigquery => "float64",
-                Databricks => "double",
+                Databricks | Spark => "double",
                 // Divergence: upstream has an implicit narrowing bug we fix
                 // see https://github.com/microsoft/dbt-fabric/blob/0de219082282724a789b0d1b18509d39899da8e1/dbt/adapters/fabric/fabric_adapter.py#L117
                 // https://learn.microsoft.com/en-us/sql/t-sql/data-types/float-and-real-transact-sql?view=fabric&preserve-view=true
                 Fabric => "float",
+                // Exasol float type is DOUBLE PRECISION (no float8 alias).
+                Exasol => "DOUBLE PRECISION",
                 _ => "float8",
             },
 
@@ -367,8 +408,11 @@ impl DefaultTypeOps {
                 (Bigquery, 1..) => "float64",
                 (Bigquery, ..=0) => "int64",
                 (Fabric, _) => "float",
-                (Databricks, 1..) => "double",
-                (Databricks, ..=0) => "bigint",
+                (Databricks | Spark, 1..) => "double",
+                (Databricks | Spark, ..=0) => "bigint",
+                // Exasol: fractional -> DOUBLE PRECISION; zero/negative scale
+                // falls through to "integer" (a valid DECIMAL(18,0) alias).
+                (Exasol, 1..) => "DOUBLE PRECISION",
                 (_, 1..) => "float8",
                 (_, ..=0) => "integer",
             },
@@ -387,8 +431,9 @@ impl DefaultTypeOps {
             // ## convert_datetime_type()
             (SqlType::Timestamp { .. }, _) => match adapter_type {
                 Bigquery => "datetime",
-                Databricks => "timestamp",
+                Databricks | Spark => "timestamp",
                 Fabric => "datetime2(6)",
+                Exasol => "timestamp",
                 _ => "timestamp without time zone",
             },
 
@@ -399,19 +444,22 @@ impl DefaultTypeOps {
             // Upstream maps Duration and Interval Arrow types to time.
             (SqlType::Interval(_) | SqlType::Time { .. }, _) => match adapter_type {
                 Fabric => "time(6)",
+                // Exasol stores a time-of-day value as TIMESTAMP.
+                Exasol => "timestamp",
                 _ => "time",
             },
 
             // ## convert_text_type()
             (SqlType::Varchar(..) | SqlType::Text | SqlType::Clob | SqlType::Char(_), _) => {
                 match adapter_type {
-                    Bigquery | Databricks => "string",
+                    Bigquery | Databricks | Spark => "string",
                     // technically should be `varchar(N)`
                     // where `N` is based on the max length of the strings in the column
                     // but that information isn't available here
                     // - N = 64 if column is empty
                     // - N = max(16, max_length) if column is not empty
                     Fabric => "varchar",
+                    Exasol => "VARCHAR(2000000)",
                     _ => "text",
                 }
             }
@@ -541,8 +589,7 @@ pub const fn get_field_sql_type_metadata_key(adapter_type: AdapterType) -> &'sta
         AdapterType::Postgres => todo!(),
         AdapterType::Salesforce => todo!(),
         AdapterType::Spark => todo!(),
-        AdapterType::DuckDB => todo!(),
-        AdapterType::Alt => todo!(),
+        AdapterType::DuckDB | AdapterType::LakeCompute => todo!(),
         AdapterType::Fabric => FABRIC_METADATA_SQL_TYPE_KEY,
         AdapterType::ClickHouse => CLICKHOUSE_METADATA_SQL_TYPE_KEY,
         AdapterType::Exasol => "DATA_TYPE",
@@ -594,7 +641,7 @@ impl SdfSchemaBuilder {
         let metadata = field.metadata();
         let comment = match self.adapter_type {
             Bigquery => metadata.get("Description"),
-            Redshift | Databricks | Spark | DuckDB | Alt => {
+            Redshift | Databricks | Spark | DuckDB | LakeCompute => {
                 metadata.get(ARROW_FIELD_COMMENT_METADATA_KEY)
             }
             // no evidence that these drivers store comments in metadata, but just in case
@@ -610,12 +657,16 @@ impl SdfSchemaBuilder {
         let current_type = field.data_type();
         let nullable = field.is_nullable();
         let comment = self.field_comment(field);
-        let original_type_text = match self.adapter_type {
-            AdapterType::Bigquery => bigquery::field_to_string(field),
-            _ => original_type_string(self.adapter_type, field),
-        };
+        let original_type_text = original_type_string(self.adapter_type, field);
         // XXX: We should probably error here rather than approximate
-        let resolved_type = if let Some(original_type_text) = &original_type_text {
+        let parse_original = match (self.adapter_type, original_type_text.as_deref()) {
+            (AdapterType::Bigquery, Some(original)) => SqlType::parse(self.adapter_type, original)
+                .is_ok_and(|(sql_type, _)| sql_type.is_complete()),
+            _ => true,
+        };
+        let resolved_type = if let Some(original_type_text) =
+            original_type_text.as_ref().filter(|_| parse_original)
+        {
             type_ops
                 .parse_into_arrow_type(original_type_text.as_ref())
                 .unwrap_or_else(|_| current_type.clone())
@@ -635,8 +686,8 @@ impl SdfSchemaBuilder {
     pub fn build_sdf_schema(self, type_ops: &dyn TypeOps) -> AdapterResult<SdfSchema> {
         use AdapterType::*;
         match self.adapter_type {
-            Bigquery | Redshift | Databricks | Spark | DuckDB | Alt | Fabric | ClickHouse
-            | Exasol | Starburst | Athena | Trino | Dremio | Oracle | Datafusion => {
+            Bigquery | Redshift | Databricks | Spark | DuckDB | LakeCompute | Fabric
+            | ClickHouse | Exasol | Starburst | Athena | Trino | Dremio | Oracle | Datafusion => {
                 let original_fields = self.original.fields();
                 let mut sdf_fields = Vec::with_capacity(original_fields.len());
                 for field in original_fields {
@@ -683,18 +734,97 @@ pub mod bigquery {
     // XXX: make private once all tests are moved to here
     use arrow_schema::{DataType, Field};
     use dbt_adapter_core::AdapterType;
+    use dbt_adapter_sql::ident::Ident;
 
-    use crate::sql_types::get_field_sql_type_metadata_key;
+    use crate::AdapterResult;
+    use crate::sql_types::{DefaultTypeOps, get_field_sql_type_metadata_key};
+
+    pub fn try_format_type(
+        data_type: &DataType,
+        _nullable: bool,
+        out: &mut String,
+    ) -> AdapterResult<()> {
+        match data_type {
+            // Arrow width does not identify the BigQuery decimal family:
+            // BIGNUMERIC(P, S) can fit in Decimal128 when P <= 38.
+            DataType::Decimal32(precision, scale)
+            | DataType::Decimal64(precision, scale)
+            | DataType::Decimal128(precision, scale)
+            | DataType::Decimal256(precision, scale) => {
+                let integer_digits = i16::from(*precision) - i16::from(*scale);
+                let fits_numeric = (0..=9).contains(scale) && (1..=29).contains(&integer_digits);
+                out.push_str(if fits_numeric {
+                    "NUMERIC"
+                } else {
+                    "BIGNUMERIC"
+                });
+            }
+            // BigQuery TIMESTAMP represents an absolute instant, while
+            // DATETIME has no time-zone context. Arrow's time zone preserves
+            // that distinction.
+            DataType::Timestamp(_, Some(_)) => out.push_str("TIMESTAMP"),
+            // Logical types without native Arrow encodings use
+            // FixedSizeList(field, 1). Render the logical field name (for
+            // example, "json" → "JSON").
+            DataType::FixedSizeList(field, 1) if field.name() == "range" => {
+                out.push_str("RANGE<");
+                try_format_type(field.data_type(), true, out)?;
+                out.push('>');
+            }
+            DataType::FixedSizeList(field, 1) => out.push_str(&field.name().to_ascii_uppercase()),
+            DataType::List(field) => {
+                out.push_str("ARRAY<");
+                try_format_type(field.data_type(), field.is_nullable(), out)?;
+                out.push('>');
+            }
+            DataType::Struct(fields) => {
+                let formatted_fields = fields
+                    .iter()
+                    .map(|field| {
+                        let mut field_type = String::new();
+                        try_format_type(field.data_type(), field.is_nullable(), &mut field_type)?;
+                        Ok(format!(
+                            "{} {field_type}",
+                            Ident::new(field.name(), AdapterType::Bigquery)
+                                .display(AdapterType::Bigquery)
+                        ))
+                    })
+                    .collect::<AdapterResult<Vec<_>>>()?;
+
+                out.push_str("STRUCT<");
+                out.push_str(&formatted_fields.join(", "));
+                out.push('>');
+            }
+            _ => DefaultTypeOps::new(AdapterType::Bigquery)
+                .write_sql_type_for_dbt_convert_functions(data_type, out)?,
+        }
+        Ok(())
+    }
 
     pub fn field_to_string<'a>(field: &'a Field) -> Option<Cow<'a, str>> {
         let type_key = get_field_sql_type_metadata_key(AdapterType::Bigquery);
 
         if let Some(original_ctype) = field.metadata().get(type_key) {
+            // REPEATED - this is an Array type
+            let is_array = field
+                .metadata()
+                .get("Repeated")
+                .is_some_and(|v| v == "true");
+
             let inner_sql_type = match original_ctype.as_str() {
                 "RECORD" => {
-                    // STRUCT/RECORD type, recurse and build original type
-                    match field.data_type() {
-                        DataType::Struct(fields) => {
+                    // STRUCT/RECORD type, recurse and build original type.
+                    let struct_fields = match field.data_type() {
+                        DataType::Struct(fields) => Some(fields),
+                        DataType::List(element) if is_array => match element.data_type() {
+                            DataType::Struct(fields) => Some(fields),
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+
+                    match struct_fields {
+                        Some(fields) => {
                             let field_strings: Vec<String> = fields
                                 .iter()
                                 .map(|nested_field| {
@@ -705,7 +835,7 @@ pub mod bigquery {
                                 .collect::<Option<Vec<_>>>()?;
                             Cow::Owned(format!("STRUCT<{}>", field_strings.join(", ")))
                         }
-                        _ => Cow::Borrowed(original_ctype.as_str()),
+                        None => Cow::Borrowed(original_ctype.as_str()),
                     }
                 }
                 "INTEGER" => Cow::Borrowed("INT64"),
@@ -715,11 +845,6 @@ pub mod bigquery {
                 other => Cow::Borrowed(other),
             };
 
-            // REPEATED - this is an Array type
-            let is_array = field
-                .metadata()
-                .get("Repeated")
-                .is_some_and(|v| v == "true");
             let sql_type = if is_array {
                 Cow::Owned(format!("ARRAY<{}>", inner_sql_type))
             } else {
@@ -729,6 +854,19 @@ pub mod bigquery {
         } else {
             None
         }
+    }
+}
+
+pub mod databricks {
+    use arrow_schema::DataType;
+
+    /// ARRAY, STRUCT and MAP. Excludes the `FixedSizeList(_, 1)` encoding of logical
+    /// types such as TIMESTAMP_NTZ.
+    pub fn is_complex_type(data_type: &DataType) -> bool {
+        matches!(
+            data_type,
+            DataType::List(_) | DataType::Struct(_) | DataType::Map(_, _)
+        )
     }
 }
 
@@ -773,8 +911,12 @@ pub mod postgres {
             DataType::Time64(TimeUnit::Microsecond) => out.push_str("time without time zone"),
             DataType::Time64(TimeUnit::Nanosecond) => out.push_str("time without time zone"),
             DataType::Interval(_) => out.push_str("interval"),
-            DataType::Binary => out.push_str("binary"),
-            DataType::Utf8 | DataType::Utf8View => out.push_str("character varying"),
+            DataType::Binary | DataType::LargeBinary | DataType::BinaryView => {
+                out.push_str("binary")
+            }
+            DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => {
+                out.push_str("character varying")
+            }
             DataType::List(_) => out.push_str("array"),
             DataType::Dictionary(key, value)
                 if key.as_ref() == &DataType::UInt16 && value.as_ref() == &DataType::Utf8 =>
@@ -836,7 +978,9 @@ pub mod clickhouse {
             DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => {
                 rendered.push_str("String")
             }
-            DataType::Binary | DataType::LargeBinary => rendered.push_str("String"),
+            DataType::Binary | DataType::LargeBinary | DataType::BinaryView => {
+                rendered.push_str("String")
+            }
             DataType::Date32 | DataType::Date64 => rendered.push_str("Date32"),
             DataType::Timestamp(TimeUnit::Second, _) => rendered.push_str("DateTime"),
             DataType::Timestamp(TimeUnit::Millisecond, _) => rendered.push_str("DateTime64(3)"),
@@ -920,8 +1064,12 @@ pub mod fabric {
                     "INTERVAL is not supported in Microsoft Fabric",
                 ));
             }
-            DataType::Binary => out.push_str("VARBINARY(MAX)"),
-            DataType::Utf8 | DataType::Utf8View => out.push_str(FABRIC_MAX_VARCHAR_TYPE),
+            DataType::Binary | DataType::LargeBinary | DataType::BinaryView => {
+                out.push_str("VARBINARY(MAX)")
+            }
+            DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => {
+                out.push_str(FABRIC_MAX_VARCHAR_TYPE)
+            }
 
             DataType::List(_) => {
                 return Err(AdapterError::new(
@@ -956,7 +1104,7 @@ pub const fn max_varchar_size(adapter_type: AdapterType) -> Option<usize> {
         // FIXME: Actual MAX is 134_217_728 - 16_777_216 is the default value
         Snowflake => Some(16_777_216),
         Redshift => Some(256),
-        Postgres | Bigquery | Databricks | Salesforce | Spark | DuckDB | Alt | Fabric
+        Postgres | Bigquery | Databricks | Salesforce | Spark | DuckDB | LakeCompute | Fabric
         | ClickHouse | Exasol | Starburst | Athena | Trino | Dremio | Oracle | Datafusion => None,
     }
 }
@@ -967,7 +1115,7 @@ pub const fn max_varbinary_size(adapter_type: AdapterType) -> Option<usize> {
         Snowflake => Some(16_777_216),
         Redshift => Some(65_535),
         // TODO: define limits for more systems
-        Postgres | Bigquery | Databricks | Salesforce | Spark | DuckDB | Alt | Fabric
+        Postgres | Bigquery | Databricks | Salesforce | Spark | DuckDB | LakeCompute | Fabric
         | ClickHouse | Exasol | Starburst | Athena | Trino | Dremio | Oracle | Datafusion => None,
     }
 }
@@ -1103,19 +1251,27 @@ pub fn var_size(adapter_type: AdapterType, data_type: &DataType) -> Option<usize
     match (adapter_type, data_type) {
         // Strings: Redshift wants a length; persist it in char_size
         // TODO(jason): We need to report the correct size and not just a default
-        (Redshift, DataType::Utf8 | DataType::Utf8View) => max_varchar_size(Redshift),
-        // For VARCHAR types, no explicit size in Snowflake unless specified
-        (Snowflake, DataType::Utf8 | DataType::Utf8View) => None,
-        // XXX: need to think about the defaults for these adapters
-        (Postgres | Bigquery | Databricks | Salesforce, DataType::Utf8 | DataType::Utf8View) => {
-            None
+        (Redshift, DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View) => {
+            max_varchar_size(Redshift)
         }
+        // For VARCHAR types, no explicit size in Snowflake unless specified
+        (Snowflake, DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View) => None,
+        // XXX: need to think about the defaults for these adapters
+        (
+            Postgres | Bigquery | Databricks | Salesforce,
+            DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View,
+        ) => None,
 
         // Bytes
         // TODO(jason): We need to report the correct size and not just a default
-        (Redshift, DataType::Binary) => max_varbinary_size(Redshift),
+        (Redshift, DataType::Binary | DataType::LargeBinary | DataType::BinaryView) => {
+            max_varbinary_size(Redshift)
+        }
         // XXX: need to think about the defaults for these adapters
-        (Snowflake | Postgres | Bigquery | Databricks | Salesforce, DataType::Binary) => None,
+        (
+            Snowflake | Postgres | Bigquery | Databricks | Salesforce,
+            DataType::Binary | DataType::LargeBinary | DataType::BinaryView,
+        ) => None,
 
         // Snowflake: For timestamp/date/time types, extract precision if available
         (Snowflake, dt) if snowflake::is_time(dt).is_yes() => {
@@ -1223,8 +1379,262 @@ pub fn numeric_precision_scale(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn test_databricks_is_complex_type() {
+        use super::databricks::is_complex_type;
+        let item = Arc::new(Field::new("item", DataType::Int32, true));
+        assert!(is_complex_type(&DataType::List(item.clone())));
+        assert!(is_complex_type(&DataType::Struct(Default::default())));
+        assert!(is_complex_type(&DataType::Map(
+            Arc::new(Field::new(
+                "entries",
+                DataType::Struct(Default::default()),
+                false
+            )),
+            false
+        )));
+        let ntz = DataType::FixedSizeList(
+            Arc::new(Field::new("timestamp_ntz", DataType::Int64, true)),
+            1,
+        );
+        assert!(!is_complex_type(&ntz));
+        assert!(!is_complex_type(&DataType::LargeList(item)));
+    }
+
     use super::*;
     use dbt_adapter_core::AdapterType::*;
+
+    #[test]
+    fn test_format_field_as_cast_type_preserves_bigquery_metadata() {
+        let ops = DefaultTypeOps::new(Bigquery);
+        for (original, data_type, expected) in [
+            (
+                "TIMESTAMP",
+                DataType::Timestamp(TimeUnit::Microsecond, None),
+                "TIMESTAMP",
+            ),
+            (
+                "DATETIME",
+                DataType::Timestamp(TimeUnit::Microsecond, None),
+                "DATETIME",
+            ),
+            ("NUMERIC(10, 2)", DataType::Decimal128(10, 2), "NUMERIC"),
+            (
+                "BIGNUMERIC(30, 20)",
+                DataType::Decimal128(30, 20),
+                "BIGNUMERIC",
+            ),
+        ] {
+            let field = Field::new("value", data_type, true).with_metadata(HashMap::from([(
+                BIGQUERY_METADATA_SQL_TYPE_KEY.to_string(),
+                original.to_string(),
+            )]));
+            let mut out = String::new();
+            ops.format_field_as_cast_type(&field, &mut out).unwrap();
+            assert_eq!(out, expected);
+        }
+        let mut out = String::new();
+        ops.format_field_as_cast_type(&Field::new("value", DataType::Int64, true), &mut out)
+            .unwrap();
+        assert_eq!(out, "int64");
+    }
+
+    #[test]
+    fn bigquery_range_cast_without_metadata_keeps_element_type() {
+        let ops = DefaultTypeOps::new(Bigquery);
+        for original in ["RANGE<DATE>", "RANGE<DATETIME>", "RANGE<TIMESTAMP>"] {
+            let data_type = ops.parse_into_arrow_type(original).unwrap();
+            let field = Field::new("period", data_type, true);
+            let mut out = String::new();
+            ops.format_field_as_cast_type(&field, &mut out).unwrap();
+            assert_eq!(out.to_ascii_uppercase(), original);
+        }
+    }
+
+    #[test]
+    fn bigquery_cast_type_preserves_mixed_nested_families() {
+        let ops = DefaultTypeOps::new(Bigquery);
+        let field = make_arrow_field(
+            &ops,
+            "value".to_string(),
+            "STRUCT<period RANGE<DATE>, labels ARRAY<STRING(10)>, amount BIGNUMERIC(10, 2), event_time TIMESTAMP>",
+            None,
+            None,
+        ).unwrap();
+        let mut out = String::new();
+        ops.format_field_as_cast_type(&field, &mut out).unwrap();
+        assert_eq!(
+            out,
+            "STRUCT<period RANGE<DATE>, labels ARRAY<STRING>, amount BIGNUMERIC, event_time TIMESTAMP>"
+        );
+    }
+
+    #[test]
+    fn bigquery_cast_type_uses_arrow_for_incomplete_legacy_metadata() {
+        let ops = DefaultTypeOps::new(Bigquery);
+        let physical = DataType::Struct(
+            vec![
+                Field::new("start", DataType::Date32, true),
+                Field::new("end", DataType::Date32, true),
+            ]
+            .into(),
+        );
+        for repeated in [false, true] {
+            let data_type = if repeated {
+                DataType::List(Arc::new(Field::new("item", physical.clone(), true)))
+            } else {
+                physical.clone()
+            };
+            let field =
+                Field::new("period", data_type.clone(), true).with_metadata(bq("RANGE", repeated));
+            let schema =
+                arrow_schema_to_sdf_schema(Arc::new(Schema::new(vec![field])), &ops).unwrap();
+            let field = schema.inner().field(0);
+            assert_eq!(field.data_type(), &data_type);
+            let mut out = String::new();
+            ops.format_field_as_cast_type(field, &mut out).unwrap();
+            assert_eq!(
+                out,
+                if repeated {
+                    "ARRAY<STRUCT<start date, `end` date>>"
+                } else {
+                    "STRUCT<start date, `end` date>"
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn bigquery_schema_keeps_complete_driver_metadata() {
+        let ops = DefaultTypeOps::new(Bigquery);
+        let physical = DataType::Struct(
+            vec![
+                Field::new("start", DataType::Date32, true),
+                Field::new("end", DataType::Date32, true),
+            ]
+            .into(),
+        );
+        for repeated in [false, true] {
+            let data_type = if repeated {
+                DataType::List(Arc::new(Field::new("item", physical.clone(), true)))
+            } else {
+                physical.clone()
+            };
+            let sql_type = if repeated {
+                "ARRAY<RANGE<DATE>>"
+            } else {
+                "RANGE<DATE>"
+            };
+            let mut metadata = bq("RANGE", repeated);
+            metadata.insert(
+                metadata_sql_type_key(Bigquery).to_string(),
+                sql_type.to_string(),
+            );
+            let field = Field::new("period", data_type, true).with_metadata(metadata);
+            let schema =
+                arrow_schema_to_sdf_schema(Arc::new(Schema::new(vec![field])), &ops).unwrap();
+            let mut out = String::new();
+            let field = schema.inner().field(0);
+            assert_eq!(
+                original_type_string(Bigquery, field).as_deref(),
+                Some(sql_type)
+            );
+            ops.format_field_as_cast_type(field, &mut out).unwrap();
+            assert_eq!(out, sql_type);
+        }
+    }
+
+    #[test]
+    fn bigquery_schema_keeps_complete_mixed_struct_metadata() {
+        let ops = DefaultTypeOps::new(Bigquery);
+        let physical_range = DataType::Struct(
+            vec![
+                Field::new("start", DataType::Date32, true),
+                Field::new("end", DataType::Date32, true),
+            ]
+            .into(),
+        );
+        let physical = DataType::Struct(
+            vec![
+                Field::new("period", physical_range, true),
+                Field::new("amount", DataType::Decimal128(10, 2), true),
+            ]
+            .into(),
+        );
+        let sql_type = "STRUCT<period RANGE<DATE>, amount BIGNUMERIC(10, 2)>";
+        let mut metadata = bq("RECORD", false);
+        metadata.insert(
+            metadata_sql_type_key(Bigquery).to_string(),
+            sql_type.to_string(),
+        );
+        let field = Field::new("value", physical, true).with_metadata(metadata);
+        let schema = arrow_schema_to_sdf_schema(Arc::new(Schema::new(vec![field])), &ops).unwrap();
+        let field = schema.inner().field(0);
+        assert_eq!(
+            original_type_string(Bigquery, field).as_deref(),
+            Some(sql_type)
+        );
+        let mut out = String::new();
+        ops.format_field_as_cast_type(field, &mut out).unwrap();
+        assert_eq!(out, "STRUCT<period RANGE<DATE>, amount BIGNUMERIC>");
+    }
+
+    #[test]
+    fn cast_type_fallback_is_bigquery_only() {
+        let ops = DefaultTypeOps::new(Snowflake);
+        let field = Field::new("value", DataType::Int64, true).with_metadata(HashMap::from([(
+            metadata_sql_type_key(Snowflake).to_string(),
+            "custom_warehouse_type".to_string(),
+        )]));
+        let mut out = String::new();
+        ops.format_field_as_cast_type(&field, &mut out).unwrap();
+        assert_eq!(out, "custom_warehouse_type");
+    }
+
+    #[test]
+    fn bigquery_unknown_metadata_keeps_the_arrow_type() {
+        let ops = DefaultTypeOps::new(Bigquery);
+        let field = Field::new("value", DataType::Int64, true).with_metadata(HashMap::from([(
+            metadata_sql_type_key(Bigquery).to_string(),
+            "future_warehouse_type".to_string(),
+        )]));
+        let schema = arrow_schema_to_sdf_schema(Arc::new(Schema::new(vec![field])), &ops).unwrap();
+        let field = schema.inner().field(0);
+        assert_eq!(field.data_type(), &DataType::Int64);
+        let mut out = String::new();
+        ops.format_field_as_cast_type(field, &mut out).unwrap();
+        assert_eq!(out, "int64");
+    }
+
+    #[test]
+    fn bigquery_incomplete_rich_metadata_keeps_physical_fields() {
+        let ops = DefaultTypeOps::new(Bigquery);
+        for (original, physical, expected) in [
+            (
+                "STRUCT",
+                DataType::Struct(vec![Field::new("id", DataType::Int64, true)].into()),
+                "STRUCT<id int64>",
+            ),
+            (
+                "ARRAY",
+                DataType::List(Arc::new(Field::new("item", DataType::Date32, true))),
+                "ARRAY<date>",
+            ),
+        ] {
+            let field =
+                Field::new("value", physical.clone(), true).with_metadata(HashMap::from([(
+                    metadata_sql_type_key(Bigquery).to_string(),
+                    original.to_string(),
+                )]));
+            let schema =
+                arrow_schema_to_sdf_schema(Arc::new(Schema::new(vec![field])), &ops).unwrap();
+            let field = schema.inner().field(0);
+            assert_eq!(field.data_type(), &physical, "{original}");
+            let mut out = String::new();
+            ops.format_field_as_cast_type(field, &mut out).unwrap();
+            assert_eq!(out, expected);
+        }
+    }
 
     fn convert_type(data_type: &DataType, adapter_type: AdapterType) -> String {
         let ops = DefaultTypeOps::new(adapter_type);
@@ -1352,6 +1762,79 @@ mod tests {
             "timestamp without time zone"
         );
     }
+
+    #[test]
+    fn test_bigquery_logical_types_roundtrip_through_default_type_ops() {
+        let type_ops = DefaultTypeOps::new(Bigquery);
+
+        for (sql_type, expected) in [
+            ("GEOGRAPHY", "GEOGRAPHY"),
+            ("TIMESTAMP", "TIMESTAMP"),
+            ("DATETIME", "datetime"),
+            ("JSON", "JSON"),
+            ("NUMERIC", "NUMERIC"),
+            ("BIGNUMERIC", "BIGNUMERIC"),
+        ] {
+            let data_type = type_ops.parse_into_arrow_type(sql_type).unwrap();
+            let mut formatted = String::new();
+            type_ops
+                .format_arrow_type_as_sql(&data_type, true, &mut formatted)
+                .unwrap();
+            assert_eq!(formatted, expected, "failed to preserve {sql_type}");
+        }
+    }
+
+    #[test]
+    fn test_bigquery_formats_decimal_by_supported_range() {
+        let type_ops = DefaultTypeOps::new(Bigquery);
+
+        for (data_type, expected) in [
+            (DataType::Decimal128(38, 9), "NUMERIC"),
+            (DataType::Decimal128(29, 0), "NUMERIC"),
+            (DataType::Decimal128(30, 0), "BIGNUMERIC"),
+            (DataType::Decimal128(30, 20), "BIGNUMERIC"),
+            (DataType::Decimal256(10, 2), "NUMERIC"),
+        ] {
+            let mut formatted = String::new();
+            type_ops
+                .format_arrow_type_as_sql(&data_type, true, &mut formatted)
+                .unwrap();
+            assert_eq!(formatted, expected, "failed to format {data_type}");
+        }
+    }
+
+    #[test]
+    fn test_bigquery_formats_nested_logical_types() {
+        let geography =
+            DataType::FixedSizeList(Arc::new(Field::new("geography", DataType::Utf8, true)), 1);
+        let json = DataType::FixedSizeList(Arc::new(Field::new("json", DataType::Utf8, true)), 1);
+        let data_type = DataType::Struct(
+            vec![
+                Field::new("location", geography, true),
+                Field::new(
+                    "events",
+                    DataType::List(Arc::new(Field::new("item", json, true))),
+                    true,
+                ),
+                Field::new(
+                    "created_at",
+                    DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+                    true,
+                ),
+            ]
+            .into(),
+        );
+
+        let mut out = String::new();
+        DefaultTypeOps::new(Bigquery)
+            .format_arrow_type_as_sql(&data_type, true, &mut out)
+            .unwrap();
+        assert_eq!(
+            out,
+            "STRUCT<location GEOGRAPHY, events ARRAY<JSON>, created_at TIMESTAMP>"
+        );
+    }
+
     const ALL_ADAPTERS: [AdapterType; 5] = [Bigquery, Databricks, Postgres, Snowflake, Redshift];
 
     #[test]
@@ -1381,5 +1864,139 @@ mod tests {
         assert_eq!(convert_text_type(Postgres), "text");
         assert_eq!(convert_text_type(Snowflake), "text");
         assert_eq!(convert_text_type(Redshift), "text");
+    }
+
+    fn bq(ty: &str, repeated: bool) -> HashMap<String, String> {
+        HashMap::from([
+            ("Type".to_string(), ty.to_string()),
+            ("Repeated".to_string(), repeated.to_string()),
+        ])
+    }
+
+    #[test]
+    fn bigquery_field_to_string_recovers_nested_types_of_repeated_records() {
+        // pois ARRAY<STRUCT<poi_name STRING, location STRUCT<poi_type STRING, point_geom GEOGRAPHY>>>
+        // A REPEATED RECORD arrives as a list wrapping the struct.
+        let poi_name =
+            Field::new("poi_name", DataType::Utf8, true).with_metadata(bq("STRING", false));
+        let poi_type =
+            Field::new("poi_type", DataType::Utf8, true).with_metadata(bq("STRING", false));
+        let point_geom =
+            Field::new("point_geom", DataType::Utf8, true).with_metadata(bq("GEOGRAPHY", false));
+
+        let location = Field::new(
+            "location",
+            DataType::Struct(vec![poi_type, point_geom].into()),
+            true,
+        )
+        .with_metadata(bq("RECORD", false));
+        let element = Field::new(
+            "item",
+            DataType::Struct(vec![poi_name, location].into()),
+            true,
+        );
+        let pois = Field::new("pois", DataType::List(Arc::new(element)), true)
+            .with_metadata(bq("RECORD", true));
+
+        assert_eq!(
+            bigquery::field_to_string(&pois).unwrap(),
+            "ARRAY<STRUCT<`poi_name` STRING, `location` STRUCT<`poi_type` STRING, `point_geom` GEOGRAPHY>>>"
+        );
+    }
+
+    #[test]
+    fn bigquery_field_to_string_recurses_through_repeated_records_at_every_level() {
+        // outer ARRAY<STRUCT<inner ARRAY<STRUCT<point_geom GEOGRAPHY>>>>
+        let point_geom =
+            Field::new("point_geom", DataType::Utf8, true).with_metadata(bq("GEOGRAPHY", false));
+
+        let inner_element = Field::new("item", DataType::Struct(vec![point_geom].into()), true);
+        let inner = Field::new("inner", DataType::List(Arc::new(inner_element)), true)
+            .with_metadata(bq("RECORD", true));
+
+        let outer_element = Field::new("item", DataType::Struct(vec![inner].into()), true);
+        let outer = Field::new("outer", DataType::List(Arc::new(outer_element)), true)
+            .with_metadata(bq("RECORD", true));
+
+        assert_eq!(
+            bigquery::field_to_string(&outer).unwrap(),
+            "ARRAY<STRUCT<`inner` ARRAY<STRUCT<`point_geom` GEOGRAPHY>>>>"
+        );
+    }
+
+    // Regression tests for the Exasol seed/agate `convert_*` type mappings.
+    // Text-like types map to Exasol's maximum VARCHAR, and floating types to
+    // DOUBLE PRECISION.
+
+    #[test]
+    fn test_exasol_convert_text_type() {
+        // text/varchar/clob/char all collapse to the maximum VARCHAR.
+        assert_eq!(convert_type(&DataType::Utf8, Exasol), "VARCHAR(2000000)");
+        assert_eq!(
+            convert_type(&DataType::Utf8View, Exasol),
+            "VARCHAR(2000000)"
+        );
+        assert_eq!(
+            convert_type(&DataType::LargeUtf8, Exasol),
+            "VARCHAR(2000000)"
+        );
+    }
+
+    #[test]
+    fn test_exasol_convert_number_type() {
+        // Real/Float/Double all map to DOUBLE PRECISION on Exasol.
+        assert_eq!(convert_type(&DataType::Float32, Exasol), "DOUBLE PRECISION");
+        assert_eq!(convert_type(&DataType::Float64, Exasol), "DOUBLE PRECISION");
+        // Fractional decimals also map to DOUBLE PRECISION.
+        assert_eq!(
+            convert_type(&DataType::Decimal128(10, 2), Exasol),
+            "DOUBLE PRECISION"
+        );
+    }
+
+    #[test]
+    fn test_exasol_convert_datetime_type() {
+        // Exasol uses "timestamp" for datetime values.
+        assert_eq!(
+            convert_type(&DataType::Timestamp(TimeUnit::Microsecond, None), Exasol),
+            "timestamp"
+        );
+    }
+
+    #[test]
+    fn test_exasol_convert_integer_type() {
+        // Integers stay "integer" on Exasol (a valid DECIMAL(18,0) alias).
+        assert_eq!(convert_type(&DataType::Int64, Exasol), "integer");
+    }
+
+    #[test]
+    fn test_exasol_convert_time_type() {
+        // A time-of-day seed column becomes TIMESTAMP on Exasol.
+        assert_eq!(
+            convert_type(&DataType::Time64(TimeUnit::Microsecond), Exasol),
+            "timestamp"
+        );
+    }
+
+    #[test]
+    fn test_convert_types_for_spark() {
+        // Regression test: seeds previously emitted PostgreSQL types (text,
+        // float8, timestamp without time zone) for Spark, which Spark SQL
+        // rejects at CREATE TABLE.
+        assert_eq!(convert_type(&DataType::Utf8, Spark), "string");
+        assert_eq!(convert_type(&DataType::Int32, Spark), "bigint");
+        assert_eq!(convert_type(&DataType::Int64, Spark), "bigint");
+        assert_eq!(convert_type(&DataType::Float64, Spark), "double");
+        assert_eq!(convert_type(&DataType::Float32, Spark), "float");
+        // decimals follow the Databricks coercion rules
+        assert_eq!(convert_type(&DataType::Decimal128(10, 2), Spark), "double");
+        assert_eq!(convert_type(&DataType::Decimal32(10, 0), Spark), "bigint");
+        // datetime -> timestamp (not "timestamp without time zone")
+        assert_eq!(
+            convert_type(&DataType::Timestamp(TimeUnit::Microsecond, None), Spark),
+            "timestamp"
+        );
+        assert_eq!(convert_type(&DataType::Boolean, Spark), "boolean");
+        assert_eq!(convert_type(&DataType::Date64, Spark), "date");
     }
 }

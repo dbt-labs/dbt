@@ -2,9 +2,12 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::type_complexity)]
 
-pub mod alt_propagation;
 pub mod context;
 pub mod context_factory;
+mod generate_run_results;
+pub mod lake_compute_catalog_attach;
+pub mod lake_compute_mdls;
+pub mod lake_compute_propagation;
 pub mod local_schema_builder;
 pub mod metricflow;
 pub mod pretty_table;
@@ -16,24 +19,27 @@ mod run_tasks_args;
 pub mod show_task_hooks;
 pub mod span_manager;
 pub mod static_analysis_buckets;
-mod stats_to_results;
 pub mod task;
 pub mod task_runner_hooks;
 pub mod task_spans;
 pub mod test_aggregation;
+pub mod unit_test_schema;
 pub mod utils;
 pub mod visitor;
 
 use std::any::Any;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::{fmt, io};
 
+pub use generate_run_results::generate_run_results;
 pub use run_tasks_args::RunTasksArgs;
-pub use stats_to_results::{stat_to_result, stats_to_results};
 
+use arrow::array::RecordBatch;
+use arrow_schema::SchemaRef;
+use dbt_adapter::response::AdapterResponse;
 use dbt_common::cancellation::CancellationToken;
 use dbt_common::io_args::{EvalArgs, IoArgs};
 use dbt_common::stats::NodeStatus;
@@ -41,17 +47,13 @@ use dbt_common::{CompiledSpans, FsResult, MacroSpan};
 use dbt_dag::schedule::Schedule;
 use dbt_frontend_common::span::ReclassifySpan;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
+use dbt_schemas::schemas::Preview;
+use dbt_schemas::schemas::common::DbtMaterialization;
 use dbt_schemas::schemas::{CommonAttributes, ContextRunResult};
 use dbt_schemas::state::ResolverState;
 use dbt_schemas::stats::Stats;
 
 use self::context::TaskRunnerCtx;
-
-/// Preview/show results produced during task execution.
-pub struct Preview {
-    pub columns: Vec<String>,
-    pub rows: Vec<serde_json::Value>,
-}
 
 /// Per-node data returned by pre-run hooks.
 pub trait PreTaskRunData: Send + Sync {
@@ -107,19 +109,15 @@ pub trait CompiledSqlCache: Send + Sync {
 
 /// Trait for executing ad-hoc SQL queries via dynamic dispatch.
 pub trait AdhocRunner: Send + Sync {
+    /// `adapter` executes the query; `None` uses the environment's adapter.
     fn run_adhoc<'a>(
         self: Arc<Self>,
         instruction: &'a dbt_scheduler::instructions::Instruction,
         rendered_sql: &'a str,
         unique_id: Option<&'a str>,
+        adapter: Option<Arc<dbt_adapter::Adapter>>,
         connection: &'a mut Option<Box<dyn dbt_adbc::Connection>>,
-    ) -> Pin<
-        Box<
-            dyn Future<Output = FsResult<(Vec<arrow::array::RecordBatch>, arrow_schema::SchemaRef)>>
-                + Send
-                + 'a,
-        >,
-    >;
+    ) -> Pin<Box<dyn Future<Output = FsResult<(Vec<RecordBatch>, SchemaRef)>> + Send + 'a>>;
 }
 
 pub struct TaskRunnerStats {
@@ -128,12 +126,38 @@ pub struct TaskRunnerStats {
 }
 
 impl TaskRunnerStats {
-    pub fn collect_as_results(&self) -> Vec<ContextRunResult> {
+    /// Build the `results` Jinja global that `on-run-end` hooks iterate.
+    ///
+    /// Ephemeral and inline models never materialize into a relation, so
+    /// dbt-core drops their results before any hook sees them
+    /// (`GraphRunnableTask._handle_result`: `if not is_ephemeral:
+    /// self.node_results.append(result)`). Fusion expands a schedule to include
+    /// ephemeral upstream dependencies, so without this filter a hook that
+    /// iterates `results` and touches `result.node.database`/`.schema` runs
+    /// against relations the real dbt-core run never reported.
+    pub fn collect_as_results(
+        &self,
+        adapter_responses: &HashMap<String, AdapterResponse>,
+    ) -> Vec<ContextRunResult> {
         self.run
             .stats
             .iter()
-            .map(|stat| stats_to_results(stat, &self.run))
+            .filter(|stat| !self.is_ephemeral_node(&stat.unique_id))
+            .map(|stat| generate_run_results(stat, &self.run, adapter_responses))
             .collect()
+    }
+
+    fn is_ephemeral_node(&self, unique_id: &str) -> bool {
+        self.run
+            .nodes
+            .as_ref()
+            .and_then(|nodes| nodes.get_node(unique_id))
+            .is_some_and(|node| {
+                matches!(
+                    node.materialized(),
+                    DbtMaterialization::Ephemeral | DbtMaterialization::Inline
+                )
+            })
     }
 
     /// Build a set of (database, schema) tuples from successfully executed relational nodes only.
@@ -165,6 +189,7 @@ impl TaskRunnerStats {
 
 pub struct RunTaskResults {
     pub stats: TaskRunnerStats,
+    pub adapter_responses: HashMap<String, AdapterResponse>,
     pub storeables: Vec<Box<dyn StoreableResults>>,
     pub showables: Vec<Box<dyn ShowableResults>>,
     pub jinja_env: Arc<JinjaEnv>,

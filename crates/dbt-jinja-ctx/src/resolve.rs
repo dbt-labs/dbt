@@ -69,12 +69,69 @@ pub struct ResolveBaseCtx {
     /// (PR 5+).
     pub execute: bool,
 
+    /// `{{ context }}` — `MacroLookupContext` used by naming macros for
+    /// root-project metadata and macro dispatch.
+    pub context: JinjaObject<MacroLookupContext>,
+
     /// `{{ node }}` — `Value::NONE` at base scope; populated per-model.
     #[schemars(with = "serde_json::Value")]
     pub node: MinijinjaValue,
 
     /// `{{ connection_name }}` — empty string at base scope.
     pub connection_name: String,
+
+    /// `{{ store_result(...) }}` — `ResultStore`-backed closure.
+    ///
+    /// Present at *base* scope, not just on [`ResolveModelCtx`], because
+    /// `generate_{database,schema,alias}_name` macros are invoked with the
+    /// bare base ctx (see `dbt_jinja_utils::utils::generate_component_name`).
+    /// dbt-core runs those through `generate_generate_name_macro_context`,
+    /// which builds a `MacroContext(ProviderContext)` and therefore always
+    /// exposes the three result-store functions. Omitting them here made a
+    /// customer macro that calls `run_query(...)` inside
+    /// `generate_schema_name` blow up on `load_result`, and the caller's
+    /// `unwrap_or_else` silently fell back to the profile schema.
+    ///
+    /// [`crate::CompileBaseCtx`] already carries these at base scope for the
+    /// same reason.
+    #[schemars(with = "serde_json::Value")]
+    pub store_result: MinijinjaValue,
+
+    /// `{{ load_result(...) }}` — `ResultStore`-backed closure.
+    /// See [`ResolveBaseCtx::store_result`] for why this is at base scope.
+    #[schemars(with = "serde_json::Value")]
+    pub load_result: MinijinjaValue,
+
+    /// `{{ store_raw_result(...) }}` — `ResultStore`-backed closure.
+    /// See [`ResolveBaseCtx::store_result`] for why this is at base scope.
+    #[schemars(with = "serde_json::Value")]
+    pub store_raw_result: MinijinjaValue,
+
+    /// `{{ builtins.* }}` — `ref`/`source`/`metric`/`function` stand-ins exposing `.config`, present at base scope for naming macros (dbt-core does the same).
+    /// Shadowed by [`ResolveModelCtx::builtins`] on per-model renders.
+    #[schemars(with = "serde_json::Value")]
+    pub builtins: MinijinjaValue,
+
+    /// `{{ ref.config }}` — same stand-in [`ResolveBaseCtx::builtins`] holds under `ref`; `UNDEFINED` when no runtime config is in scope.
+    /// Shadowed by the callable [`ResolveModelCtx::ref_fn`].
+    #[serde(rename = "ref")]
+    #[schemars(with = "serde_json::Value")]
+    pub ref_fn: MinijinjaValue,
+
+    /// `{{ source.config }}` — see [`ResolveBaseCtx::ref_fn`].
+    /// Shadowed by the callable [`ResolveModelCtx::source`].
+    #[schemars(with = "serde_json::Value")]
+    pub source: MinijinjaValue,
+
+    /// `{{ metric.config }}` — see [`ResolveBaseCtx::ref_fn`].
+    /// Shadowed by the callable [`ResolveModelCtx::metric`].
+    #[schemars(with = "serde_json::Value")]
+    pub metric: MinijinjaValue,
+
+    /// `{{ function.config }}` — see [`ResolveBaseCtx::ref_fn`].
+    /// Shadowed by the callable [`ResolveModelCtx::function`].
+    #[schemars(with = "serde_json::Value")]
+    pub function: MinijinjaValue,
 
     /// Per-package namespace objects. Each entry becomes its own top-level
     /// Jinja global via `#[serde(flatten)]` — e.g. `{ "dbt": <DbtNamespace>,
@@ -103,7 +160,8 @@ pub struct ResolveBaseCtx {
 ///
 /// 1. The Object impls (`ResolveRefFunction<T>`, `ParseConfig<T>`,
 ///    `ResolveSourceFunction<T>`, `ResolveFunctionFunction<T>`,
-///    `ParseExecute`, `ParseMetricReference`, `MacroLookupContext`) live in
+///    `ResolveMetricFunction<T>`, `ParseExecute`, `ParseMetricReference`,
+///    `MacroLookupContext`) live in
 ///    `dbt-jinja-utils`; this crate can't depend on them. A later PR moves
 ///    them here and tightens to `JinjaObject<…>`.
 /// 2. `builtins` is constructed via
@@ -133,7 +191,8 @@ pub struct ResolveModelCtx {
     #[schemars(with = "serde_json::Value")]
     pub function: MinijinjaValue,
 
-    /// `{{ metric(...) }}` — closure that records `SqlResource::Metric`.
+    /// `{{ metric(...) }}` — `ResolveMetricFunction<T>` Object that records
+    /// `SqlResource::Metric`.
     #[schemars(with = "serde_json::Value")]
     pub metric: MinijinjaValue,
 
@@ -149,14 +208,17 @@ pub struct ResolveModelCtx {
     pub model: MinijinjaValue,
 
     /// `{{ builtins.* }}` — `BTreeMap<String, MinijinjaValue>` Object holding
-    /// `ref` / `source` / `function` / `config`. Compile/run-phase code
+    /// `ref` / `source` / `function` / `metric` / `config`. Compile/run-phase code
     /// downcasts this to `BTreeMap<String, MinijinjaValue>` to overlay
     /// per-node validations.
     #[schemars(with = "serde_json::Value")]
     pub builtins: MinijinjaValue,
 
-    /// `{{ graph }}` — `Value::UNDEFINED` at parse-model scope; the real
-    /// flat graph is set at compile time.
+    /// `{{ graph }}` — the invocation-wide mutable mapping, empty at
+    /// parse-model scope; the flat graph is merged into that same mapping at
+    /// compile time. Mirrors dbt-core, where `graph` is `manifest.flat_graph`:
+    /// one dict for the whole invocation, `{}` until `build_flat_graph()` runs,
+    /// so macros can use it as scratch state throughout. dbt-labs/fs#13454.
     #[schemars(with = "serde_json::Value")]
     pub graph: MinijinjaValue,
 

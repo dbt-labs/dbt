@@ -1,0 +1,19 @@
+# Scenario: Horizon catalog where the user explicitly sets keys that carry
+# Horizon write-compat defaults.
+# Exercises: explicit user values win — the AUTHORIZATION_TYPE 'OAUTH2' and
+# STAGE_CREATE_TABLES false default clauses are suppressed in favor of the
+# user's SIGV4 / true, while the untouched defaults (vended credentials,
+# multi-table commit, metadata updates, file removal) are still emitted.
+catalogs:
+  - name: horizon_demo
+    type: horizon
+    table_format: iceberg
+    config:
+      duckdb:
+        warehouse: "horizon_wh"
+        endpoint: "https://horizon.example.com/catalog"
+        secret: "horizon_secret"
+        catalog_database: "horizon_db"
+        default_schema: "demo"
+        authorization_type: "SIGV4"
+        stage_create_tables: true

@@ -1,0 +1,117 @@
+85f3743c:
+- sequence: 0
+  type: execute
+  sql: SHOW SCHEMAS IN `e2e`
+b8842368:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists `e2e`.`adapters_databricks_pk_constraint`
+model.test.customers:
+- sequence: 0
+  type: execute
+  sql: |-
+    SELECT
+    table_name,
+    if(table_type IN ('EXTERNAL', 'MANAGED', 'MANAGED_SHALLOW_CLONE', 'EXTERNAL_SHALLOW_CLONE'), 'table', lower(table_type)) AS table_type,
+    lower(data_source_format) AS file_format,
+    table_schema,
+    table_owner,
+    table_catalog,
+    if(
+    table_type IN (
+    'EXTERNAL',
+    'MANAGED',
+    'MANAGED_SHALLOW_CLONE',
+    'EXTERNAL_SHALLOW_CLONE'
+    ),
+    lower(table_type),
+    NULL
+    ) AS databricks_table_type
+    FROM `system`.`information_schema`.`tables`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'adapters_databricks_pk_constraint'
+- sequence: 1
+  type: execute
+  sql: |-
+    select * from (
+    select 1 as id, 'Alice' as name
+    ) as __dbt_sbq
+    where false
+    limit 0
+- sequence: 2
+  type: execute
+  sql: |-
+    select * from (
+    select
+    
+    
+    cast(null as int)
+    as id, 
+    
+    cast(null as string)
+    as name
+    ) as __dbt_sbq
+    where false
+    limit 0
+- sequence: 3
+  type: execute
+  sql: |-
+    SELECT
+    table_catalog,
+    table_schema,
+    table_name,
+    filter_name,
+    target_columns
+    FROM `e2e`.`information_schema`.`row_filters`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'adapters_databricks_pk_constraint'
+    AND table_name = 'customers'
+- sequence: 4
+  type: execute
+  sql: |-
+    create or replace table `e2e`.`adapters_databricks_pk_constraint`.`customers`
+    
+    
+    
+    
+    
+    using delta
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    as
+    
+    select id, name
+    from (
+    select 1 as id, 'Alice' as name
+    ) as model_subq
+- sequence: 5
+  type: execute
+  sql: |-
+    SELECT kcu.constraint_name, kcu.column_name
+    FROM `e2e`.information_schema.key_column_usage kcu
+    WHERE kcu.table_catalog = 'e2e' 
+    AND kcu.table_schema = 'adapters_databricks_pk_constraint'
+    AND kcu.table_name = 'customers' 
+    AND kcu.constraint_name = (
+    SELECT constraint_name
+    FROM `e2e`.information_schema.table_constraints
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'adapters_databricks_pk_constraint'
+    AND table_name = 'customers' 
+    AND constraint_type = 'PRIMARY KEY'
+    )
+    ORDER BY kcu.ordinal_position
+- sequence: 6
+  type: execute
+  sql: 'alter table `e2e`.`adapters_databricks_pk_constraint`.`customers` change column `id` set not null '
+- sequence: 7
+  type: execute
+  sql: alter table `e2e`.`adapters_databricks_pk_constraint`.`customers` add constraint 34dc89f112146ec180bc75d654f607ff primary key(`id`)

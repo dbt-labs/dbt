@@ -1,4 +1,4 @@
-use crate::{attributes::DbtTelemetryContext, serialize::arrow::ArrowAttributes};
+use crate::{ExecutionPhase, attributes::DbtTelemetryContext, serialize::arrow::ArrowAttributes};
 use dbt_tracing::{
     AnyTelemetryEvent, ArrowSerializableTelemetryEvent, SpanStatus, StaticTelemetryEvent,
     TelemetryContext, TelemetryEventRecType, TelemetryOutputFlags,
@@ -10,16 +10,17 @@ use std::borrow::Cow;
 
 pub use crate::impls::node::{
     AnyNodeOutcomeDetail, NodeEvent, get_cache_detail, get_freshness_detail,
-    get_node_outcome_detail, get_test_outcome, has_node_warning, is_statically_checked_test,
-    set_node_warning_outcome_no_warnings, set_node_warning_outcome_warned,
-    update_dbt_core_event_code_for_node_processed_end,
+    get_node_outcome_detail, get_test_batch_unique_id, get_test_outcome, has_node_warning,
+    is_batched_test, is_statically_checked_test, set_node_warning_outcome_no_warnings,
+    set_node_warning_outcome_warned, update_dbt_core_event_code_for_node_processed_end,
 };
 pub use crate::proto::v1::public::events::fusion::node::{
-    NodeCacheDetail, NodeCacheReason, NodeCancelReason, NodeErrorType, NodeEvaluated,
-    NodeEvaluationDetail, NodeMaterialization, NodeOutcome, NodeProcessed, NodeSkipReason,
-    NodeSkipUpstreamDetail, NodeType, NodeWarningOutcome, SourceFreshnessDetail,
-    SourceFreshnessOutcome, TestEvaluationDetail, TestOutcome, node_evaluated::NodeOutcomeDetail,
-    node_processed,
+    AdapterResponseValue, MicrobatchBatchSize, MicrobatchEvaluated, NodeAccess,
+    NodeAdapterResponse, NodeCacheDetail, NodeCacheReason, NodeCancelReason, NodeComputeMode,
+    NodeErrorType, NodeEvaluated, NodeEvaluationDetail, NodeLanguage, NodeMaterialization,
+    NodeOutcome, NodeProcessed, NodeSkipReason, NodeSkipUpstreamDetail, NodeType,
+    NodeWarningOutcome, SourceFreshnessDetail, SourceFreshnessOutcome, TestEvaluationDetail,
+    TestOutcome, adapter_response_value, node_evaluated::NodeOutcomeDetail, node_processed,
 };
 
 impl StaticTelemetryEvent for NodeEvaluated {
@@ -68,6 +69,7 @@ impl StaticTelemetryEvent for NodeEvaluated {
             DbtTelemetryContext {
                 phase: Some(self.phase()),
                 unique_id: Some(self.unique_id.clone()),
+                batch_id: None,
             }
             .into(),
         )
@@ -83,6 +85,14 @@ struct NodeEvaluatedJsonPayload {
     pub node_outcome_detail: Option<NodeOutcomeDetail>,
     /// Time the node evaluation spent idle.
     pub idle_time_ms: Option<u64>,
+    /// dbt State decision id for the node's run-phase execution.
+    pub state_decision_id: Option<String>,
+    /// Response of the node's `main` statement.
+    pub adapter_response: Option<NodeAdapterResponse>,
+    /// Where the run phase executed.
+    pub compute_mode: Option<NodeComputeMode>,
+    /// Type of the catalog the node's catalog name resolves to.
+    pub catalog_type: Option<String>,
 }
 
 /// Internal struct used for serializing/deserializing subset of
@@ -98,6 +108,36 @@ struct NodeProcessedJsonPayload {
     pub idle_time_ms: Option<u64>,
     /// Source name for source nodes.
     pub source_name: Option<String>,
+    /// 1-based position of this node within the invocation.
+    pub node_index: Option<u32>,
+    /// Total number of nodes in the selection set.
+    pub node_count_total: Option<u32>,
+    /// Adapter type the node runs on.
+    pub adapter: Option<String>,
+    /// Kind of node, for nodes an experimental adds.
+    pub experimental_type: Option<String>,
+    /// Response of the node's `main` statement.
+    pub adapter_response: Option<NodeAdapterResponse>,
+    /// Where the run phase executed.
+    pub compute_mode: Option<NodeComputeMode>,
+    /// Type of the catalog the node's catalog name resolves to.
+    pub catalog_type: Option<String>,
+    /// Incremental strategy of a model.
+    pub incremental_strategy: Option<String>,
+    /// Strategy of a snapshot.
+    pub snapshot_strategy: Option<String>,
+    /// Language the node's code is written in.
+    pub language: Option<NodeLanguage>,
+    /// Whether a model's contract is enforced.
+    pub contract_enforced: Option<bool>,
+    /// Access level of a model or function.
+    pub access: Option<NodeAccess>,
+    /// Whether a model is versioned.
+    pub versioned: Option<bool>,
+    /// Table format of a model.
+    pub table_format: Option<String>,
+    /// Catalog a model is written to.
+    pub catalog_name: Option<String>,
 }
 
 fn deserialize_node_evaluated_json_payload(
@@ -107,6 +147,10 @@ fn deserialize_node_evaluated_json_payload(
         return Ok(NodeEvaluatedJsonPayload {
             node_outcome_detail: None,
             idle_time_ms: None,
+            state_decision_id: None,
+            adapter_response: None,
+            compute_mode: None,
+            catalog_type: None,
         });
     };
 
@@ -119,7 +163,12 @@ fn deserialize_node_evaluated_json_payload(
     })?;
 
     let is_wrapped_payload = value.as_object().is_some_and(|obj| {
-        obj.contains_key("node_outcome_detail") || obj.contains_key("idle_time_ms")
+        obj.contains_key("node_outcome_detail")
+            || obj.contains_key("idle_time_ms")
+            || obj.contains_key("state_decision_id")
+            || obj.contains_key("adapter_response")
+            || obj.contains_key("compute_mode")
+            || obj.contains_key("catalog_type")
     });
 
     if is_wrapped_payload {
@@ -142,6 +191,10 @@ fn deserialize_node_evaluated_json_payload(
                 },
             )?),
             idle_time_ms: None,
+            state_decision_id: None,
+            adapter_response: None,
+            compute_mode: None,
+            catalog_type: None,
         })
     }
 }
@@ -172,20 +225,28 @@ impl ArrowSerializableTelemetryEvent for NodeEvaluated {
             content_hash: Some(Cow::Borrowed(self.node_checksum.as_str())),
             // Serialize less frequently queried node fields into JSON as they may grow
             // with arbitrary data.
-            json_payload: (self.node_outcome_detail.is_some() || self.idle_time_ms.is_some()).then(
-                || {
-                    serde_json::to_string(&NodeEvaluatedJsonPayload {
-                        node_outcome_detail: self.node_outcome_detail.clone(),
-                        idle_time_ms: self.idle_time_ms,
-                    })
-                    .unwrap_or_else(|_| {
-                        panic!(
-                            "Failed to serialize json payload for event type \"{}\" to JSON",
-                            Self::full_name()
-                        )
-                    })
-                },
-            ),
+            json_payload: (self.node_outcome_detail.is_some()
+                || self.idle_time_ms.is_some()
+                || self.state_decision_id.is_some()
+                || self.adapter_response.is_some()
+                || self.compute_mode.is_some()
+                || self.catalog_type.is_some())
+            .then(|| {
+                serde_json::to_string(&NodeEvaluatedJsonPayload {
+                    node_outcome_detail: self.node_outcome_detail.clone(),
+                    idle_time_ms: self.idle_time_ms,
+                    state_decision_id: self.state_decision_id.clone(),
+                    adapter_response: self.adapter_response.clone(),
+                    compute_mode: self.compute_mode.map(|_| self.compute_mode()),
+                    catalog_type: self.catalog_type.clone(),
+                })
+                .unwrap_or_else(|_| {
+                    panic!(
+                        "Failed to serialize json payload for event type \"{}\" to JSON",
+                        Self::full_name()
+                    )
+                })
+            }),
             rows_affected: self.rows_affected,
             ..Default::default()
         }
@@ -232,6 +293,10 @@ impl ArrowSerializableTelemetryEvent for NodeEvaluated {
             node_cancel_reason: record.node_cancel_reason.map(|v| v as i32),
             node_skip_reason: record.node_skip_reason.map(|v| v as i32),
             sao_enabled: record.sao_enabled,
+            state_decision_id: json_payload.state_decision_id,
+            adapter_response: json_payload.adapter_response,
+            compute_mode: json_payload.compute_mode.map(|v| v as i32),
+            catalog_type: json_payload.catalog_type,
             dbt_core_event_code: record.dbt_core_event_code.as_deref().map(str::to_string),
             node_outcome_detail: json_payload.node_outcome_detail,
             relative_path: record
@@ -250,6 +315,138 @@ impl ArrowSerializableTelemetryEvent for NodeEvaluated {
                 .unwrap_or_else(|| "<missing>".to_string()),
             rows_affected: record.rows_affected,
             idle_time_ms: json_payload.idle_time_ms,
+        })
+    }
+}
+
+impl StaticTelemetryEvent for MicrobatchEvaluated {
+    const RECORD_CATEGORY: TelemetryEventRecType = TelemetryEventRecType::Span;
+    const OUTPUT_FLAGS: TelemetryOutputFlags = TelemetryOutputFlags::ALL;
+
+    fn event_display_name(&self) -> String {
+        format!(
+            "Microbatch evaluated ({}: {})",
+            self.unique_id, self.batch_id
+        )
+    }
+
+    fn get_span_status(&self) -> Option<SpanStatus> {
+        match self.node_outcome() {
+            NodeOutcome::Success | NodeOutcome::Skipped => Some(SpanStatus::succeeded()),
+            NodeOutcome::Error => Some(SpanStatus::failed("error")),
+            NodeOutcome::Canceled => Some(SpanStatus::failed("canceled")),
+            NodeOutcome::Unspecified => None,
+        }
+    }
+
+    fn context(&self) -> Option<TelemetryContext> {
+        Some(
+            DbtTelemetryContext {
+                phase: Some(ExecutionPhase::Run),
+                unique_id: Some(self.unique_id.clone()),
+                batch_id: Some(self.batch_id.clone()),
+            }
+            .into(),
+        )
+    }
+
+    fn has_sensitive_data(&self) -> bool {
+        // Like node identifiers, batch identity and timing require no scrubbing.
+        false
+    }
+}
+
+/// Internal struct used for serializing/deserializing subset of
+/// MicrobatchEvaluated fields as JSON payload in ArrowAttributes.
+#[skip_serializing_none]
+#[derive(serde::Serialize, serde::Deserialize, Clone, PartialEq, Debug)]
+struct MicrobatchEvaluatedJsonPayload<'a> {
+    batch_id: Cow<'a, str>,
+    batch_size: MicrobatchBatchSize,
+    batch_index: u32,
+    total_batches: u32,
+    event_time_start: Cow<'a, str>,
+    event_time_end: Cow<'a, str>,
+    idle_time_ms: u64,
+}
+
+impl ArrowSerializableTelemetryEvent for MicrobatchEvaluated {
+    type ArrowRecord<'a> = ArrowAttributes<'a>;
+
+    fn to_arrow_record(&self) -> ArrowAttributes<'_> {
+        ArrowAttributes {
+            phase: Some(ExecutionPhase::Run),
+            unique_id: Some(Cow::Borrowed(self.unique_id.as_str())),
+            schema: Some(Cow::Borrowed(self.schema.as_str())),
+            identifier: Some(Cow::Borrowed(self.identifier.as_str())),
+            node_outcome: Some(self.node_outcome()),
+            dbt_core_event_code: self.dbt_core_event_code.as_deref().map(Cow::Borrowed),
+            json_payload: Some(
+                serde_json::to_string(&MicrobatchEvaluatedJsonPayload {
+                    batch_id: Cow::Borrowed(self.batch_id.as_str()),
+                    batch_size: self.batch_size(),
+                    batch_index: self.batch_index,
+                    total_batches: self.total_batches,
+                    event_time_start: Cow::Borrowed(self.event_time_start.as_str()),
+                    event_time_end: Cow::Borrowed(self.event_time_end.as_str()),
+                    idle_time_ms: self.idle_time_ms,
+                })
+                .unwrap_or_else(|_| {
+                    panic!(
+                        "Failed to serialize data in event type \"{}\" to JSON",
+                        Self::full_name()
+                    )
+                }),
+            ),
+            ..Default::default()
+        }
+    }
+
+    fn from_arrow_record(record: &ArrowAttributes) -> Result<Self, String> {
+        let json_payload: MicrobatchEvaluatedJsonPayload = record
+            .json_payload
+            .as_ref()
+            .ok_or_else(|| {
+                format!(
+                    "Missing json payload for event type \"{}\"",
+                    Self::full_name()
+                )
+            })
+            .and_then(|s| {
+                serde_json::from_str(s).map_err(|e| {
+                    format!(
+                        "Failed to deserialize event type \"{}\" from JSON: {e}",
+                        Self::full_name(),
+                    )
+                })
+            })?;
+        let required = |value: &Option<Cow<'_, str>>, field: &str| {
+            value.as_deref().map(str::to_string).ok_or_else(|| {
+                format!("Missing `{field}` for event type \"{}\"", Self::full_name())
+            })
+        };
+
+        Ok(Self {
+            unique_id: required(&record.unique_id, "unique_id")?,
+            schema: required(&record.schema, "schema")?,
+            identifier: required(&record.identifier, "identifier")?,
+            batch_id: json_payload.batch_id.into_owned(),
+            batch_size: json_payload.batch_size as i32,
+            batch_index: json_payload.batch_index,
+            total_batches: json_payload.total_batches,
+            event_time_start: json_payload.event_time_start.into_owned(),
+            event_time_end: json_payload.event_time_end.into_owned(),
+            node_outcome: record
+                .node_outcome
+                .map(|value| value as i32)
+                .ok_or_else(|| {
+                    format!(
+                        "Missing `node_outcome` for event type \"{}\"",
+                        Self::full_name()
+                    )
+                })?,
+            idle_time_ms: json_payload.idle_time_ms,
+            dbt_core_event_code: record.dbt_core_event_code.as_deref().map(str::to_string),
         })
     }
 }
@@ -302,6 +499,7 @@ impl StaticTelemetryEvent for NodeProcessed {
                 // This span cuts across multiple phases, so we don't set a single phase here
                 phase: None,
                 unique_id: Some(self.unique_id.clone()),
+                batch_id: None,
             }
             .into(),
         )
@@ -339,6 +537,21 @@ impl ArrowSerializableTelemetryEvent for NodeProcessed {
                 node_outcome_detail: self.node_outcome_detail.clone(),
                 idle_time_ms: self.idle_time_ms,
                 source_name: self.source_name.clone(),
+                node_index: self.node_index,
+                node_count_total: self.node_count_total,
+                adapter: self.adapter.clone(),
+                experimental_type: self.experimental_type.clone(),
+                adapter_response: self.adapter_response.clone(),
+                compute_mode: self.compute_mode.map(|_| self.compute_mode()),
+                catalog_type: self.catalog_type.clone(),
+                incremental_strategy: self.incremental_strategy.clone(),
+                snapshot_strategy: self.snapshot_strategy.clone(),
+                language: self.language.map(|_| self.language()),
+                contract_enforced: self.contract_enforced,
+                access: self.access.map(|_| self.access()),
+                versioned: self.versioned,
+                table_format: self.table_format.clone(),
+                catalog_name: self.catalog_name.clone(),
             })
             .unwrap_or_else(|_| {
                 panic!(
@@ -448,6 +661,21 @@ impl ArrowSerializableTelemetryEvent for NodeProcessed {
             rows_affected: record.rows_affected,
             group: record.group.as_deref().map(str::to_string),
             idle_time_ms: json_payload.idle_time_ms,
+            node_index: json_payload.node_index,
+            node_count_total: json_payload.node_count_total,
+            adapter: json_payload.adapter,
+            experimental_type: json_payload.experimental_type,
+            adapter_response: json_payload.adapter_response,
+            compute_mode: json_payload.compute_mode.map(|v| v as i32),
+            catalog_type: json_payload.catalog_type,
+            incremental_strategy: json_payload.incremental_strategy,
+            snapshot_strategy: json_payload.snapshot_strategy,
+            language: json_payload.language.map(|v| v as i32),
+            contract_enforced: json_payload.contract_enforced,
+            access: json_payload.access.map(|v| v as i32),
+            versioned: json_payload.versioned,
+            table_format: json_payload.table_format,
+            catalog_name: json_payload.catalog_name,
         })
     }
 }

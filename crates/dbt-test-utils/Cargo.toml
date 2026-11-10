@@ -28,7 +28,6 @@ dbt-test-containers = { workspace = true }
 dbt-test-primitives = { workspace = true }
 dbt-tracing = { workspace = true }
 dbt-yaml = { workspace = true }
-diffy = { workspace = true }
 dirs = { workspace = true }
 dotenvy = { workspace = true }
 futures = { workspace = true }
@@ -36,21 +35,22 @@ ignore = { version = "0.4" }
 itertools = { workspace = true }
 libc = "0.2.170"
 merge = { workspace = true }
-once_cell = { workspace = true }
 parquet = { workspace = true }
-pretty_assertions = { version = "1.4.1" }
 proto-rust = { workspace = true }
 regex = { workspace = true }
 rusqlite = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
+similar = { workspace = true }
+similar-asserts = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 walkdir = { workspace = true }
 
 [dev-dependencies]
+dbt-runtime = { workspace = true }
 pbjson-types = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]

@@ -1,9 +1,9 @@
 // use serde_repr::{Deserialize_repr, Serialize_repr};
 use std::{collections::HashMap, fmt::Display};
 
+use dbt_proc_macros::DebugNoInline;
 use dbt_proc_macros::include_frontend_error_codes;
-use int_enum::IntEnum;
-use strum_macros::{EnumString, IntoStaticStr};
+use strum_macros::{EnumString, FromRepr, IntoStaticStr};
 
 /// Error codes for the SDF CLI.
 ///
@@ -12,7 +12,9 @@ use strum_macros::{EnumString, IntoStaticStr};
 #[include_frontend_error_codes]
 #[repr(u16)]
 #[non_exhaustive]
-#[derive(Debug, Copy, Clone, Eq, PartialEq, IntEnum, EnumString, IntoStaticStr, Default)]
+#[derive(
+    DebugNoInline, Copy, Clone, Eq, PartialEq, FromRepr, EnumString, IntoStaticStr, Default,
+)]
 pub enum ErrorCode {
     // ----------------- Frontend errors [0, 999] -----------------------------
     //
@@ -95,6 +97,7 @@ pub enum ErrorCode {
     FailedToLookupExistingTable = 1055,
 
     MissingTargetDirectory = 1056,
+    DeprecatedConfigKey = 1057,
     ColumnTypeMismatch = 1058,
     DuplicateConfigKey = 1059,
     UnusedConfigKey = 1060,
@@ -178,6 +181,16 @@ pub enum ErrorCode {
     SemanticModelDeprecated = 1157,
     PackageMissingProjectFile = 1158,
     DbtYamlValidationError = 1159,
+    CleanTargetOutsideProject = 1160,
+    /// A project or package defines a `unit` materialization or a
+    /// `get_unit_test_sql` macro. Fusion builds unit-test SQL in Rust and never
+    /// dispatches through either, so the override has no effect.
+    UnitTestMacroOverrideIgnored = 1161,
+    DepsInstalledPackagesFallback = 1162,
+    /// A selected unit test of a LakeCompute model runs on another adapter, as that adapter's SQL.
+    LakeComputeUnitTestOnDefaultAdapter = 1163,
+    /// An inline `config(adapter=...)` changed a node's adapter after its parse render.
+    InlineAdapterParseTargetMismatch = 1164,
 
     // Network/HTTP [1200–1249]
     NetworkError = 1200,
@@ -185,6 +198,8 @@ pub enum ErrorCode {
     RateLimited = 1202,
     HttpError = 1203,
     DbtPlatformApiError = 1204,
+    /// `REQUESTS_CA_BUNDLE` or `CURL_CA_BUNDLE` names a CA bundle that can't be used, so its certificates aren't trusted.
+    CaBundleUnusable = 1205,
 
     // Auth/credentials [1250–1279]
     AuthFailed = 1250,
@@ -205,6 +220,8 @@ pub enum ErrorCode {
     DbDriverFailed = 1308,
     ReplayDataInvalid = 1309,
     ReplayDataMissing = 1310,
+    ShallowCloneCheckFailed = 1311,
+    BigqueryMaximumBytesBilledNotEnforced = 1312,
 
     // Execution/runtime [1400–1449]
     PlannerFailed = 1400,
@@ -216,9 +233,25 @@ pub enum ErrorCode {
     SidecarError = 1406,
     NoResultsToShow = 1407,
     SidecarUnsupportedFeature = 1408,
+    /// Local compute read the columns of a relation that does not exist in the
+    /// local database yet; no columns are returned.
+    SidecarRelationNotBuilt = 1409,
     /// dbt State service degraded into fail-open: config/init/decision/cache
     /// errors that don't abort the command but indicate degraded behavior.
     StateServiceWarn = 1410,
+    /// The per-node Redis lock behind `lock_with_state` could not be created,
+    /// taken, or released; the run continues without it.
+    StateLockUnavailable = 1411,
+    /// A heartbeat write for a held `lock_with_state` lock failed; the holder
+    /// retries, but another worker may see the lock as stale in the meantime.
+    StateHeartbeatFailed = 1412,
+    /// A held `lock_with_state` lock was reclaimed by another owner; this
+    /// worker's heartbeat has stopped, but its build may still be running.
+    StateHeartbeatReclaimed = 1413,
+    /// A completed task's stop/info write was skipped because the start key
+    /// no longer matched the owner that ran it; a reclaim already overwrote
+    /// it, so the write would have clobbered the new owner's own result.
+    StateStopRejected = 1414,
 
     // Serialization [1450–1460]
     JsonInvalid = 1450,
@@ -236,12 +269,117 @@ pub enum ErrorCode {
     ValidateMacroArgs = 1506,
     JinjaTypeCheckFailed = 1507,
     JinjaTopLevelReturn = 1508,
+    /// Emitted when a `{% snapshot %}`/`{% docs %}` block name is followed by
+    /// extra characters that dbt-core's regex-based name extractor silently
+    /// discards (e.g. `{% snapshot foo.sql %}`). Deprecation warning only.
+    MalformedBlockName = 1509,
 
     // --------------------------------------------------------------------------------------------
     // Local execution
     SelectorError = 1600,
     NoNodesSelected = 1601,
     InvalidColumnSelector = 1602,
+    /// An externally supplied node set replaced the computed selection.
+    SelectionOverrideActive = 1603,
+    /// An externally supplied node set was available but not applicable to this command.
+    SelectionOverrideSkipped = 1604,
+    /// The nodes actually reported by the run differ from the externally supplied node set.
+    SelectionOverrideDivergence = 1605,
+
+    // --------------------------------------------------------------------------------------------
+    // Checks
+    //
+    // One code per outcome rather than a shared one: `warn_error_options` targets codes, so
+    // collapsing these onto `Generic` would mean upgrading or silencing a check outcome also
+    // upgrades or silences every unrelated `Generic` warning in the run.
+    /// A check found violations at `error` severity. Logged as an error.
+    CheckFailed = 1650,
+    /// A check found violations at `warn` severity.
+    CheckWarned = 1651,
+    /// A check had nothing in scope to evaluate.
+    CheckSkipped = 1652,
+    /// A check could not be evaluated (e.g. its query errored).
+    CheckEvaluationFailed = 1653,
+    /// The metadata a check reads is not on disk, so checks were skipped and the build
+    /// proceeded. Skipped rather than failed because this is infrastructure, not a verdict on the
+    /// project; `warn_error_options` can promote it where the gate must be mandatory.
+    ///
+    /// It was `CheckIndexUnavailable` while checks read `target/private/index`. They read the
+    /// parse metadata epochs directly now, so only the name changed -- the number is the same,
+    /// and an existing `warn_error_options` entry keeps working.
+    CheckMetadataUnavailable = 1654,
+    /// No longer emitted. The number is retained rather than reused so an old
+    /// `warn_error_options` entry stays inert instead of silently promoting something else.
+    ///
+    /// It reported the index being turned off as the reason the gate did not run, which was true
+    /// while checks read the index. They read the parse metadata now, so nothing about the index
+    /// decides whether a check runs -- `--skip-checks` does, and asking to skip is not warned
+    /// about. Reachable only through `--no-write-index`, which is hidden, so in practice this
+    /// code could only be met by a programmatic caller.
+    CheckIndexDisabled = 1655,
+
+    // --------------------------------------------------------------------------------------------
+    // Information schema
+    /// `target/info_schema/` is missing, unreadable, or will not open.
+    ///
+    /// Distinct from `InvalidArgument`, which this case used to report: `--info <view>` is a
+    /// well-formed request against state that has not been produced, so calling it a bad
+    /// argument sent people to check their flags, and made a missing artifact
+    /// indistinguishable from a typo'd option in anything that reads codes rather than prose.
+    /// The query itself keeps `InvalidArgument` -- an unknown view or a syntax error really is
+    /// the argument.
+    InfoSchemaUnavailable = 1656,
+    /// `--generate-info-schema` was asked for and the write failed, so `target/info_schema/`
+    /// is missing or holds the previous run's tables. A warning rather than an error: the
+    /// artifact is opt-in and nothing downstream reads it, so a failed write must not fail a
+    /// build that otherwise succeeded. Its own code so a project that depends on the artifact
+    /// -- a report, a scheduled query -- can promote just this with `warn_error_options`
+    /// instead of every `Generic` warning in the run.
+    InfoSchemaWriteFailed = 1657,
+    /// The information schema was written from a `parse`, so the columns only `compile`,
+    /// `run` or `build` fill are absent: compiled code, column types, column-level lineage
+    /// and runtime results. Reports a successful write, not a failure -- and separated from
+    /// `InfoSchemaWriteFailed` for that reason, since the two used one code and read
+    /// identically in a log.
+    InfoSchemaIncomplete = 1658,
+
+    // --------------------------------------------------------------------------------------------
+    // Project metadata index
+    //
+    // `target/private/index/` is not a user API and is not documented as one, but its *warnings*
+    // are user-visible and no longer opt-in: `--write-index` is hidden, and the index is implied
+    // on for `build`, `run` and `check` unless `--no-write-index` says otherwise. So a failure
+    // here reaches everyone, and "promote it in CI" is a reasonable thing to want without also
+    // promoting every `Generic` warning in the run.
+    /// The index could not be written, so features that read it have nothing current to read.
+    /// Checks are no longer among them: they read the parse metadata epochs, so a failed index
+    /// write leaves the gate running normally.
+    ///
+    /// The index's *parse-tier* advisory deliberately has no code and stays on `Generic`: it
+    /// fires only for `parse --write-index`, and `--write-index` is undocumented, so there is
+    /// nobody to target it. A code is worth adding when someone can act on it.
+    IndexWriteFailed = 1659,
+
+    // --------------------------------------------------------------------------------------------
+    // Schema cache
+    /// A schema cache row read from `target/` holds IPC bytes that do not deserialize. The row
+    /// is skipped, so its schema is fetched or computed again, as with a cold cache.
+    SchemaCacheEntryCorrupt = 1660,
+
+    // --------------------------------------------------------------------------------------------
+    // Warehouse signals read during onboarding
+    /// A read-only query run on the warehouse to size models or price their builds failed. A
+    /// warning: what it would have told is missing (those models stay unsized), and the other
+    /// queries' answers still count.
+    WarehouseSignalQueryFailed = 1661,
+    /// The warehouse couldn't be queried at all (the target has no output for it, or its
+    /// connection couldn't be set up), so nothing was sized from it. Separate from
+    /// `WarehouseSignalQueryFailed`: silencing transient query failures shouldn't hide that
+    /// none ran.
+    WarehouseSignalsUnavailable = 1662,
+    /// The project being checked for onboarding didn't compile, so none of its models were
+    /// checked.
+    OnboardingCompileFailed = 1663,
 
     // --------------------------------------------------------------------------------------------
     // CLI errors
@@ -250,7 +388,59 @@ pub enum ErrorCode {
     DeprecatedOption = 1702,
     DeprecatedStaticAnalysisValue = 1703,
     NotSupportedWarnErrorOption = 1704,
+    /// No longer emitted. Retained so an existing `warn_error_options` entry naming it
+    /// keeps resolving instead of failing as an unknown code.
     DocsGenerateWarning = 1705,
+    /// A node's column facts could not be inferred, so tests that they would
+    /// have let dbt skip run instead.
+    TestFactsInferenceFailed = 1706,
+
+    // --------------------------------------------------------------------------------------------
+    // Format
+    /// `dbt format` left a file unchanged because its rendered SQL has a segment the parser
+    /// could not match. A warning, or an error under `--check`.
+    FormatSkippedUnparsable = 1750,
+    /// `dbt format` left a file unchanged because formatting did not converge within
+    /// `runaway_limit` passes. A warning, or an error under `--check`.
+    FormatSkippedLoopLimit = 1751,
+
+    // --------------------------------------------------------------------------------------------
+    // Agent skills
+    /// `ai_provider` names a harness dbt has no destination directory for.
+    UnknownAiProvider = 1800,
+    /// Skills were found but `ai_provider` is unset, so nothing was installed.
+    AiProviderUnset = 1801,
+    /// A `SKILL.md` is missing required frontmatter or its `name` doesn't match its directory.
+    InvalidSkill = 1802,
+    /// Two or more enabled skills resolve to the same install name, so they would
+    /// occupy the same directory. dbt fails rather than pick a winner; the user
+    /// disables all but one (or a maintainer renames), as with duplicate model names.
+    SkillNameCollision = 1803,
+    /// No longer emitted. Retained so an existing `warn_error_options` entry naming it
+    /// keeps resolving, and so the discriminant is not reused: dbt now recognizes its
+    /// own installs by their recorded metadata and reclaims them silently, rather than
+    /// warning that a copy was modified.
+    SkillModifiedByUser = 1804,
+    /// A skill directory dbt wanted to install into is already occupied.
+    SkillDestinationOccupied = 1805,
+    /// A `skill-paths` entry resolves outside the project that declared it.
+    SkillPathEscapesProject = 1806,
+
+    // --------------------------------------------------------------------------------------------
+    // Experimentals
+    /// An error an experimental reported. Experimentals never report under any other code.
+    ExperimentalError = 1900,
+    /// A warning an experimental reported. Experimentals never report under any other code.
+    ExperimentalWarning = 1901,
+    /// A project gives entries or paths to a reserved experimental type whose experimental is off,
+    /// or that this dbt doesn't have. dbt ignores them.
+    ExperimentalNotEnabled = 1902,
+    /// A project gives entries or paths to an experimental type no one reserved. dbt ignores them.
+    UnknownExperimental = 1903,
+    /// An `experimental-paths` entry overlaps a directory dbt reads, or another experimental's.
+    ExperimentalPathOverlap = 1904,
+    /// An `experimental-paths` entry resolves outside the project that declared it. dbt skips it.
+    ExperimentalPathEscapesProject = 1905,
 
     // --------------------------------------------------------------------------------------------
     // Local execution
@@ -267,6 +457,15 @@ pub enum ErrorCode {
     // --------------------------------------------------------------------------------------------
     // Lineage
     InvalidLineageSchema = 3500,
+    /// A column whose relation `--infer-schemas` inferred matches more than one
+    /// candidate relation, so column lineage through it is incomplete.
+    AmbiguousInferredColumn = 3501,
+
+    // --------------------------------------------------------------------------------------------
+    // SQL frontend library
+    /// The SQL frontend library could not be loaded, or does not speak a
+    /// protocol this dbt does.
+    FrontendLibraryUnavailable = 3600,
 
     InvalidDialect = 8998,
     RuntimeError = 8999,
@@ -304,6 +503,14 @@ pub enum ErrorCode {
 impl std::hash::Hash for ErrorCode {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         (*self as u16).hash(state)
+    }
+}
+
+impl TryFrom<u16> for ErrorCode {
+    type Error = u16;
+
+    fn try_from(value: u16) -> Result<Self, Self::Error> {
+        Self::from_repr(value).ok_or(value)
     }
 }
 
@@ -429,6 +636,38 @@ mod tests {
         assert_eq!(
             ErrorCode::StateServiceWarn.name_and_code(),
             "StateServiceWarn (dbt1410)"
+        );
+    }
+
+    #[test]
+    fn state_lock_unavailable_renders_name_and_code() {
+        assert_eq!(
+            ErrorCode::StateLockUnavailable.name_and_code(),
+            "StateLockUnavailable (dbt1411)"
+        );
+    }
+
+    #[test]
+    fn state_heartbeat_failed_renders_name_and_code() {
+        assert_eq!(
+            ErrorCode::StateHeartbeatFailed.name_and_code(),
+            "StateHeartbeatFailed (dbt1412)"
+        );
+    }
+
+    #[test]
+    fn state_heartbeat_reclaimed_renders_name_and_code() {
+        assert_eq!(
+            ErrorCode::StateHeartbeatReclaimed.name_and_code(),
+            "StateHeartbeatReclaimed (dbt1413)"
+        );
+    }
+
+    #[test]
+    fn state_stop_rejected_renders_name_and_code() {
+        assert_eq!(
+            ErrorCode::StateStopRejected.name_and_code(),
+            "StateStopRejected (dbt1414)"
         );
     }
 }

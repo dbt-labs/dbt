@@ -32,6 +32,7 @@ use dbt_schemas::schemas::semantic_layer::semantic_manifest::SemanticManifest;
 use dbt_schemas::schemas::{InternalDbtNode, InternalDbtNodeAttributes};
 use dbt_schemas::state::{NodeResolverTracker, ResolverState};
 use dbt_state::run_cache_defer::RunCacheProfileResolver;
+use dbt_tasks_core::run_cache_lifecycle::RunCacheLifecycle;
 use dbt_telemetry::{ExecutionPhase, NodeType, PhaseExecuted};
 
 use tracing::Instrument as _;
@@ -73,6 +74,7 @@ impl DeferState {
         jinja_env: &JinjaEnv,
         previous_state: Option<Arc<StateArtifacts>>,
         root_project_quoting: ResolvedQuoting,
+        create_run_cache: impl AsyncFn() -> FsResult<Arc<RunCacheLifecycle>>,
     ) -> FsResult<Self> {
         let on_failure = if selectors_require_manifest(arg.select.as_ref(), arg.exclude.as_ref()) {
             OnManifestLoadFailure::Warn
@@ -120,11 +122,20 @@ impl DeferState {
         // Auto-deferral is opt-in: synthesis failures degrade to "no defer"
         // rather than aborting compilation.
         if nodes.is_none() {
+            let run_cache_client = create_run_cache().await?.service_client();
+
+            let unselected_node_ids =
+                Self::collect_auto_defer_unselected_node_ids(&resolved_state.nodes, schedule);
+
             let run_cache_defer_nodes = match RunCacheProfileResolver::synthesize_defer_nodes(
                 arg,
                 resolved_state,
                 jinja_env,
-            ) {
+                &unselected_node_ids,
+                run_cache_client.clone(),
+            )
+            .await
+            {
                 Ok(Some(nodes)) => {
                     let profile_target = resolved_state.dbt_profile.target.clone();
                     emit_trace_log_message(|| {
@@ -168,6 +179,28 @@ impl DeferState {
             state_artifacts: previous_state,
             ..Default::default()
         }
+    }
+
+    pub fn collect_auto_defer_unselected_node_ids(
+        resolved_state_nodes: &Nodes,
+        schedule: &Schedule<String>,
+    ) -> BTreeSet<String> {
+        // Uses `is_deferrable` to filter to resolver nodes that are model/seed/
+        // snapshot/function and non-ephemeral. Defer nodes are unknown at this
+        // point, hence passing resolver nodes twice. The actual defer-target
+        // existence is confirmed later.
+        schedule
+            .frontier_nodes
+            .iter()
+            .filter(|unique_id| {
+                resolved_state_nodes
+                    .get_node(unique_id)
+                    .is_some_and(|node| {
+                        is_deferrable(node, resolved_state_nodes, resolved_state_nodes).is_some()
+                    })
+            })
+            .cloned()
+            .collect()
     }
 }
 
@@ -468,7 +501,12 @@ async fn filter_by_relation_availability(
         dep_id_to_candidate.insert(dep_id.clone(), AvailabilityCandidate::Relation(relation));
     });
 
-    let _ = hydrate_relation_cache_if_not_already_cached(&relation_candidates, adapter).await;
+    let _ = hydrate_relation_cache_if_not_already_cached(
+        &relation_candidates,
+        adapter,
+        "downloading deferred relations",
+    )
+    .await;
     let available_functions = query_available_functions(&catalog_schemas, adapter).await;
 
     let relation_cache = adapter.engine().relation_cache();
@@ -1723,5 +1761,48 @@ mod tests {
         let resolver = build_resolver_with_defer_context(false, &nodes, &sorted, &frontier);
         // Run path, source → deferred (not in nodes_materialized)
         assert!(resolver.prefers_deferred("any", "source.s"));
+    }
+
+    #[test]
+    fn test_collect_auto_defer_unselected_node_ids() {
+        let frontier_id = "model.test.frontier_model".to_string();
+        let ephemeral_id = "model.test.ephemeral_model".to_string();
+        let selected_id = "model.test.selected_model".to_string();
+
+        let make_model = |unique_id: &str, materialization: DbtMaterialization| -> Arc<DbtModel> {
+            Arc::new(DbtModel {
+                __common_attr__: create_common_attr(unique_id),
+                __base_attr__: {
+                    let mut base = create_base_attr(unique_id);
+                    base.materialized = materialization;
+                    base
+                },
+                ..Default::default()
+            })
+        };
+
+        let mut nodes = Nodes::default();
+        nodes.models.insert(
+            frontier_id.clone(),
+            make_model(&frontier_id, DbtMaterialization::Table),
+        );
+        nodes.models.insert(
+            ephemeral_id.clone(),
+            make_model(&ephemeral_id, DbtMaterialization::Ephemeral),
+        );
+        nodes.models.insert(
+            selected_id.clone(),
+            make_model(&selected_id, DbtMaterialization::Table),
+        );
+
+        let schedule = Schedule {
+            frontier_nodes: BTreeSet::from([frontier_id.clone()]),
+            selected_nodes: BTreeSet::from([selected_id]),
+            ..Default::default()
+        };
+
+        let result = DeferState::collect_auto_defer_unselected_node_ids(&nodes, &schedule);
+
+        assert_eq!(result, BTreeSet::from([frontier_id]));
     }
 }

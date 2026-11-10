@@ -3,6 +3,7 @@
 //! Provides `env_var`, `Var`, `VarFunction`, `ConfiguredVar`, and `DbtVars`
 //! without depending on `dbt-common`, `dbt-jinja-utils`, or `dbt-schemas`.
 
+mod cli_value;
 mod configured_var;
 mod dbt_vars;
 mod env_var;
@@ -12,6 +13,6 @@ pub use configured_var::ConfiguredVar;
 pub use dbt_vars::DbtVars;
 pub use env_var::{
     DBT_INTERNAL_ENV_VAR_PREFIX, DEFAULT_ENV_PLACEHOLDER, LookupFn, SECRET_ENV_VAR_PREFIX,
-    SECRET_PLACEHOLDER, env_var,
+    SECRET_PLACEHOLDER, env_var, env_var_with_lookup,
 };
 pub use var::{Var, VarFunction};

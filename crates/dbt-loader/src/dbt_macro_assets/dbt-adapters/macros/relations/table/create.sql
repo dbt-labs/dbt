@@ -55,6 +55,14 @@
 
 -- funcsign: (string) -> string
 {% macro get_select_subquery(sql) %}
+  {#-- DIVERGENCE BEGIN: strip a terminal `;` so it does not land inside the
+       wrapper built below; done at the dispatcher so the adapter overrides are
+       covered too. See `StmtSplitter::strip_trailing_statement_terminator`.
+       Upstream: https://github.com/dbt-labs/dbt-adapters/blob/main/dbt-adapters/src/dbt/include/global_project/macros/relations/table/create.sql --#}
+  {%- if dbt_version.startswith('2.') -%}
+    {%- set sql = adapter.strip_trailing_statement_terminator(sql) -%}
+  {%- endif -%}
+  {#-- DIVERGENCE END --#}
   {{ return(adapter.dispatch('get_select_subquery', 'dbt')(sql)) }}
 {% endmacro %}
 

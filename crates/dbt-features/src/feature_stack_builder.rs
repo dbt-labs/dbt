@@ -5,9 +5,9 @@ use std::sync::Arc;
 use dbt_adapter::adapter::DefaultAdapterFactory;
 use dbt_adapter::sql_types::DefaultTypeOpsFactory;
 use dbt_common::FsError;
-use dbt_common::collections::DashMap;
+use dbt_common::collections::SccHashMap;
+use dbt_common::sources_extractor::SourcesExtractor;
 use dbt_dag::schedule::Schedule;
-use dbt_frontend_common::sources_extractor::SourcesExtractor;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::listener::{
     DefaultRenderingEventListenerFactory, RenderingEventListenerFactory,
@@ -26,9 +26,11 @@ use dbt_tasks_sa::task_runner_hooks::DefaultTaskRunnerHooksFactory;
 use crate::adapter::AdapterFeature;
 use crate::antlr_parser::AntlrParserFeature;
 use crate::cli::CliFeatureBuilder;
+use crate::experimental::ExperimentalFeature;
 use crate::feature_stack::{FeatureStack, InstrumentationFeature};
 use crate::index::{IndexFeature, NoOpIndexHooks};
 use crate::loader::LoaderFeature;
+use crate::login::LoginFeature;
 use crate::metricflow::MetricflowFeature;
 use crate::resolver::ResolverFeature;
 use crate::sidecar::SidecarFeature;
@@ -66,45 +68,38 @@ impl TaskRunnerCtxFactory for DefaultTaskRunnerCtxFactory {
         _schedule: &'a Schedule<String>,
         _worker_id: &'a str,
         _resolver_state: &'a ResolverState,
-        _env: &'a JinjaEnv,
+        _env: &'a Arc<JinjaEnv>,
         _freshness_results: Option<&'a dyn PreTaskRunData>,
         _extended_ctx: &'a dyn ExtendedCtx,
-    ) -> Pin<Box<dyn Future<Output = Result<DashMap<String, String>, Box<FsError>>> + Send + 'a>>
+    ) -> Pin<Box<dyn Future<Output = Result<SccHashMap<String, String>, Box<FsError>>> + Send + 'a>>
     {
-        Box::pin(async move { Ok(DashMap::default()) })
+        Box::pin(async move { Ok(SccHashMap::default()) })
     }
 }
 
 pub struct FeatureStackBuilder {
-    send_anonymous_usage_stats: bool,
+    name: &'static str,
+    distribution: &'static str,
     tracing: TracingFeature,
 }
 
 impl FeatureStackBuilder {
     pub fn new(tracing: TracingFeature) -> Self {
         Self {
-            send_anonymous_usage_stats: false,
+            name: "dbt-oss",
+            distribution: "dbt-oss",
             tracing,
         }
     }
 
-    pub fn send_anonymous_usage_stats(mut self, enabled: bool) -> Self {
-        self.send_anonymous_usage_stats = enabled;
-        self
-    }
-
     pub fn build(self) -> Box<FeatureStack> {
-        let dbt_distribution = "dbt-oss";
-        let version_check_enabled = false;
-
         let instrumentation = InstrumentationFeature {
-            event_emitter: vortex_events::fusion_sa_event_emitter(
-                self.send_anonymous_usage_stats,
-                dbt_distribution,
-            ),
+            event_emitter: vortex_events::default_event_emitter(None, self.distribution),
         };
 
-        let cli = CliFeatureBuilder::new("dbt-core").build();
+        let cli = CliFeatureBuilder::new(self.name)
+            .version_check_enabled(false)
+            .build();
 
         let index = IndexFeature {
             hooks: Box::new(NoOpIndexHooks),
@@ -154,10 +149,18 @@ impl FeatureStackBuilder {
 
         let loader = LoaderFeature::default();
 
-        let login_hooks = Arc::new(DefaultLoginHooks);
+        let login = LoginFeature {
+            hooks: Arc::new(DefaultLoginHooks),
+        };
 
         let jinja = crate::jinja::JinjaFeature {
             factory: Arc::new(dbt_jinja_utils::DefaultJinjaFactory),
+        };
+
+        let lake_compute = crate::lake_compute::LakeComputeFeature {
+            propagation_checker: None,
+            catalog_attach_checker: None,
+            mdls_checker: None,
         };
 
         let stack = FeatureStack {
@@ -171,10 +174,11 @@ impl FeatureStackBuilder {
             metricflow,
             task_runner,
             resolver,
+            experimentals: ExperimentalFeature::default(),
             loader,
             jinja,
-            login_hooks,
-            version_check_enabled,
+            lake_compute,
+            login,
         };
         Box::new(stack)
     }

@@ -1,3 +1,6 @@
+use std::borrow::Cow;
+
+use dbt_adapter_engine::cow::uppercase;
 use dbt_common::{AdapterError, AdapterResult};
 use dbt_schemas::schemas::{DbtModel, InternalDbtNodeAttributes};
 use minijinja::Value;
@@ -6,7 +9,7 @@ use crate::relation::config_v2::{
     ComponentConfig, ComponentConfigLoader, SimpleComponentConfigImpl, diff, impl_loader,
 };
 use crate::relation::snowflake::config::{
-    DescribeDynamicTableResults, get_string_by_name_from_record_batch,
+    SnowflakeDescribeResults, get_string_by_name_from_record_batch,
 };
 
 pub(crate) const TYPE_NAME: &str = "refresh_mode";
@@ -36,8 +39,8 @@ fn new_component(refresh_mode: String) -> RefreshMode {
     }
 }
 
-fn from_remote_state(results: &DescribeDynamicTableResults) -> AdapterResult<RefreshMode> {
-    let batch = &results.dynamic_table;
+fn from_remote_state(results: &SnowflakeDescribeResults) -> AdapterResult<RefreshMode> {
+    let batch = &results.record_batch;
     let refresh_mode = get_string_by_name_from_record_batch(batch, "refresh_mode")
         .map_err(|e| AdapterError::new(dbt_common::AdapterErrorKind::UnexpectedResult, e))?
         .to_uppercase();
@@ -66,13 +69,13 @@ fn from_local_config(
             )
         })?;
     let refresh_mode = match &snowflake_config.refresh_mode {
-        None => "AUTO".to_string(),
-        Some(s) => s.to_uppercase(),
+        None => Cow::Borrowed("AUTO"),
+        Some(s) => uppercase(s.into()),
     };
-    Ok(new_component(refresh_mode))
+    Ok(new_component(refresh_mode.into()))
 }
 
-impl_loader!(RefreshMode, DescribeDynamicTableResults);
+impl_loader!(RefreshMode, SnowflakeDescribeResults);
 
 #[cfg(test)]
 mod tests {

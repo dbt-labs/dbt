@@ -2,22 +2,23 @@ use dbt_yaml::Verbatim;
 use std::{
     collections::{BTreeMap, HashMap, hash_map::Entry},
     path::Path,
+    sync::Arc,
 };
 
-use dbt_common::tracing::dbt_emit::emit_info_log_message;
 use dbt_common::{ErrorCode, FsResult, err, io_args::IoArgs, unexpected_fs_err};
+use dbt_common::{FsError, tracing::dbt_emit::emit_info_log_message};
 use dbt_jinja_utils::{
     jinja_environment::JinjaEnv, phases::load::LoadContext, serde::into_typed_with_jinja,
 };
 use dbt_schemas::schemas::ResolvedCloudConfig;
 use dbt_schemas::schemas::packages::{
     DbtPackageEntry, DbtPackages, DbtPackagesLock, GitPackage, HubPackage, LocalPackage,
-    PrivatePackage, TarballPackage,
+    PrivatePackage, PrivatePackageProvider, TarballPackage,
 };
 
 use crate::{
     notices::{NoticeBuffer, PackageNotice, PackageNoticeKind},
-    private_package::get_resolved_url,
+    private_package::{LocalPrivatePackageResolver, PrivatePackageRef, PrivatePackageResolver},
     utils::{get_local_package_full_path, read_and_validate_dbt_project},
 };
 
@@ -76,7 +77,13 @@ pub struct PackageListing<'a> {
     pub vars: BTreeMap<String, dbt_yaml::Value>,
     pub packages: HashMap<String, UnpinnedPackage>,
     pub skip_private_deps: bool,
-    pub cloud_config: Option<ResolvedCloudConfig>,
+    pub private_package_resolver: Arc<dyn PrivatePackageResolver>,
+    /// Populated by `resolve_private_packages_batch` before the per-entry
+    /// loop runs; keyed by the rendered `private` string. A miss is resolved
+    /// on demand by `get_or_resolve_private_package_url`.
+    resolved_private_urls: HashMap<String, String>,
+    /// Optional cloud-run context an implementation of [`PrivatePackageResolver`] may use.
+    cloud_config: Option<ResolvedCloudConfig>,
     notices: &'a NoticeBuffer,
 }
 
@@ -91,6 +98,8 @@ impl<'a> PackageListing<'a> {
             vars,
             packages: HashMap::new(),
             skip_private_deps: false,
+            private_package_resolver: Arc::new(LocalPrivatePackageResolver),
+            resolved_private_urls: HashMap::new(),
             cloud_config: None,
             notices,
         }
@@ -98,6 +107,14 @@ impl<'a> PackageListing<'a> {
 
     pub fn with_skip_private_deps(mut self, skip: bool) -> Self {
         self.skip_private_deps = skip;
+        self
+    }
+
+    pub fn with_private_package_resolver(
+        mut self,
+        private_package_resolver: Arc<dyn PrivatePackageResolver>,
+    ) -> Self {
+        self.private_package_resolver = private_package_resolver;
         self
     }
 
@@ -115,6 +132,8 @@ impl<'a> PackageListing<'a> {
         packages: &DbtPackages,
         jinja_env: &JinjaEnv,
     ) -> FsResult<()> {
+        self.resolve_private_packages_batch(&packages.packages, jinja_env)
+            .await?;
         for package in packages.packages.iter() {
             self.incorporate(package.clone(), jinja_env).await?;
         }
@@ -126,9 +145,65 @@ impl<'a> PackageListing<'a> {
         dbt_packages_lock: &DbtPackagesLock,
         jinja_env: &JinjaEnv,
     ) -> FsResult<()> {
-        for package in dbt_packages_lock.packages.iter() {
-            self.incorporate(package.clone().into(), jinja_env).await?;
+        let entries: Vec<DbtPackageEntry> = dbt_packages_lock
+            .packages
+            .iter()
+            .cloned()
+            .map(Into::into)
+            .collect();
+        self.resolve_private_packages_batch(&entries, jinja_env)
+            .await?;
+        for package in entries {
+            self.incorporate(package, jinja_env).await?;
         }
+        Ok(())
+    }
+
+    /// Batch-resolves all private packages in `entries` via
+    /// `self.private_package_resolver` (one call, up front, before any
+    /// individual git checkout), populating `self.resolved_private_urls`.
+    /// Entries the resolver doesn't cover are resolved individually later,
+    /// in `incorporate`, via `get_or_resolve_private_package_url`. A no-op
+    /// when `skip_private_deps` is set, matching `incorporate`'s per-entry
+    /// skip so private packages are never resolved (and can't hard-error)
+    /// when the caller opted out.
+    async fn resolve_private_packages_batch(
+        &mut self,
+        entries: &[DbtPackageEntry],
+        jinja_env: &JinjaEnv,
+    ) -> FsResult<()> {
+        if self.skip_private_deps {
+            return Ok(());
+        }
+
+        let deps_context = LoadContext::new(self.vars.clone());
+        let mut refs = Vec::new();
+        for entry in entries {
+            let DbtPackageEntry::Private(p) = entry else {
+                continue;
+            };
+            let rendered_private: String = {
+                let value = dbt_yaml::to_value(&p.private).map_err(|e| {
+                    unexpected_fs_err!("Failed to serialize private package URL: {e}")
+                })?;
+                into_typed_with_jinja(value, true, jinja_env, &deps_context, &[], None, true)
+            }?;
+            refs.push(PrivatePackageRef {
+                private_def: rendered_private,
+                provider: p
+                    .provider
+                    .map(PrivatePackageProvider::as_str)
+                    .map(String::from),
+            });
+        }
+        if refs.is_empty() {
+            return Ok(());
+        }
+
+        self.resolved_private_urls = self
+            .private_package_resolver
+            .resolve_urls(&refs, &self.cloud_config)
+            .await?;
         Ok(())
     }
 
@@ -144,16 +219,7 @@ impl<'a> PackageListing<'a> {
                     let value = dbt_yaml::to_value(&hub_package).map_err(|e| {
                         unexpected_fs_err!("Failed to serialize hub package spec: {e}")
                     })?;
-                    into_typed_with_jinja(
-                        &self.io_args,
-                        value,
-                        true,
-                        jinja_env,
-                        &deps_context,
-                        &[],
-                        None,
-                        true,
-                    )
+                    into_typed_with_jinja(value, true, jinja_env, &deps_context, &[], None, true)
                 }?;
                 if let Some(unpinned_package) = self.packages.get_mut(&hub_package.package) {
                     match unpinned_package {
@@ -181,31 +247,13 @@ impl<'a> PackageListing<'a> {
                     let value = dbt_yaml::to_value(&git_package).map_err(|e| {
                         unexpected_fs_err!("Failed to serialize git package spec: {e}")
                     })?;
-                    into_typed_with_jinja(
-                        &self.io_args,
-                        value,
-                        true,
-                        jinja_env,
-                        &deps_context,
-                        &[],
-                        None,
-                        true,
-                    )
+                    into_typed_with_jinja(value, true, jinja_env, &deps_context, &[], None, true)
                 }?;
                 let git_package_url: String = {
                     let value = dbt_yaml::to_value(&git_package.git).map_err(|e| {
                         unexpected_fs_err!("Failed to serialize git package URL: {e}")
                     })?;
-                    into_typed_with_jinja(
-                        &self.io_args,
-                        value,
-                        true,
-                        jinja_env,
-                        &deps_context,
-                        &[],
-                        None,
-                        true,
-                    )
+                    into_typed_with_jinja(value, true, jinja_env, &deps_context, &[], None, true)
                 }?;
 
                 // Create key that includes subdirectory if present
@@ -237,28 +285,13 @@ impl<'a> PackageListing<'a> {
                     let value = dbt_yaml::to_value(&local_package).map_err(|e| {
                         unexpected_fs_err!("Failed to serialize local package spec: {e}")
                     })?;
-                    into_typed_with_jinja(
-                        &self.io_args,
-                        value,
-                        true,
-                        jinja_env,
-                        &deps_context,
-                        &[],
-                        None,
-                        true,
-                    )
+                    into_typed_with_jinja(value, true, jinja_env, &deps_context, &[], None, true)
                 }?;
                 // Get absolute path of local package
                 let full_path = get_local_package_full_path(self.in_dir(), &local_package);
 
-                let dbt_project = read_and_validate_dbt_project(
-                    &self.io_args,
-                    &full_path,
-                    true,
-                    jinja_env,
-                    &self.vars,
-                )
-                .await?;
+                let dbt_project =
+                    read_and_validate_dbt_project(&full_path, true, jinja_env, &self.vars).await?;
                 let package_key = full_path.to_string_lossy().to_string();
                 match self.packages.entry(package_key) {
                     Entry::Occupied(_) => {
@@ -280,31 +313,13 @@ impl<'a> PackageListing<'a> {
                     let value = dbt_yaml::to_value(&private_package).map_err(|e| {
                         unexpected_fs_err!("Failed to serialize private package spec: {e}")
                     })?;
-                    into_typed_with_jinja(
-                        &self.io_args,
-                        value,
-                        true,
-                        jinja_env,
-                        &deps_context,
-                        &[],
-                        None,
-                        true,
-                    )
+                    into_typed_with_jinja(value, true, jinja_env, &deps_context, &[], None, true)
                 }?;
                 let private_package_private: String = {
                     let value = dbt_yaml::to_value(&private_package.private).map_err(|e| {
                         unexpected_fs_err!("Failed to serialize private package URL: {e}")
                     })?;
-                    into_typed_with_jinja(
-                        &self.io_args,
-                        value,
-                        true,
-                        jinja_env,
-                        &deps_context,
-                        &[],
-                        None,
-                        true,
-                    )
+                    into_typed_with_jinja(value, true, jinja_env, &deps_context, &[], None, true)
                 }?;
 
                 private_package.private = Verbatim::from(private_package_private);
@@ -318,7 +333,9 @@ impl<'a> PackageListing<'a> {
                     return Ok(());
                 }
 
-                let private_package_url = get_resolved_url(&private_package, &self.cloud_config)?;
+                let private_package_url = self
+                    .get_or_resolve_private_package_url(&private_package)
+                    .await?;
 
                 // Create key that includes subdirectory if present
                 let mut package_key = private_package_url.clone();
@@ -331,7 +348,7 @@ impl<'a> PackageListing<'a> {
                     UnpinnedPackage::Private(PrivateUnpinnedPackage {
                         private: private_package_url,
                         name: None,
-                        provider: private_package.provider.clone(),
+                        provider: private_package.provider,
                         warn_unpinned: private_package.warn_unpinned,
                         revisions: private_package
                             .revision
@@ -350,31 +367,13 @@ impl<'a> PackageListing<'a> {
                     let value = dbt_yaml::to_value(&tarball_package).map_err(|e| {
                         unexpected_fs_err!("Failed to serialize tarball package spec: {e}")
                     })?;
-                    into_typed_with_jinja(
-                        &self.io_args,
-                        value,
-                        true,
-                        jinja_env,
-                        &deps_context,
-                        &[],
-                        None,
-                        true,
-                    )
+                    into_typed_with_jinja(value, true, jinja_env, &deps_context, &[], None, true)
                 }?;
                 let tarball_url: String = {
                     let value = dbt_yaml::to_value(&tarball_package.tarball).map_err(|e| {
                         unexpected_fs_err!("Failed to serialize tarball package URL: {e}")
                     })?;
-                    into_typed_with_jinja(
-                        &self.io_args,
-                        value,
-                        true,
-                        jinja_env,
-                        &deps_context,
-                        &[],
-                        None,
-                        true,
-                    )
+                    into_typed_with_jinja(value, true, jinja_env, &deps_context, &[], None, true)
                 }?;
 
                 self.handle_remote_package(
@@ -576,6 +575,49 @@ impl<'a> PackageListing<'a> {
         }
         Ok(())
     }
+
+    async fn get_or_resolve_private_package_url(
+        &mut self,
+        private_package: &PrivatePackage,
+    ) -> FsResult<String> {
+        let private_def = private_package.private.as_ref();
+
+        // Common case: private package has already been resolved.
+        if let Some(resolved) = self.resolved_private_urls.get(private_def) {
+            return Ok(resolved.clone());
+        }
+
+        // Package not yet seen - must resolve. This should only happen with transitive
+        // package dependencies, since we resolve everything from packages.yml up-front.
+        let new_package_urls = self
+            .private_package_resolver
+            .resolve_urls(
+                &[PrivatePackageRef {
+                    private_def: private_def.to_string(),
+                    provider: private_package
+                        .provider
+                        .map(PrivatePackageProvider::as_str)
+                        .map(String::from),
+                }],
+                &self.cloud_config,
+            )
+            .await?;
+        let url = new_package_urls
+            .get(private_def)
+            .ok_or_else(|| {
+                FsError::new(
+                    ErrorCode::Generic,
+                    format!("packages resolved, but requested package, {private_def} not found"),
+                )
+            })?
+            .clone();
+
+        // Save the resolved URL in the local map
+        self.resolved_private_urls
+            .insert(private_def.to_string(), url.clone());
+
+        Ok(url)
+    }
 }
 
 #[cfg(test)]
@@ -719,5 +761,180 @@ mod tests {
                 .packages
                 .contains_key("https://github.com/dbt-labs/dbt-core.git")
         );
+    }
+
+    mod private_packages_batch_resolution {
+        use super::*;
+        use async_trait::async_trait;
+        use dbt_jinja_utils::phases::load::init::initialize_load_profile_jinja_environment;
+        use dbt_schemas::schemas::packages::{DbtPackageLock, PrivatePackageLock};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        /// Fake [`PrivatePackageResolver`] used to test batching behavior
+        /// without a real resolver implementation: resolves `org/repo1` and
+        /// `org/repo2` and leaves everything else for local git URL
+        /// building, while counting how many times it was called (to assert
+        /// batching).
+        struct FakeResolver {
+            calls: AtomicUsize,
+        }
+
+        impl FakeResolver {
+            fn new() -> Self {
+                Self {
+                    calls: AtomicUsize::new(0),
+                }
+            }
+        }
+
+        #[async_trait]
+        impl PrivatePackageResolver for FakeResolver {
+            async fn resolve_urls(
+                &self,
+                entries: &[PrivatePackageRef],
+                _cloud_config: &Option<ResolvedCloudConfig>,
+            ) -> FsResult<HashMap<String, String>> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                Ok(entries
+                    .iter()
+                    .filter(|e| e.private_def == "org/repo1" || e.private_def == "org/repo2")
+                    .map(|e| {
+                        (
+                            e.private_def.clone(),
+                            format!("https://tok@github.com/{}.git", e.private_def),
+                        )
+                    })
+                    .collect())
+            }
+        }
+
+        fn private_package(private: &str) -> PrivatePackage {
+            PrivatePackage {
+                private: private.to_string().into(),
+                provider: None,
+                revision: None,
+                warn_unpinned: None,
+                subdirectory: None,
+                __unrendered__: HashMap::new(),
+            }
+        }
+
+        fn assert_resolved_via_resolver(package_listing: &PackageListing) {
+            assert_eq!(package_listing.packages.len(), 2);
+            for pkg in package_listing.packages.values() {
+                match pkg {
+                    UnpinnedPackage::Private(p) => {
+                        assert!(p.private.starts_with("https://tok@github.com/org/repo"));
+                    }
+                    other => panic!("expected a private package, got {other:?}"),
+                }
+            }
+        }
+
+        #[dbt_runtime::test]
+        async fn hydrate_dbt_packages_batches_private_resolution_into_one_call() {
+            let resolver = Arc::new(FakeResolver::new());
+            let io_args = IoArgs::default();
+            let notices = NoticeBuffer::default();
+            let mut package_listing = PackageListing::new(io_args, BTreeMap::new(), &notices)
+                .with_private_package_resolver(resolver.clone());
+
+            let dbt_packages = DbtPackages {
+                projects: vec![],
+                packages: vec![
+                    DbtPackageEntry::Private(private_package("org/repo1")),
+                    DbtPackageEntry::Private(private_package("org/repo2")),
+                ],
+            };
+
+            let jinja_env = initialize_load_profile_jinja_environment();
+            package_listing
+                .hydrate_dbt_packages(&dbt_packages, &jinja_env)
+                .await
+                .unwrap();
+
+            assert_eq!(resolver.calls.load(Ordering::SeqCst), 1);
+            assert_resolved_via_resolver(&package_listing);
+        }
+
+        #[dbt_runtime::test]
+        async fn hydrate_dbt_packages_lock_batches_private_resolution_into_one_call() {
+            // Regression test: private packages must be resolved on both the
+            // lock-regen path (`hydrate_dbt_packages`) and the
+            // install-from-existing-lockfile path
+            // (`hydrate_dbt_packages_lock`) — resolving only on one would
+            // silently break steady-state runs.
+            let resolver = Arc::new(FakeResolver::new());
+            let io_args = IoArgs::default();
+            let notices = NoticeBuffer::default();
+            let mut package_listing = PackageListing::new(io_args, BTreeMap::new(), &notices)
+                .with_private_package_resolver(resolver.clone());
+
+            let dbt_packages_lock = DbtPackagesLock {
+                packages: vec![
+                    DbtPackageLock::Private(PrivatePackageLock {
+                        private: "org/repo1".to_string().into(),
+                        name: "repo1".to_string(),
+                        revision: "main".to_string(),
+                        provider: None,
+                        warn_unpinned: None,
+                        subdirectory: None,
+                        __unrendered__: HashMap::new(),
+                    }),
+                    DbtPackageLock::Private(PrivatePackageLock {
+                        private: "org/repo2".to_string().into(),
+                        name: "repo2".to_string(),
+                        revision: "main".to_string(),
+                        provider: None,
+                        warn_unpinned: None,
+                        subdirectory: None,
+                        __unrendered__: HashMap::new(),
+                    }),
+                ],
+                sha1_hash: String::new(),
+            };
+
+            let jinja_env = initialize_load_profile_jinja_environment();
+            package_listing
+                .hydrate_dbt_packages_lock(&dbt_packages_lock, &jinja_env)
+                .await
+                .unwrap();
+
+            assert_eq!(resolver.calls.load(Ordering::SeqCst), 1);
+            assert_resolved_via_resolver(&package_listing);
+        }
+
+        #[dbt_runtime::test]
+        async fn hydrate_dbt_packages_skips_resolution_when_skip_private_deps() {
+            // Regression test: batch resolution must respect `skip_private_deps`
+            // the same way the per-entry path in `incorporate` does. Before this
+            // fix, the batch call ran unconditionally and could hard-error (or
+            // call out to a resolver) for a private package the caller asked to
+            // skip entirely.
+            let resolver = Arc::new(FakeResolver::new());
+            let io_args = IoArgs::default();
+            let notices = NoticeBuffer::default();
+            let mut package_listing = PackageListing::new(io_args, BTreeMap::new(), &notices)
+                .with_skip_private_deps(true)
+                .with_private_package_resolver(resolver.clone());
+
+            // Not "org/repo1" or "org/repo2" - the fake resolver would fail to
+            // resolve it if it were ever called.
+            let dbt_packages = DbtPackages {
+                projects: vec![],
+                packages: vec![DbtPackageEntry::Private(private_package(
+                    "unresolvable-org/unresolvable-repo",
+                ))],
+            };
+
+            let jinja_env = initialize_load_profile_jinja_environment();
+            package_listing
+                .hydrate_dbt_packages(&dbt_packages, &jinja_env)
+                .await
+                .unwrap();
+
+            assert_eq!(resolver.calls.load(Ordering::SeqCst), 0);
+            assert!(package_listing.packages.is_empty());
+        }
     }
 }

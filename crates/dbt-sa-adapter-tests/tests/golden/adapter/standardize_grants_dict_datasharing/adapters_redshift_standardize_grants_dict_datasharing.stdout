@@ -1,0 +1,23 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/a.sql
+   Parsing models/c.sql
+redshift
+current_grants_table:
+current_grants_dict:
+{}
+ Rendering models/c.sql
+redshift
+current_grants_table:
+|          schema_name | object_name | object_type | privilege_type | identity_id |   identity_name | ... |
+| -------------------- | ----------- | ----------- | -------------- | ----------- | --------------- | --- |
+| adapters_redshift... | a           | TABLE       | SELECT         |           0 | public          | ... |
+| adapters_redshift... | a           | TABLE       | SELECT         |         118 | dbt_test_user_1 | ... |
+| adapters_redshift... | a           | TABLE       | SELECT         |    31697078 | tester          | ... |
+current_grants_dict:
+{'select': ['dbt_test_user_1']}
+ Rendering models/a.sql
+==================== Execution Summary =====================
+Finished 'compile' successfully for target 'redshift' [duration]
+Processed: 2 models
+Summary: 2 total | 2 success

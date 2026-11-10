@@ -260,7 +260,7 @@ impl Unescaper {
                 match char_iter.next() {
                     None => return Err(ErrorKind::BadEscape.into()),
                     Some(d) => match d {
-                        '"' | '\\' | '/' | '\'' => ok!(self.push_char(d)),
+                        '"' | '\\' | '\'' => ok!(self.push_char(d)),
                         'b' => ok!(self.push_char('\x08')),
                         'f' => ok!(self.push_char('\x0C')),
                         'n' => ok!(self.push_char('\n')),
@@ -414,7 +414,7 @@ mod tests {
     #[test]
     fn test_unescape() {
         assert_eq!(unescape(r"foo\u2603bar").unwrap(), "foo\u{2603}bar");
-        assert_eq!(unescape(r"\t\b\f\r\n\\\/").unwrap(), "\t\x08\x0c\r\n\\/");
+        assert_eq!(unescape(r"\t\b\f\r\n\\\/").unwrap(), "\t\x08\x0c\r\n\\\\/");
         assert_eq!(unescape("foobarbaz").unwrap(), "foobarbaz");
         assert_eq!(unescape(r"\ud83d\udca9").unwrap(), "💩");
     }

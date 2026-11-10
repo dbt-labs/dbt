@@ -1,4 +1,9 @@
 [package]
+# TODO: Rename this crate to dbt-vortex-events. End state:
+# - vortex-client (generic)
+# - dbt-vortex (the client state for dbt)
+# - dbt-vortex-events (the events logged by dbt)
+# Other binaries log a different set of events through the vortex-client.
 name = "vortex-events"
 version.workspace = true
 homepage.workspace = true
@@ -11,13 +16,15 @@ edition.workspace = true
 [dependencies]
 proto-rust = { path = "../proto-rust" }
 
-base64 = { workspace = true }
 dbt-common = { workspace = true }
 dbt-env = { workspace = true }
 dbt-fusion-workspace-hack = { version = "0.1" }
 dbt-jinja-utils = { workspace = true }
 dbt-schemas = { workspace = true }
+dbt-vortex = { workspace = true }
 dbt-yaml = { workspace = true }
+
+base64 = { workspace = true }
 dirs = { workspace = true }
 md5 = { workspace = true }
 serde = { workspace = true }

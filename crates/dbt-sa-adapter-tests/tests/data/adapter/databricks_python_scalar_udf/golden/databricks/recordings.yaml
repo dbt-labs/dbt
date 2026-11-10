@@ -1,0 +1,133 @@
+2dac9033:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists `e2e`.`adapters_databricks_python_scalar_udf`
+85f3743c:
+- sequence: 0
+  type: execute
+  sql: SHOW SCHEMAS IN `e2e`
+function.test.price_for_xlarge:
+- sequence: 0
+  type: execute
+  sql: |-
+    SELECT
+    table_name,
+    if(table_type IN ('EXTERNAL', 'MANAGED', 'MANAGED_SHALLOW_CLONE', 'EXTERNAL_SHALLOW_CLONE'), 'table', lower(table_type)) AS table_type,
+    lower(data_source_format) AS file_format,
+    table_schema,
+    table_owner,
+    table_catalog,
+    if(
+    table_type IN (
+    'EXTERNAL',
+    'MANAGED',
+    'MANAGED_SHALLOW_CLONE',
+    'EXTERNAL_SHALLOW_CLONE'
+    ),
+    lower(table_type),
+    NULL
+    ) AS databricks_table_type
+    FROM `system`.`information_schema`.`tables`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'adapters_databricks_python_scalar_udf'
+- sequence: 1
+  type: execute
+  sql: |-
+    CREATE OR REPLACE FUNCTION `e2e`.`adapters_databricks_python_scalar_udf`.`price_for_xlarge` (
+    
+    
+    price float
+    )
+    RETURNS float
+    LANGUAGE PYTHON
+    AS
+    
+    
+    $$
+    def price_for_xlarge(price):
+    return price * 2
+    
+    return price_for_xlarge(price)
+    
+    
+    # This part is user provided model code
+    # you will need to copy the next section to run the code
+    # COMMAND ----------
+    # this part is dbt logic for get ref work, do not modify
+    
+    def ref(*args, **kwargs):
+    refs = {}
+    key = '.'.join(args)
+    version = kwargs.get("v") or kwargs.get("version")
+    if version:
+    key += f".v{version}"
+    dbt_load_df_function = kwargs.get("dbt_load_df_function")
+    return dbt_load_df_function(refs[key])
+    
+    
+    def source(*args, dbt_load_df_function):
+    sources = {}
+    key = '.'.join(args)
+    return dbt_load_df_function(sources[key])
+    
+    
+    config_dict = {}
+    meta_dict = {}
+    
+    
+    class config:
+    def __init__(self, *args, **kwargs):
+    pass
+    
+    @staticmethod
+    def get(key, default=None):
+    return config_dict.get(key, default)
+    
+    @staticmethod
+    def meta_get(key, default=None):
+    return meta_dict.get(key, default)
+    
+    class this:
+    """dbt.this() or dbt.this.identifier"""
+    database = "e2e"
+    schema = "adapters_databricks_python_scalar_udf"
+    identifier = "price_for_xlarge"
+    
+    def __repr__(self):
+    return '`e2e`.`adapters_databricks_python_scalar_udf`.`price_for_xlarge`'
+    
+    
+    class dbtObj:
+    def __init__(self, load_df_function) -> None:
+    self.source = lambda *args: source(*args, dbt_load_df_function=load_df_function)
+    self.ref = lambda *args, **kwargs: ref(*args, **kwargs, dbt_load_df_function=load_df_function)
+    self.config = config
+    self.this = this()
+    self.is_incremental = False
+    
+    # COMMAND ----------
+    
+    # how to execute python model in notebook
+    # dbt = dbtObj(spark.table)
+    # df = model(dbt, spark)
+    
+    
+    $$
+test.test.assert_price_for_xlarge:
+- sequence: 0
+  type: execute
+  sql: |-
+    select
+    count(*) as failures,
+    count(*) != 0 as should_warn,
+    count(*) != 0 as should_error
+    from (
+    
+    
+    select result
+    from (select `e2e`.`adapters_databricks_python_scalar_udf`.`price_for_xlarge`(100.0) as result)
+    where result != 200.0
+    
+    
+    
+    ) dbt_internal_test

@@ -1,0 +1,32 @@
+619b381f:
+- sequence: 0
+  type: execute
+  sql: "\n    create table adapters_bigquery_metadata_source_freshness_overrides.source_field (id STRING, updated_at TIMESTAMP)\n  "
+6f7e4838:
+- sequence: 0
+  type: execute
+  sql: "\n    create table adapters_bigquery_metadata_source_freshness_overrides.source_query (id STRING, updated_at TIMESTAMP)\n  "
+70bd7765:
+- sequence: 0
+  type: execute
+  sql: "\n    insert into adapters_bigquery_metadata_source_freshness_overrides.source_query (id, updated_at) values ('1', CURRENT_TIMESTAMP())\n  "
+909a511d:
+- sequence: 0
+  type: execute
+  sql: "\n    insert into adapters_bigquery_metadata_source_freshness_overrides.source_bulk (id, updated_at) values ('1', CURRENT_TIMESTAMP())\n  "
+959de356:
+- sequence: 0
+  type: execute
+  sql: "\n    create table adapters_bigquery_metadata_source_freshness_overrides.source_bulk (id STRING, updated_at TIMESTAMP)\n  "
+'99576907':
+- sequence: 0
+  type: execute
+  sql: "\n    create or replace table adapters_bigquery_metadata_source_freshness_overrides.a (val int)\n  "
+b389cbb3:
+- sequence: 0
+  type: execute
+  sql: "\n    create schema if not exists `dbt-test-env`.`adapters_bigquery_metadata_source_freshness_overrides`\n  "
+ba7a9a6c:
+- sequence: 0
+  type: execute
+  sql: "\n    insert into adapters_bigquery_metadata_source_freshness_overrides.source_field (id, updated_at) values ('1', CURRENT_TIMESTAMP())\n  "

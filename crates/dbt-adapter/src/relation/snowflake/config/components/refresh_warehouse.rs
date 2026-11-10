@@ -5,7 +5,7 @@ use minijinja::Value;
 use crate::relation::config_v2::{
     ComponentConfig, ComponentConfigLoader, SimpleComponentConfigImpl, diff, impl_loader,
 };
-use crate::relation::snowflake::config::DescribeDynamicTableResults;
+use crate::relation::snowflake::config::SnowflakeDescribeResults;
 use crate::value::none_value;
 
 pub(crate) const TYPE_NAME: &str = "refresh_warehouse";
@@ -36,7 +36,7 @@ fn new_component(refresh_warehouse: Option<String>) -> RefreshWarehouse {
     }
 }
 
-fn from_remote_state(_results: &DescribeDynamicTableResults) -> AdapterResult<RefreshWarehouse> {
+fn from_remote_state(_results: &SnowflakeDescribeResults) -> AdapterResult<RefreshWarehouse> {
     // Snowflake's DESCRIBE output does not expose `refresh_warehouse` separately;
     // the existing table's `WAREHOUSE =` parameter is reported via the `warehouse`
     // column, which the `snowflake_warehouse` component already reads.
@@ -62,7 +62,7 @@ fn from_local_config(
     Ok(new_component(snowflake_config.refresh_warehouse.clone()))
 }
 
-impl_loader!(RefreshWarehouse, DescribeDynamicTableResults);
+impl_loader!(RefreshWarehouse, SnowflakeDescribeResults);
 
 #[cfg(test)]
 mod tests {
@@ -73,7 +73,7 @@ mod tests {
     fn from_remote_state_is_always_none() {
         // Whatever the remote state, refresh_warehouse is not reported by DESCRIBE.
         let remote_state = test_helpers::make_remote_config(test_helpers::TestDynamicTableConfig {
-            snowflake_warehouse: "ANY_WH",
+            snowflake_warehouse: Some("ANY_WH"),
             ..Default::default()
         });
         let loaded = from_remote_state(&remote_state).unwrap();
@@ -83,7 +83,7 @@ mod tests {
     #[test]
     fn from_local_state_none() {
         let local_state = test_helpers::make_local_config(test_helpers::TestDynamicTableConfig {
-            snowflake_warehouse: "MY_WH",
+            snowflake_warehouse: Some("MY_WH"),
             refresh_warehouse: None,
             ..Default::default()
         });
@@ -94,7 +94,7 @@ mod tests {
     #[test]
     fn from_local_state_some() {
         let local_state = test_helpers::make_local_config(test_helpers::TestDynamicTableConfig {
-            snowflake_warehouse: "MY_LARGE_WH",
+            snowflake_warehouse: Some("MY_LARGE_WH"),
             refresh_warehouse: Some("MY_SMALL_REFRESH_WH"),
             ..Default::default()
         });

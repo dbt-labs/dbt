@@ -1,0 +1,18 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/unit_test.yml
+   Parsing models/add_array.sql
+   Parsing models/my_model.sql
+ Rendering models/my_model.sql
+   Running models/my_model.sql
+ Succeeded model databricks_test_test_array_data.my_model (view) [1 of 3 in duration]
+ Rendering models/add_array.sql
+ Rendering models/unit_test.yml:4:11 (test_with_unused_array)
+   Running ../scratch/target/run/test_array_data/models/test_with_unused_array.sql
+    Passed unit_test databricks_test_test_array_data_dbt_test__audit.test_with_unused_array [3 of 3 in duration]
+   Running models/add_array.sql
+ Succeeded model databricks_test_test_array_data.add_array (view) [2 of 3 in duration]
+==================== Execution Summary =====================
+Finished 'build' successfully for target 'databricks' [duration]
+Processed: 2 models | 1 unit test
+Summary: 3 total | 3 success

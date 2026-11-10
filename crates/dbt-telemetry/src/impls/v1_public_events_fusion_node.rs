@@ -1,9 +1,9 @@
 use crate::proto::v1::public::events::fusion::{
     node::{
-        NodeCacheDetail, NodeEvaluated, NodeEvaluationDetail, NodeMaterialization, NodeOutcome,
-        NodeProcessed, NodeSkipReason, NodeSkipUpstreamDetail, NodeType, NodeWarningOutcome,
-        SourceFreshnessDetail, SourceFreshnessOutcome, TestEvaluationDetail, TestOutcome,
-        node_evaluated, node_processed,
+        MicrobatchBatchSize, MicrobatchEvaluated, NodeCacheDetail, NodeComputeMode, NodeEvaluated,
+        NodeEvaluationDetail, NodeMaterialization, NodeOutcome, NodeProcessed, NodeSkipReason,
+        NodeSkipUpstreamDetail, NodeType, NodeWarningOutcome, SourceFreshnessDetail,
+        SourceFreshnessOutcome, TestEvaluationDetail, TestOutcome, node_evaluated, node_processed,
     },
     phase::ExecutionPhase,
 };
@@ -41,6 +41,8 @@ impl NodeType {
             Self::SavedQuery => "saved_query",
             Self::SemanticModel => "semantic_model",
             Self::Function => "function",
+            Self::Check => "check",
+            Self::Experimental => "experimental",
         }
     }
 }
@@ -64,6 +66,20 @@ impl NodeType {
             Self::SavedQuery => "saved query",
             Self::SemanticModel => "semantic model",
             Self::Function => "function",
+            Self::Check => "check",
+            Self::Experimental => "experimental",
+        }
+    }
+}
+
+impl NodeComputeMode {
+    /// Lowercase name of the compute mode. Empty when unspecified.
+    pub const fn as_static_ref(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "",
+            Self::Remote => "remote",
+            Self::Local => "local",
+            Self::LakeCompute => "lake_compute",
         }
     }
 }
@@ -85,7 +101,9 @@ impl NodeMaterialization {
             Self::Analysis => "analysis",
             Self::StreamingTable => "streaming_table",
             Self::DynamicTable => "dynamic_table",
+            Self::InteractiveTable => "interactive_table",
             Self::Function => "function",
+            Self::MetricView => "metric_view",
             Self::Custom => "custom",
         }
     }
@@ -107,6 +125,7 @@ fn dbt_core_event_code_for_node_processed_end(
     node_type: NodeType,
     node_outcome: NodeOutcome,
     node_skip_reason: Option<NodeSkipReason>,
+    last_phase: ExecutionPhase,
 ) -> Option<&'static str> {
     // Handle explicit skip outcomes first where Core has distinct codes
     if node_outcome == NodeOutcome::Skipped {
@@ -116,6 +135,13 @@ fn dbt_core_event_code_for_node_processed_end(
         }
         // Q034: SkippingDetails
         return Some("Q034");
+    }
+
+    // Q018: LogFreshnessResult — the freshness phase reports a freshness result for every
+    // node kind it measures, so the phase wins over the node type. Without this a model
+    // carrying a freshness SLA would be reported as a model build result (Q012).
+    if last_phase == ExecutionPhase::FreshnessAnalysis {
+        return Some("Q018");
     }
 
     // NodeProcessed spans entire node execution, so we use node type to determine the code
@@ -149,6 +175,7 @@ pub fn update_dbt_core_event_code_for_node_processed_end(event: &mut NodeProcess
         event.node_outcome(),
         // Only pass `Some()` if it is actually set
         event.node_skip_reason.map(|_| event.node_skip_reason()),
+        event.last_phase(),
     ) {
         event.dbt_core_event_code = code.to_string();
     }
@@ -248,6 +275,20 @@ pub fn is_statically_checked_test(node: NodeEvent<'_>) -> bool {
         return false;
     };
     test_detail.statically_checked.unwrap_or(false)
+}
+
+/// Returns true if a test ran as part of a batched generic-test query.
+pub fn is_batched_test(node: NodeEvent<'_>) -> bool {
+    get_test_batch_unique_id(node).is_some()
+}
+
+/// Returns the unique_id of the batched test node whose query produced this result, if any.
+pub fn get_test_batch_unique_id(node: NodeEvent<'_>) -> Option<&str> {
+    let Some(AnyNodeOutcomeDetail::NodeTestDetail(test_detail)) = get_node_outcome_detail(node)
+    else {
+        return None;
+    };
+    test_detail.batch_unique_id.as_deref()
 }
 
 /// Extract cache detail from node details if available
@@ -384,7 +425,56 @@ impl NodeEvaluated {
             dbt_core_event_code_for_node_evaluation(phase).map(str::to_string),
             None, // rows_affected
             None, // idle_time_ms
+            None, // state_decision_id
+            None, // adapter_response
+            None, // compute_mode
+            None, // catalog_type
             None, // node_outcome_detail
+        )
+    }
+}
+
+impl MicrobatchEvaluated {
+    /// Creates a new `MicrobatchEvaluated` event indicating start of a batch evaluation.
+    ///
+    /// This is thin wrapper around `new` that avoids the need to pass
+    /// fields that are only known at the end of the evaluation.
+    ///
+    /// # Arguments
+    /// * `unique_id` - Unique id of the model owning this batch.
+    /// * `schema` - Schema of the owning model's relation.
+    /// * `identifier` - Identifier of the owning model's relation.
+    /// * `batch_id` - Stable batch id: YYYY, YYYYMM, YYYYMMDD, or YYYYMMDDHH.
+    /// * `batch_size` - Time grain of the event-time window.
+    /// * `batch_index` - 1-based index within this execution window.
+    /// * `total_batches` - Number of batches in this execution window.
+    /// * `event_time_start` - Inclusive start of the event-time window, in UTC RFC 3339.
+    /// * `event_time_end` - Exclusive end of the event-time window, in UTC RFC 3339.
+    #[allow(clippy::too_many_arguments)]
+    pub fn start(
+        unique_id: String,
+        schema: String,
+        identifier: String,
+        batch_id: String,
+        batch_size: MicrobatchBatchSize,
+        batch_index: u32,
+        total_batches: u32,
+        event_time_start: String,
+        event_time_end: String,
+    ) -> Self {
+        Self::new(
+            unique_id,
+            schema,
+            identifier,
+            batch_id,
+            batch_size,
+            batch_index,
+            total_batches,
+            event_time_start,
+            event_time_end,
+            NodeOutcome::Unspecified,
+            0, // idle_time_ms
+            Some("Q045".to_string()),
         )
     }
 }
@@ -456,7 +546,91 @@ impl NodeProcessed {
             None, // rows_affected
             group,
             None, // idle_time_ms
+            None, // node_index assigned by the span builder at start of processing
+            None, // node_count_total assigned by the span builder at start of processing
+            None, // adapter
+            None, // experimental_type
+            None, // adapter_response
+            None, // compute_mode
+            None, // catalog_type
+            None, // incremental_strategy
+            None, // snapshot_strategy
+            None, // language
+            None, // contract_enforced
+            None, // access
+            None, // versioned
+            None, // table_format
+            None, // catalog_name
             None, // node_outcome_detail
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn interactive_table_as_static_ref() {
+        assert_eq!(
+            NodeMaterialization::InteractiveTable.as_static_ref(),
+            "interactive_table"
+        );
+    }
+
+    fn processed(node_type: NodeType, phase: ExecutionPhase) -> NodeProcessed {
+        let mut event = NodeProcessed::start(
+            "model.project.stg_orders".to_string(),
+            "stg_orders".to_string(),
+            None,
+            Some("analytics".to_string()),
+            Some("stg_orders".to_string()),
+            None,
+            None,
+            node_type,
+            Some(phase),
+            "models/staging/stg_orders.sql".to_string(),
+            None,
+            None,
+            "checksum".to_string(),
+            true,
+            None,
+        );
+        event.set_node_outcome(NodeOutcome::Success);
+        event
+    }
+
+    /// The freshness phase reports a freshness result for every node kind it measures, so a
+    /// model measured there is Q018, not the model-build Q012.
+    #[test]
+    fn model_in_freshness_phase_gets_q018() {
+        let mut event = processed(NodeType::Model, ExecutionPhase::FreshnessAnalysis);
+        update_dbt_core_event_code_for_node_processed_end(&mut event);
+        assert_eq!(event.dbt_core_event_code, "Q018");
+    }
+
+    #[test]
+    fn source_in_freshness_phase_gets_q018() {
+        let mut event = processed(NodeType::Source, ExecutionPhase::FreshnessAnalysis);
+        update_dbt_core_event_code_for_node_processed_end(&mut event);
+        assert_eq!(event.dbt_core_event_code, "Q018");
+    }
+
+    /// The phase is what makes it a freshness result — a model built by `run` is unaffected.
+    #[test]
+    fn model_outside_freshness_phase_keeps_q012() {
+        let mut event = processed(NodeType::Model, ExecutionPhase::Run);
+        update_dbt_core_event_code_for_node_processed_end(&mut event);
+        assert_eq!(event.dbt_core_event_code, "Q012");
+    }
+
+    /// Skip outcomes are resolved before the phase check.
+    #[test]
+    fn noop_skip_in_freshness_phase_still_gets_q019() {
+        let mut event = processed(NodeType::Model, ExecutionPhase::FreshnessAnalysis);
+        event.set_node_outcome(NodeOutcome::Skipped);
+        event.set_node_skip_reason(NodeSkipReason::NoOp);
+        update_dbt_core_event_code_for_node_processed_end(&mut event);
+        assert_eq!(event.dbt_core_event_code, "Q019");
     }
 }

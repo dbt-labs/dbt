@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 
 use arrow_array::RecordBatch;
 use dbt_adbc::{Backend, LoadStrategy, connection, driver};
-use dbt_auth::{AdapterConfig, NoopAuthWarningPrinter, auth_for_backend};
+use dbt_auth::{AdapterConfig, auth_for_backend};
 use dbt_metricflow::Dialect;
 use dbt_profile::ProfileEnvironment;
 
@@ -81,11 +81,10 @@ impl RedshiftConn {
 
         let backend = Backend::Redshift;
         let adapter_config = AdapterConfig::new(resolved.credentials);
-        let auth = auth_for_backend(Box::new(NoopAuthWarningPrinter), backend);
+        let auth = auth_for_backend(backend);
         let db_builder = auth
             .configure(&adapter_config)
-            .expect("auth configuration failed")
-            .builder;
+            .expect("auth configuration failed");
 
         let mut drv = driver::Builder::new(backend, LoadStrategy::CdnCache)
             .try_load()

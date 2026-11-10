@@ -212,7 +212,7 @@ fn test_items_and_dictsort_with_structs() {
     );
     insta::assert_snapshot!(
         minijinja::render!("{{ x|dictsort }}", x => Value::from_object(MyStruct)),
-        @"(('a', 'A'), ('b', 'B'))"
+        @"[('a', 'A'), ('b', 'B')]"
     );
 }
 

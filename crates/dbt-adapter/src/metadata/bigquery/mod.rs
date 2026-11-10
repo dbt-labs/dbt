@@ -1,20 +1,28 @@
 use crate::adapter::adapter_impl::AdapterImpl;
-use crate::connection::AdapterConnectionFactory;
+use crate::connection::{AdapterConnectionFactory, ConnectionGuard};
 use crate::errors::*;
 use crate::metadata::CatalogAndSchema;
 use crate::metadata::freshness_overrides::{
     FreshnessTask, FreshnessTaskResult, apply_freshness_task_result, run_override_query,
 };
 use crate::metadata::*;
-use crate::record_batch::RecordBatchExt;
+use crate::query_ctx::query_ctx_from_state;
+use crate::record_batch::StructArrayExt;
 use crate::relation::Relation;
+use crate::time_machine::{
+    args_freshness, args_freshness_with_overrides, global_replayer,
+    with_time_machine_metadata_wrapper,
+};
 use crate::{AdapterEngine, AdapterResult};
+use dbt_adapter_engine::record_batch::RecordBatchExt;
 
-use arrow_array::cast::AsArray;
 use arrow_array::*;
 use arrow_schema::*;
 use dbt_adapter_core::AdapterType;
 use dbt_adapter_core::ExecutionPhase;
+use dbt_adapter_engine::MapReduce;
+use dbt_adapter_engine::cow::uppercase;
+use dbt_adapter_sql::ident::Ident;
 use dbt_adbc::*;
 use dbt_common::cancellation::Cancellable;
 use dbt_common::cancellation::CancellationToken;
@@ -47,11 +55,32 @@ pub const BIGQUERY_PSEUDOCOLUMNS: [&str; 7] = [
     "_CHANGE_SEQUENCE_NUMBER",
 ];
 
-#[allow(dead_code)]
 pub fn list_relations(
     engine: &dyn AdapterEngine,
     ctx: &QueryCtx,
-    conn: &'_ mut dyn Connection,
+    conn: &mut ConnectionGuard<'_>,
+    db_schema: &CatalogAndSchema,
+    token: CancellationToken,
+) -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
+    let listing = list_relations_via_adbc(engine, conn, db_schema);
+    let connection_project = engine
+        .config("execution_project")
+        .or_else(|| engine.config("project"))
+        .or_else(|| engine.config("database"));
+    let (target_project, _) =
+        normalize_quote(false, AdapterType::Bigquery, &db_schema.rendered_catalog);
+    let is_cross_project =
+        connection_project.is_some_and(|project| project.as_ref() != target_project);
+
+    verify_adbc_listing(listing, is_cross_project, || {
+        list_relations_via_information_schema(engine, ctx, conn, db_schema, token)
+    })
+}
+
+fn list_relations_via_information_schema(
+    engine: &dyn AdapterEngine,
+    ctx: &QueryCtx,
+    conn: &mut ConnectionGuard<'_>,
     db_schema: &CatalogAndSchema,
     token: CancellationToken,
 ) -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
@@ -65,7 +94,7 @@ FROM
     {db_schema}.INFORMATION_SCHEMA.TABLES"
     );
 
-    let batch = engine.execute(None, conn, ctx, &sql, token)?;
+    let batch = engine.execute(None, conn.as_mut(), ctx, &sql, token)?;
     let table_names = batch.column_values::<StringArray>("table_name")?;
     let table_schemas = batch.column_values::<StringArray>("table_schema")?;
     let table_catalogs = batch.column_values::<StringArray>("table_catalog")?;
@@ -93,9 +122,81 @@ FROM
     Ok(result)
 }
 
-pub fn list_relations_via_adbc(
+pub fn list_routines(
     engine: &dyn AdapterEngine,
-    conn: &'_ mut dyn Connection,
+    ctx: &QueryCtx,
+    conn: &mut ConnectionGuard<'_>,
+    db_schema: &CatalogAndSchema,
+    token: CancellationToken,
+) -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
+    let sql = format!(
+        "SELECT
+    routine_catalog AS table_catalog,
+    routine_schema AS table_schema,
+    routine_name AS table_name,
+    routine_type AS table_type
+FROM
+    {db_schema}.INFORMATION_SCHEMA.ROUTINES
+WHERE
+    routine_type != 'PROCEDURE'"
+    );
+
+    let batch = engine.execute(None, conn.as_mut(), ctx, &sql, token)?;
+    let table_names = batch.column_values::<StringArray>("table_name")?;
+    let table_schemas = batch.column_values::<StringArray>("table_schema")?;
+    let table_catalogs = batch.column_values::<StringArray>("table_catalog")?;
+    let table_types = batch.column_values::<StringArray>("table_type")?;
+
+    let mut result = Vec::with_capacity(batch.num_rows());
+    for i in 0..batch.num_rows() {
+        let database = table_catalogs.value(i);
+        let schema = table_schemas.value(i);
+        let identifier = table_names.value(i);
+        let relation_type =
+            RelationType::from_adapter_type(AdapterType::Bigquery, table_types.value(i));
+
+        result.push(Arc::new(
+            Relation::new(
+                AdapterType::Bigquery,
+                database.to_string(),
+                schema.to_string(),
+                identifier.to_string(),
+            )
+            .with_relation_type(relation_type)
+            .with_quoting(engine.quoting()),
+        ) as Arc<dyn BaseRelation>);
+    }
+    Ok(result)
+}
+
+fn verify_adbc_listing<F>(
+    listing: AdapterResult<Vec<Arc<dyn BaseRelation>>>,
+    is_cross_project: bool,
+    fallback: F,
+) -> AdapterResult<Vec<Arc<dyn BaseRelation>>>
+where
+    F: FnOnce() -> AdapterResult<Vec<Arc<dyn BaseRelation>>>,
+{
+    match listing {
+        // BigQuery GetObjects exposes only the connection project as a catalog, so a
+        // different target project produces an empty result. Verify emptiness with
+        // the target-qualified metadata query before the caller records the schema
+        // as complete.
+        // https://github.com/dbt-labs/bigquery-adbc/blob/c87c401a934c71783862dface246252d84f9d2e6/go/connection.go#L106-L123
+        Ok(relations) if is_cross_project && relations.is_empty() => fallback(),
+        Ok(relations) => Ok(relations),
+        // GetObjects reads metadata per table, so one table dropped mid-listing
+        // fails the dataset; the fallback query is one consistent snapshot.
+        Err(e) => match classify_listing_failure(&e) {
+            ListingFailure::Unverified => fallback().map_err(|_| e),
+            ListingFailure::EmptySchema | ListingFailure::Fatal => Err(e),
+        },
+    }
+}
+
+fn list_relations_via_adbc(
+    engine: &dyn AdapterEngine,
+    conn: &mut ConnectionGuard<'_>,
     db_schema: &CatalogAndSchema,
 ) -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
     // The driver expects unquoted values, so regardless of the adapter's config
@@ -157,15 +258,7 @@ pub fn list_relations_via_adbc(
     //   - table_type: utf8
     //   - table_columns: list
     //   - table_constraints: list
-    let db_schema_tables = schemas_struct
-        .column_by_name("db_schema_tables")
-        .and_then(|c| c.as_any().downcast_ref::<ListArray>())
-        .ok_or_else(|| {
-            AdapterError::new(
-                AdapterErrorKind::UnexpectedResult,
-                "Missing or invalid 'db_schema_tables' column",
-            )
-        })?;
+    let db_schema_tables = schemas_struct.column_as::<ListArray>("db_schema_tables")?;
 
     let tables_struct = db_schema_tables
         .values()
@@ -178,24 +271,8 @@ pub fn list_relations_via_adbc(
             )
         })?;
 
-    let table_names = tables_struct
-        .column_by_name("table_name")
-        .and_then(|c| c.as_any().downcast_ref::<StringArray>())
-        .ok_or_else(|| {
-            AdapterError::new(
-                AdapterErrorKind::UnexpectedResult,
-                "Missing or invalid 'table_name' column",
-            )
-        })?;
-    let table_types = tables_struct
-        .column_by_name("table_type")
-        .and_then(|c| c.as_string_opt::<i32>())
-        .ok_or_else(|| {
-            AdapterError::new(
-                AdapterErrorKind::UnexpectedResult,
-                "Missing or invalid 'table_type' column",
-            )
-        })?;
+    let table_names = tables_struct.column_as::<StringArray>("table_name")?;
+    let table_types = tables_struct.column_as::<StringArray>("table_type")?;
 
     let mut result = Vec::with_capacity(tables_struct.len());
     for j in 0..tables_struct.len() {
@@ -235,16 +312,30 @@ struct NestedColumnDataTypes {
 struct TrieNode {
     pub children: IndexMap<String, TrieNode>,
     pub data_type: Option<String>,
+    pub rendered_constraints: Option<String>,
 }
 
 impl NestedColumnDataTypes {
-    pub fn insert(&mut self, column_name: &str, column_type: Option<&String>) {
+    pub fn insert(
+        &mut self,
+        column_name: &str,
+        column_type: Option<&str>,
+        rendered_constraints: Option<&str>,
+    ) {
         let names = column_name.split(".");
         let mut node = &mut self.root;
         for name in names {
             node = node.children.entry(name.to_owned()).or_default();
         }
-        node.data_type = column_type.map(String::from);
+        node.data_type = column_type.map(str::to_owned);
+        node.rendered_constraints = match (column_type, rendered_constraints) {
+            (Some(data_type), Some(constraints))
+                if !data_type.is_empty() && !constraints.is_empty() =>
+            {
+                Some(constraints.to_owned())
+            }
+            _ => None,
+        };
     }
 
     pub fn format_top_level_columns_data_types(&self) -> IndexMap<String, String> {
@@ -279,7 +370,10 @@ impl NestedColumnDataTypes {
                     }
                 },
             };
-            result.insert(column_name.to_owned(), data_type);
+            result.insert(
+                column_name.to_owned(),
+                node.append_rendered_constraints(data_type),
+            );
         }
         result
     }
@@ -318,9 +412,16 @@ impl TrieNode {
                     }
                 },
             };
-            result.push(data_type);
+            result.push(node.append_rendered_constraints(data_type));
         }
         result.join(", ")
+    }
+
+    fn append_rendered_constraints(&self, data_type: String) -> String {
+        match &self.rendered_constraints {
+            Some(constraints) => format!("{data_type} {constraints}"),
+            None => data_type,
+        }
     }
 }
 
@@ -330,31 +431,29 @@ impl TrieNode {
 /// (https://github.com/dbt-labs/dbt-core/blob/main/env/lib/python3.12/site-packages/dbt/adapters/bigquery/column.py#L131-L132),
 /// not a full spec, so corner cases may not be handled.
 ///
-/// When `constraints` is supplied (keyed by top-level column name), the rendered constraint
-/// clause is appended to the column's data type so that the resulting DDL emits e.g.
-/// `id INT64 NOT NULL`. BigQuery treats `NOT NULL` in the column spec as `mode: REQUIRED`.
+/// Constraints on nested fields are preserved when dotted column names are collapsed.
 pub fn nest_column_data_types(
     columns: IndexMap<String, DbtColumn>,
     constraints: Option<BTreeMap<String, String>>,
 ) -> AdapterResult<IndexMap<String, DbtColumn>> {
+    let constraints = constraints.unwrap_or_default();
     let mut result = NestedColumnDataTypes::default();
     for (column_name, column) in &columns {
-        result.insert(column_name, column.data_type.as_ref())
+        result.insert(
+            column_name,
+            column.data_type.as_deref(),
+            constraints.get(column_name).map(String::as_str),
+        )
     }
     let column_to_data_type = result.format_top_level_columns_data_types();
-    let constraints = constraints.unwrap_or_default();
     let mut result = IndexMap::new();
     for (column_name, data_type) in &column_to_data_type {
-        let data_type_with_constraints = match constraints.get(column_name) {
-            Some(c) if !c.is_empty() => format!("{data_type} {c}"),
-            _ => data_type.clone(),
-        };
         match columns.get(column_name) {
             Some(column) => result.insert(
                 column_name.clone(),
                 DbtColumn {
                     name: column.name.clone(),
-                    data_type: Some(data_type_with_constraints),
+                    data_type: Some(data_type.clone()),
                     description: column.description.clone(),
                     constraints: column.constraints.clone(),
                     meta: column.meta.clone(),
@@ -364,6 +463,8 @@ pub fn nest_column_data_types(
                     databricks_tags: column.databricks_tags.clone(),
                     column_mask: column.column_mask.clone(),
                     quote: column.quote,
+                    codec: column.codec.clone(),
+                    ttl: column.ttl.clone(),
                     deprecated_config: column.deprecated_config.clone(),
                     dimension: column.dimension.clone(),
                     entity: column.entity.clone(),
@@ -374,7 +475,7 @@ pub fn nest_column_data_types(
                 column_name.clone(),
                 DbtColumn {
                     name: column_name.to_owned(),
-                    data_type: Some(data_type_with_constraints),
+                    data_type: Some(data_type.clone()),
                     description: None,
                     constraints: vec![],
                     meta: IndexMap::new(),
@@ -384,6 +485,8 @@ pub fn nest_column_data_types(
                     databricks_tags: None,
                     column_mask: None,
                     quote: None,
+                    codec: None,
+                    ttl: None,
                     deprecated_config: Default::default(),
                     dimension: None,
                     entity: None,
@@ -580,30 +683,46 @@ pub(crate) fn generate_system_table_fqn(
     view_name: &str,
     user_preferred_region: Option<&str>,
 ) -> String {
-    let sys_identifier = view_name.to_uppercase();
+    let sys_identifier = uppercase(view_name.into());
+    let rendered_sys_identifier = if sys_identifier
+        .chars()
+        .all(|c| c == '_' || c.is_ascii_uppercase())
+    {
+        sys_identifier.to_string()
+    } else {
+        dbt_adapter_sql::ident::quote_identifier(&sys_identifier, AdapterType::Bigquery)
+    };
 
     match qualifier_options_for_info_schema_view(&sys_identifier) {
         Some(qualifier_option) => match qualifier_option.requirement {
             QualifierRequirement::RegionOnly => {
                 let region = user_preferred_region.unwrap_or("us");
-                format!("`region-{region}`.INFORMATION_SCHEMA.{sys_identifier}")
+                let region = dbt_adapter_sql::ident::quote_identifier(
+                    &format!("region-{region}"),
+                    AdapterType::Bigquery,
+                );
+                format!("{region}.INFORMATION_SCHEMA.{rendered_sys_identifier}")
             }
             QualifierRequirement::DatasetOnly => {
-                format!("{dataset}.INFORMATION_SCHEMA.{sys_identifier}")
+                format!("{dataset}.INFORMATION_SCHEMA.{rendered_sys_identifier}")
             }
             QualifierRequirement::DatasetOrRegion => {
                 // respect user's location preferences by querying the region directly if
                 // possible
                 match user_preferred_region {
-                    None => format!("{dataset}.INFORMATION_SCHEMA.{sys_identifier}"),
+                    None => format!("{dataset}.INFORMATION_SCHEMA.{rendered_sys_identifier}"),
                     Some(region) => {
-                        format!("`region-{region}`.INFORMATION_SCHEMA.{sys_identifier}")
+                        let region = dbt_adapter_sql::ident::quote_identifier(
+                            &format!("region-{region}"),
+                            AdapterType::Bigquery,
+                        );
+                        format!("{region}.INFORMATION_SCHEMA.{rendered_sys_identifier}")
                     }
                 }
             }
         },
         // This is technically an error, but we'll just let it fail when querying BQ
-        None => format!("INFORMATION_SCHEMA.{sys_identifier}"),
+        None => format!("INFORMATION_SCHEMA.{rendered_sys_identifier}"),
     }
 }
 
@@ -618,9 +737,12 @@ pub fn build_relation_clauses_bigquery(
         let dataset = rel.schema_as_resolved_str()?;
         let table = rel.identifier_as_resolved_str()?;
 
-        // Backtick-quote the project so dotted/dashed project IDs parse as
-        // a single identifier in `<db>.__TABLES__`.
-        let db_key = format!("`{project}`.{dataset}");
+        let project = dbt_adapter_sql::ident::quote_identifier(&project, AdapterType::Bigquery);
+        let dataset = Ident::new(dataset, AdapterType::Bigquery)
+            .display(AdapterType::Bigquery)
+            .to_string();
+        let table = dbt_adapter_sql::ident::escape_string_literal(&table, AdapterType::Bigquery);
+        let db_key = format!("{project}.{dataset}");
 
         where_by_db
             .entry(db_key.clone())
@@ -653,9 +775,11 @@ fn build_tables_freshness_query(database: &str, where_clauses: &[String]) -> Str
 }
 
 fn build_schema_freshness_query(database: &str, schema: &str) -> String {
+    let database = dbt_adapter_sql::ident::quote_identifier(database, AdapterType::Bigquery);
+    let schema = dbt_adapter_sql::ident::quote_identifier(schema, AdapterType::Bigquery);
     build_external_table_freshness_query(
-        &format!("`{database}`.`{schema}`.__TABLES__"),
-        &format!("`{database}`.`{schema}`.INFORMATION_SCHEMA.TABLES"),
+        &format!("{database}.{schema}.__TABLES__"),
+        &format!("{database}.{schema}.INFORMATION_SCHEMA.TABLES"),
         "",
     )
 }
@@ -680,7 +804,7 @@ fn build_external_table_freshness_query(
 
 fn query_tables_freshness(
     adapter: &AdapterImpl,
-    conn: &mut dyn Connection,
+    conn: &mut ConnectionGuard<'_>,
     database: &str,
     where_clauses: &[String],
     token: CancellationToken,
@@ -722,7 +846,7 @@ fn accumulate_tables_freshness_from_batch(
 
 fn run_bulk_tables_freshness(
     adapter: &AdapterImpl,
-    conn: &mut dyn Connection,
+    conn: &mut ConnectionGuard<'_>,
     relations: &[Arc<dyn BaseRelation>],
     token: CancellationToken,
 ) -> AdapterResult<BTreeMap<String, MetadataFreshness>> {
@@ -758,7 +882,7 @@ fn bulk_freshness_tasks_from_relations(
 
 fn run_freshness_task(
     adapter: &AdapterImpl,
-    conn: &mut dyn Connection,
+    conn: &mut ConnectionGuard<'_>,
     task: &FreshnessTask,
     token: CancellationToken,
 ) -> AdapterResult<FreshnessTaskResult> {
@@ -776,16 +900,17 @@ fn run_freshness_task(
 /// Render the SQL for fetching view definitions from
 /// `<project>.<dataset>.INFORMATION_SCHEMA.VIEWS` for a list of table identifiers.
 ///
-/// Both `project` and `dataset` are wrapped in backticks unconditionally — BQ
-/// requires them for identifiers containing `-`, and unconditional quoting is
-/// simpler than detecting the "needs quotes" case.
-///
-/// Identifiers are interpolated into a `IN ('...', '...')` list with `'`
-/// escaped to `''` defensively.
 fn build_views_query(project: &str, dataset: &str, identifiers: &[String]) -> String {
+    let project = dbt_adapter_sql::ident::quote_identifier(project, AdapterType::Bigquery);
+    let dataset = dbt_adapter_sql::ident::quote_identifier(dataset, AdapterType::Bigquery);
     let literals = identifiers
         .iter()
-        .map(|id| format!("'{}'", id.replace('\'', "''")))
+        .map(|id| {
+            format!(
+                "'{}'",
+                dbt_adapter_sql::ident::escape_string_literal(id, AdapterType::Bigquery)
+            )
+        })
         .collect::<Vec<_>>()
         .join(", ");
 
@@ -795,7 +920,7 @@ fn build_views_query(project: &str, dataset: &str, identifiers: &[String]) -> St
     table_schema,
     table_name,
     view_definition
-FROM `{project}`.`{dataset}`.INFORMATION_SCHEMA.VIEWS
+FROM {project}.{dataset}.INFORMATION_SCHEMA.VIEWS
 WHERE table_name IN ({literals})"
     )
 }
@@ -817,13 +942,10 @@ impl BigqueryMetadataAdapter {
     ) -> AsyncAdapterResult<'_, BTreeMap<String, MetadataFreshness>> {
         type Acc = BTreeMap<String, MetadataFreshness>;
 
-        let factory = Box::new(AdapterConnectionFactory::new(
-            self.adapter.engine().clone(),
-            self.adapter.engine().threads(),
-        ));
+        let factory = Box::new(AdapterConnectionFactory::new(self.adapter.engine().clone()));
         let adapter_for_map = self.adapter.clone();
         let token_clone = token.clone();
-        let map_f = move |conn: &mut dyn Connection, task: &FreshnessTask| {
+        let map_f = move |conn: &mut ConnectionGuard<'_>, task: &FreshnessTask| {
             run_freshness_task(&adapter_for_map, conn, task, token_clone.clone())
         };
         let reduce_f = move |acc: &mut Acc,
@@ -847,7 +969,7 @@ impl BigqueryMetadataAdapter {
         token: CancellationToken,
     ) -> AsyncAdapterResult<'a, BTreeMap<String, MetadataFreshness>> {
         if overrides.is_empty() {
-            return self.freshness(relations, token);
+            return self.freshness_inner(relations, token);
         }
 
         let mut override_targets = Vec::new();
@@ -1186,20 +1308,18 @@ impl MetadataAdapter for BigqueryMetadataAdapter {
         unique_id: Option<String>,
         _phase: Option<ExecutionPhase>,
         relations: &[Arc<dyn BaseRelation>],
+        item_span_operation_id: Option<&str>,
         token: CancellationToken,
     ) -> AsyncAdapterResult<'_, HashMap<String, AdapterResult<Arc<Schema>>>> {
         // All results are accumulated in an unordered map
         type Acc = HashMap<String, AdapterResult<Arc<Schema>>>;
 
-        let factory = Box::new(AdapterConnectionFactory::new(
-            self.adapter.engine().clone(),
-            self.adapter.engine().threads(),
-        ));
+        let factory = Box::new(AdapterConnectionFactory::new(self.adapter.engine().clone()));
         let node_id = unique_id.or_else(|| Some("sources".to_string()));
 
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
-        let map_f = move |conn: &'_ mut dyn Connection,
+        let map_f = move |conn: &mut ConnectionGuard<'_>,
                           relation: &Arc<dyn BaseRelation>|
               -> AdapterResult<Arc<Schema>> {
             let project = relation.database_as_resolved_str()?;
@@ -1244,7 +1364,9 @@ impl MetadataAdapter for BigqueryMetadataAdapter {
                     .map_err(adbc_error_to_adapter_error)?;
                 let mut schema_builder = SchemaBuilder::from(schema.fields());
 
-                if let Some(time_partitioning_type) = schema.metadata().get("TimePartitioning.Type")
+                if schema.metadata().get("TimePartitioning.Field").is_none()
+                    && let Some(time_partitioning_type) =
+                        schema.metadata().get("TimePartitioning.Type")
                 {
                     schema_builder.push(Field::new(
                         "_PARTITIONTIME",
@@ -1272,8 +1394,15 @@ impl MetadataAdapter for BigqueryMetadataAdapter {
             acc.insert(relation.semantic_fqn(), schema);
             Ok(())
         };
-        let map_reduce = MapReduce::new(factory, Box::new(map_f), Box::new(reduce_f), node_id);
-        map_reduce.run(Arc::new(relations.to_vec()), token)
+        run_schema_cache_map_reduce(
+            factory,
+            relations.to_vec(),
+            item_span_operation_id,
+            map_f,
+            reduce_f,
+            node_id,
+            token,
+        )
     }
 
     fn list_relations_schemas_by_patterns_inner(
@@ -1310,7 +1439,16 @@ impl MetadataAdapter for BigqueryMetadataAdapter {
         overrides: &'a BTreeMap<String, FreshnessOverride>,
         token: CancellationToken,
     ) -> AsyncAdapterResult<'a, BTreeMap<String, MetadataFreshness>> {
-        self.freshness_with_overrides_impl(relations, overrides, token)
+        with_time_machine_metadata_wrapper(
+            "global",
+            "freshness_with_overrides",
+            args_freshness_with_overrides(
+                relations.iter().map(|r| r.semantic_fqn()),
+                overrides,
+                None,
+            ),
+            self.freshness_with_overrides_impl(relations, overrides, token),
+        )
     }
 
     fn create_schemas_if_not_exists(
@@ -1325,23 +1463,25 @@ impl MetadataAdapter for BigqueryMetadataAdapter {
         &self,
         db_schemas: &[CatalogAndSchema],
         token: CancellationToken,
+        report_progress: bool,
     ) -> AsyncAdapterResult<'_, BTreeMap<CatalogAndSchema, AdapterResult<RelationVec>>> {
         type Acc = BTreeMap<CatalogAndSchema, AdapterResult<RelationVec>>;
-        let factory = Box::new(AdapterConnectionFactory::new(
-            self.adapter.engine().clone(),
-            self.adapter.engine().threads(),
-        ));
+        let factory = Box::new(AdapterConnectionFactory::new(self.adapter.engine().clone()));
 
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
 
-        let map_f = move |conn: &'_ mut dyn Connection,
+        let map_f = move |conn: &mut ConnectionGuard<'_>,
                           db_schema: &CatalogAndSchema|
               -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
             // Deviation from core: we cannot use `list_tables` as this is not supported from ADBC
             // Pagination is handled in the ADBC driver
             let query_ctx = QueryCtx::default().with_desc("list_relations_in_parallel");
-            adapter.list_relations(&query_ctx, conn, db_schema, token_clone.clone())
+            with_relation_list_item_span(
+                report_progress.then_some(RELATION_CACHE_OP_ID),
+                &db_schema.to_string(),
+                || adapter.list_relations(None, &query_ctx, conn, db_schema, token_clone.clone()),
+            )
         };
 
         let reduce_f = move |acc: &mut Acc,
@@ -1353,15 +1493,20 @@ impl MetadataAdapter for BigqueryMetadataAdapter {
                     acc.insert(db_schema, Ok(relations));
                     Ok(())
                 }
-                Err(e) => {
-                    if is_bigquery_not_found_error(&e) {
+                Err(e) => match classify_listing_failure(&e) {
+                    ListingFailure::EmptySchema => {
                         acc.insert(db_schema, Ok(Vec::new()));
                         Ok(())
-                    } else {
-                        // Other errors should be propagated
-                        Err(Cancellable::Error(e))
                     }
-                }
+                    // Caching this as a complete, empty schema would make every
+                    // relation in it look absent.
+                    ListingFailure::Unverified => {
+                        acc.insert(db_schema, Err(e));
+                        Ok(())
+                    }
+                    // Other errors should be propagated
+                    ListingFailure::Fatal => Err(Cancellable::Error(e)),
+                },
             }
         };
 
@@ -1384,9 +1529,10 @@ impl MetadataAdapter for BigqueryMetadataAdapter {
             return Box::pin(async { Ok(ViewDefinitionFetchResult::default()) });
         }
 
-        let mut by_triple: HashMap<(String, String, String), Arc<dyn BaseRelation>> =
-            HashMap::new();
-        let mut by_dataset: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
+        type Triple = (String, String, String);
+        type Dataset = (String, String);
+        let mut by_triple: HashMap<Triple, Arc<dyn BaseRelation>> = HashMap::new();
+        let mut by_dataset: BTreeMap<Dataset, Vec<String>> = BTreeMap::new();
 
         for rel in relations {
             let project = match rel.database_as_resolved_str() {
@@ -1417,22 +1563,19 @@ impl MetadataAdapter for BigqueryMetadataAdapter {
                     dataset.to_lowercase(),
                     table.to_lowercase(),
                 ),
-                rel.clone(),
+                Arc::clone(rel),
             );
             by_dataset
-                .entry((project, dataset))
+                .entry((project.into_owned(), dataset.into_owned()))
                 .or_default()
-                .push(table);
+                .push(table.into());
         }
 
-        let factory = Box::new(AdapterConnectionFactory::new(
-            self.adapter.engine().clone(),
-            self.adapter.engine().threads(),
-        ));
+        let factory = Box::new(AdapterConnectionFactory::new(self.adapter.engine().clone()));
 
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
-        let map_f = move |conn: &'_ mut dyn Connection,
+        let map_f = move |conn: &mut ConnectionGuard<'_>,
                           key: &((String, String), Vec<String>)|
               -> AdapterResult<Arc<RecordBatch>> {
             let ((project, dataset), identifiers) = key;
@@ -1487,7 +1630,70 @@ impl MetadataAdapter for BigqueryMetadataAdapter {
         map_reduce.run(Arc::new(keys), token)
     }
 
-    fn freshness_all_in_schema<'a>(
+    fn supports_bulk_freshness_dump(&self) -> bool {
+        true
+    }
+
+    /// Fetch schema-level freshness with bounded concurrency.
+    fn freshness_all_in_schemas<'a>(
+        &'a self,
+        relations: &'a [Arc<dyn BaseRelation>],
+        options: &'a MetadataQueryOptions,
+        token: CancellationToken,
+    ) -> AsyncAdapterResult<'a, BTreeMap<String, MetadataFreshness>> {
+        let groups = group_relations_by_resolved_database_schema(relations);
+        let fallback_groups = groups.clone();
+        let attempt_token = token.clone();
+        let attempt = with_time_machine_metadata_wrapper(
+            "global",
+            "freshness_all_in_schemas",
+            args_freshness(
+                relations.iter().map(|r| r.semantic_fqn()),
+                options.warehouse.clone(),
+            ),
+            async move {
+                let fan_out = self
+                    .adapter
+                    .engine()
+                    .threads()
+                    .unwrap_or(DEFAULT_SCHEMA_PREFETCH_FANOUT);
+                freshness_by_schema_fanout(self, groups, options, attempt_token, fan_out).await
+            },
+        );
+
+        Box::pin(async move {
+            match attempt.await {
+                Err(Cancellable::Error(err))
+                    if global_replayer().is_some()
+                        && matches!(
+                            err.kind(),
+                            AdapterErrorKind::ReplayDataMissing
+                                | AdapterErrorKind::ReplayMethodMismatch
+                        ) =>
+                {
+                    // Replay older recordings via their per-schema events.
+                    let mut result = BTreeMap::new();
+                    for ((database, schema), relations) in fallback_groups {
+                        result.extend(
+                            freshness_group_dump(
+                                self,
+                                &database,
+                                &schema,
+                                &relations,
+                                options,
+                                token.clone(),
+                            )
+                            .await?,
+                        );
+                    }
+                    Ok(result)
+                }
+                result => result,
+            }
+        })
+    }
+
+    fn freshness_all_in_schema_inner<'a>(
         &'a self,
         database: &'a str,
         schema: &'a str,
@@ -1508,14 +1714,13 @@ impl MetadataAdapter for BigqueryMetadataAdapter {
         let sql = build_schema_freshness_query(database, schema);
         let relations = relations.to_vec();
         let adapter = self.adapter.clone();
-        let factory = Box::new(AdapterConnectionFactory::new(
-            adapter.engine().clone(),
-            adapter.engine().threads(),
-        ));
+        let factory = Box::new(AdapterConnectionFactory::new(adapter.engine().clone()));
         type Acc = BTreeMap<String, MetadataFreshness>;
 
         let token_clone = token.clone();
-        let map_f = move |conn: &mut dyn Connection, _: &()| -> AdapterResult<Arc<RecordBatch>> {
+        let map_f = move |conn: &mut ConnectionGuard<'_>,
+                          _: &()|
+              -> AdapterResult<Arc<RecordBatch>> {
             let ctx = QueryCtx::default().with_desc("Extracting freshness from information schema");
             let (_, agate) = adapter.query(&ctx, &mut *conn, &sql, None, token_clone.clone())?;
             Ok(agate.original_record_batch())
@@ -1524,7 +1729,7 @@ impl MetadataAdapter for BigqueryMetadataAdapter {
         let reduce_f = move |acc: &mut Acc, _: (), batch_res: AdapterResult<Arc<RecordBatch>>| {
             let batch = match batch_res {
                 Ok(b) => b,
-                Err(e) if e.message().contains("Error 404: Not found:") => return Ok(()),
+                Err(e) if is_bigquery_not_found_error(&e) => return Ok(()),
                 Err(e) => return Err(Cancellable::Error(e)),
             };
             let schemas = batch.column_values::<StringArray>("table_schema")?;
@@ -1550,8 +1755,140 @@ impl MetadataAdapter for BigqueryMetadataAdapter {
     }
 }
 
+/// BigQuery reports a miss through two different APIs, and bigquery-adbc
+/// formats each from whichever fields its error type carries — so the two
+/// share no common token:
+///
+/// - **Metadata lookup** — a REST `Tables.Get` that returns HTTP 404. Has a
+///   status code, no reason code (for example, `get_table_schema` -> Table.Metadata):
+///
+///   ```text
+///   [bq] Could not get metadata for table `p`.`d`.`t`: 404 Not Found: Not found: Table p:d.t
+///   ```
+///
+/// - **Query job** — the HTTP calls all succeed; the failure arrives inside
+///   the job payload. Has a reason code, no status code (`execute` arbitrary SQLs):
+///
+///   ```text
+///   [bq] Could not complete job: notFound: Not found: Dataset p:d was not found in location US ()
+///   ```
+///
+/// See `errToAdbcErr`, which dispatches on the Go error type:
+/// <https://github.com/dbt-labs/bigquery-adbc/blob/449ef311c5f2b82d586c97cf36d7c00dc8610851/go/util.go#L153>
+///
+/// arrow-adbc stringifies the raw SDK error instead, so both of its variants
+/// read `googleapi: Error 404: Not found: …`.
+///
+/// The dataset listing (`GetObjects`) emits this arrow-adbc form too,
+/// table-scoped and with `kind() == Driver`, when a table is dropped mid-listing.
+///
+/// TODO: match on the ADBC status instead — bigquery-adbc already reports
+/// `StatusNotFound` for both — once the driver migration is complete.
 pub fn is_bigquery_not_found_error(e: &AdapterError) -> bool {
-    e.message().contains("Error 404: Not found:")
+    if e.kind() == AdapterErrorKind::NotFound {
+        return true;
+    }
+    let msg = e.message();
+    // arrow-adbc (both sources)
+    msg.contains("Error 404: Not found:")
+        // bigquery-adbc, metadata lookup
+        || msg.contains("404 Not Found:")
+        // bigquery-adbc, query job
+        || msg.contains("notFound:")
+}
+
+/// Whether a BigQuery not-found names a whole dataset or project rather than
+/// one table. Only these are safe to record as a verified-empty schema.
+fn is_container_scoped_not_found(e: &AdapterError) -> bool {
+    let msg = e.message();
+    msg.contains("Not found: Dataset") || msg.contains("Not found: Project")
+}
+
+/// How a failed dataset listing should be recorded for the relation cache.
+#[derive(Debug, PartialEq)]
+enum ListingFailure {
+    /// The dataset or project is missing, so "no relations" is the true answer.
+    EmptySchema,
+    /// The listing did not complete, so its contents are unknown.
+    Unverified,
+    /// Not a not-found: propagate.
+    Fatal,
+}
+
+fn classify_listing_failure(e: &AdapterError) -> ListingFailure {
+    if !is_bigquery_not_found_error(e) {
+        ListingFailure::Fatal
+    } else if is_container_scoped_not_found(e) {
+        ListingFailure::EmptySchema
+    } else {
+        // Default to unverified: an unrecognised not-found may be table-scoped.
+        ListingFailure::Unverified
+    }
+}
+
+/// Fallback when object is not found in `INFORMATION_SCHEMA.TABLES`
+fn bigquery_routine_fallback_sql(database: &str, schema: &str, identifier: &str) -> String {
+    let database = dbt_adapter_sql::ident::quote_identifier(database, AdapterType::Bigquery);
+    let schema = dbt_adapter_sql::ident::quote_identifier(schema, AdapterType::Bigquery);
+    let identifier =
+        dbt_adapter_sql::ident::escape_string_literal(identifier, AdapterType::Bigquery);
+    format!(
+        "SELECT routine_catalog AS table_catalog,
+                    routine_schema AS table_schema,
+                    routine_name AS table_name,
+                    routine_type AS table_type
+                FROM {database}.{schema}.INFORMATION_SCHEMA.ROUTINES
+                 WHERE routine_name = '{identifier}'
+                    AND routine_type != 'PROCEDURE';"
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn get_relation_routine_fallback(
+    adapter: &AdapterImpl,
+    state: &State,
+    conn: &mut ConnectionGuard<'_>,
+    database: &str,
+    schema: &str,
+    identifier: &str,
+    token: CancellationToken,
+) -> AdapterResult<Option<Box<dyn BaseRelation>>> {
+    let query_identifier = if adapter.quoting().identifier {
+        identifier.to_string()
+    } else {
+        identifier.to_lowercase()
+    };
+
+    let routines_sql = bigquery_routine_fallback_sql(database, schema, &query_identifier);
+
+    let ctx = query_ctx_from_state(state)?.with_desc("get_relation routines fallback");
+    let result = adapter.engine().execute(
+        Some(state),
+        conn.as_mut(),
+        &ctx,
+        &routines_sql,
+        token.clone(),
+    );
+    let batch = match result {
+        Ok(batch) => batch,
+        Err(err)
+            if err.message().contains("Dataset") && err.message().contains("was not found") =>
+        {
+            return Ok(None);
+        }
+        Err(err) => return Err(err),
+    };
+
+    let Some(mut relation) =
+        get_relation::relation_from_routines_batch(adapter, database, schema, identifier, &batch)?
+    else {
+        return Ok(None);
+    };
+
+    // BigQuery-only metadata not covered by the generic fallback.
+    let location = adapter.get_dataset_location(state, conn.as_mut(), &relation, token)?;
+    relation.location = location;
+    Ok(Some(Box::new(relation)))
 }
 
 /// BigQuery surfaces access-control failures as googleapi HTTP 403 errors.
@@ -1572,6 +1909,7 @@ fn is_bigquery_permission_error(e: &AdapterError) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::stmt_splitter::{DefaultStmtSplitter, StmtSplitter};
 
     fn bq_rel(project: &str, dataset: &str, table: &str) -> Arc<dyn BaseRelation> {
         use crate::relation::Relation;
@@ -1586,6 +1924,202 @@ mod tests {
             )
             .with_quoting(DEFAULT_RESOLVED_QUOTING),
         )
+    }
+
+    #[test]
+    fn cross_project_adbc_miss_uses_target_qualified_fallback() {
+        let relations = verify_adbc_listing(Ok(Vec::new()), true, || {
+            Ok(vec![bq_rel(
+                "target-project",
+                "analytics",
+                "existing_table",
+            )])
+        })
+        .unwrap();
+
+        assert_eq!(relations.len(), 1);
+        assert_eq!(relations[0].database_as_str().unwrap(), "target-project");
+        assert_eq!(relations[0].schema_as_str().unwrap(), "analytics");
+        assert_eq!(relations[0].identifier_as_str().unwrap(), "existing_table");
+    }
+
+    #[test]
+    fn same_project_empty_adbc_relation_listing_remains_authoritative() {
+        let relations = verify_adbc_listing(Ok(Vec::new()), false, || {
+            panic!("same-project listing should not use the fallback")
+        })
+        .unwrap();
+
+        assert!(relations.is_empty());
+    }
+
+    #[test]
+    fn nonempty_adbc_relation_listing_remains_authoritative() {
+        let relations = verify_adbc_listing(
+            Ok(vec![bq_rel(
+                "connection-project",
+                "analytics",
+                "adbc_table",
+            )]),
+            true,
+            || {
+                Ok(vec![bq_rel(
+                    "connection-project",
+                    "analytics",
+                    "fallback_table",
+                )])
+            },
+        )
+        .unwrap();
+
+        assert_eq!(relations.len(), 1);
+        assert_eq!(relations[0].identifier_as_str().unwrap(), "adbc_table");
+    }
+
+    #[test]
+    fn empty_adbc_relation_listing_returns_fallback_error() {
+        let error = verify_adbc_listing(Ok(Vec::new()), true, || {
+            Err(AdapterError::new(
+                AdapterErrorKind::SqlExecution,
+                "target-qualified metadata is unavailable",
+            ))
+        })
+        .expect_err("fallback error should be returned");
+
+        assert_eq!(error.kind(), AdapterErrorKind::SqlExecution);
+    }
+
+    fn table_scoped_not_found() -> AdapterError {
+        AdapterError::new(
+            AdapterErrorKind::UnexpectedResult,
+            "[bq] Could not get metadata for table `proj`.`dataset`.`tbl`: \
+             404 Not Found: Not found: Table proj:dataset.tbl",
+        )
+    }
+
+    fn dataset_scoped_not_found() -> AdapterError {
+        AdapterError::new(
+            AdapterErrorKind::UnexpectedResult,
+            "[bq] Could not complete job: notFound: Not found: Dataset \
+             proj:dataset was not found in location US ()",
+        )
+    }
+
+    #[test]
+    fn classify_listing_failure_maps_documented_message_forms() {
+        // Every form in `test_is_bigquery_not_found_error` and in the
+        // `is_bigquery_not_found_error` doc comment, pinned to its outcome.
+        let cases = [
+            // arrow-adbc, table-scoped.
+            (
+                "googleapi: Error 404: Not found: Table proj:dataset.tbl, notFound",
+                ListingFailure::Unverified,
+            ),
+            // bigquery-adbc metadata lookup, table-scoped.
+            (
+                "[bq] Could not get metadata for table `proj`.`dataset`.`tbl`: \
+                 404 Not Found: Not found: Table proj:dataset.tbl",
+                ListingFailure::Unverified,
+            ),
+            // arrow-adbc, container-scoped: the only safe empty-schema case.
+            (
+                "googleapi: Error 404: Not found: Dataset proj:dataset was not found \
+                 in location US, notFound",
+                ListingFailure::EmptySchema,
+            ),
+            // bigquery-adbc query job, container-scoped.
+            (
+                "[bq] Could not complete job: notFound: Not found: Dataset \
+                 proj:dataset was not found in location US ()",
+                ListingFailure::EmptySchema,
+            ),
+            // Not a not-found at all.
+            (
+                "googleapi: Error 403: Access Denied, accessDenied",
+                ListingFailure::Fatal,
+            ),
+            (
+                "[bq] Could not complete job: invalidQuery: Syntax error (query)",
+                ListingFailure::Fatal,
+            ),
+        ];
+
+        for (msg, expected) in cases {
+            let e = AdapterError::new(AdapterErrorKind::UnexpectedResult, msg);
+            assert_eq!(classify_listing_failure(&e), expected, "{msg}");
+        }
+
+        // The form observed live on the dataset-listing path: arrow-adbc
+        // spelling, kind Driver, identifiers genericised.
+        let observed = AdapterError::new(
+            AdapterErrorKind::Driver,
+            "[BigQuery] googleapi: Error 404: Not found: Table proj:dataset.tbl, notFound",
+        );
+        assert_eq!(
+            classify_listing_failure(&observed),
+            ListingFailure::Unverified
+        );
+    }
+
+    #[test]
+    fn unrecognised_not_found_defaults_to_unverified() {
+        // A kind-only not-found carries no scope, so it must not cache an empty
+        // schema: this is the shape that silently recreated incremental models.
+        let typed = AdapterError::new(AdapterErrorKind::NotFound, "table missing");
+        assert_eq!(classify_listing_failure(&typed), ListingFailure::Unverified);
+
+        // An unrecognised message shape defaults the same way.
+        let unknown = AdapterError::new(
+            AdapterErrorKind::UnexpectedResult,
+            "[bq] Could not list tables: 404 Not Found: the object is gone",
+        );
+        assert_eq!(
+            classify_listing_failure(&unknown),
+            ListingFailure::Unverified
+        );
+    }
+
+    #[test]
+    fn unverified_listing_error_uses_fallback() {
+        let relations = verify_adbc_listing(Err(table_scoped_not_found()), false, || {
+            Ok(vec![bq_rel(
+                "target-project",
+                "analytics",
+                "existing_table",
+            )])
+        })
+        .unwrap();
+
+        assert_eq!(relations.len(), 1);
+        assert_eq!(relations[0].identifier_as_str().unwrap(), "existing_table");
+    }
+
+    #[test]
+    fn unverified_listing_error_survives_a_failing_fallback() {
+        let error = verify_adbc_listing(Err(table_scoped_not_found()), false, || {
+            Err(AdapterError::new(
+                AdapterErrorKind::SqlExecution,
+                "INFORMATION_SCHEMA is not readable",
+            ))
+        })
+        .expect_err("the original not-found should be returned");
+
+        // The original error is kept so the caller still classifies as Unverified.
+        assert_eq!(error.kind(), AdapterErrorKind::UnexpectedResult);
+        assert_eq!(classify_listing_failure(&error), ListingFailure::Unverified);
+    }
+
+    #[test]
+    fn dataset_scoped_listing_error_propagates_without_fallback() {
+        let error = verify_adbc_listing(Err(dataset_scoped_not_found()), true, || {
+            panic!("a dataset-scoped miss should not use the fallback")
+        })
+        .expect_err("the dataset-scoped miss should propagate");
+
+        assert_eq!(
+            classify_listing_failure(&error),
+            ListingFailure::EmptySchema
+        );
     }
 
     fn freshness_batch(rows: &[(&str, &str, Option<i64>, bool)]) -> RecordBatch {
@@ -1670,12 +2204,36 @@ mod tests {
     }
 
     #[test]
+    fn generate_system_table_fqn_quotes_unknown_view_and_region() {
+        let fqn = generate_system_table_fqn(
+            "`dataset`",
+            r"unknown\`; SELECT 1; --",
+            Some(r"eu\`; SELECT 2; --"),
+        );
+        let sql = format!("SELECT * FROM {fqn} LIMIT 0");
+
+        assert!(fqn.contains(r"INFORMATION_SCHEMA.`UNKNOWN\\\`; SELECT 1; --`"));
+        assert_eq!(
+            DefaultStmtSplitter.split(&sql, AdapterType::Bigquery),
+            vec![sql.as_str()]
+        );
+
+        let region_fqn =
+            generate_system_table_fqn("`dataset`", "JOBS", Some(r"eu\`; SELECT 2; --"));
+        let region_sql = format!("SELECT * FROM {region_fqn} LIMIT 0");
+        assert_eq!(
+            DefaultStmtSplitter.split(&region_sql, AdapterType::Bigquery),
+            vec![region_sql.as_str()]
+        );
+    }
+
+    #[test]
     fn test_format_top_level_columns_data_types() {
         // Test case 1: Simple primitive types
         {
             let mut nested = NestedColumnDataTypes::default();
-            nested.insert("id", Some(&"integer".to_string()));
-            nested.insert("name", Some(&"string".to_string()));
+            nested.insert("id", Some("integer"), None);
+            nested.insert("name", Some("string"), None);
 
             let result = nested.format_top_level_columns_data_types();
             assert_eq!(result.get("id").unwrap(), "integer");
@@ -1685,8 +2243,8 @@ mod tests {
         // Test case 2: Nested struct
         {
             let mut nested = NestedColumnDataTypes::default();
-            nested.insert("user.id", Some(&"integer".to_string()));
-            nested.insert("user.name", Some(&"string".to_string()));
+            nested.insert("user.id", Some("integer"), None);
+            nested.insert("user.name", Some("string"), None);
 
             let result = nested.format_top_level_columns_data_types();
             assert_eq!(
@@ -1698,9 +2256,9 @@ mod tests {
         // Test case 3: Array of structs
         {
             let mut nested = NestedColumnDataTypes::default();
-            nested.insert("addresses", Some(&"array".to_string()));
-            nested.insert("addresses.street", Some(&"string".to_string()));
-            nested.insert("addresses.city", Some(&"string".to_string()));
+            nested.insert("addresses", Some("array"), None);
+            nested.insert("addresses.street", Some("string"), None);
+            nested.insert("addresses.city", Some("string"), None);
 
             let result = nested.format_top_level_columns_data_types();
             assert_eq!(
@@ -1712,10 +2270,10 @@ mod tests {
         // Test case 4: Mixed types with deep nesting
         {
             let mut nested = NestedColumnDataTypes::default();
-            nested.insert("id", Some(&"integer".to_string()));
-            nested.insert("user.name", Some(&"string".to_string()));
-            nested.insert("user.contact.email", Some(&"string".to_string()));
-            nested.insert("user.contact.phone", Some(&"string".to_string()));
+            nested.insert("id", Some("integer"), None);
+            nested.insert("user.name", Some("string"), None);
+            nested.insert("user.contact.email", Some("string"), None);
+            nested.insert("user.contact.phone", Some("string"), None);
 
             let result = nested.format_top_level_columns_data_types();
             assert_eq!(result.get("id").unwrap(), "integer");
@@ -1728,19 +2286,23 @@ mod tests {
         // Test case 5: Empty struct (no data type)
         {
             let mut nested = NestedColumnDataTypes::default();
-            nested.insert("empty_struct", None);
-            nested.insert("empty_struct.field1", Some(&"string".to_string()));
+            nested.insert("empty_struct", None, None);
+            nested.insert("empty_struct.field1", Some("string"), None);
+            nested.insert("empty_struct.untyped", None, Some("not null"));
 
             let result = nested.format_top_level_columns_data_types();
-            assert_eq!(result.get("empty_struct").unwrap(), "struct<field1 string>");
+            assert_eq!(
+                result.get("empty_struct").unwrap(),
+                "struct<field1 string, untyped>"
+            );
         }
 
         // Test case 6: Struct marked as primitive but has children
         {
             let mut nested = NestedColumnDataTypes::default();
-            nested.insert("metadata", Some(&"json".to_string()));
-            nested.insert("metadata.key1", Some(&"string".to_string()));
-            nested.insert("metadata.key2", Some(&"integer".to_string()));
+            nested.insert("metadata", Some("json"), None);
+            nested.insert("metadata.key1", Some("string"), None);
+            nested.insert("metadata.key2", Some("integer"), None);
 
             let result = nested.format_top_level_columns_data_types();
             assert_eq!(
@@ -1755,12 +2317,12 @@ mod tests {
         // Test case 7: Type strings are preserved verbatim
         {
             let mut nested = NestedColumnDataTypes::default();
-            nested.insert("float_col", Some(&"FLOAT".to_string()));
-            nested.insert("integer_col", Some(&"INTEGER".to_string()));
-            nested.insert("text_col", Some(&"TEXT".to_string()));
-            nested.insert("string_col", Some(&"STRING".to_string()));
-            nested.insert("int64_col", Some(&"INT64".to_string()));
-            nested.insert("numeric_col", Some(&"NUMERIC".to_string()));
+            nested.insert("float_col", Some("FLOAT"), None);
+            nested.insert("integer_col", Some("INTEGER"), None);
+            nested.insert("text_col", Some("TEXT"), None);
+            nested.insert("string_col", Some("STRING"), None);
+            nested.insert("int64_col", Some("INT64"), None);
+            nested.insert("numeric_col", Some("NUMERIC"), None);
 
             let result = nested.format_top_level_columns_data_types();
             assert_eq!(result.get("float_col").unwrap(), "FLOAT");
@@ -1774,7 +2336,7 @@ mod tests {
         // Test case 8: Nested struct leaves preserve provided type strings
         {
             let mut nested = NestedColumnDataTypes::default();
-            nested.insert("s.x", Some(&"FLOAT".to_string()));
+            nested.insert("s.x", Some("FLOAT"), None);
 
             let result = nested.format_top_level_columns_data_types();
             assert_eq!(result.get("s").unwrap(), "struct<x FLOAT>");
@@ -1809,8 +2371,20 @@ mod tests {
 
     #[test]
     fn build_views_query_escapes_single_quotes_in_identifiers() {
-        let sql = build_views_query("p", "d", &["weird'name".to_string()]);
-        assert!(sql.contains("'weird''name'"), "got: {sql}");
+        let sql = build_views_query(
+            r"p\`roject",
+            r"d\`ataset",
+            &[r"weird\'; SELECT 1; --".to_string()],
+        );
+        assert!(
+            sql.contains(r"FROM `p\\\`roject`.`d\\\`ataset`"),
+            "got: {sql}"
+        );
+        assert!(sql.contains(r"'weird\\\'; SELECT 1; --'"), "got: {sql}");
+        assert_eq!(
+            DefaultStmtSplitter.split(&sql, AdapterType::Bigquery),
+            vec![sql.as_str()]
+        );
     }
 
     /// https://github.com/dbt-labs/dbt-fusion/issues/1450:
@@ -1835,6 +2409,38 @@ mod tests {
     }
 
     #[test]
+    fn build_relation_clauses_bigquery_escapes_identifiers_and_table_literal() {
+        let rel = bq_rel(r"project\`id", r"dataset\`id", r"T\'; SELECT 1; --");
+
+        let (where_by_db, _) = build_relation_clauses_bigquery(std::slice::from_ref(&rel)).unwrap();
+        let (db_key, predicates) = where_by_db.first_key_value().unwrap();
+        let sql = build_tables_freshness_query(db_key, predicates);
+
+        assert_eq!(db_key, r"`project\\\`id`.`dataset\\\`id`");
+        assert!(sql.contains(r"table_id = 'T\\\'; SELECT 1; --'"));
+        assert_eq!(
+            DefaultStmtSplitter.split(&sql, AdapterType::Bigquery),
+            vec![sql.trim_end_matches(';')]
+        );
+    }
+
+    #[test]
+    fn bigquery_routine_fallback_sql_escapes_identifiers_and_name_literal() {
+        let sql = bigquery_routine_fallback_sql(
+            r"project\`id",
+            r"dataset\`id",
+            r"routine\'; SELECT 1; --",
+        );
+
+        assert!(sql.contains(r"FROM `project\\\`id`.`dataset\\\`id`.INFORMATION_SCHEMA"));
+        assert!(sql.contains(r"routine_name = 'routine\\\'; SELECT 1; --'"));
+        assert_eq!(
+            DefaultStmtSplitter.split(&sql, AdapterType::Bigquery),
+            vec![sql.trim_end_matches(';')]
+        );
+    }
+
+    #[test]
     fn tables_freshness_query_nulls_external_last_altered() {
         let sql =
             build_tables_freshness_query("`my-project`.analytics", &["table_id = 'orders'".into()]);
@@ -1850,11 +2456,20 @@ mod tests {
 
     #[test]
     fn schema_freshness_query_nulls_external_last_altered() {
-        let sql = build_schema_freshness_query("my-project", "analytics");
+        let sql = build_schema_freshness_query(
+            r"my\`project; SELECT 1; --",
+            r"ana\`lytics; SELECT 2; --",
+        );
 
         assert!(
-            sql.contains("`my-project`.`analytics`.INFORMATION_SCHEMA.TABLES"),
+            sql.contains(
+                r"`my\\\`project; SELECT 1; --`.`ana\\\`lytics; SELECT 2; --`.INFORMATION_SCHEMA.TABLES"
+            ),
             "got: {sql}"
+        );
+        assert_eq!(
+            DefaultStmtSplitter.split(&sql, AdapterType::Bigquery),
+            vec![sql.as_str()]
         );
         assert!(sql.contains("table_type = 'EXTERNAL'"), "got: {sql}");
         assert!(
@@ -1917,5 +2532,99 @@ mod tests {
              for dataset operations, quotaExceeded",
         );
         assert!(!is_bigquery_permission_error(&quota));
+    }
+
+    #[test]
+    fn test_is_bigquery_not_found_error() {
+        // arrow-adbc spelling.
+        let legacy = AdapterError::new(
+            AdapterErrorKind::UnexpectedResult,
+            "googleapi: Error 404: Not found: Table proj:dataset.tbl, notFound",
+        );
+        assert!(is_bigquery_not_found_error(&legacy));
+
+        let typed = AdapterError::new(AdapterErrorKind::NotFound, "table missing");
+        assert!(is_bigquery_not_found_error(&typed));
+
+        // arrow-adbc, query job.
+        let legacy_job = AdapterError::new(
+            AdapterErrorKind::UnexpectedResult,
+            "googleapi: Error 404: Not found: Dataset proj:dataset was not found \
+             in location US, notFound",
+        );
+        assert!(is_bigquery_not_found_error(&legacy_job));
+
+        // bigquery-adbc metadata lookup: "<code> <StatusText>", not "Error <code>".
+        let foundry = AdapterError::new(
+            AdapterErrorKind::UnexpectedResult,
+            "[bq] Could not get metadata for table `proj`.`dataset`.`tbl`: \
+             404 Not Found: Not found: Table proj:dataset.tbl",
+        );
+        assert!(is_bigquery_not_found_error(&foundry));
+
+        // bigquery-adbc query job: no HTTP code at all, only the reason.
+        let foundry_job = AdapterError::new(
+            AdapterErrorKind::UnexpectedResult,
+            "[bq] Could not complete job: notFound: Not found: Dataset \
+             proj:dataset was not found in location US ()",
+        );
+        assert!(is_bigquery_not_found_error(&foundry_job));
+
+        // Other failures must still propagate.
+        let denied = AdapterError::new(
+            AdapterErrorKind::UnexpectedResult,
+            "googleapi: Error 403: Access Denied, accessDenied",
+        );
+        assert!(!is_bigquery_not_found_error(&denied));
+
+        let invalid = AdapterError::new(
+            AdapterErrorKind::UnexpectedResult,
+            "[bq] Could not complete job: invalidQuery: Syntax error (query)",
+        );
+        assert!(!is_bigquery_not_found_error(&invalid));
+    }
+
+    fn routine_batch(routine_type: &str) -> RecordBatch {
+        let schema = Schema::new(vec![
+            Field::new("table_catalog", DataType::Utf8, false),
+            Field::new("table_schema", DataType::Utf8, false),
+            Field::new("table_name", DataType::Utf8, false),
+            Field::new("table_type", DataType::Utf8, false),
+        ]);
+        RecordBatch::try_new(
+            Arc::new(schema),
+            vec![
+                Arc::new(StringArray::from(vec!["my-proj"])),
+                Arc::new(StringArray::from(vec!["my_schema"])),
+                Arc::new(StringArray::from(vec!["add_one"])),
+                Arc::new(StringArray::from(vec![routine_type])),
+            ],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn routine_batch_maps_function_type_to_relation_type_function() {
+        let batch = routine_batch("FUNCTION");
+        assert!(batch.num_rows() > 0);
+
+        let column = batch.column_by_name("table_type").unwrap();
+        let string_array = column.as_any().downcast_ref::<StringArray>().unwrap();
+        let relation_type_name = uppercase(string_array.value(0).into());
+        let relation_type =
+            RelationType::from_adapter_type(AdapterType::Bigquery, &relation_type_name);
+
+        assert_eq!(relation_type, RelationType::Function);
+    }
+
+    #[test]
+    fn empty_routine_batch_signals_not_found() {
+        let schema = Schema::new(vec![Field::new("table_type", DataType::Utf8, false)]);
+        let empty_batch = RecordBatch::try_new(
+            Arc::new(schema),
+            vec![Arc::new(StringArray::from(Vec::<&str>::new()))],
+        )
+        .unwrap();
+        assert_eq!(empty_batch.num_rows(), 0);
     }
 }

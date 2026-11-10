@@ -13,10 +13,10 @@ use serde::Serialize;
 
 #[derive(Debug, Default, Clone, Serialize, PartialEq)]
 pub(crate) struct Config {
-    enable: bool,
-    interval_min: f64,
-    max_staleness: String,
-    expiration: Option<DateTime<Utc>>,
+    pub(crate) enable: bool,
+    pub(crate) interval_min: f64,
+    pub(crate) max_staleness: String,
+    pub(crate) expiration: Option<DateTime<Utc>>,
 }
 
 // Reference: https://github.com/dbt-labs/dbt-adapters/blob/2a94cc75dba1f98fa5caff1f396f5af7ee444598/dbt-bigquery/src/dbt/adapters/bigquery/relation_configs/_options.py#L29

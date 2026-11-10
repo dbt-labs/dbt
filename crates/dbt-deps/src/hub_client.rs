@@ -3,8 +3,6 @@ use crate::semver::{Version, VersionSpecifier, versions_compatible};
 use dbt_common::{ErrorCode, FsResult, err, fs_err};
 use dbt_schemas::schemas::packages::DbtPackageEntry;
 use dbt_schemas::schemas::serde::StringOrArrayOfStrings;
-use reqwest::StatusCode;
-use reqwest_middleware::ClientWithMiddleware;
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
@@ -12,25 +10,29 @@ use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::OnceCell;
 
-use crate::network_client::retrying_http_client;
+use crate::network_client::LazyHttpClient;
 
 pub const DBT_HUB_URL: &str = "https://hub.getdbt.com";
 pub const DBT_CORE_FIXED_VERSION: &str = "1.8.7";
 
 // tarball containing source code for version
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Deserialize, Clone, Debug, Default)]
 pub struct HubPackageDownloads {
     pub tarball: String,
+    pub sha1: Option<String>,
+    // Hub-served mirror of `tarball`; unlike upstream, its `sha1` is trustworthy
+    pub hub: Option<Box<HubPackageDownloads>>,
 }
 
 // tarball for fusion compatible version if it exists
 #[derive(Deserialize, Clone, Debug)]
 pub struct FusionHubPackageDownloads {
     pub tarball: Option<String>,
+    pub sha1: Option<String>,
 }
 
 // Fusion compatibility metadata sourced from Package Hub
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Deserialize, Clone, Debug, Default)]
 pub struct HubPackageFusionCompatibility {
     // true if required dbt version is defined
     pub require_dbt_version_defined: Option<bool>,
@@ -106,7 +108,7 @@ fn get_fusion_compatibility_status(
     }
 }
 
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Deserialize, Clone, Debug, Default)]
 pub struct HubPackageVersion {
     pub name: String,
     pub packages: Vec<DbtPackageEntry>,
@@ -129,7 +131,7 @@ pub struct HubPackageJson {
 }
 
 struct HubClientInner {
-    client: ClientWithMiddleware,
+    client: LazyHttpClient,
     base_url: String,
     index: OnceCell<HashSet<String>>,
     cache: scc::HashMap<String, HubPackageJson>,
@@ -145,11 +147,7 @@ pub struct HubClient {
 }
 
 impl HubClient {
-    pub fn new(base_url: &str) -> Self {
-        Self::with_client(base_url, retrying_http_client())
-    }
-
-    pub fn with_client(base_url: &str, client: ClientWithMiddleware) -> Self {
+    pub fn with_client(base_url: &str, client: LazyHttpClient) -> Self {
         Self {
             inner: Arc::new(HubClientInner {
                 client,
@@ -167,13 +165,19 @@ impl HubClient {
             .index
             .get_or_try_init(|| async {
                 let url = format!("{}/api/v1/index.json", self.inner.base_url);
-                let res = self.inner.client.get(&url).send().await.map_err(|e| {
-                    fs_err!(
-                        ErrorCode::RuntimeError,
-                        "Failed to get index from {url}; status: {}",
-                        e
-                    )
-                })?;
+                let res = self
+                    .inner
+                    .client
+                    .get(&url)
+                    .await
+                    .send()
+                    .await
+                    .map_err(|e| {
+                        fs_err!(
+                            ErrorCode::RuntimeError,
+                            "Failed to get index from {url}: {e:#}"
+                        )
+                    })?;
                 if res.status().is_success() {
                     let index: Vec<String> = res.json().await.map_err(|e| {
                         fs_err!(
@@ -200,13 +204,19 @@ impl HubClient {
             return Ok(entry.get().clone());
         }
         let url = format!("{}/api/v1/{}.json", self.inner.base_url, package);
-        let res = self.inner.client.get(&url).send().await.map_err(|e| {
-            fs_err!(
-                ErrorCode::RuntimeError,
-                "Failed to get package from {url}; status: {}",
-                e.status().unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)
-            )
-        })?;
+        let res = self
+            .inner
+            .client
+            .get(&url)
+            .await
+            .send()
+            .await
+            .map_err(|e| {
+                fs_err!(
+                    ErrorCode::RuntimeError,
+                    "Failed to get package from {url}: {e:#}"
+                )
+            })?;
         if res.status().is_success() {
             let hub_package: HubPackageJson = res.json().await.map_err(|e| {
                 fs_err!(
@@ -353,6 +363,7 @@ mod tests {
                 packages: vec![],
                 downloads: HubPackageDownloads {
                     tarball: "https://example.com/tarball.tar.gz".to_string(),
+                    ..Default::default()
                 },
                 require_dbt_version: None,
                 fusion_compatibility: None,
@@ -378,6 +389,7 @@ mod tests {
                 packages: vec![],
                 downloads: HubPackageDownloads {
                     tarball: "https://example.com/tarball.tar.gz".to_string(),
+                    ..Default::default()
                 },
                 require_dbt_version: None,
                 fusion_compatibility: None,
@@ -403,6 +415,7 @@ mod tests {
                 packages: vec![],
                 downloads: HubPackageDownloads {
                     tarball: "https://example.com/tarball.tar.gz".to_string(),
+                    ..Default::default()
                 },
                 require_dbt_version: None,
                 fusion_compatibility: None,
@@ -428,6 +441,7 @@ mod tests {
                 packages: vec![],
                 downloads: HubPackageDownloads {
                     tarball: "https://example.com/tarball.tar.gz".to_string(),
+                    ..Default::default()
                 },
                 require_dbt_version: None,
                 fusion_compatibility: None,
@@ -698,6 +712,7 @@ mod tests {
             packages: vec![],
             downloads: HubPackageDownloads {
                 tarball: "https://example.com/tarball.tar.gz".to_string(),
+                ..Default::default()
             },
             require_dbt_version: Some(StringOrArrayOfStrings::String(">=1.5.0".to_string())),
             fusion_compatibility: None,
@@ -716,6 +731,7 @@ mod tests {
             packages: vec![],
             downloads: HubPackageDownloads {
                 tarball: "https://example.com/tarball.tar.gz".to_string(),
+                ..Default::default()
             },
             require_dbt_version: Some(StringOrArrayOfStrings::String(">=100.0.0".to_string())),
             fusion_compatibility: None,
@@ -741,6 +757,7 @@ mod tests {
             packages: vec![],
             downloads: HubPackageDownloads {
                 tarball: "https://example.com/tarball.tar.gz".to_string(),
+                ..Default::default()
             },
             require_dbt_version: Some(StringOrArrayOfStrings::ArrayOfStrings(vec![
                 ">=1.0.0".to_string(),
@@ -762,6 +779,7 @@ mod tests {
             packages: vec![],
             downloads: HubPackageDownloads {
                 tarball: "https://example.com/tarball.tar.gz".to_string(),
+                ..Default::default()
             },
             require_dbt_version: Some(StringOrArrayOfStrings::ArrayOfStrings(vec![
                 ">=100.0.0".to_string(),
@@ -788,6 +806,7 @@ mod tests {
             packages: vec![],
             downloads: HubPackageDownloads {
                 tarball: "https://example.com/tarball.tar.gz".to_string(),
+                ..Default::default()
             },
             require_dbt_version: None,
             fusion_compatibility: None,
@@ -808,6 +827,7 @@ mod tests {
             packages: vec![],
             downloads: HubPackageDownloads {
                 tarball: "https://example.com/tarball.tar.gz".to_string(),
+                ..Default::default()
             },
             require_dbt_version: Some(StringOrArrayOfStrings::String(">=1.5.0".to_string())),
             fusion_compatibility: Some(HubPackageFusionCompatibility {
@@ -833,6 +853,7 @@ mod tests {
             packages: vec![],
             downloads: HubPackageDownloads {
                 tarball: "https://example.com/tarball.tar.gz".to_string(),
+                ..Default::default()
             },
             require_dbt_version: Some(StringOrArrayOfStrings::String(">=100.0.0".to_string())),
             fusion_compatibility: Some(HubPackageFusionCompatibility {
@@ -863,6 +884,7 @@ mod tests {
             packages: vec![],
             downloads: HubPackageDownloads {
                 tarball: "https://example.com/tarball.tar.gz".to_string(),
+                ..Default::default()
             },
             require_dbt_version: Some(StringOrArrayOfStrings::String(">=100.0.0".to_string())),
             fusion_compatibility: Some(HubPackageFusionCompatibility {
@@ -893,6 +915,7 @@ mod tests {
             packages: vec![],
             downloads: HubPackageDownloads {
                 tarball: "https://example.com/tarball.tar.gz".to_string(),
+                ..Default::default()
             },
             require_dbt_version: None,
             fusion_compatibility: Some(HubPackageFusionCompatibility {
@@ -955,6 +978,11 @@ mod tests {
 
         let package_version: HubPackageVersion = serde_json::from_str(json).unwrap();
         assert_eq!(package_version.name, "dbt_snowflake_query_tags");
+        assert_eq!(
+            package_version.downloads.sha1,
+            Some("a37691d43a990655b703f7d847badce2a7ab87d1".to_string())
+        );
+        assert!(package_version.downloads.hub.is_none());
         let fusion_compatibility: HubPackageFusionCompatibility =
             package_version.fusion_compatibility.unwrap();
         assert_eq!(
@@ -962,6 +990,44 @@ mod tests {
             Some(true)
         );
         assert_eq!(fusion_compatibility.require_dbt_version_defined, Some(true));
+    }
+
+    #[test]
+    fn test_deserialize_version_with_hub_mirror_download() {
+        let json = r#"
+        {
+            "id": "fishtown-analytics/dbt-external-tables/0.4.0",
+            "name": "dbt_external_tables",
+            "version": "0.4.0",
+            "published_at": "1970-01-01T00:00:00.000000+00:00",
+            "packages": [],
+            "works_with": [],
+            "downloads": {
+                "tarball": "https://codeload.github.com/fishtown-analytics/dbt-external-tables/tar.gz/0.4.0",
+                "format": "tgz",
+                "sha1": "34ea245587e15421b5482e94810f30315299bbbc",
+                "hub": {
+                    "tarball": "https://mirror.example-cdn.com/packages/fishtown-analytics/dbt-external-tables/tar.gz/0.4.0",
+                    "format": "tgz",
+                    "sha1": "34ea245587e15421b5482e94810f30315299bbbc"
+                }
+            }
+        }
+        "#;
+
+        let package_version: HubPackageVersion = serde_json::from_str(json).unwrap();
+        let hub_mirror = package_version
+            .downloads
+            .hub
+            .expect("expected hub mirror download");
+        assert_eq!(
+            hub_mirror.tarball,
+            "https://mirror.example-cdn.com/packages/fishtown-analytics/dbt-external-tables/tar.gz/0.4.0"
+        );
+        assert_eq!(
+            hub_mirror.sha1,
+            Some("34ea245587e15421b5482e94810f30315299bbbc".to_string())
+        );
     }
 
     #[test]
@@ -1028,6 +1094,10 @@ mod tests {
                     .to_string()
             )
         );
+        assert_eq!(
+            fusion_compatible_download.sha1,
+            Some("a37691d43a990655b703f7d847badce2a7ab87d1".to_string())
+        );
     }
 
     #[test]
@@ -1073,6 +1143,7 @@ mod tests {
         "#;
 
         let package_version: HubPackageVersion = serde_json::from_str(json).unwrap();
+        assert!(package_version.downloads.hub.is_none());
         let fusion_compatibility: HubPackageFusionCompatibility =
             package_version.fusion_compatibility.unwrap();
         assert_eq!(

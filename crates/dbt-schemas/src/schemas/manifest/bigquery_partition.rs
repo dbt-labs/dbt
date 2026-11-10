@@ -21,7 +21,10 @@ pub struct BigqueryPartitionConfig {
     pub data_type: String,
     #[serde(flatten)]
     pub __inner__: BigqueryPartitionConfigInner,
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "crate::schemas::serde::yaml_11_bool_default"
+    )]
     pub copy_partitions: bool,
 }
 
@@ -93,7 +96,10 @@ pub struct TimeConfig {
     /// When this is true, the [`BigqueryPartitionConfig::field`] will be used as the `_PARTITIONTIME` pseudo column
     /// _PARTITIONTIME: https://cloud.google.com/bigquery/docs/partitioned-tables#ingestion_time
     /// https://docs.getdbt.com/reference/resource-configs/bigquery-configs#partitioning-by-an-ingestion-date-or-timestamp
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "crate::schemas::serde::yaml_11_bool_default"
+    )]
     pub time_ingestion_partitioning: bool,
 }
 
@@ -393,6 +399,31 @@ mod tests {
             config.__inner__,
             BigqueryPartitionConfigInner::Time(_)
         ));
+    }
+
+    /// The `partition_by` booleans hit the same YAML 1.1 divergence as `contract.enforced`, and
+    /// `time_ingestion_partitioning` fails through the untagged enum.
+    #[test]
+    fn test_partition_config_resolves_yaml_11_boolean_tokens() {
+        for (token, expected) in [("no", false), ("off", false), ("yes", true), ("on", true)] {
+            let json = dbt_yaml::from_str(&format!(
+                "field: created_at\ndata_type: timestamp\ncopy_partitions: {token}\ntime_ingestion_partitioning: {token}\n"
+            ))
+            .unwrap();
+            let config: BigqueryPartitionConfig = dbt_yaml::from_value(json).unwrap();
+            assert_eq!(config.copy_partitions, expected, "token: {token}");
+            assert_eq!(
+                config.time_ingestion_partitioning(),
+                expected,
+                "token: {token}"
+            );
+        }
+
+        // Asserted on `copy_partitions`, which errors precisely; a bad
+        // `time_ingestion_partitioning` errors too, but through the untagged-enum wrapper.
+        let json = dbt_yaml::from_str("field: created_at\ncopy_partitions: maybe\n").unwrap();
+        let result: Result<BigqueryPartitionConfig, _> = dbt_yaml::from_value(json);
+        assert!(result.is_err());
     }
 
     #[test]

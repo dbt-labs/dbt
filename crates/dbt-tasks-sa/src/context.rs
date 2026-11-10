@@ -47,11 +47,14 @@ impl ExtendedTaskRunnerCtxFactory for EmptyExtendedTaskRunnerCtxFactory {
     fn adhoc_runner(
         &self,
         env: Arc<JinjaEnv>,
-        adapter_type: AdapterType,
-        _args: Arc<RunTasksArgs>,
+        _adapter_type: AdapterType,
+        args: Arc<RunTasksArgs>,
         _root_project_name: String,
     ) -> Arc<dyn AdhocRunner> {
-        Arc::new(RemoteAdhocRunner { env, adapter_type })
+        Arc::new(RemoteAdhocRunner {
+            env,
+            query_id: args.query_id.clone(),
+        })
     }
 
     fn build(

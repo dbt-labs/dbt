@@ -23,6 +23,7 @@ dbt-jinja-utils = { workspace = true }
 dbt-jinja-vars = { workspace = true }
 dbt-profile = { workspace = true }
 dbt-schemas = { workspace = true }
+dbt-skills = { workspace = true }
 dbt-telemetry = { workspace = true }
 dbt-yaml = { workspace = true }
 
@@ -47,8 +48,13 @@ walkdir = { workspace = true }
 zip = { workspace = true }
 
 [dev-dependencies]
+arrow-array = { workspace = true }
+arrow-schema = { workspace = true }
+dbt-agate = { workspace = true }
+dbt-jinja-ctx = { workspace = true }
 dbt-jinja-utils = { workspace = true, features = ["testing"] }
 dbt-parser = { workspace = true }
+dbt-runtime = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true }
 

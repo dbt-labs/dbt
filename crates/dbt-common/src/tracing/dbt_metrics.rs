@@ -105,6 +105,12 @@ pub enum InvocationMetricKey {
     NodeTotalsSkipped,
     NodeTotalsCanceled,
     NodeTotalsNoOp,
+    /// Member generic tests that ran inside an aggregated query.
+    AggregatedTests,
+    /// Aggregated generic-test queries issued.
+    AggregatedTestQueries,
+    /// Data tests proven redundant by static analysis and skipped.
+    StaticallyCheckedTests,
 }
 
 #[repr(u8)]

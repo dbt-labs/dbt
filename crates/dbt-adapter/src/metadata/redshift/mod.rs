@@ -1,8 +1,7 @@
 use crate::adapter::adapter_impl::{AdapterImpl, get_bool_config, quote_ident};
-use crate::connection::AdapterConnectionFactory;
+use crate::connection::{AdapterConnectionFactory, ConnectionGuard};
 use crate::errors::*;
 use crate::metadata::*;
-use crate::record_batch::RecordBatchExt;
 use crate::relation::Relation;
 use crate::sql_types::make_arrow_field_v2;
 use crate::{AdapterEngine, AdapterResult};
@@ -11,6 +10,10 @@ use arrow::compute::concat_batches;
 use arrow::datatypes::GenericStringType;
 use arrow_schema::{DataType, Field, Schema};
 use dbt_adapter_core::{AdapterType, ExecutionPhase};
+use dbt_adapter_engine::MapReduce;
+use dbt_adapter_engine::cow::uppercase;
+use dbt_adapter_engine::record_batch::RecordBatchExt;
+use dbt_adapter_sql::ident::escape_string_literal;
 use dbt_adbc::*;
 use dbt_common::cancellation::Cancellable;
 use dbt_common::cancellation::CancellationToken;
@@ -27,6 +30,10 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use crate::metadata::list_objects::*;
+
+fn redshift_metadata_literal(value: &str) -> String {
+    escape_string_literal(value, AdapterType::Redshift)
+}
 
 /// Inline reproduction of the `redshift__get_relations` macro
 /// (`dbt-loader/src/dbt_macro_assets/dbt-redshift/macros/relations.sql`).
@@ -111,11 +118,11 @@ fn parse_relation_dependencies(
 pub fn list_relation_dependencies(
     engine: &dyn AdapterEngine,
     ctx: &QueryCtx,
-    conn: &'_ mut dyn Connection,
+    conn: &mut ConnectionGuard<'_>,
     db_schema: &CatalogAndSchema,
     token: CancellationToken,
 ) -> AdapterResult<Vec<ParentChildPair>> {
-    let batch = engine.execute(None, conn, ctx, REDSHIFT_GET_RELATIONS_SQL, token)?;
+    let batch = engine.execute(None, conn.as_mut(), ctx, REDSHIFT_GET_RELATIONS_SQL, token)?;
     let want = db_schema.resolved_schema.to_lowercase();
     parse_relation_dependencies(
         &batch,
@@ -129,7 +136,7 @@ pub fn list_relation_dependencies(
 pub fn list_relations(
     engine: &dyn AdapterEngine,
     ctx: &QueryCtx,
-    conn: &'_ mut dyn Connection,
+    conn: &mut ConnectionGuard<'_>,
     db_schema: &CatalogAndSchema,
     token: CancellationToken,
 ) -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
@@ -157,10 +164,11 @@ fn build_redshift_relation(
 fn list_relations_via_information_schema(
     engine: &dyn AdapterEngine,
     ctx: &QueryCtx,
-    conn: &'_ mut dyn Connection,
+    conn: &mut ConnectionGuard<'_>,
     db_schema: &CatalogAndSchema,
     token: CancellationToken,
 ) -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
+    let schema = redshift_metadata_literal(&db_schema.resolved_schema);
     let sql = format!(
         "select
     table_catalog as database,
@@ -182,10 +190,10 @@ select
     end as type
 from information_schema.views
 where table_schema ilike '{}'",
-        &db_schema.resolved_schema, &db_schema.resolved_schema
+        schema, schema
     );
 
-    let batch = engine.execute(None, conn, ctx, &sql, token)?;
+    let batch = engine.execute(None, conn.as_mut(), ctx, &sql, token)?;
 
     if batch.num_rows() == 0 {
         return Ok(Vec::new());
@@ -216,7 +224,7 @@ where table_schema ilike '{}'",
 fn list_relations_via_show_tables(
     engine: &dyn AdapterEngine,
     ctx: &QueryCtx,
-    conn: &'_ mut dyn Connection,
+    conn: &mut ConnectionGuard<'_>,
     db_schema: &CatalogAndSchema,
     token: CancellationToken,
 ) -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
@@ -225,7 +233,7 @@ fn list_relations_via_show_tables(
         db_schema.rendered_catalog, db_schema.rendered_schema
     );
 
-    let batch = engine.execute(None, conn, ctx, &sql, token)?;
+    let batch = engine.execute(None, conn.as_mut(), ctx, &sql, token)?;
     parse_show_tables_batch(&batch, engine.quoting())
 }
 
@@ -254,9 +262,9 @@ fn parse_show_tables_batch(
 
     let mut relations = Vec::with_capacity(batch.num_rows());
     for i in 0..batch.num_rows() {
-        let kind = table_type.value(i).trim().to_uppercase();
-        let subtype = table_subtype.map(|arr| arr.value(i).trim().to_uppercase());
-        let relation_type = match (kind.as_str(), subtype.as_deref()) {
+        let kind = uppercase(table_type.value(i).trim().into());
+        let subtype = table_subtype.map(|arr| uppercase(arr.value(i).trim().into()));
+        let relation_type = match (kind.as_ref(), subtype.as_deref()) {
             ("VIEW", Some("MATERIALIZED VIEW")) => RelationType::MaterializedView,
             ("VIEW", _) => RelationType::View,
             _ => RelationType::Table,
@@ -291,6 +299,16 @@ fn show_table_catalog_type(table_type: &str, table_subtype: Option<&str>) -> &'s
         .unwrap_or("BASE TABLE")
 }
 
+/// Converts a `Decimal128Array` cell to a `serde_json::Value`, dividing out the
+/// decimal's scale first (`Decimal128Array::value` returns the raw unscaled i128
+/// mantissa, e.g. `4550000000` for `45.5` at scale 8).
+fn decimal128_to_json_value(array: &Decimal128Array, i: usize) -> serde_json::Value {
+    let scaled = array.value(i) as f64 / 10f64.powi(array.scale() as i32);
+    serde_json::Number::from_f64(scaled)
+        .map(serde_json::Value::Number)
+        .unwrap_or(serde_json::Value::Null)
+}
+
 fn table_hash(database: &str, schema: &str, table: &str) -> u64 {
     const FIELD_SEPARATOR: &str = "|";
 
@@ -320,6 +338,7 @@ fn table_hash(database: &str, schema: &str, table: &str) -> u64 {
 /// Reference: <https://github.com/dbt-labs/dbt-adapters/pull/1718>
 /// SHOW TABLES: <https://docs.aws.amazon.com/redshift/latest/dg/r_SHOW_TABLES.html>
 /// SVV_REDSHIFT_COLUMNS: <https://docs.aws.amazon.com/redshift/latest/dg/r_SVV_REDSHIFT_COLUMNS.html>
+/// TODO (debrin-og): Refactor and move to `AgateTable.join`
 pub(crate) fn join_show_tables_and_svv_columns(
     show_tables_results: &[Arc<RecordBatch>],
     svv_columns: &RecordBatch,
@@ -473,23 +492,24 @@ impl ListRelationsSchemasStrategy for RedshiftListRelationsSchemasStrategy {
         relations: Arc<Vec<Arc<dyn BaseRelation>>>,
         unique_id: Option<String>,
         phase: Option<ExecutionPhase>,
+        item_span_operation_id: Option<&str>,
         token: CancellationToken,
     ) -> AsyncAdapterResult<'static, HashMap<String, AdapterResult<Arc<Schema>>>> {
         type Acc = HashMap<String, AdapterResult<Arc<Schema>>>;
 
-        let factory = Box::new(AdapterConnectionFactory::new(
-            self.adapter.engine().clone(),
-            self.adapter.engine().threads(),
-        ));
+        let factory = Box::new(AdapterConnectionFactory::new(self.adapter.engine().clone()));
 
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
-        let map_f = move |conn: &'_ mut dyn Connection,
+        let map_f = move |conn: &mut ConnectionGuard<'_>,
                           relation: &Arc<dyn BaseRelation>|
               -> AdapterResult<Arc<Schema>> {
             let catalog = relation.database_as_str()?;
             let schema = relation.schema_as_str()?;
             let identifier = relation.identifier_as_str()?;
+            let catalog_literal = redshift_metadata_literal(&catalog);
+            let schema_literal = redshift_metadata_literal(&schema);
+            let identifier_literal = redshift_metadata_literal(&identifier);
 
             // Use EXISTS with r_SVV_EXTERNAL_TABLES (presumably small, only external tables compared to SVV_TABLES)
             // https://docs.aws.amazon.com/redshift/latest/dg/r_SVV_EXTERNAL_TABLES.html
@@ -501,13 +521,13 @@ impl ListRelationsSchemasStrategy for RedshiftListRelationsSchemasStrategy {
     is_nullable,
     remarks,
     EXISTS(SELECT 1 FROM SVV_EXTERNAL_TABLES
-           WHERE redshift_database_name = '{catalog}'
-           AND schemaname = '{schema}'
-           AND tablename = '{identifier}') AS is_external
+           WHERE redshift_database_name = '{catalog_literal}'
+           AND schemaname = '{schema_literal}'
+           AND tablename = '{identifier_literal}') AS is_external
 FROM SVV_ALL_COLUMNS
-WHERE database_name = '{catalog}'
-AND schema_name = '{schema}'
-AND table_name = '{identifier}'"
+WHERE database_name = '{catalog_literal}'
+AND schema_name = '{schema_literal}'
+AND table_name = '{identifier_literal}'"
             );
 
             let mut ctx = QueryCtx::new_metadata().with_desc("Get table schema");
@@ -592,8 +612,15 @@ AND table_name = '{identifier}'"
             acc.insert(relation.semantic_fqn(), schema);
             Ok(())
         };
-        let map_reduce = MapReduce::new(factory, Box::new(map_f), Box::new(reduce_f), None);
-        map_reduce.run(Arc::new(relations.to_vec()), token)
+        run_schema_cache_map_reduce(
+            factory,
+            relations.to_vec(),
+            item_span_operation_id,
+            map_f,
+            reduce_f,
+            None,
+            token,
+        )
     }
 
     fn run_by_patterns(
@@ -665,18 +692,16 @@ impl RedshiftFreshnessStrategy {
         // name → (epoch_ms, is_view)
         type MapResult = HashMap<String, (i64, bool)>;
 
-        let factory = Box::new(AdapterConnectionFactory::new(
-            self.adapter.engine().clone(),
-            self.adapter.engine().threads(),
-        ));
+        let factory = Box::new(AdapterConnectionFactory::new(self.adapter.engine().clone()));
 
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
 
-        let map_f = move |conn: &'_ mut dyn Connection,
+        let map_f = move |conn: &mut ConnectionGuard<'_>,
                           group: &((String, String), Vec<Arc<dyn BaseRelation>>)|
               -> AdapterResult<MapResult> {
             let ((_, schema), _) = group;
+            let schema_literal = redshift_metadata_literal(schema);
 
             // Primary: stl_insert tracks INSERT/COPY/CTAS, batched by schema.
             // ~1s vs ~10s for sys_query_detail on this cluster.
@@ -687,7 +712,7 @@ impl RedshiftFreshnessStrategy {
                  FROM stl_insert i \
                  JOIN pg_class c ON c.oid = i.tbl \
                  JOIN pg_namespace ns ON ns.oid = c.relnamespace \
-                 WHERE upper(ns.nspname) = upper('{schema}') \
+                 WHERE upper(ns.nspname) = upper('{schema_literal}') \
                  GROUP BY c.relname"
             );
             let ctx = QueryCtx::default().with_desc("Extracting freshness via stl_insert");
@@ -726,7 +751,7 @@ impl RedshiftFreshnessStrategy {
                  FROM pg_class c \
                  JOIN pg_namespace ns ON ns.oid = c.relnamespace \
                  JOIN pg_class_info pci ON pci.reloid = c.oid \
-                 WHERE upper(ns.nspname) = upper('{schema}') \
+                 WHERE upper(ns.nspname) = upper('{schema_literal}') \
                  AND pci.relcreationtime IS NOT NULL"
             );
             let ctx2 =
@@ -815,14 +840,11 @@ impl RedshiftFreshnessStrategy {
         }
         let keys: Vec<(String, String)> = relations_by_schema.keys().cloned().collect();
 
-        let factory = Box::new(AdapterConnectionFactory::new(
-            self.adapter.engine().clone(),
-            self.adapter.engine().threads(),
-        ));
+        let factory = Box::new(AdapterConnectionFactory::new(self.adapter.engine().clone()));
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
 
-        let map_f = move |conn: &'_ mut dyn Connection,
+        let map_f = move |conn: &mut ConnectionGuard<'_>,
                           (database, schema): &(String, String)|
               -> AdapterResult<Arc<RecordBatch>> {
             let sql = format!(
@@ -945,18 +967,18 @@ impl MetadataAdapter for RedshiftMetadataAdapter {
             stats_sql_result.column_values::<BooleanArray>("stats:encoded:include")?;
 
         let diststyle_label =
-            stats_sql_result.column_values::<StringArray>("`stats:diststyle:label")?;
+            stats_sql_result.column_values::<StringArray>("stats:diststyle:label")?;
         let diststyle_value =
-            stats_sql_result.column_values::<Decimal128Array>("`stats:diststyle:value")?;
+            stats_sql_result.column_values::<StringArray>("stats:diststyle:value")?;
         let diststyle_description =
-            stats_sql_result.column_values::<StringArray>("`stats:diststyle:description")?;
+            stats_sql_result.column_values::<StringArray>("stats:diststyle:description")?;
         let diststyle_include =
-            stats_sql_result.column_values::<BooleanArray>("`stats:diststyle:include")?;
+            stats_sql_result.column_values::<BooleanArray>("stats:diststyle:include")?;
 
         let sortkey1_label =
             stats_sql_result.column_values::<StringArray>("stats:sortkey1:label")?;
         let sortkey1_value =
-            stats_sql_result.column_values::<Decimal128Array>("stats:sortkey1:value")?;
+            stats_sql_result.column_values::<StringArray>("stats:sortkey1:value")?;
         let sortkey1_description =
             stats_sql_result.column_values::<StringArray>("stats:sortkey1:description")?;
         let sortkey1_include =
@@ -1095,32 +1117,26 @@ impl MetadataAdapter for RedshiftMetadataAdapter {
                 let size_include_i = size_include.value(i);
 
                 let pct_used_label_i = pct_used_label.value(i);
-                let pct_used_value_i = pct_used_value.value(i);
                 let pct_used_description_i = pct_used_description.value(i);
                 let pct_used_include_i = pct_used_include.value(i);
 
                 let unsorted_label_i = unsorted_label.value(i);
-                let unsorted_value_i = unsorted_value.value(i);
                 let unsorted_description_i = unsorted_description.value(i);
                 let unsorted_include_i = unsorted_include.value(i);
 
                 let stats_off_label_i = stats_off_label.value(i);
-                let stats_off_value_i = stats_off_value.value(i);
                 let stats_off_description_i = stats_off_description.value(i);
                 let stats_off_include_i = stats_off_include.value(i);
 
                 let rows_label_i = rows_label.value(i);
-                let rows_value_i = rows_value.value(i);
                 let rows_description_i = rows_description.value(i);
                 let rows_include_i = rows_include.value(i);
 
                 let skew_sortkey1_label_i = skew_sortkey1_label.value(i);
-                let skew_sortkey1_value_i = skew_sortkey1_value.value(i);
                 let skew_sortkey1_description_i = skew_sortkey1_description.value(i);
                 let skew_sortkey1_include_i = skew_sortkey1_include.value(i);
 
                 let skew_rows_label_i = skew_rows_label.value(i);
-                let skew_rows_value_i = skew_rows_value.value(i);
                 let skew_rows_description_i = skew_rows_description.value(i);
                 let skew_rows_include_i = skew_rows_include.value(i);
 
@@ -1145,7 +1161,7 @@ impl MetadataAdapter for RedshiftMetadataAdapter {
                         CatalogNodeStats {
                             id: "diststyle".to_string(),
                             label: diststyle_label_i.to_string(),
-                            value: serde_json::Number::from_i128(diststyle_value_i).into(),
+                            value: serde_json::Value::String(diststyle_value_i.to_string()),
                             description: Some(diststyle_description_i.to_string()),
                             include: diststyle_include_i,
                         },
@@ -1158,7 +1174,7 @@ impl MetadataAdapter for RedshiftMetadataAdapter {
                         CatalogNodeStats {
                             id: "sortkey1".to_string(),
                             label: sortkey1_label_i.to_string(),
-                            value: serde_json::Number::from_i128(sortkey1_value_i).into(),
+                            value: serde_json::Value::String(sortkey1_value_i.to_string()),
                             description: Some(sortkey1_description_i.to_string()),
                             include: sortkey1_include_i,
                         },
@@ -1223,7 +1239,7 @@ impl MetadataAdapter for RedshiftMetadataAdapter {
                         CatalogNodeStats {
                             id: "pct_used".to_string(),
                             label: pct_used_label_i.to_string(),
-                            value: serde_json::Number::from_i128(pct_used_value_i).into(),
+                            value: decimal128_to_json_value(&pct_used_value, i),
                             description: Some(pct_used_description_i.to_string()),
                             include: pct_used_include_i,
                         },
@@ -1236,7 +1252,7 @@ impl MetadataAdapter for RedshiftMetadataAdapter {
                         CatalogNodeStats {
                             id: "unsorted".to_string(),
                             label: unsorted_label_i.to_string(),
-                            value: serde_json::Number::from_i128(unsorted_value_i).into(),
+                            value: decimal128_to_json_value(&unsorted_value, i),
                             description: Some(unsorted_description_i.to_string()),
                             include: unsorted_include_i,
                         },
@@ -1249,7 +1265,7 @@ impl MetadataAdapter for RedshiftMetadataAdapter {
                         CatalogNodeStats {
                             id: "stats_off".to_string(),
                             label: stats_off_label_i.to_string(),
-                            value: serde_json::Number::from_i128(stats_off_value_i).into(),
+                            value: decimal128_to_json_value(&stats_off_value, i),
                             description: Some(stats_off_description_i.to_string()),
                             include: stats_off_include_i,
                         },
@@ -1262,7 +1278,7 @@ impl MetadataAdapter for RedshiftMetadataAdapter {
                         CatalogNodeStats {
                             id: "rows".to_string(),
                             label: rows_label_i.to_string(),
-                            value: serde_json::Number::from_i128(rows_value_i).into(),
+                            value: decimal128_to_json_value(&rows_value, i),
                             description: Some(rows_description_i.to_string()),
                             include: rows_include_i,
                         },
@@ -1275,7 +1291,7 @@ impl MetadataAdapter for RedshiftMetadataAdapter {
                         CatalogNodeStats {
                             id: "skew_sortkey1".to_string(),
                             label: skew_sortkey1_label_i.to_string(),
-                            value: serde_json::Number::from_i128(skew_sortkey1_value_i).into(),
+                            value: decimal128_to_json_value(&skew_sortkey1_value, i),
                             description: Some(skew_sortkey1_description_i.to_string()),
                             include: skew_sortkey1_include_i,
                         },
@@ -1288,7 +1304,7 @@ impl MetadataAdapter for RedshiftMetadataAdapter {
                         CatalogNodeStats {
                             id: "skew_rows".to_string(),
                             label: skew_rows_label_i.to_string(),
-                            value: serde_json::Number::from_i128(skew_rows_value_i).into(),
+                            value: decimal128_to_json_value(&skew_rows_value, i),
                             description: Some(skew_rows_description_i.to_string()),
                             include: skew_rows_include_i,
                         },
@@ -1300,7 +1316,7 @@ impl MetadataAdapter for RedshiftMetadataAdapter {
                     CatalogNodeStats {
                         id: "has_stats".to_string(),
                         label: "has_stats".to_string(),
-                        value: serde_json::Value::Bool(stats.is_empty()),
+                        value: serde_json::Value::Bool(!stats.is_empty()),
                         description: Some(
                             "Indicates whether there are any statistics for this table".to_string(),
                         ),
@@ -1387,11 +1403,12 @@ impl MetadataAdapter for RedshiftMetadataAdapter {
         unique_id: Option<String>,
         phase: Option<ExecutionPhase>,
         relations: &[Arc<dyn BaseRelation>], // TODO: change to an Arc<Vec<..>>
+        item_span_operation_id: Option<&str>,
         token: CancellationToken,
     ) -> AsyncAdapterResult<'_, HashMap<String, AdapterResult<Arc<Schema>>>> {
         let strategy = RedshiftListRelationsSchemasStrategy::new(self.adapter.clone());
         let relations = Arc::new(relations.to_vec());
-        strategy.run(relations, unique_id, phase, token)
+        strategy.run(relations, unique_id, phase, item_span_operation_id, token)
     }
 
     fn list_relations_schemas_by_patterns_inner(
@@ -1436,6 +1453,8 @@ impl MetadataAdapter for RedshiftMetadataAdapter {
         for relation in relations {
             let schema = relation.schema_as_str().unwrap_or_default();
             let name = relation.identifier_as_str().unwrap_or_default();
+            let schema = redshift_metadata_literal(&schema);
+            let name = redshift_metadata_literal(&name);
             conditions.push(format!(
                 "(upper(table_schema) = upper('{schema}') AND upper(table_name) = upper('{name}'))"
             ));
@@ -1451,14 +1470,11 @@ impl MetadataAdapter for RedshiftMetadataAdapter {
         let relations_owned: Vec<Arc<dyn BaseRelation>> = relations.to_vec();
         let token_clone = token.clone();
 
-        let factory = Box::new(AdapterConnectionFactory::new(
-            self.adapter.engine().clone(),
-            self.adapter.engine().threads(),
-        ));
+        let factory = Box::new(AdapterConnectionFactory::new(self.adapter.engine().clone()));
 
         // Use MapReduce with a single item to get a managed connection.
         let map_f =
-            move |conn: &'_ mut dyn Connection, _key: &()| -> AdapterResult<Arc<RecordBatch>> {
+            move |conn: &mut ConnectionGuard<'_>, _key: &()| -> AdapterResult<Arc<RecordBatch>> {
                 let ctx = QueryCtx::default().with_desc("Fetch Redshift view definitions");
                 let (_, table) = adapter.query(&ctx, conn, &sql, None, token_clone.clone())?;
                 Ok(table.original_record_batch())
@@ -1516,21 +1532,23 @@ impl MetadataAdapter for RedshiftMetadataAdapter {
         &self,
         db_schemas: &[CatalogAndSchema],
         token: CancellationToken,
+        report_progress: bool,
     ) -> AsyncAdapterResult<'_, BTreeMap<CatalogAndSchema, AdapterResult<RelationVec>>> {
         type Acc = BTreeMap<CatalogAndSchema, AdapterResult<RelationVec>>;
-        let factory = Box::new(AdapterConnectionFactory::new(
-            self.adapter.engine().clone(),
-            self.adapter.engine().threads(),
-        ));
+        let factory = Box::new(AdapterConnectionFactory::new(self.adapter.engine().clone()));
 
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
 
-        let map_f = move |conn: &'_ mut dyn Connection,
+        let map_f = move |conn: &mut ConnectionGuard<'_>,
                           db_schema: &CatalogAndSchema|
               -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
             let query_ctx = QueryCtx::default().with_desc("list_relations_in_parallel");
-            adapter.list_relations(&query_ctx, conn, db_schema, token_clone.clone())
+            with_relation_list_item_span(
+                report_progress.then_some(RELATION_CACHE_OP_ID),
+                &db_schema.to_string(),
+                || adapter.list_relations(None, &query_ctx, conn, db_schema, token_clone.clone()),
+            )
         };
 
         let reduce_f = move |acc: &mut Acc,
@@ -1563,14 +1581,11 @@ impl MetadataAdapter for RedshiftMetadataAdapter {
         }
         let jobs: Vec<(String, BTreeSet<String>)> = jobs.into_iter().collect();
 
-        let factory = Box::new(AdapterConnectionFactory::new(
-            self.adapter.engine().clone(),
-            self.adapter.engine().threads(),
-        ));
+        let factory = Box::new(AdapterConnectionFactory::new(self.adapter.engine().clone()));
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
 
-        let map_f = move |conn: &'_ mut dyn Connection,
+        let map_f = move |conn: &mut ConnectionGuard<'_>,
                           job: &(String, BTreeSet<String>)|
               -> AdapterResult<Vec<ParentChildPair>> {
             let (catalog, schemas) = job;
@@ -1578,7 +1593,7 @@ impl MetadataAdapter for RedshiftMetadataAdapter {
             let engine = adapter.engine();
             let batch = engine.execute(
                 None,
-                conn,
+                conn.as_mut(),
                 &ctx,
                 REDSHIFT_GET_RELATIONS_SQL,
                 token_clone.clone(),
@@ -1675,6 +1690,14 @@ mod tests {
 
     fn quoting() -> ResolvedQuoting {
         ResolvedQuoting::default()
+    }
+
+    #[test]
+    fn redshift_metadata_literal_escapes_quotes_and_backslashes() {
+        assert_eq!(
+            redshift_metadata_literal(r"schema\'; SELECT 1; --"),
+            r"schema\\''; SELECT 1; --"
+        );
     }
 
     fn show_tables_batch_with_subtype(rows: &[(&str, &str, &str, &str, &str)]) -> Arc<RecordBatch> {

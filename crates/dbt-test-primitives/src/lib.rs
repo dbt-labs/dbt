@@ -4,6 +4,12 @@ pub fn is_update_golden_files_mode() -> bool {
     env::var("GOLDIE_UPDATE").ok().is_some_and(|val| val == "1")
 }
 
+/// Strips the `___<suffix>___` markers that test schema names carry during recording.
+pub fn cleanup_schema_name(input: &str) -> String {
+    let re = regex::Regex::new(r"___.*?___").unwrap();
+    re.replace_all(input, "").to_string()
+}
+
 pub fn is_continuous_integration_environment() -> bool {
     env::var("CONTINUOUS_INTEGRATION").is_ok()
 }

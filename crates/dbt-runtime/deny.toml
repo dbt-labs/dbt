@@ -1,0 +1,8 @@
+[graph]
+exclude = ["dbt-fusion-workspace-hack"]
+
+[bans]
+multiple-versions = "allow"
+deny = [
+  { crate = "dbt-common", reason = "dbt-runtime is a low-level async runtime layer; it must not depend on dbt-common" },
+]

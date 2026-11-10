@@ -5,8 +5,27 @@
 
 {% macro databricks__get_replace_sql(existing_relation, target_relation, sql) %}
   {# /* if safe_relation_replace, prefer renaming */ #}
-  {% if target_relation.type == 'table' %}
+  {% if target_relation.type == "table" %}
     {{ exceptions.raise_not_implemented('get_replace_sql not implemented for target of table') }}
+  {% endif %}
+
+  {#- CREATE OR REPLACE VIEW WITH METRICS is same-type only; UC lists metric views as METRIC_VIEW. -#}
+  {% if target_relation.is_metric_view and existing_relation.is_metric_view %}
+    {{ return(get_replace_metric_view_sql(target_relation, sql)) }}
+  {% endif %}
+
+  {# DIVERGENCE: replace same-type materialized views in place regardless of use_safer_relation_operations,
+     unless the change is one CREATE OR REPLACE cannot apply. #}
+  {% if existing_relation.is_materialized_view and target_relation.is_materialized_view %}
+    {%- set model_config = adapter.get_config_from_model(config.model) -%}
+    {%- set existing_config = adapter.get_relation_config(existing_relation, model_config) -%}
+    {%- set decision = databricks__get_mv_replace_strategy(model_config, existing_config) -%}
+    {% if decision.strategy == 'replace' %}
+      {{ return(get_replace_materialized_view_sql(target_relation, sql)) }}
+    {% elif decision.strategy != 'drop' %}
+      {{ exceptions.raise_compiler_error("Cannot rebuild materialized view " ~ existing_relation ~ ": "
+           ~ (decision.reason if decision.strategy == 'refuse' else "unrecognised replace strategy '" ~ decision.strategy ~ "'")) }}
+    {% endif %}
   {% endif %}
 
   {% set safe_replace = config.get('use_safer_relation_operations', False) | as_bool  %}
@@ -24,12 +43,15 @@
     {% endif %}
   {% endif %}
 
+  {#- Hive Metastore rejects ALTER TABLE RENAME for managed Delta tables on S3, so never rename an existing HMS table. -#}
+  {% set existing_can_be_renamed = existing_relation.can_be_renamed and not (existing_relation.is_table and existing_relation.is_hive_metastore()) %}
+
   {# If safe_replace, then we know that anything that would have been caught above is instead caught here #}
-  {% if target_relation.can_be_renamed and existing_relation.can_be_renamed %}
+  {% if target_relation.can_be_renamed and existing_can_be_renamed %}
     {{ return(safely_replace(existing_relation, target_relation, sql)) }}
   {% elif target_relation.can_be_renamed %}
     {{ return(stage_then_replace(existing_relation, target_relation, sql)) }}
-  {% elif existing_relation.can_be_renamed %}
+  {% elif existing_can_be_renamed %}
     {{ return(backup_and_create_in_place(existing_relation, target_relation, sql)) }}
   {% else %}
     {{ return(drop_and_create(existing_relation, target_relation, sql)) }}
@@ -59,6 +81,7 @@
   {% call statement(name="main") %}
     {{ get_create_sql(staging_relation, sql) }}
   {% endcall %}
+  {% do adapter.cache_dropped(existing_relation) %}
 
   {{ return([
     get_drop_sql(existing_relation),

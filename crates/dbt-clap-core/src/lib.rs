@@ -22,8 +22,8 @@ use strum_macros::Display;
 use uuid::Uuid;
 
 use clap::{
-    ArgAction, Parser, ValueEnum,
-    builder::{BoolishValueParser, TypedValueParser},
+    ArgAction, Parser, ValueEnum, ValueHint,
+    builder::{BoolishValueParser, PossibleValuesParser, TypedValueParser},
 };
 use clap_complete::Shell;
 use dbt_common::constants::{
@@ -34,7 +34,8 @@ use dbt_common::io_args::{
     ClapResourceType, ClapSchemaTypes, ComputeArg, EvalArgs, InternalPackageMode, IoArgs,
     LocalExecutionBackendKind, LogFormat, LogLevel, OptimizeTestsOptions, Phases, RunCacheMode,
     ShowOptions, SystemArgs, TimeMachineModeKind, TimeMachineReplayOrdering,
-    check_key_value_cli_arg, check_selector, check_target, validate_project_name,
+    check_key_value_cli_arg, check_key_value_cli_arg_with_recovery, check_selector, check_target,
+    validate_project_name,
 };
 use dbt_common::io_args::{DisplayFormat, ListOutputFormat, StaticAnalysisKind};
 use dbt_common::row_limit::RowLimit;
@@ -59,6 +60,26 @@ use self::commands::{CommandParser, ExtensionCommandParser};
 pub const DEFAULT_LIMIT: &str = "10";
 pub const DEFAULT_FORMAT: DisplayFormat = DisplayFormat::Table;
 
+/// Parser for `--exclude-resource-type` values.
+///
+/// `all` and `default` describe a selection, so excluding by them is
+/// meaningless.
+fn exclude_resource_type_parser() -> impl TypedValueParser<Value = ClapResourceType> {
+    let values = ClapResourceType::value_variants()
+        .iter()
+        .filter(|resource_type| {
+            !matches!(
+                resource_type,
+                ClapResourceType::All | ClapResourceType::Default
+            )
+        })
+        .filter_map(|resource_type| resource_type.to_possible_value());
+    PossibleValuesParser::new(values).map(|value| {
+        ClapResourceType::from_str(&value, true)
+            .expect("value comes from ClapResourceType::to_possible_value")
+    })
+}
+
 /// `--help` heading labels used to group flags into sections.
 ///
 /// Defined here as constants so a heading is named in exactly one place and
@@ -72,6 +93,7 @@ pub mod help_headings {
     pub const EVENT_TIME: &str = "Microbatch Event Time";
     pub const SAMPLE: &str = "Sample";
     pub const ADVANCED: &str = "Advanced";
+    pub const UNSTABLE: &str = "Unstable";
 }
 const MANAGE_STATE_ENV: &str = "DBT_ENGINE_MANAGE_STATE";
 const USER_SETTINGS_YML: &str = ".dbt/user_settings.yml";
@@ -82,7 +104,7 @@ static BOLD: LazyLock<Style> = LazyLock::new(|| Style::new().bold());
 // ----------------------------------------------------------------------------------------------
 // Cli and its subcommands
 
-const ABOUT: &str = "With dbt, data analysts and engineers can build analytics the way engineers build applications.";
+const ABOUT: &str = "An ELT tool for managing your SQL transformations and data models. For more documentation on these commands, visit: docs.getdbt.com";
 static AFTER_HELP: LazyLock<String> = LazyLock::new(|| {
     format!(
         "{}",
@@ -150,7 +172,8 @@ impl CliParser {
 
     /// Build the [clap::Command] for the CLI application.
     fn app(&self) -> clap::Command {
-        let app = clap::Command::new(self.command_name);
+        // Match dbt Core: a repeated single-value flag keeps the last value.
+        let app = clap::Command::new(self.command_name).args_override_self(true);
 
         // -- Augment arguments
         let app = app.group(clap::ArgGroup::new("Cli").multiple(true).args({
@@ -174,7 +197,8 @@ impl CliParser {
     }
 
     /// Key used for the machine-readable `--format json --version` output, e.g.
-    /// `"dbt-fusion"` -> `"fusion"`, `"dbt-core"` -> `"core"`.
+    /// `"dbt-oss"` -> `"oss"`; `"dbt"` has no `dbt-` prefix so it falls through
+    /// to itself as the key.
     fn version_json_key(&self) -> &str {
         self.command_name
             .strip_prefix("dbt-")
@@ -313,6 +337,29 @@ pub struct Cli {
     pub common_args: CommonArgs,
 }
 
+/// The output directory `in_out_dir` will choose, computed before project setup
+/// and without touching the filesystem beyond the `dbt_project.yml` search.
+/// Falls back to the current directory when no project is found.
+pub fn expected_out_dir(common_args: &CommonArgs) -> PathBuf {
+    let in_dir = common_args
+        .project_dir
+        .clone()
+        .unwrap_or_else(|| determine_project_dir(&[], DBT_PROJECT_YML).unwrap_or_default());
+    join_target_path(&in_dir, common_args.target_path.as_deref())
+}
+
+fn join_target_path(in_dir: &Path, target_path: Option<&Path>) -> PathBuf {
+    target_path
+        .map(|p| {
+            if p.is_relative() {
+                in_dir.join(p)
+            } else {
+                p.to_path_buf()
+            }
+        })
+        .unwrap_or_else(|| in_dir.join(DBT_TARGET_DIR_NAME))
+}
+
 /// Determine in/out dir assuming the command requires project dir.
 ///
 /// NOTE: Don't call for commands that don't need project directory.
@@ -327,11 +374,7 @@ pub fn in_out_dir(common_args: &CommonArgs) -> FsResult<(PathBuf, PathBuf)> {
     };
     let in_dir = stdfs::canonicalize(in_dir)?;
 
-    let out_dir = common_args
-        .target_path
-        .clone()
-        .map(|p| if p.is_relative() { in_dir.join(p) } else { p })
-        .unwrap_or_else(|| in_dir.join(DBT_TARGET_DIR_NAME));
+    let out_dir = join_target_path(&in_dir, common_args.target_path.as_deref());
     stdfs::create_dir_all(&out_dir).map_err(|e| {
         fs_err!(
             ErrorCode::IoError,
@@ -367,10 +410,17 @@ got {:?}, expected an instance of {}",
         use CoreCommand::*;
         match &self.command {
             Command::Core(
-                Man(_) | Init(_) | Docs(_) | Login(_) | State(_) | Completions(_) | Internal(_),
+                Man(_) | Init(_) | Login(_) | State(_) | Completions(_) | Internal(_),
             ) => {
                 // These commands do not require a project directory
                 false
+            }
+            // `docs generate` reads a project's target directory, so it resolves
+            // `--project-dir` / `--target-path` the same way every project command
+            // does. `docs serve` only serves a directory and is documented as not
+            // requiring a project, so it stays out.
+            Command::Core(Docs(args)) => {
+                matches!(args.subcommand, Some(DocsSubcommand::Generate(_)))
             }
             Command::Core(_) => {
                 // Assume all the other core commands require a project directory.
@@ -402,6 +452,7 @@ got {:?}, expected an instance of {}",
                 Deps(args) => args.to_eval_args(system_arg, &in_dir, &out_dir),
                 List(args) => args.to_eval_args(system_arg, &in_dir, &out_dir),
                 Compile(args) => args.to_eval_args(system_arg, &in_dir, &out_dir),
+                Check(args) => args.to_eval_args(system_arg, &in_dir, &out_dir),
                 Parse(args) => args.to_eval_args(system_arg, &in_dir, &out_dir),
                 Run(args) => args.to_eval_args(system_arg, &in_dir, &out_dir),
                 RunOperation(args) => args.to_eval_args(system_arg, &in_dir, &out_dir),
@@ -413,6 +464,7 @@ got {:?}, expected an instance of {}",
                 Clone(args) => args.to_eval_args(system_arg, &in_dir, &out_dir),
                 Clean(args) => args.to_eval_args(system_arg, &in_dir, &out_dir),
                 Source(args) => args.to_eval_args(system_arg, &in_dir, &out_dir),
+                Freshness(args) => args.to_eval_args(system_arg, &in_dir, &out_dir),
                 Show(args) => args.to_eval_args(system_arg, &in_dir, &out_dir),
                 Man(args) => args.to_eval_args(system_arg, &in_dir, &out_dir),
                 Debug(args) => args.to_eval_args(system_arg, &in_dir, &out_dir),
@@ -426,11 +478,43 @@ got {:?}, expected an instance of {}",
             Command::Extension(ext_cmd) => ext_cmd.to_eval_args(&common_args, system_arg)?,
         };
         arg.from_main = from_main;
+        // Must be derived from the caller's *original* `--static-analysis`
+        // value, before the force-to-strict override just below can
+        // overwrite it for local execution — otherwise `baseline` could
+        // never survive to be observed here. `unwrap_or_default()` because
+        // omitting `--static-analysis` leaves `arg.static_analysis` as
+        // `None`, not `Some(Baseline)`, even though baseline is the actual
+        // default behavior everywhere else it's consulted.
+        arg.infer_schemas_and_typeless = arg.static_analysis.unwrap_or_default()
+            == StaticAnalysisKind::Baseline
+            && arg.write_lineage;
         if arg.local_execution_backend != LocalExecutionBackendKind::Remote {
             arg.static_analysis = Some(StaticAnalysisKind::Strict);
         }
-        if arg.write_index && arg.static_analysis == Some(StaticAnalysisKind::Strict) {
+        if (arg.write_index || arg.generate_info_schema)
+            && arg.static_analysis == Some(StaticAnalysisKind::Strict)
+        {
             arg.write_lineage = true;
+        }
+        // `build`, `run`, and `check` write the index by default.
+        //
+        // After the lineage block above so a defaulted index does not turn on `write_lineage`.
+        // Explicit `--write-index` still does. Set on `EvalArgs`, not `Cli.common_args`:
+        // `effective_partial_parse()` / `effective_partial_load()` read the raw flag, so
+        // leaving it unset keeps partial parse/load off for a plain `dbt build`/`run`/`check`.
+        // Skip if the caller already set metadata, index, or catalog so `--write-metadata`
+        // stays epochs-without-index and `--write-catalog` stays explicit.
+        if matches!(
+            arg.command,
+            FsCommand::Build | FsCommand::Run | FsCommand::Check
+        ) && !common_args.write_index
+            && !common_args.write_metadata
+            && !common_args.write_catalog
+            && !common_args.no_write_index
+        {
+            arg.write_metadata = true;
+            arg.write_index = true;
+            arg.write_index_implied = true;
         }
         Ok(arg)
     }
@@ -462,6 +546,7 @@ got {:?}, expected an instance of {}",
                 Ls(args) => args.common_args.phase.clone().unwrap_or(Phases::List),
                 List(args) => args.common_args.phase.clone().unwrap_or(Phases::List),
                 Compile(args) => args.common_args.phase.clone().unwrap_or(Phases::Compile),
+                Check(args) => args.common_args.phase.clone().unwrap_or(Phases::Compile),
                 Run(args) => args.common_args.phase.clone().unwrap_or(Phases::All),
                 RunOperation(args) => args.common_args.phase.clone().unwrap_or(Phases::Parse),
                 Seed(args) => args.common_args.phase.clone().unwrap_or(Phases::All),
@@ -475,6 +560,7 @@ got {:?}, expected an instance of {}",
                     .phase
                     .clone()
                     .unwrap_or(Phases::Freshness),
+                Freshness(args) => args.common_args.phase.clone().unwrap_or(Phases::Freshness),
                 Show(args) => args.common_args.phase.clone().unwrap_or(Phases::Show),
                 Man(_args) => unreachable!("Man command does not need a phase"),
                 Debug(args) => args.common_args.phase.clone().unwrap_or(Phases::Debug),
@@ -644,7 +730,14 @@ pub struct CompileArgs {
     pub resource_type: Option<Vec<ClapResourceType>>,
 
     /// Exclude nodes of a specific type;
-    #[arg(long, num_args(1..), value_delimiter = ' ', aliases = ["exclude-resource-types"], env = "DBT_EXCLUDE_RESOURCE_TYPES")]
+    #[arg(
+        long,
+        num_args(1..),
+        value_delimiter = ' ',
+        value_parser = exclude_resource_type_parser(),
+        aliases = ["exclude-resource-types"],
+        env = "DBT_EXCLUDE_RESOURCE_TYPES"
+    )]
     pub exclude_resource_type: Option<Vec<ClapResourceType>>,
 
     /// Limiting number of shown rows. Run with --limit -1 to remove limit [default: 10]
@@ -662,18 +755,6 @@ pub struct CompileArgs {
     /// Drop incremental models and fully recalculate incremental tables.
     #[arg(global = true, long, action = ArgAction::SetTrue, value_parser = BoolishValueParser::new(), short = 'f', env = "DBT_FULL_REFRESH")]
     pub full_refresh: bool,
-
-    #[arg(global = true, long, action = ArgAction::SetTrue, value_parser = BoolishValueParser::new(), env = "DBT_INFER_SCHEMAS", help = "Bind without a catalog; assume referenced tables/columns exist and infer schemas from usage")]
-    pub infer_schemas: bool,
-
-    #[arg(global = true, long, action = ArgAction::SetTrue, value_parser = BoolishValueParser::new(), env = "DBT_SKIP_TYPE_CHECKING", help = "Bind against the catalog but skip type checking/inference")]
-    pub skip_type_checking: bool,
-
-    #[arg(global = true, long, action = ArgAction::SetTrue, value_parser = BoolishValueParser::new(), env = "DBT_SHOW_SOURCES", help = "With --infer-schemas, print inferred column-to-source lineage at the end of the run")]
-    pub show_sources: bool,
-
-    #[arg(global = true, long, action = ArgAction::SetTrue, value_parser = BoolishValueParser::new(), env = "DBT_RESOLVE_AMBIGUOUS_COLS", help = "With --infer-schemas, interactively resolve ambiguous column-to-table attributions at the end of the run")]
-    pub resolve_ambiguous_cols: bool,
 
     /// Use the samples as given in this YAML/JSON file.
     #[arg(
@@ -701,13 +782,9 @@ impl CompileArgs {
             Some(StaticAnalysisKind::Off)
         };
         eval_args.full_refresh = self.full_refresh;
-        eval_args.infer_schemas = self.infer_schemas;
-        eval_args.skip_type_checking = self.skip_type_checking;
-        eval_args.show_sources = self.show_sources;
-        eval_args.resolve_ambiguous_cols = self.resolve_ambiguous_cols;
         eval_args.format = self.output.unwrap_or(DEFAULT_FORMAT);
         if let Some(resource_type) = &self.resource_type {
-            eval_args.resource_types = resource_type.clone();
+            eval_args.resource_types = ClapResourceType::resolve(resource_type, &[]);
         }
         if let Some(exclude_resource_type) = &self.exclude_resource_type {
             eval_args.exclude_resource_types = exclude_resource_type.clone();
@@ -724,6 +801,44 @@ impl CompileArgs {
 }
 
 #[derive(Parser, Debug, Default, Clone, Serialize, Deserialize)]
+pub struct CheckArgs {
+    /// Names of specific checks to run (the file stem, without `.sql`). Runs all
+    /// discovered checks if omitted.
+    #[arg(value_name = "CHECK")]
+    pub check_names: Vec<String>,
+
+    // Flattened Common args
+    #[clap(flatten)]
+    pub common_args: CommonArgs,
+
+    /// Flag to enable or disable SQL analysis, or to run SQL in unsafe mode, enabled by default
+    #[arg(global = true, long, env = "DBT_STATIC_ANALYSIS")]
+    pub static_analysis: Option<StaticAnalysisKind>,
+
+    /// Limiting number of shown rows per check. Run with --limit -1 to remove limit [default: 10]
+    #[arg(long, default_value=DEFAULT_LIMIT, allow_hyphen_values = true)]
+    pub limit: RowLimit,
+}
+
+impl CheckArgs {
+    pub fn to_eval_args(&self, arg: SystemArgs, in_dir: &Path, out_dir: &Path) -> EvalArgs {
+        let mut eval_args = self.common_args.to_eval_args(arg, in_dir, out_dir);
+        eval_args.phase = Phases::Compile;
+        eval_args.introspect = self.common_args.get_introspect();
+        // v1 is parse-time only. Do not force static analysis off the way
+        // warehouse-introspecting commands do.
+        eval_args.static_analysis = self.static_analysis;
+        eval_args.limit = self.limit.into();
+        // Implied index is set on `EvalArgs` in `Cli::to_eval_args` (same as
+        // `build` / `run`), not here: setting `write_index` on this struct
+        // before that function's lineage block would turn on `write_lineage`,
+        // and setting `Cli.common_args` would turn on partial parse/load.
+        eval_args.check_names = self.check_names.clone();
+        eval_args
+    }
+}
+
+#[derive(Parser, Debug, Default, Clone, Serialize, Deserialize)]
 pub struct SeedArgs {
     // Flattened Common args
     #[clap(flatten)]
@@ -735,7 +850,8 @@ pub struct SeedArgs {
 
     /// The mode to use for dbt State. Cannot be used with --force-node-selection
     #[arg(
-        long,
+        long = "state-mode",
+        alias = "run-cache-mode",
         default_value = "read-write",
         conflicts_with = "force_node_selection"
     )]
@@ -818,20 +934,76 @@ pub struct SourceFreshnessArgs {
 }
 
 #[derive(Parser, Debug, Default, Clone, Serialize, Deserialize)]
-pub struct ShowArgs {
+pub struct FreshnessArgs {
     #[clap(flatten)]
     pub common_args: CommonArgs,
-
-    /// Show the given query
-    #[arg(long)]
-    pub inline: Option<String>,
 
     /// Select nodes of a specific type;
     #[arg(long, num_args(1..), value_delimiter = ' ', aliases = ["resource-types"], env = "DBT_RESOURCE_TYPES")]
     pub resource_type: Option<Vec<ClapResourceType>>,
 
     /// Exclude nodes of a specific type;
-    #[arg(long, num_args(1..), value_delimiter = ' ', aliases = ["exclude-resource-types"], env = "DBT_EXCLUDE_RESOURCE_TYPES")]
+    #[arg(
+        long,
+        num_args(1..),
+        value_delimiter = ' ',
+        value_parser = exclude_resource_type_parser(),
+        aliases = ["exclude-resource-types"],
+        env = "DBT_EXCLUDE_RESOURCE_TYPES"
+    )]
+    pub exclude_resource_type: Option<Vec<ClapResourceType>>,
+}
+
+impl FreshnessArgs {
+    pub fn to_eval_args(&self, arg: SystemArgs, in_dir: &Path, out_dir: &Path) -> EvalArgs {
+        let mut eval_args = self.common_args.to_eval_args(arg, in_dir, out_dir);
+        eval_args.phase = Phases::Freshness;
+        if let Some(resource_type) = &self.resource_type {
+            eval_args.resource_types = ClapResourceType::resolve(resource_type, &[]);
+        }
+        if let Some(exclude_resource_type) = &self.exclude_resource_type {
+            eval_args.exclude_resource_types = exclude_resource_type.clone();
+        }
+        eval_args
+    }
+}
+
+#[derive(Parser, Debug, Default, Clone, Serialize, Deserialize)]
+pub struct ShowArgs {
+    #[clap(flatten)]
+    pub common_args: CommonArgs,
+
+    /// Show the given query
+    #[arg(long, allow_hyphen_values = true, conflicts_with = "query_id")]
+    pub inline: Option<String>,
+
+    /// Query a dbt information schema view (e.g. `models`, `dag_nodes`) instead of
+    /// the warehouse. Equivalent to `--inline "select * from {{ info_schema('<view>') }}"`.
+    /// Needs metadata from a prior `dbt build|run|check`, or
+    /// `dbt parse|compile --generate-info-schema`.
+    #[arg(long, value_name = "VIEW", conflicts_with_all = ["inline", "adapter", "query_id"])]
+    pub info: Option<String>,
+
+    /// Fetch the result of a previously completed LakeCompute query directly,
+    /// by query id, instead of compiling and running a query. No worker/compute
+    /// round trip -- this reads the query's already-materialized result.
+    /// Requires `--adapter lakecompute`.
+    #[arg(long, conflicts_with_all = ["inline", "info"])]
+    pub query_id: Option<String>,
+
+    /// Select nodes of a specific type;
+    #[arg(long, num_args(1..), value_delimiter = ' ', aliases = ["resource-types"], env = "DBT_RESOURCE_TYPES")]
+    pub resource_type: Option<Vec<ClapResourceType>>,
+
+    /// Exclude nodes of a specific type;
+    #[arg(
+        long,
+        num_args(1..),
+        value_delimiter = ' ',
+        value_parser = exclude_resource_type_parser(),
+        aliases = ["exclude-resource-types"],
+        env = "DBT_EXCLUDE_RESOURCE_TYPES"
+    )]
     pub exclude_resource_type: Option<Vec<ClapResourceType>>,
 
     /// Limiting number of shown rows. Run with --limit -1 to remove limit [default: 10]
@@ -868,14 +1040,32 @@ pub struct ShowArgs {
     /// Add source selectors to sample (e.g., "source:raw.events"). Repeatable.
     #[arg(long, num_args(1..), value_delimiter = ' ', help_heading = help_headings::SAMPLE)]
     pub sampled: Vec<String>,
+
+    /// Run against a non-default adapter the target declares (e.g. `lakecompute`),
+    /// instead of the target's default adapter. Only meaningful for targets
+    /// declaring more than one adapter, and only with `--inline`.
+    #[arg(long)]
+    pub adapter: Option<String>,
 }
 
 impl ShowArgs {
     pub fn to_eval_args(&self, arg: SystemArgs, in_dir: &Path, out_dir: &Path) -> EvalArgs {
         let mut eval_args = self.common_args.to_eval_args(arg, in_dir, out_dir);
         eval_args.phase = Phases::Show;
+        eval_args.adapter_override = self.adapter.clone();
+        eval_args.query_id = self.query_id.clone();
         if let Some(resource_type) = &self.resource_type {
-            eval_args.resource_types = resource_type.clone();
+            eval_args.resource_types = ClapResourceType::resolve(
+                resource_type,
+                &[
+                    ClapResourceType::Model,
+                    ClapResourceType::Snapshot,
+                    ClapResourceType::Seed,
+                    ClapResourceType::Source,
+                    ClapResourceType::Analysis,
+                    ClapResourceType::Test,
+                ],
+            );
         } else {
             eval_args.resource_types = vec![
                 ClapResourceType::Model,
@@ -918,7 +1108,8 @@ pub struct SnapshotArgs {
 
     /// The mode to use for dbt State. Cannot be used with --force-node-selection
     #[arg(
-        long,
+        long = "state-mode",
+        alias = "run-cache-mode",
         default_value = "read-write",
         conflicts_with = "force_node_selection"
     )]
@@ -955,8 +1146,8 @@ pub struct TestArgs {
     #[clap(flatten)]
     pub common_args: CommonArgs,
 
-    /// Aggregate compatible generic tests.
-    #[arg(long, hide = true)]
+    /// Batch compatible generic tests.
+    #[arg(long = "batch-tests", hide = true)]
     pub aggregate_tests: bool,
 
     /// Select nodes of a specific type;
@@ -964,7 +1155,14 @@ pub struct TestArgs {
     pub resource_type: Option<Vec<ClapResourceType>>,
 
     /// Exclude nodes of a specific type;
-    #[arg(long, num_args(1..), value_delimiter = ' ', aliases = ["exclude-resource-types"], env = "DBT_EXCLUDE_RESOURCE_TYPES")]
+    #[arg(
+        long,
+        num_args(1..),
+        value_delimiter = ' ',
+        value_parser = exclude_resource_type_parser(),
+        aliases = ["exclude-resource-types"],
+        env = "DBT_EXCLUDE_RESOURCE_TYPES"
+    )]
     pub exclude_resource_type: Option<Vec<ClapResourceType>>,
 
     /// Force node selection
@@ -973,7 +1171,8 @@ pub struct TestArgs {
 
     /// The mode to use for dbt State. Cannot be used with --force-node-selection
     #[arg(
-        long,
+        long = "state-mode",
+        alias = "run-cache-mode",
         default_value = "read-write",
         conflicts_with = "force_node_selection"
     )]
@@ -1013,7 +1212,10 @@ impl TestArgs {
                 .insert(OptimizeTestsOptions::TestAggregation);
         }
         if let Some(resource_type) = &self.resource_type {
-            eval_args.resource_types = resource_type.clone();
+            eval_args.resource_types = ClapResourceType::resolve(
+                resource_type,
+                &[ClapResourceType::Test, ClapResourceType::UnitTest],
+            );
         } else {
             eval_args.resource_types = vec![ClapResourceType::Test, ClapResourceType::UnitTest];
         }
@@ -1044,11 +1246,18 @@ pub struct BuildArgs {
     pub resource_type: Option<Vec<ClapResourceType>>,
 
     /// Exclude nodes of a specific type;
-    #[arg(long, num_args(1..), value_delimiter = ' ', aliases = ["exclude-resource-types"], env = "DBT_EXCLUDE_RESOURCE_TYPES")]
+    #[arg(
+        long,
+        num_args(1..),
+        value_delimiter = ' ',
+        value_parser = exclude_resource_type_parser(),
+        aliases = ["exclude-resource-types"],
+        env = "DBT_EXCLUDE_RESOURCE_TYPES"
+    )]
     pub exclude_resource_type: Option<Vec<ClapResourceType>>,
 
-    /// Aggregate compatible generic tests.
-    #[arg(long, hide = true)]
+    /// Batch compatible generic tests.
+    #[arg(long = "batch-tests", hide = true)]
     pub aggregate_tests: bool,
 
     /// Skip data tests that are proven redundant.
@@ -1061,7 +1270,8 @@ pub struct BuildArgs {
 
     /// The mode to use for dbt State. Cannot be used with --force-node-selection
     #[arg(
-        long,
+        long = "state-mode",
+        alias = "run-cache-mode",
         default_value = "read-write",
         conflicts_with = "force_node_selection"
     )]
@@ -1070,6 +1280,10 @@ pub struct BuildArgs {
     /// Drop incremental models and fully recalculate incremental tables.
     #[arg(global = true, long, action = ArgAction::SetTrue, value_parser = BoolishValueParser::new(), short = 'f', env = "DBT_FULL_REFRESH")]
     pub full_refresh: bool,
+
+    /// Skip parse-time project quality checks. Models still compile and run.
+    #[arg(long, action = ArgAction::SetTrue, value_parser = BoolishValueParser::new())]
+    pub skip_checks: bool,
 
     /// Limiting number of shown rows. Run with --limit -1 to remove limit [default: 10]
     #[arg(long, default_value=DEFAULT_LIMIT, allow_hyphen_values = true)]
@@ -1116,20 +1330,26 @@ impl BuildArgs {
         }
         eval_args.phase = Phases::All;
         // Enable task cache
+        let mut default_resource_types = vec![
+            ClapResourceType::Model,
+            ClapResourceType::Seed,
+            ClapResourceType::Snapshot,
+            ClapResourceType::Test,
+            ClapResourceType::UnitTest,
+            ClapResourceType::Function,
+            ClapResourceType::Check,
+            // Experimental nodes are never selected by default, so this only keeps the ones
+            // selected directly.
+            ClapResourceType::Experimental,
+        ];
+        if eval_args.export_saved_queries {
+            default_resource_types.push(ClapResourceType::SavedQuery);
+        }
         if let Some(resource_type) = &self.resource_type {
-            eval_args.resource_types = resource_type.clone();
+            eval_args.resource_types =
+                ClapResourceType::resolve(resource_type, &default_resource_types);
         } else {
-            eval_args.resource_types = vec![
-                ClapResourceType::Model,
-                ClapResourceType::Seed,
-                ClapResourceType::Snapshot,
-                ClapResourceType::Test,
-                ClapResourceType::UnitTest,
-                ClapResourceType::Function,
-            ];
-            if eval_args.export_saved_queries {
-                eval_args.resource_types.push(ClapResourceType::SavedQuery);
-            }
+            eval_args.resource_types = default_resource_types;
         }
         if let Some(exclude_resource_type) = &self.exclude_resource_type {
             eval_args.exclude_resource_types = exclude_resource_type.clone();
@@ -1144,6 +1364,7 @@ impl BuildArgs {
         eval_args.static_analysis = self.static_analysis;
         eval_args.empty = self.common_args.empty;
         eval_args.sample = self.sample.clone();
+        eval_args.skip_checks = self.skip_checks;
         eval_args
     }
 }
@@ -1173,7 +1394,14 @@ pub struct ListArgs {
     pub resource_type: Option<Vec<ClapResourceType>>,
 
     /// Exclude nodes of a specific type;
-    #[arg(long, num_args(1..), value_delimiter = ' ', aliases = ["exclude-resource-types"], env = "DBT_EXCLUDE_RESOURCE_TYPES")]
+    #[arg(
+        long,
+        num_args(1..),
+        value_delimiter = ' ',
+        value_parser = exclude_resource_type_parser(),
+        aliases = ["exclude-resource-types"],
+        env = "DBT_EXCLUDE_RESOURCE_TYPES"
+    )]
     pub exclude_resource_type: Option<Vec<ClapResourceType>>,
 }
 
@@ -1183,9 +1411,27 @@ impl ListArgs {
         eval_args.phase = Phases::List;
         eval_args.io.show.insert(ShowOptions::Nodes);
         eval_args.output_keys = self.output_keys.clone();
-        if let Some(resource_type) = &self.resource_type {
-            eval_args.resource_types = resource_type.clone();
-        }
+        let default_resource_types = vec![
+            ClapResourceType::Model,
+            ClapResourceType::Source,
+            ClapResourceType::Seed,
+            ClapResourceType::Snapshot,
+            ClapResourceType::Test,
+            ClapResourceType::UnitTest,
+            ClapResourceType::Function,
+            ClapResourceType::SemanticModel,
+            ClapResourceType::Metric,
+            ClapResourceType::SavedQuery,
+            ClapResourceType::Check,
+            ClapResourceType::Exposure,
+            ClapResourceType::Experimental,
+        ];
+        eval_args.resource_types = match &self.resource_type {
+            Some(resource_type) => {
+                ClapResourceType::resolve(resource_type, &default_resource_types)
+            }
+            None => default_resource_types,
+        };
         if let Some(exclude_resource_type) = &self.exclude_resource_type {
             eval_args.exclude_resource_types = exclude_resource_type.clone();
         }
@@ -1208,7 +1454,8 @@ pub struct RunArgs {
 
     /// The mode to use for dbt State. Cannot be used with --force-node-selection
     #[arg(
-        long,
+        long = "state-mode",
+        alias = "run-cache-mode",
         default_value = "read-write",
         conflicts_with = "force_node_selection"
     )]
@@ -1352,6 +1599,12 @@ pub struct RunOperationArgs {
     #[arg(long, conflicts_with_all = ["MACRO", "args"])]
     pub sql: Option<String>,
 
+    /// Run against a non-default adapter the target declares (e.g. `lakecompute`),
+    /// instead of the target's default adapter. Only meaningful for targets
+    /// declaring more than one adapter.
+    #[arg(long)]
+    pub adapter: Option<String>,
+
     // Flattened IO args
     #[clap(flatten)]
     pub common_args: CommonArgs,
@@ -1363,6 +1616,7 @@ impl RunOperationArgs {
         eval_args.phase = Phases::RunOperation;
         eval_args.macro_name = self.macro_name.clone();
         eval_args.macro_sql = self.sql.clone();
+        eval_args.adapter_override = self.adapter.clone();
         if let Some(args) = &self.args {
             eval_args.macro_args = args.clone();
         }
@@ -1452,6 +1706,26 @@ pub struct GetDistributionInfoArgs {
     pub common_args: CommonArgs,
 }
 
+/// Args for `dbt system upgrade-distribution`. No `common_args` flatten:
+/// this is a `System` subcommand, and `SystemMgmtArgs` already flattens
+/// `CommonArgs` once (same precedent as `SystemUpdateArgs`/`SystemUninstallArgs`).
+#[derive(Parser, Debug, Default, Clone, Serialize, Deserialize)]
+pub struct SystemUpgradeDistributionArgs {
+    /// Skip the confirmation prompt and proceed automatically.
+    #[arg(short = 'y', long)]
+    pub yes: bool,
+
+    /// For a managed-project upgrade, the Python package manager to sync
+    /// the rewritten manifest with (e.g. `uv`, `poetry`, `pdm`, `pipenv`,
+    /// `conda`, `hatch`, `pip`, `pipx`, `rye`, `asdf`, `mise`, `pyenv`).
+    /// Overrides automatic detection -- use this to answer non-interactively
+    /// when detection can't determine the manager on its own (it would
+    /// otherwise prompt for one interactively, or fail if run with --yes or
+    /// outside a terminal).
+    #[arg(long)]
+    pub package_manager: Option<String>,
+}
+
 #[derive(Parser, Debug, Clone, Serialize, Deserialize)]
 pub struct StateArgs {
     #[clap(flatten)]
@@ -1474,8 +1748,9 @@ pub enum StateSubcommand {
 
 #[derive(Parser, Debug, Default, Clone, Serialize, Deserialize)]
 pub struct StateExplainArgs {
-    #[arg(short, long)]
-    pub verbose: bool,
+    /// Enable more detailed output. Pass twice (-vv) to also include all upstream dependency changes
+    #[arg(short, long, action = ArgAction::Count)]
+    pub verbose: u8,
 
     #[arg(short = 'l', long = "log-file")]
     pub log_file: Option<PathBuf>,
@@ -1512,12 +1787,19 @@ impl DocsArgs {
 
 #[derive(clap::Subcommand, Debug, Clone, Serialize, Deserialize)]
 pub enum DocsSubcommand {
-    /// Generate docs catalog (deprecated: use `dbt compile --write-catalog` instead)
-    Generate,
+    /// Generate a self-contained, statically hostable docs site.
+    ///
+    /// Compiles the project, then writes the site that compile describes to
+    /// `--output-dir`. The result is a plain directory of files: host it anywhere,
+    /// no server process required.
+    ///
+    /// Pass `--no-compile` to skip the compile and export an existing index,
+    /// which is then an error if there is none.
+    Generate(DocsGenerateArgs),
     /// Start the dbt docs v2 server backed by parquet artifacts in the target directory.
     ///
-    /// Reads parquet artifacts written by `--use-index` (or `--write-index`) and
-    /// exposes a local HTTP server. Does not require a dbt project.
+    /// Reads parquet artifacts from a previous `build` / `run` / `docs generate`
+    /// and exposes a local HTTP server. Does not require a dbt project.
     Serve(DocsServeArgs),
     #[command(external_subcommand)]
     Other(Vec<String>),
@@ -1525,8 +1807,9 @@ pub enum DocsSubcommand {
 
 #[derive(Parser, Debug, Clone, Serialize, Deserialize)]
 pub struct DocsServeArgs {
-    /// Path to the dbt target directory containing the `index/` subdirectory of
-    /// parquet artifacts. Defaults to `./target` in the current working directory.
+    /// Path to the dbt target directory containing the `private/index/` subdirectory of
+    /// parquet artifacts. Defaults to the project's target directory, resolved from
+    /// `--project-dir` and `--target-path` like any other project command.
     #[arg(long, value_name = "DIR", env = "DBT_DOCS_TARGET_PATH")]
     pub target_path: Option<PathBuf>,
 
@@ -1552,6 +1835,49 @@ impl Default for DocsServeArgs {
             no_open: false,
         }
     }
+}
+
+/// Args for `dbt docs generate`.
+///
+/// Mirrors [`DocsServeArgs`] on `--target-path`, including the env var, so both
+/// docs subcommands locate the index identically. `generate` compiles and
+/// exports the index that compile produces, so it needs a project directory
+/// and a warehouse connection — unless `--no-compile` reduces it to the
+/// exporter it used to be.
+#[derive(Parser, Debug, Default, Clone, Serialize, Deserialize)]
+pub struct DocsGenerateArgs {
+    /// Path to the dbt target directory containing the `private/index/` subdirectory of
+    /// parquet artifacts. Defaults to `./target` in the current working directory.
+    #[arg(long, value_name = "DIR", env = "DBT_DOCS_TARGET_PATH")]
+    pub target_path: Option<PathBuf>,
+
+    /// Directory to write the static site to. Defaults to the target directory
+    /// itself, so `index.html` lands where core v1 wrote it.
+    #[arg(long, value_name = "DIR", env = "DBT_DOCS_OUTPUT_DIR")]
+    pub output_dir: Option<PathBuf>,
+
+    /// Base URL the browser loads DuckDB-WASM from at runtime.
+    ///
+    /// Defaults to the pinned jsDelivr path. Point this at a mirror to serve the
+    /// wasm from your own infrastructure; the site never bundles it.
+    #[arg(long, value_name = "URL", env = "DBT_DOCS_DUCKDB_CDN_BASE")]
+    pub duckdb_cdn_base: Option<String>,
+
+    /// Export only what is already indexed; never compile.
+    ///
+    /// Without this, a compile runs first, so the site always reflects the
+    /// project as it is now. With it, the export reads the index a previous
+    /// `build` / `run` / `docs generate` wrote and a missing one is an error
+    /// naming that remedy — useful where the warehouse is unreachable, or to
+    /// keep the command cheap and read-only.
+    #[arg(long, action = ArgAction::SetTrue, value_parser = BoolishValueParser::new(), env = "DBT_DOCS_NO_COMPILE", overrides_with = "compile")]
+    pub no_compile: bool,
+
+    /// Accepted for dbt v1 compatibility, where it was the default. Compiling is
+    /// the default here too, so this is a no-op; it exists so v1 scripts that pass
+    /// it keep working.
+    #[arg(long, action = ArgAction::SetTrue, value_parser = BoolishValueParser::new(), hide = true, overrides_with = "no_compile")]
+    pub compile: bool,
 }
 
 #[derive(Parser, Debug, Default, Clone, Serialize, Deserialize)]
@@ -1609,16 +1935,6 @@ pub struct CommonArgs {
     )]
     pub target: Option<String>,
 
-    /// The profile output to use for models on the alternate compute target
-    #[arg(
-        global = true,
-        long,
-        env = "DBT_X_ALT_TARGET",
-        help_heading = help_headings::PROJECT,
-        hide_short_help = true
-    )]
-    pub x_alt_target: Option<String>,
-
     /// The directory to load the dbt project from
     #[arg(
         global = true,
@@ -1671,8 +1987,21 @@ pub struct CommonArgs {
 
     /// Supply var bindings in yml format e.g. '{key: value}' or as separate key: value pairs
     // has no ENV_VAR
-    #[arg(global = true, long, value_parser = check_key_value_cli_arg, help_heading = help_headings::PROJECT, hide_short_help = true)]
+    #[arg(global = true, long, value_parser = check_key_value_cli_arg_with_recovery, help_heading = help_headings::PROJECT, hide_short_help = true)]
     pub vars: Option<BTreeMap<String, YValue>>,
+
+    /// The AI coding agent(s) to install package skills for, e.g. 'claude'.
+    /// Accepts a comma-separated list. Skills are only installed when this is set.
+    #[arg(
+        global = true,
+        long,
+        env = "DBT_ENGINE_AI_PROVIDER",
+        num_args(1..),
+        value_delimiter = ',',
+        help_heading = help_headings::PROJECT,
+        hide_short_help = true
+    )]
+    pub ai_provider: Option<Vec<String>>,
 
     /// Select nodes to run
     // has no ENV_VAR
@@ -1810,17 +2139,21 @@ pub struct CommonArgs {
     /// Enable full metadata output: incremental parse cache, epoch parquet state, and no JSON
     /// artifacts. Implies --partial-parse --no-write-json.
     ///
-    /// Not user-facing: kept for backwards compatibility with programmatic callers. Use
-    /// --write-index instead.
+    /// Not user-facing: kept for backwards compatibility with programmatic callers.
     #[arg(global = true, long, default_value_t=false, action = ArgAction::SetTrue, env = "DBT_WRITE_METADATA", value_parser = BoolishValueParser::new(), hide = true)]
     pub write_metadata: bool,
 
-    /// Write the parquet index to target/index/. With --static-analysis strict, also writes
-    /// column schemas and column-level lineage.
-    #[arg(global = true, long = "write-index", alias = "use-index", default_value_t=false, action = ArgAction::SetTrue, env = "DBT_USE_INDEX", value_parser = BoolishValueParser::new(), help_heading = help_headings::ARTIFACTS, hide_short_help = true)]
+    /// Internal engine index at target/private/index/. Not a user API — `build` / `run` /
+    /// `check` write it by default. Hidden; still accepted for programmatic callers.
+    #[arg(global = true, long = "write-index", alias = "use-index", default_value_t=false, action = ArgAction::SetTrue, env = "DBT_USE_INDEX", value_parser = BoolishValueParser::new(), hide = true)]
     pub write_index: bool,
+    /// Opt out of the index that `build` writes by default. `--write-index` is `SetTrue` with
+    /// no negation, so without this flag defaulting it on would leave no way back.
+    /// Hidden; still accepted for existing scripts.
+    #[arg(global = true, long, action = ArgAction::SetTrue, default_value_t=false, value_parser = BoolishValueParser::new(), hide = true)]
+    pub no_write_index: bool,
 
-    /// Directory for metadata parquet output (default: <target>/metadata/)
+    /// Directory for metadata parquet output (default: <target>/private/metadata/)
     #[arg(
         global = true,
         long,
@@ -1830,36 +2163,49 @@ pub struct CommonArgs {
     )]
     pub metadata_dir: Option<PathBuf>,
 
-    /// Directory for index parquet output (default: <target>/index/)
+    /// Directory for index parquet output (default: <target>/private/index/)
+    #[arg(global = true, long, env = "DBT_INDEX_DIR", hide = true)]
+    pub index_dir: Option<PathBuf>,
+
+    /// Write the dbt information schema to target/info_schema/: a queryable
+    /// parquet layer over your project's metadata. With --static-analysis strict,
+    /// also writes column types and column-level lineage.
+    #[arg(global = true, long = "generate-info-schema", default_value_t=false, action = ArgAction::SetTrue, env = "DBT_ENGINE_GENERATE_INFO_SCHEMA", value_parser = BoolishValueParser::new(), help_heading = help_headings::ARTIFACTS)]
+    pub generate_info_schema: bool,
+
+    /// Directory for information schema parquet output (default: <target>/info_schema/)
     #[arg(
         global = true,
         long,
-        env = "DBT_INDEX_DIR",
+        env = "DBT_ENGINE_INFO_SCHEMA_DIR",
         help_heading = help_headings::ARTIFACTS,
         hide_short_help = true
     )]
-    pub index_dir: Option<PathBuf>,
+    pub info_schema_dir: Option<PathBuf>,
+
+    /// Static analysis for nodes that do not configure `static_analysis`. Unlike
+    /// `--static-analysis`, nodes with a configured value keep it.
+    #[arg(
+        global = true,
+        long,
+        env = "DBT_ENGINE_DEFAULT_STATIC_ANALYSIS",
+        // Leave out the deprecated `on` and `unsafe`.
+        value_parser = PossibleValuesParser::new(["off", "baseline", "strict"])
+            .map(|s| s.parse::<StaticAnalysisKind>().expect("restricted to valid kinds")),
+        hide = true
+    )]
+    pub default_static_analysis: Option<StaticAnalysisKind>,
 
     /// Compute and write column-level lineage into compile/cll parquet.
-    /// Requires --write-index and --static-analysis strict. Omitting this flag
-    /// skips the expensive CLL graph build, keeping index writing fast.
-    #[arg(global = true, long, default_value_t=false, action = ArgAction::SetTrue, env = "DBT_WRITE_LINEAGE", value_parser = BoolishValueParser::new(), help_heading = help_headings::ARTIFACTS, hide_short_help = true)]
+    ///
+    /// Hidden. Auto-enabled when `--generate-info-schema` (or the hidden
+    /// `--write-index`) is combined with `--static-analysis strict`.
+    #[arg(global = true, long, default_value_t=false, action = ArgAction::SetTrue, env = "DBT_WRITE_LINEAGE", value_parser = BoolishValueParser::new(), hide = true)]
     pub write_lineage: bool,
 
     // Support for query cache
     #[arg(global = true, long, env = "DBT_BETA_USE_QUERY_CACHE", hide = true)]
     pub beta_use_query_cache: bool,
-
-    // Support for parquet-based schema store
-    #[arg(global = true, long, env = "DBT_USE_PARQUET_SCHEMA_STORE", hide = true)]
-    pub use_parquet_schema_store: bool,
-    #[arg(
-        global = true,
-        long,
-        env = "DBT_VERIFY_PARQUET_SCHEMA_STORE",
-        hide = true
-    )]
-    pub verify_parquet_schema_store: bool,
 
     //
     // NOTE: The arguments below were generated by a script to temporarily fill gaps between fs and
@@ -1932,6 +2278,7 @@ pub struct CommonArgs {
         global = true,
         long = "otel-file-name",
         env = "DBT_OTEL_FILE_NAME",
+        value_hint = ValueHint::FilePath,
         help_heading = help_headings::LOGGING,
         hide_short_help = true
     )]
@@ -1943,6 +2290,7 @@ pub struct CommonArgs {
         global = true,
         long = "otel-parquet-file-name",
         env = "DBT_OTEL_PARQUET_FILE_NAME",
+        value_hint = ValueHint::FilePath,
         help_heading = help_headings::LOGGING,
         hide_short_help = true
     )]
@@ -2008,11 +2356,11 @@ pub struct CommonArgs {
 
     #[arg(global = true, long, default_value_t = false, action = ArgAction::SetTrue, env = "DBT_PARTIAL_LOAD", value_parser = BoolishValueParser::new(), hide = true)]
     pub partial_load: bool,
-    #[arg(global = true, long, default_value_t = false, action = ArgAction::SetTrue, env = "DBT_PARTIAL_LOAD", value_parser = BoolishValueParser::new(), hide = true)]
+    #[arg(global = true, long, default_value_t = false, action = ArgAction::SetTrue, value_parser = BoolishValueParser::new(), hide = true)]
     pub no_partial_load: bool,
 
-    /// Select only nodes whose source files have changed since the last --partial-parse run,
-    /// plus all their downstream dependents. Implies --partial-parse.
+    /// Select only nodes whose source files have changed or been added since the last
+    /// --partial-parse run, plus all their downstream dependents. Implies --partial-parse.
     /// Use with --partial-load for full speed: --partial-load --dirty
     #[arg(global = true, long, default_value_t = false, action = ArgAction::SetTrue, env = "DBT_DIRTY", value_parser = BoolishValueParser::new(), help_heading = help_headings::EXECUTION, hide_short_help = true)]
     pub dirty: bool,
@@ -2042,6 +2390,19 @@ pub struct CommonArgs {
     /// When this option is passed, dbt will output low-level timing stats to the specified file. Example: `--record-timing-info output.profile`
     #[arg(global = true, long, short = 'r', hide = true)]
     pub record_timing_info: Option<PathBuf>,
+
+    /// Turn on a feature flag (`NAME`) or set it (`NAME=true|false`). Repeatable; also read
+    /// from DBT_ENGINE_FEATURES as a comma-separated list. Unstable: features may change or be
+    /// removed between releases.
+    #[arg(
+        global = true,
+        long = "feature",
+        value_name = "NAME[=VALUE]",
+        action = ArgAction::Append,
+        help_heading = help_headings::UNSTABLE,
+        hide_short_help = true
+    )]
+    pub features: Vec<String>,
 
     // Send anonymous usage stats to dbt Labs.
     #[arg(global = true, long, default_value_t=true, action = ArgAction::SetTrue, env = "DBT_SEND_ANONYMOUS_USAGE_STATS", value_parser = BoolishValueParser::new(), help_heading = help_headings::ADVANCED, hide_short_help = true)]
@@ -2087,7 +2448,7 @@ pub struct CommonArgs {
     // If set, ensure the installed dbt version matches the require-dbt-version specified in the dbt_project.yml file (if any). Otherwise, allow them to differ.
     #[arg(global = true, long , default_value_t=true,  action = ArgAction::SetTrue, env = "DBT_VERSION_CHECK", value_parser = BoolishValueParser::new(), hide=true)]
     pub version_check: bool,
-    /// Disable online version check for dbt-fusion updates
+    /// Disable online version check for dbt updates
     #[arg(global = true, long = "no-version-check", default_value_t=false,  action = ArgAction::SetTrue, env = "DBT_DISABLE_VERSION_CHECK", value_parser = BoolishValueParser::new(), help_heading = help_headings::EXECUTION, hide_short_help = true)]
     pub no_version_check: bool,
 
@@ -2140,7 +2501,13 @@ pub struct CommonArgs {
     // - `redis://<host>` for shared Redis coordination
     //
     /// Task cache coordination URL. Use `redis://<host>` for shared Redis coordination
-    #[clap(long, env = "DBT_TASK_CACHE_URL", default_value = "noop", hide = true)]
+    #[clap(
+        long,
+        env = "DBT_TASK_CACHE_URL",
+        default_value = "noop",
+        value_hint = ValueHint::Url,
+        hide = true
+    )]
     pub task_cache_url: String,
 
     /// Enable service-backed dbt State without legacy task-cache coordination
@@ -2246,6 +2613,10 @@ pub struct CommonArgs {
     #[arg(global = true, long, default_value = "false", action = ArgAction::SetTrue, hide = true)]
     pub skip_private_deps: bool,
 
+    /// Skip dependency resolution and linting files as-is (`dbt lint` only; unresolved package macros are tolerated in symbolic mode)
+    #[arg(global = true, long, default_value = "false", action = ArgAction::SetTrue, hide = true)]
+    pub no_deps: bool,
+
     /// If specified, the end datetime dbt uses to filter microbatch model inputs (exclusive).
     #[arg(
         global = true,
@@ -2279,6 +2650,10 @@ pub struct CommonArgs {
     /// When installing packages from Package Hub, use v2-compatible downloads if available
     #[arg(global = true, long, default_value = "false", action = ArgAction::SetTrue, env = "DBT_USE_V2_COMPATIBLE_PACKAGE_DOWNLOADS", value_parser = BoolishValueParser::new(), help_heading = help_headings::ADVANCED, hide_short_help = true)]
     pub use_v2_compatible_package_downloads: bool,
+
+    /// When installing packages from Package Hub, require a Hub-provided sha1 checksum and verify it, failing the install if Hub offers neither
+    #[arg(global = true, long, default_value = "false", action = ArgAction::SetTrue, env = "DBT_REQUIRE_HUB_VERIFIED_DOWNLOADS", value_parser = BoolishValueParser::new(), help_heading = help_headings::ADVANCED, hide_short_help = true)]
+    pub require_hub_verified_downloads: bool,
 
     /// If set, the maximum number of bytes that the ANTLR parser is allowed to
     /// allocate in its (per-dialect) global cache before it aborts with an
@@ -2333,15 +2708,29 @@ pub struct CommonArgs {
     pub antlr_parser_recursion_limit: Option<u32>,
 }
 
-fn resolve_show_arg(show_arg: &[ShowOptions], quiet: bool) -> HashSet<ShowOptions> {
+/// What an empty `--show` shows: progress and each completed node, except for a
+/// command whose output is a report of its own (`init <mode>`), where node
+/// results would bury it: progress only.
+fn default_show(cli: &Cli) -> &'static [ShowOptions] {
+    match &cli.command {
+        Command::Core(CoreCommand::Init(InitArgs { mode: Some(_), .. })) => {
+            &[ShowOptions::Progress]
+        }
+        _ => &[ShowOptions::Progress, ShowOptions::Completed],
+    }
+}
+
+fn resolve_show_arg(
+    show_arg: &[ShowOptions],
+    default: &[ShowOptions],
+    quiet: bool,
+) -> HashSet<ShowOptions> {
     let mut show = if show_arg.contains(&ShowOptions::All) {
         ShowOptions::iter().collect()
     } else if show_arg.contains(&ShowOptions::None) {
         HashSet::default()
     } else if show_arg.is_empty() {
-        [ShowOptions::Progress, ShowOptions::Completed]
-            .into_iter()
-            .collect()
+        default.iter().copied().collect()
     } else {
         show_arg
             .iter()
@@ -2396,7 +2785,7 @@ fn parse_manage_state_env(value: Option<&OsStr>) -> FsResult<Option<bool>> {
         return Ok(None);
     };
     BoolishValueParser::new()
-        .parse_ref(&clap::Command::new("dbt-fusion"), None, value)
+        .parse_ref(&clap::Command::new("dbt"), None, value)
         .map(Some)
         .map_err(|_| {
             fs_err!(
@@ -2488,7 +2877,7 @@ impl CommonArgs {
         } else {
             env::var_os("DBT_WARN_ERROR").and_then(|value| {
                 BoolishValueParser::new()
-                    .parse_ref(&clap::Command::new("dbt-fusion"), None, OsStr::new(&value))
+                    .parse_ref(&clap::Command::new("dbt"), None, OsStr::new(&value))
                     .ok()
             })
         }
@@ -2499,10 +2888,11 @@ impl CommonArgs {
     /// `--verify-partial-load` → `--partial-load` → `--partial-parse`
     /// `--verify-partial-parse` → `--partial-parse`
     /// `--dirty` → `--partial-parse`
-    /// `--write-index` → `--write-metadata` → `--partial-parse`
+    /// `--write-index` / `--generate-info-schema` → `--write-metadata` → `--partial-parse`
     pub fn effective_partial_parse(&self) -> bool {
         self.write_metadata
-            || self.write_index
+            || self.effective_write_index()
+            || self.generate_info_schema
             || self.partial_parse
             || self.partial_load
             || self.verify_partial_load
@@ -2511,9 +2901,31 @@ impl CommonArgs {
     }
 
     /// `--verify-partial-load` implies `--partial-load`. `--write-metadata` implies both.
-    /// `--write-index` implies `--write-metadata` implies both.
+    /// `--write-index` and `--generate-info-schema` imply `--write-metadata`, hence both.
+    ///
+    /// `--no-partial-load` cancels the fast path whatever turned it on here, so a caller keeps
+    /// the index without it (`--no-write-index` drops both). `--dirty` is cancelled at the
+    /// fast-path call site.
     pub fn effective_partial_load(&self) -> bool {
-        self.write_metadata || self.write_index || self.partial_load || self.verify_partial_load
+        !self.no_partial_load
+            && (self.write_metadata
+                || self.effective_write_index()
+                || self.generate_info_schema
+                || self.partial_load
+                || self.verify_partial_load)
+    }
+
+    /// `--write-index` after `--no-write-index` cancels it.
+    ///
+    /// Both `effective_partial_*` gates go through this rather than reading `write_index`
+    /// directly, because those implications exist only to serve the index. Cancelling the index
+    /// without cancelling them would leave the caller with no index but still on the
+    /// partial-load fast path. An explicit `--write-metadata` still implies both on its own;
+    /// `--no-write-index` only cancels the index.
+    /// (`--generate-info-schema` implies `--write-metadata` independently, so it stays in the gates
+    /// above regardless of `--no-write-index`.)
+    pub fn effective_write_index(&self) -> bool {
+        self.write_index && !self.no_write_index
     }
 
     /// Resolve the effective value of `--quiet` / `--no-quiet`.
@@ -2542,8 +2954,13 @@ impl CommonArgs {
             }
             expr
         });
-        let show = resolve_show_arg(self.show.as_slice(), self.get_quiet());
+        let show = resolve_show_arg(
+            self.show.as_slice(),
+            &[ShowOptions::Progress, ShowOptions::Completed],
+            self.get_quiet(),
+        );
         let replay = pick_replay_mode(self, arg.io.invocation_id, out_dir);
+        let send_anonymous_usage_stats = self.get_send_anonymous_usage_stats();
         EvalArgs {
             command: arg.command,
             io: IoArgs {
@@ -2555,9 +2972,10 @@ impl CommonArgs {
                 in_dir: in_dir.to_path_buf(),
                 out_dir: out_dir.to_path_buf(),
                 db_root: None,
-                send_anonymous_usage_stats: self.get_send_anonymous_usage_stats(),
+                send_anonymous_usage_stats,
                 status_reporter: arg.io.status_reporter.clone(),
                 log_format: self.log_format,
+                log_format_file: self.log_format_file,
                 log_level: self.log_level,
                 log_level_file: self.log_level_file,
                 log_file_max_bytes: self.log_file_max_bytes,
@@ -2567,11 +2985,10 @@ impl CommonArgs {
                 export_to_otlp: self.export_to_otlp,
                 show_all_deprecations: self.show_all_deprecations,
                 show_timings: arg.io.show_timings,
-                use_parquet_schema_store: self.use_parquet_schema_store,
-                verify_parquet_schema_store: self.verify_parquet_schema_store,
                 host: self.host.clone(),
                 port: self.port,
                 use_v2_compatible_package_downloads: self.use_v2_compatible_package_downloads,
+                require_hub_verified_downloads: self.require_hub_verified_downloads,
             },
             profiles_dir: self.profiles_dir.clone(),
             packages_install_path: self.packages_install_path.clone(),
@@ -2581,9 +2998,9 @@ impl CommonArgs {
             lock: false,       // comes from DepsArgs
             profile: self.profile.clone(),
             target: self.target.clone(),
-            x_alt_target: self.x_alt_target.clone(),
             update_deps: false,
             vars: self.vars.clone().unwrap_or_default(),
+            ai_provider: self.ai_provider.clone(),
             phase: self.phase.clone().unwrap_or(Phases::All),
             format: DEFAULT_FORMAT,
             limit: if arg.command == FsCommand::Extension("sl") {
@@ -2592,9 +3009,9 @@ impl CommonArgs {
                 Some(10)
             },
             from_main: false,
-            // `threads` controls connection backpressure and rendering
-            // parallelism. Sequential task execution is requested via the
-            // separate `no_parallel` flag below.
+            // `threads` caps the `dbt-runtime` blocking pool, and with it both
+            // warehouse concurrency and rendering parallelism. Sequential task
+            // execution is requested via the separate `no_parallel` flag below.
             num_threads: self.threads,
             no_parallel: self.no_parallel,
             select: select_option,
@@ -2616,6 +3033,8 @@ impl CommonArgs {
             macro_name: None,
             macro_args: BTreeMap::new(),
             macro_sql: None,
+            adapter_override: None,
+            query_id: None,
             selector: self.selector.clone(),
             resource_types: vec![],
             exclude_resource_types: vec![],
@@ -2652,15 +3071,28 @@ impl CommonArgs {
             log_path: self.log_path.clone(),
             project_dir: self.project_dir.clone(),
             quiet: self.get_quiet(),
-            send_anonymous_usage_stats: self.get_send_anonymous_usage_stats(),
+            send_anonymous_usage_stats,
             write_json: if (self.write_metadata && !self.write_index) || self.no_write_json {
                 false
             } else {
                 self.write_json
             },
             write_catalog: self.write_catalog,
-            write_metadata: self.write_metadata || self.write_index,
-            write_index: self.write_index,
+            // `--no-write-index` is authoritative over `--write-index`, the way
+            // `--no-write-json` is over `--write-json`. It cancels only the index, so
+            // `--write-metadata --no-write-index` still means epochs-without-index.
+            // `--generate-info-schema` implies `--write-metadata` on its own.
+            write_metadata: self.write_metadata
+                || self.effective_write_index()
+                || self.generate_info_schema,
+            write_index: self.effective_write_index(),
+            // Set by `Cli::to_eval_args` for the commands that default the index on; a
+            // per-command conversion cannot know it was a default rather than a request.
+            write_index_implied: false,
+            check_names: Vec::new(),
+            skip_checks: false,
+            generate_info_schema: self.generate_info_schema,
+            info_schema_dir: self.info_schema_dir.clone(),
             classify_with_warehouse_tags: self.classify_with_warehouse_tags,
             index_dir: self.index_dir.clone(),
             metadata_dir: self.metadata_dir.clone(),
@@ -2678,11 +3110,11 @@ impl CommonArgs {
             run_cache_mode: RunCacheMode::Noop,
             task_cache_url: self.task_cache_url.clone(),
             static_analysis: None,
+            default_static_analysis: self.default_static_analysis,
             full_refresh: false,
-            infer_schemas: false,
-            skip_type_checking: false,
-            show_sources: false,
-            resolve_ambiguous_cols: false,
+            // Derived later in `Cli::to_eval_args` from the caller's
+            // original `--static-analysis`/`--write-lineage` values.
+            infer_schemas_and_typeless: false,
             store_failures: self.store_failures,
             check_all: false,
             sample_renaming: BTreeMap::new(),
@@ -2690,43 +3122,56 @@ impl CommonArgs {
             local_execution_backend: self.compute.into(),
             skip_checkpoints: false,
             skip_private_deps: self.skip_private_deps,
+            no_deps: self.no_deps,
             event_time_end: self.event_time_end.clone(),
             event_time_start: self.event_time_start.clone(),
             internal_package_mode: self.internal_package_mode.clone(),
             skip_post_hooks: false,
+            skip_on_run_start_hooks: false,
             skip_creating_generic_tests: false,
             write_lineage: self.write_lineage,
             force_enable_linter: false,
+            force_enable_formatter_diagnostics: false,
             maximum_seed_size_mib: self.resolve_maximum_seed_size_mib(in_dir),
             command_entrypoint: arg.command,
         }
     }
 
-    pub fn get_send_anonymous_usage_stats(&self) -> bool {
-        if self.no_send_anonymous_usage_stats {
-            false
-        } else {
-            self.send_anonymous_usage_stats
-        }
-    }
-
-    /// Resolve send_anonymous_usage_stats with precedence:
-    /// `--no-send-anonymous-usage-stats` > DBT_SEND_ANONYMOUS_USAGE_STATS env > project yaml flags > true
+    /// Resolve send_anonymous_usage_stats like dbt Core, with precedence:
+    /// `DO_NOT_TRACK` > `--no-send-anonymous-usage-stats` > DBT_SEND_ANONYMOUS_USAGE_STATS env
+    /// > project yaml flags > true
+    ///
+    /// Finds `dbt_project.yml` like [`in_out_dir`], so callers that run before the project
+    /// directory is resolved get the same answer.
     ///
     /// Note: the clap flag has `default_value_t = true`, so an explicit
     /// `--send-anonymous-usage-stats=true` is indistinguishable from the default and will
     /// NOT override a YAML `false`. Only the explicit opt-out (`--no-`) and the env var are
     /// detectable here.
-    pub fn get_send_anonymous_usage_stats_for_project(&self, project_dir: &Path) -> bool {
-        if self.no_send_anonymous_usage_stats {
+    pub fn get_send_anonymous_usage_stats(&self) -> bool {
+        let env_bool = |name| {
+            env::var_os(name).and_then(|value| {
+                BoolishValueParser::new()
+                    .parse_ref(&clap::Command::new("dbt"), None, value.as_ref())
+                    .ok()
+            })
+        };
+        // `send_anonymous_usage_stats` is false only when the env var says so, or when the
+        // args were not parsed from the CLI (e.g. `CommonArgs::default()` for `dbt lsp`).
+        if env_bool("DO_NOT_TRACK") == Some(true)
+            || self.no_send_anonymous_usage_stats
+            || !self.send_anonymous_usage_stats
+        {
             return false;
         }
-        if let Some(value) = env::var_os("DBT_SEND_ANONYMOUS_USAGE_STATS") {
-            return BoolishValueParser::new()
-                .parse_ref(&clap::Command::new("dbt-fusion"), None, value.as_ref())
-                .unwrap_or(true);
+        if let Some(value) = env_bool("DBT_SEND_ANONYMOUS_USAGE_STATS") {
+            return value;
         }
-        send_anonymous_usage_stats_from_yaml(&project_dir.join(DBT_PROJECT_YML)).unwrap_or(true)
+        self.project_dir
+            .clone()
+            .or_else(|| determine_project_dir(&[], DBT_PROJECT_YML).ok())
+            .and_then(|dir| send_anonymous_usage_stats_from_yaml(&dir.join(DBT_PROJECT_YML)))
+            .unwrap_or(true)
     }
 
     pub fn get_introspect(&self) -> bool {
@@ -2742,6 +3187,11 @@ impl CommonArgs {
         }
 
         options
+    }
+
+    /// True when replaying a prior recorded dbt run via `--dbt-replay`, since those recordings predate fusion-only warnings.
+    pub fn skip_fusion_only_upgrades(&self) -> bool {
+        self.dbt_replay.is_some()
     }
 }
 
@@ -2784,9 +3234,10 @@ pub struct InitArgs {
     #[arg(long, default_value = "false")]
     pub skip_profile_setup: bool,
 
-    /// Run the Fusion onboarding/upgrade flow
-    #[arg(long, default_value = "false")]
-    pub fusion_upgrade: bool,
+    /// Run the dbt v2 onboarding/upgrade flow
+    #[arg(long = "v2-upgrade", alias = "fusion-upgrade", default_value = "false")]
+    #[serde(alias = "fusion_upgrade")]
+    pub v2_upgrade: bool,
 
     /// The sample project to initialize with
     #[arg(long, default_value = "jaffle-shop")]
@@ -2795,6 +3246,111 @@ pub struct InitArgs {
     // Flattened Common args
     #[clap(flatten)]
     pub common_args: CommonArgs,
+
+    /// Set up an existing project for something, instead of creating a project
+    #[command(subcommand)]
+    pub mode: Option<InitMode>,
+}
+
+#[derive(clap::Subcommand, Debug, Clone, Serialize, Deserialize)]
+pub enum InitMode {
+    /// Find the models in this project that can run on Lake Compute
+    Lakecompute(InitLakecomputeArgs),
+}
+
+impl InitMode {
+    pub fn name(&self) -> &'static str {
+        match self {
+            InitMode::Lakecompute(_) => "lakecompute",
+        }
+    }
+}
+
+#[derive(clap::Args, Debug, Clone, Default, Serialize, Deserialize)]
+pub struct InitLakecomputeArgs {
+    /// Print the report as JSON (with --quiet, stdout is the report alone)
+    #[arg(long, default_value = "false")]
+    pub json: bool,
+
+    /// With --json, report counts, grouped blockers and the plan, not each model
+    #[arg(long, default_value = "false", requires = "json")]
+    pub summary: bool,
+
+    /// List every model, not just a summary
+    #[arg(long, default_value = "false")]
+    pub all: bool,
+
+    /// Don't rewrite SQL that Lake Compute rejects
+    #[arg(long, default_value = "false")]
+    pub no_rewrite: bool,
+
+    /// Switch the models that can move: show the diff, then edit config and SQL
+    #[arg(long, default_value = "false")]
+    pub switch: bool,
+
+    /// Compile on Snowflake (as dbt compile does), then size and price models from query history, EXPLAIN and table sizes (read-only queries)
+    #[arg(long, default_value = "false")]
+    pub snowflake: bool,
+
+    /// With --snowflake, the days of query history to read
+    #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u32).range(1..=365))]
+    pub history_days: u32,
+
+    /// Write nothing with --switch; print queries without running them with --snowflake
+    #[arg(long, default_value = "false")]
+    pub dry_run: bool,
+
+    /// With --switch or --snowflake, go ahead without asking
+    #[arg(long, short = 'y', default_value = "false")]
+    pub yes: bool,
+
+    /// With --switch, also convert views that block models from moving
+    #[arg(long, default_value = "false", requires = "switch")]
+    pub convert_views: bool,
+
+    /// Before switching, fingerprint each model's Snowflake table for --validate
+    #[arg(long, default_value = "false", conflicts_with = "validate")]
+    pub baseline: bool,
+
+    /// After switched models build on Lake Compute, compare their tables with --baseline's
+    #[arg(long, default_value = "false")]
+    pub validate: bool,
+
+    /// With --switch, also switch models whose SQL couldn't be checked
+    #[arg(long, default_value = "false", requires = "switch")]
+    pub include_unverified: bool,
+
+    /// Read build times from this run_results.json (of a `dbt run` or `dbt build`)
+    /// [default: <target-path>/run_results.json]
+    #[arg(long)]
+    pub run_results: Option<PathBuf>,
+
+    /// Warehouse size to price build times at
+    #[arg(long, value_enum, default_value_t = WarehouseSize::XSmall)]
+    pub warehouse_size: WarehouseSize,
+}
+
+/// A Snowflake warehouse size, smallest first.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
+pub enum WarehouseSize {
+    #[default]
+    #[value(name = "xsmall")]
+    XSmall,
+    Small,
+    Medium,
+    Large,
+    #[value(name = "xlarge")]
+    XLarge,
+    #[value(name = "2xlarge")]
+    X2Large,
+    #[value(name = "3xlarge")]
+    X3Large,
+    #[value(name = "4xlarge")]
+    X4Large,
+    #[value(name = "5xlarge")]
+    X5Large,
+    #[value(name = "6xlarge")]
+    X6Large,
 }
 
 impl InitArgs {
@@ -2823,6 +3379,7 @@ impl InitArgs {
                 send_anonymous_usage_stats: self.common_args.get_send_anonymous_usage_stats(),
                 status_reporter: arg.io.status_reporter.clone(),
                 log_format: self.common_args.log_format,
+                log_format_file: self.common_args.log_format_file,
                 log_level: self.common_args.log_level,
                 log_level_file: self.common_args.log_level_file,
                 log_file_max_bytes: self.common_args.log_file_max_bytes,
@@ -2832,13 +3389,12 @@ impl InitArgs {
                 show_all_deprecations: self.common_args.show_all_deprecations,
                 show_timings: arg.from_main,
                 export_to_otlp: self.common_args.export_to_otlp,
-                use_parquet_schema_store: self.common_args.use_parquet_schema_store,
-                verify_parquet_schema_store: self.common_args.verify_parquet_schema_store,
                 host: self.common_args.host.clone(),
                 port: self.common_args.port,
                 use_v2_compatible_package_downloads: self
                     .common_args
                     .use_v2_compatible_package_downloads,
+                require_hub_verified_downloads: self.common_args.require_hub_verified_downloads,
             },
             task_cache_url: "noop".to_string(),
             favor_state: self.common_args.favor_state,
@@ -2864,7 +3420,11 @@ pub fn from_main(cli: &Cli) -> SystemArgs {
         io: IoArgs {
             invocation_id: common_args.invocation_id.unwrap_or_else(Uuid::now_v7),
             otel_parent_span_id: common_args.parent_span_id,
-            show: resolve_show_arg(common_args.show.as_slice(), common_args.get_quiet()),
+            show: resolve_show_arg(
+                common_args.show.as_slice(),
+                default_show(cli),
+                common_args.get_quiet(),
+            ),
             is_compile: command == FsCommand::Compile,
             debug: common_args.debug,
             in_dir: PathBuf::new(),
@@ -2873,6 +3433,7 @@ pub fn from_main(cli: &Cli) -> SystemArgs {
             send_anonymous_usage_stats: common_args.get_send_anonymous_usage_stats(),
             status_reporter: None,
             log_format: common_args.log_format,
+            log_format_file: common_args.log_format_file,
             log_level: match (common_args.debug, common_args.log_level) {
                 (true, Some(LogLevel::Trace)) => Some(LogLevel::Trace),
                 (true, _) => Some(LogLevel::Debug),
@@ -2890,11 +3451,10 @@ pub fn from_main(cli: &Cli) -> SystemArgs {
             otel_parquet_file_name: common_args.otel_parquet_file_name,
             show_all_deprecations: common_args.show_all_deprecations,
             show_timings: true,
-            use_parquet_schema_store: common_args.use_parquet_schema_store,
-            verify_parquet_schema_store: common_args.verify_parquet_schema_store,
             host: common_args.host,
             port: common_args.port,
             use_v2_compatible_package_downloads: common_args.use_v2_compatible_package_downloads,
+            require_hub_verified_downloads: common_args.require_hub_verified_downloads,
         },
         from_main: true,
         exit_process_on_panic: true,
@@ -2914,7 +3474,11 @@ pub fn from_lib(cli: &Cli) -> SystemArgs {
         io: IoArgs {
             invocation_id: common_args.invocation_id.unwrap_or_else(Uuid::now_v7),
             otel_parent_span_id: common_args.parent_span_id,
-            show: resolve_show_arg(common_args.show.as_slice(), common_args.get_quiet()),
+            show: resolve_show_arg(
+                common_args.show.as_slice(),
+                default_show(cli),
+                common_args.get_quiet(),
+            ),
             is_compile: command == FsCommand::Compile,
             debug: common_args.debug,
             in_dir: PathBuf::new(),
@@ -2924,6 +3488,7 @@ pub fn from_lib(cli: &Cli) -> SystemArgs {
             status_reporter: None,
             // should_cancel_compilation: None,
             log_format: common_args.log_format,
+            log_format_file: common_args.log_format_file,
             log_level: common_args.log_level,
             log_level_file: common_args.log_level_file,
             log_file_max_bytes: common_args.log_file_max_bytes,
@@ -2933,11 +3498,10 @@ pub fn from_lib(cli: &Cli) -> SystemArgs {
             otel_parquet_file_name: common_args.otel_parquet_file_name,
             show_all_deprecations: common_args.show_all_deprecations,
             show_timings: false,
-            use_parquet_schema_store: common_args.use_parquet_schema_store,
-            verify_parquet_schema_store: common_args.verify_parquet_schema_store,
             host: common_args.host,
             port: common_args.port,
             use_v2_compatible_package_downloads: common_args.use_v2_compatible_package_downloads,
+            require_hub_verified_downloads: common_args.require_hub_verified_downloads,
         },
         from_main: false,
         exit_process_on_panic: true,
@@ -2950,6 +3514,27 @@ pub fn from_lib(cli: &Cli) -> SystemArgs {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn expected_out_dir_joins_target_path_to_project_dir() {
+        let args = |project_dir: &str, target_path: Option<&str>| CommonArgs {
+            project_dir: Some(project_dir.into()),
+            target_path: target_path.map(PathBuf::from),
+            ..Default::default()
+        };
+        assert_eq!(
+            expected_out_dir(&args("proj", None)),
+            PathBuf::from("proj/target")
+        );
+        assert_eq!(
+            expected_out_dir(&args("proj", Some("out"))),
+            PathBuf::from("proj/out")
+        );
+        assert_eq!(
+            expected_out_dir(&args("proj", Some("/abs/out"))),
+            PathBuf::from("/abs/out")
+        );
+    }
 
     struct NoopParser;
 
@@ -2972,6 +3557,131 @@ mod tests {
             user_settings_path,
             default,
         )
+    }
+
+    #[test]
+    fn no_write_index_cancels_the_index_and_its_implications() {
+        // `--write-index` alone: index on, and it implies partial parse + partial load.
+        let mut args = CommonArgs {
+            write_index: true,
+            ..Default::default()
+        };
+        assert!(args.effective_write_index());
+        assert!(args.effective_partial_parse());
+        assert!(args.effective_partial_load());
+
+        // Adding `--no-write-index` must cancel all three together. Cancelling only the index
+        // would leave the caller with no index *and* the partial-load fast path, which cannot
+        // see files it has not already recorded.
+        args.no_write_index = true;
+        assert!(!args.effective_write_index());
+        assert!(!args.effective_partial_parse());
+        assert!(!args.effective_partial_load());
+    }
+
+    #[test]
+    fn no_partial_load_cancels_the_fast_path_but_keeps_the_index() {
+        // `--write-index --no-partial-load`: the caller keeps the index and opts out of the
+        // fast path. Before this, `--no-write-index` was the only way out and dropped both.
+        let args = CommonArgs {
+            write_index: true,
+            no_partial_load: true,
+            ..Default::default()
+        };
+        assert!(!args.effective_partial_load());
+        assert!(args.effective_write_index());
+        assert!(args.effective_partial_parse());
+    }
+
+    /// `effective_partial_load()` negates `no_partial_load`, so sharing `DBT_PARTIAL_LOAD` with
+    /// `partial_load` would make `DBT_PARTIAL_LOAD=1` turn the fast path off.
+    #[test]
+    fn no_partial_load_flag_is_not_populated_from_env() {
+        let reads_env = <CommonArgs as clap::Args>::augment_args(clap::Command::new("t"))
+            .get_arguments()
+            .find(|arg| arg.get_id() == "no_partial_load")
+            .map(|arg| arg.get_env().is_some());
+
+        assert_eq!(
+            reads_env,
+            Some(false),
+            "--no-partial-load must not read DBT_PARTIAL_LOAD via clap"
+        );
+    }
+
+    #[test]
+    fn no_write_index_leaves_explicit_write_metadata_alone() {
+        // `--write-metadata` implies partial parse/load on its own, so `--no-write-index`
+        // cancels only the index: this stays epochs-without-index.
+        let args = CommonArgs {
+            write_metadata: true,
+            no_write_index: true,
+            ..Default::default()
+        };
+        assert!(!args.effective_write_index());
+        assert!(args.effective_partial_parse());
+        assert!(args.effective_partial_load());
+    }
+
+    #[test]
+    fn hidden_artifact_flags_are_absent_from_long_help_but_still_parse() {
+        use clap::CommandFactory;
+
+        let help = CommonArgs::command().render_long_help().to_string();
+        for flag in [
+            "--write-lineage",
+            "--write-index",
+            "--write-metadata",
+            "--lineage",
+        ] {
+            assert!(
+                !help.contains(flag),
+                "{flag} must be hidden from --help, got:\n{help}"
+            );
+        }
+        assert!(
+            help.contains("--generate-info-schema"),
+            "public artifacts flag must remain in --help, got:\n{help}"
+        );
+        assert!(
+            help.contains("--write-catalog"),
+            "--write-catalog stays in --help, got:\n{help}"
+        );
+
+        let parsed = CommonArgs::try_parse_from([
+            "dbt",
+            "--write-catalog",
+            "--write-lineage",
+            "--write-index",
+            "--write-metadata",
+        ])
+        .expect("hidden artifact flags must remain accepted");
+        assert!(parsed.write_catalog);
+        assert!(parsed.write_lineage);
+        assert!(parsed.write_index);
+        assert!(parsed.write_metadata);
+
+        assert!(
+            CommonArgs::try_parse_from(["dbt", "--lineage"]).is_err(),
+            "--lineage is not a clap flag"
+        );
+    }
+
+    #[test]
+    fn show_info_parses_and_conflicts_with_inline() {
+        let parsed = ShowArgs::try_parse_from(["show", "--info", "models"])
+            .expect("--info must parse on show");
+        assert_eq!(parsed.info.as_deref(), Some("models"));
+
+        assert!(
+            ShowArgs::try_parse_from(["show", "--info", "models", "--inline", "select 1"]).is_err(),
+            "--info must conflict with --inline"
+        );
+        assert!(
+            ShowArgs::try_parse_from(["show", "--info", "models", "--adapter", "lakecompute"])
+                .is_err(),
+            "--info must conflict with --adapter"
+        );
     }
 
     #[test]
@@ -3363,26 +4073,371 @@ mod tests {
     }
 
     #[test]
-    fn version_json_uses_fusion_key() {
-        let parser = CliParser::new("dbt-fusion", "2.0.0-preview.92", Box::new(NoopParser));
+    fn version_json_uses_dbt_key() {
+        let parser = CliParser::new("dbt", "2.0.0-preview.92", Box::new(NoopParser));
 
-        assert_eq!(parser.version_json(), r#"{"fusion":"2.0.0-preview.92"}"#);
+        assert_eq!(parser.version_json(), r#"{"dbt":"2.0.0-preview.92"}"#);
         assert_eq!(
             parser.json_version_for_args(["dbt", "--format", "json", "--version"]),
-            Some(r#"{"fusion":"2.0.0-preview.92"}"#.to_string())
+            Some(r#"{"dbt":"2.0.0-preview.92"}"#.to_string())
+        );
+    }
+
+    fn test_system_args(command: FsCommand) -> SystemArgs {
+        SystemArgs {
+            command,
+            io: IoArgs::default(),
+            from_main: false,
+            exit_process_on_panic: false,
+            num_threads: None,
+            no_parallel: false,
+            target: None,
+        }
+    }
+
+    fn parse_core_command(args: &[&str]) -> CoreCommand {
+        let cli = CliParser::new("dbt", "2.0.0", Box::new(NoopParser))
+            .try_parse_from(std::iter::once("dbt").chain(args.iter().copied()))
+            .expect("args should parse");
+        match cli.command {
+            Command::Core(cmd) => cmd,
+            Command::Extension(_) => panic!("expected a core command"),
+        }
+    }
+
+    fn command_eval_resource_types(args: &[&str]) -> Vec<ClapResourceType> {
+        let cmd = parse_core_command(args);
+        let in_dir = Path::new("/tmp/in");
+        let out_dir = Path::new("/tmp/out");
+        match cmd {
+            CoreCommand::List(args) => {
+                args.to_eval_args(test_system_args(FsCommand::List), in_dir, out_dir)
+                    .resource_types
+            }
+            CoreCommand::Compile(args) => {
+                args.to_eval_args(test_system_args(FsCommand::Compile), in_dir, out_dir)
+                    .resource_types
+            }
+            CoreCommand::Freshness(args) => {
+                args.to_eval_args(test_system_args(FsCommand::Freshness), in_dir, out_dir)
+                    .resource_types
+            }
+            CoreCommand::Show(args) => {
+                args.to_eval_args(test_system_args(FsCommand::Show), in_dir, out_dir)
+                    .resource_types
+            }
+            CoreCommand::Test(args) => {
+                args.to_eval_args(test_system_args(FsCommand::Test), in_dir, out_dir)
+                    .resource_types
+            }
+            CoreCommand::Build(args) => {
+                args.to_eval_args(test_system_args(FsCommand::Build), in_dir, out_dir)
+                    .resource_types
+            }
+            other => panic!("expected a command with --resource-type, got {other:?}"),
+        }
+    }
+
+    fn exclude_resource_type_error(command: &str, flag: &str) -> String {
+        match CliParser::new("dbt", "2.0.0", Box::new(NoopParser)).try_parse_from([
+            "dbt",
+            command,
+            "--exclude-resource-type",
+            flag,
+        ]) {
+            Ok(_) => panic!("`{command}` accepted `--exclude-resource-type {flag}`"),
+            Err(error) => error.to_string(),
+        }
+    }
+
+    #[test]
+    #[allow(clippy::disallowed_methods)]
+    fn user_static_analysis_env_wins_over_default_static_analysis_env() {
+        // A platform-set default must not mask the user's own `DBT_STATIC_ANALYSIS`.
+        unsafe {
+            env::set_var("DBT_ENGINE_DEFAULT_STATIC_ANALYSIS", "off");
+            env::set_var("DBT_STATIC_ANALYSIS", "strict");
+        }
+        let cmd = parse_core_command(&["build"]);
+        unsafe {
+            env::remove_var("DBT_ENGINE_DEFAULT_STATIC_ANALYSIS");
+            env::remove_var("DBT_STATIC_ANALYSIS");
+        }
+        let CoreCommand::Build(args) = &cmd else {
+            panic!("expected CoreCommand::Build, got {cmd:?}");
+        };
+        let eval_args = args.to_eval_args(
+            test_system_args(FsCommand::Build),
+            Path::new("."),
+            Path::new("."),
+        );
+        assert_eq!(eval_args.static_analysis, Some(StaticAnalysisKind::Strict));
+        assert_eq!(
+            eval_args.default_static_analysis,
+            Some(StaticAnalysisKind::Off)
+        );
+    }
+
+    #[test]
+    fn top_level_freshness_command_parses_and_is_not_sources_only() {
+        let cmd = parse_core_command(&["freshness", "--select", "stg_orders+"]);
+
+        let CoreCommand::Freshness(args) = &cmd else {
+            panic!("expected CoreCommand::Freshness, got {cmd:?}");
+        };
+        assert_eq!(
+            args.common_args.select.as_deref(),
+            Some(["stg_orders+".to_string()].as_slice())
+        );
+        assert!(!cmd.as_command().is_sources_only_freshness());
+        assert_eq!(cmd.as_command(), FsCommand::Freshness);
+    }
+
+    #[test]
+    fn top_level_freshness_command_supports_resource_type_filters() {
+        let cmd = parse_core_command(&[
+            "freshness",
+            "--resource-type",
+            "source",
+            "--exclude-resource-type",
+            "model",
+        ]);
+
+        let CoreCommand::Freshness(args) = &cmd else {
+            panic!("expected CoreCommand::Freshness, got {cmd:?}");
+        };
+        assert_eq!(args.resource_type, Some(vec![ClapResourceType::Source]));
+        assert_eq!(
+            args.exclude_resource_type,
+            Some(vec![ClapResourceType::Model])
+        );
+
+        let eval_args = args.to_eval_args(
+            test_system_args(FsCommand::Freshness),
+            Path::new("/tmp/in"),
+            Path::new("/tmp/out"),
+        );
+        assert_eq!(eval_args.resource_types, vec![ClapResourceType::Source]);
+        assert_eq!(
+            eval_args.exclude_resource_types,
+            vec![ClapResourceType::Model]
+        );
+    }
+
+    #[test]
+    fn list_command_supports_exposure_resource_type() {
+        let cmd = parse_core_command(&["list", "--resource-type", "exposure"]);
+
+        let CoreCommand::List(args) = &cmd else {
+            panic!("expected CoreCommand::List, got {cmd:?}");
+        };
+        assert_eq!(args.resource_type, Some(vec![ClapResourceType::Exposure]));
+
+        let eval_args = args.to_eval_args(
+            test_system_args(FsCommand::List),
+            Path::new("/tmp/in"),
+            Path::new("/tmp/out"),
+        );
+        assert_eq!(eval_args.resource_types, vec![ClapResourceType::Exposure]);
+    }
+
+    #[test]
+    fn exclude_resource_type_rejects_all_and_default() {
+        for command in ["list", "build", "compile", "show", "test", "freshness"] {
+            for flag in ["all", "default"] {
+                let error = exclude_resource_type_error(command, flag);
+                assert!(
+                    error.contains(&format!("invalid value '{flag}'")),
+                    "`{command} --exclude-resource-type {flag}` should fail on the value: {error}"
+                );
+                assert!(
+                    error.contains("--exclude-resource-type"),
+                    "error should name the flag: {error}"
+                );
+            }
+            // Both `all` and `default` must be rejected, not silently ignored.
+        }
+    }
+
+    #[test]
+    fn commands_accept_resource_type_all() {
+        let all = ClapResourceType::resolve(&[ClapResourceType::All], &[]);
+        for command in ["list", "build", "compile", "show", "test", "freshness"] {
+            assert_eq!(
+                command_eval_resource_types(&[command, "--resource-type", "all"]),
+                all,
+                "{command} --resource-type all"
+            );
+        }
+    }
+
+    #[test]
+    fn list_omitted_resource_type_uses_list_defaults() {
+        let default = vec![
+            ClapResourceType::Model,
+            ClapResourceType::Source,
+            ClapResourceType::Seed,
+            ClapResourceType::Snapshot,
+            ClapResourceType::Test,
+            ClapResourceType::UnitTest,
+            ClapResourceType::Function,
+            ClapResourceType::SemanticModel,
+            ClapResourceType::Metric,
+            ClapResourceType::SavedQuery,
+            ClapResourceType::Check,
+            ClapResourceType::Exposure,
+            ClapResourceType::Experimental,
+        ];
+        assert_eq!(command_eval_resource_types(&["list"]), default);
+        assert_eq!(
+            command_eval_resource_types(&["list", "--resource-type", "default"]),
+            default
+        );
+    }
+
+    #[test]
+    fn show_omitted_resource_type_uses_show_defaults() {
+        let default = vec![
+            ClapResourceType::Model,
+            ClapResourceType::Snapshot,
+            ClapResourceType::Seed,
+            ClapResourceType::Source,
+            ClapResourceType::Analysis,
+            ClapResourceType::Test,
+        ];
+        assert_eq!(command_eval_resource_types(&["show"]), default);
+        assert_eq!(
+            command_eval_resource_types(&["show", "--resource-type", "default"]),
+            default
+        );
+    }
+
+    #[test]
+    fn test_omitted_resource_type_uses_test_defaults() {
+        let default = vec![ClapResourceType::Test, ClapResourceType::UnitTest];
+        assert_eq!(command_eval_resource_types(&["test"]), default);
+        assert_eq!(
+            command_eval_resource_types(&["test", "--resource-type", "default"]),
+            default
+        );
+    }
+
+    #[test]
+    fn build_omitted_resource_type_uses_build_defaults() {
+        let default = vec![
+            ClapResourceType::Model,
+            ClapResourceType::Seed,
+            ClapResourceType::Snapshot,
+            ClapResourceType::Test,
+            ClapResourceType::UnitTest,
+            ClapResourceType::Function,
+            ClapResourceType::Check,
+            ClapResourceType::Experimental,
+        ];
+        assert_eq!(command_eval_resource_types(&["build"]), default);
+        assert_eq!(
+            command_eval_resource_types(&["build", "--resource-type", "default"]),
+            default
+        );
+    }
+
+    #[test]
+    fn compile_and_freshness_omitted_resource_type_is_unfiltered() {
+        assert!(command_eval_resource_types(&["compile"]).is_empty());
+        assert!(command_eval_resource_types(&["freshness"]).is_empty());
+    }
+
+    #[test]
+    fn nested_source_freshness_command_is_sources_only() {
+        let cmd = parse_core_command(&["source", "freshness", "--select", "raw_orders"]);
+
+        let CoreCommand::Source(args) = &cmd else {
+            panic!("expected CoreCommand::Source, got {cmd:?}");
+        };
+        let SourceCommand::Freshness(freshness) = &args.command;
+        assert_eq!(
+            freshness.common_args.select.as_deref(),
+            Some(["raw_orders".to_string()].as_slice())
+        );
+        assert!(cmd.as_command().is_sources_only_freshness());
+        assert_eq!(cmd.as_command(), FsCommand::Source);
+    }
+
+    #[test]
+    fn nested_source_freshness_still_injects_resource_type_source() {
+        let cmd = parse_core_command(&["source", "freshness"]);
+        let CoreCommand::Source(args) = &cmd else {
+            panic!("expected CoreCommand::Source");
+        };
+
+        let eval_args = args.to_eval_args(
+            test_system_args(FsCommand::Source),
+            Path::new("/tmp/in"),
+            Path::new("/tmp/out"),
+        );
+
+        assert_eq!(eval_args.phase, Phases::Freshness);
+        assert_eq!(
+            eval_args.select.as_ref().map(|s| s.to_string()),
+            Some("resource_type:source".to_string())
+        );
+    }
+
+    #[test]
+    fn repeated_target_flag_keeps_last_value() {
+        let cmd = parse_core_command(&["compile", "--target", "dev", "--target", "prod"]);
+        let CoreCommand::Compile(args) = &cmd else {
+            panic!("expected CoreCommand::Compile, got {cmd:?}");
+        };
+        assert_eq!(args.common_args.target, Some("prod".to_string()));
+
+        let cmd = parse_core_command(&["compile", "-t", "dev", "-t", "prod"]);
+        let CoreCommand::Compile(args) = &cmd else {
+            panic!("expected CoreCommand::Compile, got {cmd:?}");
+        };
+        assert_eq!(args.common_args.target, Some("prod".to_string()));
+    }
+
+    #[test]
+    fn repeated_debug_flag_parses() {
+        let cmd = parse_core_command(&["build", "--debug", "--debug"]);
+        let CoreCommand::Build(args) = &cmd else {
+            panic!("expected CoreCommand::Build, got {cmd:?}");
+        };
+        assert!(args.common_args.debug);
+    }
+
+    #[test]
+    fn repeated_local_set_arg_keeps_last_value() {
+        let cmd = parse_core_command(&["compile", "--limit", "1", "--limit", "4"]);
+        let CoreCommand::Compile(args) = &cmd else {
+            panic!("expected CoreCommand::Compile, got {cmd:?}");
+        };
+        assert_eq!(args.limit.value(), Some(4));
+    }
+
+    #[test]
+    fn repeated_select_flag_still_unions() {
+        let cmd = parse_core_command(&["ls", "--select", "a", "--select", "b"]);
+        let CoreCommand::Ls(args) = &cmd else {
+            panic!("expected CoreCommand::Ls, got {cmd:?}");
+        };
+        assert_eq!(
+            args.common_args.select.as_deref(),
+            Some(["a".to_string(), "b".to_string()].as_slice())
         );
     }
 
     #[test]
     fn version_json_key_derives_from_command_name() {
-        let parser = CliParser::new("dbt-core", "1.9.0", Box::new(NoopParser));
+        let parser = CliParser::new("dbt-oss", "1.9.0", Box::new(NoopParser));
 
-        assert_eq!(parser.version_json(), r#"{"core":"1.9.0"}"#);
+        assert_eq!(parser.version_json(), r#"{"oss":"1.9.0"}"#);
     }
 
     #[test]
     fn json_version_returns_display_version_error() {
-        let err = CliParser::new("dbt-fusion", "2.0.0-preview.92", Box::new(NoopParser))
+        let err = CliParser::new("dbt", "2.0.0-preview.92", Box::new(NoopParser))
             .try_parse_from(["dbt", "--format", "json", "--version"])
             .expect_err("json version should short-circuit parsing");
 
@@ -3491,9 +4546,31 @@ mod tests {
         assert!(send_anonymous_usage_stats_from_yaml(&path).is_none());
     }
 
-    /// Serializes tests that mutate `DBT_SEND_ANONYMOUS_USAGE_STATS`, since env vars are
-    /// process-global and Rust runs tests in parallel within a binary.
+    /// Serializes tests that mutate `DBT_SEND_ANONYMOUS_USAGE_STATS` or `DO_NOT_TRACK`, since
+    /// env vars are process-global and Rust runs tests in parallel within a binary.
     static SEND_STATS_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Takes the env lock and clears both consent env vars, so ambient values (CI sets
+    /// `DO_NOT_TRACK=1` in some jobs) don't leak in.
+    #[allow(clippy::disallowed_methods)]
+    fn lock_send_stats_env() -> std::sync::MutexGuard<'static, ()> {
+        let guard = SEND_STATS_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { env::remove_var("DBT_SEND_ANONYMOUS_USAGE_STATS") };
+        unsafe { env::remove_var("DO_NOT_TRACK") };
+        guard
+    }
+
+    /// `CommonArgs` as clap parses `--project-dir <dir>` with no other flags:
+    /// `send_anonymous_usage_stats` defaults to true.
+    fn cli_default_args(project_dir: &Path) -> CommonArgs {
+        CommonArgs {
+            send_anonymous_usage_stats: true,
+            project_dir: Some(project_dir.to_path_buf()),
+            ..Default::default()
+        }
+    }
 
     fn write_yaml_with_stats(dir: &Path, value: bool) -> PathBuf {
         let path = dir.join("dbt_project.yml");
@@ -3506,70 +4583,74 @@ mod tests {
     }
 
     #[test]
-    fn get_send_anonymous_usage_stats_for_project_opt_out_wins() {
+    fn get_send_anonymous_usage_stats_opt_out_wins() {
+        let _guard = lock_send_stats_env();
         let dir = tempfile::tempdir().unwrap();
         // yaml says true, but the explicit `--no-` opt-out wins.
         write_yaml_with_stats(dir.path(), true);
         let args = CommonArgs {
             no_send_anonymous_usage_stats: true,
-            ..Default::default()
+            ..cli_default_args(dir.path())
         };
-        assert!(!args.get_send_anonymous_usage_stats_for_project(dir.path()));
+        assert!(!args.get_send_anonymous_usage_stats());
     }
 
     #[test]
     #[allow(clippy::disallowed_methods)]
-    fn get_send_anonymous_usage_stats_for_project_env_false_overrides_yaml_true() {
-        let _guard = SEND_STATS_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+    fn get_send_anonymous_usage_stats_env_false_overrides_yaml_true() {
+        let _guard = lock_send_stats_env();
         let dir = tempfile::tempdir().unwrap();
         write_yaml_with_stats(dir.path(), true);
-        let args = CommonArgs::default();
+        let args = cli_default_args(dir.path());
         unsafe { env::set_var("DBT_SEND_ANONYMOUS_USAGE_STATS", "false") };
-        let result = args.get_send_anonymous_usage_stats_for_project(dir.path());
+        let result = args.get_send_anonymous_usage_stats();
         unsafe { env::remove_var("DBT_SEND_ANONYMOUS_USAGE_STATS") };
         assert!(!result);
     }
 
     #[test]
     #[allow(clippy::disallowed_methods)]
-    fn get_send_anonymous_usage_stats_for_project_env_true_overrides_yaml_false() {
-        let _guard = SEND_STATS_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+    fn get_send_anonymous_usage_stats_env_true_overrides_yaml_false() {
+        let _guard = lock_send_stats_env();
         let dir = tempfile::tempdir().unwrap();
         write_yaml_with_stats(dir.path(), false);
-        let args = CommonArgs::default();
+        let args = cli_default_args(dir.path());
         unsafe { env::set_var("DBT_SEND_ANONYMOUS_USAGE_STATS", "true") };
-        let result = args.get_send_anonymous_usage_stats_for_project(dir.path());
+        let result = args.get_send_anonymous_usage_stats();
         unsafe { env::remove_var("DBT_SEND_ANONYMOUS_USAGE_STATS") };
         assert!(result);
     }
 
     #[test]
-    fn get_send_anonymous_usage_stats_for_project_yaml_only_fallback() {
-        let _guard = SEND_STATS_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        // Ensure no ambient env var leaks in.
-        unsafe { env::remove_var("DBT_SEND_ANONYMOUS_USAGE_STATS") };
+    fn get_send_anonymous_usage_stats_yaml_only_fallback() {
+        let _guard = lock_send_stats_env();
         let dir = tempfile::tempdir().unwrap();
         write_yaml_with_stats(dir.path(), false);
-        let args = CommonArgs::default();
-        assert!(!args.get_send_anonymous_usage_stats_for_project(dir.path()));
+        let args = cli_default_args(dir.path());
+        assert!(!args.get_send_anonymous_usage_stats());
     }
 
     #[test]
-    fn get_send_anonymous_usage_stats_for_project_defaults_true() {
-        let _guard = SEND_STATS_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        unsafe { env::remove_var("DBT_SEND_ANONYMOUS_USAGE_STATS") };
+    fn get_send_anonymous_usage_stats_defaults_true() {
+        let _guard = lock_send_stats_env();
         // No yaml file, no env, no opt-out → default true.
         let dir = tempfile::tempdir().unwrap();
-        let args = CommonArgs::default();
-        assert!(args.get_send_anonymous_usage_stats_for_project(dir.path()));
+        let args = cli_default_args(dir.path());
+        assert!(args.get_send_anonymous_usage_stats());
+    }
+
+    #[test]
+    fn get_send_anonymous_usage_stats_unparsed_args_stay_off() {
+        let _guard = lock_send_stats_env();
+        // `dbt lsp`, `dbt wizard` and `dbt agent` build `CommonArgs::default()`, which must
+        // keep Vortex off whatever the project says.
+        let dir = tempfile::tempdir().unwrap();
+        write_yaml_with_stats(dir.path(), true);
+        let args = CommonArgs {
+            project_dir: Some(dir.path().to_path_buf()),
+            ..Default::default()
+        };
+        assert!(!args.get_send_anonymous_usage_stats());
     }
 
     fn parse_internal_args(args: &[&str]) -> Result<InternalArgs, clap::Error> {
@@ -3608,5 +4689,36 @@ mod tests {
     fn get_distribution_info_path_and_all_are_mutually_exclusive() {
         let result = parse_internal_args(&["get-distribution-info", "--all", "/some/dbt"]);
         assert!(result.is_err());
+    }
+
+    /// Regression test for dbt-core#15685: both entrypoints carry
+    /// `--log-format-file` from `CommonArgs` into `IoArgs`.
+    #[test]
+    fn cli_entrypoints_carry_log_format_file_into_io_args() {
+        // `Cli::common_args()` reads the subcommand's args, not the top-level field.
+        let cli = Cli {
+            command: Command::Core(CoreCommand::Run(RunArgs {
+                common_args: CommonArgs {
+                    log_format: LogFormat::Text,
+                    log_format_file: Some(LogFormat::Json),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })),
+            common_args: CommonArgs::default(),
+        };
+
+        for (entrypoint, args) in [("from_main", from_main(&cli)), ("from_lib", from_lib(&cli))] {
+            assert_eq!(
+                args.io.log_format_file,
+                Some(LogFormat::Json),
+                "expected `{entrypoint}` to carry log_format_file"
+            );
+            assert_eq!(
+                args.io.log_format,
+                LogFormat::Text,
+                "expected `{entrypoint}` to leave log_format alone"
+            );
+        }
     }
 }

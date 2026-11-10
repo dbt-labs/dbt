@@ -65,6 +65,7 @@
   - [`GET /api/v1/search`](#get-apiv1search)
   - [ADR-9: Server-side analytics relay as the documented exception to the read-only GET pattern](#adr-9-server-side-analytics-relay-as-the-documented-exception-to-the-read-only-get-pattern)
   - [`POST /api/v1/analytics/events`](#post-apiv1analyticsevents)
+  - [ADR-10: Browser-to-Vortex analytics for static sites (supersedes ADR-9)](#adr-10-browser-to-vortex-analytics-for-static-sites-supersedes-adr-9)
 
 ---
 
@@ -328,7 +329,7 @@ Status legend: ✅ returned today · 🔧 needs backend change · 🔍 verify pa
 | `columns[*].index` | `number \| null` | Core | ✅ | — | Column order |
 | `columns[*].data_type` | `string \| null` | Core | ✅ | — | Declared in YAML |
 | `columns[*].declared_type` | `string \| null` | Core | ✅ | — | |
-| `columns[*].inferred_type` | `string \| null` | Proprietary | ✅ | — | `null` in Core; populated by Fusion static analysis |
+| `columns[*].inferred_type` | `string \| null` | Proprietary | ✅ | — | `null` in Core; populated by dbt v2 static analysis |
 | `columns[*].catalog_type` | `string \| null` | Core-conditional | ✅ | `null` when catalog absent | Warehouse-verified type; `null` unless `dbt docs generate` ran |
 | `columns[*].description` | `string \| null` | Core | ✅ | — | |
 | `columns[*].label` | `string \| null` | Core | ✅ | — | |
@@ -946,7 +947,7 @@ Status legend: ✅ returned today · 🔧 needs backend change · 🔍 verify pa
 | `columns[*].index` | `number \| null` | Core | ✅ | — | |
 | `columns[*].data_type` | `string \| null` | Core | ✅ | — | Declared in YAML |
 | `columns[*].declared_type` | `string \| null` | Core | ✅ | — | |
-| `columns[*].inferred_type` | `string \| null` | Proprietary | ✅ | — | `null` in Core; populated by Fusion static analysis |
+| `columns[*].inferred_type` | `string \| null` | Proprietary | ✅ | — | `null` in Core; populated by dbt v2 static analysis |
 | `columns[*].catalog_type` | `string \| null` | Core-conditional | ✅ | — | Warehouse-verified type |
 | `columns[*].description` | `string \| null` | Core | ✅ | — | |
 | `columns[*].label` | `string \| null` | Core | ✅ | — | |
@@ -1200,7 +1201,7 @@ Status legend: ✅ returned today · 🔧 needs backend change · 🔍 verify pa
 | `columns[*].index` | `number \| null` | Core | ✅ | — | Column order |
 | `columns[*].data_type` | `string \| null` | Core | ✅ | — | Declared in YAML patch |
 | `columns[*].declared_type` | `string \| null` | Core | ✅ | — | |
-| `columns[*].inferred_type` | `string \| null` | Proprietary | ✅ | — | `null` in Core; populated by Fusion static analysis |
+| `columns[*].inferred_type` | `string \| null` | Proprietary | ✅ | — | `null` in Core; populated by dbt v2 static analysis |
 | `columns[*].catalog_type` | `string \| null` | Core-conditional | ✅ | — | Warehouse-verified type; `null` unless `dbt docs generate` ran |
 | `columns[*].description` | `string \| null` | Core | ✅ | — | |
 | `columns[*].label` | `string \| null` | Core | ✅ | — | |
@@ -1446,7 +1447,7 @@ Status legend: ✅ returned today · 🔧 needs backend change · 🔍 verify pa
 | `columns[*].index` | `number \| null` | Core | ✅ | — | Column order |
 | `columns[*].data_type` | `string \| null` | Core | ✅ | — | Declared in YAML |
 | `columns[*].declared_type` | `string \| null` | Core | ✅ | — | |
-| `columns[*].inferred_type` | `string \| null` | Proprietary | ✅ | — | `null` in Core; populated by Fusion static analysis |
+| `columns[*].inferred_type` | `string \| null` | Proprietary | ✅ | — | `null` in Core; populated by dbt v2 static analysis |
 | `columns[*].catalog_type` | `string \| null` | Core-conditional | ✅ | — | Warehouse-verified type; `null` unless `dbt docs generate` ran |
 | `columns[*].description` | `string \| null` | Core | ✅ | — | |
 | `columns[*].label` | `string \| null` | Core | ✅ | — | |
@@ -2711,7 +2712,7 @@ Status legend: ✅ returned today · 🔧 needs backend change · 🔍 verify pa
 | `contract_enforced` | *(absent)* | — | ❌ | — | Model-only governance field; not applicable to metrics |
 | `raw_code` | *(absent)* | — | ❌ | — | Metrics have no SQL body; closest is `type_params.expr` for derived metrics |
 | `compiled_code` | *(absent)* | — | ❌ | — | Metrics have no SQL body |
-| `ai_context` | *(absent)* | — | ❌ | — | `dbt.metrics.ai_context` exists but is Proprietary/Fusion-specific; not a Discovery-public field. Defer until a UI consumer exists |
+| `ai_context` | *(absent)* | — | ❌ | — | `dbt.metrics.ai_context` exists but is Proprietary/dbt-v2-specific; not a Discovery-public field. Defer until a UI consumer exists |
 | `config` | *(absent)* | — | ❌ | — | `dbt.metrics.config` JSON exists but has no Discovery-public schema; defer until a UI consumer exists. Mirrors `TestDetail` Risk: the GraphQL `config` blob has no FE consumer for metrics either |
 | `refs` | *(absent)* | — | ❌ | — | `dbt.metrics.refs` JSON exists but is denormalized into `depends_on` via `dbt.edges`; do not duplicate |
 | `sources` | *(absent)* | — | ❌ | — | Same rationale as `refs` |
@@ -5706,7 +5707,7 @@ No handler exists for `GET /api/v1/metrics` today; every included field is 🔧 
 | `formula` | *(absent)* | — | ❌ | — | Class B per detail Design note 5: not a column on `dbt.metrics.parquet`. For `derived` metrics the expression lives at `type_params.expr` — read it there on the detail endpoint, not on the list row. |
 | `run_generated_at` | *(absent)* | — | ❌ | — | Class B per detail Design note 6: Discovery's `runGeneratedAt` has no parquet analogue under that name. `created_at` (above) replaces it for the list row's "Definition updated as of …" header semantics. |
 | `patch_path` | *(absent)* | — | ❌ | — | Class B: `MetricRow` has no `patch_path` column (unlike `NodeRow`/`MacroRow`). Metrics are defined directly in YAML; `original_file_path` is the YAML file (available on the detail endpoint only). |
-| `ai_context` | *(absent)* | — | ❌ | — | `dbt.metrics.ai_context` exists but is Proprietary/Fusion-specific; not a Discovery-public field. Defer until a UI consumer exists. |
+| `ai_context` | *(absent)* | — | ❌ | — | `dbt.metrics.ai_context` exists but is Proprietary/dbt-v2-specific; not a Discovery-public field. Defer until a UI consumer exists. |
 | `config` | *(absent)* | — | ❌ | — | JSON-string per CC-7. `dbt.metrics.config` exists but has no Discovery-public schema; defer until a UI consumer exists. |
 | `refs` / `sources` / `metrics` | *(absent)* | — | ❌ | — | JSON-string per CC-7. Denormalized into `depends_on` via `dbt.edges` on the detail endpoint; do not duplicate on the list row. |
 | `depends_on_macros` | *(absent)* | — | ❌ | — | Denormalized into the generic `depends_on` edge view on the detail endpoint; metrics rarely reference macros directly. Not exposed on the list row. |
@@ -6913,6 +6914,10 @@ interface SearchResponse {
 
 ## ADR-9: Server-side analytics relay as the documented exception to the read-only GET pattern
 
+> **Superseded by [ADR-10](#adr-10-browser-to-vortex-analytics-for-static-sites-supersedes-adr-9), and the endpoint it describes is deleted.** Kept for the
+> reasoning, which ADR-10 answers point by point. `POST /api/v1/analytics/events` no
+> longer exists; nor does any other `/api/v1/*` route.
+
 **Status:** Decided — docs v2 emits product analytics through a server-side relay in this crate; the browser never talks to Vortex directly. (META-7739)
 **Trigger to revisit:** A second write surface is proposed, OR the analytics volume/latency profile outgrows fire-and-forget and needs an ack/queue, OR the `docs.proto` contract moves into generated `proto-rust` types the CLI already links.
 
@@ -7107,3 +7112,79 @@ interface AnalyticsRelayResponse {
 3. **Wire types are hand-transcribed from `docs.proto`.** Field numbers/types are duplicated in `src/handlers/analytics.rs`. If `docs.proto` changes, this crate must be updated by hand (same maintenance posture as dbt-index and codex-vortex). The `enrichment` field (tag 1) is intentionally omitted — producers set it None and omitting it encodes identically.
 4. **Unknown `event_type` fails the whole batch.** Deserialization is all-or-nothing: one unknown/malformed event returns `400 invalid_event` and nothing in the batch is emitted. This keeps the contract strict; if partial acceptance is ever wanted, switch to per-event deserialization with a per-event error list.
 
+---
+
+## ADR-10: Browser-to-Vortex analytics for static sites (supersedes ADR-9)
+
+**Status:** Decided. Supersedes [ADR-9](#adr-9-server-side-analytics-relay-as-the-documented-exception-to-the-read-only-get-pattern) for the static-site distribution.
+
+### Context
+
+ADR-9 made `POST /api/v1/analytics/events` the single write surface and explicitly
+rejected browser-to-Vortex on three grounds: consent enforcement, PII containment, and
+CORS. That reasoning held while docs v2 was served by a process.
+
+`dbt docs generate` produces a directory of static files with no server. There is no
+relay to POST to, so ADR-9's mechanism is not available — the choice is browser-direct
+or no analytics at all.
+
+### Decision
+
+The browser posts events to the Vortex collector. Each of ADR-9's three objections, re-examined:
+
+**Consent.** Resolved at export time and inlined into `window.__DBT_DOCS__`. This is
+not a weakening — it is the only place the question *can* be answered, because consent
+lives in the project and profile, which only the machine running `dbt docs generate`
+can read. A visitor's browser has nothing to ask. When consent is denied the producer
+is configured `enabled: false`, which makes it drop every `logProto` and `flush`
+silently, so no call site can leak through by forgetting to check.
+
+**CORS.** Verified against the collector rather than assumed; no infrastructure change
+was required.
+
+**Event contents.** Unchanged, and deliberately so: the same eight events the relay
+forwarded, carrying the same fields. The transport moved; the schema did not. Of ADR-9's
+three objections this is the one that still has force, and it is tracked outside this
+document.
+
+Fields the relay hydrated server-side (`distribution`, `dbt_version`, `is_logged_in`,
+and the `dbt_cloud_*` context ids) are baked into the bootstrap at export time from the
+same `DistInfoProvider::telemetry_hydration()` seam that fed the relay.
+
+### Options considered
+
+1. **Drop analytics from static sites.** Simplest and safest, but leaves us unable to
+   tell whether the feature is used at all and if it is, how we can improve it
+2. **Keep a relay, require a server.** Reintroduces the exact dependency users told us
+   was a blocker, for telemetry alone.
+3. **Browser-direct (chosen).** Costs the properties analysed above; keeps the events
+   the relay already sent.
+
+### What is no longer true
+
+- The ingest URL is now in the shipped bundle. No credential ships with it — there was
+  never one to ship — but ADR-9's "keep the ingest URL off the browser" goal is
+  abandoned rather than met.
+- Field authority is weaker. The relay ignored client-supplied values for the hydrated
+  fields; now they come from a bootstrap that whoever hosts the site can edit. Treat the
+  hydrated fields as self-reported rather than authoritative.
+
+### Risk register
+
+1. **The event schema is carried over unchanged, and is reviewed separately.** This ADR
+   moved the transport only. Whether the current fields are the right ones to send from
+   a published site is a schema question, tracked outside this document and not resolved
+   here.
+2. **Consent is baked at generate time, not read at view time.** A site generated
+   under consent keeps sending until it is regenerated. Revoking consent requires a
+   rebuild. Acceptable for a static artifact; there is no mechanism that could do
+   better without a server. Furthermore, most users will self-host, enabling them to control consent.
+3. **No delivery guarantee.** Batching is off (`maxBatchBytes: -1`) so each event is
+   sent as it is logged, but a tab closing mid-flight still loses it. Same posture as
+   ADR-9's `202`.
+
+### Revisit when
+
+- The event schema review in risk 1 concludes, which may narrow what is sent.
+- A served distribution needs analytics again, in which case `telemetry.ts` grows a
+  second sink alongside this one.

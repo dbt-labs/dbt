@@ -1,8 +1,12 @@
 //! Client for sending messages to Vortex.
 //!
-//! The behavior of the producer can be controlled by setting environment variables:
-//! - `VORTEX_BASE_URL` (default `http://127.0.0.1:8083`): The base URL of the Vortex API.
-//! - `VORTEX_INGEST_ENDPOINT` (default `/internal/v1/ingest/protobuf`): The ingest endpoint of
+//! A host builds a [`VortexProducerClient`] from its own [`VortexEnv`]. Hosts that
+//! only need one can install their environment with [`init`] and use the free
+//! [`log_proto`] function instead of holding the producer themselves.
+//!
+//! The default [`VortexEnv`] implementation reads these environment variables:
+//! - `VORTEX_BASE_URL` (default `https://p.vx.dbt.com`): The base URL of the Vortex API.
+//! - `VORTEX_INGEST_ENDPOINT` (default `/v1/ingest/protobuf`): The ingest endpoint of
 //!   the Vortex API.
 //! - `VORTEX_DEV_MODE` (default `false`): If true, the producer will write to a file instead of
 //!   sending messages to an API endpoint.
@@ -13,15 +17,16 @@ use std::any::Any;
 use std::fs;
 use std::io::{self, Write as _};
 use std::path::PathBuf;
-use std::sync::{LazyLock, Mutex, mpsc};
+use std::sync::{Mutex, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use dbt_env::env::InternalEnv;
 use http::HeaderValue;
 use pbjson_types::Timestamp;
 use prost::Message;
 use proto_rust::v1::events::vortex::{VortexMessage, VortexMessageBatch};
+
+use crate::env::VortexEnv;
 
 #[cfg(test)]
 use std::println as trace;
@@ -39,20 +44,6 @@ const MAX_BACKOFF_MILLIS: u64 = 30_000;
 const LOG_PROTO_SHUTDOWN_MESSAGE: &str = "You're trying to log a message via \
 Vortex, but the client is already shut down. This should be fixed, but on release \
 builds the message will simply be dropped.";
-
-static WORKER_THREAD: Mutex<Option<JoinHandle<Result<(), ureq::Error>>>> = Mutex::new(None);
-
-static PRODUCER: LazyLock<VortexProducerClient> = LazyLock::new(|| {
-    let mut client = VortexProducerClient::default();
-    let handle = client.take_thread_handle();
-    debug_assert!(
-        client.is_in_dev_mode() || handle.is_some(),
-        "Worker thread must be spawned by VortexProducerClient::new()"
-    );
-    let mut lock = WORKER_THREAD.lock().unwrap();
-    *lock = handle;
-    client
-});
 
 #[derive(Debug)]
 pub enum ProducerError {
@@ -75,47 +66,6 @@ impl std::fmt::Display for ProducerError {
 }
 
 impl std::error::Error for ProducerError {}
-
-/// Main entrypoint for logging messages to Vortex.
-///
-/// Caller should ignore the return error. This function is non-blocking in production
-/// and only returns an error when the client is in dev-mode logging to a file.
-#[inline(always)]
-pub fn log_proto<T: Message + prost::Name + serde::Serialize>(
-    message: T,
-) -> Result<(), ProducerError> {
-    PRODUCER
-        .log_proto(message, false) // can only fail in dev mode
-        .map_err(ProducerError::DevModeError)
-}
-
-/// Logs the last message to Vortex and shuts down the client.
-pub fn log_proto_and_shutdown<T: Message + prost::Name + serde::Serialize>(
-    shutdown_message: T,
-) -> Result<(), ProducerError> {
-    PRODUCER
-        .log_proto(shutdown_message, true) // can only fail in dev mode
-        .map_err(ProducerError::DevModeError)?;
-    // Wait for the worker thread to finish processing messages. Since a
-    // shutdown message has been sent, it will NOT block indefinitely.
-    let handle = {
-        let mut lock = WORKER_THREAD.lock().unwrap();
-        lock.take()
-    };
-    match handle {
-        Some(h) => match h.join() {
-            Ok(Ok(())) => Ok(()),
-            Ok(Err(e)) => Err(ProducerError::SendError(e)),
-            Err(e) => Err(ProducerError::ShutdownError(e)),
-        },
-        None => Ok(()), // dev-mode or already shut down
-    }
-}
-
-pub fn vortex_producer_is_running() -> bool {
-    let lock = WORKER_THREAD.lock().unwrap();
-    lock.is_some()
-}
 
 struct Batch {
     // configuration and the RNG
@@ -348,10 +298,23 @@ struct BatchSenderAgentImpl {
 }
 
 impl BatchSenderAgentImpl {
-    pub fn new(endpoint: http::Uri, vortex_client_platform: HeaderValue) -> Self {
-        let config = ureq::config::Config::builder()
-            .http_status_as_error(false)
-            .build();
+    pub fn new(
+        endpoint: http::Uri,
+        vortex_client_platform: HeaderValue,
+        env: &dyn VortexEnv,
+    ) -> Self {
+        const TIMEOUT_PER_CALL: Duration = Duration::from_secs(30);
+
+        let config = {
+            let mut config_builder = ureq::config::Config::builder()
+                .http_status_as_error(false)
+                .timeout_per_call(Some(TIMEOUT_PER_CALL));
+            if let Some(tls_config) = env.tls_config() {
+                config_builder = config_builder.tls_config(tls_config);
+            }
+            config_builder.build()
+        };
+
         let agent = ureq::Agent::new_with_config(config);
         Self {
             agent,
@@ -401,9 +364,47 @@ impl SenderAgent for BatchSenderAgentImpl {
     }
 }
 
-struct VortexProducerClient {
+#[derive(Default)]
+pub struct WorkerThread {
+    join_handle: Option<JoinHandle<Result<(), ureq::Error>>>,
+}
+
+impl WorkerThread {
+    fn new(join_handle: Option<JoinHandle<Result<(), ureq::Error>>>) -> Self {
+        Self { join_handle }
+    }
+
+    /// An empty slot, `const` so hosts can hold it in a `static`.
+    pub const fn empty() -> Self {
+        Self { join_handle: None }
+    }
+
+    pub fn is_some(&self) -> bool {
+        self.join_handle.is_some()
+    }
+
+    pub(crate) fn take(&mut self) -> WorkerThread {
+        let join_handle = self.join_handle.take();
+        WorkerThread { join_handle }
+    }
+
+    /// Call after logging a message with is_shutdown=true to wait for the worker
+    /// thread to finish processing messages.
+    pub(crate) fn join_on_shutdown(self) -> Result<(), ProducerError> {
+        match self.join_handle {
+            Some(handle) => match handle.join() {
+                Ok(Ok(())) => Ok(()),
+                Ok(Err(e)) => Err(ProducerError::SendError(e)),
+                Err(e) => Err(ProducerError::ShutdownError(e)),
+            },
+            None => Ok(()), // dev-mode or already shut down
+        }
+    }
+}
+
+pub struct VortexProducerClient {
     sender: mpsc::Sender<(Box<VortexMessage>, bool)>,
-    thread_handle: Option<JoinHandle<Result<(), ureq::Error>>>,
+    thread_handle: WorkerThread,
     /// Path to the file where messages will be written in dev mode.
     ///
     /// Only set in development mode. MUST be `None` in production.
@@ -412,13 +413,11 @@ struct VortexProducerClient {
     dev_mode_output_writer: Mutex<Result<fs::File, io::Error>>,
 }
 
-impl Default for VortexProducerClient {
-    fn default() -> Self {
-        let env = InternalEnv::global();
-        let vortex_config = env.vortex_config();
+impl VortexProducerClient {
+    pub fn from_env(env: &dyn VortexEnv) -> Self {
         let endpoint = {
-            let base_url = vortex_config.base_url.clone();
-            let ingest_endpoint = vortex_config.ingest_endpoint.clone();
+            let base_url = env.base_url();
+            let ingest_endpoint = env.ingest_endpoint();
             let full_url = format!("{base_url}{ingest_endpoint}");
             full_url
                 .parse::<http::Uri>()
@@ -431,8 +430,8 @@ impl Default for VortexProducerClient {
             //     {service}/{version} {client}/{version} {proto_library}/{version}
             //
             // This helps identify the client platform and its components for monitoring and debugging.
-            let service_name = "fusion";
-            let service_version = env.invocation_config().dbt_version.clone();
+            let service_name = env.service_name();
+            let service_version = env.service_version();
             // TODO: Change this to the actual version of the proto-rust library.
             let proto_version = "unknown";
             #[allow(clippy::uninlined_format_args)]
@@ -449,20 +448,17 @@ impl Default for VortexProducerClient {
                 .expect("Failed to create X-Vortex-Client-Platform header value")
         };
         let dev_mode_output_path = {
-            if vortex_config.dev_mode == "true" {
-                let path = PathBuf::from(&vortex_config.dev_mode_output_path);
-                Some(path)
+            if env.dev_mode() {
+                Some(env.dev_mode_output_path())
             } else {
                 None
             }
         };
-        let agent = BatchSenderAgentImpl::new(endpoint, vortex_client_platform);
+        let agent = BatchSenderAgentImpl::new(endpoint, vortex_client_platform, env);
         let agent: Box<dyn SenderAgent> = Box::new(agent);
         Self::new(agent, dev_mode_output_path)
     }
-}
 
-impl VortexProducerClient {
     fn new(agent: Box<dyn SenderAgent>, dev_mode_output_path: Option<PathBuf>) -> Self {
         let dev_mode_output_writer = if let Some(path) = &dev_mode_output_path {
             match fs::OpenOptions::new().create(true).append(true).open(path) {
@@ -480,19 +476,18 @@ impl VortexProducerClient {
 
         let mut client = Self {
             sender,
-            thread_handle: None,
+            thread_handle: Default::default(),
             dev_mode_output_path,
             dev_mode_output_writer,
         };
-        client.thread_handle = if client.is_in_dev_mode() {
-            None
-        } else {
-            Some(thread::spawn(move || worker_thread_loop(agent, receiver)))
+        if !client.is_in_dev_mode() {
+            let join_handle = Some(thread::spawn(move || worker_thread_loop(agent, receiver)));
+            client.thread_handle = WorkerThread::new(join_handle);
         };
         client
     }
 
-    fn take_thread_handle(&mut self) -> Option<JoinHandle<Result<(), ureq::Error>>> {
+    pub fn take_thread_handle(&mut self) -> WorkerThread {
         debug_assert!(
             self.is_in_dev_mode() || self.thread_handle.is_some(),
             "take_thread_handle() must be called only once."
@@ -524,7 +519,38 @@ impl VortexProducerClient {
         }
     }
 
-    fn log_proto<T: Message + prost::Name + serde::Serialize>(
+    /// Main entrypoint for logging messages to Vortex.
+    ///
+    /// Caller should ignore the return error. This function is non-blocking in production
+    /// and only returns an error when the client is in dev-mode logging to a file.
+    #[inline(always)]
+    pub fn log_proto<T: Message + prost::Name + serde::Serialize>(
+        &self,
+        message: T,
+    ) -> Result<(), ProducerError> {
+        self.do_log_proto(message, false) // can only fail in dev mode
+            .map_err(ProducerError::DevModeError)
+    }
+
+    /// Logs the last message to Vortex and shuts down the client.
+    pub fn log_proto_and_shutdown<T: Message + prost::Name + serde::Serialize>(
+        &self,
+        worker_thread: &Mutex<WorkerThread>,
+        shutdown_message: T,
+    ) -> Result<(), ProducerError> {
+        self.do_log_proto(shutdown_message, true) // can only fail in dev mode
+            .map_err(ProducerError::DevModeError)?;
+        // Wait for the worker thread to finish processing messages. Since a
+        // shutdown message has been sent, it will NOT block indefinitely.
+        let worker_thread = {
+            let mut lock = worker_thread.lock().unwrap();
+            lock.take()
+        };
+        worker_thread.join_on_shutdown()
+    }
+
+    #[inline(always)]
+    fn do_log_proto<T: Message + prost::Name + serde::Serialize>(
         &self,
         message: T,
         is_shutdown: bool,
@@ -1116,13 +1142,13 @@ mod tests {
         let sent_batches_handle = agent.sent_batches_handle();
         let mut client = VortexProducerClient::new(Box::new(agent), None);
 
-        client.log_proto(test_message(0), false).unwrap();
-        client.log_proto(test_message(1), true).unwrap(); // shutdown message
-        client.log_proto(test_message(2), false).unwrap(); // after shutdown message (logged)
+        client.do_log_proto(test_message(0), false).unwrap();
+        client.do_log_proto(test_message(1), true).unwrap(); // shutdown message
+        client.do_log_proto(test_message(2), false).unwrap(); // after shutdown message (logged)
 
         let start = Instant::now();
         let handle = client.take_thread_handle();
-        handle.unwrap().join().unwrap().unwrap_err(); // wait for the worker thread to finish
+        handle.join_on_shutdown().unwrap_err(); // wait for the worker thread to finish
         let elapsed = start.elapsed();
         assert!(
             elapsed < MARGIN,
@@ -1142,17 +1168,17 @@ mod tests {
         let sent_batches_handle = agent.sent_batches_handle();
         let mut client = VortexProducerClient::new(Box::new(agent), None);
 
-        client.log_proto(test_message(0), false).unwrap();
-        client.log_proto(test_message(1), false).unwrap();
-        client.log_proto(test_message(2), false).unwrap();
-        client.log_proto(test_message(3), false).unwrap(); // TARGET_BATCH_SIZE_BYTES reached
-        client.log_proto(test_message(4), false).unwrap();
-        client.log_proto(test_message(5), true).unwrap(); // shutdown message
-        client.log_proto(test_message(6), false).unwrap(); // after shutdown message (might be logged)
+        client.do_log_proto(test_message(0), false).unwrap();
+        client.do_log_proto(test_message(1), false).unwrap();
+        client.do_log_proto(test_message(2), false).unwrap();
+        client.do_log_proto(test_message(3), false).unwrap(); // TARGET_BATCH_SIZE_BYTES reached
+        client.do_log_proto(test_message(4), false).unwrap();
+        client.do_log_proto(test_message(5), true).unwrap(); // shutdown message
+        client.do_log_proto(test_message(6), false).unwrap(); // after shutdown message (might be logged)
 
         let start = Instant::now();
         let handle = client.take_thread_handle();
-        handle.unwrap().join().unwrap().unwrap(); // wait for the worker thread to finish
+        handle.join_on_shutdown().unwrap(); // wait for the worker thread to finish
         #[cfg(feature = "scheduling-tests")]
         {
             let elapsed = start.elapsed();
@@ -1163,7 +1189,7 @@ mod tests {
         }
 
         // this prints a warning in debug mode, but does not do anything in release mode
-        let _ = client.log_proto(test_message(7), false);
+        let _ = client.do_log_proto(test_message(7), false);
 
         #[cfg(feature = "scheduling-tests")]
         sent_batches_handle.with_lock(|batches| {
@@ -1195,24 +1221,19 @@ mod tests {
         let sent_batches_handle = agent.sent_batches_handle();
         let mut client = VortexProducerClient::new(Box::new(agent), None);
 
-        client.log_proto(test_message(0), false).unwrap();
-        client.log_proto(test_message(1), false).unwrap();
+        client.do_log_proto(test_message(0), false).unwrap();
+        client.do_log_proto(test_message(1), false).unwrap();
         let elapsed = sent_batches_handle.poll_until(FLUSH_INTERVAL / 2, |batches| {
             batches.sent.len() == 1 && batches.sent[0].len() == 2
         });
         #[cfg(feature = "scheduling-tests")]
         assert!(elapsed >= flush_interval);
 
-        client.log_proto(test_message(2), false).unwrap();
-        client.log_proto(test_message(3), true).unwrap(); // shutdown message
-        client.log_proto(test_message(4), false).unwrap(); // after shutdown message (might be logged)
+        client.do_log_proto(test_message(2), false).unwrap();
+        client.do_log_proto(test_message(3), true).unwrap(); // shutdown message
+        client.do_log_proto(test_message(4), false).unwrap(); // after shutdown message (might be logged)
 
-        client
-            .take_thread_handle()
-            .unwrap()
-            .join()
-            .unwrap()
-            .unwrap();
+        client.take_thread_handle().join_on_shutdown().unwrap();
 
         sent_batches_handle.with_lock(|batches| {
             assert!(batches.sent.len() >= 2);
@@ -1255,14 +1276,14 @@ mod tests {
         let sent_batches_handle = agent.sent_batches_handle();
         let mut client = VortexProducerClient::new(Box::new(agent), None);
 
-        client.log_proto(test_message(0), false).unwrap();
-        client.log_proto(test_message(1), false).unwrap();
+        client.do_log_proto(test_message(0), false).unwrap();
+        client.do_log_proto(test_message(1), false).unwrap();
         sent_batches_handle.poll_until(flush_interval / 2, |batches| {
             assert!(batches.sent.is_empty());
             // 1 is observable here because flush_interval/2 < MIN_BACKOFF_MILLIS.
             batches.failed.len() == 1
         });
-        client.log_proto(test_message(2), false).unwrap();
+        client.do_log_proto(test_message(2), false).unwrap();
         sent_batches_handle.poll_until(flush_interval / 2, |batches| {
             // we expect the server to fail again, so the batch is not sent yet
             assert!(batches.sent.is_empty());
@@ -1282,14 +1303,9 @@ mod tests {
                 false
             }
         });
-        client.log_proto(test_message(3), true).unwrap(); // shutdown message
-        client.log_proto(test_message(4), false).unwrap(); // after shutdown message (might be logged)
-        client
-            .take_thread_handle()
-            .unwrap()
-            .join()
-            .unwrap()
-            .unwrap();
+        client.do_log_proto(test_message(3), true).unwrap(); // shutdown message
+        client.do_log_proto(test_message(4), false).unwrap(); // after shutdown message (might be logged)
+        client.take_thread_handle().join_on_shutdown().unwrap();
 
         sent_batches_handle.with_lock(|batches| {
             assert_eq!(batches.sent.len(), 2);
@@ -1315,10 +1331,10 @@ mod tests {
         let sent_batches_handle = agent.sent_batches_handle();
         let mut client = VortexProducerClient::new(Box::new(agent), None);
 
-        client.log_proto(test_message(0), false).unwrap();
-        client.log_proto(test_message(1), false).unwrap();
-        client.log_proto(test_message(2), false).unwrap();
-        client.log_proto(test_message(3), false).unwrap();
+        client.do_log_proto(test_message(0), false).unwrap();
+        client.do_log_proto(test_message(1), false).unwrap();
+        client.do_log_proto(test_message(2), false).unwrap();
+        client.do_log_proto(test_message(3), false).unwrap();
         let elapsed =
             sent_batches_handle.poll_until(flush_interval / 2, |batches| batches.sent.len() >= 1);
         #[cfg(feature = "scheduling-tests")]
@@ -1326,7 +1342,7 @@ mod tests {
 
         // After 1 success, the server will keep failing, so let's simulate a burst of messages.
         for i in 4..=14 {
-            client.log_proto(test_message(i), false).unwrap();
+            client.do_log_proto(test_message(i), false).unwrap();
         }
         // Poll for the next and last success.
         sent_batches_handle.poll_until(flush_interval / 2, |batches| batches.sent.len() >= 2);
@@ -1364,9 +1380,9 @@ mod tests {
         });
 
         // During the backoff period before the 3rd failure, we log more messages.
-        client.log_proto(test_message(15), false).unwrap();
-        client.log_proto(test_message(16), false).unwrap();
-        client.log_proto(test_message(17), false).unwrap();
+        client.do_log_proto(test_message(15), false).unwrap();
+        client.do_log_proto(test_message(16), false).unwrap();
+        client.do_log_proto(test_message(17), false).unwrap();
         sent_batches_handle.poll_until(flush_interval / 2, |batches| {
             if batches.failed.len() >= 3 {
                 #[cfg(feature = "scheduling-tests")]
@@ -1393,9 +1409,9 @@ mod tests {
         // During the backoff period we burst and log a shutdown message. We expect a 4th
         // failure in the request attempt made as soon as the shutdown message is received.
         for i in 18..=30 {
-            client.log_proto(test_message(i), false).unwrap();
+            client.do_log_proto(test_message(i), false).unwrap();
         }
-        client.log_proto(test_message(31), true).unwrap();
+        client.do_log_proto(test_message(31), true).unwrap();
         let elapsed = sent_batches_handle.poll_until(flush_interval / 2, |batches| {
             if batches.failed.len() >= 4 {
                 #[cfg(feature = "scheduling-tests")]
@@ -1426,11 +1442,6 @@ mod tests {
             "shutdown cancels the backoff and sends the shutdown message immediately"
         );
 
-        client
-            .take_thread_handle()
-            .unwrap()
-            .join()
-            .unwrap()
-            .unwrap_err();
+        client.take_thread_handle().join_on_shutdown().unwrap_err();
     }
 }

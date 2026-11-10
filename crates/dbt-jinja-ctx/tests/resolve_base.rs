@@ -1,15 +1,17 @@
 //! Tests covering `ResolveBaseCtx` end-to-end:
 //!
 //! 1. The typed ctx serializes to the same key set today's hand-built
-//!    `build_resolve_context` BTreeMap produces — six fixed keys plus one
+//!    `build_resolve_context` BTreeMap produces — fifteen fixed keys plus one
 //!    top-level entry per `dbt_namespace` (via `#[serde(flatten)]`).
 //! 2. The `dbt_namespaces` flatten emits each namespace as its own
 //!    top-level Jinja key (not as a nested `dbt_namespaces.foo` path).
 //! 3. The `ResolveBaseCtx` JsonSchema has stable shape (snapshot test).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-use dbt_jinja_ctx::{DbtNamespace, JinjaObject, ResolveBaseCtx, to_jinja_btreemap};
+use dbt_jinja_ctx::{
+    DbtNamespace, JinjaObject, MacroLookupContext, ResolveBaseCtx, to_jinja_btreemap,
+};
 use minijinja::Value as MinijinjaValue;
 
 fn fixture_resolve_base_ctx() -> ResolveBaseCtx {
@@ -34,8 +36,21 @@ fn fixture_resolve_base_ctx() -> ResolveBaseCtx {
         macro_dispatch_order,
         target_package_name: "my_project".to_string(),
         execute: false,
+        context: JinjaObject::new(MacroLookupContext::new(
+            "my_project".to_string(),
+            None,
+            BTreeSet::from(["my_project".to_string()]),
+        )),
         node: MinijinjaValue::NONE,
         connection_name: String::new(),
+        store_result: MinijinjaValue::from("store-result-stub"),
+        load_result: MinijinjaValue::from("load-result-stub"),
+        store_raw_result: MinijinjaValue::from("store-raw-result-stub"),
+        builtins: MinijinjaValue::from("builtins-stub"),
+        ref_fn: MinijinjaValue::from("ref-stub"),
+        source: MinijinjaValue::from("source-stub"),
+        metric: MinijinjaValue::from("metric-stub"),
+        function: MinijinjaValue::from("function-stub"),
         dbt_namespaces,
     }
 }
@@ -51,16 +66,57 @@ fn resolve_base_ctx_serializes_to_expected_keys() {
         vec![
             "MACRO_DISPATCH_ORDER",
             "TARGET_PACKAGE_NAME",
+            "builtins",
             "connection_name",
+            "context",
             "dbt",
             "doc",
             "execute",
+            "function",
+            "load_result",
+            "metric",
             "node",
+            "ref",
             "snowflake",
+            "source",
+            "store_raw_result",
+            "store_result",
         ],
-        "resolve-base ctx must produce the six base keys plus one entry per \
+        "resolve-base ctx must produce the fifteen base keys plus one entry per \
          dbt_namespace via #[serde(flatten)]"
     );
+}
+
+#[test]
+fn context_exposes_root_project_name_at_resolve_base() {
+    let registered = to_jinja_btreemap(&fixture_resolve_base_ctx());
+    let project_name = registered
+        .get("context")
+        .expect("context must be present at resolve-base scope")
+        .get_attr("project_name")
+        .expect("context.project_name must resolve");
+
+    assert_eq!(project_name.as_str(), Some("my_project"));
+}
+
+/// Regression: a custom `generate_schema_name` that calls `run_query(...)`
+/// unguarded reaches `load_result` through `statement`, and
+/// `generate_component_name` evaluates those macros against the bare base ctx.
+/// When the three result-store functions were only on `ResolveModelCtx`, the
+/// macro raised `UnknownFunction` and `generate_database_and_schema` silently
+/// fell back to the profile schema.
+#[test]
+fn result_store_fns_present_at_resolve_base() {
+    let ctx = fixture_resolve_base_ctx();
+    let registered = to_jinja_btreemap(&ctx);
+    for key in ["store_result", "load_result", "store_raw_result"] {
+        assert!(
+            registered.contains_key(key),
+            "`{key}` must be present at resolve-base scope; \
+             generate_*_name macros run against this ctx and dbt-core's \
+             MacroContext always exposes it"
+        );
+    }
 }
 
 #[test]

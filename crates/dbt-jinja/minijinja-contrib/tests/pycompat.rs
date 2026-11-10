@@ -1,6 +1,6 @@
 #![cfg(feature = "pycompat")]
 
-use minijinja::{Environment, Value};
+use minijinja::{context, Environment, Value};
 use minijinja_contrib::pycompat::unknown_method_callback;
 use similar_asserts::assert_eq;
 
@@ -118,6 +118,83 @@ fn test_dict_method_bare_attribute_returns_bound_method() {
     assert!(eval_expr("{'items': 99}['items'] == 99").is_true());
     // The bound method is callable: invoking it produces the dict's items.
     assert!(eval_expr("{'items': 99}.items()|list == [('items', 99)]").is_true());
+}
+
+#[test]
+fn test_undefined_get_returns_default() {
+    // Mirrors dbt-common's `Undefined.get(key, default=None)`: dbt macros
+    // commonly probe an undefined `config`-like object with
+    // `.get('key', default)`, and that must not fail, regardless of the
+    // engine's `UndefinedBehavior`.
+    let mut env = Environment::new();
+    env.set_unknown_method_callback(unknown_method_callback);
+
+    assert_eq!(
+        env.render_str(
+            "{{ values.get('missing', 'fallback') }}",
+            context! { values => Value::UNDEFINED },
+            &[],
+        )
+        .unwrap(),
+        "fallback"
+    );
+    assert_eq!(
+        env.render_str(
+            "{{ values.get('missing') is undefined }}",
+            context! { values => Value::UNDEFINED },
+            &[],
+        )
+        .unwrap(),
+        "True"
+    );
+}
+
+#[test]
+fn test_undefined_other_method_calls_fail() {
+    // Any method other than `get` on an undefined value must fail, so the
+    // engine can name the undefined receiver in the error (see
+    // `name_undefined_receiver` in minijinja/src/vm/mod.rs).
+    let mut env = Environment::new();
+    env.set_unknown_method_callback(unknown_method_callback);
+
+    let err = env
+        .render_str(
+            "{{ values.whatever(1, 2, foo=3) }}",
+            context! { values => Value::UNDEFINED },
+            &[],
+        )
+        .unwrap_err();
+    assert_eq!(err.kind(), minijinja::ErrorKind::UnknownMethod);
+}
+
+#[test]
+fn test_plain_sequence_pop_unsupported() {
+    // Unlike `MutableVec` (backing Jinja list literals), a plain `Vec<Value>`
+    // Object is immutable, so `pop()` can't remove the element in place.
+    // Like Python's tuple, it should not support `pop()` at all.
+    let mut env = Environment::new();
+    env.set_unknown_method_callback(unknown_method_callback);
+    let values = Value::from_object(vec![Value::from(1), Value::from(2), Value::from(3)]);
+
+    assert!(env
+        .render_str("{{ values.pop() }}", context! { values => values }, &[])
+        .is_err());
+}
+
+#[test]
+fn test_plain_sequence_iteration() {
+    let env = Environment::new();
+    let values = Value::from_object(vec![Value::from(1), Value::from(2), Value::from(3)]);
+
+    assert_eq!(
+        env.render_str(
+            "{{ values | list | join(',') }}",
+            context! { values => values },
+            &[],
+        )
+        .unwrap(),
+        "1,2,3"
+    );
 }
 
 #[test]

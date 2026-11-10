@@ -8,13 +8,15 @@ use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
 use dbt_common::{
     ErrorCode, FsError, FsResult,
-    constants::{DBT_LOG_DIR_NAME, DBT_TARGET_DIR_NAME},
+    constants::{DBT_LOG_DIR_NAME, DBT_TARGET_DIR_NAME, default_telemetry_dir},
     err, stdfs,
 };
 use dbt_test_primitives::is_update_golden_files_mode;
 use dbt_tracing::{IndexedTelemetryDeserializeError, TelemetryRecord};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use sha2::{Digest, Sha256};
+#[cfg(any(windows, test))]
+use std::sync::LazyLock;
 
 use crate::task::{
     goldie::{TextualPatch, diff_goldie, execute_and_compare},
@@ -43,6 +45,10 @@ const OTEL_PARQUET_FILE_NAME: &str = "otel.parquet";
 
 /// Stable invocation id used to keep telemetry snapshots reproducible.
 const TELEMETRY_INVOCATION_ID: &str = "424242424242";
+
+#[cfg(any(windows, test))]
+static JSON_ESCAPED_BACKSLASH_PATTERN: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"\\{2,}").unwrap());
 
 /// Telemetry event types that are known to be unstable and removed before normalization.
 const UNSTABLE_TELEMETRY_EVENT_TYPES: &[&str] = &[
@@ -185,7 +191,7 @@ fn compare_telemetry(
 
     let task_suffix = task_suffix(task_index);
     let actual_jsonl_path = log_dir.join(OTEL_JSONL_FILE_NAME);
-    let actual_parquet_path = target_dir.join("metadata").join(OTEL_PARQUET_FILE_NAME);
+    let actual_parquet_path = default_telemetry_dir(&target_dir).join(OTEL_PARQUET_FILE_NAME);
     let golden_jsonl_path = test_env
         .golden_dir
         .join(format!("{}{}.otel.jsonl", task.name, task_suffix));
@@ -275,7 +281,7 @@ fn parquet_to_jsonl(
 }
 
 /// Reads parquet bytes and deserializes each record batch into telemetry records.
-fn read_parquet_to_records(
+pub fn read_parquet_to_records(
     parquet_bytes: Vec<u8>,
     deserializer: TelemetryArrowDeserializer,
 ) -> FsResult<Vec<TelemetryRecord>> {
@@ -666,6 +672,12 @@ fn volatile_keys(deterministic_sort: bool) -> Vec<&'static str> {
         "host_os",
         "host_arch",
         "version",
+        // `mem::size_of` of the closure handed to `spawn_blocking`, so it is a
+        // target-layout fact, not an observation: the same closure measures 136
+        // bytes on Linux/macOS and 144 on windows-msvc. Snapshotting it makes
+        // the golden pass on one platform and fail on the others.
+        "size.bytes",
+        "original_size.bytes",
     ];
     if deterministic_sort {
         keys.extend(["span_id", "event_id", "parent_span_id"]);
@@ -740,12 +752,19 @@ fn strip_non_replayable_keys(content: String) -> String {
 fn json_safe_normalize_slashes(output: String) -> String {
     #[cfg(windows)]
     {
-        output.replace("\\\\", "|").replace("/", "|")
+        normalize_json_escaped_slashes(output)
     }
     #[cfg(not(windows))]
     {
         output
     }
+}
+
+#[cfg(any(windows, test))]
+fn normalize_json_escaped_slashes(output: String) -> String {
+    JSON_ESCAPED_BACKSLASH_PATTERN
+        .replace_all(&output, "|")
+        .replace('/', "|")
 }
 
 /// Applies every telemetry JSONL normalization transform in comparison order.
@@ -786,7 +805,20 @@ fn normalize_unrendered_config_in_model_strings(output: String) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_volatile_keys;
+    use super::{normalize_json_escaped_slashes, normalize_volatile_keys};
+    use crate::task::utils::normalize_windows_tmp_paths;
+
+    #[test]
+    fn normalizes_nested_windows_temp_paths() {
+        let expected = r#"{"string":"{'root_path': '|tmp|.tmpXXXXXX|root'}"}"#;
+        for content in [
+            r#"{"string":"{'root_path': 'C:\\Users\\Administrator\\AppData\\Local\\Temp\\.tmpcSTNo8\\root'}"}"#,
+            r#"{"string":"{'root_path': 'C:\\\\Users\\\\Administrator\\\\AppData\\\\Local\\\\Temp\\\\.tmpcSTNo8\\\\root'}"}"#,
+        ] {
+            let normalized = normalize_windows_tmp_paths(content.to_string());
+            assert_eq!(normalize_json_escaped_slashes(normalized), expected);
+        }
+    }
 
     #[test]
     fn normalizes_preview_nightly_version_targets() {

@@ -1,4 +1,4 @@
-use crate::{AdapterConfig, Auth, AuthError, AuthOutcome, auth_configure_pipeline};
+use crate::{AdapterConfig, Auth, AuthError, AuthWarningPrinter, auth_configure_pipeline};
 use database::Builder as DatabaseBuilder;
 use dbt_adbc::bigquery::auth_type;
 use dbt_adbc::{Backend, bigquery, database};
@@ -23,7 +23,15 @@ struct KeyFileJson {
     pub client_x509_cert_url: String,
 }
 
-pub struct BigqueryAuth;
+pub struct BigqueryAuth {
+    pub warning_printer: Box<dyn AuthWarningPrinter>,
+}
+
+impl BigqueryAuth {
+    pub fn new(warning_printer: Box<dyn AuthWarningPrinter>) -> Self {
+        Self { warning_printer }
+    }
+}
 
 enum BigqueryAuthIR<'a> {
     /// Interactive `gcloud` login flow (driver default auth).
@@ -51,18 +59,24 @@ enum BigqueryAuthIR<'a> {
 }
 
 impl<'a> BigqueryAuthIR<'a> {
-    pub fn apply(self, mut builder: DatabaseBuilder) -> Result<DatabaseBuilder, AuthError> {
+    pub fn apply(
+        self,
+        mut builder: DatabaseBuilder,
+        _warning_printer: &dyn AuthWarningPrinter,
+    ) -> Result<DatabaseBuilder, AuthError> {
         match self {
             Self::Oauth => {
                 builder.with_named_option(bigquery::AUTH_TYPE, auth_type::DEFAULT)?;
             }
             Self::ServiceAccount { keyfile } => {
-                let expanded_path = shellexpand::tilde(keyfile).to_string();
-                if Path::new(&expanded_path).exists() {
+                let expanded_path = shellexpand::tilde(keyfile);
+                if Path::new(expanded_path.as_ref()).exists() {
                     builder
                         .with_named_option(bigquery::AUTH_TYPE, auth_type::JSON_CREDENTIAL_FILE)?;
-                    builder
-                        .with_named_option(bigquery::AUTH_CREDENTIALS, expanded_path.as_str())?;
+                    builder.with_named_option(
+                        bigquery::AUTH_CREDENTIALS,
+                        expanded_path.into_owned(),
+                    )?;
                 } else {
                     return Err(AuthError::config(format!(
                         "Keyfile '{keyfile}' does not exist"
@@ -125,38 +139,47 @@ impl<'a> BigqueryAuthIR<'a> {
 /// Identity provider `type`s accepted in `token_endpoint` for `external-oauth-wif`.
 const SUPPORTED_TOKEN_ENDPOINT_TYPES: &[&str] = &["entra"];
 
-// The bigquery ADBC driver appends "bigquery/v2/" to the hostname provided
-// in `api_endpoint`. Here, we reject anything that isn't "http(s)://host[:port]/"
-// to fit that routine's preconditions.
-fn validate_api_endpoint(endpoint: &str) -> Result<(), AuthError> {
-    let url = Url::parse(endpoint).map_err(|_| {
-        AuthError::config(format!(
-            "'api_endpoint' must start with 'http://' or 'https://': {endpoint:?}"
-        ))
-    })?;
+/// An `http(s)://host[:port]/` URL with nothing after the host.
+struct HostEndpoint(Url);
 
-    if url.scheme() != "http" && url.scheme() != "https" {
-        return Err(AuthError::config(format!(
-            "'api_endpoint' must start with 'http://' or 'https://': {endpoint:?}"
-        )));
+impl HostEndpoint {
+    fn parse(key: &str, endpoint: &str) -> Result<Self, AuthError> {
+        let url = Url::parse(endpoint)
+            .ok()
+            .filter(|url| url.scheme() == "http" || url.scheme() == "https")
+            .ok_or_else(|| {
+                AuthError::config(format!(
+                    "'{key}' must start with 'http://' or 'https://': {endpoint:?}"
+                ))
+            })?;
+
+        if url.path() != "/" || url.query().is_some() || url.fragment().is_some() {
+            return Err(AuthError::config(format!(
+                "'{key}' must be a bare host (with optional port), e.g. 'https://your-proxy.example.com/': {endpoint:?}"
+            )));
+        }
+
+        Ok(Self(url))
     }
 
-    if !endpoint.ends_with('/') {
-        return Err(AuthError::config(format!(
-            "'api_endpoint' must end with a trailing '/': {endpoint:?}"
-        )));
+    /// `http(s)://host[:port]/`, which the driver appends "bigquery/v2/" to.
+    fn url(&self) -> &str {
+        self.0.as_str()
     }
 
-    if url.path() != "/" || url.query().is_some() || url.fragment().is_some() {
-        return Err(AuthError::config(format!(
-            "'api_endpoint' must be a bare host (with optional port), e.g. 'https://your-proxy.example.com/': {endpoint:?}"
-        )));
+    /// `host:port`, which the gRPC client dials.
+    fn host_port(&self) -> String {
+        // An http(s) URL always has a host and a known default port.
+        let host = self.0.host_str().unwrap_or_default();
+        let port = self.0.port_or_known_default().unwrap_or(443);
+        format!("{host}:{port}")
     }
-
-    Ok(())
 }
 
-fn parse_auth<'a>(config: &'a AdapterConfig) -> Result<BigqueryAuthIR<'a>, AuthError> {
+fn parse_auth<'a>(
+    config: &'a AdapterConfig,
+    _warning_printer: &dyn AuthWarningPrinter,
+) -> Result<BigqueryAuthIR<'a>, AuthError> {
     let method = config
         .get_str("method")
         .ok_or_else(|| AuthError::config("Missing required 'method' field in BigQuery config"))?;
@@ -313,21 +336,32 @@ fn resolve_impersonate_scopes(config: &AdapterConfig) -> String {
 fn apply_connection_args(
     config: &AdapterConfig,
     mut builder: DatabaseBuilder,
+    warning_printer: &dyn AuthWarningPrinter,
 ) -> Result<DatabaseBuilder, AuthError> {
     if let Some(project_id) = project_id(config)? {
         builder.with_named_option(bigquery::PROJECT_ID, project_id)?;
     }
 
     if let Some(quota_project) = config.get_string("quota_project") {
-        builder.with_named_option(bigquery::AUTH_QUOTA_PROJECT, quota_project)?;
+        builder.with_named_option(bigquery::AUTH_QUOTA_PROJECT, quota_project.into_owned())?;
     }
 
     let dataset_id = dataset_id(config)?;
     builder.with_named_option(bigquery::DATASET_ID, dataset_id)?;
 
-    if let Some(api_endpoint) = config.get_str("api_endpoint") {
-        validate_api_endpoint(api_endpoint)?;
-        builder.with_named_option(bigquery::API_ENDPOINT, api_endpoint)?;
+    if let Some(raw) = config.get_str("api_endpoint") {
+        let endpoint = HostEndpoint::parse("api_endpoint", raw)?;
+        if !raw.ends_with('/') {
+            warning_printer.warn(&format!(
+                "'api_endpoint' is missing a trailing '/', which dbt appends automatically. We suggest setting it to '{raw}/' instead."
+            ));
+        }
+        builder.with_named_option(bigquery::API_ENDPOINT, endpoint.url())?;
+    }
+
+    if let Some(raw) = config.get_str("storage_read_api_endpoint") {
+        let endpoint = HostEndpoint::parse("storage_read_api_endpoint", raw)?;
+        builder.with_named_option(bigquery::STORAGE_READ_API_ENDPOINT, endpoint.host_port())?;
     }
 
     if let Some(location) = config.get_str("location") {
@@ -393,8 +427,8 @@ impl Auth for BigqueryAuth {
         Backend::BigQuery
     }
 
-    fn configure(&self, config: &AdapterConfig) -> Result<AuthOutcome, AuthError> {
-        auth_configure_pipeline!(self.backend(), &config, parse_auth, apply_connection_args)
+    fn configure(&self, config: &AdapterConfig) -> Result<database::Builder, AuthError> {
+        auth_configure_pipeline!(self, &config, parse_auth, apply_connection_args)
     }
 }
 
@@ -461,9 +495,9 @@ mod tests {
     }
 
     fn try_configure(config: Mapping) -> Result<database::Builder, AuthError> {
-        let auth = BigqueryAuth {};
+        let auth = BigqueryAuth::new(Box::new(crate::NoopAuthWarningPrinter));
         let adapter_config = AdapterConfig::new(config);
-        auth.configure(&adapter_config).map(|r| r.builder)
+        auth.configure(&adapter_config)
     }
 
     #[test]
@@ -626,7 +660,7 @@ api_endpoint: https://definitely-not-bigquery.invalid/
     }
 
     #[test]
-    fn test_builder_from_auth_config_oauth_api_endpoint_rejects_missing_trailing_slash() {
+    fn test_builder_from_auth_config_oauth_api_endpoint_normalizes_missing_trailing_slash() {
         let yaml_doc = r#"
 database: my_db
 schema: my_schema
@@ -634,8 +668,11 @@ method: oauth
 api_endpoint: https://definitely-not-bigquery.invalid
 "#;
         let config = dbt_yaml::from_str::<Mapping>(yaml_doc).unwrap();
-        let err = try_configure(config).unwrap_err();
-        assert_contains!(err.msg(), "trailing '/'");
+        let builder = try_configure(config).unwrap();
+        assert_eq!(
+            other_option_value(&builder, bigquery::API_ENDPOINT).unwrap(),
+            "https://definitely-not-bigquery.invalid/"
+        );
     }
 
     #[test]
@@ -662,6 +699,107 @@ api_endpoint: definitely-not-bigquery.invalid/
         let config = dbt_yaml::from_str::<Mapping>(yaml_doc).unwrap();
         let err = try_configure(config).unwrap_err();
         assert_contains!(err.msg(), "http://' or 'https://'");
+    }
+
+    #[test]
+    fn test_builder_from_auth_config_storage_read_api_endpoint() {
+        let yaml_doc = r#"
+database: my_db
+schema: my_schema
+method: oauth
+storage_read_api_endpoint: https://definitely-not-bigquerystorage.invalid
+"#;
+        let config = dbt_yaml::from_str::<Mapping>(yaml_doc).unwrap();
+        let builder = try_configure(config).unwrap();
+        assert_eq!(
+            other_option_value(&builder, bigquery::STORAGE_READ_API_ENDPOINT).unwrap(),
+            "definitely-not-bigquerystorage.invalid:443"
+        );
+        assert!(other_option_value(&builder, bigquery::API_ENDPOINT).is_none());
+    }
+
+    #[test]
+    fn test_builder_from_auth_config_storage_read_api_endpoint_keeps_port() {
+        let yaml_doc = r#"
+database: my_db
+schema: my_schema
+method: oauth
+storage_read_api_endpoint: http://localhost:9060/
+"#;
+        let config = dbt_yaml::from_str::<Mapping>(yaml_doc).unwrap();
+        let builder = try_configure(config).unwrap();
+        assert_eq!(
+            other_option_value(&builder, bigquery::STORAGE_READ_API_ENDPOINT).unwrap(),
+            "localhost:9060"
+        );
+    }
+
+    #[test]
+    fn test_builder_from_auth_config_api_endpoint_and_storage_read_api_endpoint() {
+        let yaml_doc = r#"
+database: my_db
+schema: my_schema
+method: oauth
+api_endpoint: https://definitely-not-bigquery.invalid/
+storage_read_api_endpoint: https://definitely-not-bigquerystorage.invalid:8443/
+"#;
+        let config = dbt_yaml::from_str::<Mapping>(yaml_doc).unwrap();
+        let builder = try_configure(config).unwrap();
+        assert_eq!(
+            other_option_value(&builder, bigquery::API_ENDPOINT).unwrap(),
+            "https://definitely-not-bigquery.invalid/"
+        );
+        assert_eq!(
+            other_option_value(&builder, bigquery::STORAGE_READ_API_ENDPOINT).unwrap(),
+            "definitely-not-bigquerystorage.invalid:8443"
+        );
+    }
+
+    #[test]
+    fn test_builder_from_auth_config_storage_read_api_endpoint_rejects_path() {
+        let yaml_doc = r#"
+database: my_db
+schema: my_schema
+method: oauth
+storage_read_api_endpoint: https://bigquerystorage.googleapis.com/v1/
+"#;
+        let config = dbt_yaml::from_str::<Mapping>(yaml_doc).unwrap();
+        let err = try_configure(config).unwrap_err();
+        assert_contains!(err.msg(), "'storage_read_api_endpoint' must be a bare host");
+    }
+
+    #[test]
+    fn test_builder_from_auth_config_storage_read_api_endpoint_rejects_missing_scheme() {
+        let yaml_doc = r#"
+database: my_db
+schema: my_schema
+method: oauth
+storage_read_api_endpoint: bigquerystorage.googleapis.com:443
+"#;
+        let config = dbt_yaml::from_str::<Mapping>(yaml_doc).unwrap();
+        let err = try_configure(config).unwrap_err();
+        assert_contains!(err.msg(), "'storage_read_api_endpoint' must start with");
+    }
+
+    #[test]
+    fn test_builder_from_auth_config_oauth_priority_is_not_a_connection_option() {
+        let yaml_for = |priority| {
+            format!(
+                r#"
+database: my_db
+schema: my_schema
+method: oauth
+priority: {priority}
+"#
+            )
+        };
+
+        for priority in ["batch", "interactive"] {
+            let config = dbt_yaml::from_str::<Mapping>(&yaml_for(priority)).unwrap();
+            let builder = try_configure(config)
+                .unwrap_or_else(|e| panic!("rejected {priority:?}: {}", e.msg()));
+            assert_eq!(other_option_value(&builder, bigquery::QUERY_PRIORITY), None);
+        }
     }
 
     #[test]

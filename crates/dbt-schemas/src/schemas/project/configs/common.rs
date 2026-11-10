@@ -1,4 +1,5 @@
-use dbt_proc_macros::DefaultTo;
+use dbt_adapter_core::AdapterType;
+use dbt_proc_macros::{DefaultTo, WarehouseScope};
 use dbt_yaml::DbtSchema;
 use serde::{Deserialize, Serialize};
 // Type aliases for clarity
@@ -6,17 +7,24 @@ type YmlValue = dbt_yaml::Value;
 use indexmap::IndexMap;
 use serde_with::skip_serializing_none;
 use std::collections::BTreeMap;
+use std::fmt;
+use std::ops::{Deref, DerefMut};
+use std::sync::LazyLock;
 
+use dbt_common::ErrorCode;
+use dbt_common::tracing::dbt_emit::emit_error_log_message;
 use dbt_common::tracing::emit::emit_trace_event;
 use dbt_telemetry::StateModifiedDiff;
 
-use crate::schemas::common::PartitionConfig;
 use crate::schemas::common::{ClusterConfig, DocsConfig, Schedule};
+use crate::schemas::common::{PartitionConfig, RowFilterConfig};
 use crate::schemas::manifest::GrantAccessToTarget;
+use crate::schemas::project::configs::config_merge::TblProperties;
 use crate::schemas::project::configs::model_config::DataLakeObjectCategory;
 use crate::schemas::project::dbt_project::{ResolvableConfig, ResolvedConfig};
 use crate::schemas::serde::PartitionsConfig;
 use crate::schemas::serde::QueryTag;
+use crate::schemas::serde::RefreshableConfig;
 use crate::schemas::serde::StringOrArrayOfStrings;
 use crate::schemas::serde::{
     IndexesConfig, OmissibleGrantConfig, PrimaryKeyConfig, StringOrInteger, bool_or_string_bool,
@@ -91,165 +99,492 @@ pub fn tags_eq_vec(a: &[String], b: &[String]) -> bool {
 
 /// This configuration is a superset of all warehouse specific configurations
 /// that users can set
+// `#[warehouse(...)]` is required on every field and generates the resource applicability table.
 #[skip_serializing_none]
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, DbtSchema, DefaultTo)]
+#[derive(
+    Debug, Clone, Serialize, Deserialize, Default, PartialEq, DbtSchema, DefaultTo, WarehouseScope,
+)]
+// Clippy mistakes repeated variants across groups for duplicated attributes.
+#[allow(clippy::duplicated_attributes)]
+#[warehouse(
+    group(all_nodes, Model, Seed, Snapshot, Source, Test, UnitTest),
+    group(materializing, Model, Seed, Snapshot, Test, UnitTest)
+)]
 pub struct WarehouseSpecificNodeConfig {
     // Shared
+    #[warehouse(valid(all_nodes))]
     pub partition_by: Option<PartitionConfig>,
+    #[warehouse(valid(all_nodes))]
     pub cluster_by: Option<ClusterConfig>,
+    #[warehouse(valid(materializing))]
     pub adapter_properties: Option<BTreeMap<String, YmlValue>>,
 
     // BigQuery
+    #[warehouse(valid(Function, Model, Test))]
     pub description: Option<String>,
     #[serde(
         default,
         deserialize_with = "hours_to_expiration_or_string_omissible",
         skip_serializing_if = "Omissible::is_omitted"
     )]
+    #[warehouse(valid(all_nodes))]
     pub hours_to_expiration: Omissible<Option<StringOrInteger>>,
     #[serde(default, deserialize_with = "u64_or_string_u64")]
+    #[warehouse(valid(all_nodes))]
     pub job_execution_timeout_seconds: Option<u64>,
+    #[warehouse(valid(all_nodes))]
     pub reservation: Option<String>,
+    #[warehouse(valid(all_nodes))]
     pub labels: Option<IndexMap<String, String>>,
     #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(all_nodes))]
     pub labels_from_meta: Option<bool>,
+    #[warehouse(valid(all_nodes))]
     pub kms_key_name: Option<String>,
     #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(all_nodes))]
     pub require_partition_filter: Option<bool>,
     #[serde(default, deserialize_with = "u64_or_string_u64")]
+    #[warehouse(valid(all_nodes))]
     pub partition_expiration_days: Option<u64>,
+    #[warehouse(valid(all_nodes))]
     pub grant_access_to: Option<Vec<GrantAccessToTarget>>,
+    #[warehouse(valid(all_nodes))]
     pub partitions: Option<PartitionsConfig>,
     #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(all_nodes))]
     pub enable_refresh: Option<bool>,
     #[serde(default, deserialize_with = "f64_or_string_f64")]
+    #[warehouse(valid(all_nodes))]
     pub refresh_interval_minutes: Option<f64>,
+    #[warehouse(valid(Model, Seed, Snapshot))]
     pub resource_tags: Option<IndexMap<String, String>>,
+    #[warehouse(valid(all_nodes))]
     pub max_staleness: Option<String>,
+    #[warehouse(valid(Model))]
     pub jar_file_uri: Option<String>,
+    #[warehouse(valid(Model))]
     pub timeout: Option<u64>,
+    #[warehouse(valid(Model))]
     pub batch_id: Option<String>,
+    #[warehouse(valid(Model))]
     pub dataproc_cluster_name: Option<String>,
     #[serde(default, deserialize_with = "u64_or_string_u64")]
+    #[warehouse(valid(Model))]
     pub notebook_template_id: Option<u64>,
+    #[warehouse(valid(Model))]
     pub intermediate_format: Option<String>,
+    #[warehouse(valid(Model))]
     pub enable_list_inference: Option<bool>,
+    #[warehouse(valid(Model))]
     pub storage_uri: Option<String>,
+    #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(Model, Seed, Snapshot))]
+    pub enable_change_history: Option<bool>,
 
     // Used by both Databricks and Bigquery
+    #[warehouse(valid(all_nodes))]
     pub file_format: Option<String>,
 
     // Databricks
+    #[warehouse(valid(all_nodes))]
     pub catalog_name: Option<String>,
+    #[warehouse(valid(all_nodes))]
     pub location_root: Option<String>,
     #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(Model))]
     pub use_uniform: Option<bool>,
-    pub tblproperties: Option<BTreeMap<String, YmlValue>>,
+    #[warehouse(valid(all_nodes))]
+    pub tblproperties: Option<TblProperties>,
     // this config is introduced here https://github.com/databricks/dbt-databricks/pull/823
     #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(all_nodes))]
     pub include_full_name_in_path: Option<bool>,
+    #[warehouse(valid(all_nodes))]
     pub liquid_clustered_by: Option<StringOrArrayOfStrings>,
     #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(all_nodes))]
     pub auto_liquid_cluster: Option<bool>,
+    #[warehouse(valid(Model, Snapshot))]
+    pub zorder: Option<StringOrArrayOfStrings>,
+    #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(Model, Snapshot))]
+    pub skip_optimize: Option<bool>,
+    #[warehouse(valid(all_nodes))]
     pub clustered_by: Option<StringOrArrayOfStrings>,
+    #[warehouse(valid(all_nodes))]
     pub buckets: Option<i64>,
+    #[warehouse(valid(all_nodes))]
     pub catalog: Option<String>,
-    pub databricks_tags: Option<BTreeMap<String, YmlValue>>,
+    #[warehouse(valid(all_nodes))]
+    pub databricks_tags: Option<IndexMap<String, YmlValue>>,
+    #[warehouse(valid(materializing))]
+    pub query_tags: Option<String>,
+    #[warehouse(valid(all_nodes))]
     pub compression: Option<String>,
+    #[warehouse(valid(all_nodes))]
     pub databricks_compute: Option<String>,
+    #[warehouse(valid(all_nodes))]
     pub target_alias: Option<String>,
+    #[warehouse(valid(all_nodes))]
     pub source_alias: Option<String>,
+    #[warehouse(valid(all_nodes))]
     pub matched_condition: Option<String>,
+    #[warehouse(valid(all_nodes))]
     pub not_matched_condition: Option<String>,
+    #[warehouse(valid(all_nodes))]
     pub not_matched_by_source_condition: Option<String>,
+    #[warehouse(valid(all_nodes))]
+    pub merge_actions_explicit: Option<String>,
+    #[warehouse(valid(all_nodes))]
     pub not_matched_by_source_action: Option<String>,
     #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(all_nodes))]
     pub merge_with_schema_evolution: Option<bool>,
     #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(all_nodes))]
     pub skip_matched_step: Option<bool>,
     #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(all_nodes))]
     pub skip_not_matched_step: Option<bool>,
+    #[warehouse(valid(all_nodes))]
     pub schedule: Option<Schedule>,
     #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(Model))]
     pub incremental_apply_config_changes: Option<bool>,
     #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(Model, Snapshot))]
+    pub persist_constraints: Option<bool>,
+    #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(Model))]
+    pub use_materialization_v2: Option<bool>,
+    #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(Model))]
     pub use_safer_relation_operations: Option<bool>,
     #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(Model))]
     pub view_update_via_alter: Option<bool>,
+    #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(Model, Snapshot, UnitTest))]
+    pub unique_tmp_table_suffix: Option<bool>,
+    #[warehouse(valid(Model))]
+    pub row_filter: Option<RowFilterConfig>,
 
     // Snowflake
+    #[warehouse(valid(materializing))]
     pub table_tag: Option<String>,
+    #[warehouse(valid(materializing))]
     pub row_access_policy: Option<String>,
+    #[warehouse(valid(materializing))]
     pub external_volume: Option<String>,
+    #[warehouse(valid(materializing))]
     pub base_location_root: Option<String>,
+    #[warehouse(valid(materializing))]
     pub base_location_subpath: Option<String>,
+    // Snapshot table creation shares these Snowflake relation settings with models.
     #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(Model, Snapshot))]
     pub change_tracking: Option<bool>,
     #[serde(default, deserialize_with = "u64_or_string_u64")]
+    #[warehouse(valid(Model, Snapshot))]
     pub data_retention_time_in_days: Option<u64>,
     #[serde(default, deserialize_with = "u64_or_string_u64")]
+    #[warehouse(valid(Model, Snapshot))]
     pub max_data_extension_time_in_days: Option<u64>,
+    #[warehouse(valid(Model, Snapshot))]
     pub storage_serialization_policy: Option<String>,
+    #[warehouse(valid(Model, Snapshot))]
     pub target_file_size: Option<String>,
+    #[warehouse(valid(materializing))]
     pub target_lag: Option<String>,
+    #[warehouse(valid(materializing))]
     pub snowflake_initialization_warehouse: Option<String>,
+    #[warehouse(valid(materializing))]
     pub snowflake_warehouse: Option<String>,
+    #[warehouse(valid(materializing))]
     pub refresh_warehouse: Option<String>,
+    #[warehouse(valid(materializing))]
     pub immutable_where: Option<String>,
+    #[warehouse(valid(materializing))]
     pub refresh_mode: Option<String>,
+    #[warehouse(valid(materializing))]
     pub initialize: Option<String>,
+    #[warehouse(valid(materializing))]
     pub scheduler: Option<String>,
+    #[warehouse(valid(materializing))]
     pub tmp_relation_type: Option<String>,
+    #[warehouse(valid(materializing))]
     pub query_tag: Option<QueryTag>,
     #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(materializing))]
     pub automatic_clustering: Option<bool>,
     #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(materializing))]
     pub copy_grants: Option<bool>,
     #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(materializing))]
     pub copy_tags: Option<bool>,
     #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(materializing))]
     pub secure: Option<bool>,
     #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(materializing))]
     pub transient: Option<bool>,
     #[serde(default, deserialize_with = "u64_or_string_u64")]
+    #[warehouse(valid(Model, Snapshot))]
     pub iceberg_version: Option<u64>,
 
     // Redshift
     #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(all_nodes))]
     pub auto_refresh: Option<bool>,
     #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(all_nodes))]
     pub backup: Option<bool>,
     #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(all_nodes))]
     pub bind: Option<bool>,
-    pub dist: Option<String>,
+    #[warehouse(valid(all_nodes))]
+    pub dist: Option<StringOrArrayOfStrings>,
+    #[warehouse(valid(all_nodes))]
     pub sort: Option<StringOrArrayOfStrings>,
+    #[warehouse(valid(all_nodes))]
     pub sort_type: Option<String>,
 
     // MsSql
     // XXX: This is an incomplete set of configs
     #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(all_nodes))]
     pub as_columnstore: Option<bool>,
 
     // Athena
     // XXX: This is an incomplete set of configs
+    #[warehouse(valid(all_nodes))]
     pub table_type: Option<String>,
 
     // Postgres
     // XXX: This is an incomplete set of configs
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "IndexesConfig::is_none")]
+    #[warehouse(valid(all_nodes))]
     pub indexes: IndexesConfig,
     #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(all_nodes))]
     pub unlogged: Option<bool>,
 
     // Salesforce
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "PrimaryKeyConfig::is_none")]
+    #[warehouse(valid(Model))]
     pub primary_key: PrimaryKeyConfig,
+    #[warehouse(valid(Model))]
     pub category: Option<DataLakeObjectCategory>,
+
+    // ClickHouse
+    // Table options, valid where the v1 macros render them: create_csv_table (seeds: engine,
+    // order_by), create_table_as (snapshots and store_failures tests: all of them), the Memory
+    // fixture tables of unit tests (settings only). v2's seed insert renders no query_settings
+    // yet, so the key is not valid on seeds until the v1 insert path is restored.
+    #[warehouse(valid(Model, Seed, Snapshot, Test))]
+    pub engine: Option<String>,
+    #[warehouse(valid(Model, Seed, Snapshot, Test))]
+    pub order_by: Option<StringOrArrayOfStrings>,
+    #[warehouse(valid(Model, Snapshot, Test))]
+    pub ttl: Option<String>,
+    #[warehouse(valid(Model, Snapshot, Test, UnitTest))]
+    pub settings: Option<BTreeMap<String, YmlValue>>,
+    #[warehouse(valid(Model, Snapshot, Test))]
+    pub query_settings: Option<BTreeMap<String, YmlValue>>,
+    #[warehouse(valid(Model, Snapshot, Test))]
+    pub projections: Option<Vec<YmlValue>>,
+    // distributed materializations
+    #[warehouse(valid(Model))]
+    pub sharding_key: Option<String>,
+    // Only reaches DDL through a node-built relation (`ClickHouseRelation.create_from`,
+    // dbt/adapters/clickhouse/relation.py): models and seeds. Snapshot and test targets come from
+    // api.Relation.create, where v1 ignores it too.
+    #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(Model, Seed))]
+    pub disable_on_cluster: Option<bool>,
+    // incremental materialization
+    #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(Model))]
+    pub inserts_only: Option<bool>,
+    // dictionary materialization
+    #[warehouse(valid(Model))]
+    pub connection_overrides: Option<BTreeMap<String, YmlValue>>,
+    #[warehouse(valid(Model))]
+    pub fields: Option<Vec<YmlValue>>,
+    #[warehouse(valid(Model))]
+    pub source_type: Option<String>,
+    #[warehouse(valid(Model))]
+    pub url: Option<String>,
+    #[warehouse(valid(Model))]
+    pub format: Option<String>,
+    #[warehouse(valid(Model))]
+    pub layout: Option<String>,
+    #[warehouse(valid(Model))]
+    pub lifetime: Option<YmlValue>,
+    #[warehouse(valid(Model))]
+    pub range: Option<YmlValue>,
+    #[warehouse(valid(Model))]
+    pub table: Option<String>,
+    #[warehouse(valid(Model))]
+    pub update_field: Option<String>,
+    #[warehouse(valid(Model))]
+    pub update_lag: Option<YmlValue>,
+    // view materialization
+    #[warehouse(valid(Model))]
+    pub definer: Option<String>,
+    #[warehouse(valid(Model))]
+    pub sql_security: Option<String>,
+    // materialized-view materialization
+    #[warehouse(valid(Model))]
+    pub refreshable: Option<RefreshableConfig>,
+    #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(Model))]
+    pub catchup: Option<bool>,
+    #[warehouse(valid(Model))]
+    pub mv_on_schema_change: Option<String>,
+    #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(Model))]
+    pub repopulate_from_mvs_on_full_refresh: Option<bool>,
+
+    // Exasol
+    // Key names match the Python dbt-exasol adapter so existing projects
+    // migrate without config changes. Snapshots share Exasol table creation with models.
+    #[warehouse(valid(Model, Snapshot))]
+    pub partition_by_config: Option<StringOrArrayOfStrings>,
+    #[warehouse(valid(Model, Snapshot))]
+    pub distribute_by_config: Option<StringOrArrayOfStrings>,
+    #[warehouse(valid(Model, Snapshot))]
+    pub primary_key_config: Option<StringOrArrayOfStrings>,
 }
 
 impl ResolvedConfig for WarehouseSpecificNodeConfig {
     fn enabled(&self) -> bool {
         true
+    }
+}
+
+/// The aliases [`take_databricks_catalog_alias`] translates, for a config type that calls it.
+pub const TYPED_ALIAS_KEYS: &[&str] = &["catalog"];
+
+/// Takes the Databricks `catalog` alias value out of `warehouse_specific`, for the caller to
+/// move into its own `database` field -- mirroring dbt-core's `Credentials._ALIASES`
+/// (`catalog` -> `database`, `dbt/adapters/databricks/credentials.py:69-72`). `None` on every
+/// other adapter (D1) or when `catalog` was not set at this config layer.
+///
+/// Shared by every config type that embeds [`WarehouseSpecificNodeConfig`] and has its own
+/// `database` field, since that field's exact type (`Option<String>` vs
+/// `Omissible<Option<String>>`) differs by config type -- callers pass whether their own
+/// `database` is already set and wrap the returned value themselves.
+pub fn take_databricks_catalog_alias(
+    adapter_type: AdapterType,
+    warehouse_specific: &mut WarehouseSpecificNodeConfig,
+    database_already_set: bool,
+) -> Option<String> {
+    if adapter_type != AdapterType::Databricks {
+        return None;
+    }
+    if database_already_set {
+        if warehouse_specific.catalog.is_some() {
+            emit_error_log_message(
+                ErrorCode::InvalidConfig,
+                "Config keys `catalog` and `database` both resolve to `database` for adapter \
+                 'databricks'; a project cannot set the same underlying config key two different \
+                 ways in the same place.",
+            );
+        }
+        return None;
+    }
+    warehouse_specific.catalog.take()
+}
+
+static EMPTY_WAREHOUSE_SPECIFIC_NODE_CONFIG: LazyLock<WarehouseSpecificNodeConfig> =
+    LazyLock::new(WarehouseSpecificNodeConfig::default);
+
+/// A [`WarehouseSpecificNodeConfig`] that is heap-allocated only when it differs from the
+/// default, so configs that set no warehouse option don't carry the whole struct inline.
+///
+/// Derefs to the config, or to a shared default when nothing is allocated. Serialization,
+/// deserialization, equality and `Debug` all go through that logical value, so the storage is
+/// not observable.
+#[derive(Clone, Default)]
+pub struct LazyWarehouseSpecificNodeConfig(Option<Box<WarehouseSpecificNodeConfig>>);
+
+impl LazyWarehouseSpecificNodeConfig {
+    /// The allocated config, or `None` for a default.
+    pub fn get(&self) -> Option<&WarehouseSpecificNodeConfig> {
+        self.0.as_deref()
+    }
+
+    /// Mutable access to an allocated config. Returns `None`, without allocating, for a default.
+    pub fn get_mut(&mut self) -> Option<&mut WarehouseSpecificNodeConfig> {
+        self.0.as_deref_mut()
+    }
+
+    /// Frees the allocation if the config is back to the default.
+    pub fn free_if_default(&mut self) {
+        if self
+            .0
+            .as_deref()
+            .is_some_and(|config| *config == *EMPTY_WAREHOUSE_SPECIFIC_NODE_CONFIG)
+        {
+            self.0 = None;
+        }
+    }
+
+    pub fn into_inner(self) -> WarehouseSpecificNodeConfig {
+        self.0.map(|config| *config).unwrap_or_default()
+    }
+}
+
+impl From<WarehouseSpecificNodeConfig> for LazyWarehouseSpecificNodeConfig {
+    fn from(config: WarehouseSpecificNodeConfig) -> Self {
+        if config == *EMPTY_WAREHOUSE_SPECIFIC_NODE_CONFIG {
+            Self(None)
+        } else {
+            Self(Some(Box::new(config)))
+        }
+    }
+}
+
+impl Deref for LazyWarehouseSpecificNodeConfig {
+    type Target = WarehouseSpecificNodeConfig;
+
+    fn deref(&self) -> &WarehouseSpecificNodeConfig {
+        self.0
+            .as_deref()
+            .unwrap_or(&EMPTY_WAREHOUSE_SPECIFIC_NODE_CONFIG)
+    }
+}
+
+impl DerefMut for LazyWarehouseSpecificNodeConfig {
+    fn deref_mut(&mut self) -> &mut WarehouseSpecificNodeConfig {
+        self.0.get_or_insert_with(Default::default)
+    }
+}
+
+impl PartialEq for LazyWarehouseSpecificNodeConfig {
+    fn eq(&self, other: &Self) -> bool {
+        **self == **other
+    }
+}
+
+impl fmt::Debug for LazyWarehouseSpecificNodeConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&**self, f)
+    }
+}
+
+impl Serialize for LazyWarehouseSpecificNodeConfig {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        (**self).serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for LazyWarehouseSpecificNodeConfig {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        WarehouseSpecificNodeConfig::deserialize(deserializer).map(Self::from)
     }
 }
 
@@ -381,6 +716,7 @@ pub fn same_warehouse_config(
         self_wh.require_partition_filter == other_wh.require_partition_filter;
     let partition_expiration_days_eq =
         self_wh.partition_expiration_days == other_wh.partition_expiration_days;
+    let enable_change_history_eq = self_wh.enable_change_history == other_wh.enable_change_history;
     let grant_access_to_eq = self_wh.grant_access_to == other_wh.grant_access_to;
     let partitions_eq = self_wh.partitions == other_wh.partitions;
     let enable_refresh_eq = self_wh.enable_refresh == other_wh.enable_refresh;
@@ -395,10 +731,13 @@ pub fn same_warehouse_config(
         self_wh.include_full_name_in_path == other_wh.include_full_name_in_path;
     let liquid_clustered_by_eq = self_wh.liquid_clustered_by == other_wh.liquid_clustered_by;
     let auto_liquid_cluster_eq = self_wh.auto_liquid_cluster == other_wh.auto_liquid_cluster;
+    let zorder_eq = self_wh.zorder == other_wh.zorder;
+    let skip_optimize_eq = self_wh.skip_optimize == other_wh.skip_optimize;
     let clustered_by_eq = self_wh.clustered_by == other_wh.clustered_by;
     let buckets_eq = self_wh.buckets == other_wh.buckets;
     let catalog_eq = self_wh.catalog == other_wh.catalog;
     let databricks_tags_eq = self_wh.databricks_tags == other_wh.databricks_tags;
+    let query_tags_eq = self_wh.query_tags == other_wh.query_tags;
     let compression_eq = self_wh.compression == other_wh.compression;
     let databricks_compute_eq = self_wh.databricks_compute == other_wh.databricks_compute;
     let target_alias_eq = self_wh.target_alias == other_wh.target_alias;
@@ -407,12 +746,19 @@ pub fn same_warehouse_config(
     let not_matched_condition_eq = self_wh.not_matched_condition == other_wh.not_matched_condition;
     let not_matched_by_source_condition_eq =
         self_wh.not_matched_by_source_condition == other_wh.not_matched_by_source_condition;
+    let merge_actions_explicit_eq =
+        self_wh.merge_actions_explicit == other_wh.merge_actions_explicit;
     let not_matched_by_source_action_eq =
         self_wh.not_matched_by_source_action == other_wh.not_matched_by_source_action;
     let merge_with_schema_evolution_eq =
         self_wh.merge_with_schema_evolution == other_wh.merge_with_schema_evolution;
     let skip_matched_step_eq = self_wh.skip_matched_step == other_wh.skip_matched_step;
     let skip_not_matched_step_eq = self_wh.skip_not_matched_step == other_wh.skip_not_matched_step;
+    let persist_constraints_eq = self_wh.persist_constraints == other_wh.persist_constraints;
+    let use_materialization_v2_eq =
+        self_wh.use_materialization_v2 == other_wh.use_materialization_v2;
+    let unique_tmp_table_suffix_eq =
+        self_wh.unique_tmp_table_suffix == other_wh.unique_tmp_table_suffix;
     let schedule_eq = self_wh.schedule == other_wh.schedule;
     let adapter_properties_eq = self_wh.adapter_properties == other_wh.adapter_properties;
     let table_tag_eq = self_wh.table_tag == other_wh.table_tag;
@@ -447,6 +793,33 @@ pub fn same_warehouse_config(
     let indexes_eq = self_wh.indexes == other_wh.indexes;
     let primary_key_eq = self_wh.primary_key == other_wh.primary_key;
     let category_eq = self_wh.category == other_wh.category;
+    let engine_eq = self_wh.engine == other_wh.engine;
+    let order_by_eq = self_wh.order_by == other_wh.order_by;
+    let ttl_eq = self_wh.ttl == other_wh.ttl;
+    let settings_eq = self_wh.settings == other_wh.settings;
+    let query_settings_eq = self_wh.query_settings == other_wh.query_settings;
+    let projections_eq = self_wh.projections == other_wh.projections;
+    let sharding_key_eq = self_wh.sharding_key == other_wh.sharding_key;
+    let disable_on_cluster_eq = self_wh.disable_on_cluster == other_wh.disable_on_cluster;
+    let inserts_only_eq = self_wh.inserts_only == other_wh.inserts_only;
+    let connection_overrides_eq = self_wh.connection_overrides == other_wh.connection_overrides;
+    let fields_eq = self_wh.fields == other_wh.fields;
+    let source_type_eq = self_wh.source_type == other_wh.source_type;
+    let url_eq = self_wh.url == other_wh.url;
+    let format_eq = self_wh.format == other_wh.format;
+    let layout_eq = self_wh.layout == other_wh.layout;
+    let lifetime_eq = self_wh.lifetime == other_wh.lifetime;
+    let range_eq = self_wh.range == other_wh.range;
+    let table_eq = self_wh.table == other_wh.table;
+    let update_field_eq = self_wh.update_field == other_wh.update_field;
+    let update_lag_eq = self_wh.update_lag == other_wh.update_lag;
+    let definer_eq = self_wh.definer == other_wh.definer;
+    let sql_security_eq = self_wh.sql_security == other_wh.sql_security;
+    let refreshable_eq = self_wh.refreshable == other_wh.refreshable;
+    let catchup_eq = self_wh.catchup == other_wh.catchup;
+    let mv_on_schema_change_eq = self_wh.mv_on_schema_change == other_wh.mv_on_schema_change;
+    let repopulate_from_mvs_on_full_refresh_eq =
+        self_wh.repopulate_from_mvs_on_full_refresh == other_wh.repopulate_from_mvs_on_full_refresh;
 
     let result = partition_by_eq
         && cluster_by_eq
@@ -458,6 +831,7 @@ pub fn same_warehouse_config(
         && kms_key_name_eq
         && require_partition_filter_eq
         && partition_expiration_days_eq
+        && enable_change_history_eq
         && grant_access_to_eq
         && partitions_eq
         && enable_refresh_eq
@@ -470,10 +844,13 @@ pub fn same_warehouse_config(
         && include_full_name_in_path_eq
         && liquid_clustered_by_eq
         && auto_liquid_cluster_eq
+        && zorder_eq
+        && skip_optimize_eq
         && clustered_by_eq
         && buckets_eq
         && catalog_eq
         && databricks_tags_eq
+        && query_tags_eq
         && compression_eq
         && databricks_compute_eq
         && target_alias_eq
@@ -481,10 +858,14 @@ pub fn same_warehouse_config(
         && matched_condition_eq
         && not_matched_condition_eq
         && not_matched_by_source_condition_eq
+        && merge_actions_explicit_eq
         && not_matched_by_source_action_eq
         && merge_with_schema_evolution_eq
         && skip_matched_step_eq
         && skip_not_matched_step_eq
+        && persist_constraints_eq
+        && use_materialization_v2_eq
+        && unique_tmp_table_suffix_eq
         && schedule_eq
         && adapter_properties_eq
         && table_tag_eq
@@ -517,7 +898,33 @@ pub fn same_warehouse_config(
         && table_type_eq
         && indexes_eq
         && primary_key_eq
-        && category_eq;
+        && category_eq
+        && engine_eq
+        && order_by_eq
+        && ttl_eq
+        && settings_eq
+        && query_settings_eq
+        && projections_eq
+        && sharding_key_eq
+        && disable_on_cluster_eq
+        && inserts_only_eq
+        && connection_overrides_eq
+        && fields_eq
+        && source_type_eq
+        && url_eq
+        && format_eq
+        && layout_eq
+        && lifetime_eq
+        && range_eq
+        && table_eq
+        && update_field_eq
+        && update_lag_eq
+        && definer_eq
+        && sql_security_eq
+        && refreshable_eq
+        && catchup_eq
+        && mv_on_schema_change_eq
+        && repopulate_from_mvs_on_full_refresh_eq;
 
     if !result {
         log_state_mod_diff(
@@ -602,6 +1009,14 @@ pub fn same_warehouse_config(
                     Some((
                         format!("{:?}", &self_wh.partition_expiration_days),
                         format!("{:?}", &other_wh.partition_expiration_days),
+                    )),
+                ),
+                (
+                    "enable_change_history",
+                    enable_change_history_eq,
+                    Some((
+                        format!("{:?}", &self_wh.enable_change_history),
+                        format!("{:?}", &other_wh.enable_change_history),
                     )),
                 ),
                 (
@@ -701,6 +1116,22 @@ pub fn same_warehouse_config(
                     )),
                 ),
                 (
+                    "zorder",
+                    zorder_eq,
+                    Some((
+                        format!("{:?}", &self_wh.zorder),
+                        format!("{:?}", &other_wh.zorder),
+                    )),
+                ),
+                (
+                    "skip_optimize",
+                    skip_optimize_eq,
+                    Some((
+                        format!("{:?}", &self_wh.skip_optimize),
+                        format!("{:?}", &other_wh.skip_optimize),
+                    )),
+                ),
+                (
                     "clustered_by",
                     clustered_by_eq,
                     Some((
@@ -789,6 +1220,14 @@ pub fn same_warehouse_config(
                     )),
                 ),
                 (
+                    "merge_actions_explicit",
+                    merge_actions_explicit_eq,
+                    Some((
+                        format!("{:?}", &self_wh.merge_actions_explicit),
+                        format!("{:?}", &other_wh.merge_actions_explicit),
+                    )),
+                ),
+                (
                     "not_matched_by_source_action",
                     not_matched_by_source_action_eq,
                     Some((
@@ -818,6 +1257,30 @@ pub fn same_warehouse_config(
                     Some((
                         format!("{:?}", &self_wh.skip_not_matched_step),
                         format!("{:?}", &other_wh.skip_not_matched_step),
+                    )),
+                ),
+                (
+                    "persist_constraints",
+                    persist_constraints_eq,
+                    Some((
+                        format!("{:?}", &self_wh.persist_constraints),
+                        format!("{:?}", &other_wh.persist_constraints),
+                    )),
+                ),
+                (
+                    "use_materialization_v2",
+                    use_materialization_v2_eq,
+                    Some((
+                        format!("{:?}", &self_wh.use_materialization_v2),
+                        format!("{:?}", &other_wh.use_materialization_v2),
+                    )),
+                ),
+                (
+                    "unique_tmp_table_suffix",
+                    unique_tmp_table_suffix_eq,
+                    Some((
+                        format!("{:?}", &self_wh.unique_tmp_table_suffix),
+                        format!("{:?}", &other_wh.unique_tmp_table_suffix),
                     )),
                 ),
                 (
@@ -938,6 +1401,14 @@ pub fn same_warehouse_config(
                     Some((
                         format!("{:?}", &self_wh.tmp_relation_type),
                         format!("{:?}", &other_wh.tmp_relation_type),
+                    )),
+                ),
+                (
+                    "query_tags",
+                    query_tags_eq,
+                    Some((
+                        format!("{:?}", &self_wh.query_tags),
+                        format!("{:?}", &other_wh.query_tags),
                     )),
                 ),
                 (
@@ -1084,6 +1555,214 @@ pub fn same_warehouse_config(
                         format!("{:?}", &other_wh.category),
                     )),
                 ),
+                (
+                    "engine",
+                    engine_eq,
+                    Some((
+                        format!("{:?}", &self_wh.engine),
+                        format!("{:?}", &other_wh.engine),
+                    )),
+                ),
+                (
+                    "order_by",
+                    order_by_eq,
+                    Some((
+                        format!("{:?}", &self_wh.order_by),
+                        format!("{:?}", &other_wh.order_by),
+                    )),
+                ),
+                (
+                    "ttl",
+                    ttl_eq,
+                    Some((
+                        format!("{:?}", &self_wh.ttl),
+                        format!("{:?}", &other_wh.ttl),
+                    )),
+                ),
+                (
+                    "settings",
+                    settings_eq,
+                    Some((
+                        format!("{:?}", &self_wh.settings),
+                        format!("{:?}", &other_wh.settings),
+                    )),
+                ),
+                (
+                    "query_settings",
+                    query_settings_eq,
+                    Some((
+                        format!("{:?}", &self_wh.query_settings),
+                        format!("{:?}", &other_wh.query_settings),
+                    )),
+                ),
+                (
+                    "projections",
+                    projections_eq,
+                    Some((
+                        format!("{:?}", &self_wh.projections),
+                        format!("{:?}", &other_wh.projections),
+                    )),
+                ),
+                (
+                    "sharding_key",
+                    sharding_key_eq,
+                    Some((
+                        format!("{:?}", &self_wh.sharding_key),
+                        format!("{:?}", &other_wh.sharding_key),
+                    )),
+                ),
+                (
+                    "disable_on_cluster",
+                    disable_on_cluster_eq,
+                    Some((
+                        format!("{:?}", &self_wh.disable_on_cluster),
+                        format!("{:?}", &other_wh.disable_on_cluster),
+                    )),
+                ),
+                (
+                    "inserts_only",
+                    inserts_only_eq,
+                    Some((
+                        format!("{:?}", &self_wh.inserts_only),
+                        format!("{:?}", &other_wh.inserts_only),
+                    )),
+                ),
+                (
+                    "connection_overrides",
+                    connection_overrides_eq,
+                    Some((
+                        format!("{:?}", &self_wh.connection_overrides),
+                        format!("{:?}", &other_wh.connection_overrides),
+                    )),
+                ),
+                (
+                    "fields",
+                    fields_eq,
+                    Some((
+                        format!("{:?}", &self_wh.fields),
+                        format!("{:?}", &other_wh.fields),
+                    )),
+                ),
+                (
+                    "source_type",
+                    source_type_eq,
+                    Some((
+                        format!("{:?}", &self_wh.source_type),
+                        format!("{:?}", &other_wh.source_type),
+                    )),
+                ),
+                (
+                    "url",
+                    url_eq,
+                    Some((
+                        format!("{:?}", &self_wh.url),
+                        format!("{:?}", &other_wh.url),
+                    )),
+                ),
+                (
+                    "format",
+                    format_eq,
+                    Some((
+                        format!("{:?}", &self_wh.format),
+                        format!("{:?}", &other_wh.format),
+                    )),
+                ),
+                (
+                    "layout",
+                    layout_eq,
+                    Some((
+                        format!("{:?}", &self_wh.layout),
+                        format!("{:?}", &other_wh.layout),
+                    )),
+                ),
+                (
+                    "lifetime",
+                    lifetime_eq,
+                    Some((
+                        format!("{:?}", &self_wh.lifetime),
+                        format!("{:?}", &other_wh.lifetime),
+                    )),
+                ),
+                (
+                    "range",
+                    range_eq,
+                    Some((
+                        format!("{:?}", &self_wh.range),
+                        format!("{:?}", &other_wh.range),
+                    )),
+                ),
+                (
+                    "table",
+                    table_eq,
+                    Some((
+                        format!("{:?}", &self_wh.table),
+                        format!("{:?}", &other_wh.table),
+                    )),
+                ),
+                (
+                    "update_field",
+                    update_field_eq,
+                    Some((
+                        format!("{:?}", &self_wh.update_field),
+                        format!("{:?}", &other_wh.update_field),
+                    )),
+                ),
+                (
+                    "update_lag",
+                    update_lag_eq,
+                    Some((
+                        format!("{:?}", &self_wh.update_lag),
+                        format!("{:?}", &other_wh.update_lag),
+                    )),
+                ),
+                (
+                    "definer",
+                    definer_eq,
+                    Some((
+                        format!("{:?}", &self_wh.definer),
+                        format!("{:?}", &other_wh.definer),
+                    )),
+                ),
+                (
+                    "sql_security",
+                    sql_security_eq,
+                    Some((
+                        format!("{:?}", &self_wh.sql_security),
+                        format!("{:?}", &other_wh.sql_security),
+                    )),
+                ),
+                (
+                    "refreshable",
+                    refreshable_eq,
+                    Some((
+                        format!("{:?}", &self_wh.refreshable),
+                        format!("{:?}", &other_wh.refreshable),
+                    )),
+                ),
+                (
+                    "catchup",
+                    catchup_eq,
+                    Some((
+                        format!("{:?}", &self_wh.catchup),
+                        format!("{:?}", &other_wh.catchup),
+                    )),
+                ),
+                (
+                    "mv_on_schema_change",
+                    mv_on_schema_change_eq,
+                    Some((
+                        format!("{:?}", &self_wh.mv_on_schema_change),
+                        format!("{:?}", &other_wh.mv_on_schema_change),
+                    )),
+                ),
+                (
+                    "repopulate_from_mvs_on_full_refresh",
+                    repopulate_from_mvs_on_full_refresh_eq,
+                    Some((
+                        format!("{:?}", &self_wh.repopulate_from_mvs_on_full_refresh),
+                        format!("{:?}", &other_wh.repopulate_from_mvs_on_full_refresh),
+                    )),
+                ),
             ],
         );
     }
@@ -1123,6 +1802,42 @@ pub(crate) fn unrendered_value_eq(a: Option<&YmlValue>, b: Option<&YmlValue>) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_take_databricks_catalog_alias_moves_catalog_when_database_unset() {
+        let mut wh = WarehouseSpecificNodeConfig {
+            catalog: Some("my_catalog".to_string()),
+            ..Default::default()
+        };
+        let catalog = take_databricks_catalog_alias(AdapterType::Databricks, &mut wh, false);
+        assert_eq!(catalog, Some("my_catalog".to_string()));
+        assert_eq!(
+            wh.catalog, None,
+            "catalog must be cleared once moved into database"
+        );
+    }
+
+    /// An explicit `database` at the *same* config layer takes precedence over the `catalog`
+    /// alias (ordinary same-source-dict alias precedence) -- `catalog` is left untouched rather
+    /// than allowed to clobber the explicit value. This is also the D4 same-layer-duplicate case,
+    /// which now additionally emits a hard parse error (not observable from this test, which
+    /// installs no tracing subscriber); see
+    /// `test_databricks_catalog_alias_duplicate_at_same_layer_errors` (`dbt-parser/src/tests.rs`)
+    /// for that assertion.
+    #[test]
+    fn test_take_databricks_catalog_alias_defers_to_an_explicit_database_at_the_same_layer() {
+        let mut wh = WarehouseSpecificNodeConfig {
+            catalog: Some("my_catalog".to_string()),
+            ..Default::default()
+        };
+        let catalog = take_databricks_catalog_alias(AdapterType::Databricks, &mut wh, true);
+        assert_eq!(catalog, None);
+        assert_eq!(
+            wh.catalog,
+            Some("my_catalog".to_string()),
+            "catalog must be left untouched when database is already explicitly set"
+        );
+    }
 
     #[test]
     fn test_array_of_strings_eq_none_and_empty_array() {

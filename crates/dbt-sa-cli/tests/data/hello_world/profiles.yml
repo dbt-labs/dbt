@@ -1,6 +1,11 @@
 hello_world:
   target: '{{ env_var("target_env_var", "snowflake_local") }}'
   outputs:
+    duckdb_mem:
+      type: duckdb
+      path: ":memory:"
+      schema: main
+      threads: 1
     datafusion:
       type: datafusion
       database: js

@@ -1,0 +1,117 @@
+bc0f25d8:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists `dbt-test-env`.`adapters_bigquery_unit_test`
+model.test.json_downstream:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace view `dbt-test-env`.`adapters_bigquery_unit_test`.`json_downstream`
+    OPTIONS()
+    as SELECT id, JSON_VALUE(payload_json, '$.segmentCode') AS segment_code
+    FROM `dbt-test-env`.`adapters_bigquery_unit_test`.`json_source`;
+model.test.json_source:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace view `dbt-test-env`.`adapters_bigquery_unit_test`.`json_source`
+    OPTIONS()
+    as SELECT
+    CAST('1' AS STRING) AS id,
+    PARSE_JSON('{"segmentCode":"HORECA"}') AS payload_json;
+unit_test.test.json_downstream.json_object_mock:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace table `dbt-test-env`.`adapters_bigquery_unit_test`.`json_object_mock__dbt_tmp`
+    
+    
+    
+    
+    
+    OPTIONS(
+    expiration_timestamp=TIMESTAMP_ADD(CURRENT_TIMESTAMP(), INTERVAL 12 hour)
+    )
+    as (
+    select * from (
+    SELECT id, JSON_VALUE(payload_json, '$.segmentCode') AS segment_code
+    FROM `dbt-test-env`.`adapters_bigquery_unit_test`.`json_source`
+    ) as __dbt_sbq
+    where false and current_timestamp() = current_timestamp()
+    limit 0
+    
+    );
+- sequence: 1
+  type: execute
+  sql: |-
+    drop table if exists `dbt-test-env`.`adapters_bigquery_unit_test`.`json_object_mock__dbt_tmp`
+- sequence: 2
+  type: execute
+  sql: |-
+    -- Build actual result given inputs
+    WITH
+    \t`dbt-test-env_adapters_bigquery_unit_test_json_source` as (SELECT *  FROM UNNEST([STRUCT(CAST('1' AS STRING) AS id, PARSE_JSON('{"segmentCode":"HORECA"}') AS payload_json)])),
+    \t`dbt-test-env_adapters_bigquery_unit_test_json_downstream_expect` as (SELECT *  FROM UNNEST([STRUCT(CAST('1' AS STRING) AS id, CAST('HORECA' AS STRING) AS segment_code)])),
+    \t`dbt-test-env_adapters_bigquery_unit_test_json_downstream_actual` as (SELECT id, JSON_VALUE(payload_json, '$.segmentCode') AS segment_code
+    FROM `dbt-test-env_adapters_bigquery_unit_test_json_source`
+    )
+    SELECT * FROM (
+    (SELECT id, segment_code, 'actual' AS actual_or_expected FROM `dbt-test-env_adapters_bigquery_unit_test_json_downstream_actual`)
+    UNION ALL
+    (SELECT id, segment_code, 'expected' AS actual_or_expected FROM `dbt-test-env_adapters_bigquery_unit_test_json_downstream_expect`)
+    ) unit_test_diff
+    ORDER BY id, segment_code
+unit_test.test.json_downstream.json_object_mock.get_table_schema.bca0633e:
+- sequence: 0
+  type: get_table_schema
+  table_name: bca0633e
+unit_test.test.json_downstream.json_string_mock:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace table `dbt-test-env`.`adapters_bigquery_unit_test`.`json_string_mock__dbt_tmp`
+    
+    
+    
+    
+    
+    OPTIONS(
+    expiration_timestamp=TIMESTAMP_ADD(CURRENT_TIMESTAMP(), INTERVAL 12 hour)
+    )
+    as (
+    select * from (
+    SELECT id, JSON_VALUE(payload_json, '$.segmentCode') AS segment_code
+    FROM `dbt-test-env`.`adapters_bigquery_unit_test`.`json_source`
+    ) as __dbt_sbq
+    where false and current_timestamp() = current_timestamp()
+    limit 0
+    
+    );
+- sequence: 1
+  type: execute
+  sql: |-
+    drop table if exists `dbt-test-env`.`adapters_bigquery_unit_test`.`json_string_mock__dbt_tmp`
+- sequence: 2
+  type: execute
+  sql: |-
+    -- Build actual result given inputs
+    WITH
+    \t`dbt-test-env_adapters_bigquery_unit_test_json_source` as (SELECT *  FROM UNNEST([STRUCT(CAST('1' AS STRING) AS id, PARSE_JSON('{"segmentCode":"HORECA"}') AS payload_json)])),
+    \t`dbt-test-env_adapters_bigquery_unit_test_json_downstream_expect` as (SELECT *  FROM UNNEST([STRUCT(CAST('1' AS STRING) AS id, CAST('HORECA' AS STRING) AS segment_code)])),
+    \t`dbt-test-env_adapters_bigquery_unit_test_json_downstream_actual` as (SELECT id, JSON_VALUE(payload_json, '$.segmentCode') AS segment_code
+    FROM `dbt-test-env_adapters_bigquery_unit_test_json_source`
+    )
+    SELECT * FROM (
+    (SELECT id, segment_code, 'actual' AS actual_or_expected FROM `dbt-test-env_adapters_bigquery_unit_test_json_downstream_actual`)
+    UNION ALL
+    (SELECT id, segment_code, 'expected' AS actual_or_expected FROM `dbt-test-env_adapters_bigquery_unit_test_json_downstream_expect`)
+    ) unit_test_diff
+    ORDER BY id, segment_code
+unit_test.test.json_downstream.json_string_mock.get_table_schema.5072dbdc:
+- sequence: 0
+  type: get_table_schema
+  table_name: 5072dbdc
+unit_test.test.json_downstream.json_string_mock.get_table_schema.f5037e62:
+- sequence: 0
+  type: get_table_schema
+  table_name: f5037e62

@@ -19,6 +19,78 @@ fn assert_parses_to(line: u32, input: &str, expected: &SqlType, backend: Adapter
     );
 }
 
+#[test]
+fn test_normalize_for_cast() {
+    for (backend, input, expected) in [
+        (Bigquery, "NUMERIC(10, 2)", "NUMERIC"),
+        (Bigquery, "BIGNUMERIC(30, 20)", "BIGNUMERIC"),
+        (Bigquery, "ARRAY<NUMERIC(10, 2)>", "ARRAY<NUMERIC>"),
+        (Bigquery, "ARRAY<STRING(10)>", "ARRAY<STRING>"),
+        (Bigquery, "ARRAY<RANGE<DATETIME>>", "ARRAY<RANGE<DATETIME>>"),
+        (
+            Bigquery,
+            "STRUCT<period RANGE<DATE>, labels ARRAY<STRING(10)>, amount BIGNUMERIC(10, 2)>",
+            "STRUCT<period RANGE<DATE>, labels ARRAY<STRING>, amount BIGNUMERIC>",
+        ),
+        (
+            Bigquery,
+            "STRUCT<`odd name` BIGNUMERIC(30, 20), items ARRAY<STRUCT<n NUMERIC(10, 2), ts TIMESTAMP>>>",
+            "STRUCT<`odd name` BIGNUMERIC, items ARRAY<STRUCT<n NUMERIC, ts TIMESTAMP>>>",
+        ),
+        (Snowflake, "NUMBER(10, 2)", "NUMBER(10, 2)"),
+    ] {
+        let (mut sql_type, _) = SqlType::parse(backend, input).unwrap();
+        sql_type.normalize_for_cast(backend);
+        assert_eq!(sql_type.to_string(backend), expected, "{input}");
+    }
+}
+
+#[test]
+fn test_bigquery_range_arrow_roundtrip() {
+    for input in ["RANGE<DATE>", "RANGE<DATETIME>", "RANGE<TIMESTAMP>"] {
+        let (sql_type, _) = SqlType::parse(Bigquery, input).unwrap();
+        assert!(matches!(sql_type, Range(_)));
+        let arrow_type = sql_type.pick_best_arrow_type(Bigquery);
+        assert!(
+            matches!(&arrow_type, DataType::FixedSizeList(field, 1) if field.name() == "range")
+        );
+        assert_eq!(
+            SqlType::from_arrow_type(Bigquery, &arrow_type).to_string(Bigquery),
+            input
+        );
+    }
+}
+
+#[test]
+fn test_range_type_is_bigquery_only() {
+    for backend in [Bigquery, Snowflake, DuckDB, Postgres] {
+        let (sql_type, nullable) = SqlType::parse(backend, "RANGE<DATE> NOT NULL").unwrap();
+        assert!(!nullable);
+        assert_eq!(matches!(sql_type, Range(_)), backend == Bigquery);
+        if backend != Bigquery {
+            assert_eq!(sql_type.to_string(backend), "RANGE < DATE >");
+        }
+    }
+}
+
+#[test]
+fn test_sql_type_completeness() {
+    for (input, complete) in [
+        ("RANGE", false),
+        ("ARRAY", false),
+        ("RECORD", false),
+        ("STRUCT<x SOME_OPAQUE_TYPE>", false),
+        ("ARRAY<RANGE<DATE>>", true),
+        ("STRUCT<period RANGE<DATE>, amount BIGNUMERIC(10, 2)>", true),
+    ] {
+        // The opaque-type fallback may consume nested delimiters.
+        let complete_type = SqlType::parse(Bigquery, input)
+            .ok()
+            .is_some_and(|(ty, _)| ty.is_complete());
+        assert_eq!(complete_type, complete, "{input}");
+    }
+}
+
 /// Test that parsing leads to the expected SqlType on every backend.
 ///
 /// Uses [assert_parses_to] for every pair.
@@ -1397,6 +1469,40 @@ fn test_struct_on_databricks() {
     }
 }
 
+#[test]
+fn test_bigquery_logical_types_preserve_identity() {
+    for (sql_type, expected_name) in [(Json, "json"), (Geography(None), "geography")] {
+        assert_eq!(
+            sql_type.pick_best_arrow_type(Bigquery),
+            DataType::FixedSizeList(Arc::new(Field::new(expected_name, DataType::Utf8, true)), 1,),
+        );
+    }
+
+    let nested = Struct(Some(vec![
+        StructField::new(Ident::plain("payload"), Json, true),
+        StructField::new(Ident::plain("location"), Geography(None), true),
+    ]))
+    .pick_best_arrow_type(Bigquery);
+    let logical_type =
+        |name| DataType::FixedSizeList(Arc::new(Field::new(name, DataType::Utf8, true)), 1);
+    let field = |name: &str, data_type: DataType, sql_type: &str| {
+        Field::new(name, data_type, true).with_metadata(HashMap::from([(
+            metadata_sql_type_key(Bigquery).to_string(),
+            sql_type.to_string(),
+        )]))
+    };
+    assert_eq!(
+        nested,
+        DataType::Struct(
+            vec![
+                field("payload", logical_type("json"), "JSON"),
+                field("location", logical_type("geography"), "GEOGRAPHY"),
+            ]
+            .into(),
+        ),
+    );
+}
+
 // Athena-specific type behavior tests
 // Athena is Presto/Trino-based; see https://docs.aws.amazon.com/athena/latest/ug/data-types.html
 
@@ -1473,6 +1579,205 @@ fn test_athena_struct_rendering() {
     assert_roundtrip(line!(), &t, s, Athena);
 }
 
+// Exasol-specific type behavior tests
+//
+// Exasol represents large strings as VARCHAR up to the 2,000,000-character
+// maximum (TEXT/CLOB map to VARCHAR(2000000)); an unbounded VARCHAR defaults to
+// that maximum, while a bounded VARCHAR keeps its explicit length.
+
+#[test]
+fn test_exasol_text_renders_as_max_varchar() {
+    assert_eq!(Text.to_string(Exasol), "VARCHAR(2000000)");
+}
+
+#[test]
+fn test_exasol_clob_renders_as_max_varchar() {
+    assert_eq!(Clob.to_string(Exasol), "VARCHAR(2000000)");
+}
+
+#[test]
+fn test_exasol_unbounded_varchar_renders_as_max_varchar() {
+    assert_eq!(
+        Varchar(None, Default::default()).to_string(Exasol),
+        "VARCHAR(2000000)"
+    );
+    assert_eq!(SqlType::varchar(None).to_string(Exasol), "VARCHAR(2000000)");
+}
+
+#[test]
+fn test_exasol_bounded_varchar_keeps_length() {
+    assert_eq!(
+        Varchar(Some(50), Default::default()).to_string(Exasol),
+        "VARCHAR(50)"
+    );
+    assert_eq!(SqlType::varchar(Some(50)).to_string(Exasol), "VARCHAR(50)");
+}
+
+#[test]
+fn test_exasol_hashtype_parse_and_render() {
+    // Bare HASHTYPE (server default is 16 bytes)
+    let (ty, _) = SqlType::parse(Exasol, "HASHTYPE").unwrap();
+    assert!(matches!(ty, HashType(None)));
+    assert_eq!(ty.to_string(Exasol), "HASHTYPE");
+
+    // Explicit byte size round-trips
+    let (ty, _) = SqlType::parse(Exasol, "HASHTYPE(16 BYTE)").unwrap();
+    assert!(matches!(ty, HashType(Some(16))));
+    assert_eq!(ty.to_string(Exasol), "HASHTYPE(16 BYTE)");
+
+    // BIT sizes normalize to bytes
+    let (ty, _) = SqlType::parse(Exasol, "HASHTYPE(128 BIT)").unwrap();
+    assert!(matches!(ty, HashType(Some(16))));
+
+    // exarrow-rs maps HASHTYPE values to Arrow Binary
+    assert_eq!(
+        HashType(Some(16)).pick_best_arrow_type(Exasol),
+        DataType::Binary
+    );
+}
+
+#[test]
+fn test_exasol_float_types_render_as_double_precision() {
+    // Exasol's float type is DOUBLE PRECISION; FLOAT/REAL are aliases with no precision.
+    assert_eq!(Real.to_string(Exasol), "DOUBLE PRECISION");
+    assert_eq!(Double.to_string(Exasol), "DOUBLE PRECISION");
+    assert_eq!(Float(None).to_string(Exasol), "DOUBLE PRECISION");
+    assert_eq!(Float(Some(53)).to_string(Exasol), "DOUBLE PRECISION");
+    assert_eq!(HalfFloat.to_string(Exasol), "DOUBLE PRECISION");
+}
+
+#[test]
+fn test_exasol_timestamp_uses_only_valid_exasol_forms() {
+    // Bare TIMESTAMP for no-tz / unspecified.
+    assert_eq!(
+        Timestamp {
+            precision: None,
+            time_zone_spec: TimeZoneSpec::Without
+        }
+        .to_string(Exasol),
+        "TIMESTAMP"
+    );
+    assert_eq!(
+        Timestamp {
+            precision: None,
+            time_zone_spec: TimeZoneSpec::Unspecified
+        }
+        .to_string(Exasol),
+        "TIMESTAMP"
+    );
+    // Precision preserved.
+    assert_eq!(
+        Timestamp {
+            precision: Some(6),
+            time_zone_spec: TimeZoneSpec::Without
+        }
+        .to_string(Exasol),
+        "TIMESTAMP(6)"
+    );
+    // Any tz-aware spec -> WITH LOCAL TIME ZONE (Exasol's tz-aware timestamp form).
+    assert_eq!(
+        Timestamp {
+            precision: None,
+            time_zone_spec: TimeZoneSpec::Local
+        }
+        .to_string(Exasol),
+        "TIMESTAMP WITH LOCAL TIME ZONE"
+    );
+    assert_eq!(
+        Timestamp {
+            precision: Some(3),
+            time_zone_spec: TimeZoneSpec::With
+        }
+        .to_string(Exasol),
+        "TIMESTAMP(3) WITH LOCAL TIME ZONE"
+    );
+    // Never emit the invalid 'WITHOUT TIME ZONE' keyword form.
+    for tz in [
+        TimeZoneSpec::Without,
+        TimeZoneSpec::With,
+        TimeZoneSpec::Local,
+        TimeZoneSpec::Unspecified,
+    ] {
+        let rendered = Timestamp {
+            precision: None,
+            time_zone_spec: tz,
+        }
+        .to_string(Exasol);
+        assert!(
+            !rendered.contains("WITHOUT TIME ZONE"),
+            "Exasol timestamp must not use WITHOUT TIME ZONE, got: {rendered}"
+        );
+    }
+}
+
+#[test]
+fn test_exasol_time_renders_as_timestamp() {
+    // Exasol renders a time-of-day as TIMESTAMP.
+    assert_eq!(
+        Time {
+            precision: None,
+            time_zone_spec: TimeZoneSpec::Without
+        }
+        .to_string(Exasol),
+        "TIMESTAMP"
+    );
+    assert_eq!(
+        Time {
+            precision: Some(6),
+            time_zone_spec: TimeZoneSpec::Without
+        }
+        .to_string(Exasol),
+        "TIMESTAMP(6)"
+    );
+}
+
+#[test]
+fn test_exasol_binary_renders_as_max_varchar() {
+    // Exasol stores arbitrary bytes as VARCHAR (text/hex).
+    assert_eq!(Blob.to_string(Exasol), "VARCHAR(2000000)");
+    assert_eq!(Binary(None).to_string(Exasol), "VARCHAR(2000000)");
+    assert_eq!(Binary(Some(16)).to_string(Exasol), "VARCHAR(2000000)");
+}
+
+#[test]
+fn test_exasol_datetime_renders_as_timestamp() {
+    // Exasol uses TIMESTAMP for datetime values.
+    assert_eq!(DateTime.to_string(Exasol), "TIMESTAMP");
+}
+
+#[test]
+fn test_exasol_interval_normalizes_to_two_supported_forms() {
+    // Year/Month qualifier -> INTERVAL YEAR TO MONTH.
+    assert_eq!(
+        Interval(Some((Year, Some(Month)))).to_string(Exasol),
+        "INTERVAL YEAR TO MONTH"
+    );
+    assert_eq!(
+        Interval(Some((Month, None))).to_string(Exasol),
+        "INTERVAL YEAR TO MONTH"
+    );
+    // Any day/time qualifier (and a bare interval) -> INTERVAL DAY TO SECOND.
+    assert_eq!(
+        Interval(Some((Day, Some(Second)))).to_string(Exasol),
+        "INTERVAL DAY TO SECOND"
+    );
+    assert_eq!(
+        Interval(Some((Day, Some(Hour)))).to_string(Exasol),
+        "INTERVAL DAY TO SECOND"
+    );
+    assert_eq!(Interval(None).to_string(Exasol), "INTERVAL DAY TO SECOND");
+}
+
+#[test]
+fn test_exasol_geometry_uses_native_geometry_type() {
+    // Exasol has a native GEOMETRY(srid) type (handled by the shared path).
+    assert_eq!(Geometry(None).to_string(Exasol), "GEOMETRY");
+    assert_eq!(
+        Geometry(Some("4326".to_string())).to_string(Exasol),
+        "GEOMETRY(4326)"
+    );
+}
+
 #[test]
 fn test_parse_column_description() {
     let col = SqlType::parse_column_description(Snowflake, "id INTEGER NOT NULL", false).unwrap();
@@ -1538,4 +1843,35 @@ fn test_parse_column_description() {
     let col = SqlType::parse_column_description(Snowflake, "price NUMBER(10,2)", true).unwrap();
     assert_eq!(col.name.unwrap().as_ref(), "price");
     assert!(matches!(col.sql_type, Numeric(Some((10, Some(2))))));
+}
+
+#[test]
+fn duckdb_renders_arrow_timestamp_units_as_its_own_types() {
+    use arrow_schema::{DataType, TimeUnit};
+
+    let render =
+        |data_type: DataType| SqlType::from_arrow_type(DuckDB, &data_type).to_string(DuckDB);
+    assert_eq!(
+        render(DataType::Timestamp(TimeUnit::Second, None)),
+        "TIMESTAMP_S"
+    );
+    assert_eq!(
+        render(DataType::Timestamp(TimeUnit::Millisecond, None)),
+        "TIMESTAMP_MS"
+    );
+    assert_eq!(
+        render(DataType::Timestamp(TimeUnit::Microsecond, None)),
+        "TIMESTAMP"
+    );
+    assert_eq!(
+        render(DataType::Timestamp(TimeUnit::Nanosecond, None)),
+        "TIMESTAMP_NS"
+    );
+    assert_eq!(
+        render(DataType::Timestamp(
+            TimeUnit::Microsecond,
+            Some("UTC".into())
+        )),
+        "TIMESTAMP WITH TIME ZONE"
+    );
 }

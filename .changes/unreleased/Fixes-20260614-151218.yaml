@@ -1,7 +1,0 @@
-kind: Fixes
-body: 'fix: explicitly set default empty variable for $SHELL so that the script will not end while setting the $SHELL.'
-time: 2026-06-14T15:12:18.167108503+09:00
-custom:
-    author: yuwtennis
-    issue: "14599"
-    project: dbt-fusion

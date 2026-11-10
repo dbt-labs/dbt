@@ -1,9 +1,16 @@
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
+use dbt_adapter::load_store::ResultStore;
 use dbt_common::{ErrorCode, FsResult, fs_err};
-use dbt_jinja_ctx::{DbtNamespace, DocsContext, JinjaObject, ResolveBaseCtx, to_jinja_btreemap};
+use dbt_jinja_ctx::{
+    DbtNamespace, DocsContext, JinjaObject, MacroLookupContext, ResolveBaseCtx, to_jinja_btreemap,
+};
 use dbt_jinja_vars::ConfiguredVar;
 use dbt_schemas::schemas::macros::DbtDocsMacro;
+use dbt_schemas::state::DbtRuntimeConfig;
 use minijinja::value::{Enumerator, Object, Value as MinijinjaValue};
 
 use crate::{functions::DocMacro, jinja_environment::JinjaEnv};
@@ -50,6 +57,10 @@ impl Object for RecursiveDocsContext {
 /// Jinja2 environment globals, so Core has them even though they are not context keys.
 const JINJA_ENGINE_GLOBALS: &[&str] = &["cycler", "joiner", "lipsum"];
 
+/// dbt-core's `BaseResolver` subclasses bound by `GenerateNameProvider`
+/// (`core/dbt/context/providers.py`). Each one carries `.config`.
+const RESOLVER_NAMES: &[&str] = &["ref", "source", "metric", "function"];
+
 /// Builds the Jinja environment used to render documentation fields.
 ///
 /// Keeps the parse environment's filters, tests and function registry. Drops everything
@@ -62,6 +73,8 @@ pub fn build_docs_jinja_environment(parse_env: &JinjaEnv) -> JinjaEnv {
 
     let mut docs_env = parse_env.clone();
     docs_env.env.clear_templates();
+    // The loader survives clear_templates; disable it so docs cannot load project macros.
+    docs_env.env.set_loader(|_| Ok(None::<String>));
     docs_env.env.reset_globals_to_defaults();
     // `jinja2.ext.debug` is not enabled in dbt Core.
     docs_env.env.remove_global("debug");
@@ -186,6 +199,7 @@ pub fn build_resolve_context(
     docs_macros: &BTreeMap<String, DbtDocsMacro>,
     macro_dispatch_order: BTreeMap<String, Vec<String>>,
     namespace_keys: Vec<String>,
+    runtime_config: Option<Arc<DbtRuntimeConfig>>,
 ) -> BTreeMap<String, MinijinjaValue> {
     let docs_map: BTreeMap<(String, String), String> = docs_macros
         .values()
@@ -196,6 +210,9 @@ pub fn build_resolve_context(
             )
         })
         .collect();
+
+    let mut packages: BTreeSet<String> = namespace_keys.iter().cloned().collect();
+    packages.insert(root_project_name.to_string());
 
     let dbt_namespaces: BTreeMap<String, JinjaObject<DbtNamespace>> = namespace_keys
         .into_iter()
@@ -214,13 +231,67 @@ pub fn build_resolve_context(
         .map(|(k, v)| (k, MinijinjaValue::from(v)))
         .collect();
 
+    // One store for the whole package, mirroring `build_compile_base_ctx`.
+    // Safe to share here (unlike the per-batch case `reset_result_store`
+    // guards against): `execute` is false at parse, so `statement` short-
+    // circuits before reaching `store_result` and nothing is ever written.
+    // Every `load_result` therefore returns none, which is what makes an
+    // unguarded `run_query(...)` a no-op at parse — same as dbt-core.
+    let result_store = ResultStore::default();
+
+    // dbt-core's `BaseContext.to_dict` does `_ctx["builtins"] = builtins` then
+    // `_ctx.update(builtins)`, so every resolver is reachable both ways. Nothing
+    // at base scope can resolve a node, so these carry `.config` only.
+    let resolvers: BTreeMap<String, MinijinjaValue> = runtime_config
+        .map(|runtime_config| {
+            let config = MinijinjaValue::from_dyn_object(runtime_config);
+            RESOLVER_NAMES
+                .iter()
+                .map(|name| {
+                    let attrs = BTreeMap::from([("config".to_string(), config.clone())]);
+                    ((*name).to_string(), MinijinjaValue::from_object(attrs))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let resolver = |name: &str| {
+        resolvers
+            .get(name)
+            .cloned()
+            .unwrap_or(MinijinjaValue::UNDEFINED)
+    };
+    let (ref_value, source_value, metric_value, function_value) = (
+        resolver("ref"),
+        resolver("source"),
+        resolver("metric"),
+        resolver("function"),
+    );
+    let builtins = if resolvers.is_empty() {
+        MinijinjaValue::UNDEFINED
+    } else {
+        MinijinjaValue::from_object(resolvers)
+    };
+
     let ctx = ResolveBaseCtx {
         doc: MinijinjaValue::from_object(DocMacro::new(root_project_name.to_string(), docs_map)),
         macro_dispatch_order,
         target_package_name: local_project_name.to_string(),
         execute: false,
+        context: JinjaObject::new(MacroLookupContext::new(
+            root_project_name.to_string(),
+            None,
+            packages,
+        )),
         node: MinijinjaValue::NONE,
         connection_name: String::new(),
+        store_result: MinijinjaValue::from_function(result_store.store_result()),
+        load_result: MinijinjaValue::from_function(result_store.load_result()),
+        store_raw_result: MinijinjaValue::from_function(result_store.store_raw_result()),
+        builtins,
+        ref_fn: ref_value,
+        source: source_value,
+        metric: metric_value,
+        function: function_value,
         dbt_namespaces,
     };
 
@@ -322,6 +393,15 @@ mod docs_context_tests {
                 None,
             )
             .unwrap();
+        env.env.set_loader(|name| match name {
+            "root_pkg.project_macro" => Ok(Some(
+                "{% macro project_macro() %}project{% endmacro %}".to_string(),
+            )),
+            "dependency_pkg.dependency_macro" => Ok(Some(
+                "{% macro dependency_macro() %}dependency{% endmacro %}".to_string(),
+            )),
+            _ => Ok(None),
+        });
         env.env.add_global(
             "root_pkg",
             Value::from_object(BTreeMap::from([(
@@ -470,6 +550,10 @@ mod docs_context_tests {
     fn docs_context_rejects_project_macros_and_runtime_callables() {
         let (env, ctx) = docs_env_and_ctx();
         for (label, template) in [
+            (
+                "loader-backed project macro",
+                "{% from 'root_pkg.project_macro' import project_macro %}{{ project_macro() }}",
+            ),
             ("direct project macro", "{{ project_macro() }}"),
             ("package-qualified macro", "{{ root_pkg.project_macro() }}"),
             (

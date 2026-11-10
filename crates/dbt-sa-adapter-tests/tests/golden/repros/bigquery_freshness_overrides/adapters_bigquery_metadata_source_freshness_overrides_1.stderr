@@ -1,0 +1,6 @@
+[warning] [StaleSource (dbt1063)]: Stale source source.test.adapters_bigquery_metadata_source_freshness_overrides_sources.source_bulk
+  --> models/schema.yml
+[warning] [StaleSource (dbt1063)]: Stale source source.test.adapters_bigquery_metadata_source_freshness_overrides_sources.source_field
+  --> models/schema.yml
+[warning] [StaleSource (dbt1063)]: Stale source source.test.adapters_bigquery_metadata_source_freshness_overrides_sources.source_query
+  --> models/schema.yml

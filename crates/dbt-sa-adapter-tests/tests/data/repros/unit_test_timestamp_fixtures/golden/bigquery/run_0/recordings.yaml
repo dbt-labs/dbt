@@ -1,0 +1,21 @@
+6df7c9a8:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists `dbt-test-env`.`bigquery_unit_test_existing_parent_timestamp_fixtures`
+model.unit_test_timestamp_fixtures.events:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace table `dbt-test-env`.`bigquery_unit_test_existing_parent_timestamp_fixtures`.`events`
+    
+    
+    
+    
+    
+    OPTIONS()
+    as (
+    SELECT
+    0 AS id,
+    TIMESTAMP '2000-01-01 00:00:00+00:00' AS event_timestamp,
+    DATETIME '2000-01-01 00:00:00' AS local_datetime
+    );

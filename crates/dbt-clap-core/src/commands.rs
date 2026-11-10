@@ -4,15 +4,17 @@ use std::fmt;
 use clap::error::ErrorKind;
 use dbt_common::FsResult;
 use dbt_common::io_args::{EvalArgs, FsCommand, Phases, StaticAnalysisKind, SystemArgs};
-use strum_macros::Display;
+use dbt_common::telemetry_command::TelemetryCommand;
+use strum_macros::{Display, IntoStaticStr};
 
 use crate::{
-    BuildArgs, CleanArgs, CloneArgs, CommonArgs, CompileArgs, CompletionsArgs, DebugArgs, DepsArgs,
-    DocsArgs, InitArgs, InternalArgs, ListArgs, LoginArgs, ManArgs, ParseArgs, RetryArgs, RunArgs,
-    RunOperationArgs, SeedArgs, ShowArgs, SnapshotArgs, SourceArgs, StateArgs, TestArgs,
+    BuildArgs, CheckArgs, CleanArgs, CloneArgs, CommonArgs, CompileArgs, CompletionsArgs,
+    DebugArgs, DepsArgs, DocsArgs, FreshnessArgs, InitArgs, InternalArgs, ListArgs, LoginArgs,
+    ManArgs, ParseArgs, RetryArgs, RunArgs, RunOperationArgs, SeedArgs, ShowArgs, SnapshotArgs,
+    SourceArgs, StateArgs, TestArgs,
 };
 
-#[derive(clap::Subcommand, Debug, Clone, Display)]
+#[derive(clap::Subcommand, Debug, Clone, Display, IntoStaticStr)]
 pub enum CoreCommand {
     /// Initialize a new dbt project
     Init(InitArgs),
@@ -26,6 +28,8 @@ pub enum CoreCommand {
     Ls(ListArgs),
     /// Compile models
     Compile(CompileArgs),
+    /// Run project quality checks against the dbt metadata index
+    Check(CheckArgs),
     /// Run models
     Run(RunArgs),
     /// Run the named macro with any supplied arguments
@@ -44,6 +48,8 @@ pub enum CoreCommand {
     Clean(CleanArgs),
     /// Run sources subcommands
     Source(SourceArgs),
+    /// Check freshness of resources
+    Freshness(FreshnessArgs),
     /// Create clones of selected nodes
     Clone(CloneArgs),
     /// Create reference documentation
@@ -52,7 +58,7 @@ pub enum CoreCommand {
     Debug(DebugArgs),
     /// Retry failed nodes from the previous run
     Retry(RetryArgs),
-    /// Generate and serve documentation (deprecated in Fusion - use `dbt compile --write-catalog`)
+    /// Generate and serve documentation
     Docs(DocsArgs),
     /// Authenticate with dbt platform
     Login(LoginArgs),
@@ -76,6 +82,7 @@ impl CoreCommand {
             List(..) => FsCommand::List,
             Ls(..) => FsCommand::List,
             Compile(..) => FsCommand::Compile,
+            Check(..) => FsCommand::Check,
             Run(..) => FsCommand::Run,
             RunOperation(..) => FsCommand::RunOperation,
             Seed(..) => FsCommand::Seed,
@@ -85,6 +92,7 @@ impl CoreCommand {
             Clone(..) => FsCommand::Clone,
             Clean(..) => FsCommand::Clean,
             Source(..) => FsCommand::Source,
+            Freshness(..) => FsCommand::Freshness,
             Show(..) => FsCommand::Show,
             Man(..) => FsCommand::Man,
             Debug(..) => FsCommand::Debug,
@@ -110,6 +118,7 @@ impl CoreCommand {
             Ls(args) => &args.common_args,
             Parse(args) => &args.common_args,
             Compile(args) => &args.common_args,
+            Check(args) => &args.common_args,
             Run(args) => &args.common_args,
             RunOperation(args) => &args.common_args,
             Seed(args) => &args.common_args,
@@ -119,6 +128,7 @@ impl CoreCommand {
             Clone(args) => &args.common_args,
             Clean(args) => &args.common_args,
             Source(args) => args.common_args(),
+            Freshness(args) => &args.common_args,
             Show(args) => &args.common_args,
             Man(args) => &args.common_args,
             Debug(args) => &args.common_args,
@@ -140,6 +150,7 @@ impl CoreCommand {
             List(_) => None,
             Ls(_) => None,
             Compile(compile_args) => compile_args.static_analysis,
+            Check(check_args) => check_args.static_analysis,
             Run(run_args) => run_args.static_analysis,
             RunOperation(_) => None,
             Test(test_args) => test_args.static_analysis,
@@ -149,6 +160,7 @@ impl CoreCommand {
             Build(build_args) => build_args.static_analysis,
             Clean(_) => None,
             Source(_) => None,
+            Freshness(_) => None,
             Clone(_) => None,
             Man(_) => None,
             Debug(_) => None,
@@ -179,6 +191,9 @@ impl CoreCommand {
 pub trait AbstractExtensionCommand: Send + Sync + fmt::Debug + Any {
     /// The canonical name of the command as used on the command line.
     fn name(&self) -> &'static str;
+
+    /// Format anonymous telemetry from this command's typed arguments.
+    fn telemetry_command(&self) -> TelemetryCommand;
 
     // virtualized support for Clone, and Display
     fn clone_box(&self) -> Box<dyn AbstractExtensionCommand>;
@@ -216,6 +231,13 @@ impl Command {
         match self {
             Command::Core(cmd) => cmd.name(),
             Command::Extension(cmd) => cmd.name(),
+        }
+    }
+
+    pub fn telemetry_command(&self) -> TelemetryCommand {
+        match self {
+            Self::Core(command) => TelemetryCommand::bare_static(command.into()),
+            Self::Extension(command) => command.telemetry_command(),
         }
     }
 }

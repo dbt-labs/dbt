@@ -128,6 +128,34 @@ structured record pipeline. It:
 - Applies middleware before dispatching records to consumers.
 - Stores per-consumer filter masks so a consumer that filtered out a span start
   will not receive that span end.
+- Supports force closing span subtrees (see below).
+
+#### Force Closing Spans
+
+Native `tracing` closes a span when its last handle is dropped, so a worker that
+retains any descendant keeps the span open after the work it represents has
+ended. `force_close_span` ends the structured telemetry of a force closable span
+and its whole subtree immediately:
+
+- The span end record is delivered once, through the current middlewares and
+  consumers. Repeated calls and the eventual native close are no-ops.
+- Every later record in the subtree is suppressed: events, new child spans, and
+  the ends of children that were already open. Consumers may therefore see a
+  span start without a matching end for descendants that outlive the span.
+- A record already being delivered on another thread when the span is closed may
+  still reach consumers after the span end.
+- The native span, its extensions, and reference counts are not affected.
+
+A span is force closable if it declares the close marker field at creation.
+Closable spans can be nested, and closing one leaves the enclosing closable spans
+open. As of now only `create_root_info_span` creates closable spans; other spans
+can get the capability through an additional span creation helper that declares
+the field. `force_close_span` on a span without the field does nothing.
+
+For a reloadable data layer, close the span before flushing and detaching its
+consumers. Reload waits for callbacks already running, and records from retained
+descendants that arrive after a reload are still suppressed, so they never reach
+the next consumer stack.
 
 ### TelemetryMiddleware
 
@@ -339,7 +367,7 @@ When work crosses async, task, or thread boundaries, propagate the current span
 explicitly. Prefer the crate helpers for spawned work:
 
 ```rust
-use dbt_tracing::async_tracing::{spawn_blocking_traced, spawn_traced};
+use dbt_tracing::async_tracing::spawn_traced;
 use tracing::Instrument as _;
 
 async fn handle_request() {
@@ -352,7 +380,9 @@ fn spawn_work() {
         run_async_work().await;
     });
 
-    spawn_blocking_traced(|| {
+    // IMPORTANT: dbt_runtime::spawn_blocking already propagates
+    // the current span, so no extra instrumentation is needed.
+    dbt_runtime::spawn_blocking(|| {
         run_blocking_work();
     });
 
@@ -438,7 +468,7 @@ OTLP support lives in `src/serialize/otlp.rs`. JSON envelope support lives in
 4. Use trace-level spans for high-volume developer debugging rather than
    user-facing debug logs.
 5. Preserve span context across async, task, and thread boundaries with
-   `spawn_traced`, `spawn_blocking_traced`, or `tracing::Instrument`.
+   `spawn_traced`, `dbt_runtime::spawn_blocking`, or `tracing::Instrument`.
 6. Implement filtering in `is_span_enabled`, `is_log_enabled`, or a
    `TelemetryFilter` wrapper to avoid unnecessary work in consumers.
 7. Use middleware for global transforms, dropping, scrubbing, and metric

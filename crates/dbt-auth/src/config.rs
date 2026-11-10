@@ -1,5 +1,9 @@
 use std::borrow::Cow;
 
+use dbt_adbc::{Backend, database};
+
+use crate::{Auth, AuthError};
+
 pub use dbt_yaml::Value as YmlValue;
 
 // TODO(felipecrv): move this struct for generic use as it now has nothing specific to adapters
@@ -9,7 +13,7 @@ pub struct AdapterConfig {
     repr: dbt_yaml::Mapping,
 }
 
-fn yml_value_to_string<'a>(value: &'a YmlValue) -> Cow<'a, str> {
+pub(crate) fn yml_value_to_string<'a>(value: &'a YmlValue) -> Cow<'a, str> {
     // This function exists because `dbt_yaml::to_string` appends
     // a newline to the end of every string. And, less importantly, it
     // also copies values that are strings already.
@@ -74,6 +78,18 @@ impl AdapterConfig {
         self.get(field)?.as_str()
     }
 
+    /// Get a direct reference to a string value if it exists and is a string,
+    /// and is non-empty.
+    /// This returns a borrow tied to the lifetime of the AdapterConfig itself.
+    ///
+    /// TODO: It's possible this behavior is what we just want from get_str, but
+    /// we would need to investigate this to make sure we aren't breaking anything.
+    /// Is there ever a case where we want to explicitly distinguish between
+    /// not setting an option and setting an empty string?
+    pub fn get_str_non_empty(&self, field: &str) -> Option<&str> {
+        self.get(field)?.as_str().filter(|s| !s.is_empty())
+    }
+
     /// Like `require`, but returns a borrowed string.
     pub fn require_str(&self, field: &str) -> Result<&str, dbt_yaml::Error> {
         use serde::de::Error as _;
@@ -101,6 +117,18 @@ impl AdapterConfig {
         self.get("use_dbt_cloud_credentials")
             .and_then(|v| v.as_bool())
             .unwrap_or(false)
+    }
+
+    pub fn build_connection_builder(
+        &self,
+        auth: &dyn Auth,
+        configure_cloud_database: impl FnOnce(Backend) -> Result<database::Builder, AuthError>,
+    ) -> Result<database::Builder, AuthError> {
+        if self.use_dbt_cloud_credentials() {
+            configure_cloud_database(auth.backend())
+        } else {
+            auth.configure(self)
+        }
     }
 }
 

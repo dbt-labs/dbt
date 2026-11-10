@@ -6,6 +6,7 @@ use dbt_common::{FsResult, stats::NodeStatus};
 use crate::run_cache::run_cache_service::RunCacheServiceDecision;
 use crate::{context::TaskRunnerCtx, task::TaskResult};
 use dbt_schemas::schemas::{DbtUnitTest, InternalDbtNodeAttributes, manifest::DbtSavedQuery};
+use dbt_state::node_session::ExecutionGuard;
 
 #[async_trait]
 pub trait RunTaskHooks: Send + Sync {
@@ -20,16 +21,24 @@ pub trait RunTaskHooks: Send + Sync {
         node: Arc<dyn InternalDbtNodeAttributes>,
         sql: &str,
     ) -> FsResult<RunCacheServiceDecision>;
-    async fn run_alt_compute_sidecar(
+    /// Take the per-node lock before a dbt State decision. `None` means the
+    /// node runs without the lock: the `lock_with_state` flag is off, the
+    /// node type does not take one, or acquisition failed open. The caller
+    /// releases the guard with
+    /// [`crate::run_cache::state_lock::release_state_lock`] once the dbt
+    /// State confirmation has been sent.
+    async fn acquire_state_lock(
+        &self,
+        ctx: &TaskRunnerCtx,
+        node: Arc<dyn InternalDbtNodeAttributes>,
+    ) -> Option<ExecutionGuard>;
+    async fn run_lake_compute_sidecar(
         &self,
         ctx: &mut TaskRunnerCtx,
         node: Arc<dyn InternalDbtNodeAttributes>,
         task_result: Option<TaskResult>,
     ) -> FsResult<NodeStatus>;
-    /// Executes a node on the compute target selected by its `alt_compute`
-    /// config (a non-`default` target), returning its run status. The default
-    /// implementation is inert.
-    async fn run_on_alt_compute(
+    async fn run_on_lake_compute(
         &self,
         ctx: &mut TaskRunnerCtx,
         node: Arc<dyn InternalDbtNodeAttributes>,

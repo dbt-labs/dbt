@@ -1,0 +1,136 @@
+{
+  "detail": {
+    "unique_id": "saved_query.jaffle_shop.promotions_8",
+    "name": "promotions_8",
+    "resource_type": "saved_query",
+    "package_name": "jaffle_shop",
+    "description": "Synthetic fixture description. Structure is what this fixture exists to pin down; the prose is deliberately not real.",
+    "original_file_path": "models/metrics.yml",
+    "label": "Order metrics by month",
+    "file_path": "models/metrics.yml",
+    "fqn": [],
+    "tags": [],
+    "group_name": null,
+    "created_at": 1780422801.0,
+    "query_params": {
+      "group_by": [
+        "TimeDimension('metric_time', 'month')"
+      ],
+      "limit": null,
+      "metrics": [
+        "orders_total",
+        "orders_count",
+        "revenue_total",
+        "revenue_net",
+        "customers_new",
+        "customers_active",
+        "order_value_average",
+        "items_per_order",
+        "refund_total",
+        "discount_total",
+        "shipping_total",
+        "tax_total",
+        "sessions_total",
+        "conversion_rate",
+        "basket_size",
+        "repeat_rate",
+        "margin_total",
+        "units_sold",
+        "returns_total",
+        "reviews_count",
+        "tickets_open",
+        "plan_upgrades",
+        "plan_downgrades",
+        "usage_total",
+        "orders_total_1",
+        "orders_count_1",
+        "revenue_total_1",
+        "revenue_net_1",
+        "customers_new_1",
+        "customers_active_1",
+        "order_value_average_1",
+        "items_per_order_1",
+        "refund_total_1",
+        "discount_total_1",
+        "shipping_total_1",
+        "tax_total_1",
+        "sessions_total_1",
+        "conversion_rate_1",
+        "basket_size_1",
+        "repeat_rate_1",
+        "margin_total_1",
+        "units_sold_1",
+        "returns_total_1",
+        "reviews_count_1",
+        "tickets_open_1",
+        "plan_upgrades_1",
+        "plan_downgrades_1",
+        "usage_total_1",
+        "orders_total_2",
+        "orders_count_2",
+        "revenue_total_2",
+        "revenue_net_2",
+        "customers_new_2",
+        "customers_active_2",
+        "order_value_average_2",
+        "items_per_order_2",
+        "refund_total_2",
+        "discount_total_2",
+        "shipping_total_2",
+        "tax_total_2",
+        "sessions_total_2",
+        "conversion_rate_2",
+        "basket_size_2"
+      ],
+      "order_by": [],
+      "where": {
+        "where_filters": [
+          {
+            "where_sql_template": "{{ Dimension('order__ordered_at') }} is not null and {{ Dimension('order__ordered_at') }} >= '2023-02-01'"
+          }
+        ]
+      }
+    },
+    "exports": [
+      {
+        "config": {
+          "alias": "promotions_8",
+          "database": "analytics",
+          "export_as": "table",
+          "schema_name": "public"
+        },
+        "name": "promotions_8",
+        "unrendered_config": {
+          "export_as": "table"
+        }
+      }
+    ],
+    "depends_on": [],
+    "referenced_by": []
+  },
+  "lineage": {
+    "status": 200,
+    "body": {
+      "root": "saved_query.jaffle_shop.promotions_8",
+      "max_depth": 3,
+      "nodes": [
+        {
+          "depth": 0,
+          "materialized": null,
+          "name": "promotions_8",
+          "resource_type": "saved_query",
+          "unique_id": "saved_query.jaffle_shop.promotions_8"
+        }
+      ],
+      "edges": []
+    }
+  },
+  "columnLineage": {
+    "status": 412,
+    "body": {
+      "code": "column_lineage_unavailable",
+      "message": "Column-level lineage is not available in this distribution + artifact set.",
+      "upgrade_path": "Run `dbt --use-index <run|build|compile>` with static analysis enabled, in a distribution that ships the column-lineage provider."
+    }
+  }
+}

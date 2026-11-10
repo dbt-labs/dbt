@@ -1,0 +1,69 @@
+46925b52:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists development.adapters_snowflake_repros_snowflake_incremental_transient
+8e616f78:
+- sequence: 0
+  type: execute
+  sql: SHOW OBJECTS IN SCHEMA "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_REPROS_SNOWFLAKE_INCREMENTAL_TRANSIENT" LIMIT 10000
+  error: |-
+    Internal: [Snowflake] 002043 (02000): SQL compilation error:
+    Object does not exist, or operation cannot be performed. (sqlstate: 02000, vendor_code: 2043)
+dbbbff64:
+- sequence: 0
+  type: execute
+  sql: |-
+    show terse schemas in database development
+    limit 10000
+model.hello_world.incremental:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace transient  table development.adapters_snowflake_repros_snowflake_incremental_transient.incremental
+    
+    
+    
+    
+    as (
+    
+    
+    WITH source_data AS (SELECT * FROM development.adapters_snowflake_repros_snowflake_incremental_transient.model_a )
+    
+    
+    
+    SELECT id,
+    field1,
+    field2
+    FROM source_data where id <= 1
+    
+    
+    )
+- sequence: 1
+  type: execute
+  sql: drop table if exists development.adapters_snowflake_repros_snowflake_incremental_transient.incremental__dbt_tmp cascade
+model.hello_world.model_a:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace transient  table development.adapters_snowflake_repros_snowflake_incremental_transient.model_a
+    
+    
+    
+    
+    as (
+    
+    
+    with source_data as (
+    
+    select 1 as id, 'aaa' as field1, 'bbb' as field2, 111 as field3, 'TTT' as field4
+    union all select 2 as id, 'ccc' as field1, 'ddd' as field2, 222 as field3, 'UUU' as field4
+    )
+    
+    select id
+    ,field1
+    ,field2
+    ,field3
+    ,field4
+    
+    from source_data
+    )

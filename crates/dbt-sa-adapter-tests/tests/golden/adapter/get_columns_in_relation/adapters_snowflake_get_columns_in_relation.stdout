@@ -1,0 +1,35 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/a.sql
+   Parsing models/b.sql
+snowflake
+development
+adapters_snowflake_get_columns_in_relation
+text_col.can_expand_to(num_col):
+text_col.can_expand_to(text_col2):
+ Rendering models/b.sql
+snowflake
+development
+adapters_snowflake_get_columns_in_relation
+text_col.can_expand_to(num_col): False
+text_col.can_expand_to(text_col2): True
+Column: NUMBER_COL
+Column data_type: NUMBER(38,0)
+Column dtype: NUMBER
+Column numeric_precision: 38
+Column numeric_scale: 0
+Column char_size: None
+Column quoted: "NUMBER_COL"
+Column: TEXT_COL
+Column data_type: character varying(100)
+Column dtype: VARCHAR
+Column numeric_precision: None
+Column numeric_scale: None
+Column char_size: 100
+Column quoted: "TEXT_COL"
+Column string_size: 100
+ Rendering models/a.sql
+==================== Execution Summary =====================
+Finished 'compile' successfully for target 'snowflake' [duration]
+Processed: 2 models
+Summary: 2 total | 2 success

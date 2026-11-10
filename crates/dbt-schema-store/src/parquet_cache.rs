@@ -5,8 +5,8 @@
 //!
 //! ```text
 //! target/
-//!   metadata/compile/schemas/{N}.parquet    ← compile-time schemas (no TTL)
-//!   metadata/warehouse/schemas/{N}.parquet  ← warehouse-fetched schemas (TTL)
+//!   private/metadata/compile/schemas/{N}.parquet    ← compile-time schemas (no TTL)
+//!   private/metadata/warehouse/schemas/{N}.parquet  ← warehouse-fetched schemas (TTL)
 //! ```
 //!
 //! Design:
@@ -27,7 +27,10 @@
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        Arc, LazyLock,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -35,6 +38,7 @@ use arrow::ipc::{
     reader::StreamReader as ArrowIpcStreamReader, writer::StreamWriter as ArrowIpcStreamWriter,
 };
 use arrow_schema::{ArrowError, DataType, Field, Schema, SchemaRef};
+use dbt_common::ErrorCode;
 use parquet::arrow::ArrowWriter;
 use parquet::arrow::ProjectionMask;
 use parquet::arrow::arrow_reader::{ArrowPredicateFn, ParquetRecordBatchReaderBuilder, RowFilter};
@@ -83,83 +87,67 @@ fn schema_row_fields() -> Vec<Field> {
 
 // ── in-memory row ─────────────────────────────────────────────────────────────
 
-/// One entry held in memory after load.
-///
-/// Schemas are kept as raw IPC bytes and deserialized lazily on first access via
-/// [`OnceLock`], so unaccessed remote schemas do not inflate heap usage.
+/// One entry held in memory.
 #[derive(Debug)]
-pub(crate) struct CacheRow {
-    /// Raw Arrow IPC bytes for the SDF (canonical) schema.
-    pub sdf_bytes: Vec<u8>,
-    /// Raw Arrow IPC bytes for the original warehouse schema, if any.
-    pub original_bytes: Option<Vec<u8>>,
-    pub cached_at_ms: u64,
-    /// The lookup key for this entry (e.g. `Frontier(db.schema.table)`).
-    /// Injected into schema metadata on deserialization so binder errors can
-    /// show the source identity rather than a raw filesystem path.
-    pub lookup_key: String,
-    /// Cache directory injected into schema metadata on first deserialization.
-    pub cache_dir: PathBuf,
-    /// Lazily-deserialized [`SchemaEntry`]; `None` inner value means corrupt bytes.
-    deserialized: std::sync::OnceLock<Option<SchemaEntry>>,
-    /// True when this entry was written by [`ParquetSchemaCache::upsert`] in the
-    /// current run and has not yet been persisted to a delta epoch file.
-    /// False for entries loaded from existing epoch files (already on disk).
-    pub dirty: bool,
-}
-
-impl Clone for CacheRow {
-    fn clone(&self) -> Self {
-        let deserialized = std::sync::OnceLock::new();
-        if let Some(v) = self.deserialized.get() {
-            let _ = deserialized.set(v.clone());
-        }
-        Self {
-            sdf_bytes: self.sdf_bytes.clone(),
-            original_bytes: self.original_bytes.clone(),
-            cached_at_ms: self.cached_at_ms,
-            lookup_key: self.lookup_key.clone(),
-            cache_dir: self.cache_dir.clone(),
-            deserialized,
-            dirty: self.dirty,
-        }
-    }
-}
-
-impl CacheRow {
-    fn new(
+pub(crate) enum CacheRow {
+    /// Loaded from an existing epoch file (already on disk). Deserialized
+    /// lazily on first access, so unaccessed remote schemas do not inflate heap
+    /// usage. The IPC bytes are dropped once deserialized; `None` means corrupt
+    /// bytes.
+    Loaded(LazyLock<Option<SchemaEntry>, LoadedSchemaInit>),
+    /// Written by [`ParquetSchemaCache::upsert`] in the current run and not yet
+    /// persisted to a delta epoch file.
+    Unsaved {
+        entry: SchemaEntry,
+        /// Raw Arrow IPC bytes for the SDF (canonical) schema.
         sdf_bytes: Vec<u8>,
+        /// Raw Arrow IPC bytes for the original warehouse schema, if any.
         original_bytes: Option<Vec<u8>>,
         cached_at_ms: u64,
-        lookup_key: String,
-        cache_dir: PathBuf,
-        dirty: bool,
-    ) -> Self {
-        Self {
-            sdf_bytes,
-            original_bytes,
-            cached_at_ms,
-            lookup_key,
-            cache_dir,
-            deserialized: std::sync::OnceLock::new(),
-            dirty,
-        }
+    },
+    /// Written by [`ParquetSchemaCache::upsert`] and persisted by a save. The
+    /// IPC bytes are on disk, so only the entry is kept.
+    Saved(SchemaEntry),
+}
+
+/// Deserializes the IPC bytes of a [`CacheRow::Loaded`] row.
+type LoadedSchemaInit = Box<dyn FnOnce() -> Option<SchemaEntry> + Send>;
+
+impl CacheRow {
+    /// Creates a row from IPC bytes read from an epoch file.
+    ///
+    /// `lookup_key` (e.g. `Frontier(db.schema.table)`) is injected into schema
+    /// metadata on deserialization so binder errors can show the source
+    /// identity rather than a raw filesystem path.
+    fn loaded(lookup_key: String, sdf_bytes: Vec<u8>, original_bytes: Option<Vec<u8>>) -> Self {
+        Self::Loaded(LazyLock::new(Box::new(move || {
+            let sdf = match deserialize_schema(&sdf_bytes) {
+                Ok(s) => s,
+                Err(e) => {
+                    dbt_common::tracing::dbt_emit::emit_warn_log_message(
+                        ErrorCode::SchemaCacheEntryCorrupt,
+                        format!(
+                            "schema cache: corrupt IPC bytes for {lookup_key}, skipping entry: {e}"
+                        ),
+                    );
+                    return None;
+                }
+            };
+            let sdf = inject_cache_path_metadata(sdf, &lookup_key);
+            let original = original_bytes
+                .as_deref()
+                .and_then(|b| deserialize_schema(b).ok());
+            Some(SchemaEntry::from_sdf_arrow_schema(original, sdf))
+        })))
     }
 
     /// Returns the deserialized [`SchemaEntry`], deserializing on first call.
-    /// Returns `None` if the bytes are corrupt.
+    /// Returns `None` if the bytes are corrupt (logs a warning).
     pub fn entry(&self) -> Option<&SchemaEntry> {
-        self.deserialized
-            .get_or_init(|| {
-                let sdf = deserialize_schema(&self.sdf_bytes).ok()?;
-                let sdf = inject_cache_path_metadata(sdf, &self.lookup_key);
-                let original = self
-                    .original_bytes
-                    .as_deref()
-                    .and_then(|b| deserialize_schema(b).ok());
-                Some(SchemaEntry::from_sdf_arrow_schema(original, sdf))
-            })
-            .as_ref()
+        match self {
+            Self::Loaded(schema) => LazyLock::force(schema).as_ref(),
+            Self::Unsaved { entry, .. } | Self::Saved(entry) => Some(entry),
+        }
     }
 }
 
@@ -248,6 +236,10 @@ fn read_rows(path: &Path, key_filter: Option<&HashSet<&str>>) -> Vec<SchemaRow> 
         return Vec::new();
     };
     let Ok(builder) = ParquetRecordBatchReaderBuilder::try_new(file) else {
+        tracing::warn!(
+            path = %path.display(),
+            "schema cache: corrupt parquet file, skipping"
+        );
         return Vec::new();
     };
 
@@ -361,7 +353,12 @@ pub(crate) fn compact_epochs(
 
     let tmp = dir.join("0.parquet.tmp");
     write_rows(&tmp, &compacted)?;
-    std::fs::rename(&tmp, dir.join("0.parquet"))
+    let target = dir.join("0.parquet");
+    // On Windows, rename fails if the target exists. Remove it first.
+    if cfg!(windows) {
+        let _ = std::fs::remove_file(&target);
+    }
+    std::fs::rename(&tmp, &target)
         .map_err(|e| ArrowError::IoError("compaction rename".to_string(), e))?;
     for (n, path) in epochs {
         if *n != 0 {
@@ -381,6 +378,11 @@ pub(crate) fn compact_epochs(
 pub struct ParquetSchemaCache {
     entries: HashMap<String, CacheRow>,
     cache_dir: PathBuf,
+    /// TTL intervals by lookup_key, used during compaction to prune stale entries.
+    ttl_intervals: HashMap<String, Option<Duration>>,
+    /// True when there are dirty entries that need flushing. Reset after a
+    /// successful save so that only genuinely new entries are written next time.
+    has_dirty: AtomicBool,
 }
 
 impl ParquetSchemaCache {
@@ -403,9 +405,15 @@ impl ParquetSchemaCache {
         load_all_rows: bool,
     ) -> Self {
         let entries = Self::try_load(cache_dir, entries_with_intervals, load_all_rows);
+        let ttl_intervals: HashMap<String, Option<Duration>> = entries_with_intervals
+            .iter()
+            .map(|(k, d)| (k.clone(), *d))
+            .collect();
         Self {
             entries,
             cache_dir: cache_dir.to_path_buf(),
+            ttl_intervals,
+            has_dirty: AtomicBool::new(false),
         }
     }
 
@@ -461,21 +469,9 @@ impl ParquetSchemaCache {
                     continue;
                 }
             }
-            // Validate IPC bytes are parseable before accepting the row, but do not
-            // keep the deserialized schema — the CacheRow will deserialize lazily.
-            if deserialize_schema(&row.sdf_schema).is_err() {
-                continue;
-            }
             result.insert(
                 key.clone(),
-                CacheRow::new(
-                    row.sdf_schema,
-                    row.original_schema,
-                    row.cached_at_ms as u64,
-                    key,
-                    cache_dir.to_path_buf(),
-                    false, // loaded from disk — already persisted
-                ),
+                CacheRow::loaded(key, row.sdf_schema, row.original_schema),
             );
         }
         result
@@ -497,8 +493,8 @@ impl ParquetSchemaCache {
     /// Inserts or replaces an entry in the in-memory map.
     ///
     /// The IPC bytes are serialized eagerly (needed for `save()`); the
-    /// deserialized [`SchemaEntry`] is stored in the `OnceLock` immediately so
-    /// subsequent `get()` calls don't re-deserialize.
+    /// [`SchemaEntry`] is stored next to them so subsequent `get()` calls don't
+    /// deserialize.
     pub fn upsert(&mut self, lookup_key: String, entry: SchemaEntry) -> SchemaStoreResult<()> {
         let cached_at_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -506,17 +502,14 @@ impl ParquetSchemaCache {
             .as_millis() as u64;
         let sdf_bytes = serialize_schema(entry.inner())?;
         let original_bytes = entry.original().map(serialize_schema).transpose()?;
-        let row = CacheRow::new(
+        let row = CacheRow::Unsaved {
+            entry,
             sdf_bytes,
             original_bytes,
             cached_at_ms,
-            lookup_key.clone(),
-            self.cache_dir.clone(),
-            true, // newly written this run — must be persisted
-        );
-        // Pre-populate the OnceLock so get() is free for this freshly-computed entry.
-        let _ = row.deserialized.set(Some(entry));
+        };
         self.entries.insert(lookup_key, row);
+        self.has_dirty.store(true, Ordering::Release);
         Ok(())
     }
 
@@ -528,31 +521,49 @@ impl ParquetSchemaCache {
     /// Writes all in-memory entries as a new epoch parquet file under `cache_dir`.
     ///
     /// Compacts to `0.parquet` when the epoch count exceeds [`COMPACT_THRESHOLD`].
-    pub fn save(&self) -> SchemaStoreResult<()> {
-        self.save_to(&self.cache_dir)
+    pub fn save(&mut self) -> SchemaStoreResult<()> {
+        let dir = self.cache_dir.clone();
+        self.save_to(&dir)
     }
 
-    /// Writes all in-memory entries as a new epoch parquet file under `dir`.
+    /// Writes dirty entries as a new epoch parquet file under `dir`.
     ///
-    /// Only dirty entries (written by [`upsert`] in this run) are written — clean
-    /// entries were loaded from existing epoch files and are already on disk.
+    /// Only dirty entries (written by [`upsert`] since the last save) are
+    /// written — clean entries are already on disk.
     /// If nothing is dirty, no file is written and no epoch number is consumed.
-    ///
     /// Compacts to `0.parquet` when the epoch count exceeds [`COMPACT_THRESHOLD`].
-    pub fn save_to(&self, dir: &Path) -> SchemaStoreResult<()> {
-        let rows = self.build_dirty_rows(next_epoch(dir) as i32)?;
+    pub fn save_to(&mut self, dir: &Path) -> SchemaStoreResult<()> {
+        if !self.has_dirty.swap(false, Ordering::AcqRel) {
+            return Ok(()); // nothing new since last save
+        }
+
+        let epoch_n = next_epoch(dir);
+        let rows = self.build_dirty_rows(epoch_n as i32)?;
         if rows.is_empty() {
             return Ok(()); // nothing new to persist
         }
         std::fs::create_dir_all(dir)
             .map_err(|e| ArrowError::IoError(format!("create_dir_all {}", dir.display()), e))?;
-        let epoch_n = next_epoch(dir);
         let path = dir.join(format!("{epoch_n}.parquet"));
         write_rows(&path, &rows)?;
 
+        // Mark all entries clean so they aren't re-written on the next save.
+        for row in self.entries.values_mut() {
+            if let CacheRow::Unsaved { entry, .. } = row {
+                // Cloning a `SchemaEntry` only bumps its `Arc` counts. Moving it out
+                // would need ownership of the row, which `values_mut` does not give.
+                *row = CacheRow::Saved(entry.clone());
+            }
+        }
+
         let epochs = existing_epochs(dir);
         if epochs.len() > COMPACT_THRESHOLD {
-            compact_epochs(dir, &epochs, &CompactionContext::default())?;
+            let ttl_map: HashMap<&str, Option<Duration>> = self
+                .ttl_intervals
+                .iter()
+                .map(|(k, d)| (k.as_str(), *d))
+                .collect();
+            compact_epochs(dir, &epochs, &CompactionContext { ttl_map })?;
         }
         Ok(())
     }
@@ -561,14 +572,20 @@ impl ParquetSchemaCache {
     fn build_dirty_rows(&self, epoch: i32) -> SchemaStoreResult<Vec<SchemaRow>> {
         let mut rows = Vec::new();
         for (key, cache_row) in &self.entries {
-            if !cache_row.dirty {
+            let CacheRow::Unsaved {
+                sdf_bytes,
+                original_bytes,
+                cached_at_ms,
+                ..
+            } = cache_row
+            else {
                 continue;
-            }
+            };
             rows.push(SchemaRow {
                 lookup_key: key.clone(),
-                sdf_schema: cache_row.sdf_bytes.clone(),
-                original_schema: cache_row.original_bytes.clone(),
-                cached_at_ms: cache_row.cached_at_ms as i64,
+                sdf_schema: sdf_bytes.clone(),
+                original_schema: original_bytes.clone(),
+                cached_at_ms: *cached_at_ms as i64,
                 build_hash: env!("CARGO_PKG_VERSION").to_string(),
                 epoch,
             });
@@ -597,6 +614,8 @@ impl ParquetSchemaCache {
         Self {
             entries: HashMap::new(),
             cache_dir: cache_dir.to_path_buf(),
+            ttl_intervals: HashMap::new(),
+            has_dirty: AtomicBool::new(false),
         }
     }
 }
@@ -827,5 +846,213 @@ mod tests {
         let epochs = existing_epochs(dir.path());
         assert_eq!(epochs.len(), 1, "compaction must leave exactly one file");
         assert_eq!(epochs[0].0, 0, "compacted file must be epoch 0");
+    }
+
+    #[test]
+    fn compaction_applies_ttl_context() {
+        let dir = tempfile::tempdir().unwrap();
+        let fresh_key = "Frontier(db.s.fresh)";
+        let stale_key = "Frontier(db.s.stale)";
+
+        // Write both entries as epoch 0.
+        let mut cache = ParquetSchemaCache::empty(dir.path());
+        cache
+            .upsert(
+                fresh_key.to_string(),
+                SchemaEntry::from_sdf_arrow_schema(None, make_schema("f")),
+            )
+            .unwrap();
+        cache
+            .upsert(
+                stale_key.to_string(),
+                SchemaEntry::from_sdf_arrow_schema(None, make_schema("s")),
+            )
+            .unwrap();
+        cache.save().unwrap();
+
+        // Wait so the stale entry ages past TTL.
+        std::thread::sleep(Duration::from_millis(5));
+
+        // Write a second epoch to trigger compaction threshold check.
+        // We'll compact manually with a TTL context.
+        let epochs = existing_epochs(dir.path());
+        let mut ttl_map = HashMap::new();
+        ttl_map.insert(stale_key, Some(Duration::from_millis(1))); // stale: expired
+        ttl_map.insert(fresh_key, Some(Duration::from_secs(3600))); // fresh: not expired
+        let ctx = CompactionContext { ttl_map };
+
+        compact_epochs(dir.path(), &epochs, &ctx).unwrap();
+
+        // Reload: fresh must survive, stale must be pruned.
+        let loaded = ParquetSchemaCache::load(
+            dir.path(),
+            &[
+                (fresh_key.to_string(), Some(Duration::from_secs(3600))),
+                (stale_key.to_string(), Some(Duration::from_secs(3600))), // generous TTL on load
+            ],
+            false,
+        );
+        assert!(
+            loaded.get(fresh_key).is_some(),
+            "fresh entry must survive compaction"
+        );
+        assert!(
+            loaded.get(stale_key).is_none(),
+            "stale entry must be pruned during compaction"
+        );
+    }
+
+    #[test]
+    fn compaction_succeeds_when_zero_parquet_exists() {
+        // Simulates the Windows rename concern: 0.parquet already exists from a
+        // previous compaction, and we compact again.
+        let dir = tempfile::tempdir().unwrap();
+        let key = "Frontier(db.s.t)";
+
+        // Create initial epoch 0.
+        let mut cache = ParquetSchemaCache::empty(dir.path());
+        cache
+            .upsert(
+                key.to_string(),
+                SchemaEntry::from_sdf_arrow_schema(None, make_schema("col")),
+            )
+            .unwrap();
+        cache.save().unwrap();
+
+        // Manually trigger compaction (even though threshold isn't met).
+        let epochs = existing_epochs(dir.path());
+        compact_epochs(dir.path(), &epochs, &CompactionContext::default()).unwrap();
+
+        // Now write more epochs to force a second compaction.
+        for i in 1..=(COMPACT_THRESHOLD as u32 + 1) {
+            let k = format!("Frontier(db.s.extra{i})");
+            let mut c = ParquetSchemaCache::empty(dir.path());
+            c.upsert(
+                k,
+                SchemaEntry::from_sdf_arrow_schema(None, make_schema("x")),
+            )
+            .unwrap();
+            c.save().unwrap();
+        }
+
+        // Second compaction must succeed (0.parquet already exists).
+        let epochs2 = existing_epochs(dir.path());
+        assert!(
+            compact_epochs(dir.path(), &epochs2, &CompactionContext::default()).is_ok(),
+            "compaction must succeed when 0.parquet already exists"
+        );
+
+        // Original entry must survive.
+        let loaded = ParquetSchemaCache::load(dir.path(), &[(key.to_string(), None)], false);
+        assert!(
+            loaded.get(key).is_some(),
+            "original entry must survive double compaction"
+        );
+    }
+
+    #[test]
+    fn corrupt_epoch_file_skipped_gracefully() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = "Frontier(db.s.t)";
+
+        // Write a valid epoch 0.
+        let mut cache = ParquetSchemaCache::empty(dir.path());
+        cache
+            .upsert(
+                key.to_string(),
+                SchemaEntry::from_sdf_arrow_schema(None, make_schema("col")),
+            )
+            .unwrap();
+        cache.save().unwrap();
+
+        // Write garbage as epoch 1.
+        std::fs::create_dir_all(dir.path()).unwrap();
+        std::fs::write(dir.path().join("1.parquet"), b"this is not valid parquet").unwrap();
+
+        // Load must succeed — corrupt file skipped, valid epoch 0 still loaded.
+        let loaded = ParquetSchemaCache::load(dir.path(), &[(key.to_string(), None)], false);
+        assert_eq!(
+            loaded.len(),
+            1,
+            "valid entries must survive despite corrupt epoch file"
+        );
+        assert_eq!(loaded.get(key).unwrap().inner().field(0).name(), "col");
+    }
+
+    #[test]
+    fn corrupt_ipc_bytes_in_row_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let valid_key = "Frontier(db.s.valid)";
+        let corrupt_key = "Frontier(db.s.corrupt)";
+
+        // Write a file with one valid row and one corrupt row.
+        let valid_schema = serialize_schema(&make_schema("ok")).unwrap();
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        let rows = vec![
+            SchemaRow {
+                lookup_key: valid_key.to_string(),
+                sdf_schema: valid_schema,
+                original_schema: None,
+                cached_at_ms: now_ms,
+                build_hash: env!("CARGO_PKG_VERSION").to_string(),
+                epoch: 0,
+            },
+            SchemaRow {
+                lookup_key: corrupt_key.to_string(),
+                sdf_schema: b"not valid ipc bytes".to_vec(),
+                original_schema: None,
+                cached_at_ms: now_ms,
+                build_hash: env!("CARGO_PKG_VERSION").to_string(),
+                epoch: 0,
+            },
+        ];
+        std::fs::create_dir_all(dir.path()).unwrap();
+        write_rows(&dir.path().join("0.parquet"), &rows).unwrap();
+
+        // Load: valid row must survive, corrupt row must be silently skipped.
+        let loaded = ParquetSchemaCache::load(
+            dir.path(),
+            &[
+                (valid_key.to_string(), None),
+                (corrupt_key.to_string(), None),
+            ],
+            false,
+        );
+        assert!(loaded.get(valid_key).is_some(), "valid row must load");
+        assert!(
+            loaded.get(corrupt_key).is_none(),
+            "corrupt IPC row must be skipped"
+        );
+    }
+
+    #[test]
+    fn saved_row_keeps_entry_and_later_upsert_is_saved_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = "Selected(model.pkg.orders)";
+
+        let mut cache = ParquetSchemaCache::empty(dir.path());
+        cache
+            .upsert(
+                key.to_string(),
+                SchemaEntry::from_sdf_arrow_schema(None, make_schema("old")),
+            )
+            .unwrap();
+        cache.save().unwrap();
+        assert!(matches!(cache.entries[key], CacheRow::Saved(_)));
+        assert_eq!(cache.get(key).unwrap().inner().field(0).name(), "old");
+
+        cache
+            .upsert(
+                key.to_string(),
+                SchemaEntry::from_sdf_arrow_schema(None, make_schema("new")),
+            )
+            .unwrap();
+        cache.save().unwrap();
+        assert_eq!(existing_epochs(dir.path()).len(), 2);
+        let loaded = ParquetSchemaCache::load(dir.path(), &[(key.to_string(), None)], false);
+        assert_eq!(loaded.get(key).unwrap().inner().field(0).name(), "new");
     }
 }

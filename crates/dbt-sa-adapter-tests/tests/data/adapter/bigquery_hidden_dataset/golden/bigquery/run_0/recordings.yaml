@@ -1,0 +1,8 @@
+7b88c1d9:
+- sequence: 0
+  type: execute
+  sql: CREATE SCHEMA IF NOT EXISTS `dbt-test-env`.`_adapters_bigquery_hidden_dataset`
+fcb374bc:
+- sequence: 0
+  type: execute
+  sql: DROP SCHEMA IF EXISTS `dbt-test-env`.`_adapters_bigquery_hidden_dataset` CASCADE

@@ -4,14 +4,15 @@ use chrono::TimeZone;
 use chrono_tz::{Europe::London, Tz};
 use dbt_adapter::{AdapterType, load_store::ResultStore};
 use dbt_common::io_args::StaticAnalysisKind;
-use dbt_common::serde_utils::convert_yml_to_dash_map;
-use dbt_common::{dashmap::DashMap, serde_utils::convert_yml_to_value_map};
+use dbt_common::serde_utils::convert_yml_to_scc_map;
+use dbt_common::{FsResult, collections::SccHashMap};
 use dbt_schemas::schemas::InternalDbtNode;
 use dbt_schemas::{
     schemas::{InternalDbtNodeAttributes, common::DbtMaterialization, telemetry::NodeType},
     state::{DbtRuntimeConfig, NodeResolverTracker, ResolverState},
 };
-use minijinja::constants::{CURRENT_EXECUTION_PHASE, CURRENT_PATH, CURRENT_SPAN};
+use minijinja::constants::{CURRENT_EXECUTION_PHASE, CURRENT_PATH, CURRENT_SPAN, DIALECT};
+use minijinja::value::OverlayMap;
 use minijinja::{Value as MinijinjaValue, machinery::Span};
 use minijinja_contrib::modules::{py_datetime::datetime::PyDateTime, pytz::PytzTimezone};
 use std::{
@@ -19,9 +20,7 @@ use std::{
     sync::Arc,
 };
 
-use dbt_jinja_ctx::{
-    CompileNodeCtx, JinjaObject, MacroLookupContext, to_jinja_btreemap, to_model_context_map,
-};
+use dbt_jinja_ctx::{CompileNodeCtx, JinjaObject, MacroLookupContext, to_jinja_btreemap};
 
 use crate::phases::compile_and_run_context::{FunctionFunction, SourceFunction};
 use dbt_schemas::schemas::project::ConfigKeys;
@@ -127,14 +126,11 @@ impl Default for DependencyValidationConfig {
 /// Build a compile model context (wrapper for build_compile_node_context_inner)
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn build_compile_node_context<T>(
-    model: &T,
+    model: Arc<T>,
     resolver_state: &ResolverState,
-    base_context: &BTreeMap<String, MinijinjaValue>,
+    base_context: &MinijinjaValue,
     ref_validation_config: DependencyValidationConfig,
-) -> (
-    BTreeMap<String, MinijinjaValue>,
-    Arc<DashMap<String, MinijinjaValue>>,
-)
+) -> FsResult<(OverlayMap, Arc<SccHashMap<String, MinijinjaValue>>)>
 where
     T: InternalDbtNodeAttributes + ?Sized,
 {
@@ -153,21 +149,19 @@ where
 /// Returns a context and the current relation
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn build_compile_node_context_inner<T>(
-    model: &T,
+    model: Arc<T>,
     adapter_type: AdapterType,
-    base_context: &BTreeMap<String, MinijinjaValue>,
+    base_context: &MinijinjaValue,
     root_project_name: &str,
     node_resolver: Arc<dyn NodeResolverTracker>,
     runtime_config: Arc<DbtRuntimeConfig>,
     ref_validation_config: DependencyValidationConfig,
-) -> (
-    BTreeMap<String, MinijinjaValue>,
-    Arc<DashMap<String, MinijinjaValue>>,
-)
+) -> FsResult<(OverlayMap, Arc<SccHashMap<String, MinijinjaValue>>)>
 where
     T: InternalDbtNodeAttributes + ?Sized,
 {
-    let mut base_builtins = if let Some(builtins) = base_context.get("builtins") {
+    let mut ctx = OverlayMap::extending(base_context);
+    let mut base_builtins = if let Some(builtins) = ctx.get("builtins") {
         builtins
             .as_object()
             .unwrap()
@@ -177,7 +171,6 @@ where
     } else {
         BTreeMap::new()
     };
-    let mut ctx = base_context.clone();
 
     let this_relation = match model.resource_type() {
         NodeType::UnitTest => {
@@ -188,14 +181,12 @@ where
                 .cloned()
                 .map(|r| r.name)
                 .expect("Unit test must have a dependency");
-            let (_, this_relation, _, _) = node_resolver
-                .lookup_ref(
-                    &Some(model.common().package_name.clone()),
-                    &ref_name,
-                    &None,
-                    &None,
-                )
-                .expect("Ref must exist");
+            let (_, this_relation, _, _) = node_resolver.lookup_ref(
+                &Some(model.common().package_name.clone()),
+                &ref_name,
+                &None,
+                &None,
+            )?;
             this_relation
         }
         NodeType::Model => {
@@ -214,7 +205,10 @@ where
                     .unwrap(),
                 ))
                 .into_value()
-            } else if matches!(model.materialized(), DbtMaterialization::Ephemeral) {
+            } else if matches!(
+                model.materialized(),
+                DbtMaterialization::Ephemeral | DbtMaterialization::Inline
+            ) {
                 // Build `this` directly as the physical relation
                 // (database.schema.identifier) rather than using the relation the
                 // resolver stores for this node. The stored relation is typed so
@@ -236,14 +230,16 @@ where
                 ))
                 .into_value()
             } else {
-                let (_, this_relation, _, deferred_relation) = node_resolver
-                    .lookup_ref(
-                        &Some(model.common().package_name.clone()),
-                        &ref_name,
-                        &model.version().map(|v| v.to_string()),
-                        &Some(model.common().package_name.clone()),
-                    )
-                    .expect("Ref must exist");
+                let version = model.version().map(|v| v.to_string());
+                // Bind `this` by identity. Sharing a name with another node
+                // (e.g. a legacy snapshot) makes `ref()` ambiguous, but must
+                // not stop a model from resolving its own relation.
+                let (this_relation, deferred_relation) = node_resolver.lookup_self_relation(
+                    &model.common().unique_id,
+                    &model.common().package_name,
+                    &ref_name,
+                    &version,
+                )?;
 
                 if let Some(deferred_relation_value) = deferred_relation
                     && (matches!(*model.base().static_analysis, StaticAnalysisKind::Unsafe)
@@ -268,7 +264,7 @@ where
         ))
         .into_value(),
     };
-    let config_map = Arc::new(convert_yml_to_dash_map(model.serialized_config()));
+    let config_map = Arc::new(convert_yml_to_scc_map(model.serialized_config()));
 
     // Get valid config keys based on resource type
     let valid_keys = match model.resource_type() {
@@ -305,6 +301,7 @@ where
         runtime_config.clone(),
         validation_config_with_depends_on.clone(),
         model.common().unique_id.clone(),
+        adapter_type,
     );
     let ref_value = MinijinjaValue::from_object(ref_function);
     base_builtins.insert("ref".to_string(), ref_value.clone());
@@ -323,12 +320,18 @@ where
     let source_function = SourceFunction::new_with_validation(
         node_resolver.clone(),
         model.common().package_name.clone(),
+        runtime_config.clone(),
         validation_config_with_depends_on,
     );
     let source_value = MinijinjaValue::from_object(source_function);
     base_builtins.insert("source".to_string(), source_value.clone());
 
-    let mut model_map = convert_yml_to_value_map(model.serialize());
+    let model_map = dbt_schemas::jinja_node::LazyNodeContext::from_node(
+        model.clone(),
+        dbt_schemas::schemas::serialization_utils::SerializationMode::OmitNone,
+    )
+    // TODO(LazyNodeContext): See `with_eager_nested_maps`.
+    .with_eager_nested_maps();
     // dbt-core exposes `model.path` relative to the resource root (e.g.
     // `staging/orders.sql`), not package-relative (`models/staging/orders.sql`).
     // Fusion stores the package-relative form on the node (it is used for file
@@ -338,13 +341,19 @@ where
         let model_paths = model_paths_for_package(&runtime_config, &model.common().package_name);
         let jinja_path = dbt_common::path::strip_resource_paths(&model.common().path, &model_paths);
         model_map.insert(
-            "path".to_owned(),
+            MinijinjaValue::from("path"),
             MinijinjaValue::from(jinja_path.to_string_lossy().into_owned()),
         );
     }
+    // Unit tests have no batch window. Models still need the placeholder for
+    // their pre-batch render; microbatch execution installs the real window.
     model_map.insert(
-        "batch".to_owned(),
-        MinijinjaValue::from_object(init_batch_context()),
+        MinijinjaValue::from("batch"),
+        if model.resource_type() == NodeType::UnitTest {
+            MinijinjaValue::from(())
+        } else {
+            MinijinjaValue::from_object(init_batch_context())
+        },
     );
 
     let result_store = ResultStore::default();
@@ -373,7 +382,7 @@ where
         source: source_value,
         function: function_value,
         builtins: MinijinjaValue::from_object(base_builtins),
-        model: MinijinjaValue::from_dyn_object(to_model_context_map(model_map)),
+        model: MinijinjaValue::from_object(model_map),
         store_result: MinijinjaValue::from_function(result_store.store_result()),
         load_result: MinijinjaValue::from_function(result_store.load_result()),
         store_raw_result: MinijinjaValue::from_function(result_store.store_raw_result()),
@@ -409,13 +418,24 @@ where
         MinijinjaValue::from("render"),
     );
 
-    // Today's caller still consumes `BTreeMap<String, MinijinjaValue>`. We
+    // A node that selected an adapter via `+adapter` renders against that
+    // adapter's dialect. Inserted into the node's own context so macro dispatch
+    // resolves per node. Always present now that the adapter is resolved at parse:
+    // an unannotated node carries the target default rather than nothing.
+    ctx.insert(
+        DIALECT.to_string(),
+        // `as_ref()` deliberately, not `to_string()`: the namespace is keyed
+        // with `as_ref()`, and for AdapterType those are separate strum impls.
+        MinijinjaValue::from(model.node_adapter().as_ref()),
+    );
+
+    // Today's caller still consumes map entries, not the typed struct. We
     // serialize the typed overlay and `.extend(...)` onto the base — same
     // last-write-wins shadowing semantic the original BTreeMap-based code
     // produced. PR 9 (cleanup) flows the typed struct directly through
     // `render_named_str<S: Serialize>` and drops the conversion.
     ctx.extend(to_jinja_btreemap(&overlay));
-    (ctx, config_map)
+    Ok((ctx, config_map))
 }
 
 fn init_batch_context() -> BTreeMap<String, MinijinjaValue> {
@@ -439,4 +459,303 @@ fn init_batch_context() -> BTreeMap<String, MinijinjaValue> {
         )),
     );
     batch_map
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::node_resolver::{NodeResolver, PackageSearchOrder};
+    use dbt_common::ErrorCode;
+    use dbt_schemas::filter::RunFilter;
+    use dbt_schemas::schemas::Nodes;
+    use dbt_schemas::schemas::common::ResolvedQuoting;
+    use dbt_schemas::schemas::nodes::{
+        CommonAttributes, DbtModel, DbtSnapshot, NodeBaseAttributes,
+    };
+    use dbt_schemas::state::ModelStatus;
+
+    const ADAPTER_TYPE: AdapterType = AdapterType::Snowflake;
+
+    fn common(unique_id: &str) -> CommonAttributes {
+        CommonAttributes {
+            unique_id: unique_id.to_string(),
+            name: "barbers".to_string(),
+            package_name: "my_new_project".to_string(),
+            ..Default::default()
+        }
+    }
+
+    fn colliding_model() -> DbtModel {
+        DbtModel {
+            __common_attr__: common("model.my_new_project.barbers"),
+            __base_attr__: NodeBaseAttributes {
+                alias: "barbers".to_string(),
+                materialized: DbtMaterialization::View,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    /// A model and a legacy snapshot sharing a name, as dbt-core accepts.
+    fn insert_colliding_snapshot(node_resolver: &mut NodeResolver) {
+        let snapshot = DbtSnapshot {
+            __common_attr__: common("snapshot.my_new_project.barbers"),
+            __base_attr__: NodeBaseAttributes {
+                alias: "barbers_snapshot".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        node_resolver
+            .insert_ref(&snapshot, ModelStatus::Enabled, false)
+            .expect("insert snapshot ref");
+    }
+
+    fn resolver_with_collision(model: &DbtModel) -> NodeResolver {
+        let mut node_resolver = NodeResolver::default();
+        node_resolver
+            .insert_ref(model, ModelStatus::Enabled, false)
+            .expect("insert model ref");
+        insert_colliding_snapshot(&mut node_resolver);
+        node_resolver
+    }
+
+    fn build_ctx(model: &DbtModel, node_resolver: NodeResolver) -> FsResult<OverlayMap> {
+        build_compile_node_context_inner(
+            Arc::new(model.clone()),
+            ADAPTER_TYPE,
+            &MinijinjaValue::from(BTreeMap::<String, MinijinjaValue>::new()),
+            "my_new_project",
+            Arc::new(node_resolver),
+            Arc::new(DbtRuntimeConfig::default()),
+            DependencyValidationConfig::new_unvalidated(),
+        )
+        .map(|(ctx, _)| ctx)
+    }
+
+    // A name shared with a snapshot must not stop a model from binding its own
+    // `this` — dbt-core builds such projects (dbt-labs/fs#12879).
+    #[test]
+    fn colliding_node_name_still_resolves_own_this() {
+        let model = colliding_model();
+        let ctx = build_ctx(&model, resolver_with_collision(&model))
+            .expect("model must resolve its own `this` despite the name collision");
+
+        let this = ctx.get("this").expect("`this` must be bound").to_string();
+        assert!(
+            this.contains("barbers") && !this.contains("barbers_snapshot"),
+            "`this` bound to the wrong node's relation: {this}"
+        );
+    }
+
+    // `merge` extends the ref vectors in place, so identity resolution reads
+    // merged records without any second structure to keep in sync.
+    #[test]
+    fn merged_resolver_still_resolves_own_this() {
+        let model = colliding_model();
+        let mut node_resolver = NodeResolver::default();
+        node_resolver.merge(resolver_with_collision(&model));
+
+        let ctx = build_ctx(&model, node_resolver)
+            .expect("a merged resolver must still resolve the model's own `this`");
+
+        let this = ctx.get("this").expect("`this` must be bound").to_string();
+        assert!(
+            this.contains("barbers") && !this.contains("barbers_snapshot"),
+            "`this` bound to the wrong node's relation: {this}"
+        );
+    }
+
+    // Identity resolution must not smuggle a disabled node past the
+    // enabled/disabled distinction `lookup_ref` enforces.
+    #[test]
+    fn disabled_self_node_is_reported_not_resolved() {
+        let model = colliding_model();
+        let mut node_resolver = NodeResolver::default();
+        node_resolver
+            .insert_ref(&model, ModelStatus::Disabled, false)
+            .expect("insert disabled model ref");
+
+        let err = build_ctx(&model, node_resolver).expect_err("a disabled node must not resolve");
+
+        assert_eq!(err.code, ErrorCode::DisabledDependency);
+    }
+
+    #[test]
+    fn disabled_self_node_with_colliding_snapshot_is_reported() {
+        let model = colliding_model();
+        let mut node_resolver = NodeResolver::default();
+        node_resolver
+            .insert_ref(&model, ModelStatus::Disabled, false)
+            .expect("insert disabled model ref");
+        insert_colliding_snapshot(&mut node_resolver);
+
+        let err = build_ctx(&model, node_resolver)
+            .expect_err("a colliding snapshot must not replace a disabled model's `this`");
+
+        assert_eq!(err.code, ErrorCode::DisabledDependency);
+        assert!(
+            err.to_string()
+                .contains("Attempted to use disabled ref 'barbers'"),
+            "unexpected error: {err}"
+        );
+    }
+
+    // The collision is still a genuine ambiguity for user-written `ref()`,
+    // which has no unique_id to disambiguate with.
+    #[test]
+    fn colliding_node_name_still_makes_user_ref_ambiguous() {
+        let model = colliding_model();
+        let err = resolver_with_collision(&model)
+            .lookup_ref(
+                &Some("my_new_project".to_string()),
+                "barbers",
+                &None,
+                &Some("my_new_project".to_string()),
+            )
+            .expect_err("ref('barbers') must stay ambiguous");
+
+        assert_eq!(err.code, ErrorCode::InvalidConfig);
+        assert!(
+            err.to_string().contains("Found ambiguous ref('barbers')"),
+            "unexpected error: {err}"
+        );
+    }
+
+    // An unresolvable `this` must be reported, not `.expect()`ed into a panic.
+    #[test]
+    fn unresolvable_this_is_reported_not_panicked() {
+        let model = colliding_model();
+        let err = build_ctx(&model, NodeResolver::default())
+            .expect_err("an unregistered model must not resolve");
+
+        assert_eq!(err.code, ErrorCode::DependencyNotFound);
+    }
+
+    #[test]
+    fn missing_self_node_with_colliding_snapshot_is_reported() {
+        let model = colliding_model();
+        let mut node_resolver = NodeResolver::default();
+        insert_colliding_snapshot(&mut node_resolver);
+
+        let err = build_ctx(&model, node_resolver)
+            .expect_err("a colliding snapshot must not replace a missing model's `this`");
+
+        assert_eq!(err.code, ErrorCode::DependencyNotFound);
+        assert!(
+            err.to_string()
+                .contains("Ref 'barbers' not found in project"),
+            "unexpected error: {err}"
+        );
+    }
+
+    fn model_on(adapter: AdapterType, name: &str) -> DbtModel {
+        DbtModel {
+            __common_attr__: CommonAttributes {
+                unique_id: format!("model.my_new_project.{name}"),
+                name: name.to_string(),
+                package_name: "my_new_project".to_string(),
+                ..Default::default()
+            },
+            __base_attr__: NodeBaseAttributes {
+                adapter,
+                database: "Cat".to_string(),
+                schema: "Sch".to_string(),
+                alias: name.to_string(),
+                materialized: DbtMaterialization::Table,
+                quoting: ResolvedQuoting::trues(),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    /// Renders `{{ ref('up') }}` from `caller`, with `prod_up` as `up`'s deferred node if given.
+    fn render_ref_to_up(up: DbtModel, prod_up: Option<DbtModel>, caller: DbtModel) -> String {
+        let caller = Arc::new(caller);
+        let mut nodes = Nodes::default();
+        nodes
+            .models
+            .insert(up.__common_attr__.unique_id.clone(), Arc::new(up));
+        nodes
+            .models
+            .insert(caller.__common_attr__.unique_id.clone(), caller.clone());
+        let mut node_resolver = NodeResolver::from_dbt_nodes(
+            &nodes,
+            AdapterType::Databricks,
+            "my_new_project".to_string(),
+            None,
+            RunFilter::default(),
+            BTreeMap::new(),
+            false,
+            PackageSearchOrder::default(),
+        )
+        .expect("build resolver");
+        if let Some(prod_up) = prod_up {
+            node_resolver
+                .update_ref_with_deferral(&prod_up, AdapterType::Databricks, false)
+                .expect("defer up");
+        }
+        let adapter_type = caller.node_adapter();
+        let (ctx, _) = build_compile_node_context_inner(
+            caller,
+            adapter_type,
+            &MinijinjaValue::from(BTreeMap::<String, MinijinjaValue>::new()),
+            "my_new_project",
+            Arc::new(node_resolver),
+            Arc::new(DbtRuntimeConfig::default()),
+            DependencyValidationConfig::new_unvalidated(),
+        )
+        .expect("build compile context");
+        minijinja::Environment::new()
+            .render_str("{{ ref('up') }}", ctx, &[])
+            .expect("render ref")
+    }
+
+    // `ref()` spells an upstream with the calling node's adapter, in the case the upstream renders.
+    #[test]
+    fn ref_renders_with_the_calling_nodes_adapter() {
+        let up = || model_on(AdapterType::Databricks, "up");
+        let lakecompute_caller = model_on(AdapterType::LakeCompute, "lc_down");
+        assert_eq!(
+            render_ref_to_up(up(), None, lakecompute_caller),
+            r#""cat"."sch"."up""#
+        );
+        let databricks_caller = model_on(AdapterType::Databricks, "dbx_down");
+        assert_eq!(
+            render_ref_to_up(up(), None, databricks_caller),
+            "`cat`.`sch`.`up`"
+        );
+    }
+
+    // A deferred upstream is spelled with the calling node's adapter too.
+    #[test]
+    fn deferred_ref_renders_with_the_calling_nodes_adapter() {
+        let mut prod_up = model_on(AdapterType::Databricks, "up");
+        prod_up.__base_attr__.database = "Prod".to_string();
+        let lakecompute_caller = model_on(AdapterType::LakeCompute, "lc_down");
+        assert_eq!(
+            render_ref_to_up(
+                model_on(AdapterType::Databricks, "up"),
+                Some(prod_up),
+                lakecompute_caller
+            ),
+            r#""prod"."sch"."up""#
+        );
+    }
+
+    // An ephemeral ref keeps its CTE name's case; Databricks never folds it.
+    #[test]
+    fn cross_adapter_ephemeral_ref_keeps_its_cte_name() {
+        let mut up = model_on(AdapterType::Databricks, "up");
+        up.__base_attr__.alias = "MyEph".to_string();
+        up.__base_attr__.materialized = DbtMaterialization::Ephemeral;
+        let lakecompute_caller = model_on(AdapterType::LakeCompute, "lc_down");
+        assert_eq!(
+            render_ref_to_up(up, None, lakecompute_caller),
+            "__dbt__cte__MyEph"
+        );
+    }
 }

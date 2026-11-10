@@ -1,0 +1,22 @@
+version: 2
+
+unit_tests:
+  - name: json_object_mock
+    model: json_downstream
+    given:
+      - input: ref('json_source')
+        rows:
+          - { id: "1", payload_json: { segmentCode: "HORECA" } }
+    expect:
+      rows:
+        - { id: "1", segment_code: "HORECA" }
+
+  - name: json_string_mock
+    model: json_downstream
+    given:
+      - input: ref('json_source')
+        rows:
+          - { id: "1", payload_json: '{"segmentCode":"HORECA"}' }
+    expect:
+      rows:
+        - { id: "1", segment_code: "HORECA" }

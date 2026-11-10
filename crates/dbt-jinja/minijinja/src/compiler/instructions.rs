@@ -201,7 +201,17 @@ pub enum Instruction<'source> {
     ),
 
     /// Calls a method
-    CallMethod(&'source str, Option<u16>, Box<Span>, Box<Span>),
+    ///
+    /// The last field carries the receiver's identifier when the receiver is a
+    /// plain variable (`foo.bar()` -> `Some("foo")`), so that a failed call on an
+    /// undefined receiver can name it. `None` for any other receiver expression.
+    CallMethod(
+        &'source str,
+        Option<u16>,
+        Box<Span>,
+        Box<Span>,
+        Option<&'source str>,
+    ),
 
     /// Calls an object
     CallObject(Option<u16>, Span),
@@ -245,6 +255,7 @@ pub enum Instruction<'source> {
     #[cfg(feature = "macros")]
     Return {
         explicit: bool,
+        arg_count: Option<Option<u16>>,
     },
 
     /// True if the value is undefined

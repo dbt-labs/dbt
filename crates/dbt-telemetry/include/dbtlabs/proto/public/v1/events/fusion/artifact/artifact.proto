@@ -10,6 +10,7 @@ enum ArtifactType {
   ARTIFACT_TYPE_SEMANTIC_MANIFEST = 2;
   ARTIFACT_TYPE_CATALOG = 3;
   ARTIFACT_TYPE_SOURCES = 4;
+  ARTIFACT_TYPE_FRESHNESS = 5;
 }
 
 // Event emitted when an artifact is written to disk.

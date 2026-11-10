@@ -1,7 +1,0 @@
-kind: Fixes
-body: 'Normalize BigQuery model context column data types when contract `alias_types` is enabled (e.g. `FLOAT` -> `FLOAT64`), matching dbt Core.'
-time: 2026-07-05T00:00:00.000000+00:00
-custom:
-    author: mvanhorn
-    issue: "14097"
-    project: dbt-core

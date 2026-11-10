@@ -1,4 +1,4 @@
-use crate::{AdapterConfig, Auth, AuthError, AuthOutcome, auth_configure_pipeline};
+use crate::{AdapterConfig, Auth, AuthError, AuthWarningPrinter, auth_configure_pipeline};
 use database::Builder as DatabaseBuilder;
 
 use dbt_adbc::{Backend, database};
@@ -16,7 +16,11 @@ enum PostgresAuthIR<'a> {
 }
 
 impl<'a> PostgresAuthIR<'a> {
-    pub fn apply(self, mut builder: DatabaseBuilder) -> Result<DatabaseBuilder, AuthError> {
+    pub fn apply(
+        self,
+        mut builder: DatabaseBuilder,
+        _warning_printer: &dyn AuthWarningPrinter,
+    ) -> Result<DatabaseBuilder, AuthError> {
         match self {
             Self::Database {
                 user,
@@ -35,7 +39,10 @@ impl<'a> PostgresAuthIR<'a> {
     }
 }
 
-fn parse_auth<'a>(config: &'a AdapterConfig) -> Result<PostgresAuthIR<'a>, AuthError> {
+fn parse_auth<'a>(
+    config: &'a AdapterConfig,
+    _warning_printer: &dyn AuthWarningPrinter,
+) -> Result<PostgresAuthIR<'a>, AuthError> {
     Ok(PostgresAuthIR::Database {
         user: config.require_str("user")?,
         password: config.require_str("password")?,
@@ -49,19 +56,28 @@ fn parse_auth<'a>(config: &'a AdapterConfig) -> Result<PostgresAuthIR<'a>, AuthE
 fn apply_connection_args(
     _config: &AdapterConfig,
     builder: DatabaseBuilder,
+    _warning_printer: &dyn AuthWarningPrinter,
 ) -> Result<DatabaseBuilder, AuthError> {
     Ok(builder)
 }
 
-pub struct PostgresAuth;
+pub struct PostgresAuth {
+    pub warning_printer: Box<dyn AuthWarningPrinter>,
+}
+
+impl PostgresAuth {
+    pub fn new(warning_printer: Box<dyn AuthWarningPrinter>) -> Self {
+        Self { warning_printer }
+    }
+}
 
 impl Auth for PostgresAuth {
     fn backend(&self) -> Backend {
         Backend::Postgres
     }
 
-    fn configure(&self, config: &AdapterConfig) -> Result<AuthOutcome, AuthError> {
-        auth_configure_pipeline!(self.backend(), &config, parse_auth, apply_connection_args)
+    fn configure(&self, config: &AdapterConfig) -> Result<database::Builder, AuthError> {
+        auth_configure_pipeline!(self, &config, parse_auth, apply_connection_args)
     }
 }
 
@@ -82,10 +98,9 @@ mod tests {
             ("database".into(), "db".into()),
         ]);
 
-        let builder = PostgresAuth {}
+        let builder = PostgresAuth::new(Box::new(crate::NoopAuthWarningPrinter))
             .configure(&AdapterConfig::new(config))
-            .expect("configure")
-            .builder;
+            .expect("configure");
 
         let uri = uri_value(&builder);
         assert_contains!(&uri, "postgresql://alice:secret@pg.local:5432/db");
@@ -106,10 +121,9 @@ database: db
         )
         .expect("parse yaml");
 
-        let builder = PostgresAuth {}
+        let builder = PostgresAuth::new(Box::new(crate::NoopAuthWarningPrinter))
             .configure(&AdapterConfig::new(config))
-            .expect("configure")
-            .builder;
+            .expect("configure");
 
         let uri = uri_value(&builder);
         assert_contains!(&uri, "postgresql://alice:secret@pg.local:5432/db");

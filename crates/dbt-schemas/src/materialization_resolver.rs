@@ -140,25 +140,23 @@ impl MaterializationCandidateList {
 pub struct MaterializationResolver {
     /// Pre-filtered materialization macros only, keyed by unique_id
     pub materialization_macros: BTreeMap<String, DbtMacro>,
-    /// Active adapter type (e.g., `postgres`, `redshift`)
-    pub adapter_type: String,
     /// Root project name for locality determination
     pub root_project_name: String,
     /// Cache mapping materialization name -> fully qualified macro name
-    pub cache: Mutex<HashMap<String, String>>,
+    /// Keyed by `(dialect, materialization_name)`.
+    pub cache: Mutex<HashMap<(String, String), String>>,
 }
 
 impl MaterializationResolver {
     /// Create a new resolver instance with pre-filtered materialization macros
     ///
     /// * `macros` - All macros in the project
-    /// * `adapter_type` - Current adapter type (e.g., "snowflake", "postgres")
     /// * `root_project_name` - Name of the root project
-    pub fn new(
-        macros: &BTreeMap<String, DbtMacro>,
-        adapter_type: AdapterType,
-        root_project_name: &str,
-    ) -> Self {
+    ///
+    /// Deliberately holds no adapter type of its own: every lookup names the
+    /// adapter it is for, so there is no default to fall back to and no way for a
+    /// caller to resolve against the wrong one by omission.
+    pub fn new(macros: &BTreeMap<String, DbtMacro>, root_project_name: &str) -> Self {
         // Pre-filter to only materialization macros
         let materialization_macros: BTreeMap<String, DbtMacro> = macros
             .iter()
@@ -168,14 +166,13 @@ impl MaterializationResolver {
 
         Self {
             materialization_macros,
-            adapter_type: adapter_type.to_string(),
             root_project_name: root_project_name.to_string(),
             cache: Mutex::new(HashMap::new()),
         }
     }
 
-    fn classify_macro_locality(&self, package_name: &str) -> MacroLocality {
-        let internal_packages = get_internal_packages(&self.adapter_type);
+    fn classify_macro_locality(&self, package_name: &str, dialect: &str) -> MacroLocality {
+        let internal_packages = get_internal_packages(dialect);
         if internal_packages.contains(&package_name.to_string()) {
             MacroLocality::Core
         } else if package_name == self.root_project_name {
@@ -188,9 +185,10 @@ impl MaterializationResolver {
     fn find_materialization_candidates(
         &self,
         materialization_name: &str,
+        dialect: &str,
     ) -> MaterializationCandidateList {
         let mut candidates = MaterializationCandidateList::new();
-        let adapter_prefixes = get_adapter_prefixes(&self.adapter_type);
+        let adapter_prefixes = get_adapter_prefixes(dialect);
         let expected_names: Vec<String> = adapter_prefixes
             .iter()
             .map(|suffix| materialization_macro_name(materialization_name, suffix))
@@ -201,7 +199,7 @@ impl MaterializationResolver {
                 .iter()
                 .position(|name| &macro_obj.name == name)
             {
-                let locality = self.classify_macro_locality(&macro_obj.package_name);
+                let locality = self.classify_macro_locality(&macro_obj.package_name, dialect);
                 let candidate = MaterializationCandidate::new(
                     macro_obj.name.clone(),
                     macro_obj.package_name.clone(),
@@ -226,15 +224,21 @@ impl MaterializationResolver {
     pub fn find_materialization_macro_by_name(
         &self,
         materialization_name: &str,
+        adapter_type: AdapterType,
     ) -> FsResult<String> {
+        let dialect = adapter_type.as_ref();
+        // Keyed by dialect as well as name: resolution consults the dialect's
+        // package chain and prefixes, so two nodes on different adapters must not
+        // share a cached answer.
+        let cache_key = (dialect.to_string(), materialization_name.to_string());
         if let Ok(cache) = self.cache.lock()
-            && let Some(cached) = cache.get(materialization_name)
+            && let Some(cached) = cache.get(&cache_key)
         {
             return Ok(cached.clone());
         }
 
         // Standard resolution path for non-dot notation names
-        let mut candidates = self.find_materialization_candidates(materialization_name);
+        let mut candidates = self.find_materialization_candidates(materialization_name, dialect);
         let is_builtin = BUILTIN_MATERIALIZATIONS.contains(&materialization_name);
         let has_core_candidates = !candidates
             .candidates_with_locality(MacroLocality::Core)
@@ -259,7 +263,7 @@ impl MaterializationResolver {
                         best_filtered.package_name, best_filtered.macro_name
                     );
                     if let Ok(mut cache) = self.cache.lock() {
-                        cache.insert(materialization_name.to_string(), result.clone());
+                        cache.insert(cache_key, result.clone());
                     }
                     return Ok(result);
                 }
@@ -271,7 +275,7 @@ impl MaterializationResolver {
         if let Some(best) = candidates.best_candidate() {
             let result = format!("{}.{}", best.package_name, best.macro_name);
             if let Ok(mut cache) = self.cache.lock() {
-                cache.insert(materialization_name.to_string(), result.clone());
+                cache.insert(cache_key, result.clone());
             }
             return Ok(result);
         }
@@ -280,7 +284,7 @@ impl MaterializationResolver {
             ErrorCode::Unexpected,
             "Materialization macro not found for materialization: {}, adapter: {}",
             materialization_name,
-            &self.adapter_type
+            dialect
         ))
     }
 
@@ -302,20 +306,54 @@ impl MaterializationResolver {
     /// A name that resolves to no macro (an invalid materialization) returns
     /// `false`; that error is surfaced later where the macro is actually
     /// dispatched.
-    pub fn is_custom_materialization(&self, materialization_name: &str) -> bool {
-        match self.find_materialization_macro_by_name(materialization_name) {
+    pub fn is_custom_materialization(
+        &self,
+        materialization_name: &str,
+        adapter_type: AdapterType,
+    ) -> bool {
+        match self.find_materialization_macro_by_name(materialization_name, adapter_type) {
             Ok(qualified) => {
                 // `qualified` is `"<package>.<macro_name>"`; package names do
                 // not contain `.`, so the prefix before the first `.` is the
                 // defining package.
                 let package_name = qualified.split('.').next().unwrap_or_default();
                 !matches!(
-                    self.classify_macro_locality(package_name),
+                    self.classify_macro_locality(package_name, adapter_type.as_ref()),
                     MacroLocality::Core
                 )
             }
             Err(_) => false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests_support {
+    use dbt_common::path::DbtPath;
+
+    use super::*;
+
+    pub(super) fn build_macro(name: &str, package: &str) -> DbtMacro {
+        let mut m = DbtMacro::default();
+        m.name = name.to_string();
+        m.package_name = package.to_string();
+        m.unique_id = format!("macro.{package}.{name}");
+        m.original_file_path = DbtPath::from(format!("macros/{package}/{name}.sql"));
+        m.path = m.original_file_path.clone();
+        m.description = String::new();
+        m.supported_languages = None;
+        m
+    }
+
+    pub(super) fn resolver_with(
+        all_macros: Vec<DbtMacro>,
+        root_project_name: &str,
+    ) -> MaterializationResolver {
+        let map: BTreeMap<String, DbtMacro> = all_macros
+            .into_iter()
+            .map(|m| (m.unique_id.clone(), m))
+            .collect();
+        MaterializationResolver::new(&map, root_project_name)
     }
 }
 
@@ -339,14 +377,13 @@ mod tests {
 
     fn resolver_with(
         all_macros: Vec<DbtMacro>,
-        adapter_type: AdapterType,
         root_project_name: &str,
     ) -> MaterializationResolver {
         let mut map = BTreeMap::<String, DbtMacro>::new();
         for m in all_macros {
             map.insert(m.unique_id.clone(), m);
         }
-        MaterializationResolver::new(&map, adapter_type, root_project_name)
+        MaterializationResolver::new(&map, root_project_name)
     }
 
     #[test]
@@ -359,9 +396,9 @@ mod tests {
             build_macro("materialization_view_postgres", root),
             build_macro("materialization_view_default", root),
         ];
-        let resolver = resolver_with(macros, adapter, root);
+        let resolver = resolver_with(macros, root);
         let got = resolver
-            .find_materialization_macro_by_name("view")
+            .find_materialization_macro_by_name("view", adapter)
             .expect("should resolve");
         assert_eq!(got, format!("{}.{}", root, "materialization_view_postgres"));
     }
@@ -375,9 +412,9 @@ mod tests {
             build_macro("materialization_view_default", root),
             build_macro("materialization_view_postgres", "pkg_a"),
         ];
-        let resolver = resolver_with(macros, adapter, root);
+        let resolver = resolver_with(macros, root);
         let got = resolver
-            .find_materialization_macro_by_name("view")
+            .find_materialization_macro_by_name("view", adapter)
             .expect("should resolve");
         assert_eq!(got, "pkg_a.materialization_view_postgres".to_string());
     }
@@ -390,9 +427,9 @@ mod tests {
             build_macro("materialization_view_postgres", "pkg_x"),
             build_macro("materialization_view_default", "pkg_x"),
         ];
-        let resolver = resolver_with(macros, adapter, root);
+        let resolver = resolver_with(macros, root);
         let got = resolver
-            .find_materialization_macro_by_name("view")
+            .find_materialization_macro_by_name("view", adapter)
             .expect("should resolve");
         assert_eq!(got, "pkg_x.materialization_view_postgres".to_string());
     }
@@ -407,9 +444,9 @@ mod tests {
             build_macro("materialization_view_default", "pkg_y"),
             build_macro("materialization_view_default", "dbt"),
         ];
-        let resolver = resolver_with(macros, adapter, root);
+        let resolver = resolver_with(macros, root);
         let got = resolver
-            .find_materialization_macro_by_name("view")
+            .find_materialization_macro_by_name("view", adapter)
             .expect("should resolve");
         assert_eq!(
             got,
@@ -426,9 +463,9 @@ mod tests {
             build_macro("materialization_view_postgres", root),
             build_macro("materialization_view_postgres", "dbt_postgres"),
         ];
-        let resolver = resolver_with(macros, adapter, root);
+        let resolver = resolver_with(macros, root);
         let got = resolver
-            .find_materialization_macro_by_name("view")
+            .find_materialization_macro_by_name("view", adapter)
             .expect("should resolve");
         assert_eq!(got, format!("{}.{}", root, "materialization_view_postgres"));
     }
@@ -443,9 +480,9 @@ mod tests {
             build_macro("materialization_view_postgres", root), // parent adapter-specific
             build_macro("materialization_view_default", "dbt"), // default core fallback
         ];
-        let resolver = resolver_with(macros, adapter, root);
+        let resolver = resolver_with(macros, root);
         let got = resolver
-            .find_materialization_macro_by_name("view")
+            .find_materialization_macro_by_name("view", adapter)
             .expect("should resolve via parent adapter fallback");
         assert_eq!(got, format!("{}.{}", root, "materialization_view_postgres"));
     }
@@ -459,9 +496,9 @@ mod tests {
             // Only default exists (core)
             build_macro("materialization_view_default", "dbt"),
         ];
-        let resolver = resolver_with(macros, adapter, root);
+        let resolver = resolver_with(macros, root);
         let got = resolver
-            .find_materialization_macro_by_name("view")
+            .find_materialization_macro_by_name("view", adapter)
             .expect("should resolve to default core");
         assert_eq!(got, "dbt.materialization_view_default".to_string());
     }
@@ -471,9 +508,9 @@ mod tests {
         let root = "root";
         let adapter = AdapterType::Postgres;
         let macros = vec![build_macro("materialization_view_default", "dbt")];
-        let resolver = resolver_with(macros, adapter, root);
+        let resolver = resolver_with(macros, root);
         let err = resolver
-            .find_materialization_macro_by_name("does_not_exist")
+            .find_materialization_macro_by_name("does_not_exist", adapter)
             .unwrap_err();
         let msg = format!(
             "Materialization macro not found for materialization: {}, adapter: {}",
@@ -496,9 +533,9 @@ mod tests {
             build_macro("materialization_view_postgres", "pkg_override"),
         ];
         // Flag enabled → imported excluded → core default selected
-        let resolver = resolver_with(macros, adapter, root);
+        let resolver = resolver_with(macros, root);
         let got = resolver
-            .find_materialization_macro_by_name("view")
+            .find_materialization_macro_by_name("view", adapter)
             .expect("should resolve");
         assert_eq!(got, "dbt.materialization_view_default".to_string());
     }
@@ -515,9 +552,9 @@ mod tests {
         ];
 
         // Flag enabled - imported still used for non-builtin 'test_table'
-        let resolver = resolver_with(macros.clone(), adapter, root);
+        let resolver = resolver_with(macros.clone(), root);
         let got = resolver
-            .find_materialization_macro_by_name("test_table")
+            .find_materialization_macro_by_name("test_table", adapter)
             .expect("should resolve");
         assert_eq!(
             got,
@@ -525,9 +562,9 @@ mod tests {
         );
 
         // Flag disabled - same behavior
-        let resolver2 = resolver_with(macros, adapter, root);
+        let resolver2 = resolver_with(macros, root);
         let got2 = resolver2
-            .find_materialization_macro_by_name("test_table")
+            .find_materialization_macro_by_name("test_table", adapter)
             .expect("should resolve");
         assert_eq!(
             got2,
@@ -547,9 +584,9 @@ mod tests {
             // Root reimplementation (wrapper pattern)
             build_macro("materialization_view_postgres", root),
         ];
-        let resolver = resolver_with(macros, adapter, root);
+        let resolver = resolver_with(macros, root);
         let got = resolver
-            .find_materialization_macro_by_name("view")
+            .find_materialization_macro_by_name("view", adapter)
             .expect("should resolve");
         assert_eq!(got, format!("{}.{}", root, "materialization_view_postgres"));
     }
@@ -562,8 +599,8 @@ mod tests {
             "materialization_test_table_postgres",
             "external_package",
         )];
-        let resolver = resolver_with(macros, adapter, root);
-        assert!(resolver.is_custom_materialization("test_table"));
+        let resolver = resolver_with(macros, root);
+        assert!(resolver.is_custom_materialization("test_table", adapter));
     }
 
     #[test]
@@ -580,8 +617,8 @@ mod tests {
             build_macro("materialization_table_default", "dbt"),
             build_macro("materialization_table_postgres", root),
         ];
-        let resolver = resolver_with(macros, adapter, root);
-        assert!(resolver.is_custom_materialization("table"));
+        let resolver = resolver_with(macros, root);
+        assert!(resolver.is_custom_materialization("table", adapter));
     }
 
     #[test]
@@ -596,8 +633,8 @@ mod tests {
             build_macro("materialization_table_default", "dbt"),
             build_macro("materialization_table_default", root),
         ];
-        let resolver = resolver_with(macros, adapter, root);
-        assert!(!resolver.is_custom_materialization("table"));
+        let resolver = resolver_with(macros, root);
+        assert!(!resolver.is_custom_materialization("table", adapter));
     }
 
     #[test]
@@ -608,8 +645,8 @@ mod tests {
             build_macro("materialization_table_postgres", "dbt_postgres"),
             build_macro("materialization_table_default", "dbt"),
         ];
-        let resolver = resolver_with(macros, adapter, root);
-        assert!(!resolver.is_custom_materialization("table"));
+        let resolver = resolver_with(macros, root);
+        assert!(!resolver.is_custom_materialization("table", adapter));
     }
 
     #[test]
@@ -622,8 +659,8 @@ mod tests {
             build_macro("materialization_table_default", "dbt"),
             build_macro("materialization_table_postgres", "pkg_override"),
         ];
-        let resolver = resolver_with(macros, adapter, root);
-        assert!(!resolver.is_custom_materialization("table"));
+        let resolver = resolver_with(macros, root);
+        assert!(!resolver.is_custom_materialization("table", adapter));
     }
 
     #[test]
@@ -631,8 +668,8 @@ mod tests {
         let root = "root";
         let adapter = AdapterType::Postgres;
         let macros = vec![build_macro("materialization_view_default", "dbt")];
-        let resolver = resolver_with(macros, adapter, root);
-        assert!(!resolver.is_custom_materialization("does_not_exist"));
+        let resolver = resolver_with(macros, root);
+        assert!(!resolver.is_custom_materialization("does_not_exist", adapter));
     }
 
     #[test]
@@ -643,13 +680,96 @@ mod tests {
             build_macro("materialization_view_postgres", root),
             build_macro("materialization_view_default", "dbt"),
         ];
-        let resolver = resolver_with(macros, adapter, root);
+        let resolver = resolver_with(macros, root);
         let first = resolver
-            .find_materialization_macro_by_name("view")
+            .find_materialization_macro_by_name("view", adapter)
             .expect("should resolve");
         let second = resolver
-            .find_materialization_macro_by_name("view")
+            .find_materialization_macro_by_name("view", adapter)
             .expect("should resolve from cache");
         assert_eq!(first, second);
+    }
+}
+
+#[cfg(test)]
+mod per_node_dialect_tests {
+    use super::tests_support::*;
+    use super::*;
+
+    /// A node that selected a different adapter must resolve that adapter's
+    /// materialization, not the target default's. Both macros live in internal
+    /// packages, so only the dialect distinguishes them.
+    #[test]
+    fn selection_resolves_the_selected_adapters_materialization() {
+        let resolver = resolver_with(
+            vec![
+                build_macro("materialization_table_snowflake", "dbt_snowflake"),
+                build_macro("materialization_table_duckdb", "dbt_duckdb"),
+            ],
+            "my_project",
+        );
+
+        assert_eq!(
+            resolver
+                .find_materialization_macro_by_name("table", AdapterType::Snowflake)
+                .unwrap(),
+            "dbt_snowflake.materialization_table_snowflake",
+            "a Snowflake selection should resolve Snowflake's materialization"
+        );
+        assert_eq!(
+            resolver
+                .find_materialization_macro_by_name("table", AdapterType::DuckDB)
+                .unwrap(),
+            "dbt_duckdb.materialization_table_duckdb",
+            "a DuckDB selection should resolve DuckDB's materialization"
+        );
+    }
+
+    /// The cache is keyed by dialect. Resolving the default first must not poison
+    /// the answer for a node that selected another adapter — the bug this keying
+    /// exists to prevent.
+    #[test]
+    fn cache_does_not_leak_across_dialects() {
+        let resolver = resolver_with(
+            vec![
+                build_macro("materialization_table_snowflake", "dbt_snowflake"),
+                build_macro("materialization_table_duckdb", "dbt_duckdb"),
+            ],
+            "my_project",
+        );
+
+        // Warm the cache with one dialect first, then ask for the other.
+        let _ = resolver
+            .find_materialization_macro_by_name("table", AdapterType::Snowflake)
+            .unwrap();
+        assert_eq!(
+            resolver
+                .find_materialization_macro_by_name("table", AdapterType::DuckDB)
+                .unwrap(),
+            "dbt_duckdb.materialization_table_duckdb",
+            "a warmed cache must not answer for another dialect"
+        );
+        // And the first dialect is still correct afterwards.
+        assert_eq!(
+            resolver
+                .find_materialization_macro_by_name("table", AdapterType::Snowflake)
+                .unwrap(),
+            "dbt_snowflake.materialization_table_snowflake"
+        );
+    }
+
+    /// Locality is judged against the selected dialect's package chain, so a
+    /// package that is internal for one adapter is not misread for another.
+    #[test]
+    fn locality_follows_the_selected_dialect() {
+        let resolver = resolver_with(
+            vec![build_macro("materialization_table_duckdb", "dbt_duckdb")],
+            "my_project",
+        );
+
+        assert!(
+            !resolver.is_custom_materialization("table", AdapterType::DuckDB),
+            "dbt_duckdb is internal for a DuckDB selection, so not custom"
+        );
     }
 }

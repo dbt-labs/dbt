@@ -1,0 +1,13 @@
+# Scenario: Amazon S3 Tables reached through `endpoint_type: S3_TABLES`.
+# Exercises: ENDPOINT_TYPE emission on a non-Glue catalog type, with the
+# table bucket ARN carried through as the ATTACH source unchanged.
+catalogs:
+  - name: s3_tables_demo
+    type: iceberg_rest
+    table_format: iceberg
+    config:
+      duckdb:
+        endpoint_type: S3_TABLES
+        warehouse: "arn:aws:s3tables:us-east-1:123456789012:bucket/demo-bucket"
+        catalog_database: "s3_tables_db"
+        secret: s3_tables_secret

@@ -1,0 +1,7 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/t_incremental.sql
+   Parsing models/t_table.sql
+   Parsing models/v_view.sql
+==================== Execution Summary =====================
+Finished 'run-operation' successfully for target 'databricks' [duration]

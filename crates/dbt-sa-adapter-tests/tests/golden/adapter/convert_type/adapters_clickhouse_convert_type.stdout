@@ -1,0 +1,11 @@
+   dbt-oss 
+   Loading profiles.yml
+debug:warning=static analysis for adapter: ClickHouse is disabled
+   Parsing models/a.sql
+Add sql for clickhouse
+ Rendering models/a.sql
+Add sql for clickhouse
+==================== Execution Summary =====================
+Finished 'compile' successfully for target 'clickhouse' [duration]
+Processed: 1 model | 1 seed
+Summary: 2 total | 2 success

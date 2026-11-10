@@ -15,13 +15,13 @@
     {% endif %}
 
 
-    {#% set select_extended = redshift__can_select_from('svv_table_info') %#}
-    {#% if select_extended %#}
-        {#% set extended_catalog = _redshift__get_extended_catalog_by_schema(schemas) %#}
-        {#% set catalog = catalog.join(extended_catalog, ['table_schema', 'table_name']) %#}
-    {#% else %#}
-        {#{ redshift__no_svv_table_info_warning() }#}
-    {#% endif %#}
+    {% set select_extended = redshift__can_select_from('svv_table_info') %}
+    {% if select_extended %}
+        {% set extended_catalog = _redshift__get_extended_catalog_by_schema(schemas) %}
+        {% set catalog = catalog.join(extended_catalog, ['table_schema', 'table_name']) %}
+    {% else %}
+        {{ redshift__no_svv_table_info_warning() }}
+    {% endif %}
 
     {{ return(catalog) }}
 

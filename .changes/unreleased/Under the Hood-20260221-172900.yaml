@@ -1,7 +1,0 @@
-kind: Under the Hood
-body: Add BigQuery-only parallel execution path for copy_partitions with bounded concurrency and rate-limit retries, plus supporting adapter tests.
-time: 2026-02-21T17:29:00-08:00
-custom:
-    author: leohoare
-    issue: "14283"
-    project: dbt-fusion

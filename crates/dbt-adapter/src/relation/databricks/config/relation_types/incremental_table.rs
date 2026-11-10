@@ -12,16 +12,15 @@ fn requires_full_refresh(components: &IndexMap<&'static str, ComponentConfigChan
 
 /// Create a `RelationConfigLoader` for Databricks incremental tables
 pub(crate) fn new_loader() -> RelationConfigLoader<'static, DatabricksRelationMetadata> {
-    // TODO: missing from Python dbt-databricks:
-    // - liquid clustering
-    let loaders: [Box<dyn ComponentConfigLoader<DatabricksRelationMetadata>>; 7] = [
+    let loaders: [Box<dyn ComponentConfigLoader<DatabricksRelationMetadata>>; 9] = [
         // TODO: column mask
         Box::new(components::ColumnCommentsLoader),
         Box::new(components::ColumnTagsLoader),
         Box::new(components::RelationCommentLoader),
         Box::new(components::ConstraintsLoader),
-        // Box::new(components::LiquidClusteringLoader),
+        Box::new(components::LiquidClusteringLoader),
         Box::new(components::RelationTagsLoader),
+        Box::new(components::RowFilterLoader),
         Box::new(components::TblPropertiesLoader),
         Box::new(components::ColumnMasksLoader),
     ];
@@ -74,18 +73,16 @@ mod tests {
                         }),
                     },
                 ],
+                row_filter_function: Some("row_filter_fn".to_string()),
+                row_filter_columns: vec!["col1".to_string()],
                 tags: IndexMap::from_iter([
                     ("a_tag".to_string(), "old".to_string()),
                     ("b_tag".to_string(), "old".to_string()),
                 ]),
-                tbl_properties: IndexMap::from_iter([
-                    ("delta.enableRowTracking".to_string(), "false".to_string()),
-                    (
-                        "pipelines.pipelineId".to_string(),
-                        "my_old_pipeline".to_string(),
-                    ),
-                    ("customKey".to_string(), "old".to_string()),
-                ]),
+                tbl_properties: IndexMap::from_iter([(
+                    "delta.enableChangeDataFeed".to_string(),
+                    "false".to_string(),
+                )]),
                 ..Default::default()
             },
             desired_state: TestModelConfig {
@@ -115,28 +112,33 @@ mod tests {
                         ..Default::default()
                     },
                 ],
+                row_filter_function: Some("row_filter_fn_2".to_string()),
+                row_filter_columns: vec!["col1".to_string(), "col2".to_string()],
                 tags: IndexMap::from_iter([
                     ("a_tag".to_string(), "new".to_string()),
                     ("b_tag".to_string(), "old".to_string()),
                 ]),
                 tbl_properties: IndexMap::from_iter([
-                    // changing these key should not result in anything as these should be ignored
-                    ("delta.enableRowTracking".to_string(), "true".to_string()),
+                    ("delta.enableChangeDataFeed".to_string(), "true".to_string()),
                     (
-                        "pipelines.pipelineId".to_string(),
-                        "my_new_pipeline".to_string(),
+                        "data.owner".to_string(),
+                        "analytics-engineering".to_string(),
                     ),
-                    // changing a key not in the ignore list should cause a changeset entry
-                    ("customKey".to_string(), "new".to_string()),
-                    // introducing a new key should also add it to the changeset
-                    ("customKey2".to_string(), "value".to_string()),
                 ]),
                 ..Default::default()
             },
             expected_changeset: RelationComponentConfigChangeSet::new(
                 AdapterType::Databricks,
                 [
-                    // TODO: add liquid clustering to changeset here once that gets implemented
+                    (
+                        components::LiquidClusteringLoader.type_name(),
+                        ComponentConfigChange::Some(
+                            components::LiquidClusteringLoader::new_component_type_erased(
+                                false,
+                                vec!["cluster_by_new".to_string()],
+                            ),
+                        ),
+                    ),
                     (
                         components::ColumnCommentsLoader.type_name(),
                         ComponentConfigChange::Some(
@@ -187,10 +189,16 @@ mod tests {
                         components::RelationTagsLoader.type_name(),
                         ComponentConfigChange::Some(
                             components::RelationTagsLoader::new_component_type_erased(
-                                IndexMap::from_iter([
-                                    ("a_tag".to_string(), "new".to_string()),
-                                    ("b_tag".to_string(), "old".to_string()),
-                                ]),
+                                IndexMap::from_iter([("a_tag".to_string(), "new".to_string())]),
+                            ),
+                        ),
+                    ),
+                    (
+                        components::RowFilterLoader.type_name(),
+                        ComponentConfigChange::Some(
+                            components::RowFilterLoader::new_component_type_erased(
+                                Some("test_db.test_schema.row_filter_fn_2".to_string()),
+                                vec!["col1".to_string(), "col2".to_string()],
                             ),
                         ),
                     ),
@@ -199,8 +207,11 @@ mod tests {
                         ComponentConfigChange::Some(
                             components::TblPropertiesLoader::new_component_type_erased(
                                 IndexMap::from_iter([
-                                    ("customKey".to_string(), "new".to_string()),
-                                    ("customKey2".to_string(), "value".to_string()),
+                                    ("delta.enableChangeDataFeed".to_string(), "true".to_string()),
+                                    (
+                                        "data.owner".to_string(),
+                                        "analytics-engineering".to_string(),
+                                    ),
                                 ]),
                             ),
                         ),
@@ -235,13 +246,13 @@ mod tests {
     </persist>
 </column_comments>
 <column_tags>
-    <tags>
+    <set_column_tags>
         <b_column>
             <col_tag>
                 new
             </col_tag>
         </b_column>
-    </tags>
+    </set_column_tags>
 </column_tags>
 <comment>
     <comment>
@@ -263,30 +274,47 @@ mod tests {
     <unset_constraints>
     </unset_constraints>
 </constraints>
+<liquid_clustering>
+    <auto_cluster>
+        False
+    </auto_cluster>
+    <cluster_by>
+        cluster_by_new
+    </cluster_by>
+</liquid_clustering>
 <tags>
     <set_tags>
         <a_tag>
             new
         </a_tag>
-        <b_tag>
-            old
-        </b_tag>
     </set_tags>
 </tags>
+<row_filter>
+    <function>
+        test_db.test_schema.row_filter_fn_2
+    </function>
+    <columns>
+        col1
+        col2
+    </columns>
+    <should_unset>
+        False
+    </should_unset>
+    <is_change>
+        True
+    </is_change>
+</row_filter>
 <tblproperties>
     <tblproperties>
-        <customKey>
-            new
-        </customKey>
-        <customKey2>
-            value
-        </customKey2>
-        <delta.enableRowTracking>
+        <delta.enableChangeDataFeed>
             true
-        </delta.enableRowTracking>
+        </delta.enableChangeDataFeed>
+        <data.owner>
+            analytics-engineering
+        </data.owner>
     </tblproperties>
     <pipeline_id>
-        my_new_pipeline
+        None
     </pipeline_id>
 </tblproperties>
 <column_masks>

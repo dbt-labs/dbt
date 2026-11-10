@@ -1,5 +1,6 @@
 //! https://github.com/databricks/dbt-databricks/blob/main/dbt/adapters/databricks/relation_configs/query.py
 
+use crate::AdapterType;
 use crate::errors::{AdapterError, AdapterErrorKind, AdapterResult};
 use crate::relation::config_v2::{
     ComponentConfig, ComponentConfigLoader, SimpleComponentConfigImpl, diff, impl_loader,
@@ -16,13 +17,6 @@ pub(crate) const TYPE_NAME: &str = "query";
 /// Component for Databricks query.
 pub type Query = SimpleComponentConfigImpl<String>;
 
-/// `SqlUtils.clean_sql`
-/// https://github.com/databricks/dbt-databricks/blob/main/dbt/adapters/databricks/handle.py
-fn clean_sql(sql: &str) -> String {
-    let trimmed = sql.trim();
-    trimmed.strip_suffix(';').unwrap_or(trimmed).to_string()
-}
-
 // `&String` is required by `ToJinjaFn`
 #[expect(clippy::ptr_arg)]
 fn to_jinja(v: &String) -> Value {
@@ -38,7 +32,7 @@ fn new_component(query: &str) -> Query {
         type_name: TYPE_NAME,
         diff_fn: diff::desired_state,
         to_jinja_fn: to_jinja,
-        value: clean_sql(query),
+        value: dbt_adapter_sql::statements::clean_sql(query, AdapterType::Databricks),
     }
 }
 
@@ -96,6 +90,8 @@ impl QueryLoader {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::metadata::databricks::describe_json::*;
+    use crate::metadata::databricks::*;
     use crate::relation::databricks::config::test_helpers;
     use arrow::array::{ArrayRef, RecordBatch, StringArray};
     use arrow_schema::{DataType, Field, Schema};
@@ -156,6 +152,22 @@ mod tests {
         let config = from_remote_state_with(&[]);
 
         assert_eq!(config.value, "");
+    }
+
+    #[test]
+    fn test_as_json_path_produces_no_false_diff_vs_info_schema_path() {
+        let info_schema_config = from_remote_state_with(&["(\n    select 1 as id\n  )"]);
+
+        let row = Some(ViewDescriptionRow {
+            view_definition: "(\n    select 1 as id\n  )".to_string(),
+        });
+        let as_json_results = IndexMap::from([(
+            DatabricksRelationMetadataKey::InfoSchemaViews,
+            view_description_to_agate(&row).unwrap(),
+        )]);
+        let as_json_config = from_remote_state(&as_json_results).unwrap();
+
+        assert_eq!(as_json_config.value, info_schema_config.value);
     }
 
     #[test]

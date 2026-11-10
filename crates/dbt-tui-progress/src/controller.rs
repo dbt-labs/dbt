@@ -76,6 +76,17 @@ where
         }
     }
 
+    /// Creates a progress controller that tracks bars and spinners but never draws them.
+    ///
+    /// Useful for exercising interactive output paths where no terminal is attached.
+    pub fn new_hidden() -> Self {
+        let controller = Self::new();
+        controller
+            .controller
+            .set_draw_target(indicatif::ProgressDrawTarget::hidden());
+        controller
+    }
+
     /// Starts the background ticker thread for progress bar animations.
     ///
     /// The ticker thread periodically updates all active progress bars and
@@ -265,6 +276,16 @@ where
         });
     }
 
+    /// Removes a context item from a progress bar without advancing it.
+    ///
+    /// For context items that are not units of the bar's total, e.g. a named stage of a
+    /// phase shown alongside the items it is working through.
+    pub fn remove_bar_context(&self, id: &Id, item: &str) {
+        self.bars.read_sync(id, |_, bar| {
+            bar.delete(item);
+        });
+    }
+
     /// Marks a progress bar context item idle without removing it.
     pub fn set_bar_context_idle(&self, id: &Id, item: &str) {
         self.bars.read_sync(id, |_, bar| {
@@ -330,13 +351,18 @@ where
         // Best-effort attempt to shut down cleanly. If anything goes wrong we
         // just give up quietly.
         let (lock, cvar) = &*self.shutdown;
-        let Ok(mut shutdown) = lock.lock() else {
-            // Lock poisoned, so we can't proceed
-            return;
-        };
+        {
+            let Ok(mut shutdown) = lock.lock() else {
+                // Lock poisoned, so we can't proceed
+                return;
+            };
 
-        *shutdown = true;
-        cvar.notify_all();
+            *shutdown = true;
+            cvar.notify_all();
+            // Guard dropped here: the ticker thread's `wait_timeout` needs to
+            // reacquire this same mutex to observe the flag and return, which
+            // would otherwise deadlock against the `join()` below.
+        }
 
         // Wait for the ticker thread to finish
         if let Some(ticker) = self.ticker.take() {

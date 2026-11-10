@@ -1,7 +1,7 @@
-use dbt_adapter::statement::{StmtCancellationReport, cancel_all_tracked_statements};
 use dbt_common::FsResult;
 use dbt_common::cancellation::{CancellationReport, CancellationTokenSource, TIMEOUT_AFTER_CTRL_C};
 use dbt_common::fail_fast::FailFast;
+use dbt_tracked_stmt::{StmtCancellationReport, cancel_all_tracked_statements};
 
 use std::pin::Pin;
 use std::time::{Duration, Instant};

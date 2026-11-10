@@ -1,0 +1,25 @@
+name: "test"
+version: "1.0"
+
+profile: fusion_tests
+
+config-version: 2
+quoting:
+  database: false
+  schema: true
+  identifier: true
+
+macro-paths: ["macros"]
+
+flags:
+  use_catalogs_v2: true
+
+models:
+  test:
+    +materialized: table
+    # run_2: drop the Iceberg-REST catalog config so this same relation is
+    # rebuilt as a plain native Snowflake table. This flips `table_format`
+    # against the existing (Iceberg) relation, tripping `needs_to_drop` and
+    # forcing the shared `drop.sql` -> `snowflake__drop_table` path, which is
+    # where `adapter.build_catalog_relation(relation.database)` is called
+    # with a bare database-name string.

@@ -1,10 +1,11 @@
 use std::fmt::Debug;
 
-use dbt_common::adapter::dialect_of;
 use dbt_frontend_common::Dialect;
 use dbt_sql_utils::{is_empty_or_comment_only, sql_split_statements};
 
 use crate::AdapterType;
+
+mod clickhouse;
 
 /// Trait for SQL statement splitting functionality
 pub trait StmtSplitter: Send + Sync + Debug {
@@ -13,19 +14,69 @@ pub trait StmtSplitter: Send + Sync + Debug {
     /// The implementation should:
     /// - Split the SQL into individual statements based on delimiters
     /// - Handle dialect-specific syntax correctly
-    fn split(&self, sql: &str, adapter_type: AdapterType) -> Vec<String>;
+    /// - Return subslices of `sql` with the delimiters and the surrounding
+    ///   whitespace of the input removed.
+    fn split<'i>(&self, sql: &'i str, adapter_type: AdapterType) -> Vec<&'i str>;
 
     /// Determine if a SQL string is either empty or only contains a comment
     fn is_empty(&self, sql: &str, adapter_type: AdapterType) -> bool;
+
+    /// Drop the trailing statement terminator from a rendered node body so it
+    /// can be spliced into a wrapping query.
+    ///
+    /// `sql` is returned untouched unless it holds exactly one non-empty
+    /// statement: multi-statement bodies keep their terminators, and so do
+    /// bodies that are entirely empty or comment-only.
+    fn strip_trailing_statement_terminator<'i>(
+        &self,
+        sql: &'i str,
+        adapter_type: AdapterType,
+    ) -> &'i str {
+        // Skip splitting, which dominates the cost of this call.
+        if !sql.contains(';') {
+            return sql;
+        }
+
+        let mut statements = self
+            .split(sql, adapter_type)
+            .into_iter()
+            .filter(|stmt| !self.is_empty(stmt, adapter_type));
+
+        match (statements.next(), statements.next()) {
+            // Rewrite only when a terminator was actually dropped, so a body
+            // without one keeps its original whitespace byte for byte.
+            (Some(only), None) if only != sql.trim() => only,
+            _ => sql,
+        }
+    }
 }
 
 #[derive(Debug)]
 pub struct DefaultStmtSplitter;
 
 impl StmtSplitter for DefaultStmtSplitter {
-    fn split(&self, sql: &str, adapter_type: AdapterType) -> Vec<String> {
-        let dialect = dialect_of(adapter_type);
-        sql_split_statements(sql, dialect).into_iter().collect()
+    fn split<'i>(&self, sql: &'i str, adapter_type: AdapterType) -> Vec<&'i str> {
+        use AdapterType::*;
+        let dialect = match adapter_type {
+            Postgres => Dialect::Postgresql,
+            Snowflake => Dialect::Snowflake,
+            Bigquery => Dialect::Bigquery,
+            // TODO(serramatutu): switch Spark to Spark dialect once frontend looks good
+            Databricks | Spark => Dialect::Databricks,
+            Redshift => Dialect::Redshift,
+            // Salesforce dialect is unclear, it claims ANSI vaguely
+            // https://developer.salesforce.com/docs/data/data-cloud-query-guide/references/data-cloud-query-api-reference/c360a-api-query-v2-call-overview.html
+            // falls back to Postgresql at the moment
+            Salesforce => Dialect::Postgresql,
+            // `LakeCompute` defines no dialect of its own, so it falls back to DuckDB's
+            DuckDB | LakeCompute => Dialect::Duckdb,
+            ClickHouse => return clickhouse::split_statements(sql),
+            Trino => Dialect::Trino,
+            _ => Dialect::Trino,
+        };
+        sql_split_statements(sql, Some(dialect))
+            .into_iter()
+            .collect()
     }
 
     fn is_empty(&self, sql: &str, adapter_type: AdapterType) -> bool {
@@ -37,6 +88,7 @@ impl StmtSplitter for DefaultStmtSplitter {
             Bigquery => by_dialect(Dialect::Bigquery),
             Databricks | Spark => by_dialect(Dialect::Databricks),
             Redshift => by_dialect(Dialect::Redshift),
+            ClickHouse => clickhouse::is_empty_or_comment_only(sql),
             // fallback to the Trino lexer for unsupported lexer dialects
             _ => by_dialect(Dialect::Trino),
         }
@@ -64,12 +116,16 @@ mod tests {
         AdapterType::Trino,
     ];
 
-    fn split(sql: &str, adapter_type: AdapterType) -> Vec<String> {
+    fn split(sql: &str, adapter_type: AdapterType) -> Vec<&str> {
         DefaultStmtSplitter.split(sql, adapter_type)
     }
 
     fn is_empty(sql: &str, adapter_type: AdapterType) -> bool {
         DefaultStmtSplitter.is_empty(sql, adapter_type)
+    }
+
+    fn strip(sql: &str, adapter_type: AdapterType) -> &str {
+        DefaultStmtSplitter.strip_trailing_statement_terminator(sql, adapter_type)
     }
 
     // ---- split: ported from dbt_sql_utils::splitter::tests ----
@@ -180,12 +236,82 @@ mod tests {
         }
     }
 
+    /// A Databricks `metric_view`'s compiled DDL wraps its YAML spec in
+    /// `$$...$$`. A `;` inside a YAML block-literal comment must not split
+    /// the statement before the closing `$$`.
     #[test]
-    fn test_split_unterminated_string_drops_partial_trailing() {
-        // The tokenizer aborts on the unterminated string; we keep only the
-        // clean prefix, matching the UNPAIRED_TOKEN behavior of the sdf splitter.
+    fn test_split_databricks_dollar_quoted_strings() {
+        let sql = r#"
+    create or replace view `catalog`.`schema`.`mv_example`
+    with metrics
+    language yaml
+    as $$
+    version: 1.1
+
+    source: "`catalog`.`schema`.`fct_example`"
+
+    comment: |
+      Some description; more text after the semicolon.
+
+    fields:
+      - name: id
+        expr: enterprise_id
+    $$
+  "#;
+
+        let statements = split(sql, AdapterType::Databricks);
+
+        assert_eq!(
+            statements.len(),
+            1,
+            "Expected a single create-view statement, got {}: {:?}",
+            statements.len(),
+            statements
+        );
+        assert!(
+            statements[0]
+                .trim_start()
+                .to_lowercase()
+                .starts_with("create or replace view")
+        );
+        assert!(
+            statements[0].contains("Some description; more text after the semicolon."),
+            "Expected the full YAML body to survive unsplit, got: {}",
+            statements[0]
+        );
+    }
+
+    #[test]
+    fn test_split_clickhouse_backslash_escaped_strings() {
+        assert_eq!(
+            split(
+                r#"select 'don\'t; drop'; select '\x3F', 'a\\'; select 2"#,
+                AdapterType::ClickHouse
+            ),
+            vec![
+                r#"select 'don\'t; drop'"#,
+                r#" select '\x3F', 'a\\'"#,
+                " select 2"
+            ]
+        );
+        assert!(!is_empty(r#"select 'don\'t'"#, AdapterType::ClickHouse));
+    }
+
+    #[test]
+    fn test_split_clickhouse_dollar_quoted_strings() {
+        assert_eq!(
+            split("select $tag$a;b$tag$; select 2", AdapterType::ClickHouse),
+            vec!["select $tag$a;b$tag$", " select 2"]
+        );
+    }
+
+    #[test]
+    fn test_split_unpaired_token_retains_partial_trailing() {
         let result = split("select 1; select 'unterminated", AdapterType::Snowflake);
-        assert_eq!(result, vec!["select 1"]);
+        assert_eq!(result, vec!["select 1", " select 'unterminated"]);
+
+        let result = split("select /* unterminated; select 1", AdapterType::Snowflake);
+        assert_eq!(result, vec!["select /* unterminated; select 1"]);
     }
 
     // ---- is_empty: ported from is_empty_or_comment_only ----
@@ -215,6 +341,70 @@ mod tests {
             assert!(!is_empty("-- comment\nselect 1", *d));
             assert!(!is_empty("select 1; select 2", *d));
             assert!(!is_empty("/* comment */\nselect 1\n-- trailing", *d));
+        }
+    }
+
+    // ---- strip_trailing_statement_terminator ----
+
+    #[test]
+    fn test_strip_terminator() {
+        for d in REPRESENTATIVE_DIALECTS {
+            assert_eq!(strip("select 1;", *d), "select 1");
+            assert_eq!(strip("select 1;;", *d), "select 1");
+            assert_eq!(strip("select 1 ;  ", *d), "select 1 ");
+            assert_eq!(strip("select 1;\n", *d), "select 1");
+        }
+    }
+
+    #[test]
+    fn test_strip_terminator_followed_by_comments() {
+        for d in REPRESENTATIVE_DIALECTS {
+            assert_eq!(strip("select 1; -- trailing", *d), "select 1");
+            assert_eq!(strip("select 1;\n-- trailing\n", *d), "select 1");
+            assert_eq!(strip("select 1; /* trailing */", *d), "select 1");
+            // A leading empty statement is dropped along with the terminator.
+            assert_eq!(strip("; select 1", *d), " select 1");
+        }
+    }
+
+    #[test]
+    fn test_strip_terminator_keeps_body_comments() {
+        for d in REPRESENTATIVE_DIALECTS {
+            assert_eq!(strip("-- header\nselect 1;", *d), "-- header\nselect 1");
+            assert_eq!(
+                strip("/* before */ select 1 /* after */;", *d),
+                "/* before */ select 1 /* after */"
+            );
+        }
+    }
+
+    #[test]
+    fn test_strip_terminator_absent_is_byte_identical() {
+        for d in REPRESENTATIVE_DIALECTS {
+            // Whitespace is preserved verbatim when there is nothing to drop.
+            assert_eq!(strip("\n  select 1\n", *d), "\n  select 1\n");
+            assert_eq!(strip("select 1", *d), "select 1");
+            assert_eq!(strip("", *d), "");
+            // A `;` that is not a statement terminator must not trigger a rewrite.
+            assert_eq!(strip("select 'a;b'\n", *d), "select 'a;b'\n");
+            assert_eq!(strip("select 1 -- a ; b\n", *d), "select 1 -- a ; b\n");
+        }
+    }
+
+    #[test]
+    fn test_strip_terminator_leaves_multi_statement_bodies() {
+        for d in REPRESENTATIVE_DIALECTS {
+            assert_eq!(strip("select 1; select 2;", *d), "select 1; select 2;");
+            assert_eq!(strip("select 1; select 2", *d), "select 1; select 2");
+        }
+    }
+
+    #[test]
+    fn test_strip_terminator_leaves_bodies_without_statements() {
+        for d in REPRESENTATIVE_DIALECTS {
+            assert_eq!(strip(";", *d), ";");
+            assert_eq!(strip(";;;", *d), ";;;");
+            assert_eq!(strip("-- just a comment;", *d), "-- just a comment;");
         }
     }
 }

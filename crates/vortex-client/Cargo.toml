@@ -15,8 +15,6 @@ scheduling-tests = []
 [dependencies]
 proto-rust = { path = "../proto-rust" }
 
-# client dependencies
-dbt-env = { workspace = true }
 dbt-fusion-workspace-hack = { version = "0.1" }
 http = { workspace = true }
 pbjson-types = { workspace = true }

@@ -1,0 +1,47 @@
+flags:
+  send_anonymous_usage_stats: false
+name: test
+profile: fusion_tests
+
+models:
+  test:
+    # Base Table - everything should reference this
+    # note: this HAS to be a table! Redshift does not support mat views
+    # that refer to views
+    a:
+      +materialized: materialized_view
+      +dist: "even"
+      +auto_refresh: false
+      +backup: true
+
+    # Model 2: DISTKEY with compound sort
+    b:
+      +materialized: materialized_view
+      +dist: "id"
+      +sort: ["id", "name"]
+      +sort_type: "compound"
+      +auto_refresh: false
+      +backup: true
+
+    # Model 3: ALL distribution with interleaved sort  
+    c:
+      +materialized: materialized_view
+      +dist: "all"
+      +sort: ["name", "id"]
+      +sort_type: "interleaved"
+      +auto_refresh: true
+      +backup: false
+
+    # Model 4: use column as dist key. single sort key
+    d:
+      +materialized: materialized_view
+      +dist: "id"
+      +sort: "id"
+      +sort_type: "compound"
+      +auto_refresh: false
+      +backup: true
+    +meta:
+      base:
+        +materialized: table
+
+    # Model 1: Basic EVEN distribution, no sort

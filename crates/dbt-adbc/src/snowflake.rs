@@ -21,6 +21,9 @@ pub const REQUEST_TIMEOUT: &str = "adbc.snowflake.sql.client_option.request_time
 pub const JWT_EXPIRE_TIMEOUT: &str = "adbc.snowflake.sql.client_option.jwt_expire_timeout";
 pub const CLIENT_TIMEOUT: &str = "adbc.snowflake.sql.client_option.client_timeout";
 pub const AUTH_CLIENT_TIMEOUT: &str = "adbc.snowflake.sql.client_option.auth_client_timeout";
+/// Max retries per HTTP request
+/// Retrying also stops when [REQUEST_TIMEOUT] (non-login requests) / [LOGIN_TIMEOUT] runs out
+pub const MAX_RETRY_COUNT: &str = "adbc.snowflake.sql.client_option.max_retry_count";
 pub const USE_HIGH_PRECISION: &str = "adbc.snowflake.sql.client_option.use_high_precision";
 pub const APPLICATION_NAME: &str = "adbc.snowflake.sql.client_option.app_name";
 pub const SSL_SKIP_VERIFY: &str = "adbc.snowflake.sql.client_option.tls_skip_verify";
@@ -34,8 +37,21 @@ pub const JWT_PRIVATE_KEY_PKCS8_VALUE: &str =
 pub const JWT_PRIVATE_KEY_PKCS8_PASSWORD: &str =
     "adbc.snowflake.sql.client_option.jwt_private_key_pkcs8_password";
 pub const DISABLE_TELEMETRY: &str = "adbc.snowflake.sql.client_option.disable_telemetry";
+/// When enabled, a prefetch slot is held until the consumer drains the chunk's
+/// channel, so at most `prefetch_concurrency` chunks are in flight at once.
+pub const BOUNDED_PREFETCH: &str = "adbc.snowflake.sql.client_option.bounded_prefetch";
 pub const LOG_TRACING: &str = "adbc.snowflake.sql.client_option.tracing";
 pub const CLIENT_CONFIG_FILE: &str = "adbc.snowflake.sql.client_option.config_file";
+
+/// The identity provider to use for Workload Identity Federation (WIF) auth.
+///
+/// One of "OIDC", "AWS", "GCP", "AZURE". Must be set when auth_type is
+/// auth_type::WORKLOAD_IDENTITY.
+pub const WORKLOAD_IDENTITY_PROVIDER: &str = "adbc.snowflake.sql.client_option.identity_provider";
+/// The Entra resource to request a token for. Only valid when
+/// WORKLOAD_IDENTITY_PROVIDER is "AZURE"; Snowflake's default resource is used if unset.
+pub const WORKLOAD_IDENTITY_ENTRA_RESOURCE: &str =
+    "adbc.snowflake.sql.client_option.identity_provider_entra_resource";
 
 // WARN: Do not set both of these for one runtime
 // Turn on caching for username password MFA tokens
@@ -63,6 +79,8 @@ pub mod auth_type {
     pub const USERNAME_PASSWORD_MFA: &str = "auth_mfa";
     /// Snowflake Programmatic Access Token (PAT)
     pub const PROGRAMMATIC_ACCESS_TOKEN: &str = "auth_pat";
+    /// Workload Identity Federation (WIF)
+    pub const WORKLOAD_IDENTITY: &str = "auth_wif";
 }
 
 // Names of Connection options --------------------------------------------
@@ -73,3 +91,9 @@ pub mod auth_type {
 pub const CLIENT_ID: &str = "adbc.snowflake.sql.client_option.client_id";
 pub const CLIENT_SECRET: &str = "adbc.snowflake.sql.client_option.client_secret";
 pub const REFRESH_TOKEN: &str = "adbc.snowflake.sql.client_option.refresh_token";
+
+// Names of schema metadata keys -----------------------------------------
+
+pub mod schema_metadata {
+    pub const QUERY_ID: &str = "SNOWFLAKE_QUERY_ID";
+}

@@ -13,10 +13,12 @@ edition.workspace = true
 workspace = true
 
 [dependencies]
+chrono = { workspace = true }
 dbt-fusion-workspace-hack = { version = "0.1" }
 dbt-yaml = { workspace = true }
 indexmap = { workspace = true, features = ["serde"] }
 minijinja = { workspace = true }
+minijinja-contrib = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 

@@ -1,0 +1,10 @@
+# Scenario: catalog_database that sanitizes to the empty string.
+# Exercises: Configuration error for empty alias after sanitization.
+catalogs:
+  - name: bad_alias
+    type: iceberg_rest
+    table_format: iceberg
+    config:
+      duckdb:
+        catalog_database: "!!!"
+        endpoint: "https://rest.example.com"

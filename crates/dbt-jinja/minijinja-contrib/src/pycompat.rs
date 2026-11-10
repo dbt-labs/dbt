@@ -87,9 +87,26 @@ pub fn unknown_method_callback(
 ) -> Result<Value, Error> {
     match value.kind() {
         ValueKind::String => string_methods(value, method, args),
+        ValueKind::Undefined => undefined_methods(method, args),
         ValueKind::Map => map_methods(value, method, args),
         ValueKind::Seq => seq_methods(value, method, args),
         ValueKind::Number => number_methods(value, method, args),
+        _ => Err(Error::from(ErrorKind::UnknownMethod)),
+    }
+}
+
+fn undefined_methods(method: &str, args: &[Value]) -> Result<Value, Error> {
+    match method {
+        // Mirrors dbt-common's `Undefined.get(key, default=None)`: dbt
+        // macros commonly probe an undefined `config`-like object with
+        // `.get('key', default)`, and that must not fail. Every other
+        // method call on an undefined value still fails with UnknownMethod
+        // so the engine can name the undefined receiver in the error (see
+        // `name_undefined_receiver` in vm/mod.rs).
+        "get" => {
+            let (_key, default): (&Value, Option<&Value>) = from_args(args)?;
+            Ok(default.cloned().unwrap_or(Value::UNDEFINED))
+        }
         _ => Err(Error::from(ErrorKind::UnknownMethod)),
     }
 }
@@ -953,6 +970,10 @@ fn seq_methods(value: &Value, method: &str, args: &[Value]) -> Result<Value, Err
                 ))
             }
         }
+        // `pop` mutates the sequence in place. Mutable sequences (e.g.
+        // `MutableVec`) already implement it via `Object::call_method`, so if
+        // we get here the sequence isn't mutable and, like Python's tuple,
+        // doesn't support `pop()` at all.
         _ => Err(Error::from(ErrorKind::UnknownMethod)),
     }
 }

@@ -30,6 +30,14 @@
 
 -- funcsign: (string, optional[string]) -> string
 {% macro get_empty_subquery_sql(select_sql, select_sql_header=none) -%}
+  {#-- DIVERGENCE BEGIN: strip a terminal `;` so it does not land inside the
+       wrapper built below; done at the dispatcher so the adapter overrides are
+       covered too. See `StmtSplitter::strip_trailing_statement_terminator`.
+       Upstream: https://github.com/dbt-labs/dbt-adapters/blob/main/dbt-adapters/src/dbt/include/global_project/macros/adapters/columns.sql --#}
+  {%- if dbt_version.startswith('2.') -%}
+    {%- set select_sql = adapter.strip_trailing_statement_terminator(select_sql) -%}
+  {%- endif -%}
+  {#-- DIVERGENCE END --#}
   {{ return(adapter.dispatch('get_empty_subquery_sql', 'dbt')(select_sql, select_sql_header)) }}
 {% endmacro %}
 
@@ -98,7 +106,8 @@
     {% call statement('get_columns_in_query', fetch_result=True, auto_begin=False) -%}
         {{ get_empty_subquery_sql(select_sql) }}
     {% endcall %}
-    {{ return(load_result('get_columns_in_query').table.columns | map(attribute='name') | list) }}
+    {# DIVERGENCE: Fusion reads the original schema because Agate flattens nested columns. #}
+    {{ return(load_result('get_columns_in_query').table.top_level_column_names) }}
 {% endmacro %}
 
 -- funcsign: (relation, string, string) -> string

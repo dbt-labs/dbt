@@ -1,0 +1,123 @@
+985feccd:
+- sequence: 0
+  type: execute
+  sql: |-
+    show terse schemas in database test_catalog_linked_db_glue
+    limit 10000
+dbbbff64:
+- sequence: 0
+  type: execute
+  sql: |-
+    show terse schemas in database development
+    limit 10000
+dbe0ded0:
+- sequence: 0
+  type: execute
+  sql: |-
+    show terse schemas in database test_catalog_linked_db_internal
+    limit 10000
+model.test.builtin_copy_grants:
+- sequence: 0
+  type: execute
+  sql: SHOW OBJECTS IN SCHEMA "DEVELOPMENT"."icebergrestschemafusion_icebergBuiltinTestSchema" LIMIT 10000
+- sequence: 1
+  type: execute
+  sql: |-
+    create or replace iceberg table development."icebergrestschemafusion_icebergBuiltinTestSchema"."builtin_copy_grants"
+    external_volume = 's3_iceberg_snow'
+    
+    catalog = 'SNOWFLAKE'  -- required, and always SNOWFLAKE for built-in Iceberg tables
+    base_location = '_fusion_ci/grants_tags/icebergrestschemafusion_icebergBuiltinTestSchema/builtin_copy_grants'
+    
+    
+    
+    
+    
+    
+    
+    
+    change_tracking = True
+    
+    
+    
+    copy grants
+    
+    
+    as (
+    
+    select 1 as id
+    )
+model.test.glue_copy_grants:
+- sequence: 0
+  type: execute
+  sql: SHOW OBJECTS IN SCHEMA "TEST_CATALOG_LINKED_DB_GLUE"."icebergrestschemafusion" LIMIT 10000
+- sequence: 1
+  type: execute
+  sql: |-
+    select * from (
+    
+    
+    select 1 as id
+    ) as __dbt_sbq
+    where false
+    limit 0
+- sequence: 2
+  type: execute
+  sql: drop table if exists "TEST_CATALOG_LINKED_DB_GLUE"."icebergrestschemafusion"."glue_copy_grants"
+- sequence: 3
+  type: execute
+  sql: |-
+    create iceberg table test_catalog_linked_db_glue."icebergrestschemafusion"."glue_copy_grants" (
+    "id" NUMBER(1,0))
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    target_file_size = 'AUTO'
+    
+    auto_refresh = True
+- sequence: 4
+  type: execute
+  sql: |-
+    insert into test_catalog_linked_db_glue."icebergrestschemafusion"."glue_copy_grants"
+    
+    
+    select 1 as id
+model.test.rest_copy_grants:
+- sequence: 0
+  type: execute
+  sql: SHOW OBJECTS IN SCHEMA "TEST_CATALOG_LINKED_DB_INTERNAL"."icebergrestschemafusion" LIMIT 10000
+- sequence: 1
+  type: execute
+  sql: drop table if exists "TEST_CATALOG_LINKED_DB_INTERNAL"."icebergrestschemafusion"."rest_copy_grants"
+- sequence: 2
+  type: execute
+  sql: |-
+    create iceberg table test_catalog_linked_db_internal."icebergrestschemafusion"."rest_copy_grants"
+    
+    
+    
+    
+    
+    
+    
+    
+    target_file_size = 'AUTO'
+    
+    auto_refresh = True
+    
+    
+    
+    
+    
+    
+    as (
+    
+    
+    select 1 as id
+    )

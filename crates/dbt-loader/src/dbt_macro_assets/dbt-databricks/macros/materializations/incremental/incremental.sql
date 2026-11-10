@@ -8,20 +8,20 @@
   {%- set _ = dbt_databricks_validate_get_file_format(catalog_relation.file_format) -%}
   {#-- DIVERGENCE END #}
 
-  {%- set existing_relation = load_relation_with_metadata(this) %}
-  {%- set target_relation = this.incorporate(type='table') -%}
-  {%- set incremental_strategy = get_incremental_strategy(catalog_relation.file_format) -%}
-  {%- set grant_config = config.get('grants') -%}
-  {%- set full_refresh = should_full_refresh() %}
-  {%- set partition_by = config.get('partition_by', none) -%}
-  {%- set language = model['language'] -%}
-  {%- set on_schema_change = incremental_validate_on_schema_change(config.get('on_schema_change'), default='ignore') -%}
-  {%- set is_delta = (catalog_relation.file_format == 'delta' and existing_relation.is_delta) -%}
+  {% set existing_relation = load_relation_with_metadata(this) %}
+  {% set target_relation = this.incorporate(type='table') %}
+  {% set incremental_strategy = get_incremental_strategy(catalog_relation.file_format) %}
+  {% set grant_config = config.get('grants') %}
+  {% set full_refresh = should_full_refresh() %}
+  {% set partition_by = config.get('partition_by') %}
+  {% set language = model['language'] %}
+  {% set on_schema_change = incremental_validate_on_schema_change(config.get('on_schema_change'), default='ignore') %}
+  {% set is_delta = (catalog_relation.file_format == 'delta' and existing_relation.is_delta) %}
   {% set is_iceberg = (catalog_relation.file_format == 'iceberg' and existing_relation.is_iceberg) %}
   {% set is_replaceable_format = is_delta or is_iceberg %}
   {% set compiled_code = adapter.clean_sql(model['compiled_code']) %}
 
-  {% if adapter.behavior.use_materialization_v2 %}
+  {% if use_materialization_v2() %}
     {{ log("USING V2 MATERIALIZATION") }}
     {#-- Set vars --#}
     {% set safe_create = config.get('use_safer_relation_operations', False) | as_bool  %}
@@ -42,6 +42,7 @@
     {%- if existing_relation is none -%}
       {{ log("No existing relation found") }}
       {{ create_table_at(target_relation, intermediate_relation, compiled_code) }}
+      {% do persist_docs(target_relation, model, for_relation=language=='python') %}
     {%- elif should_replace -%}
       {{ log("Existing relation found that requires replacement") }}
       {% if safe_create and existing_relation.can_be_renamed %}
@@ -49,13 +50,14 @@
         {{ safe_relation_replace(existing_relation, staging_relation, intermediate_relation, compiled_code) }}
       {% else %}
         {#-- Relation must be dropped & recreated --#}
-        {% if not is_replaceable %} {#-- If Delta, we will `create or replace` below, so no need to drop --#}
+        {% if not is_replaceable or existing_relation.is_shallow_clone %} {#-- Delta uses `create or replace` below, except a shallow clone must be dropped --#}
           {{ log("Dropping existing relation, as it is not replaceable") }}
           {% do adapter.drop_relation(existing_relation) %}
         {% endif %}
         {{ log("Replacing target relation") }}
         {{ create_table_at(target_relation, intermediate_relation, compiled_code) }}
       {% endif %}
+      {% do persist_docs(target_relation, model, for_relation=language=='python') %}
     {%- else -%}
       {{ log("Existing relation found, proceeding with incremental work")}}
       {#-- Set Overwrite Mode to DYNAMIC for subsequent incremental operations --#}
@@ -64,7 +66,7 @@
       {%- endif -%}
       {#-- Relation must be merged --#}
       {%- do process_schema_changes(on_schema_change, intermediate_relation, existing_relation) -%}
-      {{ process_config_changes(target_relation) }}
+      {{ process_config_changes(target_relation, existing_relation) }}
       {% set build_sql = get_build_sql(incremental_strategy, target_relation, intermediate_relation) %}
       {%- if language == 'sql' -%}
         {#-- Check if build_sql is a list (multi-statement strategy) or a string (single statement) --#}
@@ -100,8 +102,8 @@
     {%- set tblproperties = config.get('tblproperties') -%}
     {%- set tags = config.get('databricks_tags') -%}
     {% set temp_relation = make_temp_relation(target_relation) %}
-    {%- set incremental_predicates = config.get('predicates', default=none) or config.get('incremental_predicates', default=none) -%}
-    {%- set unique_key = config.get('unique_key', none) -%}
+    {% set incremental_predicates = config.get('predicates') or config.get('incremental_predicates') %}
+    {%- set unique_key = config.get('unique_key') -%}
 
     {#-- Run pre-hooks --#}
     {{ run_hooks(pre_hooks) }}
@@ -113,12 +115,10 @@
       {%- endcall -%}
       {% do persist_constraints(target_relation, model) %}
       {% do apply_tags(target_relation, tags) %}
-      {#-- DIVERGENCE START: Core does not set column tags for incremental #}
       {% set column_tags = adapter.get_column_tags_from_model(config.model) %}
-      {% if column_tags and column_tags.tags %}
-        {% do apply_column_tags(target_relation, column_tags) %}
+      {% if column_tags and column_tags.set_column_tags %}
+        {{ apply_column_tags(target_relation, column_tags) }}
       {% endif %}
-      {#-- DIVERGENCE END #}
       {%- if language == 'python' -%}
         {%- do apply_tblproperties(target_relation, tblproperties) %}
       {%- endif -%}
@@ -126,7 +126,7 @@
       {% do persist_docs(target_relation, model, for_relation=language=='python') %}
     {%- elif existing_relation.is_view or existing_relation.is_materialized_view or existing_relation.is_streaming_table or should_full_refresh() -%}
       {#-- Relation must be dropped & recreated --#}
-      {% if not is_replaceable_format %} {#-- If Delta or Iceberg, we will `create or replace` below, so no need to drop --#}
+      {% if not is_replaceable_format or existing_relation.is_shallow_clone %} {#-- Delta/Iceberg uses `create or replace` below, except a shallow clone must be dropped --#}
         {% do adapter.drop_relation(existing_relation) %}
       {% endif %}
       {%- call statement('main', language=language) -%}
@@ -138,8 +138,8 @@
       {% endif %}
       {% do apply_tags(target_relation, tags) %}
       {% set column_tags = adapter.get_column_tags_from_model(config.model) %}
-      {% if column_tags and column_tags.tags %}
-        {% do apply_column_tags(target_relation, column_tags) %}
+      {% if column_tags and column_tags.set_column_tags %}
+        {{ apply_column_tags(target_relation, column_tags) }}
       {% endif %}
       {% do persist_docs(target_relation, model, for_relation=language=='python') %}
     {%- else -%}
@@ -148,9 +148,12 @@
         {{ set_overwrite_mode('DYNAMIC') }}
       {%- endif -%}
       {#-- Relation must be merged --#}
-      {%- set _existing_config = adapter.get_relation_config(existing_relation) -%}
-      {%- set model_config = adapter.get_config_from_model(config.model) -%}
-      {%- set _configuration_changes = model_config.get_changeset(_existing_config) -%}
+      {%- set _configuration_changes = none -%}
+      {%- if config.get('incremental_apply_config_changes', True) | as_bool -%}
+        {%- set model_config = adapter.get_config_from_model(config.model) -%}
+        {%- set _existing_config = adapter.get_relation_config(existing_relation, model_config) -%}
+        {%- set _configuration_changes = model_config.get_changeset(_existing_config) -%}
+      {%- endif -%}
       {%- call statement('create_temp_relation', language=language) -%}
         {{ create_table_as(True, temp_relation, compiled_code, language) }}
       {%- endcall -%}
@@ -190,26 +193,29 @@
       {%- endif -%}
       {% if _configuration_changes is not none %}
         {% set tags = _configuration_changes.changes.get("tags", None) %}
-        {% set column_tags = _configuration_changes.changes.get("column_tags", None) %}
         {% set tblproperties = _configuration_changes.changes.get("tblproperties", None) %}
         {% set liquid_clustering = _configuration_changes.changes.get("liquid_clustering") %}
+        {% set row_filter = _configuration_changes.changes.get("row_filter") %}
         {% set constraints = _configuration_changes.changes.get("constraints") %}
+        {% set column_tags = _configuration_changes.changes.get("column_tags") %}
         {% if tags is not none %}
           {% do apply_tags(target_relation, tags.set_tags) %}
         {%- endif -%}
-        {#-- DIVERGENCE START: Core does not set column tags for incremental #} 
-        {% if column_tags is not none %}
-          {% do apply_column_tags(target_relation, column_tags) %}
-        {%- endif -%}
-        {#-- DIVERGENCE END #}
         {% if tblproperties is not none %}
           {% do apply_tblproperties(target_relation, tblproperties.tblproperties) %}
         {%- endif -%}
         {% if liquid_clustering is not none %}
-          {% do apply_liquid_clustered_cols(target_relation, liquid_clustering) %}
+          {% do apply_liquid_clustered_cols(target_relation, liquid_clustering, existing_relation) %}
+        {% endif %}
+        {% if row_filter is not none %}
+          {{ apply_row_filter(target_relation, row_filter) }}
+        {% endif %}
+        {% if column_tags %}
+          {{ apply_column_tags(target_relation, column_tags) }}
         {% endif %}
         {#- Incremental constraint application requires information_schema access (see fetch_*_constraints macros) -#}
-        {% if constraints and not target_relation.is_hive_metastore() %}
+        {% set contract_config = config.get('contract') %}
+        {% if constraints and contract_config and contract_config.enforced and not target_relation.is_hive_metastore() %}
           {{ apply_constraints(target_relation, constraints) }}
         {% endif %}
       {%- endif -%}
@@ -237,7 +243,7 @@
       set spark.sql.sources.partitionOverwriteMode = {{ value }}
     {%- endcall -%}
   {% else %}
-    {{ exceptions.warn("INSERT OVERWRITE is only properly supported on all-purpose clusters.  On SQL Warehouses, this strategy would be equivalent to using the table materialization.") }}
+    {{ exceptions.warn("insert_overwrite is supported on SQL warehouses with DBR 17.1+. On older DBR versions, this strategy would be equivalent to using the table materialization.") }}
   {% endif %}
 {% endmacro %}
 
@@ -251,15 +257,15 @@
           'unique_key': unique_key,
           'dest_columns': none,
           'incremental_predicates': incremental_predicates}) -%}
-  {{ strategy_sql_macro_func(strategy_arg_dict) }}
+  {% do return(strategy_sql_macro_func(strategy_arg_dict)) %}
 {% endmacro %}
 
-{% macro process_config_changes(target_relation) %}
+{% macro process_config_changes(target_relation, existing_relation=none) %}
   {% set apply_config_changes = config.get('incremental_apply_config_changes', True) | as_bool %}
   {% if apply_config_changes %}
-    {%- set existing_config = adapter.get_relation_config(target_relation) -%}
     {%- set model_config = adapter.get_config_from_model(config.model) -%}
+    {%- set existing_config = adapter.get_relation_config(target_relation, model_config) -%}
     {%- set configuration_changes = model_config.get_changeset(existing_config) -%}
-    {{ apply_config_changeset(target_relation, model, configuration_changes) }}
+    {{ apply_config_changeset(target_relation, model, configuration_changes, existing_relation) }}
   {% endif %}
 {% endmacro %}

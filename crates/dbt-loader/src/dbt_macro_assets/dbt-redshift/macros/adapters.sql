@@ -54,8 +54,10 @@
     {{ get_assert_columns_equivalent(sql) }}
     {%- set sql = get_select_subquery(sql) %}
     {% if backup == false -%}backup no{%- endif %}
+    {%- if not temporary %}
     {{ dist(_dist) }}
     {{ sort(_sort_type, _sort) }}
+    {%- endif %}
   ;
 
   insert into {{ relation.include(database=(not temporary), schema=(not temporary)) }}
@@ -69,8 +71,10 @@
   create {% if temporary -%}temporary{%- endif %} table
     {{ relation.include(database=(not temporary), schema=(not temporary)) }}
     {% if backup == false -%}backup no{%- endif %}
+    {%- if not temporary %}
     {{ dist(_dist) }}
     {{ sort(_sort_type, _sort) }}
+    {%- endif %}
   as (
     {{ sql }}
   );

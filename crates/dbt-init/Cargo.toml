@@ -18,8 +18,10 @@ dbt-cloud-api = { workspace = true }
 dbt-cloud-config = { workspace = true }
 dbt-common = { workspace = true }
 dbt-error = { workspace = true }
+dbt-flags = { workspace = true }
 dbt-jinja-utils = { workspace = true }
 dbt-loader = { workspace = true }
+dbt-profile-schemas = { workspace = true }
 dbt-schemas = { workspace = true }
 
 dialoguer = { workspace = true }

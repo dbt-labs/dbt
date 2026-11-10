@@ -4,7 +4,7 @@ mod assertions {
         AssertDirExistsTask, AssertFileExistsTask, ProjectEnv, TaskSeq, assert_file_contains,
     };
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn tasks_file_contains() -> FsResult<()> {
         let root = env!("CARGO_MANIFEST_DIR");
         let env = ProjectEnv::immutable_from(root, "tests/data/hello")?;
@@ -17,7 +17,7 @@ mod assertions {
         Ok(())
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn tasks_file_exists() -> FsResult<()> {
         let root = env!("CARGO_MANIFEST_DIR");
         let env = ProjectEnv::immutable_from(root, "tests/data/hello")?;
@@ -30,7 +30,7 @@ mod assertions {
         Ok(())
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn tasks_dir_exists() -> FsResult<()> {
         let root = env!("CARGO_MANIFEST_DIR");
         let env = ProjectEnv::immutable_from(root, "tests/data/hello")?;

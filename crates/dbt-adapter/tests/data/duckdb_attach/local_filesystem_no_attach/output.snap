@@ -1,0 +1,4 @@
+---
+source: fs/sa/crates/dbt-adapter/tests/duckdb_attach.rs
+input_file: fs/sa/crates/dbt-adapter/tests/data/duckdb_attach/local_filesystem_no_attach/catalogs.yml
+---

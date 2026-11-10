@@ -1,7 +1,3 @@
-use crate::adapter_config::{
-    setup_bigquery_profile, setup_clickhouse_profile, setup_databricks_profile,
-    setup_fabric_profile, setup_postgres_profile, setup_redshift_profile, setup_snowflake_profile,
-};
 use crate::dbt_cloud_client::{CloudProject, DbtCloudClient, DbtCloudYml};
 use crate::yaml_utils::{
     has_top_level_key_parsed_file, list_top_level_keys_from_file, remove_top_level_key_from_str,
@@ -14,23 +10,15 @@ use dbt_common::{ErrorCode, FsResult, fs_err, io_args::IoArgs};
 use dbt_jinja_utils::phases::load::init::initialize_load_profile_jinja_environment;
 use dbt_jinja_utils::serde::{into_typed_with_jinja, value_from_file};
 use dbt_loader::{args::LoadArgs, load_profiles};
+use dbt_profile_schemas::profile::ProfileTarget;
 use dbt_schemas::schemas::profiles::DbConfig;
 use dbt_schemas::schemas::project::DbtProjectSimplified;
 
 use dialoguer::{Confirm, Select};
 
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProfileTarget {
-    pub target: String,
-    pub outputs: HashMap<String, DbConfig>,
-}
-
-pub type Profiles = HashMap<String, ProfileTarget>;
 
 /// Load profile using the standard dbt-loader infrastructure
 fn load_profile_with_loader(
@@ -58,7 +46,6 @@ fn load_profile_with_loader(
         profile: Some(profile_name.to_string()).into(),
         dbt_cloud: None,
         flags: None,
-        data_paths: Default::default(),
         source_paths: Default::default(),
         log_path: Default::default(),
         target_path: Default::default(),
@@ -66,7 +53,7 @@ fn load_profile_with_loader(
     };
 
     let dbt_profile = load_profiles(&load_args, &dbt_project)?;
-    Ok(dbt_profile.db_config)
+    Ok(dbt_profile.default_db_config().clone())
 }
 
 #[derive(Debug, Clone)]
@@ -86,22 +73,13 @@ impl ProjectStore {
             return Ok(None);
         }
 
-        let io_args = IoArgs::default();
         let yaml_value = value_from_file(&dbt_cloud_config_path, true, None)?;
 
         let env = initialize_load_profile_jinja_environment();
         let empty_context = HashMap::<String, String>::new();
 
-        let config: DbtCloudYml = into_typed_with_jinja(
-            &io_args,
-            yaml_value,
-            false,
-            &env,
-            &empty_context,
-            &[],
-            None,
-            true,
-        )?;
+        let config: DbtCloudYml =
+            into_typed_with_jinja(yaml_value, false, &env, &empty_context, &[], None, true)?;
 
         Ok(Some(Self { config }))
     }
@@ -155,10 +133,143 @@ fn adapter_type_for_profile(parsed: &serde_json::Value, profile_name: &str) -> O
         Some(target) => outputs.get(target)?,
         None => outputs.as_object()?.values().next()?,
     };
+    // A list of outputs (from the Lake Compute setup): its default is the
+    // target's adapter.
+    let output = match output.as_array() {
+        Some(list) if dbt_flags::LAKECOMPUTE_PROFILE_SETUP.enabled() => {
+            list.get(default_output(list))?
+        }
+        _ => output,
+    };
     output
         .get("type")
         .and_then(|t| t.as_str())
         .map(|s| s.to_string())
+}
+
+/// The outputs of `profile_name`'s `target` in a parsed profiles.yml, when
+/// it's a list of outputs.
+fn target_outputs(
+    parsed: &serde_json::Value,
+    profile_name: &str,
+    target: &str,
+) -> Vec<serde_json::Value> {
+    parsed
+        .get(profile_name)
+        .and_then(|p| p.get("outputs"))
+        .and_then(|o| o.get(target))
+        .and_then(|t| t.as_array())
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// Which of a target's list of outputs is its default: the one flagged
+/// `default: true` (also as a string, as dbt reads it rendered), else the first.
+fn default_output(list: &[serde_json::Value]) -> usize {
+    list.iter()
+        .position(|o| match o.get("default") {
+            Some(serde_json::Value::Bool(flag)) => *flag,
+            Some(serde_json::Value::String(flag)) => flag.trim().eq_ignore_ascii_case("true"),
+            _ => false,
+        })
+        .unwrap_or(0)
+}
+
+fn is_lakecompute(output: &serde_json::Value) -> bool {
+    output_type(output) == Some(AdapterType::LakeCompute)
+}
+
+/// An output's adapter, as dbt reads its `type` (case doesn't matter).
+fn output_type(output: &serde_json::Value) -> Option<AdapterType> {
+    output.get("type")?.as_str()?.parse().ok()
+}
+
+/// `profile` with a lakecompute output (when `lakecompute`) beside its
+/// target's warehouse output, which stays the default: the target becomes a
+/// list of outputs, as dbt reads one where models can run on more than one
+/// adapter. `existing` is the target's list as it was: its lakecompute output
+/// and any other outputs are kept as they were, and its default's name too.
+fn with_lakecompute(
+    profile: &ProfileTarget,
+    existing: &[serde_json::Value],
+    lakecompute: bool,
+) -> FsResult<dbt_yaml::Value> {
+    use dbt_yaml::{Mapping, Span, Value};
+    let yaml = |e: dbt_yaml::Error| fs_err!(ErrorCode::IoError, "Failed to serialize profile: {e}");
+    let warehouse = profile.outputs.get(&profile.target).ok_or_else(|| {
+        fs_err!(
+            ErrorCode::InvalidConfig,
+            "target '{}' has no output to add lakecompute beside",
+            profile.target
+        )
+    })?;
+    // The warehouse output this replaces: the default, when it's not the
+    // lakecompute one; else the first output on the warehouse's adapter.
+    let default_at = default_output(existing);
+    let replaced = existing
+        .get(default_at)
+        .is_some_and(|o| !is_lakecompute(o))
+        .then_some(default_at)
+        .or_else(|| {
+            existing
+                .iter()
+                .position(|o| output_type(o) == Some(warehouse.adapter_type()))
+        });
+    let name = replaced
+        .and_then(|i| existing[i].get("name").and_then(|n| n.as_str()))
+        .map_or_else(|| warehouse.adapter_type().to_string(), str::to_string);
+    // An output named `name`: `config`'s fields after the name (and flag).
+    let named = |name: &str, default: bool, config: &DbConfig| -> FsResult<Value> {
+        let mut output = Mapping::new();
+        output.insert(Value::from("name"), Value::from(name));
+        if default {
+            output.insert(Value::from("default"), Value::from(true));
+        }
+        if let Value::Mapping(fields, _) = dbt_yaml::to_value(config).map_err(yaml)? {
+            output.extend(fields);
+        }
+        Ok(Value::Mapping(output, Span::default()))
+    };
+    let mut outputs = vec![named(&name, true, warehouse)?];
+    for (i, output) in existing.iter().enumerate() {
+        if Some(i) == replaced {
+            continue;
+        }
+        let mut output = output.clone();
+        // The warehouse output is the default now.
+        if let Some(fields) = output.as_object_mut() {
+            fields.remove("default");
+        }
+        outputs.push(dbt_yaml::to_value(&output).map_err(yaml)?);
+    }
+    if lakecompute && !existing.iter().any(is_lakecompute) {
+        let lakecompute =
+            dbt_profile_schemas::ProfileSetup::new(AdapterType::LakeCompute).setup(None)?;
+        outputs.push(named(
+            AdapterType::LakeCompute.as_ref(),
+            false,
+            &lakecompute,
+        )?);
+    }
+    let mut value = dbt_yaml::to_value(profile).map_err(yaml)?;
+    if let Some(Value::Mapping(targets, _)) = value.get_mut("outputs") {
+        targets.insert(
+            Value::from(profile.target.as_str()),
+            Value::Sequence(outputs, Span::default()),
+        );
+    }
+    Ok(value)
+}
+
+/// Asks whether to add a lakecompute output beside Snowflake; yes by default
+/// when the target has one (setting it up again keeps it).
+fn ask_for_lakecompute(has: bool) -> FsResult<bool> {
+    let prompt = "Also run models on Lake Compute? (adds a lakecompute output beside Snowflake)";
+    Confirm::new()
+        .with_prompt(prompt)
+        .default(has)
+        .interact()
+        .map_err(|e| fs_err!(ErrorCode::IoError, "Failed to get confirmation: {}", e))
 }
 
 /// Outcome of the initial profile-action prompt shown to the user during `dbt init`.
@@ -194,6 +305,8 @@ impl ProfileSetup {
             AdapterType::Databricks,
             AdapterType::Bigquery,
             AdapterType::ClickHouse,
+            AdapterType::DuckDB,
+            AdapterType::Exasol,
             AdapterType::Postgres,
             AdapterType::Redshift,
             AdapterType::Fabric,
@@ -333,98 +446,8 @@ impl ProfileSetup {
         _profile_name: &str,
         existing_config: Option<&DbConfig>,
     ) -> FsResult<ProfileTarget> {
-        let db_config = match adapter {
-            AdapterType::Snowflake => {
-                let snowflake_config = match existing_config {
-                    Some(DbConfig::Snowflake(config)) => Some(config),
-                    _ => None,
-                };
-                DbConfig::Snowflake(setup_snowflake_profile(snowflake_config.map(Box::as_ref))?)
-            }
-            AdapterType::Bigquery => {
-                let bigquery_config = match existing_config {
-                    Some(DbConfig::Bigquery(config)) => Some(config),
-                    _ => None,
-                };
-                DbConfig::Bigquery(setup_bigquery_profile(bigquery_config.map(Box::as_ref))?)
-            }
-            AdapterType::Databricks => {
-                let databricks_config = match existing_config {
-                    Some(DbConfig::Databricks(config)) => Some(config),
-                    _ => None,
-                };
-                DbConfig::Databricks(setup_databricks_profile(
-                    databricks_config.map(Box::as_ref),
-                )?)
-            }
-            AdapterType::Postgres => {
-                let postgres_config = match existing_config {
-                    Some(DbConfig::Postgres(config)) => Some(config),
-                    _ => None,
-                };
-                DbConfig::Postgres(setup_postgres_profile(postgres_config.map(Box::as_ref))?)
-            }
-            AdapterType::Redshift => {
-                let redshift_config = match existing_config {
-                    Some(DbConfig::Redshift(config)) => Some(config),
-                    _ => None,
-                };
-                DbConfig::Redshift(setup_redshift_profile(redshift_config.map(Box::as_ref))?)
-            }
-            AdapterType::Spark => {
-                let _salesforce_config = match existing_config {
-                    Some(DbConfig::Spark(config)) => Some(config),
-                    _ => None,
-                };
-                todo!("setup_spark_profile")
-            }
-            AdapterType::Salesforce => {
-                let _salesforce_config = match existing_config {
-                    Some(DbConfig::Salesforce(config)) => Some(config),
-                    _ => None,
-                };
-                todo!("setup_salesforce_profile")
-            }
-            AdapterType::Fabric => {
-                let fabric_config = match existing_config {
-                    Some(DbConfig::Fabric(config)) => Some(config),
-                    _ => None,
-                };
-                DbConfig::Fabric(setup_fabric_profile(fabric_config.map(Box::as_ref))?)
-            }
-
-            AdapterType::DuckDB => {
-                // DuckDB doesn't require credentials for local file-based operations
-                // TODO: Create proper DuckDB profile setup
-                return Err(fs_err!(
-                    ErrorCode::Generic,
-                    "DuckDB profile setup not yet implemented. DuckDB runs locally without credentials."
-                ));
-            }
-            AdapterType::Alt => {
-                // TODO: Create proper Alt profile setup
-                return Err(fs_err!(
-                    ErrorCode::Generic,
-                    "Alt profile setup not yet implemented."
-                ));
-            }
-            AdapterType::ClickHouse => {
-                let clickhouse_config = match existing_config {
-                    Some(DbConfig::ClickHouse(config)) => Some(config),
-                    _ => None,
-                };
-                DbConfig::ClickHouse(setup_clickhouse_profile(
-                    clickhouse_config.map(Box::as_ref),
-                )?)
-            }
-            AdapterType::Exasol => todo!("Exasol"),
-            AdapterType::Starburst => todo!("Starburst"),
-            AdapterType::Athena => todo!("Athena"),
-            AdapterType::Trino => todo!("Trino"),
-            AdapterType::Datafusion => todo!("Datafusion"),
-            AdapterType::Dremio => todo!("Dremio"),
-            AdapterType::Oracle => todo!("Oracle"),
-        };
+        let profile_setup = dbt_profile_schemas::ProfileSetup::new(adapter);
+        let db_config = profile_setup.setup(existing_config)?;
 
         let mut outputs = HashMap::new();
         outputs.insert("dev".to_string(), db_config);
@@ -437,7 +460,11 @@ impl ProfileSetup {
 
     /// Write or update a single profile block in the appropriate profiles.yml,
     /// preserving existing content, order, and comments.
-    pub fn write_profile(&self, profile_name: &str, profile: &ProfileTarget) -> FsResult<()> {
+    pub fn write_profile(
+        &self,
+        profile_name: &str,
+        profile: &impl serde::Serialize,
+    ) -> FsResult<()> {
         // Determine target profiles.yml path:
         // 1) If ./profiles.yml exists, prefer writing there
         // 2) Else write to self.profiles_dir/profiles.yml (creating directory if needed)
@@ -500,8 +527,8 @@ impl ProfileSetup {
             existing.push('\n');
         }
 
-        let mut top: HashMap<String, ProfileTarget> = HashMap::new();
-        top.insert(profile_name.to_string(), profile.clone());
+        let mut top = BTreeMap::new();
+        top.insert(profile_name.to_string(), profile);
         let new_block = dbt_yaml::to_string(&top).map_err(|e| {
             fs_err!(
                 ErrorCode::IoError,
@@ -710,8 +737,31 @@ impl ProfileSetup {
 
         let profile =
             self.create_profile_for_adapter(adapter, profile_name, merged_config.as_ref())?;
-        self.write_profile(profile_name, &profile)?;
-
+        if adapter != AdapterType::Snowflake || !dbt_flags::LAKECOMPUTE_PROFILE_SETUP.enabled() {
+            return self.write_profile(profile_name, &profile);
+        }
+        let mut existing = fs::read_to_string(self.active_profiles_path())
+            .ok()
+            .and_then(|text| dbt_yaml::from_str::<serde_json::Value>(&text).ok())
+            .map(|parsed| target_outputs(&parsed, profile_name, &profile.target))
+            .unwrap_or_default();
+        if !ask_for_lakecompute(existing.iter().any(is_lakecompute))? {
+            // The target's other outputs stay; a lakecompute one goes.
+            existing.retain(|o| !is_lakecompute(o));
+            if existing.len() <= 1 {
+                return self.write_profile(profile_name, &profile);
+            }
+            return self
+                .write_profile(profile_name, &with_lakecompute(&profile, &existing, false)?);
+        }
+        self.write_profile(profile_name, &with_lakecompute(&profile, &existing, true)?)?;
+        let next = format!(
+            "{} Added a lakecompute output: models with adapter='lakecompute' run on Lake Compute. \
+             It reads its Fivetran token from {}; `dbt debug` checks the connection.",
+            GREEN.apply_to("Info"),
+            dbt_profile_schemas::LAKE_COMPUTE_TOKEN_ENV,
+        );
+        emit_info_log_message(next);
         Ok(())
     }
 
@@ -723,9 +773,168 @@ impl ProfileSetup {
 #[cfg(test)]
 mod tests {
     use super::adapter_type_for_profile;
+    use dbt_profile_schemas::profile::ProfileTarget;
+    use dbt_schemas::schemas::profiles::{DbConfig, SnowflakeDbConfig};
 
     fn parse(yaml: &str) -> serde_json::Value {
         dbt_yaml::from_str(yaml).unwrap()
+    }
+
+    /// A profile whose `dev` target is one Snowflake output.
+    fn snowflake_profile(config: SnowflakeDbConfig) -> ProfileTarget {
+        ProfileTarget {
+            target: "dev".to_string(),
+            outputs: [("dev".to_string(), DbConfig::Snowflake(Box::new(config)))].into(),
+        }
+    }
+
+    #[test]
+    fn a_lakecompute_output_goes_beside_the_warehouse_one() {
+        use super::{is_lakecompute, target_outputs, with_lakecompute};
+        let profile = snowflake_profile(SnowflakeDbConfig {
+            account: Some("acme".to_string()),
+            ..Default::default()
+        });
+        let value = with_lakecompute(&profile, &[], true).unwrap();
+        let text = dbt_yaml::to_string(
+            &[("p", &value)]
+                .into_iter()
+                .collect::<std::collections::BTreeMap<_, _>>(),
+        )
+        .unwrap();
+        let parsed = parse(&text);
+        let outputs = parsed["p"]["outputs"]["dev"]
+            .as_array()
+            .expect("a list of outputs");
+        assert_eq!(outputs.len(), 2, "{text}");
+        assert_eq!(
+            (
+                outputs[0]["name"].as_str(),
+                outputs[0]["default"].as_bool(),
+                outputs[0]["type"].as_str()
+            ),
+            (Some("snowflake"), Some(true), Some("snowflake")),
+            "{text}"
+        );
+        assert_eq!(outputs[0]["account"], "acme");
+        assert_eq!(outputs[1]["type"], "lakecompute");
+        assert_eq!(outputs[1]["method"], "fivetran");
+        assert_eq!(
+            outputs[1]["fivetran_credential"],
+            "{{ env_var('DBT_LAKE_COMPUTE_TOKEN', '') }}"
+        );
+        assert!(
+            target_outputs(&parsed, "p", "dev")
+                .iter()
+                .any(is_lakecompute)
+        );
+        let single = parse("p:\n  target: dev\n  outputs:\n    dev:\n      type: snowflake\n");
+        assert!(
+            !target_outputs(&single, "p", "dev")
+                .iter()
+                .any(is_lakecompute)
+        );
+    }
+
+    #[test]
+    fn setting_it_up_again_keeps_the_lakecompute_output_and_the_others() {
+        use super::{is_lakecompute, target_outputs, with_lakecompute};
+        let before = parse(
+            "p:\n  target: dev\n  outputs:\n    dev:\n      - name: wh\n        default: true\n        type: snowflake\n      - name: lc\n        type: lakecompute\n        method: fivetran\n        fivetran_credential: \"{{ env_var('MY_TOKEN') }}\"\n      - name: other\n        type: snowflake\n        account: b\n",
+        );
+        let existing = target_outputs(&before, "p", "dev");
+        assert!(existing.iter().any(is_lakecompute));
+        let profile = snowflake_profile(SnowflakeDbConfig::default());
+        let value = with_lakecompute(&profile, &existing, true).unwrap();
+        let text = dbt_yaml::to_string(&value).unwrap();
+        let after = parse(&text);
+        let outputs = after["outputs"]["dev"].as_array().unwrap();
+        let names: Vec<&str> = outputs.iter().filter_map(|o| o["name"].as_str()).collect();
+        assert_eq!(names, ["wh", "lc", "other"], "{text}");
+        assert_eq!(
+            outputs[1]["fivetran_credential"],
+            "{{ env_var('MY_TOKEN') }}"
+        );
+        // Declined: the others stay, without the lakecompute one.
+        let others: Vec<_> = existing
+            .into_iter()
+            .filter(|o| !is_lakecompute(o))
+            .collect();
+        let value = with_lakecompute(&profile, &others, false).unwrap();
+        let after = parse(&dbt_yaml::to_string(&value).unwrap());
+        let names: Vec<&str> = after["outputs"]["dev"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|o| o["name"].as_str())
+            .collect();
+        assert_eq!(names, ["wh", "other"]);
+    }
+
+    #[test]
+    fn the_first_output_is_the_default_without_a_flag() {
+        use super::{target_outputs, with_lakecompute};
+        let profile = snowflake_profile(SnowflakeDbConfig::default());
+        let written = |before: &str| {
+            let existing = target_outputs(&parse(before), "p", "dev");
+            let text =
+                dbt_yaml::to_string(&with_lakecompute(&profile, &existing, true).unwrap()).unwrap();
+            let after = parse(&text);
+            let outputs = after["outputs"]["dev"].as_array().unwrap().clone();
+            outputs
+                .iter()
+                .map(|o| {
+                    (
+                        o["name"].as_str().unwrap_or_default().to_string(),
+                        o["type"].as_str().unwrap_or_default().to_string(),
+                        o["default"].as_bool() == Some(true),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let s = |n: &str, t: &str, d: bool| (n.to_string(), t.to_string(), d);
+        // Unflagged: the first is the default, replaced rather than kept beside.
+        assert_eq!(
+            written(
+                "p:\n  target: dev\n  outputs:\n    dev:\n      - name: wh\n        type: snowflake\n      - name: lc\n        type: lakecompute\n"
+            ),
+            [s("wh", "snowflake", true), s("lc", "lakecompute", false)]
+        );
+        // A lakecompute default is kept, no longer the default.
+        assert_eq!(
+            written(
+                "p:\n  target: dev\n  outputs:\n    dev:\n      - name: lc\n        type: lakecompute\n        default: true\n      - name: wh\n        type: snowflake\n"
+            ),
+            [s("wh", "snowflake", true), s("lc", "lakecompute", false)]
+        );
+    }
+
+    #[test]
+    fn dbt_loads_the_profile_it_writes_with_lakecompute() {
+        use super::{load_profile_with_loader, with_lakecompute};
+        let profile = snowflake_profile(SnowflakeDbConfig {
+            account: Some("acme".to_string()),
+            user: Some("me".to_string()),
+            password: Some("{{ env_var('NO_SUCH_PASSWORD', 'x') }}".to_string()),
+            database: Some("analytics".to_string()),
+            schema: Some("dev".to_string()),
+            warehouse: Some("transforming".to_string()),
+            role: Some("transformer".to_string()),
+            ..Default::default()
+        });
+        let value = with_lakecompute(&profile, &[], true).unwrap();
+        let dir = std::env::temp_dir().join(format!("dbt-init-lakecompute-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let block: std::collections::BTreeMap<&str, &dbt_yaml::Value> = [("p", &value)].into();
+        std::fs::write(
+            dir.join("profiles.yml"),
+            dbt_yaml::to_string(&block).unwrap(),
+        )
+        .unwrap();
+        let loaded = load_profile_with_loader(Some(&dir), "p", None);
+        let _ = std::fs::remove_dir_all(&dir);
+        // Snowflake stays the target's default output.
+        assert!(matches!(loaded, Ok(DbConfig::Snowflake(_))), "{loaded:?}");
     }
 
     #[test]
@@ -737,6 +946,15 @@ mod tests {
             adapter_type_for_profile(&parsed, "my_profile").as_deref(),
             Some("snowflake")
         );
+    }
+
+    #[test]
+    fn a_list_target_has_no_type_without_the_flag() {
+        // As before the Lake Compute setup (`lakecompute_profile_setup` is off).
+        let parsed = parse(
+            "p:\n  target: dev\n  outputs:\n    dev:\n      - name: lc\n        type: lakecompute\n      - name: wh\n        default: true\n        type: snowflake\n",
+        );
+        assert_eq!(adapter_type_for_profile(&parsed, "p"), None);
     }
 
     #[test]

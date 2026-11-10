@@ -1,0 +1,30 @@
+[package]
+name = "dbt-file-security"
+description = "Protected local file and directory creation primitives"
+version.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+keywords.workspace = true
+
+[lib]
+doctest = false
+
+[dependencies]
+dbt-fusion-workspace-hack = { version = "0.1" }
+
+[target.'cfg(windows)'.dependencies]
+tempfile = { workspace = true }
+windows-sys = { version = "0.61.2", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Security_Authorization",
+  "Win32_Storage_FileSystem",
+  "Win32_System_SystemServices",
+  "Win32_System_Threading",
+] }
+
+[lints]
+workspace = true

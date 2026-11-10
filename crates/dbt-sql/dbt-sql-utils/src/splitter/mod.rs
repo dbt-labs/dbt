@@ -57,31 +57,36 @@ fn do_sql_find_statement_delimiters<'input, 'arena>(
         if start_token.is_none() {
             start_token = Some(token.clone());
         }
-        if token.get_channel() == 0 && token.get_token_type() == semi_colon {
-            let start_token_ = start_token.unwrap();
-            let span = Span::new(
-                CodeLocation::new(
-                    start_token_.get_line(),
-                    start_token_.get_char_position_in_line() as u32,
-                    start_token_.get_start_index() as u32,
-                ),
-                CodeLocation::new(
-                    token.get_line(),
-                    token.get_char_position_in_line() as u32,
-                    token.get_start_index() as u32,
-                ),
-            );
-            result.push(span);
-            start_token = None;
-        } else if token.get_token_type() == unpaired_token {
-            unpaired_token_found = true;
-            break;
+        if !unpaired_token_found {
+            if token.get_channel() == 0 && token.get_token_type() == semi_colon {
+                let start_token_ = start_token.unwrap();
+                let span = Span::new(
+                    CodeLocation::new(
+                        start_token_.get_line(),
+                        start_token_.get_char_position_in_line() as u32,
+                        start_token_.get_start_index() as u32,
+                    ),
+                    CodeLocation::new(
+                        token.get_line(),
+                        token.get_char_position_in_line() as u32,
+                        token.get_start_index() as u32,
+                    ),
+                );
+                result.push(span);
+                start_token = None;
+            } else if token.get_token_type() == unpaired_token {
+                // Unpaired token (unclosed quote, comment, etc.) found -- the
+                // current statement is malformed (as far as our grammar
+                // dictates) and thus we cannot trust any tokens after this
+                // point, just lump everything into the current statement and
+                // return it
+                unpaired_token_found = true;
+                continue;
+            }
         }
         last_token = Some(token);
     }
-    if let Some(last_token) = last_token
-        && !unpaired_token_found
-    {
+    if let Some(last_token) = last_token {
         let start_token = start_token.unwrap();
         if start_token.get_start_index() != last_token.get_start_index() {
             result.push(Span::new(
@@ -265,7 +270,7 @@ pub fn jinja_sql_find_statement_spans(input: &str, dialect: Option<Dialect>) -> 
 }
 
 /// Splits the input string into SQL statements using semicolons as delimiters.
-pub fn sql_split_statements(input: &str, dialect: Option<Dialect>) -> Vec<String> {
+pub fn sql_split_statements(input: &str, dialect: Option<Dialect>) -> Vec<&str> {
     let sql_buf = input.trim();
     do_sql_split_statements(sql_buf, dialect)
 }
@@ -321,7 +326,7 @@ pub fn snowflake_terminal_flow_statement(input: &str) -> &str {
     &input[result_start as usize..]
 }
 
-fn do_sql_split_statements(input: &str, dialect: Option<Dialect>) -> Vec<String> {
+fn do_sql_split_statements(input: &str, dialect: Option<Dialect>) -> Vec<&str> {
     let mut result = vec![];
     for span in sql_find_statement_spans(input, dialect) {
         let statement = span.slice(input);

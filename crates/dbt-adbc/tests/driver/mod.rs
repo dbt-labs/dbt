@@ -122,11 +122,12 @@ mod tests {
             }
             Backend::DuckDB | Backend::DuckDBExtended => {
                 let mut builder = database::Builder::new(backend);
-                let database_path = ":memory:".to_string();
-                builder.with_named_option("path", database_path)?;
+                builder.with_named_option("path", ":memory:")?;
                 Ok(builder)
             }
-            Backend::Alt => unimplemented!("Alt backend database builder in tests"),
+            Backend::LakeCompute => {
+                unimplemented!("LakeCompute backend database builder in tests")
+            }
             Backend::ClickHouse => {
                 let mut builder = database::Builder::new(backend);
                 let uri = env::var("ADBC_CLICKHOUSE_URI")

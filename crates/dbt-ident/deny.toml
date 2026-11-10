@@ -1,8 +1,0 @@
-[graph]
-exclude = ["dbt-fusion-workspace-hack"]
-
-[bans]
-multiple-versions = "allow"
-deny = [
-  { crate = "dbt-common", reason = "dbt-ident should be treated as an 'external' crate for handling SQL identifiers" },
-]

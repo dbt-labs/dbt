@@ -1,0 +1,11 @@
+# On-disk, because `source freshness` reads relations built by an earlier
+# invocation. Relative path, so it lands in the project dir the caller chdirs to
+# — see the `invoke` fixture.
+freshness:
+  target: duckdb_file
+  outputs:
+    duckdb_file:
+      type: duckdb
+      path: db.db
+      threads: 1
+      schema: main

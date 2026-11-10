@@ -60,9 +60,12 @@
 //! - `Cache`: internal bookkeeping (no DB I/O)
 //! - `Pure`: local computation (no I/O at all)
 
+use std::path::Path;
 use std::{io, sync::Arc};
 
 use dbt_common::cancellation::CancellationToken;
+use dbt_common::io_args::{ReplayMode as InvocationReplayMode, TimeMachineMode};
+use dbt_common::{ErrorCode, FsResult, fs_err};
 use parking_lot::Mutex;
 use tokio::task::JoinHandle;
 
@@ -78,12 +81,18 @@ pub(crate) mod serializable_impls;
 pub(crate) mod validation;
 pub mod writer;
 
+/// Serializes tests that touch the global recorder/replayer.
+#[cfg(test)]
+pub(crate) static TIME_MACHINE_TEST_LOCK: tokio::sync::Mutex<()> =
+    tokio::sync::Mutex::const_new(());
+
 // Re-export commonly used types
 pub use engine::{EventReplayer, ReplayCallError, ReplayerStats, TimeMachine};
 pub use event::{
     AdapterCallEvent, CacheInvalidationEvent, CatalogSchema, CatalogSchemas, MetadataCallArgs,
-    MetadataCallEvent, NodeIndex, RecordedEvent, RecordingHeader, RunRemoteAdhocEvent, SaoEvent,
-    SaoStatus,
+    MetadataCallEvent, NodeIndex, RecordedCachedTestResult, RecordedEvent,
+    RecordedRunCacheCloneDecision, RecordingHeader, RunCacheCloneEvent, RunRemoteAdhocEvent,
+    SaoEvent, SaoStatus,
 };
 pub use event_recorder::EventRecorder;
 pub use event_replay::{
@@ -104,8 +113,9 @@ impl From<TimeMachineReplayOrdering> for ReplayMode {
 }
 pub use metadata::{
     MetadataResultDeserialize, MetadataResultSerialize, args_create_schemas_if_not_exists,
-    args_fetch_view_definitions, args_freshness, args_list_relations_in_parallel,
-    args_list_relations_schemas, args_list_relations_schemas_by_patterns, args_list_udfs,
+    args_fetch_view_definitions, args_freshness, args_freshness_all_in_schema,
+    args_freshness_with_overrides, args_list_relations_in_parallel, args_list_relations_schemas,
+    args_list_relations_schemas_by_patterns, args_list_udfs, args_relations_exist,
     with_time_machine_metadata_wrapper,
 };
 pub use semantic::SemanticCategory;
@@ -232,6 +242,36 @@ pub fn is_replaying() -> bool {
     GLOBAL_REPLAYER.lock().is_some()
 }
 
+/// Pin the Jinja `modules.datetime` clock to the recording's start time when replaying, so
+/// wall-clock-derived SQL renders as it did at record time. No-op for any other mode.
+///
+/// Call before any project Jinja is rendered.
+pub fn prepare_replay(replay: Option<&InvocationReplayMode>) -> FsResult<()> {
+    let Some(InvocationReplayMode::FsTimeMachine(TimeMachineMode::Replay(config))) = replay else {
+        return Ok(());
+    };
+    freeze_jinja_clock(&config.artifact_path).map_err(|e| {
+        fs_err!(
+            ErrorCode::Generic,
+            "Failed to load time machine recording from '{}': {}",
+            config.artifact_path.display(),
+            e
+        )
+    })
+}
+
+fn freeze_jinja_clock(recording_dir: &Path) -> Result<(), ReplayError> {
+    let header = event_replay::read_recording_header(recording_dir)?;
+    let recorded_at = header.recorded_at_utc().map_err(|e| {
+        ReplayError::InvalidFormat(format!(
+            "header.json recorded_at '{}' is not RFC 3339: {}",
+            header.recorded_at, e
+        ))
+    })?;
+    minijinja_contrib::modules::py_datetime::freeze_now(Some(recorded_at));
+    Ok(())
+}
+
 /// Handle for the global replay session.
 pub struct ReplayHandle {
     _private: (),
@@ -263,13 +303,17 @@ pub struct RecordingHandle {
 impl RecordingHandle {
     /// Shutdown the recording session and wait for all events to be written.
     ///
-    /// After shutdown, the global recorder is still accessible but events
+    /// After shutdown, the global recording session is cleared and events
     /// will be silently dropped.
     pub async fn shutdown(self) -> Result<RecordingResult, RecordingError> {
-        // Extract needed data synchronously (don't hold MutexGuard across await)
+        // Extract needed data synchronously (don't hold MutexGuard across await).
+        // Must `take()` (not `as_ref()`): the writer's mpsc channel only closes
+        // once the sole `Arc<EventRecorder>` is dropped, so leaving it in
+        // `GLOBAL_SESSION` means the writer's `receiver.recv()` never sees
+        // `None` and the `handle.await` below never resolves.
         let handle = {
-            let guard = GLOBAL_SESSION.lock();
-            let session = guard.as_ref().ok_or(RecordingError::NotInitialized)?;
+            let mut guard = GLOBAL_SESSION.lock();
+            let session = guard.take().ok_or(RecordingError::NotInitialized)?;
             session.recorder.close();
             session
                 .writer_handle

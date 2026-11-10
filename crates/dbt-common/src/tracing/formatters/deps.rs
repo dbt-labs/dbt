@@ -1,48 +1,33 @@
-use std::sync::LazyLock;
+use std::fmt;
 
 use dbt_telemetry::{DepsAddPackage, DepsAllPackagesInstalled, DepsPackageInstalled, PackageType};
 use dbt_tracing::StatusCode;
 
 use super::{
-    color::{GREEN, RED, maybe_apply_color},
-    layout::right_align_static_action,
+    color::{GREEN, MaybeColored, RED},
+    layout::RightAligned,
 };
 
-pub static INSTALLING_ACTION: LazyLock<String> = LazyLock::new(|| {
-    // Use shared function for consistent column width even if this is a static string
-    right_align_static_action("Installing")
-});
+pub const INSTALLING_ACTION: RightAligned<&str> = RightAligned("Installing");
+pub const INSTALLED_ACTION: RightAligned<&str> = RightAligned("Installed");
+pub const ADDING_ACTION: RightAligned<&str> = RightAligned("Adding");
+pub const ADDED_ACTION: RightAligned<&str> = RightAligned("Added");
 
-pub static INSTALLED_ACTION: LazyLock<String> = LazyLock::new(|| {
-    // Use shared function for consistent column width even if this is a static string
-    right_align_static_action("Installed")
-});
-
-pub static ADDING_ACTION: LazyLock<String> = LazyLock::new(|| {
-    // Use shared function for consistent column width even if this is a static string
-    right_align_static_action("Adding")
-});
-
-pub static ADDED_ACTION: LazyLock<String> = LazyLock::new(|| {
-    // Use shared function for consistent column width even if this is a static string
-    right_align_static_action("Added")
-});
-
-/// Formats a package specification as "name@version" or just "name" if no version.
+/// Displays a package specification as "name@version" or just "name" if no version.
 ///
 /// This is used for consistent package spec formatting across different event types
 /// (DepsPackageInstalled, DepsAddPackage, etc.)
-///
-/// # Arguments
-/// * `name` - The package name
-/// * `version` - Optional package version
-///
-/// # Returns
-/// A formatted string: "name@version" if version is present, otherwise just "name"
-pub fn format_package_spec(name: &str, version: Option<&str>) -> String {
-    match version {
-        Some(v) => format!("{}@{}", name, v),
-        None => name.to_string(),
+pub struct PackageSpec<'a> {
+    pub name: &'a str,
+    pub version: Option<&'a str>,
+}
+
+impl fmt::Display for PackageSpec<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.version {
+            Some(v) => write!(f, "{}@{}", self.name, v),
+            None => f.write_str(self.name),
+        }
     }
 }
 
@@ -63,146 +48,195 @@ pub fn get_package_display_name(pkg: &DepsPackageInstalled) -> Option<&str> {
     }
 }
 
-fn format_version_suffix(package_type: PackageType, package_version: Option<&str>) -> String {
-    match package_type {
-        PackageType::Hub => {
-            // For hub packages: "{name}: {version}"
-            format!(
-                ": {}",
-                // version must be known at span end for hub packages
-                package_version.unwrap_or("latest")
-            )
-        }
-        // For git, local, private, tarball: "{name} from {version-hash}" or nothing if version unknown
-        PackageType::Git | PackageType::Local | PackageType::Private | PackageType::Tarball => {
-            if let Some(version) = package_version {
-                format!(" from {}", version)
-            } else {
-                String::from("")
+/// Version shown after a package name.
+struct VersionSuffix<'a> {
+    package_type: PackageType,
+    package_version: Option<&'a str>,
+}
+
+impl fmt::Display for VersionSuffix<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.package_type {
+            PackageType::Hub => {
+                // For hub packages: "{name}: {version}"
+                write!(
+                    f,
+                    ": {}",
+                    // version must be known at span end for hub packages
+                    self.package_version.unwrap_or("latest")
+                )
             }
+            // For git, local, private, tarball: "{name} from {version-hash}" or nothing if version unknown
+            PackageType::Git | PackageType::Local | PackageType::Private | PackageType::Tarball => {
+                if let Some(version) = self.package_version {
+                    write!(f, " from {}", version)
+                } else {
+                    Ok(())
+                }
+            }
+            PackageType::Unspecified => Ok(()),
         }
-        PackageType::Unspecified => String::from(""),
     }
 }
 
-/// Formats a package installation phase message for span start (Installing).
-///
-/// # Arguments
-/// * `event` - The DepsAllPackagesInstalled event
-/// * `colorize` - Whether to apply green color to the "Installing" prefix
+/// `Installed`/`Added` in green, or `Failed` in red for an error status.
+fn outcome_prefix(
+    success: RightAligned<&'static str>,
+    status: StatusCode,
+    colorize: bool,
+) -> MaybeColored<'static, OutcomePrefix> {
+    match status {
+        StatusCode::Unset | StatusCode::Ok => {
+            MaybeColored::new(&GREEN, OutcomePrefix::Succeeded(success), colorize)
+        }
+        StatusCode::Error => MaybeColored::new(&RED, OutcomePrefix::Failed, colorize),
+    }
+}
+
+/// Action shown for a finished package operation.
+#[derive(Clone, Copy)]
+enum OutcomePrefix {
+    Succeeded(RightAligned<&'static str>),
+    /// Unlike the success action, not aligned to the action column
+    Failed,
+}
+
+impl fmt::Display for OutcomePrefix {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Succeeded(action) => write!(f, "{action}"),
+            Self::Failed => f.write_str("Failed"),
+        }
+    }
+}
+
+/// Displays the start of the package installation phase (Installing).
 ///
 /// NOTE: as of today the package count is not included in the message,
 /// because the true count is not resolved when span is started,
 /// but it can be added in the future if dpes resolution flow is adjusted.
 ///
 /// The total count is presented in the span end message.
-pub fn format_package_install_start(_event: &DepsAllPackagesInstalled, colorize: bool) -> String {
-    let prefix = maybe_apply_color(&GREEN, INSTALLING_ACTION.as_str(), colorize);
-
-    format!("{} {}", prefix, "packages")
+pub struct PackageInstallStart<'a> {
+    pub event: &'a DepsAllPackagesInstalled,
+    pub colorize: bool,
 }
 
-/// Formats a package installation phase message for span start (Installing).
-///
-/// # Arguments
-/// * `event` - The DepsAllPackagesInstalled event
-/// * `colorize` - Whether to apply green color to the "Installing" prefix
-pub fn format_package_install_end(event: &DepsAllPackagesInstalled, colorize: bool) -> String {
-    let prefix = maybe_apply_color(&GREEN, INSTALLED_ACTION.as_str(), colorize);
-
-    format!(
-        "{} {} {}",
-        prefix,
-        event.package_count,
-        if event.package_count > 1 {
-            "packages"
-        } else {
-            "package"
-        }
-    )
+impl fmt::Display for PackageInstallStart<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} packages",
+            MaybeColored::new(&GREEN, INSTALLING_ACTION, self.colorize)
+        )
+    }
 }
 
-/// Formats a package installation message for span start (Installing).
+/// Displays the end of the package installation phase (Installed) with the package count.
+pub struct PackageInstallEnd<'a> {
+    pub event: &'a DepsAllPackagesInstalled,
+    pub colorize: bool,
+}
+
+impl fmt::Display for PackageInstallEnd<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let count = self.event.package_count;
+        write!(
+            f,
+            "{} {} {}",
+            MaybeColored::new(&GREEN, INSTALLED_ACTION, self.colorize),
+            count,
+            if count > 1 { "packages" } else { "package" }
+        )
+    }
+}
+
+/// Displays a package installation start (Installing).
 ///
-/// # Arguments
-/// * `pkg` - The DepsPackageInstalled event containing package details
-/// * `colorize` - Whether to apply green color to the "Installing" prefix
-///
-/// # Returns
-/// A formatted message string in the form: "Installing <details>"
-/// where <details> varies by package type:
+/// Writes the pattern: "Installing <details>" where <details> varies by package type:
 /// - Hub packages: "name"
 /// - Other packages: "name" or "url/path" if name is unknown
-pub fn format_package_installed_start(pkg: &DepsPackageInstalled, colorize: bool) -> String {
-    let message_detail = get_package_display_name(pkg).unwrap_or("unknown");
-
-    let prefix = maybe_apply_color(&GREEN, INSTALLING_ACTION.as_str(), colorize);
-    format!("{} {}", prefix, message_detail)
+pub struct PackageInstalledStart<'a> {
+    pub pkg: &'a DepsPackageInstalled,
+    pub colorize: bool,
 }
 
-/// Formats a package installation message for span end (Installed).
+impl fmt::Display for PackageInstalledStart<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} {}",
+            MaybeColored::new(&GREEN, INSTALLING_ACTION, self.colorize),
+            get_package_display_name(self.pkg).unwrap_or("unknown")
+        )
+    }
+}
+
+/// Displays a package installation end (Installed).
 ///
-/// # Arguments
-/// * `pkg` - The DepsPackageInstalled event containing package details
-/// * 'status' - The installation status of the package
-/// * `colorize` - Whether to apply green color to the "Installed" prefix
-///
-/// # Returns
-/// A formatted message string in the form: "Installed <details>"
-/// where <details> varies by package type:
+/// Writes the pattern: "Installed <details>" where <details> varies by package type:
 /// - Hub packages: "name: version"
 /// - Other packages: "name"
-pub fn format_package_installed_end(
-    pkg: &DepsPackageInstalled,
-    status: StatusCode,
-    colorize: bool,
-) -> String {
-    let pkg_display_name = get_package_display_name(pkg).unwrap_or("unknown");
-    let version_suffix = format_version_suffix(pkg.package_type(), pkg.package_version.as_deref());
-
-    let prefix = match status {
-        StatusCode::Unset | StatusCode::Ok => {
-            maybe_apply_color(&GREEN, INSTALLED_ACTION.as_str(), colorize)
-        }
-        StatusCode::Error => maybe_apply_color(&RED, "Failed", colorize),
-    };
-
-    format!("{} {}{}", prefix, pkg_display_name, version_suffix)
+pub struct PackageInstalledEnd<'a> {
+    pub pkg: &'a DepsPackageInstalled,
+    pub status: StatusCode,
+    pub colorize: bool,
 }
 
-/// Formats a package add message for span start (Adding).
-///
-/// # Arguments
-/// * `pkg` - The DepsAddPackage event containing package details
-/// * `colorize` - Whether to apply green color to the "Adding" prefix
-///
-/// # Returns
-/// A formatted message string in the form: "Adding <details>"
-/// where <details> is the package name with optional version
-pub fn format_package_add_start(pkg: &DepsAddPackage, colorize: bool) -> String {
-    let prefix = maybe_apply_color(&GREEN, ADDING_ACTION.as_str(), colorize);
-    format!("{} {}", prefix, pkg.package_name)
+impl fmt::Display for PackageInstalledEnd<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} {}{}",
+            outcome_prefix(INSTALLED_ACTION, self.status, self.colorize),
+            get_package_display_name(self.pkg).unwrap_or("unknown"),
+            VersionSuffix {
+                package_type: self.pkg.package_type(),
+                package_version: self.pkg.package_version.as_deref(),
+            }
+        )
+    }
 }
 
-/// Formats a package add message for span end (Added).
+/// Displays a package add start (Adding).
 ///
-/// # Arguments
-/// * `pkg` - The DepsAddPackage event containing package details
-/// * `status` - The add status of the package
-/// * `colorize` - Whether to apply green color to the "Added" prefix
+/// Writes the pattern: "Adding <package name>"
+pub struct PackageAddStart<'a> {
+    pub pkg: &'a DepsAddPackage,
+    pub colorize: bool,
+}
+
+impl fmt::Display for PackageAddStart<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} {}",
+            MaybeColored::new(&GREEN, ADDING_ACTION, self.colorize),
+            self.pkg.package_name
+        )
+    }
+}
+
+/// Displays a package add end (Added).
 ///
-/// # Returns
-/// A formatted message string in the form: "Added <details>"
-/// where <details> is the package name with optional version
-pub fn format_package_add_end(pkg: &DepsAddPackage, status: StatusCode, colorize: bool) -> String {
-    let version_suffix = format_version_suffix(pkg.package_type(), pkg.package_version.as_deref());
+/// Writes the pattern: "Added <package name><version suffix>"
+pub struct PackageAddEnd<'a> {
+    pub pkg: &'a DepsAddPackage,
+    pub status: StatusCode,
+    pub colorize: bool,
+}
 
-    let prefix = match status {
-        StatusCode::Unset | StatusCode::Ok => {
-            maybe_apply_color(&GREEN, ADDED_ACTION.as_str(), colorize)
-        }
-        StatusCode::Error => maybe_apply_color(&RED, "Failed", colorize),
-    };
-
-    format!("{} {}{}", prefix, pkg.package_name, version_suffix)
+impl fmt::Display for PackageAddEnd<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} {}{}",
+            outcome_prefix(ADDED_ACTION, self.status, self.colorize),
+            self.pkg.package_name,
+            VersionSuffix {
+                package_type: self.pkg.package_type(),
+                package_version: self.pkg.package_version.as_deref(),
+            }
+        )
+    }
 }

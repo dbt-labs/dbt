@@ -3,39 +3,6 @@ use itertools::Itertools;
 const HASH_SIZE: usize = 16;
 const VERSION_SIZE: usize = 17;
 
-pub fn canonicalize_relation_name(relation: &str) -> String {
-    let mut segments = Vec::new();
-    let mut current = String::new();
-    let mut quote: Option<char> = None;
-    let mut quoted = false;
-    for c in relation.chars() {
-        match quote {
-            Some(q) if c == q => quote = None,
-            Some(_) => current.push(c),
-            None if c == '"' || c == '`' => {
-                quote = Some(c);
-                quoted = true;
-            }
-            None if c == '.' => {
-                let segment = std::mem::take(&mut current);
-                segments.push(if quoted {
-                    segment
-                } else {
-                    segment.to_uppercase()
-                });
-                quoted = false;
-            }
-            None => current.push(c),
-        }
-    }
-    segments.push(if quoted {
-        current
-    } else {
-        current.to_uppercase()
-    });
-    segments.join(".")
-}
-
 pub fn strip_version_hash(
     table_name: &str,
     version: &Option<String>,
@@ -83,44 +50,5 @@ pub fn get_version_hash(table_name: &str) -> (Option<String>, Option<String>) {
         }
     } else {
         (None, None)
-    }
-}
-
-#[cfg(test)]
-mod canonicalize_relation_name_tests {
-    use super::canonicalize_relation_name;
-
-    #[test]
-    fn unquoted_segments_fold_to_uppercase() {
-        assert_eq!(canonicalize_relation_name("foo.bar"), "FOO.BAR");
-    }
-
-    #[test]
-    fn quoted_segments_preserve_case() {
-        assert_eq!(canonicalize_relation_name(r#""Foo"."Bar""#), "Foo.Bar");
-    }
-
-    #[test]
-    fn mixed_quoted_and_unquoted_segments() {
-        assert_eq!(
-            canonicalize_relation_name("`MyProject`.dataset.`MyTable`"),
-            "MyProject.DATASET.MyTable"
-        );
-    }
-
-    #[test]
-    fn backtick_quoted_full_path_with_internal_dots_is_not_re_split() {
-        assert_eq!(
-            canonicalize_relation_name("`project.dataset.table`"),
-            "project.dataset.table"
-        );
-    }
-
-    #[test]
-    fn case_distinct_quoted_relations_no_longer_collide() {
-        assert_ne!(
-            canonicalize_relation_name(r#""Users""#),
-            canonicalize_relation_name(r#""users""#)
-        );
     }
 }

@@ -1,0 +1,143 @@
+# Telemetry / Tracing
+
+Paths in this file are relative to the directory containing `AGENTS.md`.
+
+## Start Here
+
+Read this file first for tracing or telemetry work. Then read the README or
+AGENTS file for the layer you are changing.
+
+## Rules
+
+Never call `tracing` event macros or print macros directly, including in
+debug-only or internal code. Use the emit helpers: they capture the call-site
+location with `#[track_caller]`, pass telemetry attributes through thread-local
+storage, and export to OTEL. Prefer a structured event (`LogMessage`,
+`ProgressMessage`, ...) when one fits.
+
+| Instead of | Use (`dbt_common::tracing::dbt_emit`) |
+| --- | --- |
+| `tracing::error!` | `emit_error_log_message` |
+| `tracing::warn!` | `emit_warn_log_message` |
+| `tracing::info!` | `emit_info_log_message` |
+| `tracing::debug!` | `emit_debug_log_message` |
+| `tracing::trace!` | `emit_trace_log_message` |
+| `tracing::event!` | `dbt_tracing::emit::emit_{error,warn,info,debug,trace}_event` |
+| `eprintln!` / `eprint!` | `print_err` (CLI only, no trace) |
+| `println!` / `print!` | `println` / `print` (CLI only, no trace) |
+| `tracing::span!` and level variants | `dbt_tracing::emit::create_info_span` / `create_debug_span` |
+
+`#[tracing::instrument]`, `tracing::Instrument` and `Span::current()` are fine.
+
+Exceptions to the print ban: `build.rs` (cargo directives), tests, and
+`xtask`/dev tooling.
+Crates that cannot depend on `dbt-common` use `dbt_tracing::emit` directly.
+
+## Decision Tree
+
+- Generic tracing infrastructure: read
+  `crates/dbt-tracing/AGENTS.md` and
+  `crates/dbt-tracing/README.md`.
+- dbt CLI output, log formatting, middleware behavior, layer assembly, or dbt
+  fallback attributes: read
+  `crates/dbt-common/src/tracing/README.md`.
+- Structured event schemas, the event registry, or Arrow attributes:
+  read `crates/dbt-telemetry/README.md`.
+- Anonymous product-usage telemetry through Vortex: work in
+  `crates/vortex-client/`, `crates/vortex-events/`, or
+  `crates/proto-rust/` as appropriate. Do not treat Vortex work as
+  `dbt-tracing` work.
+
+## Architecture Boundary
+
+- `dbt-tracing` is the generic structured tracing library. It owns the data
+  layer, record envelopes, emit APIs, middleware/consumer traits, filters,
+  generic output layers, Arrow serialization, and OTLP serialization.
+- `dbt-telemetry` owns event schemas, helper impls, Arrow attribute shapes, and
+  the event registry.
+- `dbt-common::tracing` owns dbt runtime integration: `FsTraceConfig`,
+  `init_tracing`, dbt fallback callbacks, user-facing output, dbt-only layers,
+  middlewares, and formatters.
+- Vortex anonymous telemetry is separate from this structured tracing/export
+  stack.
+
+## Common Workflows
+
+### Add An Event
+
+1. Edit a proto under
+   `crates/dbt-telemetry/include/dbtlabs/proto/public/v1/events/fusion/`.
+2. Regenerate the Rust bindings. Generated code is checked in; regeneration
+   runs through the workspace proto codegen task.
+3. Add or update schema implementations in
+   `crates/dbt-telemetry/src/schemas/`.
+4. Add optional helpers in `crates/dbt-telemetry/src/impls/` only when
+   useful to callsites.
+5. Register first-class events in
+   `crates/dbt-telemetry/src/attributes/registry.rs`.
+6. Update `crates/dbt-telemetry/src/serialize/arrow.rs` only for
+   intentionally well-known Parquet columns.
+7. Update registry coverage and Arrow roundtrip tests.
+8. Run scoped checks/tests for `dbt-telemetry`.
+
+### Change CLI Or User-Facing Formatting
+
+Work in `crates/dbt-common/src/tracing/formatters/` and the relevant
+dbt-only layer under `crates/dbt-common/src/tracing/layers/`. Middleware
+behavior lives under `crates/dbt-common/src/tracing/middlewares/`.
+
+Layer and middleware tests live under
+`crates/dbt-common/src/tracing/tests/`.
+
+Formatters are `Display` types written straight into the sink; do not add
+functions that return a formatted `String`. Exact terminal and `dbt.log` output
+is pinned by inline cases in `crates/dbt-common/src/tracing/tests/output/`;
+update a case's expected text for any intended output change.
+
+### Add Or Change Generic Output Behavior
+
+Work in `crates/dbt-tracing/src/layers/` for JSONL, Parquet, OTLP, and
+pretty writer behavior. Work in `crates/dbt-tracing/src/serialize/` for
+Arrow, JSON envelope, or OTLP serialization.
+
+Keep generic layers independent of dbt event names, dbt CLI behavior, and
+Vortex.
+
+### Debug Local Traces With Jaeger
+
+```bash
+docker run -d --rm --name jaeger -p 4318:4318 -p 16686:16686 \
+  cr.jaegertracing.io/jaegertracing/jaeger:2.10.0
+OTEL_EXPORTER_OTLP_ENDPOINT="http://localhost:4318" \
+  cargo run -p dbt-sa-cli -- --export-to-otlp <your-dbt-commands>
+docker stop jaeger
+```
+
+Open Jaeger at `http://localhost:16686`.
+
+### Handle Async Or Thread Span Propagation
+
+When work crosses async, task, or thread boundaries, preserve the current span
+with `tracing::Instrument`, `Span::current().enter()`, or helpers in
+`crates/dbt-tracing/src/async_tracing.rs`.
+
+## Useful Paths
+
+- Protos:
+  `crates/dbt-telemetry/include/dbtlabs/proto/public/v1/events/fusion/`
+- Generic emit helpers: `crates/dbt-tracing/src/emit.rs`
+- dbt emit conveniences: `crates/dbt-common/src/tracing/dbt_emit.rs`
+- Generic data layer: `crates/dbt-tracing/src/layers/data_layer.rs`
+- Generic middleware/consumer traits: `crates/dbt-tracing/src/layer.rs`
+- dbt layer assembly: `crates/dbt-common/src/tracing/config.rs`
+- dbt integration tests: `crates/dbt-common/src/tracing/tests/`
+
+## Telemetry Test Sweep
+
+When a change may affect tracing infrastructure end to end, run the scoped
+telemetry test sweep:
+
+```bash
+cargo nextest run \
+  -E 'package(dbt-tracing) | package(dbt-common) | package(dbt-telemetry)'
+```

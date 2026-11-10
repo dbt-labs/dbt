@@ -29,15 +29,18 @@
 
   {%- set columns = adapter.get_columns_in_relation(temp_relation) -%}
   {%- set model_columns = model.get('columns', {}) -%}
-  {%- set columns_and_constraints = adapter.parse_columns_and_constraints(columns, model_columns, []) -%}
+  {%- set contract_config = config.get('contract') -%}
+  {%- set contract_enforced = contract_config and contract_config.enforced -%}
+  {%- set columns_and_constraints = adapter.parse_columns_and_constraints(columns, model_columns, [], contract_enforced, model.name) -%}
 
   {#-- We don't enrich the relation with model constraints because they are not supported for streaming tables --#}
   CREATE STREAMING TABLE {{ relation.render() }}
     {{ get_column_and_constraints_sql(relation, columns_and_constraints[0]) }}
+    {{ get_create_row_filter_clause(relation) }}
     {{ get_create_sql_partition_by(partition_by) }}
     {{ liquid_clustered_cols() }}
     {{ get_create_sql_comment(comment) }}
     {{ get_create_sql_tblproperties(tblproperties) }}
-    {{ get_create_sql_refresh_schedule(refresh.cron, refresh.time_zone_value) }}
+    {{ get_create_sql_refresh_schedule(refresh) }}
     AS {{ sql }}
 {% endmacro %}

@@ -1,3 +1,6 @@
+use dbt_adapter_core::AdapterType;
+
+use crate::schemas::serde::AdapterTypeOrArray;
 use dbt_common::path::DbtPath;
 use indexmap::IndexMap;
 use std::{collections::BTreeMap, path::PathBuf};
@@ -29,10 +32,10 @@ use crate::schemas::serde::{bool_or_string_bool, string_or_number_to_string};
 type YmlValue = dbt_yaml::Value;
 
 use crate::schemas::{
-    AbsorbedOverload, CommonAttributes, DbtAnalysis, DbtExposure, DbtFunction, DbtModel, DbtSeed,
-    DbtSnapshot, DbtSource, DbtTest, DbtUnitTest, NodeBaseAttributes,
+    AbsorbedOverload, CommonAttributes, DbtAnalysis, DbtCheck, DbtExposure, DbtFunction, DbtModel,
+    DbtSeed, DbtSnapshot, DbtSource, DbtTest, DbtUnitTest, NodeBaseAttributes,
     common::{
-        Access, ComputePlatform, DbtChecksum, DbtContract, DbtMaterialization, DbtQuoting, Expect,
+        Access, DbtChecksum, DbtContract, DbtMaterialization, DbtQuoting, Expect,
         FreshnessDefinition, Given, IncludeExclude, NodeDependsOn, PersistDocsConfig, SyncConfig,
     },
     dbt_column::{DbtColumnRef, deserialize_dbt_columns, serialize_dbt_columns},
@@ -50,9 +53,9 @@ use crate::schemas::{
     },
     nodes::{ExposureType, TestMetadata},
     project::{
-        AnalysesConfig, DataTestConfig, ExposureConfig, FunctionConfig, MetricConfig, ModelConfig,
-        SavedQueryConfig, SeedConfig, SemanticModelConfig, SnapshotConfig, SnapshotMetaColumnNames,
-        SourceConfig, UnitTestConfig,
+        AnalysesConfig, CheckConfig, DataTestConfig, ExposureConfig, FunctionConfig, MetricConfig,
+        ModelConfig, SavedQueryConfig, SeedConfig, SemanticModelConfig, SnapshotConfig,
+        SnapshotMetaColumnNames, SourceConfig, UnitTestConfig,
     },
     properties::{
         ModelConstraint, UnitTestOverrides,
@@ -137,6 +140,12 @@ pub struct ManifestMaterializableCommonAttributes {
     pub meta: IndexMap<String, YmlValue>,
 }
 
+/// The propagation target that a manifest records as `canonical_relation_adapter`. Only
+/// Databricks and BigQuery change how a node's relation is rendered, so other targets give `None`.
+pub(super) fn canonical_relation_marker(target: Option<AdapterType>) -> Option<AdapterType> {
+    target.filter(|target| matches!(target, AdapterType::Databricks | AdapterType::Bigquery))
+}
+
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -145,6 +154,10 @@ pub struct ManifestNodeBaseAttributes {
     #[serde(default)]
     pub alias: String,
     pub relation_name: Option<String>,
+    /// The propagation target that the node uses for relation rendering, recorded only when it
+    /// is Databricks or BigQuery. Manifests written before this field omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canonical_relation_adapter: Option<AdapterType>,
 
     // Paths
     pub compiled_path: Option<String>,
@@ -231,6 +244,9 @@ impl From<DbtSeed> for ManifestSeed {
             __base_attr__: ManifestNodeBaseAttributes {
                 alias: seed.__base_attr__.alias,
                 relation_name: seed.__base_attr__.relation_name,
+                canonical_relation_adapter: canonical_relation_marker(
+                    seed.__base_attr__.effective_propagation_target,
+                ),
                 columns: seed.__base_attr__.columns,
                 depends_on: seed.__base_attr__.depends_on,
                 refs: seed.__base_attr__.refs,
@@ -304,6 +320,7 @@ impl From<DbtUnitTest> for ManifestUnitTest {
             __base_attr__: ManifestNodeBaseAttributes {
                 alias: unit_test.__base_attr__.alias,
                 relation_name: unit_test.__base_attr__.relation_name,
+                canonical_relation_adapter: None,
                 columns: unit_test.__base_attr__.columns,
                 depends_on: unit_test.__base_attr__.depends_on,
                 refs: unit_test.__base_attr__.refs,
@@ -388,6 +405,7 @@ impl From<DbtTest> for ManifestDataTest {
             __base_attr__: ManifestNodeBaseAttributes {
                 alias: test.__base_attr__.alias,
                 relation_name: test.__base_attr__.relation_name,
+                canonical_relation_adapter: None,
                 columns: test.__base_attr__.columns,
                 depends_on: test.__base_attr__.depends_on,
                 refs: test.__base_attr__.refs,
@@ -446,6 +464,12 @@ pub struct ManifestSnapshotConfig {
     pub hard_deletes: Option<HardDeletes>,
     pub target_database: Option<String>,
     pub target_schema: Option<String>,
+    // Internal-only placement hint; never written to the manifest.
+    #[serde(skip_serializing, default)]
+    pub adapter: Option<AdapterType>,
+    // Internal-only placement hint; never written to the manifest.
+    #[serde(skip_serializing, default)]
+    pub propagate: Option<AdapterTypeOrArray>,
     #[serde(default, deserialize_with = "bool_or_string_bool")]
     pub enabled: Option<bool>,
     #[serde(default, deserialize_with = "bool_or_string_bool")]
@@ -492,6 +516,8 @@ pub struct ManifestSnapshotConfig {
     pub sync: Option<SyncConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub state: Option<ModelState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub table_format: Option<String>,
     pub __warehouse_specific_config__: WarehouseSpecificNodeConfig,
 }
 
@@ -512,6 +538,8 @@ impl From<SnapshotConfig> for ManifestSnapshotConfig {
             hard_deletes: config.hard_deletes,
             target_database: config.target_database,
             target_schema: config.target_schema,
+            adapter: config.adapter,
+            propagate: config.propagate,
             enabled: config.enabled,
             full_refresh: config.full_refresh,
             tags: config.tags.into_inner(),
@@ -535,6 +563,7 @@ impl From<SnapshotConfig> for ManifestSnapshotConfig {
             docs: config.docs,
             sync: config.sync,
             state: config.state,
+            table_format: config.table_format,
             __warehouse_specific_config__: config.__warehouse_specific_config__,
         }
     }
@@ -557,6 +586,8 @@ impl From<ManifestSnapshotConfig> for SnapshotConfig {
             hard_deletes: config.hard_deletes,
             target_database: config.target_database,
             target_schema: config.target_schema,
+            adapter: config.adapter,
+            propagate: config.propagate,
             enabled: config.enabled,
             full_refresh: config.full_refresh,
             tags: crate::schemas::project::configs::config_merge::Tags(config.tags),
@@ -582,6 +613,7 @@ impl From<ManifestSnapshotConfig> for SnapshotConfig {
             docs: config.docs,
             sync: config.sync,
             state: config.state,
+            table_format: config.table_format,
             __warehouse_specific_config__: config.__warehouse_specific_config__,
         }
     }
@@ -622,6 +654,7 @@ impl From<DbtSnapshot> for ManifestSnapshot {
             __base_attr__: ManifestNodeBaseAttributes {
                 alias: snapshot.__base_attr__.alias,
                 relation_name: snapshot.__base_attr__.relation_name,
+                canonical_relation_adapter: None,
                 columns: snapshot.__base_attr__.columns,
                 depends_on: snapshot.__base_attr__.depends_on,
                 refs: snapshot.__base_attr__.refs,
@@ -846,12 +879,18 @@ pub struct ManifestModelConfig {
         serialize_with = "crate::schemas::nodes::serialize_none_as_empty_list"
     )]
     pub tags: Option<StringOrArrayOfStrings>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub classifiers: Option<StringOrArrayOfStrings>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub catalog_name: Option<String>,
     // Internal-only placement hint; never written to the manifest.
     #[serde(skip_serializing, default)]
-    pub alt_compute: Option<ComputePlatform>,
+    #[schemars(with = "Option<String>")]
+    pub adapter: Option<AdapterType>,
+    // Internal-only placement hint; never written to the manifest.
+    #[serde(skip_serializing, default)]
+    #[schemars(with = "Option<StringOrArrayOfStrings>")]
+    pub propagate: Option<AdapterTypeOrArray>,
     #[serde(
         default,
         deserialize_with = "crate::schemas::serde::default_type",
@@ -861,7 +900,8 @@ pub struct ManifestModelConfig {
     pub group: Option<String>,
     pub materialized: Option<DbtMaterialization>,
     pub incremental_strategy: Option<DbtIncrementalStrategy>,
-    pub incremental_predicates: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub incremental_predicates: Option<StringOrArrayOfStrings>,
     pub batch_size: Option<DbtBatchSize>,
     pub lookback: Option<i32>,
     pub begin: Option<String>,
@@ -943,12 +983,17 @@ pub struct ManifestModelConfig {
     pub static_analysis: Option<Spanned<StaticAnalysisKind>>,
     pub freshness: Option<ModelFreshness>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub loaded_at_field: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub loaded_at_query: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub state: Option<ModelState>,
     #[serde(
         default,
         serialize_with = "crate::schemas::serde::serialize_none_as_default"
     )]
     pub latest_version_pointer: Option<LatestVersionPointer>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub sql_header: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub location: Option<String>,
@@ -972,6 +1017,10 @@ pub struct ManifestModelConfig {
     pub additional_libs: Option<Vec<YmlValue>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user_folder_for_python: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub environment_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub environment_dependencies: Option<Vec<String>>,
     /// Schema synchronization configuration
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sync: Option<SyncConfig>,
@@ -993,6 +1042,14 @@ pub struct ManifestSeedConfig {
     pub schema: Option<String>,
     pub alias: Option<String>,
     pub catalog_name: Option<String>,
+    // Internal-only placement hint; never written to the manifest.
+    #[serde(skip_serializing, default)]
+    #[schemars(with = "Option<String>")]
+    pub adapter: Option<AdapterType>,
+    // Internal-only placement hint; never written to the manifest.
+    #[serde(skip_serializing, default)]
+    #[schemars(with = "Option<StringOrArrayOfStrings>")]
+    pub propagate: Option<AdapterTypeOrArray>,
     #[serde(
         default,
         serialize_with = "crate::schemas::serde::serialize_option_docs_with_nulls"
@@ -1005,6 +1062,9 @@ pub struct ManifestSeedConfig {
     #[serde(default, deserialize_with = "bool_or_string_bool")]
     pub quote_columns: Option<bool>,
     pub delimiter: Option<Spanned<String>>,
+    #[serde(default, deserialize_with = "bool_or_string_bool")]
+    pub all_varchar: Option<bool>,
+    pub fast: Option<bool>,
     pub event_time: Option<String>,
     pub full_refresh: Option<bool>,
     pub group: Option<String>,
@@ -1048,10 +1108,14 @@ impl From<SeedConfig> for ManifestSeedConfig {
             database: config.database,
             schema: config.schema,
             catalog_name: config.catalog_name,
+            adapter: config.adapter,
+            propagate: config.propagate,
             docs: config.docs,
             grants: config.grants,
             quote_columns: config.quote_columns,
             delimiter: config.delimiter,
+            all_varchar: config.all_varchar,
+            fast: config.fast,
             event_time: config.event_time,
             full_refresh: config.full_refresh,
             group: config.group,
@@ -1083,10 +1147,14 @@ impl From<ManifestSeedConfig> for SeedConfig {
             database: config.database,
             schema: config.schema,
             catalog_name: config.catalog_name,
+            adapter: config.adapter,
+            propagate: config.propagate,
             docs: config.docs,
             grants: config.grants,
             quote_columns: config.quote_columns,
             delimiter: config.delimiter,
+            all_varchar: config.all_varchar,
+            fast: config.fast,
             event_time: config.event_time,
             full_refresh: config.full_refresh,
             group: config.group,
@@ -1122,7 +1190,8 @@ impl From<ModelConfig> for ManifestModelConfig {
             tags: config.tags.into_inner(),
             classifiers: config.classifiers.into_inner(),
             catalog_name: config.catalog_name,
-            alt_compute: config.alt_compute,
+            adapter: config.adapter,
+            propagate: config.propagate,
             meta: config.meta,
             group: config.group,
             materialized: config.materialized,
@@ -1164,6 +1233,8 @@ impl From<ModelConfig> for ManifestModelConfig {
             table_format: config.table_format,
             static_analysis: config.static_analysis,
             freshness: config.freshness,
+            loaded_at_field: config.loaded_at_field,
+            loaded_at_query: (*config.loaded_at_query).clone(),
             state: config.state,
             latest_version_pointer: config.latest_version_pointer,
             sql_header: config.sql_header,
@@ -1178,6 +1249,8 @@ impl From<ModelConfig> for ManifestModelConfig {
             index_url: config.index_url.clone(),
             additional_libs: config.additional_libs.clone(),
             user_folder_for_python: config.user_folder_for_python,
+            environment_key: config.environment_key.clone(),
+            environment_dependencies: config.environment_dependencies.clone(),
             sync: config.sync,
             __warehouse_specific_config__: config.__warehouse_specific_config__,
         }
@@ -1196,7 +1269,8 @@ impl From<ManifestModelConfig> for ModelConfig {
                 config.classifiers,
             ),
             catalog_name: config.catalog_name,
-            alt_compute: config.alt_compute,
+            adapter: config.adapter,
+            propagate: config.propagate,
             compute: config.compute,
             meta: config.meta,
             group: config.group,
@@ -1243,6 +1317,8 @@ impl From<ManifestModelConfig> for ModelConfig {
             table_format: config.table_format,
             static_analysis: config.static_analysis,
             freshness: config.freshness,
+            loaded_at_field: config.loaded_at_field,
+            loaded_at_query: Verbatim::from(config.loaded_at_query),
             state: config.state,
             latest_version_pointer: config.latest_version_pointer,
             sql_header: config.sql_header,
@@ -1257,6 +1333,8 @@ impl From<ManifestModelConfig> for ModelConfig {
             index_url: config.index_url.clone(),
             additional_libs: config.additional_libs.clone(),
             user_folder_for_python: config.user_folder_for_python,
+            environment_key: config.environment_key.clone(),
+            environment_dependencies: config.environment_dependencies.clone(),
             sync: config.sync,
             __warehouse_specific_config__: config.__warehouse_specific_config__,
             // config_keys_used and config_keys_defaults are not in ManifestModelConfig
@@ -1291,6 +1369,9 @@ impl From<DbtModel> for ManifestModel {
             __base_attr__: ManifestNodeBaseAttributes {
                 alias: model.__base_attr__.alias,
                 relation_name: model.__base_attr__.relation_name,
+                canonical_relation_adapter: canonical_relation_marker(
+                    model.__base_attr__.effective_propagation_target,
+                ),
                 columns: model.__base_attr__.columns,
                 depends_on: model.__base_attr__.depends_on,
                 refs: model.__base_attr__.refs,
@@ -1376,6 +1457,7 @@ impl From<DbtAnalysis> for ManifestAnalysis {
             __base_attr__: ManifestNodeBaseAttributes {
                 alias: analysis.__base_attr__.alias,
                 relation_name: analysis.__base_attr__.relation_name,
+                canonical_relation_adapter: None,
                 columns: analysis.__base_attr__.columns,
                 depends_on: analysis.__base_attr__.depends_on,
                 refs: analysis.__base_attr__.refs,
@@ -1414,6 +1496,75 @@ impl From<DbtAnalysis> for ManifestAnalysis {
     }
 }
 
+/// A check as it appears in `manifest.json`.
+///
+/// Deliberately narrower than the other node types: a check is never materialized and has no
+/// relation, so there is no `materialized`, `quoting`, `alias` or `relation_name` to record. `phase`
+/// is the resolved phase (configured or inferred), which is what a consumer needs to know when the
+/// check runs.
+#[skip_serializing_none]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ManifestCheck {
+    pub __common_attr__: ManifestMaterializableCommonAttributes,
+
+    pub __base_attr__: ManifestNodeBaseAttributes,
+
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub config: CheckConfig,
+}
+
+impl From<DbtCheck> for ManifestCheck {
+    fn from(check: DbtCheck) -> Self {
+        Self {
+            __common_attr__: ManifestMaterializableCommonAttributes {
+                unique_id: check.__common_attr__.unique_id,
+                database: check.__base_attr__.database,
+                schema: check.__base_attr__.schema,
+                name: check.__common_attr__.name,
+                package_name: check.__common_attr__.package_name,
+                fqn: check.__common_attr__.fqn,
+                path: check.__common_attr__.path,
+                original_file_path: check.__common_attr__.original_file_path,
+                patch_path: check.__common_attr__.patch_path,
+                description: check.__common_attr__.description,
+                tags: check.__common_attr__.tags,
+                classifiers: check.__common_attr__.classifiers,
+                meta: check.__common_attr__.meta,
+            },
+            __base_attr__: ManifestNodeBaseAttributes {
+                alias: check.__base_attr__.alias,
+                relation_name: check.__base_attr__.relation_name,
+                canonical_relation_adapter: None,
+                columns: check.__base_attr__.columns,
+                depends_on: check.__base_attr__.depends_on,
+                refs: check.__base_attr__.refs,
+                sources: check.__base_attr__.sources,
+                metrics: check.__base_attr__.metrics,
+                raw_code: check.__common_attr__.raw_code,
+                compiled: None,
+                compiled_code: None,
+                checksum: check.__common_attr__.checksum,
+                language: check.__common_attr__.language,
+                unrendered_config: Default::default(),
+                doc_blocks: Default::default(),
+                extra_ctes_injected: Default::default(),
+                extra_ctes: Default::default(),
+                created_at: Default::default(),
+                compiled_path: Default::default(),
+                build_path: Default::default(),
+                contract: Default::default(),
+                functions: check.__base_attr__.functions,
+                static_analysis_off_reason: check.__base_attr__.static_analysis_off_reason,
+            },
+            enabled: check.__base_attr__.enabled,
+            config: check.deprecated_config,
+        }
+    }
+}
+
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -1446,6 +1597,7 @@ impl From<DbtOperation> for ManifestOperation {
             __base_attr__: ManifestNodeBaseAttributes {
                 alias: operation.__base_attr__.alias,
                 relation_name: operation.__base_attr__.relation_name,
+                canonical_relation_adapter: None,
                 columns: operation.__base_attr__.columns,
                 depends_on: operation.__base_attr__.depends_on,
                 refs: operation.__base_attr__.refs,
@@ -1559,6 +1711,7 @@ impl From<DbtFunction> for ManifestFunction {
             __base_attr__: ManifestNodeBaseAttributes {
                 alias: function.__base_attr__.alias,
                 relation_name: function.__base_attr__.relation_name,
+                canonical_relation_adapter: None,
                 compiled_path: None,
                 build_path: None,
                 columns: Vec::new(),
@@ -2141,5 +2294,163 @@ impl From<DbtSavedQuery> for ManifestSavedQuery {
             config: saved_query.deprecated_config,
             __other__: saved_query.__other__,
         }
+    }
+}
+
+#[cfg(test)]
+mod manifest_model_config_null_omission_tests {
+    use super::ManifestModelConfig;
+
+    /// dbt-core macros like `default__create_indexes` call
+    /// `config.get('indexes', default=[])` with no null-guard, so an explicit JSON
+    /// `null` (instead of an omitted key) breaks under `--use-v2-parser`
+    /// (dbt-core#15913). These fields must be omitted from the manifest when unset.
+    #[test]
+    fn unset_fields_are_omitted_not_serialized_as_null() {
+        let config = ManifestModelConfig::default();
+        let json = serde_json::to_value(&config).unwrap();
+
+        for key in ["classifiers", "incremental_predicates", "sql_header"] {
+            assert!(
+                json.get(key).is_none(),
+                "expected top-level key `{key}` to be omitted when unset, got: {json}"
+            );
+        }
+
+        let warehouse_specific = json
+            .get("__warehouse_specific_config__")
+            .expect("__warehouse_specific_config__ should be present");
+        for key in ["indexes", "primary_key"] {
+            assert!(
+                warehouse_specific.get(key).is_none(),
+                "expected `{key}` to be omitted when unset, got: {warehouse_specific}"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod node_adapter_manifest_round_trip_tests {
+    use super::{
+        AdapterType, DbtModel, DbtSeed, ManifestModel, ManifestSeedConfig, ManifestSnapshotConfig,
+        NodeBaseAttributes, SeedConfig, SnapshotConfig,
+    };
+
+    #[test]
+    fn canonical_relation_marker_round_trips_for_models_and_seeds() {
+        for target in [AdapterType::Databricks, AdapterType::Bigquery] {
+            let model = DbtModel {
+                __base_attr__: NodeBaseAttributes {
+                    effective_propagation_target: Some(target),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let manifest_model: ManifestModel = model.into();
+            assert_eq!(
+                manifest_model.__base_attr__.canonical_relation_adapter,
+                Some(target)
+            );
+
+            let seed = DbtSeed {
+                __base_attr__: NodeBaseAttributes {
+                    effective_propagation_target: Some(target),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let manifest_seed: super::ManifestSeed = seed.into();
+            assert_eq!(
+                manifest_seed.__base_attr__.canonical_relation_adapter,
+                Some(target)
+            );
+        }
+
+        let snowflake = DbtModel {
+            __base_attr__: NodeBaseAttributes {
+                effective_propagation_target: Some(AdapterType::Snowflake),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(
+            ManifestModel::from(snowflake)
+                .__base_attr__
+                .canonical_relation_adapter,
+            None
+        );
+    }
+
+    #[test]
+    fn seed_config_adapter_round_trips_through_manifest_seed_config() {
+        let seed_config = SeedConfig {
+            adapter: Some(AdapterType::LakeCompute),
+            ..Default::default()
+        };
+
+        let manifest_config: ManifestSeedConfig = seed_config.into();
+        assert_eq!(manifest_config.adapter, Some(AdapterType::LakeCompute));
+
+        let round_tripped: SeedConfig = manifest_config.into();
+        assert_eq!(round_tripped.adapter, Some(AdapterType::LakeCompute));
+    }
+
+    #[test]
+    fn snapshot_config_adapter_round_trips_through_manifest_snapshot_config() {
+        let snapshot_config = SnapshotConfig {
+            adapter: Some(AdapterType::Bigquery),
+            table_format: Some("iceberg".to_string()),
+            __warehouse_specific_config__: super::WarehouseSpecificNodeConfig {
+                iceberg_version: Some(2),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let manifest_config: ManifestSnapshotConfig = snapshot_config.into();
+        assert_eq!(manifest_config.adapter, Some(AdapterType::Bigquery));
+        assert_eq!(manifest_config.table_format.as_deref(), Some("iceberg"));
+        assert_eq!(
+            manifest_config
+                .__warehouse_specific_config__
+                .iceberg_version,
+            Some(2)
+        );
+
+        let round_tripped: SnapshotConfig = manifest_config.into();
+        assert_eq!(round_tripped.adapter, Some(AdapterType::Bigquery));
+        assert_eq!(round_tripped.table_format.as_deref(), Some("iceberg"));
+        assert_eq!(
+            round_tripped.__warehouse_specific_config__.iceberg_version,
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn manifest_snapshot_config_never_serializes_adapter() {
+        let manifest_config = ManifestSnapshotConfig {
+            adapter: Some(AdapterType::Bigquery),
+            ..Default::default()
+        };
+
+        let json = serde_json::to_value(&manifest_config).unwrap();
+        assert!(
+            json.get("adapter").is_none(),
+            "adapter is an internal placement hint and must not appear in the manifest: {json}"
+        );
+    }
+
+    #[test]
+    fn manifest_seed_config_never_serializes_adapter() {
+        let manifest_config = ManifestSeedConfig {
+            adapter: Some(AdapterType::LakeCompute),
+            ..Default::default()
+        };
+
+        let json = serde_json::to_value(&manifest_config).unwrap();
+        assert!(
+            json.get("adapter").is_none(),
+            "adapter is an internal placement hint and must not appear in the manifest: {json}"
+        );
     }
 }

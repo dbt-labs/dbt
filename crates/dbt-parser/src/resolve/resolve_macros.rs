@@ -2,9 +2,11 @@ use dbt_adapter_core::AdapterType;
 use dbt_common::ErrorCode;
 use dbt_common::FsResult;
 use dbt_common::io_args::IoArgs;
-use dbt_common::path::DbtPath;
+use dbt_common::path::{DbtPath, resource_extension};
 use dbt_common::stdfs::diff_paths;
 use dbt_common::tracing::dbt_emit::{emit_warn_log_from_fs_error, emit_warn_log_message};
+use dbt_common::tracing::event_info::store_event_attributes;
+use dbt_common::tracing::span_info::record_span_status;
 use dbt_common::{err, fs_err};
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::listener::DefaultJinjaTypeCheckEventListenerFactory;
@@ -17,10 +19,11 @@ use dbt_schemas::schemas::macros::MacroConfig;
 use dbt_schemas::schemas::macros::MacroDependsOn;
 use dbt_schemas::schemas::properties::MacrosProperties;
 use dbt_schemas::state::DbtAsset;
+use dbt_telemetry::GenericOpExecuted;
 use minijinja::Value as MinijinjaValue;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
-use std::ffi::OsStr;
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -117,10 +120,7 @@ pub fn resolve_macros(
             base_path,
             package_name,
         } = dbt_asset;
-        let ext = macro_file
-            .extension()
-            .and_then(OsStr::to_str)
-            .map(str::to_ascii_lowercase);
+        let ext = resource_extension(macro_file).map(str::to_ascii_lowercase);
         if ext.as_deref() == Some("jinja") || ext.as_deref() == Some("sql") {
             let macro_file_path = DbtPath::from(base_path.join(macro_file));
             let macro_sql = read_file_content(macro_file, &macro_file_path, embedded_contents)?;
@@ -394,7 +394,6 @@ pub fn is_valid_macro_arg_type(s: &str) -> bool {
 /// - Warns when YAML argument `type` values use unsupported or malformed type syntax
 /// - Infers undocumented parameters from the Jinja definition and adds them to `arguments`
 pub fn apply_macro_patches(
-    io: &IoArgs,
     macros: &mut BTreeMap<String, DbtMacro>,
     macro_properties: &BTreeMap<String, MinimalPropertiesEntry>,
     package_name: &str,
@@ -411,7 +410,6 @@ pub fn apply_macro_patches(
         if let Some(dbt_macro) = macros.get_mut(&unique_id) {
             // Parse the macro properties with Jinja rendering (for doc blocks)
             let macro_props: MacrosProperties = into_typed_with_jinja(
-                io,
                 props_entry.schema_value.clone(),
                 false,
                 jinja_env,
@@ -503,7 +501,7 @@ pub fn apply_macro_patches(
                     }
 
                     // Infer undocumented Jinja args and append them to the arguments list
-                    let documented_names: std::collections::HashSet<String> =
+                    let documented_names: HashSet<String> =
                         arguments.iter().map(|a| a.name.clone()).collect();
                     for jinja_arg in &dbt_macro.args {
                         if !documented_names.contains(&jinja_arg.name) {
@@ -560,6 +558,17 @@ pub fn apply_macro_patches(
 /// registered) and after `apply_macro_patches`. Snapshot stubs
 /// (unique_id starts with `"snapshot."`) are skipped — they have their own
 /// processing path and no meaningful Jinja body to analyse.
+#[tracing::instrument(
+    level = "debug",
+    skip_all,
+    fields(
+        _e = ?store_event_attributes(GenericOpExecuted::new(
+            "resolve.typecheck_macros".to_string(),
+            "typechecking macros".to_string(),
+            None,
+        )),
+    )
+)]
 pub fn typecheck_macros(
     io: &IoArgs,
     macros: &mut BTreeMap<String, DbtMacro>,
@@ -588,7 +597,17 @@ pub fn typecheck_macros(
                 jinja_env.clone(),
                 &noqa,
                 factory.clone(),
-                None,
+                // `macro_namespace_template_resolver` resolves a default-valued
+                // macro parameter's own signature via `{target_package}.{name}`
+                // first; passing `None` here made every "current package"
+                // candidate fall back to the hardcoded `"dbt"` package, so any
+                // package macro (e.g. `dbt_utils.default__unpivot`) with a
+                // default-valued argument couldn't resolve its own signature
+                // and hit a codegen path that pushes no value for that
+                // argument at all -- a stack underflow at `compile_assignment`
+                // once typechecking reached it. Passing the macro's real
+                // package here lets that resolution succeed.
+                Some(dbt_macro.package_name.clone()),
                 root_package_name,
                 dbt_and_adapters_namespace.clone(),
                 &file_path,
@@ -597,6 +616,7 @@ pub fn typecheck_macros(
                 unique_id,
                 adapter_type,
                 true,
+                None,
             );
         }));
     }
@@ -608,6 +628,28 @@ pub fn typecheck_macros(
             dbt_macro.depends_on.macros = deps.iter().cloned().collect();
         }
     }
+
+    // Compute the transitive closure of "reaches an introspective adapter
+    // call" over the macro call graph (`all_depends_on`), seeded from the
+    // macros observed directly calling one (`direct_introspective`). Used by
+    // `JinjaRenderMode::Symbolic` to treat a whole macro call as an opaque
+    // taint boundary -- see `JinjaEnv::introspective_macros`'s doc comment
+    // for why call-site-level fine-grained propagation alone isn't enough.
+    let mut introspective: HashSet<String> =
+        factory.direct_introspective().iter().cloned().collect();
+    let mut worklist: Vec<String> = introspective.iter().cloned().collect();
+    while let Some(callee) = worklist.pop() {
+        for (caller, callees) in all_depends_on.iter() {
+            if callees.contains(&callee) && introspective.insert(caller.clone()) {
+                worklist.push(caller.clone());
+            }
+        }
+    }
+    jinja_env.set_introspective_macros(introspective);
+
+    // `instrument` opens the span but never writes dbt's span status; this
+    // function has a single exit, so record success here.
+    record_span_status(&tracing::Span::current(), None);
 
     Ok(())
 }
@@ -902,9 +944,7 @@ select 1 as id, current_timestamp as updated_at
         };
         let macro_properties = BTreeMap::from([("my_macro".to_string(), props_entry)]);
 
-        let io = IoArgs::default();
         apply_macro_patches(
-            &io,
             &mut macros,
             &macro_properties,
             "test_pkg",
@@ -1033,6 +1073,64 @@ select 1 as id, current_timestamp as updated_at
             vec!["macro.pkg.helper".to_string()],
             "macro processed after the panicking one should still be typechecked correctly"
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn typecheck_macros_flags_direct_introspective_call() -> FsResult<()> {
+        use minijinja::Environment;
+
+        fn make_macro(unique_id: &str, sql: &str) -> DbtMacro {
+            let path = DbtPath::from(PathBuf::from(format!("macros/{unique_id}.sql")));
+            DbtMacro {
+                name: unique_id.rsplit('.').next().unwrap().to_string(),
+                package_name: "pkg".to_string(),
+                path: path.clone(),
+                original_file_path: path,
+                absolute_path: DbtPath::from(PathBuf::new()),
+                span: None,
+                unique_id: unique_id.to_string(),
+                macro_sql: sql.to_string(),
+                depends_on: MacroDependsOn { macros: vec![] },
+                description: String::new(),
+                meta: BTreeMap::new(),
+                docs: None,
+                config: MacroConfig::default(),
+                patch_path: None,
+                funcsign: None,
+                supported_languages: None,
+                args: vec![],
+                arguments: vec![],
+                macro_name_span: None,
+                __other__: BTreeMap::new(),
+            }
+        }
+
+        let jinja_env = Arc::new(JinjaEnv::new(Environment::new()));
+
+        let mut macros = BTreeMap::new();
+        macros.insert(
+            "macro.pkg.introspects".to_string(),
+            make_macro("macro.pkg.introspects", "{{ adapter.execute('select 1') }}"),
+        );
+        macros.insert(
+            "macro.pkg.plain".to_string(),
+            make_macro("macro.pkg.plain", "{{ 1 + 1 }}"),
+        );
+
+        let io = IoArgs::default();
+        typecheck_macros(
+            &io,
+            &mut macros,
+            jinja_env.clone(),
+            AdapterType::Postgres,
+            "pkg",
+            MinijinjaValue::from(()),
+        )?;
+
+        assert!(jinja_env.is_introspective_macro("macro.pkg.introspects"));
+        assert!(!jinja_env.is_introspective_macro("macro.pkg.plain"));
 
         Ok(())
     }

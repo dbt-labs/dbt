@@ -1,7 +1,0 @@
-kind: Fixes
-body: Fix source freshness failing entirely when a single source errors in the MapReduce aggregation phase.
-time: 2026-07-01T13:39:51.631177+05:30
-custom:
-    author: "Pavan19047"
-    issue: '15385'
-    project: dbt-core

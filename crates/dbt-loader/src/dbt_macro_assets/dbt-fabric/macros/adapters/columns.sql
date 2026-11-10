@@ -56,7 +56,8 @@
 
     {% endcall %}
 
-    {{ return(load_result('get_columns_in_query').table.columns | map(attribute='name') | list) }}
+    {# DIVERGENCE: Fusion reads the original schema because Agate flattens nested columns. #}
+    {{ return(load_result('get_columns_in_query').table.top_level_column_names) }}
 {% endmacro %}
 
 {% macro fabric__alter_column_type(relation, column_name, new_column_type) %}

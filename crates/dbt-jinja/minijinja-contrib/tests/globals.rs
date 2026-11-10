@@ -86,6 +86,19 @@ fn test_dict_fromkeys_dedupes() {
 }
 
 #[test]
+fn test_dict_unknown_method_falls_back_to_constructor() {
+    let env = dict_env();
+    assert_snapshot!(
+        render!(in env, r"{{ dict.from_keys([('a', 1), ('b', 2)]) }}"),
+        @"{'a': 1, 'b': 2}"
+    );
+    assert_snapshot!(
+        render!(in env, r"{{ dict.anything([('a', 1)]) }}"),
+        @"{'a': 1}"
+    );
+}
+
+#[test]
 fn test_dict_call_empty() {
     let env = dict_env();
     assert_snapshot!(render!(in env, r"{{ dict() }}"), @"{}");

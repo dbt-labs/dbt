@@ -1,0 +1,248 @@
+{
+  "detail": {
+    "unique_id": "source.jaffle_shop.raw_source_4.discounts_9",
+    "name": "discounts_9",
+    "resource_type": "source",
+    "package_name": "jaffle_shop",
+    "description": "Synthetic fixture description. Structure is what this fixture exists to pin down; the prose is deliberately not real.",
+    "original_file_path": "models/_orders__sources.yml",
+    "file_path": "models/_orders__sources.yml",
+    "tags": [],
+    "fqn": [
+      "jaffle_shop",
+      "staging",
+      "raw_source_4",
+      "raw_source_4",
+      "discounts_9"
+    ],
+    "database_name": "analytics",
+    "schema_name": "public",
+    "identifier": null,
+    "source_name": null,
+    "source_description": null,
+    "loader": null,
+    "meta": null,
+    "referenced_by": [
+      {
+        "unique_id": "model.jaffle_shop.base_campaigns_7",
+        "edge_type": "ref"
+      },
+      {
+        "unique_id": "test.jaffle_shop.carts",
+        "edge_type": "ref"
+      },
+      {
+        "unique_id": "test.jaffle_shop.features",
+        "edge_type": "ref"
+      }
+    ],
+    "columns": [
+      {
+        "name": "load_id",
+        "index": 0,
+        "data_type": null,
+        "declared_type": null,
+        "inferred_type": null,
+        "catalog_type": null,
+        "description": "Synthetic fixture description. Structure is what this fixture exists to pin down; the prose is deliberately not real.",
+        "label": null,
+        "granularity": null
+      }
+    ],
+    "freshness": {
+      "status": "skipped",
+      "snapshotted_at": null,
+      "max_loaded_at": null,
+      "max_loaded_at_time_ago": null,
+      "criteria": null
+    },
+    "catalog": null
+  },
+  "lineage": {
+    "status": 200,
+    "body": {
+      "root": "source.jaffle_shop.raw_source_4.discounts_9",
+      "max_depth": 3,
+      "nodes": [
+        {
+          "depth": 0,
+          "materialized": "external",
+          "name": "discounts_9",
+          "resource_type": "source",
+          "unique_id": "source.jaffle_shop.raw_source_4.discounts_9"
+        },
+        {
+          "depth": 1,
+          "materialized": "view",
+          "name": "base_campaigns_7",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.base_campaigns_7"
+        },
+        {
+          "depth": 1,
+          "materialized": "test",
+          "name": "source_not_null_orders__loads_load_id",
+          "resource_type": "test",
+          "unique_id": "test.jaffle_shop.carts"
+        },
+        {
+          "depth": 1,
+          "materialized": "test",
+          "name": "source_unique_orders__loads_load_id",
+          "resource_type": "test",
+          "unique_id": "test.jaffle_shop.features"
+        },
+        {
+          "depth": 2,
+          "materialized": "view",
+          "name": "stg_renewals_8",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.stg_renewals_8"
+        },
+        {
+          "depth": 2,
+          "materialized": "view",
+          "name": "stg_usage_8",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.stg_usage_8"
+        },
+        {
+          "depth": 2,
+          "materialized": "test",
+          "name": "not_null_base_orders__loads_load_id",
+          "resource_type": "test",
+          "unique_id": "test.jaffle_shop.not_null_plans_id.e44b53e4a4"
+        },
+        {
+          "depth": 2,
+          "materialized": "test",
+          "name": "unique_base_orders__loads_load_id",
+          "resource_type": "test",
+          "unique_id": "test.jaffle_shop.unique_customers_1_id.69a481ac1c"
+        },
+        {
+          "depth": 3,
+          "materialized": "table",
+          "name": "dim_orders_9",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.dim_orders_9"
+        },
+        {
+          "depth": 3,
+          "materialized": "table",
+          "name": "fct_events_6",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.fct_events_6"
+        },
+        {
+          "depth": 3,
+          "materialized": "test",
+          "name": "not_null_stg_orders__events_event_id",
+          "resource_type": "test",
+          "unique_id": "test.jaffle_shop.not_null_supplies_1_id.ede0aa9fcb"
+        },
+        {
+          "depth": 3,
+          "materialized": "test",
+          "name": "not_null_stg_orders__surveys_survey_id",
+          "resource_type": "test",
+          "unique_id": "test.jaffle_shop.not_null_signups_id.b96bf09182"
+        },
+        {
+          "depth": 3,
+          "materialized": "test",
+          "name": "unique_stg_orders__events_event_id",
+          "resource_type": "test",
+          "unique_id": "test.jaffle_shop.unique_campaigns_1_id.23962a6e53"
+        },
+        {
+          "depth": 3,
+          "materialized": "test",
+          "name": "unique_stg_orders__surveys_survey_id",
+          "resource_type": "test",
+          "unique_id": "test.jaffle_shop.unique_payments_1_id.8e172a6464"
+        }
+      ],
+      "edges": [
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.base_campaigns_7",
+          "to_id": "model.jaffle_shop.stg_renewals_8"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.base_campaigns_7",
+          "to_id": "model.jaffle_shop.stg_usage_8"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.base_campaigns_7",
+          "to_id": "test.jaffle_shop.not_null_plans_id.e44b53e4a4"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.base_campaigns_7",
+          "to_id": "test.jaffle_shop.unique_customers_1_id.69a481ac1c"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.dim_orders_9",
+          "to_id": "model.jaffle_shop.fct_events_6"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.stg_renewals_8",
+          "to_id": "model.jaffle_shop.dim_orders_9"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.stg_renewals_8",
+          "to_id": "test.jaffle_shop.not_null_supplies_1_id.ede0aa9fcb"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.stg_renewals_8",
+          "to_id": "test.jaffle_shop.unique_campaigns_1_id.23962a6e53"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.stg_usage_8",
+          "to_id": "model.jaffle_shop.fct_events_6"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.stg_usage_8",
+          "to_id": "test.jaffle_shop.not_null_signups_id.b96bf09182"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.stg_usage_8",
+          "to_id": "test.jaffle_shop.unique_payments_1_id.8e172a6464"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "source.jaffle_shop.raw_source_4.discounts_9",
+          "to_id": "model.jaffle_shop.base_campaigns_7"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "source.jaffle_shop.raw_source_4.discounts_9",
+          "to_id": "test.jaffle_shop.carts"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "source.jaffle_shop.raw_source_4.discounts_9",
+          "to_id": "test.jaffle_shop.features"
+        }
+      ]
+    }
+  },
+  "columnLineage": {
+    "status": 412,
+    "body": {
+      "code": "column_lineage_unavailable",
+      "message": "Column-level lineage is not available in this distribution + artifact set.",
+      "upgrade_path": "Run `dbt --use-index <run|build|compile>` with static analysis enabled, in a distribution that ships the column-lineage provider."
+    }
+  }
+}

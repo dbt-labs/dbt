@@ -3,7 +3,7 @@ use dbt_schemas::schemas::{DbtModel, InternalDbtNodeAttributes};
 use minijinja::Value;
 
 use crate::relation::snowflake::config::{
-    DescribeDynamicTableResults, get_bool_by_name_from_record_batch,
+    SnowflakeDescribeResults, get_bool_by_name_from_record_batch,
 };
 use crate::{
     relation::config_v2::{
@@ -40,8 +40,8 @@ fn new_component(transient: Option<bool>) -> Transient {
     }
 }
 
-fn from_remote_state(results: &DescribeDynamicTableResults) -> AdapterResult<Transient> {
-    let batch = &results.dynamic_table;
+fn from_remote_state(results: &SnowflakeDescribeResults) -> AdapterResult<Transient> {
+    let batch = &results.record_batch;
     Ok(new_component(get_bool_by_name_from_record_batch(
         batch,
         "transient",
@@ -70,7 +70,7 @@ fn from_local_config(relation_config: &dyn InternalDbtNodeAttributes) -> Adapter
     Ok(new_component(snowflake_config.transient))
 }
 
-impl_loader!(Transient, DescribeDynamicTableResults);
+impl_loader!(Transient, SnowflakeDescribeResults);
 
 #[cfg(test)]
 mod tests {

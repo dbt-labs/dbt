@@ -76,8 +76,10 @@ impl Constraints {
     /// - Stores `custom` PK expressions (e.g. `primary key (\`id\`) rely`) as native PK constraints
     ///   in `information_schema`, so a local `Custom` PK must normalize to `PrimaryKey` for the
     ///   diff to be stable across incremental runs.
+    /// - Does not expose PK/FK RELY/NORELY options
+    /// - Does not persist FK `to`/`to_columns` on expression-form FKs
     ///
-    /// Reference: https://raw.githubusercontent.com/databricks/dbt-databricks/refs/tags/v1.10.9/dbt/adapters/databricks/relation_configs/constraints.py
+    /// Reference: https://github.com/databricks/dbt-databricks/blob/b479512df0a3be374cbfb58c465d65d786a9b212/dbt/adapters/databricks/relation_configs/constraints.py#L39-L73
     fn normalize_constraint(constraint: &TypedConstraint) -> TypedConstraint {
         match constraint {
             TypedConstraint::Check {
@@ -99,8 +101,72 @@ impl Constraints {
                     }
                 })
             }
-            _ => constraint.clone(),
+            TypedConstraint::PrimaryKey { name, columns, .. } => TypedConstraint::PrimaryKey {
+                name: name.clone(),
+                columns: columns.clone(),
+                expression: None,
+            },
+            TypedConstraint::ForeignKey { name, columns, .. } => TypedConstraint::ForeignKey {
+                name: name.clone(),
+                columns: columns.clone(),
+                to: None,
+                to_columns: None,
+                expression: None,
+            },
         }
+    }
+
+    fn by_normalized_key(
+        constraints: &IndexSet<TypedConstraint>,
+    ) -> IndexMap<TypedConstraint, &TypedConstraint> {
+        constraints
+            .iter()
+            .map(|c| (Self::normalize_constraint(c), c))
+            .collect()
+    }
+
+    /// Original constraints whose normalized key is in `a` but not in `b`.
+    fn originals_only_in(
+        a: &IndexMap<TypedConstraint, &TypedConstraint>,
+        b: &IndexMap<TypedConstraint, &TypedConstraint>,
+    ) -> IndexSet<TypedConstraint> {
+        a.iter()
+            .filter(|(key, _)| !b.contains_key(*key))
+            .map(|(_, original)| (*original).clone())
+            .collect()
+    }
+
+    /// Same-name FKs whose target changed. Expression-form FKs are skipped: their target lives in
+    /// `expression`, which the catalog does not round-trip.
+    fn repointed_foreign_keys<'a>(
+        next_by_key: &'a IndexMap<TypedConstraint, &'a TypedConstraint>,
+        prev_by_key: &'a IndexMap<TypedConstraint, &'a TypedConstraint>,
+    ) -> impl Iterator<Item = (&'a TypedConstraint, &'a TypedConstraint)> {
+        next_by_key.iter().filter_map(|(key, next)| {
+            let prev = *prev_by_key.get(key)?;
+            let TypedConstraint::ForeignKey {
+                to: Some(to),
+                to_columns,
+                ..
+            } = *next
+            else {
+                return None;
+            };
+            let TypedConstraint::ForeignKey {
+                to: prev_to,
+                to_columns: prev_to_columns,
+                ..
+            } = prev
+            else {
+                return None;
+            };
+            let target = (Some(to), to_columns.as_deref().unwrap_or_default());
+            let prev_target = (
+                prev_to.as_ref(),
+                prev_to_columns.as_deref().unwrap_or_default(),
+            );
+            (target != prev_target).then_some((*next, prev))
+        })
     }
 
     /// Attempt to reinterpret a normalized custom expression as a PrimaryKey constraint.
@@ -216,11 +282,11 @@ impl Constraints {
                     Ok(to_column),
                 ) = (
                     row.get_attr("constraint_name"),
-                    row.get_attr("column_name"),
-                    row.get_attr("parent_catalog_name"),
-                    row.get_attr("parent_schema_name"),
-                    row.get_attr("parent_table_name"),
-                    row.get_attr("parent_column_name"),
+                    row.get_attr("from_column"),
+                    row.get_attr("to_catalog"),
+                    row.get_attr("to_schema"),
+                    row.get_attr("to_table"),
+                    row.get_attr("to_column"),
                 ) && let (
                     Some(name_str),
                     Some(col_str),
@@ -318,6 +384,15 @@ impl Constraints {
     }
 
     fn from_local_config(relation_config: &dyn InternalDbtNodeAttributes) -> Self {
+        let contract_enforced = relation_config
+            .as_any()
+            .downcast_ref::<dbt_schemas::schemas::nodes::DbtModel>()
+            .and_then(|model| model.deprecated_config.contract.as_ref())
+            .is_some_and(|contract| contract.enforced);
+        if !contract_enforced {
+            return Self::default();
+        }
+
         let columns = &relation_config.base().columns;
 
         let model_constraints = if let Some(model) = relation_config
@@ -338,7 +413,19 @@ impl Constraints {
             return Self::default();
         };
 
-        let constraints_set: IndexSet<_> = other_constraints.into_iter().collect();
+        // Name unnamed keys as at create time so they match the server's names instead of churning.
+        // Reference: https://github.com/databricks/dbt-databricks/blob/fdc4ac22f4494c701d8f7d6e5b380e5f0d1fe9ff/dbt/adapters/databricks/relation_configs/constraints.py#L255-L259
+        let identifier = relation_config.alias();
+        let constraints_set: IndexSet<_> = other_constraints
+            .into_iter()
+            .map(|constraint| {
+                let synthesized_name = match constraint.name() {
+                    None => constraint.synthesized_name(&identifier),
+                    Some(_) => None,
+                };
+                constraint.with_name(synthesized_name)
+            })
+            .collect();
 
         // FIXME(serramatutu): make `parse_constraints` return `IndexSet` directly once old code
         // that relies on `BTreeSet` is deleted
@@ -384,9 +471,10 @@ impl ComponentConfig for Constraints {
         TYPE_NAME
     }
 
-    /// Uses normalization for proper constraint comparison, matching the Python implementation.
+    /// Diffs on normalized keys but emits the original constraints, so ADD/DROP SQL keeps the
+    /// model's full definition and the catalog's name.
     ///
-    /// Reference: https://raw.githubusercontent.com/databricks/dbt-databricks/refs/tags/v1.10.9/dbt/adapters/databricks/relation_configs/constraints.py
+    /// Reference: https://github.com/databricks/dbt-databricks/blob/b479512df0a3be374cbfb58c465d65d786a9b212/dbt/adapters/databricks/relation_configs/constraints.py#L75-L115
     fn diff_from(
         &self,
         current_state: Option<&dyn ComponentConfig>,
@@ -399,31 +487,18 @@ impl ComponentConfig for Constraints {
         // The config is not if type `Constraints`, so we can't diff
         let current_state = current_state.as_any().downcast_ref::<Self>()?;
 
-        // Normalize constraints for comparison (like Python implementation)
-        let next_set_constraints_normalized: IndexSet<_> = self
-            .set_constraints
-            .iter()
-            .map(Self::normalize_constraint)
-            .collect();
+        let next_by_key = Self::by_normalized_key(&self.set_constraints);
+        let prev_by_key = Self::by_normalized_key(&current_state.set_constraints);
 
-        let prev_set_constraints_normalized: IndexSet<_> = current_state
-            .set_constraints
-            .iter()
-            .map(Self::normalize_constraint)
-            .collect();
-
-        // Find constraints that need to be unset (exist in other but not in self)
-        let constraints_to_unset =
-            &prev_set_constraints_normalized - &next_set_constraints_normalized;
-
-        // Find non-nulls that need to be unset (exist in other but not in self)
+        let mut constraints_to_unset = Self::originals_only_in(&prev_by_key, &next_by_key);
         let non_nulls_to_unset = &current_state.set_non_nulls - &self.set_non_nulls;
-
-        // Find constraints that need to be set (exist in self but not in other)
-        let set_constraints = &next_set_constraints_normalized - &prev_set_constraints_normalized;
-
-        // Find non-nulls that need to be set (exist in self but not in other)
+        let mut set_constraints = Self::originals_only_in(&next_by_key, &prev_by_key);
         let set_non_nulls = &self.set_non_nulls - &current_state.set_non_nulls;
+
+        for (next, prev) in Self::repointed_foreign_keys(&next_by_key, &prev_by_key) {
+            set_constraints.insert(next.clone());
+            constraints_to_unset.insert(prev.clone());
+        }
 
         if !set_constraints.is_empty()
             || !set_non_nulls.is_empty()
@@ -505,8 +580,10 @@ mod tests {
     use dbt_schemas::schemas::{
         common::{Constraint, ConstraintType},
         nodes::DbtModel,
+        properties::ModelConstraint,
     };
     use dbt_test_primitives::assert_contains;
+    use dbt_yaml::Spanned;
     use indexmap::{IndexMap, IndexSet};
     use std::io;
     use std::sync::Arc;
@@ -560,14 +637,14 @@ pk_composite,user_id"#,
     fn create_mock_foreign_key_constraints_table() -> AgateTable {
         let schema = Schema::new(vec![
             Field::new("constraint_name", DataType::Utf8, false),
-            Field::new("column_name", DataType::Utf8, false),
-            Field::new("parent_catalog_name", DataType::Utf8, false),
-            Field::new("parent_schema_name", DataType::Utf8, false),
-            Field::new("parent_table_name", DataType::Utf8, false),
-            Field::new("parent_column_name", DataType::Utf8, false),
+            Field::new("from_column", DataType::Utf8, false),
+            Field::new("to_catalog", DataType::Utf8, false),
+            Field::new("to_schema", DataType::Utf8, false),
+            Field::new("to_table", DataType::Utf8, false),
+            Field::new("to_column", DataType::Utf8, false),
         ]);
         let csv = io::Cursor::new(
-            r#"constraint_name,column_name,parent_catalog_name,parent_schema_name,parent_table_name,parent_column_name
+            r#"constraint_name,from_column,to_catalog,to_schema,to_table,to_column
 fk_user_org,org_id,main,default,organizations,id
 fk_composite,parent_id,main,default,parents,id
 fk_composite,parent_type,main,default,parents,type
@@ -593,6 +670,24 @@ fk_composite,parent_type,main,default,parents,type
                     ..Default::default()
                 })
                 .collect(),
+            ..Default::default()
+        };
+        test_helpers::create_mock_dbt_model(cfg)
+    }
+
+    fn create_mock_unenforced_dbt_model_with_constraints(
+        constraints: IndexMap<&str, Vec<Constraint>>,
+    ) -> DbtModel {
+        let cfg = test_helpers::TestModelConfig {
+            columns: constraints
+                .into_iter()
+                .map(|(name, constraints)| test_helpers::TestModelColumn {
+                    name: name.to_string(),
+                    constraints,
+                    ..Default::default()
+                })
+                .collect(),
+            contract_enforced: Some(false),
             ..Default::default()
         };
         test_helpers::create_mock_dbt_model(cfg)
@@ -821,6 +916,28 @@ fk_composite,parent_type,main,default,parents,type
     }
 
     #[test]
+    fn test_from_local_config_ignores_declared_constraints_when_contract_is_unenforced() {
+        let columns = IndexMap::from_iter([(
+            "id",
+            vec![Constraint {
+                type_: ConstraintType::NotNull,
+                ..Default::default()
+            }],
+        )]);
+        let mut mock_node = create_mock_unenforced_dbt_model_with_constraints(columns);
+        mock_node.__model_attr__.constraints = vec![ModelConstraint {
+            type_: ConstraintType::PrimaryKey,
+            columns: Some(vec!["id".to_string()]),
+            ..Default::default()
+        }];
+
+        let config = Constraints::from_local_config(&mock_node);
+
+        assert!(config.set_non_nulls.is_empty());
+        assert!(config.set_constraints.is_empty());
+    }
+
+    #[test]
     fn test_from_local_config_no_constraints() {
         let columns = IndexMap::new();
         let mock_node = create_mock_dbt_model_with_constraints(columns);
@@ -828,6 +945,57 @@ fk_composite,parent_type,main,default,parents,type
 
         assert!(config.set_non_nulls.is_empty());
         assert!(config.set_constraints.is_empty());
+    }
+
+    #[test]
+    fn test_from_local_config_unnamed_keys_match_server_names() {
+        // The server holds the create-time names; two unnamed FKs to one parent must not churn.
+        let foreign_key = || Constraint {
+            type_: ConstraintType::ForeignKey,
+            to: Some(Spanned::new("`main`.`default`.`parents`".to_string())),
+            to_columns: Some(vec!["id".to_string()]),
+            ..Default::default()
+        };
+        let mock_node = create_mock_dbt_model_with_constraints(IndexMap::from_iter([
+            (
+                "id",
+                vec![Constraint {
+                    type_: ConstraintType::PrimaryKey,
+                    ..Default::default()
+                }],
+            ),
+            ("parent_a", vec![foreign_key()]),
+            ("parent_b", vec![foreign_key()]),
+        ]));
+        let local = Constraints::from_local_config(&mock_node);
+
+        let md5 = |input: &str| format!("{:x}", md5::compute(input));
+        let server_fk = |column: &str| TypedConstraint::ForeignKey {
+            name: Some(md5(&format!(
+                "foreign_key;test_table;['{column}'];`main`.`default`.`parents`;['id'];"
+            ))),
+            columns: vec![column.to_string()],
+            to: Some("`main`.`default`.`parents`".to_string()),
+            to_columns: Some(vec!["id".to_string()]),
+            expression: None,
+        };
+        let remote = Constraints::new(
+            IndexSet::new(),
+            IndexSet::new(),
+            IndexSet::from([
+                TypedConstraint::PrimaryKey {
+                    name: Some(md5("primary_key;test_table;['id'];")),
+                    columns: vec!["id".to_string()],
+                    expression: None,
+                },
+                server_fk("parent_a"),
+                server_fk("parent_b"),
+            ]),
+            IndexSet::new(),
+        );
+
+        let diff = Constraints::diff_from(&local, Some(&remote));
+        assert!(diff.is_none(), "unnamed keys should not churn: {diff:?}");
     }
 
     #[test]
@@ -966,5 +1134,182 @@ fk_composite,parent_type,main,default,parents,type
             quoted_expr.contains(r#""user name""#),
             "Quoted identifiers should be preserved"
         );
+    }
+
+    #[test]
+    fn test_as_json_path_produces_no_false_diff_vs_info_schema_path_for_constraints() {
+        use crate::metadata::databricks::describe_json::{
+            ForeignKeyConstraintRow, PrimaryKeyConstraintRow,
+        };
+        use crate::metadata::databricks::{
+            foreign_key_constraints_to_agate, primary_key_constraints_to_agate,
+        };
+
+        let info_schema_results = IndexMap::from([
+            (
+                DatabricksRelationMetadataKey::PrimaryKeyConstraints,
+                create_mock_primary_key_constraints_table(),
+            ),
+            (
+                DatabricksRelationMetadataKey::ForeignKeyConstraints,
+                create_mock_foreign_key_constraints_table(),
+            ),
+        ]);
+        let info_schema_config = Constraints::from_remote_state(&info_schema_results);
+
+        let pk_rows = vec![
+            PrimaryKeyConstraintRow {
+                constraint_name: "pk_users".to_string(),
+                column_name: "id".to_string(),
+            },
+            PrimaryKeyConstraintRow {
+                constraint_name: "pk_composite".to_string(),
+                column_name: "org_id".to_string(),
+            },
+            PrimaryKeyConstraintRow {
+                constraint_name: "pk_composite".to_string(),
+                column_name: "user_id".to_string(),
+            },
+        ];
+        let fk_rows = vec![
+            ForeignKeyConstraintRow {
+                constraint_name: "fk_user_org".to_string(),
+                from_column: "org_id".to_string(),
+                to_catalog: "main".to_string(),
+                to_schema: "default".to_string(),
+                to_table: "organizations".to_string(),
+                to_column: "id".to_string(),
+            },
+            ForeignKeyConstraintRow {
+                constraint_name: "fk_composite".to_string(),
+                from_column: "parent_id".to_string(),
+                to_catalog: "main".to_string(),
+                to_schema: "default".to_string(),
+                to_table: "parents".to_string(),
+                to_column: "id".to_string(),
+            },
+            ForeignKeyConstraintRow {
+                constraint_name: "fk_composite".to_string(),
+                from_column: "parent_type".to_string(),
+                to_catalog: "main".to_string(),
+                to_schema: "default".to_string(),
+                to_table: "parents".to_string(),
+                to_column: "type".to_string(),
+            },
+        ];
+        let as_json_results = IndexMap::from([
+            (
+                DatabricksRelationMetadataKey::PrimaryKeyConstraints,
+                primary_key_constraints_to_agate(&pk_rows).unwrap(),
+            ),
+            (
+                DatabricksRelationMetadataKey::ForeignKeyConstraints,
+                foreign_key_constraints_to_agate(&fk_rows).unwrap(),
+            ),
+        ]);
+        let as_json_config = Constraints::from_remote_state(&as_json_results);
+
+        assert!(
+            Constraints::diff_from(&as_json_config, Some(&info_schema_config)).is_none(),
+            "AS-JSON path should not produce a diff against the info_schema path for identical constraints"
+        );
+        assert!(
+            Constraints::diff_from(&info_schema_config, Some(&as_json_config)).is_none(),
+            "info_schema path should not produce a diff against the AS-JSON path for identical constraints"
+        );
+    }
+
+    fn constraints_of(constraints: impl IntoIterator<Item = TypedConstraint>) -> Constraints {
+        Constraints::new(
+            IndexSet::new(),
+            IndexSet::new(),
+            constraints.into_iter().collect(),
+            IndexSet::new(),
+        )
+    }
+
+    fn fk(
+        name: &str,
+        to: Option<&str>,
+        to_columns: Option<&[&str]>,
+        expression: Option<&str>,
+    ) -> TypedConstraint {
+        TypedConstraint::ForeignKey {
+            name: Some(name.to_string()),
+            columns: vec!["parent_id".to_string()],
+            to: to.map(str::to_string),
+            to_columns: to_columns.map(|cols| cols.iter().map(|c| c.to_string()).collect()),
+            expression: expression.map(str::to_string),
+        }
+    }
+
+    // Reference: https://github.com/databricks/dbt-databricks/blob/b479512df0a3be374cbfb58c465d65d786a9b212/tests/unit/relation_configs/test_constraint.py#L382-L478
+    #[test]
+    fn test_diff_ignores_unpersisted_pk_fk_fields() {
+        let catalog_pk = TypedConstraint::PrimaryKey {
+            name: Some("pk_n".to_string()),
+            columns: vec!["n".to_string()],
+            expression: None,
+        };
+        let catalog_fk = fk("fk_n", Some("`cat`.`sch`.`parent`"), Some(&["id"]), None);
+        let cases = [
+            (
+                "pk rely",
+                TypedConstraint::PrimaryKey {
+                    name: Some("pk_n".to_string()),
+                    columns: vec!["n".to_string()],
+                    expression: Some("RELY".to_string()),
+                },
+                catalog_pk,
+            ),
+            (
+                "expression-form fk",
+                fk(
+                    "fk_n",
+                    None,
+                    None,
+                    Some("(parent_id) REFERENCES `cat`.`sch`.`parent` RELY"),
+                ),
+                catalog_fk.clone(),
+            ),
+            ("named fk", catalog_fk.clone(), catalog_fk),
+        ];
+        for (case, model, catalog) in cases {
+            let diff =
+                Constraints::diff_from(&constraints_of([model]), Some(&constraints_of([catalog])));
+            assert!(diff.is_none(), "{case}: unexpected diff {diff:?}");
+        }
+    }
+
+    #[test]
+    fn test_diff_reconciles_repointed_fk() {
+        let model = fk("fk_p", Some("`cat`.`sch`.`parent_v2`"), Some(&["id"]), None);
+        let catalog = fk("fk_p", Some("`cat`.`sch`.`parent`"), Some(&["id"]), None);
+        let diff = Constraints::diff_from(
+            &constraints_of([model.clone()]),
+            Some(&constraints_of([catalog.clone()])),
+        )
+        .unwrap();
+        let diff = diff.as_any().downcast_ref::<Constraints>().unwrap();
+        assert_eq!(diff.set_constraints, IndexSet::from([model]));
+        assert_eq!(diff.unset_constraints, IndexSet::from([catalog]));
+    }
+
+    #[test]
+    fn test_diff_emits_original_constraints() {
+        let model_pk = TypedConstraint::PrimaryKey {
+            name: Some("pk_n".to_string()),
+            columns: vec!["n".to_string()],
+            expression: Some("RELY".to_string()),
+        };
+        let catalog_fk = fk("fk_old", Some("`cat`.`sch`.`parent`"), Some(&["id"]), None);
+        let diff = Constraints::diff_from(
+            &constraints_of([model_pk.clone()]),
+            Some(&constraints_of([catalog_fk.clone()])),
+        )
+        .unwrap();
+        let diff = diff.as_any().downcast_ref::<Constraints>().unwrap();
+        assert_eq!(diff.set_constraints, IndexSet::from([model_pk]));
+        assert_eq!(diff.unset_constraints, IndexSet::from([catalog_fk]));
     }
 }

@@ -1,15 +1,13 @@
 use dbt_adapter::Adapter;
-use dbt_adapter::relation::create_relation;
+use dbt_adapter::relation::render_effective_relation;
 use dbt_common::{ErrorCode, FsError, fs_err};
 use dbt_common::{FsResult, constants::DBT_CTE_PREFIX, error::MacroSpan, stdfs};
 use dbt_frontend_common::{error::CodeLocation, span::Span};
 use dbt_schemas::schemas::common::ResolvedQuoting;
 use dbt_schemas::schemas::project::ResolvableConfig;
 use dbt_schemas::schemas::telemetry::NodeType;
-use dbt_schemas::schemas::{
-    CommonAttributes, DbtModel, DbtSeed, DbtSnapshot, DbtTest, DbtUnitTest, InternalDbtNode,
-};
-use dbt_yaml::{Spanned, Value as YmlValue};
+use dbt_schemas::schemas::{CommonAttributes, InternalDbtNode};
+use dbt_yaml::Spanned;
 use minijinja::arg_utils::ArgParser;
 use minijinja::constants::{ROOT_PACKAGE_NAME, TARGET_PACKAGE_NAME, TARGET_UNIQUE_ID, THREAD_ID};
 use minijinja::{
@@ -18,7 +16,10 @@ use minijinja::{
     value::{Rest, Value as MinijinjaValue, ValueKind},
 };
 use regex::Regex;
-use serde::Deserialize;
+use serde::Serialize;
+use sqlparser::dialect::GenericDialect;
+use sqlparser::keywords::Keyword;
+use sqlparser::tokenizer::{Location, Token, Tokenizer};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -37,14 +38,28 @@ use crate::{jinja_environment::JinjaEnv, phases::parse::sql_resource::SqlResourc
 pub use dbt_jinja_vars::{DBT_INTERNAL_ENV_VAR_PREFIX, SECRET_ENV_VAR_PREFIX};
 
 /// The version of dbt used in this crate
-pub const DBT_VERSION: &str = "2.0.0"; // easter egg jokes for now
+///
+/// See: fs/sa/crates/dbt-main/src/dbt_lib.rs:660
+pub const DBT_VERSION: &str = match option_env!("DBT_VERSION") {
+    Some(version) => version,
+    None => env!("CARGO_PKG_VERSION"),
+};
 
 /// A lazy initialized mutex-protected hash map for storing environment variables
 pub static ENV_VARS: LazyLock<Mutex<HashMap<String, String>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// Cache for template lookups per (current_project, root_project, component)
-static TEMPLATE_CACHE: LazyLock<Mutex<HashMap<(String, String), String>>> =
+/// Key for [`TEMPLATE_CACHE`]: `(dialect, current_project, macro_name)`.
+///
+/// The dialect is part of the key because the final fallback resolves through the
+/// per-dialect internal-package namespace: two adapters can define the same
+/// unprefixed macro, so a Snowflake node and a DuckDB node must not share a
+/// cached answer.
+type TemplateCacheKey = (String, String, String);
+
+/// Cache for template lookups. See [`TemplateCacheKey`] for why the dialect is
+/// part of the key.
+static TEMPLATE_CACHE: LazyLock<Mutex<HashMap<TemplateCacheKey, String>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Matches local quoted or unquoted CTE definitions that use dbt's ephemeral CTE
@@ -224,22 +239,148 @@ pub fn inject_and_persist_ephemeral_models(
         return Ok(final_sql);
     }
 
-    // Wrap the current SQL in a subquery and prepend CTEs
     let ctes = all_ctes.join(", ");
-    final_sql = format!(
-        "with {ctes}\n--EPHEMERAL-SELECT-WRAPPER-START\nselect * from (\n{final_sql}\n--EPHEMERAL-SELECT-WRAPPER-END\n)"
-    );
-    // Shift expanded macro spans down by number of added lines and added offet
-    // for the "with ... select * from (" line, and the CTEs
-    let added_lines = ctes.lines().count() + 2;
-    let added_offset = ctes.len() + 23;
-    for span in macro_spans.items.iter_mut() {
-        span.1.start_line += added_lines as u32;
-        span.1.end_line += added_lines as u32;
-        span.1.start_offset += added_offset as u32;
-        span.1.end_offset += added_offset as u32;
+    if let Some((sql, insertion)) = inject_ctes_into_existing_with(&final_sql, &ctes) {
+        final_sql = sql;
+        shift_macro_spans_after_insertion(macro_spans, insertion);
+    } else {
+        // Preserve the wrapper fallback for statements without a leading WITH clause.
+        final_sql = format!(
+            "with {ctes}\n--EPHEMERAL-SELECT-WRAPPER-START\nselect * from (\n{final_sql}\n--EPHEMERAL-SELECT-WRAPPER-END\n) as {model_name}"
+        );
+        let added_lines = ctes.lines().count() + 2;
+        let added_offset = ctes.len() + 23;
+        for span in macro_spans.items.iter_mut() {
+            span.1.start_line += added_lines as u32;
+            span.1.end_line += added_lines as u32;
+            span.1.start_offset += added_offset as u32;
+            span.1.end_offset += added_offset as u32;
+        }
     }
     Ok(final_sql)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Insertion {
+    line: u32,
+    col: u32,
+    offset: u32,
+    added_lines: u32,
+    added_bytes: u32,
+    added_cols: u32,
+    trailing_cols: u32,
+}
+
+/// Uses token locations to splice ephemeral CTEs into a leading WITH chain
+/// without reformatting the warehouse-specific SQL.
+fn inject_ctes_into_existing_with(sql: &str, ctes: &str) -> Option<(String, Insertion)> {
+    let dialect = GenericDialect {};
+    let mut tokens = Vec::new();
+    // A later warehouse-specific token may be unsupported by the generic dialect.
+    // The prefix tokens collected before that error are sufficient for this splice.
+    let _ = Tokenizer::new(&dialect, sql).tokenize_with_location_into_buf(&mut tokens);
+    let (with_index, with) = tokens
+        .iter()
+        .enumerate()
+        .find(|(_, token)| !matches!(token.token, Token::Whitespace(_)))?;
+    if !matches!(&with.token, Token::Word(word) if word.keyword == Keyword::WITH) {
+        return None;
+    }
+
+    // Comments between WITH and RECURSIVE are trivia, so preserve them and
+    // insert after the modifier.
+    let next = tokens[with_index + 1..]
+        .iter()
+        .find(|token| !matches!(token.token, Token::Whitespace(_)));
+    let insertion_token = match next {
+        Some(token) if matches!(&token.token, Token::Word(word) if word.keyword == Keyword::RECURSIVE) => {
+            token
+        }
+        _ => with,
+    };
+    let insertion_location = insertion_token.span.end;
+    let offset = byte_offset_at_location(sql, insertion_location)?;
+    let line = insertion_location.line.try_into().ok()?;
+    let col = insertion_location.column.try_into().ok()?;
+    let inserted = format!("  {ctes},");
+    let added_lines = inserted.bytes().filter(|byte| *byte == b'\n').count() as u32;
+    let added_cols = inserted.chars().count() as u32;
+    let trailing_cols = inserted.rsplit('\n').next().unwrap().chars().count() as u32 + 1;
+
+    let mut result = String::with_capacity(sql.len() + inserted.len());
+    result.push_str(&sql[..offset]);
+    result.push_str(&inserted);
+    result.push_str(&sql[offset..]);
+
+    Some((
+        result,
+        Insertion {
+            line,
+            col,
+            offset: offset as u32,
+            added_lines,
+            added_bytes: inserted.len() as u32,
+            added_cols,
+            trailing_cols,
+        },
+    ))
+}
+
+fn byte_offset_at_location(sql: &str, target: Location) -> Option<usize> {
+    let mut line = 1;
+    let mut col = 1;
+    for (offset, ch) in sql.char_indices() {
+        if line == target.line && col == target.column {
+            return Some(offset);
+        }
+        if ch == '\n' {
+            line += 1;
+            col = 1;
+        } else {
+            col += 1;
+        }
+    }
+    (line == target.line && col == target.column).then_some(sql.len())
+}
+
+fn shift_macro_spans_after_insertion(macro_spans: &mut MacroSpans, insertion: Insertion) {
+    for (_, expanded) in &mut macro_spans.items {
+        if expanded.end_offset <= insertion.offset {
+            continue;
+        }
+        if expanded.start_offset >= insertion.offset {
+            shift_span_position(
+                &mut expanded.start_line,
+                &mut expanded.start_col,
+                &mut expanded.start_offset,
+                insertion,
+            );
+        }
+        shift_span_position(
+            &mut expanded.end_line,
+            &mut expanded.end_col,
+            &mut expanded.end_offset,
+            insertion,
+        );
+    }
+}
+
+fn shift_span_position(line: &mut u32, col: &mut u32, offset: &mut u32, insertion: Insertion) {
+    if *offset < insertion.offset {
+        return;
+    }
+
+    *offset += insertion.added_bytes;
+    if *line == insertion.line {
+        if insertion.added_lines == 0 {
+            *col += insertion.added_cols;
+        } else {
+            *line += insertion.added_lines;
+            *col = insertion.trailing_cols + (*col).saturating_sub(insertion.col);
+        }
+    } else {
+        *line += insertion.added_lines;
+    }
 }
 
 /// Extract all model names from `__dbt__cte__` references
@@ -283,7 +424,7 @@ fn extract_local_ephemeral_cte_names(sql: &str) -> HashSet<&str> {
 pub fn render_sql(
     sql: &str,
     env: &JinjaEnv,
-    ctx: &BTreeMap<String, Value>,
+    ctx: &impl Serialize,
     listener_factory: &dyn RenderingEventListenerFactory,
     filename: &Path,
 ) -> FsResult<String> {
@@ -297,6 +438,7 @@ pub fn render_sql(
             ctx,
             &listeners,
             &[],
+            None,
         )
         .map_err(|e| FsError::from_jinja_err(e, "Failed to render SQL"))?;
     for listener in listeners {
@@ -309,14 +451,18 @@ pub fn render_sql(
 /// Renders SQL with Jinja macros, using caller-provided listeners
 /// This allows callers to access listener state after rendering
 /// (e.g., for MangledRefWarningPrinter to check for mangled refs)
+///
+/// If `ast_visitor` is `Some`, this parse's AST is reused for it instead of parsing
+/// `sql` again.
 #[allow(clippy::too_many_arguments)]
 pub fn render_sql_with_listeners(
     sql: &str,
     env: &JinjaEnv,
-    ctx: &BTreeMap<String, Value>,
+    ctx: &impl Serialize,
     listeners: &[Rc<dyn RenderingEventListener>],
     tokenizer_listeners: &[Rc<dyn minijinja::listener::TokenizerEventListener>],
     filename: &Path,
+    ast_visitor: Option<&mut dyn FnMut(&minijinja::compiler::ast::Stmt<'_>)>,
 ) -> FsResult<String> {
     let result = env
         .env
@@ -326,6 +472,7 @@ pub fn render_sql_with_listeners(
             ctx,
             listeners,
             tokenizer_listeners,
+            ast_visitor,
         )
         .map_err(|e| FsError::from_jinja_err(e, "Failed to render SQL"))?;
 
@@ -426,6 +573,17 @@ pub fn get_catalog_by_relations(
     Ok(result)
 }
 
+fn template_exists(env: &JinjaEnv, name: &str) -> FsResult<bool> {
+    match env.env.get_template(name) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == ErrorKind::TemplateNotFound => Ok(false),
+        Err(error) => Err(Box::new(FsError::from_jinja_err(
+            error,
+            "Failed to load template",
+        ))),
+    }
+}
+
 /// Find the template for a given macro
 pub fn find_macro_template(
     env: &JinjaEnv,
@@ -433,7 +591,16 @@ pub fn find_macro_template(
     root_project_name: &str,
     current_project_name: &str,
 ) -> FsResult<String> {
-    let cache_key = (current_project_name.to_string(), macro_name.to_string());
+    let dialect = env
+        .env
+        .get_dialect()
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap_or_else(|| "postgres".to_string());
+    let cache_key = (
+        dialect.clone(),
+        current_project_name.to_string(),
+        macro_name.to_string(),
+    );
 
     // Check cache first - return early if found
     if let Ok(cache) = TEMPLATE_CACHE.lock()
@@ -443,7 +610,7 @@ pub fn find_macro_template(
     }
     // First try - check the current project
     let template_name = format!("{current_project_name}.{macro_name}");
-    if env.has_template(&template_name) {
+    if template_exists(env, &template_name)? {
         // Cache and return
         if let Ok(mut cache) = TEMPLATE_CACHE.lock() {
             cache.insert(cache_key, template_name.clone());
@@ -453,7 +620,7 @@ pub fn find_macro_template(
 
     // Second try - check the root project
     let template_name = format!("{root_project_name}.{macro_name}");
-    if env.has_template(&template_name) {
+    if template_exists(env, &template_name)? {
         // Cache and return
         if let Ok(mut cache) = TEMPLATE_CACHE.lock() {
             cache.insert(cache_key, template_name.clone());
@@ -462,10 +629,10 @@ pub fn find_macro_template(
     }
 
     // Last attempt - check dbt internal package
-    let dbt_and_adapters = env.get_dbt_and_adapters_namespace();
+    let dbt_and_adapters = env.get_dbt_and_adapters_namespace(&dialect);
     if let Some(package) = dbt_and_adapters.get(&Value::from(macro_name)) {
         let template_name = format!("{package}.{macro_name}");
-        if env.has_template(&template_name) {
+        if template_exists(env, &template_name)? {
             // Cache and return
             if let Ok(mut cache) = TEMPLATE_CACHE.lock() {
                 cache.insert(cache_key, template_name.clone());
@@ -483,63 +650,77 @@ pub fn find_macro_template(
 }
 
 /// Generate a component name using the specified macro
-pub fn generate_component_name(
+///
+/// Takes the node by value and returns it with the name, so the macro can read
+/// it without the node being copied.
+pub fn generate_component_name<T: InternalDbtNode + Clone>(
     env: &JinjaEnv,
     component: &str,
     root_project_name: &str,
     current_project_name: &str,
     base_ctx: &BTreeMap<String, Value>,
     custom_name: Option<String>,
-    node: Option<&dyn InternalDbtNode>,
+    node: T,
+) -> FsResult<(String, T)> {
+    // The macro only reads the node, but Jinja objects must be 'static, so the
+    // context can't borrow it. We lend the owned node through an `Arc` instead
+    // and take it back once the call is done.
+    let node = Arc::new(node);
+    let mut context = dbt_schemas::jinja_node::LazyNodeContext::from_node(
+        node.clone(),
+        dbt_schemas::schemas::serialization_utils::SerializationMode::KeepNone,
+    );
+    let prefix = match node.resource_type() {
+        NodeType::Model => "models",
+        NodeType::Snapshot => "snapshots",
+        NodeType::Seed => "seeds",
+        NodeType::Analysis => "analyses",
+        _ => "",
+    };
+    if !prefix.is_empty() {
+        context.transform("path", move |value| {
+            if let Some(path) = value.as_str() {
+                let stripped = Path::new(path)
+                    .strip_prefix(prefix)
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .unwrap_or_else(|_| path.to_string());
+                dbt_yaml::Value::string(stripped)
+            } else {
+                value
+            }
+        });
+    }
+    let result = generate_component_name_value(
+        env,
+        component,
+        root_project_name,
+        current_project_name,
+        base_ctx,
+        custom_name,
+        Value::from_object(context),
+    );
+    let node = Arc::unwrap_or_clone(node);
+    result.map(|name| (name, node))
+}
+
+/// Invokes a naming macro with an existing Jinja node value.
+#[allow(clippy::too_many_arguments)]
+pub fn generate_component_name_value(
+    env: &JinjaEnv,
+    component: &str,
+    root_project_name: &str,
+    current_project_name: &str,
+    base_ctx: &BTreeMap<String, Value>,
+    custom_name: Option<String>,
+    node: Value,
 ) -> FsResult<String> {
     let macro_name = format!("generate_{component}_name");
-    // find the macro template - this is now cached for performance
     let template_name =
         find_macro_template(env, &macro_name, root_project_name, current_project_name)?;
-
-    // Create a state object for rendering
     let template = env.get_template(&template_name)?;
-
-    // Create a new state
-    let new_state = template.eval_to_state(base_ctx, &[])?;
-
-    // Build the args
-    let mut args = custom_name
-        .map(|name| vec![Value::from(name)])
-        .unwrap_or_else(|| vec![Value::from(())]); // If no custom name, pass in none so the macro reads from the target context
-    if let Some(node) = node {
-        let mut serialized = node.serialize_keep_none();
-        // Strip resource-type prefix from path so node.path inside macros like
-        // generate_schema_name matches dbt-core convention ("staging/model.sql"
-        // not "models/staging/model.sql"). build_flat_graph does the same for
-        // graph.nodes.
-        let prefix = match node.resource_type() {
-            NodeType::Model => "models",
-            NodeType::Snapshot => "snapshots",
-            NodeType::Seed => "seeds",
-            NodeType::Analysis => "analyses",
-            _ => "",
-        };
-        if !prefix.is_empty() {
-            if let YmlValue::Mapping(ref mut map, _) = serialized {
-                let path_key = YmlValue::string("path".to_string());
-                if let Some(path_value) = map.get(&path_key) {
-                    if let Some(path_str) = path_value.as_str() {
-                        let stripped = Path::new(path_str)
-                            .strip_prefix(prefix)
-                            .map(|p| p.to_string_lossy().into_owned())
-                            .unwrap_or_else(|_| path_str.to_string());
-                        map.insert(path_key, YmlValue::string(stripped));
-                    }
-                }
-            }
-        }
-        args.push(Value::from_serialize(serialized));
-    }
-
-    // Call the macro
-    let result = new_state
-        .call_macro_raw(macro_name.as_str(), &args, &[])
+    let state = template.eval_to_state(base_ctx, &[])?;
+    state
+        .call_macro_raw(&macro_name, &[Value::from(custom_name), node], &[])
         .map(|v| match v.kind() {
             ValueKind::None => "".to_string(),
             _ => v.to_string().trim().to_string(),
@@ -549,9 +730,7 @@ pub fn generate_component_name(
                 err,
                 format!("Failed to run macro {macro_name} for component {component}"),
             ))
-        })?;
-    // Return the result
-    Ok(result)
+        })
 }
 
 /// Clear template cache (primarily for testing purposes)
@@ -569,66 +748,23 @@ pub fn generate_relation_name(
     identifier: &str,
     quote_config: ResolvedQuoting,
 ) -> FsResult<String> {
-    // Create relation using the adapter
-    match create_relation(
+    render_effective_relation(
         parse_adapter.adapter_type(),
-        database.to_owned(),
-        schema.to_owned(),
-        Some(identifier.to_owned()),
-        None, // relation_type
+        database,
+        schema,
+        identifier,
         quote_config,
-    ) {
-        Ok(relation) => Ok(relation.render_self_as_str()),
-        Err(e) => Err(e),
-    }
+        None,
+    )
 }
 
 type NodeId = String;
 /// Returns the metadata of the current model from the given Jinja execution state
 pub fn node_metadata_from_state(state: &State) -> Option<(NodeId, PathBuf)> {
-    match state.lookup("model", &[]) {
-        Some(node) => {
-            if let Ok(model) = DbtModel::deserialize(&node) {
-                Some((
-                    model.__common_attr__.unique_id,
-                    model.__common_attr__.original_file_path.to_path_buf(),
-                ))
-            } else if let Ok(test) = DbtTest::deserialize(&node) {
-                Some((
-                    test.__common_attr__.unique_id,
-                    test.__common_attr__.original_file_path.to_path_buf(),
-                ))
-            } else if let Ok(snapshot) = DbtSnapshot::deserialize(&node) {
-                Some((
-                    snapshot.__common_attr__.unique_id,
-                    snapshot.__common_attr__.original_file_path.to_path_buf(),
-                ))
-            } else if let Ok(seed) = DbtSeed::deserialize(&node) {
-                Some((
-                    seed.__common_attr__.unique_id,
-                    seed.__common_attr__.original_file_path.to_path_buf(),
-                ))
-            } else if let Ok(unit_test) = DbtUnitTest::deserialize(&node) {
-                Some((
-                    unit_test.__common_attr__.unique_id,
-                    unit_test.__common_attr__.original_file_path.to_path_buf(),
-                ))
-            } else {
-                // Fallback: direct attribute extraction for Object types
-                // (e.g. LazyModelWrapper) where full deserialization fails
-                let unique_id = node
-                    .get_attr("unique_id")
-                    .ok()
-                    .and_then(|v| v.as_str().map(|s| s.to_string()));
-                let file_path = node
-                    .get_attr("original_file_path")
-                    .ok()
-                    .and_then(|v| v.as_str().map(PathBuf::from));
-                unique_id.zip(file_path)
-            }
-        }
-        None => None,
-    }
+    let node = state.lookup("model", &[])?;
+    let unique_id = node.get_attr("unique_id").ok()?.as_str()?.to_owned();
+    let file_path = PathBuf::from(node.get_attr("original_file_path").ok()?.as_str()?);
+    Some((unique_id, file_path))
 }
 
 /// Render a reference or source string and return the corresponding SqlResource
@@ -690,33 +826,216 @@ pub fn dependency_package_name_from_ctx<'a>(
 
 /// Add common context vars for tasks
 pub fn add_task_context(
-    base_context: &mut BTreeMap<String, Value>,
+    base_context: &mut impl Extend<(String, Value)>,
     common: &CommonAttributes,
     thread_id: &i32,
 ) {
-    base_context.insert(
-        TARGET_PACKAGE_NAME.to_string(),
-        MinijinjaValue::from(common.package_name.clone()),
-    );
-    base_context.insert(
-        TARGET_UNIQUE_ID.to_string(),
-        MinijinjaValue::from(common.unique_id.clone()),
-    );
-    base_context.insert(
-        THREAD_ID.to_string(),
-        MinijinjaValue::from(format!("Thread-{}", thread_id)),
-    );
+    base_context.extend([
+        (
+            TARGET_PACKAGE_NAME.to_string(),
+            MinijinjaValue::from(common.package_name.clone()),
+        ),
+        (
+            TARGET_UNIQUE_ID.to_string(),
+            MinijinjaValue::from(common.unique_id.clone()),
+        ),
+        (
+            THREAD_ID.to_string(),
+            MinijinjaValue::from(format!("Thread-{}", thread_id)),
+        ),
+    ]);
 }
 
 #[cfg(test)]
 mod tests {
     use std::rc::Rc;
 
-    use minijinja::{Environment, context, listener::RenderingEventListener};
+    use minijinja::{
+        Environment, MacroSpans, context, listener::RenderingEventListener, machinery::Span,
+    };
 
     use crate::listener::DefaultRenderingEventListener;
 
-    use super::raw_source_spans_to_macro_span_vec;
+    use super::{
+        find_macro_template, inject_ctes_into_existing_with, raw_source_spans_to_macro_span_vec,
+        shift_macro_spans_after_insertion,
+    };
+    use crate::jinja_environment::JinjaEnv;
+
+    #[test]
+    fn malformed_macro_does_not_fall_back_to_another_package() {
+        let mut env = Environment::new();
+        env.set_loader(|name| match name {
+            "current.bad_macro" => Ok(Some(("{{".to_string(), Some("current.sql".into())))),
+            "root.bad_macro" => Ok(Some(("valid".to_string(), Some("root.sql".into())))),
+            _ => Ok(None),
+        });
+        let env = JinjaEnv::new(env);
+        super::clear_template_cache();
+
+        assert!(find_macro_template(&env, "bad_macro", "root", "current").is_err());
+        super::clear_template_cache();
+    }
+
+    #[test]
+    fn injects_ctes_into_existing_with_chain() {
+        let sql = "WITH student_attendance AS (\n    SELECT 1\n)\nSELECT * FROM student_attendance";
+        let ctes = "__dbt__cte__valid_class as (\nSELECT 1\n)";
+
+        let (actual, _) = inject_ctes_into_existing_with(sql, ctes).unwrap();
+
+        assert_eq!(
+            actual,
+            "WITH  __dbt__cte__valid_class as (\nSELECT 1\n), student_attendance AS (\n    SELECT 1\n)\nSELECT * FROM student_attendance"
+        );
+    }
+
+    #[test]
+    fn injects_after_recursive_keyword_and_preserves_leading_comments() {
+        let sql = "-- model comment\n/* unicode: ☃ */\nWITH RECURSIVE paths AS (SELECT 1)\nSELECT * FROM paths";
+
+        let (actual, _) = inject_ctes_into_existing_with(sql, "injected AS (SELECT 2)").unwrap();
+
+        assert_eq!(
+            actual,
+            "-- model comment\n/* unicode: ☃ */\nWITH RECURSIVE  injected AS (SELECT 2), paths AS (SELECT 1)\nSELECT * FROM paths"
+        );
+    }
+
+    #[test]
+    fn injects_after_recursive_keyword_separated_by_comments() {
+        for (sql, expected) in [
+            (
+                "WITH /* keep */ RECURSIVE paths AS (SELECT 1) SELECT * FROM paths",
+                "WITH /* keep */ RECURSIVE  injected AS (SELECT 2), paths AS (SELECT 1) SELECT * FROM paths",
+            ),
+            (
+                "WITH -- keep\nRECURSIVE paths AS (SELECT 1) SELECT * FROM paths",
+                "WITH -- keep\nRECURSIVE  injected AS (SELECT 2), paths AS (SELECT 1) SELECT * FROM paths",
+            ),
+        ] {
+            let (actual, _) =
+                inject_ctes_into_existing_with(sql, "injected AS (SELECT 2)").unwrap();
+
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[test]
+    fn ignores_with_outside_a_leading_keyword() {
+        for sql in [
+            "SELECT 'WITH value'",
+            "SELECT 1 -- WITH ignored",
+            "(WITH nested AS (SELECT 1) SELECT * FROM nested)",
+            "\"WITH\" AS identifier",
+        ] {
+            assert!(inject_ctes_into_existing_with(sql, "injected AS (SELECT 2)").is_none());
+        }
+    }
+
+    #[test]
+    fn shifts_only_macro_spans_after_the_insertion() {
+        let sql = "WITH existing AS (\n    SELECT value\n)";
+        let (_, insertion) =
+            inject_ctes_into_existing_with(sql, "injected AS (\nSELECT 1\n)").unwrap();
+        let source = Span::default();
+        let before = Span {
+            start_line: 1,
+            start_col: 1,
+            start_offset: 0,
+            end_line: 1,
+            end_col: 4,
+            end_offset: 3,
+        };
+        let after = Span {
+            start_line: 1,
+            start_col: 6,
+            start_offset: 5,
+            end_line: 1,
+            end_col: 14,
+            end_offset: 13,
+        };
+        let ending_at_insertion = Span {
+            start_line: 1,
+            start_col: 1,
+            start_offset: 0,
+            end_line: 1,
+            end_col: 5,
+            end_offset: 4,
+        };
+        let crossing_insertion = Span {
+            start_line: 1,
+            start_col: 1,
+            start_offset: 0,
+            end_line: 1,
+            end_col: 14,
+            end_offset: 13,
+        };
+        let mut macro_spans = MacroSpans {
+            items: vec![
+                (source, before),
+                (source, ending_at_insertion),
+                (source, crossing_insertion),
+                (source, after),
+            ],
+            ..Default::default()
+        };
+
+        shift_macro_spans_after_insertion(&mut macro_spans, insertion);
+
+        assert_eq!(macro_spans.items[0].1, before);
+        assert_eq!(macro_spans.items[1].1, ending_at_insertion);
+        assert_eq!(
+            macro_spans.items[2].1.start_line,
+            crossing_insertion.start_line
+        );
+        assert_eq!(
+            macro_spans.items[2].1.start_col,
+            crossing_insertion.start_col
+        );
+        assert_eq!(
+            macro_spans.items[2].1.start_offset,
+            crossing_insertion.start_offset
+        );
+        assert_eq!(
+            macro_spans.items[2].1.end_offset,
+            crossing_insertion.end_offset + insertion.added_bytes
+        );
+        assert_eq!(macro_spans.items[3].1.start_line, 3);
+        assert_eq!(macro_spans.items[3].1.start_col, 4);
+        assert_eq!(
+            macro_spans.items[3].1.start_offset,
+            after.start_offset + insertion.added_bytes
+        );
+    }
+
+    #[test]
+    fn shifts_same_line_unicode_macro_span_by_character_columns() {
+        let sql = "/* ☃ */ WITH existing AS (SELECT value)";
+        let existing_offset = sql.find("existing").unwrap();
+        let existing_col = sql[..existing_offset].chars().count() as u32 + 1;
+        let expanded = Span {
+            start_line: 1,
+            start_col: existing_col,
+            start_offset: existing_offset as u32,
+            end_line: 1,
+            end_col: existing_col + "existing".len() as u32,
+            end_offset: (existing_offset + "existing".len()) as u32,
+        };
+        let (actual, insertion) =
+            inject_ctes_into_existing_with(sql, "injected AS (SELECT '☃')").unwrap();
+        let mut macro_spans = MacroSpans {
+            items: vec![(Span::default(), expanded)],
+            ..Default::default()
+        };
+
+        shift_macro_spans_after_insertion(&mut macro_spans, insertion);
+
+        let actual_offset = actual.find("existing").unwrap();
+        let actual_col = actual[..actual_offset].chars().count() as u32 + 1;
+        assert_eq!(macro_spans.items[0].1.start_offset, actual_offset as u32);
+        assert_eq!(macro_spans.items[0].1.start_col, actual_col);
+    }
 
     #[test]
     fn raw_source_spans_track_rendered_loop_lines() {

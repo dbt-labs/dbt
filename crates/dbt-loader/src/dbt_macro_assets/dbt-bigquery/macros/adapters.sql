@@ -1,4 +1,4 @@
-{% macro bigquery__create_table_as(temporary, relation, compiled_code, language='sql') -%}
+{% macro bigquery__create_table_as(temporary, relation, compiled_code, language='sql', replace=true) -%}
   {%- if language == 'sql' -%}
     {%- set raw_partition_by = config.get('partition_by', none) -%}
     {%- set raw_cluster_by = config.get('cluster_by', none) -%}
@@ -12,10 +12,17 @@
     {%- endif -%}
 
     {%- set catalog_relation = adapter.build_catalog_relation(config.model) -%}
+    {#-- Never replace a snapshot's target table. The default snapshot
+         materialization creates it only on the first build, when the relation cache says it does not
+         exist, so a inconsistent cache now errors instead of silently dropping a snapshot. Later runs build a
+         temporary staging table, thus we should keep `replace`. `model` is not defined in all the existing calling contexts. --#}
+    {%- set is_snapshot = model is defined and model.resource_type == 'snapshot' -%}
+    {%- set is_snapshot_target = is_snapshot and not temporary -%}
+    {%- set replace = replace and not is_snapshot_target -%}
 
     {{ sql_header if sql_header is not none }}
 
-    create or replace table {{ relation }}
+    create {% if replace %}or replace {% endif %}table {{ relation }}
       {%- set contract_config = config.get('contract') -%}
       {%- if contract_config.enforced -%}
         {{ get_assert_columns_equivalent(compiled_code) }}
@@ -28,7 +35,7 @@
     {{ partition_by(partition_config) }}
     {{ cluster_by(raw_cluster_by) }}
 
-    {% if catalog_relation.table_format == 'iceberg' and not temporary %}
+    {% if catalog_relation.table_format == 'iceberg' and not temporary and not catalog_relation.lakehouse_catalog %}
     {%- if catalog_relation.connection_id -%} with connection `{{ catalog_relation.connection_id }}`
     {%- else -%} with connection default
     {%- endif -%}
@@ -69,6 +76,14 @@
   {%- endif -%}
 
 {%- endmacro -%}
+
+{% macro bq_create_table_as_with_replace(temporary, relation, compiled_code, language='sql', replace=true) %}
+  {% if replace %}
+    {{ return(create_table_as(temporary, relation, compiled_code, language)) }}
+  {% else %}
+    {{ return(bigquery__create_table_as(temporary, relation, compiled_code, language, replace=false)) }}
+  {% endif %}
+{% endmacro %}
 
 {% macro bigquery__create_view_as(relation, sql) -%}
   {%- set sql_header = config.get('sql_header', none) -%}
@@ -257,6 +272,37 @@ having count(*) > 1
 
   {% do adapter.upload_file(local_file_path, database, table_schema, table_name, kwargs=kwargs) %}
 
+{% endmacro %}
+
+{% macro bigquery__make_relation_with_suffix(base_relation, suffix, dstring) %}
+    {% if dstring %}
+      {% set dt = modules.datetime.datetime.now() %}
+      {% set dtstring = dt.strftime("%H%M%S%f") %}
+      {% set suffix = suffix ~ dtstring %}
+    {% endif %}
+    {% set suffix_length = suffix|length %}
+    {% set relation_max_name_length = 1024 %}  {# BigQuery limit #}
+    {% if suffix_length > relation_max_name_length %}
+        {% do exceptions.raise_compiler_error('Relation suffix is too long (' ~ suffix_length ~ ' characters). Maximum length is ' ~ relation_max_name_length ~ ' characters.') %}
+    {% endif %}
+    {% set identifier = base_relation.identifier[:relation_max_name_length - suffix_length] ~ suffix %}
+
+    {{ return(base_relation.incorporate(path={"identifier": identifier })) }}
+
+{% endmacro %}
+
+{% macro bigquery__make_temp_relation(base_relation, suffix) %}
+    {% set temp_relation = bigquery__make_relation_with_suffix(base_relation, suffix, dstring=True) %}
+    {{ return(temp_relation) }}
+{% endmacro %}
+
+{% macro bigquery__make_intermediate_relation(base_relation, suffix) %}
+    {{ return(bigquery__make_relation_with_suffix(base_relation, suffix, dstring=False)) }}
+{% endmacro %}
+
+{% macro bigquery__make_backup_relation(base_relation, backup_relation_type, suffix) %}
+    {% set backup_relation = bigquery__make_relation_with_suffix(base_relation, suffix, dstring=False) %}
+    {{ return(backup_relation.incorporate(type=backup_relation_type)) }}
 {% endmacro %}
 
 

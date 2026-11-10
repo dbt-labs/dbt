@@ -212,6 +212,16 @@ impl ParsedMetric {
     }
 }
 
+/// Fusion serialises a node's resolved config as `config`, except for saved queries and
+/// semantic models, where it is `deprecated_config`.
+fn node_config(payload: &Value) -> Option<Value> {
+    payload
+        .get("config")
+        .filter(|v| !v.is_null())
+        .or_else(|| payload.get("deprecated_config").filter(|v| !v.is_null()))
+        .cloned()
+}
+
 pub struct SemanticEntity {
     pub name: String,
     pub entity_type: String,
@@ -219,6 +229,7 @@ pub struct SemanticEntity {
     pub label: Option<String>,
     pub entity_role: Option<String>,
     pub expr: Option<String>,
+    pub config: Option<Value>,
 }
 
 pub struct SemanticMeasure {
@@ -231,6 +242,7 @@ pub struct SemanticMeasure {
     pub agg_time_dimension: Option<String>,
     pub agg_params: Option<Value>,
     pub non_additive_dimension: Option<Value>,
+    pub config: Option<Value>,
 }
 
 pub struct SemanticDimension {
@@ -242,6 +254,7 @@ pub struct SemanticDimension {
     pub is_partition: bool,
     pub time_granularity: Option<String>,
     pub validity_params: Option<Value>,
+    pub config: Option<Value>,
 }
 
 pub struct ParsedSemanticModel {
@@ -257,6 +270,7 @@ pub struct ParsedSemanticModel {
     pub depends_on_macros: Vec<String>,
     pub group_name: Option<String>,
     pub created_at: Option<f64>,
+    pub config: Option<Value>,
     pub entities: Vec<SemanticEntity>,
     pub measures: Vec<SemanticMeasure>,
     pub dimensions: Vec<SemanticDimension>,
@@ -293,6 +307,7 @@ impl ParsedSemanticModel {
                             label: str_field(ent, "label"),
                             entity_role: str_field(ent, "role"),
                             expr: str_field(ent, "expr"),
+                            config: ent.get("config").filter(|v| !v.is_null()).cloned(),
                         })
                     })
                     .collect()
@@ -319,6 +334,7 @@ impl ParsedSemanticModel {
                             agg_time_dimension: str_field(meas, "agg_time_dimension"),
                             agg_params: meas.get("agg_params").cloned(),
                             non_additive_dimension: meas.get("non_additive_dimension").cloned(),
+                            config: meas.get("config").filter(|v| !v.is_null()).cloned(),
                         })
                     })
                     .collect()
@@ -355,6 +371,7 @@ impl ParsedSemanticModel {
                                 .unwrap_or(false),
                             time_granularity,
                             validity_params: dim.get("validity_params").cloned(),
+                            config: dim.get("config").filter(|v| !v.is_null()).cloned(),
                         })
                     })
                     .collect()
@@ -378,6 +395,7 @@ impl ParsedSemanticModel {
             depends_on_macros: depends_on_macros(payload),
             group_name: str_field(&attr, "group"),
             created_at: attr.get("created_at").and_then(|v| v.as_f64()),
+            config: node_config(payload),
             entities,
             measures,
             dimensions,
@@ -400,6 +418,7 @@ pub struct ParsedSavedQuery {
     pub tags: Vec<String>,
     pub group_name: Option<String>,
     pub created_at: Option<f64>,
+    pub config: Option<Value>,
 }
 
 impl ParsedSavedQuery {
@@ -444,6 +463,7 @@ impl ParsedSavedQuery {
             tags,
             group_name: str_field(&attr, "group"),
             created_at: attr.get("created_at").and_then(|v| v.as_f64()),
+            config: node_config(payload),
         }
     }
 }
@@ -464,6 +484,8 @@ pub struct ParsedExposure {
     pub depends_on_nodes: Vec<String>,
     pub depends_on_macros: Vec<String>,
     pub tags: Vec<String>,
+    pub meta: Option<Value>,
+    pub config: Option<Value>,
     pub created_at: Option<f64>,
 }
 
@@ -500,6 +522,12 @@ impl ParsedExposure {
             depends_on_nodes: depends_on_nodes(payload),
             depends_on_macros: depends_on_macros(payload),
             tags: tags.to_vec(),
+            meta: common
+                .get("meta")
+                .filter(|v| !v.is_null())
+                .or_else(|| payload.get("meta"))
+                .cloned(),
+            config: payload.get("config").filter(|v| !v.is_null()).cloned(),
             created_at: attr.get("created_at").and_then(|v| v.as_f64()),
         }
     }
@@ -594,13 +622,21 @@ impl ParsedMacro {
 
 pub struct ParsedDoc {
     pub name: String,
+    pub package_name: String,
+    pub file_path: String,
+    pub original_file_path: String,
     pub block_contents: Option<String>,
 }
 
 impl ParsedDoc {
     pub fn from_payload(payload: &Value) -> Self {
+        // Docs serialize flat (no __attr__ nesting), like macros above.
         Self {
             name: str_field_default(payload, "name", ""),
+            package_name: str_field_default(payload, "package_name", ""),
+            // `DbtDocsMacro` calls it `path`; the column is `file_path`.
+            file_path: str_field_default(payload, "path", ""),
+            original_file_path: str_field_default(payload, "original_file_path", ""),
             block_contents: str_field(payload, "block_contents"),
         }
     }
@@ -622,6 +658,7 @@ pub struct ParsedUnitTest {
     pub schema_name: String,
     pub depends_on_nodes: Vec<String>,
     pub depends_on_macros: Vec<String>,
+    pub config: Option<Value>,
 }
 
 impl ParsedUnitTest {
@@ -660,6 +697,7 @@ impl ParsedUnitTest {
             schema_name: str_field_default(&common, "schema", ""),
             depends_on_nodes: depends_on_nodes(payload),
             depends_on_macros: depends_on_macros(payload),
+            config: payload.get("config").filter(|v| !v.is_null()).cloned(),
         }
     }
 }
@@ -757,5 +795,44 @@ mod tests {
             m.name, "correct_name",
             "__common_attr__.name must take precedence"
         );
+    }
+
+    /// `ParsedDoc` must read every column `dbt.docs` declares, not just `name`
+    /// and `block_contents`.
+    ///
+    /// The docs-v2 overview page picks the winning `__overview__` block by
+    /// package, so a NULL `package_name` makes a user-authored overview
+    /// indistinguishable from the injected default. Note `file_path` comes from
+    /// the payload's `path` key — `DbtDocsMacro` names the field `path`, and
+    /// reading `file_path` instead yields an empty string rather than an error.
+    #[test]
+    fn parsed_doc_reads_package_and_paths() {
+        let payload = json!({
+            "name": "__overview__",
+            "package_name": "jaffle_shop",
+            "path": "overview.md",
+            "original_file_path": "models/overview.md",
+            "unique_id": "doc.jaffle_shop.__overview__",
+            "block_contents": "# Jaffle Shop"
+        });
+        let d = ParsedDoc::from_payload(&payload);
+        assert_eq!(d.name, "__overview__");
+        assert_eq!(d.package_name, "jaffle_shop");
+        assert_eq!(d.file_path, "overview.md", "file_path reads the `path` key");
+        assert_eq!(d.original_file_path, "models/overview.md");
+        assert_eq!(d.block_contents.as_deref(), Some("# Jaffle Shop"));
+    }
+
+    /// A payload from before those fields were read must still parse, so an
+    /// index written by an older Fusion keeps loading (the columns are nullable
+    /// and simply stay empty).
+    #[test]
+    fn parsed_doc_tolerates_a_legacy_payload() {
+        let payload = json!({ "name": "__overview__", "block_contents": "hi" });
+        let d = ParsedDoc::from_payload(&payload);
+        assert_eq!(d.name, "__overview__");
+        assert_eq!(d.package_name, "");
+        assert_eq!(d.file_path, "");
+        assert_eq!(d.original_file_path, "");
     }
 }

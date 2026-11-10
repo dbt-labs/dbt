@@ -15,15 +15,16 @@ workspace = true
 [dependencies]
 dbt-adapter-core = { workspace = true }
 dbt-error = { workspace = true }
+dbt-flags = { workspace = true }
 dbt-frontend-common = { workspace = true }
 dbt-telemetry = { workspace = true }
 dbt-tracing = { workspace = true }
 # leaf dependencies (depend on little more than std lib)
 blake3 = { workspace = true }
 dbt-base = { workspace = true }
+dbt-cancel = { workspace = true }
 hex = { workspace = true }
 md5 = { workspace = true }
-once_cell = { workspace = true }
 
 clap = { workspace = true, features = ["derive", "env"] }
 indexmap = { workspace = true, features = ["serde"] }
@@ -34,9 +35,7 @@ uuid = { workspace = true, features = ["v7"] }
 
 chrono = { workspace = true }
 console = { workspace = true }
-dashmap = { workspace = true }
 dbt-yaml = { workspace = true }
-dialoguer = { workspace = true }
 humantime = { workspace = true }
 minijinja = { workspace = true }
 scc = { workspace = true }
@@ -50,7 +49,6 @@ strum_macros = { workspace = true }
 arc-swap = { workspace = true }
 tokio = { workspace = true, features = ["fs"] }
 
-normalize-path = { workspace = true }
 pathdiff = { workspace = true }
 
 dbt-tui-progress = { workspace = true }
@@ -60,6 +58,8 @@ dirs = { workspace = true }
 
 sha2 = { workspace = true }
 
+url = { workspace = true }
+
 # Tracing
 proto-rust = { workspace = true }
 tracing = { workspace = true }
@@ -67,17 +67,14 @@ tracing-subscriber = { workspace = true }
 
 dbt-fusion-workspace-hack = { version = "0.1" }
 
-[target.'cfg(windows)'.dependencies]
-dunce = "1.0.5"
-powershell_script = "1.1.0"
-
 [dev-dependencies]
 bytes = { workspace = true }
+dbt-runtime = { workspace = true }
 dbt-telemetry = { workspace = true, features = ["test-utils"] }
 dbt-test-primitives = { workspace = true }
 dbt-tracing = { workspace = true, features = ["test-utils"] }
 indoc = { workspace = true }
-tempfile = { workspace = true }
+similar = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [lib]

@@ -45,7 +45,7 @@ impl DuckDb {
         db_builder
             .with_named_option("path", ":memory:")
             .expect("failed to set DuckDB path");
-        let mut database = db_builder
+        let database = db_builder
             .build(&mut drv)
             .expect("failed to create DuckDB database");
         let connection = database

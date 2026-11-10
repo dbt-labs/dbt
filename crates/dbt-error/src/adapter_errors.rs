@@ -1,11 +1,13 @@
-use dbt_base::Cancellable;
-use minijinja::{Error as MinijinjaError, ErrorKind as MinijinjaErrorKind};
 use std::future::Future;
 use std::io::{self};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::{fmt, panic};
-use tokio::task::JoinError;
+
+use minijinja::{Error as MinijinjaError, ErrorKind as MinijinjaErrorKind};
+
+use dbt_cancel::Cancellable;
+use dbt_proc_macros::DebugNoInline;
 
 use super::{ErrorCode, types::FsError};
 
@@ -15,7 +17,7 @@ pub type AdapterResult<T> = Result<T, AdapterError>;
 pub type AsyncAdapterResult<'a, T, E = AdapterError> =
     Pin<Box<dyn Future<Output = Result<T, Cancellable<E>>> + Send + 'a>>;
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[derive(DebugNoInline, Copy, Clone, Eq, PartialEq)]
 pub enum AdapterErrorKind {
     /// Internal error
     Internal,
@@ -37,6 +39,8 @@ pub enum AdapterErrorKind {
     ReplayDataInvalid,
     /// Recorded replay data missing for requested operation
     ReplayDataMissing,
+    /// Replayed call's method name didn't match the next recorded event
+    ReplayMethodMismatch,
     /// SQL output did not match expected (conformance/build diff)
     SqlMismatch,
     /// Unexpected Database Ref
@@ -62,6 +66,7 @@ pub enum AdapterErrorKind {
 impl fmt::Display for AdapterErrorKind {
     /// For a string representation of the error kind
     /// For a description/explanation, use [AdapterErrorKind::description]
+    #[inline(never)]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
@@ -77,6 +82,7 @@ impl fmt::Display for AdapterErrorKind {
                 AdapterErrorKind::UnexpectedResult => "Unexpected Result",
                 AdapterErrorKind::ReplayDataInvalid => "Replay Data Invalid",
                 AdapterErrorKind::ReplayDataMissing => "Replay Data Missing",
+                AdapterErrorKind::ReplayMethodMismatch => "Replay Method Mismatch",
                 AdapterErrorKind::SqlMismatch => "SQL Mismatch",
                 AdapterErrorKind::UnexpectedDbReference => "Unexpected Database Reference",
                 AdapterErrorKind::Cancelled => "Cancelled",
@@ -106,6 +112,7 @@ impl From<AdapterErrorKind> for ErrorCode {
             AdapterErrorKind::UnexpectedResult => ErrorCode::ExecutorFailed,
             AdapterErrorKind::ReplayDataInvalid => ErrorCode::ReplayDataInvalid,
             AdapterErrorKind::ReplayDataMissing => ErrorCode::ReplayDataMissing,
+            AdapterErrorKind::ReplayMethodMismatch => ErrorCode::ReplayDataInvalid,
             AdapterErrorKind::SqlMismatch => ErrorCode::SqlMismatch,
             // When DB is configured incorrectly, e.g. RA3
             AdapterErrorKind::UnexpectedDbReference => ErrorCode::InvalidConfig,
@@ -142,7 +149,7 @@ fn map_sqlstate_to_code(sqlstate: &str) -> Option<ErrorCode> {
 }
 
 /// Adapter error.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct AdapterError {
     kind: AdapterErrorKind,
     message: String,
@@ -154,6 +161,19 @@ pub struct AdapterError {
     vendor_code: Option<i32>,
     /// Source of this error
     source: Option<Arc<dyn std::error::Error + Send + Sync>>,
+}
+
+impl fmt::Debug for AdapterError {
+    #[inline(never)]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AdapterError")
+            .field("kind", &self.kind)
+            .field("message", &self.message)
+            .field("sqlstate", &self.sqlstate)
+            .field("vendor_code", &self.vendor_code)
+            .field("source", &self.source)
+            .finish()
+    }
 }
 
 impl AdapterError {
@@ -235,6 +255,7 @@ impl AdapterError {
 }
 
 impl fmt::Display for AdapterError {
+    #[inline(never)]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let message = self.message();
         if message.is_empty() {
@@ -311,8 +332,21 @@ impl From<dbt_yaml::Error> for AdapterError {
     }
 }
 
-impl From<JoinError> for AdapterError {
-    fn from(err: JoinError) -> Self {
+impl From<tokio::task::JoinError> for AdapterError {
+    fn from(err: tokio::task::JoinError) -> Self {
+        if err.is_cancelled() {
+            AdapterError::new(AdapterErrorKind::Cancelled, "")
+        } else if err.is_panic() {
+            panic::resume_unwind(err.into_panic());
+        } else {
+            // as of today, this is unreachable, but we keep it for future-proofing
+            AdapterError::new(AdapterErrorKind::Internal, err.to_string())
+        }
+    }
+}
+
+impl From<dbt_runtime::JoinError> for AdapterError {
+    fn from(err: dbt_runtime::JoinError) -> Self {
         if err.is_cancelled() {
             AdapterError::new(AdapterErrorKind::Cancelled, "")
         } else if err.is_panic() {
@@ -326,7 +360,14 @@ impl From<JoinError> for AdapterError {
 
 impl From<AdapterError> for Box<FsError> {
     fn from(err: AdapterError) -> Self {
-        let err_code = map_sqlstate_to_code(err.sqlstate()).unwrap_or_else(|| err.kind().into());
+        // NotFound and Authentication come from the driver's status, which is more specific
+        // than the SQLSTATE class: class 42 is "Syntax Error or Access Rule Violation"
+        // (https://docs.databricks.com/aws/en/error-messages/sqlstates), so it also covers
+        // missing objects and privilege failures.
+        let err_code = match err.kind() {
+            AdapterErrorKind::NotFound | AdapterErrorKind::Authentication => err.kind().into(),
+            kind => map_sqlstate_to_code(err.sqlstate()).unwrap_or_else(|| kind.into()),
+        };
         Box::new(FsError::new(err_code, format!("{err}")))
     }
 }
@@ -341,5 +382,56 @@ pub fn into_fs_error(err: Cancellable<AdapterError>) -> Box<FsError> {
             Box::new(e)
         }
         Cancellable::Error(err) => err.into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn code_for(kind: AdapterErrorKind, sqlstate: &str) -> ErrorCode {
+        let bytes = sqlstate.as_bytes();
+        assert_eq!(bytes.len(), 5, "SQLSTATE must be 5 bytes, got {sqlstate:?}");
+        let mut state = [b'0'; 5];
+        state.copy_from_slice(bytes);
+        let err =
+            AdapterError::new_with_sqlstate_and_vendor_code(kind, "boom".to_string(), state, None);
+        Box::<FsError>::from(err).code
+    }
+
+    #[test]
+    fn not_found_and_authentication_win_over_sqlstate_class() {
+        assert_eq!(
+            code_for(AdapterErrorKind::NotFound, "42P01"),
+            ErrorCode::DbNotFound
+        );
+        assert_eq!(
+            code_for(AdapterErrorKind::Authentication, "42501"),
+            ErrorCode::DbAuthFailed
+        );
+        assert_eq!(
+            code_for(AdapterErrorKind::NotFound, "28000"),
+            ErrorCode::DbNotFound
+        );
+        assert_eq!(
+            code_for(AdapterErrorKind::NotFound, "08006"),
+            ErrorCode::DbNotFound
+        );
+        assert_eq!(
+            code_for(AdapterErrorKind::Authentication, "08006"),
+            ErrorCode::DbAuthFailed
+        );
+    }
+
+    #[test]
+    fn other_kinds_still_use_sqlstate_class() {
+        assert_eq!(
+            code_for(AdapterErrorKind::Driver, "42601"),
+            ErrorCode::DbSyntaxInvalid
+        );
+        assert_eq!(
+            code_for(AdapterErrorKind::Driver, "99999"),
+            ErrorCode::DbDriverFailed
+        );
     }
 }

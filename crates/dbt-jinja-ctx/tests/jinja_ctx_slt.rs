@@ -97,8 +97,21 @@ fn fixture_resolve_base_ctx() -> ResolveBaseCtx {
         macro_dispatch_order,
         target_package_name: "my_project".to_string(),
         execute: false,
+        context: JinjaObject::new(MacroLookupContext::new(
+            "my_project".to_string(),
+            None,
+            BTreeSet::from(["my_project".to_string()]),
+        )),
         node: MinijinjaValue::NONE,
         connection_name: String::new(),
+        store_result: MinijinjaValue::from("store-result-stub"),
+        load_result: MinijinjaValue::from("load-result-stub"),
+        store_raw_result: MinijinjaValue::from("store-raw-result-stub"),
+        builtins: MinijinjaValue::from("builtins-stub"),
+        ref_fn: MinijinjaValue::from("ref-stub"),
+        source: MinijinjaValue::from("source-stub"),
+        metric: MinijinjaValue::from("metric-stub"),
+        function: MinijinjaValue::from("function-stub"),
         dbt_namespaces,
     }
 }

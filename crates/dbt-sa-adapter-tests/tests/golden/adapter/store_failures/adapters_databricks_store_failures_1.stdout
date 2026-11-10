@@ -1,0 +1,10 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/one.yml
+   Parsing models/one.sql
+   Running ../scratch/target/run/store_failures/generic_tests/not_null_one_id.sql
+    Passed test  not_null_one_id [1 of 1 in duration]
+==================== Execution Summary =====================
+Finished 'test' successfully for target 'databricks' [duration]
+Processed: 1 test
+Summary: 1 total | 1 success

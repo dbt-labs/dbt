@@ -17,6 +17,7 @@ pub trait ListRelationsSchemasStrategy: Send + Sync {
         relations: Arc<Vec<Arc<dyn BaseRelation>>>,
         unique_id: Option<String>,
         phase: Option<ExecutionPhase>,
+        item_span_operation_id: Option<&str>,
         token: CancellationToken,
     ) -> AsyncAdapterResult<'static, HashMap<String, AdapterResult<Arc<Schema>>>>;
 

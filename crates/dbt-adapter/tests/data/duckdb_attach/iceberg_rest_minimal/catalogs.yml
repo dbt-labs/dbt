@@ -1,0 +1,10 @@
+# Scenario: Minimal iceberg_rest catalog with only a warehouse.
+# Exercises: source = warehouse field; no optional flags emitted.
+catalogs:
+  - name: rest_demo
+    type: iceberg_rest
+    table_format: iceberg
+    config:
+      duckdb:
+        warehouse: "demo_warehouse"
+        catalog_database: "rest_demo"

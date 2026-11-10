@@ -1,0 +1,7 @@
+kind: Features
+body: '[ClickHouse] Adds cluster support and distributed_table / distributed_incremental materializations.'
+time: 2026-09-25T17:47:14.000265+02:00
+custom:
+    author: koletzilla
+    issue: "14580"
+    project: dbt-core

@@ -1,11 +1,11 @@
 use insta::assert_snapshot;
 use minijinja::{
-    constants::MACRO_NAMESPACE_REGISTRY,
+    constants::{MACRO_NAMESPACE_REGISTRY, ROOT_PACKAGE_NAME},
     context,
     dispatch_object::DispatchObject,
     listener::RenderingEventListener,
     value::{mutable_vec::MutableVec, Object, ValueMap},
-    Environment, Error as MinijinjaError, State, Value,
+    Environment, Error as MinijinjaError, ErrorKind, State, Value,
 };
 use std::rc::Rc;
 use std::sync::Arc;
@@ -82,6 +82,20 @@ fn test_set_append() {
     None
     ['x', 'y']
     ");
+}
+
+#[test]
+fn test_if_condition_implied_tuple() {
+    let env = Environment::new();
+    let rv = env
+        .render_str(
+            r#"{% if target_name == "default","np" %}matched{% else %}missed{% endif %}"#,
+            context! { target_name => "other" },
+            &[],
+        )
+        .unwrap();
+
+    assert_eq!(rv, "matched");
 }
 
 #[test]
@@ -200,6 +214,152 @@ fn test_macro_namespace_subscript_lookup() {
     assert_snapshot!(rv, @"two");
 }
 
+fn dispatch_env() -> Environment<'static> {
+    let mut env = Environment::new();
+    env.add_global(ROOT_PACKAGE_NAME, Value::from("myproj"));
+    env.add_global(
+        "dispatch",
+        Value::from_object(DispatchObject {
+            macro_name: "thing".to_string(),
+            package_name: None,
+            strict: false,
+            auto_execute: false,
+            context: None,
+        }),
+    );
+    env
+}
+
+fn dispatch_env_with_fallback(
+    candidate_name: &'static str,
+    candidate: &'static str,
+) -> Environment<'static> {
+    let mut env = dispatch_env();
+    env.add_template(candidate_name, candidate).unwrap();
+    env.add_template(
+        "myproj.default__thing",
+        "{% macro default__thing() %}default{% endmacro %}",
+    )
+    .unwrap();
+    env
+}
+
+#[test]
+fn test_dispatch_skips_template_without_macro() {
+    let mut env = dispatch_env();
+    env.add_template(
+        "myproj.default__thing",
+        "-- intentionally defines no macro\n",
+    )
+    .unwrap();
+
+    let err = env
+        .render_str("{{ dispatch() }}", Value::UNDEFINED, &[])
+        .unwrap_err();
+
+    assert_eq!(err.kind(), ErrorKind::UnknownFunction);
+    assert_eq!(
+        err.detail(),
+        Some(concat!(
+            "In dispatch: No macro named 'thing' found within namespace: 'None'\n",
+            "    Searched for: 'dbt.postgres__thing', 'myproj.postgres__thing', ",
+            "'dbt.default__thing', 'myproj.default__thing', 'dbt.thing', 'myproj.thing'"
+        ))
+    );
+}
+
+#[test]
+fn test_state_lookup_template_without_macro_returns_error() {
+    let mut env = Environment::new();
+    env.add_global(ROOT_PACKAGE_NAME, Value::from("myproj"));
+    env.add_template(
+        "myproj.default__thing",
+        "-- intentionally defines no macro\n",
+    )
+    .unwrap();
+
+    let err = env
+        .render_str("{{ default__thing() }}", Value::UNDEFINED, &[])
+        .unwrap_err();
+
+    assert_eq!(err.kind(), ErrorKind::UnknownFunction);
+    assert_eq!(
+        err.detail(),
+        Some(concat!(
+            "In dispatch: No macro named 'default__thing' found within namespace: 'myproj'\n",
+            "    Searched for: 'myproj.default__thing'"
+        ))
+    );
+}
+
+#[test]
+fn test_dispatch_skips_missing_macro_for_later_candidate() {
+    for candidate in [
+        "-- intentionally defines no macro\n",
+        "{% set postgres__thing = 'not a macro' %}",
+    ] {
+        let env = dispatch_env_with_fallback("myproj.postgres__thing", candidate);
+
+        let rv = env
+            .render_str("{{ dispatch() }}", Value::UNDEFINED, &[])
+            .unwrap();
+
+        assert_eq!(rv, "default");
+    }
+}
+
+#[test]
+fn test_dispatch_skips_missing_macro_for_same_name_later_package() {
+    let env =
+        dispatch_env_with_fallback("dbt.default__thing", "-- intentionally defines no macro\n");
+
+    let rv = env
+        .render_str("{{ dispatch() }}", Value::UNDEFINED, &[])
+        .unwrap();
+
+    assert_eq!(rv, "default");
+}
+
+#[test]
+fn test_dispatch_preserves_candidate_errors() {
+    for candidate in [
+        "{{ fail() }}{% macro postgres__thing() %}postgres{% endmacro %}",
+        "{% macro postgres__thing() %}{{ fail() }}{% endmacro %}",
+    ] {
+        let mut env = dispatch_env_with_fallback("myproj.postgres__thing", candidate);
+        env.add_function("fail", || -> Result<Value, MinijinjaError> {
+            Err(MinijinjaError::new(
+                ErrorKind::InvalidOperation,
+                "candidate failed",
+            ))
+        });
+        let err = env
+            .render_str("{{ dispatch() }}", Value::UNDEFINED, &[])
+            .unwrap_err();
+
+        assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+        assert_eq!(err.detail(), Some("candidate failed"));
+    }
+}
+
+#[test]
+fn test_dispatch_checks_depth_before_template_evaluation() {
+    let mut env = dispatch_env();
+    env.set_recursion_limit(20);
+    env.add_template(
+        "myproj.default__thing",
+        "{{ default__thing() }}{% macro default__thing() %}ok{% endmacro %}",
+    )
+    .unwrap();
+
+    let err = env
+        .render_str("{{ dispatch() }}", Value::UNDEFINED, &[])
+        .unwrap_err();
+
+    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_eq!(err.detail(), Some("recursion limit exceeded"));
+}
+
 #[test]
 fn test_indent_filter_with_width_zero() {
     let env = Environment::new();
@@ -221,4 +381,27 @@ writing
   i
   am
   writing");
+}
+
+#[test]
+fn test_unrecognized_string_escapes_render_verbatim() {
+    let env = Environment::new();
+    for (template, expected) in [
+        (
+            r#"{% set pat = "'[+*\/=<> :;.,!?]+'" %}{{ pat }}"#,
+            r"'[+*\/=<> :;.,!?]+'",
+        ),
+        (r#"{{ "a/b" }}"#, "a/b"),
+        (r#"{{ "http://x.com/a/b" }}"#, "http://x.com/a/b"),
+        (r#"{{ "a/b\tc" }}"#, "a/b\tc"),
+        (r#"{{ "a/b\/c" }}"#, "a/b\\/c"),
+        (r#"{{ "a\/b" }}"#, r"a\/b"),
+        (r#"{{ 'a\/b' }}"#, r"a\/b"),
+        (r#"{{ "\\/" }}"#, r"\/"),
+        (r#"{{ "\d+" }}"#, r"\d+"),
+        (r#"{{ "a\'b\"c\\d" }}"#, r#"a'b"c\d"#),
+    ] {
+        let rv = env.render_str(template, context! {}, &[]).unwrap();
+        assert_eq!(rv, expected, "template: {template}");
+    }
 }

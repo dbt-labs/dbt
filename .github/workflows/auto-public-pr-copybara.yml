@@ -17,10 +17,12 @@ name: Copybara - Auto Public PR Migration
 # ready. PRs from public forks must carry the `ci:approve-public-fork-ci`
 # label before the secret-bearing dispatch runs; it's stripped on each push
 # so updates require re-approval.
+# `labeled` is filtered down to that one label so unrelated labels don't
+# re-dispatch.
 
 on:
   pull_request_target:
-    types: [opened, reopened, synchronize, labeled, unlabeled, ready_for_review]
+    types: [opened, reopened, synchronize, labeled, ready_for_review]
     branches:
       - main
     paths-ignore:
@@ -33,10 +35,12 @@ on:
       - 'crates/dbt-loader/src/loader.rs'
       - 'crates/dbt-loader/src/mod.rs'
 
-# only run this once per PR at a time
+# Only run this once per PR at a time. Only a new push supersedes an earlier
+# run, so the `labeled` run cla-bot's `cla:yes` triggers can't cancel — and
+# then skip — the `opened` run's dispatch.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.number }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event.action == 'synchronize' }}
 
 permissions: {}
 
@@ -45,6 +49,11 @@ env:
 
 jobs:
   check_run_approval:
+    # Job-level `if` cannot read `env`, so CI_LABEL is spelled out here.
+    if: >-
+      github.event.action != 'labeled'
+      || (github.event.label.name == 'ci:approve-public-fork-ci'
+          && github.event.pull_request.head.repo.full_name != github.repository)
     permissions:
       pull-requests: write
       contents: read

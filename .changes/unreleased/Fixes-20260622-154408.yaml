@@ -1,7 +1,0 @@
-kind: Fixes
-body: Fix typo in the `try_or_compiler_error` type-check warning message ("a optional argument argument" -> "an optional argument")
-time: 2026-06-22T15:44:08.000000-00:00
-custom:
-    author: zozo123
-    issue: "15323"
-    project: dbt-core

@@ -230,6 +230,7 @@ tuple_impls! { A B }
 tuple_impls! { A B C }
 tuple_impls! { A B C D }
 tuple_impls! { A B C D E }
+tuple_impls! { A B C D E F }
 
 impl BoxedFilter {
     /// Creates a new boxed filter.
@@ -415,6 +416,22 @@ mod builtins {
         })
     }
 
+    /// Looks up an `attribute=` argument on a value.  Like Jinja2, the
+    /// attribute can be a (dotted) string path or an integer index.
+    fn get_attr(value: &Value, attr: &Value) -> Result<Value, Error> {
+        match attr.as_str() {
+            Some(path) => value.get_path(path),
+            None => value.get_item(attr),
+        }
+    }
+
+    fn get_attr_or_default(value: &Value, attr: &Value, default: &Value) -> Value {
+        match get_attr(value, attr) {
+            Ok(val) if !val.is_undefined() => val,
+            _ => default.clone(),
+        }
+    }
+
     fn cmp_helper(a: &Value, b: &Value, case_sensitive: bool) -> Ordering {
         if !case_sensitive {
             if let (Some(a), Some(b)) = (a.as_str(), b.as_str()) {
@@ -431,6 +448,22 @@ mod builtins {
         a.cmp(b)
     }
 
+    /// Undefined operands reach `dictsort` / `items` when a parse-phase template chains
+    /// through a missing attribute. `handle_undefined(true)` keeps Lenient and Strict erroring.
+    fn undefined_pair_list(state: &State) -> Result<Value, Error> {
+        ok!(state
+            .undefined_behavior()
+            .handle_undefined(true)
+            .map_err(|err| {
+                Error::new(
+                    ErrorKind::InvalidOperation,
+                    "cannot convert value into pair list",
+                )
+                .with_source(err)
+            }));
+        Ok(Value::from(MutableVec::<Value>::new()))
+    }
+
     /// Dict sorting functionality.
     ///
     /// This filter works like `|items` but sorts the pairs by key first.
@@ -442,6 +475,7 @@ mod builtins {
     /// * `reverse`: set to `true` to sort in reverse.
     #[cfg_attr(docsrs, doc(cfg(feature = "builtins")))]
     pub fn dictsort(
+        state: &State,
         v: &Value,
         case_sensitive: Option<bool>,
         by_value: Option<Cow<'_, str>>,
@@ -449,6 +483,9 @@ mod builtins {
         kwargs: Kwargs,
     ) -> Result<Value, Error> {
         if v.kind() != ValueKind::Map {
+            if v.is_undefined() {
+                return undefined_pair_list(state);
+            }
             return Err(Error::new(
                 ErrorKind::InvalidOperation,
                 "cannot convert value into pair list",
@@ -478,10 +515,12 @@ mod builtins {
             rv.reverse();
         }
         kwargs.assert_all_used()?;
-        Ok(rv
-            .into_iter()
-            .map(|(k, v)| Value::from(vec![k, v]))
-            .collect())
+        // Always return a list (like Jinja2's dictsort)
+        Ok(Value::from(
+            rv.into_iter()
+                .map(|(k, v)| Value::from(vec![k, v]))
+                .collect::<MutableVec<_>>(),
+        ))
     }
 
     /// Returns a list of pairs (items) from a mapping.
@@ -502,7 +541,7 @@ mod builtins {
     /// </dl>
     /// ```
     #[cfg_attr(docsrs, doc(cfg(feature = "builtins")))]
-    pub fn items(v: &Value) -> Result<Value, Error> {
+    pub fn items(state: &State, v: &Value) -> Result<Value, Error> {
         if v.kind() == ValueKind::Map {
             let rv = MutableVec::with_capacity(v.len().unwrap_or(0));
             let iter = ok!(v.try_iter());
@@ -511,6 +550,8 @@ mod builtins {
                 rv.push(Value::from(tuple![key, value]));
             }
             Ok(Value::from(rv))
+        } else if v.is_undefined() {
+            undefined_pair_list(state)
         } else {
             Err(Error::new(
                 ErrorKind::InvalidOperation,
@@ -555,7 +596,7 @@ mod builtins {
         }
 
         let joiner = joiner.as_ref().unwrap_or(&Cow::Borrowed(""));
-        let attr = ok!(kwargs.get::<Option<&str>>("attribute"));
+        let attr = ok!(kwargs.get::<Option<Value>>("attribute"));
         ok!(kwargs.assert_all_used());
 
         let iter = ok!(val.try_iter().map_err(|err| {
@@ -572,8 +613,8 @@ mod builtins {
                 rv.push_str(joiner);
             }
 
-            let value_to_join = if let Some(attr) = attr {
-                item.get_path_or_default(attr, &Value::UNDEFINED)
+            let value_to_join = if let Some(ref attr) = attr {
+                get_attr_or_default(&item, attr, &Value::UNDEFINED)
             } else {
                 item
             };
@@ -691,7 +732,7 @@ mod builtins {
         let base = arg_parser.get_optional("base").unwrap_or(10);
 
         match &value.0 {
-            ValueRepr::Undefined => Err(Error::from(ErrorKind::UndefinedError)),
+            ValueRepr::Undefined(_) => Err(Error::from(ErrorKind::UndefinedError)),
             ValueRepr::None => Ok(Value::from(default)),
             ValueRepr::Bool(x) => Ok(Value::from(*x as u64)),
             ValueRepr::U64(_) | ValueRepr::I64(_) | ValueRepr::U128(_) | ValueRepr::I128(_) => {
@@ -739,7 +780,7 @@ mod builtins {
     #[cfg_attr(docsrs, doc(cfg(feature = "builtins")))]
     pub fn float(value: &Value) -> Result<Value, Error> {
         match &value.0 {
-            ValueRepr::Undefined | ValueRepr::None => Ok(Value::from(0.0)),
+            ValueRepr::Undefined(_) | ValueRepr::None => Ok(Value::from(0.0)),
             ValueRepr::Bool(x) => Ok(Value::from(*x as u64 as f64)),
             ValueRepr::String(..) | ValueRepr::SmallStr(_) => value
                 .as_str()
@@ -1021,8 +1062,8 @@ mod builtins {
         }))
         .collect::<Vec<_>>();
         let case_sensitive = ok!(kwargs.get::<Option<bool>>("case_sensitive")).unwrap_or(false);
-        if let Some(attr) = ok!(kwargs.get::<Option<&str>>("attribute")) {
-            items.sort_by(|a, b| match (a.get_path(attr), b.get_path(attr)) {
+        if let Some(attr) = ok!(kwargs.get::<Option<Value>>("attribute")) {
+            items.sort_by(|a, b| match (get_attr(a, &attr), get_attr(b, &attr)) {
                 (Ok(a), Ok(b)) => cmp_helper(&a, &b, case_sensitive),
                 _ => Ordering::Equal,
             });
@@ -1446,7 +1487,7 @@ mod builtins {
             Ok(rv)
         } else {
             match &value.0 {
-                ValueRepr::None | ValueRepr::Undefined => Ok("".into()),
+                ValueRepr::None | ValueRepr::Undefined(_) => Ok("".into()),
                 ValueRepr::Bytes(b) => Ok(percent_encoding::percent_encode(b, SET).to_string()),
                 ValueRepr::String(..) | ValueRepr::SmallStr(_) => Ok(
                     percent_encoding::utf8_percent_encode(value.as_str().unwrap(), SET).to_string(),
@@ -1616,10 +1657,7 @@ mod builtins {
                 Value::UNDEFINED
             };
             for value in ok!(state.undefined_behavior().try_iter(value)) {
-                let sub_val = match attr.as_str() {
-                    Some(path) => value.get_path(path),
-                    None => value.get_item(&attr),
-                };
+                let sub_val = get_attr(&value, &attr);
                 rv.push(match (sub_val, &default) {
                     (Ok(attr), _) => {
                         if attr.is_undefined() {
@@ -1705,17 +1743,17 @@ mod builtins {
     /// the "CA" group will have two values.  This can be disabled by passing
     /// `case_sensitive=True`.
     #[cfg_attr(docsrs, doc(cfg(feature = "builtins")))]
-    pub fn groupby(value: Value, attribute: Option<&str>, kwargs: Kwargs) -> Result<Value, Error> {
+    pub fn groupby(value: Value, attribute: Option<Value>, kwargs: Kwargs) -> Result<Value, Error> {
         let default = ok!(kwargs.get::<Option<Value>>("default")).unwrap_or_default();
         let case_sensitive = ok!(kwargs.get::<Option<bool>>("case_sensitive")).unwrap_or(false);
         let attr = match attribute {
             Some(attr) => attr,
-            None => ok!(kwargs.get::<&str>("attribute")),
+            None => ok!(kwargs.get::<Value>("attribute")),
         };
         let mut items: Vec<Value> = ok!(value.try_iter()).collect();
         items.sort_by(|a, b| {
-            let a = a.get_path_or_default(attr, &default);
-            let b = b.get_path_or_default(attr, &default);
+            let a = get_attr_or_default(a, &attr, &default);
+            let b = get_attr_or_default(b, &attr, &default);
             cmp_helper(&a, &b, case_sensitive)
         });
         ok!(kwargs.assert_all_used());
@@ -1754,7 +1792,7 @@ mod builtins {
         let mut list = Vec::new();
 
         for item in items {
-            let group_by = item.get_path_or_default(attr, &default);
+            let group_by = get_attr_or_default(&item, &attr, &default);
             if let Some(ref last_grouper) = grouper {
                 if cmp_helper(last_grouper, &group_by, case_sensitive) != Ordering::Equal {
                     rv.push(Value::from_object(GroupTuple {
@@ -1804,7 +1842,7 @@ mod builtins {
     pub fn unique(state: &State, values: Value, kwargs: Kwargs) -> Result<Value, Error> {
         use std::collections::BTreeSet;
 
-        let attr = ok!(kwargs.get::<Option<&str>>("attribute"));
+        let attr = ok!(kwargs.get::<Option<Value>>("attribute"));
         let case_sensitive = ok!(kwargs.get::<Option<bool>>("case_sensitive")).unwrap_or(false);
         ok!(kwargs.assert_all_used());
 
@@ -1813,8 +1851,8 @@ mod builtins {
 
         let iter = ok!(state.undefined_behavior().try_iter(values));
         for item in iter {
-            let value_to_compare = if let Some(attr) = attr {
-                item.get_path_or_default(attr, &Value::UNDEFINED)
+            let value_to_compare = if let Some(ref attr) = attr {
+                get_attr_or_default(&item, attr, &Value::UNDEFINED)
             } else {
                 item.clone()
             };

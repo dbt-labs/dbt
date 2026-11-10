@@ -1,0 +1,27 @@
+models:
+  - name: model_a
+    description: |
+      my description
+      with multiple
+      lines
+    config:
+      persist_docs:
+        relation: true
+
+  - name: view_a
+    description: |
+      my view description
+      with multiple
+      lines
+    config:
+      persist_docs:
+        relation: true
+
+  - name: incremental
+    description: |
+      my table description
+      with multiple
+      lines
+    config:
+      persist_docs:
+        relation: true

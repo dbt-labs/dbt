@@ -32,125 +32,6 @@ pub enum SemanticCategory {
     Pure,
 }
 
-/// Adapter methods that query database state without mutation.
-const METADATA_READ_METHODS: &[&str] = &[
-    "get_relation",
-    "get_columns_in_relation",
-    "list_schemas",
-    "check_schema_exists",
-    "list_relations_without_caching",
-    "get_relations_by_pattern",
-    "get_relations_without_caching",
-    "valid_snapshot_target",
-    "describe_relation",
-    "describe_dynamic_table",
-    "get_column_schema_from_query",
-    "get_columns_in_select_sql",
-    "get_partitions_metadata",
-    "get_bq_table",
-    "get_dataset_location",
-    "get_catalog_integration",
-    "get_relation_config",
-    "compare_dbr_version",
-    "has_dbr_capability",
-    "get_missing_columns",
-    "is_replaceable",
-    "location_exists",
-];
-
-/// Adapter methods that mutate database state (DDL/DML).
-const WRITE_METHODS: &[&str] = &[
-    "execute",
-    "add_query",
-    "drop_relation",
-    "rename_relation",
-    "truncate_relation",
-    "create_schema",
-    "drop_schema",
-    "expand_target_column_types",
-    "load_dataframe",
-    "copy_table",
-    "copy_partitions",
-    "update_columns",
-    "update_table_description",
-    "alter_table_add_columns",
-    "upload_file",
-    "grant_access_to",
-    "submit_python_job",
-    "assert_valid_snapshot_target_given_strategy",
-    "update_tblproperties_for_uniform_iceberg",
-];
-
-/// Adapter methods that only touch the adapter's in-memory relation cache.
-const CACHE_METHODS: &[&str] = &["cache_added", "cache_dropped", "cache_renamed"];
-
-/// Adapter methods that are local computation with no I/O.
-const PURE_METHODS: &[&str] = &[
-    "quote",
-    "quote_as_configured",
-    "quote_seed_column",
-    "render_equals",
-    "convert_type",
-    "build_catalog_from_show_tables_and_svv_columns",
-    "dispatch",
-    "commit",
-    "type",
-    "render_raw_model_constraints",
-    "render_raw_columns_constraints",
-    "get_incremental_strategy_macro",
-    "standardize_grants_dict",
-    "verify_database",
-    "nest_column_data_types",
-    "get_struct_select_expression",
-    "add_time_ingestion_partition_column",
-    "parse_partition_by",
-    "valid_incremental_strategies",
-    "get_persist_doc_columns",
-    "get_column_tags_from_model",
-    "get_config_from_model",
-    "generate_unique_temporary_table_suffix",
-    "parse_columns_and_constraints",
-    "clean_sql",
-    "get_common_options",
-    "get_table_options",
-    "get_view_options",
-    "parse_index",
-    "redact_credentials",
-    "compute_external_path",
-    "get_hard_deletes_behavior",
-    "is_cluster",
-    "is_ducklake",
-    "has_feature",
-    "is_motherduck",
-    "disable_transactions",
-    "build_catalog_relation",
-    "sync_struct_columns",
-    "resolve_file_format",
-    "get_seed_file_path",
-    "is_uniform",
-    "external_root",
-    "external_write_options",
-    "external_read_location",
-    "get_temp_relation_path",
-    "get_clickhouse_cluster_name",
-    "get_clickhouse_local_suffix",
-    "get_clickhouse_local_db_prefix",
-    "clickhouse_db_engine_clause",
-    "is_before_version",
-    "supports_atomic_exchange",
-    "can_exchange",
-    "should_on_cluster",
-    "calculate_incremental_strategy",
-    "validate_incremental_strategy",
-    "get_model_settings",
-    "get_model_query_settings",
-    "filter_settings_by_engine",
-    "get_ch_database",
-    "get_credentials",
-    "get_csv_data",
-    "table_format",
-];
-
 impl SemanticCategory {
     /// Classify a Adapter method by its semantic category.
     ///
@@ -160,21 +41,134 @@ impl SemanticCategory {
     /// - Cache: Only touches adapter's in-memory relation cache
     /// - Pure: Local computation, no I/O at all
     pub fn from_adapter_method(method: &str) -> Self {
-        if METADATA_READ_METHODS.contains(&method) {
-            SemanticCategory::MetadataRead
-        } else if WRITE_METHODS.contains(&method) {
-            SemanticCategory::Write
-        } else if CACHE_METHODS.contains(&method) {
-            SemanticCategory::Cache
-        } else if PURE_METHODS.contains(&method) {
-            SemanticCategory::Pure
-        } else {
-            debug_assert!(
-                false,
-                "time-machine: Unknown adapter method '{}', add it to SemanticCategory::from_adapter_method",
-                method
-            );
-            SemanticCategory::Write
+        match method {
+            // Query database state without mutation
+            "get_relation"
+            | "get_columns_in_relation"
+            | "list_schemas"
+            | "check_schema_exists"
+            | "list_relations_without_caching"
+            | "get_relations_by_pattern"
+            | "get_relations_without_caching"
+            | "valid_snapshot_target"
+            | "describe_relation"
+            | "get_column_schema_from_query"
+            | "get_columns_in_select_sql"
+            | "get_partitions_metadata"
+            | "get_bq_table"
+            | "get_dataset_location"
+            | "get_catalog_integration"
+            | "get_relation_config"
+            | "compare_dbr_version"
+            | "has_dbr_capability"
+            | "get_missing_columns"
+            | "is_replaceable"
+            | "location_exists"
+            | "can_exchange"
+            | "supports_atomic_exchange"
+            | "check_incremental_schema_changes" => SemanticCategory::MetadataRead,
+
+            // Mutate database state (DDL/DML)
+            "execute"
+            | "add_query"
+            | "drop_relation"
+            | "rename_relation"
+            | "truncate_relation"
+            | "create_schema"
+            | "drop_schema"
+            | "expand_target_column_types"
+            | "load_dataframe"
+            | "copy_table"
+            | "update_columns"
+            | "update_table_description"
+            | "alter_table_add_columns"
+            | "upload_file"
+            | "grant_access_to"
+            | "submit_python_job"
+            | "assert_valid_snapshot_target_given_strategy"
+            | "update_tblproperties_for_uniform_iceberg" => SemanticCategory::Write,
+
+            // Internal bookkeeping only
+            "cache_added" | "cache_dropped" | "cache_renamed" => SemanticCategory::Cache,
+
+            // No I/O at all
+            "quote"
+            | "quote_as_configured"
+            | "quote_seed_column"
+            | "render_equals"
+            | "convert_type"
+            | "build_catalog_from_show_tables_and_svv_columns"
+            | "dispatch"
+            | "commit"
+            | "type"
+            | "render_raw_model_constraints"
+            | "render_raw_columns_constraints"
+            | "get_incremental_strategy_macro"
+            | "standardize_grants_dict"
+            | "verify_database"
+            | "nest_column_data_types"
+            | "get_struct_select_expression"
+            | "add_time_ingestion_partition_column"
+            | "parse_partition_by"
+            | "valid_incremental_strategies"
+            | "get_persist_doc_columns"
+            | "get_column_tags_from_model"
+            | "get_config_from_model"
+            | "generate_unique_temporary_table_suffix"
+            | "parse_columns_and_constraints"
+            | "clean_sql"
+            | "get_common_options"
+            | "get_table_options"
+            | "get_view_options"
+            | "parse_index"
+            | "redact_credentials"
+            | "compute_external_path"
+            | "get_hard_deletes_behavior"
+            | "is_cluster"
+            | "is_ducklake"
+            | "has_feature"
+            | "is_motherduck"
+            | "disable_transactions"
+            | "build_catalog_relation"
+            | "sync_struct_columns"
+            | "resolve_file_format"
+            | "get_seed_file_path"
+            | "convert_datetimes_to_strs"
+            | "get_binding_char"
+            | "is_uniform"
+            | "external_root"
+            | "external_write_options"
+            | "external_read_location"
+            | "get_temp_relation_path"
+            | "get_clickhouse_cluster_name"
+            | "get_clickhouse_local_suffix"
+            | "get_clickhouse_local_db_prefix"
+            | "clickhouse_db_engine_clause"
+            | "is_before_version"
+            | "is_at_or_after_version"
+            | "format_columns"
+            | "should_on_cluster"
+            | "calculate_incremental_strategy"
+            | "validate_incremental_strategy"
+            | "get_model_settings"
+            | "get_model_query_settings"
+            | "filter_settings_by_engine"
+            | "get_ch_database"
+            | "get_credentials"
+            | "s3source_clause"
+            | "get_csv_data"
+            | "table_format"
+            | "warn_once"
+            | "strip_trailing_statement_terminator" => SemanticCategory::Pure,
+
+            _ => {
+                debug_assert!(
+                    false,
+                    "time-machine: Unknown adapter method '{}', add it to SemanticCategory::from_adapter_method",
+                    method
+                );
+                SemanticCategory::Write
+            }
         }
     }
 
@@ -186,7 +180,11 @@ impl SemanticCategory {
             | "list_relations_sdf_schemas"
             | "list_relations_schemas_by_patterns"
             | "list_relations_in_parallel"
+            | "relations_exist"
             | "freshness"
+            | "freshness_with_overrides"
+            | "freshness_all_in_schema"
+            | "freshness_all_in_schemas"
             | "list_user_defined_functions"
             | "build_schemas_from_stats_sql"
             | "build_columns_from_get_columns"
@@ -251,6 +249,12 @@ mod tests {
             SemanticCategory::from_adapter_method("list_schemas"),
             SemanticCategory::MetadataRead
         );
+        // `describe_*` issues a read-only SHOW. An unregistered method falls through to
+        // `Write`, which would record a read as mutating during replay.
+        assert_eq!(
+            SemanticCategory::from_adapter_method("describe_relation"),
+            SemanticCategory::MetadataRead
+        );
 
         // Writes
         assert_eq!(
@@ -295,6 +299,14 @@ mod tests {
         );
         assert_eq!(
             SemanticCategory::from_metadata_method("freshness"),
+            SemanticCategory::MetadataRead
+        );
+        assert_eq!(
+            SemanticCategory::from_metadata_method("relations_exist"),
+            SemanticCategory::MetadataRead
+        );
+        assert_eq!(
+            SemanticCategory::from_metadata_method("freshness_all_in_schemas"),
             SemanticCategory::MetadataRead
         );
         assert_eq!(

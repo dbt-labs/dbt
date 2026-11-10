@@ -170,10 +170,10 @@ fn test_unknown_method_callback() {
     use minijinja::{Error, ErrorKind};
 
     let mut env = Environment::new();
-    env.set_unknown_method_callback(|_state, value, method, args| {
+    env.set_unknown_method_callback(|state, value, method, args| {
         if value.kind() == ValueKind::Map && method == "items" {
             from_args::<()>(args)?;
-            minijinja::filters::items(value)
+            minijinja::filters::items(state, value)
         } else {
             Err(Error::from(ErrorKind::UnknownMethod))
         }

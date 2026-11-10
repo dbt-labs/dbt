@@ -15,6 +15,7 @@ use std::collections::BTreeMap;
 type YmlValue = dbt_yaml::Value;
 
 use super::AnalysesProperties;
+use super::CheckProperties;
 use super::DataTestProperties;
 use super::ExposureProperties;
 use super::FunctionProperties;
@@ -30,6 +31,7 @@ use super::unit_test_properties::UnitTestProperties;
 pub struct DbtPropertiesFileValues {
     pub version: Option<FloatOrString>,
     pub analyses: Option<Vec<dbt_yaml::Value>>,
+    pub checks: Option<Vec<dbt_yaml::Value>>,
     pub exposures: Option<Vec<dbt_yaml::Value>>,
     pub groups: Option<Vec<dbt_yaml::Value>>,
     pub macros: Option<Vec<dbt_yaml::Value>>,
@@ -46,7 +48,9 @@ pub struct DbtPropertiesFileValues {
     pub unit_tests: Option<Vec<dbt_yaml::Value>>,
     pub tests: Option<Vec<dbt_yaml::Value>>,
     pub data_tests: Option<Vec<dbt_yaml::Value>>,
-    pub anchors: Verbatim<Option<Vec<dbt_yaml::Value>>>,
+    /// Entries for experimentals, by experimental type. Each experimental reads its own.
+    pub experimental: Option<BTreeMap<String, dbt_yaml::Value>>,
+    pub anchors: Verbatim<Option<dbt_yaml::Value>>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
@@ -57,6 +61,13 @@ pub struct MinimalSchemaValue {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub versions: Option<Vec<Versions>>,
     pub tables: Verbatim<Option<Vec<dbt_yaml::Value>>>,
+    pub __additional_properties__: Verbatim<BTreeMap<String, dbt_yaml::Value>>,
+}
+
+/// An entry under `experimental:`, read only for its name. The experimental reads the rest.
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct MinimalExperimentalEntryValue {
+    pub name: String,
     pub __additional_properties__: Verbatim<BTreeMap<String, dbt_yaml::Value>>,
 }
 
@@ -89,6 +100,7 @@ pub struct DbtPropertiesFile {
     pub tests: Option<Vec<DataTestProperties>>,
     pub data_tests: Option<Vec<DataTestProperties>>,
     pub analyses: Option<Vec<AnalysesProperties>>,
+    pub checks: Option<Vec<CheckProperties>>,
     pub exposures: Option<Vec<ExposureProperties>>,
     pub groups: Option<Vec<GroupProperties>>,
     pub macros: Option<Vec<MacrosProperties>>,
@@ -97,8 +109,11 @@ pub struct DbtPropertiesFile {
     // semantic_models cannot be removed for backward compatibility
     // removal would result in many regression tests failing
     pub semantic_models: Option<Vec<dbt_yaml::Value>>,
+    /// Entries for experimentals, by experimental type. Experimentals are features in testing, off
+    /// unless their feature flag is on; each reads the entries under its own type.
+    pub experimental: Option<BTreeMap<String, Vec<dbt_yaml::Value>>>,
     pub version: Option<FloatOrString>,
-    pub anchors: Verbatim<Option<Vec<dbt_yaml::Value>>>,
+    pub anchors: Verbatim<Option<dbt_yaml::Value>>,
 }
 
 // -- Additional Properties

@@ -16,6 +16,7 @@ workspace = true
 async-trait = { workspace = true }
 dbt-adapter = { workspace = true }
 dbt-adapter-core = { workspace = true }
+dbt-adapter-engine = { workspace = true }
 dbt-adapter-sql = { workspace = true }
 dbt-adbc = { workspace = true }
 dbt-cloud-config = { workspace = true }
@@ -25,6 +26,7 @@ dbt-frontend-common = { workspace = true }
 dbt-fusion-workspace-hack = { version = "0.1" }
 dbt-jinja-utils = { workspace = true }
 dbt-pretty-table = { workspace = true }
+dbt-runtime = { workspace = true }
 dbt-scheduler = { workspace = true }
 dbt-schema-store = { workspace = true }
 dbt-schemas = { workspace = true }
@@ -35,8 +37,8 @@ dbt-yaml = { workspace = true }
 
 arrow = { workspace = true }
 arrow-schema = { workspace = true }
+blake3 = { workspace = true }
 chrono = { workspace = true }
-datafusion-expr = { workspace = true }
 futures = { workspace = true }
 humantime = { workspace = true }
 minijinja = { workspace = true }

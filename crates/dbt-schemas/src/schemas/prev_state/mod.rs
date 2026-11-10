@@ -140,6 +140,26 @@ fn unrendered_hook_value_eq(a: Option<&dbt_yaml::Value>, b: Option<&dbt_yaml::Va
     unrendered_value_eq(a, b)
 }
 
+/// Builds a source's unique_id the way dbt-core does: resource type, package name, source
+/// name and table name joined with `.`, all verbatim
+/// (`core/dbt/parser/schemas.py`, `add_source_definitions`).
+///
+/// Fusion instead runs the table name through `[^a-zA-Z0-9_]` → `__` first
+/// (`dbt-parser`, `resolve_sources.rs`), so a BigQuery wildcard source table `events_*` is
+/// `source.pkg.src.events___` here and `source.pkg.src.events_*` in a dbt-core-produced
+/// state manifest.  Since unique_id is the key that pairs a node with its previous-manifest
+/// counterpart, that divergence makes every such source look brand new, which under a
+/// descendant selector (`state:modified+`) drags in everything downstream of it.
+///
+/// The sanitization is not invertible — `__` could have come from `*`, `-`, `.`, `/`, a
+/// space, or a literal `__` — so the two spellings can only be reconciled with both nodes in
+/// hand.  This rebuilds the dbt-core spelling from the three components both engines store
+/// verbatim on the node (`package_name`, `source_name`, `name`), giving a join key that is
+/// stable across engines.
+fn core_style_source_uid(package_name: &str, source_name: &str, table_name: &str) -> String {
+    format!("source.{package_name}.{source_name}.{table_name}")
+}
+
 impl StateArtifacts {
     fn test_signature(test: &DbtTest) -> Option<TestSignature> {
         #[cfg(test)]
@@ -276,6 +296,26 @@ impl StateArtifacts {
         nodes.get_node(base).map(|n| n as &dyn InternalDbtNode)
     }
 
+    /// Pairs a source with its state-manifest counterpart when the two engines spell its
+    /// unique_id differently — see [`core_style_source_uid`].  Keys on the three components
+    /// both engines store verbatim, so a source genuinely *renamed* to the sanitized spelling
+    /// looks itself up under that new name and correctly finds nothing.
+    fn find_previous_source_by_core_style_id<'a>(
+        current: &dyn InternalDbtNode,
+        nodes: &'a Nodes,
+    ) -> Option<&'a dyn InternalDbtNode> {
+        let current_source = current.as_any().downcast_ref::<DbtSource>()?;
+        let core_style_uid = core_style_source_uid(
+            &current_source.__common_attr__.package_name,
+            &current_source.__source_attr__.source_name,
+            &current_source.__common_attr__.name,
+        );
+        nodes
+            .sources
+            .get(&core_style_uid)
+            .map(|n| Arc::as_ref(n) as &dyn InternalDbtNode)
+    }
+
     fn previous_node_for<'a>(
         &'a self,
         current: &dyn InternalDbtNode,
@@ -284,6 +324,15 @@ impl StateArtifacts {
 
         if let Some(prev) = nodes.get_node(current.common().unique_id.as_str()) {
             return Some(prev as &dyn InternalDbtNode);
+        }
+
+        if current.resource_type() == NodeType::Source {
+            // Fallback: Fusion sanitizes a source's table name into its unique_id while
+            // dbt-core does not, so the exact lookup misses against a Mantle-produced state
+            // manifest.  Pair on the source's identity instead.
+            if let Some(found) = Self::find_previous_source_by_core_style_id(current, nodes) {
+                return Some(found);
+            }
         }
 
         if current.resource_type() == NodeType::Test {
@@ -321,6 +370,22 @@ impl StateArtifacts {
             source_freshness_results,
             state_path,
             target_path,
+            test_sig_index: Default::default(),
+            test_full_name_index: Default::default(),
+            truncated_name_to_state_uid: Default::default(),
+        }
+    }
+
+    /// Constructs a `StateArtifacts` directly from an already-parsed previous-state `Nodes`
+    /// graph, bypassing the manifest.json load path. For callers (typically tests) that build
+    /// the previous state in memory rather than from a real state directory.
+    pub fn from_previous_nodes(nodes: Nodes) -> Self {
+        Self {
+            nodes: Some(nodes),
+            run_results: None,
+            source_freshness_results: None,
+            state_path: PathBuf::new(),
+            target_path: None,
             test_sig_index: Default::default(),
             test_full_name_index: Default::default(),
             truncated_name_to_state_uid: Default::default(),
@@ -491,9 +556,9 @@ impl StateArtifacts {
             // Macro modification is checked by iteraring through depends_on.macros
             // for each node and checking if the dependent macros are modified.
             Some(ModificationType::Macros) => self.check_modified_macros(node, current_nodes),
-            Some(ModificationType::Contract) => self.check_contract_modified(node),
+            Some(ModificationType::Contract) => self.check_contract_modified(node, adapter_type),
             Some(ModificationType::Any) | None => {
-                self.check_contract_modified(node)
+                self.check_contract_modified(node, adapter_type)
                     || self.check_configs_modified(node, adapter_type)
                     || self.check_relation_modified(node)
                     || self.check_persisted_descriptions_modified(node)
@@ -590,18 +655,6 @@ impl StateArtifacts {
             return true;
         };
 
-        // For models, treat "modified content" as a *body* comparison (checksum/raw_code),
-        // not a full same_contents comparison. Config/relation/persisted-description diffs
-        // are handled by dedicated checks in `state:modified` selection.
-        if current_node.resource_type() == NodeType::Model
-            && previous_node.resource_type() == NodeType::Model
-        {
-            // Fast path: identical checksums => body is unchanged.
-            if current_node.common().checksum == previous_node.common().checksum {
-                return false;
-            }
-        }
-
         if current_node.has_same_content(previous_node, adapter_type) {
             return false;
         }
@@ -674,12 +727,25 @@ impl StateArtifacts {
             // specific keys where env-aware Jinja is known to appear. A new false positive for
             // those types requires a new per-key fix; the wholesale approach cannot yet be applied
             // to them.
+            // Checks are on Approach B deliberately. They have no dbt-core counterpart to mirror
+            // (`same_contents` does not exist for the type), and `build_unrendered_config` does not
+            // populate `unrendered_config` for them, so the Stage-1 wholesale shortcut would be an
+            // under-selection landmine: it would report "not modified" off an empty map and mask
+            // real edits to `severity`/`tags`/`phase`. `DbtCheck::has_same_config` compares the
+            // rendered config instead. Moving checks to Approach A requires populating
+            // `unrendered_config` first, as a prerequisite commit
+            // (see `.agents/state-modified-conformance.md`).
             NodeType::Exposure
             | NodeType::Analysis
             | NodeType::Macro
             | NodeType::SemanticModel
             | NodeType::Metric
-            | NodeType::SavedQuery => !current_node.has_same_config(previous_node, adapter_type),
+            | NodeType::SavedQuery
+            | NodeType::Check => !current_node.has_same_config(previous_node, adapter_type),
+
+            // Experimental nodes are not written to the manifest, so there is never a previous node
+            // to compare, and `state:` methods never select them. Listed for exhaustiveness.
+            NodeType::Experimental => !current_node.has_same_config(previous_node, adapter_type),
 
             // Never returned by any `InternalDbtNode::resource_type()` impl (see nodes.rs) —
             // `DocsMacro`/`Operation` describe non-node telemetry concepts and `Unspecified` is a
@@ -872,7 +938,11 @@ impl StateArtifacts {
         )
     }
 
-    fn check_contract_modified(&self, current_node: &dyn InternalDbtNode) -> bool {
+    fn check_contract_modified(
+        &self,
+        current_node: &dyn InternalDbtNode,
+        adapter_type: AdapterType,
+    ) -> bool {
         // Get the previous node from the manifest (unique_id first, then test signature fallback).
         let Some(previous_node) = self.previous_node_for(current_node) else {
             // If previous node doesn't exist, consider it modified.
@@ -883,12 +953,19 @@ impl StateArtifacts {
             current_node.as_any().downcast_ref::<DbtModel>(),
             previous_node.as_any().downcast_ref::<DbtModel>(),
         ) {
-            let is_same_contract = current_model.same_contract(previous_model);
+            let is_same_contract = current_model.same_contract(previous_model, adapter_type);
             if !is_same_contract {
                 log_state_mod_diff(
                     &current_node.common().unique_id,
                     "contract",
-                    [("contract", false, None)],
+                    [(
+                        "contract",
+                        false,
+                        Some((
+                            format!("{:?}", current_model.__model_attr__.contract),
+                            format!("{:?}", previous_model.__model_attr__.contract),
+                        )),
+                    )],
                 );
             }
             !is_same_contract
@@ -898,6 +975,20 @@ impl StateArtifacts {
     }
 
     fn check_body_modified(&self, current_node: &dyn InternalDbtNode) -> bool {
+        // Unit tests have no body comparison, in the same way they have no config comparison (see
+        // `check_configs_modified`). dbt-core's `UnitTestDefinition` extends `GraphNode` and
+        // defines no `same_body`, so `check_modified_factory("same_body")` takes its `hasattr`
+        // else-branch and returns False (dbt-mantle core/dbt/graph/selector_methods.py:759):
+        // `state:modified.body` never selects a unit test there.
+        //
+        // Without this guard, unit tests fall through to the default `has_same_body`, which
+        // compares `checksum`. Fusion leaves a unit test's checksum empty while dbt-core writes a
+        // sha256 over model/versions/given/expect/overrides, so every unit test looked body-modified
+        // against a state manifest written by dbt 1.x. See dbt-labs/dbt#16449.
+        if current_node.resource_type() == NodeType::UnitTest {
+            return false;
+        }
+
         // Get the previous node from the manifest (unique_id first, then test signature fallback).
         let Some(previous_node) = self.previous_node_for(current_node) else {
             // If previous node doesn't exist, consider it modified.
@@ -910,7 +1001,14 @@ impl StateArtifacts {
             log_state_mod_diff(
                 &current_node.common().unique_id,
                 "body",
-                [("body", false, None)],
+                [(
+                    "body",
+                    false,
+                    Some((
+                        current_node.common().checksum.to_checksum_string(),
+                        previous_node.common().checksum.to_checksum_string(),
+                    )),
+                )],
             );
         }
 
@@ -1256,6 +1354,138 @@ mod tests {
         }
     }
 
+    /// `unique_id` is spelled independently of the three identity fields so a test can
+    /// reproduce the Fusion (sanitized) and Mantle (verbatim) spellings side by side.
+    fn make_source(uid: &str, package: &str, source_name: &str, table_name: &str) -> DbtSource {
+        let mut source = DbtSource::default();
+        source.__common_attr__.unique_id = uid.to_string();
+        source.__common_attr__.package_name = package.to_string();
+        source.__common_attr__.name = table_name.to_string();
+        source.__source_attr__.source_name = source_name.to_string();
+        source.__common_attr__.fqn = vec![source_name.to_string(), table_name.to_string()];
+        source
+    }
+
+    fn state_with_previous_sources(previous_sources: Vec<DbtSource>) -> StateArtifacts {
+        let mut prev_nodes = Nodes::default();
+        for source in previous_sources {
+            prev_nodes
+                .sources
+                .insert(source.__common_attr__.unique_id.clone(), Arc::new(source));
+        }
+
+        StateArtifacts {
+            nodes: Some(prev_nodes),
+            run_results: None,
+            source_freshness_results: None,
+            state_path: PathBuf::from("/tmp/fake_state"),
+            target_path: None,
+            test_sig_index: Default::default(),
+            test_full_name_index: Default::default(),
+            truncated_name_to_state_uid: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// A BigQuery wildcard source table is `source.pkg.ga4.events_*` in a dbt-core-produced
+    /// state manifest but `source.pkg.ga4.events___` in Fusion, because Fusion sanitizes the
+    /// table name into the unique_id.  Before the identity fallback the exact lookup missed,
+    /// `is_new` fired, and `state:modified+` dragged in everything downstream of the source.
+    #[test]
+    fn source_with_sanitized_uid_pairs_with_mantle_verbatim_uid() {
+        let state = state_with_previous_sources(vec![make_source(
+            "source.pkg.ga4.events_*",
+            "pkg",
+            "ga4",
+            "events_*",
+        )]);
+        // Fusion's spelling of the same source: sanitized unique_id, verbatim `name`.
+        let current = make_source("source.pkg.ga4.events___", "pkg", "ga4", "events_*");
+
+        assert!(!state.is_new(&current));
+        assert!(!state.is_modified(&current, None, None, AdapterType::Bigquery));
+    }
+
+    fn state_with_previous_model(previous_model: DbtModel) -> StateArtifacts {
+        let mut prev_nodes = Nodes::default();
+        prev_nodes.models.insert(
+            previous_model.__common_attr__.unique_id.clone(),
+            Arc::new(previous_model),
+        );
+
+        StateArtifacts {
+            nodes: Some(prev_nodes),
+            run_results: None,
+            source_freshness_results: None,
+            state_path: PathBuf::from("/tmp/fake_state"),
+            target_path: None,
+            test_sig_index: Default::default(),
+            test_full_name_index: Default::default(),
+            truncated_name_to_state_uid: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// Regression guard for the `NodeType::Model` checksum fast path that `check_modified_content`
+    /// used to carry: it returned "unmodified" as soon as the checksums matched, which made every
+    /// non-body conjunct of `DbtModel::has_same_content` — dbt-core's `ParsedNode.same_contents` —
+    /// unreachable whenever the body was unchanged. `latest_version` is the sharpest witness: it is
+    /// not a `ModelConfig` key, so no config comparison can see it, and
+    /// `DbtModel::same_ref_representation` is the only check that does. If the fast path is ever
+    /// reintroduced, this fails.
+    #[test]
+    fn model_latest_version_change_is_modified_with_an_unchanged_body() {
+        use crate::schemas::serde::StringOrInteger;
+
+        let mut previous = DbtModel::default();
+        previous.__common_attr__.unique_id = "model.pkg.my_model.v1".to_string();
+        previous.__common_attr__.name = "my_model".to_string();
+        previous.__common_attr__.package_name = "pkg".to_string();
+        previous.__model_attr__.version = Some(StringOrInteger::Integer(1));
+        previous.__model_attr__.latest_version = Some(StringOrInteger::Integer(1));
+
+        // Identical body (same default checksum), only `latest_version` moves 1 -> 2.
+        let mut current = previous.clone();
+        current.__model_attr__.latest_version = Some(StringOrInteger::Integer(2));
+
+        let state = state_with_previous_model(previous);
+        assert!(!state.is_new(&current));
+        assert!(
+            state.is_modified(&current, None, None, AdapterType::DuckDB),
+            "a `latest_version` bump with an unchanged body must still be state:modified — \
+             `check_modified_content` must not short-circuit on matching checksums"
+        );
+    }
+
+    /// The fallback keys on the table name both engines store verbatim, not on the sanitized
+    /// unique_id, so a source genuinely renamed to the sanitized spelling is still new.
+    #[test]
+    fn source_renamed_to_a_different_table_is_still_new() {
+        let state = state_with_previous_sources(vec![make_source(
+            "source.pkg.ga4.events_*",
+            "pkg",
+            "ga4",
+            "events_*",
+        )]);
+        let current = make_source("source.pkg.ga4.events___", "pkg", "ga4", "events___");
+
+        assert!(state.is_new(&current));
+    }
+
+    /// When the state manifest contains both spellings as genuinely distinct sources, the
+    /// exact unique_id match owns the pairing — the fallback runs only after it misses.
+    #[test]
+    fn source_exact_uid_match_wins_over_identity_fallback() {
+        let state = state_with_previous_sources(vec![
+            make_source("source.pkg.ga4.events_*", "pkg", "ga4", "events_*"),
+            make_source("source.pkg.ga4.events___", "pkg", "ga4", "events___"),
+        ]);
+
+        let current = make_source("source.pkg.ga4.events___", "pkg", "ga4", "events___");
+        let previous = state
+            .previous_node_for(&current)
+            .expect("exact unique_id match");
+        assert_eq!(previous.common().name, "events___");
+    }
+
     #[test]
     fn state_modified_configs_treats_stringified_hook_lists_as_unchanged() {
         let uid = "model.pkg.orders";
@@ -1340,7 +1570,7 @@ mod tests {
     fn config_map(pairs: &[(&str, &str)]) -> BTreeMap<String, dbt_yaml::Value> {
         pairs
             .iter()
-            .map(|(k, v)| (k.to_string(), yml_value(v)))
+            .map(|(k, v)| ((*k).to_string(), yml_value(v)))
             .collect()
     }
 
@@ -2352,8 +2582,14 @@ mod tests {
                         pre_clone: None,
                         execute_hooks_on_any_reuse: None,
                         compare_unrendered_code: None,
+                        ignore_external_modifications: None,
                     })
                 }),
+            ),
+            (
+                "table_format",
+                ExcludeKind::Relevant,
+                Box::new(|n| n.deprecated_config.table_format = Some("iceberg".to_string())),
             ),
             // --- parity-excludes: dbt-core's `CompareBehavior.Exclude` on `NodeAndTestConfig` ---
             (
@@ -2614,9 +2850,7 @@ mod tests {
             (
                 "freshness",
                 ExcludeKind::Relevant,
-                Box::new(|n| {
-                    n.deprecated_config.freshness = Some(ModelFreshness { build_after: None })
-                }),
+                Box::new(|n| n.deprecated_config.freshness = Some(ModelFreshness::default())),
             ),
             (
                 "state",
@@ -2629,6 +2863,7 @@ mod tests {
                         pre_clone: None,
                         execute_hooks_on_any_reuse: None,
                         compare_unrendered_code: None,
+                        ignore_external_modifications: None,
                     })
                 }),
             ),
@@ -2707,6 +2942,13 @@ mod tests {
         // deliberately not compared there) — outside this drift guard's scope, which only
         // transcribes the comparator's actual active field list. `warehouse_config` is nested
         // adapter-specific config with its own dedicated test coverage.
+        //
+        // Out of scope by ownership, not by omission: `latest_version` and `deprecation_date` are
+        // not `ModelConfig` keys at all, and the `access` *node attribute* (`__model_attr__.access`,
+        // as distinct from the `access` config key exercised above) is not either. All three are
+        // owned by `DbtModel::same_ref_representation` (nodes.rs), dbt-core's
+        // `ModelNode.same_ref_representation` — so they need no entry here, and if you are looking
+        // for "who compares `deprecation_date`", that is the answer.
         assert_denylist_keys_agree_across_stage1_and_stage2::<DbtModel>(
             NodeType::Model,
             "ModelConfig::same_config",

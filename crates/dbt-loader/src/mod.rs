@@ -11,8 +11,9 @@ pub mod loader_hooks;
 pub use deps::execute_deps_command;
 pub use load_packages::{
     build_internal_dbt_project, construct_internal_packages, internal_macro_package_names,
-    internal_package_names, is_metadata_file, is_under_macros_or_tests, load_internal_packages,
-    load_packages, persist_internal_packages,
+    internal_macro_package_names_for, internal_package_names, internal_package_names_for,
+    is_metadata_file, is_under_macros_or_tests, load_internal_packages, load_packages,
+    persist_internal_packages,
 };
 pub use load_profiles::load_profiles;
 pub use load_vars::load_vars;

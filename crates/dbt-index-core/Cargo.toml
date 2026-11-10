@@ -15,6 +15,12 @@ workspace = true
 [lib]
 path = "src/lib.rs"
 
+[features]
+# The `info_schema::bench` harness is a measurement tool, not part of the
+# shipped library. It is compiled only under `cfg(test)` or when a consumer opts
+# in with this feature (the dbt-cli e2e benchmark does, via dev-dependencies).
+bench = []
+
 [dependencies]
 adbc-core = { workspace = true }
 arrow-array = { workspace = true }
@@ -29,7 +35,6 @@ parquet = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_arrow = { workspace = true }
 serde_json = { workspace = true }
-simd-json = { version = "0.14", features = ["serde_impl"] }
 thiserror = { workspace = true }
 
 [dev-dependencies]

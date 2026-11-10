@@ -1,5 +1,7 @@
 use crate::schemas::common::DocsConfig;
 use crate::schemas::manifest::postgres::PostgresIndex;
+use crate::schemas::properties::model_properties::ModelConstraint;
+use dbt_adapter_core::AdapterType;
 use dbt_common::serde_utils::Omissible;
 use dbt_common::{CodeLocationWithFile, ErrorCode, FsError, FsResult, stdfs};
 use dbt_proc_macros::StringOrArrayNewtype;
@@ -208,10 +210,7 @@ where
             map.into_iter()
                 .map(|(k, v)| {
                     let yml_val = dbt_yaml::from_value::<YmlValue>(v).unwrap_or(YmlValue::null());
-                    (
-                        k.as_str().expect("key is not a string").to_string(),
-                        yml_val,
-                    )
+                    (dbt_common::serde_utils::yml_key_to_string(&k), yml_val)
                 })
                 .collect(),
         )),
@@ -259,6 +258,67 @@ where
         .as_bool()
         .or_else(|| value.as_str().map(|s| s.to_lowercase() == "true"))
         .unwrap_or_default())
+}
+
+/// Resolver (private) of the YAML 1.1 boolean token set accepted by dbt-core (via PyYAML).
+///
+/// Only unquoted `true`/`false` arrive here as booleans. The other tokens (`yes`, `on`, ...)
+/// arrive as strings, as does Jinja output, so strings are matched against the token set after
+/// trimming surrounding whitespace.
+///
+/// This resolver reports an explicit `null` as `Ok(None)` and is a workhorse in the following
+/// public deserializers that differ in only what they do with that `None`.
+fn yaml_11_bool_token<'de, D>(deserializer: D) -> Result<Option<bool>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = dbt_yaml::Value::deserialize(deserializer)?;
+    if let Some(b) = value.as_bool() {
+        return Ok(Some(b));
+    }
+    if value.is_null() {
+        return Ok(None);
+    }
+    match value.as_str() {
+        // PyYAML's bool resolver: these three casings only, and no bare `y`/`n`.
+        Some(s) => match s.trim() {
+            "true" | "True" | "TRUE" | "yes" | "Yes" | "YES" | "on" | "On" | "ON" => Ok(Some(true)),
+            "false" | "False" | "FALSE" | "no" | "No" | "NO" | "off" | "Off" | "OFF" => {
+                Ok(Some(false))
+            }
+            _ => Err(de::Error::invalid_value(
+                de::Unexpected::Str(s),
+                &"a boolean",
+            )),
+        },
+        None => Err(de::Error::custom("expected a boolean")),
+    }
+}
+
+/// YAML 1.1 boolean resolver that reads an explicit `null` is a value of its own, not an error and
+/// not `false`.
+pub fn yaml_11_bool_null_as_none<'de, D>(deserializer: D) -> Result<Option<bool>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    yaml_11_bool_token(deserializer)
+}
+
+/// YAML 1.1 boolean resolver that reads an explicit `null` as `false`.
+pub fn yaml_11_bool_null_as_false<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(yaml_11_bool_token(deserializer)?.unwrap_or(false))
+}
+
+/// Schema-only shape for a boolean that may be authored as a Jinja expression string.
+/// Use as `#[schemars(with = "BoolOrJinja")]` on a `bool` or `Option<bool>` field.
+#[derive(Debug, Clone, DbtSchema)]
+#[serde(untagged)]
+pub enum BoolOrJinja {
+    Bool(bool),
+    Jinja(String),
 }
 
 pub fn u64_or_string_u64<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
@@ -338,6 +398,152 @@ where
     }
 }
 
+/// Accepts a mapping or sequence for `event_time`, matching Core's lack of validation
+/// (`event_time: Any` in dbt-core's `config.py`) so Fusion doesn't reject valid Core
+/// projects. The JSON-stringified result is a placeholder, not a real column name — Core
+/// doesn't resolve one either. See dbt-labs/fs#13343.
+pub fn event_time_or_map_to_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value: Option<YmlValue> = Option::deserialize(deserializer)?;
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    match value {
+        YmlValue::String(s, _) => Ok(Some(s)),
+        YmlValue::Mapping(_, _) | YmlValue::Sequence(_, _) => {
+            let json_string = serde_json::to_string(&value)
+                .map_err(|e| de::Error::custom(format!("Failed to serialize to JSON: {e}")))?;
+            Ok(Some(json_string))
+        }
+        _ => Err(de::Error::custom("expected a string, a map, or a sequence")),
+    }
+}
+
+/// Drops one trailing `\n` from each of `keys` in `value`, preserving spans. Must run before
+/// Jinja: dbt-core strips the template source, so an expression's own newline survives.
+pub fn strip_one_trailing_newline_at_keys(value: &mut YmlValue, keys: &[&str]) {
+    for key in keys {
+        let Some(field) = value.get_mut(*key) else {
+            continue;
+        };
+        let Some(stripped) = field
+            .as_str()
+            .and_then(|s| s.strip_suffix('\n'))
+            .map(str::to_string)
+        else {
+            continue;
+        };
+        let span = field.span().clone();
+        *field = YmlValue::string(stripped).with_span(span);
+    }
+}
+
+/// Accepts the sequence-valued `column_types` entries Core tolerates, joined into one string.
+pub fn column_types_map<'de, D>(
+    deserializer: D,
+) -> Result<Option<BTreeMap<Spanned<String>, String>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value: Option<BTreeMap<Spanned<String>, YmlValue>> = Option::deserialize(deserializer)?;
+    let Some(map) = value else {
+        return Ok(None);
+    };
+    map.into_iter()
+        .map(|(key, value)| Ok((key, column_type_value_to_string(value)?)))
+        .collect::<Result<_, D::Error>>()
+        .map(Some)
+}
+
+// Like `event_time`/`query_tag` above, Core's `column_types` values are untyped
+// (`Dict[str, Any]`) and never validated. Confirmed Core has no join/stringify logic for a
+// sequence value either: its one in-repo consumer (seed CSV loading) only reads the dict's
+// keys and discards the value, and the DDL-generating macro outside dbt-mantle bare-Jinja-
+// interpolates it, producing a broken Python list repr in the SQL. This join is a Fusion-only
+// convention to accept the shape without erroring, not a reproduction of any Core behavior.
+fn column_type_value_to_string<E: de::Error>(value: YmlValue) -> Result<String, E> {
+    match value {
+        YmlValue::String(s, _) => Ok(s),
+        YmlValue::Sequence(items, _) => items
+            .into_iter()
+            .map(column_type_value_to_string)
+            .collect::<Result<Vec<_>, E>>()
+            .map(|parts| parts.join(", ")),
+        _ => Err(de::Error::custom(
+            "expected a string or a sequence of strings",
+        )),
+    }
+}
+
+/// Accepts the scalar `policy_tags` Core tolerates in place of a single-element list.
+pub fn policy_tags_from_scalar_or_list<'de, D>(
+    deserializer: D,
+) -> Result<Option<Vec<StringOrMap>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value: Option<YmlValue> = Option::deserialize(deserializer)?;
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    match value {
+        YmlValue::Sequence(_, _) => Vec::<StringOrMap>::deserialize(value)
+            .map(Some)
+            .map_err(|e| de::Error::custom(e.to_string())),
+        _ => StringOrMap::deserialize(value)
+            .map(|entry| Some(vec![entry]))
+            .map_err(|e| de::Error::custom(e.to_string())),
+    }
+}
+
+/// Accepts the mapping-valued `constraints` dbt-core tolerates. dbt-core declares no
+/// `constraints` on its `ModelConfig`, so the value lands in the untyped `_extra` dict and never
+/// reaches `node.constraints`: a mapping produces no constraint and no DDL. Dropping it matches
+/// that outcome, and the authored value still survives in `unrendered_config`.
+pub fn model_constraints_or_map<'de, D>(
+    deserializer: D,
+) -> Result<Option<Vec<ModelConstraint>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value: Option<YmlValue> = Option::deserialize(deserializer)?;
+    match value {
+        None | Some(YmlValue::Null(_)) => Ok(None),
+        // A mapping is not a constraint list on either engine; accept and drop it.
+        Some(YmlValue::Mapping(_, _)) => Ok(None),
+        Some(other) => Vec::<ModelConstraint>::deserialize(other)
+            .map(Some)
+            .map_err(|e| de::Error::custom(e.to_string())),
+    }
+}
+
+/// Resolves the YAML 1.1 boolean token set PyYAML (and so dbt-core) accepts. Fusion's YAML 1.2
+/// reader resolves only `true`/`false`, so an unquoted `no` arrives here as a string. Unlike
+/// `bool_or_string_bool`, a token outside the set errors instead of silently becoming `false`.
+/// Over-accepts a quoted `"no"` that dbt-core rejects: `dbt_yaml::Value` carries no scalar style,
+/// so quoting is already lost by the time this runs.
+pub fn yaml_11_bool_default<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = dbt_yaml::Value::deserialize(deserializer)?;
+    if let Some(b) = value.as_bool() {
+        return Ok(b);
+    }
+    match value.as_str() {
+        // PyYAML's bool resolver: these three casings only, and no bare `y`/`n`.
+        Some("true" | "True" | "TRUE" | "yes" | "Yes" | "YES" | "on" | "On" | "ON") => Ok(true),
+        Some("false" | "False" | "FALSE" | "no" | "No" | "NO" | "off" | "Off" | "OFF") => Ok(false),
+        Some(other) => Err(de::Error::invalid_value(
+            de::Unexpected::Str(other),
+            &"a boolean",
+        )),
+        None => Err(de::Error::custom("expected a boolean")),
+    }
+}
+
 pub fn default_true() -> Option<bool> {
     Some(true)
 }
@@ -348,8 +554,8 @@ pub fn default_true() -> Option<bool> {
 //
 // This type matches dbt-core's query_tag behavior:
 // - String values are kept as-is
-// - Map/dict values are JSON-serialized to strings
-// - Sequence/list values are JSON-serialized to strings
+// - Map/dict values are JSON-serialized to strings (Fusion-only; not what Core does)
+// - Sequence/list values are JSON-serialized to strings (Fusion-only; not what Core does)
 // - Always serializes as a string
 // - Use as Option<QueryTag> for optional fields
 
@@ -405,7 +611,7 @@ impl<'de> Deserialize<'de> for QueryTag {
         match value {
             dbt_yaml::Value::String(s, _) => Ok(QueryTag(s)),
             dbt_yaml::Value::Mapping(_, _) | dbt_yaml::Value::Sequence(_, _) => {
-                // Convert map or sequence to JSON string to match dbt-core behavior
+                // Fusion-only stringification (see module doc above) — not what Core does
                 let json_string = serde_json::to_string(&value)
                     .map_err(|e| de::Error::custom(format!("Failed to serialize to JSON: {e}")))?;
                 Ok(QueryTag(json_string))
@@ -455,7 +661,7 @@ pub fn yml_value_to_minijinja_map(value: YmlValue) -> BTreeMap<String, Minijinja
     }
 }
 
-pub fn minijinja_value_to_typed_struct<T: DeserializeOwned>(value: MinijinjaValue) -> FsResult<T> {
+pub fn minijinja_value_to_typed_struct<T: DeserializeOwned>(value: &MinijinjaValue) -> FsResult<T> {
     let yml_val = dbt_yaml::to_value(value).map_err(|e| {
         FsError::new(
             ErrorCode::SerializationError,
@@ -635,7 +841,7 @@ impl TryFrom<minijinja::Value> for NodeVersion {
     }
 }
 
-#[derive(Debug, Serialize, UntaggedEnumDeserialize, Clone, PartialEq, DbtSchema)]
+#[derive(Debug, Serialize, UntaggedEnumDeserialize, Clone, PartialEq, Eq, DbtSchema)]
 #[serde(untagged)]
 pub enum StringOrMap {
     StringValue(String),
@@ -654,6 +860,59 @@ impl From<StringOrArrayOfStrings> for Vec<String> {
         match value {
             StringOrArrayOfStrings::String(s) => vec![s],
             StringOrArrayOfStrings::ArrayOfStrings(a) => a,
+        }
+    }
+}
+
+/// One or more adapter types, as `propagate: snowflake` or
+/// `propagate: [snowflake]`.
+///
+/// Typed rather than a [`StringOrArrayOfStrings`], so serde rejects a value that
+/// is not an adapter type at parse -- the same guarantee
+/// `adapter: Option<AdapterType>` already gives for its single-valued sibling.
+///
+/// The extra typing is about validation, not about the accepted shape, so fields
+/// of this type carry `#[schemars(with = "Option<StringOrArrayOfStrings>")]`:
+/// `AdapterType` has no `JsonSchema` impl, and the shape a document may actually
+/// contain here *is* a string or an array of strings. Describing it as
+/// `Option<Vec<String>>` instead would emit an array-only schema and have
+/// editors reject the scalar form (`propagate: snowflake`) that this type
+/// accepts.
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum AdapterTypeOrArray {
+    One(AdapterType),
+    Many(Vec<AdapterType>),
+}
+
+impl<'de> Deserialize<'de> for AdapterTypeOrArray {
+    /// Hand-written rather than derived: `UntaggedEnumDeserialize` reports only
+    /// "data did not match any variant of untagged enum AdapterTypeOrArray" on a
+    /// bad value, while `+adapter`'s error names the offending value. Dispatching
+    /// on the shape first, then letting `AdapterType`'s own error surface, keeps
+    /// the two diagnostics consistent -- which is the whole reason this type is
+    /// typed rather than a `StringOrArrayOfStrings`.
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = YmlValue::deserialize(deserializer)?;
+        match value {
+            YmlValue::Sequence(..) => dbt_yaml::from_value::<Vec<AdapterType>>(value)
+                .map(Self::Many)
+                .map_err(de::Error::custom),
+            scalar => dbt_yaml::from_value::<AdapterType>(scalar)
+                .map(Self::One)
+                .map_err(de::Error::custom),
+        }
+    }
+}
+
+impl From<AdapterTypeOrArray> for Vec<AdapterType> {
+    fn from(value: AdapterTypeOrArray) -> Self {
+        match value {
+            AdapterTypeOrArray::One(a) => vec![a],
+            AdapterTypeOrArray::Many(a) => a,
         }
     }
 }
@@ -697,12 +956,15 @@ where
     }
 }
 
-/// External-table style `partitions` config — list-of-strings (e.g. `['ds=2023-01-01']`)
-/// or list-of-maps (e.g. `[{name: foo, data_type: varchar}]`, as used by `dbt-external-tables`).
+/// External-table style `partitions` config — a string or list-of-strings (e.g.
+/// `['ds=2023-01-01']`), or a map or list-of-maps (e.g. `[{name: foo, data_type: varchar}]`,
+/// as used by `dbt-external-tables`).
 #[derive(Debug, Serialize, UntaggedEnumDeserialize, Clone, PartialEq, DbtSchema)]
 #[serde(untagged)]
 pub enum PartitionsConfig {
+    String(String),
     Strings(Vec<String>),
+    Map(HashMap<String, YmlValue>),
     Maps(Vec<HashMap<String, YmlValue>>),
 }
 
@@ -886,6 +1148,41 @@ impl StringOrArrayOfStrings {
             StringOrArrayOfStrings::ArrayOfStrings(a) => a.clone(),
         }
     }
+
+    /// The value as JSON, preserving the authored shape: a string, or an array of strings.
+    pub fn to_json_value(&self) -> serde_json::Value {
+        match self {
+            StringOrArrayOfStrings::String(s) => serde_json::Value::String(s.clone()),
+            StringOrArrayOfStrings::ArrayOfStrings(a) => {
+                serde_json::Value::Array(a.iter().cloned().map(serde_json::Value::String).collect())
+            }
+        }
+    }
+
+    /// The value as YAML, preserving the authored shape: a string, or a sequence of strings.
+    pub fn to_yaml_value(&self) -> dbt_yaml::Value {
+        match self {
+            StringOrArrayOfStrings::String(s) => dbt_yaml::Value::string(s.clone()),
+            StringOrArrayOfStrings::ArrayOfStrings(a) => dbt_yaml::Value::Sequence(
+                a.iter().cloned().map(dbt_yaml::Value::string).collect(),
+                Default::default(),
+            ),
+        }
+    }
+
+    /// The inverse of [`Self::to_json_value`]. `None` for any other JSON shape, including an
+    /// array holding a non-string.
+    pub fn from_json_value(value: &serde_json::Value) -> Option<Self> {
+        match value {
+            serde_json::Value::String(s) => Some(StringOrArrayOfStrings::String(s.clone())),
+            serde_json::Value::Array(a) => a
+                .iter()
+                .map(|v| v.as_str().map(str::to_string))
+                .collect::<Option<Vec<String>>>()
+                .map(StringOrArrayOfStrings::ArrayOfStrings),
+            _ => None,
+        }
+    }
 }
 
 impl PartialEq for StringOrArrayOfStrings {
@@ -907,6 +1204,14 @@ impl PartialEq for StringOrArrayOfStrings {
 }
 
 impl Eq for StringOrArrayOfStrings {}
+
+impl std::hash::Hash for StringOrArrayOfStrings {
+    // Consistent with the `PartialEq` impl above, which treats a single-element array as
+    // equal to the equivalent scalar string, so both must normalize to the same hash.
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.to_strings().hash(state);
+    }
+}
 
 // =============================================================================
 // PrimaryKeyConfig - Wrapper type for primary_key that normalizes to arrays
@@ -969,6 +1274,37 @@ impl PrimaryKeyConfig {
 // - Always serializes as a list
 // - Generates correct JSON schema automatically
 
+/// A ClickHouse data-skipping index: `{name, definition}` items consumed by the
+/// ClickHouse macros (`ADD INDEX {{ index.get('name') }} {{ index.get('definition') }}`).
+/// Both fields are required, so no `skip_serializing_none` is needed.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, DbtSchema)]
+pub struct ClickHouseIndex {
+    name: String,
+    definition: String,
+}
+
+/// One element of the shared `indexes` config. Adapter shapes are kept as distinct
+/// typed variants (like `PartitionConfig` does for BigQuery); the required fields are
+/// disjoint (`columns` vs `name`+`definition`), so untagged deserialization is
+/// unambiguous, and each variant serializes its own shape back to Jinja.
+#[derive(Debug, Clone, PartialEq, UntaggedEnumDeserialize, Serialize, DbtSchema)]
+#[serde(untagged)]
+pub enum IndexItem {
+    /// Postgres: `{columns, unique, type}`
+    Postgres(PostgresIndex),
+    /// ClickHouse: `{name, definition}`
+    ClickHouse(ClickHouseIndex),
+}
+
+/// ClickHouse `refreshable` MV config: the settings map or a bare bool, where `false`
+/// behaves like omitting the key (dbt-clickhouse parity).
+#[derive(Debug, Clone, PartialEq, UntaggedEnumDeserialize, Serialize, DbtSchema)]
+#[serde(untagged)]
+pub enum RefreshableConfig {
+    Bool(bool),
+    Config(BTreeMap<String, YmlValue>),
+}
+
 /// A wrapper type for the `indexes` config field that handles flexible deserialization.
 ///
 /// dbt-core accepts both list and dictionary formats for indexes. This type accepts
@@ -984,7 +1320,7 @@ impl PrimaryKeyConfig {
 /// // Serializes as: [{columns: ["id"], unique: true}]  (keys are discarded)
 /// ```
 #[derive(Debug, Clone, Default, PartialEq, DbtSchema)]
-pub struct IndexesConfig(Option<Vec<PostgresIndex>>);
+pub struct IndexesConfig(Option<Vec<IndexItem>>);
 
 impl IndexesConfig {
     /// Creates a new empty IndexesConfig
@@ -992,13 +1328,13 @@ impl IndexesConfig {
         Self(None)
     }
 
-    /// Creates an IndexesConfig from a Vec of PostgresIndex
-    pub fn from_vec(indexes: Vec<PostgresIndex>) -> Self {
+    /// Creates an IndexesConfig from a Vec of IndexItem
+    pub fn from_vec(indexes: Vec<IndexItem>) -> Self {
         Self(Some(indexes))
     }
 
     /// Consumes self and returns the inner value
-    pub fn into_inner(self) -> Option<Vec<PostgresIndex>> {
+    pub fn into_inner(self) -> Option<Vec<IndexItem>> {
         self.0
     }
 
@@ -1023,8 +1359,8 @@ impl IndexesConfig {
     }
 }
 
-impl AsRef<Option<Vec<PostgresIndex>>> for IndexesConfig {
-    fn as_ref(&self) -> &Option<Vec<PostgresIndex>> {
+impl AsRef<Option<Vec<IndexItem>>> for IndexesConfig {
+    fn as_ref(&self) -> &Option<Vec<IndexItem>> {
         &self.0
     }
 }
@@ -1034,7 +1370,7 @@ impl Serialize for IndexesConfig {
     where
         S: Serializer,
     {
-        // Always serialize as Option<Vec<PostgresIndex>>
+        // Always serialize as Option<Vec<IndexItem>>
         self.0.serialize(serializer)
     }
 }
@@ -1048,14 +1384,14 @@ impl<'de> Deserialize<'de> for IndexesConfig {
         use std::fmt;
         use std::marker::PhantomData;
 
-        struct IndexesVisitor(PhantomData<PostgresIndex>);
+        struct IndexesVisitor(PhantomData<IndexItem>);
 
         impl<'de> Visitor<'de> for IndexesVisitor {
-            type Value = Option<Vec<PostgresIndex>>;
+            type Value = Option<Vec<IndexItem>>;
 
             fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
                 formatter.write_str(
-                    "a sequence of PostgresIndex, a map of name -> PostgresIndex, or null",
+                    "a sequence of index configs, a map of name -> index config, or null",
                 )
             }
 
@@ -1090,7 +1426,7 @@ impl<'de> Deserialize<'de> for IndexesConfig {
             {
                 let mut vec = Vec::new();
                 // Discard the keys, collect just the values
-                while let Some((_key, value)) = map.next_entry::<String, PostgresIndex>()? {
+                while let Some((_key, value)) = map.next_entry::<String, IndexItem>()? {
                     vec.push(value);
                 }
                 Ok(Some(vec))
@@ -1103,13 +1439,13 @@ impl<'de> Deserialize<'de> for IndexesConfig {
     }
 }
 
-impl From<Option<Vec<PostgresIndex>>> for IndexesConfig {
-    fn from(value: Option<Vec<PostgresIndex>>) -> Self {
+impl From<Option<Vec<IndexItem>>> for IndexesConfig {
+    fn from(value: Option<Vec<IndexItem>>) -> Self {
         IndexesConfig(value)
     }
 }
 
-impl From<IndexesConfig> for Option<Vec<PostgresIndex>> {
+impl From<IndexesConfig> for Option<Vec<IndexItem>> {
     fn from(config: IndexesConfig) -> Self {
         config.0
     }
@@ -1196,12 +1532,91 @@ impl std::fmt::Display for FloatOrString {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::schemas::common::PartitionConfig;
     use dbt_common::serde_utils::Omissible;
 
     #[derive(Serialize, Deserialize)]
     struct TestConfig {
         #[serde(default)]
         grants: OmissibleGrantConfig,
+    }
+
+    /// `propagate` accepts a bare adapter name or a list of them, and both
+    /// collapse to the same `Vec<AdapterType>` for callers.
+    #[test]
+    fn adapter_type_or_array_accepts_one_or_many() {
+        let one: AdapterTypeOrArray = dbt_yaml::from_str("snowflake").unwrap();
+        assert_eq!(one, AdapterTypeOrArray::One(AdapterType::Snowflake));
+        assert_eq!(Vec::<AdapterType>::from(one), vec![AdapterType::Snowflake]);
+
+        let many: AdapterTypeOrArray = dbt_yaml::from_str("[snowflake, bigquery]").unwrap();
+        assert_eq!(
+            Vec::<AdapterType>::from(many),
+            vec![AdapterType::Snowflake, AdapterType::Bigquery]
+        );
+    }
+
+    /// The point of typing this rather than reusing `StringOrArrayOfStrings`:
+    /// a value that is not an adapter type fails here, at deserialization.
+    #[test]
+    fn adapter_type_or_array_rejects_a_value_that_is_not_an_adapter() {
+        let err = dbt_yaml::from_str::<AdapterTypeOrArray>("compute")
+            .expect_err("`compute` is not an adapter type");
+        assert!(
+            format!("{err}").contains("compute"),
+            "error should name the offending value: {err}"
+        );
+        dbt_yaml::from_str::<AdapterTypeOrArray>("[snowflake, compute]")
+            .expect_err("one bad entry rejects the whole list");
+    }
+
+    #[test]
+    fn partition_by_round_trips_string_and_list() {
+        let scalar: PartitionConfig = dbt_yaml::from_str("toYYYYMM(created_at)").unwrap();
+        assert_eq!(
+            dbt_yaml::to_string(&scalar).unwrap().trim(),
+            "toYYYYMM(created_at)"
+        );
+
+        let list: PartitionConfig = dbt_yaml::from_str("[a, b]").unwrap();
+        let round_tripped: Vec<String> =
+            dbt_yaml::from_str(&dbt_yaml::to_string(&list).unwrap()).unwrap();
+        assert_eq!(round_tripped, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn indexes_round_trip_clickhouse_and_postgres_shapes() {
+        // ClickHouse {name, definition}
+        let ch: IndexesConfig =
+            dbt_yaml::from_str("[{name: idx1, definition: 'a TYPE minmax GRANULARITY 4'}]")
+                .unwrap();
+        assert!(matches!(
+            ch.as_ref().as_deref(),
+            Some([IndexItem::ClickHouse(_)])
+        ));
+        // Round-trip: re-parse the serialized YAML and compare to the original items
+        // (robust against emitter quoting/reflow choices).
+        let ch_reparsed: Vec<IndexItem> =
+            dbt_yaml::from_str(&dbt_yaml::to_string(&ch).unwrap()).unwrap();
+        assert_eq!(Some(ch_reparsed), ch.into_inner());
+
+        // Postgres {columns, unique} — list form
+        let pg: IndexesConfig = dbt_yaml::from_str("[{columns: [id], unique: true}]").unwrap();
+        assert!(matches!(
+            pg.as_ref().as_deref(),
+            Some([IndexItem::Postgres(_)])
+        ));
+        let pg_reparsed: Vec<IndexItem> =
+            dbt_yaml::from_str(&dbt_yaml::to_string(&pg).unwrap()).unwrap();
+        assert_eq!(Some(pg_reparsed), pg.into_inner());
+
+        // Postgres dict-of-indexes form still works, and serializes back as a list
+        let pg_map: IndexesConfig =
+            dbt_yaml::from_str("{my_index: {columns: [id], unique: true}}").unwrap();
+        assert_eq!(pg_map.len(), 1);
+        let pg_map_reparsed: Vec<IndexItem> =
+            dbt_yaml::from_str(&dbt_yaml::to_string(&pg_map).unwrap()).unwrap();
+        assert_eq!(Some(pg_map_reparsed), pg_map.into_inner());
     }
 
     #[test]
@@ -1272,8 +1687,46 @@ mod tests {
                     vec!["ds=2023-01-01".to_string(), "ds=2023-01-02".to_string()]
                 );
             }
-            PartitionsConfig::Maps(_) => panic!("expected Strings variant"),
+            PartitionsConfig::Maps(_) | PartitionsConfig::String(_) | PartitionsConfig::Map(_) => {
+                panic!("expected Strings variant")
+            }
         }
+    }
+
+    #[test]
+    fn test_partitions_config_accepts_string() {
+        let yaml = "ds=2023-01-01\n";
+        let parsed: PartitionsConfig = dbt_yaml::from_str(yaml).unwrap();
+        assert_eq!(
+            parsed,
+            PartitionsConfig::String("ds=2023-01-01".to_string())
+        );
+        assert_eq!(
+            serde_json::to_string(&parsed).unwrap(),
+            r#""ds=2023-01-01""#
+        );
+    }
+
+    #[test]
+    fn test_partitions_config_accepts_map() {
+        let yaml = "name: extracted_at_ts\ndata_type: timestamptz\n";
+        let parsed: PartitionsConfig = dbt_yaml::from_str(yaml).unwrap();
+        match &parsed {
+            PartitionsConfig::Map(map) => {
+                assert_eq!(
+                    map.get("name").and_then(|value| value.as_str()),
+                    Some("extracted_at_ts")
+                );
+                assert_eq!(
+                    map.get("data_type").and_then(|value| value.as_str()),
+                    Some("timestamptz")
+                );
+            }
+            _ => panic!("expected Map variant"),
+        }
+        let json = serde_json::to_string(&parsed).unwrap();
+        assert!(json.contains(r#""name":"extracted_at_ts""#));
+        assert!(json.contains(r#""data_type":"timestamptz""#));
     }
 
     #[test]
@@ -1293,7 +1746,9 @@ mod tests {
                     Some("timestamptz"),
                 );
             }
-            PartitionsConfig::Strings(_) => panic!("expected Maps variant"),
+            PartitionsConfig::Strings(_)
+            | PartitionsConfig::String(_)
+            | PartitionsConfig::Map(_) => panic!("expected Maps variant"),
         }
     }
 
@@ -1395,6 +1850,37 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<W>(r#"{"h":"null"}"#).unwrap().h,
             Omissible::Present(Some(StringOrInteger::String("null".to_string())))
+        );
+    }
+
+    #[test]
+    fn strip_one_trailing_newline_at_keys_matches_core_get_rendered_native() {
+        // Verified against dbt-core's `get_rendered(..., native=True)`, which never takes the
+        // no-jinja fast path and so always runs the Jinja lexer -- dropping exactly one trailing
+        // newline and nothing else. `untouched` stands in for a key not on the allowlist.
+        let mut value: YmlValue = dbt_yaml::from_str(
+            "one: \"declared_source\\n\"\ntwo: \"declared_source\\n\\n\"\npadded: \"  declared_source  \\n\"\nplain: declared_source\nuntouched: \"declared_source\\n\"\n",
+        )
+        .unwrap();
+
+        strip_one_trailing_newline_at_keys(&mut value, &["one", "two", "padded", "plain"]);
+
+        assert_eq!(value.get("one").unwrap().as_str(), Some("declared_source"));
+        assert_eq!(
+            value.get("two").unwrap().as_str(),
+            Some("declared_source\n")
+        );
+        assert_eq!(
+            value.get("padded").unwrap().as_str(),
+            Some("  declared_source  ")
+        );
+        assert_eq!(
+            value.get("plain").unwrap().as_str(),
+            Some("declared_source")
+        );
+        assert_eq!(
+            value.get("untouched").unwrap().as_str(),
+            Some("declared_source\n")
         );
     }
 }

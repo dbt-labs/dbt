@@ -17,7 +17,7 @@ use dbt_common::{ErrorCode, FsResult, fs_err};
 use dbt_dag::schedule::Schedule;
 use dbt_schema_store::{
     CanonicalFqn, LocalSchemaEntry,
-    store::{DataStore, SchemaStore, StoreFormat},
+    store::{DataStore, SchemaStore},
 };
 use dbt_schemas::schemas::{DbtSource, InternalDbtNodeAttributes, Nodes, dbt_column::DbtColumnRef};
 use dbt_telemetry::NodeType;
@@ -159,8 +159,6 @@ pub fn init_schema_store(
     cache_dir: &Path,
     adapter_type: AdapterType,
     extra_frontier_unique_ids: Option<&BTreeSet<String>>,
-    use_parquet_schema_store: bool,
-    verify_parquet_schema_store: bool,
 ) -> FsResult<SchemaStore> {
     // Filter out unit tests and data tests from selected nodes.
     // Unit tests inherit the database/schema/alias from the model they test, which causes
@@ -226,30 +224,116 @@ pub fn init_schema_store(
     // Build per-source refresh intervals
     let refresh_intervals = build_refresh_intervals(&all_frontier_ids, nodes);
 
-    let (primary_format, verify_format) = if verify_parquet_schema_store {
-        // Verify mode: old store is primary (its results are returned),
-        // new parquet store runs as shadow for comparison.
-        (StoreFormat::Parquet, Some(StoreFormat::ParquetCache))
-    } else if use_parquet_schema_store {
-        (StoreFormat::ParquetCache, None)
-    } else {
-        (StoreFormat::Parquet, None)
-    };
-
     let store = SchemaStore::new(
         cache_dir.to_path_buf(),
         selected,
         remote_frontier,
         local,
         local_schemas,
-        primary_format,
         refresh_intervals,
-        verify_format,
     );
 
     Ok(store)
 }
 
 pub fn init_data_store(cache_dir: &Path) -> DataStore {
-    DataStore::new(cache_dir.to_path_buf(), StoreFormat::Parquet)
+    DataStore::new(cache_dir.to_path_buf())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow_schema::DataType;
+    use dbt_schema_store::{SchemaOwner, SchemaStoreTrait};
+    use dbt_schemas::schemas::common::ResolvedQuoting;
+    use dbt_schemas::schemas::{CommonAttributes, DbtModel, NodeBaseAttributes};
+
+    #[test]
+    fn schema_store_preserves_node_ownership_across_adapter_casing() {
+        for default_adapter in [AdapterType::DuckDB, AdapterType::Snowflake] {
+            for quoting in [ResolvedQuoting::falses(), ResolvedQuoting::trues()] {
+                let mut nodes = Nodes::default();
+                let mut schedule = Schedule::default();
+                let mut extra = BTreeSet::new();
+                for adapter in [AdapterType::DuckDB, AdapterType::Snowflake] {
+                    for role in ["selected", "frontier", "extra"] {
+                        let name = format!("Mixed_{adapter}_{role}");
+                        let unique_id = format!("model.test.{name}");
+                        nodes.models.insert(
+                            unique_id.clone(),
+                            Arc::new(DbtModel {
+                                __common_attr__: CommonAttributes {
+                                    unique_id: unique_id.clone(),
+                                    name: name.clone(),
+                                    ..Default::default()
+                                },
+                                __base_attr__: NodeBaseAttributes {
+                                    database: "MixedDb".to_string(),
+                                    schema: "MixedSchema".to_string(),
+                                    alias: name,
+                                    adapter,
+                                    quoting,
+                                    ..Default::default()
+                                },
+                                ..Default::default()
+                            }),
+                        );
+                        match role {
+                            "selected" => {
+                                schedule.selected_nodes.insert(unique_id);
+                            }
+                            "frontier" => {
+                                schedule.frontier_nodes.insert(unique_id);
+                            }
+                            "extra" => {
+                                extra.insert(unique_id);
+                            }
+                            _ => unreachable!(),
+                        }
+                    }
+                }
+                let dir = tempfile::tempdir().unwrap();
+                let store =
+                    init_schema_store(&schedule, &nodes, dir.path(), default_adapter, Some(&extra))
+                        .unwrap();
+                for (unique_id, node) in &nodes.models {
+                    let canonical_fqn =
+                        create_relation_from_node(node.node_adapter(), node.as_ref(), None)
+                            .unwrap()
+                            .get_canonical_fqn()
+                            .unwrap();
+                    let indexed_fqn =
+                        create_relation_from_node(default_adapter, node.as_ref(), None)
+                            .unwrap()
+                            .get_canonical_fqn()
+                            .unwrap();
+                    if node.node_adapter() != default_adapter && !quoting.database {
+                        assert_ne!(canonical_fqn.to_string(), indexed_fqn.to_string());
+                    }
+                    assert_eq!(canonical_fqn, indexed_fqn);
+                    assert_eq!(
+                        store.schema_owner(&canonical_fqn),
+                        Some(SchemaOwner::Current(unique_id.clone()))
+                    );
+                    let schema = Arc::new(Schema::new(vec![
+                        Field::new("id", DataType::Utf8, false),
+                        Field::new("name", DataType::Utf8, true),
+                    ]));
+                    // Analysis registers with the node adapter, which may spell the key differently.
+                    store
+                        .register_schema(&canonical_fqn, None, Arc::clone(&schema), true)
+                        .unwrap();
+                    assert_eq!(
+                        store.get_schema_by_unique_id(unique_id).unwrap().inner(),
+                        &schema
+                    );
+                    assert_eq!(store.get_schema(&indexed_fqn).unwrap().inner(), &schema);
+                    assert_eq!(
+                        store.schema_owner(&canonical_fqn),
+                        Some(SchemaOwner::Current(unique_id.clone()))
+                    );
+                }
+            }
+        }
+    }
 }

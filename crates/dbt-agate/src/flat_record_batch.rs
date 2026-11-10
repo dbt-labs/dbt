@@ -517,16 +517,24 @@ pub(crate) struct FlatRecordBatch {
 
 impl FlatRecordBatch {
     pub fn try_new(batch: Arc<RecordBatch>) -> Result<Self, ArrowError> {
+        Self::try_new_impl(batch, None)
+    }
+
+    pub fn try_new_impl(
+        batch: Arc<RecordBatch>,
+        original: Option<Arc<RecordBatch>>,
+    ) -> Result<Self, ArrowError> {
         let flat = Arc::new(flatten_record_batch_columns(batch.as_ref()));
-        Self::_from_flattened_record_batch(flat, Some(batch))
+        let original = original.or_else(|| Some(batch));
+        Self::_from_flattened_record_batch(flat, original)
     }
 
     pub(crate) fn _from_flattened_record_batch(
         flat: Arc<RecordBatch>,
         original: Option<Arc<RecordBatch>>,
     ) -> Result<Self, ArrowError> {
-        let data_types = flat
-            .schema()
+        let schema = flat.schema();
+        let data_types = schema
             .fields()
             .iter()
             .map(|field| {
@@ -540,10 +548,20 @@ impl FlatRecordBatch {
                 crate::DataType::new(dtype_name)
             })
             .collect::<Vec<_>>();
-        let converters = flat
-            .columns()
+        let converters = schema
+            .fields()
             .iter()
-            .map(|array| make_array_converter(&**array))
+            .zip(flat.columns())
+            .map(|(field, array)| {
+                make_array_converter(array.as_ref()).map_err(|e| {
+                    // Name the column whose converter failed. See https://github.com/dbt-labs/fs/issues/15412
+                    ArrowError::NotYetImplemented(format!(
+                        "no agate converter for column '{}' (Arrow type {}): {e}",
+                        field.name(),
+                        field.data_type(),
+                    ))
+                })
+            })
             .collect::<Result<Vec<_>, ArrowError>>()?;
         Ok(Self {
             flat,
@@ -602,6 +620,16 @@ impl FlatRecordBatch {
 
     pub fn column_names(&self) -> impl Iterator<Item = &String> + '_ {
         self.flat
+            .schema_ref()
+            .fields()
+            .iter()
+            .map(|field| field.name())
+    }
+
+    pub fn top_level_column_names(&self) -> impl Iterator<Item = &String> + '_ {
+        self.original
+            .as_ref()
+            .unwrap_or(&self.flat)
             .schema_ref()
             .fields()
             .iter()
@@ -678,4 +706,69 @@ pub(crate) fn single_column_batch(batch: &RecordBatch, idx: usize) -> RecordBatc
     let columns = vec![batch.column(idx).clone()];
     // only one column selected, row-count can be derived, so .unwrap() is safe
     RecordBatch::try_new(Arc::new(schema), columns).unwrap()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::array::{FixedSizeBinaryArray, Int32Array, StringArray};
+
+    /// The error must name the *offending* column, not merely the Arrow type.
+    ///
+    /// The unsupported column is deliberately not the first one: the converters are built
+    /// by zipping schema fields against columns, and a mispaired zip would still produce a
+    /// plausible-looking message naming the wrong column.
+    #[test]
+    fn converter_error_names_the_offending_column() {
+        let embedding =
+            FixedSizeBinaryArray::try_from_iter(vec![vec![1u8, 2], vec![3u8, 4]].into_iter())
+                .unwrap();
+        let schema = Schema::new(vec![
+            Field::new("id", DataType::Int32, true),
+            Field::new("name", DataType::Utf8, true),
+            Field::new("embedding", embedding.data_type().clone(), true),
+        ]);
+        let batch = RecordBatch::try_new(
+            Arc::new(schema),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2])),
+                Arc::new(StringArray::from(vec!["a", "b"])),
+                Arc::new(embedding),
+            ],
+        )
+        .unwrap();
+
+        let err = FlatRecordBatch::try_new(Arc::new(batch)).unwrap_err();
+        let msg = err.to_string();
+
+        assert_eq!(
+            msg,
+            "Not yet implemented: no agate converter for column 'embedding' \
+             (Arrow type FixedSizeBinary(2)): Cast error: Casting from FixedSizeBinary(2) \
+             to Utf8 not supported"
+        );
+        assert!(
+            !msg.contains("'id'") && !msg.contains("'name'"),
+            "error must not name the supported columns, got: {msg}"
+        );
+    }
+
+    /// Columns that all have converters must still build cleanly.
+    #[test]
+    fn supported_columns_build_without_error() {
+        let schema = Schema::new(vec![
+            Field::new("id", DataType::Int32, true),
+            Field::new("name", DataType::Utf8, true),
+        ]);
+        let batch = RecordBatch::try_new(
+            Arc::new(schema),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2])),
+                Arc::new(StringArray::from(vec!["a", "b"])),
+            ],
+        )
+        .unwrap();
+
+        assert!(FlatRecordBatch::try_new(Arc::new(batch)).is_ok());
+    }
 }

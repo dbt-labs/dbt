@@ -6,3 +6,12 @@
 {% set variable3 | upper %}
     this is the {{ body }} with filter
 {% endset %}
+{% set sources, campaigns =
+    ['facebook', 'google'],
+    ['search', 'display'],
+%}
+{% set a, b = 1, 2, %}
+{% set a, b, %}
+    tuple set block body
+{% endset %}
+{% set x = 1, %}

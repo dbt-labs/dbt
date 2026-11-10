@@ -1,10 +1,16 @@
-# The SPA source lives in the dbt-ui repo. A built `dist/` is committed
-# here so every build of `dbt-docs-server` embeds a working bundle.
+# The SPA source lives here, alongside a committed `dist/` so that every build of
+# `dbt-docs-server` embeds a working bundle without needing a JS toolchain.
+# Rebuild with `pnpm build` (here or from the workspace root) and commit `dist/` in the
+# same change as any source edit, here or in `../dbt-docs-lib/`.
 node_modules/
 .vite/
 
-# Parent fs/sa/.gitignore excludes `dist/` everywhere; re-include this
-# committed bundle but keep sourcemaps out (upstream vite has
-# sourcemap: false; belt-and-suspenders).
+# Both the repo root and `fs/sa/.gitignore` exclude `dist/` everywhere. Re-include
+# this committed bundle — this negation is load-bearing, removing it silently
+# un-tracks the embedded SPA — but keep sourcemaps out.
 !dist/
 dist/**/*.map
+
+# Storybook build output. Unlike `dist/`, this is a developer tool and is never
+# embedded in the binary, so it stays untracked.
+storybook-static/

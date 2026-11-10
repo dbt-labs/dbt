@@ -1,0 +1,8 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/hello_world.sql
+ Rendering models/hello_world.sql
+==================== Execution Summary =====================
+Finished 'compile' with 1 warning for target 'snowflake_local' [duration]
+Processed: 1 model
+Summary: 1 total | 1 success

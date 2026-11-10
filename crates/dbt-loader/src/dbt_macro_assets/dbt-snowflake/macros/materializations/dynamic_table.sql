@@ -43,7 +43,7 @@
     {% else %}
 
         -- get config options
-        {% set on_configuration_change = config.get('on_configuration_change', 'apply') %} {# DIVERGENCE: core does not default to `apply` here because it sets it elsewhere in the Python code #}
+        {% set on_configuration_change = config.get('on_configuration_change') %}
         {% set configuration_changes = snowflake__get_dynamic_table_configuration_changes(existing_relation, config) %}
 
         {% if configuration_changes is none %}
@@ -99,7 +99,8 @@
 
 {% macro snowflake__get_dynamic_table_configuration_changes(existing_relation, new_config) -%}
     {%- set _include_transient = new_config.get("transient") is not none -%}
-    {% set _existing_dynamic_table = adapter.describe_dynamic_table(existing_relation, _include_transient) %}
+    {# DIVERGENCE: core wraps adapter.describe_dynamic_table in a snowflake__describe_dynamic_table macro; Fusion dispatches every relation type through adapter.describe_relation in adapter_impl.rs, so there is no wrapper macro. #}
+    {% set _existing_dynamic_table = adapter.describe_relation(existing_relation, include_transient=_include_transient) %}
     {% set _configuration_changes = existing_relation.dynamic_table_config_changeset(_existing_dynamic_table, new_config.model) %}
     {% do return(_configuration_changes) %}
 {%- endmacro %}

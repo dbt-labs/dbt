@@ -103,7 +103,11 @@ impl Object for DbtNamespace {
                 context: Some(context),
             }))
         } else if self.name == "dbt" {
-            let dbt_and_adapters = state.env().get_dbt_and_adapters_namespace();
+            // `dbt.<name>` is the unprefixed internal-macro path, so this is
+            // exactly where two adapters defining the same macro would collide.
+            // Resolve within the node's dialect.
+            let dialect = minijinja::dispatch_object::resolve_dialect(state);
+            let dbt_and_adapters = state.env().get_dbt_and_adapters_namespace(&dialect);
             if let Some(package) = dbt_and_adapters.get(&Value::from(name)) {
                 let package_name = package.as_str().map(|s| s.to_string());
                 let template_registry_entry = template_registry.get(&ns_name);

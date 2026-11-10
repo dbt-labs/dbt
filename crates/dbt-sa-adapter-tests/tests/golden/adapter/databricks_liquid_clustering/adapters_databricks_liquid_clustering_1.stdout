@@ -1,0 +1,19 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/lc_lifecycle.yml
+   Parsing models/lc_incremental.sql
+   Parsing models/lc_materialized_view.sql
+   Parsing models/lc_table.sql
+ Rendering models/lc_table.sql
+   Running models/lc_table.sql
+ Succeeded model adapters_databricks_liquid_clustering.lc_table (table) [1 of 3 in duration]
+ Rendering models/lc_materialized_view.sql
+   Running models/lc_materialized_view.sql
+ Succeeded model adapters_databricks_liquid_clustering.lc_materialized_view (mat_view) [2 of 3 in duration]
+ Rendering models/lc_incremental.sql
+   Running models/lc_incremental.sql
+ Succeeded model adapters_databricks_liquid_clustering.lc_incremental (incremental) [3 of 3 in duration]
+==================== Execution Summary =====================
+Finished 'run' successfully for target 'databricks' [duration]
+Processed: 3 models
+Summary: 3 total | 3 success

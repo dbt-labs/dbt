@@ -34,3 +34,5 @@ scratch/
 
 #redis
 dump.rdb
+
+AGENTS.local.md

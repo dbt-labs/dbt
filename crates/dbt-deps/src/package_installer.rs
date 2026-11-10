@@ -1,19 +1,17 @@
 //! Concurrent package installation: one trait impl per unpinned package kind.
 
 use std::path::Path;
-use std::sync::Arc;
 
-use dbt_common::io_utils::StatusReporter;
 use dbt_common::tracing::dbt_emit::emit_info_log_message;
-use dbt_common::tracing::formatters::deps::get_package_display_name;
 use dbt_common::tracing::span_info::{SpanStatusRecorder as _, update_span_attrs};
-use dbt_common::{FsResult, constants::INSTALLING, create_info_span, stdfs, tokiofs};
+use dbt_common::{ErrorCode, FsResult, create_info_span, fs_err, stdfs, tokiofs};
 use dbt_telemetry::{DepsPackageInstalled, PackageType};
 use tracing::Instrument as _;
 use vortex_events::package_install_event;
 
 use crate::context::DepsOperationContext;
 use crate::git_client::install_git_like_package;
+use crate::hub_client::HubPackageVersion;
 use crate::package_listing::UnpinnedPackage;
 use crate::types::{
     GitUnpinnedPackage, HubUnpinnedPackage, LocalUnpinnedPackage, PrivateUnpinnedPackage,
@@ -59,7 +57,6 @@ pub(crate) trait PackageInstaller {
     async fn install(&self, ctx: &DepsOperationContext<'_>, dest: &Path) -> FsResult<()> {
         ctx.check_cancellation()?;
         let attrs = self.span_attrs();
-        report_progress(&attrs, ctx.io.status_reporter.as_ref());
         let span = create_info_span(attrs);
 
         let mut outcome = InstallOutcome::default();
@@ -87,16 +84,6 @@ pub(crate) trait PackageInstaller {
         });
 
         result
-    }
-}
-
-fn report_progress(
-    attrs: &DepsPackageInstalled,
-    status_reporter: Option<&Arc<dyn StatusReporter + 'static>>,
-) {
-    if let Some(reporter) = status_reporter {
-        let detail = get_package_display_name(attrs).unwrap_or("unknown");
-        reporter.show_progress(INSTALLING, detail, None);
     }
 }
 
@@ -132,27 +119,27 @@ impl PackageInstaller for HubUnpinnedPackage {
         out.name = Some(pinned.name.clone());
         out.version = Some(pinned.version.clone());
 
-        let tarball_url = if ctx.use_v2_compatible_package_downloads
-            && let Some(fusion_compatibility) = &metadata.fusion_compatibility
-            && let Some(hub_fusion_compatible_download) =
-                &fusion_compatibility.fusion_compatible_download
-            && let Some(fusion_compatible_download_url) = &hub_fusion_compatible_download.tarball
-        {
-            emit_info_log_message(format!(
-                "Installing the v2-compatible download from Package Hub for {}@{}",
-                pinned.name, pinned.version,
-            ));
-            fusion_compatible_download_url.clone()
-        } else {
-            metadata.downloads.tarball.clone()
-        };
+        let (tarball_url, expected_sha1) = select_hub_download(
+            ctx.use_v2_compatible_package_downloads,
+            ctx.require_hub_verified_downloads,
+            metadata,
+            &pinned.name,
+            &pinned.version,
+        )?;
 
         let final_path = dest.join(&metadata.name);
         ensure_dir(&final_path).await?;
 
         if let Err(e) = ctx
             .tarball_client
-            .download_and_extract_tarball(&tarball_url, &final_path, true, None, &[])
+            .download_and_extract_tarball(
+                &tarball_url,
+                &final_path,
+                true,
+                None,
+                &[],
+                expected_sha1.as_deref(),
+            )
             .await
         {
             let _ = tokiofs::remove_dir_all(&final_path).await;
@@ -161,6 +148,58 @@ impl PackageInstaller for HubUnpinnedPackage {
 
         Ok(())
     }
+}
+
+/// Select the tarball URL and the sha1 to verify it against.
+///
+/// `downloads.sha1` describes the upstream tarball, whose gzip output is not
+/// byte-stable, so it's not a usable substitute for the mirror's own sha1.
+fn select_hub_download(
+    use_v2_compatible_package_downloads: bool,
+    require_hub_verified_downloads: bool,
+    metadata: &HubPackageVersion,
+    name: &str,
+    version: &str,
+) -> FsResult<(String, Option<String>)> {
+    let (tarball_url, sha1) = if use_v2_compatible_package_downloads
+        && let Some(fusion_compatibility) = &metadata.fusion_compatibility
+        && let Some(hub_fusion_compatible_download) =
+            &fusion_compatibility.fusion_compatible_download
+        && let Some(fusion_compatible_download_url) = &hub_fusion_compatible_download.tarball
+    {
+        emit_info_log_message(format!(
+            "Installing the v2-compatible download from Package Hub for {name}@{version}",
+        ));
+        (
+            fusion_compatible_download_url.clone(),
+            hub_fusion_compatible_download.sha1.clone(),
+        )
+    } else if require_hub_verified_downloads {
+        let hub_mirror = metadata.downloads.hub.as_ref().ok_or_else(|| {
+            fs_err!(
+                ErrorCode::RuntimeError,
+                "Package Hub did not provide a verifiable mirror download for {name}@{version}, \
+                 but require_hub_verified_downloads is enabled. Disable the flag to install the \
+                 unverified upstream tarball instead."
+            )
+        })?;
+        (hub_mirror.tarball.clone(), hub_mirror.sha1.clone())
+    } else {
+        (metadata.downloads.tarball.clone(), None)
+    };
+
+    if !require_hub_verified_downloads {
+        return Ok((tarball_url, None));
+    }
+    let sha1 = sha1.ok_or_else(|| {
+        fs_err!(
+            ErrorCode::RuntimeError,
+            "Package Hub did not provide a sha1 checksum for {name}@{version}, but \
+             require_hub_verified_downloads is enabled. Disable the flag to install without \
+             checksum verification."
+        )
+    })?;
+    Ok((tarball_url, Some(sha1)))
 }
 
 impl PackageInstaller for GitUnpinnedPackage {
@@ -291,7 +330,7 @@ impl PackageInstaller for TarballUnpinnedPackage {
 
         if let Err(e) = ctx
             .tarball_client
-            .download_and_extract_tarball(&self.tarball, &extract_path, true, None, &[])
+            .download_and_extract_tarball(&self.tarball, &extract_path, true, None, &[], None)
             .await
         {
             let _ = tokiofs::remove_dir_all(&extract_path).await;
@@ -299,8 +338,7 @@ impl PackageInstaller for TarballUnpinnedPackage {
         }
 
         let dbt_project =
-            read_and_validate_dbt_project(ctx.io, &extract_path, false, ctx.jinja_env, ctx.vars)
-                .await?;
+            read_and_validate_dbt_project(&extract_path, false, ctx.jinja_env, ctx.vars).await?;
         let project_name = dbt_project.name;
         out.name = Some(project_name.clone());
         out.version = Some("tarball".to_string());
@@ -329,8 +367,7 @@ async fn install_git_like(
 
     // Warnings already emitted during resolve; suppress here.
     let dbt_project =
-        read_and_validate_dbt_project(ctx.io, &checkout_path, false, ctx.jinja_env, ctx.vars)
-            .await?;
+        read_and_validate_dbt_project(&checkout_path, false, ctx.jinja_env, ctx.vars).await?;
     out.name = Some(dbt_project.name.clone());
     move_dir(&checkout_path, &dest.join(&dbt_project.name)).await?;
     drop(tmp_dir);
@@ -351,5 +388,124 @@ impl UnpinnedPackage {
             UnpinnedPackage::Private(p) => p.install(ctx, dest).await,
             UnpinnedPackage::Tarball(p) => p.install(ctx, dest).await,
         }
+    }
+}
+
+#[cfg(test)]
+mod select_hub_download_tests {
+    use super::*;
+    use crate::hub_client::{
+        FusionHubPackageDownloads, HubPackageDownloads, HubPackageFusionCompatibility,
+        HubPackageVersion,
+    };
+
+    const ORIGINAL_URL: &str = "https://codeload.github.com/org/pkg/tar.gz/1.0.0";
+    const HUB_MIRROR_URL: &str = "https://mirror.example-cdn.com/packages/org/pkg/tar.gz/1.0.0";
+    const FUSION_URL: &str = "https://codeload.github.com/org/pkg/tar.gz/1.0.0-fusion";
+    const HUB_SHA1: &str = "1111111111111111111111111111111111111111";
+    const FUSION_SHA1: &str = "2222222222222222222222222222222222222222";
+
+    /// Outer `None` omits the download; inner `None` omits just its sha1.
+    fn metadata(
+        hub_mirror_sha1: Option<Option<&str>>,
+        fusion_sha1: Option<Option<&str>>,
+    ) -> HubPackageVersion {
+        HubPackageVersion {
+            name: "pkg".to_string(),
+            downloads: HubPackageDownloads {
+                tarball: ORIGINAL_URL.to_string(),
+                hub: hub_mirror_sha1.map(|sha1| {
+                    Box::new(HubPackageDownloads {
+                        tarball: HUB_MIRROR_URL.to_string(),
+                        sha1: sha1.map(str::to_string),
+                        hub: None,
+                    })
+                }),
+                ..Default::default()
+            },
+            fusion_compatibility: fusion_sha1.map(|sha1| HubPackageFusionCompatibility {
+                fusion_compatible_download: Some(FusionHubPackageDownloads {
+                    tarball: Some(FUSION_URL.to_string()),
+                    sha1: sha1.map(str::to_string),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn select(
+        use_v2: bool,
+        require_hub_verified: bool,
+        metadata: &HubPackageVersion,
+    ) -> FsResult<(String, Option<String>)> {
+        select_hub_download(use_v2, require_hub_verified, metadata, "pkg", "1.0.0")
+    }
+
+    #[test]
+    fn verified_no_fusion_uses_hub_mirror_and_its_sha1() {
+        let metadata = metadata(Some(Some(HUB_SHA1)), None);
+        assert_eq!(
+            select(false, true, &metadata).unwrap(),
+            (HUB_MIRROR_URL.to_string(), Some(HUB_SHA1.to_string()))
+        );
+    }
+
+    #[test]
+    fn verified_fusion_available_uses_fusion_url_and_sha1() {
+        let metadata = metadata(Some(Some(HUB_SHA1)), Some(Some(FUSION_SHA1)));
+        assert_eq!(
+            select(true, true, &metadata).unwrap(),
+            (FUSION_URL.to_string(), Some(FUSION_SHA1.to_string()))
+        );
+    }
+
+    #[test]
+    fn verified_fusion_without_sha1_is_an_error() {
+        let metadata = metadata(Some(Some(HUB_SHA1)), Some(None));
+        let err = select(true, true, &metadata).unwrap_err();
+        assert!(
+            err.to_string().contains("did not provide a sha1 checksum"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn verified_hub_mirror_without_sha1_is_an_error() {
+        let metadata = metadata(Some(None), None);
+        let err = select(false, true, &metadata).unwrap_err();
+        assert!(
+            err.to_string().contains("did not provide a sha1 checksum"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn verified_without_hub_mirror_is_an_error() {
+        let metadata = metadata(None, None);
+        let err = select(false, true, &metadata).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("did not provide a verifiable mirror download"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn unverified_fusion_available_uses_fusion_url_without_sha1() {
+        let metadata = metadata(Some(Some(HUB_SHA1)), Some(Some(FUSION_SHA1)));
+        assert_eq!(
+            select(true, false, &metadata).unwrap(),
+            (FUSION_URL.to_string(), None)
+        );
+    }
+
+    #[test]
+    fn unverified_no_fusion_uses_original_url_without_sha1() {
+        let metadata = metadata(Some(Some(HUB_SHA1)), None);
+        assert_eq!(
+            select(false, false, &metadata).unwrap(),
+            (ORIGINAL_URL.to_string(), None)
+        );
     }
 }

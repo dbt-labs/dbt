@@ -1,0 +1,17 @@
+# Scenario: Two catalogs whose catalog_database sanitizes to the same alias.
+# Exercises: Configuration error emitted with the colliding alias name.
+catalogs:
+  - name: first_rest
+    type: iceberg_rest
+    table_format: iceberg
+    config:
+      duckdb:
+        catalog_database: shared
+        endpoint: "https://rest-a.example.com"
+  - name: second_rest
+    type: iceberg_rest
+    table_format: iceberg
+    config:
+      duckdb:
+        catalog_database: shared
+        endpoint: "https://rest-b.example.com"

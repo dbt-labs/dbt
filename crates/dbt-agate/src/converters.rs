@@ -8,8 +8,8 @@ use arrow::compute::{CastOptions, cast_with_options};
 use arrow::datatypes::*;
 use arrow::util::display::FormatOptions;
 use arrow_array::{
-    Array, ArrowPrimitiveType, BooleanArray, GenericByteArray, GenericListArray, MapArray,
-    OffsetSizeTrait, StructArray,
+    Array, ArrowPrimitiveType, BooleanArray, FixedSizeListArray, GenericByteArray,
+    GenericByteViewArray, GenericListArray, MapArray, OffsetSizeTrait, StructArray,
 };
 use arrow_buffer::i256;
 use arrow_schema::ArrowError;
@@ -476,11 +476,50 @@ impl<O: OffsetSizeTrait> ArrayConverter for GenericByteArrayConverter<GenericBin
 
 type GenericStringArrayConverter<O> = GenericByteArrayConverter<GenericStringType<O>>;
 type StringArrayConverter = GenericStringArrayConverter<i32>;
-// type LargeStringArrayConverter = GenericStringArrayConverter<i64>;
+type LargeStringArrayConverter = GenericStringArrayConverter<i64>;
 
 type GenericBinaryArrayConverter<O> = GenericByteArrayConverter<GenericBinaryType<O>>;
 type BinaryArrayConverter = GenericBinaryArrayConverter<i32>;
-// type LargeBinaryArrayConverter = GenericBinaryArrayConverter<i64>;
+type LargeBinaryArrayConverter = GenericBinaryArrayConverter<i64>;
+// }}}
+
+// StringView and BinaryView {{{
+struct ByteViewArrayConverter<T: ByteViewType> {
+    array: GenericByteViewArray<T>,
+}
+
+impl<T: ByteViewType> ByteViewArrayConverter<T> {
+    pub fn new(array: &GenericByteViewArray<T>) -> Self {
+        Self {
+            array: array.clone(),
+        }
+    }
+}
+
+impl ArrayConverter for ByteViewArrayConverter<StringViewType> {
+    fn to_value(&self, idx: usize) -> Value {
+        if self.array.is_valid(idx) {
+            let value = self.array.value(idx);
+            Value::from(value)
+        } else {
+            Value::from(())
+        }
+    }
+}
+
+impl ArrayConverter for ByteViewArrayConverter<BinaryViewType> {
+    fn to_value(&self, idx: usize) -> Value {
+        if self.array.is_valid(idx) {
+            let value = self.array.value(idx);
+            Value::from(value)
+        } else {
+            Value::from(())
+        }
+    }
+}
+
+type StringViewArrayConverter = ByteViewArrayConverter<StringViewType>;
+type BinaryViewArrayConverter = ByteViewArrayConverter<BinaryViewType>;
 // }}}
 
 // List {{{
@@ -491,7 +530,7 @@ struct GenericListArrayConverter<O: OffsetSizeTrait> {
 }
 
 impl<O: OffsetSizeTrait> GenericListArrayConverter<O> {
-    pub fn new(list_array: &GenericListArray<O>) -> Result<Self, ArrowError> {
+    pub fn try_new(list_array: &GenericListArray<O>) -> Result<Self, ArrowError> {
         let child_array = list_array.values();
         let child = make_array_converter(child_array.as_ref())?;
         Ok(Self {
@@ -534,6 +573,55 @@ type ListArrayConverter = GenericListArrayConverter<i32>;
 type LargeListArrayConverter = GenericListArrayConverter<i64>;
 // }}}
 
+// FixedSizeList {{{
+/// Arrow `FixedSizeList` (e.g. Snowflake `VECTOR(FLOAT, n)`) as a Jinja sequence .
+struct FixedSizeListArrayConverter {
+    value_length: usize,
+    child: Box<dyn ArrayConverter>,
+    nulls: Option<NullBuffer>,
+}
+
+impl FixedSizeListArrayConverter {
+    pub fn try_new(list_array: &FixedSizeListArray) -> Result<Self, ArrowError> {
+        // `values()` is already sliced to this array's window, so child positions are
+        // relative to it and need no further offset adjustment.
+        let child = make_array_converter(list_array.values().as_ref())?;
+        Ok(Self {
+            value_length: list_array.value_length() as usize,
+            child,
+            nulls: list_array.nulls().cloned(),
+        })
+    }
+
+    #[inline(always)]
+    pub fn is_valid(&self, idx: usize) -> bool {
+        self.nulls.as_ref().is_none_or(|nulls| nulls.is_valid(idx))
+    }
+
+    #[inline(always)]
+    fn range_for(&self, idx: usize) -> std::ops::Range<usize> {
+        let start = idx * self.value_length;
+        start..start + self.value_length
+    }
+}
+
+impl ArrayConverter for FixedSizeListArrayConverter {
+    fn to_value(&self, idx: usize) -> Value {
+        if self.is_valid(idx) {
+            let range = self.range_for(idx);
+            let mut elems = Vec::with_capacity(range.len());
+
+            for child_idx in range {
+                elems.push(self.child.to_value(child_idx));
+            }
+            Value::from(elems)
+        } else {
+            Value::from(())
+        }
+    }
+}
+// }}}
+
 // Map {{{
 struct MapConverter {
     keys: Box<dyn ArrayConverter>,
@@ -543,7 +631,7 @@ struct MapConverter {
 }
 
 impl MapConverter {
-    pub fn new(array: &MapArray) -> Result<Self, ArrowError> {
+    pub fn try_new(array: &MapArray) -> Result<Self, ArrowError> {
         let keys = make_array_converter(array.keys().as_ref())?;
         let values = make_array_converter(array.values().as_ref())?;
         Ok(Self {
@@ -593,7 +681,7 @@ struct StructConverter {
 }
 
 impl StructConverter {
-    pub fn new(array: &StructArray) -> Result<Self, ArrowError> {
+    pub fn try_new(array: &StructArray) -> Result<Self, ArrowError> {
         debug_assert_eq!(
             array.fields().len(),
             array.columns().len(),
@@ -601,7 +689,8 @@ impl StructConverter {
         );
         let mut field_converters = Vec::with_capacity(array.num_columns());
         for column in array.columns() {
-            field_converters.push(make_array_converter(column.as_ref())?);
+            let field_converter = make_array_converter(column.as_ref())?;
+            field_converters.push(field_converter);
         }
         Ok(Self {
             fields: array.fields().clone(),
@@ -677,7 +766,11 @@ pub fn make_array_converter(array: &dyn Array) -> Result<Box<dyn ArrayConverter>
             array.as_primitive::<Decimal256Type>(),
         )),
         DataType::Utf8 => Box::new(StringArrayConverter::new(array.as_string())),
+        DataType::LargeUtf8 => Box::new(LargeStringArrayConverter::new(array.as_string::<i64>())),
         DataType::Binary => Box::new(BinaryArrayConverter::new(array.as_binary())),
+        DataType::LargeBinary => Box::new(LargeBinaryArrayConverter::new(array.as_binary::<i64>())),
+        DataType::Utf8View => Box::new(StringViewArrayConverter::new(array.as_string_view())),
+        DataType::BinaryView => Box::new(BinaryViewArrayConverter::new(array.as_binary_view())),
         DataType::Date32 => Box::new(PrimitiveArrayConverter::<Date32Type>::new(
             array.as_primitive::<Date32Type>(),
         )),
@@ -728,12 +821,26 @@ pub fn make_array_converter(array: &dyn Array) -> Result<Box<dyn ArrayConverter>
                 maybe_tz.clone(),
             ))
         }
-        DataType::List(_field) => Box::new(ListArrayConverter::new(array.as_list::<i32>())?),
-        DataType::LargeList(_field) => {
-            Box::new(LargeListArrayConverter::new(array.as_list::<i64>())?)
+        DataType::List(_field) => {
+            let converter = ListArrayConverter::try_new(array.as_list::<i32>())?;
+            Box::new(converter)
         }
-        DataType::Map(_field, _is_sorted) => Box::new(MapConverter::new(array.as_map())?),
-        DataType::Struct(_fields) => Box::new(StructConverter::new(array.as_struct())?),
+        DataType::LargeList(_field) => {
+            let converter = LargeListArrayConverter::try_new(array.as_list::<i64>())?;
+            Box::new(converter)
+        }
+        DataType::FixedSizeList(_field, _size) => {
+            let converter = FixedSizeListArrayConverter::try_new(array.as_fixed_size_list())?;
+            Box::new(converter)
+        }
+        DataType::Map(_field, _is_sorted) => {
+            let converter = MapConverter::try_new(array.as_map())?;
+            Box::new(converter)
+        }
+        DataType::Struct(_fields) => {
+            let converter = StructConverter::try_new(array.as_struct())?;
+            Box::new(converter)
+        }
         _ => {
             // FALLBACK: Turn every Arrow value into a [minijinja::Value] string.
             let format_options = FormatOptions::new().with_null("None");
@@ -753,12 +860,16 @@ mod tests {
     use super::*;
     use arrow::compute::kernels::cast_utils::Parser as _;
     use arrow_array::{
-        ArrayRef, Date32Array, Date64Array, Decimal128Array, Decimal256Array, Float64Array,
-        Int32Array, Int64Array, LargeListArray, ListArray, StringArray, Time32MillisecondArray,
-        Time32SecondArray, Time64MicrosecondArray, Time64NanosecondArray,
+        ArrayRef, BinaryViewArray, Date32Array, Date64Array, Decimal128Array, Decimal256Array,
+        FixedSizeListArray, Float32Array, Float64Array, Int32Array, Int64Array, LargeBinaryArray,
+        LargeListArray, LargeStringArray, ListArray, StringArray, StringViewArray,
+        Time32MillisecondArray, Time32SecondArray, Time64MicrosecondArray, Time64NanosecondArray,
         TimestampMicrosecondArray, TimestampMillisecondArray, TimestampNanosecondArray,
         TimestampSecondArray, UInt64Array,
-        builder::{Int32Builder, ListBuilder, MapBuilder, StringBuilder, StructBuilder},
+        builder::{
+            FixedSizeListBuilder, Float32Builder, Int32Builder, ListBuilder, MapBuilder,
+            StringBuilder, StructBuilder,
+        },
     };
 
     use arrow_buffer::Buffer;
@@ -939,6 +1050,72 @@ mod tests {
         assert_eq!(
             result,
             vec![Value::from("Hello"), Value::from("World"), Value::from(())]
+        );
+    }
+
+    #[test]
+    fn test_large_string_values() {
+        let array: ArrayRef = Arc::new(LargeStringArray::from(vec![
+            Some("Hello"),
+            Some("World"),
+            None,
+        ]));
+        let result = arrow_to_values(&array).unwrap();
+        assert_eq!(
+            result,
+            vec![Value::from("Hello"), Value::from("World"), Value::from(())]
+        );
+    }
+
+    #[test]
+    fn test_large_binary_values() {
+        let array: ArrayRef = Arc::new(LargeBinaryArray::from(vec![
+            Some(b"ab".as_ref()),
+            None,
+            Some(b"cd".as_ref()),
+        ]));
+        // LargeBinary and Binary should convert identically to their i32 counterparts.
+        let small: ArrayRef = Arc::new(arrow_array::BinaryArray::from(vec![
+            Some(b"ab".as_ref()),
+            None,
+            Some(b"cd".as_ref()),
+        ]));
+        assert_eq!(
+            arrow_to_values(&array).unwrap(),
+            arrow_to_values(&small).unwrap()
+        );
+    }
+
+    #[test]
+    fn test_string_view_values() {
+        let array: ArrayRef = Arc::new(StringViewArray::from(vec![
+            Some("Hello"),
+            Some("World"),
+            None,
+        ]));
+        let result = arrow_to_values(&array).unwrap();
+        assert_eq!(
+            result,
+            vec![Value::from("Hello"), Value::from("World"), Value::from(())]
+        );
+    }
+
+    #[test]
+    fn test_binary_view_values() {
+        let array: ArrayRef = Arc::new(BinaryViewArray::from(vec![
+            Some(b"ab".as_ref()),
+            None,
+            Some(b"cd".as_ref()),
+        ]));
+        // BinaryView should convert identically to Binary.
+        let small: ArrayRef = Arc::new(arrow_array::BinaryArray::from(vec![
+            Some(b"ab".as_ref()),
+            None,
+            Some(b"cd".as_ref()),
+        ]));
+        assert_eq!(
+            arrow_to_values(&array).unwrap(),
+            arrow_to_values(&small).unwrap()
         );
     }
 
@@ -1153,6 +1330,86 @@ mod tests {
                 Value::from(vec![Value::from(1), Value::from(2)]),
                 Value::from(vec![Value::from(3)]),
                 Value::from(()), // null row
+            ]
+        );
+    }
+
+    /// Regression test for dbt-labs/fs#15412.
+    ///
+    /// Snowflake `VECTOR(FLOAT, n)` arrives from the driver as Arrow
+    /// `FixedSizeList(Float32, n)`. The flattener forwards it as a flat column
+    /// (see `flat_record_batch.rs`), so it reaches conversion. Before the fix there was
+    /// no `FixedSizeList` arm here, so it hit the `_ =>` cast-to-`Utf8` fallback and
+    /// returned `CastError`, which `AgateTable::new` unwrapped into a panic.
+    #[test]
+    fn test_fixed_size_list_values_snowflake_vector() {
+        // select [1.0, 2.0, 3.0]::vector(float, 3)
+        let mut builder = FixedSizeListBuilder::new(Float32Builder::new(), 3);
+        builder.values().append_slice(&[1.0, 2.0, 3.0]);
+        builder.append(true);
+        builder.values().append_slice(&[4.0, 5.0, 6.0]);
+        builder.append(true);
+        // a NULL vector row
+        builder.values().append_slice(&[0.0, 0.0, 0.0]);
+        builder.append(false);
+
+        let array: ArrayRef = Arc::new(builder.finish());
+        assert!(matches!(array.data_type(), DataType::FixedSizeList(_, 3)));
+
+        let result = arrow_to_values(&array).unwrap();
+
+        assert_eq!(
+            result,
+            vec![
+                Value::from(vec![
+                    Value::from(1.0f32),
+                    Value::from(2.0f32),
+                    Value::from(3.0f32)
+                ]),
+                Value::from(vec![
+                    Value::from(4.0f32),
+                    Value::from(5.0f32),
+                    Value::from(6.0f32)
+                ]),
+                Value::from(()), // null row
+            ]
+        );
+    }
+
+    /// Nulls *inside* a fixed-size list must survive as `None`, not be dropped.
+    #[test]
+    fn test_fixed_size_list_with_null_elements() {
+        let mut builder = FixedSizeListBuilder::new(Int32Builder::new(), 2);
+        builder.values().append_value(1);
+        builder.values().append_null();
+        builder.append(true);
+
+        let array: ArrayRef = Arc::new(builder.finish());
+        let result = arrow_to_values(&array).unwrap();
+
+        assert_eq!(
+            result,
+            vec![Value::from(vec![Value::from(1), Value::from(())])]
+        );
+    }
+
+    /// A sliced `FixedSizeListArray` carries a non-zero offset; element lookup must
+    /// account for it, otherwise rows silently shift.
+    #[test]
+    fn test_fixed_size_list_with_offset() {
+        let values = Float32Array::from(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let field = Arc::new(Field::new("element", DataType::Float32, false));
+        let array = FixedSizeListArray::new(field, 2, Arc::new(values), None);
+
+        // drop the first list, keeping [3.0, 4.0] and [5.0, 6.0]
+        let sliced: ArrayRef = Arc::new(array.slice(1, 2));
+        let result = arrow_to_values(&sliced).unwrap();
+
+        assert_eq!(
+            result,
+            vec![
+                Value::from(vec![Value::from(3.0f32), Value::from(4.0f32)]),
+                Value::from(vec![Value::from(5.0f32), Value::from(6.0f32)]),
             ]
         );
     }

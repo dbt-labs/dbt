@@ -7,8 +7,14 @@ pub const MACRO_NAMESPACE_REGISTRY: &str = "MACRO_NAMESPACE_REGISTRY";
 pub const ROOT_PROJECT_NAMESPACE: &str = "ROOT_PROJECT_NAMESPACE";
 /// The name of the non-internal packages namespace
 pub const NON_INTERNAL_PACKAGES: &str = "NON_INTERNAL_PACKAGES";
-/// The name of the dbt and adapters namespace
+/// The name of the dbt and adapters namespace. Holds `dialect -> (macro_name ->
+/// package)`; select a dialect's namespace with
+/// [`crate::dispatch_object::dbt_and_adapters_namespace_for`].
 pub const DBT_AND_ADAPTERS_NAMESPACE: &str = "DBT_AND_ADAPTERS_NAMESPACE";
+/// The adapter dialect a template is being rendered or typechecked for. Set as an
+/// environment global for rendering, and carried in the typecheck context so the
+/// typechecker resolves internal macros the same way dispatch does.
+pub const DIALECT: &str = "dialect";
 /// The name of the root package name
 pub const ROOT_PACKAGE_NAME: &str = "ROOT_PACKAGE_NAME";
 /// The name of the local package

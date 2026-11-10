@@ -1,9 +1,11 @@
 use std::{
+    borrow::Cow,
     collections::{BTreeMap, BTreeSet, HashMap},
     fmt,
     sync::Arc,
 };
 
+use crate::connection::{ConnectionGuard, DynConnectionFactory};
 use crate::{
     AdapterResult, AdapterType,
     errors::{AdapterError, AdapterErrorKind},
@@ -12,13 +14,124 @@ use crate::{
 use arrow::array::RecordBatch;
 use arrow_schema::{DataType, Field, Schema};
 use chrono::{DateTime, Utc};
-use dbt_schemas::schemas::relations::base::BaseRelation;
+use dbt_adapter_engine::MapReduce;
+use dbt_common::AsyncAdapterResult;
+use dbt_common::cancellation::{Cancellable, CancellationToken};
+use dbt_schemas::schemas::{dbt_catalogs::DbtCatalogsView, relations::base::BaseRelation};
+use dbt_tracing::emit::create_debug_span;
+use dbt_tracing::span_info::SpanStatusRecorder as _;
 use minijinja::State;
+
+pub const SCHEMA_CACHE_OP_ID: &str = "hydrate_schema_cache";
+
+/// Operation id shared by the `GenericOpExecuted` parent span (`cache.rs`) and every
+/// adapter's `GenericOpItemProcessed` child span (`with_relation_list_item_span` callers)
+/// for relation-cache hydration. Both sides must reference this constant rather than
+/// duplicating the string literal, or the TUI silently loses the parent/child correlation.
+pub(crate) const RELATION_CACHE_OP_ID: &str = "hydrate_relation_cache";
+
+/// Run one schema-cache fetch under a DEBUG-level progress item span.
+///
+/// `operation_id` must match the parent `GenericOpExecuted` span's operation_id so the
+/// TUI layer correlates this item with the right progress bar.
+fn with_schema_cache_item_span<T>(
+    operation_id: &str,
+    target: &str,
+    fetch: impl FnOnce() -> AdapterResult<T>,
+) -> AdapterResult<T> {
+    let span = create_debug_span(dbt_telemetry::GenericOpItemProcessed::new(
+        operation_id.to_string(),
+        "downloading".to_string(),
+        "downloaded".to_string(),
+        target.to_string(),
+    ));
+    let _guard = span.enter();
+    fetch().record_status(&span)
+}
+
+/// Run one relation-list fetch under a DEBUG-level progress item span.
+///
+/// `operation_id` must match the parent `GenericOpExecuted` span's operation_id so the
+/// TUI layer correlates this item with the right progress bar. `None` means the calling
+/// adapter doesn't report per-item progress (e.g. it's a stub with no real per-schema
+/// hydration); the fetch just runs without a span.
+fn with_relation_list_item_span<T>(
+    operation_id: Option<&str>,
+    target: &str,
+    fetch: impl FnOnce() -> AdapterResult<T>,
+) -> AdapterResult<T> {
+    // `Span::none()` is a real span; entering it and calling `record_status` on it are no-ops.
+    let span = operation_id.map_or_else(tracing::Span::none, |operation_id| {
+        create_debug_span(dbt_telemetry::GenericOpItemProcessed::new(
+            operation_id.to_string(),
+            "downloading".to_string(),
+            "downloaded".to_string(),
+            target.to_string(),
+        ))
+    });
+    let _guard = span.enter();
+    fetch().record_status(&span)
+}
+
+trait SchemaCacheKey {
+    fn schema_cache_target(&self) -> String;
+}
+
+impl SchemaCacheKey for Arc<dyn BaseRelation> {
+    fn schema_cache_target(&self) -> String {
+        self.semantic_fqn()
+    }
+}
+
+impl SchemaCacheKey for (String, String) {
+    fn schema_cache_target(&self) -> String {
+        self.0.clone()
+    }
+}
+
+#[allow(clippy::type_complexity)]
+fn run_schema_cache_map_reduce<K>(
+    factory: Box<DynConnectionFactory>,
+    keys: Vec<K>,
+    item_span_operation_id: Option<&str>,
+    map_f: impl Fn(&mut ConnectionGuard<'_>, &K) -> AdapterResult<Arc<Schema>> + Send + Sync + 'static,
+    reduce_f: impl Fn(
+        &mut HashMap<String, AdapterResult<Arc<Schema>>>,
+        K,
+        AdapterResult<Arc<Schema>>,
+    ) -> Result<(), Cancellable<AdapterError>>
+    + Send
+    + Sync
+    + 'static,
+    node_id: Option<String>,
+    token: CancellationToken,
+) -> AsyncAdapterResult<'static, HashMap<String, AdapterResult<Arc<Schema>>>>
+where
+    K: SchemaCacheKey + Clone + Send + Sync + 'static,
+{
+    // Callers that don't own a parent `GenericOpExecuted` span (item_span_operation_id ==
+    // None) get no item span at all, rather than being silently attributed to the schema
+    // hydration bar's operation_id.
+    let map_f: Box<
+        dyn Fn(&mut ConnectionGuard<'_>, &K) -> AdapterResult<Arc<Schema>> + Send + Sync,
+    > = match item_span_operation_id {
+        Some(operation_id) => {
+            let operation_id = operation_id.to_string();
+            Box::new(move |conn: &mut ConnectionGuard<'_>, key: &K| {
+                let target = key.schema_cache_target();
+                with_schema_cache_item_span(&operation_id, &target, || map_f(conn, key))
+            })
+        }
+        None => Box::new(map_f),
+    };
+    MapReduce::new(factory, map_f, Box::new(reduce_f), node_id).run(Arc::new(keys), token)
+}
 
 pub(crate) mod bigquery;
 pub(crate) mod clickhouse;
 pub mod databricks;
 pub(crate) mod duckdb;
+pub(crate) mod exasol;
 pub(crate) mod fabric;
 pub(crate) mod freshness_overrides;
 pub(crate) mod metadata_adapter;
@@ -38,6 +151,23 @@ pub use view_definition::{ViewDefinition, ViewDefinitionFetchResult};
 /// The canonical list of BigQuery pseudocolumns (queryable columns absent from
 /// `INFORMATION_SCHEMA`). Re-exported so other crates can share the source of truth.
 pub use bigquery::BIGQUERY_PSEUDOCOLUMNS;
+
+pub fn routed_source_databases(
+    adapter_type: AdapterType,
+    catalogs: &DbtCatalogsView<'_>,
+) -> HashMap<String, String> {
+    if adapter_type != AdapterType::DuckDB {
+        return HashMap::new();
+    }
+    catalogs
+        .catalogs
+        .iter()
+        .filter_map(|catalog| {
+            duckdb::duckdb_catalog_attached_database(catalog)
+                .map(|database| (catalog.name.to_owned(), database))
+        })
+        .collect()
+}
 
 /// Implementation of the `get_relation` function for all adapters.
 pub(crate) mod get_relation;
@@ -96,8 +226,8 @@ impl From<&dyn BaseRelation> for CatalogAndSchema {
         Self {
             rendered_catalog,
             rendered_schema,
-            resolved_catalog,
-            resolved_schema,
+            resolved_catalog: resolved_catalog.into_owned(),
+            resolved_schema: resolved_schema.into_owned(),
         }
     }
 }
@@ -129,8 +259,13 @@ pub enum FreshnessOverride {
     /// Custom SQL returning a single timestamp scalar. `{{ this }}` (or `{{this}}`)
     /// is substituted with the source's rendered FQN before execution.
     Query(String),
-    /// Column name. The metadata adapter runs `SELECT max({field}) FROM {relation}`.
-    Field(String),
+    /// Column name plus the source's optional `freshness.filter`. The metadata
+    /// adapter runs `SELECT max({field}) FROM {relation}`, adding
+    /// `WHERE {filter}` when set — matching `default__collect_freshness`.
+    Field {
+        field: String,
+        filter: Option<String>,
+    },
 }
 
 impl MetadataFreshness {
@@ -269,23 +404,13 @@ pub fn new_arrow_field_with_metadata(
     field.with_metadata(metadata)
 }
 
-pub fn get_input_schema_database_and_table(
-    relation: &Arc<dyn BaseRelation>,
-) -> AdapterResult<(String, String, String)> {
-    let table_name = relation.semantic_fqn();
-
-    let parts: Vec<&str> = table_name.split('.').collect();
-    if parts.len() != 3 {
-        return Err(AdapterError::new(
-            AdapterErrorKind::UnexpectedResult,
-            format!("Invalid table name format: {table_name}"),
-        ));
-    }
-    // database will be used as an identifier
-    let database = table_name.split('.').next().ok_or_else(|| {
+pub fn get_input_schema_database_and_table<'a>(
+    relation: &'a Arc<dyn BaseRelation>,
+) -> AdapterResult<(Cow<'a, str>, Cow<'a, str>, Cow<'a, str>)> {
+    let database = relation.database_as_resolved_str().map_err(|e| {
         AdapterError::new(
             AdapterErrorKind::UnexpectedResult,
-            "relation database should not be None",
+            format!("relation database should not be None: {e}"),
         )
     })?;
 
@@ -303,13 +428,14 @@ pub fn get_input_schema_database_and_table(
         )
     })?;
 
-    Ok((input_schema, database.to_owned(), input_table))
+    Ok((input_schema, database, input_table))
 }
 
-/// Builds and returns ([WhereClausesByDb], [RelationsByDb]) from a list of [BaseRelation]
-/// [WhereClausesByDb] maps databases to statements that select their schema+tables in the relation
-/// [RelationsByDb] keys the database to the cloned [BaseRelation]
-/// We expect a fqn from the relation in format <database>.<schema>.<table>
+/// Builds and returns ([WhereClausesByDb], [RelationsByDb]) from a list of [BaseRelation].
+/// Both maps use the relation's resolved, unquoted database name as the key;
+/// consumers must render that key safely before interpolating it into SQL.
+/// [WhereClausesByDb] maps databases to escaped schema/table predicates, and
+/// [RelationsByDb] maps databases to the cloned relations.
 pub fn build_relation_clauses(
     relations: &[Arc<dyn BaseRelation>],
 ) -> AdapterResult<(WhereClausesByDb, RelationsByDb)> {
@@ -318,15 +444,19 @@ pub fn build_relation_clauses(
     let mut relations_by_database = BTreeMap::new();
     for relation in relations {
         let (input_schema, database, input_table) = get_input_schema_database_and_table(relation)?;
+        let adapter_type = relation.adapter_type();
+        let input_schema =
+            dbt_adapter_sql::ident::escape_string_literal(&input_schema, adapter_type);
+        let input_table = dbt_adapter_sql::ident::escape_string_literal(&input_table, adapter_type);
 
         where_clauses_by_database
-            .entry(database.to_owned())
+            .entry(database.as_ref().to_owned())
             .or_insert_with(Vec::new)
             .push(format!(
                 "table_schema = '{input_schema}' and table_name = '{input_table}'"
             ));
         relations_by_database
-            .entry(database.to_owned())
+            .entry(database.into_owned())
             .or_insert_with(Vec::new)
             .push(relation.clone());
     }
@@ -368,7 +498,6 @@ mod tests {
     use super::*;
     use crate::relation::Relation;
     use dbt_schemas::schemas::relations::DEFAULT_RESOLVED_QUOTING;
-    use dbt_test_primitives::assert_contains;
 
     #[test]
     fn test_build_relation_clauses() {
@@ -407,38 +536,40 @@ mod tests {
         // Test where clauses
         assert_eq!(where_clauses.len(), 2);
         assert_eq!(
-            where_clauses.get("\"db1\"").unwrap(),
+            where_clauses.get("db1").unwrap(),
             &vec![
                 "table_schema = 'schema1' and table_name = 'table1'",
                 "table_schema = 'schema2' and table_name = 'table2'"
             ]
         );
         assert_eq!(
-            where_clauses.get("\"db2\"").unwrap(),
+            where_clauses.get("db2").unwrap(),
             &vec!["table_schema = 'schema1' and table_name = 'table3'"]
         );
 
         // Test relations by database
         assert_eq!(relations_by_db.len(), 2);
-        assert_eq!(relations_by_db.get("\"db1\"").unwrap().len(), 2);
-        assert_eq!(relations_by_db.get("\"db2\"").unwrap().len(), 1);
+        assert_eq!(relations_by_db.get("db1").unwrap().len(), 2);
+        assert_eq!(relations_by_db.get("db2").unwrap().len(), 1);
     }
 
     #[test]
-    fn test_build_relation_clauses_invalid_fqn() {
+    fn test_build_relation_clauses_escapes_untrusted_components() {
         let relations = vec![Arc::new(
             Relation::new(
                 AdapterType::Snowflake,
-                "invalid.fqn".to_string(), // This will cause an error as it contains a dot
-                "schema1".to_string(),
-                "table1".to_string(),
+                "db.with.dot".to_string(),
+                r"schema\name'".to_string(),
+                "table'; select 1; --".to_string(),
             )
             .with_quoting(DEFAULT_RESOLVED_QUOTING),
         ) as Arc<dyn BaseRelation>];
 
-        let result = build_relation_clauses(&relations);
-        assert!(result.is_err());
-        assert_contains!(result.unwrap_err().to_string(), "Invalid table name format");
+        let (where_clauses, _) = build_relation_clauses(&relations).unwrap();
+        assert_eq!(
+            where_clauses.get("db.with.dot").unwrap(),
+            &[r"table_schema = 'schema\\name''' and table_name = 'table''; select 1; --'"]
+        );
     }
 
     #[test]

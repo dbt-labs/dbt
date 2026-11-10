@@ -325,7 +325,7 @@ mod tests {
         cleanup(&path);
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn test_acquire_no_existing_lease() {
         let lease_id = "acquire-no-existing-lease".to_string();
         let path = test_lease_path();
@@ -344,7 +344,7 @@ mod tests {
         cleanup(&path);
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn test_acquire_expired_lease() {
         let lease_id = "acquire-expired-lease".to_string();
         let path = test_lease_path();
@@ -367,7 +367,7 @@ mod tests {
         cleanup(&path);
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn test_acquire_timeout() {
         let lease_id = "acquire-with-timeout".to_string();
         let path = test_lease_path();
@@ -390,7 +390,7 @@ mod tests {
         cleanup(&path);
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn test_renew_valid_lease() {
         let lease_id = "renew-valid-lease".to_string();
         let path = test_lease_path();
@@ -419,7 +419,7 @@ mod tests {
         cleanup(&path);
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn test_renew_expired_lease() {
         let lease_id = "renew-expired-lease".to_string();
         let path = test_lease_path();

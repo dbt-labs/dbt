@@ -1,10 +1,10 @@
-use std::collections::BTreeMap;
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::mpsc;
 
+use dbt_adapter_core::AdapterType;
 use dbt_common::pretty_string::make_title;
 use dbt_common::stats::NodeStatus;
 use dbt_common::tracing::{
@@ -15,6 +15,7 @@ use dbt_common::{ErrorCode, FsResult, MacroSpansOnly, err, io_args};
 use dbt_jinja_utils::utils::{macro_spans_to_macro_span_vec, render_sql};
 use dbt_pretty_table::{make_column_names, pretty_data_table};
 use dbt_scheduler::instructions::{Instruction, SqlInstruction};
+use dbt_schemas::schemas::Preview;
 use dbt_schemas::schemas::profiles::Execute;
 use dbt_schemas::schemas::telemetry::NodeType;
 use dbt_schemas::schemas::{InternalDbtNodeAttributes, Nodes};
@@ -22,10 +23,12 @@ use dbt_tasks_core::context::TaskRunnerCtx;
 use dbt_tasks_core::pretty_table::from_pretty_table_error;
 use dbt_tasks_core::show_task_hooks::ShowTaskHooks;
 use dbt_tasks_core::task::TaskResult;
+use dbt_tasks_core::task::run_blocking_task_operation;
 use dbt_tasks_core::task::{TP, Task};
 use dbt_telemetry::{ShowDataOutput, ShowDataOutputFormat};
 
 use minijinja::Value as MinijinjaValue;
+use minijinja::value::OverlayMap;
 
 mod analysis;
 mod model;
@@ -44,6 +47,7 @@ pub trait Showable: InternalDbtNodeAttributes {
 
 pub(super) async fn run_show<F>(
     ctx: &mut TaskRunnerCtx,
+    node: &dyn InternalDbtNodeAttributes,
     unique_id: &str,
     resource_label: &str,
     is_inline: bool,
@@ -57,10 +61,18 @@ where
     let query = base_query_provider(ctx)?;
     let limit = ctx.inner.arg.limit.filter(|limit| *limit > 0);
 
-    let use_worker_backend =
-        matches!(ctx.inner.execute, Execute::Sidecar | Execute::Service) && ctx.is_sidecar();
+    // `--query-id` always goes through the adhoc_runner path (RemoteAdhocRunner
+    // is the only one that knows how to fetch an existing query's result
+    // directly) -- never the local sidecar worker, which would just execute
+    // the placeholder SQL and silently ignore the requested query id.
+    let use_worker_backend = ctx.inner.arg.query_id.is_none()
+        && matches!(ctx.inner.execute, Execute::Sidecar | Execute::Service)
+        && ctx.is_sidecar();
 
-    let mut compile_ctx = make_show_compile_context(ctx)?;
+    let adapter_type = ctx.adapter_type_for(node);
+    let adapter = ctx.adapter_for(node)?;
+
+    let mut compile_ctx = make_show_compile_context(ctx, adapter_type)?;
     compile_ctx.insert(
         "compiled_code".to_string(),
         MinijinjaValue::from(query.as_str()),
@@ -75,25 +87,25 @@ where
 
     let filename = PathBuf::from(format!("show-{unique_id}"));
 
-    let final_rendered_sql = if use_worker_backend {
-        // Worker backend applies limit separately via run_query_batches; render the query as-is.
-        render_sql(
-            &query,
-            &ctx.env,
-            &compile_ctx,
-            &*ctx.rendering_listener_factory,
-            &filename,
-        )?
-    } else {
-        // Non-worker path: delegate limit handling to the adapter-aware get_show_sql macro,
-        // which dispatches to adapter-specific limit syntax (e.g. FETCH FIRST n ROWS ONLY for Fabric).
-        render_sql(
-            "{{ get_show_sql(compiled_code, none, show_limit) }}",
-            &ctx.env,
-            &compile_ctx,
-            &*ctx.rendering_listener_factory,
-            &filename,
-        )?
+    // `get_show_sql` dispatches by adapter and a project can override it with a
+    // macro that reaches the adapter, so this render goes to the blocking pool:
+    // every database connection must be created by a `dbt-runtime` worker thread.
+    let final_rendered_sql = {
+        let template = if use_worker_backend {
+            // Worker backend applies limit separately via run_query_batches; render the query as-is.
+            query.clone()
+        } else {
+            // Non-worker path: delegate limit handling to the adapter-aware get_show_sql macro,
+            // which dispatches to adapter-specific limit syntax (e.g. FETCH FIRST n ROWS ONLY for Fabric).
+            "{{ get_show_sql(compiled_code, none, show_limit) }}".to_owned()
+        };
+        let env = Arc::clone(&ctx.env);
+        let listener_factory = Arc::clone(&ctx.rendering_listener_factory);
+        let filename = filename.clone();
+        run_blocking_task_operation(move || {
+            render_sql(&template, &env, &compile_ctx, &*listener_factory, &filename)
+        })
+        .await??
     };
     let macro_spans = ctx.rendering_listener_factory.drain_macro_spans(&filename);
 
@@ -137,6 +149,7 @@ where
                 &Instruction::Sql(sql_instruction),
                 &final_rendered_sql,
                 Some(unique_id),
+                Some(adapter),
                 &mut None,
             )
             .await
@@ -152,11 +165,11 @@ where
         }
     };
 
-    // Capture for LSP preview path. No-op if no caller is reading preview_result.
-    {
-        let mut guard = ctx.inner.preview_results.lock();
-        *guard = Some((batches.clone(), schema.clone()));
-    }
+    // Captured for in-process callers, which collect it after the task loop.
+    *ctx.inner.preview_results.lock() = Some(Preview {
+        batches: batches.clone(),
+        schema: schema.clone(),
+    });
 
     if batches.is_empty() && schema.fields().is_empty() {
         emit_warn_log_message(
@@ -179,7 +192,17 @@ where
         io_args::DisplayFormat::Path => dbt_pretty_table::DisplayFormat::Path,
     };
     let column_names = make_column_names(schema.as_ref());
-    let title = make_title("Query", object_name.as_str());
+    let mut title = make_title("Query", object_name.as_str());
+    // Surface the dbt-compute query id, if this ran via lake compute: the only
+    // way to later recover this result via dbt-compute's
+    // `/download_credentials` endpoint, and otherwise never shown to the user.
+    if let Some(query_id) = schema
+        .metadata()
+        .get(dbt_adbc::lake_compute::schema_metadata::QUERY_ID)
+        .filter(|id| !id.is_empty())
+    {
+        title = format!("{title} (query_id={query_id})");
+    }
     let table = pretty_data_table(
         &title,
         "",
@@ -234,19 +257,25 @@ pub(super) fn rendered_sql_for(
     unique_id: &str,
     resource_label: &str,
 ) -> FsResult<String> {
-    let rendered_node_info = ctx.inner.rendered_sql.get(unique_id).ok_or_else(|| {
-        dbt_common::fs_err!(
-            ErrorCode::Unexpected,
-            "No rendered SQL found for {resource_label}: {}",
-            unique_id
-        )
-    })?;
-
-    Ok(rendered_node_info.sql.clone())
+    ctx.inner
+        .rendered_sql
+        .read_sync(unique_id, |_, info| info.sql.to_string())
+        .ok_or_else(|| {
+            dbt_common::fs_err!(
+                ErrorCode::Unexpected,
+                "No rendered SQL found for {resource_label}: {}",
+                unique_id
+            )
+        })
 }
 
-fn make_show_compile_context(ctx: &TaskRunnerCtx) -> FsResult<BTreeMap<String, MinijinjaValue>> {
-    Ok(ctx.inner.base_context.clone())
+fn make_show_compile_context(
+    ctx: &TaskRunnerCtx,
+    adapter_type: AdapterType,
+) -> FsResult<OverlayMap> {
+    let mut compile_ctx = ctx.base_context_overlay();
+    ctx.insert_adapter_overlay(&mut compile_ctx, adapter_type)?;
+    Ok(compile_ctx)
 }
 
 /// A task that shows the compiled SQL results for a node

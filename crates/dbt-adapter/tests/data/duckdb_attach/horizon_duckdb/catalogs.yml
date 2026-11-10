@@ -1,0 +1,16 @@
+# Scenario: Snowflake Horizon (Polaris) Iceberg REST catalog attached on duckdb.
+# Exercises: read-write attach (READ_ONLY false) + the Horizon write-compat
+# ATTACH defaults (OAuth2, vended credentials, no staged creates / multi-table
+# commits) emitted for keys the user did not set. These options require
+# duckdb 1.5.4 / duckdb-iceberg#1017.
+catalogs:
+  - name: horizon_demo
+    type: horizon
+    table_format: iceberg
+    config:
+      duckdb:
+        warehouse: "horizon_wh"
+        endpoint: "https://horizon.example.com/catalog"
+        secret: "horizon_secret"
+        catalog_database: "horizon_db"
+        default_schema: "demo"

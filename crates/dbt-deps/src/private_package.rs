@@ -1,98 +1,133 @@
-use dbt_common::{ErrorCode, FsResult, err};
-use dbt_schemas::schemas::ResolvedCloudConfig;
-use dbt_schemas::schemas::packages::PrivatePackage;
-use percent_encoding::percent_decode_str;
-use serde::{Deserialize, Serialize};
-use serde_json;
+use std::collections::HashMap;
 use std::ops::Deref;
-use url::Url;
-use vortex_events::private_package_usage_event;
+use std::str::FromStr;
 
-#[derive(Debug, Deserialize, Serialize)]
-pub struct ProviderDetail {
-    url: String,
-    token: String,
-    org: String,
-    provider: Option<String>,
+use async_trait::async_trait;
+use dbt_common::{ErrorCode, FsError, FsResult, err};
+use dbt_schemas::schemas::ResolvedCloudConfig;
+
+/// A private package definition, rendered and ready to hand to a
+/// [`PrivatePackageResolver`].
+#[derive(Debug, Clone)]
+pub struct PrivatePackageRef {
+    pub private_def: String,
+    pub provider: Option<String>,
 }
 
-impl ProviderDetail {
-    fn resolved_url(&self, private_def: &PrivateDefinition) -> String {
-        if self.is_azure_devops() {
-            let git_url = ADOGitURL::new(self.url.clone());
-            if self.is_ado() && !private_def.groups.is_empty() {
-                let project = private_def.groups.join("/");
-                git_url.resolve_with_project(&self.token, &project, &private_def.repo_name)
-            } else {
-                git_url.resolve(&self.token, &private_def.repo_name)
-            }
-        } else {
-            let git_url = GitURL::new(self.url.clone());
-            git_url.resolve(&self.token, &private_def.repo_name)
-        }
-    }
-
-    fn is_ado(&self) -> bool {
-        self.provider.as_deref() == Some("ado")
-    }
-
-    fn is_azure_active_directory(&self) -> bool {
-        self.provider.as_deref() == Some("azure_active_directory")
-    }
-
-    fn is_azure_devops(&self) -> bool {
-        self.is_ado() || self.is_azure_active_directory()
-    }
-
-    fn matches_private_definition(
+/// Extension point for resolving private package definitions to git clone
+/// URLs using environment- or platform-provided provider configuration.
+///
+/// Implementations should return a map keyed by `private_def`; if any entry
+/// cannot be resolved, the entire method should fail. If possible, the error
+/// returned should have information about the failing entr(y|ies) in the case
+/// of a partial failure.
+#[async_trait]
+pub trait PrivatePackageResolver: Send + Sync {
+    async fn resolve_urls(
         &self,
-        private_def: &PrivateDefinition,
-        provider: Option<&str>,
-    ) -> bool {
-        // Check if provider matches (if specified)
-        // "ado" and "azure_active_directory" are distinct providers with different path requirements
-        if let Some(requested_provider) = provider
-            && self.provider.as_deref() != Some(requested_provider)
-        {
-            return false;
-        }
+        _entries: &[PrivatePackageRef],
+        _cloud_config: &Option<ResolvedCloudConfig>,
+    ) -> FsResult<HashMap<String, String>>;
+}
 
-        // Validate path structure based on provider type
-        // "ado" expects 3-part names (org/project/repo)
-        // "azure_active_directory" expects 2-part names (org/repo) for backward compatibility
-        if self.is_ado() {
-            // For "ado", the private definition should have groups (project)
-            // URL template contains the project, so we match org and repo
-            let git_url = ADOGitURL::new(self.url.clone());
-            git_url.can_resolve_ado(private_def)
-        } else if self.is_azure_active_directory() {
-            // For "azure_active_directory", backward compatibility with 2-part names
-            let git_url = ADOGitURL::new(self.url.clone());
-            git_url.can_resolve_azure_active_directory(private_def)
-        } else {
-            let git_url = GitURL::new(self.url.clone());
-            git_url.can_resolve(private_def)
+/// Resolve using local SSH URLs. This package resolver relies on git being
+/// able to authenticate with the provider to pull each repo directly. It
+/// does not attempt to use dbt platform for any credential management.
+///
+/// **Supported providers:**
+/// - github
+/// - gitlab
+/// - ado / azure_devops
+///
+/// **Unsupported providers:**
+/// - azure_active_directory (requires dbt platform resolution)
+pub struct LocalPrivatePackageResolver;
+
+#[async_trait]
+impl PrivatePackageResolver for LocalPrivatePackageResolver {
+    async fn resolve_urls(
+        &self,
+        entries: &[PrivatePackageRef],
+        _cloud_config: &Option<ResolvedCloudConfig>,
+    ) -> FsResult<HashMap<String, String>> {
+        entries
+            .iter()
+            .map(|entry| {
+                self.get_resolved_url(entry)
+                    .map(|url| (entry.private_def.clone(), url))
+            })
+            .collect()
+    }
+}
+
+impl LocalPrivatePackageResolver {
+    /// Resolves a private package definition to its local (SSH) Git clone URL.
+    fn get_resolved_url(&self, private_package: &PrivatePackageRef) -> FsResult<String> {
+        // Default to "github" when provider is unspecified, matching dbt-core's behavior
+        match private_package.provider.as_deref().unwrap_or("github") {
+            "github" => Ok(format!(
+                "git@github.com:{}.git",
+                private_package.private_def.deref()
+            )),
+            "gitlab" => Ok(format!(
+                "git@gitlab.com:{}.git",
+                private_package.private_def.deref()
+            )),
+            "ado" | "azure_devops" => {
+                // "ado"/"azure_devops" requires 3-part names: org/project/repo
+                let def: PrivateDefinition = private_package.private_def.parse()?;
+                if def.path_segments.is_empty() {
+                    return err!(
+                        ErrorCode::InvalidConfig,
+                        "The '{}' provider requires org/project/repo format (3 parts), got: '{}'",
+                        private_package.provider.as_deref().unwrap_or_default(),
+                        private_package.private_def.deref()
+                    );
+                }
+                Ok(format!(
+                    "git@ssh.dev.azure.com:v3/{}",
+                    private_package.private_def.deref()
+                ))
+            }
+            _ => {
+                err!(
+                    ErrorCode::InvalidConfig,
+                    r#"Invalid private package configuration: '{}' provider: '{}'. Valid providers for local resolution are: github, gitlab, ado, azure_devops"#,
+                    private_package.private_def.deref(),
+                    private_package.provider.as_deref().unwrap_or_default()
+                )
+            }
         }
     }
 }
 
+/// A private package definition rendered down to org/[segment/...]/repo,
+/// used to match against [`ProviderDetail`] templates. `path_segments` is
+/// whatever sits between org and repo — subgroups for GitLab, a project for
+/// ADO, always empty for GitHub.
 #[derive(Debug, Clone)]
 pub struct PrivateDefinition {
     pub org_name: String,
-    pub groups: Vec<String>,
+    pub path_segments: Vec<String>,
     pub repo_name: String,
 }
 
-impl PrivateDefinition {
-    pub fn build(s: &str) -> Self {
+impl FromStr for PrivateDefinition {
+    type Err = Box<FsError>;
+
+    fn from_str(s: &str) -> FsResult<Self> {
         let parts: Vec<&str> = s.split('/').collect();
         if parts.len() < 2 {
-            panic!("Private definition must have at least org/repo format");
+            return err!(
+                ErrorCode::InvalidConfig,
+                "Private definition must have at least org/repo format, got: '{}'",
+                s
+            );
         }
 
         let org_name = parts[0].to_string();
         let repo_name = parts[parts.len() - 1].to_string();
-        let groups = if parts.len() > 2 {
+        let path_segments = if parts.len() > 2 {
             parts[1..parts.len() - 1]
                 .iter()
                 .map(|s| (*s).to_string())
@@ -101,272 +136,25 @@ impl PrivateDefinition {
             Vec::new()
         };
 
-        Self {
+        Ok(Self {
             org_name,
-            groups,
+            path_segments,
             repo_name,
-        }
+        })
     }
+}
 
+impl PrivateDefinition {
     pub fn to_path_string(&self) -> String {
-        if self.groups.is_empty() {
+        if self.path_segments.is_empty() {
             format!("{}/{}", self.org_name, self.repo_name)
         } else {
-            let groups_str = self.groups.join("/");
-            format!("{}/{}/{}", self.org_name, groups_str, self.repo_name)
+            let segments_str = self.path_segments.join("/");
+            format!("{}/{}/{}", self.org_name, segments_str, self.repo_name)
         }
     }
 
     pub fn is_repo_wildcard(&self) -> bool {
         self.repo_name == "{repo}"
-    }
-}
-
-fn path_component_eq(left: &str, right: &str) -> bool {
-    left.eq_ignore_ascii_case(right)
-}
-
-fn groups_eq(left: &[String], right: &[String]) -> bool {
-    left.len() == right.len()
-        && left
-            .iter()
-            .zip(right.iter())
-            .all(|(left_group, right_group)| path_component_eq(left_group, right_group))
-}
-
-fn extract_path_from_url(url: String) -> String {
-    // 1) parse
-    let parsed =
-        Url::parse(&url).unwrap_or_else(|e| panic!("Failed to parse URL `{}`: {}", &url, e));
-
-    // 2) grab the raw path (no leading slash)
-    let raw = parsed.path().trim_start_matches('/');
-
-    // 3) percent-decode it back to "{repo}.git"
-    let decoded = percent_decode_str(raw)
-        .decode_utf8()
-        .expect("URL path was not valid UTF-8");
-
-    // 4) drop the ".git" suffix if present
-    decoded.trim_end_matches(".git").to_string()
-}
-
-#[derive(Debug)]
-pub struct GitURL {
-    url: String,
-}
-
-impl GitURL {
-    pub fn new(url: String) -> Self {
-        Self { url }
-    }
-
-    pub fn get_definition(&self) -> PrivateDefinition {
-        // Extract the path part and remove .git suffix
-        let path = extract_path_from_url(self.url.clone());
-        PrivateDefinition::build(&path)
-    }
-
-    pub fn can_resolve(&self, private_def: &PrivateDefinition) -> bool {
-        let url_def = self.get_definition();
-
-        // Compare org names
-        if !path_component_eq(&url_def.org_name, &private_def.org_name) {
-            return false;
-        }
-
-        // Compare groups (for multi-level paths)
-        if !groups_eq(&url_def.groups, &private_def.groups) {
-            return false;
-        }
-
-        // Compare repo names (allowing for {repo} wildcard)
-        if url_def.is_repo_wildcard()
-            || path_component_eq(&url_def.repo_name, &private_def.repo_name)
-        {
-            return true;
-        }
-
-        false
-    }
-
-    pub fn resolve(&self, token: &str, repo: &str) -> String {
-        self.url.replace("{token}", token).replace("{repo}", repo)
-    }
-}
-
-#[derive(Debug)]
-pub struct ADOGitURL {
-    url: String,
-}
-
-impl ADOGitURL {
-    pub fn new(url: String) -> Self {
-        Self { url }
-    }
-
-    pub fn get_definition(&self) -> PrivateDefinition {
-        // Extract the path part and remove .git suffix
-        let path = extract_path_from_url(self.url.clone());
-
-        // Handle ADO's _git path structure
-        let path = if path.contains("/_git/") {
-            path.replace("/_git/", "/")
-        } else {
-            path
-        };
-
-        PrivateDefinition::build(&path)
-    }
-
-    pub fn can_resolve(&self, private_def: &PrivateDefinition) -> bool {
-        // Default behavior for backward compatibility
-        self.can_resolve_azure_active_directory(private_def)
-    }
-
-    pub fn can_resolve_azure_active_directory(&self, private_def: &PrivateDefinition) -> bool {
-        let url_def = self.get_definition();
-
-        // For azure_active_directory, we only compare org and repo, not groups (project is in URL template)
-        // Private definition should be 2-part: org/repo
-        if !path_component_eq(&url_def.org_name, &private_def.org_name) {
-            return false;
-        }
-
-        // Compare repo names (allowing for {repo} wildcard)
-        if url_def.is_repo_wildcard()
-            || path_component_eq(&url_def.repo_name, &private_def.repo_name)
-        {
-            return true;
-        }
-
-        false
-    }
-
-    pub fn can_resolve_ado(&self, private_def: &PrivateDefinition) -> bool {
-        // "ado" requires 3-part names: org/project/repo
-        if private_def.groups.is_empty() {
-            return false;
-        }
-
-        let url_def = self.get_definition();
-
-        // The project in private_def is informational — the URL template contains the actual project.
-        // We only match on org and repo.
-        if !path_component_eq(&url_def.org_name, &private_def.org_name) {
-            return false;
-        }
-
-        // Compare repo names (allowing for {repo} wildcard)
-        if url_def.is_repo_wildcard()
-            || path_component_eq(&url_def.repo_name, &private_def.repo_name)
-        {
-            return true;
-        }
-
-        false
-    }
-
-    pub fn resolve(&self, token: &str, repo: &str) -> String {
-        self.url.replace("{token}", token).replace("{repo}", repo)
-    }
-
-    pub fn resolve_with_project(&self, token: &str, project: &str, repo: &str) -> String {
-        self.url
-            .replace("{token}", token)
-            .replace("{project}", project)
-            .replace("{repo}", repo)
-    }
-}
-
-/// Retrieves Git provider configuration from environment variable
-pub fn get_provider_info() -> Vec<ProviderDetail> {
-    let git_providers_str =
-        std::env::var("DBT_ENV_PRIVATE_GIT_PROVIDER_INFO").unwrap_or_else(|_| "[]".to_string());
-
-    let provider_json: Vec<ProviderDetail> =
-        serde_json::from_str(&git_providers_str).expect("Failed to parse git providers JSON");
-
-    provider_json
-}
-
-/// Resolves a private package definition to its Git clone URL
-pub fn get_resolved_url(
-    private_package: &PrivatePackage,
-    cloud_config: &Option<ResolvedCloudConfig>,
-) -> FsResult<String> {
-    let provider_info = get_provider_info();
-    let private_def = PrivateDefinition::build(&private_package.private);
-
-    // If we did not get any provider information then we run locally and default to ssh git.
-    if provider_info.is_empty() {
-        return get_local_resolved_url(private_package);
-    }
-
-    // Iterate over all providers and try to match each one
-    for provider in provider_info {
-        if provider.matches_private_definition(&private_def, private_package.provider.as_deref()) {
-            private_package_usage_event(
-                cloud_config,
-                private_package.private.deref(),
-                private_package.provider.as_deref(),
-                true,
-                provider.provider.as_deref(),
-            );
-            return Ok(provider.resolved_url(&private_def));
-        }
-    }
-
-    // No matching provider found
-    private_package_usage_event(
-        cloud_config,
-        private_package.private.deref(),
-        private_package.provider.as_deref(),
-        false,
-        None,
-    );
-    err!(
-        ErrorCode::InvalidConfig,
-        "No matching provider found for private definition '{}' with provider {:?}",
-        private_package.private.deref(),
-        private_package.provider
-    )
-}
-
-fn get_local_resolved_url(private_package: &PrivatePackage) -> FsResult<String> {
-    // Default to "github" when provider is unspecified, matching dbt-core's behavior
-    match private_package.provider.as_deref().unwrap_or("github") {
-        "github" => Ok(format!(
-            "git@github.com:{}.git",
-            private_package.private.deref()
-        )),
-        "gitlab" => Ok(format!(
-            "git@gitlab.com:{}.git",
-            private_package.private.deref()
-        )),
-        "ado" | "azure_devops" => {
-            // "ado"/"azure_devops" requires 3-part names: org/project/repo
-            let def = PrivateDefinition::build(private_package.private.deref());
-            if def.groups.is_empty() {
-                return err!(
-                    ErrorCode::InvalidConfig,
-                    "The '{}' provider requires org/project/repo format (3 parts), got: '{}'",
-                    private_package.provider.as_deref().unwrap_or_default(),
-                    private_package.private.deref()
-                );
-            }
-            Ok(format!(
-                "git@ssh.dev.azure.com:v3/{}",
-                private_package.private.deref()
-            ))
-        }
-        _ => {
-            err!(
-                ErrorCode::InvalidConfig,
-                r#"Invalid private package configuration: '{}' provider: '{}'. Valid providers are: github, gitlab, ado, azure_active_directory"#,
-                private_package.private.deref(),
-                private_package.provider.as_deref().unwrap_or_default()
-            )
-        }
     }
 }

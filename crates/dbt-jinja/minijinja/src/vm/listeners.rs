@@ -66,6 +66,16 @@ pub trait TypecheckingEventListener {
         _def_unique_id: &str,
     ) {
     }
+
+    /// Called when a method call whose name matches a known introspective
+    /// (warehouse-dependent) adapter method -- see
+    /// `crate::vm::INTROSPECTIVE_METHOD_NAMES` -- is encountered during
+    /// typechecking. The receiver's static type is not checked (the
+    /// `adapter` global itself has no static type today, so a `CallMethod`
+    /// on it type-checks as `Any`); this over-approximates by name alone,
+    /// which is the conservative direction for a static "does this macro
+    /// reach an introspective call" analysis to err in.
+    fn on_introspective_call(&self, _method_name: &str) {}
 }
 
 /// Default implementation of the TypecheckingEventListener trait that does nothing.

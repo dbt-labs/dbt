@@ -61,8 +61,9 @@ pub struct RunTasksArgs {
     pub write_lineage: bool,
     /// Whether this is the main command or a subcommand
     pub from_main: bool,
-    /// Number of threads (connection backpressure + parser rendering). Not
-    /// used to force sequential task execution; see `no_parallel`.
+    /// Number of threads: the cap on the `dbt-runtime` blocking pool, which
+    /// bounds warehouse concurrency and parser rendering alike. Not used to
+    /// force sequential task execution; see `no_parallel`.
     pub num_threads: usize,
     /// When true, the task graph is visited sequentially (one node at a time)
     /// regardless of `num_threads`. Use for deterministic test output.
@@ -76,6 +77,8 @@ pub struct RunTasksArgs {
 
     /// Whether to favor state over current environment
     pub favor_state: bool,
+    /// False when --no-defer is explicitly passed
+    pub defer: bool,
     /// The mode to use for the run cache
     pub run_cache_mode: RunCacheMode,
     /// The url to use for the run cache
@@ -94,16 +97,16 @@ pub struct RunTasksArgs {
     pub long_living: bool,
     /// Whether to perform a full refresh (rebuild incremental models from scratch)
     pub full_refresh: bool,
+    /// Bind without a catalog; assume referenced tables/columns exist and infer schemas from usage.
+    pub infer_schemas_and_typeless: bool,
     /// Whether to run with `--empty` (creates relations with schema only, no data).
     pub empty: bool,
-    pub infer_schemas: bool,
-    pub skip_type_checking: bool,
-    pub show_sources: bool,
-    pub resolve_ambiguous_cols: bool,
     /// If specified, the end datetime dbt uses to filter microbatch model inputs (exclusive).
     pub event_time_end: Option<String>,
     /// If specified, the start datetime dbt uses to filter microbatch model inputs (inclusive).
     pub event_time_start: Option<String>,
+    /// The raw `--sample` spec (e.g. `"30 days"` or a `{start, end}` JSON range), if passed.
+    pub sample: Option<String>,
     /// Per-invocation fail-fast signal.
     pub fail_fast: FailFast,
     /// Whether the user passed `--fail-fast`. The signal above is triggered on
@@ -112,6 +115,8 @@ pub struct RunTasksArgs {
     pub fail_fast_flag: bool,
     /// Whether to skip running post hook operations.
     pub skip_post_hooks: bool,
+    /// Whether to skip running on-run-start hook operations.
+    pub skip_on_run_start_hooks: bool,
     /// Hidden test optimization flags.
     pub optimize_tests: dbt_common::collections::HashSet<OptimizeTestsOptions>,
     /// Whether the gRPC run-cache service is explicitly requested via CLI flag.
@@ -121,6 +126,15 @@ pub struct RunTasksArgs {
     /// Previous batch_results from run_results.json, populated during retry
     /// so that already-successful overloads can be skipped.
     pub previous_batch_results: HashMap<String, dbt_schemas::schemas::BatchResults>,
+    /// Resolved metadata directory (`--metadata-dir` or `<out_dir>/metadata`). Carried here so a
+    /// task can find it — `EvalArgs::metadata_dir()` is not reachable from the task layer, and
+    /// deriving it from `out_dir` would silently ignore the override.
+    pub metadata_dir: PathBuf,
+    /// Resolved index directory (`--index-dir` or `<out_dir>/index`). See `metadata_dir`.
+    pub index_dir: PathBuf,
+    /// `show --query-id <id>`: fetch a previously completed LakeCompute query's
+    /// result directly. See `EvalArgs::query_id`.
+    pub query_id: Option<String>,
 }
 
 impl RunTasksArgs {
@@ -128,6 +142,9 @@ impl RunTasksArgs {
         let run_tasks_args = Self {
             command: arg.command,
             io: arg.io.clone(),
+            metadata_dir: arg.metadata_dir(),
+            index_dir: arg.index_dir(),
+            query_id: arg.query_id.clone(),
             profile: arg.profile.clone(),
             profiles_dir: arg.profiles_dir.clone(),
             packages_install_path: arg.packages_install_path.clone(),
@@ -155,6 +172,7 @@ impl RunTasksArgs {
             skip_unreferenced_table_check: arg.skip_unreferenced_table_check,
             task_cache_url: arg.task_cache_url.clone(),
             favor_state: arg.favor_state,
+            defer: arg.defer,
             run_cache_mode: arg.run_cache_mode.clone(),
             sample_renaming: arg.sample_renaming.clone(),
             select: arg.select.clone(),
@@ -163,19 +181,18 @@ impl RunTasksArgs {
             local_execution_backend: arg.local_execution_backend,
             long_living: arg.long_living,
             full_refresh: arg.full_refresh,
+            infer_schemas_and_typeless: arg.infer_schemas_and_typeless,
             event_time_start: arg.event_time_start.clone(),
             event_time_end: arg.event_time_end.clone(),
+            sample: arg.sample.clone(),
             fail_fast,
             fail_fast_flag: arg.fail_fast,
             skip_post_hooks: arg.skip_post_hooks,
+            skip_on_run_start_hooks: arg.skip_on_run_start_hooks,
             optimize_tests: arg.optimize_tests.clone(),
             run_cache_service: arg.run_cache_service,
             warn_error_options: arg.warn_error_options.clone(),
             empty: arg.empty,
-            infer_schemas: arg.infer_schemas,
-            skip_type_checking: arg.skip_type_checking,
-            show_sources: arg.show_sources,
-            resolve_ambiguous_cols: arg.resolve_ambiguous_cols,
             previous_batch_results: Default::default(),
         };
         Box::new(run_tasks_args)
@@ -235,6 +252,7 @@ impl fmt::Debug for RunTasksArgs {
             .field("limit", &self.limit)
             .field("run_cache_url", &self.task_cache_url)
             .field("run_cache_mode", &self.run_cache_mode)
+            .field("defer", &self.defer)
             .finish()
     }
 }

@@ -13,6 +13,7 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::hash;
+use crate::materialization::normalize_incremental_strategy;
 use crate::proto::query_cache::{
     ClientPrepareEnrichedSqlRequest, ClientTelemetryEvent, CloneRequest, DbtNodeState,
     ExecutionOutcome, ExecutionRecord, ModelExecutionType, QueryDependency, SessionEndRequest,
@@ -115,6 +116,13 @@ pub struct ExecutionTypeInput {
     pub has_unique_key: bool,
 }
 
+/// Derives the wire execution type for a node.
+///
+/// Branch order is significant. `DBT_CUSTOM` is decided *before* the
+/// incremental/snapshot branch, so a custom node stays `DBT_CUSTOM` even under
+/// `--full-refresh`. The incremental/snapshot branch is gated on full refresh
+/// as a whole, so a full-refreshed snapshot rewrites its target wholesale and
+/// is `FULL` rather than `SNAPSHOT`.
 pub fn execution_type_from_input(
     input: &ExecutionTypeInput,
 ) -> Result<ModelExecutionType, RequestBuildError> {
@@ -127,21 +135,28 @@ pub fn execution_type_from_input(
     if input.is_custom_materialization {
         return Ok(ModelExecutionType::DbtCustom);
     }
-    if input.resource_type == NodeType::Snapshot {
-        return Ok(ModelExecutionType::Snapshot);
-    }
-    if input.resource_type == NodeType::Model && input.is_incremental && !input.full_refresh {
-        let strategy = input
-            .incremental_strategy
-            .as_deref()
-            .unwrap_or("append")
-            .replace('+', "_")
-            .to_ascii_uppercase();
+    // An incremental model, or any node whose resource type is snapshot.
+    let is_incremental_or_snapshot =
+        input.is_incremental || input.resource_type == NodeType::Snapshot;
+    if is_incremental_or_snapshot && !input.full_refresh {
+        if input.resource_type == NodeType::Snapshot {
+            return Ok(ModelExecutionType::Snapshot);
+        }
+
+        // Proto enum names are upper-case; the shared normalizer lower-cases,
+        // so flip the case after it has stripped any `+` prefix.
+        let strategy = normalize_incremental_strategy(
+            input.incremental_strategy.as_deref().unwrap_or("append"),
+        )
+        .to_ascii_uppercase();
 
         if strategy == "MERGE" && !input.has_unique_key {
             return Ok(ModelExecutionType::Append);
         }
 
+        // A strategy outside dbt's built-ins is already classified as a custom
+        // materialization above; this fallback only guards names the proto does
+        // not carry.
         return Ok(
             ModelExecutionType::from_str_name(&strategy).unwrap_or(ModelExecutionType::DbtCustom)
         );
@@ -205,6 +220,11 @@ pub struct SubmitEnrichedSqlRequestInput {
     pub clone_chain_depth_limit: Option<i64>,
     pub dbt_node_state: Option<DbtNodeState>,
     pub compare_unrendered_code: bool,
+    pub table_namespace: Option<String>,
+    pub ignore_external_modifications: bool,
+    pub allow_clones: Option<bool>,
+    pub is_defer_to_profile: bool,
+    pub defer_enabled: bool,
 }
 
 impl SubmitEnrichedSqlRequestInput {
@@ -229,6 +249,11 @@ impl SubmitEnrichedSqlRequestInput {
             clone_chain_depth_limit: self.clone_chain_depth_limit,
             dbt_node_state: self.dbt_node_state,
             compare_unrendered_code: self.compare_unrendered_code,
+            table_namespace: self.table_namespace,
+            ignore_external_modifications: self.ignore_external_modifications,
+            allow_clones: self.allow_clones,
+            is_defer_to_profile: self.is_defer_to_profile,
+            defer_enabled: self.defer_enabled,
         }
     }
 }
@@ -246,6 +271,10 @@ pub struct SubmitValuesRequestInput {
     pub clone_table_properties: Option<TableProperties>,
     pub clone_chain_depth_limit: Option<i64>,
     pub dbt_node_state: Option<DbtNodeState>,
+    pub table_namespace: Option<String>,
+    pub allow_clones: Option<bool>,
+    pub is_defer_to_profile: bool,
+    pub defer_enabled: bool,
 }
 
 impl SubmitValuesRequestInput {
@@ -262,6 +291,10 @@ impl SubmitValuesRequestInput {
             clone_table_properties: self.clone_table_properties,
             clone_chain_depth_limit: self.clone_chain_depth_limit,
             dbt_node_state: self.dbt_node_state,
+            table_namespace: self.table_namespace,
+            allow_clones: self.allow_clones,
+            is_defer_to_profile: self.is_defer_to_profile,
+            defer_enabled: self.defer_enabled,
         }
     }
 }
@@ -305,6 +338,7 @@ pub fn sql_execution_record_from_submit_request(
                 default_schema: request.default_schema,
                 dbt_node_state: request.dbt_node_state,
                 from_speculative_submit,
+                table_namespace: request.table_namespace,
             },
         ))),
     }
@@ -324,6 +358,7 @@ pub fn values_execution_record_from_submit_request(
             semantic_extras: request.semantic_extras,
             labels: request.labels,
             dbt_node_state: request.dbt_node_state,
+            table_namespace: request.table_namespace,
         }))),
     }
 }
@@ -421,6 +456,7 @@ pub struct CloneRequestInput {
     pub clone_source_table_type: Option<String>,
     pub table_properties: Option<TableProperties>,
     pub clone_chain_depth_limit: Option<i64>,
+    pub table_namespace: Option<String>,
 }
 
 impl CloneRequestInput {
@@ -436,6 +472,7 @@ impl CloneRequestInput {
             clone_source_table_type: self.clone_source_table_type,
             table_properties: self.table_properties,
             clone_chain_depth_limit: self.clone_chain_depth_limit,
+            table_namespace: self.table_namespace,
         }
     }
 }
@@ -858,12 +895,19 @@ mod tests {
                 ),
                 node_macros_hash: Some("node_macros_hash".to_string()),
                 node_contract_hash: Some("node_contract_hash".to_string()),
+                node_database_representation: None,
             }),
             compare_unrendered_code: true,
+            table_namespace: None,
+            ignore_external_modifications: true,
+            allow_clones: Some(true),
+            is_defer_to_profile: true,
+            defer_enabled: true,
         }
         .into_proto();
 
         assert!(request.compare_unrendered_code);
+        assert!(request.ignore_external_modifications);
         assert_eq!(request.target_table.as_deref(), Some("analytics.orders"));
         assert_eq!(request.default_schema.as_deref(), Some("marts"));
         assert_eq!(request.execution_type, ModelExecutionType::Merge as i32);
@@ -894,8 +938,12 @@ mod tests {
                 ),
                 node_macros_hash: Some("node_macros_hash".to_string()),
                 node_contract_hash: Some("node_contract_hash".to_string()),
+                node_database_representation: None
             })
-        )
+        );
+        assert_eq!(request.allow_clones, Some(true));
+        assert!(request.is_defer_to_profile);
+        assert!(request.defer_enabled);
     }
 
     #[test]
@@ -926,7 +974,12 @@ mod tests {
                 ),
                 node_macros_hash: Some("node_macros_hash".to_string()),
                 node_contract_hash: Some("node_contract_hash".to_string()),
+                node_database_representation: None,
             }),
+            table_namespace: Some("foo".to_string()),
+            allow_clones: Some(true),
+            is_defer_to_profile: true,
+            defer_enabled: true,
         }
         .into_proto();
 
@@ -952,8 +1005,13 @@ mod tests {
                 ),
                 node_macros_hash: Some("node_macros_hash".to_string()),
                 node_contract_hash: Some("node_contract_hash".to_string()),
+                node_database_representation: None
             })
-        )
+        );
+        assert_eq!(request.table_namespace(), "foo");
+        assert_eq!(request.allow_clones, Some(true));
+        assert!(request.is_defer_to_profile);
+        assert!(request.defer_enabled);
     }
 
     #[test]
@@ -981,6 +1039,11 @@ mod tests {
             clone_chain_depth_limit: None,
             dbt_node_state: None,
             compare_unrendered_code: false,
+            table_namespace: None,
+            ignore_external_modifications: false,
+            allow_clones: Some(true),
+            is_defer_to_profile: false,
+            defer_enabled: true,
         }
         .into_proto();
 
@@ -1020,6 +1083,10 @@ mod tests {
             clone_table_properties: None,
             clone_chain_depth_limit: None,
             dbt_node_state: None,
+            table_namespace: None,
+            allow_clones: Some(true),
+            is_defer_to_profile: false,
+            defer_enabled: true,
         }
         .into_proto();
 
@@ -1061,6 +1128,7 @@ mod tests {
             clone_source_table_type: Some("table".to_string()),
             table_properties: Some(properties),
             clone_chain_depth_limit: Some(3),
+            table_namespace: None,
         }
         .into_proto();
 

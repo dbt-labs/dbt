@@ -4,6 +4,7 @@
 //! standard SQL plus timestamp parsing — only the bulk INFORMATION_SCHEMA-style
 //! query differs across adapters. This module owns the parts that don't.
 
+use crate::connection::ConnectionGuard;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -11,7 +12,7 @@ use arrow_array::{
     Array, TimestampMicrosecondArray, TimestampMillisecondArray, TimestampNanosecondArray,
     TimestampSecondArray,
 };
-use dbt_adbc::{Connection, QueryCtx};
+use dbt_adbc::QueryCtx;
 use dbt_common::cancellation::CancellationToken;
 use dbt_schemas::schemas::relations::base::BaseRelation;
 
@@ -71,8 +72,9 @@ pub(crate) fn render_this(template: &str, rendered_relation: &str) -> String {
 ///
 /// Renders `{{ this }}` for `FreshnessOverride::Query` or builds
 /// `SELECT max({field}) FROM {relation}` for `FreshnessOverride::Field`,
-/// then defensively downcasts the first column over the common timestamp
-/// precisions (Snowflake returns ms, BigQuery micros, etc.).
+/// adding `WHERE {filter}` when set, then defensively downcasts the first
+/// column over the common timestamp precisions (Snowflake returns ms,
+/// BigQuery micros, etc.).
 pub(crate) fn freshness_override_sql(
     relation: &Arc<dyn BaseRelation>,
     ovr: &FreshnessOverride,
@@ -80,16 +82,22 @@ pub(crate) fn freshness_override_sql(
     let rendered_relation = relation.render_self_as_str();
     match ovr {
         FreshnessOverride::Query(query) => render_this(query, &rendered_relation),
-        FreshnessOverride::Field(field) => format!(
-            "SELECT max({}) AS last_modified FROM {}",
-            field, rendered_relation
-        ),
+        FreshnessOverride::Field { field, filter } => match filter {
+            Some(filter) => format!(
+                "SELECT max({}) AS last_modified FROM {} WHERE {}",
+                field, rendered_relation, filter
+            ),
+            None => format!(
+                "SELECT max({}) AS last_modified FROM {}",
+                field, rendered_relation
+            ),
+        },
     }
 }
 
 pub(crate) fn run_override_sql(
     adapter: &AdapterImpl,
-    conn: &mut dyn Connection,
+    conn: &mut ConnectionGuard<'_>,
     semantic_fqn: String,
     sql: &str,
     token: CancellationToken,
@@ -126,7 +134,7 @@ pub(crate) fn run_override_sql(
 
 pub(crate) fn run_override_query(
     adapter: &AdapterImpl,
-    conn: &mut dyn Connection,
+    conn: &mut ConnectionGuard<'_>,
     relation: &Arc<dyn BaseRelation>,
     ovr: &FreshnessOverride,
     token: CancellationToken,
@@ -155,4 +163,64 @@ pub(crate) fn apply_freshness_task_result(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::relation::create_relation;
+    use dbt_adapter_core::AdapterType;
+    use dbt_schemas::dbt_types::RelationType;
+    use dbt_schemas::schemas::common::ResolvedQuoting;
+
+    fn make_relation() -> Arc<dyn BaseRelation> {
+        create_relation(
+            AdapterType::Snowflake,
+            "db".to_string(),
+            "raw".to_string(),
+            Some("users".to_string()),
+            Some(RelationType::View),
+            ResolvedQuoting::default(),
+        )
+        .unwrap()
+        .into()
+    }
+
+    #[test]
+    fn field_override_without_filter_has_no_where_clause() {
+        let relation = make_relation();
+        let sql = freshness_override_sql(
+            &relation,
+            &FreshnessOverride::Field {
+                field: "updated_at".to_string(),
+                filter: None,
+            },
+        );
+        assert_eq!(
+            sql,
+            format!(
+                "SELECT max(updated_at) AS last_modified FROM {}",
+                relation.render_self_as_str()
+            )
+        );
+    }
+
+    #[test]
+    fn field_override_with_filter_adds_where_clause() {
+        let relation = make_relation();
+        let sql = freshness_override_sql(
+            &relation,
+            &FreshnessOverride::Field {
+                field: "updated_at".to_string(),
+                filter: Some("deleted_at is null".to_string()),
+            },
+        );
+        assert_eq!(
+            sql,
+            format!(
+                "SELECT max(updated_at) AS last_modified FROM {} WHERE deleted_at is null",
+                relation.render_self_as_str()
+            )
+        );
+    }
 }

@@ -7,11 +7,8 @@
 use std::{collections::HashMap, hint::black_box, sync::Arc, time::Instant};
 
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
-use dbt_ident::Ident;
-use dbt_schema_store::{
-    CanonicalFqn, SchemaStoreTrait,
-    store::{SchemaStore, StoreFormat},
-};
+use dbt_schema_store::{CanonicalFqn, SchemaStoreTrait, store::SchemaStore};
+use dbt_sql_base::Ident;
 use tempfile::TempDir;
 
 fn make_schema(n_cols: usize) -> SchemaRef {
@@ -48,9 +45,7 @@ fn run_perf(label: &str, n: usize, cols_per_schema: usize) {
         frontier.clone(),
         HashMap::new(),
         vec![],
-        StoreFormat::ParquetCache,
         HashMap::new(),
-        None,
     );
     let init_ms = t0.elapsed().as_millis();
 
@@ -74,9 +69,7 @@ fn run_perf(label: &str, n: usize, cols_per_schema: usize) {
         frontier.clone(),
         HashMap::new(),
         vec![],
-        StoreFormat::ParquetCache,
         HashMap::new(),
-        None,
     );
     let load_ms = t3.elapsed().as_millis();
 

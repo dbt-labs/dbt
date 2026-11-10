@@ -1,25 +1,25 @@
 use super::resolve_properties::MinimalPropertiesEntry;
 use crate::args::ResolveArgs;
 use crate::dbt_project_config::{
-    ProjectConfigResolver, RootProjectConfigs, init_project_config,
-    strip_resource_paths_from_ref_path,
+    ProjectConfigResolver, RootProjectConfigs, strip_resource_paths_from_ref_path,
 };
 use crate::renderer::{
     RenderCtx, RenderCtxInner, SqlFileRenderResult, collect_adapter_identifiers_detect_unsafe,
-    render_unresolved_sql_files,
+    render_unresolved_sql_files, strip_deprecated_warehouse_keys_from_properties,
 };
 use crate::resolve::resolve_tests::persist_generic_data_tests::TestableNodeTrait;
 use crate::resolve::resolve_tests::persist_generic_data_tests::{
     TestUnrenderedConfigs, extract_test_unrendered_configs,
 };
 use crate::resolve::resolve_utils::{
-    build_unrendered_config, err_resource_name_has_spaces, extract_config_map, validate_compute,
+    RawProjectConfigsByAdapter, err_resource_name_has_spaces, extract_config_map,
+    resolve_node_quoting, select_node_adapter, validate_compute,
 };
 use crate::resolve::yaml_field_utils;
 use crate::sql_file_info::SqlFileInfo;
 use crate::utils::{
-    RelationComponents, extract_resource_config_from_raw_project, get_original_file_path,
-    get_snapshot_fqn, parse_unrendered_config, update_node_relation_components,
+    RelationComponents, get_original_file_path, get_snapshot_fqn, parse_unrendered_config,
+    update_node_relation_components,
 };
 use crate::validation::check_node_static_analysis;
 use dbt_adapter_core::AdapterType;
@@ -27,13 +27,14 @@ use dbt_common::cancellation::CancellationToken;
 use dbt_common::constants::DBT_SNAPSHOTS_DIR_NAME;
 use dbt_common::error::AbstractLocation;
 use dbt_common::io_args::{StaticAnalysisKind, StaticAnalysisOffReason};
-use dbt_common::path::DbtPath;
+use dbt_common::path::{DbtPath, node_name_from_path};
 use dbt_common::tokiofs;
 use dbt_common::tracing::dbt_emit::{emit_error_log_from_fs_error, emit_warn_log_from_fs_error};
 use dbt_common::{ErrorCode, FsResult, fs_err, stdfs, unexpected_fs_err};
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::listener::DefaultJinjaTypeCheckEventListenerFactory;
 use dbt_jinja_utils::node_resolver::NodeResolver;
+use dbt_jinja_utils::phases::parse::ParseAdapterScopes;
 use dbt_jinja_utils::serde::into_typed_with_jinja;
 use dbt_schemas::schemas::common::{
     DbtChecksum, DbtQuoting, ModelFreshnessRules, NodeDependsOn,
@@ -45,6 +46,7 @@ use dbt_schemas::schemas::nodes::AdapterAttr;
 use dbt_schemas::schemas::project::SnapshotConfig;
 use dbt_schemas::schemas::properties::SnapshotProperties;
 use dbt_schemas::schemas::ref_and_source::{DbtRef, DbtSourceWrapper};
+use dbt_schemas::schemas::telemetry::NodeType;
 use dbt_schemas::schemas::{
     CommonAttributes, DbtSnapshot, DbtSnapshotAttr, InternalDbtNode, IntrospectionKind,
     NodeBaseAttributes, NodePathKind,
@@ -52,6 +54,7 @@ use dbt_schemas::schemas::{
 use dbt_schemas::state::{
     DbtAsset, DbtPackage, DbtRuntimeConfig, GenericTestAsset, ModelStatus, NodeResolverTracker,
 };
+use indexmap::IndexMap;
 use minijinja::Value as MinijinjaValue;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -70,13 +73,17 @@ pub async fn resolve_snapshots(
     macros: &BTreeMap<String, DbtMacro>,
     database: &str,
     schema: &str,
-    adapter_type: AdapterType,
+    parse_adapter_scopes: &Arc<ParseAdapterScopes>,
+    default_adapter: AdapterType,
+    adapter_quoting: &IndexMap<AdapterType, DbtQuoting>,
     jinja_env: Arc<JinjaEnv>,
-    base_ctx: &BTreeMap<String, MinijinjaValue>,
+    base_ctx: &Arc<BTreeMap<String, MinijinjaValue>>,
     runtime_config: Arc<DbtRuntimeConfig>,
+    root_runtime_config: Arc<DbtRuntimeConfig>,
     node_resolver: &mut NodeResolver,
     collected_generic_tests: &mut Vec<GenericTestAsset>,
     test_name_truncations: &mut HashMap<String, String>,
+    seen_generic_test_paths: &mut HashMap<PathBuf, String>,
     token: &CancellationToken,
 ) -> FsResult<(
     HashMap<String, Arc<DbtSnapshot>>,
@@ -95,16 +102,12 @@ pub async fn resolve_snapshots(
     };
 
     let is_dependency = dependency_package_name.is_some();
-    let raw_local_project_config =
-        extract_resource_config_from_raw_project(&package.raw_project_yml, "snapshots");
-    let raw_root_project_cfg = if is_dependency {
-        Some(extract_resource_config_from_raw_project(
-            &root_package.raw_project_yml,
-            "snapshots",
-        ))
-    } else {
-        None
-    };
+    let mut raw_project_configs_by_adapter = RawProjectConfigsByAdapter::new(
+        &package.raw_project_yml,
+        is_dependency.then_some(&root_package.raw_project_yml),
+        "snapshots",
+        default_adapter,
+    )?;
 
     let package_name = package.dbt_project.name.to_owned();
 
@@ -124,6 +127,11 @@ pub async fn resolve_snapshots(
     for (macro_uid, macro_node) in macros {
         if macro_node.package_name == package_name && macro_uid.starts_with("snapshot.") {
             synthetic_snapshot_macro_uids.insert(macro_uid.clone());
+            // Render listeners report template names for synthetic snapshot macros.
+            synthetic_snapshot_macro_uids.insert(format!(
+                "macro.{}.{}",
+                macro_node.package_name, macro_node.name
+            ));
             // Write the macro call to the `snapshots` directory
             let macro_call = format!("{{{{ {}() }}}}", macro_node.name);
             let macro_name = macro_node.name.clone();
@@ -195,6 +203,12 @@ pub async fn resolve_snapshots(
         })
         .collect();
 
+    strip_deprecated_warehouse_keys_from_properties(
+        &mut snapshot_properties,
+        NodeType::Snapshot,
+        dependency_package_name,
+    );
+
     // Save snapshot from yml to the `snapshots` directory
     for (snapshot_name, mpe) in snapshot_properties.iter_mut() {
         // if mpe.schema_value
@@ -211,11 +225,10 @@ pub async fn resolve_snapshots(
             let raw_description =
                 yaml_field_utils::detach_field_from_mapping(&mut schema_value, "description");
             let mut snapshot: SnapshotProperties = into_typed_with_jinja(
-                &arg.io,
                 schema_value,
                 false,
                 &jinja_env,
-                base_ctx,
+                base_ctx.as_ref(),
                 &[],
                 dependency_package_name,
                 true,
@@ -227,6 +240,7 @@ pub async fn resolve_snapshots(
             }
 
             if let Some(relation) = &snapshot.relation {
+                let relation = relation.to_string();
                 // check if the relation matches the pattern of ref(...)
                 let relation = if relation.starts_with("ref(") || relation.starts_with("source(") {
                     format!("{{{{ {relation} }}}}")
@@ -278,32 +292,35 @@ pub async fn resolve_snapshots(
         }
     }
 
-    let config_resolver = ProjectConfigResolver::build(
+    let config_resolver = ProjectConfigResolver::per_adapter(
         root_project_configs.snapshots.clone(),
-        is_dependency,
-        || {
-            init_project_config(
-                &package.dbt_project.snapshots,
-                package_quoting,
-                dependency_package_name,
-            )
-        },
-    )?
-    .with_resolve_defaults((
-        arg.static_analysis.unwrap_or_default(),
-        root_package.dbt_project.sync.clone(),
-    ));
+        |root| &root.snapshots,
+        root_project_configs,
+        &package.dbt_project.snapshots,
+        dependency_package_name,
+        (
+            arg.unconfigured_static_analysis(),
+            root_package.dbt_project.sync.clone(),
+        ),
+        default_adapter,
+        arg.adapter_override,
+    )?;
 
     let render_ctx = RenderCtx {
         inner: Arc::new(RenderCtxInner {
             args: arg.clone(),
             root_project_name: root_package.dbt_project.name.clone(),
             config_resolver,
+            adapter_hint: None,
+            adapter_layer: None,
+            parse_adapter_scopes: Some(parse_adapter_scopes.clone()),
+            adapter_quoting: root_project_configs.adapter_quoting.clone(),
             package_quoting,
             uses_snapshot_fqn: true,
-            base_ctx: base_ctx.clone(),
+            defer_render_errors_to_compile: true,
+            base_ctx: Arc::clone(base_ctx),
             package_name: package_name.to_string(),
-            adapter_type,
+            adapter_type: default_adapter,
             database: database.to_string(),
             schema: schema.to_string(),
             // Must match the resource paths used for the node's own fqn below,
@@ -314,9 +331,11 @@ pub async fn resolve_snapshots(
                 .as_ref()
                 .unwrap_or(&default_snapshots_path)
                 .clone(),
+            resource_type: Some(NodeType::Snapshot),
         }),
         jinja_env: jinja_env.clone(),
         runtime_config: runtime_config.clone(),
+        root_runtime_config: root_runtime_config.clone(),
     };
 
     // Render the snapshots
@@ -346,18 +365,22 @@ pub async fn resolve_snapshots(
     for SqlFileRenderResult {
         asset: dbt_asset,
         sql_file_info,
-        config: snapshot_config,
+        config: mut snapshot_config,
+        adapter,
+        alias_adapter,
         raw_code,
+        macro_dependencies,
         macro_spans: _macro_spans,
         properties: maybe_properties,
         status,
+        render_error_deferred,
         patch_path,
         ..
     } in snapshot_sql_resources_map.into_iter()
     {
         {
             let error_path = &dbt_asset.original_path;
-            let snapshot_name = dbt_asset.path.file_stem().unwrap().to_str().unwrap();
+            let snapshot_name = node_name_from_path(&dbt_asset.path).unwrap();
             if snapshot_name.contains(' ') {
                 return Err(err_resource_name_has_spaces(snapshot_name, error_path));
             }
@@ -395,7 +418,6 @@ pub async fn resolve_snapshots(
 
             let columns = process_columns(
                 properties.columns.as_ref(),
-                snapshot_config.meta.clone(),
                 snapshot_config.tags.inner().clone().map(|tags| tags.into()),
             )?;
 
@@ -423,6 +445,27 @@ pub async fn resolve_snapshots(
                 dependency_package_name,
             );
             validate_compute(snapshot_config.compute, error_path)?;
+            // See `resolve_models`: the flag overrides the config. A snapshot
+            // selects explicitly -- it has no attached node to inherit from.
+            let selected_adapter = select_node_adapter(
+                snapshot_config.adapter,
+                adapter,
+                default_adapter,
+                error_path,
+            )?;
+
+            // See `resolve_models`: both remaining quoting layers depend on which
+            // adapter the node runs on, which is only known after the config merge.
+            // `propagate` comes straight off the node's own config. Unlike
+            // `adapter` there is no target default to fall back to and nothing to
+            // inherit: an unset `+propagate` means "publish nowhere".
+            let selected_propagate: Vec<AdapterType> = snapshot_config
+                .propagate
+                .clone()
+                .map(Into::into)
+                .unwrap_or_default();
+            snapshot_config.quoting =
+                resolve_node_quoting(snapshot_config.quoting, adapter_quoting, selected_adapter);
 
             if let Some(state) = &snapshot_config.state {
                 ModelFreshnessRules::validate(state.lag_tolerance.as_ref()).map_err(|e| {
@@ -435,10 +478,14 @@ pub async fn resolve_snapshots(
                 })?;
             }
 
-            let macro_depends_on = all_depends_on
+            let mut macro_depends_on = all_depends_on
                 .get(&format!("{package_name}.{snapshot_name}"))
                 .cloned()
-                .unwrap_or_default()
+                .unwrap_or_default();
+            if selected_adapter != default_adapter {
+                macro_depends_on.extend(macro_dependencies);
+            }
+            let macro_depends_on = macro_depends_on
                 .into_iter()
                 .filter(|uid| !synthetic_snapshot_macro_uids.contains(uid.as_str()))
                 .collect();
@@ -463,14 +510,13 @@ pub async fn resolve_snapshots(
                     (None, None)
                 };
 
-            let unrendered_config = build_unrendered_config(
+            let unrendered_config = raw_project_configs_by_adapter.unrendered_config(
+                alias_adapter,
                 &fqn,
-                &raw_local_project_config,
-                raw_root_project_cfg.as_ref(),
                 raw_schema_yml_configs.get(snapshot_name),
                 raw_inline_config.as_ref(),
                 true,
-            );
+            )?;
 
             // Create initial snapshot with default values
             let mut dbt_snapshot = DbtSnapshot {
@@ -499,6 +545,9 @@ pub async fn resolve_snapshots(
                     meta: snapshot_config.meta.clone().unwrap_or_default(),
                 },
                 __base_attr__: NodeBaseAttributes {
+                    adapter: selected_adapter,
+                    propagate: selected_propagate,
+                    effective_propagation_target: None,
                     database: "".to_owned(), // will be updated below
                     schema: "".to_owned(),   // will be updated below
                     alias: "".to_owned(),    // will be updated below
@@ -568,15 +617,34 @@ pub async fn resolve_snapshots(
                     },
                     sync: snapshot_config.sync.clone(),
                     state: snapshot_config.state.clone(),
+                    catalog_name: snapshot_config
+                        .__warehouse_specific_config__
+                        .catalog_name
+                        .clone(),
+                    table_format: snapshot_config.table_format.clone(),
                 },
                 __adapter_attr__: AdapterAttr::from_config_and_dialect(
                     &snapshot_config.__warehouse_specific_config__,
-                    adapter_type,
+                    selected_adapter,
                 ),
                 deprecated_config: snapshot_config.clone().into(),
                 compiled: None,
                 compiled_code: None,
-                __other__: BTreeMap::new(),
+                __other__: properties
+                    .relation
+                    .as_ref()
+                    .map(|relation| {
+                        let mut other = BTreeMap::new();
+                        other.insert(
+                            "raw_relation".to_string(),
+                            dbt_yaml::Value::String(
+                                relation.clone().into_inner(),
+                                relation.span().clone(),
+                            ),
+                        );
+                        other
+                    })
+                    .unwrap_or_default(),
             };
 
             let components = RelationComponents {
@@ -596,17 +664,17 @@ pub async fn resolve_snapshots(
             };
 
             // Update with relation components
-            update_node_relation_components(
-                &mut dbt_snapshot,
+            dbt_snapshot = update_node_relation_components(
+                dbt_snapshot,
                 &jinja_env,
                 &root_package.dbt_project.name,
                 &package_name,
                 base_ctx,
                 &components,
-                adapter_type,
+                Some(parse_adapter_scopes),
             )?;
 
-            match node_resolver.insert_ref(&dbt_snapshot, adapter_type, status, false) {
+            match node_resolver.insert_ref(&dbt_snapshot, status, false) {
                 Ok(_) => (),
                 Err(e) => {
                     let err_with_loc = e.with_location(error_path.clone());
@@ -637,7 +705,8 @@ pub async fn resolve_snapshots(
                             &root_package.dbt_project.name,
                             collected_generic_tests,
                             test_name_truncations,
-                            adapter_type,
+                            seen_generic_test_paths,
+                            selected_adapter,
                             &arg.io,
                             patch_path.as_ref().unwrap_or(&dbt_asset.path),
                             false,
@@ -651,7 +720,29 @@ pub async fn resolve_snapshots(
                 ModelStatus::Disabled => {
                     disabled_snapshots.insert(unique_id, Arc::new(dbt_snapshot));
                 }
-                ModelStatus::ParsingFailed => {}
+                ModelStatus::ParsingFailed => {
+                    if render_error_deferred {
+                        snapshots.insert(unique_id, Arc::new(dbt_snapshot));
+
+                        if !arg.skip_creating_generic_tests {
+                            properties.as_testable().persist(
+                                package_name.as_str(),
+                                &root_package.dbt_project.name,
+                                collected_generic_tests,
+                                test_name_truncations,
+                                seen_generic_test_paths,
+                                selected_adapter,
+                                &arg.io,
+                                patch_path.as_ref().unwrap_or(&dbt_asset.path),
+                                false,
+                                &raw_test_configs
+                                    .get(snapshot_name)
+                                    .cloned()
+                                    .unwrap_or_default(),
+                            )?;
+                        }
+                    }
+                }
             }
         }
     }
@@ -679,10 +770,10 @@ pub async fn resolve_snapshots(
         snapshots_with_execute,
         node_resolver,
         jinja_env,
-        adapter_type,
         package.dbt_project.name.as_str(),
         &root_package.dbt_project.name,
         runtime_config,
+        parse_adapter_scopes,
         token,
     )
     .await?;

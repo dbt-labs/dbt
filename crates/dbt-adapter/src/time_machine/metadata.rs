@@ -45,11 +45,16 @@ use std::time::Instant;
 
 use arrow_schema::{Field, Schema};
 use chrono::{DateTime, Utc};
-use dbt_adapter_core::AdapterType;
+use dbt_adapter_core::{AdapterType, quote_char};
 use dbt_common::cancellation::Cancellable;
+use dbt_schemas::schemas::common::ResolvedQuoting;
+use dbt_schemas::schemas::relations::base::BaseRelation;
 
 use crate::errors::{AdapterError, AdapterErrorKind, AdapterResult};
-use crate::metadata::{CatalogAndSchema, MetadataFreshness, RelationSchemaPair, RelationVec, UDF};
+use crate::metadata::{
+    CatalogAndSchema, FreshnessOverride, MetadataFreshness, RelationSchemaPair, RelationVec, UDF,
+};
+use crate::relation::do_create_relation;
 
 use super::event::{CatalogSchema, CatalogSchemas, MetadataCallArgs};
 use super::{global_recorder, global_replayer};
@@ -80,7 +85,7 @@ where
             // In replay mode - look up the recorded result
             match replayer.get_metadata_result(&caller_id, method, &args) {
                 Some(Ok(json)) => {
-                    return T::from_recording_json(&json).map_err(|e| {
+                    return T::from_recording_json(&json, replayer.adapter_type()).map_err(|e| {
                         Cancellable::Error(AdapterError::new(
                             AdapterErrorKind::Internal,
                             format!("Failed to deserialize replay result: {}", e),
@@ -88,12 +93,14 @@ where
                     });
                 }
                 Some(Err(e)) => {
+                    let kind = if e.is_method_mismatch {
+                        AdapterErrorKind::ReplayMethodMismatch
+                    } else {
+                        AdapterErrorKind::Driver
+                    };
                     // Use the original error message so replay output matches the recording exactly.
                     let original_msg = e.recorded_error.unwrap_or(e.message);
-                    return Err(Cancellable::Error(AdapterError::new(
-                        AdapterErrorKind::Driver,
-                        original_msg,
-                    )));
+                    return Err(Cancellable::Error(AdapterError::new(kind, original_msg)));
                 }
                 None => {
                     // No matching recorded event found in replay mode.
@@ -160,7 +167,10 @@ pub trait MetadataResultSerialize {
 /// Trait for deserializing MetadataAdapter result types from JSON for replay.
 pub trait MetadataResultDeserialize: Sized {
     /// Deserialize this result from JSON for replay.
-    fn from_recording_json(json: &serde_json::Value) -> Result<Self, String>;
+    fn from_recording_json(
+        json: &serde_json::Value,
+        adapter_type: AdapterType,
+    ) -> Result<Self, String>;
 }
 
 // Implementations for common MetadataAdapter result types
@@ -190,7 +200,10 @@ impl MetadataResultSerialize for HashMap<String, AdapterResult<Arc<Schema>>> {
 }
 
 impl MetadataResultDeserialize for HashMap<String, AdapterResult<Arc<Schema>>> {
-    fn from_recording_json(json: &serde_json::Value) -> Result<Self, String> {
+    fn from_recording_json(
+        json: &serde_json::Value,
+        _adapter_type: AdapterType,
+    ) -> Result<Self, String> {
         let obj = json.as_object().ok_or("Expected object")?;
         let mut result = HashMap::new();
 
@@ -223,6 +236,21 @@ impl MetadataResultDeserialize for HashMap<String, AdapterResult<Arc<Schema>>> {
     }
 }
 
+impl MetadataResultSerialize for BTreeMap<String, bool> {
+    fn to_recording_json(&self) -> serde_json::Value {
+        serde_json::to_value(self).unwrap_or(serde_json::Value::Null)
+    }
+}
+
+impl MetadataResultDeserialize for BTreeMap<String, bool> {
+    fn from_recording_json(
+        json: &serde_json::Value,
+        _adapter_type: AdapterType,
+    ) -> Result<Self, String> {
+        serde_json::from_value(json.clone()).map_err(|e| e.to_string())
+    }
+}
+
 impl MetadataResultSerialize for BTreeMap<String, MetadataFreshness> {
     fn to_recording_json(&self) -> serde_json::Value {
         let entries: serde_json::Map<String, serde_json::Value> = self
@@ -242,7 +270,10 @@ impl MetadataResultSerialize for BTreeMap<String, MetadataFreshness> {
 }
 
 impl MetadataResultDeserialize for BTreeMap<String, MetadataFreshness> {
-    fn from_recording_json(json: &serde_json::Value) -> Result<Self, String> {
+    fn from_recording_json(
+        json: &serde_json::Value,
+        _adapter_type: AdapterType,
+    ) -> Result<Self, String> {
         let obj = json.as_object().ok_or("Expected object")?;
         let mut result = BTreeMap::new();
 
@@ -279,8 +310,16 @@ impl MetadataResultSerialize for BTreeMap<CatalogAndSchema, AdapterResult<Relati
             .map(|(db_schema, result)| {
                 let value = match result {
                     Ok(relations) => {
-                        let rel_names: Vec<String> =
-                            relations.iter().map(|r| r.semantic_fqn()).collect();
+                        let rel_names: Vec<serde_json::Value> = relations
+                            .iter()
+                            .map(|relation| {
+                                serde_json::json!({
+                                    "database": relation.database_as_resolved_str().ok(),
+                                    "schema": relation.schema_as_resolved_str().ok(),
+                                    "identifier": relation.identifier_as_resolved_str().ok(),
+                                })
+                            })
+                            .collect();
                         serde_json::json!({ "ok": rel_names })
                     }
                     Err(e) => serde_json::json!({ "error": e.to_string() }),
@@ -298,8 +337,80 @@ impl MetadataResultSerialize for BTreeMap<CatalogAndSchema, AdapterResult<Relati
     }
 }
 
+/// Rebuilds the relations of a recorded `list_relations_in_parallel` entry from their
+/// raw components or legacy `semantic_fqn` strings. The relation type stays unset.
+fn relations_from_recorded_fqns(
+    ok: &serde_json::Value,
+    adapter_type: AdapterType,
+) -> Result<RelationVec, String> {
+    ok.as_array()
+        .ok_or("Expected array of relation FQNs")?
+        .iter()
+        .map(|fqn| {
+            if let Some(fqn) = fqn.as_str() {
+                return relation_from_semantic_fqn(fqn, adapter_type);
+            }
+            let component = |key: &str| -> Result<Option<String>, String> {
+                match fqn.get(key) {
+                    Some(serde_json::Value::String(value)) => Ok(Some(value.clone())),
+                    Some(serde_json::Value::Null) => Ok(None),
+                    _ => Err(format!("Expected relation component {key}")),
+                }
+            };
+            do_create_relation(
+                adapter_type,
+                component("database")?.unwrap_or_default(),
+                component("schema")?.unwrap_or_default(),
+                component("identifier")?,
+                None,
+                ResolvedQuoting::trues(),
+            )
+            .map(Arc::from)
+            .map_err(|e| format!("Failed to rebuild recorded relation: {e}"))
+        })
+        .collect()
+}
+
+/// Inverse of [`BaseRelation::semantic_fqn`]: `` `database`.`schema`.`identifier` ``, with the
+/// database part absent when empty.
+fn relation_from_semantic_fqn(
+    fqn: &str,
+    adapter_type: AdapterType,
+) -> Result<Arc<dyn BaseRelation>, String> {
+    let quote = quote_char(adapter_type);
+    let inner = fqn
+        .strip_prefix(quote)
+        .and_then(|rest| rest.strip_suffix(quote))
+        .ok_or_else(|| format!("Relation FQN {fqn:?} is not {quote}-quoted"))?;
+    let parts: Vec<&str> = inner.split(&format!("{quote}.{quote}")).collect();
+    let (database, schema, identifier) = match parts.as_slice() {
+        [schema, identifier] => ("", *schema, *identifier),
+        [database, schema, identifier] => (*database, *schema, *identifier),
+        _ => {
+            return Err(format!(
+                "Relation FQN {fqn:?} must have 2 or 3 parts, found {}",
+                parts.len()
+            ));
+        }
+    };
+    let relation = do_create_relation(
+        adapter_type,
+        database.to_string(),
+        schema.to_string(),
+        Some(identifier.to_string()),
+        None,
+        // Recorded FQN is already normalized, so quoting every part reproduces it exactly.
+        ResolvedQuoting::trues(),
+    )
+    .map_err(|e| format!("Failed to rebuild relation from FQN {fqn:?}: {e}"))?;
+    Ok(Arc::from(relation))
+}
+
 impl MetadataResultDeserialize for BTreeMap<CatalogAndSchema, AdapterResult<RelationVec>> {
-    fn from_recording_json(json: &serde_json::Value) -> Result<Self, String> {
+    fn from_recording_json(
+        json: &serde_json::Value,
+        adapter_type: AdapterType,
+    ) -> Result<Self, String> {
         let arr = json.as_array().ok_or("Expected array")?;
         let mut result = BTreeMap::new();
 
@@ -333,10 +444,8 @@ impl MetadataResultDeserialize for BTreeMap<CatalogAndSchema, AdapterResult<Rela
             };
 
             let relations_result = if let Some(res) = entry.get("result") {
-                if res.get("ok").is_some() {
-                    // For replay, return empty relations - the actual relation objects
-                    // cannot be reconstructed from JSON without adapter context
-                    Ok(Vec::new())
+                if let Some(ok) = res.get("ok") {
+                    Ok(relations_from_recorded_fqns(ok, adapter_type)?)
                 } else if let Some(error) = res.get("error") {
                     let error_msg = error.as_str().unwrap_or("Unknown error");
                     Err(AdapterError::new(AdapterErrorKind::Driver, error_msg))
@@ -392,7 +501,10 @@ impl MetadataResultSerialize for Vec<(String, AdapterResult<RelationSchemaPair>)
 }
 
 impl MetadataResultDeserialize for Vec<(String, AdapterResult<RelationSchemaPair>)> {
-    fn from_recording_json(_json: &serde_json::Value) -> Result<Self, String> {
+    fn from_recording_json(
+        _json: &serde_json::Value,
+        _adapter_type: AdapterType,
+    ) -> Result<Self, String> {
         // RelationSchemaPair contains a BaseRelation which cannot be reconstructed
         // without adapter context. For replay, this method should not be called
         // as list_relations_schemas_by_patterns is not commonly used.
@@ -419,7 +531,10 @@ impl MetadataResultSerialize for Vec<UDF> {
 }
 
 impl MetadataResultDeserialize for Vec<UDF> {
-    fn from_recording_json(json: &serde_json::Value) -> Result<Self, String> {
+    fn from_recording_json(
+        json: &serde_json::Value,
+        _adapter_type: AdapterType,
+    ) -> Result<Self, String> {
         use crate::metadata::UDFKind;
         use dbt_adapter_core::AdapterType;
 
@@ -491,7 +606,10 @@ impl MetadataResultSerialize for Vec<crate::metadata::ViewDefinition> {
 }
 
 impl MetadataResultDeserialize for Vec<crate::metadata::ViewDefinition> {
-    fn from_recording_json(json: &serde_json::Value) -> Result<Self, String> {
+    fn from_recording_json(
+        json: &serde_json::Value,
+        _adapter_type: AdapterType,
+    ) -> Result<Self, String> {
         let arr = json.as_array().ok_or("Expected array")?;
         let mut out = Vec::with_capacity(arr.len());
         for entry in arr {
@@ -544,16 +662,23 @@ impl MetadataResultSerialize for crate::metadata::ViewDefinitionFetchResult {
 }
 
 impl MetadataResultDeserialize for crate::metadata::ViewDefinitionFetchResult {
-    fn from_recording_json(json: &serde_json::Value) -> Result<Self, String> {
+    fn from_recording_json(
+        json: &serde_json::Value,
+        adapter_type: AdapterType,
+    ) -> Result<Self, String> {
         if json.is_array() {
             return Ok(Self {
-                definitions: <Vec<crate::metadata::ViewDefinition>>::from_recording_json(json)?,
+                definitions: <Vec<crate::metadata::ViewDefinition>>::from_recording_json(
+                    json,
+                    adapter_type,
+                )?,
                 ..Default::default()
             });
         }
 
         let definitions = json.get("definitions").ok_or("Missing 'definitions'")?;
-        let definitions = <Vec<crate::metadata::ViewDefinition>>::from_recording_json(definitions)?;
+        let definitions =
+            <Vec<crate::metadata::ViewDefinition>>::from_recording_json(definitions, adapter_type)?;
         let unresolvable = json
             .get("unresolvable")
             .map(|v| {
@@ -591,7 +716,10 @@ impl MetadataResultSerialize for Vec<(String, String, AdapterResult<()>)> {
 }
 
 impl MetadataResultDeserialize for Vec<(String, String, AdapterResult<()>)> {
-    fn from_recording_json(json: &serde_json::Value) -> Result<Self, String> {
+    fn from_recording_json(
+        json: &serde_json::Value,
+        _adapter_type: AdapterType,
+    ) -> Result<Self, String> {
         let arr = json.as_array().ok_or("Expected array")?;
         let mut result = Vec::new();
 
@@ -663,12 +791,73 @@ pub fn args_list_relations_in_parallel(
 }
 
 /// Create MetadataCallArgs for freshness.
-pub fn args_freshness(relations: impl IntoIterator<Item = impl AsRef<str>>) -> MetadataCallArgs {
+pub fn args_freshness(
+    relations: impl IntoIterator<Item = impl AsRef<str>>,
+    warehouse: Option<String>,
+) -> MetadataCallArgs {
     MetadataCallArgs::Freshness {
         relations: relations
             .into_iter()
             .map(|r| r.as_ref().to_string())
             .collect(),
+        warehouse,
+    }
+}
+
+/// Create MetadataCallArgs for relation-existence checks.
+pub fn args_relations_exist(
+    relations: impl IntoIterator<Item = impl AsRef<str>>,
+    warehouse: Option<String>,
+) -> MetadataCallArgs {
+    MetadataCallArgs::RelationsExist {
+        relations: relations
+            .into_iter()
+            .map(|r| r.as_ref().to_string())
+            .collect(),
+        warehouse,
+    }
+}
+
+/// Create MetadataCallArgs for freshness checks with source overrides.
+pub fn args_freshness_with_overrides(
+    relations: impl IntoIterator<Item = impl AsRef<str>>,
+    overrides: &BTreeMap<String, FreshnessOverride>,
+    warehouse: Option<String>,
+) -> MetadataCallArgs {
+    MetadataCallArgs::FreshnessWithOverrides {
+        relations: relations
+            .into_iter()
+            .map(|r| r.as_ref().to_string())
+            .collect(),
+        overrides: overrides
+            .iter()
+            .map(|(relation, override_)| {
+                let kind = match override_ {
+                    FreshnessOverride::Query(_) => "query",
+                    FreshnessOverride::Field { .. } => "field",
+                };
+                (relation.clone(), kind.to_string())
+            })
+            .collect(),
+        warehouse,
+    }
+}
+
+/// Create MetadataCallArgs for schema-wide freshness.
+pub fn args_freshness_all_in_schema(
+    database: impl Into<String>,
+    schema: impl Into<String>,
+    relations: impl IntoIterator<Item = impl AsRef<str>>,
+    warehouse: Option<String>,
+) -> MetadataCallArgs {
+    MetadataCallArgs::FreshnessAllInSchema {
+        database: database.into(),
+        schema: schema.into(),
+        relations: relations
+            .into_iter()
+            .map(|r| r.as_ref().to_string())
+            .collect(),
+        warehouse,
     }
 }
 
@@ -718,16 +907,24 @@ pub fn args_create_schemas_if_not_exists(
 
 #[cfg(test)]
 mod tests {
+    use super::super::{
+        EventReplayer, TIME_MACHINE_TEST_LOCK, get_or_init_recording, get_or_init_replayer,
+        reset_time_machine_globals,
+    };
     use super::*;
     use arrow_schema::{DataType, Field, TimeUnit};
+    use dbt_common::cancellation::CancellationToken;
+    use dbt_frontend_common::column_resolution::IdentifierCaseSensitivity;
+    use dbt_schemas::dbt_types::RelationType;
 
     #[test]
     fn test_schema_result_serialization() {
         let mut map = HashMap::new();
-        let schema = Arc::new(Schema::new(vec![
+        let schema = Schema::new(vec![
             Field::new("id", DataType::Int64, false),
             Field::new("name", DataType::Utf8, true),
-        ]));
+        ]);
+        let schema = Arc::new(IdentifierCaseSensitivity::CaseInsensitive.apply_to_schema(&schema));
         map.insert("test.schema.table".to_string(), Ok(schema));
         map.insert(
             "test.schema.error".to_string(),
@@ -743,6 +940,16 @@ mod tests {
         // Check successful entry has schema
         let table_result = &obj["test.schema.table"];
         assert!(table_result.get("ok").is_some());
+
+        let deserialized: HashMap<String, AdapterResult<Arc<Schema>>> =
+            HashMap::from_recording_json(&json, AdapterType::Snowflake)
+                .expect("schema recording should deserialize");
+        assert_eq!(
+            IdentifierCaseSensitivity::from_field(
+                deserialized["test.schema.table"].as_ref().unwrap().field(0)
+            ),
+            Some(IdentifierCaseSensitivity::CaseInsensitive)
+        );
 
         // Check error entry
         let error_result = &obj["test.schema.error"];
@@ -790,7 +997,8 @@ mod tests {
 
         // Deserialize back
         let deserialized: HashMap<String, AdapterResult<Arc<Schema>>> =
-            HashMap::from_recording_json(&json).expect("Failed to deserialize");
+            HashMap::from_recording_json(&json, AdapterType::Snowflake)
+                .expect("Failed to deserialize");
 
         // Verify roundtrip
         assert_eq!(map.len(), deserialized.len());
@@ -812,6 +1020,199 @@ mod tests {
                 orig.name()
             );
             assert_eq!(orig.is_nullable(), res.is_nullable(), "Nullable mismatch");
+        }
+    }
+
+    #[test]
+    fn list_relations_recording_round_trips_escaped_components() {
+        for adapter_type in [
+            AdapterType::Snowflake,
+            AdapterType::Databricks,
+            AdapterType::Bigquery,
+            AdapterType::ClickHouse,
+        ] {
+            for database in ["", "db\".`\\"] {
+                let schema = CatalogAndSchema {
+                    resolved_catalog: database.to_string(),
+                    resolved_schema: "sch\".`\\".to_string(),
+                    rendered_catalog: String::new(),
+                    rendered_schema: String::new(),
+                };
+                let relation = Arc::from(
+                    do_create_relation(
+                        adapter_type,
+                        database.to_string(),
+                        schema.resolved_schema.clone(),
+                        Some("a\"b`.`c\\".to_string()),
+                        None,
+                        ResolvedQuoting::trues(),
+                    )
+                    .unwrap(),
+                );
+                let original: BTreeMap<CatalogAndSchema, AdapterResult<RelationVec>> =
+                    BTreeMap::from([(schema.clone(), Ok(vec![relation]))]);
+                let json = original.to_recording_json();
+                let replayed =
+                    BTreeMap::<CatalogAndSchema, AdapterResult<RelationVec>>::from_recording_json(
+                        &json,
+                        adapter_type,
+                    )
+                    .unwrap();
+                let original = &original[&schema].as_ref().unwrap()[0];
+                let replayed = &replayed[&schema].as_ref().unwrap()[0];
+                assert_eq!(replayed.database(), original.database());
+                assert_eq!(replayed.schema(), original.schema());
+                assert_eq!(replayed.identifier(), original.identifier());
+                assert_eq!(replayed.semantic_fqn(), original.semantic_fqn());
+            }
+        }
+    }
+
+    #[test]
+    fn list_relations_in_parallel_recording_json_yields_relations() {
+        // Shape written by `to_recording_json`, as found in a recorded Databricks run.
+        let json = serde_json::json!([{
+            "resolved_catalog": "rioter_dbt",
+            "resolved_schema": "pr_schema",
+            "rendered_catalog": "`rioter_dbt`",
+            "rendered_schema": "`pr_schema`",
+            "result": { "ok": [
+                "`rioter_dbt`.`pr_schema`.`seed_table`",
+                "`rioter_dbt`.`pr_schema`.`other`",
+            ]},
+        }, {
+            "resolved_catalog": "rioter_dbt",
+            "resolved_schema": "empty_schema",
+            "rendered_catalog": "`rioter_dbt`",
+            "rendered_schema": "`empty_schema`",
+            "result": { "ok": [] },
+        }, {
+            "resolved_catalog": "rioter_dbt",
+            "resolved_schema": "denied_schema",
+            "rendered_catalog": "`rioter_dbt`",
+            "rendered_schema": "`denied_schema`",
+            "result": { "error": "permission denied" },
+        }]);
+
+        let listed = <BTreeMap<CatalogAndSchema, AdapterResult<RelationVec>>>::from_recording_json(
+            &json,
+            AdapterType::Databricks,
+        )
+        .expect("recording should deserialize");
+
+        let fqns_in = |schema: &str| -> Vec<String> {
+            let (_, relations) = listed
+                .iter()
+                .find(|(key, _)| key.resolved_schema == schema)
+                .unwrap();
+            relations
+                .as_ref()
+                .unwrap()
+                .iter()
+                .map(|r| r.semantic_fqn())
+                .collect()
+        };
+        assert_eq!(
+            fqns_in("pr_schema"),
+            [
+                "`rioter_dbt`.`pr_schema`.`seed_table`",
+                "`rioter_dbt`.`pr_schema`.`other`"
+            ]
+        );
+        assert!(fqns_in("empty_schema").is_empty());
+        assert!(
+            listed
+                .iter()
+                .find(|(key, _)| key.resolved_schema == "denied_schema")
+                .unwrap()
+                .1
+                .is_err()
+        );
+    }
+
+    #[dbt_runtime::test]
+    async fn list_relations_in_parallel_replays_recorded_relations() {
+        let _guard = TIME_MACHINE_TEST_LOCK.lock().await;
+        let schema = CatalogAndSchema {
+            rendered_catalog: "`cat`".to_string(),
+            rendered_schema: "`pr_schema`".to_string(),
+            resolved_catalog: "cat".to_string(),
+            resolved_schema: "pr_schema".to_string(),
+        };
+        let relation = |name: &str| {
+            do_create_relation(
+                AdapterType::Databricks,
+                "cat".to_string(),
+                "pr_schema".to_string(),
+                Some(name.to_string()),
+                Some(RelationType::Table),
+                ResolvedQuoting::default(),
+            )
+            .unwrap()
+        };
+        let args = || args_list_relations_in_parallel([("cat", "pr_schema")]);
+
+        reset_time_machine_globals().await.unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let handle = get_or_init_recording(
+            dir.path(),
+            "databricks",
+            "list-relations",
+            None,
+            CancellationToken::never_cancels(),
+        );
+        let seed: RelationVec = vec![Arc::from(relation("seed_table"))];
+        with_time_machine_metadata_wrapper("global", "list_relations_in_parallel", args(), async {
+            Ok(BTreeMap::from([(schema.clone(), Ok(seed))]))
+        })
+        .await
+        .unwrap();
+        handle.shutdown().await.unwrap();
+
+        // Replay against an empty live listing: the result can only come from the recording.
+        reset_time_machine_globals().await.unwrap();
+        get_or_init_replayer(|| Ok(Arc::new(EventReplayer::load(dir.path())?))).unwrap();
+        let replayed = with_time_machine_metadata_wrapper(
+            "global",
+            "list_relations_in_parallel",
+            args(),
+            async { Ok(BTreeMap::<CatalogAndSchema, AdapterResult<RelationVec>>::new()) },
+        )
+        .await
+        .unwrap();
+        reset_time_machine_globals().await.unwrap();
+
+        let replayed_fqns: Vec<String> = replayed[&schema]
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|r| r.semantic_fqn())
+            .collect();
+        assert_eq!(replayed_fqns, [relation("seed_table").semantic_fqn()]);
+    }
+
+    #[test]
+    fn relation_from_semantic_fqn_round_trips_parts() {
+        let relation = relation_from_semantic_fqn("`cat`.`sch`.`tbl`", AdapterType::Databricks)
+            .expect("3-part FQN parses");
+        assert_eq!(relation.database_as_resolved_str().unwrap(), "cat");
+        assert_eq!(relation.schema_as_resolved_str().unwrap(), "sch");
+        assert_eq!(relation.identifier_as_resolved_str().unwrap(), "tbl");
+        assert_eq!(relation.semantic_fqn(), "`cat`.`sch`.`tbl`");
+        assert_eq!(relation.relation_type(), None);
+
+        let relation = relation_from_semantic_fqn("\"DB\".\"SCH\".\"TBL\"", AdapterType::Snowflake)
+            .expect("snowflake FQN parses");
+        assert_eq!(relation.semantic_fqn(), "\"DB\".\"SCH\".\"TBL\"");
+    }
+
+    #[test]
+    fn relation_from_semantic_fqn_rejects_malformed_input() {
+        for fqn in ["cat.sch.tbl", "`tbl`", "`a`.`b`.`c`.`d`", ""] {
+            assert!(
+                relation_from_semantic_fqn(fqn, AdapterType::Databricks).is_err(),
+                "{fqn:?} should be rejected"
+            );
         }
     }
 
@@ -839,12 +1240,19 @@ mod tests {
 
     #[test]
     fn test_args_freshness() {
-        let args = args_freshness(["source.a.b", "source.c.d"]);
+        let args = args_freshness(
+            ["source.a.b", "source.c.d"],
+            Some("metadata_warehouse".to_string()),
+        );
 
         match args {
-            MetadataCallArgs::Freshness { relations } => {
+            MetadataCallArgs::Freshness {
+                relations,
+                warehouse,
+            } => {
                 assert_eq!(relations.len(), 2);
                 assert_eq!(relations[0], "source.a.b");
+                assert_eq!(warehouse, Some("metadata_warehouse".to_string()));
             }
             _ => panic!("Expected Freshness"),
         }
@@ -870,7 +1278,8 @@ mod tests {
             default_schema: "S".to_string(),
         }];
         let json = original.to_recording_json();
-        let restored = <Vec<ViewDefinition>>::from_recording_json(&json).expect("ok");
+        let restored =
+            <Vec<ViewDefinition>>::from_recording_json(&json, AdapterType::Snowflake).expect("ok");
         assert_eq!(restored.len(), 1);
         assert_eq!(restored[0].fqn, original[0].fqn);
         assert_eq!(restored[0].definition, original[0].definition);
@@ -894,7 +1303,9 @@ mod tests {
         };
 
         let json = original.to_recording_json();
-        let restored = ViewDefinitionFetchResult::from_recording_json(&json).expect("ok");
+        let restored =
+            ViewDefinitionFetchResult::from_recording_json(&json, AdapterType::Snowflake)
+                .expect("ok");
 
         assert_eq!(restored.definitions.len(), 1);
         assert_eq!(restored.definitions[0].fqn, original.definitions[0].fqn);

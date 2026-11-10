@@ -24,13 +24,14 @@ adbc-core = { workspace = true }
 arrow = { workspace = true }
 arrow-schema = { workspace = true }
 base64 = { workspace = true }
-dashmap = { workspace = true }
 dbt-adbc = { workspace = true }
+dbt-base = { workspace = true }
 dbt-fusion-workspace-hack = { version = "0.1" }
-once_cell = { workspace = true }
+dbt-test-primitives = { workspace = true }
 parquet = { workspace = true }
 regex = { workspace = true }
 rusqlite = { workspace = true }
+scc = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 

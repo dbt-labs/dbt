@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::{ErrorCode, collections::HashMap};
 use dbt_yaml::{Value, Verbatim};
 use serde::{Deserialize, Serialize, Serializer};
-use strum::{AsRefStr, EnumMessage};
+use strum::{AsRefStr, EnumMessage, IntoEnumIterator};
 
 mod legacy;
 
@@ -25,7 +25,7 @@ pub enum LegacyWarnErrorGroupValue {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum FusionWarnErrorGroupValue {
     StaticAnalysis,
-    PackageParsingCompatibilityErrors,
+    PackageParsingCompatibility,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize)]
@@ -170,7 +170,7 @@ impl WarnErrorOptions {
                 ) => {}
                 WarnErrorOptionValue::FusionGroup(
                     FusionWarnErrorGroupValue::StaticAnalysis
-                    | FusionWarnErrorGroupValue::PackageParsingCompatibilityErrors,
+                    | FusionWarnErrorGroupValue::PackageParsingCompatibility,
                 ) => {}
                 WarnErrorOptionValue::SupportedLegacy(_) => {}
                 WarnErrorOptionValue::NotYetSupportedLegacy(legacy) => {
@@ -198,7 +198,7 @@ impl WarnErrorOptions {
             .into_iter()
             .map(|(name, reason)| {
                 format!(
-                    "warn_error_options value `{name}` will not be supported in Fusion: {reason} Please remove from cli argument or config."
+                    "warn_error_options value `{name}` will not be supported in dbt v2: {reason} Please remove from cli argument or config."
                 )
             })
             .collect::<Vec<_>>();
@@ -208,7 +208,7 @@ impl WarnErrorOptions {
         if let Some(warn_line) = match not_yet_supported.len() {
             0 => None,
             1 => Some(format!(
-                "warn_error_options value `{}` is recognized, but Fusion does not support it yet.",
+                "warn_error_options value `{}` is recognized, but dbt v2 does not support it yet.",
                 not_yet_supported.iter().next().unwrap()
             )),
             len if len <= MAX_CODES_IN_MSG => {
@@ -218,7 +218,7 @@ impl WarnErrorOptions {
                     .collect::<Vec<_>>()
                     .join(", ");
                 Some(format!(
-                    "warn_error_options values {values} are recognized, but Fusion does not support them yet."
+                    "warn_error_options values {values} are recognized, but dbt v2 does not support them yet."
                 ))
             }
             // Too many, show at most MAX_CODES_IN_MSG and N others
@@ -230,7 +230,7 @@ impl WarnErrorOptions {
                     .collect::<Vec<_>>()
                     .join(", ");
                 Some(format!(
-                    "warn_error_options values {values} and {} others are recognized, but Fusion does not support them yet.",
+                    "warn_error_options values {values} and {} others are recognized, but dbt v2 does not support them yet.",
                     len - MAX_CODES_IN_MSG
                 ))
             }
@@ -240,11 +240,11 @@ impl WarnErrorOptions {
 
         let mut error_lines = Vec::new();
 
-        // Parsed numbers that are not valid Fusion error codes use a dedicated error message
+        // Parsed numbers that are not valid dbt v2 error codes use a dedicated error message
         if let Some(error_line) = match invalid_fusion_codes.len() {
             0 => None,
             1 => Some(format!(
-                "warn_error_options value `{}` is not a known Fusion error code.",
+                "warn_error_options value `{}` is not a known dbt v2 error code.",
                 invalid_fusion_codes.iter().next().unwrap()
             )),
             len if len <= MAX_CODES_IN_MSG => {
@@ -254,7 +254,7 @@ impl WarnErrorOptions {
                     .collect::<Vec<_>>()
                     .join(", ");
                 Some(format!(
-                    "warn_error_options values {values} are not known Fusion error codes."
+                    "warn_error_options values {values} are not known dbt v2 error codes."
                 ))
             }
             // Too many, show at most MAX_CODES_IN_MSG and N others
@@ -266,7 +266,7 @@ impl WarnErrorOptions {
                     .collect::<Vec<_>>()
                     .join(", ");
                 Some(format!(
-                    "warn_error_options values {values} and {} others are not known Fusion error codes.",
+                    "warn_error_options values {values} and {} others are not known dbt v2 error codes.",
                     len - MAX_CODES_IN_MSG
                 ))
             }
@@ -278,7 +278,7 @@ impl WarnErrorOptions {
         if let Some(error_line) = match invalid_raw_values.len() {
             0 => None,
             1 => Some(format!(
-                "warn_error_options value `{}` is invalid because it is not a known Fusion error name, dbt-core event name, or supported warn-error group.",
+                "warn_error_options value `{}` is invalid because it is not a known dbt v2 error name, dbt-core event name, or supported warn-error group.",
                 invalid_raw_values.iter().next().unwrap()
             )),
             len if len <= MAX_CODES_IN_MSG => {
@@ -288,7 +288,7 @@ impl WarnErrorOptions {
                     .collect::<Vec<_>>()
                     .join(", ");
                 Some(format!(
-                    "warn_error_options values {values} are invalid because they are not known Fusion error names, dbt-core event names, or supported warn-error groups."
+                    "warn_error_options values {values} are invalid because they are not known dbt v2 error names, dbt-core event names, or supported warn-error groups."
                 ))
             }
             // Too many, show at most MAX_CODES_IN_MSG and N others
@@ -300,7 +300,7 @@ impl WarnErrorOptions {
                     .collect::<Vec<_>>()
                     .join(", ");
                 Some(format!(
-                    "warn_error_options values {values} and {} others are invalid because they are not known Fusion error names, dbt-core event names, or supported warn-error groups.",
+                    "warn_error_options values {values} and {} others are invalid because they are not known dbt v2 error names, dbt-core event names, or supported warn-error groups.",
                     len - MAX_CODES_IN_MSG
                 ))
             }
@@ -476,7 +476,7 @@ fn parse_warn_error_option_value(value: &Value) -> Option<WarnErrorOptionValue> 
 
     if raw == "PackageParsingCompatibility" {
         return Some(WarnErrorOptionValue::FusionGroup(
-            FusionWarnErrorGroupValue::PackageParsingCompatibilityErrors,
+            FusionWarnErrorGroupValue::PackageParsingCompatibility,
         ));
     }
 
@@ -528,10 +528,7 @@ impl WarnErrorOptions {
         let matches = |value: &WarnErrorOptionValue| match value {
             WarnErrorOptionValue::LegacyGroup(LegacyWarnErrorGroupValue::All) => MatchType::All,
             WarnErrorOptionValue::LegacyGroup(LegacyWarnErrorGroupValue::Deprecations)
-                if matches!(
-                    error_code,
-                    ErrorCode::PackageRedirectDeprecation | ErrorCode::WEOIncludeExcludeDeprecation
-                ) =>
+                if matches_deprecations_group(error_code) =>
             {
                 MatchType::Group
             }
@@ -541,7 +538,7 @@ impl WarnErrorOptions {
                 MatchType::Group
             }
             WarnErrorOptionValue::FusionGroup(
-                FusionWarnErrorGroupValue::PackageParsingCompatibilityErrors,
+                FusionWarnErrorGroupValue::PackageParsingCompatibility,
             ) if Self::matches_package_parsing_compatibility(error_code, error_ctx) => {
                 MatchType::Group
             }
@@ -554,6 +551,13 @@ impl WarnErrorOptions {
                 MatchType::NamedEvent
             }
             _ => MatchType::NotMatched,
+        };
+
+        // Keep the canary warning-only unless the code is selected explicitly.
+        let implicit_warn_match = if error_code == ErrorCode::DeprecatedConfigKey {
+            MatchType::Group
+        } else {
+            MatchType::NotMatched
         };
 
         let max_matches_and_verdict = [
@@ -570,7 +574,8 @@ impl WarnErrorOptions {
                     .iter()
                     .map(matches)
                     .max()
-                    .unwrap_or(MatchType::NotMatched),
+                    .unwrap_or(MatchType::NotMatched)
+                    .max(implicit_warn_match),
                 WarnErrorDecision::Retain,
             ),
             (
@@ -638,6 +643,25 @@ impl WarnErrorOptions {
             _ => WarnErrorDecision::Retain,
         }
     }
+}
+
+fn matches_deprecations_group(error_code: ErrorCode) -> bool {
+    matches!(
+        error_code,
+        ErrorCode::PackageRedirectDeprecation
+            | ErrorCode::WEOIncludeExcludeDeprecation
+            | ErrorCode::MalformedBlockName
+    )
+}
+
+/// Returns true if no dbt-core warning maps to this error code.
+///
+/// Derived from the legacy mapping rather than a hand-kept list, so a newly
+/// added code counts as Fusion-only until it is wired to a dbt-core event.
+pub fn is_fusion_only_warning(error_code: ErrorCode) -> bool {
+    !matches_deprecations_group(error_code)
+        && !SupportedLegacyWarnError::iter()
+            .any(|legacy| matches_legacy_error_code(legacy, error_code))
 }
 
 fn matches_legacy_error_code(legacy: SupportedLegacyWarnError, error_code: ErrorCode) -> bool {
@@ -723,6 +747,109 @@ mod tests {
     use crate::ErrorCode;
 
     #[test]
+    fn config_spelling_round_trips_through_serde() {
+        let spellings = [
+            "PackageParsingCompatibility",
+            "StaticAnalysis",
+            "Deprecations",
+            "all",
+            "NoNodesForSelectionCriteria",
+        ];
+        let yaml = format!("{{error: [{}]}}", spellings.join(", "));
+        let parsed = WarnErrorOptions::from_yaml_value(&dbt_yaml::from_str(&yaml).unwrap());
+        let json = serde_json::to_value(&parsed).unwrap();
+        assert_eq!(json["error"], serde_json::json!(spellings));
+    }
+
+    /// Guards the derivation in [`is_fusion_only_warning`]: every legacy warning
+    /// wired to an error code must count as having a dbt-core counterpart.
+    #[test]
+    fn mapped_legacy_warnings_are_not_fusion_only() {
+        for legacy in SupportedLegacyWarnError::iter() {
+            for code in [
+                ErrorCode::JinjaWarn,
+                ErrorCode::NoNodesSelected,
+                ErrorCode::DeprecatedModel,
+                ErrorCode::PackageRedirectDeprecation,
+                ErrorCode::UnusedResourceConfigPath,
+                ErrorCode::ConstraintNotSupported,
+            ] {
+                if matches_legacy_error_code(legacy, code) {
+                    assert!(
+                        !is_fusion_only_warning(code),
+                        "{code:?} maps to legacy warning {legacy:?} and must not be Fusion-only"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn deprecations_group_codes_are_not_fusion_only() {
+        for code in [
+            ErrorCode::PackageRedirectDeprecation,
+            ErrorCode::WEOIncludeExcludeDeprecation,
+            ErrorCode::MalformedBlockName,
+        ] {
+            assert!(
+                !is_fusion_only_warning(code),
+                "{code:?} is a dbt-core deprecation"
+            );
+        }
+    }
+
+    #[test]
+    fn codes_without_a_legacy_mapping_are_fusion_only() {
+        for code in [
+            ErrorCode::PackageParsingCompatibility,
+            ErrorCode::UnusedConfigKey,
+        ] {
+            assert!(
+                is_fusion_only_warning(code),
+                "{code:?} has no dbt-core counterpart"
+            );
+        }
+    }
+
+    #[test]
+    fn deprecated_config_key_canary_is_not_escalated_by_warn_error() {
+        assert!(
+            is_fusion_only_warning(ErrorCode::DeprecatedConfigKey),
+            "DeprecatedConfigKey must stay Fusion-only while it is a canary"
+        );
+
+        let mut blanket_warn_error = WarnErrorOptions::default();
+        blanket_warn_error.add_all_to_error();
+        assert_eq!(
+            blanket_warn_error.decision_for_error_code(ErrorCode::DeprecatedConfigKey),
+            WarnErrorDecision::Retain,
+            "blanket --warn-error must not turn the canary into an error"
+        );
+
+        let silenced_by_name = WarnErrorOptions {
+            silence: vec![WarnErrorOptionValue::FusionCode(
+                ErrorCode::DeprecatedConfigKey as u16,
+            )],
+            ..Default::default()
+        };
+        assert_eq!(
+            silenced_by_name.decision_for_error_code(ErrorCode::DeprecatedConfigKey),
+            WarnErrorDecision::Silence,
+        );
+
+        let escalated_by_name = WarnErrorOptions {
+            error: vec![WarnErrorOptionValue::FusionCode(
+                ErrorCode::DeprecatedConfigKey as u16,
+            )],
+            ..Default::default()
+        };
+        assert_eq!(
+            escalated_by_name.decision_for_error_code(ErrorCode::DeprecatedConfigKey),
+            WarnErrorDecision::UpgradeToError,
+        );
+    }
+
+    #[test]
     fn error_decision_honors_precedence() {
         let options = WarnErrorOptions {
             error: vec![
@@ -779,6 +906,22 @@ mod tests {
             deprecations_options.decision_for_error_code(ErrorCode::WEOIncludeExcludeDeprecation),
             WarnErrorDecision::Silence,
             "Named event silence should beat Deprecations warn and All error"
+        );
+    }
+
+    #[test]
+    fn malformed_block_name_is_a_deprecation() {
+        let options = WarnErrorOptions {
+            error: vec![WarnErrorOptionValue::LegacyGroup(
+                LegacyWarnErrorGroupValue::Deprecations,
+            )],
+            ..Default::default()
+        };
+
+        assert_eq!(
+            options.decision_for_error_code(ErrorCode::MalformedBlockName),
+            WarnErrorDecision::UpgradeToError,
+            "MalformedBlockName should be escalated by the Deprecations group"
         );
     }
 
@@ -1050,7 +1193,7 @@ mod tests {
         assert_eq!(
             parsed.silence,
             vec![WarnErrorOptionValue::FusionGroup(
-                FusionWarnErrorGroupValue::PackageParsingCompatibilityErrors,
+                FusionWarnErrorGroupValue::PackageParsingCompatibility,
             )],
         );
         assert_eq!(

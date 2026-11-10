@@ -1,0 +1,56 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/instance.sql
+{'name': 'str_col', 'dtype': 'STRING', 'char_size': 10, 'column': 'str_col', 'quoted': '`str_col`', 'numeric_precision': None, 'numeric_scale': None, 'fields': (), 'mode': 'NULLABLE'}
+string_size   10
+is_string     True
+is_numeric    False
+is_float      False
+is_number     False
+is_integer    False
+can_expand_to True
+{'name': 'int_col', 'dtype': 'NUMERIC', 'char_size': None, 'column': 'int_col', 'quoted': '`int_col`', 'numeric_precision': 10, 'numeric_scale': 10, 'fields': (), 'mode': 'NULLABLE'}
+is_string     False
+is_numeric    True
+is_float      False
+is_number     True
+is_integer    False
+   Parsing models/static.sql
+timestamp
+string
+STRING
+FLOAT64
+long
+INT64
+numeric
+STRING(600)
+{'name': 'col', 'dtype': 'varchar', 'char_size': 256, 'column': 'col', 'quoted': '`col`', 'numeric_precision': None, 'numeric_scale': None, 'fields': (), 'mode': 'NULLABLE'}
+ Rendering models/static.sql
+timestamp
+string
+STRING
+FLOAT64
+long
+INT64
+numeric
+STRING(600)
+{'name': 'col', 'dtype': 'varchar', 'char_size': 256, 'column': 'col', 'quoted': '`col`', 'numeric_precision': None, 'numeric_scale': None, 'fields': (), 'mode': 'NULLABLE'}
+ Rendering models/instance.sql
+{'name': 'str_col', 'dtype': 'STRING', 'char_size': 10, 'column': 'str_col', 'quoted': '`str_col`', 'numeric_precision': None, 'numeric_scale': None, 'fields': (), 'mode': 'NULLABLE'}
+string_size   10
+is_string     True
+is_numeric    False
+is_float      False
+is_number     False
+is_integer    False
+can_expand_to True
+{'name': 'int_col', 'dtype': 'NUMERIC', 'char_size': None, 'column': 'int_col', 'quoted': '`int_col`', 'numeric_precision': 10, 'numeric_scale': 10, 'fields': (), 'mode': 'NULLABLE'}
+is_string     False
+is_numeric    True
+is_float      False
+is_number     True
+is_integer    False
+==================== Execution Summary =====================
+Finished 'compile' successfully for target 'bigquery' [duration]
+Processed: 2 models
+Summary: 2 total | 2 success

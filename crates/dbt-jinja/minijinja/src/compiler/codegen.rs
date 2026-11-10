@@ -1,5 +1,4 @@
 use std::collections::BTreeMap;
-use std::path::Path;
 use std::sync::Arc;
 
 use crate::compiler::ast::{self, Expr};
@@ -714,39 +713,52 @@ impl<'source> CodeGenerator<'source> {
                         typecheck_resolved_context,
                     ) => {
                         let mut attempts = Vec::new();
-                        if let Some(macro_qualified_name) = macro_namespace_template_resolver(
+                        let resolved_signature = macro_namespace_template_resolver(
                             typecheck_resolved_context,
                             function_registry.clone(),
                             macro_decl.name,
                             &mut attempts,
-                        ) {
-                            if let Some(signature) = function_registry.get(&macro_qualified_name) {
-                                if let Some(udf) =
-                                    signature.downcast_ref::<UserDefinedFunctionType>()
-                                {
-                                    if let Some(arg) = udf.args.get(i) {
-                                        let type_ = arg.type_.get_non_optional_type();
-                                        // the parameter has default value, so we need to exclude the none from arg type and check with the default
-                                        self.add(Instruction::LoadType(Value::from_object(type_)));
-                                        self.compile_expr(default)?;
-                                        self.add(Instruction::UnionType);
-                                    } else {
-                                        self.add(Instruction::LoadType(Value::from_object(
-                                            Type::Any { hard: false },
-                                        )));
-                                        self.compile_expr(default)?;
-                                        self.add(Instruction::UnionType);
-                                    }
-                                } else {
-                                    self.add(Instruction::LoadType(Value::from_object(
-                                        Type::Any { hard: false },
-                                    )));
-                                }
-                            } else {
-                                panic!(
-                                    "Function signature not found for macro {}",
-                                    macro_decl.name
-                                );
+                        )
+                        .and_then(|macro_qualified_name| {
+                            function_registry.get(&macro_qualified_name).cloned()
+                        });
+                        match resolved_signature.as_ref().and_then(|signature| {
+                            signature.downcast_ref::<UserDefinedFunctionType>()
+                        }) {
+                            Some(udf) => {
+                                let type_ = udf
+                                    .args
+                                    .get(i)
+                                    .map(|arg| arg.type_.get_non_optional_type())
+                                    .unwrap_or(Type::Any { hard: false });
+                                // the parameter has default value, so we need to exclude the none from arg type and check with the default
+                                self.add(Instruction::LoadType(Value::from_object(type_)));
+                                self.compile_expr(default)?;
+                                self.add(Instruction::UnionType);
+                            }
+                            None => {
+                                // No statically-known signature for this macro
+                                // (e.g. it has no docstring `funcsign` -- the
+                                // common case for most macros -- or, until
+                                // recently, `macro_namespace_template_resolver`
+                                // couldn't resolve a package macro's own
+                                // qualified name at all when typechecking it in
+                                // isolation without a `target_package_name`).
+                                // Fall back to `Any` for the declared type, but
+                                // still compile the default expression and
+                                // union it in -- omitting either one leaves
+                                // this argument's assignment with nothing to
+                                // pop off the stack (a stack underflow once
+                                // typechecking reaches it), and skipping
+                                // `compile_expr(default)` would also silently
+                                // stop the type checker from ever visiting
+                                // calls made inside the default expression
+                                // itself.
+                                self.add(Instruction::LoadType(Value::from_object(Type::Any {
+                                    hard: false,
+                                })));
+                                self.compile_expr(default)?;
+                                self.add(Instruction::UnionType);
                             }
                         }
                     }
@@ -792,7 +804,10 @@ impl<'source> CodeGenerator<'source> {
         for node in &macro_decl.body {
             self.compile_stmt(node)?;
         }
-        self.add(Instruction::Return { explicit: false });
+        self.add(Instruction::Return {
+            explicit: false,
+            arg_count: None,
+        });
         let mut undeclared = crate::compiler::meta::find_macro_closure(macro_decl);
         let caller_reference = undeclared.remove("caller");
         let macro_instr = self.next_instruction();
@@ -865,14 +880,10 @@ impl<'source> CodeGenerator<'source> {
             if let ast::CallType::Function(name) = call.identify_call() {
                 if name == "return" {
                     let arg_count = self.compile_call_args(&call.args, 0, None, do_tag.span())?;
-                    if arg_count != Some(1) {
-                        return Err(crate::Error::new(
-                            crate::error::ErrorKind::InvalidOperation,
-                            "Incorrect return argument count",
-                        )
-                        .with_span(Path::new(self.instructions.name()), &do_tag.span()));
-                    }
-                    self.add(Instruction::Return { explicit: true });
+                    self.add(Instruction::Return {
+                        explicit: true,
+                        arg_count: Some(arg_count),
+                    });
                     return Ok(());
                 }
             }
@@ -981,20 +992,16 @@ impl<'source> CodeGenerator<'source> {
                 ast::CallType::Function(name) => {
                     if name == "return" {
                         let arg_count = self.compile_call_args(&call.args, 0, None, span)?;
-                        if arg_count != Some(1) {
-                            return Err(crate::Error::new(
-                                crate::error::ErrorKind::InvalidOperation,
-                                "Incorrect return argument count",
-                            )
-                            .with_span(Path::new(self.instructions.name()), &span));
-                        }
                         self.add(Instruction::MacroStop(
                             span.end_line,
                             span.end_col,
                             span.end_offset,
                         ));
 
-                        self.add(Instruction::Return { explicit: true });
+                        self.add(Instruction::Return {
+                            explicit: true,
+                            arg_count: Some(arg_count),
+                        });
                         return Ok(());
                     } else if name == "super" && call.args.is_empty() {
                         self.add_with_span(Instruction::FastSuper(call.span()), call.span());
@@ -1368,11 +1375,22 @@ impl<'source> CodeGenerator<'source> {
                     Some(identifier_span) => identifier_span,
                     _ => span, // fallback to span
                 };
+                // Remember the receiver's name for plain variable receivers, so that
+                // calling a method on an undefined receiver can report which variable
+                // was undefined rather than just the method name. Only `Var` is
+                // captured: it is the common case and the only receiver whose written
+                // form is a single identifier, so there is no risk of naming a
+                // sub-expression the author did not write.
+                let receiver_name = match expr {
+                    ast::Expr::Var(var) => Some(var.id),
+                    _ => None,
+                };
                 self.add(Instruction::CallMethod(
                     name,
                     arg_count,
                     identifier_span.into(),
                     span.into(),
+                    receiver_name,
                 ));
             }
             ast::CallType::Object(expr) => {

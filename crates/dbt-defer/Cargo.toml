@@ -24,6 +24,7 @@ dbt-scheduler = { workspace = true }
 dbt-schema-store = { workspace = true }
 dbt-schemas = { workspace = true }
 dbt-state = { workspace = true }
+dbt-tasks-core = { workspace = true }
 dbt-telemetry = { workspace = true }
 tracing = { workspace = true }
 

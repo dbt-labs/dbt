@@ -3,12 +3,16 @@ use std::sync::Arc;
 
 use dbt_adapter::Adapter;
 use dbt_adapter::engine::SidecarClient;
-use dbt_common::FsResult;
 use dbt_common::cancellation::CancellationToken;
 use dbt_common::io_args::{EvalArgs, StaticAnalysisKind};
+use dbt_common::pretty_string::CYAN;
+use dbt_common::static_analysis::is_strict_static_analysis;
+use dbt_common::tracing::dbt_emit::emit_warn_log_message;
+use dbt_common::{ErrorCode, FsResult};
 use dbt_compilation::config::CompilationConfig;
 use dbt_compilation::schema_hydration::{
-    SchemaHydrationState, SchemaHydrator, SchemaHydratorFactory,
+    SchemaHydrationScope, SchemaHydrationState, SchemaHydrator, SchemaHydratorFactory,
+    hydrate_selected_get_relations, should_hydrate_schemas,
 };
 use dbt_dag::schedule::Schedule;
 use dbt_defer::DeferState;
@@ -135,10 +139,22 @@ impl SchemaHydrator for DefaultSchemaHydrator {
         arg: &EvalArgs,
         schedule: &Schedule<String>,
         resolved_state: &mut ResolverState,
-        _schema_hydration_state: &mut SchemaHydrationState,
+        schema_hydration_state: &mut SchemaHydrationState,
         defer_state: &mut DeferState,
         token: CancellationToken,
     ) -> FsResult<Box<dyn StaticAnalysisBuckets>> {
+        if arg.static_analysis.is_some_and(is_strict_static_analysis) {
+            emit_warn_log_message(
+                ErrorCode::Generic,
+                format!(
+                    "static analysis was requested with `--static-analysis strict` but did not run: \
+                     this distribution of dbt OSS does not include the static analysis engine. \
+                     Install the full dbt distribution to enable it: {}",
+                    CYAN.apply_to("dbt system upgrade-distribution")
+                ),
+            );
+        }
+
         if let Some(defer_nodes) = defer_state.defer_nodes.as_mut() {
             let relation_remap = dbt_defer::defer_sa_upstreams(
                 arg,
@@ -154,6 +170,18 @@ impl SchemaHydrator for DefaultSchemaHydrator {
                 resolved_state,
                 &relation_remap,
             );
+        }
+
+        if should_hydrate_schemas(arg) {
+            hydrate_selected_get_relations(
+                &self.adapter,
+                schedule,
+                resolved_state,
+                schema_hydration_state,
+                SchemaHydrationScope::Full,
+                arg.infer_schemas_and_typeless,
+            )
+            .await;
         }
 
         Ok(Box::new(DefaultStaticAnalysisBuckets::new(

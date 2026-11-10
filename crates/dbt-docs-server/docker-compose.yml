@@ -6,13 +6,20 @@
 # this file's dir.
 #
 #   DBT_TARGET_PATH=/abs/path/to/project/target docker compose up --build
+#
+# The image tracks the newest dbt release carrying a Linux binary. Pin one with
+# DBT_VERSION=2.0.0-beta.2 (and see the note in the Dockerfile about build
+# caching: `--build-arg`/`--no-cache` is what re-resolves `latest`).
 
 services:
   dbt-docs-server:
     build:
-      # Installs the released dbt binary; copies no source, so context is minimal.
+      # Downloads the released dbt binary; COPYs no source, so the context is
+      # empty (see .dockerignore).
       context: .
       dockerfile: Dockerfile
+      args:
+        DBT_VERSION: ${DBT_VERSION:-latest}
     image: dbt-docs-server
     ports:
       - "${DBT_DOCS_PORT:-8580}:8580"
@@ -27,6 +34,7 @@ services:
       DBT_DOCS_PORT: "8580"
       DBT_DOCS_TARGET_PATH: "/data/target"
     restart: unless-stopped
+    # The image ships a HEALTHCHECK (HEAD /), inherited here.
 
 volumes:
   dbt-adbc-cache:

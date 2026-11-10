@@ -85,8 +85,7 @@ impl PackageResolver for GitUnpinnedPackage {
         .await?;
         self.revisions = vec![commit_sha.clone()];
         let dbt_project =
-            read_and_validate_dbt_project(ctx.io, &checkout_path, true, ctx.jinja_env, ctx.vars)
-                .await?;
+            read_and_validate_dbt_project(&checkout_path, true, ctx.jinja_env, ctx.vars).await?;
         self.name = Some(dbt_project.name.clone());
         let mut transitive_deps = Vec::new();
         if let Some(dbt_packages) = load_dbt_packages(&checkout_path).await?.0 {
@@ -154,8 +153,7 @@ impl PackageResolver for PrivateUnpinnedPackage {
         .await?;
         self.revisions = vec![commit_sha.clone()];
         let dbt_project =
-            read_and_validate_dbt_project(ctx.io, &checkout_path, true, ctx.jinja_env, ctx.vars)
-                .await?;
+            read_and_validate_dbt_project(&checkout_path, true, ctx.jinja_env, ctx.vars).await?;
         self.name = Some(dbt_project.name.clone());
         let mut transitive_deps = Vec::new();
         if let Some(dbt_packages) = load_dbt_packages(&checkout_path).await?.0 {
@@ -192,11 +190,10 @@ impl PackageResolver for TarballUnpinnedPackage {
 
         let checkout_path = ctx
             .tarball_client
-            .download_and_extract_tarball(&self.tarball, &download_dir, true, None, &[])
+            .download_and_extract_tarball(&self.tarball, &download_dir, true, None, &[], None)
             .await?;
         let dbt_project =
-            read_and_validate_dbt_project(ctx.io, &checkout_path, true, ctx.jinja_env, ctx.vars)
-                .await?;
+            read_and_validate_dbt_project(&checkout_path, true, ctx.jinja_env, ctx.vars).await?;
         self.name = Some(dbt_project.name.clone());
         let mut transitive_deps = Vec::new();
         if let Some(dbt_packages) = load_dbt_packages(&checkout_path).await?.0 {

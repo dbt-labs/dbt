@@ -27,15 +27,6 @@ impl RunCloneTask {
 }
 
 impl Task for RunCloneTask {
-    // Cloneable implementations use TaskOp::BlockingWithConnection internally,
-    // so avoid taking the default outer backpressure guard as well.
-    fn run_task_with_backpressure<'a>(
-        &'a self,
-        ctx: &'a mut TaskRunnerCtx,
-    ) -> Pin<Box<dyn Future<Output = FsResult<NodeStatus>> + Send + 'a>> {
-        self.run_task(ctx)
-    }
-
     fn run_task<'a>(
         &'a self,
         ctx: &'a mut TaskRunnerCtx,
@@ -124,7 +115,7 @@ pub trait Cloneable: InternalDbtNodeAttributes {
                 Ok(status) => status,
                 Err(e) => {
                     // Insert error stats so it appears in run_results.json
-                    ctx.inner.run_stats.insert(
+                    ctx.inner.run_stats.upsert_sync(
                         unique_id.to_string(),
                         Stat::new(
                             unique_id.to_string(),
@@ -139,7 +130,7 @@ pub trait Cloneable: InternalDbtNodeAttributes {
                 }
             };
 
-            ctx.inner.run_stats.insert(
+            ctx.inner.run_stats.upsert_sync(
                 unique_id.to_string(),
                 Stat::new(
                     unique_id.to_string(),

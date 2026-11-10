@@ -1,0 +1,28 @@
+# Scenario: iceberg_rest catalog exercising every option accepted by the
+# official duckdb-iceberg 1.5.3 extension.
+# Exercises: SECRET, ENDPOINT, DEFAULT_SCHEMA, MAX_TABLE_STALENESS,
+# AUTHORIZATION_TYPE, ACCESS_DELEGATION_MODE, SUPPORT_NESTED_NAMESPACES,
+# PURGE_REQUESTED, READ_ONLY (user override of the read-write default),
+# ENCODE_ENTIRE_PREFIX.
+# NOTE: region for IcebergRest comes from the S3 secret on 1.5.3 (not a
+# DEFAULT_REGION attach option). Write-compat options (stage_create_tables,
+# disable_multi_table_commit, skip_create_table_metadata_updates,
+# remove_files_on_delete) only exist in duckdb-iceberg #1017 and are gated out.
+catalogs:
+  - name: rest_full
+    type: iceberg_rest
+    table_format: iceberg
+    config:
+      duckdb:
+        endpoint: "https://rest.example.com"
+        warehouse: "warehouse_name"
+        secret: "iceberg_secret"
+        catalog_database: "iceberg_db"
+        default_schema: "demo"
+        max_table_staleness: "10 minutes"
+        authorization_type: "OAUTH2"
+        access_delegation_mode: "VENDED_CREDENTIALS"
+        support_nested_namespaces: false
+        purge_requested: false
+        read_only: true
+        encode_entire_prefix: true

@@ -1,13 +1,14 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use chrono::Utc;
+use dbt_adapter::response::AdapterResponse;
 use dbt_common::ErrorCode;
 use dbt_common::io_args::EvalArgs;
 use dbt_common::tracing::dbt_emit::emit_warn_log_message;
 use dbt_schemas::schemas::RunResultOutput;
 use dbt_schemas::schemas::manifest::{DbtManifest, DbtNode};
 use dbt_schemas::stats::Stats;
-use dbt_tasks_core::stat_to_result;
+use dbt_tasks_core::generate_run_results;
 
 /// Minimal context captured before `SystemArgs` is moved into the async runtime.
 /// Passed back to `run_cli` so it can write the invocation record unconditionally at exit,
@@ -94,25 +95,42 @@ impl InvocationContext {
     }
 }
 
+/// Returns free heap memory to the OS.
+///
+/// glibc keeps freed memory resident, so the process keeps the footprint of a
+/// finished phase. Call this after a phase drops its working state and before
+/// the next phase allocates.
+pub(crate) fn release_free_heap_memory() {
+    // SAFETY: `malloc_trim` only releases memory that no allocation uses.
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    unsafe {
+        libc::malloc_trim(0);
+    }
+}
+
 /// Write runtime result rows to the metadata/runtime/results parquet directory.
 /// Called alongside `write_run_results_json` at end of run/test/build.
-pub(crate) fn write_runtime_results_parquet(stats: &Stats, arg: &EvalArgs) {
+pub(crate) fn write_runtime_results_parquet(
+    stats: &Stats,
+    adapter_responses: &HashMap<String, AdapterResponse>,
+    arg: &EvalArgs,
+) {
     use dbt_metadata_parquet::runtime_results::{RuntimeResultRow, write_runtime_results};
 
     let results_dir = arg.metadata_dir().join("run").join("results");
 
     let ingested_at: i64 = Utc::now().timestamp_micros();
 
-    let nodes = match stats.nodes.as_ref() {
-        Some(n) => n,
-        None => return,
-    };
+    if stats.nodes.is_none() {
+        return;
+    }
 
     let rows: Vec<RuntimeResultRow> = stats
         .stats
         .iter()
         .map(|stat| {
-            let result: RunResultOutput = stat_to_result(stat, nodes).into();
+            let result: RunResultOutput =
+                generate_run_results(stat, stats, adapter_responses).into();
             RuntimeResultRow {
                 invocation_id: arg.io.invocation_id.to_string(),
                 unique_id: result.unique_id.clone(),
@@ -208,42 +226,36 @@ pub(crate) async fn write_catalog_stats_parquet(
 pub(crate) fn update_manifest_with_macro_depends_on(
     dbt_manifest: &mut DbtManifest,
     macro_depends_on: &BTreeMap<String, BTreeSet<String>>,
+    resolved_state: &dbt_schemas::state::ResolverState,
 ) {
     if macro_depends_on.is_empty() {
         return;
     }
 
     for (unique_id, node) in dbt_manifest.nodes.iter_mut() {
-        if let DbtNode::Model(model_node) = node
-            && let Some(macros) = macro_depends_on.get(unique_id)
+        let Some(macros) = macro_depends_on.get(unique_id) else {
+            continue;
+        };
+        let base = match node {
+            DbtNode::Model(node) => &mut node.__base_attr__,
+            DbtNode::Test(node) => &mut node.__base_attr__,
+            DbtNode::Snapshot(node) => &mut node.__base_attr__,
+            DbtNode::Seed(node) => &mut node.__base_attr__,
+            DbtNode::Analysis(node) => &mut node.__base_attr__,
+            DbtNode::Operation(node) => &mut node.__base_attr__,
+            DbtNode::Function(node) => &mut node.__base_attr__,
+            DbtNode::Check(_) => continue,
+        };
+        let mut dependencies = macros.clone();
+        if resolved_state
+            .nodes
+            .get_node(unique_id)
+            .is_some_and(|node| node.node_adapter() != resolved_state.adapter_type)
         {
-            model_node.__base_attr__.depends_on.macros = macros.iter().cloned().collect();
+            // Shared macro typechecking cannot describe each caller's dispatch.
+            dependencies.extend(base.depends_on.macros.iter().cloned());
         }
-        if let DbtNode::Test(test_node) = node
-            && let Some(macros) = macro_depends_on.get(unique_id)
-        {
-            test_node.__base_attr__.depends_on.macros = macros.iter().cloned().collect();
-        }
-        if let DbtNode::Snapshot(snapshot_node) = node
-            && let Some(macros) = macro_depends_on.get(unique_id)
-        {
-            snapshot_node.__base_attr__.depends_on.macros = macros.iter().cloned().collect();
-        }
-        if let DbtNode::Seed(seed_node) = node
-            && let Some(macros) = macro_depends_on.get(unique_id)
-        {
-            seed_node.__base_attr__.depends_on.macros = macros.iter().cloned().collect();
-        }
-        if let DbtNode::Analysis(analysis_node) = node
-            && let Some(macros) = macro_depends_on.get(unique_id)
-        {
-            analysis_node.__base_attr__.depends_on.macros = macros.iter().cloned().collect();
-        }
-        if let DbtNode::Operation(operation_node) = node
-            && let Some(macros) = macro_depends_on.get(unique_id)
-        {
-            operation_node.__base_attr__.depends_on.macros = macros.iter().cloned().collect();
-        }
+        base.depends_on.macros = dependencies.into_iter().collect();
     }
     for (unique_id, macro_node) in dbt_manifest.macros.iter_mut() {
         if let Some(macros) = macro_depends_on.get(unique_id) {

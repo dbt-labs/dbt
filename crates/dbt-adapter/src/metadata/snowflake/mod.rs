@@ -1,46 +1,47 @@
 use crate::adapter::adapter_impl::*;
-use crate::connection::AdapterConnectionFactory;
+use crate::connection::{AdapterConnectionFactory, ConnectionGuard, DynConnectionFactory};
 use crate::metadata::FreshnessOverride;
 use crate::metadata::freshness_overrides::{
     FreshnessTask, FreshnessTaskResult, apply_freshness_task_result, freshness_override_sql,
     run_override_sql,
 };
 use crate::metadata::{CatalogAndSchema, *};
-use crate::record_batch::RecordBatchExt;
 use crate::relation::Relation;
 use crate::sql_types::{TypeOps, make_arrow_field};
+use crate::time_machine::{
+    args_freshness, args_freshness_with_overrides, args_relations_exist,
+    with_time_machine_metadata_wrapper,
+};
 use crate::{AdapterEngine, AdapterResult, AdapterType};
+use dbt_adapter_engine::cow::uppercase;
+use dbt_adapter_engine::record_batch::RecordBatchExt;
+use dbt_adapter_sql::ident::{Ident, escape_string_literal, quote_identifier};
 
 use arrow_array::{
     Array, BooleanArray, Decimal128Array, RecordBatch, StringArray, TimestampMillisecondArray,
 };
 use arrow_schema::Schema;
 use dbt_adapter_core::ExecutionPhase;
-use dbt_adbc::{Connection, ConnectionFactory, MapReduce, QueryCtx};
+use dbt_adapter_engine::{ConnectionFactory, MapReduce};
+use dbt_adbc::QueryCtx;
 use dbt_common::AsyncAdapterResult;
+use dbt_common::ErrorCode;
 use dbt_common::cancellation::Cancellable;
 use dbt_common::cancellation::CancellationToken;
-use dbt_frontend_common::Dialect;
+use dbt_common::tracing::dbt_emit::{emit_debug_log_message, emit_warn_log_message};
+use dbt_frontend_common::column_resolution::IdentifierCaseSensitivity;
+use dbt_frontend_common::{Dialect, FullyQualifiedName};
 use dbt_schemas::dbt_types::RelationType;
 use dbt_schemas::schemas::common::ResolvedQuoting;
 use dbt_schemas::schemas::legacy_catalog::*;
 use dbt_schemas::schemas::relations::base::*;
 use indexmap::IndexMap;
 use minijinja::State;
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Display;
-use std::sync::Arc;
-
-/// Detect a `CREATE [<modifiers>] TABLE <name>` DDL.
-///
-/// Used to filter out tables from `GET_DDL('VIEW', ...)` results, since
-/// Snowflake returns `CREATE TABLE` for tables instead of an error.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct SnowflakeMetadataQueryPlan {
-    statements: Vec<String>,
-}
+use std::sync::{Arc, Mutex};
 
 const SNOWFLAKE_METADATA_NODE_ID: &str = "snowflake-metadata";
 
@@ -52,20 +53,21 @@ fn metadata_warehouse_error(err: impl Display) -> AdapterError {
 /// to once per *physical connection* rather than once per query.
 ///
 /// `MapReduce` workers reuse a single connection across many tasks in a batch
-/// before recycling it, so switching the warehouse inside the per-task closure
+/// before handing it back, so switching the warehouse inside the per-task closure
 /// re-issues `use warehouse` before and after every task on a reused
 /// connection. Wrapping the factory instead moves
 /// the switch to `new_connection` (once, when the connection is first obtained
 /// for the batch) and the restore to `recycle_connection` (once, right before
 /// the connection is handed back).
-type UseWarehouseFn = Box<dyn Fn(&mut dyn Connection, &str) -> AdapterResult<()> + Send + Sync>;
-type RestoreWarehouseFn = Box<dyn Fn(&mut dyn Connection) -> AdapterResult<()> + Send + Sync>;
+type UseWarehouseFn =
+    Box<dyn Fn(&mut ConnectionGuard<'_>, &str) -> AdapterResult<()> + Send + Sync>;
+type RestoreWarehouseFn = Box<dyn Fn(&mut ConnectionGuard<'_>) -> AdapterResult<()> + Send + Sync>;
 
 struct MetadataWarehouseConnectionFactory {
     metadata_warehouse: Option<String>,
     use_warehouse: UseWarehouseFn,
     restore_warehouse: RestoreWarehouseFn,
-    inner: Box<dyn ConnectionFactory<Error = Cancellable<AdapterError>>>,
+    inner: Box<DynConnectionFactory>,
 }
 
 impl MetadataWarehouseConnectionFactory {
@@ -73,12 +75,12 @@ impl MetadataWarehouseConnectionFactory {
         adapter: AdapterImpl,
         metadata_warehouse: Option<String>,
         token: CancellationToken,
-        inner: Box<dyn ConnectionFactory<Error = Cancellable<AdapterError>>>,
+        inner: Box<DynConnectionFactory>,
     ) -> Self {
         let use_warehouse = {
             let adapter = adapter.clone();
             let token = token.clone();
-            Box::new(move |conn: &mut dyn Connection, warehouse: &str| {
+            Box::new(move |conn: &mut ConnectionGuard<'_>, warehouse: &str| {
                 adapter
                     .use_warehouse(
                         conn,
@@ -86,10 +88,11 @@ impl MetadataWarehouseConnectionFactory {
                         SNOWFLAKE_METADATA_NODE_ID,
                         token.clone(),
                     )
+                    .map(|_| ())
                     .map_err(metadata_warehouse_error)
             }) as UseWarehouseFn
         };
-        let restore_warehouse = Box::new(move |conn: &mut dyn Connection| {
+        let restore_warehouse = Box::new(move |conn: &mut ConnectionGuard<'_>| {
             adapter
                 .restore_warehouse(conn, SNOWFLAKE_METADATA_NODE_ID, token.clone())
                 .map_err(metadata_warehouse_error)
@@ -101,7 +104,7 @@ impl MetadataWarehouseConnectionFactory {
         metadata_warehouse: Option<String>,
         use_warehouse: UseWarehouseFn,
         restore_warehouse: RestoreWarehouseFn,
-        inner: Box<dyn ConnectionFactory<Error = Cancellable<AdapterError>>>,
+        inner: Box<DynConnectionFactory>,
     ) -> Self {
         Self {
             metadata_warehouse,
@@ -120,61 +123,34 @@ impl MetadataWarehouseConnectionFactory {
 
 impl ConnectionFactory for MetadataWarehouseConnectionFactory {
     type Error = Cancellable<AdapterError>;
+    type Connection = ConnectionGuard<'static>;
 
-    fn new_connection(&self, node_id: Option<&str>) -> Result<Box<dyn Connection>, Self::Error> {
+    fn new_connection(&self, node_id: Option<&str>) -> Result<Self::Connection, Self::Error> {
         let mut conn = self.inner.new_connection(node_id)?;
         if let Some(warehouse) = self.active_warehouse() {
-            (self.use_warehouse)(conn.as_mut(), warehouse).map_err(Cancellable::Error)?;
+            (self.use_warehouse)(&mut conn, warehouse).map_err(Cancellable::Error)?;
         }
         Ok(conn)
     }
 
-    fn recycle_connection(&self, mut conn: Box<dyn Connection>) {
-        // These connections go back into the global recycling pool shared with
-        // unrelated jobs. A failed restore leaves the connection stuck on the
-        // metadata warehouse, so drop it instead of recycling it — otherwise an
-        // unrelated node could silently inherit the metadata warehouse. Mirrors
-        // `reset_node_overrides` in dbt-tasks-sa/src/materialize.rs.
+    fn recycle_connection(&self, mut conn: Self::Connection) {
+        // These connections go back into the worker thread's slot, where the
+        // next node to run there picks them up. A failed restore leaves the
+        // connection stuck on the metadata warehouse, so drop it instead —
+        // otherwise an unrelated node could silently inherit the metadata
+        // warehouse. Mirrors `reset_node_overrides` in
+        // dbt-tasks-sa/src/materialize.rs.
         if self.active_warehouse().is_some() {
-            if let Err(e) = (self.restore_warehouse)(conn.as_mut()) {
+            if let Err(e) = (self.restore_warehouse)(&mut conn) {
                 tracing::warn!(
                     "failed to restore warehouse before recycling Snowflake metadata connection, dropping it instead: {e}"
                 );
+                conn.discard_conn_on_drop();
                 return;
             }
         }
         self.inner.recycle_connection(conn);
     }
-
-    fn connection_limit(&self) -> u32 {
-        self.inner.connection_limit()
-    }
-}
-
-fn snowflake_metadata_query_plan(
-    metadata_sql: &str,
-    metadata_warehouse: Option<&str>,
-) -> SnowflakeMetadataQueryPlan {
-    let mut statements = Vec::new();
-    if let Some(warehouse) = metadata_warehouse.filter(|warehouse| !warehouse.is_empty()) {
-        statements.push(format!("use warehouse {warehouse}"));
-    }
-    statements.push(metadata_sql.to_string());
-
-    SnowflakeMetadataQueryPlan { statements }
-}
-
-fn snowflake_freshness_override_query_plan(
-    metadata_sql: &str,
-    metadata_warehouse: Option<&str>,
-) -> SnowflakeMetadataQueryPlan {
-    snowflake_metadata_query_plan(metadata_sql, metadata_warehouse)
-}
-
-fn snowflake_list_relations_query_plan(
-    metadata_warehouse: Option<&str>,
-) -> SnowflakeMetadataQueryPlan {
-    snowflake_metadata_query_plan("list_relations", metadata_warehouse)
 }
 
 fn require_snowflake_metadata_component<'a>(
@@ -195,8 +171,195 @@ fn require_snowflake_metadata_component<'a>(
     ))
 }
 
+fn snowflake_string_literal(value: &str) -> String {
+    format!("'{}'", escape_string_literal(value, AdapterType::Snowflake))
+}
+
+/// Render a Snowflake identifier without changing the case-folding behavior of
+/// ordinary unquoted names. Names that cannot be a single unquoted identifier
+/// are quoted and any embedded quotes are doubled.
+fn snowflake_metadata_identifier(value: &str) -> String {
+    let mut chars = value.chars();
+    let is_safe_unquoted = chars
+        .next()
+        .is_some_and(|c| c == '_' || c.is_ascii_alphabetic())
+        && chars.all(|c| c == '_' || c == '$' || c.is_ascii_alphanumeric());
+    if is_safe_unquoted {
+        Ident::new(value, AdapterType::Snowflake)
+            .display(AdapterType::Snowflake)
+            .to_string()
+    } else {
+        quote_identifier(value, AdapterType::Snowflake)
+    }
+}
+
+pub(crate) fn snowflake_relation_identifier(value: &str, quote: bool) -> String {
+    if quote {
+        quote_identifier(value, AdapterType::Snowflake)
+    } else {
+        snowflake_metadata_identifier(value)
+    }
+}
+
+fn snowflake_show_objects_sql(
+    db_schema: &CatalogAndSchema,
+    limit: usize,
+    from_name: Option<&str>,
+) -> String {
+    let from_clause = from_name
+        .map(|name| format!(" FROM {}", snowflake_string_literal(name)))
+        .unwrap_or_default();
+    let scope = match (
+        db_schema.resolved_catalog.is_empty(),
+        db_schema.resolved_schema.is_empty(),
+    ) {
+        (true, _) => quote_identifier(&db_schema.resolved_schema, AdapterType::Snowflake),
+        (_, true) => quote_identifier(&db_schema.resolved_catalog, AdapterType::Snowflake),
+        (false, false) => format!(
+            "{}.{}",
+            quote_identifier(&db_schema.resolved_catalog, AdapterType::Snowflake),
+            quote_identifier(&db_schema.resolved_schema, AdapterType::Snowflake)
+        ),
+    };
+    format!("SHOW OBJECTS IN SCHEMA {scope} LIMIT {limit}{from_clause}")
+}
+
+fn snowflake_show_user_functions_sql(catalog: &str, schema: &str) -> String {
+    format!(
+        "SHOW USER FUNCTIONS IN SCHEMA {}.{}",
+        snowflake_metadata_identifier(catalog),
+        snowflake_metadata_identifier(schema)
+    )
+}
+
+fn snowflake_relation_sql_name(relation: &dyn BaseRelation) -> String {
+    let include = relation.include_policy();
+    let quoting = relation.quote_policy();
+    let mut parts = Vec::with_capacity(3);
+    let mut push = |value: Option<&str>, include: bool, quote: bool| {
+        if include
+            && let Some(value) = value
+            && !value.is_empty()
+        {
+            parts.push(if quote {
+                quote_identifier(value, AdapterType::Snowflake)
+            } else {
+                snowflake_metadata_identifier(value)
+            });
+        }
+    };
+    push(relation.database(), include.database, quoting.database);
+    push(relation.schema(), include.schema, quoting.schema);
+    push(
+        relation.identifier(),
+        include.identifier,
+        quoting.identifier,
+    );
+    parts.join(".")
+}
+
+fn snowflake_relation_patterns_sql(database: &str, patterns: &[&RelationPattern]) -> String {
+    let predicates = patterns
+        .iter()
+        .map(|pat| {
+            format!(
+                "(TABLE_SCHEMA ILIKE {} AND TABLE_NAME ILIKE {})",
+                snowflake_string_literal(&pat.schema_pattern),
+                snowflake_string_literal(&pat.table_pattern)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" OR ");
+    let database = snowflake_metadata_identifier(database);
+    format!(
+        "SELECT
+    TABLE_CATALOG,
+    TABLE_SCHEMA,
+    TABLE_NAME,
+    COLUMN_NAME,
+    DATA_TYPE,
+    IS_NULLABLE,
+    CHARACTER_MAXIMUM_LENGTH,
+    NUMERIC_PRECISION,
+    NUMERIC_SCALE,
+    COMMENT
+FROM {database}.INFORMATION_SCHEMA.COLUMNS
+WHERE {predicates}
+ORDER BY TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION"
+    )
+}
+
+/// Build the constant-cost schema-count probe for a database. The database is
+/// rendered as a quoted identifier (embedded quotes escaped) so a name
+/// containing `"` stays a single well-formed identifier.
+fn snowflake_schema_count_sql(database: &str, limit: usize) -> String {
+    format!(
+        "SHOW TERSE SCHEMAS IN DATABASE {} LIMIT {limit}",
+        quote_identifier(database, AdapterType::Snowflake)
+    )
+}
+
+// When prefetching last-modified metadata across several schemas we can either issue one broad
+// `table_schema IN (...)` scan or one pruned `table_schema = 'S'` point query per schema. A
+// `table_schema IN (...)` predicate loses single-schema pruning and forces a full scan of the whole
+// database, so its cost grows with the DB's *schema count* (not the
+// number of schemas we asked for), while each single-eq point query prunes and stays flat regardless
+// of DB size. The two measured curves are:
+//   - POINT_QUERY_SECONDS: one pruned `table_schema = 'S'` query is ~0.71s, flat at any DB size.
+//   - IN_SCAN_SECONDS_PER_1000_SCHEMAS: the broad `IN (...)` full scan grows ~2.5s per 1,000 schemas
+//     present in the database.
+// Fetching D schemas one-by-one costs ~D * POINT_QUERY_SECONDS, so it beats the single `IN` scan once
+// the database holds more than ~(POINT_QUERY_SECONDS / IN_SCAN_SECONDS_PER_SCHEMA) schemas per fetched
+// schema. That per-fetched-schema crossover is CROSSOVER_N_PER_FETCHED_SCHEMA (~284); the probe simply
+// asks "does this database have at least CROSSOVER_N_PER_FETCHED_SCHEMA * D schemas?".
+const POINT_QUERY_SECONDS: f64 = 0.71; // measured: one `table_schema = 'S'` query, flat
+const IN_SCAN_SECONDS_PER_1000_SCHEMAS: f64 = 2.5; // measured: broad `IN (...)` scan slope, per 1,000 schemas
+const IN_SCAN_SECONDS_PER_SCHEMA: f64 = IN_SCAN_SECONDS_PER_1000_SCHEMAS / 1000.0;
+const CROSSOVER_N_PER_FETCHED_SCHEMA: usize =
+    (POINT_QUERY_SECONDS / IN_SCAN_SECONDS_PER_SCHEMA + 0.5) as usize; // 284
+const MAX_SHOW_LIMIT: usize = 10000; // Snowflake hard cap on SHOW ... LIMIT
+// At or below this many fetched schemas, D point queries cost at most ~D * POINT_QUERY_SECONDS (a
+// few seconds) — cheap and bounded — so we always fetch sequentially and skip the schema-count probe
+// entirely, sidestepping both the probe round-trip and any risk of a broad IN scan on a large DB.
+const ALWAYS_SEQUENTIAL_MAX_SCHEMAS: usize = 4;
+
+fn schema_probe_limit(num_schemas: usize) -> usize {
+    (CROSSOVER_N_PER_FETCHED_SCHEMA * num_schemas).min(MAX_SHOW_LIMIT)
+}
+
+/// Pure strategy decision from a probe result, split out from
+/// `should_fetch_schemas_sequentially` so the edge cases are unit-testable
+/// without a live adapter. `observed` is the row count the
+/// `SHOW TERSE SCHEMAS ... LIMIT T` probe returned, or `None` if the probe
+/// failed. Returns `true` to fetch per-schema sequentially, `false` to use one
+/// broad `IN (...)` scan.
+///
+/// Cap behavior: when `CROSSOVER_N_PER_FETCHED_SCHEMA * num_schemas` exceeds
+/// `MAX_SHOW_LIMIT` (num_schemas above ~35), `threshold` is clamped to
+/// `MAX_SHOW_LIMIT`, so a saturated probe only proves the database has
+/// `>= MAX_SHOW_LIMIT` schemas — not the full
+/// `CROSSOVER_N_PER_FETCHED_SCHEMA * num_schemas` crossover. We deliberately
+/// still choose sequential there: the database is very large and its true schema
+/// count is unknown, so the broad IN scan's cost grows without bound in that
+/// count while sequential stays bounded at `~POINT_QUERY_SECONDS * num_schemas`.
+/// In the narrow band where N sits between `MAX_SHOW_LIMIT` and the true
+/// crossover this can pick sequential when a scan would have been marginally
+/// cheaper, but that overpay is bounded and small next to the unbounded cost of
+/// scanning a genuinely huge database.
+fn schema_probe_decision(num_schemas: usize, observed: Option<usize>) -> bool {
+    if num_schemas <= ALWAYS_SEQUENTIAL_MAX_SCHEMAS {
+        return true;
+    }
+    match observed {
+        // Probe failed -> fall back to the broad IN scan.
+        None => false,
+        Some(observed) => observed == schema_probe_limit(num_schemas),
+    }
+}
+
 fn snowflake_freshness_sql(database: &str, where_clauses: &[String]) -> AdapterResult<String> {
     let database = require_snowflake_metadata_component("database", database)?;
+    let database = quote_identifier(database, AdapterType::Snowflake);
     Ok(format!(
         "SELECT
                 table_schema,
@@ -211,7 +374,7 @@ fn snowflake_freshness_sql(database: &str, where_clauses: &[String]) -> AdapterR
 }
 
 fn is_table_ddl(ddl: &str) -> bool {
-    static TABLE_REGEX: Lazy<fancy_regex::Regex> = Lazy::new(|| {
+    static TABLE_REGEX: LazyLock<fancy_regex::Regex> = LazyLock::new(|| {
         fancy_regex::Regex::new(
             r"(?ix)
                 ^\s*create\b
@@ -231,17 +394,16 @@ fn is_table_ddl(ddl: &str) -> bool {
     TABLE_REGEX.is_match(ddl).unwrap_or(false)
 }
 
-/// Render the anonymous block (the body that goes inside `EXECUTE IMMEDIATE $$...$$`)
-/// that calls `GET_DDL` over a list of FQNs and captures per-object errors as
-/// part of the result set.
+/// Render the anonymous block that calls `GET_DDL` over a list of FQNs and
+/// captures per-object errors as part of the result set.
 ///
-/// The caller is responsible for wrapping the returned string in
-/// `EXECUTE IMMEDIATE $$ ... $$`. The rendered block accepts no parameters
-/// and returns a result set with columns (fqn, view_definition, error).
+/// The caller is responsible for rendering the returned block as a safe string
+/// literal for `EXECUTE IMMEDIATE`. The block accepts no parameters and returns
+/// a result set with columns (fqn, view_definition, error).
 fn build_view_definition_script(fqns: &[String]) -> String {
     let array_literals = fqns
         .iter()
-        .map(|fqn| format!("'{}'", fqn.replace('\'', "''")))
+        .map(|fqn| snowflake_string_literal(fqn))
         .collect::<Vec<_>>()
         .join(", ");
 
@@ -338,7 +500,7 @@ fn accumulate_view_definition_fetch_result(
             continue;
         }
 
-        let parsed = match Dialect::Snowflake.parse_fqn(&fqn) {
+        let parsed = match FullyQualifiedName::parse(&fqn, Dialect::Snowflake) {
             Ok(p) => p,
             Err(_) => continue, // unparseable — skip
         };
@@ -355,10 +517,22 @@ fn accumulate_view_definition_fetch_result(
     Ok(())
 }
 
-/// Helper to differentiate between tables and dynamic tables using the is_dynamic flag.
 /// TODO: When we implement iceberg tables, we might want to pass in the is_iceberg flag here.
-pub fn relation_type_from_table_flags(is_dynamic: &str) -> Result<RelationType, AdapterError> {
-    if is_dynamic.eq_ignore_ascii_case("y") {
+///
+/// `is_interactive` must be checked before `is_dynamic`: a dynamic interactive table reports
+/// both `is_dynamic='Y'` and `is_interactive='Y'`, so checking `is_dynamic` first would
+/// misclassify it as a plain dynamic table.
+///
+/// Callers pass `is_interactive` tolerantly defaulted to `"n"`: the column is absent on
+/// accounts and versions without interactive table support, and its cell can be NULL or empty
+/// even when the column is present, neither of which may fail the surrounding query.
+pub fn relation_type_from_table_flags(
+    is_dynamic: &str,
+    is_interactive: &str,
+) -> Result<RelationType, AdapterError> {
+    if try_canonicalize_bool_column_field(is_interactive)? {
+        Ok(RelationType::InteractiveTable)
+    } else if is_dynamic.eq_ignore_ascii_case("y") {
         Ok(RelationType::DynamicTable)
     } else if is_dynamic.eq_ignore_ascii_case("n") {
         Ok(RelationType::Table)
@@ -383,6 +557,10 @@ fn build_relations_from_show_objects(
     let table_kind = show_objects_result.column_values::<StringArray>("kind")?;
     let is_dynamic = show_objects_result.column_values::<StringArray>("is_dynamic")?;
     let is_iceberg = show_objects_result.column_values::<StringArray>("is_iceberg")?;
+    // See `relation_type_from_table_flags`'s doc.
+    let is_interactive = show_objects_result
+        .column_values::<StringArray>("is_interactive")
+        .ok();
 
     for i in 0..show_objects_result.num_rows() {
         let name = name.value(i);
@@ -391,9 +569,14 @@ fn build_relations_from_show_objects(
         let table_kind = table_kind.value(i);
         let is_dynamic = is_dynamic.value(i);
         let is_iceberg = is_iceberg.value(i);
+        let is_interactive = is_interactive
+            .as_ref()
+            .map(|col| col.value(i))
+            .filter(|value| !value.is_empty())
+            .unwrap_or("n");
 
         let relation_type = if table_kind.eq_ignore_ascii_case("table") {
-            Some(relation_type_from_table_flags(is_dynamic)?)
+            Some(relation_type_from_table_flags(is_dynamic, is_interactive)?)
         } else if table_kind.eq_ignore_ascii_case("view") {
             Some(RelationType::View)
         } else if table_kind.eq_ignore_ascii_case("temporary") {
@@ -428,7 +611,7 @@ fn build_relations_from_show_objects(
 pub fn list_relations(
     engine: &dyn AdapterEngine,
     ctx: &QueryCtx,
-    conn: &'_ mut dyn Connection,
+    conn: &mut ConnectionGuard<'_>,
     db_schema: &CatalogAndSchema,
     token: CancellationToken,
 ) -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
@@ -437,15 +620,8 @@ pub fn list_relations(
     let mut from_name = None;
     let mut batches = Vec::new();
     loop {
-        let sql = format!(
-            "SHOW OBJECTS IN SCHEMA {} LIMIT {}{}",
-            db_schema,
-            limit_size,
-            from_name
-                .map(|name| format!(" FROM '{name}'"))
-                .unwrap_or_default()
-        );
-        let batch = engine.execute(None, conn, ctx, &sql, token.clone())?;
+        let sql = snowflake_show_objects_sql(db_schema, limit_size, from_name.as_deref());
+        let batch = engine.execute(None, conn.as_mut(), ctx, &sql, token.clone())?;
 
         // From the RecordBatch, get the last row of the vector of name 'name'
         let names = batch.column_values::<StringArray>("name")?;
@@ -474,12 +650,16 @@ pub fn list_relations(
 
 pub struct SnowflakeMetadataAdapter {
     pub adapter: AdapterImpl,
+    identifier_case_sensitivity: Mutex<HashMap<String, Option<IdentifierCaseSensitivity>>>,
 }
 
 impl SnowflakeMetadataAdapter {
     pub fn new(engine: Arc<dyn AdapterEngine>) -> Self {
         let adapter = AdapterImpl::new(engine, None);
-        Self { adapter }
+        Self {
+            adapter,
+            identifier_case_sensitivity: Mutex::new(HashMap::new()),
+        }
     }
 
     fn freshness_inner_with_options(
@@ -503,31 +683,22 @@ impl SnowflakeMetadataAdapter {
         let metadata_warehouse = options.warehouse.clone();
         let factory = Box::new(MetadataWarehouseConnectionFactory::new(
             self.adapter.clone(),
-            metadata_warehouse.clone(),
+            metadata_warehouse,
             token.clone(),
-            Box::new(AdapterConnectionFactory::new(
-                self.adapter.engine().clone(),
-                self.adapter.engine().threads(),
-            )),
+            Box::new(AdapterConnectionFactory::new(self.adapter.engine().clone())),
         ));
 
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
-        let map_f = move |conn: &'_ mut dyn Connection,
+        let map_f = move |conn: &mut ConnectionGuard<'_>,
                           database_and_where_clauses: &(String, Vec<String>)|
               -> AdapterResult<Arc<RecordBatch>> {
             let (database, where_clauses) = &database_and_where_clauses;
             let sql = snowflake_freshness_sql(database, where_clauses)?;
 
-            let plan = snowflake_metadata_query_plan(&sql, metadata_warehouse.as_deref());
-            let metadata_sql = plan
-                .statements
-                .last()
-                .expect("metadata query plan always includes metadata SQL");
-
             let ctx = QueryCtx::default().with_desc("Extracting freshness from information schema");
             let (_adapter_response, agate_table) =
-                adapter.query(&ctx, conn, metadata_sql, None, token_clone.clone())?;
+                adapter.query(&ctx, conn, &sql, None, token_clone.clone())?;
             let batch = agate_table.original_record_batch();
             Ok(batch)
         };
@@ -592,7 +763,6 @@ impl SnowflakeMetadataAdapter {
         }
 
         let engine = self.adapter.engine().clone();
-        let threads = engine.threads();
 
         // Run the bulk and per-override queries through one MapReduce pass so
         // they share the same connection-factory threadpool — same parallelism
@@ -600,9 +770,9 @@ impl SnowflakeMetadataAdapter {
         let metadata_warehouse = options.warehouse.clone();
         let factory = Box::new(MetadataWarehouseConnectionFactory::new(
             self.adapter.clone(),
-            metadata_warehouse.clone(),
+            metadata_warehouse,
             token.clone(),
-            Box::new(AdapterConnectionFactory::new(engine, threads)),
+            Box::new(AdapterConnectionFactory::new(engine)),
         ));
         type Acc = BTreeMap<String, MetadataFreshness>;
 
@@ -616,7 +786,7 @@ impl SnowflakeMetadataAdapter {
 
         let token_clone = token.clone();
         let adapter_for_map = self.adapter.clone();
-        let map_f = move |conn: &'_ mut dyn Connection,
+        let map_f = move |conn: &mut ConnectionGuard<'_>,
                           task: &FreshnessTask|
               -> AdapterResult<FreshnessTaskResult> {
             match task {
@@ -626,21 +796,11 @@ impl SnowflakeMetadataAdapter {
                     let mut acc: Acc = BTreeMap::new();
                     for (database, where_clauses) in where_clauses_by_database {
                         let sql = snowflake_freshness_sql(&database, &where_clauses)?;
-                        let plan =
-                            snowflake_metadata_query_plan(&sql, metadata_warehouse.as_deref());
-                        let metadata_sql = plan
-                            .statements
-                            .last()
-                            .expect("metadata query plan always includes metadata SQL");
                         let ctx = QueryCtx::default()
                             .with_desc("Extracting freshness from information schema");
-                        let Ok((_resp, agate_table)) = adapter_for_map.query(
-                            &ctx,
-                            conn,
-                            metadata_sql,
-                            None,
-                            token_clone.clone(),
-                        ) else {
+                        let Ok((_resp, agate_table)) =
+                            adapter_for_map.query(&ctx, conn, &sql, None, token_clone.clone())
+                        else {
                             // Keep successful database batches; missing relations fall back downstream.
                             continue;
                         };
@@ -669,19 +829,11 @@ impl SnowflakeMetadataAdapter {
                 FreshnessTask::Override(relation, ovr) => {
                     let semantic_fqn = relation.semantic_fqn();
                     let sql = freshness_override_sql(relation, ovr);
-                    let plan = snowflake_freshness_override_query_plan(
-                        &sql,
-                        metadata_warehouse.as_deref(),
-                    );
-                    let metadata_sql = plan
-                        .statements
-                        .last()
-                        .expect("metadata query plan always includes metadata SQL");
                     run_override_sql(
                         &adapter_for_map,
                         conn,
                         semantic_fqn,
-                        metadata_sql,
+                        &sql,
                         token_clone.clone(),
                     )
                 }
@@ -702,37 +854,36 @@ impl SnowflakeMetadataAdapter {
         map_reduce.run(Arc::new(tasks), token)
     }
 
+    /// `report_progress`: when `true`, each per-schema fetch is wrapped in a
+    /// progress span for the caller's progress bar.
     fn list_relations_in_parallel_inner_with_options(
         &self,
         db_schemas: &[CatalogAndSchema],
         options: &MetadataQueryOptions,
         token: CancellationToken,
+        report_progress: bool,
     ) -> AsyncAdapterResult<'static, BTreeMap<CatalogAndSchema, AdapterResult<RelationVec>>> {
         type Acc = BTreeMap<CatalogAndSchema, AdapterResult<RelationVec>>;
         let metadata_warehouse = options.warehouse.clone();
         let factory = Box::new(MetadataWarehouseConnectionFactory::new(
             self.adapter.clone(),
-            metadata_warehouse.clone(),
+            metadata_warehouse,
             token.clone(),
-            Box::new(AdapterConnectionFactory::new(
-                self.adapter.engine().clone(),
-                self.adapter.engine().threads(),
-            )),
+            Box::new(AdapterConnectionFactory::new(self.adapter.engine().clone())),
         ));
 
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
 
-        let map_f = move |conn: &'_ mut dyn Connection,
+        let map_f = move |conn: &mut ConnectionGuard<'_>,
                           db_schema: &CatalogAndSchema|
               -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
-            let plan = snowflake_list_relations_query_plan(metadata_warehouse.as_deref());
-            let _metadata_operation = plan
-                .statements
-                .last()
-                .expect("metadata query plan always includes metadata operation");
             let query_ctx = QueryCtx::default().with_desc("list_relations_in_parallel");
-            adapter.list_relations(&query_ctx, conn, db_schema, token_clone.clone())
+            with_relation_list_item_span(
+                report_progress.then_some(RELATION_CACHE_OP_ID),
+                &db_schema.to_string(),
+                || adapter.list_relations(None, &query_ctx, conn, db_schema, token_clone.clone()),
+            )
         };
 
         let reduce_f = move |acc: &mut Acc,
@@ -760,6 +911,233 @@ impl SnowflakeMetadataAdapter {
 
         let map_reduce = MapReduce::new(factory, Box::new(map_f), Box::new(reduce_f), None);
         map_reduce.run(Arc::new(db_schemas.to_vec()), token)
+    }
+}
+
+impl SnowflakeMetadataAdapter {
+    /// Count the schemas in `database`, capped at `limit` rows.
+    ///
+    /// A cheap, constant-cost probe (`SHOW TERSE SCHEMAS IN DATABASE ... LIMIT`)
+    /// used by the adaptive freshness prefetch to choose between one broad
+    /// `table_schema IN (...)` scan and per-schema point queries, without listing
+    /// the whole database. Returns `min(actual_schema_count, limit)`; callers treat
+    /// `observed == limit` as "the database has at least `limit` schemas".
+    pub fn count_schemas_up_to<'a>(
+        &'a self,
+        database: &'a str,
+        limit: usize,
+        token: CancellationToken,
+    ) -> AsyncAdapterResult<'a, usize> {
+        let sql = snowflake_schema_count_sql(database, limit);
+        let adapter = self.adapter.clone();
+        let token_clone = token.clone();
+
+        // Runs on the default connection (no metadata warehouse): the adaptive
+        // prefetch only probes on the no-metadata-warehouse path.
+        let factory = Box::new(MetadataWarehouseConnectionFactory::new(
+            adapter.clone(),
+            None,
+            token_clone.clone(),
+            Box::new(AdapterConnectionFactory::new(adapter.engine().clone())),
+        ));
+
+        let map_f = move |conn: &mut ConnectionGuard<'_>, _: &()| -> AdapterResult<usize> {
+            let ctx = QueryCtx::default().with_desc("dbt State schema-count probe");
+            let (_resp, agate_table) =
+                adapter.query(&ctx, conn, &sql, None, token_clone.clone())?;
+            Ok(agate_table.original_record_batch().num_rows())
+        };
+
+        let reduce_f = move |acc: &mut usize, _: (), res: AdapterResult<usize>| {
+            *acc = res?;
+            Ok(())
+        };
+
+        let map_reduce = MapReduce::new(factory, Box::new(map_f), Box::new(reduce_f), None);
+        map_reduce.run(Arc::new(vec![()]), token)
+    }
+
+    /// Decide whether to run per-schema point queries sequentially instead of one
+    /// broad `IN (...)` scan for `database`.
+    ///
+    /// Runs `SHOW TERSE SCHEMAS IN DATABASE "<database>" LIMIT T`
+    /// (T = `schema_probe_limit`) via `count_schemas_up_to`. Returns `true` when
+    /// the probe saturates at exactly `T` rows (the database has `N >= T` schemas,
+    /// so sequential point queries are expected to be cheaper); returns `false`
+    /// otherwise. On any probe error, returns `false` (fall back to the IN scan).
+    /// Returns `true` without probing when `num_schemas <= ALWAYS_SEQUENTIAL_MAX_SCHEMAS`.
+    async fn should_fetch_schemas_sequentially(
+        &self,
+        database: &str,
+        num_schemas: usize,
+        token: CancellationToken,
+    ) -> bool {
+        if num_schemas <= ALWAYS_SEQUENTIAL_MAX_SCHEMAS {
+            return true;
+        }
+
+        let threshold = schema_probe_limit(num_schemas);
+        let observed = self
+            .count_schemas_up_to(database, threshold, token)
+            .await
+            .ok();
+        let sequential = schema_probe_decision(num_schemas, observed);
+        match observed {
+            None => emit_debug_log_message(format!(
+                "Schema-count probe failed for catalog {database} (fetching {num_schemas} schemas, \
+                 threshold {threshold}); falling back to a single IN scan"
+            )),
+            Some(observed) => emit_debug_log_message(format!(
+                "Schema-count probe for catalog {database} (fetching {num_schemas} schemas, \
+                 threshold {threshold}) observed {observed} schemas; using {} strategy",
+                if sequential {
+                    "sequential point-query"
+                } else {
+                    "single IN scan"
+                }
+            )),
+        }
+        sequential
+    }
+
+    /// Sequentially fetch per-schema dumps for a database, each fail-open (a
+    /// failed dump omits that schema).
+    async fn freshness_by_schema_sequential(
+        &self,
+        database: &str,
+        schemas: &BTreeMap<String, Vec<Arc<dyn BaseRelation>>>,
+        options: &MetadataQueryOptions,
+        token: CancellationToken,
+    ) -> Result<BTreeMap<String, MetadataFreshness>, Cancellable<AdapterError>> {
+        let mut result = BTreeMap::new();
+        for (schema, relations) in schemas {
+            result.extend(
+                freshness_group_dump(self, database, schema, relations, options, token.clone())
+                    .await?,
+            );
+        }
+        Ok(result)
+    }
+
+    /// One broad `table_schema IN (...)` scan for a database. Errors propagate so
+    /// replay callers can handle missing data; outer callers decide when to fail
+    /// open. An empty scan leaves those relations' freshness unknown.
+    async fn freshness_all_in_schemas_broad(
+        &self,
+        database: &str,
+        relations: &[Arc<dyn BaseRelation>],
+        options: &MetadataQueryOptions,
+        token: CancellationToken,
+    ) -> Result<BTreeMap<String, MetadataFreshness>, Cancellable<AdapterError>> {
+        self.freshness_all_in_schemas_broad_raw(database, relations, options, token)
+            .await
+    }
+
+    /// Raw broad multi-schema `table_schema IN (...)` scan for one database — one
+    /// query covering every schema of `relations` (no fail-open handling; callers
+    /// add it).
+    ///
+    /// The set of schemas to scan is derived from `relations` themselves (via the
+    /// same `schema_as_resolved_str` resolution `find_matching_relation` uses to
+    /// key results), deduplicated and validated non-empty, so the predicate can
+    /// never scope a different set of schemas than the results are matched
+    /// against.
+    fn freshness_all_in_schemas_broad_raw<'a>(
+        &'a self,
+        database: &'a str,
+        relations: &'a [Arc<dyn BaseRelation>],
+        options: &'a MetadataQueryOptions,
+        token: CancellationToken,
+    ) -> AsyncAdapterResult<'a, BTreeMap<String, MetadataFreshness>> {
+        // This scan reads a single `{database}.INFORMATION_SCHEMA.TABLES`, and
+        // `find_matching_relation` keys results by schema + table only (it does
+        // not compare database). Restrict to relations that actually resolve to
+        // this database so a same-`schema.table` relation in another database can
+        // never be keyed to a row from this one. Callers group by database before
+        // building the broad group, so in practice this keeps every relation;
+        // it just makes the method correct regardless of how it is called.
+        let relations: Vec<Arc<dyn BaseRelation>> = relations
+            .iter()
+            .filter(|relation| {
+                relation.database_as_resolved_str().ok().as_deref() == Some(database)
+            })
+            .cloned()
+            .collect();
+        if relations.is_empty() {
+            return Box::pin(async move { Ok(BTreeMap::new()) });
+        }
+
+        let quoted_schemas: Result<BTreeSet<String>, AdapterError> = relations
+            .iter()
+            .map(|relation| {
+                let schema = relation.schema_as_resolved_str().map_err(|_| {
+                    AdapterError::new(
+                        AdapterErrorKind::UnexpectedResult,
+                        "relation schema should not be None",
+                    )
+                })?;
+                require_snowflake_metadata_component("schema", &schema)
+                    .map(snowflake_string_literal)
+            })
+            .collect();
+        let quoted_schemas = match quoted_schemas {
+            Ok(quoted_schemas) => quoted_schemas,
+            Err(e) => {
+                let future = async move { Err(Cancellable::Error(e)) };
+                return Box::pin(future);
+            }
+        };
+        let where_clause = format!(
+            "table_schema IN ({})",
+            quoted_schemas.into_iter().collect::<Vec<_>>().join(", ")
+        );
+        let sql = match snowflake_freshness_sql(database, &[where_clause]) {
+            Ok(sql) => sql,
+            Err(e) => {
+                let future = async move { Err(Cancellable::Error(e)) };
+                return Box::pin(future);
+            }
+        };
+        let adapter = self.adapter.clone();
+        let metadata_warehouse = options.warehouse.clone();
+        let token_clone = token.clone();
+
+        let factory = Box::new(MetadataWarehouseConnectionFactory::new(
+            adapter.clone(),
+            metadata_warehouse,
+            token_clone.clone(),
+            Box::new(AdapterConnectionFactory::new(adapter.engine().clone())),
+        ));
+        type Acc = BTreeMap<String, MetadataFreshness>;
+
+        let map_f = move |conn: &mut ConnectionGuard<'_>,
+                          _: &()|
+              -> AdapterResult<Arc<RecordBatch>> {
+            let ctx = QueryCtx::default().with_desc("Extracting freshness from information schema");
+            let (_resp, agate_table) =
+                adapter.query(&ctx, conn, &sql, None, token_clone.clone())?;
+            Ok(agate_table.original_record_batch())
+        };
+
+        let reduce_f = move |acc: &mut Acc, _: (), batch_res: AdapterResult<Arc<RecordBatch>>| {
+            let batch = batch_res?;
+            let schemas = batch.column_values::<StringArray>("TABLE_SCHEMA")?;
+            let tables = batch.column_values::<StringArray>("TABLE_NAME")?;
+            let timestamps = batch.column_values::<TimestampMillisecondArray>("LAST_ALTERED")?;
+            let is_views = batch.column_values::<BooleanArray>("IS_VIEW")?;
+            for i in 0..batch.num_rows() {
+                for fqn in find_matching_relation(schemas.value(i), tables.value(i), &relations)? {
+                    acc.insert(
+                        fqn,
+                        MetadataFreshness::from_millis(timestamps.value(i), is_views.value(i))?,
+                    );
+                }
+            }
+            Ok(())
+        };
+
+        let map_reduce = MapReduce::new(factory, Box::new(map_f), Box::new(reduce_f), None);
+        map_reduce.run(Arc::new(vec![()]), token)
     }
 }
 
@@ -1007,24 +1385,22 @@ impl MetadataAdapter for SnowflakeMetadataAdapter {
             .flat_map(|(catalog, schemas)| {
                 schemas
                     .iter()
-                    .map(move |schema| format!("SHOW USER FUNCTIONS IN SCHEMA {catalog}.{schema}"))
+                    .map(move |schema| snowflake_show_user_functions_sql(catalog, schema))
             })
             .collect::<Vec<_>>();
 
-        let factory = Box::new(AdapterConnectionFactory::new(
-            self.adapter.engine().clone(),
-            self.adapter.engine().threads(),
-        ));
+        let factory = Box::new(AdapterConnectionFactory::new(self.adapter.engine().clone()));
 
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
-        let map_f =
-            move |conn: &'_ mut dyn Connection, sql: &String| -> AdapterResult<Arc<RecordBatch>> {
-                let ctx = QueryCtx::default().with_desc("List user functions");
-                let (_, table) = adapter.query(&ctx, conn, sql, None, token_clone.clone())?;
-                let batch = table.original_record_batch();
-                Ok(batch)
-            };
+        let map_f = move |conn: &mut ConnectionGuard<'_>,
+                          sql: &String|
+              -> AdapterResult<Arc<RecordBatch>> {
+            let ctx = QueryCtx::default().with_desc("List user functions");
+            let (_, table) = adapter.query(&ctx, conn, sql, None, token_clone.clone())?;
+            let batch = table.original_record_batch();
+            Ok(batch)
+        };
 
         let reduce_f = |acc: &mut Acc,
                         _sql: String,
@@ -1046,10 +1422,10 @@ impl MetadataAdapter for SnowflakeMetadataAdapter {
             let arguments = batch.column_values::<StringArray>("arguments")?;
 
             // possible values are either "Y" or "N"
-            let is_true = |s: &str| s.to_uppercase() == "Y";
+            let is_true = |s: &str| uppercase(s.into()) == "Y";
             for i in 0..batch.num_rows() {
-                let language = language.value(i).to_string();
-                if language.to_uppercase() != "SQL" {
+                let language: &str = language.value(i);
+                if uppercase(language.into()) != "SQL" {
                     continue;
                 }
 
@@ -1095,6 +1471,7 @@ impl MetadataAdapter for SnowflakeMetadataAdapter {
         unique_id: Option<String>,
         phase: Option<ExecutionPhase>,
         relations: &[Arc<dyn BaseRelation>],
+        item_span_operation_id: Option<&str>,
         token: CancellationToken,
     ) -> AsyncAdapterResult<'_, HashMap<String, AdapterResult<Arc<Schema>>>> {
         // All results are accumulated in an unordered map
@@ -1102,17 +1479,19 @@ impl MetadataAdapter for SnowflakeMetadataAdapter {
 
         let keys: Vec<(String, String)> = relations
             .iter()
-            .map(|relation| (relation.semantic_fqn(), relation.render_self_as_str()))
+            .map(|relation| {
+                (
+                    relation.semantic_fqn(),
+                    snowflake_relation_sql_name(relation.as_ref()),
+                )
+            })
             .collect();
 
-        let factory = Box::new(AdapterConnectionFactory::new(
-            self.adapter.engine().clone(),
-            self.adapter.engine().threads(),
-        ));
+        let factory = Box::new(AdapterConnectionFactory::new(self.adapter.engine().clone()));
 
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
-        let map_f = move |conn: &'_ mut dyn Connection,
+        let map_f = move |conn: &mut ConnectionGuard<'_>,
                           key: &(String, String)|
               -> AdapterResult<Arc<Schema>> {
             let (_, rendered) = key;
@@ -1137,8 +1516,113 @@ impl MetadataAdapter for SnowflakeMetadataAdapter {
             acc.insert(semantic_fqn, schema);
             Ok(())
         };
+        run_schema_cache_map_reduce(
+            factory,
+            keys,
+            item_span_operation_id,
+            map_f,
+            reduce_f,
+            None,
+            token,
+        )
+    }
+
+    fn enrich_relation_schemas<'a>(
+        &'a self,
+        relations: &'a [Arc<dyn BaseRelation>],
+        schemas: HashMap<String, AdapterResult<Arc<Schema>>>,
+        token: CancellationToken,
+    ) -> AsyncAdapterResult<'a, HashMap<String, AdapterResult<Arc<Schema>>>> {
+        let relation_databases = relations
+            .iter()
+            .filter_map(|relation| {
+                relation
+                    .database()
+                    .map(|database| (relation.semantic_fqn(), database.to_string()))
+            })
+            .collect::<HashMap<_, _>>();
+        let databases = relation_databases
+            .values()
+            .cloned()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+
+        if databases.is_empty() {
+            return Box::pin(async move { Ok(schemas) });
+        }
+
+        let cached_policies = self.identifier_case_sensitivity.lock().unwrap().clone();
+        let missing_databases = databases
+            .into_iter()
+            .filter(|database| !cached_policies.contains_key(database))
+            .collect::<Vec<_>>();
+        if missing_databases.is_empty() {
+            let policies = cached_policies
+                .into_iter()
+                .filter_map(|(database, policy)| policy.map(|policy| (database, policy)))
+                .collect();
+            return Box::pin(async move {
+                Ok(apply_identifier_case_sensitivity(
+                    schemas,
+                    &relation_databases,
+                    &policies,
+                ))
+            });
+        }
+
+        let factory = Box::new(AdapterConnectionFactory::new(self.adapter.engine().clone()));
+        let adapter = self.adapter.clone();
+        let query_token = token.clone();
+        let map_f = move |conn: &mut ConnectionGuard<'_>,
+                          database: &String|
+              -> AdapterResult<Option<IdentifierCaseSensitivity>> {
+            discover_database_identifier_case_sensitivity(
+                &adapter,
+                conn,
+                database,
+                query_token.clone(),
+            )
+        };
+        let reduce_f =
+            |acc: &mut HashMap<String, Option<IdentifierCaseSensitivity>>,
+             database: String,
+             result: AdapterResult<Option<IdentifierCaseSensitivity>>| {
+                match result {
+                    Ok(case_sensitivity) => {
+                        acc.insert(database, case_sensitivity);
+                    }
+                    Err(error) if error.kind() == AdapterErrorKind::Cancelled => {
+                        return Err(Cancellable::Error(error));
+                    }
+                    // Identifier metadata is an optional enrichment. An unavailable
+                    // capability must not make an otherwise valid schema fetch fail.
+                    Err(error) => emit_debug_log_message(format!(
+                        "Identifier policy discovery failed for database {database}: {error}; \
+                         using default identifier resolution"
+                    )),
+                }
+                Ok(())
+            };
         let map_reduce = MapReduce::new(factory, Box::new(map_f), Box::new(reduce_f), None);
-        map_reduce.run(Arc::new(keys), token)
+
+        Box::pin(async move {
+            let discovered_policies = map_reduce.run(Arc::new(missing_databases), token).await?;
+            self.identifier_case_sensitivity
+                .lock()
+                .unwrap()
+                .extend(discovered_policies.clone());
+            let policies = cached_policies
+                .into_iter()
+                .chain(discovered_policies)
+                .filter_map(|(database, policy)| policy.map(|policy| (database, policy)))
+                .collect();
+            Ok(apply_identifier_case_sensitivity(
+                schemas,
+                &relation_databases,
+                &policies,
+            ))
+        })
     }
 
     /// List relations schemas by patterns (use information schema query)
@@ -1161,51 +1645,21 @@ impl MetadataAdapter for SnowflakeMetadataAdapter {
 
         let queries = patterns_by_database
             .into_iter()
-            .map(|(database, patterns)| {
-                // Build the query for all relations in this database
-                let predicates = patterns
-                    .iter()
-                    .map(|pat| {
-                        format!(
-                            "(TABLE_SCHEMA ILIKE '{}' AND TABLE_NAME ILIKE '{}')",
-                            pat.schema_pattern, pat.table_pattern
-                        )
-                    })
-                    .collect::<Vec<_>>();
-                let predicates_union = predicates.join(" OR ");
-                format!(
-                    "SELECT
-    TABLE_CATALOG,
-    TABLE_SCHEMA,
-    TABLE_NAME,
-    COLUMN_NAME,
-    DATA_TYPE,
-    IS_NULLABLE,
-    CHARACTER_MAXIMUM_LENGTH,
-    NUMERIC_PRECISION,
-    NUMERIC_SCALE,
-    COMMENT
-FROM {database}.INFORMATION_SCHEMA.COLUMNS
-WHERE {predicates_union}
-ORDER BY TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION"
-                )
-            });
+            .map(|(database, patterns)| snowflake_relation_patterns_sql(&database, &patterns));
 
-        let factory = Box::new(AdapterConnectionFactory::new(
-            self.adapter.engine().clone(),
-            self.adapter.engine().threads(),
-        ));
+        let factory = Box::new(AdapterConnectionFactory::new(self.adapter.engine().clone()));
 
         // map_f runs the queries, reduce_f decodes the result set and builds the schemas
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
-        let map_f =
-            move |conn: &'_ mut dyn Connection, sql: &String| -> AdapterResult<Arc<RecordBatch>> {
-                let ctx = QueryCtx::default().with_desc("Get schema by pattern");
-                let (_, table) = adapter.query(&ctx, conn, sql, None, token_clone.clone())?;
-                let batch = table.original_record_batch();
-                Ok(batch)
-            };
+        let map_f = move |conn: &mut ConnectionGuard<'_>,
+                          sql: &String|
+              -> AdapterResult<Arc<RecordBatch>> {
+            let ctx = QueryCtx::default().with_desc("Get schema by pattern");
+            let (_, table) = adapter.query(&ctx, conn, sql, None, token_clone.clone())?;
+            let batch = table.original_record_batch();
+            Ok(batch)
+        };
 
         let quoting = self.adapter.quoting();
 
@@ -1250,7 +1704,15 @@ ORDER BY TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION"
         options: &'a MetadataQueryOptions,
         token: CancellationToken,
     ) -> AsyncAdapterResult<'a, BTreeMap<String, MetadataFreshness>> {
-        self.freshness_inner_with_options(relations, options, token)
+        with_time_machine_metadata_wrapper(
+            "global",
+            "freshness",
+            args_freshness(
+                relations.iter().map(|r| r.semantic_fqn()),
+                options.warehouse.clone(),
+            ),
+            self.freshness_inner_with_options(relations, options, token),
+        )
     }
 
     /// Honors per-source `loaded_at_field` / `loaded_at_query` config. Mirrors the
@@ -1264,11 +1726,20 @@ ORDER BY TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION"
         overrides: &'a BTreeMap<String, FreshnessOverride>,
         token: CancellationToken,
     ) -> AsyncAdapterResult<'a, BTreeMap<String, MetadataFreshness>> {
-        self.freshness_with_overrides_inner_with_options(
-            relations,
-            overrides,
-            &MetadataQueryOptions::default(),
-            token,
+        with_time_machine_metadata_wrapper(
+            "global",
+            "freshness_with_overrides",
+            args_freshness_with_overrides(
+                relations.iter().map(|r| r.semantic_fqn()),
+                overrides,
+                None,
+            ),
+            self.freshness_with_overrides_inner_with_options(
+                relations,
+                overrides,
+                &MetadataQueryOptions::default(),
+                token,
+            ),
         )
     }
 
@@ -1279,10 +1750,23 @@ ORDER BY TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION"
         options: &'a MetadataQueryOptions,
         token: CancellationToken,
     ) -> AsyncAdapterResult<'a, BTreeMap<String, MetadataFreshness>> {
-        self.freshness_with_overrides_inner_with_options(relations, overrides, options, token)
+        with_time_machine_metadata_wrapper(
+            "global",
+            "freshness_with_overrides",
+            args_freshness_with_overrides(
+                relations.iter().map(|r| r.semantic_fqn()),
+                overrides,
+                options.warehouse.clone(),
+            ),
+            self.freshness_with_overrides_inner_with_options(relations, overrides, options, token),
+        )
     }
 
-    fn freshness_all_in_schema<'a>(
+    fn supports_bulk_freshness_dump(&self) -> bool {
+        true
+    }
+
+    fn freshness_all_in_schema_inner<'a>(
         &'a self,
         database: &'a str,
         schema: &'a str,
@@ -1299,7 +1783,7 @@ ORDER BY TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION"
         };
 
         // Schema-only WHERE clause — no per-table filtering.
-        let where_clause = format!("table_schema = '{schema}'");
+        let where_clause = format!("table_schema = {}", snowflake_string_literal(schema));
         let sql = match snowflake_freshness_sql(database, &[where_clause]) {
             Ok(sql) => sql,
             Err(e) => {
@@ -1314,26 +1798,18 @@ ORDER BY TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION"
 
         let factory = Box::new(MetadataWarehouseConnectionFactory::new(
             adapter.clone(),
-            metadata_warehouse.clone(),
+            metadata_warehouse,
             token_clone.clone(),
-            Box::new(AdapterConnectionFactory::new(
-                adapter.engine().clone(),
-                adapter.engine().threads(),
-            )),
+            Box::new(AdapterConnectionFactory::new(adapter.engine().clone())),
         ));
         type Acc = BTreeMap<String, MetadataFreshness>;
 
-        let map_f = move |conn: &'_ mut dyn Connection,
+        let map_f = move |conn: &mut ConnectionGuard<'_>,
                           _: &()|
               -> AdapterResult<Arc<RecordBatch>> {
-            let plan = snowflake_metadata_query_plan(&sql, metadata_warehouse.as_deref());
-            let metadata_sql = plan
-                .statements
-                .last()
-                .expect("metadata query plan always includes metadata SQL");
             let ctx = QueryCtx::default().with_desc("Extracting freshness from information schema");
             let (_resp, agate_table) =
-                adapter.query(&ctx, conn, metadata_sql, None, token_clone.clone())?;
+                adapter.query(&ctx, conn, &sql, None, token_clone.clone())?;
             Ok(agate_table.original_record_batch())
         };
 
@@ -1358,16 +1834,150 @@ ORDER BY TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION"
         map_reduce.run(Arc::new(vec![()]), token)
     }
 
+    /// Owns the Snowflake freshness-prefetch strategy: group by database and, per
+    /// database, pick the cheapest way to dump last-modified metadata.
+    ///
+    /// - `metadata_warehouse` set → parallel per-schema fan-out on the isolated
+    ///   warehouse (bounded by the engine's thread count).
+    /// - no warehouse + adaptive → schema-count probe chooses a broad
+    ///   `table_schema IN (...)` scan (small DB) or sequential per-schema point
+    ///   queries (large DB).
+    /// - no warehouse + non-adaptive → always the broad `IN (...)` scan.
+    ///
+    /// Every path is fail-open, so a single failing schema or database never
+    /// aborts the run.
+    fn freshness_all_in_schemas<'a>(
+        &'a self,
+        relations: &'a [Arc<dyn BaseRelation>],
+        options: &'a MetadataQueryOptions,
+        token: CancellationToken,
+    ) -> AsyncAdapterResult<'a, BTreeMap<String, MetadataFreshness>> {
+        with_time_machine_metadata_wrapper(
+            "global",
+            "freshness_all_in_schemas",
+            args_freshness(
+                relations.iter().map(|r| r.semantic_fqn()),
+                options.warehouse.clone(),
+            ),
+            async move {
+                // Group by resolved database, then resolved schema, so the strategy
+                // decision (per database) and the `table_schema` predicates line up
+                // with `find_matching_relation`'s schema resolution.
+                let mut by_database: BTreeMap<
+                    String,
+                    BTreeMap<String, Vec<Arc<dyn BaseRelation>>>,
+                > = BTreeMap::new();
+                for relation in relations {
+                    let database = relation.database_as_resolved_str().unwrap_or_default();
+                    let schema = relation.schema_as_resolved_str().unwrap_or_default();
+                    by_database
+                        .entry(database.into_owned())
+                        .or_default()
+                        .entry(schema.into_owned())
+                        .or_default()
+                        .push(Arc::clone(relation));
+                }
+
+                // With a dedicated metadata warehouse the per-schema dumps run on the
+                // isolated warehouse, so fanning them out is a clear win. Without one
+                // they contend on the main warehouse, so the sequential/broad choice
+                // (below) keeps concurrency at one query at a time.
+                let has_metadata_warehouse = options
+                    .warehouse
+                    .as_deref()
+                    .is_some_and(|warehouse| !warehouse.is_empty());
+
+                let mut result: BTreeMap<String, MetadataFreshness> = BTreeMap::new();
+                for (database, schemas) in by_database {
+                    let db_result = if has_metadata_warehouse {
+                        let groups = schemas
+                            .into_iter()
+                            .map(|(schema, relations)| ((database.clone(), schema), relations))
+                            .collect();
+                        let fan_out = self
+                            .adapter
+                            .engine()
+                            .threads()
+                            .unwrap_or(DEFAULT_SCHEMA_PREFETCH_FANOUT);
+                        freshness_by_schema_fanout(self, groups, options, token.clone(), fan_out)
+                            .await
+                    } else {
+                        let use_broad = if options.adaptive_metadata_fetch {
+                            !self
+                                .should_fetch_schemas_sequentially(
+                                    &database,
+                                    schemas.len(),
+                                    token.clone(),
+                                )
+                                .await
+                        } else {
+                            true
+                        };
+                        if use_broad {
+                            let db_relations: Vec<Arc<dyn BaseRelation>> =
+                                schemas.values().flatten().cloned().collect();
+                            self.freshness_all_in_schemas_broad(
+                                &database,
+                                &db_relations,
+                                options,
+                                token.clone(),
+                            )
+                            .await
+                        } else {
+                            self.freshness_by_schema_sequential(
+                                &database,
+                                &schemas,
+                                options,
+                                token.clone(),
+                            )
+                            .await
+                        }
+                    };
+                    match db_result {
+                        Ok(values) => result.extend(values),
+                        Err(Cancellable::Error(err))
+                            if err.kind() == AdapterErrorKind::ReplayDataMissing =>
+                        {
+                            return Err(Cancellable::Error(err));
+                        }
+                        // A cancelled join/query can surface as `Cancellable::Error`
+                        // with kind `Cancelled` instead of `Cancellable::Cancelled` —
+                        // treat it the same way so cancellation always stops the run
+                        // instead of fail-opening.
+                        Err(Cancellable::Error(err))
+                            if err.kind() == AdapterErrorKind::Cancelled =>
+                        {
+                            return Err(Cancellable::Error(err));
+                        }
+                        Err(Cancellable::Error(err)) => emit_warn_log_message(
+                            ErrorCode::StateServiceWarn,
+                            format!(
+                                "dbt State database-level freshness dump failed for {database}: {err}; \
+                                 omitting freshness for this database"
+                            ),
+                        ),
+                        Err(Cancellable::Cancelled) => {
+                            return Err(Cancellable::Cancelled);
+                        }
+                    }
+                }
+                Ok(result)
+            },
+        )
+    }
+
     /// Reference: https://github.com/dbt-labs/dbt-adapters/blob/f492c919d3bd415bf5065b3cd8cd1af23562feb0/dbt-snowflake/src/dbt/include/snowflake/macros/metadata/list_relations_without_caching.sql
     fn list_relations_in_parallel_inner(
         &self,
         db_schemas: &[CatalogAndSchema],
         token: CancellationToken,
+        report_progress: bool,
     ) -> AsyncAdapterResult<'_, BTreeMap<CatalogAndSchema, AdapterResult<RelationVec>>> {
         self.list_relations_in_parallel_inner_with_options(
             db_schemas,
             &MetadataQueryOptions::default(),
             token,
+            report_progress,
         )
     }
 
@@ -1385,8 +1995,9 @@ ORDER BY TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION"
             .collect::<Vec<_>>();
 
         let future = async move {
+            // report_progress: false — existence checks don't drive a progress bar.
             let listed = self
-                .list_relations_in_parallel_inner_with_options(&db_schemas, options, token)
+                .list_relations_in_parallel_inner_with_options(&db_schemas, options, token, false)
                 .await?;
             let mut result = BTreeMap::new();
 
@@ -1409,7 +2020,15 @@ ORDER BY TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION"
 
             Ok(result)
         };
-        Box::pin(future)
+        with_time_machine_metadata_wrapper(
+            "global",
+            "relations_exist",
+            args_relations_exist(
+                relations.iter().map(|r| r.semantic_fqn()),
+                options.warehouse.clone(),
+            ),
+            future,
+        )
     }
 
     fn is_permission_error(&self, e: &AdapterError) -> bool {
@@ -1448,18 +2067,15 @@ ORDER BY TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION"
 
         let script = build_view_definition_script(&fqns);
 
-        let factory = Box::new(AdapterConnectionFactory::new(
-            self.adapter.engine().clone(),
-            self.adapter.engine().threads(),
-        ));
+        let factory = Box::new(AdapterConnectionFactory::new(self.adapter.engine().clone()));
 
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
-        let map_f = move |conn: &'_ mut dyn Connection,
+        let map_f = move |conn: &mut ConnectionGuard<'_>,
                           script: &String|
               -> AdapterResult<Arc<RecordBatch>> {
             let ctx = QueryCtx::default().with_desc("Fetch view definitions");
-            let sql = format!("EXECUTE IMMEDIATE $${script}$$");
+            let sql = format!("EXECUTE IMMEDIATE {}", snowflake_string_literal(script));
             let (_, table) = adapter.query(&ctx, conn, &sql, None, token_clone.clone())?;
             Ok(table.original_record_batch())
         };
@@ -1477,6 +2093,78 @@ ORDER BY TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION"
     }
 }
 
+fn discover_database_identifier_case_sensitivity(
+    adapter: &AdapterImpl,
+    conn: &mut ConnectionGuard<'_>,
+    database: &str,
+    token: CancellationToken,
+) -> AdapterResult<Option<IdentifierCaseSensitivity>> {
+    let show_sql = format!(
+        "show databases like {};",
+        snowflake_string_literal(database)
+    );
+    let show_ctx = QueryCtx::new_metadata().with_desc("Get database kind");
+    let (_, databases) = adapter.query(&show_ctx, conn, &show_sql, None, token.clone())?;
+    let batch = lowercase_column_names(databases.original_record_batch().as_ref());
+    let names = batch.column_values::<StringArray>("name")?;
+    let kinds = batch.column_values::<StringArray>("kind")?;
+    let is_catalog_linked = (0..batch.num_rows()).any(|index| {
+        names.value(index) == database
+            && kinds
+                .value(index)
+                .eq_ignore_ascii_case("CATALOG-LINKED DATABASE")
+    });
+    if !is_catalog_linked {
+        return Ok(None);
+    }
+
+    let config_sql = format!(
+        "select system$get_catalog_linked_database_config({}) as \"config\";",
+        snowflake_string_literal(database)
+    );
+    let config_ctx = QueryCtx::new_metadata().with_desc("Get identifier resolution policy");
+    let (_, config) = adapter.query(&config_ctx, conn, &config_sql, None, token)?;
+    let batch = lowercase_column_names(config.original_record_batch().as_ref());
+    let configs = batch.column_values::<StringArray>("config")?;
+
+    Ok((batch.num_rows() == 1)
+        .then(|| parse_identifier_case_sensitivity(configs.value(0)))
+        .flatten())
+}
+
+fn parse_identifier_case_sensitivity(config: &str) -> Option<IdentifierCaseSensitivity> {
+    let config: serde_json::Value = serde_json::from_str(config).ok()?;
+    match config.get("catalog_case_sensitivity")?.as_str()? {
+        value if value.eq_ignore_ascii_case("CASE_INSENSITIVE") => {
+            Some(IdentifierCaseSensitivity::CaseInsensitive)
+        }
+        value if value.eq_ignore_ascii_case("CASE_SENSITIVE") => {
+            Some(IdentifierCaseSensitivity::CaseSensitive)
+        }
+        _ => None,
+    }
+}
+
+fn apply_identifier_case_sensitivity(
+    schemas: HashMap<String, AdapterResult<Arc<Schema>>>,
+    relation_databases: &HashMap<String, String>,
+    policies: &HashMap<String, IdentifierCaseSensitivity>,
+) -> HashMap<String, AdapterResult<Arc<Schema>>> {
+    schemas
+        .into_iter()
+        .map(|(semantic_fqn, schema)| {
+            let policy = relation_databases
+                .get(&semantic_fqn)
+                .and_then(|database| policies.get(database));
+            let schema = match (schema, policy) {
+                (Ok(schema), Some(policy)) => Ok(Arc::new(policy.apply_to_schema(schema.as_ref()))),
+                (schema, _) => schema,
+            };
+            (semantic_fqn, schema)
+        })
+        .collect()
+}
+
 /// reference: https://github.com/sdf-labs/sdf/blob/main/crates/sdf-cli/src/providers/database/snowflake.rs#L177-L178
 fn build_schema_from_desc_table(
     show_columns_result: Arc<RecordBatch>,
@@ -1490,7 +2178,7 @@ fn build_schema_from_desc_table(
     let mut fields = vec![];
     for i in 0..show_columns_result.num_rows() {
         let name = column_names.value(i);
-        let nullable = nullability.value(i).to_uppercase() == "Y";
+        let nullable = uppercase(nullability.value(i).into()) == "Y";
         let text_data_type = data_types.value(i);
         let comment = match comments.value(i) {
             "" => None,
@@ -1575,7 +2263,7 @@ fn build_schemas_from_information_schema(
 
         let name = column_names.value(i);
         let data_type = data_types.value(i);
-        let nullable = is_nullable.value(i).to_uppercase() == "YES";
+        let nullable = uppercase(is_nullable.value(i).into()) == "YES";
         let comment = match comments.value(i) {
             "" => None,
             c => Some(c.to_string()),
@@ -1627,9 +2315,74 @@ fn build_schemas_from_information_schema(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::connection::tlocal_slot_occupied;
     use crate::engine::NoopConnection;
+    use crate::stmt_splitter::{DefaultStmtSplitter, StmtSplitter};
     use arrow_schema::{DataType, Field};
-    use std::sync::Mutex;
+
+    #[test]
+    fn parses_catalog_linked_database_identifier_case_sensitivity() {
+        assert_eq!(
+            parse_identifier_case_sensitivity(r#"{"catalog_case_sensitivity":"CASE_INSENSITIVE"}"#),
+            Some(IdentifierCaseSensitivity::CaseInsensitive)
+        );
+        assert_eq!(
+            parse_identifier_case_sensitivity(r#"{"catalog_case_sensitivity":"CASE_SENSITIVE"}"#),
+            Some(IdentifierCaseSensitivity::CaseSensitive)
+        );
+        assert_eq!(parse_identifier_case_sensitivity("{}"), None);
+    }
+
+    #[test]
+    fn applies_identifier_policy_only_to_relations_from_the_matching_database() {
+        let schemas = HashMap::from([
+            (
+                "catalog_linked.schema.table".to_string(),
+                Ok(Arc::new(Schema::new(vec![Field::new(
+                    "id",
+                    DataType::Int64,
+                    false,
+                )]))),
+            ),
+            (
+                "native.schema.table".to_string(),
+                Ok(Arc::new(Schema::new(vec![Field::new(
+                    "ID",
+                    DataType::Int64,
+                    false,
+                )]))),
+            ),
+        ]);
+        let relation_databases = HashMap::from([
+            (
+                "catalog_linked.schema.table".to_string(),
+                "catalog_linked".to_string(),
+            ),
+            ("native.schema.table".to_string(), "native".to_string()),
+        ]);
+        let policies = HashMap::from([(
+            "catalog_linked".to_string(),
+            IdentifierCaseSensitivity::CaseInsensitive,
+        )]);
+
+        let schemas = apply_identifier_case_sensitivity(schemas, &relation_databases, &policies);
+
+        assert_eq!(
+            IdentifierCaseSensitivity::from_field(
+                schemas["catalog_linked.schema.table"]
+                    .as_ref()
+                    .unwrap()
+                    .field(0)
+            ),
+            Some(IdentifierCaseSensitivity::CaseInsensitive)
+        );
+        assert_eq!(
+            IdentifierCaseSensitivity::from_field(
+                schemas["native.schema.table"].as_ref().unwrap().field(0)
+            ),
+            None
+        );
+    }
 
     struct FakeConnectionFactory {
         recycled: Arc<Mutex<u32>>,
@@ -1637,20 +2390,14 @@ mod tests {
 
     impl ConnectionFactory for FakeConnectionFactory {
         type Error = Cancellable<AdapterError>;
+        type Connection = ConnectionGuard<'static>;
 
-        fn new_connection(
-            &self,
-            _node_id: Option<&str>,
-        ) -> Result<Box<dyn Connection>, Self::Error> {
-            Ok(Box::new(NoopConnection))
+        fn new_connection(&self, _node_id: Option<&str>) -> Result<Self::Connection, Self::Error> {
+            Ok(ConnectionGuard::new(Box::new(NoopConnection)))
         }
 
-        fn recycle_connection(&self, _conn: Box<dyn Connection>) {
+        fn recycle_connection(&self, _conn: Self::Connection) {
             *self.recycled.lock().unwrap() += 1;
-        }
-
-        fn connection_limit(&self) -> u32 {
-            4
         }
     }
 
@@ -1663,11 +2410,11 @@ mod tests {
         let use_log = log.clone();
         let restore_log = log;
         (
-            Box::new(move |_conn: &mut dyn Connection, _warehouse: &str| {
+            Box::new(move |_conn: &mut ConnectionGuard<'_>, _warehouse: &str| {
                 use_log.lock().unwrap().push("use");
                 Ok(())
             }),
-            Box::new(move |_conn: &mut dyn Connection| {
+            Box::new(move |_conn: &mut ConnectionGuard<'_>| {
                 restore_log.lock().unwrap().push("restore");
                 if fail_restore {
                     Err(AdapterError::new(
@@ -1727,6 +2474,10 @@ mod tests {
             *recycled.lock().unwrap(),
             0,
             "connection must not be recycled after a failed restore"
+        );
+        assert!(
+            !tlocal_slot_occupied(),
+            "connection stuck on the metadata warehouse must not be parked for the next node"
         );
     }
 
@@ -1802,6 +2553,122 @@ mod tests {
         .expect("valid view-definition batch")
     }
 
+    /// Build a `SHOW OBJECTS`-shaped `RecordBatch`. `is_interactive` is `None` to
+    /// simulate accounts/versions where that column doesn't exist yet; when present,
+    /// individual cells may themselves be `None` to simulate a NULL value.
+    fn show_objects_batch(
+        rows: Vec<(&str, &str, &str, &str, &str, &str)>,
+        is_interactive: Option<Vec<Option<&str>>>,
+    ) -> RecordBatch {
+        let mut fields = vec![
+            Field::new("name", DataType::Utf8, false),
+            Field::new("database_name", DataType::Utf8, false),
+            Field::new("schema_name", DataType::Utf8, false),
+            Field::new("kind", DataType::Utf8, false),
+            Field::new("is_dynamic", DataType::Utf8, false),
+            Field::new("is_iceberg", DataType::Utf8, false),
+        ];
+        let mut names = Vec::with_capacity(rows.len());
+        let mut database_names = Vec::with_capacity(rows.len());
+        let mut schema_names = Vec::with_capacity(rows.len());
+        let mut kinds = Vec::with_capacity(rows.len());
+        let mut is_dynamics = Vec::with_capacity(rows.len());
+        let mut is_icebergs = Vec::with_capacity(rows.len());
+        for (name, database_name, schema_name, kind, is_dynamic, is_iceberg) in rows {
+            names.push(name);
+            database_names.push(database_name);
+            schema_names.push(schema_name);
+            kinds.push(kind);
+            is_dynamics.push(is_dynamic);
+            is_icebergs.push(is_iceberg);
+        }
+        let mut columns: Vec<Arc<dyn Array>> = vec![
+            Arc::new(StringArray::from(names)),
+            Arc::new(StringArray::from(database_names)),
+            Arc::new(StringArray::from(schema_names)),
+            Arc::new(StringArray::from(kinds)),
+            Arc::new(StringArray::from(is_dynamics)),
+            Arc::new(StringArray::from(is_icebergs)),
+        ];
+        if let Some(is_interactive) = is_interactive {
+            fields.push(Field::new("is_interactive", DataType::Utf8, true));
+            columns.push(Arc::new(StringArray::from(is_interactive)));
+        }
+        RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
+            .expect("valid show-objects batch")
+    }
+
+    #[test]
+    fn build_relations_from_show_objects_tolerates_missing_is_interactive_column() {
+        let batch = show_objects_batch(vec![("MY_DT", "DB", "SCHEMA", "TABLE", "y", "n")], None);
+
+        let relations = build_relations_from_show_objects(&batch, ResolvedQuoting::trues())
+            .expect("missing is_interactive column should degrade gracefully, not error");
+
+        assert_eq!(relations.len(), 1);
+        assert_eq!(
+            relations[0].relation_type(),
+            Some(RelationType::DynamicTable)
+        );
+    }
+
+    #[test]
+    fn build_relations_from_show_objects_classifies_interactive_table_when_column_present() {
+        let batch = show_objects_batch(
+            vec![("MY_IT", "DB", "SCHEMA", "TABLE", "n", "n")],
+            Some(vec![Some("y")]),
+        );
+
+        let relations = build_relations_from_show_objects(&batch, ResolvedQuoting::trues())
+            .expect("valid show-objects batch");
+
+        assert_eq!(relations.len(), 1);
+        assert_eq!(
+            relations[0].relation_type(),
+            Some(RelationType::InteractiveTable)
+        );
+    }
+
+    #[test]
+    fn build_relations_from_show_objects_classifies_interactive_table_for_canonical_truthy_value() {
+        let batch = show_objects_batch(
+            vec![("MY_IT", "DB", "SCHEMA", "TABLE", "n", "n")],
+            Some(vec![Some("yes")]),
+        );
+
+        let relations = build_relations_from_show_objects(&batch, ResolvedQuoting::trues())
+            .expect("valid show-objects batch");
+
+        assert_eq!(relations.len(), 1);
+        assert_eq!(
+            relations[0].relation_type(),
+            Some(RelationType::InteractiveTable)
+        );
+    }
+
+    #[test]
+    fn build_relations_from_show_objects_tolerates_null_is_interactive_value() {
+        let batch = show_objects_batch(
+            vec![("MY_DT", "DB", "SCHEMA", "TABLE", "y", "n")],
+            Some(vec![None]),
+        );
+
+        let relations = build_relations_from_show_objects(&batch, ResolvedQuoting::trues())
+            .expect("NULL is_interactive cell should degrade gracefully, not error");
+
+        assert_eq!(relations.len(), 1);
+        assert_eq!(
+            relations[0].relation_type(),
+            Some(RelationType::DynamicTable)
+        );
+    }
+
+    #[test]
+    fn relation_type_from_table_flags_errors_on_malformed_is_interactive_value() {
+        let err = relation_type_from_table_flags("n", "maybe").unwrap_err();
+        assert!(err.message().contains("maybe"));
+    }
+
     #[test]
     fn snowflake_freshness_sql_rejects_blank_database() {
         let err =
@@ -1828,7 +2695,220 @@ mod tests {
         let sql =
             snowflake_freshness_sql(" RAW ", &["table_schema = 'PUBLIC'".to_string()]).unwrap();
 
-        assert!(sql.contains("FROM RAW.INFORMATION_SCHEMA.TABLES"));
+        assert!(sql.contains(r#"FROM "RAW".INFORMATION_SCHEMA.TABLES"#));
+    }
+
+    #[test]
+    fn snowflake_freshness_sql_builds_broad_in_scan() {
+        // Mirrors how `freshness_all_in_schemas` composes the broad multi-schema
+        // predicate for a small database.
+        let sql =
+            snowflake_freshness_sql("RAW", &["table_schema IN ('S0', 'S1', 'S2')".to_string()])
+                .unwrap();
+
+        assert!(sql.contains(r#"FROM "RAW".INFORMATION_SCHEMA.TABLES"#));
+        assert!(sql.contains("WHERE table_schema IN ('S0', 'S1', 'S2')"));
+    }
+
+    #[test]
+    fn snowflake_string_literal_escapes_single_quotes() {
+        assert_eq!(snowflake_string_literal("PUBLIC"), "'PUBLIC'");
+        // A schema name containing `'` is escaped by doubling so the string
+        // literal stays well-formed.
+        let schema = snowflake_string_literal("o'brien");
+        assert_eq!(schema, "'o''brien'");
+
+        let sql = snowflake_freshness_sql("RAW", &[format!("table_schema = {schema}")]).unwrap();
+        assert!(sql.contains("WHERE table_schema = 'o''brien'"));
+    }
+
+    #[test]
+    fn snowflake_show_objects_sql_escapes_identifiers_and_warehouse_name() {
+        let relation = Relation::new(
+            AdapterType::Snowflake,
+            r#"DB"; select 1; --"#.to_string(),
+            r#"SCHEMA"; select 2; --"#.to_string(),
+            String::new(),
+        )
+        .with_quoting(ResolvedQuoting::trues());
+        let db_schema = CatalogAndSchema::from(&relation as &dyn BaseRelation);
+        let sql = snowflake_show_objects_sql(&db_schema, 10_000, Some(r"T\'; select 3; --"));
+
+        assert!(sql.contains(r#"IN SCHEMA "DB""; select 1; --"."SCHEMA""; select 2; --""#));
+        assert!(sql.contains(r"FROM 'T\\''; select 3; --'"));
+        assert_eq!(
+            DefaultStmtSplitter.split(&sql, AdapterType::Snowflake),
+            vec![sql.trim_end_matches(';')]
+        );
+    }
+
+    #[test]
+    fn snowflake_relation_patterns_escape_literals_and_quote_database() {
+        let pattern = RelationPattern::new(
+            r#"db"; drop table customers; --"#.to_string(),
+            r"S\'; select 1; --".to_string(),
+            r"T\'; select 2; --".to_string(),
+        );
+        let sql = snowflake_relation_patterns_sql(&pattern.database, &[&pattern]);
+
+        assert!(sql.contains(r#"FROM "db""; drop table customers; --".INFORMATION_SCHEMA"#));
+        assert!(sql.contains(r"TABLE_SCHEMA ILIKE 'S\\''; select 1; --'"));
+        assert!(sql.contains(r"TABLE_NAME ILIKE 'T\\''; select 2; --'"));
+        assert_eq!(
+            DefaultStmtSplitter.split(&sql, AdapterType::Snowflake),
+            vec![sql.as_str()]
+        );
+
+        let lowercase_database =
+            RelationPattern::new("analytics".to_string(), "%".to_string(), "%".to_string());
+        let sql =
+            snowflake_relation_patterns_sql(&lowercase_database.database, &[&lowercase_database]);
+        assert!(sql.contains("FROM analytics.INFORMATION_SCHEMA.COLUMNS"));
+
+        let punctuation_database =
+            RelationPattern::new("a,b".to_string(), "%".to_string(), "%".to_string());
+        let sql = snowflake_relation_patterns_sql(
+            &punctuation_database.database,
+            &[&punctuation_database],
+        );
+        assert!(sql.contains(r#"FROM "a,b".INFORMATION_SCHEMA.COLUMNS"#));
+    }
+
+    #[test]
+    fn snowflake_user_functions_sql_escapes_catalog_and_schema_identifiers() {
+        let sql =
+            snowflake_show_user_functions_sql(r#"DB"; select 1; --"#, r#"SCHEMA"; select 2; --"#);
+
+        assert_eq!(
+            DefaultStmtSplitter.split(&sql, AdapterType::Snowflake),
+            vec![sql.as_str()]
+        );
+        assert!(sql.contains(r#""DB""; select 1; --"."SCHEMA""; select 2; --""#));
+
+        assert_eq!(
+            snowflake_show_user_functions_sql("analytics", "dbt_user"),
+            "SHOW USER FUNCTIONS IN SCHEMA analytics.dbt_user"
+        );
+    }
+
+    #[test]
+    fn snowflake_describe_table_name_quotes_unsafe_unquoted_components() {
+        let relation = Relation::new(
+            AdapterType::Snowflake,
+            r#"DB"; select 1; --"#.to_string(),
+            r#"SCHEMA"; select 2; --"#.to_string(),
+            r#"TABLE"; select 3; --"#.to_string(),
+        )
+        .with_quoting(ResolvedQuoting::falses());
+        let sql = format!("describe table {};", snowflake_relation_sql_name(&relation));
+
+        assert_eq!(
+            DefaultStmtSplitter.split(&sql, AdapterType::Snowflake),
+            vec![sql.trim_end_matches(';')]
+        );
+        assert!(
+            sql.contains(
+                r#""DB""; select 1; --"."SCHEMA""; select 2; --"."TABLE""; select 3; --""#
+            )
+        );
+    }
+
+    #[test]
+    fn snowflake_freshness_sql_quotes_untrusted_database() {
+        let sql = snowflake_freshness_sql(
+            r#"db"; drop table customers; --"#,
+            &["table_schema = 'PUBLIC'".to_string()],
+        )
+        .unwrap();
+
+        assert!(sql.contains(r#"FROM "db""; drop table customers; --".INFORMATION_SCHEMA.TABLES"#));
+    }
+
+    #[test]
+    fn snowflake_freshness_query_keeps_untrusted_leaf_name_in_one_statement() {
+        let relation = Arc::new(
+            Relation::new(
+                AdapterType::Snowflake,
+                "RAW".to_string(),
+                "PUBLIC".to_string(),
+                r"T\'; select 1; --".to_string(),
+            )
+            .with_quoting(ResolvedQuoting::trues()),
+        ) as Arc<dyn BaseRelation>;
+        let (where_clauses, _) = build_relation_clauses(&[relation]).unwrap();
+        let sql = snowflake_freshness_sql("RAW", &where_clauses["RAW"]).unwrap();
+
+        assert!(sql.contains(r"table_name = 'T\\''; select 1; --'"));
+        assert_eq!(
+            DefaultStmtSplitter.split(&sql, AdapterType::Snowflake),
+            vec![sql.as_str()]
+        );
+    }
+
+    #[test]
+    fn snowflake_schema_count_sql_escapes_double_quotes() {
+        assert_eq!(
+            snowflake_schema_count_sql("DB", 1420),
+            r#"SHOW TERSE SCHEMAS IN DATABASE "DB" LIMIT 1420"#
+        );
+        // A database name containing `"` is escaped by doubling so the identifier
+        // stays well-formed.
+        assert_eq!(
+            snowflake_schema_count_sql(r#"a"b"#, 100),
+            r#"SHOW TERSE SCHEMAS IN DATABASE "a""b" LIMIT 100"#
+        );
+    }
+
+    #[test]
+    fn schema_probe_limit_scales_and_clamps() {
+        // D=5 -> 284 * 5 = 1420, below the 10k cap.
+        assert_eq!(schema_probe_limit(5), 1420);
+        // D=36 -> 284 * 36 = 10224, clamped to Snowflake's SHOW LIMIT cap.
+        assert_eq!(schema_probe_limit(36), MAX_SHOW_LIMIT);
+        assert_eq!(schema_probe_limit(36), 10000);
+    }
+
+    #[test]
+    fn crossover_coefficient_matches_measured_rates() {
+        // Derived in code from the two measured curves; documented as ~284.
+        assert_eq!(CROSSOVER_N_PER_FETCHED_SCHEMA, 284);
+    }
+
+    #[test]
+    fn schema_probe_decision_small_db_uses_sequential_without_probe() {
+        // At or below ALWAYS_SEQUENTIAL_MAX_SCHEMAS the probe is skipped: the
+        // decision is sequential regardless of any observed count.
+        assert!(schema_probe_decision(1, None));
+        assert!(schema_probe_decision(ALWAYS_SEQUENTIAL_MAX_SCHEMAS, None));
+        assert!(schema_probe_decision(
+            ALWAYS_SEQUENTIAL_MAX_SCHEMAS,
+            Some(0)
+        ));
+    }
+
+    #[test]
+    fn schema_probe_decision_probe_failure_falls_back_to_broad_scan() {
+        // D above the short-circuit and no observed count (probe error) -> broad IN scan.
+        assert!(!schema_probe_decision(
+            ALWAYS_SEQUENTIAL_MAX_SCHEMAS + 1,
+            None
+        ));
+    }
+
+    #[test]
+    fn schema_probe_decision_saturated_probe_uses_sequential() {
+        // D=5 -> threshold 284*5 = 1420. Saturated (observed == threshold) -> sequential.
+        assert!(schema_probe_decision(5, Some(1420)));
+        // Just short of saturation -> the DB is small enough for one broad scan.
+        assert!(!schema_probe_decision(5, Some(1419)));
+    }
+
+    #[test]
+    fn schema_probe_decision_clamped_threshold_saturation() {
+        // D=36 -> 284*36 = 10224, clamped to MAX_SHOW_LIMIT (10000). Saturation is
+        // measured against the clamped threshold.
+        assert!(schema_probe_decision(36, Some(MAX_SHOW_LIMIT)));
+        assert!(!schema_probe_decision(36, Some(MAX_SHOW_LIMIT - 1)));
     }
 
     #[test]
@@ -1962,56 +3042,19 @@ mod tests {
     }
 
     #[test]
-    fn snowflake_metadata_query_plan_uses_metadata_warehouse_before_query() {
-        let options = MetadataQueryOptions {
-            warehouse: Some("metadata_wh".to_string()),
-        };
-        let metadata_sql = "select * from db.information_schema.tables";
-
-        let plan = snowflake_metadata_query_plan(metadata_sql, options.warehouse.as_deref());
-
+    fn interactive_flag_takes_precedence_over_dynamic() {
         assert_eq!(
-            plan.statements,
-            vec![
-                "use warehouse metadata_wh".to_string(),
-                "select * from db.information_schema.tables".to_string(),
-            ]
+            relation_type_from_table_flags("y", "y").unwrap(),
+            RelationType::InteractiveTable
         );
-    }
-
-    #[test]
-    fn snowflake_freshness_override_query_plan_uses_metadata_warehouse_before_query() {
-        let options = MetadataQueryOptions {
-            warehouse: Some("metadata_wh".to_string()),
-        };
-        let metadata_sql = "select max(loaded_at) as last_modified from raw.events";
-
-        let plan =
-            snowflake_freshness_override_query_plan(metadata_sql, options.warehouse.as_deref());
-
+        // static IT: is_dynamic=n, is_interactive=y
         assert_eq!(
-            plan.statements,
-            vec![
-                "use warehouse metadata_wh".to_string(),
-                "select max(loaded_at) as last_modified from raw.events".to_string(),
-            ]
+            relation_type_from_table_flags("n", "y").unwrap(),
+            RelationType::InteractiveTable
         );
-    }
-
-    #[test]
-    fn snowflake_list_relations_query_plan_uses_metadata_warehouse_before_listing() {
-        let options = MetadataQueryOptions {
-            warehouse: Some("metadata_wh".to_string()),
-        };
-
-        let plan = snowflake_list_relations_query_plan(options.warehouse.as_deref());
-
         assert_eq!(
-            plan.statements,
-            vec![
-                "use warehouse metadata_wh".to_string(),
-                "list_relations".to_string(),
-            ]
+            relation_type_from_table_flags("y", "n").unwrap(),
+            RelationType::DynamicTable
         );
     }
 
@@ -2032,5 +3075,34 @@ mod tests {
         assert!(script.contains("OBJECT_NAME"));
         assert!(script.contains("DEFINITION"));
         assert!(script.contains("ERROR"));
+    }
+
+    #[test]
+    fn view_definition_query_keeps_untrusted_fqn_in_one_statement() {
+        let fqn = r#""RAW"."PUBLIC"."T\'); DROP TABLE CUSTOMERS; $$ --""#.to_string();
+        let script = build_view_definition_script(&[fqn]);
+        let sql = format!("EXECUTE IMMEDIATE {}", snowflake_string_literal(&script));
+
+        assert!(script.contains("'\"RAW\".\"PUBLIC\".\"T\\\\''); DROP TABLE CUSTOMERS; $$ --\"'"));
+        assert_eq!(
+            DefaultStmtSplitter.split(&sql, AdapterType::Snowflake),
+            vec![sql.as_str()]
+        );
+    }
+
+    #[test]
+    fn snowflake_relation_identifier_safely_honors_quote_policy() {
+        assert_eq!(
+            snowflake_relation_identifier(r#"db"; SELECT 1; --"#, false),
+            r#""db""; SELECT 1; --""#
+        );
+        assert_eq!(
+            snowflake_relation_identifier("analytics", false),
+            "analytics"
+        );
+        assert_eq!(
+            snowflake_relation_identifier("analytics", true),
+            r#""analytics""#
+        );
     }
 }

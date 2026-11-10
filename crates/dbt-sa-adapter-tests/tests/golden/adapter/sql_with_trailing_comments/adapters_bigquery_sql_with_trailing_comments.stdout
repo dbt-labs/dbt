@@ -1,0 +1,66 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/simple_test.sql
+=== Investigating how this dialect handles comment-only statements ===
+Test 1: Original issue - query with trailing comment
+  Result:
+Test 2: Query with trailing line comment
+  Result:
+Test 3: Query with multiple trailing comments
+  Result:
+Test 4: Exact original GitHub issue case
+  Result:
+Test 5: Comment at start, then SQL
+  Result:
+Test 6: SQL surrounded by comments
+  Result:
+Test 7: Multiple statements with mixed comments
+  Result:
+=== All trailing comment tests completed successfully! ===
+=== Testing original GitHub issue ===
+✓ Original issue test completed
+   Parsing models/test_model.sql
+Test 1 result:
+Test 2 result:
+Test 3 result:
+Test 4 result:
+Test 5 result:
+Test 6 result:
+Test 7 result:
+Test 8 result:
+ Rendering models/test_model.sql
+Test 1 result: 1
+Test 2 result: 2
+Test 3 result: 3
+Test 4 result: 4
+Test 5 result: 5
+Test 6 result: 6
+Test 7 result: 7
+Test 8 result: 88
+   Running models/test_model.sql
+ Succeeded model adapters_bigquery_sql_with_trailing_comments.test_model (table) [1 of 2 in duration]
+ Rendering models/simple_test.sql
+=== Investigating how this dialect handles comment-only statements ===
+Test 1: Original issue - query with trailing comment
+  Result: {<agate.Row: (1)>: undefined}
+Test 2: Query with trailing line comment
+  Result: {<agate.Row: (2)>: undefined}
+Test 3: Query with multiple trailing comments
+  Result: {<agate.Row: (3)>: undefined}
+Test 4: Exact original GitHub issue case
+  Result: {<agate.Row: (1)>: undefined}
+Test 5: Comment at start, then SQL
+  Result: {<agate.Row: (5)>: undefined}
+Test 6: SQL surrounded by comments
+  Result: {<agate.Row: (6)>: undefined}
+Test 7: Multiple statements with mixed comments
+  Result: {<agate.Row: (8)>: undefined}
+=== All trailing comment tests completed successfully! ===
+=== Testing original GitHub issue ===
+✓ Original issue test completed
+   Running models/simple_test.sql
+ Succeeded model adapters_bigquery_sql_with_trailing_comments.simple_test (table) [2 of 2 in duration]
+==================== Execution Summary =====================
+Finished 'run' successfully for target 'bigquery' [duration]
+Processed: 2 models
+Summary: 2 total | 2 success

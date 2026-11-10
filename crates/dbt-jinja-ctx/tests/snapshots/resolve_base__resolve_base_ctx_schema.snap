@@ -1,6 +1,6 @@
 ---
 source: fs/sa/crates/dbt-jinja-ctx/tests/resolve_base.rs
-assertion_line: 117
+assertion_line: 181
 expression: schema
 ---
 {
@@ -11,10 +11,19 @@ expression: schema
   "required": [
     "MACRO_DISPATCH_ORDER",
     "TARGET_PACKAGE_NAME",
+    "builtins",
     "connection_name",
+    "context",
     "doc",
     "execute",
-    "node"
+    "function",
+    "load_result",
+    "metric",
+    "node",
+    "ref",
+    "source",
+    "store_raw_result",
+    "store_result"
   ],
   "properties": {
     "MACRO_DISPATCH_ORDER": {
@@ -31,9 +40,20 @@ expression: schema
       "description": "`{{ TARGET_PACKAGE_NAME }}` — local project name. Key string matches `minijinja::constants::TARGET_PACKAGE_NAME`.",
       "type": "string"
     },
+    "builtins": {
+      "description": "`{{ builtins.* }}` — `ref`/`source`/`metric`/`function` stand-ins exposing `.config`, present at base scope for naming macros (dbt-core does the same). Shadowed by [`ResolveModelCtx::builtins`] on per-model renders."
+    },
     "connection_name": {
       "description": "`{{ connection_name }}` — empty string at base scope.",
       "type": "string"
+    },
+    "context": {
+      "description": "`{{ context }}` — `MacroLookupContext` used by naming macros for root-project metadata and macro dispatch.",
+      "allOf": [
+        {
+          "$ref": "#/definitions/JinjaObject<dbt_jinja_ctx::objects::lookup::MacroLookupContext>"
+        }
+      ]
     },
     "doc": {
       "description": "`{{ doc(package, name) }}` — `DocMacro` Object lookup.\n\nTyped `MinijinjaValue` while `DocMacro` lives in `dbt-jinja-utils`; a future PR moves it here and tightens to `JinjaObject<DocMacro>`."
@@ -42,9 +62,38 @@ expression: schema
       "description": "`{{ execute }}` — `false` at parse, flipped to `true` at compile/run (PR 5+).",
       "type": "boolean"
     },
+    "function": {
+      "description": "`{{ function.config }}` — see [`ResolveBaseCtx::ref_fn`]. Shadowed by the callable [`ResolveModelCtx::function`]."
+    },
+    "load_result": {
+      "description": "`{{ load_result(...) }}` — `ResultStore`-backed closure. See [`ResolveBaseCtx::store_result`] for why this is at base scope."
+    },
+    "metric": {
+      "description": "`{{ metric.config }}` — see [`ResolveBaseCtx::ref_fn`]. Shadowed by the callable [`ResolveModelCtx::metric`]."
+    },
     "node": {
       "description": "`{{ node }}` — `Value::NONE` at base scope; populated per-model."
+    },
+    "ref": {
+      "description": "`{{ ref.config }}` — same stand-in [`ResolveBaseCtx::builtins`] holds under `ref`; `UNDEFINED` when no runtime config is in scope. Shadowed by the callable [`ResolveModelCtx::ref_fn`]."
+    },
+    "source": {
+      "description": "`{{ source.config }}` — see [`ResolveBaseCtx::ref_fn`]. Shadowed by the callable [`ResolveModelCtx::source`]."
+    },
+    "store_raw_result": {
+      "description": "`{{ store_raw_result(...) }}` — `ResultStore`-backed closure. See [`ResolveBaseCtx::store_result`] for why this is at base scope."
+    },
+    "store_result": {
+      "description": "`{{ store_result(...) }}` — `ResultStore`-backed closure.\n\nPresent at *base* scope, not just on [`ResolveModelCtx`], because `generate_{database,schema,alias}_name` macros are invoked with the bare base ctx (see `dbt_jinja_utils::utils::generate_component_name`). dbt-core runs those through `generate_generate_name_macro_context`, which builds a `MacroContext(ProviderContext)` and therefore always exposes the three result-store functions. Omitting them here made a customer macro that calls `run_query(...)` inside `generate_schema_name` blow up on `load_result`, and the caller's `unwrap_or_else` silently fell back to the profile schema.\n\n[`crate::CompileBaseCtx`] already carries these at base scope for the same reason."
     }
   },
-  "additionalProperties": true
+  "additionalProperties": true,
+  "definitions": {
+    "JinjaObject<dbt_jinja_ctx::objects::lookup::MacroLookupContext>": {
+      "description": "Opaque Jinja-callable object backed by `dbt_jinja_ctx::objects::lookup::MacroLookupContext`.",
+      "type": "object",
+      "x-jinja-object": true,
+      "x-jinja-object-type": "dbt_jinja_ctx::objects::lookup::MacroLookupContext"
+    }
+  }
 }

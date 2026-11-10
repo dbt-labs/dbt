@@ -3,10 +3,9 @@ use std::pin::Pin;
 
 use dbt_common::FsResult;
 use dbt_common::stats::NodeStatus;
-use dbt_jinja_utils::utils::add_task_context;
-use dbt_schemas::schemas::{DbtModel, InternalDbtNode};
+use dbt_schemas::schemas::DbtModel;
 use dbt_tasks_core::context::TaskRunnerCtx;
-use dbt_tasks_core::task::TaskOp;
+use dbt_tasks_core::task::run_blocking_task_operation;
 
 use crate::cloneable::Cloneable;
 use crate::materialize::materialize_clone;
@@ -18,37 +17,30 @@ impl Cloneable for DbtModel {
         ctx: &'a mut TaskRunnerCtx,
     ) -> Pin<Box<dyn Future<Output = FsResult<NodeStatus>> + Send + 'a>> {
         Box::pin(async move {
-            let mut base_context = ctx.inner.base_context.clone();
+            let base_context = ctx.run_base_context(self)?;
 
-            add_task_context(&mut base_context, self.common(), &ctx.thread_id);
-
-            let adapter_type = ctx.adapter_type();
-            let max_threads = ctx.dbt_profile().threads;
+            let adapter = ctx.adapter_for(self)?;
+            let clone_adapter = adapter.clone();
             let node = self.clone();
             let ctx_inner = ctx.clone();
 
-            let result = TaskOp::BlockingWithConnection {
-                f: Box::new(move || {
-                    materialize_clone(
-                        &node,
-                        &node.deprecated_config,
-                        adapter_type,
-                        ctx_inner.runtime_config(),
-                        ctx_inner.defer_nodes(),
-                        &ctx_inner.inner.materialization_resolver,
-                        ctx_inner.env.clone(),
-                        &base_context,
-                        &ctx_inner.inner.arg.io,
-                        None,
-                    )
-                }),
-                adapter_type,
-                max_threads,
-            }
-            .run()
+            let result = run_blocking_task_operation(move || {
+                materialize_clone(
+                    &node,
+                    &node.deprecated_config,
+                    &clone_adapter,
+                    ctx_inner.runtime_config(),
+                    ctx_inner.defer_nodes(),
+                    &ctx_inner.inner.materialization_resolver,
+                    ctx_inner.env.clone(),
+                    &base_context,
+                    &ctx_inner.inner.arg.io,
+                    None,
+                )
+            })
             .await??;
 
-            let _ = cache_materialization_return_value(ctx.env.clone(), &result);
+            let _ = cache_materialization_return_value(&adapter, ctx.env.clone(), &result);
 
             Ok(NodeStatus::Succeeded)
         })

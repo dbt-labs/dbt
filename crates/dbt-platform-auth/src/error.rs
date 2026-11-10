@@ -36,3 +36,17 @@ pub enum AuthError {
     #[error("token refresh failed: {0}")]
     RefreshFailed(String),
 }
+
+impl AuthError {
+    /// A short, consistent action the user can take to resolve this error. Centralizes
+    /// the "run `dbt login`" messaging so every caller of [`crate::AuthChain::resolve`]
+    /// gives the user the same guidance. `None` when the error isn't resolved by a login
+    /// action (e.g. a malformed config file).
+    pub fn login_hint(&self) -> Option<&'static str> {
+        match self {
+            AuthError::NotAuthenticated => Some("run `dbt login` to authenticate"),
+            AuthError::AuthenticationExpired => Some("run `dbt login` to re-authenticate"),
+            _ => None,
+        }
+    }
+}

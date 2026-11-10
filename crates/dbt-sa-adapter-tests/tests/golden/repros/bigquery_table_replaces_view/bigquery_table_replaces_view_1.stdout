@@ -1,0 +1,10 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/m.sql
+ Rendering models/m.sql
+   Running models/m.sql
+ Succeeded model bigquery_table_replaces_view.m (table) [1 of 1 in duration]
+==================== Execution Summary =====================
+Finished 'run' successfully for target 'bigquery' [duration]
+Processed: 1 model
+Summary: 1 total | 1 success

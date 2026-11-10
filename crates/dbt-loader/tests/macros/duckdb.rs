@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use dbt_adapter::Column;
 use dbt_adapter::relation::RelationObject;
 use dbt_adapter_core::AdapterType;
 use dbt_jinja_utils::mock_object::MockJinjaObject;
@@ -58,9 +59,17 @@ fn build_harness(
     });
     mock.on("get_column_schema_from_query", |_| {
         Ok(Value::from_serialize(vec![BTreeMap::from([
-            ("quoted", Value::from("id")),
+            ("name", Value::from("id")),
+            ("quoted", Value::from("\"id\"")),
             ("dtype", Value::from("integer")),
         ])]))
+    });
+    mock.on("quote", |args| {
+        let name = args
+            .first()
+            .and_then(|v| v.as_str().map(str::to_string))
+            .unwrap_or_default();
+        Ok(Value::from(format!("\"{name}\"")))
     });
     harness
         .env_mut()
@@ -81,6 +90,93 @@ fn build_harness(
         .add_global("adapter", Value::from_dyn_object(mock));
 
     harness
+}
+
+#[test]
+fn create_table_as_quotes_only_columns_marked_quote_true() {
+    let harness = build_harness("iceberg_demo", "ducklake_demo");
+    harness.mock().on("build_catalog_relation", |_| {
+        Ok(catalog_relation("direct_create"))
+    });
+    // `quoted` mirrors real `Column::quoted()` under DuckDB's default resolved
+    // quoting (identifier quoting on): always pre-quoted, regardless of any
+    // per-column `quote` config.
+    harness.mock().on("get_column_schema_from_query", |_| {
+        Ok(Value::from_serialize(vec![
+            BTreeMap::from([
+                ("name", Value::from("id")),
+                ("quoted", Value::from("\"id\"")),
+                ("dtype", Value::from("integer")),
+            ]),
+            BTreeMap::from([
+                ("name", Value::from("MixedCase")),
+                ("quoted", Value::from("\"MixedCase\"")),
+                ("dtype", Value::from("varchar")),
+            ]),
+        ]))
+    });
+    harness.mock().on("quote", |args| {
+        let identifier = args.first().and_then(|v| v.as_str()).unwrap_or_default();
+        Ok(Value::from(format!("\"{identifier}\"")))
+    });
+
+    let model = Value::from_serialize(BTreeMap::from([
+        ("alias".to_string(), Value::from("orders")),
+        (
+            "unique_id".to_string(),
+            Value::from("model.test_project.orders"),
+        ),
+        (
+            "columns".to_string(),
+            Value::from_serialize(BTreeMap::from([(
+                "MixedCase",
+                BTreeMap::from([
+                    ("name", Value::from("MixedCase")),
+                    ("quote", Value::from(true)),
+                ]),
+            )])),
+        ),
+    ]));
+
+    let ctx = harness
+        .materialization_context("orders", "select 1 as id, 2 as mixedcase")
+        .relation_type(RelationType::Table)
+        .with("model", model)
+        .with("dbt_version", Value::from("2.0.0"))
+        .build();
+
+    let rendered = harness
+        .render(
+            "{{ duckdb__create_table_as(false, this, compiled_code) }}",
+            ctx,
+        )
+        .expect("render should succeed");
+
+    // `compiled_code` (the select statement) is passed through verbatim by the
+    // macro, so assert only on the column lists the macro itself generates
+    // (the `create table (...)` and `insert into (...)` clauses), not on
+    // anything that could leak in from the query body.
+    assert!(
+        rendered.contains("\"MixedCase\" varchar"),
+        "column configured with quote: true should be quoted in the create-table column list, got: {rendered}"
+    );
+    assert!(
+        rendered.contains("id integer") && !rendered.contains("\"id\" integer"),
+        "column without quote: true should remain unquoted in the create-table column list, got: {rendered}"
+    );
+
+    let insert_clause = rendered
+        .split("insert into")
+        .nth(1)
+        .expect("rendered SQL should contain an insert into clause");
+    assert!(
+        insert_clause.contains("\"MixedCase\""),
+        "column configured with quote: true should be quoted in the insert column list, got: {insert_clause}"
+    );
+    assert!(
+        !insert_clause.contains("\"id\""),
+        "column without quote: true should remain unquoted in the insert column list, got: {insert_clause}"
+    );
 }
 
 #[test]
@@ -177,6 +273,15 @@ fn rename_relation_alters_iceberg_without_committing_connection() {
 }
 
 fn render_table_materialization(write_strategy: &'static str) -> MacroTestHarness {
+    render_table_materialization_with_columns(write_strategy, BTreeMap::new())
+}
+
+/// `user_columns` populates the model's yaml `columns:` block, keyed by column
+/// name — this is what the `direct_create` column list consults for `quote:`.
+fn render_table_materialization_with_columns(
+    write_strategy: &'static str,
+    user_columns: BTreeMap<String, Value>,
+) -> MacroTestHarness {
     let harness = build_harness("iceberg_demo", "ducklake_demo");
     harness
         .mock()
@@ -196,7 +301,7 @@ fn render_table_materialization(write_strategy: &'static str) -> MacroTestHarnes
     let model = Value::from_serialize(BTreeMap::from([
         ("alias", Value::from("orders")),
         ("unique_id", Value::from("model.test_project.orders")),
-        ("columns", Value::from(BTreeMap::<String, Value>::new())),
+        ("columns", Value::from_serialize(user_columns)),
         ("language", Value::from("sql")),
         ("compiled_code", Value::from("select 1 as id")),
     ]));
@@ -263,6 +368,51 @@ fn table_materialization_writes_iceberg_target_directly() {
     );
 }
 
+/// The `direct_create` branch derives its column list from the SELECT via
+/// `get_column_schema_from_query`, so those columns carry no `quote:` flag of
+/// their own. Undeclared columns must be emitted bare rather than quoted
+/// unconditionally, matching every other adapter's DDL.
+#[test]
+fn table_materialization_does_not_quote_undeclared_column_names() {
+    let harness = render_table_materialization("direct_create");
+    let executed = executed_sql(harness.mock()).join("\n");
+
+    assert!(
+        executed.contains("id integer"),
+        "column spec should name the column unquoted, got: {executed}"
+    );
+    assert!(
+        !executed.contains("\"id\""),
+        "undeclared column name must not be quoted in generated DDL, got: {executed}"
+    );
+}
+
+/// Counterpart to the above: the `quote:` flag is looked up by name in the
+/// model's yaml `columns:` block, so declaring `quote: true` still quotes.
+/// Without this the fix would be indistinguishable from always emitting
+/// `col.name`.
+#[test]
+fn table_materialization_quotes_column_names_flagged_in_yaml() {
+    let user_columns = BTreeMap::from([(
+        "id".to_string(),
+        Value::from_serialize(BTreeMap::from([
+            ("name".to_string(), Value::from("id")),
+            ("quote".to_string(), Value::from(true)),
+        ])),
+    )]);
+    let harness = render_table_materialization_with_columns("direct_create", user_columns);
+    let executed = executed_sql(harness.mock()).join("\n");
+
+    assert!(
+        executed.contains("\"id\" integer"),
+        "column flagged `quote: true` should be quoted, got: {executed}"
+    );
+    assert!(
+        executed.contains("insert into"),
+        "expected the create-then-insert path, got: {executed}"
+    );
+}
+
 #[test]
 fn table_materialization_ctas_in_place_for_staged_create_opt_in() {
     // `stage_create_tables: true` (duckdb-iceberg#1017) → direct_create_as_select:
@@ -290,4 +440,361 @@ fn table_materialization_ctas_in_place_for_staged_create_opt_in() {
         !executed.contains("insert into"),
         "staged-create opt-in should not create-then-insert, got: {executed}"
     );
+}
+
+const SEED_FILE_PATH: &str = "/tmp/jobs/run/seeds/raw_orders.csv";
+
+fn render_load_csv_rows(dbt_version: &str, fast: bool) -> (MacroTestHarness, String) {
+    let harness = build_harness("iceberg_demo", "ducklake_demo");
+    harness
+        .mock()
+        .on("get_seed_file_path", |_| Ok(Value::from(SEED_FILE_PATH)));
+    harness
+        .mock()
+        .on("load_dataframe", |_| Ok(Value::UNDEFINED));
+    harness.mock().on("add_query", |_| Ok(Value::UNDEFINED));
+    harness
+        .mock()
+        .on("convert_datetimes_to_strs", |args| Ok(args[0].clone()));
+    harness
+        .mock()
+        .on("get_binding_char", |_| Ok(Value::from("?")));
+    harness.mock().on("quote_seed_column", |args| {
+        Ok(args.first().cloned().unwrap_or(Value::UNDEFINED))
+    });
+
+    let model = Value::from_serialize(BTreeMap::from([
+        ("database", "md_db"),
+        ("schema", "main"),
+        ("alias", "raw_orders"),
+    ]));
+    let agate_table = Value::from_serialize(BTreeMap::from([
+        ("column_names", Value::from_serialize(["id", "status"])),
+        (
+            "rows",
+            Value::from_serialize(vec![
+                vec![Value::from(1), Value::from("placed")],
+                vec![Value::from(2), Value::from("shipped")],
+            ]),
+        ),
+    ]));
+    let config = Arc::new(MockJinjaObject::new());
+    config.on("get", move |args| {
+        let key = args.first().and_then(|v| v.as_str());
+        let default = args.get(1).cloned().unwrap_or(Value::UNDEFINED);
+        match key {
+            Some("fast") => Ok(Value::from(fast)),
+            Some("column_types") => Ok(Value::from_serialize(BTreeMap::from([
+                ("id", "varchar"),
+                ("amount", "decimal(10,2)"),
+            ]))),
+            _ => Ok(default),
+        }
+    });
+
+    let ctx = harness
+        .materialization_context("raw_orders", "")
+        .relation_type(RelationType::Table)
+        .config(Value::from_dyn_object(config))
+        .with("model", model)
+        .with("agate_table", agate_table)
+        .with("dbt_version", Value::from(dbt_version))
+        .build();
+
+    let rendered = harness
+        .render("{{ duckdb__load_csv_rows(model, agate_table) }}", ctx)
+        .expect("render should succeed");
+    (harness, rendered)
+}
+
+#[test]
+fn load_csv_rows_fast_path_calls_load_dataframe() {
+    // The seed CSV lives on the dbt host's disk; a remote/sandboxed database
+    // (MotherDuck with saas_mode) can't `COPY ... FROM` it, so Fusion hands the
+    // parsed rows to `adapter.load_dataframe`. The Rust side binds these
+    // arguments by position, so this test pins the whole positional contract.
+    // The rows and the ingest itself are covered by the Rust tests in
+    // `dbt-adapter` (`seed::tests`, `duckdb_seed_ingest_*`).
+    let (harness, rendered) = render_load_csv_rows("2.0.0", true);
+
+    let calls = harness.mock().observed_calls();
+    let load = calls
+        .to("load_dataframe")
+        .next()
+        .expect("fast seed load should call adapter.load_dataframe");
+    assert_eq!(load.args.len(), 7, "load_dataframe takes 7 positional args");
+    let arg = |i: usize| load.args[i].to_string();
+    assert_eq!(arg(0), "md_db", "database");
+    assert_eq!(arg(1), "main", "schema");
+    assert_eq!(arg(2), "raw_orders", "table_name");
+    assert_eq!(arg(3), SEED_FILE_PATH, "file_path");
+    // args[4] is the agate table; its rows are checked by the Rust ingest tests.
+    let column_types = &load.args[5];
+    for (column, dtype) in [("id", "varchar"), ("amount", "decimal(10,2)")] {
+        let got = column_types
+            .get_item(&Value::from(column))
+            .expect("column_types should be a mapping");
+        assert_eq!(got.as_str(), Some(dtype), "column_types[{column}]");
+    }
+    assert_eq!(arg(6), ",", "field_delimiter");
+    calls.assert_not_called("add_query");
+    assert!(
+        !rendered.contains(SEED_FILE_PATH),
+        "Fusion must not reference the local seed file in generated SQL, got: {rendered}"
+    );
+}
+
+#[test]
+fn load_csv_rows_fast_path_keeps_copy_outside_fusion() {
+    let (harness, rendered) = render_load_csv_rows("1.10.0", true);
+
+    let calls = harness.mock().observed_calls();
+    calls.assert_not_called("load_dataframe");
+    calls.assert_called("add_query");
+    assert!(
+        rendered.contains("COPY") && rendered.contains(SEED_FILE_PATH),
+        "Python dbt-core should keep upstream's COPY, got: {rendered}"
+    );
+}
+
+#[test]
+fn create_csv_table_types_every_column_varchar_when_all_varchar_is_set() {
+    let harness = build_harness("iceberg_demo", "ducklake_demo");
+    harness
+        .mock()
+        .on("convert_type", |_| Ok(Value::from("bigint")));
+    harness.mock().on("quote_seed_column", |args| {
+        let name = args.first().and_then(|v| v.as_str()).unwrap_or_default();
+        Ok(Value::from(format!("\"{name}\"")))
+    });
+
+    let model = Value::from_serialize(BTreeMap::from([(
+        "config",
+        BTreeMap::from([("all_varchar", true)]),
+    )]));
+    let agate_table = Value::from_serialize(BTreeMap::from([(
+        "column_names",
+        Value::from_serialize(["id", "status"]),
+    )]));
+
+    let ctx = harness
+        .materialization_context("raw_orders", "")
+        .relation_type(RelationType::Table)
+        .with("model", model)
+        .with("agate_table", agate_table)
+        .build();
+
+    let rendered = harness
+        .render("{{ duckdb__create_csv_table(model, agate_table) }}", ctx)
+        .expect("render should succeed");
+
+    assert!(
+        rendered.contains("\"id\" VARCHAR") && rendered.contains("\"status\" VARCHAR"),
+        "all_varchar should type every column VARCHAR, got: {rendered}"
+    );
+    assert!(
+        !rendered.contains("bigint"),
+        "all_varchar should replace the inferred type, got: {rendered}"
+    );
+}
+
+#[test]
+fn create_csv_table_column_types_win_over_all_varchar() {
+    let harness = build_harness("iceberg_demo", "ducklake_demo");
+    harness
+        .mock()
+        .on("convert_type", |_| Ok(Value::from("bigint")));
+    harness.mock().on("quote_seed_column", |args| {
+        let name = args.first().and_then(|v| v.as_str()).unwrap_or_default();
+        Ok(Value::from(format!("\"{name}\"")))
+    });
+
+    // `column_types` and `all_varchar` together: the listed column keeps its
+    // explicit type and the rest become VARCHAR.
+    let model = Value::from_serialize(BTreeMap::from([(
+        "config",
+        BTreeMap::from([
+            ("all_varchar", Value::from(true)),
+            (
+                "column_types",
+                Value::from_serialize(BTreeMap::from([("id", "integer")])),
+            ),
+        ]),
+    )]));
+    let agate_table = Value::from_serialize(BTreeMap::from([(
+        "column_names",
+        Value::from_serialize(["id", "status"]),
+    )]));
+
+    let ctx = harness
+        .materialization_context("raw_orders", "")
+        .relation_type(RelationType::Table)
+        .with("model", model)
+        .with("agate_table", agate_table)
+        .build();
+
+    let rendered = harness
+        .render("{{ duckdb__create_csv_table(model, agate_table) }}", ctx)
+        .expect("render should succeed");
+
+    assert!(
+        rendered.contains("\"id\" integer"),
+        "column_types should win for the column it names, got: {rendered}"
+    );
+    assert!(
+        rendered.contains("\"status\" VARCHAR"),
+        "all_varchar should type the unnamed column VARCHAR, got: {rendered}"
+    );
+    assert!(
+        !rendered.contains("bigint"),
+        "all_varchar should replace the inferred type, got: {rendered}"
+    );
+}
+
+#[test]
+fn load_csv_rows_without_fast_inserts_in_batches() {
+    let (harness, rendered) = render_load_csv_rows("2.0.0", false);
+
+    let calls = harness.mock().observed_calls();
+    calls.assert_not_called("load_dataframe");
+    let insert = calls
+        .to("add_query")
+        .next()
+        .expect("fast: false should insert through add_query");
+    assert!(
+        insert.args[0].to_string().contains("insert into"),
+        "expected a batched insert, got: {}",
+        insert.args[0]
+    );
+    assert!(
+        rendered.contains("values") && rendered.contains("(?,?)"),
+        "each row should use the adapter's binding char, got: {rendered}"
+    );
+}
+
+mod on_schema_change {
+    use super::*;
+
+    fn harness() -> MacroTestHarness {
+        MacroTestHarness::for_adapter(AdapterType::DuckDB)
+            .load_all_macros()
+            .build()
+            .expect("harness should build")
+    }
+
+    fn column(name: &str, data_type: &str) -> Value {
+        Value::from_object(Column::new(
+            AdapterType::DuckDB,
+            name.to_string(),
+            data_type.to_string(),
+            None,
+            None,
+            None,
+        ))
+    }
+
+    fn render_diff(source: Vec<Value>, target: Vec<Value>) -> String {
+        let ctx = BTreeMap::from([
+            ("source".to_string(), Value::from(source)),
+            ("target".to_string(), Value::from(target)),
+        ]);
+        harness()
+            .render(
+                "{{ diff_column_data_types(source, target) | map(attribute='column_name') | list }}",
+                ctx,
+            )
+            .expect("diff should render")
+    }
+
+    /// https://github.com/dbt-labs/dbt/issues/16353
+    #[test]
+    fn same_types_in_different_spellings_are_not_changes() {
+        let source = vec![
+            column("id", "integer"),
+            column("big", "bigint"),
+            column("dbl", "double"),
+            column("dec", "decimal(18, 3)"),
+            column("txt", "VARCHAR"),
+            column("dt", "date"),
+            column("ts", "timestamp"),
+            column("flg", "boolean"),
+        ];
+        let target = vec![
+            column("id", "INTEGER"),
+            column("big", "BIGINT"),
+            column("dbl", "DOUBLE"),
+            column("dec", "DECIMAL(18,3)"),
+            column("txt", "VARCHAR"),
+            column("dt", "DATE"),
+            column("ts", "TIMESTAMP"),
+            column("flg", "BOOLEAN"),
+        ];
+        assert_eq!(render_diff(source, target).trim(), "[]");
+    }
+
+    #[test]
+    fn real_type_changes_are_still_reported() {
+        let source = vec![
+            column("id", "bigint"),
+            column("dec", "decimal(18, 4)"),
+            column("ts", "timestamptz"),
+            column("same", "integer"),
+        ];
+        let target = vec![
+            column("id", "INTEGER"),
+            column("dec", "DECIMAL(18,3)"),
+            column("ts", "TIMESTAMP"),
+            column("same", "INTEGER"),
+        ];
+        assert_eq!(render_diff(source, target).trim(), "['id', 'dec', 'ts']");
+    }
+
+    fn render_name_diff(source: Vec<Value>, target: Vec<Value>) -> String {
+        let ctx = BTreeMap::from([
+            ("source".to_string(), Value::from(source)),
+            ("target".to_string(), Value::from(target)),
+        ]);
+        harness()
+            .render(
+                "{{ diff_columns(source, target) | map(attribute='name') | list }}",
+                ctx,
+            )
+            .expect("diff should render")
+    }
+
+    #[test]
+    fn column_names_differing_only_in_ascii_case_are_the_same_column() {
+        let source = vec![column("id", "integer"), column("Amount", "integer")];
+        let target = vec![column("ID", "INTEGER"), column("amount", "INTEGER")];
+        assert_eq!(
+            render_name_diff(source.clone(), target.clone()).trim(),
+            "[]"
+        );
+        assert_eq!(render_diff(source, target).trim(), "[]");
+    }
+
+    #[test]
+    fn column_names_differing_in_non_ascii_case_are_different_columns() {
+        let source = vec![column("É", "integer")];
+        let target = vec![column("é", "INTEGER")];
+        assert_eq!(render_name_diff(source, target).trim(), "['É']");
+    }
+
+    #[test]
+    fn columns_really_missing_are_still_reported() {
+        let source = vec![column("id", "integer"), column("newcol", "integer")];
+        let target = vec![column("ID", "INTEGER"), column("flg", "BOOLEAN")];
+        assert_eq!(
+            render_name_diff(source.clone(), target.clone()).trim(),
+            "['newcol']"
+        );
+        assert_eq!(render_name_diff(target, source).trim(), "['flg']");
+    }
+
+    #[test]
+    fn columns_missing_on_either_side_are_not_type_changes() {
+        let source = vec![column("only_source", "integer")];
+        let target = vec![column("only_target", "VARCHAR")];
+        assert_eq!(render_diff(source, target).trim(), "[]");
+    }
 }

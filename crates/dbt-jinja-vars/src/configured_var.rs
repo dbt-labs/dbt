@@ -11,6 +11,7 @@ use minijinja::{
 };
 
 use crate::VarFunction;
+use crate::cli_value::cli_var_value_to_minijinja;
 
 /// A struct that represent a var object to be used in configuration contexts
 #[derive(Clone, Debug)]
@@ -43,6 +44,17 @@ impl ConfiguredVar {
         }
     }
 
+    /// Returns a copy whose CLI vars are extended by `overrides`; override keys win.
+    pub fn with_cli_overrides(&self, overrides: &BTreeMap<String, dbt_yaml::Value>) -> Self {
+        let mut var = self.clone();
+        var.cli_vars.extend(
+            overrides
+                .iter()
+                .map(|(key, val)| (key.clone(), val.clone())),
+        );
+        var
+    }
+
     fn package_name(&self, state: &State<'_, '_>, var_name: &str) -> Result<String, Error> {
         self.package_name
             .clone()
@@ -64,6 +76,9 @@ impl ConfiguredVar {
 
 impl VarFunction for ConfiguredVar {
     fn contains_var(&self, state: &State<'_, '_>, var_name: &str) -> Result<bool, Error> {
+        if self.cli_vars.contains_key(var_name) {
+            return Ok(true);
+        }
         let package_name = self.package_name(state, var_name)?;
         let vars_lookup = self.vars.get(&package_name).ok_or_else(|| {
             Error::new(
@@ -82,7 +97,7 @@ impl VarFunction for ConfiguredVar {
     ) -> Result<Value, Error> {
         // 1. CLI vars
         if let Some(value) = self.cli_vars.get(&var_name) {
-            return Ok(Value::from_serialize(value));
+            return Ok(cli_var_value_to_minijinja(value));
         }
         // 2. Check if this is dbt_project.yml parsing
         let package_name = self.package_name(state, &var_name)?;
@@ -233,6 +248,28 @@ mod tests {
     }
 
     #[test]
+    fn cli_var_unquoted_date_scalar_supports_strftime() {
+        let env = make_env_with_var();
+        let cli_vars: BTreeMap<String, dbt_yaml::Value> =
+            dbt_yaml::from_str("start_date: 2026-08-03\n").unwrap();
+
+        let mut vars: BTreeMap<String, IndexMap<String, DbtVars>> = BTreeMap::new();
+        vars.insert("my_new_project".to_string(), IndexMap::new());
+
+        let mut env_with_vars = env;
+        env_with_vars.add_global(
+            "var",
+            MinijinjaValue::from_object(ConfiguredVar::new(vars, cli_vars)),
+        );
+
+        let template = env_with_vars
+            .template_from_str("{{ var('start_date').strftime('%Y%m') }}")
+            .unwrap();
+        let rendered = template.render(minijinja::context!(), &[]).unwrap();
+        assert_eq!(rendered, "202608");
+    }
+
+    #[test]
     fn var_has_var() {
         let env = make_env_with_var();
         let template = env
@@ -241,6 +278,33 @@ mod tests {
 
         let rendered = template.render(minijinja::context!(), &[]).unwrap();
         assert_eq!(rendered, "False");
+    }
+
+    #[test]
+    fn var_has_var_sees_package_cli_and_override_vars() {
+        let mut vars: BTreeMap<String, IndexMap<String, DbtVars>> = BTreeMap::new();
+        vars.insert(
+            "my_new_project".to_string(),
+            dbt_yaml::from_str("p: 1\n").unwrap(),
+        );
+        let cli_vars: BTreeMap<String, dbt_yaml::Value> = dbt_yaml::from_str("c: 2\n").unwrap();
+        let overrides: BTreeMap<String, dbt_yaml::Value> = dbt_yaml::from_str("o: 3\n").unwrap();
+
+        let mut env = make_env_with_var();
+        env.add_global(
+            "var",
+            MinijinjaValue::from_object(
+                ConfiguredVar::new(vars, cli_vars).with_cli_overrides(&overrides),
+            ),
+        );
+
+        let template = env
+            .template_from_str(
+                "{{ var.has_var('p') }}{{ var.has_var('c') }}{{ var.has_var('o') }}{{ var.has_var('missing') }}",
+            )
+            .unwrap();
+        let rendered = template.render(minijinja::context!(), &[]).unwrap();
+        assert_eq!(rendered, "TrueTrueTrueFalse");
     }
 
     /// Build an environment where the project vars are parsed directly from a

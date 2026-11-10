@@ -16,12 +16,16 @@
 //! println!("{}: {}", profile.adapter_type, profile.credentials_json().unwrap());
 //! ```
 
+mod adapters;
 mod error;
 mod jinja;
 mod resolve;
 
+pub use adapters::{
+    AdapterConnections, DEFAULT_CONNECTION_NAME, TargetConnection, parse_target_connections,
+};
 pub use error::{ProfileError, Result};
 pub use resolve::{
-    ProfileEnvironment, ResolveArgs, ResolvedProfile, find_profiles_path, render_target, resolve,
-    resolve_target, resolve_with_env, resolve_with_env_ext,
+    ProfileEnvironment, ProfileMetadata, ResolveArgs, ResolvedProfile, find_profiles_path,
+    render_target, resolve, resolve_metadata, resolve_target, resolve_with_env,
 };

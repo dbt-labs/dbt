@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use super::*;
 use crate::adapter::Adapter;
@@ -20,6 +21,53 @@ fn dispatch_test(
     let env = minijinja::Environment::new();
     let state = State::new_for_env(&env);
     adapter.call_method_impl(&state, name, args, &[])
+}
+
+/// As `dispatch_test`, but with a `dialect` global standing in for the render
+/// context a node that selected an adapter via `+adapter` would carry.
+fn dispatch_test_with_dialect(
+    adapter: &Arc<Adapter>,
+    dialect: &str,
+    name: &str,
+    args: &[Value],
+) -> Result<Value, minijinja::Error> {
+    let mut env = minijinja::Environment::new();
+    env.add_global(minijinja::constants::DIALECT, Value::from(dialect));
+    let state = State::new_for_env(&env);
+    adapter.call_method_impl(&state, name, args, &[])
+}
+
+/// Minimal listener that opts into introspective-hole rendering, standing in
+/// for `dbt_jinja_utils::listener::SymbolicRenderingEventListener` (which
+/// this crate doesn't depend on): `Adapter::call_method`'s Parse-mode
+/// taint-wrapping is gated on a listener like this being present, so tests
+/// asserting a result *is* tainted need one, matching how only
+/// `JinjaRenderMode::Symbolic` behaves in production.
+#[derive(Debug)]
+struct TaintGateListener;
+
+impl RenderingEventListener for TaintGateListener {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn name(&self) -> &str {
+        "TaintGateListener"
+    }
+
+    fn on_macro_start(&self, _file_path: Option<&Path>, _line: &u32, _col: &u32, _offset: &u32) {}
+
+    fn on_macro_stop(&self, _file_path: Option<&Path>, _line: &u32, _col: &u32, _offset: &u32) {}
+
+    fn on_malicious_return(&self, _location: &minijinja::CodeLocation) {}
+
+    fn on_function_start(&self) {}
+
+    fn on_function_end(&self) {}
+
+    fn wants_introspective_holes(&self) -> bool {
+        true
+    }
 }
 
 /// Create a Typed-phase DuckDB adapter backed by MockEngine.
@@ -311,6 +359,21 @@ fn test_render_equals_flag_on_databricks_is_not_distinct_from() {
     assert_eq!(result.as_str().unwrap(), "(a IS NOT DISTINCT FROM b)");
 }
 
+/// `LakeCompute` defines no null-comparison form of its own, so it must answer as
+/// DuckDB. It previously fell into the `_` arm and emitted the verbose
+/// `case when ... end = 0` form.
+#[test]
+fn test_render_equals_flag_on_lake_compute_matches_duckdb() {
+    let adapter = make_adapter_with_truthy_nulls(AdapterType::LakeCompute);
+    let result = dispatch_test(
+        &adapter,
+        "render_equals",
+        &[Value::from("a"), Value::from("b")],
+    )
+    .unwrap();
+    assert_eq!(result.as_str().unwrap(), "(a IS NOT DISTINCT FROM b)");
+}
+
 // -- location_exists tests ------------------------------------------------
 
 #[test]
@@ -369,7 +432,7 @@ fn test_parse_mode_accepts_mistyped_args_list_relations_without_caching() {
     assert!(result.try_iter().unwrap().next().is_none());
 }
 
-#[test]
+#[dbt_runtime::worker_test]
 fn test_get_relation_dispatch_spark_absent_database() {
     // Exercises the full `"get_relation"` arm of `call_method_impl` (arg parsing + per-adapter
     // database resolution + handoff to `get_relation`) for the absent-database (`none`) case,
@@ -409,4 +472,573 @@ fn test_get_relation_dispatch_spark_absent_database() {
     )
     .unwrap();
     assert!(!result.is_none() && !result.is_undefined());
+}
+
+// -- introspective taint wiring --------------------------------------------
+//
+// `Adapter::call_method` (the `Object` trait method, as opposed to
+// `call_method_impl` which `dispatch_test` above calls directly and which
+// bypasses this wrapping) taints the return value of every method in
+// `INTROSPECTIVE_METHODS` when running in `Parse` mode. This is what lets
+// `JinjaRenderMode::Symbolic` hole-punch introspective results instead of
+// silently rendering the Parse-mode stub as if it were real.
+
+fn call_method_test(
+    adapter: &Arc<Adapter>,
+    name: &str,
+    args: &[Value],
+) -> Result<Value, minijinja::Error> {
+    let env = minijinja::Environment::new();
+    let state = State::new_for_env(&env);
+    let listener: Rc<dyn RenderingEventListener> = Rc::new(TaintGateListener);
+    adapter.call_method(&state, name, args, &[listener])
+}
+
+#[test]
+fn test_parse_mode_execute_result_is_tainted() {
+    let adapter = make_duckdb_parse_adapter();
+    let result = call_method_test(&adapter, "execute", &[Value::from("select 1")]).unwrap();
+    assert!(result.is_introspective_stub());
+}
+
+#[test]
+fn test_parse_mode_execute_result_is_not_tainted_without_an_opted_in_listener() {
+    // Regression test: taint-wrapping is gated on a listener actually
+    // wanting introspective holes (only `JinjaRenderMode::Symbolic`'s does).
+    // Wrapping unconditionally changes the value's `ValueRepr` from
+    // whatever primitive it really is (e.g. `None`) to `Object` for *every*
+    // render mode, which silently broke plain `{% if not
+    // adapter.get_relation(...) %}`/`is none`-style checks that never touch
+    // taint at all -- `Value::is_none()` can't see through an `Object`
+    // wrapper no matter what `IntrospectiveValue` overrides.
+    let adapter = make_duckdb_parse_adapter();
+    let env = minijinja::Environment::new();
+    let state = State::new_for_env(&env);
+    let result = adapter
+        .call_method(&state, "execute", &[Value::from("select 1")], &[])
+        .unwrap();
+    assert!(!result.is_introspective_stub());
+}
+
+#[test]
+fn test_parse_mode_get_columns_in_relation_result_is_tainted() {
+    let adapter = make_duckdb_parse_adapter();
+    let relation = dispatch_test(
+        &adapter,
+        "get_relation",
+        &[
+            Value::from("db"),
+            Value::from("schema"),
+            Value::from("my_table"),
+        ],
+    )
+    .unwrap();
+    let result = call_method_test(&adapter, "get_columns_in_relation", &[relation]).unwrap();
+    assert!(result.is_introspective_stub());
+}
+
+#[test]
+fn test_parse_mode_get_columns_in_relation_accepts_string() {
+    let adapter = make_duckdb_parse_adapter();
+    let result = call_method_test(
+        &adapter,
+        "get_columns_in_relation",
+        &[Value::from("relation_name")],
+    )
+    .unwrap();
+    assert!(result.is_introspective_stub());
+}
+
+#[test]
+fn test_runtime_get_columns_in_relation_rejects_string() {
+    let adapter = make_duckdb_adapter();
+    let err = dispatch_test(
+        &adapter,
+        "get_columns_in_relation",
+        &[Value::from("relation_name")],
+    )
+    .unwrap_err();
+    assert_eq!(err.detail(), Some("relation must be an object"));
+}
+
+#[test]
+fn fixture_columns_are_scoped_to_each_render() {
+    let adapter = make_duckdb_adapter();
+    let relation = dispatch_test(
+        &make_duckdb_parse_adapter(),
+        "get_relation",
+        &[
+            Value::from("db"),
+            Value::from("schema"),
+            Value::from("input"),
+        ],
+    )
+    .unwrap();
+    let key = downcast_value_to_dyn_base_relation(&relation)
+        .unwrap()
+        .semantic_fqn();
+    let environments = ["ALPHA", "BETA"].map(|name| {
+        let mut env = minijinja::Environment::new();
+        let column = crate::Column::new(
+            AdapterType::DuckDB,
+            name.to_string(),
+            "text".to_string(),
+            Some(256),
+            None,
+            None,
+        );
+        let columns = Value::from(vec![Value::from_object(column)]);
+        env.add_global(
+            UNIT_TEST_FIXTURE_COLUMNS,
+            Value::from_iter([(
+                key.clone(),
+                fixture_columns::lazy_fixture_columns(move || Ok(columns.clone())),
+            )]),
+        );
+        env
+    });
+    for index in [0, 1, 0] {
+        let state = State::new_for_env(&environments[index]);
+        let columns = adapter
+            .call_method_impl(
+                &state,
+                "get_columns_in_relation",
+                std::slice::from_ref(&relation),
+                &[],
+            )
+            .unwrap();
+        assert_eq!(
+            columns
+                .get_item(&Value::from(0))
+                .unwrap()
+                .get_attr("name")
+                .unwrap()
+                .as_str(),
+            Some(["ALPHA", "BETA"][index])
+        );
+    }
+    // Neither render may overwrite the adapter's ordinary metadata lookup.
+    let columns = dispatch_test(&adapter, "get_columns_in_relation", &[relation]).unwrap();
+    assert_eq!(
+        columns
+            .get_item(&Value::from(0))
+            .unwrap()
+            .get_attr("name")
+            .unwrap()
+            .as_str(),
+        Some("one")
+    );
+}
+
+#[test]
+fn test_parse_mode_get_relation_result_is_tainted() {
+    let adapter = make_duckdb_parse_adapter();
+    let result = call_method_test(
+        &adapter,
+        "get_relation",
+        &[
+            Value::from("db"),
+            Value::from("schema"),
+            Value::from("my_table"),
+        ],
+    )
+    .unwrap();
+    assert!(result.is_introspective_stub());
+}
+
+#[test]
+fn test_parse_mode_non_introspective_method_is_not_tainted() {
+    let adapter = make_duckdb_parse_adapter();
+    let result = call_method_test(
+        &adapter,
+        "check_schema_exists",
+        &[Value::from("db"), Value::from("schema")],
+    )
+    .unwrap();
+    assert!(!result.is_introspective_stub());
+}
+
+#[dbt_runtime::worker_test]
+fn test_typed_mode_execute_result_is_not_tainted() {
+    let adapter = make_duckdb_adapter();
+    let result = call_method_test(&adapter, "execute", &[Value::from("select 1")]).unwrap();
+    assert!(!result.is_introspective_stub());
+}
+
+/// `adapter.type()` must report the adapter the *node* runs on. Model bodies
+/// branch on it, so a node that selected a `lakecompute` adapter seeing the
+/// target's default would take the wrong branch.
+#[test]
+fn adapter_type_follows_the_nodes_selected_dialect() {
+    let adapter = make_duckdb_adapter();
+
+    // No selection: the adapter's own type.
+    let default = dispatch_test(&adapter, "type", &[]).unwrap();
+    assert_eq!(default.as_str().unwrap(), "duckdb");
+
+    // Selection: the node's dialect wins.
+    let selected = dispatch_test_with_dialect(&adapter, "lakecompute", "type", &[]).unwrap();
+    assert_eq!(selected.as_str().unwrap(), "lakecompute");
+}
+
+/// An unparseable or absent dialect must fall back to the adapter's own type
+/// rather than erroring or silently reporting something else.
+#[test]
+fn adapter_type_falls_back_on_an_unknown_dialect() {
+    let adapter = make_duckdb_adapter();
+
+    let result = dispatch_test_with_dialect(&adapter, "not_an_adapter", "type", &[]).unwrap();
+    assert_eq!(result.as_str().unwrap(), "duckdb");
+}
+
+#[test]
+fn adapter_quote_follows_the_nodes_selected_dialect() {
+    let adapter = make_duckdb_parse_adapter();
+    for (dialect, expected) in [
+        ("bigquery", "`x`"),
+        ("databricks", "`x`"),
+        ("snowflake", "\"x\""),
+        ("not_an_adapter", "\"x\""),
+    ] {
+        let quoted =
+            dispatch_test_with_dialect(&adapter, dialect, "quote", &[Value::from("x")]).unwrap();
+        assert_eq!(quoted.as_str(), Some(expected), "{dialect}");
+    }
+}
+
+#[test]
+fn test_statement_macro_does_not_crash_in_symbolic_lint_mode() {
+    // Regression test: `JinjaRenderMode::Symbolic` forces `execute = true` so
+    // macros guarded by `{% if not execute %}`/`{% if execute %}` take their
+    // real (introspective) branch instead of a hardcoded default -- relying
+    // on `Adapter::call_method`'s Parse-mode taint-wrapping (see
+    // `test_parse_mode_execute_result_is_tainted`) plus tuple-unpack taint
+    // propagation (`IntrospectiveValue::unpack`) to keep that branch safe.
+    // dbt's own `statement()` macro is the canonical case this must handle:
+    // `{% set res, table = adapter.execute(...) %}` inside a real
+    // `{% if execute %}` block, invoked via `{% call statement() %}`.
+    // Before the taint/unpack fix, this failed with "cannot unpack: sequence
+    // of wrong length (expected 2, got 1)".
+    let adapter = make_duckdb_parse_adapter();
+    let env = minijinja::Environment::new();
+    let listener: Rc<dyn RenderingEventListener> = Rc::new(TaintGateListener);
+    let source = "\
+{%- macro statement(name=None, fetch_result=False, auto_begin=True, language='sql') -%}
+  {%- if execute -%}
+    {%- set compiled_code = caller() -%}
+    {%- if language == 'sql' -%}
+      {%- set res, table = adapter.execute(compiled_code, auto_begin=auto_begin, fetch=fetch_result) -%}
+    {%- endif -%}
+  {%- endif -%}
+{%- endmacro -%}
+{%- call statement('run_query_statement', fetch_result=true) -%}
+select 1
+{%- endcall -%}";
+    let result = env.render_str(
+        source,
+        minijinja::context! {
+            execute => true,
+            adapter => Value::from_object(adapter.as_ref().clone()),
+        },
+        &[listener],
+    );
+
+    assert!(result.is_ok(), "{:?}", result.err());
+}
+
+#[test]
+fn test_parse_mode_call_with_tainted_argument_short_circuits_instead_of_erroring() {
+    // Regression test: `quote()` isn't itself introspective (it's a pure
+    // string transform, not in `INTROSPECTIVE_METHODS`), but it's commonly
+    // called with an identifier drawn from an already-tainted result (e.g. a
+    // column name from `get_columns_in_relation()`). Before this fix,
+    // `call_method_impl`'s `ArgsIter::next_arg::<&str>()` hard-failed with
+    // "argument 'identifier' to quote() has incompatible type
+    // IntrospectiveValue; value is not a string" because the tainted arg is
+    // an `Object`, not a real `&str`, and `Adapter::call_method` called the
+    // real impl regardless of argument taint.
+    let adapter = make_duckdb_parse_adapter();
+    let tainted_relation = call_method_test(
+        &adapter,
+        "get_relation",
+        &[
+            Value::from("db"),
+            Value::from("schema"),
+            Value::from("my_table"),
+        ],
+    )
+    .unwrap();
+    assert!(tainted_relation.is_introspective_stub());
+
+    let result = call_method_test(&adapter, "quote", &[tainted_relation]).unwrap();
+    assert!(result.is_introspective_stub());
+}
+
+#[test]
+fn test_check_schema_exists_tolerates_none_database() {
+    let adapter = make_duckdb_adapter();
+    let err = dispatch_test(
+        &adapter,
+        "check_schema_exists",
+        &[Value::from(()), Value::from("main")],
+    )
+    .unwrap_err();
+    let message = err.to_string();
+    assert!(
+        !message.contains("incompatible type"),
+        "database=none should not fail argument type conversion, got: {message}"
+    );
+    assert!(
+        message.contains("template not found") || message.contains("check_schema_exists"),
+        "expected a macro-lookup failure past arg parsing, got: {message}"
+    );
+}
+
+/// A statement that fails after `BEGIN` leaves the session's transaction state unknown, so the
+/// connection must be discarded instead of being parked in the thread-local for the next node.
+mod execute_inner_txn {
+    use std::collections::BTreeMap;
+    use std::sync::{Arc, Mutex};
+
+    use adbc_core::PartitionedResult;
+    use adbc_core::error::{Error, Result, Status};
+    use adbc_core::options::{ObjectDepth, OptionStatement, OptionValue};
+    use arrow_array::{RecordBatchIterator, RecordBatchReader};
+    use arrow_schema::Schema;
+    use dbt_adapter_core::AdapterType;
+    use dbt_adbc::{Connection, QueryCtx, Statement};
+    use dbt_auth::auth_for_backend;
+    use dbt_common::AdapterResult;
+    use dbt_common::cancellation::CancellationToken;
+    use dbt_yaml::Mapping;
+
+    use crate::adapter::adapter_factory::backend_of;
+    use crate::adapter::adapter_impl::AdapterImpl;
+    use crate::cache::RelationCache;
+    use crate::config::AdapterConfig;
+    use crate::connection::{ConnectionGuard, drop_thread_local_connection, tlocal_slot_occupied};
+    use crate::engine::query_comment::QueryCommentConfig;
+    use crate::engine::{AdapterEngine, AdbcEngine};
+    use crate::sql_types::DefaultTypeOps;
+    use crate::stmt_splitter::DefaultStmtSplitter;
+    use dbt_schemas::schemas::relations::SNOWFLAKE_RESOLVED_QUOTING;
+
+    /// What the driver reports once the client gives up on a request.
+    const TIMEOUT_MESSAGE: &str = "timeout after 10m0s and 8 attempts. HTTP Status: 503";
+
+    /// SQL that makes [`ScriptedConnection`] fail with [`TIMEOUT_MESSAGE`].
+    const FAILING_SQL: &str = "select 'times out'";
+
+    #[derive(Default)]
+    struct Session {
+        executed: Vec<String>,
+        discarded: bool,
+    }
+
+    /// A connection that records the SQL it receives.
+    struct ScriptedConnection(Arc<Mutex<Session>>);
+
+    struct ScriptedStatement {
+        session: Arc<Mutex<Session>>,
+        sql: String,
+    }
+
+    impl Statement for ScriptedStatement {
+        fn execute<'a>(&'a mut self) -> Result<Box<dyn RecordBatchReader + Send + 'a>> {
+            let mut session = self.session.lock().unwrap();
+            session.executed.push(self.sql.clone());
+            if self.sql == FAILING_SQL {
+                return Err(Error::with_message_and_status(TIMEOUT_MESSAGE, Status::IO));
+            }
+            let schema = Arc::new(Schema::empty());
+            Ok(Box::new(RecordBatchIterator::new(
+                std::iter::empty(),
+                schema,
+            )))
+        }
+
+        fn set_sql_query(&mut self, sql: &str) -> Result<()> {
+            self.sql = sql.trim().to_string();
+            Ok(())
+        }
+
+        fn set_option(&mut self, _key: OptionStatement, _value: OptionValue) -> Result<()> {
+            Ok(())
+        }
+
+        fn cancel(&mut self) -> Result<()> {
+            Ok(())
+        }
+
+        fn bind(&mut self, _batch: arrow_array::RecordBatch) -> Result<()> {
+            unimplemented!()
+        }
+        fn bind_stream(&mut self, _reader: Box<dyn RecordBatchReader + Send>) -> Result<()> {
+            unimplemented!()
+        }
+        fn execute_update(&mut self) -> Result<Option<i64>> {
+            unimplemented!()
+        }
+        fn execute_schema(&mut self) -> Result<Schema> {
+            unimplemented!()
+        }
+        fn execute_partitions(&mut self) -> Result<PartitionedResult> {
+            unimplemented!()
+        }
+        fn get_parameter_schema(&self) -> Result<Schema> {
+            unimplemented!()
+        }
+        fn prepare(&mut self) -> Result<()> {
+            unimplemented!()
+        }
+        fn set_substrait_plan(&mut self, _plan: &[u8]) -> Result<()> {
+            unimplemented!()
+        }
+    }
+
+    impl Connection for ScriptedConnection {
+        fn new_statement(&mut self) -> Result<Box<dyn Statement>> {
+            Ok(Box::new(ScriptedStatement {
+                session: Arc::clone(&self.0),
+                sql: String::new(),
+            }))
+        }
+
+        fn cancel(&mut self) -> Result<()> {
+            Ok(())
+        }
+
+        fn commit(&mut self) -> Result<()> {
+            unimplemented!()
+        }
+
+        fn rollback(&mut self) -> Result<()> {
+            unimplemented!()
+        }
+
+        fn get_table_schema(
+            &self,
+            _catalog: Option<&str>,
+            _db_schema: Option<&str>,
+            _table_name: &str,
+        ) -> Result<Schema> {
+            unimplemented!()
+        }
+
+        fn get_objects<'a>(
+            &'a self,
+            _depth: ObjectDepth,
+            _catalog: Option<&'a str>,
+            _db_schema: Option<&'a str>,
+            _table_name: Option<&'a str>,
+            _table_type: Option<Vec<&'a str>>,
+            _column_name: Option<&'a str>,
+        ) -> Result<Box<dyn RecordBatchReader + Send + 'a>> {
+            unimplemented!()
+        }
+    }
+
+    fn snowflake_engine() -> Arc<dyn AdapterEngine> {
+        let config = Mapping::from_iter([
+            ("user".into(), "U".into()),
+            ("password".into(), "P".into()),
+            ("account".into(), "A".into()),
+            ("database".into(), "D".into()),
+            ("schema".into(), "S".into()),
+            ("role".into(), "role".into()),
+            ("warehouse".into(), "warehouse".into()),
+        ]);
+        let adapter_type = AdapterType::Snowflake;
+        Arc::new(AdbcEngine::new(
+            adapter_type,
+            auth_for_backend(backend_of(adapter_type)).into(),
+            AdapterConfig::new(config),
+            SNOWFLAKE_RESOLVED_QUOTING,
+            QueryCommentConfig::from_query_comment(None, adapter_type, false, None),
+            Arc::new(DefaultTypeOps::new(adapter_type)),
+            Arc::new(DefaultStmtSplitter),
+            Arc::new(RelationCache::default()),
+            BTreeMap::new(),
+            None,
+            None,
+        ))
+    }
+
+    /// Runs `sql` through `execute_inner` on a fresh [`ScriptedConnection`] and returns the result
+    /// together with the connection's final state.
+    fn run(sql: &str) -> (AdapterResult<()>, Session) {
+        let engine = snowflake_engine();
+        let adapter = AdapterImpl::new(Arc::clone(&engine), None);
+        let session = Arc::new(Mutex::new(Session::default()));
+        drop_thread_local_connection();
+        let mut conn = ConnectionGuard::new(Box::new(ScriptedConnection(Arc::clone(&session))));
+        let result = adapter.execute_inner(
+            engine,
+            None,
+            &mut conn,
+            &QueryCtx::new("test"),
+            sql,
+            true,
+            false,
+            None,
+            None,
+            CancellationToken::never_cancels(),
+        );
+        drop(conn);
+        let mut session = std::mem::take(&mut *session.lock().unwrap());
+        session.discarded = !tlocal_slot_occupied();
+        (result.map(|_| ()), session)
+    }
+
+    #[test]
+    fn statement_failing_inside_a_transaction_discards_the_connection() {
+        let (result, session) = run(&format!("begin; {FAILING_SQL}; commit;"));
+
+        let err = result.expect_err("the failing statement's error must still propagate");
+        assert!(
+            session.discarded,
+            "connection was parked for reuse inside an open transaction; executed: {:?}",
+            session.executed
+        );
+        assert!(err.message().contains(TIMEOUT_MESSAGE), "{}", err.message());
+        assert!(
+            err.message().contains("left uncommitted"),
+            "{}",
+            err.message()
+        );
+    }
+
+    #[test]
+    fn failing_commit_discards_the_connection() {
+        let (result, session) = run(&format!("begin; select 1; {FAILING_SQL}"));
+
+        assert!(result.is_err());
+        assert!(session.discarded);
+    }
+
+    #[test]
+    fn committed_transaction_keeps_the_connection() {
+        let (result, session) = run("begin; select 1; commit;");
+
+        assert!(result.is_ok());
+        assert!(!session.discarded);
+        assert_eq!(session.executed, ["begin", "select 1", "commit"]);
+    }
+
+    #[test]
+    fn failure_after_a_finished_transaction_keeps_the_connection() {
+        let (result, session) = run(&format!("begin; select 1; rollback; {FAILING_SQL}"));
+
+        assert!(result.is_err());
+        assert!(!session.discarded);
+    }
+
+    #[test]
+    fn failure_outside_a_transaction_keeps_the_connection() {
+        let (result, session) = run(FAILING_SQL);
+
+        assert!(result.is_err());
+        assert!(!session.discarded);
+        assert_eq!(session.executed, [FAILING_SQL]);
+    }
 }

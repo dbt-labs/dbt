@@ -1,6 +1,8 @@
 use crate::schemas::common::ClusterConfig;
+use crate::schemas::serde::AdapterTypeOrArray;
 use crate::schemas::serde::OmissibleGrantConfig;
 use crate::schemas::serde::QueryTag;
+use dbt_adapter_core::AdapterType;
 use dbt_common::io_args::ComputeArg;
 use dbt_common::io_args::StaticAnalysisKind;
 use dbt_yaml::DbtSchema;
@@ -11,6 +13,7 @@ use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
 use std::collections::BTreeMap;
+use std::collections::HashSet;
 use std::collections::btree_map::Iter;
 
 // Type aliases for clarity
@@ -29,15 +32,17 @@ use crate::schemas::common::SyncConfig;
 use crate::schemas::manifest::GrantAccessToTarget;
 use crate::schemas::project::ResolvableConfig;
 use crate::schemas::project::TypedRecursiveConfig;
-use crate::schemas::project::configs::common::WarehouseSpecificNodeConfig;
-use crate::schemas::project::configs::config_merge::Tags;
+use crate::schemas::project::configs::common::{
+    TYPED_ALIAS_KEYS, WarehouseSpecificNodeConfig, take_databricks_catalog_alias,
+};
+use crate::schemas::project::configs::config_merge::{Tags, TblProperties};
 use crate::schemas::properties::ModelState;
 use crate::schemas::serde::PartitionsConfig;
 use crate::schemas::serde::StringOrArrayOfStrings;
 use crate::schemas::serde::bool_or_string_bool;
 use crate::schemas::serde::{
-    IndexesConfig, PrimaryKeyConfig, StringOrInteger, f64_or_string_f64,
-    hours_to_expiration_or_string_omissible, u64_or_string_u64,
+    IndexesConfig, PrimaryKeyConfig, StringOrInteger, event_time_or_map_to_string,
+    f64_or_string_f64, hours_to_expiration_or_string_omissible, u64_or_string_u64,
 };
 use dbt_common::serde_utils::Omissible;
 use dbt_proc_macros::DefaultTo;
@@ -86,15 +91,19 @@ pub struct ProjectSnapshotConfig {
     pub full_refresh: Option<bool>,
     #[serde(rename = "+tags")]
     pub tags: Option<StringOrArrayOfStrings>,
-    #[serde(rename = "+pre-hook")]
+    #[serde(rename = "+pre-hook", alias = "+pre_hook")]
     pub pre_hook: Verbatim<Option<Hooks>>,
-    #[serde(rename = "+post-hook")]
+    #[serde(rename = "+post-hook", alias = "+post_hook")]
     pub post_hook: Verbatim<Option<Hooks>>,
     #[serde(rename = "+persist_docs")]
     pub persist_docs: Option<PersistDocsConfig>,
     #[serde(rename = "+grants")]
     pub grants: OmissibleGrantConfig,
-    #[serde(rename = "+event_time")]
+    #[serde(
+        default,
+        rename = "+event_time",
+        deserialize_with = "event_time_or_map_to_string"
+    )]
     pub event_time: Option<String>,
     #[serde(rename = "+quoting")]
     pub quoting: Option<DbtQuoting>,
@@ -141,6 +150,14 @@ pub struct ProjectSnapshotConfig {
     pub base_location_subpath: Option<String>,
     #[serde(
         default,
+        rename = "+iceberg_version",
+        deserialize_with = "u64_or_string_u64"
+    )]
+    pub iceberg_version: Option<u64>,
+    #[serde(rename = "+table_format")]
+    pub table_format: Option<String>,
+    #[serde(
+        default,
         rename = "+copy_grants",
         deserialize_with = "bool_or_string_bool"
     )]
@@ -159,6 +176,8 @@ pub struct ProjectSnapshotConfig {
     pub scheduler: Option<String>,
     #[serde(rename = "+query_tag")]
     pub query_tag: Option<QueryTag>,
+    #[serde(rename = "+query_tags")]
+    pub query_tags: Option<String>,
     #[serde(rename = "+table_tag")]
     pub table_tag: Option<String>,
     #[serde(rename = "+row_access_policy")]
@@ -188,6 +207,12 @@ pub struct ProjectSnapshotConfig {
     // Adapter-specific fields (BigQuery)
     #[serde(rename = "+cluster_by")]
     pub cluster_by: Option<ClusterConfig>,
+    #[serde(
+        default,
+        rename = "+enable_change_history",
+        deserialize_with = "bool_or_string_bool"
+    )]
+    pub enable_change_history: Option<bool>,
     #[serde(
         default,
         rename = "+enable_refresh",
@@ -266,11 +291,17 @@ pub struct ProjectSnapshotConfig {
     #[serde(rename = "+databricks_compute")]
     pub databricks_compute: Option<String>,
     #[serde(rename = "+databricks_tags")]
-    pub databricks_tags: Option<BTreeMap<String, YmlValue>>,
+    pub databricks_tags: Option<IndexMap<String, YmlValue>>,
     #[serde(rename = "+file_format")]
     pub file_format: Option<String>,
     #[serde(rename = "+catalog_name")]
     pub catalog_name: Option<String>,
+    #[serde(rename = "+adapter")]
+    #[schemars(with = "Option<String>")]
+    pub adapter: Option<AdapterType>,
+    #[serde(rename = "+propagate")]
+    #[schemars(with = "Option<StringOrArrayOfStrings>")]
+    pub propagate: Option<AdapterTypeOrArray>,
     #[serde(
         default,
         rename = "+include_full_name_in_path",
@@ -293,6 +324,8 @@ pub struct ProjectSnapshotConfig {
     pub not_matched_by_source_action: Option<String>,
     #[serde(rename = "+not_matched_by_source_condition")]
     pub not_matched_by_source_condition: Option<String>,
+    #[serde(rename = "+merge_actions_explicit")]
+    pub merge_actions_explicit: Option<String>,
     #[serde(rename = "+not_matched_condition")]
     pub not_matched_condition: Option<String>,
     #[serde(
@@ -307,17 +340,37 @@ pub struct ProjectSnapshotConfig {
         deserialize_with = "bool_or_string_bool"
     )]
     pub skip_not_matched_step: Option<bool>,
+    #[serde(
+        default,
+        rename = "+persist_constraints",
+        deserialize_with = "bool_or_string_bool"
+    )]
+    pub persist_constraints: Option<bool>,
+    #[serde(
+        default,
+        rename = "+unique_tmp_table_suffix",
+        deserialize_with = "bool_or_string_bool"
+    )]
+    pub unique_tmp_table_suffix: Option<bool>,
     #[serde(rename = "+source_alias")]
     pub source_alias: Option<String>,
     #[serde(rename = "+target_alias")]
     pub target_alias: Option<String>,
     #[serde(rename = "+tblproperties")]
-    pub tblproperties: Option<BTreeMap<String, YmlValue>>,
+    pub tblproperties: Option<TblProperties>,
+    #[serde(rename = "+zorder")]
+    pub zorder: Option<StringOrArrayOfStrings>,
+    #[serde(
+        default,
+        rename = "+skip_optimize",
+        deserialize_with = "bool_or_string_bool"
+    )]
+    pub skip_optimize: Option<bool>,
     // Adapter-specific fields (Redshift)
     #[serde(default, rename = "+bind", deserialize_with = "bool_or_string_bool")]
     pub bind: Option<bool>,
     #[serde(rename = "+dist")]
-    pub dist: Option<String>,
+    pub dist: Option<StringOrArrayOfStrings>,
     #[serde(rename = "+sort")]
     pub sort: Option<StringOrArrayOfStrings>,
     #[serde(rename = "+sort_type")]
@@ -355,6 +408,20 @@ pub struct ProjectSnapshotConfig {
     #[serde(rename = "+state")]
     pub state: Option<ModelState>,
 
+    // ClickHouse
+    #[serde(rename = "+engine")]
+    pub engine: Option<String>,
+    #[serde(rename = "+order_by")]
+    pub order_by: Option<StringOrArrayOfStrings>,
+    #[serde(rename = "+ttl")]
+    pub ttl: Option<String>,
+    #[serde(rename = "+settings")]
+    pub settings: Option<BTreeMap<String, YmlValue>>,
+    #[serde(rename = "+query_settings")]
+    pub query_settings: Option<BTreeMap<String, YmlValue>>,
+    #[serde(rename = "+projections")]
+    pub projections: Option<Vec<YmlValue>>,
+
     // Flattened field:
     pub __additional_properties__: BTreeMap<String, ShouldBe<ProjectSnapshotConfig>>,
 }
@@ -366,6 +433,119 @@ impl TypedRecursiveConfig for ProjectSnapshotConfig {
 
     fn iter_children(&self) -> Iter<'_, String, ShouldBe<Self>> {
         self.__additional_properties__.iter()
+    }
+
+    fn has_set_fields(&self) -> bool {
+        self.database.is_some()
+            || self.schema.is_some()
+            || self.alias.is_some()
+            || self.materialized.is_some()
+            || self.strategy.is_some()
+            || self.unique_key.is_some()
+            || self.check_cols.is_some()
+            || self.updated_at.is_some()
+            || self.dbt_valid_to_current.is_some()
+            || self.snapshot_meta_column_names.is_some()
+            || self.hard_deletes.is_some()
+            || self.target_database.is_some()
+            || self.target_schema.is_some()
+            || self.enabled.is_some()
+            || self.full_refresh.is_some()
+            || self.tags.is_some()
+            || self.pre_hook.is_some()
+            || self.post_hook.is_some()
+            || self.persist_docs.is_some()
+            || self.grants.0.is_present()
+            || self.event_time.is_some()
+            || self.quoting.is_some()
+            || self.static_analysis.is_some()
+            || self.meta.is_some()
+            || self.group.is_some()
+            || self.quote_columns.is_some()
+            || self.invalidate_hard_deletes.is_some()
+            || self.docs.is_some()
+            || self.adapter_properties.is_some()
+            || self.automatic_clustering.is_some()
+            || self.auto_refresh.is_some()
+            || self.backup.is_some()
+            || self.base_location_root.is_some()
+            || self.base_location_subpath.is_some()
+            || self.iceberg_version.is_some()
+            || self.table_format.is_some()
+            || self.copy_grants.is_some()
+            || self.copy_tags.is_some()
+            || self.external_volume.is_some()
+            || self.initialize.is_some()
+            || self.scheduler.is_some()
+            || self.query_tag.is_some()
+            || self.table_tag.is_some()
+            || self.row_access_policy.is_some()
+            || self.refresh_mode.is_some()
+            || self.secure.is_some()
+            || self.snowflake_initialization_warehouse.is_some()
+            || self.immutable_where.is_some()
+            || self.snowflake_warehouse.is_some()
+            || self.refresh_warehouse.is_some()
+            || self.target_lag.is_some()
+            || self.tmp_relation_type.is_some()
+            || self.transient.is_some()
+            || self.cluster_by.is_some()
+            || self.enable_change_history.is_some()
+            || self.enable_refresh.is_some()
+            || self.grant_access_to.is_some()
+            || self.hours_to_expiration.is_present()
+            || self.job_execution_timeout_seconds.is_some()
+            || self.reservation.is_some()
+            || self.kms_key_name.is_some()
+            || self.labels.is_some()
+            || self.labels_from_meta.is_some()
+            || self.max_staleness.is_some()
+            || self.partition_by.is_some()
+            || self.partition_expiration_days.is_some()
+            || self.partitions.is_some()
+            || self.refresh_interval_minutes.is_some()
+            || self.resource_tags.is_some()
+            || self.require_partition_filter.is_some()
+            || self.auto_liquid_cluster.is_some()
+            || self.buckets.is_some()
+            || self.catalog.is_some()
+            || self.clustered_by.is_some()
+            || self.compute.is_some()
+            || self.compression.is_some()
+            || self.databricks_compute.is_some()
+            || self.databricks_tags.is_some()
+            || self.file_format.is_some()
+            || self.catalog_name.is_some()
+            || self.adapter.is_some()
+            || self.propagate.is_some()
+            || self.include_full_name_in_path.is_some()
+            || self.liquid_clustered_by.is_some()
+            || self.location_root.is_some()
+            || self.matched_condition.is_some()
+            || self.merge_with_schema_evolution.is_some()
+            || self.not_matched_by_source_action.is_some()
+            || self.not_matched_by_source_condition.is_some()
+            || self.merge_actions_explicit.is_some()
+            || self.not_matched_condition.is_some()
+            || self.skip_matched_step.is_some()
+            || self.skip_not_matched_step.is_some()
+            || self.persist_constraints.is_some()
+            || self.unique_tmp_table_suffix.is_some()
+            || self.source_alias.is_some()
+            || self.target_alias.is_some()
+            || self.tblproperties.is_some()
+            || self.zorder.is_some()
+            || self.skip_optimize.is_some()
+            || self.bind.is_some()
+            || self.dist.is_some()
+            || self.sort.is_some()
+            || self.sort_type.is_some()
+            || self.as_columnstore.is_some()
+            || self.table_type.is_some()
+            || self.indexes.is_some()
+            || self.unlogged.is_some()
+            || self.schedule.is_some()
+            || self.sync.is_some()
     }
 }
 
@@ -394,6 +574,14 @@ pub struct SnapshotConfig {
     pub target_database: Option<String>,
     pub target_schema: Option<String>,
     pub compute: Option<ComputeArg>,
+    // Internal placement hint; kept out of serialized config/telemetry output.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<String>")]
+    pub adapter: Option<AdapterType>,
+    // Internal placement hint; kept out of serialized config/telemetry output.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<StringOrArrayOfStrings>")]
+    pub propagate: Option<AdapterTypeOrArray>,
     // General Configuration
     #[resolved(promote, method = get_enabled_with_default)]
     #[serde(default, deserialize_with = "bool_or_string_bool")]
@@ -409,6 +597,7 @@ pub struct SnapshotConfig {
     pub persist_docs: Option<PersistDocsConfig>,
     #[serde(default)]
     pub grants: OmissibleGrantConfig,
+    #[serde(default, deserialize_with = "event_time_or_map_to_string")]
     pub event_time: Option<String>,
     #[resolved(promote, expect = "quoting set by apply_package_defaults")]
     pub quoting: Option<DbtQuoting>,
@@ -425,6 +614,7 @@ pub struct SnapshotConfig {
     pub sync: Option<SyncConfig>,
     // dbt State configs (state-aware run-cache behavior)
     pub state: Option<ModelState>,
+    pub table_format: Option<String>,
     // Adapter specific configs
     pub __warehouse_specific_config__: WarehouseSpecificNodeConfig,
 }
@@ -562,6 +752,8 @@ impl From<ProjectSnapshotConfig> for SnapshotConfig {
             target_database: config.target_database,
             target_schema: config.target_schema,
             compute: config.compute,
+            adapter: config.adapter,
+            propagate: config.propagate,
             enabled: config.enabled,
             full_refresh: config.full_refresh,
             tags: Tags(config.tags),
@@ -579,6 +771,7 @@ impl From<ProjectSnapshotConfig> for SnapshotConfig {
             docs: config.docs,
             sync: config.sync,
             state: config.state,
+            table_format: config.table_format,
             __warehouse_specific_config__: WarehouseSpecificNodeConfig {
                 description: None, // Only for Bigquery models
                 adapter_properties: config.adapter_properties,
@@ -600,6 +793,7 @@ impl From<ProjectSnapshotConfig> for SnapshotConfig {
                 scheduler: config.scheduler,
                 tmp_relation_type: config.tmp_relation_type,
                 query_tag: config.query_tag,
+                query_tags: config.query_tags,
                 table_tag: config.table_tag,
                 row_access_policy: config.row_access_policy,
                 automatic_clustering: config.automatic_clustering,
@@ -607,9 +801,15 @@ impl From<ProjectSnapshotConfig> for SnapshotConfig {
                 copy_tags: config.copy_tags,
                 secure: config.secure,
                 transient: config.transient,
-                iceberg_version: None,
+                iceberg_version: config.iceberg_version,
 
                 partition_by: config.partition_by,
+
+                partition_by_config: None,
+
+                distribute_by_config: None,
+
+                primary_key_config: None,
                 cluster_by: config.cluster_by,
                 hours_to_expiration: config.hours_to_expiration,
                 job_execution_timeout_seconds: config.job_execution_timeout_seconds,
@@ -633,6 +833,7 @@ impl From<ProjectSnapshotConfig> for SnapshotConfig {
                 enable_list_inference: None,
                 intermediate_format: None,
                 storage_uri: None,
+                enable_change_history: config.enable_change_history,
 
                 file_format: config.file_format,
                 catalog_name: config.catalog_name,
@@ -642,6 +843,8 @@ impl From<ProjectSnapshotConfig> for SnapshotConfig {
                 include_full_name_in_path: config.include_full_name_in_path,
                 liquid_clustered_by: config.liquid_clustered_by,
                 auto_liquid_cluster: config.auto_liquid_cluster,
+                zorder: config.zorder,
+                skip_optimize: config.skip_optimize,
                 clustered_by: config.clustered_by,
                 buckets: config.buckets,
                 catalog: config.catalog,
@@ -653,12 +856,17 @@ impl From<ProjectSnapshotConfig> for SnapshotConfig {
                 matched_condition: config.matched_condition,
                 not_matched_condition: config.not_matched_condition,
                 not_matched_by_source_condition: config.not_matched_by_source_condition,
+                merge_actions_explicit: config.merge_actions_explicit,
                 not_matched_by_source_action: config.not_matched_by_source_action,
                 merge_with_schema_evolution: config.merge_with_schema_evolution,
                 skip_matched_step: config.skip_matched_step,
                 skip_not_matched_step: config.skip_not_matched_step,
+                persist_constraints: config.persist_constraints,
+                unique_tmp_table_suffix: config.unique_tmp_table_suffix,
                 schedule: config.schedule,
+                row_filter: None,
                 incremental_apply_config_changes: None,
+                use_materialization_v2: None,
                 use_safer_relation_operations: None,
                 view_update_via_alter: None,
 
@@ -679,6 +887,33 @@ impl From<ProjectSnapshotConfig> for SnapshotConfig {
                 // snapshot is unsupported for Salesforce yet
                 primary_key: PrimaryKeyConfig::default(),
                 category: None,
+
+                engine: config.engine,
+                order_by: config.order_by,
+                ttl: config.ttl,
+                settings: config.settings,
+                query_settings: config.query_settings,
+                projections: config.projections,
+                sharding_key: None,
+                disable_on_cluster: None,
+                inserts_only: None,
+                connection_overrides: None,
+                fields: None,
+                source_type: None,
+                url: None,
+                format: None,
+                layout: None,
+                lifetime: None,
+                range: None,
+                table: None,
+                update_field: None,
+                update_lag: None,
+                definer: None,
+                sql_security: None,
+                refreshable: None,
+                catchup: None,
+                mv_on_schema_change: None,
+                repopulate_from_mvs_on_full_refresh: None,
             },
         }
     }
@@ -701,6 +936,8 @@ impl From<SnapshotConfig> for ProjectSnapshotConfig {
             target_database: config.target_database,
             target_schema: config.target_schema,
             compute: config.compute,
+            adapter: config.adapter,
+            propagate: config.propagate,
             enabled: config.enabled,
             full_refresh: config.full_refresh,
             tags: config.tags.into_inner(),
@@ -721,6 +958,8 @@ impl From<SnapshotConfig> for ProjectSnapshotConfig {
             external_volume: config.__warehouse_specific_config__.external_volume,
             base_location_root: config.__warehouse_specific_config__.base_location_root,
             base_location_subpath: config.__warehouse_specific_config__.base_location_subpath,
+            iceberg_version: config.__warehouse_specific_config__.iceberg_version,
+            table_format: config.table_format,
             target_lag: config.__warehouse_specific_config__.target_lag,
             snowflake_initialization_warehouse: config
                 .__warehouse_specific_config__
@@ -733,6 +972,7 @@ impl From<SnapshotConfig> for ProjectSnapshotConfig {
             scheduler: config.__warehouse_specific_config__.scheduler,
             tmp_relation_type: config.__warehouse_specific_config__.tmp_relation_type,
             query_tag: config.__warehouse_specific_config__.query_tag,
+            query_tags: config.__warehouse_specific_config__.query_tags,
             table_tag: config.__warehouse_specific_config__.table_tag,
             row_access_policy: config.__warehouse_specific_config__.row_access_policy,
             automatic_clustering: config.__warehouse_specific_config__.automatic_clustering,
@@ -758,6 +998,7 @@ impl From<SnapshotConfig> for ProjectSnapshotConfig {
                 .partition_expiration_days,
             grant_access_to: config.__warehouse_specific_config__.grant_access_to,
             partitions: config.__warehouse_specific_config__.partitions,
+            enable_change_history: config.__warehouse_specific_config__.enable_change_history,
             enable_refresh: config.__warehouse_specific_config__.enable_refresh,
             refresh_interval_minutes: config
                 .__warehouse_specific_config__
@@ -769,6 +1010,8 @@ impl From<SnapshotConfig> for ProjectSnapshotConfig {
             catalog_name: config.__warehouse_specific_config__.catalog_name,
             location_root: config.__warehouse_specific_config__.location_root,
             tblproperties: config.__warehouse_specific_config__.tblproperties,
+            zorder: config.__warehouse_specific_config__.zorder,
+            skip_optimize: config.__warehouse_specific_config__.skip_optimize,
             include_full_name_in_path: config
                 .__warehouse_specific_config__
                 .include_full_name_in_path,
@@ -790,11 +1033,14 @@ impl From<SnapshotConfig> for ProjectSnapshotConfig {
             not_matched_by_source_condition: config
                 .__warehouse_specific_config__
                 .not_matched_by_source_condition,
+            merge_actions_explicit: config.__warehouse_specific_config__.merge_actions_explicit,
             not_matched_condition: config.__warehouse_specific_config__.not_matched_condition,
             source_alias: config.__warehouse_specific_config__.source_alias,
             target_alias: config.__warehouse_specific_config__.target_alias,
             skip_matched_step: config.__warehouse_specific_config__.skip_matched_step,
             skip_not_matched_step: config.__warehouse_specific_config__.skip_not_matched_step,
+            persist_constraints: config.__warehouse_specific_config__.persist_constraints,
+            unique_tmp_table_suffix: config.__warehouse_specific_config__.unique_tmp_table_suffix,
             // Redshift fields
             auto_refresh: config.__warehouse_specific_config__.auto_refresh,
             backup: config.__warehouse_specific_config__.backup,
@@ -812,6 +1058,13 @@ impl From<SnapshotConfig> for ProjectSnapshotConfig {
             unlogged: config.__warehouse_specific_config__.unlogged,
             // Schedule (Databricks streaming tables)
             schedule: config.__warehouse_specific_config__.schedule,
+            // ClickHouse fields
+            engine: config.__warehouse_specific_config__.engine,
+            order_by: config.__warehouse_specific_config__.order_by,
+            ttl: config.__warehouse_specific_config__.ttl,
+            settings: config.__warehouse_specific_config__.settings,
+            query_settings: config.__warehouse_specific_config__.query_settings,
+            projections: config.__warehouse_specific_config__.projections,
             sync: config.sync,
             state: config.state,
             __additional_properties__: BTreeMap::new(),
@@ -826,6 +1079,14 @@ impl ResolvableConfig<SnapshotConfig> for SnapshotConfig {
 
     fn get_enabled_with_default(&self) -> bool {
         self.enabled.unwrap_or(true)
+    }
+
+    fn get_enabled(&self) -> Option<bool> {
+        self.enabled
+    }
+
+    fn get_adapter(&self) -> Option<AdapterType> {
+        self.adapter
     }
 
     fn disable(&mut self) {
@@ -857,18 +1118,168 @@ impl ResolvableConfig<SnapshotConfig> for SnapshotConfig {
     fn default_to(&mut self, parent: &SnapshotConfig) {
         self.default_to_fields(parent);
     }
+
+    fn typed_alias_keys() -> &'static [&'static str] {
+        TYPED_ALIAS_KEYS
+    }
+
+    fn canonicalize_adapter_aliases(&mut self, alias_adapter: AdapterType) {
+        if let Some(catalog) = take_databricks_catalog_alias(
+            alias_adapter,
+            &mut self.__warehouse_specific_config__,
+            self.database.is_some(),
+        ) {
+            self.database = Some(catalog);
+        }
+        // BigQuery's `project`/`dataset` aliases are already routed to `database`/`schema` by
+        // the pre-existing, ungated serde `alias`es on those fields (D1); nothing to do here.
+        //
+        // Databricks' `target_catalog` -> `target_database` has no dedicated alias field the
+        // way `catalog`/`database` do, so it cannot be canonicalized here; it is handled only
+        // where a raw config-key rename is possible, at the inline `{{ config(...) }}` layer
+        // (`ParseConfig::apply_config`). A `+target_catalog:` in `dbt_project.yml` or a
+        // schema.yml `config:` block remains an unrecognized key -- see the marker test
+        // `test_snapshot_target_catalog_in_project_yml_is_unrecognized_key` in
+        // `dbt-parser/src/dbt_project_config.rs`.
+    }
 }
 
 impl ConfigKeys for SnapshotConfig {
-    // The default implementation from the trait will handle
-    // extracting field names via serialization automatically
+    fn valid_field_names() -> HashSet<String> {
+        let default_instance = Self::default();
+        let serialized = dbt_yaml::to_value(&default_instance)
+            .expect("Failed to serialize SnapshotConfig for field extraction");
+
+        let mut field_names = HashSet::new();
+
+        if let YmlValue::Mapping(map, _) = serialized {
+            for (key, _) in map {
+                if let YmlValue::String(key_str, _) = key {
+                    field_names.insert(key_str);
+                }
+            }
+        }
+
+        // Add known aliases that might not show up in serialization
+        field_names.insert("project".to_string()); // alias for database
+        field_names.insert("data_space".to_string()); // alias for database
+        field_names.insert("dataset".to_string()); // alias for schema
+        field_names.insert("post-hook".to_string()); // might be serialized as post_hook
+        field_names.insert("pre-hook".to_string()); // might be serialized as pre_hook
+
+        field_names
+    }
+}
+
+impl crate::schemas::project::configs::warehouse_scope::WarehouseConfigResource for SnapshotConfig {
+    const NODE_TYPE: dbt_telemetry::NodeType = dbt_telemetry::NodeType::Snapshot;
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ProjectSnapshotConfig, SnapshotConfig};
+    use super::{AdapterType, ProjectSnapshotConfig, SnapshotConfig, WarehouseSpecificNodeConfig};
     use crate::schemas::common::{FreshnessPeriod, UpdatesOn};
+    use crate::schemas::project::{ResolvableConfig, TypedRecursiveConfig};
     use crate::schemas::properties::{ModelState, StatePreClone};
+
+    #[test]
+    fn test_snapshot_query_tags_propagate_through_resolved_config() {
+        let project: ProjectSnapshotConfig = dbt_yaml::from_str(
+            r#"
++query_tags: '{"team":"snapshot"}'
+__additional_properties__: {}
+"#,
+        )
+        .unwrap();
+
+        let resolved: SnapshotConfig = project.into();
+        assert_eq!(
+            resolved.__warehouse_specific_config__.query_tags.as_deref(),
+            Some(r#"{"team":"snapshot"}"#)
+        );
+    }
+
+    #[test]
+    fn test_snapshot_clickhouse_table_options_propagate_through_resolved_config() {
+        let project: ProjectSnapshotConfig = dbt_yaml::from_str(
+            r#"
++engine: ReplacingMergeTree()
++order_by: [id, ts]
++ttl: ts + INTERVAL 1 DAY
++settings:
+  allow_nullable_key: 1
++query_settings:
+  max_insert_threads: 1
++projections:
+  - name: p
+    query: SELECT id ORDER BY ts
+__additional_properties__: {}
+"#,
+        )
+        .unwrap();
+
+        let resolved: SnapshotConfig = project.into();
+        let wh = &resolved.__warehouse_specific_config__;
+        assert_eq!(wh.engine.as_deref(), Some("ReplacingMergeTree()"));
+        assert!(wh.order_by.is_some());
+        assert_eq!(wh.ttl.as_deref(), Some("ts + INTERVAL 1 DAY"));
+        assert!(
+            wh.settings
+                .as_ref()
+                .is_some_and(|s| s.contains_key("allow_nullable_key"))
+        );
+        assert!(wh.query_settings.is_some());
+        assert_eq!(wh.projections.as_ref().map(Vec::len), Some(1));
+
+        let round_trip: ProjectSnapshotConfig = resolved.into();
+        assert_eq!(round_trip.engine.as_deref(), Some("ReplacingMergeTree()"));
+        assert_eq!(round_trip.ttl.as_deref(), Some("ts + INTERVAL 1 DAY"));
+    }
+
+    #[test]
+    fn test_project_snapshot_iceberg_config_parses_and_round_trips() {
+        let project_config: ProjectSnapshotConfig = dbt_yaml::from_str(
+            r#"
++table_format: iceberg
++iceberg_version: "2"
+__additional_properties__: {}
+"#,
+        )
+        .unwrap();
+
+        assert!(project_config.has_set_fields());
+
+        let snapshot_config: SnapshotConfig = project_config.into();
+        assert_eq!(snapshot_config.table_format.as_deref(), Some("iceberg"));
+        assert_eq!(
+            snapshot_config
+                .__warehouse_specific_config__
+                .iceberg_version,
+            Some(2)
+        );
+
+        let round_tripped: ProjectSnapshotConfig = snapshot_config.into();
+        assert_eq!(round_tripped.table_format.as_deref(), Some("iceberg"));
+        assert_eq!(round_tripped.iceberg_version, Some(2));
+    }
+
+    #[test]
+    fn test_snapshot_iceberg_config_inherits_from_parent() {
+        let parent = SnapshotConfig {
+            table_format: Some("iceberg".to_string()),
+            __warehouse_specific_config__: WarehouseSpecificNodeConfig {
+                iceberg_version: Some(2),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut child = SnapshotConfig::default();
+
+        child.default_to(&parent);
+
+        assert_eq!(child.table_format.as_deref(), Some("iceberg"));
+        assert_eq!(child.__warehouse_specific_config__.iceberg_version, Some(2));
+    }
 
     #[test]
     fn test_project_snapshot_config_resource_tags_parses() {
@@ -997,6 +1408,7 @@ __warehouse_specific_config__: {}
                 pre_clone: Some(StatePreClone::IfMissing),
                 execute_hooks_on_any_reuse: None,
                 compare_unrendered_code: None,
+                ignore_external_modifications: None,
             }),
             ..Default::default()
         };
@@ -1009,5 +1421,79 @@ __warehouse_specific_config__: {}
         assert_eq!(state.require_fresh_data_from, Some(UpdatesOn::All));
         assert_eq!(state.evaluate_volatile_sql, Some(true));
         assert_eq!(state.pre_clone, Some(StatePreClone::IfMissing));
+    }
+
+    /// Regression for #16135: a snapshot that sets one `state:` key keeps the keys
+    /// the project layer set.
+    #[test]
+    fn test_snapshot_config_state_merges_field_by_field() {
+        use crate::schemas::project::dbt_project::ResolvableConfig;
+
+        let parent = SnapshotConfig {
+            state: Some(ModelState {
+                lag_tolerance: None,
+                require_fresh_data_from: None,
+                evaluate_volatile_sql: Some(true),
+                pre_clone: Some(StatePreClone::IfMissing),
+                execute_hooks_on_any_reuse: None,
+                compare_unrendered_code: None,
+                ignore_external_modifications: None,
+            }),
+            ..Default::default()
+        };
+        let mut child = SnapshotConfig {
+            state: Some(ModelState {
+                lag_tolerance: None,
+                require_fresh_data_from: Some(UpdatesOn::All),
+                evaluate_volatile_sql: None,
+                pre_clone: None,
+                execute_hooks_on_any_reuse: None,
+                compare_unrendered_code: None,
+                ignore_external_modifications: None,
+            }),
+            ..Default::default()
+        };
+        child.default_to(&parent);
+
+        let state = child.state.expect("state should survive the merge");
+        assert_eq!(state.require_fresh_data_from, Some(UpdatesOn::All));
+        assert_eq!(state.evaluate_volatile_sql, Some(true));
+        assert_eq!(state.pre_clone, Some(StatePreClone::IfMissing));
+    }
+
+    /// `+adapter` names an adapter *type*, so the value is typed rather than a
+    /// free string -- anything that is not a supported adapter fails here, at
+    /// deserialization. Mirrors the seed and model cases.
+    #[test]
+    fn test_project_snapshot_config_adapter_parses_and_round_trips() {
+        let project_config: ProjectSnapshotConfig = dbt_yaml::from_str(
+            r#"
++adapter: bigquery
+__additional_properties__: {}
+"#,
+        )
+        .unwrap();
+        assert_eq!(project_config.adapter, Some(AdapterType::Bigquery));
+
+        let config: SnapshotConfig = project_config.into();
+        assert_eq!(config.adapter, Some(AdapterType::Bigquery));
+
+        let round_tripped: ProjectSnapshotConfig = config.into();
+        assert_eq!(round_tripped.adapter, Some(AdapterType::Bigquery));
+    }
+
+    #[test]
+    fn test_project_snapshot_config_rejects_a_value_that_is_not_an_adapter() {
+        let err = dbt_yaml::from_str::<ProjectSnapshotConfig>(
+            r#"
++adapter: compute
+__additional_properties__: {}
+"#,
+        )
+        .expect_err("`compute` is not an adapter type");
+        assert!(
+            format!("{err}").contains("compute"),
+            "error should name the offending value: {err}"
+        );
     }
 }

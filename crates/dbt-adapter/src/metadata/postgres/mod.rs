@@ -1,7 +1,8 @@
 use crate::AdapterEngine;
 use crate::adapter::adapter_impl::AdapterImpl;
-use crate::{AdapterResult, errors::AsyncAdapterResult, metadata::*, record_batch::RecordBatchExt};
+use crate::{AdapterResult, errors::AsyncAdapterResult, metadata::*};
 use arrow_schema::Schema;
+use dbt_adapter_engine::record_batch::RecordBatchExt;
 use dbt_common::cancellation::CancellationToken;
 
 use arrow_array::{Array, Decimal128Array, RecordBatch, StringArray};
@@ -152,6 +153,7 @@ impl MetadataAdapter for PostgresMetadataAdapter {
         _unique_id: Option<String>,
         _phase: Option<ExecutionPhase>,
         _relations: &[Arc<dyn BaseRelation>],
+        _item_span_operation_id: Option<&str>,
         _token: CancellationToken,
     ) -> AsyncAdapterResult<'_, HashMap<String, AdapterResult<Arc<Schema>>>> {
         let future = async move { todo!("PostgreSQL's list_relations_schemas") };
@@ -182,10 +184,15 @@ impl MetadataAdapter for PostgresMetadataAdapter {
         create_schemas_if_not_exists(&self.adapter, self, state, catalog_schemas)
     }
 
+    fn supports_relation_progress(&self) -> bool {
+        false
+    }
+
     fn list_relations_in_parallel_inner(
         &self,
         _db_schemas: &[CatalogAndSchema],
         _token: CancellationToken,
+        _report_progress: bool,
     ) -> AsyncAdapterResult<'_, BTreeMap<CatalogAndSchema, AdapterResult<RelationVec>>> {
         // FIXME: Implement cache hydration
         let future = async move { Ok(BTreeMap::new()) };

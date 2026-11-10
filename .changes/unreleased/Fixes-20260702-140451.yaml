@@ -1,7 +1,0 @@
-kind: Fixes
-body: dbt init no longer leaves a stale authenticator field when switching from SSO/MFA to Password or Key pair authentication for Snowflake profiles
-time: 2026-07-02T14:04:51.656394+05:30
-custom:
-    author: priyankahotkar
-    issue: 15378
-    project: dbt-core

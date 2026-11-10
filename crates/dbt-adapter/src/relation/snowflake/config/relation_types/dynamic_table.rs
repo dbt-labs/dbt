@@ -3,7 +3,7 @@
 use crate::AdapterType;
 use crate::relation::config_v2::ComponentConfigChange;
 use crate::relation::config_v2::{ComponentConfigLoader, RelationConfigLoader};
-use crate::relation::snowflake::config::{DescribeDynamicTableResults, components};
+use crate::relation::snowflake::config::{SnowflakeDescribeResults, components};
 use indexmap::IndexMap;
 
 fn requires_full_refresh(components: &IndexMap<&'static str, ComponentConfigChange>) -> bool {
@@ -15,9 +15,10 @@ fn requires_full_refresh(components: &IndexMap<&'static str, ComponentConfigChan
 }
 
 /// Create a `RelationConfigLoader` for Snowflake dynamic tables.
-pub(crate) fn new_loader() -> RelationConfigLoader<'static, DescribeDynamicTableResults> {
-    let loaders: [Box<dyn ComponentConfigLoader<DescribeDynamicTableResults>>; 12] = [
+pub(crate) fn new_loader() -> RelationConfigLoader<'static, SnowflakeDescribeResults> {
+    let loaders: [Box<dyn ComponentConfigLoader<SnowflakeDescribeResults>>; 13] = [
         Box::new(components::ClusterByLoader),
+        Box::new(components::CopyGrantsLoader),
         Box::new(components::ImmutableWhereLoader),
         Box::new(components::InitializeLoader),
         Box::new(components::RefreshModeLoader),
@@ -41,6 +42,7 @@ mod tests {
         ComponentConfigChange, RelationConfig, SimpleComponentConfigImpl,
     };
     use crate::relation::snowflake::config::{components, test_helpers};
+    use dbt_schemas::schemas::common::ClusterConfig;
     use indexmap::IndexMap;
 
     #[test]
@@ -101,7 +103,7 @@ mod tests {
         let loader = super::new_loader();
         // local: split — DDL on EXEC_WH, self-refresh on REFRESH_WH
         let local = test_helpers::make_local_config(test_helpers::TestDynamicTableConfig {
-            snowflake_warehouse: "EXEC_WH",
+            snowflake_warehouse: Some("EXEC_WH"),
             refresh_warehouse: Some("REFRESH_WH"),
             target_lag: Some("1 hour"),
             initialize: "on_create",
@@ -109,7 +111,7 @@ mod tests {
         });
         // remote: existing dynamic table still has WAREHOUSE = EXEC_WH
         let remote = test_helpers::make_remote_config(test_helpers::TestDynamicTableConfig {
-            snowflake_warehouse: "EXEC_WH",
+            snowflake_warehouse: Some("EXEC_WH"),
             target_lag: Some("1 hour"),
             ..Default::default()
         });
@@ -144,7 +146,7 @@ mod tests {
     fn refresh_warehouse_matches_existing_no_change() {
         let loader = super::new_loader();
         let local = test_helpers::make_local_config(test_helpers::TestDynamicTableConfig {
-            snowflake_warehouse: "EXEC_WH",
+            snowflake_warehouse: Some("EXEC_WH"),
             refresh_warehouse: Some("REFRESH_WH"),
             target_lag: Some("1 hour"),
             initialize: "on_create",
@@ -152,7 +154,7 @@ mod tests {
         });
         // remote already on REFRESH_WH — matches desired effective WAREHOUSE
         let remote = test_helpers::make_remote_config(test_helpers::TestDynamicTableConfig {
-            snowflake_warehouse: "REFRESH_WH",
+            snowflake_warehouse: Some("REFRESH_WH"),
             target_lag: Some("1 hour"),
             ..Default::default()
         });
@@ -171,18 +173,210 @@ mod tests {
         ));
     }
 
+    /// Snowflake normalizes `target_lag` units on readback, so a dynamic table configured
+    /// with `'60 seconds'` reads back as `'1 minute'`. Comparing raw strings emitted a no-op
+    /// `ALTER ... SET TARGET_LAG` on every single run.
+    #[test]
+    fn normalized_target_lag_readback_is_not_a_change() {
+        let loader = super::new_loader();
+        let local = test_helpers::make_local_config(test_helpers::TestDynamicTableConfig {
+            snowflake_warehouse: Some("WH"),
+            target_lag: Some("60 seconds"),
+            initialize: "on_create",
+            ..Default::default()
+        });
+        let remote = test_helpers::make_remote_state(test_helpers::TestRemoteState {
+            refresh_warehouse: Some("WH".to_owned()),
+            target_lag: Some("1 minute".to_owned()),
+            ..Default::default()
+        });
+
+        let desired = loader.from_local_config(&local).unwrap();
+        let existing = loader.from_remote_state(&remote).unwrap();
+        let changes = RelationConfig::diff(&desired, &existing);
+
+        assert!(matches!(
+            changes.get(components::target_lag::TYPE_NAME),
+            ComponentConfigChange::None
+        ));
+    }
+
+    #[test]
+    fn genuine_target_lag_change_is_still_detected() {
+        let loader = super::new_loader();
+        let local = test_helpers::make_local_config(test_helpers::TestDynamicTableConfig {
+            snowflake_warehouse: Some("WH"),
+            target_lag: Some("120 seconds"),
+            initialize: "on_create",
+            ..Default::default()
+        });
+        let remote = test_helpers::make_remote_state(test_helpers::TestRemoteState {
+            refresh_warehouse: Some("WH".to_owned()),
+            target_lag: Some("1 minute".to_owned()),
+            ..Default::default()
+        });
+
+        let desired = loader.from_local_config(&local).unwrap();
+        let existing = loader.from_remote_state(&remote).unwrap();
+        let changes = RelationConfig::diff(&desired, &existing);
+
+        assert!(matches!(
+            changes.get(components::target_lag::TYPE_NAME),
+            ComponentConfigChange::Some(_)
+        ));
+    }
+
+    /// `SHOW` reports `cluster_by` parenthesized, so a dynamic table configured with
+    /// `["id", "val"]` reads back as `(id, val)`.
+    #[test]
+    fn parenthesized_cluster_by_readback_is_not_a_change() {
+        let loader = super::new_loader();
+        let local = test_helpers::make_local_config(test_helpers::TestDynamicTableConfig {
+            snowflake_warehouse: Some("WH"),
+            cluster_by: Some(ClusterConfig::List(vec!["id".to_owned(), "val".to_owned()])),
+            initialize: "on_create",
+            ..Default::default()
+        });
+        let remote = test_helpers::make_remote_state(test_helpers::TestRemoteState {
+            refresh_warehouse: Some("WH".to_owned()),
+            cluster_by: Some("(id, val)".to_owned()),
+            ..Default::default()
+        });
+
+        let desired = loader.from_local_config(&local).unwrap();
+        let existing = loader.from_remote_state(&remote).unwrap();
+        let changes = RelationConfig::diff(&desired, &existing);
+
+        assert!(matches!(
+            changes.get(components::cluster_by::TYPE_NAME),
+            ComponentConfigChange::None
+        ));
+    }
+
+    #[test]
+    fn genuine_cluster_by_change_is_still_detected() {
+        let loader = super::new_loader();
+        let local = test_helpers::make_local_config(test_helpers::TestDynamicTableConfig {
+            snowflake_warehouse: Some("WH"),
+            cluster_by: Some(ClusterConfig::List(vec![
+                "id".to_owned(),
+                "other".to_owned(),
+            ])),
+            initialize: "on_create",
+            ..Default::default()
+        });
+        let remote = test_helpers::make_remote_state(test_helpers::TestRemoteState {
+            refresh_warehouse: Some("WH".to_owned()),
+            cluster_by: Some("(id, val)".to_owned()),
+            ..Default::default()
+        });
+
+        let desired = loader.from_local_config(&local).unwrap();
+        let existing = loader.from_remote_state(&remote).unwrap();
+        let changes = RelationConfig::diff(&desired, &existing);
+
+        assert!(matches!(
+            changes.get(components::cluster_by::TYPE_NAME),
+            ComponentConfigChange::Some(_)
+        ));
+    }
+
+    /// Warehouse names are case-insensitive identifiers and `SHOW` reports them uppercased,
+    /// so a lowercase `snowflake_initialization_warehouse` in the model config must not read
+    /// as a change against the uppercased readback.
+    #[test]
+    fn case_differing_initialization_warehouse_readback_is_not_a_change() {
+        let loader = super::new_loader();
+        let local = test_helpers::make_local_config(test_helpers::TestDynamicTableConfig {
+            snowflake_warehouse: Some("WH"),
+            target_lag: Some("1 hour"),
+            snowflake_initialization_warehouse: Some("my_init_wh"),
+            initialize: "on_create",
+            ..Default::default()
+        });
+        let remote = test_helpers::make_remote_state(test_helpers::TestRemoteState {
+            refresh_warehouse: Some("WH".to_owned()),
+            target_lag: Some("1 hour".to_owned()),
+            initialization_warehouse: Some("MY_INIT_WH".to_owned()),
+            ..Default::default()
+        });
+
+        let desired = loader.from_local_config(&local).unwrap();
+        let existing = loader.from_remote_state(&remote).unwrap();
+        let changes = RelationConfig::diff(&desired, &existing);
+
+        assert!(matches!(
+            changes.get(components::snowflake_initialization_warehouse::TYPE_NAME),
+            ComponentConfigChange::None
+        ));
+    }
+
+    #[test]
+    fn genuine_initialization_warehouse_change_is_still_detected() {
+        let loader = super::new_loader();
+        let local = test_helpers::make_local_config(test_helpers::TestDynamicTableConfig {
+            snowflake_warehouse: Some("WH"),
+            target_lag: Some("1 hour"),
+            snowflake_initialization_warehouse: Some("other_init_wh"),
+            initialize: "on_create",
+            ..Default::default()
+        });
+        let remote = test_helpers::make_remote_state(test_helpers::TestRemoteState {
+            refresh_warehouse: Some("WH".to_owned()),
+            target_lag: Some("1 hour".to_owned()),
+            initialization_warehouse: Some("MY_INIT_WH".to_owned()),
+            ..Default::default()
+        });
+
+        let desired = loader.from_local_config(&local).unwrap();
+        let existing = loader.from_remote_state(&remote).unwrap();
+        let changes = RelationConfig::diff(&desired, &existing);
+
+        assert!(matches!(
+            changes.get(components::snowflake_initialization_warehouse::TYPE_NAME),
+            ComponentConfigChange::Some(_)
+        ));
+    }
+
+    /// Clustering key order is part of the clustering definition, so reordering is a real
+    /// change even though the key *set* is identical.
+    #[test]
+    fn reordered_cluster_by_is_a_change() {
+        let loader = super::new_loader();
+        let local = test_helpers::make_local_config(test_helpers::TestDynamicTableConfig {
+            snowflake_warehouse: Some("WH"),
+            cluster_by: Some(ClusterConfig::List(vec!["val".to_owned(), "id".to_owned()])),
+            initialize: "on_create",
+            ..Default::default()
+        });
+        let remote = test_helpers::make_remote_state(test_helpers::TestRemoteState {
+            refresh_warehouse: Some("WH".to_owned()),
+            cluster_by: Some("(id, val)".to_owned()),
+            ..Default::default()
+        });
+
+        let desired = loader.from_local_config(&local).unwrap();
+        let existing = loader.from_remote_state(&remote).unwrap();
+        let changes = RelationConfig::diff(&desired, &existing);
+
+        assert!(matches!(
+            changes.get(components::cluster_by::TYPE_NAME),
+            ComponentConfigChange::Some(_)
+        ));
+    }
+
     #[test]
     fn refresh_warehouse_case_insensitive_no_change() {
         let loader = super::new_loader();
         let local = test_helpers::make_local_config(test_helpers::TestDynamicTableConfig {
-            snowflake_warehouse: "EXEC_WH",
+            snowflake_warehouse: Some("EXEC_WH"),
             refresh_warehouse: Some("refresh_wh"), // lowercase desired
             target_lag: Some("1 hour"),
             initialize: "on_create",
             ..Default::default()
         });
         let remote = test_helpers::make_remote_config(test_helpers::TestDynamicTableConfig {
-            snowflake_warehouse: "REFRESH_WH", // uppercase from Snowflake
+            snowflake_warehouse: Some("REFRESH_WH"), // uppercase from Snowflake
             target_lag: Some("1 hour"),
             ..Default::default()
         });

@@ -1,7 +1,6 @@
-use datafusion_common::error::DataFusionError;
-use datafusion_expr::Expr;
-use dbt_base::cancel::CancelledError;
+use dbt_cancel::CancelledError;
 use dbt_frontend_common::error::{FrontendError, FrontendResult, NameCandidate, format_candidates};
+use dbt_proc_macros::DebugNoInline;
 use itertools::Itertools as _;
 use regex::Regex;
 use std::{
@@ -12,7 +11,6 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, LazyLock},
 };
-use tokio::task::JoinError;
 
 use super::{ErrorCode, preprocessor_location::MacroSpan};
 use crate::code_location::{AbstractLocation, MiniJinjaErrorWrapper};
@@ -533,6 +531,15 @@ impl FsError {
         self
     }
 
+    /// The DataFusion error this error wraps, if its cause is one; this
+    /// error otherwise.
+    pub fn into_datafusion_cause(self) -> Result<Box<dyn Error + Send + Sync>, Box<Self>> {
+        match self.cause {
+            Some(WrappedError::Datafusion(e)) => Ok(e),
+            _ => Err(Box::new(self)),
+        }
+    }
+
     /// Adds a cause to this error, replacing the existing cause if any
     ///
     /// Note: if you attach a cause to an error, make sure you don't format the
@@ -823,36 +830,33 @@ pub enum NameError {
     Schema(dbt_frontend_common::error::SchemaError),
     /// Generic error when looking up a name from a set of names
     Generic(GenericNameError),
-    /// Generic schema error originating from Datafusion
-    Datafusion(datafusion_common::SchemaError),
+    /// Generic schema error originating from Datafusion, as displayed
+    Datafusion(String),
 }
 
 impl Display for NameError {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         let msg = match self {
             NameError::Aliases(e) => format_candidates(
-                e.items()
+                e.aliases()
                     .iter()
-                    .filter_map(|e| match e {
-                        Expr::Alias(alias) => Some(NameCandidate {
-                            name: alias.name.to_owned().into(),
-                            qualifier: None,
-                        }),
-                        _ => None,
+                    .map(|alias| NameCandidate {
+                        name: alias.to_owned().into(),
+                        qualifier: None,
                     })
                     .collect(),
                 e.target(),
                 Some(MAX_DISPLAY_TOKENS),
             ),
             NameError::Schema(e) => format_candidates(
-                e.schemas()
+                e.columns()
                     .iter()
-                    .flat_map(|s| s.iter().map(|f| f.into()))
+                    .map(NameCandidate::from)
                     .collect::<Vec<_>>(),
                 e.target(),
                 Some(MAX_DISPLAY_TOKENS),
             ),
-            NameError::Datafusion(e) => e.to_string(),
+            NameError::Datafusion(e) => e.clone(),
             NameError::Generic(e) => format_candidates(
                 e.available
                     .iter()
@@ -907,13 +911,13 @@ impl NameError {
 /// Note: you don't have to add all third-party library error types here, only
 /// those that may be useful for debugging or error handling. If not, then just
 /// use the [Generic(String)] variant.
-#[derive(Debug)]
+#[derive(DebugNoInline)]
 #[non_exhaustive]
 pub enum WrappedError {
     Antlr(String),
     Arrow(Box<arrow::error::ArrowError>),
     Parquet(Box<parquet::errors::ParquetError>),
-    Datafusion(DataFusionError),
+    Datafusion(Box<dyn Error + Send + Sync>),
     Frontend(FrontendError),
     FrontendInternal(dbt_frontend_common::error::InternalError),
     // ObjectStore(object_store::Error),
@@ -927,7 +931,7 @@ pub enum WrappedError {
     Fmt(fmt::Error),
     Generic(String),
     Cli(Box<FsError>),
-    // RemoteExecution(reqwest::Error),
+    Reqwest(reqwest::Error),
     ExitCode(i32),
 }
 
@@ -950,7 +954,15 @@ impl Display for WrappedError {
             WrappedError::Parquet(e) => write!(f, "{e}"),
             // WrappedError::ObjectStore(e) => write!(f, "{}", e),
             WrappedError::NameError(e) => write!(f, "{e}"),
-            // WrappedError::RemoteExecution(e) => write!(f, "{}", e),
+            WrappedError::Reqwest(e) => {
+                write!(f, "{e}")?;
+                let mut source = Error::source(e);
+                while let Some(err) = source {
+                    write!(f, ": {err}")?;
+                    source = err.source();
+                }
+                Ok(())
+            }
             WrappedError::Fmt(e) => write!(f, "{e}"),
             WrappedError::ExitCode(code) => write!(f, "exit code {code}"),
         }
@@ -960,8 +972,9 @@ impl Display for WrappedError {
 impl Error for WrappedError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            WrappedError::Datafusion(e) => Some(e),
+            WrappedError::Datafusion(e) => Some(e.as_ref()),
             WrappedError::Arrow(e) => Some(e),
+            WrappedError::Reqwest(e) => Some(e),
             _ => None,
         }
     }
@@ -973,7 +986,9 @@ impl From<dbt_frontend_common::error::WrappedError> for WrappedError {
             dbt_frontend_common::error::WrappedError::Frontend(err) => Self::Frontend(err),
             dbt_frontend_common::error::WrappedError::Antlr(err) => Self::Antlr(err.to_string()),
             dbt_frontend_common::error::WrappedError::Arrow(err) => Self::Arrow(err),
-            dbt_frontend_common::error::WrappedError::Datafusion(err) => Self::Datafusion(err),
+            dbt_frontend_common::error::WrappedError::Datafusion(err) => {
+                Self::Datafusion(err.into_error())
+            }
             dbt_frontend_common::error::WrappedError::SerdeJson(err) => Self::SerdeJson(err),
             dbt_frontend_common::error::WrappedError::ParseFloat(_)
             | dbt_frontend_common::error::WrappedError::ParseInt(_)
@@ -1021,8 +1036,8 @@ impl From<CancelledError> for Box<FsError> {
     }
 }
 
-impl From<JoinError> for FsError {
-    fn from(e: JoinError) -> Self {
+impl From<tokio::task::JoinError> for FsError {
+    fn from(e: tokio::task::JoinError) -> Self {
         if e.is_cancelled() {
             FsError::new(ErrorCode::OperationCanceled, "Operation cancelled")
         } else if e.is_panic() {
@@ -1034,8 +1049,27 @@ impl From<JoinError> for FsError {
     }
 }
 
-impl From<JoinError> for Box<FsError> {
-    fn from(e: JoinError) -> Self {
+impl From<tokio::task::JoinError> for Box<FsError> {
+    fn from(e: tokio::task::JoinError) -> Self {
+        Box::new(e.into())
+    }
+}
+
+impl From<dbt_runtime::JoinError> for FsError {
+    fn from(e: dbt_runtime::JoinError) -> Self {
+        if e.is_cancelled() {
+            FsError::new(ErrorCode::OperationCanceled, "Operation cancelled")
+        } else if e.is_panic() {
+            panic::resume_unwind(e.into_panic());
+        } else {
+            // as of today, this is unreachable, but we keep it for future-proofing
+            FsError::new(ErrorCode::Unknown, format!("Join error: {e}"))
+        }
+    }
+}
+
+impl From<dbt_runtime::JoinError> for Box<FsError> {
+    fn from(e: dbt_runtime::JoinError) -> Self {
         Box::new(e.into())
     }
 }
@@ -1209,13 +1243,6 @@ impl From<serde_json::Error> for WrappedError {
 //     }
 // }
 
-// impl From<reqwest::Error> for FsError {
-//     fn from(e: reqwest::Error) -> Self {
-//         FsError::new(ErrorCode::RemoteError, "Remote execution error")
-//             .with_cause(WrappedError::RemoteExecution(e))
-//     }
-// }
-
 // impl From<sdf_preprocessor::error::PreprocError> for Box<FsError> {
 //     fn from(e: sdf_preprocessor::error::PreprocError) -> Self {
 //         Box::new(e.into())
@@ -1240,86 +1267,11 @@ impl From<super::adapter_errors::AdapterError> for WrappedError {
 //     }
 // }
 
-impl From<DataFusionError> for FsError {
-    fn from(err: DataFusionError) -> Self {
-        match err {
-            // --- !!FIXME!! --- For migration only! This is to allow
-            // "tunneling" FsErrors through DataFusionError. Remove once
-            // we get rid of all DataFusionResult usage.
-            DataFusionError::External(e) if e.is::<FsError>() => {
-                *e.downcast::<FsError>().expect("e.is::<FsError>()")
-            }
-            // --- End of !!FIXME!! ---
-            DataFusionError::Execution(s) => {
-                // TODO https://github.com/sdf-labs/sdf/issues/3515 We cannot use .with_cause, that
-                // would produce a bad message for the user for cases where
-                // DataFusionError::Execution originates from SDF (so-called "legacy errors").
-                FsError::new(ErrorCode::ExecutionError, s)
-            }
-            DataFusionError::ExecutionJoin(_) => {
-                FsError::new(ErrorCode::ExecutionError, "Execution join error")
-                    .with_cause(WrappedError::Datafusion(err))
-            }
-            DataFusionError::ArrowError(ae, _) => {
-                FsError::new(ErrorCode::ArrowError, "Arrow error")
-                    .with_cause(WrappedError::Arrow(ae))
-            }
-            DataFusionError::ParquetError(pe) => {
-                FsError::new(ErrorCode::ParquetError, "Parquet error")
-                    .with_cause(WrappedError::Parquet(pe))
-            }
-            // DataFusionError::ObjectStore(oe) => {
-            //     FsError::new(ErrorCode::ObjectStoreError, "Object store error")
-            //         .with_cause(WrappedError::ObjectStore(oe))
-            // }
-            DataFusionError::IoError(ie) => {
-                FsError::new(ErrorCode::IoError, "IO error").with_cause(WrappedError::Io(ie))
-            }
-            DataFusionError::Plan(s) => FsError::new(ErrorCode::LogicalPlanError, "Semantic error")
-                .with_cause(WrappedError::Generic(s)),
-            DataFusionError::SchemaError(se, _) => {
-                FsError::new(ErrorCode::LogicalPlanError, "Schema error")
-                    .with_cause(WrappedError::NameError(NameError::Datafusion(*se)))
-            }
-            DataFusionError::ResourcesExhausted(s) => {
-                FsError::new(ErrorCode::ResourceError, "Resource error")
-                    .with_cause(WrappedError::Generic(s))
-            }
-            DataFusionError::SQL(_, _)
-            | DataFusionError::NotImplemented(_)
-            | DataFusionError::Internal(_)
-            | DataFusionError::Configuration(_)
-            | DataFusionError::Context(_, _)
-            | DataFusionError::Substrait(_)
-            | DataFusionError::External(_)
-            | DataFusionError::ObjectStore(_)
-            | DataFusionError::Diagnostic(_, _)
-            | DataFusionError::Collection(_)
-            | DataFusionError::Shared(_) => {
-                FsError::new(ErrorCode::GenericDatafusionError, "Datafusion error")
-                    .with_cause(WrappedError::Datafusion(err))
-            }
-        }
-    }
-}
-
-impl From<DataFusionError> for Box<FsError> {
-    fn from(e: DataFusionError) -> Self {
-        Box::new(e.into())
-    }
-}
-
 // impl From<reqwest::Error> for Box<FsError> {
 //     fn from(e: reqwest::Error) -> Self {
 //         Box::new(e.into())
 //     }
 // }
-
-impl From<DataFusionError> for WrappedError {
-    fn from(e: DataFusionError) -> Self {
-        WrappedError::Datafusion(e)
-    }
-}
 
 impl From<GenericNameError> for WrappedError {
     fn from(e: GenericNameError) -> Self {
@@ -1571,21 +1523,6 @@ impl<T> ContextableResult<T> for FsResult<T> {
 // This part allows "tunneling" InternalErrors through DataFusionError, thus
 // allowing DataFusionResult to be used interchangeably with InternalResult
 
-impl From<FsError> for DataFusionError {
-    fn from(e: FsError) -> Self {
-        match e.cause {
-            Some(WrappedError::Datafusion(e)) => e,
-            _ => DataFusionError::External(Box::new(e)),
-        }
-    }
-}
-
-impl From<Box<FsError>> for DataFusionError {
-    fn from(e: Box<FsError>) -> Self {
-        (*e).into()
-    }
-}
-
 // impl From<sdf_auth::validate_credentials::CredentialError> for Box<FsError> {
 //     fn from(e: sdf_auth::validate_credentials::CredentialError) -> Self {
 //         Box::new(FsError::new(ErrorCode::RemoteError, e.to_string()))
@@ -1664,6 +1601,36 @@ mod tests {
         assert_eq!(
             location.file.as_ref().as_path(),
             Path::new("run/test/models/test_fail.sql")
+        );
+    }
+
+    #[tokio::test]
+    async fn reqwest_wrapped_error_display_includes_source_chain() {
+        // Bind then immediately drop a listener to obtain a local port that is
+        // guaranteed to refuse connections, so the request fails fast and
+        // deterministically without depending on external network conditions.
+        let port = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind should succeed");
+            listener
+                .local_addr()
+                .expect("local_addr should succeed")
+                .port()
+        };
+
+        let client = reqwest::Client::new();
+
+        let reqwest_err = client
+            .get(format!("http://127.0.0.1:{port}"))
+            .send()
+            .await
+            .expect_err("request to closed local port should fail");
+
+        let wrapped = WrappedError::Reqwest(reqwest_err);
+        let rendered = wrapped.to_string();
+
+        assert!(
+            rendered.contains(": "),
+            "expected rendered error to include at least one appended source, got: {rendered}"
         );
     }
 }

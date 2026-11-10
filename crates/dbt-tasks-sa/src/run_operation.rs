@@ -30,7 +30,7 @@ use dbt_yaml::Spanned;
 use minijinja::{
     MacroSpans, Value, Value as MinijinjaValue,
     constants::{CURRENT_PATH, CURRENT_SPAN, TARGET_PACKAGE_NAME},
-    value::Kwargs,
+    value::{Kwargs, OverlayMap},
 };
 use minijinja_contrib::modules::py_datetime::datetime::PyDateTime;
 
@@ -42,9 +42,9 @@ const INLINE_SQL_PAYLOAD_VAR: &str = "__dbt_inline_sql_payload__";
 /// and executes it via `{% call statement(...) %}`; returns the rendered SQL.
 pub async fn run_operation_inline_sql(
     sql: &str,
-    resolver_state: &ResolverState,
-    jinja_env: &JinjaEnv,
-    base_context: &BTreeMap<String, Value>,
+    resolver_state: &Arc<ResolverState>,
+    jinja_env: &Arc<JinjaEnv>,
+    base_context: &Arc<BTreeMap<String, Value>>,
     io_args: &IoArgs,
 ) -> FsResult<String> {
     if sql.trim().is_empty() {
@@ -54,7 +54,7 @@ pub async fn run_operation_inline_sql(
         ));
     }
 
-    let mut ctx = base_context.clone();
+    let mut ctx = OverlayMap::new(Value::from_dyn_object(Arc::clone(base_context)));
     ctx.insert(
         TARGET_PACKAGE_NAME.to_string(),
         Value::from(resolver_state.root_project_name.clone()),
@@ -82,12 +82,38 @@ pub async fn run_operation_inline_sql(
         Value::from_serialize(minijinja::machinery::Span::default()),
     );
 
-    let listener_factory = DefaultRenderingEventListenerFactory::default();
+    let listener_factory = Arc::new(DefaultRenderingEventListenerFactory::default());
     let filename = io_args.in_dir.join("inline_query.sql");
-    let rendered_user_sql = render_sql(sql, jinja_env, &ctx, &listener_factory, &filename)?;
+    // Rendering may reach the warehouse (and the `statement` wrapper below always
+    // does), so it happens on the blocking pool: every database connection must be
+    // created by a `dbt-runtime` worker thread.
+    let rendered_user_sql = {
+        let jinja_env = Arc::clone(jinja_env);
+        let sql = sql.to_owned();
+        let ctx = ctx.clone();
+        let listener_factory = Arc::clone(&listener_factory);
+        let filename = filename.clone();
+        dbt_runtime::spawn_blocking(move || {
+            render_sql(&sql, &jinja_env, &ctx, listener_factory.as_ref(), &filename)
+        })
+        .await
+        .map_err(|e| fs_err!(ErrorCode::Generic, "spawn_blocking join error: {}", e))??
+    };
 
     let final_user_sql = if rendered_user_sql.contains(DBT_CTE_PREFIX) {
-        precompile_ephemeral_models(resolver_state, jinja_env, base_context, io_args)?;
+        // Compiling the ephemeral models renders their bodies, which may call the
+        // adapter, so it belongs on the blocking pool like the renders above.
+        {
+            let resolver_state = Arc::clone(resolver_state);
+            let jinja_env = Arc::clone(jinja_env);
+            let base_context = Arc::clone(base_context);
+            let io_args = io_args.clone();
+            dbt_runtime::spawn_blocking(move || {
+                precompile_ephemeral_models(&resolver_state, &jinja_env, &base_context, &io_args)
+            })
+            .await
+            .map_err(|e| fs_err!(ErrorCode::Generic, "spawn_blocking join error: {}", e))??;
+        }
         let mut macro_spans = MacroSpans::default();
         inject_and_persist_ephemeral_models(
             rendered_user_sql,
@@ -110,7 +136,20 @@ pub async fn run_operation_inline_sql(
         name = INLINE_SQL_NAME,
         var = INLINE_SQL_PAYLOAD_VAR,
     );
-    let _ = render_sql(&wrapper, jinja_env, &wrap_ctx, &listener_factory, &filename)?;
+    {
+        let jinja_env = Arc::clone(jinja_env);
+        let _ = dbt_runtime::spawn_blocking(move || {
+            render_sql(
+                &wrapper,
+                &jinja_env,
+                &wrap_ctx,
+                listener_factory.as_ref(),
+                &filename,
+            )
+        })
+        .await
+        .map_err(|e| fs_err!(ErrorCode::Generic, "spawn_blocking join error: {}", e))??;
+    }
 
     Ok(final_user_sql)
 }
@@ -122,9 +161,10 @@ pub async fn run_operation_inline_sql(
 fn precompile_ephemeral_models(
     resolver_state: &ResolverState,
     jinja_env: &JinjaEnv,
-    base_context: &BTreeMap<String, Value>,
+    base_context: &Arc<BTreeMap<String, Value>>,
     io_args: &IoArgs,
 ) -> FsResult<()> {
+    let base_context = &Value::from_dyn_object(Arc::clone(base_context));
     // Collect ephemeral models keyed by unique_id.
     let ephemerals: BTreeMap<String, Arc<dbt_schemas::schemas::DbtModel>> = resolver_state
         .nodes
@@ -163,11 +203,11 @@ fn precompile_ephemeral_models(
         // Build the per-node compile context — this binds `this`, the ref-graph,
         // adapter dispatch, etc. exactly as the normal pipeline does.
         let (compile_ctx, _) = build_compile_node_context(
-            model.as_ref(),
+            model.clone(),
             resolver_state,
             base_context,
             DependencyValidationConfig::new_unvalidated(),
-        );
+        )?;
 
         let original_file_path = model.__common_attr__.original_file_path.clone();
         let absolute_path =
@@ -205,9 +245,9 @@ pub async fn run_operation_on_run(
     io_args: &IoArgs,
     schemas: &Option<Value>,
     database_schemas: &Option<Value>,
-    listener_factory: Option<&dyn RenderingEventListenerFactory>,
-    jinja_env: &JinjaEnv,
-    base_context: &BTreeMap<String, Value>,
+    listener_factory: Option<Arc<dyn RenderingEventListenerFactory>>,
+    jinja_env: &Arc<JinjaEnv>,
+    base_context: &Value,
     results: Value,
 ) -> FsResult<String> {
     if operation
@@ -220,7 +260,7 @@ pub async fn run_operation_on_run(
     }
 
     // Get the base context
-    let mut operation_ctx = base_context.clone();
+    let mut operation_ctx = OverlayMap::extending(base_context);
     operation_ctx.insert(
         TARGET_PACKAGE_NAME.to_string(),
         Value::from(operation.__common_attr__.package_name.clone()),
@@ -239,30 +279,34 @@ pub async fn run_operation_on_run(
         CURRENT_SPAN.to_string(),
         Value::from_serialize(minijinja::machinery::Span::default()),
     );
-    let default_listener_factory = DefaultRenderingEventListenerFactory::default();
-    let listener_factory = listener_factory.unwrap_or(&default_listener_factory);
+    let listener_factory: Arc<dyn RenderingEventListenerFactory> = listener_factory
+        .unwrap_or_else(|| Arc::new(DefaultRenderingEventListenerFactory::default()));
 
     // First, wrap the raw_code with reset_span and render it.
-    // Skip reset_span when the span is invalid (e.g. after deserialization from JSON
-    // in partial-parse mode, where the dbt_yaml Spanned wrapper loses its source span).
+    // `name_span` is a plain field on `CommonAttributes` (unlike the outer
+    // `Spanned<DbtOperation>`'s own span, which is lost when the operation is
+    // round-tripped through the `--partial-parse` JSON cache), so it stays
+    // valid across cold and warm runs alike. Skip reset_span only when it was
+    // never populated (e.g. an empty hook body).
     let raw_code = operation
         .__common_attr__
         .raw_code
         .as_ref()
         .expect("raw_code is required in operation");
-    let raw_code_with_reset_span = if operation.span().is_valid() {
+    let name_span = &operation.__common_attr__.name_span;
+    let raw_code_with_reset_span = if name_span.start.line > 0 {
         format!(
             "{{% do reset_span('{}', {}, {}, {}, {}, {}, {}) %}}\n{}",
             operation
                 .__common_attr__
                 .original_file_path
                 .to_string_lossy(),
-            operation.span().start.line as u32,
-            operation.span().start.column as u32,
-            operation.span().start.index as u32,
-            operation.span().end.line as u32,
-            operation.span().end.column as u32,
-            operation.span().end.index as u32,
+            name_span.start.line,
+            name_span.start.col,
+            name_span.start.index,
+            name_span.stop.line,
+            name_span.stop.col,
+            name_span.stop.index,
             raw_code,
         )
     } else {
@@ -281,29 +325,42 @@ pub async fn run_operation_on_run(
         }),
     );
 
-    let rendered_sql = render_sql(
-        &raw_code_with_reset_span,
-        jinja_env,
-        &operation_ctx,
-        listener_factory,
-        &operation.__common_attr__.original_file_path,
-    )
-    .map_err(|e| e.with_location(operation.__common_attr__.original_file_path.to_path_buf()))?;
-    // Then wrap the rendered SQL with call statement and render again
-    let instruction_plus_wrapper = format!(
-        "{{% call statement(None, auto_begin=false, fetch_result=false) %}}\n{}\n{{% endcall %}}",
-        &rendered_sql,
-    );
+    // The hook body is rendered and then executed through `statement`, so it
+    // talks to the warehouse: both renders have to happen on the blocking pool,
+    // because every database connection must be created by a `dbt-runtime`
+    // worker thread.
+    let rendered_sql = {
+        let jinja_env = Arc::clone(jinja_env);
+        let file_path = operation.__common_attr__.original_file_path.to_path_buf();
+        dbt_runtime::spawn_blocking(move || {
+            let rendered_sql = render_sql(
+                &raw_code_with_reset_span,
+                &jinja_env,
+                &operation_ctx,
+                listener_factory.as_ref(),
+                &file_path,
+            )
+            .map_err(|e| e.with_location(file_path.clone()))?;
+            // Then wrap the rendered SQL with call statement and render again
+            let instruction_plus_wrapper = format!(
+                "{{% call statement(None, auto_begin=false, fetch_result=false) %}}\n{}\n{{% endcall %}}",
+                &rendered_sql,
+            );
 
-    // actually execute the query
-    let _ = render_sql(
-        &instruction_plus_wrapper,
-        jinja_env,
-        &operation_ctx,
-        listener_factory,
-        &operation.__common_attr__.original_file_path,
-    )
-    .map_err(|e| e.with_location(operation.__common_attr__.original_file_path.to_path_buf()))?;
+            // actually execute the query
+            let _ = render_sql(
+                &instruction_plus_wrapper,
+                &jinja_env,
+                &operation_ctx,
+                listener_factory.as_ref(),
+                &file_path,
+            )
+            .map_err(|e| e.with_location(file_path.clone()))?;
+            Ok::<_, Box<FsError>>(rendered_sql)
+        })
+        .await
+        .map_err(|e| fs_err!(ErrorCode::Generic, "spawn_blocking join error: {}", e))??
+    };
 
     // Save the rendered sql to `target/compiled/{project}/dbt_project.yml/hooks/{name}.sql`,
     // mirroring the run path obtained above and dbt-core's nested operation layout.
@@ -377,16 +434,21 @@ pub async fn run_operation_on_run_with_ctx(
     // Build operation-specific context with static_analysis=unsafe
     // This ensures refs/sources in operations use deferred relations
     let (mut operation_ctx, _) = ctx.build_compile_node_context(
-        &**operation,
-        &ctx.inner.base_context,
+        // We are forced to clone here, cause jinja engine requires an owned (static) object as value,
+        // while operations are coming from shared resolver state and thus by reference.
+        // We accept the clone cost here under assumption that number of operations are very small
+        // in practice and doesn't (yet) worth the cost of building workarounds
+        Arc::new((**operation).clone()),
+        &Value::from_dyn_object(Arc::clone(&ctx.inner.base_context)),
         DependencyValidationConfig::new_unvalidated(),
-    );
+    )?;
 
     // Extend with stateful functions
     extend_base_context_stateful_fn(
         &mut operation_ctx,
         &operation.__common_attr__.package_name,
         ctx.runtime_config().dependencies.keys().cloned().collect(),
+        None,
     );
 
     // Add selected_resources list from schedule
@@ -410,9 +472,9 @@ pub async fn run_operation_on_run_with_ctx(
         &ctx.inner.arg.io,
         &schemas,
         &database_schemas,
-        Some(ctx.rendering_listener_factory.as_ref()),
+        Some(Arc::clone(&ctx.rendering_listener_factory)),
         &ctx.env,
-        &operation_ctx,
+        &Value::from(operation_ctx),
         results_value,
     )
     .await
@@ -423,7 +485,7 @@ pub async fn run_operation(
     input_macro_name: &str,
     input_macro_args: &BTreeMap<String, dbt_yaml::Value>,
     resolver_state: &ResolverState,
-    jinja_env: &JinjaEnv,
+    jinja_env: &Arc<JinjaEnv>,
     base_context: &BTreeMap<String, Value>,
 ) -> FsResult<Value> {
     // Convert macro arguments from yaml to jinja values
@@ -511,14 +573,21 @@ pub async fn run_operation(
         )),
     );
 
-    let template = jinja_env.get_template(&template_name)?;
-    let state = template.eval_to_state(run_operation_context, &[])?;
-    let func = state
-        .lookup(&macro_name, &[])
-        .ok_or_else(|| unexpected_fs_err!("macro lookup failed"))?;
+    // The macro is free to query the warehouse, so it runs on the blocking pool:
+    // every database connection must be created by a `dbt-runtime` worker thread.
+    let jinja_env = Arc::clone(jinja_env);
+    dbt_runtime::spawn_blocking(move || {
+        let template = jinja_env.get_template(&template_name)?;
+        let state = template.eval_to_state(run_operation_context, &[])?;
+        let func = state
+            .lookup(&macro_name, &[])
+            .ok_or_else(|| unexpected_fs_err!("macro lookup failed"))?;
 
-    func.call(&state, &[Value::from(Kwargs::from_iter(macro_args))], &[])
-        .map_err(|err| Box::new(FsError::from_jinja_err(err, "Failed to run operation")))
+        func.call(&state, &[Value::from(Kwargs::from_iter(macro_args))], &[])
+            .map_err(|err| Box::new(FsError::from_jinja_err(err, "Failed to run operation")))
+    })
+    .await
+    .map_err(|e| fs_err!(ErrorCode::Generic, "spawn_blocking join error: {}", e))?
 }
 
 fn search_resolved_macro(

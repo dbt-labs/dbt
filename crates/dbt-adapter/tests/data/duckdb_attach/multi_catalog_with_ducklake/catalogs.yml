@@ -1,0 +1,25 @@
+# Scenario: Mixed catalog types including two DuckLake entries.
+# Exercises: `INSTALL ducklake` prepended exactly once even with multiple
+# DuckLake catalogs; ordering of ATTACHes preserved.
+catalogs:
+  - name: rest_demo
+    type: iceberg_rest
+    table_format: iceberg
+    config:
+      duckdb:
+        warehouse: "demo_warehouse"
+        catalog_database: "rest_demo"
+  - name: lake_a
+    type: ducklake
+    table_format: default
+    config:
+      duckdb:
+        metadata_path: "lake_a.db"
+        catalog_database: lake_a
+  - name: lake_b
+    type: ducklake
+    table_format: default
+    config:
+      duckdb:
+        metadata_path: "lake_b.db"
+        catalog_database: lake_b

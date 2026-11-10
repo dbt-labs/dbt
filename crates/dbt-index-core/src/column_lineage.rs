@@ -47,9 +47,7 @@ pub struct ColumnLineageEdge {
 
 #[derive(Debug, thiserror::Error)]
 pub enum LineageError {
-    #[error(
-        "column lineage is not available; rerun `dbt --write-index <run|build|compile>` with static analysis enabled"
-    )]
+    #[error("column lineage is not available; rerun `dbt build --static-analysis strict`")]
     NotAvailable,
     #[error("node {0} not found")]
     NodeNotFound(String),

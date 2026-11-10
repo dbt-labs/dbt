@@ -18,8 +18,9 @@ use dbt_common::unexpected_err;
 use dbt_common::{ErrorCode, FsResult, constants::DBT_COMPILED_DIR_NAME, fs_err, stdfs};
 use dbt_dag::schedule::Schedule;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
-use dbt_loader::internal_macro_package_names;
-use dbt_schema_store::{CanonicalFqn, SchemaStoreTrait};
+use dbt_loader::internal_macro_package_names_for;
+use dbt_schema_store::SchemaStoreTrait;
+use dbt_schemas::IndexMap;
 use dbt_schemas::schemas::common::DbtMaterialization;
 use dbt_schemas::schemas::dbt_column::{DbtColumn, DbtColumnRef};
 use dbt_schemas::schemas::relations::base::ComponentName;
@@ -31,6 +32,7 @@ use dbt_schemas::schemas::{
 };
 use dbt_schemas::state::ResolverState;
 use dbt_tasks_core::RunTasksArgs;
+use dbt_tasks_core::context::adapter_type_outside_compute_platform;
 use dbt_telemetry::ArtifactType;
 use dbt_telemetry::NodeType;
 use minijinja::{State, Value};
@@ -372,14 +374,14 @@ pub fn update_node_columns(
     let type_ops = type_ops_factory.create(adapter_type);
 
     // TODO(anna): Let's revisit this and try to extract out the flattening behavior into something like `schema_to_flattened_columns`
-    let mut schema_columns = Vec::<Column>::with_capacity(columns.len());
+    let mut schema_columns = Vec::<Arc<Column>>::with_capacity(columns.len());
     let builder = ColumnBuilder::new(adapter_type);
     for field in schema.fields() {
         let column = builder.build(field, type_ops.as_ref())?;
         if adapter_type == AdapterType::Bigquery {
             schema_columns.extend(column.flatten());
         } else {
-            schema_columns.push(column);
+            schema_columns.push(Arc::from(column));
         }
     }
 
@@ -428,6 +430,8 @@ pub fn update_node_columns(
             databricks_tags: existing.and_then(|col| col.databricks_tags.clone()),
             column_mask: existing.and_then(|col| col.column_mask.clone()),
             quote: existing.and_then(|col| col.quote),
+            codec: existing.and_then(|col| col.codec.clone()),
+            ttl: existing.and_then(|col| col.ttl.clone()),
             deprecated_config: existing
                 .map(|col| col.deprecated_config.clone())
                 .unwrap_or_default(),
@@ -497,7 +501,7 @@ pub fn get_catalog_schemas(
 }
 
 /// Registers the schemas in the database.
-pub async fn register_catalog_schemas_remote(
+pub fn register_catalog_schemas_remote(
     adapter: &Arc<Adapter>,
     state: &State<'_, '_>,
     catalog_schemas: Vec<(String, String, String)>,
@@ -529,13 +533,14 @@ pub async fn register_catalog_schemas_remote(
     Ok(())
 }
 
-/// Computes catalogs and schemas of selected nodes in order to create missing ones.
-/// This is the same as `get_catalog_schemas`, but includes the unique id of an associated node.
-pub fn get_catalog_schemas_and_ids(
+/// Computes catalogs and schemas of selected nodes in order to create missing ones, grouped by
+/// the adapter that creates them; `run_adapter`'s group comes first and always exists.
+pub fn get_catalog_schemas_and_ids_by_adapter(
     nodes: &Nodes,
     schedule: &Schedule<String>,
-) -> BTreeMap<String, BTreeMap<String, String>> {
-    let mut catalog_schemas = BTreeMap::new();
+    run_adapter: AdapterType,
+) -> IndexMap<AdapterType, BTreeMap<String, BTreeMap<String, String>>> {
+    let mut groups = IndexMap::from([(run_adapter, BTreeMap::new())]);
     for unique_id in schedule.selected_nodes.iter() {
         let Some(node) = nodes.get_node(unique_id) else {
             continue;
@@ -545,6 +550,8 @@ pub fn get_catalog_schemas_and_ids(
         if base.relation_name.is_none() {
             continue;
         }
+        let owner = adapter_type_outside_compute_platform(node.node_adapter(), run_adapter);
+        let catalog_schemas = groups.entry(owner).or_default();
         if node.resource_type() == NodeType::SavedQuery {
             let saved_query = &nodes
                 .saved_queries
@@ -575,7 +582,7 @@ pub fn get_catalog_schemas_and_ids(
                 .insert(schema, unique_id.clone());
         }
     }
-    catalog_schemas
+    groups
 }
 
 /// Filters schemas by ones that don't already exist.
@@ -630,66 +637,6 @@ pub fn filter_missing_schemas(
     Ok(missing_catalog_schemas)
 }
 
-pub fn mirror_schema_to_frontier_cache(
-    io_args_out_dir: &Path,
-    canonical_fqn: &CanonicalFqn,
-    unique_id: &str,
-    schema_store: &dyn SchemaStoreTrait,
-) -> FsResult<()> {
-    // For the ParquetCache store format, promote the Selected entry directly
-    // in the in-memory cache; no per-file copy is needed.
-    schema_store
-        .promote_to_frontier(canonical_fqn)
-        .map_err(|e| {
-            fs_err!(
-                ErrorCode::IoError,
-                "Failed to promote schema to frontier cache: {}",
-                e
-            )
-        })?;
-
-    // For legacy per-file formats (StoreFormat::Parquet), copy the analyzed
-    // parquet file to the sourced_remote path. This is a no-op for ParquetCache
-    // because the analyzed file no longer exists on disk.
-    let schema_root = io_args_out_dir.join("schemas");
-    let analyzed_path = schema_root
-        .join("analyzed")
-        .join(unique_id)
-        .join("output.parquet");
-    if !analyzed_path.exists() {
-        return Ok(());
-    }
-
-    let frontier_path = schema_root
-        .join("sourced_remote")
-        .join("internal")
-        .join(canonical_fqn.catalog().as_str())
-        .join(canonical_fqn.schema().as_str())
-        .join(canonical_fqn.table().as_str())
-        .join("output.parquet");
-    if let Some(parent) = frontier_path.parent() {
-        stdfs::create_dir_all(parent).map_err(|e| {
-            fs_err!(
-                ErrorCode::IoError,
-                "Failed to create schema cache directory {}: {}",
-                parent.display(),
-                e
-            )
-        })?;
-    }
-
-    stdfs::copy(&analyzed_path, &frontier_path).map_err(|e| {
-        fs_err!(
-            ErrorCode::IoError,
-            "Failed to mirror seed schema from {} to {}: {}",
-            analyzed_path.display(),
-            frontier_path.display(),
-            e
-        )
-    })?;
-    Ok(())
-}
-
 pub fn typecheck_macros(
     resolver_state: &ResolverState,
     env: Arc<JinjaEnv>,
@@ -702,7 +649,10 @@ pub fn typecheck_macros(
     // mode. Skip them — they're stable and pre-tested. After the manifest parity fix,
     // original_file_path is package-relative and no longer starts with "dbt_internal_packages",
     // so we identify internal macros by package_name instead.
-    let internal_pkgs = internal_macro_package_names(resolver_state.adapter_type);
+    // Union over every adapter the target declares, not just the default one:
+    // otherwise a borrowed package's macros would not be recognised as internal.
+    let internal_pkgs =
+        internal_macro_package_names_for(resolver_state.dbt_profile.adapter_types());
     let is_internal = |m: &&DbtMacro| internal_pkgs.contains(&m.package_name);
 
     let all_files = {
@@ -784,13 +734,14 @@ pub fn typecheck_macros(
             jinja_typechecking_listener_factory.clone(),
             Some(m.package_name.clone()),
             &env.env.get_root_package_name(),
-            Value::from_dyn_object(env.env.get_dbt_and_adapters_namespace()),
+            Value::from_dyn_object(env.env.get_dbt_and_adapters_namespaces()),
             &relative_file_path.clone(),
             &content,
             &offset,
             &m.unique_id.clone(),
             resolver_state.adapter_type,
             false,
+            None,
         );
     }
     Ok(())
@@ -834,4 +785,99 @@ pub fn write_decompiled_sql(out_dir: &Path, relative_path: &Path, sql: &str) {
         let _ = std::fs::create_dir_all(parent);
     }
     let _ = std::fs::write(&decompiled_path, sql);
+}
+
+#[cfg(test)]
+mod catalog_schema_group_tests {
+    use super::*;
+    use dbt_schemas::schemas::DbtModel;
+
+    /// A schedule selecting one model per `(unique_id, adapter, database, schema, relation_name?)`.
+    fn nodes_and_schedule(
+        models: &[(&str, AdapterType, &str, &str, bool)],
+    ) -> (Nodes, Schedule<String>) {
+        let mut nodes = Nodes::default();
+        let mut schedule = Schedule::<String>::default();
+        for (unique_id, adapter, database, schema, has_relation) in models {
+            let mut model = DbtModel::default();
+            model.__common_attr__.unique_id = (*unique_id).to_string();
+            model.__base_attr__.adapter = *adapter;
+            model.__base_attr__.database = (*database).to_string();
+            model.__base_attr__.schema = (*schema).to_string();
+            model.__base_attr__.relation_name =
+                has_relation.then(|| format!("{database}.{schema}.x"));
+            nodes
+                .models
+                .insert((*unique_id).to_string(), Arc::new(model));
+            schedule.selected_nodes.insert((*unique_id).to_string());
+        }
+        (nodes, schedule)
+    }
+
+    fn map(entries: &[(&str, &str, &str)]) -> BTreeMap<String, BTreeMap<String, String>> {
+        let mut map: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
+        for (catalog, schema, unique_id) in entries {
+            map.entry((*catalog).to_string())
+                .or_default()
+                .insert((*schema).to_string(), (*unique_id).to_string());
+        }
+        map
+    }
+
+    #[test]
+    fn single_adapter_is_one_group() {
+        let (nodes, schedule) = nodes_and_schedule(&[
+            ("model.p.a", AdapterType::Snowflake, "DB", "S1", true),
+            ("model.p.b", AdapterType::Snowflake, "DB", "S2", true),
+            ("model.p.c", AdapterType::Snowflake, "DB", "S3", false),
+        ]);
+        assert_eq!(
+            get_catalog_schemas_and_ids_by_adapter(&nodes, &schedule, AdapterType::Snowflake)
+                .into_iter()
+                .collect::<Vec<_>>(),
+            vec![(
+                AdapterType::Snowflake,
+                map(&[("DB", "S1", "model.p.a"), ("DB", "S2", "model.p.b")])
+            )]
+        );
+    }
+
+    #[test]
+    fn no_relation_nodes_is_one_empty_group() {
+        let (nodes, schedule) =
+            nodes_and_schedule(&[("model.p.a", AdapterType::DuckDB, "db", "main", false)]);
+        assert_eq!(
+            get_catalog_schemas_and_ids_by_adapter(&nodes, &schedule, AdapterType::Snowflake)
+                .into_iter()
+                .collect::<Vec<_>>(),
+            vec![(AdapterType::Snowflake, BTreeMap::new())]
+        );
+    }
+
+    #[test]
+    fn groups_by_adapter_run_adapter_first_lakecompute_with_it() {
+        let (nodes, schedule) = nodes_and_schedule(&[
+            ("model.p.a_duck", AdapterType::DuckDB, "db", "main", true),
+            ("model.p.b_lake", AdapterType::LakeCompute, "DB", "LC", true),
+            ("model.p.c_snow", AdapterType::Snowflake, "db", "main", true),
+        ]);
+        assert_eq!(
+            get_catalog_schemas_and_ids_by_adapter(&nodes, &schedule, AdapterType::Snowflake)
+                .into_iter()
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    AdapterType::Snowflake,
+                    map(&[
+                        ("DB", "LC", "model.p.b_lake"),
+                        ("db", "main", "model.p.c_snow")
+                    ])
+                ),
+                (
+                    AdapterType::DuckDB,
+                    map(&[("db", "main", "model.p.a_duck")])
+                ),
+            ]
+        );
+    }
 }

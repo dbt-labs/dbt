@@ -3,7 +3,7 @@ use std::{collections::HashMap, str::FromStr};
 
 use dbt_common::{ErrorCode, FsError, FsResult, err, fs_err};
 use dbt_schemas::schemas::packages::{
-    GitPackage, HubPackage, PackageVersion, PrivatePackage, TarballPackage,
+    GitPackage, HubPackage, PackageVersion, PrivatePackage, PrivatePackageProvider, TarballPackage,
 };
 use dbt_yaml::Value as YmlValue;
 
@@ -289,7 +289,7 @@ pub struct LocalUnpinnedPackage {
 pub struct PrivatePinnedPackage {
     pub private: String,
     pub name: String,
-    pub provider: Option<String>,
+    pub provider: Option<PrivatePackageProvider>,
     pub revision: String,
     pub warn_unpinned: Option<bool>,
     pub subdirectory: Option<String>,
@@ -300,7 +300,7 @@ pub struct PrivatePinnedPackage {
 pub struct PrivateUnpinnedPackage {
     pub private: String,
     pub name: Option<String>,
-    pub provider: Option<String>,
+    pub provider: Option<PrivatePackageProvider>,
     pub warn_unpinned: Option<bool>,
     pub revisions: Vec<String>,
     pub subdirectory: Option<String>,
@@ -348,7 +348,7 @@ impl TryFrom<PrivatePackage> for PrivateUnpinnedPackage {
         Ok(Self {
             private: (*private_package.private).clone(),
             name: None,
-            provider: private_package.provider.clone(),
+            provider: private_package.provider,
             warn_unpinned: private_package.warn_unpinned,
             revisions: private_package
                 .revision

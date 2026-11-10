@@ -332,7 +332,7 @@ mod tests {
         })
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn test_writer_task() {
         let temp_dir =
             std::env::temp_dir().join(format!("time_machine_test_{}", std::process::id()));

@@ -1,4 +1,13 @@
 -- funcsign: () -> string
+{% macro spark__target_platform() -%}
+  {%- if target.get('method') == 'livy' and target.get('platform_hint') == 'fabric_lakehouse' -%}
+    {{ return('fabric_lakehouse') }}
+  {%- else -%}
+    {{ return('vanilla') }}
+  {%- endif -%}
+{%- endmacro -%}
+
+-- funcsign: () -> string
 {% macro tblproperties_clause() %}
   {{ return(adapter.dispatch('tblproperties_clause', 'dbt')()) }}
 {%- endmacro -%}
@@ -23,6 +32,10 @@
 -- funcsign: () -> string
 {% macro spark__file_format_clause() %}
   {%- set file_format = config.get('file_format', validator=validation.any[basestring]) -%}
+  {%- if file_format is none and spark__target_platform() == 'fabric_lakehouse' -%}
+    {#-- Fabric Lakehouse tables are Delta by default (v1 dbt-fabricspark parity). --#}
+    {%- set file_format = 'delta' -%}
+  {%- endif -%}
   {%- if file_format is not none %}
     using {{ file_format }}
   {%- endif %}
@@ -157,7 +170,12 @@
     {%- if temporary -%}
       {{ create_temporary_view(relation, compiled_code) }}
     {%- else -%}
-      {% if config.get('file_format', validator=validation.any[basestring]) in ['delta', 'iceberg'] %}
+      {%- set file_format = config.get('file_format', validator=validation.any[basestring]) -%}
+      {%- if file_format is none and spark__target_platform() == 'fabric_lakehouse' -%}
+        {#-- Fabric Lakehouse tables are Delta by default (v1 dbt-fabricspark parity). --#}
+        {%- set file_format = 'delta' -%}
+      {%- endif -%}
+      {% if file_format in ['delta', 'iceberg'] %}
         create or replace table {{ relation }}
       {% else %}
         create table {{ relation }}
@@ -272,17 +290,25 @@
     {{ sql }}
 {% endmacro %}
 
-  -- TODO: confirm that the added without_identifier() is correct, this doesn't exist in the original macro
-  -- from ani, cc @gliga @xuliangs
 {% macro spark__create_schema(relation) -%}
   {%- call statement('create_schema') -%}
-    create schema if not exists {{relation.without_identifier()}}
+    {%- if spark__target_platform() == 'fabric_lakehouse' and not relation.database -%}
+      {#-- Classic Fabric lakehouses have no schemas: the lakehouse itself is
+          the namespace, so schema creation is a no-op. --#}
+      select 1
+    {%- else -%}
+      create schema if not exists {{ relation }}
+    {%- endif -%}
   {% endcall %}
 {% endmacro %}
 
 {% macro spark__drop_schema(relation) -%}
   {%- call statement('drop_schema') -%}
-    drop schema if exists {{ relation.without_identifier() }} cascade
+    {%- if spark__target_platform() == 'fabric_lakehouse' and not relation.database -%}
+      select 1
+    {%- else -%}
+      drop schema if exists {{ relation }} cascade
+    {%- endif -%}
   {%- endcall -%}
 {% endmacro %}
 
@@ -314,22 +340,30 @@
 
 {% macro spark__list_relations_without_caching(relation) %}
   {% call statement('list_relations_without_caching', fetch_result=True) -%}
-    show table extended in {{ relation.schema }} like '*'
+    {{ spark__list_relations_without_caching_sql(relation) }}
   {% endcall %}
 
   {% do return(load_result('list_relations_without_caching').table) %}
 {% endmacro %}
+
+{% macro spark__list_relations_without_caching_sql(relation) -%}
+  show table extended in {{ relation.without_identifier() }} like '*'
+{%- endmacro %}
 
 {% macro list_relations_show_tables_without_caching(schema_relation) %}
   {#-- Spark with iceberg tables don't work with show table extended for #}
   {#-- V2 iceberg tables #}
   {#-- https://issues.apache.org/jira/browse/SPARK-33393 #}
   {% call statement('list_relations_without_caching_show_tables', fetch_result=True) -%}
-    show tables in {{ schema_relation.schema }} like '*'
+    {{ spark__list_relations_show_tables_without_caching_sql(schema_relation) }}
   {% endcall %}
 
   {% do return(load_result('list_relations_without_caching_show_tables').table) %}
 {% endmacro %}
+
+{% macro spark__list_relations_show_tables_without_caching_sql(schema_relation) -%}
+  show tables in {{ schema_relation.without_identifier() }} like '*'
+{%- endmacro %}
 
 {% macro describe_table_extended_without_caching(table_name) %}
   {#-- Spark with iceberg tables don't work with show table extended for #}
@@ -343,10 +377,20 @@
 
 {% macro spark__list_schemas(database) -%}
   {% call statement('list_schemas', fetch_result=True, auto_begin=False) %}
-    show databases
+    {{ spark__list_schemas_sql(database) }}
   {% endcall %}
   {{ return(load_result('list_schemas').table) }}
 {% endmacro %}
+
+{% macro spark__list_schemas_sql(database) -%}
+  {#-- Callers may pass the database already quoted, so an unset database
+      arrives as an empty quoted identifier (``) rather than an empty string. --#}
+  {%- if database and (database | replace('`', '') | trim) -%}
+    show schemas in {{ database }}
+  {%- else -%}
+    show databases
+  {%- endif -%}
+{%- endmacro %}
 
 {% macro spark__check_schema_exists_like(schema) -%}
   {% call statement('check_schema_exists', fetch_result=True, auto_begin=False) %}
@@ -377,7 +421,18 @@
 
 
 {% macro spark__generate_database_name(custom_database_name=none, node=none) -%}
-  {% do return(None) %}
+  {%- set catalog_name = node.config.get('catalog_name') if (node is not none and node.config is defined) else none -%}
+  {%- if catalog_name -%}
+    {%- set catalog_relation = adapter.build_catalog_relation(node) -%}
+    {% do return(catalog_relation.catalog_database) %}
+  {%- endif -%}
+  {#-- Schema-enabled Fabric lakehouses put the lakehouse in the database slot
+      (3-part naming); plain Spark and classic lakehouses have no database. --#}
+  {%- if target.database -%}
+    {% do return(custom_database_name or target.database) %}
+  {%- else -%}
+    {% do return(None) %}
+  {%- endif -%}
 {%- endmacro %}
 
 {% macro spark__persist_docs(relation, model, for_relation, for_columns) -%}

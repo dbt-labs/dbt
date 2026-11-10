@@ -1,0 +1,158 @@
+{
+  "detail": {
+    "unique_id": "metric.jaffle_shop.warehouses_8",
+    "name": "warehouses_8",
+    "resource_type": "metric",
+    "package_name": "jaffle_shop",
+    "description": "Synthetic fixture description. Structure is what this fixture exists to pin down; the prose is deliberately not real.",
+    "original_file_path": "models/warehouses_8.yml",
+    "file_path": "models/warehouses_8.yml",
+    "fqn": [],
+    "tags": [],
+    "label": "Order Conversions",
+    "metric_type": "simple",
+    "type_params": {
+      "conversion_type_params": null,
+      "cumulative_type_params": null,
+      "denominator": null,
+      "expr": "case when order_id is not null then 1 else 0 end",
+      "fill_nulls_with": null,
+      "grain_to_date": null,
+      "input_measures": [],
+      "is_private": false,
+      "join_to_timespine": false,
+      "measure": null,
+      "metric_aggregation_params": {
+        "agg": "sum",
+        "agg_params": {
+          "percentile": null,
+          "use_approximate_percentile": false,
+          "use_discrete_percentile": false
+        },
+        "agg_time_dimension": "created_at",
+        "expr": "case when order_id is not null then 1 else 0 end",
+        "non_additive_dimension": null,
+        "semantic_model": "warehouses_8"
+      },
+      "metrics": null,
+      "numerator": null,
+      "window": null
+    },
+    "filter": {
+      "where_filters": [
+        {
+          "where_sql_template": "{{ Dimension('customer__is_active')}} = true"
+        }
+      ]
+    },
+    "time_granularity": null,
+    "semantic_model_name": null,
+    "input_metric_names": [],
+    "group_name": null,
+    "meta": null,
+    "depends_on": [
+      {
+        "unique_id": "semantic_model.jaffle_shop.warehouses_8",
+        "edge_type": "ref"
+      }
+    ],
+    "referenced_by": [],
+    "created_at": 1780422801.0
+  },
+  "lineage": {
+    "status": 200,
+    "body": {
+      "root": "metric.jaffle_shop.warehouses_8",
+      "max_depth": 3,
+      "nodes": [
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "dim_revenue_7",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.dim_revenue_7"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "fct_trials_8",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.fct_trials_8"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "fct_products_3",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.fct_products_3"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "stg_channels_3",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.stg_channels_3"
+        },
+        {
+          "depth": -2,
+          "materialized": "view",
+          "name": "warehouses_8",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.warehouses_8"
+        },
+        {
+          "depth": -1,
+          "name": "warehouses_8",
+          "resource_type": "semantic_model",
+          "unique_id": "semantic_model.jaffle_shop.warehouses_8"
+        },
+        {
+          "depth": 0,
+          "name": "warehouses_8",
+          "resource_type": "metric",
+          "unique_id": "metric.jaffle_shop.warehouses_8"
+        }
+      ],
+      "edges": [
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.warehouses_8",
+          "to_id": "semantic_model.jaffle_shop.warehouses_8"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.dim_revenue_7",
+          "to_id": "model.jaffle_shop.warehouses_8"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.fct_trials_8",
+          "to_id": "model.jaffle_shop.warehouses_8"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.fct_products_3",
+          "to_id": "model.jaffle_shop.warehouses_8"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.stg_channels_3",
+          "to_id": "model.jaffle_shop.warehouses_8"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "semantic_model.jaffle_shop.warehouses_8",
+          "to_id": "metric.jaffle_shop.warehouses_8"
+        }
+      ]
+    }
+  },
+  "columnLineage": {
+    "status": 412,
+    "body": {
+      "code": "column_lineage_unavailable",
+      "message": "Column-level lineage is not available in this distribution + artifact set.",
+      "upgrade_path": "Run `dbt --use-index <run|build|compile>` with static analysis enabled, in a distribution that ships the column-lineage provider."
+    }
+  }
+}

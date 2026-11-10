@@ -2,11 +2,13 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use dbt_adapter::Adapter;
+use dbt_adapter::cache::hydrate_relation_cache_if_not_already_cached;
 use dbt_adapter::engine::SidecarClient;
 use dbt_common::FsError;
 use dbt_common::FsResult;
 use dbt_common::cancellation::CancellationToken;
 use dbt_common::io_args::EvalArgs;
+use dbt_common::io_args::FsCommand;
 use dbt_common::io_args::IoArgs;
 use dbt_common::io_args::StaticAnalysisKind;
 use dbt_dag::schedule::Schedule;
@@ -25,6 +27,10 @@ pub struct SchemaHydrationArgs<'a> {
     pub global_static_analysis: Option<StaticAnalysisKind>,
     pub execute_mode: Execute,
     pub scope: SchemaHydrationScope,
+    /// `--infer-schemas`: a node whose schema we failed to download should
+    /// stay eligible for static analysis instead of having it disabled, so
+    /// binding can fall back to inferring the schema from usage.
+    pub infer_schemas: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -68,4 +74,40 @@ pub trait SchemaHydratorFactory: Send + Sync {
         sidecar_client: Option<Arc<dyn SidecarClient>>,
         metricflow_server_client: Option<Arc<dyn MetricflowClient>>,
     ) -> Box<dyn SchemaHydrator>;
+}
+
+pub fn should_hydrate_schemas(arg: &EvalArgs) -> bool {
+    arg.command != FsCommand::Seed
+        && arg.command != FsCommand::Clone
+        && arg.command != FsCommand::RunOperation
+        && arg.command != FsCommand::Extension("compare")
+        && arg.command != FsCommand::Extension("pull")
+        && (arg.command != FsCommand::Compile || arg.introspect)
+}
+
+pub async fn hydrate_selected_get_relations(
+    adapter: &Arc<Adapter>,
+    schedule: &Schedule<String>,
+    resolver_state: &ResolverState,
+    state: &SchemaHydrationState,
+    scope: SchemaHydrationScope,
+    infer_schemas: bool,
+) {
+    if infer_schemas || scope == SchemaHydrationScope::FrontierOnly {
+        return;
+    }
+    let selected_get_relations = resolver_state
+        .get_relation_calls
+        .iter()
+        .filter(|(node_id, _)| schedule.selected_nodes.contains(*node_id))
+        .flat_map(|(_, relations)| relations)
+        .filter(|relation| !state.fetched_schema_fqns.contains(&relation.semantic_fqn()))
+        .cloned()
+        .collect::<Vec<_>>();
+    let _ = hydrate_relation_cache_if_not_already_cached(
+        &selected_get_relations,
+        adapter,
+        "downloading referenced relations",
+    )
+    .await;
 }

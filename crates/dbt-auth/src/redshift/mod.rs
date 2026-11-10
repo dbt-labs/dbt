@@ -1,20 +1,21 @@
 mod token_service;
 
-use crate::{AdapterConfig, Auth, AuthError, AuthOutcome, auth_configure_pipeline};
+use crate::{AdapterConfig, Auth, AuthError, AuthWarningPrinter, auth_configure_pipeline};
 use database::Builder as DatabaseBuilder;
 
-use crate::redshift::token_service::{TokenEndpoint, create_token_service_client};
+use crate::redshift::token_service::TokenEndpoint;
 use adbc_core::constants::ADBC_OPTION_USERNAME;
 use dbt_adbc::redshift::{
     AUTH_IDC_CLIENT_DISPLAY_NAME, AUTH_IDC_REGION, AUTH_IDP_LISTEN_PORT, AUTH_IDP_RESPONSE_TIMEOUT,
-    AUTH_ISSUER_URL, AUTH_PROVIDER, AUTH_PROVIDER_BROWSER_IDC, AUTH_PROVIDER_IDP_TOKEN, AUTH_TOKEN,
-    AUTH_TOKEN_TYPE,
+    AUTH_ISSUER_URL, AUTH_PROVIDER, AUTH_PROVIDER_BROWSER_IDC, AUTH_PROVIDER_IDP_TOKEN,
+    AUTH_TOKEN_ENDPOINT_REQUEST_DATA, AUTH_TOKEN_ENDPOINT_REQUEST_HEADERS,
+    AUTH_TOKEN_ENDPOINT_REQUEST_URL,
 };
 use dbt_adbc::{
     Backend, database,
     redshift::{
         AWS_ACCESS_KEY_ID, AWS_PROFILE, AWS_REGION, AWS_SECRET_ACCESS_KEY, CLUSTER_IDENTIFIER,
-        CLUSTER_TYPE, WORK_GROUP_NAME,
+        CLUSTER_TYPE, CONNECT_TIMEOUT, WORK_GROUP_NAME,
         cluster_type::{REDSHIFT, SERVERLESS},
     },
 };
@@ -96,6 +97,9 @@ enum RedshiftAuthIR<'a> {
         idp_listen_port: String,
         idc_client_display_name: &'a str,
         idp_response_timeout: String,
+        // If this is not provided in YML, the driver will look first in the environment
+        // variables AWS_REGION and AWS_DEFAULT_REGION, then in ~/.aws/config.
+        region: &'a str,
         host: &'a str,
         port: String,
         database: &'a str,
@@ -109,7 +113,11 @@ enum RedshiftAuthIR<'a> {
 }
 
 impl<'a> RedshiftAuthIR<'a> {
-    pub fn apply(self, mut builder: DatabaseBuilder) -> Result<DatabaseBuilder, AuthError> {
+    pub fn apply(
+        self,
+        mut builder: DatabaseBuilder,
+        _warning_printer: &dyn AuthWarningPrinter,
+    ) -> Result<DatabaseBuilder, AuthError> {
         match self {
             Self::Database {
                 user,
@@ -175,6 +183,7 @@ impl<'a> RedshiftAuthIR<'a> {
                 idp_listen_port,
                 idc_client_display_name,
                 idp_response_timeout,
+                region,
                 host,
                 port,
                 database,
@@ -186,6 +195,8 @@ impl<'a> RedshiftAuthIR<'a> {
                 builder.with_named_option(AUTH_IDC_CLIENT_DISPLAY_NAME, idc_client_display_name)?;
                 builder.with_named_option(AUTH_IDP_RESPONSE_TIMEOUT, idp_response_timeout)?;
 
+                builder.with_named_option(AWS_REGION, region)?;
+
                 let connection_str = build_connection_uri(host, &port, database, None);
                 builder.with_parse_uri(connection_str)?;
             }
@@ -195,24 +206,24 @@ impl<'a> RedshiftAuthIR<'a> {
                 port,
                 database,
             } => {
-                builder.with_named_option(AUTH_PROVIDER, AUTH_PROVIDER_IDP_TOKEN)?;
+                let headers =
+                    token_service::token_endpoint_headers(&token_endpoint).map_err(|e| {
+                        AuthError::config(format!("Failed to build token headers: {e}"))
+                    })?;
+                let headers_json = serde_json::to_string(&headers).map_err(|e| {
+                    AuthError::config(format!("Failed to serialize token endpoint headers: {e}"))
+                })?;
 
-                let client = create_token_service_client(token_endpoint).map_err(|e| {
-                    AuthError::config(format!("Failed to create token service: {e}"))
-                })?;
-                let access_token = client.handle_request().map_err(|e| match e {
-                    token_service::TokenServiceError::MissingToken => AuthError::config(
-                        "access_token missing from IdP token request. \
-Please confirm correct configuration of the token_endpoint \
-field in profiles.yml and that your IdP can use a refresh token \
-to obtain an OIDC-compliant access token.",
-                    ),
-                    e => AuthError::config(format!(
-                        "Failed to fetch token service access token: {e}"
-                    )),
-                })?;
-                builder.with_named_option(AUTH_TOKEN, access_token)?;
-                builder.with_named_option(AUTH_TOKEN_TYPE, "EXT_JWT")?;
+                builder.with_named_option(AUTH_PROVIDER, AUTH_PROVIDER_IDP_TOKEN)?;
+                builder.with_named_option(
+                    AUTH_TOKEN_ENDPOINT_REQUEST_URL,
+                    token_endpoint.request_url,
+                )?;
+                builder.with_named_option(
+                    AUTH_TOKEN_ENDPOINT_REQUEST_DATA,
+                    token_endpoint.request_data,
+                )?;
+                builder.with_named_option(AUTH_TOKEN_ENDPOINT_REQUEST_HEADERS, headers_json)?;
 
                 let connection_str = build_connection_uri(host, &port, database, None);
                 builder.with_parse_uri(connection_str)?;
@@ -223,7 +234,10 @@ to obtain an OIDC-compliant access token.",
     }
 }
 
-fn parse_auth(config: &AdapterConfig) -> Result<RedshiftAuthIR<'_>, AuthError> {
+fn parse_auth<'a>(
+    config: &'a AdapterConfig,
+    _warning_printer: &dyn AuthWarningPrinter,
+) -> Result<RedshiftAuthIR<'a>, AuthError> {
     // todo: update with Redshift specific configs once available
     let method = config
         .get("method")
@@ -317,6 +331,7 @@ fn parse_auth(config: &AdapterConfig) -> Result<RedshiftAuthIR<'_>, AuthError> {
         }
         "browser_identity_center" => {
             let idc_region = config.require_str("idc_region")?;
+            let region = config.require_str("region")?;
             let issuer_url = config.require_str("issuer_url")?;
             let idp_listen_port = config
                 .get_string("idp_listen_port")
@@ -336,6 +351,7 @@ fn parse_auth(config: &AdapterConfig) -> Result<RedshiftAuthIR<'_>, AuthError> {
                 idp_listen_port,
                 idc_client_display_name,
                 idp_response_timeout,
+                region,
                 host,
                 port,
                 database,
@@ -362,21 +378,39 @@ fn parse_auth(config: &AdapterConfig) -> Result<RedshiftAuthIR<'_>, AuthError> {
 }
 
 fn apply_connection_args(
-    _config: &AdapterConfig,
-    builder: DatabaseBuilder,
+    config: &AdapterConfig,
+    mut builder: DatabaseBuilder,
+    _warning_printer: &dyn AuthWarningPrinter,
 ) -> Result<DatabaseBuilder, AuthError> {
+    if let Some(secs) = config.get("connect_timeout").and_then(|v| v.as_i64()) {
+        if secs <= 0 {
+            return Err(AuthError::config(format!(
+                "connect_timeout must be a positive number of seconds, got {secs}"
+            )));
+        }
+        builder.with_named_option(CONNECT_TIMEOUT, format!("{secs}s"))?;
+    }
+
     Ok(builder)
 }
 
-pub struct RedshiftAuth;
+pub struct RedshiftAuth {
+    pub warning_printer: Box<dyn AuthWarningPrinter>,
+}
+
+impl RedshiftAuth {
+    pub fn new(warning_printer: Box<dyn AuthWarningPrinter>) -> Self {
+        Self { warning_printer }
+    }
+}
 
 impl Auth for RedshiftAuth {
     fn backend(&self) -> Backend {
         Backend::Redshift
     }
 
-    fn configure(&self, config: &AdapterConfig) -> Result<AuthOutcome, AuthError> {
-        auth_configure_pipeline!(self.backend(), &config, parse_auth, apply_connection_args)
+    fn configure(&self, config: &AdapterConfig) -> Result<database::Builder, AuthError> {
+        auth_configure_pipeline!(self, &config, parse_auth, apply_connection_args)
     }
 }
 
@@ -400,9 +434,8 @@ mod tests_adbc {
     }
 
     fn configure(config: Mapping) -> Result<database::Builder, AuthError> {
-        RedshiftAuth
+        RedshiftAuth::new(Box::new(crate::NoopAuthWarningPrinter))
             .configure(&AdapterConfig::new(config))
-            .map(|outcome| outcome.builder)
     }
 
     fn assert_error_contains(config: Mapping, needle: &str) {
@@ -751,6 +784,7 @@ password: secretpass
             ("port".into(), "5439".into()),
             ("database".into(), "dev".into()),
             ("idc_region".into(), "us-east-1".into()),
+            ("region".into(), "us-west-2".into()),
             ("issuer_url".into(), "https://issuer.example.com".into()),
         ]);
 
@@ -780,6 +814,7 @@ password: secretpass
             other_option_value(&builder, AUTH_IDP_RESPONSE_TIMEOUT),
             Some("60")
         );
+        assert_eq!(other_option_value(&builder, AWS_REGION), Some("us-west-2"));
         let uri = uri_value(&builder);
         assert!(
             uri.starts_with("postgresql://redshift-cluster.aws.com:5439/dev"),
@@ -796,6 +831,7 @@ host: redshift-cluster.aws.com
 port: 5439
 database: dev
 idc_region: us-east-1
+region: us-west-2
 issuer_url: https://issuer.example.com
 idp_listen_port: 8080
 idp_response_timeout: 90
@@ -813,6 +849,11 @@ idp_response_timeout: 90
             other_option_value(&builder, AUTH_IDP_RESPONSE_TIMEOUT),
             Some("90")
         );
+        assert_eq!(
+            other_option_value(&builder, AUTH_IDC_REGION),
+            Some("us-east-1")
+        );
+        assert_eq!(other_option_value(&builder, AWS_REGION), Some("us-west-2"));
     }
 
     #[test]

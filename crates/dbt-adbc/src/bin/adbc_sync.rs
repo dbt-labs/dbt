@@ -1,8 +1,9 @@
 use std::fmt::Write as _;
-use std::io::Read as _;
 use std::path::PathBuf;
 
-use dbt_adbc::install::{self, DriverTriplet, find_expected_checksum, format_driver_url};
+use dbt_adbc::install::{
+    self, DriverTriplet, InstallError, find_expected_checksums, format_driver_url,
+};
 use sha2::{Digest, Sha256};
 
 const OS_ARCH: &[(&str, &str)] = &[
@@ -33,8 +34,8 @@ impl OwnedDriverTriplet {
 
 /// (backend_name, triplet)
 type DriverEntry = (String, OwnedDriverTriplet);
-/// (backend_name, triplet, checksum)
-type ChecksumEntry = (String, OwnedDriverTriplet, String);
+/// (backend_name, triplet, compressed checksum, decompressed checksum)
+type ChecksumEntry = (String, OwnedDriverTriplet, String, String);
 
 fn parse_backend_and_version(s: &str) -> (&str, &str) {
     // Split on the first '-' only: "bigquery-0.21.0.dev+dbt0.21.7" -> ("bigquery", "0.21.0.dev+dbt0.21.7")
@@ -73,23 +74,27 @@ fn build_driver_entries(toml: &toml::Table) -> Vec<DriverEntry> {
     entries
 }
 
-fn download_and_hash(agent: &ureq::Agent, url: &str) -> Result<String, ureq::Error> {
-    let mut response = agent.get(url).call()?;
-    let mut hasher = Sha256::new();
-    let mut buf = [0u8; 256 * 1024]; // 256 KiB buffer
+/// Download the Zstandard-compressed driver at `url` and return the hex SHA-256 of the
+/// compressed (downloaded) bytes and of the decompressed bytes, in that order.
+fn download_and_hash(agent: &ureq::Agent, url: &str) -> Result<(String, String), InstallError> {
+    let mut response = agent.get(url).call().map_err(InstallError::Http)?;
     let mut reader = response.body_mut().as_reader();
-    loop {
-        let n = reader.read(&mut buf).map_err(ureq::Error::Io)?;
-        if n == 0 {
-            break;
-        }
-        hasher.update(&buf[..n]);
-    }
-    let hash = hasher.finalize();
-    Ok(format!("{:x}", hash))
+    // Sha256 implements io::Write, so it hashes the decompressed output directly.
+    let mut decompressed_hasher = Sha256::new();
+    let compressed_hash = install::stream_zst_artifact(&mut reader, &mut decompressed_hasher)?;
+    let decompressed_hash = decompressed_hasher.finalize();
+    Ok((
+        format!("{:x}", compressed_hash),
+        format!("{:x}", decompressed_hash),
+    ))
 }
 
 fn main() {
+    // Checksums are of whatever this host serves, so name it: a stray
+    // DBT_ADBC_USE_STAGING_CDN would otherwise silently record pre-release
+    // hashes.
+    eprintln!("Syncing checksums from https://{}", install::cdn_host());
+
     let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let output_path = crate_dir.join("src/checksums.rs");
 
@@ -109,7 +114,7 @@ fn main() {
 
     for (backend, triplet) in &entries {
         let tr = triplet.as_ref();
-        if let Some(hash) = find_expected_checksum(backend, tr) {
+        if let Some((hash, decompressed_hash)) = find_expected_checksums(backend, tr) {
             eprintln!(
                 "Cached  {}-{} ({}, {})",
                 backend, triplet.version, triplet.os, triplet.arch
@@ -122,17 +127,17 @@ fn main() {
                     version: triplet.version.clone(),
                 },
                 hash.to_string(),
+                decompressed_hash.to_string(),
             ));
             continue;
         }
-
         let url = format_driver_url(backend, tr);
         eprint!(
             "Downloading {}-{} ({}, {})... ",
             backend, triplet.version, triplet.os, triplet.arch
         );
         match download_and_hash(&http_agent, &url) {
-            Ok(hash) => {
+            Ok((hash, decompressed_hash)) => {
                 eprintln!("ok");
                 new_count += 1;
                 checksums.push((
@@ -143,9 +148,10 @@ fn main() {
                         version: triplet.version.clone(),
                     },
                     hash,
+                    decompressed_hash,
                 ));
             }
-            Err(ureq::Error::StatusCode(status)) => {
+            Err(InstallError::Http(ureq::Error::StatusCode(status))) => {
                 eprintln!("skipped (HTTP {})", status);
                 not_found_count += 1;
             }
@@ -166,16 +172,17 @@ fn main() {
     writeln!(out).unwrap();
     writeln!(out, "#[allow(clippy::type_complexity)]").unwrap();
     writeln!(out, "#[rustfmt::skip]").unwrap();
-    writeln!(out, "pub static SORTED_CDN_DRIVER_CHECKSUMS: [(").unwrap();
+    writeln!(out, "pub static SORTED_CDN_DRIVER_CHECKSUMS: &[(").unwrap();
     writeln!(out, "    (").unwrap();
     writeln!(out, "        &str, // backend").unwrap();
     writeln!(out, "        &str, // target_os").unwrap();
     writeln!(out, "        &str, // arch").unwrap();
     writeln!(out, "        &str, // version").unwrap();
     writeln!(out, "    ),").unwrap();
-    writeln!(out, "    &str, // checksum").unwrap();
-    writeln!(out, "); {}] = [", checksums.len()).unwrap();
-    for (backend, triplet, checksum) in &checksums {
+    writeln!(out, "    &str, // checksum (compressed)").unwrap();
+    writeln!(out, "    &str, // checksum (decompressed)").unwrap();
+    writeln!(out, ")] = &[").unwrap();
+    for (backend, triplet, checksum, decompressed_checksum) in &checksums {
         writeln!(out, "    (").unwrap();
         writeln!(
             out,
@@ -184,6 +191,7 @@ fn main() {
         )
         .unwrap();
         writeln!(out, "        \"{}\",", checksum).unwrap();
+        writeln!(out, "        \"{}\",", decompressed_checksum).unwrap();
         writeln!(out, "    ),").unwrap();
     }
     writeln!(out, "];").unwrap();

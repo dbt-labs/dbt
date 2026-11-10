@@ -6,6 +6,7 @@
 #   MACRO_DISPATCH_ORDER      = { dbt: [dbt] }
 #   TARGET_PACKAGE_NAME       = my_project
 #   execute                   = false (flips true at compile/run)
+#   context.project_name      = my_project
 #   node                      = NONE (populated per-model)
 #   connection_name           = "" (empty at base scope)
 #   dbt_namespaces            = { dbt: <DbtNamespace Object> } <-- flattened to top-level
@@ -17,6 +18,10 @@ resolve_base  my_project
 key execute
 ----
 resolve_base  false
+
+key context.project_name
+----
+resolve_base  my_project
 
 key connection_name
 ----

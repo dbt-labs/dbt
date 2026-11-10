@@ -363,7 +363,7 @@ mod builtins {
         let rv = match value {
             None => MutableMap::default(),
             Some(value) => match value.0 {
-                ValueRepr::Undefined => MutableMap::default(),
+                ValueRepr::Undefined(_) => MutableMap::default(),
                 ValueRepr::Object(obj) if obj.repr() == ObjectRepr::Map => {
                     let map = MutableMap::default();
                     if let Some(pairs) = obj.try_iter_pairs() {

@@ -1,0 +1,1858 @@
+{
+  "detail": {
+    "unique_id": "model.jaffle_shop.trials_7",
+    "name": "trials_7",
+    "resource_type": "model",
+    "package_name": "jaffle_shop",
+    "materialized": "view",
+    "description": "Synthetic fixture description. Structure is what this fixture exists to pin down; the prose is deliberately not real.",
+    "database_name": "analytics",
+    "schema_name": "public",
+    "relation_name": "analytics.public.trials_7",
+    "identifier": null,
+    "original_file_path": "models/trials_7.sql",
+    "access_level": null,
+    "group_name": null,
+    "raw_code": null,
+    "compiled_code": null,
+    "contract_enforced": false,
+    "tags": [],
+    "fqn": [
+      "jaffle_shop",
+      "marts",
+      "partner",
+      "trials_7"
+    ],
+    "columns": [],
+    "depends_on": [
+      {
+        "unique_id": "model.jaffle_shop.fct_trials_8",
+        "edge_type": "ref"
+      },
+      {
+        "unique_id": "model.jaffle_shop.fct_refunds_3",
+        "edge_type": "ref"
+      }
+    ],
+    "referenced_by": [
+      {
+        "unique_id": "exposure.jaffle_shop.taxes_9",
+        "edge_type": "ref"
+      },
+      {
+        "unique_id": "test.jaffle_shop.dbt_utils_unique_combination_of_columns_locations_id.c42bde3cbe",
+        "edge_type": "ref"
+      }
+    ],
+    "execution_info": null,
+    "catalog": null
+  },
+  "lineage": {
+    "status": 200,
+    "body": {
+      "root": "model.jaffle_shop.trials_7",
+      "max_depth": 3,
+      "nodes": [
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "tickets_9",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.tickets_9"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "base_sessions_8",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.base_sessions_8"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "base_order_items_5",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.base_order_items_5"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "base_usage_2",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.base_usage_2"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "channels_7",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.channels_7"
+        },
+        {
+          "depth": -3,
+          "materialized": "incremental",
+          "name": "products_6",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.products_6"
+        },
+        {
+          "depth": -3,
+          "materialized": "incremental",
+          "name": "suppliers_6",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.suppliers_6"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "supplies_6",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.supplies_6"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "segments_3",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.segments_3"
+        },
+        {
+          "depth": -3,
+          "materialized": "incremental",
+          "name": "segments_8",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.segments_8"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "dim_page_views_9",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.dim_page_views_9"
+        },
+        {
+          "depth": -3,
+          "materialized": "view",
+          "name": "dim_regions_7",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.dim_regions_7"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "dim_promotions_9",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.dim_promotions_9"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "dim_taxes_5",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.dim_taxes_5"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "dim_customers_9",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.dim_customers_9"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "dim_invoices_9",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.dim_invoices_9"
+        },
+        {
+          "depth": -3,
+          "materialized": "incremental",
+          "name": "orders_4",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.orders_4"
+        },
+        {
+          "depth": -3,
+          "materialized": "incremental",
+          "name": "plans_4",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.plans_4"
+        },
+        {
+          "depth": -3,
+          "materialized": "incremental",
+          "name": "renewals_7",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.renewals_7"
+        },
+        {
+          "depth": -3,
+          "materialized": "incremental",
+          "name": "refunds_5",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.refunds_5"
+        },
+        {
+          "depth": -3,
+          "materialized": "incremental",
+          "name": "returns_3",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.returns_3"
+        },
+        {
+          "depth": -3,
+          "materialized": "incremental",
+          "name": "features_4",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.features_4"
+        },
+        {
+          "depth": -3,
+          "materialized": "incremental",
+          "name": "warehouses_6",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.warehouses_6"
+        },
+        {
+          "depth": -3,
+          "materialized": "incremental",
+          "name": "discounts_1",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.discounts_1"
+        },
+        {
+          "depth": -3,
+          "materialized": "incremental",
+          "name": "categories_4",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.categories_4"
+        },
+        {
+          "depth": -3,
+          "materialized": "incremental",
+          "name": "orders_1",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.orders_1"
+        },
+        {
+          "depth": -3,
+          "materialized": "incremental",
+          "name": "currencies_1",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.currencies_1"
+        },
+        {
+          "depth": -3,
+          "materialized": "incremental",
+          "name": "currencies_2",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.currencies_2"
+        },
+        {
+          "depth": -3,
+          "materialized": "incremental",
+          "name": "fct_products_4",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.fct_products_4"
+        },
+        {
+          "depth": -3,
+          "materialized": "incremental",
+          "name": "fct_shipments_8",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.fct_shipments_8"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "fct_segments_7",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.fct_segments_7"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "fct_suppliers_4",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.fct_suppliers_4"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "fct_signups_6",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.fct_signups_6"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "fct_revenue_6",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.fct_revenue_6"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "fct_promotions_5",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.fct_promotions_5"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "fct_discounts_8",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.fct_discounts_8"
+        },
+        {
+          "depth": -3,
+          "materialized": "incremental",
+          "name": "fct_locations_9",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.fct_locations_9"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "int_returns_1",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.int_returns_1"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "int_currencies_4",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.int_currencies_4"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "int_segments_2",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.int_segments_2"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "int_page_views_5",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.int_page_views_5"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "int_usage_5",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.int_usage_5"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "int_tickets_1",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.int_tickets_1"
+        },
+        {
+          "depth": -3,
+          "materialized": "incremental",
+          "name": "int_page_views_4",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.int_page_views_4"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "int_revenue_4",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.int_revenue_4"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "int_returns_7",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.int_returns_7"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "int_products_1",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.int_products_1"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "int_carts_2",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.int_carts_2"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "int_reviews_7",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.int_reviews_7"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "int_renewals_4",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.int_renewals_4"
+        },
+        {
+          "depth": -3,
+          "materialized": "incremental",
+          "name": "int_taxes_4",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.int_taxes_4"
+        },
+        {
+          "depth": -3,
+          "materialized": "incremental",
+          "name": "int_returns_6",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.int_returns_6"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "int_reviews_8",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.int_reviews_8"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "int_refunds_4",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.int_refunds_4"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "int_customers_3",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.int_customers_3"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "int_suppliers_1",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.int_suppliers_1"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "int_shipments_4",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.int_shipments_4"
+        },
+        {
+          "depth": -3,
+          "materialized": "incremental",
+          "name": "int_categories_7",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.int_categories_7"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "int_customers_8",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.int_customers_8"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "int_campaigns_5",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.int_campaigns_5"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "int_signups_5",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.int_signups_5"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "int_plans_1",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.int_plans_1"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "int_tickets",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.int_tickets"
+        },
+        {
+          "depth": -3,
+          "materialized": "incremental",
+          "name": "channels_5",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.channels_5"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "stg_warehouses_1",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.stg_warehouses_1"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "stg_plans_8",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.stg_plans_8"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "stg_orders_7",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.stg_orders_7"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "stg_cohorts_5",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.stg_cohorts_5"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "stg_promotions_7",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.stg_promotions_7"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "stg_renewals_3",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.stg_renewals_3"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "stg_features_8",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.stg_features_8"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "stg_returns_9",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.stg_returns_9"
+        },
+        {
+          "depth": -3,
+          "materialized": "incremental",
+          "name": "stg_warehouses_9",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.stg_warehouses_9"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "stg_shipments_5",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.stg_shipments_5"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "stg_order_items_7",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.stg_order_items_7"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "stg_returns_5",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.stg_returns_5"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "stg_products_7",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.stg_products_7"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "stg_reviews_9",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.stg_reviews_9"
+        },
+        {
+          "depth": -3,
+          "materialized": "view",
+          "name": "stg_categories_6",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.stg_categories_6"
+        },
+        {
+          "depth": -3,
+          "materialized": "view",
+          "name": "stg_features_2",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.stg_features_2"
+        },
+        {
+          "depth": -3,
+          "materialized": "view",
+          "name": "stg_cohorts_3",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.stg_cohorts_3"
+        },
+        {
+          "depth": -3,
+          "materialized": "view",
+          "name": "stg_customers_5",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.stg_customers_5"
+        },
+        {
+          "depth": -3,
+          "materialized": "view",
+          "name": "stg_taxes_3",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.stg_taxes_3"
+        },
+        {
+          "depth": -3,
+          "materialized": "view",
+          "name": "stg_promotions_1",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.stg_promotions_1"
+        },
+        {
+          "depth": -3,
+          "materialized": "view",
+          "name": "stg_sessions_7",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.stg_sessions_7"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "stg_zendesk__organization",
+          "resource_type": "model",
+          "unique_id": "model.zendesk.stg_zendesk__organization"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "stg_orders_5",
+          "resource_type": "seed",
+          "unique_id": "seed.jaffle_shop.stg_orders_5"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "stg_products_2",
+          "resource_type": "seed",
+          "unique_id": "seed.jaffle_shop.stg_products_2"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "sessions_9",
+          "resource_type": "seed",
+          "unique_id": "seed.jaffle_utils.sessions_9"
+        },
+        {
+          "depth": -3,
+          "materialized": "external",
+          "name": "carts_9",
+          "resource_type": "source",
+          "unique_id": "source.jaffle_shop.raw_source_2.carts_9"
+        },
+        {
+          "depth": -3,
+          "materialized": "external",
+          "name": "carts_9",
+          "resource_type": "source",
+          "unique_id": "source.jaffle_shop.raw_source_3.carts_9"
+        },
+        {
+          "depth": -3,
+          "materialized": "external",
+          "name": "carts_9",
+          "resource_type": "source",
+          "unique_id": "source.jaffle_shop.raw_source_1.carts_9"
+        },
+        {
+          "depth": -3,
+          "materialized": "external",
+          "name": "refunds_9",
+          "resource_type": "source",
+          "unique_id": "source.jaffle_shop.raw_source_2.refunds_9"
+        },
+        {
+          "depth": -3,
+          "materialized": "external",
+          "name": "refunds_9",
+          "resource_type": "source",
+          "unique_id": "source.jaffle_shop.raw_source_1.refunds_9"
+        },
+        {
+          "depth": -3,
+          "materialized": "external",
+          "name": "refunds_9",
+          "resource_type": "source",
+          "unique_id": "source.jaffle_shop.raw_source_3.refunds_9"
+        },
+        {
+          "depth": -2,
+          "materialized": "table",
+          "name": "cohorts_8",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.cohorts_8"
+        },
+        {
+          "depth": -2,
+          "materialized": "table",
+          "name": "fct_campaigns_6",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.fct_campaigns_6"
+        },
+        {
+          "depth": -2,
+          "materialized": "table",
+          "name": "fct_taxes_7",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.fct_taxes_7"
+        },
+        {
+          "depth": -2,
+          "materialized": "table",
+          "name": "fct_sessions_6",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.fct_sessions_6"
+        },
+        {
+          "depth": -2,
+          "materialized": "table",
+          "name": "fct_categories_9",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.fct_categories_9"
+        },
+        {
+          "depth": -2,
+          "materialized": "table",
+          "name": "fct_carts_5",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.fct_carts_5"
+        },
+        {
+          "depth": -2,
+          "materialized": "incremental",
+          "name": "fct_regions_8",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.fct_regions_8"
+        },
+        {
+          "depth": -2,
+          "materialized": "table",
+          "name": "fct_warehouses_5",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.fct_warehouses_5"
+        },
+        {
+          "depth": -2,
+          "materialized": "table",
+          "name": "fct_invoices_6",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.fct_invoices_6"
+        },
+        {
+          "depth": -2,
+          "materialized": "table",
+          "name": "fct_page_views_2",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.fct_page_views_2"
+        },
+        {
+          "depth": -2,
+          "materialized": "table",
+          "name": "fct_categories_3",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.fct_categories_3"
+        },
+        {
+          "depth": -2,
+          "materialized": "table",
+          "name": "fct_taxes_8",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.fct_taxes_8"
+        },
+        {
+          "depth": -2,
+          "materialized": "table",
+          "name": "int_warehouses_3",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.int_warehouses_3"
+        },
+        {
+          "depth": -2,
+          "materialized": "incremental",
+          "name": "int_taxes_6",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.int_taxes_6"
+        },
+        {
+          "depth": -2,
+          "materialized": "table",
+          "name": "int_orders_2",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.int_orders_2"
+        },
+        {
+          "depth": -2,
+          "materialized": "table",
+          "name": "features_7",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.features_7"
+        },
+        {
+          "depth": -2,
+          "materialized": "table",
+          "name": "stg_channels_3",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.stg_channels_3"
+        },
+        {
+          "depth": -2,
+          "materialized": "table",
+          "name": "stg_supplies_8",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.stg_supplies_8"
+        },
+        {
+          "depth": -2,
+          "materialized": "table",
+          "name": "stg_events_7",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.stg_events_7"
+        },
+        {
+          "depth": -2,
+          "materialized": "table",
+          "name": "stg_categories_2",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.stg_categories_2"
+        },
+        {
+          "depth": -1,
+          "materialized": "table",
+          "name": "fct_trials_8",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.fct_trials_8"
+        },
+        {
+          "depth": -1,
+          "materialized": "table",
+          "name": "fct_refunds_3",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.fct_refunds_3"
+        },
+        {
+          "depth": 0,
+          "materialized": "view",
+          "name": "trials_7",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.trials_7"
+        },
+        {
+          "depth": 1,
+          "name": "taxes_9",
+          "resource_type": "exposure",
+          "unique_id": "exposure.jaffle_shop.taxes_9"
+        },
+        {
+          "depth": 1,
+          "materialized": "test",
+          "name": "dbt_utils_unique_combination_of_columns_partner_daily_user_counts_account_id__date_day",
+          "resource_type": "test",
+          "unique_id": "test.jaffle_shop.dbt_utils_unique_combination_of_columns_locations_id.c42bde3cbe"
+        }
+      ],
+      "edges": [
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.trials_7",
+          "to_id": "exposure.jaffle_shop.taxes_9"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.trials_7",
+          "to_id": "test.jaffle_shop.dbt_utils_unique_combination_of_columns_locations_id.c42bde3cbe"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.tickets_9",
+          "to_id": "model.jaffle_shop.fct_refunds_3"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.tickets_9",
+          "to_id": "model.jaffle_shop.int_customers_3"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.tickets_9",
+          "to_id": "model.jaffle_shop.stg_channels_3"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.tickets_9",
+          "to_id": "model.jaffle_shop.stg_categories_2"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.base_sessions_8",
+          "to_id": "model.jaffle_shop.int_products_1"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.base_sessions_8",
+          "to_id": "model.jaffle_shop.stg_plans_8"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.base_order_items_5",
+          "to_id": "model.jaffle_shop.stg_channels_3"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.base_usage_2",
+          "to_id": "model.jaffle_shop.stg_categories_2"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.channels_7",
+          "to_id": "model.jaffle_shop.fct_refunds_3"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.channels_7",
+          "to_id": "model.jaffle_shop.fct_suppliers_4"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.channels_7",
+          "to_id": "model.jaffle_shop.fct_regions_8"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.channels_7",
+          "to_id": "model.jaffle_shop.int_segments_2"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.channels_7",
+          "to_id": "model.jaffle_shop.int_refunds_4"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.channels_7",
+          "to_id": "model.jaffle_shop.int_customers_3"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.products_6",
+          "to_id": "model.jaffle_shop.fct_regions_8"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.suppliers_6",
+          "to_id": "model.jaffle_shop.fct_regions_8"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.supplies_6",
+          "to_id": "model.jaffle_shop.fct_regions_8"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.supplies_6",
+          "to_id": "model.jaffle_shop.int_refunds_4"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.segments_3",
+          "to_id": "model.jaffle_shop.int_segments_2"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.segments_3",
+          "to_id": "model.jaffle_shop.int_page_views_4"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.segments_3",
+          "to_id": "model.jaffle_shop.int_renewals_4"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.cohorts_8",
+          "to_id": "model.jaffle_shop.fct_refunds_3"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.segments_8",
+          "to_id": "model.jaffle_shop.fct_regions_8"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.dim_page_views_9",
+          "to_id": "model.jaffle_shop.fct_categories_9"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.dim_regions_7",
+          "to_id": "model.jaffle_shop.int_segments_2"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.dim_promotions_9",
+          "to_id": "model.jaffle_shop.fct_trials_8"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.dim_promotions_9",
+          "to_id": "model.jaffle_shop.int_segments_2"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.dim_taxes_5",
+          "to_id": "model.jaffle_shop.fct_trials_8"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.dim_taxes_5",
+          "to_id": "model.jaffle_shop.int_segments_2"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.dim_customers_9",
+          "to_id": "model.jaffle_shop.fct_categories_9"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.dim_customers_9",
+          "to_id": "model.jaffle_shop.int_segments_2"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.dim_invoices_9",
+          "to_id": "model.jaffle_shop.segments_3"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.dim_invoices_9",
+          "to_id": "model.jaffle_shop.int_segments_2"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.orders_4",
+          "to_id": "model.jaffle_shop.fct_campaigns_6"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.plans_4",
+          "to_id": "model.jaffle_shop.fct_campaigns_6"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.renewals_7",
+          "to_id": "model.jaffle_shop.cohorts_8"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.refunds_5",
+          "to_id": "model.jaffle_shop.fct_taxes_7"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.returns_3",
+          "to_id": "model.jaffle_shop.fct_taxes_7"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.features_4",
+          "to_id": "model.jaffle_shop.fct_taxes_7"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.warehouses_6",
+          "to_id": "model.jaffle_shop.fct_taxes_7"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.discounts_1",
+          "to_id": "model.jaffle_shop.channels_5"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.categories_4",
+          "to_id": "model.jaffle_shop.fct_regions_8"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.orders_1",
+          "to_id": "model.jaffle_shop.fct_carts_5"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.currencies_1",
+          "to_id": "model.jaffle_shop.fct_carts_5"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.currencies_2",
+          "to_id": "model.jaffle_shop.channels_5"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.fct_trials_8",
+          "to_id": "model.jaffle_shop.trials_7"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.fct_campaigns_6",
+          "to_id": "model.jaffle_shop.fct_refunds_3"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.fct_products_4",
+          "to_id": "model.jaffle_shop.fct_taxes_7"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.fct_taxes_7",
+          "to_id": "model.jaffle_shop.fct_trials_8"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.fct_taxes_7",
+          "to_id": "model.jaffle_shop.fct_refunds_3"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.fct_sessions_6",
+          "to_id": "model.jaffle_shop.fct_refunds_3"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.fct_shipments_8",
+          "to_id": "model.jaffle_shop.dim_promotions_9"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.fct_shipments_8",
+          "to_id": "model.jaffle_shop.int_page_views_4"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.fct_segments_7",
+          "to_id": "model.jaffle_shop.int_segments_2"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.fct_refunds_3",
+          "to_id": "model.jaffle_shop.trials_7"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.fct_suppliers_4",
+          "to_id": "model.jaffle_shop.fct_categories_9"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.fct_suppliers_4",
+          "to_id": "model.jaffle_shop.fct_taxes_8"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.fct_suppliers_4",
+          "to_id": "model.jaffle_shop.int_plans_1"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.fct_suppliers_4",
+          "to_id": "model.jaffle_shop.int_tickets"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.fct_categories_9",
+          "to_id": "model.jaffle_shop.fct_refunds_3"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.fct_carts_5",
+          "to_id": "model.jaffle_shop.fct_refunds_3"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.fct_regions_8",
+          "to_id": "model.jaffle_shop.fct_trials_8"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.fct_regions_8",
+          "to_id": "model.jaffle_shop.int_taxes_4"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.fct_regions_8",
+          "to_id": "model.jaffle_shop.int_returns_6"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.fct_signups_6",
+          "to_id": "model.jaffle_shop.int_segments_2"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.fct_revenue_6",
+          "to_id": "model.jaffle_shop.fct_locations_9"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.fct_warehouses_5",
+          "to_id": "model.jaffle_shop.fct_trials_8"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.fct_invoices_6",
+          "to_id": "model.jaffle_shop.fct_trials_8"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.fct_page_views_2",
+          "to_id": "model.jaffle_shop.fct_refunds_3"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.fct_categories_3",
+          "to_id": "model.jaffle_shop.fct_refunds_3"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.fct_taxes_8",
+          "to_id": "model.jaffle_shop.fct_trials_8"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.fct_promotions_5",
+          "to_id": "model.jaffle_shop.fct_taxes_8"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.fct_discounts_8",
+          "to_id": "model.jaffle_shop.fct_promotions_5"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.fct_discounts_8",
+          "to_id": "model.jaffle_shop.fct_locations_9"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.fct_locations_9",
+          "to_id": "model.jaffle_shop.fct_taxes_7"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.fct_locations_9",
+          "to_id": "model.jaffle_shop.fct_refunds_3"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_returns_1",
+          "to_id": "model.jaffle_shop.channels_7"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_currencies_4",
+          "to_id": "model.jaffle_shop.channels_7"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_currencies_4",
+          "to_id": "model.jaffle_shop.fct_regions_8"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_segments_2",
+          "to_id": "model.jaffle_shop.fct_trials_8"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_segments_2",
+          "to_id": "model.jaffle_shop.fct_sessions_6"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_segments_2",
+          "to_id": "model.jaffle_shop.int_warehouses_3"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_page_views_5",
+          "to_id": "model.jaffle_shop.int_segments_2"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_usage_5",
+          "to_id": "model.jaffle_shop.fct_taxes_7"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_usage_5",
+          "to_id": "model.jaffle_shop.fct_segments_7"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_usage_5",
+          "to_id": "model.jaffle_shop.fct_categories_9"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_warehouses_3",
+          "to_id": "model.jaffle_shop.fct_trials_8"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_tickets_1",
+          "to_id": "model.jaffle_shop.fct_suppliers_4"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_tickets_1",
+          "to_id": "model.jaffle_shop.int_segments_2"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_page_views_4",
+          "to_id": "model.jaffle_shop.int_segments_2"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_revenue_4",
+          "to_id": "model.jaffle_shop.fct_sessions_6"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_revenue_4",
+          "to_id": "model.jaffle_shop.fct_suppliers_4"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_revenue_4",
+          "to_id": "model.jaffle_shop.int_tickets_1"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_returns_7",
+          "to_id": "model.jaffle_shop.fct_categories_9"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_returns_7",
+          "to_id": "model.jaffle_shop.int_segments_2"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_returns_7",
+          "to_id": "model.jaffle_shop.int_revenue_4"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_products_1",
+          "to_id": "model.jaffle_shop.stg_warehouses_1"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_products_1",
+          "to_id": "model.jaffle_shop.stg_plans_8"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_products_1",
+          "to_id": "model.jaffle_shop.stg_supplies_8"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_products_1",
+          "to_id": "model.jaffle_shop.stg_orders_7"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_products_1",
+          "to_id": "model.jaffle_shop.stg_promotions_7"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_products_1",
+          "to_id": "model.jaffle_shop.stg_events_7"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_products_1",
+          "to_id": "model.jaffle_shop.stg_renewals_3"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_products_1",
+          "to_id": "model.jaffle_shop.stg_features_8"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_products_1",
+          "to_id": "model.jaffle_shop.stg_returns_9"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_products_1",
+          "to_id": "model.jaffle_shop.stg_warehouses_9"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_products_1",
+          "to_id": "model.jaffle_shop.stg_shipments_5"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_products_1",
+          "to_id": "model.jaffle_shop.stg_order_items_7"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_products_1",
+          "to_id": "model.jaffle_shop.stg_products_7"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_products_1",
+          "to_id": "model.jaffle_shop.stg_taxes_3"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_carts_2",
+          "to_id": "model.jaffle_shop.channels_7"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_reviews_7",
+          "to_id": "model.jaffle_shop.fct_locations_9"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_renewals_4",
+          "to_id": "model.jaffle_shop.dim_promotions_9"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_taxes_6",
+          "to_id": "model.jaffle_shop.fct_refunds_3"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_orders_2",
+          "to_id": "model.jaffle_shop.fct_trials_8"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_orders_2",
+          "to_id": "model.jaffle_shop.fct_refunds_3"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_taxes_4",
+          "to_id": "model.jaffle_shop.int_taxes_6"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_returns_6",
+          "to_id": "model.jaffle_shop.int_orders_2"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_reviews_8",
+          "to_id": "model.jaffle_shop.fct_taxes_7"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_refunds_4",
+          "to_id": "model.jaffle_shop.int_segments_2"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_customers_3",
+          "to_id": "model.jaffle_shop.fct_warehouses_5"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_suppliers_1",
+          "to_id": "model.jaffle_shop.fct_warehouses_5"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_suppliers_1",
+          "to_id": "model.jaffle_shop.int_customers_3"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_shipments_4",
+          "to_id": "model.jaffle_shop.fct_invoices_6"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_categories_7",
+          "to_id": "model.jaffle_shop.fct_locations_9"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_categories_7",
+          "to_id": "model.jaffle_shop.int_reviews_7"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_customers_8",
+          "to_id": "model.jaffle_shop.cohorts_8"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_customers_8",
+          "to_id": "model.jaffle_shop.fct_locations_9"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_campaigns_5",
+          "to_id": "model.jaffle_shop.channels_7"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_campaigns_5",
+          "to_id": "model.jaffle_shop.int_segments_2"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_signups_5",
+          "to_id": "model.jaffle_shop.channels_7"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_signups_5",
+          "to_id": "model.jaffle_shop.int_segments_2"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_plans_1",
+          "to_id": "model.jaffle_shop.fct_page_views_2"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.int_tickets",
+          "to_id": "model.jaffle_shop.fct_categories_3"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.features_7",
+          "to_id": "model.jaffle_shop.fct_trials_8"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.channels_5",
+          "to_id": "model.jaffle_shop.fct_refunds_3"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.channels_5",
+          "to_id": "model.jaffle_shop.features_7"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.stg_warehouses_1",
+          "to_id": "model.jaffle_shop.int_segments_2"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.stg_plans_8",
+          "to_id": "model.jaffle_shop.channels_7"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.stg_plans_8",
+          "to_id": "model.jaffle_shop.dim_taxes_5"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.stg_plans_8",
+          "to_id": "model.jaffle_shop.fct_trials_8"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.stg_plans_8",
+          "to_id": "model.jaffle_shop.fct_refunds_3"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.stg_plans_8",
+          "to_id": "model.jaffle_shop.fct_categories_9"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.stg_plans_8",
+          "to_id": "model.jaffle_shop.int_segments_2"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.stg_plans_8",
+          "to_id": "model.jaffle_shop.int_carts_2"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.stg_channels_3",
+          "to_id": "model.jaffle_shop.fct_refunds_3"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.stg_channels_3",
+          "to_id": "model.jaffle_shop.int_currencies_4"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.stg_supplies_8",
+          "to_id": "model.jaffle_shop.fct_refunds_3"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.stg_orders_7",
+          "to_id": "model.jaffle_shop.int_segments_2"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.stg_cohorts_5",
+          "to_id": "model.jaffle_shop.fct_regions_8"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.stg_cohorts_5",
+          "to_id": "model.jaffle_shop.int_segments_2"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.stg_cohorts_5",
+          "to_id": "model.jaffle_shop.int_usage_5"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.stg_promotions_7",
+          "to_id": "model.jaffle_shop.fct_invoices_6"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.stg_events_7",
+          "to_id": "model.jaffle_shop.fct_trials_8"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.stg_renewals_3",
+          "to_id": "model.jaffle_shop.int_segments_2"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.stg_features_8",
+          "to_id": "model.jaffle_shop.int_segments_2"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.stg_returns_9",
+          "to_id": "model.jaffle_shop.int_segments_2"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.stg_warehouses_9",
+          "to_id": "model.jaffle_shop.dim_promotions_9"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.stg_warehouses_9",
+          "to_id": "model.jaffle_shop.fct_segments_7"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.stg_warehouses_9",
+          "to_id": "model.jaffle_shop.fct_regions_8"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.stg_warehouses_9",
+          "to_id": "model.jaffle_shop.int_page_views_4"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.stg_shipments_5",
+          "to_id": "model.jaffle_shop.int_segments_2"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.stg_order_items_7",
+          "to_id": "model.jaffle_shop.int_segments_2"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.stg_returns_5",
+          "to_id": "model.jaffle_shop.fct_categories_9"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.stg_products_7",
+          "to_id": "model.jaffle_shop.int_segments_2"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.stg_products_7",
+          "to_id": "model.jaffle_shop.int_revenue_4"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.stg_categories_2",
+          "to_id": "model.jaffle_shop.fct_refunds_3"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.stg_reviews_9",
+          "to_id": "model.jaffle_shop.fct_taxes_8"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.stg_reviews_9",
+          "to_id": "model.jaffle_shop.int_returns_7"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.stg_reviews_9",
+          "to_id": "model.jaffle_shop.stg_categories_2"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.stg_categories_6",
+          "to_id": "model.jaffle_shop.dim_taxes_5"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.stg_features_2",
+          "to_id": "model.jaffle_shop.dim_taxes_5"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.stg_cohorts_3",
+          "to_id": "model.jaffle_shop.dim_taxes_5"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.stg_customers_5",
+          "to_id": "model.jaffle_shop.int_warehouses_3"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.stg_taxes_3",
+          "to_id": "model.jaffle_shop.int_segments_2"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.stg_promotions_1",
+          "to_id": "model.jaffle_shop.fct_invoices_6"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.jaffle_shop.stg_sessions_7",
+          "to_id": "model.jaffle_shop.fct_invoices_6"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.zendesk.stg_zendesk__organization",
+          "to_id": "model.jaffle_shop.channels_7"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "model.zendesk.stg_zendesk__organization",
+          "to_id": "model.jaffle_shop.int_refunds_4"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "seed.jaffle_utils.sessions_9",
+          "to_id": "model.jaffle_shop.fct_categories_9"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "seed.jaffle_shop.stg_orders_5",
+          "to_id": "model.jaffle_shop.channels_7"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "seed.jaffle_shop.stg_products_2",
+          "to_id": "model.jaffle_shop.dim_promotions_9"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "source.jaffle_shop.raw_source_1.carts_9",
+          "to_id": "model.jaffle_shop.stg_supplies_8"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "source.jaffle_shop.raw_source_1.refunds_9",
+          "to_id": "model.jaffle_shop.stg_events_7"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "source.jaffle_shop.raw_source_2.carts_9",
+          "to_id": "model.jaffle_shop.stg_supplies_8"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "source.jaffle_shop.raw_source_2.refunds_9",
+          "to_id": "model.jaffle_shop.stg_events_7"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "source.jaffle_shop.raw_source_3.carts_9",
+          "to_id": "model.jaffle_shop.stg_supplies_8"
+        },
+        {
+          "edge_type": "ref",
+          "from_id": "source.jaffle_shop.raw_source_3.refunds_9",
+          "to_id": "model.jaffle_shop.stg_events_7"
+        }
+      ]
+    }
+  },
+  "columnLineage": {
+    "status": 412,
+    "body": {
+      "code": "column_lineage_unavailable",
+      "message": "Column-level lineage is not available in this distribution + artifact set.",
+      "upgrade_path": "Run `dbt --use-index <run|build|compile>` with static analysis enabled, in a distribution that ships the column-lineage provider."
+    }
+  }
+}

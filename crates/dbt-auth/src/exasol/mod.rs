@@ -1,4 +1,4 @@
-use crate::{AdapterConfig, Auth, AuthError, AuthOutcome, auth_configure_pipeline};
+use crate::{AdapterConfig, Auth, AuthError, AuthWarningPrinter, auth_configure_pipeline};
 use database::Builder as DatabaseBuilder;
 use dbt_adbc::{Backend, database};
 use std::borrow::Cow;
@@ -18,11 +18,17 @@ enum ExasolAuthIR<'a> {
         certificate_validation: bool,
         certificate_fingerprint: Option<&'a str>,
         connection_timeout: Option<Cow<'a, str>>,
+        query_timeout: Option<Cow<'a, str>>,
+        idle_timeout: Option<Cow<'a, str>>,
     },
 }
 
 impl<'a> ExasolAuthIR<'a> {
-    pub fn apply(self, mut builder: DatabaseBuilder) -> Result<DatabaseBuilder, AuthError> {
+    pub fn apply(
+        self,
+        mut builder: DatabaseBuilder,
+        _warning_printer: &dyn AuthWarningPrinter,
+    ) -> Result<DatabaseBuilder, AuthError> {
         match self {
             Self::UserPass {
                 user,
@@ -34,6 +40,8 @@ impl<'a> ExasolAuthIR<'a> {
                 certificate_validation,
                 certificate_fingerprint,
                 connection_timeout,
+                query_timeout,
+                idle_timeout,
             } => {
                 let mut uri = format!("exasol://{host}:{port}");
 
@@ -60,6 +68,14 @@ impl<'a> ExasolAuthIR<'a> {
                     params.push(format!("timeout={timeout}"));
                 }
 
+                if let Some(timeout) = &query_timeout {
+                    params.push(format!("query_timeout={timeout}"));
+                }
+
+                if let Some(timeout) = &idle_timeout {
+                    params.push(format!("idle_timeout={timeout}"));
+                }
+
                 if !params.is_empty() {
                     uri.push('?');
                     uri.push_str(&params.join("&"));
@@ -75,7 +91,10 @@ impl<'a> ExasolAuthIR<'a> {
     }
 }
 
-fn parse_auth<'a>(config: &'a AdapterConfig) -> Result<ExasolAuthIR<'a>, AuthError> {
+fn parse_auth<'a>(
+    config: &'a AdapterConfig,
+    _warning_printer: &dyn AuthWarningPrinter,
+) -> Result<ExasolAuthIR<'a>, AuthError> {
     let encryption = config
         .get_string("encryption")
         .map(|s| s != "false" && s != "0" && s != "False")
@@ -106,25 +125,36 @@ fn parse_auth<'a>(config: &'a AdapterConfig) -> Result<ExasolAuthIR<'a>, AuthErr
         certificate_validation,
         certificate_fingerprint: config.get_str("certificate_fingerprint"),
         connection_timeout: config.get_string("connection_timeout"),
+        query_timeout: config.get_string("query_timeout"),
+        idle_timeout: config.get_string("idle_timeout"),
     })
 }
 
 fn apply_connection_args(
     _config: &AdapterConfig,
     builder: DatabaseBuilder,
+    _warning_printer: &dyn AuthWarningPrinter,
 ) -> Result<DatabaseBuilder, AuthError> {
     Ok(builder)
 }
 
-pub struct ExasolAuth;
+pub struct ExasolAuth {
+    pub warning_printer: Box<dyn AuthWarningPrinter>,
+}
+
+impl ExasolAuth {
+    pub fn new(warning_printer: Box<dyn AuthWarningPrinter>) -> Self {
+        Self { warning_printer }
+    }
+}
 
 impl Auth for ExasolAuth {
     fn backend(&self) -> Backend {
         Backend::Exasol
     }
 
-    fn configure(&self, config: &AdapterConfig) -> Result<AuthOutcome, AuthError> {
-        auth_configure_pipeline!(self.backend(), &config, parse_auth, apply_connection_args)
+    fn configure(&self, config: &AdapterConfig) -> Result<database::Builder, AuthError> {
+        auth_configure_pipeline!(self, &config, parse_auth, apply_connection_args)
     }
 }
 
@@ -143,10 +173,9 @@ mod tests {
             ("password".into(), "exasol".into()),
         ]);
 
-        let builder = ExasolAuth {}
+        let builder = ExasolAuth::new(Box::new(crate::NoopAuthWarningPrinter))
             .configure(&AdapterConfig::new(config))
-            .expect("configure")
-            .builder;
+            .expect("configure");
 
         let uri = uri_value(&builder);
         assert_contains!(&uri, "exasol://localhost:8563");
@@ -161,10 +190,9 @@ mod tests {
             ("password".into(), "secret".into()),
         ]);
 
-        let builder = ExasolAuth {}
+        let builder = ExasolAuth::new(Box::new(crate::NoopAuthWarningPrinter))
             .configure(&AdapterConfig::new(config))
-            .expect("configure")
-            .builder;
+            .expect("configure");
 
         let uri = uri_value(&builder);
         assert_contains!(&uri, "exasol://exasol.prod.internal:9563");
@@ -178,10 +206,9 @@ mod tests {
             ("schema".into(), "MY_SCHEMA".into()),
         ]);
 
-        let builder = ExasolAuth {}
+        let builder = ExasolAuth::new(Box::new(crate::NoopAuthWarningPrinter))
             .configure(&AdapterConfig::new(config))
-            .expect("configure")
-            .builder;
+            .expect("configure");
 
         let uri = uri_value(&builder);
         assert_contains!(&uri, "exasol://localhost:8563/MY_SCHEMA");
@@ -195,10 +222,9 @@ mod tests {
             ("encryption".into(), "false".into()),
         ]);
 
-        let builder = ExasolAuth {}
+        let builder = ExasolAuth::new(Box::new(crate::NoopAuthWarningPrinter))
             .configure(&AdapterConfig::new(config))
-            .expect("configure")
-            .builder;
+            .expect("configure");
 
         let uri = uri_value(&builder);
         assert_contains!(&uri, "tls=0");
@@ -215,10 +241,9 @@ encryption: false
         )
         .expect("parse yaml");
 
-        let builder = ExasolAuth {}
+        let builder = ExasolAuth::new(Box::new(crate::NoopAuthWarningPrinter))
             .configure(&AdapterConfig::new(config))
-            .expect("configure")
-            .builder;
+            .expect("configure");
 
         let uri = uri_value(&builder);
         assert_contains!(&uri, "tls=0");
@@ -232,10 +257,9 @@ encryption: false
             ("certificate_validation".into(), "false".into()),
         ]);
 
-        let builder = ExasolAuth {}
+        let builder = ExasolAuth::new(Box::new(crate::NoopAuthWarningPrinter))
             .configure(&AdapterConfig::new(config))
-            .expect("configure")
-            .builder;
+            .expect("configure");
 
         let uri = uri_value(&builder);
         assert_contains!(&uri, "validateservercertificate=0");
@@ -249,10 +273,9 @@ encryption: false
             ("certificate_fingerprint".into(), "AB:CD:EF:01:23:45".into()),
         ]);
 
-        let builder = ExasolAuth {}
+        let builder = ExasolAuth::new(Box::new(crate::NoopAuthWarningPrinter))
             .configure(&AdapterConfig::new(config))
-            .expect("configure")
-            .builder;
+            .expect("configure");
 
         let uri = uri_value(&builder);
         assert_contains!(&uri, "certificatefingerprint=AB:CD:EF:01:23:45");
@@ -266,13 +289,30 @@ encryption: false
             ("connection_timeout".into(), YmlValue::number(30i64.into())),
         ]);
 
-        let builder = ExasolAuth {}
+        let builder = ExasolAuth::new(Box::new(crate::NoopAuthWarningPrinter))
             .configure(&AdapterConfig::new(config))
-            .expect("configure")
-            .builder;
+            .expect("configure");
 
         let uri = uri_value(&builder);
         assert_contains!(&uri, "timeout=30");
+    }
+
+    #[test]
+    fn test_query_and_idle_timeout() {
+        let config = Mapping::from_iter([
+            ("user".into(), "sys".into()),
+            ("password".into(), "exasol".into()),
+            ("query_timeout".into(), YmlValue::number(300i64.into())),
+            ("idle_timeout".into(), "600".into()),
+        ]);
+
+        let builder = ExasolAuth::new(Box::new(crate::NoopAuthWarningPrinter))
+            .configure(&AdapterConfig::new(config))
+            .expect("configure");
+
+        let uri = uri_value(&builder);
+        assert_contains!(&uri, "query_timeout=300");
+        assert_contains!(&uri, "idle_timeout=600");
     }
 
     #[test]
@@ -283,10 +323,9 @@ encryption: false
             ("port".into(), YmlValue::number(9563i64.into())),
         ]);
 
-        let builder = ExasolAuth {}
+        let builder = ExasolAuth::new(Box::new(crate::NoopAuthWarningPrinter))
             .configure(&AdapterConfig::new(config))
-            .expect("configure")
-            .builder;
+            .expect("configure");
 
         let uri = uri_value(&builder);
         assert_contains!(&uri, "exasol://localhost:9563");
@@ -296,7 +335,8 @@ encryption: false
     fn test_missing_user_returns_error() {
         let config = Mapping::from_iter([("password".into(), "exasol".into())]);
 
-        let result = ExasolAuth {}.configure(&AdapterConfig::new(config));
+        let result = ExasolAuth::new(Box::new(crate::NoopAuthWarningPrinter))
+            .configure(&AdapterConfig::new(config));
         assert!(result.is_err());
     }
 
@@ -304,7 +344,8 @@ encryption: false
     fn test_missing_password_returns_error() {
         let config = Mapping::from_iter([("user".into(), "sys".into())]);
 
-        let result = ExasolAuth {}.configure(&AdapterConfig::new(config));
+        let result = ExasolAuth::new(Box::new(crate::NoopAuthWarningPrinter))
+            .configure(&AdapterConfig::new(config));
         assert!(result.is_err());
     }
 
@@ -315,10 +356,9 @@ encryption: false
             ("password".into(), "exasol".into()),
         ]);
 
-        let builder = ExasolAuth {}
+        let builder = ExasolAuth::new(Box::new(crate::NoopAuthWarningPrinter))
             .configure(&AdapterConfig::new(config))
-            .expect("configure")
-            .builder;
+            .expect("configure");
 
         let uri = uri_value(&builder);
         // When encryption is enabled (default), no tls param should be present

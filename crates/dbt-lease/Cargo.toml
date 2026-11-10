@@ -1,0 +1,27 @@
+[package]
+name = "dbt-lease"
+description = "File-based, inter-process lease concurrency primitive"
+version.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+license.workspace = true
+keywords.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+dbt-fusion-workspace-hack = { version = "0.1" }
+
+base64 = { workspace = true }
+getrandom = { workspace = true }
+rand = { workspace = true }
+tempfile = { workspace = true }
+thiserror = { workspace = true }
+
+[lib]
+name = "dbt_lease"
+path = "src/lib.rs"
+doctest = false

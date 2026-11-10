@@ -1,0 +1,20 @@
+# Scenario: DuckLake catalog with every supported option populated.
+# Exercises: DATA_PATH, METADATA_SCHEMA, METADATA_CATALOG, DATA_INLINING_ROW_LIMIT,
+# CREATE_IF_NOT_EXISTS, READ_ONLY, ENCRYPTED, AUTOMATIC_MIGRATION, OVERRIDE_DATA_PATH.
+catalogs:
+  - name: lake_full
+    type: ducklake
+    table_format: iceberg
+    config:
+      duckdb:
+        metadata_path: "metadata.db"
+        data_path: "s3://bucket/lake"
+        metadata_schema: "lake_meta"
+        metadata_catalog: "lake_db"
+        data_inlining_row_limit: 100
+        create_if_not_exists: true
+        read_only: false
+        encrypted: true
+        automatic_migration: true
+        override_data_path: true
+        catalog_database: "lake_full"

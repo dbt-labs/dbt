@@ -27,6 +27,8 @@ const VERSION_PREFIX: &str = "v1_";
 pub struct FreshnessResultRow {
     pub invocation_id: String,
     pub unique_id: String,
+    /// `None` in rows written before this column existed.
+    pub resource_type: Option<String>,
     pub status: String,
     pub max_loaded_at: Option<String>,
     pub snapshotted_at: Option<String>,
@@ -43,6 +45,7 @@ fn freshness_fields() -> Vec<Field> {
     vec![
         Field::new("invocation_id", DataType::Utf8, false),
         Field::new("unique_id", DataType::Utf8, false),
+        Field::new("resource_type", DataType::Utf8, true),
         Field::new("status", DataType::Utf8, false),
         Field::new("max_loaded_at", DataType::Utf8, true),
         Field::new("snapshotted_at", DataType::Utf8, true),
@@ -129,6 +132,7 @@ mod tests {
         let rows = vec![FreshnessResultRow {
             invocation_id: "inv-001".to_string(),
             unique_id: "source.my_project.raw.orders".to_string(),
+            resource_type: Some("source".to_string()),
             status: "pass".to_string(),
             max_loaded_at: Some("2026-05-13T10:00:00Z".to_string()),
             snapshotted_at: Some("2026-05-13T12:00:00Z".to_string()),
@@ -148,5 +152,163 @@ mod tests {
         assert_eq!(read_back[0].unique_id, "source.my_project.raw.orders");
         assert_eq!(read_back[0].status, "pass");
         assert_eq!(read_back[0].max_loaded_at_time_ago, Some(7200.0));
+        // Microseconds in, microseconds out: the column is Timestamp(Microsecond), and a
+        // producer writing nanoseconds would land ~1000x in the future.
+        assert_eq!(read_back[0].ingested_at, 1_700_000_000_000_000);
+    }
+
+    #[test]
+    fn test_resource_type_round_trips_for_sources_and_models() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir_path = dir.path();
+
+        let row = |unique_id: &str, resource_type: &str| FreshnessResultRow {
+            invocation_id: "inv-002".to_string(),
+            unique_id: unique_id.to_string(),
+            resource_type: Some(resource_type.to_string()),
+            status: "pass".to_string(),
+            max_loaded_at: Some("2026-05-13T10:00:00Z".to_string()),
+            snapshotted_at: Some("2026-05-13T12:00:00Z".to_string()),
+            max_loaded_at_time_ago: Some(7200.0),
+            execution_time: None,
+            warn_after_count: Some(12),
+            warn_after_period: Some("hour".to_string()),
+            error_after_count: None,
+            error_after_period: None,
+            ingested_at: 1_700_000_000_000_000,
+        };
+
+        let rows = vec![
+            row("source.my_project.raw.orders", "source"),
+            row("model.my_project.stg_orders", "model"),
+        ];
+        write_freshness_results(dir_path, &rows).unwrap();
+
+        let read_back = read_freshness_results(dir_path);
+        assert_eq!(read_back.len(), 2);
+        let by_id: std::collections::BTreeMap<&str, Option<&str>> = read_back
+            .iter()
+            .map(|r| (r.unique_id.as_str(), r.resource_type.as_deref()))
+            .collect();
+        assert_eq!(by_id["source.my_project.raw.orders"], Some("source"));
+        assert_eq!(by_id["model.my_project.stg_orders"], Some("model"));
+    }
+
+    /// A row exactly as a producer before `resource_type` existed wrote it.
+    #[derive(Serialize)]
+    struct LegacyFreshnessResultRow {
+        invocation_id: String,
+        unique_id: String,
+        status: String,
+        max_loaded_at: Option<String>,
+        snapshotted_at: Option<String>,
+        max_loaded_at_time_ago: Option<f64>,
+        execution_time: Option<f64>,
+        warn_after_count: Option<i32>,
+        warn_after_period: Option<String>,
+        error_after_count: Option<i32>,
+        error_after_period: Option<String>,
+        ingested_at: i64,
+    }
+
+    fn legacy_fields() -> Vec<Field> {
+        freshness_fields()
+            .into_iter()
+            .filter(|f| f.name() != "resource_type")
+            .collect()
+    }
+
+    fn write_legacy_row(dir: &Path, epoch: u32, unique_id: &str, ingested_at: i64) {
+        let row = LegacyFreshnessResultRow {
+            invocation_id: "inv-legacy".to_string(),
+            unique_id: unique_id.to_string(),
+            status: "pass".to_string(),
+            max_loaded_at: Some("2026-05-13T10:00:00Z".to_string()),
+            snapshotted_at: Some("2026-05-13T12:00:00Z".to_string()),
+            max_loaded_at_time_ago: Some(7200.0),
+            execution_time: None,
+            warn_after_count: Some(12),
+            warn_after_period: Some("hour".to_string()),
+            error_after_count: None,
+            error_after_period: None,
+            ingested_at,
+        };
+        let path = dir.join(format!("{VERSION_PREFIX}{epoch}.parquet"));
+        epoch_io::write_rows(&path, &legacy_fields(), &[row]).unwrap();
+    }
+
+    /// Adding `resource_type` must not orphan existing history: the column is nullable
+    /// and the field optional, so rows written without it still deserialize.
+    #[test]
+    fn test_rows_written_before_resource_type_are_still_readable() {
+        let dir = tempfile::tempdir().unwrap();
+        write_legacy_row(
+            dir.path(),
+            0,
+            "source.my_project.raw.orders",
+            1_700_000_000_000_000,
+        );
+
+        let read_back = read_freshness_results(dir.path());
+        assert_eq!(
+            read_back.len(),
+            1,
+            "legacy rows were silently dropped instead of read"
+        );
+        assert_eq!(read_back[0].unique_id, "source.my_project.raw.orders");
+        assert_eq!(read_back[0].resource_type, None);
+    }
+
+    /// Consolidation rewrites every file it reads and deletes the originals, so a
+    /// legacy row it could not read would be lost for good.
+    #[test]
+    fn test_consolidation_preserves_legacy_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir_path = dir.path();
+
+        write_legacy_row(
+            dir_path,
+            0,
+            "source.my_project.raw.legacy",
+            1_700_000_000_000_000,
+        );
+        write_freshness_results(
+            dir_path,
+            &[FreshnessResultRow {
+                invocation_id: "inv-new".to_string(),
+                unique_id: "source.my_project.raw.current".to_string(),
+                resource_type: Some("source".to_string()),
+                status: "pass".to_string(),
+                max_loaded_at: None,
+                snapshotted_at: None,
+                max_loaded_at_time_ago: None,
+                execution_time: None,
+                warn_after_count: None,
+                warn_after_period: None,
+                error_after_count: None,
+                error_after_period: None,
+                ingested_at: 1_778_000_000_000_000,
+            }],
+        )
+        .unwrap();
+
+        let files = existing_files(dir_path);
+        assert_eq!(files.len(), 2);
+        consolidate(dir_path, &files).unwrap();
+
+        assert_eq!(existing_files(dir_path).len(), 1);
+        let read_back = read_freshness_results(dir_path);
+        assert_eq!(
+            read_back
+                .iter()
+                .map(|r| r.unique_id.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "source.my_project.raw.legacy",
+                "source.my_project.raw.current"
+            ],
+        );
+        assert_eq!(read_back[0].resource_type, None);
+        assert_eq!(read_back[1].resource_type.as_deref(), Some("source"));
     }
 }

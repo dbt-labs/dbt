@@ -1,27 +1,31 @@
 use crate::metadata::bigquery as bigquery_metadata;
 use crate::relation::RelationChangeSet;
-use crate::relation::config_v2::RelationConfig;
+use crate::relation::config_v2::{RelationConfig, RelationConfigLoader, SimpleComponentConfigImpl};
 use crate::relation::databricks;
 use crate::relation::redshift::materialized_view_config::{
     DescribeMaterializedViewResults, RedshiftMaterializedViewConfig,
     RedshiftMaterializedViewConfigChangeset,
 };
-use crate::relation::snowflake::config::DescribeDynamicTableResults;
-use crate::relation::snowflake::config::relation_types::dynamic_table::new_loader;
+use crate::relation::snowflake::config::relation_types::{dynamic_table, interactive_table};
+use crate::relation::snowflake::config::{
+    DYNAMIC_TABLE_KEY, INTERACTIVE_TABLE_KEY, SnowflakeDescribeResults, components,
+};
 use crate::relation::{RelationObject, StaticBaseRelation};
 use crate::value::none_value;
 
 use dbt_adapter_core::AdapterType;
+use dbt_adapter_engine::cow::{lowercase, uppercase};
 use dbt_adapter_sql::ident::max_identifier_length;
 use dbt_common::{ErrorCode, FsResult, constants::DBT_CTE_PREFIX, fs_err};
 use dbt_frontend_common::ident::Identifier;
 use dbt_schema_store::CanonicalFqn;
-use dbt_schemas::schemas::InternalDbtNodeWrapper;
 use dbt_schemas::schemas::common::{DbtMaterialization, DbtQuoting};
 use dbt_schemas::schemas::relations::base::{
     BaseRelation, BaseRelationProperties, Policy, RelationPath, TableFormat,
 };
+use dbt_schemas::schemas::relations::default_resolved_quoting_for;
 use dbt_schemas::schemas::serde::minijinja_value_to_typed_struct;
+use dbt_schemas::schemas::{InternalDbtNodeAttributes, InternalDbtNodeWrapper};
 
 use arrow::array::RecordBatch;
 use dbt_schemas::dbt_types::RelationType;
@@ -31,6 +35,7 @@ use minijinja::arg_utils::ArgsIter;
 use serde::Deserialize;
 
 use std::any::Any;
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -80,6 +85,10 @@ impl StaticBaseRelation for RelationStatic {
         self.adapter_type.as_ref().to_string()
     }
 
+    fn get_default_quoting(&self) -> ResolvedQuoting {
+        default_resolved_quoting_for(self.adapter_type)
+    }
+
     fn create(&self, args: &[Value]) -> Result<Value, minijinja::Error> {
         match self.adapter_type {
             AdapterType::Snowflake => {
@@ -103,12 +112,10 @@ impl StaticBaseRelation for RelationStatic {
                     })
                     .unwrap_or(self.quoting);
 
-                let table_format =
-                    if table_format.is_some_and(|s| s.eq_ignore_ascii_case("iceberg")) {
-                        TableFormat::Iceberg
-                    } else {
-                        TableFormat::Default
-                    };
+                let table_format = match table_format.as_deref() {
+                    Some(s) if s.eq_ignore_ascii_case("iceberg") => TableFormat::Iceberg,
+                    _ => TableFormat::Default,
+                };
 
                 let relation = Relation::new(AdapterType::Snowflake, database, schema, identifier)
                     .with_relation_type(relation_type.map(|s| RelationType::from(s.as_str())))
@@ -118,7 +125,7 @@ impl StaticBaseRelation for RelationStatic {
                 let rel = RelationObject::new(Arc::new(relation));
                 Ok(Value::from_object(rel))
             }
-            _ => {
+            AdapterType::ClickHouse => {
                 let iter = ArgsIter::new("Relation.create", &[], args);
                 let database = iter.next_kwarg::<Option<String>>("database")?;
                 let schema = iter.next_kwarg::<Option<String>>("schema")?;
@@ -126,6 +133,9 @@ impl StaticBaseRelation for RelationStatic {
                 let relation_type = iter.next_kwarg::<Option<Value>>("type")?;
                 let custom_quoting = iter.next_kwarg::<Option<Value>>("quote_policy")?;
                 let temporary = iter.next_kwarg::<Option<bool>>("temporary")?;
+                // ClickHouseRelation.create extras, stamped by clickhouse__get_or_create_relation
+                let can_exchange = iter.next_kwarg::<Option<bool>>("can_exchange")?;
+                let can_on_cluster = iter.next_kwarg::<Option<bool>>("can_on_cluster")?;
                 iter.finish()?;
 
                 let custom_quoting = custom_quoting
@@ -136,20 +146,56 @@ impl StaticBaseRelation for RelationStatic {
                         schema: v.schema.unwrap_or_default(),
                     });
 
-                self.try_new(
-                    database,
-                    schema,
-                    identifier,
-                    relation_type.and_then(|v: Value| {
+                let relation = Relation::new(AdapterType::ClickHouse, database, schema, identifier)
+                    .with_relation_type(relation_type.and_then(|v: Value| {
                         if v.is_none() || v.is_undefined() {
                             None
                         } else {
                             Some(RelationType::from(v.as_str().unwrap_or_default()))
                         }
-                    }),
-                    custom_quoting,
-                    temporary,
-                )
+                    }))
+                    .with_quoting(custom_quoting.unwrap_or(self.quoting))
+                    .with_temporary(temporary.unwrap_or(false))
+                    .with_can_exchange(can_exchange.unwrap_or(false))
+                    .with_can_on_cluster(Some(can_on_cluster.unwrap_or(false)))
+                    .validate()?;
+                Ok(RelationObject::new(Arc::new(relation)).into_value())
+            }
+            _ => {
+                let iter = ArgsIter::new("Relation.create", &[], args);
+                let database = iter.next_kwarg::<Option<String>>("database")?;
+                let schema = iter.next_kwarg::<Option<String>>("schema")?;
+                let identifier = iter.next_kwarg::<Option<String>>("identifier")?;
+                let relation_type = iter.next_kwarg::<Option<Value>>("type")?;
+                let custom_quoting = iter.next_kwarg::<Option<Value>>("quote_policy")?;
+                let temporary = iter.next_kwarg::<Option<bool>>("temporary")?;
+                let is_staging = match self.adapter_type {
+                    AdapterType::Databricks => iter.next_kwarg::<Option<bool>>("is_staging")?,
+                    _ => None,
+                };
+                iter.finish()?;
+
+                let custom_quoting = custom_quoting
+                    .and_then(|v| DbtQuoting::deserialize(v).ok())
+                    .map(|v| ResolvedQuoting {
+                        database: v.database.unwrap_or_default(),
+                        identifier: v.identifier.unwrap_or_default(),
+                        schema: v.schema.unwrap_or_default(),
+                    });
+
+                Relation::new(self.adapter_type, database, schema, identifier)
+                    .with_relation_type(relation_type.and_then(|v: Value| {
+                        if v.is_none() || v.is_undefined() {
+                            None
+                        } else {
+                            Some(RelationType::from(v.as_str().unwrap_or_default()))
+                        }
+                    }))
+                    .with_quoting(custom_quoting.unwrap_or(self.quoting))
+                    .with_temporary(temporary.unwrap_or(false))
+                    .with_is_staging(is_staging.unwrap_or(false))
+                    .validate()
+                    .map(|r| RelationObject::new(Arc::new(r)).into_value())
             }
         }
     }
@@ -190,12 +236,26 @@ pub struct Relation {
     pub metadata: Option<BTreeMap<String, String>>,
     /// Whether the relation is a delta table
     pub is_delta: bool,
+    /// Whether the relation is a Databricks shallow clone
+    pub is_shallow_clone: bool,
+    /// Whether this is a Databricks safer-replace staging relation, whose keys are always
+    /// given staging names and renamed after the swap
+    pub is_staging: bool,
     /// Constraints to be created with the table
     pub create_constraints: Vec<databricks::typed_constraint::TypedConstraint>,
     /// Constraints to be applied during ALTER operations
     pub alter_constraints: Vec<databricks::typed_constraint::TypedConstraint>,
     /// Whether the relation is a temporary view (session-scoped).
     pub temporary: bool,
+    /// ClickHouse catalog state; see [`BaseRelation::can_exchange`] and siblings.
+    pub can_exchange: bool,
+    /// `None` = built from a node and not stamped by the catalog, an `api.Relation.create` kwarg
+    /// or `disable_on_cluster`; `on_cluster_clause` resolves it through the adapter
+    /// (`metadata::clickhouse::relation_should_on_cluster`). Reads as `false`, relation.py's default.
+    pub can_on_cluster: Option<bool>,
+    pub mvs_pointing_to_it: Vec<BTreeMap<String, String>>,
+    pub is_refreshable: bool,
+    pub refreshable_append: bool,
     /// The location/region for this relation (BigQuery only, e.g., "US", "EU").
     pub location: Option<String>,
     /// DuckDB external source location, rendered in place of schema/table.
@@ -350,9 +410,16 @@ impl Relation {
             native_schema: None,
             metadata: None,
             is_delta: false,
+            is_shallow_clone: false,
+            is_staging: false,
             create_constraints: Vec::new(),
             alter_constraints: Vec::new(),
             temporary: false,
+            can_exchange: false,
+            can_on_cluster: None,
+            mvs_pointing_to_it: Vec::new(),
+            is_refreshable: false,
+            refreshable_append: false,
             external: None,
             table_format: TableFormat::Default,
         }
@@ -388,8 +455,43 @@ impl Relation {
         self
     }
 
+    pub fn with_is_shallow_clone(mut self, is_shallow_clone: bool) -> Self {
+        self.is_shallow_clone = is_shallow_clone;
+        self
+    }
+
+    pub fn with_is_staging(mut self, is_staging: bool) -> Self {
+        self.is_staging = is_staging;
+        self
+    }
+
     pub fn with_temporary(mut self, temporary: bool) -> Self {
         self.temporary = temporary;
+        self
+    }
+
+    pub fn with_can_exchange(mut self, can_exchange: bool) -> Self {
+        self.can_exchange = can_exchange;
+        self
+    }
+
+    pub fn with_can_on_cluster(mut self, can_on_cluster: Option<bool>) -> Self {
+        self.can_on_cluster = can_on_cluster;
+        self
+    }
+
+    pub fn with_mvs_pointing_to_it(mut self, mvs: Vec<BTreeMap<String, String>>) -> Self {
+        self.mvs_pointing_to_it = mvs;
+        self
+    }
+
+    pub fn with_is_refreshable(mut self, is_refreshable: bool) -> Self {
+        self.is_refreshable = is_refreshable;
+        self
+    }
+
+    pub fn with_refreshable_append(mut self, refreshable_append: bool) -> Self {
+        self.refreshable_append = refreshable_append;
         self
     }
 
@@ -447,9 +549,16 @@ impl Relation {
             native_schema: None,
             metadata: None,
             is_delta: false,
+            is_shallow_clone: false,
+            is_staging: false,
             create_constraints: Vec::default(),
             alter_constraints: Vec::default(),
             temporary: false,
+            can_exchange: false,
+            can_on_cluster: None,
+            mvs_pointing_to_it: Vec::new(),
+            is_refreshable: false,
+            refreshable_append: false,
             location: Some("".to_string()),
             external: None,
             table_format: TableFormat::Default,
@@ -491,6 +600,8 @@ impl Relation {
     }
 
     /// Add a constraint, routing to create_constraints or alter_constraints based on type
+    ///
+    /// Reference: https://github.com/databricks/dbt-databricks/blob/fdc4ac22f4494c701d8f7d6e5b380e5f0d1fe9ff/dbt/adapters/databricks/relation.py#L259-L272
     pub fn add_constraint(&mut self, constraint: databricks::typed_constraint::TypedConstraint) {
         use dbt_schemas::schemas::common::ConstraintType;
 
@@ -499,7 +610,18 @@ impl Relation {
                 self.alter_constraints.push(constraint);
             }
             _ => {
-                self.create_constraints.push(constraint);
+                // Materialized views have no constraint diff, so they keep server-assigned names.
+                let synthesized_name = match self.path.identifier.as_deref() {
+                    Some(identifier)
+                        if (constraint.name().is_none() || self.is_staging)
+                            && !self.is_materialized_view() =>
+                    {
+                        constraint.synthesized_name(identifier)
+                    }
+                    _ => None,
+                };
+                self.create_constraints
+                    .push(constraint.with_name(synthesized_name));
             }
         }
     }
@@ -524,6 +646,91 @@ impl Relation {
             .map(|c| c.render())
             .collect::<Vec<_>>()
             .join(", ")
+    }
+}
+
+/// The Snowflake relation types whose configuration is loaded and diffed component by
+/// component. The dynamic-table and interactive-table Jinja names are both served by the
+/// dynamic-table implementations, which select between them on the model's `materialized`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum SnowflakeConfigRelationType {
+    DynamicTable,
+    InteractiveTable,
+}
+
+impl SnowflakeConfigRelationType {
+    fn of(local_config: &dyn InternalDbtNodeAttributes) -> Self {
+        match local_config.materialized() {
+            DbtMaterialization::InteractiveTable => Self::InteractiveTable,
+            _ => Self::DynamicTable,
+        }
+    }
+
+    fn loader(self) -> RelationConfigLoader<'static, SnowflakeDescribeResults> {
+        match self {
+            Self::DynamicTable => dynamic_table::new_loader(),
+            Self::InteractiveTable => interactive_table::new_loader(),
+        }
+    }
+
+    fn describe_result_key(self) -> &'static str {
+        match self {
+            Self::DynamicTable => DYNAMIC_TABLE_KEY,
+            Self::InteractiveTable => INTERACTIVE_TABLE_KEY,
+        }
+    }
+}
+
+fn target_lag_of(config: &RelationConfig) -> Option<&Option<String>> {
+    config
+        .get(components::target_lag::TYPE_NAME)?
+        .as_any()
+        .downcast_ref::<SimpleComponentConfigImpl<Option<String>>>()
+        .map(|component| &component.value)
+}
+
+/// A static interactive table is a plain `TABLE` with no warehouse attached, so it cannot be
+/// made refreshing in place: Snowflake rejects `ALTER INTERACTIVE TABLE ... SET TARGET_LAG`
+/// with `001420`. The reverse direction is equally unalterable but visible from the changeset
+/// alone, so only this direction is decided here.
+fn target_lag_newly_set(desired_state: &RelationConfig, current_state: &RelationConfig) -> bool {
+    matches!(
+        (target_lag_of(current_state), target_lag_of(desired_state)),
+        (Some(None), Some(Some(_)))
+    )
+}
+
+fn dynamic_table_config_changeset_from_local_config(
+    local_config: &dyn InternalDbtNodeAttributes,
+    relation_results_value: &Value,
+) -> Result<Value, minijinja::Error> {
+    let config_relation_type = SnowflakeConfigRelationType::of(local_config);
+    let relation_results = SnowflakeDescribeResults::from_value_with_key(
+        relation_results_value,
+        config_relation_type.describe_result_key(),
+    )
+    .map_err(|e| {
+        minijinja::Error::new(
+            minijinja::ErrorKind::SerdeDeserializeError,
+            format!("from_config: Failed to serialize SnowflakeDescribeResults: {e}"),
+        )
+    })?;
+
+    let loader = config_relation_type.loader();
+    let current_state = loader.from_remote_state(&relation_results)?;
+    let desired_state = loader.from_local_config(local_config)?;
+
+    let mut changeset = RelationConfig::diff(&desired_state, &current_state);
+    if config_relation_type == SnowflakeConfigRelationType::InteractiveTable
+        && target_lag_newly_set(&desired_state, &current_state)
+    {
+        changeset = changeset.forcing_full_refresh();
+    }
+
+    if changeset.is_empty() {
+        Ok(none_value())
+    } else {
+        Ok(Value::from_object(changeset))
     }
 }
 
@@ -613,7 +820,14 @@ impl BaseRelation for Relation {
         .with_quoting(self.quote_policy)
         .with_metadata(self.metadata.clone())
         .with_is_delta(self.is_delta)
+        .with_is_shallow_clone(self.is_shallow_clone)
+        .with_is_staging(self.is_staging)
         .with_temporary(self.temporary)
+        .with_can_exchange(self.can_exchange)
+        .with_can_on_cluster(self.can_on_cluster)
+        .with_mvs_pointing_to_it(self.mvs_pointing_to_it.clone())
+        .with_is_refreshable(self.is_refreshable)
+        .with_refreshable_append(self.refreshable_append)
         // FIXME: no need to validate here since the parent relation is already valid.
         .validate()?;
 
@@ -638,7 +852,15 @@ impl BaseRelation for Relation {
         .with_quoting(policy)
         .with_metadata(self.metadata.clone())
         .with_is_delta(self.is_delta)
+        .with_is_shallow_clone(self.is_shallow_clone)
+        .with_is_staging(self.is_staging)
         .with_temporary(self.temporary)
+        .with_table_format(self.table_format)
+        .with_can_exchange(self.can_exchange)
+        .with_can_on_cluster(self.can_on_cluster)
+        .with_mvs_pointing_to_it(self.mvs_pointing_to_it.clone())
+        .with_is_refreshable(self.is_refreshable)
+        .with_refreshable_append(self.refreshable_append)
         // FIXME: no need to validate here since the parent relation is already valid.
         .validate()?;
         relation.create_constraints = self.create_constraints.clone();
@@ -681,6 +903,26 @@ impl BaseRelation for Relation {
         self.temporary
     }
 
+    fn can_exchange(&self) -> bool {
+        self.can_exchange
+    }
+
+    fn can_on_cluster(&self) -> bool {
+        self.can_on_cluster.unwrap_or(false)
+    }
+
+    fn mvs_pointing_to_it(&self) -> &[BTreeMap<String, String>] {
+        &self.mvs_pointing_to_it
+    }
+
+    fn is_refreshable(&self) -> bool {
+        self.is_refreshable
+    }
+
+    fn refreshable_append(&self) -> bool {
+        self.refreshable_append
+    }
+
     fn is_delta(&self) -> bool {
         self.is_delta
     }
@@ -691,6 +933,28 @@ impl BaseRelation for Relation {
                 self.is_delta = is_delta.unwrap_or(self.is_delta);
             }
             _ => {}
+        }
+    }
+
+    fn is_shallow_clone(&self) -> bool {
+        self.is_shallow_clone
+    }
+
+    #[allow(clippy::single_match)]
+    fn set_is_shallow_clone(&mut self, is_shallow_clone: Option<bool>) {
+        match self.adapter_type {
+            AdapterType::Databricks => {
+                self.is_shallow_clone = is_shallow_clone.unwrap_or(self.is_shallow_clone);
+            }
+            _ => {}
+        }
+    }
+
+    fn set_table_format(&mut self, table_format: Option<TableFormat>) {
+        if self.adapter_type == AdapterType::Snowflake
+            && let Some(table_format) = table_format
+        {
+            self.table_format = table_format;
         }
     }
 
@@ -840,10 +1104,25 @@ impl BaseRelation for Relation {
     ) -> Result<bool, minijinja::Error> {
         match self.adapter_type {
             AdapterType::Snowflake => {
-                if let Some(old_relation) = old_relation {
-                    // core does only checks this for table conversions since dynamic tables
-                    // are expected to be rebuilt cross-catalog using full refresh mode
-                    if old_relation.is_table() {
+                let Some(old_relation) = old_relation else {
+                    return Ok(false);
+                };
+
+                // `CREATE OR REPLACE` can only replace an object with one of the same kind
+                // (Snowflake rejects a cross-kind replacement with `001998`), so the kind of
+                // object each side is stored as is the granularity this decides at. A static
+                // interactive table is stored as a plain `TABLE`, but it is still declared as
+                // an interactive table, so the declared relation type is what matters.
+                match (
+                    old_relation.is_interactive_table(),
+                    self.is_interactive_table(),
+                ) {
+                    (true, true) => Ok(false),
+                    // Its own kind — the `table_format` check below would treat it as
+                    // replaceable in place.
+                    (true, _) | (_, true) => Ok(true),
+                    // core does only checks this for table conversions
+                    _ if old_relation.is_table() => {
                         // invoke drop for table -> Iceberg or Iceberg -> table
                         let old_relation_table_format = old_relation
                             .as_any()
@@ -851,12 +1130,10 @@ impl BaseRelation for Relation {
                             .unwrap()
                             .table_format;
                         Ok(self.table_format != old_relation_table_format)
-                    } else {
-                        // An existing view must be dropped for model to build into a table.
-                        Ok(true)
                     }
-                } else {
-                    Ok(false)
+                    // Views must be dropped; dynamic tables are rebuilt cross-catalog via
+                    // full refresh.
+                    _ => Ok(true),
                 }
             }
             _ => Err(minijinja::Error::new(
@@ -872,7 +1149,9 @@ impl BaseRelation for Relation {
 
         match (self.adapter_type, self.relation_type()) {
             (Bigquery, Some(Table)) => true,
-            (Snowflake, Some(Table) | Some(View)) => !self.is_iceberg_format(),
+            (Snowflake, Some(Table) | Some(View) | Some(InteractiveTable)) => {
+                !self.is_iceberg_format()
+            }
             (_, Some(Table) | Some(View)) => true,
             (_, _) => false,
         }
@@ -884,7 +1163,9 @@ impl BaseRelation for Relation {
 
         match (self.adapter_type, self.relation_type()) {
             (Redshift, Some(View)) => true,
-            (Snowflake, Some(Table) | Some(View) | Some(DynamicTable)) => true,
+            (Snowflake, Some(Table) | Some(View) | Some(DynamicTable) | Some(InteractiveTable)) => {
+                true
+            }
             (_, Some(Table) | Some(View)) => true,
             (_, _) => false,
         }
@@ -898,23 +1179,10 @@ impl BaseRelation for Relation {
     ) -> Result<Value, minijinja::Error> {
         match self.adapter_type {
             AdapterType::Snowflake => {
-                let relation_results =
-                    DescribeDynamicTableResults::try_from(relation_results_value).map_err(|e| {
-                        minijinja::Error::new(
-                            minijinja::ErrorKind::SerdeDeserializeError,
-                            format!(
-                                "from_config: Failed to serialize DescribeDynamicTableResults: {e}"
-                            ),
-                        )
-                    })?;
-
-                let loader = new_loader();
-                let current_state = loader.from_remote_state(&relation_results)?;
-
                 // TODO(serramatutu): minijinja_value_to_typed_struct does not work with references, so we
                 // have to clone the value here...
                 let local_config = minijinja_value_to_typed_struct::<InternalDbtNodeWrapper>(
-                    relation_config_value.clone(),
+                    relation_config_value,
                 )
                 .map_err(|e| {
                     minijinja::Error::new(
@@ -932,15 +1200,10 @@ impl BaseRelation for Relation {
                     }
                 };
 
-                let desired_state = loader.from_local_config(local_config.as_ref())?;
-
-                let changeset = RelationConfig::diff(&desired_state, &current_state);
-
-                if changeset.is_empty() {
-                    Ok(none_value())
-                } else {
-                    Ok(Value::from_object(changeset))
-                }
+                dynamic_table_config_changeset_from_local_config(
+                    local_config.as_ref(),
+                    relation_results_value,
+                )
             }
             _ => Err(minijinja::Error::new(
                 minijinja::ErrorKind::InvalidOperation,
@@ -958,14 +1221,15 @@ impl BaseRelation for Relation {
             AdapterType::Snowflake => {
                 // TODO(serramatutu): minijinja_value_to_typed_struct does not work with references, so we
                 // have to clone the value here...
-                let local_config =
-                    minijinja_value_to_typed_struct::<InternalDbtNodeWrapper>(config.clone())
-                        .map_err(|e| {
-                            minijinja::Error::new(
-                                minijinja::ErrorKind::SerdeDeserializeError,
-                                format!("Failed to deserialize InternalDbtNodeWrapper: {e}"),
-                            )
-                        })?;
+                let local_config = minijinja_value_to_typed_struct::<InternalDbtNodeWrapper>(
+                    config,
+                )
+                .map_err(|e| {
+                    minijinja::Error::new(
+                        minijinja::ErrorKind::SerdeDeserializeError,
+                        format!("Failed to deserialize InternalDbtNodeWrapper: {e}"),
+                    )
+                })?;
                 let local_config = match local_config {
                     InternalDbtNodeWrapper::Model(model) => model,
                     _ => {
@@ -975,7 +1239,9 @@ impl BaseRelation for Relation {
                         ));
                     }
                 };
-                let relation_config = new_loader().from_local_config(local_config.as_ref())?;
+                let relation_config = SnowflakeConfigRelationType::of(local_config.as_ref())
+                    .loader()
+                    .from_local_config(local_config.as_ref())?;
 
                 Ok(Value::from_object(relation_config))
             }
@@ -986,8 +1252,13 @@ impl BaseRelation for Relation {
         }
     }
 
-    fn normalize_component(&self, component: &str) -> String {
-        crate::format_ident::default_identifier_case(component, self.adapter_type)
+    fn normalize_component<'a>(&self, component: &'a str) -> Cow<'a, str> {
+        use AdapterType::*;
+        match self.adapter_type {
+            Salesforce | Bigquery | ClickHouse => Cow::Borrowed(component),
+            Snowflake => uppercase(component.into()),
+            _ => lowercase(component.into()),
+        }
     }
 
     fn render_self_as_str(&self) -> String {
@@ -1004,6 +1275,9 @@ impl BaseRelation for Relation {
                 .schema
                 .as_deref()
                 .expect("INFORMATION_SCHEMA relation needs dataset");
+            let dataset = dbt_adapter_sql::ident::Ident::new(dataset, AdapterType::Bigquery)
+                .display(AdapterType::Bigquery)
+                .to_string();
             let view_name = self.path.identifier.as_deref();
 
             // Detect if user has set `project == location` and normalize
@@ -1015,7 +1289,7 @@ impl BaseRelation for Relation {
 
             let fqn_no_project = if let Some(view_name) = view_name {
                 bigquery_metadata::generate_system_table_fqn(
-                    dataset,
+                    &dataset,
                     view_name,
                     self.location.as_deref(),
                 )
@@ -1027,7 +1301,7 @@ impl BaseRelation for Relation {
             };
 
             let fqn = if let Some(project) = &project {
-                format!("`{project}`.{fqn_no_project}")
+                format!("{}.{fqn_no_project}", self.quoted(project))
             } else {
                 fqn_no_project
             };
@@ -1095,7 +1369,15 @@ impl BaseRelation for Relation {
             .with_quoting(custom_quoting)
             .with_metadata(self.metadata.clone())
             .with_is_delta(self.is_delta)
+            .with_is_shallow_clone(self.is_shallow_clone)
+            .with_is_staging(self.is_staging)
             .with_temporary(self.temporary)
+            .with_table_format(self.table_format)
+            .with_can_exchange(self.can_exchange)
+            .with_can_on_cluster(self.can_on_cluster)
+            .with_mvs_pointing_to_it(self.mvs_pointing_to_it.clone())
+            .with_is_refreshable(self.is_refreshable)
+            .with_refreshable_append(self.refreshable_append)
             .validate()?;
         Ok(Arc::new(relation))
     }
@@ -1167,6 +1449,12 @@ impl BaseRelation for Relation {
                 }
             }
             Bigquery => {
+                if remote_state_value.is_none() {
+                    return Err(minijinja::Error::new(
+                        minijinja::ErrorKind::InvalidArgument,
+                        "remote_state cannot be None",
+                    ));
+                }
                 let current_state = remote_state_value
                     .as_object()
                     .ok_or_else(|| {
@@ -1185,15 +1473,14 @@ impl BaseRelation for Relation {
 
                 // TODO(serramatutu): minijinja_value_to_typed_struct does not work with
                 // references, so we have to clone the value here...
-                let local_config = minijinja_value_to_typed_struct::<InternalDbtNodeWrapper>(
-                    local_config_value.clone(),
-                )
-                .map_err(|e| {
-                    minijinja::Error::new(
-                        minijinja::ErrorKind::SerdeDeserializeError,
-                        format!("Failed to deserialize InternalDbtNodeWrapper: {e}"),
-                    )
-                })?;
+                let local_config =
+                    minijinja_value_to_typed_struct::<InternalDbtNodeWrapper>(local_config_value)
+                        .map_err(|e| {
+                        minijinja::Error::new(
+                            minijinja::ErrorKind::SerdeDeserializeError,
+                            format!("Failed to deserialize InternalDbtNodeWrapper: {e}"),
+                        )
+                    })?;
                 let local_config = match local_config {
                     InternalDbtNodeWrapper::Model(model) => model,
                     _ => {
@@ -1401,7 +1688,10 @@ mod tests {
                 sample: None,
             };
             let result = filter_relation().render_with_run_filter(&run_filter, &None);
-            assert_eq!(result, "(select * from my_db.my_schema.my_table limit 0)");
+            assert_eq!(
+                result,
+                "(select * from my_db.my_schema.my_table where false limit 0)"
+            );
         }
 
         #[test]
@@ -1557,7 +1847,7 @@ mod tests {
             let result = filter_relation().render_with_run_filter(&run_filter, &event_time);
             assert_eq!(
                 result,
-                "(select * from (select * from my_db.my_schema.my_table limit 0) where created_at >= '2024-07-01T00:00:00+00:00' and created_at < '2024-07-08T18:00:00+00:00')"
+                "(select * from (select * from my_db.my_schema.my_table where false limit 0) where created_at >= '2024-07-01T00:00:00+00:00' and created_at < '2024-07-08T18:00:00+00:00')"
             );
         }
 
@@ -1605,7 +1895,7 @@ mod tests {
             let rendered = format!("{}", Value::from_object(filtered));
             assert_eq!(
                 rendered,
-                "(select * from (select * from my_db.my_schema.my_table limit 0) where event_date >= '2026-07-13T00:00:00+00:00' and event_date < '2026-07-14T00:00:00+00:00')"
+                "(select * from (select * from my_db.my_schema.my_table where false limit 0) where event_date >= '2026-07-13T00:00:00+00:00' and event_date < '2026-07-14T00:00:00+00:00')"
             );
         }
     }
@@ -1681,6 +1971,35 @@ mod tests {
             assert_eq!(
                 relation.inner().render_self_as_str(),
                 "`dbt`.`dbt_staging`.`stg_pinterest_campaign_int`"
+            );
+        }
+
+        #[test]
+        fn test_render_escapes_adapter_identifier_delimiters() {
+            let relation = |adapter_type, identifier: &str| {
+                Relation::new(adapter_type, None, None, Some(identifier.to_string()))
+                    .with_quoting(ResolvedQuoting::trues())
+            };
+
+            assert_eq!(
+                relation(AdapterType::Snowflake, "a\"b").render_self_as_str(),
+                r#""a""b""#
+            );
+            assert_eq!(
+                relation(AdapterType::Databricks, "a`b").render_self_as_str(),
+                "`a``b`"
+            );
+            assert_eq!(
+                relation(AdapterType::Bigquery, r"a\`b").render_self_as_str(),
+                r"`a\\\`b`"
+            );
+            assert_eq!(
+                relation(AdapterType::ClickHouse, r"a\`b").render_self_as_str(),
+                r"`a\\``b`"
+            );
+            assert_eq!(
+                relation(AdapterType::ClickHouse, "trail\\").render_self_as_str(),
+                r"`trail\\`"
             );
         }
 
@@ -1892,6 +2211,27 @@ mod tests {
             );
         }
 
+        #[test]
+        fn test_information_schema_escapes_project_and_dataset() {
+            let relation = Relation::new(
+                AdapterType::Bigquery,
+                "project`; SELECT 1; --".to_string(),
+                "dataset`; SELECT 2; --".to_string(),
+                "table".to_string(),
+            )
+            .with_relation_type(RelationType::Table)
+            .with_quoting(DEFAULT_RESOLVED_QUOTING);
+
+            let rendered = relation
+                .information_schema("TABLES")
+                .unwrap()
+                .render_self_as_str();
+            assert_eq!(
+                rendered,
+                r"`project\`; SELECT 1; --`.`dataset\`; SELECT 2; --`.INFORMATION_SCHEMA.TABLES"
+            );
+        }
+
         /// See: https://github.com/dbt-labs/dbt-core/issues/15157
         #[test]
         fn test_information_schema_with_region_as_database_regression_15157() {
@@ -1953,6 +2293,7 @@ mod tests {
 
     mod snowflake {
         use super::*;
+        use minijinja::value::Kwargs;
 
         #[test]
         fn test_create_via_static_base_relation() {
@@ -1974,6 +2315,433 @@ mod tests {
             let relation = relation.downcast_object::<RelationObject>().unwrap();
             assert_eq!(relation.inner().render_self_as_str(), r#""d"."s"."i""#);
             assert_eq!(relation.relation_type().unwrap(), RelationType::Table);
+        }
+
+        fn create(adapter_type: AdapterType, args: &[Value]) -> Result<Relation, minijinja::Error> {
+            RelationStatic {
+                adapter_type,
+                quoting: DEFAULT_RESOLVED_QUOTING,
+            }
+            .create(args)
+            .map(|v| {
+                v.downcast_object::<RelationObject>()
+                    .unwrap()
+                    .inner()
+                    .as_any()
+                    .downcast_ref::<Relation>()
+                    .unwrap()
+                    .clone()
+            })
+        }
+
+        #[test]
+        fn test_create_kwargs_keep_snowflake_semantics() {
+            let relation = create(
+                AdapterType::Snowflake,
+                &[Value::from(Kwargs::from_iter([
+                    ("database", Value::from("d")),
+                    ("schema", Value::from("s")),
+                    ("identifier", Value::from("i")),
+                    ("type", Value::from("view")),
+                    (
+                        "quote_policy",
+                        Value::from(BTreeMap::from([
+                            ("database", false),
+                            ("identifier", true),
+                            ("schema", true),
+                        ])),
+                    ),
+                    ("table_format", Value::from("ICEBERG")),
+                    // Snowflake ignores kwargs it does not know, `temporary` included
+                    ("temporary", Value::from(true)),
+                    ("something_else", Value::from(1)),
+                ]))],
+            )
+            .unwrap();
+            assert_eq!(relation.render_self_as_str(), r#"d."s"."i""#);
+            assert_eq!(relation.relation_type, Some(RelationType::View));
+            assert_eq!(relation.table_format, TableFormat::Iceberg);
+            assert!(!relation.temporary);
+        }
+
+        #[test]
+        fn test_create_positional_table_format_is_sixth() {
+            let relation = create(
+                AdapterType::Snowflake,
+                &[
+                    Value::from("d"),
+                    Value::from("s"),
+                    Value::from("i"),
+                    Value::from("table"),
+                    Value::from("{database: true, identifier: true, schema: true}"),
+                    Value::from("iceberg"),
+                ],
+            )
+            .unwrap();
+            assert_eq!(relation.table_format, TableFormat::Iceberg);
+            assert!(!relation.temporary);
+        }
+
+        #[test]
+        fn test_create_type_none_and_default_quoting() {
+            let relation = create(
+                AdapterType::Snowflake,
+                &[Value::from(Kwargs::from_iter([
+                    ("database", Value::from("d")),
+                    ("schema", Value::from("s")),
+                    ("identifier", Value::from("i")),
+                    ("type", Value::from(())),
+                ]))],
+            )
+            .unwrap();
+            assert_eq!(relation.relation_type, None);
+            assert_eq!(relation.table_format, TableFormat::Default);
+            assert_eq!(relation.render_self_as_str(), r#""d"."s"."i""#);
+        }
+
+        #[test]
+        fn test_create_generic_adapter_rejects_unknown_kwargs_and_honors_temporary() {
+            let err = create(
+                AdapterType::Postgres,
+                &[Value::from(Kwargs::from_iter([
+                    ("schema", Value::from("s")),
+                    ("identifier", Value::from("i")),
+                    ("table_format", Value::from("iceberg")),
+                ]))],
+            )
+            .unwrap_err();
+            assert!(err.to_string().contains("table_format"), "got: {err}");
+
+            let relation = create(
+                AdapterType::Postgres,
+                &[
+                    Value::from("d"),
+                    Value::from("s"),
+                    Value::from("i"),
+                    Value::from("table"),
+                    Value::from("{database: true, identifier: true, schema: true}"),
+                    Value::from(true),
+                ],
+            )
+            .unwrap();
+            assert!(relation.temporary);
+            assert_eq!(relation.relation_type, Some(RelationType::Table));
+        }
+
+        #[test]
+        fn test_create_clickhouse_catalog_kwargs() {
+            let relation = create(
+                AdapterType::ClickHouse,
+                &[Value::from(Kwargs::from_iter([
+                    ("schema", Value::from("s")),
+                    ("identifier", Value::from("i")),
+                    ("type", Value::from("table")),
+                    ("can_exchange", Value::from(true)),
+                    ("can_on_cluster", Value::from(false)),
+                ]))],
+            )
+            .unwrap();
+            assert!(relation.can_exchange);
+            assert_eq!(relation.can_on_cluster, Some(false));
+
+            let err = create(
+                AdapterType::ClickHouse,
+                &[Value::from(Kwargs::from_iter([
+                    ("schema", Value::from("s")),
+                    ("identifier", Value::from("i")),
+                    ("table_format", Value::from("iceberg")),
+                ]))],
+            )
+            .unwrap_err();
+            assert!(err.to_string().contains("table_format"), "got: {err}");
+        }
+
+        fn snowflake_relation(relation_type: RelationType, table_format: TableFormat) -> Relation {
+            Relation::new(
+                AdapterType::Snowflake,
+                "d".to_string(),
+                "s".to_string(),
+                "i".to_string(),
+            )
+            .with_relation_type(Some(relation_type))
+            .with_table_format(table_format)
+        }
+
+        fn drop_decision(old: RelationType, target: RelationType) -> bool {
+            drop_decision_with_formats((old, TableFormat::Default), (target, TableFormat::Default))
+        }
+
+        fn drop_decision_with_formats(
+            old: (RelationType, TableFormat),
+            target: (RelationType, TableFormat),
+        ) -> bool {
+            let old_relation: Arc<dyn BaseRelation> = Arc::new(snowflake_relation(old.0, old.1));
+            snowflake_relation(target.0, target.1)
+                .needs_to_drop(Some(old_relation))
+                .unwrap()
+        }
+
+        #[test]
+        fn needs_to_drop_matrix_interactive() {
+            use RelationType::*;
+
+            assert!(!drop_decision(InteractiveTable, InteractiveTable));
+            assert!(drop_decision(InteractiveTable, Table));
+            // Snowflake rejects `CREATE OR REPLACE INTERACTIVE TABLE` over a plain `TABLE`
+            // with `001998`, and the two share a table format, so the format comparison alone
+            // would wrongly report that no drop is needed.
+            assert!(drop_decision(Table, InteractiveTable));
+            assert!(drop_decision(InteractiveTable, DynamicTable));
+            assert!(drop_decision(DynamicTable, InteractiveTable));
+            assert!(drop_decision(View, InteractiveTable));
+            assert!(drop_decision(InteractiveTable, View));
+            assert!(!drop_decision(Table, Table));
+        }
+
+        /// Pins the decisions that predate interactive tables, none of which this matrix may
+        /// change.
+        #[test]
+        fn needs_to_drop_preserves_non_interactive_decisions() {
+            use RelationType::*;
+
+            assert!(drop_decision(DynamicTable, DynamicTable));
+            assert!(drop_decision(View, Table));
+            assert!(drop_decision(View, View));
+            assert!(drop_decision(DynamicTable, Table));
+            assert!(!drop_decision(Table, View));
+            assert!(!drop_decision(Table, DynamicTable));
+            // table format change in either direction still drops
+            assert!(drop_decision_with_formats(
+                (Table, TableFormat::Default),
+                (Table, TableFormat::Iceberg)
+            ));
+            assert!(drop_decision_with_formats(
+                (Table, TableFormat::Iceberg),
+                (Table, TableFormat::Default)
+            ));
+        }
+
+        #[test]
+        fn needs_to_drop_without_old_relation_never_drops() {
+            assert!(
+                !snowflake_relation(RelationType::InteractiveTable, TableFormat::Default)
+                    .needs_to_drop(None)
+                    .unwrap()
+            );
+        }
+
+        #[test]
+        fn interactive_table_can_be_renamed_and_replaced() {
+            let interactive =
+                snowflake_relation(RelationType::InteractiveTable, TableFormat::Default);
+            assert!(interactive.can_be_renamed());
+            assert!(interactive.can_be_replaced());
+
+            let iceberg = snowflake_relation(RelationType::InteractiveTable, TableFormat::Iceberg);
+            assert!(!iceberg.can_be_renamed());
+            assert!(iceberg.can_be_replaced());
+        }
+
+        #[test]
+        fn quote_preserves_table_format() {
+            let iceberg = snowflake_relation(RelationType::Table, TableFormat::Iceberg);
+            let quoted = iceberg.quote(Some(true), Some(false), Some(true)).unwrap();
+            assert!(quoted.is_iceberg_format());
+            assert_eq!(quoted.quote_policy(), Policy::new(true, false, true));
+        }
+
+        #[test]
+        fn incorporate_preserves_table_format() {
+            // `incorporate` (e.g. `target_relation.incorporate(type='table')` in the
+            // incremental materialization) rebuilds the relation via `create_relation`,
+            // which used to default `table_format` back to `Default` and silently
+            // turn Iceberg models into non-Iceberg ones for anything computed from the
+            // incorporated relation, e.g. `persist_docs`' `alter_relation_comment`
+            // (fs#14268).
+            let iceberg: Arc<dyn BaseRelation> = Arc::new(snowflake_relation(
+                RelationType::Table,
+                TableFormat::Iceberg,
+            ));
+            let incorporated = iceberg
+                .incorporate(None, Some(RelationType::Table), None)
+                .unwrap();
+            assert!(incorporated.is_iceberg_format());
+        }
+    }
+
+    mod snowflake_interactive_target_lag {
+        use super::*;
+        use crate::relation::config_v2::{ComponentConfigChange, RelationComponentConfigChangeSet};
+        use crate::relation::snowflake::config::relation_types::interactive_table;
+        use crate::relation::snowflake::config::test_helpers::{
+            TestDynamicTableConfig, TestRemoteState, make_local_config,
+            make_remote_interactive_state, make_remote_state,
+        };
+        use dbt_agate::AgateTable;
+        use minijinja::value::ValueMap;
+
+        fn states(
+            local_target_lag: Option<&'static str>,
+            remote_target_lag: Option<&str>,
+        ) -> (RelationConfig, RelationConfig) {
+            let loader = interactive_table::new_loader();
+            let local = make_local_config(TestDynamicTableConfig {
+                target_lag: local_target_lag,
+                snowflake_warehouse: local_target_lag.map(|_| "WH"),
+                ..Default::default()
+            });
+            let remote = make_remote_interactive_state(TestRemoteState {
+                target_lag: remote_target_lag.map(|s| s.to_owned()),
+                refresh_warehouse: remote_target_lag.map(|_| "WH".to_owned()),
+                ..Default::default()
+            });
+            (
+                loader.from_local_config(&local).unwrap(),
+                loader.from_remote_state(&remote).unwrap(),
+            )
+        }
+
+        /// A static interactive table gaining a `target_lag` has to be rebuilt: Snowflake
+        /// rejects the in-place `ALTER ... SET TARGET_LAG` with `001420`.
+        #[test]
+        fn target_lag_added_forces_full_refresh_at_the_changeset_layer() {
+            let (desired, current) = states(Some("1 hour"), None);
+
+            let changeset = RelationConfig::diff(&desired, &current);
+            assert!(!changeset.requires_full_refresh());
+
+            assert!(target_lag_newly_set(&desired, &current));
+            assert!(changeset.forcing_full_refresh().requires_full_refresh());
+        }
+
+        #[test]
+        fn target_lag_value_change_is_not_newly_set() {
+            let (desired, current) = states(Some("2 hours"), Some("1 hour"));
+            assert!(!target_lag_newly_set(&desired, &current));
+            assert!(!RelationConfig::diff(&desired, &current).requires_full_refresh());
+        }
+
+        #[test]
+        fn target_lag_unchanged_is_not_newly_set() {
+            let (desired, current) = states(Some("1 hour"), Some("1 hour"));
+            assert!(!target_lag_newly_set(&desired, &current));
+        }
+
+        #[test]
+        fn target_lag_removed_is_not_newly_set() {
+            let (desired, current) = states(None, Some("1 hour"));
+            assert!(!target_lag_newly_set(&desired, &current));
+            assert!(RelationConfig::diff(&desired, &current).requires_full_refresh());
+        }
+
+        #[test]
+        fn both_sides_static_is_not_newly_set() {
+            let (desired, current) = states(None, None);
+            assert!(!target_lag_newly_set(&desired, &current));
+        }
+
+        #[test]
+        fn config_relation_type_follows_the_materialization() {
+            let mut model = make_local_config(TestDynamicTableConfig::default());
+
+            assert_eq!(model.materialized(), DbtMaterialization::DynamicTable);
+            assert_eq!(
+                SnowflakeConfigRelationType::of(&model),
+                SnowflakeConfigRelationType::DynamicTable
+            );
+
+            model.__base_attr__.materialized = DbtMaterialization::InteractiveTable;
+            assert_eq!(
+                SnowflakeConfigRelationType::of(&model),
+                SnowflakeConfigRelationType::InteractiveTable
+            );
+        }
+
+        #[test]
+        fn describe_result_keys_match_the_describe_methods() {
+            assert_eq!(
+                SnowflakeConfigRelationType::DynamicTable.describe_result_key(),
+                DYNAMIC_TABLE_KEY
+            );
+            assert_eq!(
+                SnowflakeConfigRelationType::InteractiveTable.describe_result_key(),
+                INTERACTIVE_TABLE_KEY
+            );
+        }
+
+        /// `minijinja_value_to_typed_struct` round-trips a serialized `DbtModel` through YAML and
+        /// drops `config`, so the Jinja entry point can't be driven from a Rust-level `Value`.
+        #[test]
+        fn interactive_table_config_changeset_uses_the_interactive_loader_and_forces_refresh() {
+            let mut local_either_loader_can_read = make_local_config(TestDynamicTableConfig {
+                target_lag: Some("1 hour"),
+                snowflake_warehouse: Some("WH"),
+                refresh_mode: Some("FULL"),
+                ..Default::default()
+            });
+            local_either_loader_can_read.__base_attr__.materialized =
+                DbtMaterialization::InteractiveTable;
+
+            let batch_either_loader_can_read = make_remote_state(TestRemoteState {
+                target_lag: Some("1 hour".to_owned()),
+                refresh_warehouse: Some("WH".to_owned()),
+                ..Default::default()
+            })
+            .record_batch;
+            let relation_results_value_either_loader_can_read = Value::from(ValueMap::from([(
+                Value::from(INTERACTIVE_TABLE_KEY),
+                Value::from_object(AgateTable::from_record_batch(batch_either_loader_can_read)),
+            )]));
+
+            let result_either_loader_can_read = dynamic_table_config_changeset_from_local_config(
+                &local_either_loader_can_read,
+                &relation_results_value_either_loader_can_read,
+            )
+            .expect("both the interactive and the dynamic loader can read this batch cleanly");
+            let changeset_either_loader_can_read = result_either_loader_can_read
+                .downcast_object::<RelationComponentConfigChangeSet>()
+                .expect(
+                    "snowflake_warehouse differs between the desired \"WH\" and the unset \
+                     remote reading, which always produces a diff",
+                );
+            assert!(
+                matches!(
+                    changeset_either_loader_can_read.get(components::refresh_mode::TYPE_NAME),
+                    ComponentConfigChange::None
+                ),
+                "refresh_mode is a dynamic-table-only component; it must never appear in an \
+                 interactive-table changeset. If this fails, the interactive-table branch of \
+                 `SnowflakeConfigRelationType::loader()` is selecting the dynamic loader."
+            );
+
+            let mut local = make_local_config(TestDynamicTableConfig {
+                target_lag: Some("1 hour"),
+                snowflake_warehouse: Some("WH"),
+                ..Default::default()
+            });
+            local.__base_attr__.materialized = DbtMaterialization::InteractiveTable;
+
+            // An 8-column `SHOW INTERACTIVE TABLES` batch, with no `target_lag` yet — the
+            // static -> dynamic transition this test is pinning.
+            let batch = make_remote_interactive_state(TestRemoteState::default()).record_batch;
+            let relation_results_value = Value::from(ValueMap::from([(
+                Value::from(INTERACTIVE_TABLE_KEY),
+                Value::from_object(AgateTable::from_record_batch(batch)),
+            )]));
+
+            let result = dynamic_table_config_changeset_from_local_config(
+                &local,
+                &relation_results_value,
+            )
+            .expect(
+                "the interactive loader must load an 8-column SHOW INTERACTIVE TABLES batch \
+                 cleanly; a wrong loader selection here reads columns the batch doesn't have",
+            );
+            let changeset = result
+                .downcast_object::<RelationComponentConfigChangeSet>()
+                .expect("target_lag going from None to Some always produces a diff");
+
+            assert!(changeset.requires_full_refresh());
         }
     }
 

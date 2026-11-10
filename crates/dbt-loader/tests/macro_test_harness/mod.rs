@@ -48,6 +48,7 @@ use std::sync::{Arc, Mutex};
 use dbt_adapter::Adapter;
 use dbt_adapter::relation::{RelationObject, create_relation};
 use dbt_adapter::sql_types::DefaultTypeOps;
+use dbt_adapter::stmt_splitter::{DefaultStmtSplitter, StmtSplitter};
 use dbt_adapter_core::AdapterType;
 use dbt_common::FsResult;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
@@ -193,10 +194,13 @@ pub fn assert_executed_contains(mock: &MockJinjaObject, substring: &str) {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-/// Resolve and load all internal macros for an adapter type.
-fn load_all_macros_for(adapter_type: AdapterType) -> MacroUnitsWrapper {
+/// Resolve and load all internal macros for a set of adapter types.
+///
+/// The union over each adapter's inheritance chain, matching what a run with a
+/// multi-adapter target loads.
+fn load_all_macros_for(adapter_types: &[AdapterType]) -> MacroUnitsWrapper {
     let synthetic_root = Path::new("/tmp/synthetic");
-    let packages = construct_internal_packages(adapter_type, synthetic_root)
+    let packages = construct_internal_packages(adapter_types.iter().copied(), synthetic_root)
         .expect("construct_internal_packages");
 
     let mut all_macros = BTreeMap::new();
@@ -220,6 +224,7 @@ pub struct MacroTestHarness {
     root_package: String,
     env: JinjaEnv,
     mock: Arc<MockJinjaObject>,
+    store_result_calls: Arc<Mutex<Vec<String>>>,
 }
 
 impl MacroTestHarness {
@@ -227,6 +232,7 @@ impl MacroTestHarness {
     pub fn for_adapter(adapter_type: AdapterType) -> MacroTestHarnessBuilder {
         MacroTestHarnessBuilder {
             adapter_type,
+            extra_adapters: vec![],
             root_package: "test_project".to_string(),
             macros: MacroUnitsWrapper::new(BTreeMap::new()),
             load_all: false,
@@ -242,9 +248,37 @@ impl MacroTestHarness {
         self.env.render_str(template, ctx, &[])
     }
 
+    /// Render as a node that selected `adapter_type` with `+adapter`.
+    ///
+    /// Injects `dialect` into the render context, which is exactly what
+    /// `compile_node_context` does for a node with a non-default `+adapter`.
+    /// `resolve_dialect` checks the context frames before the environment
+    /// global, so this selects that adapter's macro namespace and dispatch
+    /// prefixes for this render only.
+    pub fn render_for(
+        &self,
+        adapter_type: AdapterType,
+        template: &str,
+        ctx: BTreeMap<String, Value>,
+    ) -> FsResult<String> {
+        let mut ctx = ctx;
+        ctx.insert(
+            minijinja::constants::DIALECT.to_string(),
+            // `as_ref()`, not `to_string()`: the namespace is keyed with `as_ref()`.
+            Value::from(adapter_type.as_ref()),
+        );
+        self.env.render_str(template, ctx, &[])
+    }
+
     /// Access the mock adapter.
     pub fn mock(&self) -> &Arc<MockJinjaObject> {
         &self.mock
+    }
+
+    /// Names passed to `store_result(name, ...)`, in call order. Only populated when
+    /// [`MacroTestHarnessBuilder::with_stub_functions`] registered the stub that records them.
+    pub fn store_result_calls(&self) -> Vec<String> {
+        self.store_result_calls.lock().unwrap().clone()
     }
 
     /// Create a relation appropriate for this adapter's type.
@@ -409,6 +443,10 @@ impl MaterializationContextBuilder {
 /// Builder for [`MacroTestHarness`].
 pub struct MacroTestHarnessBuilder {
     adapter_type: AdapterType,
+    /// Adapter types this environment serves beyond `adapter_type`, as a
+    /// multi-adapter target does. Their internal packages are loaded and each
+    /// gets its own macro namespace.
+    extra_adapters: Vec<AdapterType>,
     root_package: String,
     macros: MacroUnitsWrapper,
     load_all: bool,
@@ -458,6 +496,21 @@ impl MacroTestHarnessBuilder {
         self
     }
 
+    /// Declare additional adapters this environment serves, as a target with an
+    /// adapter list does.
+    ///
+    /// Without this, a harness built with `for_adapter(AdapterType::LakeCompute)` alone
+    /// measures lake-compute-as-sole-adapter and proves nothing about a mixed graph.
+    /// Combine with [`MacroTestHarness::render_for`] to render a node against
+    /// one of the declared adapters.
+    pub fn with_extra_adapters(
+        mut self,
+        adapter_types: impl IntoIterator<Item = AdapterType>,
+    ) -> Self {
+        self.extra_adapters.extend(adapter_types);
+        self
+    }
+
     /// Add extra thread-local dependency package names for dispatch resolution.
     ///
     /// The adapter's internal packages (`dbt`, `dbt_<adapter>`, etc.) are
@@ -467,7 +520,7 @@ impl MacroTestHarnessBuilder {
         self
     }
 
-    /// Register Jinja stub functions (`write`, `log`, `store_result`)
+    /// Register Jinja stub functions (`write`, `log`, `store_result`, `load_result`)
     /// typically needed by materialization macros.
     pub fn with_stub_functions(mut self) -> Self {
         self.stub_functions = true;
@@ -491,13 +544,27 @@ impl MacroTestHarnessBuilder {
 
     /// Build the harness. Fails if macro registration encounters errors.
     pub fn build(self) -> FsResult<MacroTestHarness> {
-        let internal_deps =
-            minijinja::dispatch_object::get_internal_packages(self.adapter_type.as_ref());
+        // The adapter's own type first, then any extra ones, deduped -- the same
+        // order a run derives from `DbtProfile::adapter_types()`.
+        let mut adapter_types = vec![self.adapter_type];
+        for extra in &self.extra_adapters {
+            if !adapter_types.contains(extra) {
+                adapter_types.push(*extra);
+            }
+        }
+        let dialects: Vec<String> = adapter_types
+            .iter()
+            .map(|t| t.as_ref().to_string())
+            .collect();
+
+        let internal_deps = minijinja::dispatch_object::get_internal_packages_for(
+            dialects.iter().map(String::as_str),
+        );
         let all_deps: Vec<String> = internal_deps.into_iter().chain(self.extra_deps).collect();
         set_thread_local_dependencies(all_deps);
 
         let mut macros = if self.load_all {
-            load_all_macros_for(self.adapter_type)
+            load_all_macros_for(&adapter_types)
         } else {
             MacroUnitsWrapper::new(BTreeMap::new())
         };
@@ -518,19 +585,36 @@ impl MacroTestHarnessBuilder {
         let builder = JinjaEnvBuilder::new()
             .with_adapter(adapter)
             .with_root_package(self.root_package.clone())
+            // Skip the adapter's own dialect: the builder always includes it.
+            .with_extra_dialects(dialects.iter().skip(1).cloned().collect())
             .try_with_macros(macros)?;
 
         let mut env = builder.build();
+
+        let store_result_calls: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
 
         if self.stub_functions {
             env.env
                 .add_function("write", |_val: Value| Ok(Value::UNDEFINED));
             env.env
                 .add_function("log", |_msg: Value| Ok(Value::UNDEFINED));
+            let recorded_store_results = store_result_calls.clone();
             env.env.add_function(
                 "store_result",
-                |_name: Value, _kwargs: minijinja::value::Kwargs| Ok(Value::UNDEFINED),
+                move |name: Value, _kwargs: minijinja::value::Kwargs| {
+                    recorded_store_results
+                        .lock()
+                        .unwrap()
+                        .push(name.to_string());
+                    Ok(Value::UNDEFINED)
+                },
             );
+            env.env.add_function("load_result", |_name: Value| {
+                Ok(Value::from_serialize(BTreeMap::from([(
+                    "table",
+                    Vec::<Vec<Value>>::new(),
+                )])))
+            });
         }
 
         for (key, value) in self.globals {
@@ -540,6 +624,17 @@ impl MacroTestHarnessBuilder {
         let mock = default_mock_adapter();
         let adapter_type_str = self.adapter_type.as_ref().to_string();
         mock.on("type", move |_| Ok(Value::from(adapter_type_str.clone())));
+        // Stands in for `Adapter::strip_trailing_statement_terminator`, running
+        // the same dialect-aware normalization so macros that wrap a node body
+        // see production behavior. The binding itself is covered by
+        // `dbt-adapter`'s own tests, not here.
+        let adapter_type = self.adapter_type;
+        mock.on("strip_trailing_statement_terminator", move |args| {
+            let sql = args.first().and_then(|v| v.as_str()).unwrap_or("");
+            Ok(Value::from(
+                DefaultStmtSplitter.strip_trailing_statement_terminator(sql, adapter_type),
+            ))
+        });
         if !self.behavior_flags.is_empty() {
             mock.set_attr("behavior", Value::from_serialize(&self.behavior_flags));
         }
@@ -551,6 +646,7 @@ impl MacroTestHarnessBuilder {
             root_package: self.root_package,
             env,
             mock,
+            store_result_calls,
         })
     }
 }

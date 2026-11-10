@@ -1,6 +1,6 @@
 //! Tasks for io.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::fs;
 use std::sync::Arc;
 use std::{
@@ -183,10 +183,12 @@ impl Task for RmDirTask {
     }
 }
 
-/// A row in the SQLite recordings.db
+/// A row in the SQLite recordings.db:
+/// `(unique_id, record_type, sql, data_base64, error, options_json)`
 type RecordingRow = (
     String,
     String,
+    Option<String>,
     Option<String>,
     Option<String>,
     Option<String>,
@@ -313,6 +315,18 @@ pub fn rebuild_string_like_arrays(
 /// leaving Arrow data (data_base64) untouched. Use this for warehouse-name
 /// masking: replacing warehouse names in Arrow data would corrupt replay
 /// behaviour by making configuration-change detection see phantom diffs.
+/// `options_json` if this recordings.db has the column, else a NULL
+/// placeholder. Recordings committed before statement options were captured
+/// don't have it, and neither the dump nor the rewrite below may add it on a
+/// read: an `ALTER TABLE` would modify a committed fixture just by running the
+/// test suite against it.
+fn options_column_expr(conn: &Connection) -> TestResult<&'static str> {
+    let present = conn
+        .prepare("SELECT 1 FROM pragma_table_info('recordings') WHERE name = 'options_json'")?
+        .exists([])?;
+    Ok(if present { "options_json" } else { "NULL" })
+}
+
 fn update_sqlite_recordings_sql_only(
     db_path: &Path,
     replace_fn: &dyn Fn(&str) -> String,
@@ -368,8 +382,10 @@ fn update_sqlite_recordings(db_path: &Path, replace_fn: &dyn Fn(&str) -> String)
     }
 
     // Get all recordings
-    let mut stmt =
-        conn.prepare("SELECT unique_id, record_type, sql, data_base64, error FROM recordings")?;
+    let mut stmt = conn.prepare(&format!(
+        "SELECT unique_id, record_type, sql, data_base64, error, {options} FROM recordings",
+        options = options_column_expr(&conn)?
+    ))?;
     let recordings: Vec<RecordingRow> = stmt
         .query_map([], |row| {
             let unique_id: String = row.get(0)?;
@@ -377,12 +393,20 @@ fn update_sqlite_recordings(db_path: &Path, replace_fn: &dyn Fn(&str) -> String)
             let sql: Option<String> = row.get(2)?;
             let data_base64: Option<String> = row.get(3)?;
             let error: Option<String> = row.get(4)?;
-            Ok((unique_id, record_type, sql, data_base64, error))
+            let options_json: Option<String> = row.get(5)?;
+            Ok((
+                unique_id,
+                record_type,
+                sql,
+                data_base64,
+                error,
+                options_json,
+            ))
         })?
         .collect::<Result<Vec<_>, _>>()?;
 
     // Update unique_id, SQL, error, and data fields
-    for (unique_id, record_type, sql, data_base64, error) in recordings {
+    for (unique_id, record_type, sql, data_base64, error, options_json) in recordings {
         let mut new_unique_id = replace_fn(&unique_id);
         // `random_schema` is `prefix___<micros>___`; sources named `{schema}_sources`
         // leave `____` between the stable prefix and `_sources` once the micros
@@ -449,19 +473,26 @@ fn update_sqlite_recordings(db_path: &Path, replace_fn: &dyn Fn(&str) -> String)
 
         // Primary key includes unique_id; rewrite via delete+insert when it changes.
         if new_unique_id != unique_id {
+            // The insert below names `options_json`, so this recordings.db needs
+            // the column. Safe here: this branch is already rewriting the file.
+            if options_column_expr(&conn)? == "NULL" {
+                conn.execute("ALTER TABLE recordings ADD COLUMN options_json TEXT", [])?;
+            }
             conn.execute(
                 "DELETE FROM recordings WHERE unique_id = ?1 AND record_type = ?2",
                 params![unique_id, record_type],
             )?;
             conn.execute(
-                "INSERT INTO recordings (unique_id, record_type, sql, data_base64, error)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                "INSERT INTO recordings
+                    (unique_id, record_type, sql, data_base64, error, options_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 params![
                     new_unique_id,
                     record_type,
                     new_sql,
                     new_data_base64,
-                    new_error
+                    new_error,
+                    options_json
                 ],
             )?;
         } else {
@@ -546,6 +577,14 @@ impl Task for SedTask {
                     |content: &str| -> String { canonicalize_dbt_tmp_identifiers(content) };
                 update_sqlite_recordings_sql_only(path, &tmp_name_replace)?;
 
+                let re_dbt_version = Regex::new(r#""dbt_version"\s*:\s*"[^"]*""#).unwrap();
+                let dbt_version_replace = |content: &str| -> String {
+                    re_dbt_version
+                        .replace_all(content, r#""dbt_version": "DBT_VERSION""#)
+                        .to_string()
+                };
+                update_sqlite_recordings_sql_only(path, &dbt_version_replace)?;
+
                 // Apply Time Elapsed regex removal
                 let re_time_elapsed = Regex::new(r"Time Elapsed:.*").unwrap();
                 let time_elapsed_replace = |content: &str| -> String {
@@ -600,6 +639,12 @@ fn dump_sqlite_recordings_to_yaml(db_path: &Path, yaml_path: &Path) -> TestResul
             sql: String,
             #[serde(skip_serializing_if = "Option::is_none")]
             error: Option<String>,
+            /// Statement options the driver reported for this execute (e.g.
+            /// dbt-compute's `adbc.dbt.last_warnings`). Dumped so a re-recorded
+            /// fixture's captured options are reviewable in the diff, not just
+            /// buried in the binary `recordings.db`.
+            #[serde(skip_serializing_if = "Option::is_none")]
+            options: Option<BTreeMap<String, String>>,
         },
         GetTableSchema {
             table_name: String,
@@ -629,12 +674,14 @@ fn dump_sqlite_recordings_to_yaml(db_path: &Path, yaml_path: &Path) -> TestResul
         return Ok(());
     }
 
-    // Query all recordings, ordered by unique_id for consistency
-    let mut stmt = conn.prepare(
-        "SELECT unique_id, record_type, sql, data_base64, error FROM recordings ORDER BY unique_id",
-    )?;
+    // Query all recordings; ordered below by (base id, numeric call index)
+    let mut stmt = conn.prepare(&format!(
+        "SELECT unique_id, record_type, sql, data_base64, error, {options}
+         FROM recordings",
+        options = options_column_expr(&conn)?
+    ))?;
 
-    let recordings: Vec<RecordingRow> = stmt
+    let mut recordings: Vec<RecordingRow> = stmt
         .query_map([], |row| {
             Ok((
                 row.get(0)?,
@@ -642,36 +689,34 @@ fn dump_sqlite_recordings_to_yaml(db_path: &Path, yaml_path: &Path) -> TestResul
                 row.get(2)?,
                 row.get(3)?,
                 row.get(4)?,
+                row.get(5)?,
             ))
         })?
         .collect::<Result<Vec<_>, _>>()?;
-
-    // Track sequence numbers per base unique_id
-    let mut sequence_counters = HashMap::new();
+    // A string sort puts "-10" before "-2"; sort the call index as a number.
+    recordings.sort_by_cached_key(|r| split_call_index(&r.0));
 
     // Group operations by base unique_id (using BTreeMap for sorted output)
     let mut operations_by_model = BTreeMap::new();
 
-    for (unique_id, record_type, sql, _, error) in recordings {
-        // Extract base unique_id by removing sequence suffix (e.g., "model.hello_world.hello-0" -> "model.hello_world.hello")
-        let base_unique_id = if let Some(pos) = unique_id.rfind('-') {
-            // Check if what follows the last '-' is a digit (sequence number)
-            debug_assert!(unique_id[(pos + 1)..].chars().all(|c| c.is_ascii_digit()));
-            unique_id[..pos].to_string()
-        } else {
-            unique_id.clone()
-        };
-
-        let sequence = *sequence_counters.entry(base_unique_id.clone()).or_insert(0);
-        sequence_counters.insert(base_unique_id.clone(), sequence + 1);
+    for (unique_id, record_type, sql, _, error, options_json) in recordings {
+        let (base_unique_id, index) = split_call_index(&unique_id);
+        let sequence = index.unwrap_or(0) as usize;
 
         let operation = match record_type.as_str() {
             "execute" => {
                 let sql = sql.unwrap_or_default();
+                let options = options_json
+                    .as_deref()
+                    .and_then(|json| serde_json::from_str(json).ok());
 
                 YamlOperation {
                     sequence,
-                    operation: OperationType::Execute { sql, error },
+                    operation: OperationType::Execute {
+                        sql,
+                        error,
+                        options,
+                    },
                 }
             }
             "get_table_schema" => {
@@ -718,6 +763,17 @@ fn dump_sqlite_recordings_to_yaml(db_path: &Path, yaml_path: &Path) -> TestResul
     stdfs::write(yaml_path, yaml_str)?;
 
     Ok(())
+}
+
+/// "model.p.orders-10" -> ("model.p.orders", Some(10)); ids without a numeric
+/// `-N` suffix -> (id, None).
+fn split_call_index(unique_id: &str) -> (String, Option<u64>) {
+    match unique_id.rsplit_once('-') {
+        Some((base, n)) if !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) => {
+            (base.to_string(), n.parse().ok())
+        }
+        _ => (unique_id.to_string(), None),
+    }
 }
 
 /// Convert inline multiline strings to YAML block scalar format (|-) for better readability
@@ -863,6 +919,58 @@ mod tests {
     use arrow::buffer::OffsetBuffer;
     use arrow::datatypes::{Field, Fields};
     use std::sync::Arc;
+
+    #[test]
+    fn yaml_sidecar_is_in_call_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("recordings.db");
+        let conn = Connection::open(&db).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE recordings (unique_id TEXT NOT NULL, record_type TEXT NOT NULL,
+                 sql TEXT, data_base64 TEXT, error TEXT, options_json TEXT,
+                 PRIMARY KEY (unique_id, record_type))",
+        )
+        .unwrap();
+        for i in 0..12 {
+            conn.execute(
+                "INSERT INTO recordings VALUES (?1, 'execute', ?2, NULL, NULL, NULL)",
+                params![format!("model.p.m-{i}"), format!("select {i}")],
+            )
+            .unwrap();
+        }
+        drop(conn);
+        let yaml = dir.path().join("recordings.yaml");
+        dump_sqlite_recordings_to_yaml(&db, &yaml).unwrap();
+        let text = fs::read_to_string(&yaml).unwrap();
+        let pos: Vec<usize> = (0..12)
+            .map(|i| text.find(&format!("select {i}\n")).unwrap())
+            .collect();
+        assert!(pos.windows(2).all(|w| w[0] < w[1]), "{text}");
+    }
+
+    #[test]
+    #[ignore = "one-off: regenerate committed recordings.yaml"]
+    fn regenerate_committed_yaml_sidecars() {
+        let root = std::process::Command::new("git")
+            .args(["rev-parse", "--show-toplevel"])
+            .output()
+            .unwrap()
+            .stdout;
+        let root = PathBuf::from(String::from_utf8(root).unwrap().trim());
+        let files = std::process::Command::new("git")
+            .current_dir(&root)
+            .args(["ls-files", "*recordings.yaml"])
+            .output()
+            .unwrap()
+            .stdout;
+        for yaml in String::from_utf8(files).unwrap().lines() {
+            let yaml = root.join(yaml);
+            let db = yaml.with_file_name("recordings.db");
+            if db.exists() {
+                dump_sqlite_recordings_to_yaml(&db, &yaml).unwrap();
+            }
+        }
+    }
 
     #[test]
     fn rebuild_rewrites_strings_nested_in_list() {

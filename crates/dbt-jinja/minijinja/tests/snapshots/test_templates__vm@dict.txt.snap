@@ -18,7 +18,7 @@ input_file: fs/sa/crates/dbt-jinja/minijinja/tests/inputs/dict.txt
 {'a': 1, 'b': 2}
 {'x': 1, 'y': 2}
 {'a': 1, 'b': 2, 'c': 3}
-(('depth', 1), ('depth0', 0), ('extra', 2), ('first', True), ('index', 1), ('index0', 0), ('last', True), ('length', 1), ('nextitem', undefined), ('previtem', undefined), ('revindex', 1), ('revindex0', 0))
+[('depth', 1), ('depth0', 0), ('extra', 2), ('first', True), ('index', 1), ('index0', 0), ('last', True), ('length', 1), ('nextitem', undefined), ('previtem', undefined), ('revindex', 1), ('revindex0', 0)]
 {'a': 1, 'b': 2, 'c': 3}
 b
 b

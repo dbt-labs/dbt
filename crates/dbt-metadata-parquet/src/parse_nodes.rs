@@ -1,4 +1,4 @@
-//! Read-only access to `target/metadata/parse/nodes/` parquet files.
+//! Read-only access to `target/private/metadata/parse/nodes/` parquet files.
 //!
 //! Only the fields needed by `dbt agent schema` are read:
 //! `unique_id`, `name`, `resource_type`, `original_path`, `depends_on`.
@@ -64,7 +64,7 @@ fn read_file(path: &std::path::PathBuf) -> Vec<ParseNodeRow> {
     out
 }
 
-/// Read parse-node rows from all epochs under `dir` (e.g. `target/metadata/parse/nodes/`).
+/// Read parse-node rows from all epochs under `dir` (e.g. `target/private/metadata/parse/nodes/`).
 /// Latest-wins per `unique_id` — highest `ingested_at` epoch file wins.
 /// If only one epoch file exists the single-file fast path is taken.
 pub fn read_parse_nodes(dir: &Path) -> Vec<ParseNodeRow> {

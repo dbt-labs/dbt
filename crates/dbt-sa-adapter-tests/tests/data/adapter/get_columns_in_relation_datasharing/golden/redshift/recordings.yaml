@@ -1,0 +1,13 @@
+model.test.model:
+- sequence: 0
+  type: execute
+  sql: DROP SCHEMA IF EXISTS adapters_redshift_get_columns_in_relation_datasharing CASCADE
+- sequence: 1
+  type: execute
+  sql: CREATE SCHEMA adapters_redshift_get_columns_in_relation_datasharing
+- sequence: 2
+  type: execute
+  sql: CREATE TABLE adapters_redshift_get_columns_in_relation_datasharing.c (number_col int, text_col varchar(100), text_col2 varchar(101))
+- sequence: 3
+  type: execute
+  sql: SHOW COLUMNS FROM TABLE "ci"."adapters_redshift_get_columns_in_relation_datasharing"."c"

@@ -1,9 +1,12 @@
 use crate::args::ResolveArgs;
-use crate::dbt_project_config::{ProjectConfigResolver, RootProjectConfigs, init_project_config};
+use crate::dbt_project_config::{
+    ProjectConfigResolver, RootProjectConfigs, disallow_plus_prefix_from_flags, init_project_config,
+};
 use crate::resolve::resolve_utils::build_unrendered_config;
 use crate::utils::{
     extract_resource_config_from_raw_project, get_node_fqn, get_original_file_path, get_unique_id,
 };
+use dbt_adapter_core::AdapterType;
 
 use dbt_common::io_args::{StaticAnalysisKind, StaticAnalysisOffReason};
 use dbt_common::path::DbtPath;
@@ -53,6 +56,7 @@ fn semantic_model_properties_config(model_props: &ModelProperties) -> Option<Sem
 
 #[allow(clippy::too_many_arguments, clippy::expect_fun_call)]
 pub async fn resolve_semantic_models(
+    adapter_type: AdapterType,
     args: &ResolveArgs,
     package: &DbtPackage,
     root_package: &DbtPackage,
@@ -76,13 +80,17 @@ pub async fn resolve_semantic_models(
 
     let dependency_package_name = dependency_package_name_from_ctx(env, base_ctx);
     let is_dependency = dependency_package_name.is_some();
-    let raw_local_project_config =
-        extract_resource_config_from_raw_project(&package.raw_project_yml, "semantic-models");
+    let raw_local_project_config = extract_resource_config_from_raw_project(
+        &package.raw_project_yml,
+        "semantic-models",
+        adapter_type,
+    )?;
     let raw_root_project_cfg = if is_dependency {
         Some(extract_resource_config_from_raw_project(
             &root_package.raw_project_yml,
             "semantic-models",
-        ))
+            adapter_type,
+        )?)
     } else {
         None
     };
@@ -95,8 +103,11 @@ pub async fn resolve_semantic_models(
                 &package.dbt_project.semantic_models,
                 (),
                 dependency_package_name,
+                disallow_plus_prefix_from_flags(root_package.dbt_project.flags.as_ref()),
+                adapter_type,
             )
         },
+        adapter_type,
     )?;
 
     for (model_name, model_props) in typed_models_properties.iter() {
@@ -259,7 +270,8 @@ pub async fn resolve_semantic_models(
             raw_properties_yml_config.as_ref(),
             None,
             false,
-        );
+            adapter_type,
+        )?;
 
         let dbt_semantic_model = DbtSemanticModel {
             __common_attr__: CommonAttributes {
@@ -292,6 +304,11 @@ pub async fn resolve_semantic_models(
                 meta: semantic_model_config.meta.clone().unwrap_or_default(),
             },
             __base_attr__: NodeBaseAttributes {
+                // Not executed against a warehouse; records the target it parsed under.
+                adapter: adapter_type,
+                // This node type has no `+propagate` config; nothing is published.
+                propagate: Vec::new(),
+                effective_propagation_target: None,
                 database: "".to_string(),
                 schema: "".to_string(),
                 alias: "".to_string(),

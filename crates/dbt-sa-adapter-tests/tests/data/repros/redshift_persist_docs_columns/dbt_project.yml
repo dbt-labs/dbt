@@ -1,0 +1,8 @@
+name: 'redshift_persist_docs_bug'
+version: '1.0.0'
+config-version: 2
+
+profile: 'fusion_tests'
+
+model-paths: ['models']
+

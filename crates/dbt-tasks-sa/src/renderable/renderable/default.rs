@@ -1,25 +1,23 @@
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use dbt_common::collections::DashMap;
+use dbt_common::collections::SccHashMap;
 use dbt_common::constants::DBT_EPHEMERAL_DIR_NAME;
-use dbt_common::constants::{RENDERED, RENDERING};
-use dbt_common::serde_utils::convert_yml_to_dash_map;
+use dbt_common::constants::RENDERING;
+use dbt_common::serde_utils::convert_yml_to_scc_map;
 use dbt_common::stats::NodeStatus;
 use dbt_common::tracing::emit::emit_debug_event;
 use dbt_common::{FsResult, MacroSpansOnly, stdfs};
 use dbt_jinja_utils::phases::compile::DependencyValidationConfig;
 use dbt_jinja_utils::utils::{
-    add_task_context, inject_and_persist_ephemeral_models, macro_spans_to_macro_span_vec,
-    render_sql,
+    inject_and_persist_ephemeral_models, macro_spans_to_macro_span_vec, render_sql,
 };
 use dbt_scheduler::instructions::SqlInstruction;
 use dbt_schemas::schemas::common::DbtMaterialization;
 use dbt_schemas::schemas::properties::UnitTestOverrides;
-use dbt_schemas::schemas::{InternalDbtNodeAttributes, IntrospectionKind, NodePathKind};
+use dbt_schemas::schemas::{InternalDbtNodeAttributes, NodePathKind};
 use dbt_tasks_core::context::TaskRunnerCtx;
-use dbt_tasks_core::task::TaskOp;
+use dbt_tasks_core::task::run_blocking_task_operation_with_wait_parents;
 use dbt_telemetry::{CompiledCode, NodeType};
 use minijinja::Value as MinijinjaValue;
 
@@ -33,10 +31,8 @@ pub async fn run_default_render(
     ctx: TaskRunnerCtx,
     result_sender: Option<std::sync::mpsc::SyncSender<TaskResult>>,
     local_exec_unit_test_overrides: Option<UnitTestOverrides>,
+    wait_parents: Option<Vec<tracing::span::Id>>,
 ) -> FsResult<NodeStatus> {
-    let adapter_type = ctx.adapter_type();
-    let max_threads = ctx.dbt_profile().threads;
-    let bypass = bypass_backpressure(node.introspection(), *node.static_analysis_enabled());
     let render_step = Box::new(move || {
         let mut ctx = ctx;
         let res = render_default(&node, &mut ctx, &local_exec_unit_test_overrides);
@@ -48,24 +44,14 @@ pub async fn run_default_render(
             &result_sender,
         )
     });
-    if bypass {
-        TaskOp::Blocking(render_step).run().await?
-    } else {
-        TaskOp::BlockingWithConnection {
-            f: render_step,
-            adapter_type,
-            max_threads,
-        }
-        .run()
-        .await?
-    }
+    run_blocking_task_operation_with_wait_parents(render_step, wait_parents).await?
 }
 
 fn render_default(
     node: &Arc<dyn InternalDbtNodeAttributes>,
     ctx: &mut TaskRunnerCtx,
     local_exec_unit_test_overrides: &Option<UnitTestOverrides>,
-) -> FsResult<(SqlInstruction, Arc<DashMap<String, MinijinjaValue>>)> {
+) -> FsResult<(SqlInstruction, Arc<SccHashMap<String, MinijinjaValue>>)> {
     report_rendering_progress(node, ctx);
 
     if let Some((rendered_sql_maybe_with_cte, macro_spans, reclassify_spans)) = ctx
@@ -73,8 +59,8 @@ fn render_default(
         .compiled_sql_cache
         .try_get_compiled_sql(&ctx.inner.arg.io, node.common())
     {
-        let config_map = Arc::new(convert_yml_to_dash_map(node.serialized_config()));
-        show_rendered_progress(node, ctx, &rendered_sql_maybe_with_cte);
+        let config_map = Arc::new(convert_yml_to_scc_map(node.serialized_config()));
+        emit_compiled_code(node, ctx, &rendered_sql_maybe_with_cte);
         // The cache returns the raw span components; the rendering listener
         // factory rebuilds the `CompiledSpans`.
         let spans = ctx
@@ -95,9 +81,7 @@ fn render_default(
         ));
     }
 
-    let mut base_context = ctx.inner.base_context.clone();
-
-    add_task_context(&mut base_context, node.common(), &ctx.thread_id);
+    let base_context = ctx.run_base_context(node.as_ref())?;
 
     // For snapshots, `path` is the generated SQL artifact used as render input.
     // Display/error locations still use the definition path via `get_node_path`.
@@ -119,13 +103,13 @@ fn render_default(
     }
 
     let (mut compile_context, config_map) = ctx.build_compile_node_context(
-        node.as_ref(),
+        node.clone(),
         &base_context,
         DependencyValidationConfig::new_validated(),
-    );
+    )?;
 
     if let Some(overrides) = local_exec_unit_test_overrides {
-        unit_test::apply_unit_test_overrides(&mut compile_context, overrides, ctx);
+        unit_test::apply_unit_test_overrides(&mut compile_context, overrides, ctx)?;
     }
 
     let render_file_path = node
@@ -170,7 +154,7 @@ fn render_default(
         spans.as_ref(),
     )?;
 
-    show_rendered_progress(node, ctx, &rendered_sql_maybe_with_cte);
+    emit_compiled_code(node, ctx, &rendered_sql_maybe_with_cte);
 
     Ok((
         SqlInstruction {
@@ -203,33 +187,12 @@ fn report_rendering_progress(node: &Arc<dyn InternalDbtNodeAttributes>, ctx: &Ta
     }
 }
 
-fn show_rendered_progress(
+fn emit_compiled_code(
     node: &Arc<dyn InternalDbtNodeAttributes>,
     ctx: &TaskRunnerCtx,
     rendered_sql_maybe_with_cte: &str,
 ) {
     let io = &ctx.inner.arg.io;
-
-    // Keep existing status reporter behavior for models and snapshots.
-    if node.common().unique_id.starts_with("model")
-        || node.common().unique_id.starts_with("snapshot")
-    {
-        if let Some(reporter) = io.status_reporter.as_ref() {
-            let display_path = node
-                .get_node_path(
-                    NodePathKind::Definition,
-                    io.in_dir.as_path(),
-                    io.out_dir.as_path(),
-                )
-                .display()
-                .to_string();
-            reporter.show_progress(
-                RENDERED,
-                display_path.as_ref(),
-                Some(rendered_sql_maybe_with_cte),
-            );
-        }
-    }
 
     // Emit compiled SQL events for all node types. Downstream layers decide filtering.
     let compiled_absolute_path = ctx
@@ -250,31 +213,18 @@ fn show_rendered_progress(
     );
 }
 
-/// Returns `true` when the node can render without acquiring a warehouse
-/// connection, allowing it to bypass connection backpressure.
-///
-/// A node bypasses backpressure when:
-/// - It has no introspection at all, or
-/// - Its introspection is safe and static analysis is enabled (so the warehouse is not needed)
-pub(crate) fn bypass_backpressure(
-    introspection: IntrospectionKind,
-    static_analysis_enabled: bool,
-) -> bool {
-    introspection.is_none() || (introspection.is_safe() && static_analysis_enabled)
-}
-
 /// Render a Python model without Jinja processing
 fn render_python_model(
     node: &Arc<dyn InternalDbtNodeAttributes>,
     ctx: &mut TaskRunnerCtx,
     raw_python: &str,
-    base_context: &BTreeMap<String, MinijinjaValue>,
-) -> FsResult<(SqlInstruction, Arc<DashMap<String, MinijinjaValue>>)> {
+    base_context: &MinijinjaValue,
+) -> FsResult<(SqlInstruction, Arc<SccHashMap<String, MinijinjaValue>>)> {
     let (compile_context, config_map) = ctx.build_compile_node_context(
-        node.as_ref(),
+        node.clone(),
         base_context,
         DependencyValidationConfig::new_validated(),
-    );
+    )?;
 
     let postfix_template = "{{ py_script_postfix(model) }}";
     let rendered_postfix = render_sql(
@@ -286,9 +236,9 @@ fn render_python_model(
     )
     .map_err(|e| *e)?;
 
-    let compiled_python = format!("{}\n{}", raw_python, rendered_postfix);
+    let compiled_python = format!("{}\n\n{}", raw_python.trim_end(), rendered_postfix);
 
-    show_rendered_progress(node, ctx, &compiled_python);
+    emit_compiled_code(node, ctx, &compiled_python);
 
     ctx.inner.compiled_sql_cache.set_compiled_sql(
         &ctx.inner.arg.io,
@@ -310,44 +260,4 @@ fn render_python_model(
         },
         config_map,
     ))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn none_always_bypasses() {
-        assert!(bypass_backpressure(IntrospectionKind::None, false));
-        assert!(bypass_backpressure(IntrospectionKind::None, true));
-    }
-
-    #[test]
-    fn upstream_schema_bypasses_only_with_static_analysis() {
-        assert!(bypass_backpressure(IntrospectionKind::UpstreamSchema, true));
-        assert!(!bypass_backpressure(
-            IntrospectionKind::UpstreamSchema,
-            false
-        ));
-    }
-
-    #[test]
-    fn unsafe_kinds_never_bypass() {
-        for kind in [
-            IntrospectionKind::Execute,
-            IntrospectionKind::This,
-            IntrospectionKind::InternalSchema,
-            IntrospectionKind::ExternalSchema,
-            IntrospectionKind::Unknown,
-        ] {
-            assert!(
-                !bypass_backpressure(kind, false),
-                "{kind:?} with sa=false should not bypass"
-            );
-            assert!(
-                !bypass_backpressure(kind, true),
-                "{kind:?} with sa=true should not bypass"
-            );
-        }
-    }
 }

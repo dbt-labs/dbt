@@ -1,11 +1,14 @@
-use dashmap::DashMap;
-
 use crate::compiler::cfg::CFG;
 use crate::compiler::codegen::{TypeConstraintOperation, Variable};
 use crate::compiler::instructions::Instruction;
 use crate::compiler::tokens::Span;
 use crate::compiler::typecheck::FunctionRegistry;
-use crate::constants::{DBT_AND_ADAPTERS_NAMESPACE, ROOT_PACKAGE_NAME, TARGET_PACKAGE_NAME};
+use crate::constants::{
+    DBT_AND_ADAPTERS_NAMESPACE, DIALECT, ROOT_PACKAGE_NAME, TARGET_PACKAGE_NAME,
+};
+use crate::dispatch_object::dbt_and_adapters_namespace_for;
+use crate::types::adapter::AdapterDispatchFunction;
+use crate::types::builtins::{Reference, TypeRegistry};
 use crate::types::function::{LambdaType, UserDefinedFunctionType};
 use crate::types::list::ListType;
 use crate::types::struct_::StructType;
@@ -24,6 +27,41 @@ use std::rc::Rc;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::{fmt, vec};
+
+/// Adapter methods whose `Parse`-mode implementation independently fabricates
+/// relation/table/column/schema-shaped data (rather than returning a trivial
+/// `bool`/`none` placeholder). Used both at runtime (`dbt-adapter`'s
+/// `Adapter::call_method`, which owns the canonical copy of this exact list)
+/// to taint the returned value, and statically here (`Instruction::CallMethod`
+/// handling, via `on_introspective_call`) to flag which macros transitively
+/// reach an introspective call, so a whole macro call can be treated as an
+/// opaque taint boundary regardless of which internal branch a given render
+/// actually takes. Keep in sync with `dbt_adapter::adapter::INTROSPECTIVE_METHODS`.
+///
+/// TODO: fs#12847 -- this list is matched by method name only, regardless of
+/// receiver (the `adapter` global has no static type today, so there's
+/// nothing to check the receiver against). Most of these names are
+/// dbt/adapter-specific enough that a collision with an unrelated object's
+/// method is very unlikely, but `execute` is generic enough to be a real, if
+/// low-probability, false-positive risk. Revisit scoping this to the actual
+/// `adapter` receiver.
+pub const INTROSPECTIVE_METHOD_NAMES: &[&str] = &[
+    "execute",
+    "get_relation",
+    "get_columns_in_relation",
+    "get_missing_columns",
+    "get_relations_by_pattern",
+    "list_schemas",
+    "get_column_schema_from_query",
+    "get_columns_in_select_sql",
+    "build_catalog_from_show_tables_and_svv_columns",
+    "get_relation_config",
+    "get_relations_without_caching",
+    "list_relations_without_caching",
+    "get_bq_table",
+    "describe_relation",
+    "get_partitions_metadata",
+];
 
 #[derive(Clone, Debug)]
 struct TypeWithConstraint {
@@ -103,7 +141,7 @@ impl TypeWithConstraint {
         &self,
         other: &TypeWithConstraint,
         op: &'static str,
-        registry: Arc<DashMap<String, Type>>,
+        registry: Arc<TypeRegistry>,
     ) -> Option<TypeWithConstraint> {
         self.inner
             .can_binary_op_with(&other.inner, op, registry)
@@ -221,13 +259,13 @@ impl TypeWithConstraint {
 /// symbol table mapping local variable names to their types
 #[derive(Clone, Debug, Default)]
 struct SymbolTable {
-    builtins: Arc<DashMap<String, Type>>,
+    builtins: Arc<TypeRegistry>,
     locals: BTreeMap<String, TypeWithConstraint>,
     locals_definitions_location: BTreeMap<String, Vec<Span>>,
 }
 
 impl SymbolTable {
-    fn new(builtins: Arc<DashMap<String, Type>>) -> Self {
+    fn new(builtins: Arc<TypeRegistry>) -> Self {
         Self {
             builtins,
             locals: BTreeMap::new(),
@@ -248,8 +286,8 @@ impl SymbolTable {
                 .cloned()
                 .or_else(|| {
                     self.builtins
-                        .get(&name)
-                        .map(|type_| type_.value().clone().into())
+                        .read_sync(&name, |_, type_| type_.clone())
+                        .map(Into::into)
                 })
                 .ok_or_else(|| {
                     crate::Error::new(
@@ -274,8 +312,8 @@ impl SymbolTable {
                     .cloned()
                     .or_else(|| {
                         self.builtins
-                            .get(base_name)
-                            .map(|type_| type_.value().clone().into())
+                            .read_sync(base_name, |_, type_| type_.clone())
+                            .map(Into::into)
                     })
                     .ok_or_else(|| {
                         crate::Error::new(
@@ -323,16 +361,19 @@ impl SymbolTable {
                     _ => unreachable!(),
                 }) {
                     Some(type_) => type_,
-                    None => if let Some(type_) = self.builtins.get(match &path[0] {
-                        Part::String(s) => s,
-                        _ => unreachable!(),
-                    }) {
+                    None => if let Some(type_) = self.builtins.read_sync(
+                        match &path[0] {
+                            Part::String(s) => s,
+                            _ => unreachable!(),
+                        },
+                        |_, type_| type_.clone(),
+                    ) {
                         self.locals.insert(
                             match &path[0] {
                                 Part::String(s) => s.clone(),
                                 _ => unreachable!(),
                             },
-                            type_.value().clone().into(),
+                            type_.into(),
                         );
                         if let Some(span_location) = span_location {
                             self.locals_definitions_location.insert(
@@ -433,7 +474,7 @@ struct TypecheckState {
 }
 
 impl TypecheckState {
-    fn new(builtins: Arc<DashMap<String, Type>>) -> Self {
+    fn new(builtins: Arc<TypeRegistry>) -> Self {
         TypecheckState {
             stack: TypecheckStack::default(),
             locals: SymbolTable::new(builtins),
@@ -492,16 +533,39 @@ pub struct TypeChecker<'src> {
     cfg: CFG,
     in_states: Vec<TypecheckState>,
     function_registry: Arc<FunctionRegistry>,
-    builtins: Arc<DashMap<String, Type>>,
+    builtins: Arc<TypeRegistry>,
 }
 
 /// Typecheck logic implementation
 impl<'src> TypeChecker<'src> {
+    fn bind_dispatch(
+        &self,
+        mut function: TypeWithConstraint,
+        context: &BTreeMap<String, Value>,
+    ) -> TypeWithConstraint {
+        let resolved = match &function.inner {
+            Type::Object(object) => object
+                .downcast_ref::<Reference>()
+                .and_then(|reference| reference.get_type().ok())
+                .unwrap_or_else(|| function.inner.clone()),
+            _ => function.inner.clone(),
+        };
+        if let Type::Object(object) = &resolved {
+            if object.downcast_ref::<AdapterDispatchFunction>().is_some() {
+                // Builtins are shared. Dispatch state belongs to this template.
+                function.inner = Type::Object(DynObject::new(Arc::new(
+                    AdapterDispatchFunction::new(context.clone(), self.function_registry.clone()),
+                )));
+            }
+        }
+        function
+    }
+
     pub fn new(
         instr: &'src [Instruction<'src>],
         cfg: CFG,
         funcsigns: Arc<FunctionRegistry>,
-        builtins: Arc<DashMap<String, Type>>,
+        builtins: Arc<TypeRegistry>,
     ) -> Self {
         let in_states = vec![TypecheckState::new(builtins.clone()); cfg.blocks.len()];
         Self {
@@ -761,9 +825,10 @@ impl<'src> TypeChecker<'src> {
                             ))
                         }
                     };
+                    let attribute = value_type.get_attribute(name, listener.clone())?;
                     typestate
                         .stack
-                        .push(value_type.get_attribute(name, listener.clone())?);
+                        .push(self.bind_dispatch(attribute, &typecheck_resolved_context));
                 }
 
                 Instruction::SetAttr(_name, _span) => {
@@ -1501,13 +1566,17 @@ impl<'src> TypeChecker<'src> {
                                 if let Some(arg_cnt) = arg_count {
                                     let (args, kwargs) = typestate.get_call_args(*arg_cnt);
 
-                                    typestate.stack.push(
-                                        self.builtins.get("caller").unwrap().call(
-                                            &args,
-                                            &kwargs,
-                                            listener.clone(),
-                                        )?,
-                                    );
+                                    // Clone out of the registry before calling: the
+                                    // callee may look up the same registry.
+                                    let caller = self
+                                        .builtins
+                                        .read_sync("caller", |_, type_| type_.clone())
+                                        .unwrap();
+                                    typestate.stack.push(caller.call(
+                                        &args,
+                                        &kwargs,
+                                        listener.clone(),
+                                    )?);
                                 } else {
                                     return Err(crate::Error::new(
                                         crate::error::ErrorKind::InvalidOperation,
@@ -1525,8 +1594,14 @@ impl<'src> TypeChecker<'src> {
                         if let Some(arg_cnt) = arg_count {
                             let (args, kwargs) = typestate.get_call_args(*arg_cnt);
                             let function_type = match *name {
-                                "source" => self.builtins.get("source").unwrap(),
-                                "ref" => self.builtins.get("ref").unwrap(),
+                                "source" => self
+                                    .builtins
+                                    .read_sync("source", |_, type_| type_.clone())
+                                    .unwrap(),
+                                "ref" => self
+                                    .builtins
+                                    .read_sync("ref", |_, type_| type_.clone())
+                                    .unwrap(),
                                 _ => unreachable!(),
                             };
                             typestate.stack.push(function_type.call(
@@ -1678,9 +1753,17 @@ impl<'src> TypeChecker<'src> {
                         typestate.stack.push(Type::Any { hard: false });
                     }
                 }
-                Instruction::CallMethod(name, arg_count, identifier_span, span) => {
+                Instruction::CallMethod(name, arg_count, identifier_span, span, _) => {
                     // TYPECHECK: NO? (Maybe add method check later)
                     listener.set_span(span);
+
+                    // See `on_introspective_call`'s doc comment: this is a
+                    // name-only, receiver-type-independent check (the
+                    // `adapter` global has no static type today), which is
+                    // intentionally conservative.
+                    if INTROSPECTIVE_METHOD_NAMES.contains(name) {
+                        listener.on_introspective_call(name);
+                    }
 
                     let count = arg_count.unwrap_or(0);
                     if count > 0 {
@@ -1733,6 +1816,7 @@ impl<'src> TypeChecker<'src> {
                         }
 
                         let function = self_type.get_attribute(name, listener.clone())?;
+                        let function = self.bind_dispatch(function, &typecheck_resolved_context);
 
                         if function.is_any() {
                             typestate.stack.push(function);
@@ -1906,9 +1990,11 @@ impl<'src> TypeChecker<'src> {
                     } else if let Some(function) = self.function_registry.get(*name) {
                         typestate.stack.push(Type::Object(function.clone()));
                     } else if *name == "caller" {
-                        typestate
-                            .stack
-                            .push(self.builtins.get("caller").unwrap().clone());
+                        typestate.stack.push(
+                            self.builtins
+                                .read_sync("caller", |_, type_| type_.clone())
+                                .unwrap(),
+                        );
                     } else {
                         listener.warn(&format!(
                             "Function '{name}' is not defined in the function registry."
@@ -1917,7 +2003,7 @@ impl<'src> TypeChecker<'src> {
                     }
                 }
                 #[cfg(feature = "macros")]
-                Instruction::Return { explicit } => {
+                Instruction::Return { explicit, .. } => {
                     // TYPECHECK: NO
                     // do nothing instead of break because we want to cover all instructions
                     if *explicit {
@@ -2219,15 +2305,23 @@ pub fn macro_namespace_template_resolver(
         .cloned()
         .unwrap_or_else(|| Value::from("dbt"));
     let root_package = root_package.as_str().unwrap();
-    let dbt_and_adapters = typecheck_resolved_context
+    // The published namespace is `dialect -> (macro_name -> package)`; select this
+    // context's dialect so an unprefixed internal macro defined by more than one
+    // loaded adapter resolves to the right package, matching dispatch.
+    let dialect = typecheck_resolved_context
+        .get(DIALECT)
+        .and_then(|v| v.as_str())
+        .unwrap_or("postgres")
+        .to_string();
+    let namespaces = typecheck_resolved_context
         .get(DBT_AND_ADAPTERS_NAMESPACE)
         .cloned()
         .unwrap_or_default();
-    let dbt_and_adapters = dbt_and_adapters
+    let namespaces = namespaces
         .as_object()
-        .unwrap()
-        .downcast_ref::<ValueMap>()
-        .unwrap();
+        .and_then(|o| o.downcast_ref::<ValueMap>().cloned())
+        .unwrap_or_default();
+    let dbt_and_adapters = dbt_and_adapters_namespace_for(&namespaces, &dialect);
 
     // 1. Local namespace (current package)
     let template_name = format!("{current_package_name}.{search_name}");

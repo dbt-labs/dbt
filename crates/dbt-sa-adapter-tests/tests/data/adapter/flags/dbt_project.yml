@@ -1,0 +1,7 @@
+# This project contains examples using BigQuery adapter methods that don't require any database connection
+flags:
+  send_anonymous_usage_stats: false
+  list_relations_per_page: 100
+  list_relations_page_limit: 10
+name: test
+profile: fusion_tests

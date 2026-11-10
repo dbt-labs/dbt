@@ -41,7 +41,6 @@ mod tests {
     use arrow_schema::{DataType, Field};
 
     use super::*;
-
     #[test]
     fn test_bigquery_ingest_schema_with_column_overrides() {
         let original_metadata = HashMap::from([("existing".to_string(), "value".to_string())]);

@@ -1,12 +1,19 @@
 use dbt_adapter::{Adapter, column::ColumnStatic, relation::factory::create_static_relation};
-use dbt_common::{ErrorCode, FsError, FsResult, fs_err};
+use dbt_adapter_core::AdapterType;
+use dbt_common::{FsError, FsResult};
+use dbt_schemas::schemas::common::ResolvedQuoting;
 use minijinja::{
     Environment, Error as MinijinjaError, State, Template, UndefinedBehavior, Value,
     listener::RenderingEventListener,
     value::{ValueMap, mutable_map::MutableMap},
 };
 use serde::Serialize;
-use std::{collections::BTreeMap, path::Path, rc::Rc, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashSet},
+    path::Path,
+    rc::Rc,
+    sync::{Arc, RwLock},
+};
 use tracy_client::span;
 
 /// A struct that wraps a Minijinja Expression.
@@ -49,7 +56,7 @@ impl<'env: 'source, 'source> JinjaExpression<'env, 'source> {
     pub fn typecheck(
         &self,
         funcsigns: Arc<minijinja::compiler::typecheck::FunctionRegistry>,
-        builtins: Arc<dashmap::DashMap<String, minijinja::Type>>,
+        builtins: Arc<minijinja::TypeRegistry>,
         warning_printer: Rc<dyn minijinja::TypecheckingEventListener>,
         typecheck_resolved_context: BTreeMap<String, Value>,
     ) -> FsResult<()> {
@@ -93,7 +100,7 @@ impl<'env: 'source, 'source> JinjaTemplate<'env, 'source> {
     pub fn typecheck(
         &self,
         funcsigns: Arc<minijinja::compiler::typecheck::FunctionRegistry>,
-        builtins: Arc<dashmap::DashMap<String, minijinja::Type>>,
+        builtins: Arc<minijinja::TypeRegistry>,
         warning_printer: Rc<dyn minijinja::TypecheckingEventListener>,
         typecheck_resolved_context: BTreeMap<String, Value>,
     ) -> FsResult<()> {
@@ -120,6 +127,14 @@ pub struct JinjaEnv {
     pub env: Environment<'static>,
     /// The Jinja function registry.
     pub jinja_function_registry: Arc<minijinja::compiler::typecheck::FunctionRegistry>,
+    /// Macro unique-ids (as produced by `dbt-parser`'s DAG, e.g.
+    /// `macro.dbt_utils.default__unpivot`) known, via the static analysis in
+    /// `dbt_parser::resolve::resolve_macros::typecheck_macros`, to reach an
+    /// introspective (warehouse-dependent) adapter call -- directly, or
+    /// transitively through another macro they call. Populated once, after
+    /// typechecking, and shared (via the `Arc<RwLock<_>>`) with every clone
+    /// of this `JinjaEnv`; empty (and inert) outside `JinjaRenderMode::Symbolic`.
+    pub introspective_macros: Arc<RwLock<HashSet<String>>>,
 }
 
 impl AsRef<JinjaEnv> for JinjaEnv {
@@ -128,13 +143,53 @@ impl AsRef<JinjaEnv> for JinjaEnv {
     }
 }
 
+/// The `api` namespace (`api.Relation`, `api.Column`) for one adapter.
+///
+/// Both are bound to the adapter's *type*, and `Relation` additionally to its
+/// quoting policy, so a node rendering against a non-default adapter needs its
+/// own -- built here rather than duplicated, so the environment-wide default and
+/// a per-node override cannot drift.
+pub fn adapter_api_value(adapter: &Adapter) -> Value {
+    adapter_api_value_for_type(adapter.adapter_type(), adapter.engine().quoting())
+}
+
+/// Builds the type-only API without creating an adapter or connection.
+pub fn adapter_api_value_for_type(adapter_type: AdapterType, quoting: ResolvedQuoting) -> Value {
+    let mut api_map = BTreeMap::new();
+    api_map.insert(
+        "Relation".to_string(),
+        create_static_relation(adapter_type, quoting),
+    );
+    api_map.insert(
+        "Column".to_string(),
+        Some(Value::from_object(ColumnStatic::new(adapter_type))),
+    );
+    Value::from_object(api_map)
+}
+
 impl JinjaEnv {
     /// Create a new JinjaEnv.
     pub fn new(env: Environment<'static>) -> Self {
         Self {
             env,
             jinja_function_registry: Arc::new(BTreeMap::new()),
+            introspective_macros: Arc::new(RwLock::new(HashSet::new())),
         }
+    }
+
+    /// Replace the set of macro unique-ids known to reach an introspective
+    /// adapter call. See `introspective_macros`'s doc comment.
+    pub fn set_introspective_macros(&self, macros: HashSet<String>) {
+        *self.introspective_macros.write().unwrap() = macros;
+    }
+
+    /// Whether `unique_id` is known to reach an introspective adapter call.
+    /// See `introspective_macros`'s doc comment.
+    pub fn is_introspective_macro(&self, unique_id: &str) -> bool {
+        self.introspective_macros
+            .read()
+            .unwrap()
+            .contains(unique_id)
     }
 
     /// Create a new empty state.
@@ -143,6 +198,8 @@ impl JinjaEnv {
     }
 
     /// Create a new state with a pre-interned string map.
+    // TODO: callers copy a shared base context to call this, and this copies it again into a
+    // `MutableMap`. Accept an `OverlayMap` root so they can layer over the shared base.
     pub fn new_state_with_context(&self, ctx: BTreeMap<String, Value>) -> State<'_, '_> {
         self.env.new_state_with_context(MutableMap::from(
             ctx.into_iter()
@@ -182,6 +239,13 @@ impl JinjaEnv {
         self.env.get_global(name)
     }
 
+    /// Register a global value (e.g. a helper function) available to every
+    /// template rendered by this environment. Clone the environment first if
+    /// you want the global scoped to a single render pass.
+    pub fn add_global(&mut self, name: &str, value: Value) {
+        self.env.add_global(name.to_string(), value);
+    }
+
     /// Compile an expression.
     pub fn compile_expression<'a>(&self, expr: &'a str) -> FsResult<JinjaExpression<'_, 'a>> {
         Ok(JinjaExpression(self.env.compile_expression(expr).map_err(
@@ -198,17 +262,7 @@ impl JinjaEnv {
 
     /// Set the adapter
     pub(crate) fn set_adapter(&mut self, adapter: Arc<Adapter>) {
-        let adapter_type = adapter.adapter_type();
-        let mut api_map = BTreeMap::new();
-        api_map.insert(
-            "Relation".to_string(),
-            create_static_relation(adapter_type, adapter.engine().quoting()),
-        );
-        api_map.insert(
-            "Column".to_string(),
-            Some(Value::from_object(ColumnStatic::new(adapter_type))),
-        );
-        self.env.add_global("api", Value::from_object(api_map));
+        self.env.add_global("api", adapter_api_value(&adapter));
 
         // Add the adapter type to the environment for easy access
         self.env
@@ -238,20 +292,8 @@ impl JinjaEnv {
         self.env.set_undefined_behavior(behavior);
     }
 
-    /// Check if a template exists.
-    pub fn has_template(&self, name: &str) -> bool {
-        self.env.get_template(name).is_ok()
-    }
-
     /// Get a template from the environment.
     pub fn get_template(&self, name: &str) -> FsResult<JinjaTemplate<'_, '_>> {
-        if !self.has_template(name) {
-            return Err(fs_err!(
-                ErrorCode::JinjaError,
-                "Template not found: {}",
-                name
-            ));
-        }
         let result = self
             .env
             .get_template(name)
@@ -259,9 +301,14 @@ impl JinjaEnv {
         Ok(JinjaTemplate(result))
     }
 
-    /// Get the dbt and adapters namespace.
-    pub fn get_dbt_and_adapters_namespace(&self) -> Arc<ValueMap> {
-        self.env.get_dbt_and_adapters_namespace()
+    /// Get the dbt and adapters namespace for `dialect`.
+    pub fn get_dbt_and_adapters_namespace(&self, dialect: &str) -> Arc<ValueMap> {
+        self.env.get_dbt_and_adapters_namespace(dialect)
+    }
+
+    /// The full `dialect -> namespace` map, for passing into a typecheck context.
+    pub fn get_dbt_and_adapters_namespaces(&self) -> Arc<ValueMap> {
+        self.env.get_dbt_and_adapters_namespaces()
     }
 
     /// Get the target context.

@@ -1,0 +1,3 @@
+version: 2
+models:
+  - name: basic_metric_view

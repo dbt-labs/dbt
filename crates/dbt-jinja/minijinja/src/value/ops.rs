@@ -162,7 +162,7 @@ pub fn slice(value: Value, start: Value, stop: Value, step: Value) -> Result<Val
             };
             Ok(Value::from_bytes(bytes))
         }
-        ValueRepr::Undefined | ValueRepr::None => Ok(Value::from(Vec::<Value>::new())),
+        ValueRepr::Undefined(_) | ValueRepr::None => Ok(Value::from(Vec::<Value>::new())),
         ValueRepr::Object(obj) if matches!(obj.repr(), ObjectRepr::Seq | ObjectRepr::Iterable) => {
             let len = obj.enumerator_len().unwrap_or_default();
             let (start, len) = get_offset_and_len(start, stop, || len);
@@ -193,6 +193,12 @@ fn int_as_value(val: i128) -> Value {
 }
 
 fn impossible_op(op: &str, lhs: &Value, rhs: &Value) -> Error {
+    if let Some(name) = lhs.undefined_name().or(rhs.undefined_name()) {
+        let mut error = Error::from(ErrorKind::UndefinedError);
+        error.set_detail(format!("`{name}` is undefined"));
+        return error;
+    }
+
     Error::new(
         ErrorKind::InvalidOperation,
         format!(
@@ -300,7 +306,39 @@ pub fn add(lhs: &Value, rhs: &Value) -> Result<Value, Error> {
     }
 }
 
-math_binop!(sub, checked_sub, -);
+/// Set-difference `-` for two sequence/iterable values (e.g. `dict.keys() - dict.keys()`,
+/// which Python's `dict_keys` view objects support natively and dbt-core macros rely on),
+/// falling back to numeric subtraction otherwise.
+///
+/// Mirrors `add`'s existing generalization of `+` to any `Seq`/`Iterable` pair (list
+/// concatenation) -- this is the same idea for `-`, one level up: elements of `lhs` not
+/// present in `rhs`, preserving `lhs`'s order.
+pub fn sub(lhs: &Value, rhs: &Value) -> Result<Value, Error> {
+    if matches!(lhs.kind(), ValueKind::Seq | ValueKind::Iterable)
+        && matches!(rhs.kind(), ValueKind::Seq | ValueKind::Iterable)
+    {
+        let are_both_tuples = !lhs.is_mutable() && !rhs.is_mutable();
+        if let Ok(lhs_iter) = lhs.try_iter() {
+            let rhs_items: Vec<Value> = rhs.try_iter().map(|it| it.collect()).unwrap_or_default();
+            let res: Vec<Value> = lhs_iter.filter(|item| !rhs_items.contains(item)).collect();
+            return Ok(if are_both_tuples {
+                Value::from(res)
+            } else {
+                Value::from(mutable_vec::MutableVec::from(res))
+            });
+        }
+        return Ok(Value::from(Vec::<Value>::new()));
+    }
+    match coerce(lhs, rhs, true) {
+        Some(CoerceResult::I128(a, b)) => match a.checked_sub(b) {
+            Some(val) => Ok(int_as_value(val)),
+            None => Err(failed_op("-", lhs, rhs)),
+        },
+        Some(CoerceResult::F64(a, b)) => Ok((a - b).into()),
+        _ => Err(impossible_op("-", lhs, rhs)),
+    }
+}
+
 math_binop!(math_rem, checked_rem_euclid, %);
 
 pub fn mul(lhs: &Value, rhs: &Value) -> Result<Value, Error> {
@@ -587,6 +625,37 @@ mod tests {
         assert_eq!(
             sub(&Value::from(2), &Value::from(1)).unwrap(),
             Value::from(1)
+        );
+    }
+
+    /// Regression: `dict.keys() - dict.keys()` is a common idiom customer dbt macros use
+    /// (Python's `dict_keys` view objects support `-` natively; dbt-core is Python-based, so
+    /// this always worked there). Fusion's `sub` previously only special-cased numbers,
+    /// erroring "tried to use - operator on unsupported types iterator and iterator" for any
+    /// two sequence/iterable values -- breaking every macro invocation relying on it.
+    #[test]
+    fn test_subtracting_sequences_is_set_difference() {
+        let a = Value::from(vec![Value::from("x"), Value::from("y"), Value::from("z")]);
+        let b = Value::from(vec![Value::from("y")]);
+        assert_eq!(
+            sub(&a, &b).unwrap(),
+            Value::from(vec![Value::from("x"), Value::from("z")])
+        );
+
+        // Order and non-membership: nothing removed when there's no overlap.
+        let c = Value::from(vec![Value::from(1), Value::from(2)]);
+        let d = Value::from(vec![Value::from(3)]);
+        assert_eq!(
+            sub(&c, &d).unwrap(),
+            Value::from(vec![Value::from(1), Value::from(2)])
+        );
+
+        // A number minus a sequence is still a hard error (only *both* sides being
+        // sequence/iterable activates set-difference semantics).
+        let err = sub(&Value::from(3), &Value::from(Vec::<Value>::new())).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "invalid operation: tried to use - operator on unsupported types number and sequence"
         );
     }
 

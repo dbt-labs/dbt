@@ -12,10 +12,18 @@ pub mod auth_type {
     pub const EXTERNAL_BROWSER: &str = "external-browser";
     /// Azure service principal (Microsoft Entra ID) authentication
     pub const AZURE_CLIENT_SECRET: &str = "azure-client-secret";
+    /// OIDC authentication via environment variable
+    pub const ENV_OIDC: &str = "env-oidc";
+    /// OIDC authentication via file path
+    pub const FILE_OIDC: &str = "file-oidc";
 }
 
 /// HTTP Path to connect
 pub const HTTP_PATH: &str = "databricks.http_path";
+
+/// Connection-establishment timeout (Go duration string, e.g. "600s"). Bounds the
+/// session-open and retries a cold-starting warehouse until the deadline.
+pub const CONNECT_TIMEOUT: &str = "databricks.connect_timeout";
 
 /// Optional default catalog to use when executing SQL statements
 pub const CATALOG: &str = "databricks.catalog";
@@ -42,9 +50,18 @@ pub const AZURE_CLIENT_SECRET: &str = "databricks.azure.client_secret";
 /// The Azure tenant ID (optional; discovered from the workspace when absent)
 pub const AZURE_TENANT_ID: &str = "databricks.azure.tenant_id";
 
+/// The Databricks service principal's client ID, for OIDC authentication
+pub const OIDC_CLIENT_ID: &str = "databricks.oidc.client_id";
+/// The path to the file containing the ID token to exchange
+pub const OIDC_TOKEN_FILEPATH: &str = "databricks.oidc.token_filepath";
+
 /// TLS/SSL options
 pub const SSL_MODE: &str = "databricks.ssl_mode";
 pub const SSL_ROOT_CERT: &str = "databricks.ssl_root_cert";
 
 /// User agent string for dbt attribution by databricks
 pub const USER_AGENT: &str = "databricks.user_agent";
+
+pub mod schema_metadata {
+    pub const QUERY_ID: &str = "DATABRICKS_QUERY_ID";
+}

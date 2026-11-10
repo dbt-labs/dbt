@@ -108,6 +108,9 @@ impl DbtManifestV12 {
                 DbtNode::Analysis(analysis) => {
                     Some((id.as_str(), analysis.__base_attr__.compiled_code.as_deref()))
                 }
+                DbtNode::Check(check) => {
+                    Some((id.as_str(), check.__base_attr__.compiled_code.as_deref()))
+                }
             })
             .collect::<HashMap<_, _>>()
     }

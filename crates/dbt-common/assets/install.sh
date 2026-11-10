@@ -25,6 +25,8 @@ RED='\033[0;31m'
 NC='\033[0m' # No Color
 
 TARGET_VERSION=""
+DBT_CDN_URL="${DBT_CDN_URL:-https://public.cdn.getdbt.com/fs}"
+DBT_DB_RUNNER_BASE_URL="${DBT_DB_RUNNER_BASE_URL:-$DBT_CDN_URL/cli}"
 
 log() {
     printf "install.sh: %s\n" "$1"
@@ -154,12 +156,14 @@ help() {
     echo "Usage: install.sh [options]"
     echo ""
     echo "Options:"
-    echo "  --update, -u       Update to latest or specified version"
+    echo "  --update, -u       Update to stable or specified version"
     echo "  --version VER      Install version VER"
     echo "  --target TARGET    Install for target platform TARGET"
-    echo "  --to DEST          Install to DEST"
+    echo "  --prefix PREFIX    Install under PREFIX: dbt in PREFIX/bin, drivers in PREFIX/lib/dbt"
+    echo "                     (default: \$HOME/.local)"
+    echo "  --to DEST          Deprecated: install dbt into DEST, without its drivers"
     echo "  --help, -h         Show this help text"
-    echo "  --package PACKAGE  Install package PACKAGE [dbt|all]"
+    echo "  --package PACKAGE  Select package set [dbt|all] (all adds dbt-db-runner)"
 }
 
 update=false
@@ -182,6 +186,10 @@ while [ $# -gt 0 ]; do
         ;;
     --target)
         target=$2
+        shift
+        ;;
+    --prefix)
+        prefix=$2
         shift
         ;;
     --to)
@@ -209,6 +217,7 @@ check_dependencies() {
 
     # Dependencies
     need basename
+    need dirname
     need curl
     need install
     need mkdir
@@ -228,14 +237,26 @@ check_dependencies() {
         need grep
     fi
 
-    if [ -z "${dest:-}" ]; then
-        dest="$HOME/.local/bin"
-    else
+    if [ -n "${prefix:-}" ] && [ -n "${dest:-}" ]; then
+        err_and_exit "--prefix and --to cannot be combined"
+    fi
+    if [ -n "${dest:-}" ]; then
+        log "WARNING: --to is deprecated and does not install dbt's drivers. Use --prefix PREFIX instead: dbt goes in PREFIX/bin and its drivers in PREFIX/lib/dbt."
         # Convert relative path to absolute
         case "$dest" in
             /*) ;; # Already absolute path
             *) dest="$PWD/$dest" ;; # Convert relative to absolute
         esac
+        lib_dir=""
+    else
+        prefix="${prefix:-$HOME/.local}"
+        case "$prefix" in
+            /*) ;;
+            *) prefix="$PWD/$prefix" ;;
+        esac
+        prefix="${prefix%/}"
+        dest="$prefix/bin"
+        lib_dir="$prefix/lib/dbt"
     fi
 }
 
@@ -255,19 +276,19 @@ check_binary_version() {
 }
 
 # Compare installed version with target version
-# Usage: compare_versions current_version target_version is_latest
+# Usage: compare_versions current_version target_version requested_version package
 # Returns: 0 if versions match, 1 if they don't match
 compare_versions() {
-    current_version="$1"
-    target_version="$2"
-    version="$3"
-    package="$4"
+    compare_current_version="$1"
+    compare_target_version="$2"
+    compare_requested_version="$3"
+    compare_package="$4"
 
-    if [ "$current_version" = "$target_version" ]; then
-        if [ -z "$version" ]; then
-            log "Latest $package version $target_version is already installed"
+    if [ "$compare_current_version" = "$compare_target_version" ]; then
+        if [ -z "$compare_requested_version" ]; then
+            log "Latest $compare_package version $compare_target_version is already installed"
         else
-            log "$package version $target_version is already installed"
+            log "$compare_package version $compare_target_version is already installed"
         fi
         return 0
     fi
@@ -281,7 +302,7 @@ compare_versions() {
 check_version_exists() {
     version="$1"
     target="$2"
-    url="https://public.cdn.getdbt.com/fs/cli/fs-v$version-$target.tar.gz"
+    url="$DBT_CDN_URL/cli/fs-v$version-$target.tar.gz"
     log_debug "Checking if version $version exists on CDN: $url"
     if ! curl -sLI -f "$url" >/dev/null 2>&1; then
         err_and_exit "Version $version not found on CDN. Please check available versions and try again."
@@ -447,7 +468,7 @@ setup_shell_config() {
 # Returns: target version string
 determine_version() {
     specific_version="$1"
-    version_url="https://public.cdn.getdbt.com/fs/versions.json"
+    version_url="$DBT_CDN_URL/versions.json"
     versions=""
 
     TARGET_VERSION=""
@@ -460,9 +481,9 @@ determine_version() {
     fi
 
     if [ -z "$specific_version" ];then
-        log_grey "Checking for latest version"
-        TARGET_VERSION=$(echo "$versions" | jq -r ".latest.tag" | sed 's/^v//') || err_and_exit "Failed to parse latest version from versions data."
-        log_grey "Latest available version: $TARGET_VERSION"
+        log_grey "Checking for stable version"
+        TARGET_VERSION=$(echo "$versions" | jq -r ".stable.tag" | sed 's/^v//') || err_and_exit "Failed to parse stable version from versions data."
+        log_grey "Stable available version: $TARGET_VERSION"
     # check the version that tag maps to, if the tag exists
     elif echo "$versions" | jq -e "has(\"$specific_version\")" > /dev/null;then
         log_grey "Checking for $specific_version version"
@@ -483,24 +504,40 @@ display_ascii_art() {
     if [ "$package_name" = "dbt" ]; then
         cat<<EOF
 
- =====              =====    ┓┓  
-=========        =========  ┏┫┣┓╋
- ===========    >========   ┗┻┗┛┗
-  ======================    ███████╗██╗   ██╗███████╗██╗ ██████╗ ███╗   ██╗
-   ====================     ██╔════╝██║   ██║██╔════╝██║██╔═══██╗████╗  ██║
-    ========--========      █████╗  ██║   ██║███████╗██║██║   ██║██╔██╗ ██║
-     =====-    -=====       ██╔══╝  ██║   ██║╚════██║██║██║   ██║██║╚██╗██║
-    ========--========      ██╔══╝  ██║   ██║╚════██║██║██║   ██║██║╚██╗██║
-   ====================     ██║     ╚██████╔╝███████║██║╚██████╔╝██║ ╚████║
-  ======================    ╚═╝      ╚═════╝ ╚══════╝╚═╝ ╚═════╝ ╚═╝  ╚═══╝
- ========<   ============                        ┌─┐┌┐┌┌─┐┬┌┐┌┌─┐
-=========      ==========                        ├┤ ││││ ┬││││├┤ 
- =====             =====                         └─┘┘└┘└─┘┴┘└┘└─┘ $version
+ =====              =====
+=========        =========
+ ===========    >========
+  ======================         ██╗   ██╗        ██╗  
+   ====================          ██║   ██║       ████╗ 
+    ========--========       ██████║   ██████╗   ╚██╔╝ 
+     =====-    -=====       ██╔══██║   ██╔══██╗   ██║  
+    ========--========      ██║  ██║   ██║  ██║   ██║  
+   ====================     ╚██████║   ██████╔╝   ╚██╗ v$version
+  ======================     ╚═════╝   ╚═════╝     ╚═╝ 
+ ========<   ============
+=========      ==========
+ =====             =====
 
 EOF
     else
         log "Successfully installed $package_name $version to: $dest"
     fi
+}
+
+# Replace only the archive's libraries; other packages own the rest.
+install_sidecar_packages() {
+    source_dir="$1"
+    destination_dir="$2"
+    mkdir -p "$destination_dir" || err_and_exit "Cannot create $destination_dir. Make $(dirname "$(dirname "$destination_dir")") writable, or install with another --prefix."
+    for library in "$source_dir"/*; do
+        [ -e "$library" ] || [ -L "$library" ] || continue
+        [ -f "$library" ] && [ ! -L "$library" ] || err_and_exit "Invalid sidecar file"
+        library_leaf=$(basename "$library")
+        tmp_bin="$destination_dir/.$library_leaf.tmp.$$"
+        install -m 644 "$library" "$tmp_bin" || err_and_exit "Cannot stage sidecar"
+        mv -f "$tmp_bin" "$destination_dir/$library_leaf" || err_and_exit "Cannot publish sidecar"
+        tmp_bin=""
+    done
 }
 
 # Install a package
@@ -540,7 +577,10 @@ install_package() {
     # Construct URL based on package
     case "$package_name" in
         "dbt")
-            url="https://public.cdn.getdbt.com/fs/cli/fs-v$version-$target.tar.gz"
+            url="$DBT_CDN_URL/cli/fs-v$version-$target.tar.gz"
+            ;;
+        "dbt-db-runner")
+            url="$DBT_DB_RUNNER_BASE_URL/fs-db-runner-v$version-$target.tar.gz"
             ;;
         *)
             err_and_exit "Invalid package name: $package_name"
@@ -548,37 +588,42 @@ install_package() {
     esac
 
     log_debug "Downloading: $url"
+    archive="$td/package.tar.gz"
+    http_status=""
+    if ! http_status=$(curl -sL -f -o "$archive" -w '%{http_code}' "$url"); then
+        if [ "$package_name" = "dbt-db-runner" ] && [ "$http_status" = "404" ]; then
+            log_grey "$package_name is not available for version $version; installing dbt without it."
+            rm -f "$dest/$package_name"
+            rm -rf "$td"
+            td=""
+            return 0
+        fi
+        err_and_exit "Failed to download $package_name version $version for $target."
+    fi
+
     # Download and extract
-    if ! curl -sL "$url" | tar -C "$td" -xz; then
+    if ! tar -C "$td" -xzf "$archive"; then
         err_and_exit "Failed to extract package. The downloaded archive appears to be invalid."
     fi
+    rm -f "$archive"
 
     # Check if any files were extracted
     if [ ! -d "$td" ] || [ -z "$(ls -A "$td")" ]; then
         err_and_exit "No files were extracted from the archive"
     fi
 
-    for f in "$(cd "$td" && find . -type f)"; do
-        [ -x "$td/$f" ] || {
-            log_debug "File $f is not executable, skipping"
-            continue
-        }
+    # Libraries may be executable too.
+    [ -f "$td/$package_name" ] || err_and_exit "Binary $package_name missing from archive"
+    if [ "$package_name" = "dbt" ] && [ -n "${lib_dir:-}" ] && [ -d "$td/lib/dbt" ]; then
+        install_sidecar_packages "$td/lib/dbt" "$lib_dir"
+    fi
+    tmp_bin="$dest/.${package_name}.tmp.$$"
+    install -m 755 "$td/$package_name" "$tmp_bin" || err_and_exit "Failed to stage $package_name"
+    mv -f "$tmp_bin" "$dest/$package_name" || err_and_exit "Failed to replace $package_name"
+    tmp_bin=""
 
-        log_debug "Moving $f to $dest/$package_name"
-
-        # Ensure the destination directory exists
-        mkdir -p "$dest" || err_and_exit "Error: Failed to create installation directory: $dest"
-
-        # Stage into a temp file in the same directory (same filesystem = atomic mv).
-        # install sets permissions before the file goes live; mv -f atomically
-        # replaces any existing binary without a removal gap.
-        tmp_bin="$dest/.${package_name}.tmp.$$"
-        install -v -m 755 "$td/$f" "$tmp_bin" 2>&1 | while IFS= read -r line; do
-            log_debug "$line"
-        done || err_and_exit "Error: Failed to stage $package_name binary."
-        mv -f "$tmp_bin" "$dest/$package_name" || err_and_exit "Error: Failed to replace $package_name binary."
-        log_debug "Installed $package_name to $dest/$package_name"
-    done
+    rm -rf "$td"
+    td=""
 
     display_ascii_art "$package_name" "$version"
 
@@ -599,7 +644,10 @@ install_packages() {
     dest="$4"
     update="$5"
     current_dbt_version=""
+    current_runner_version=""
     dbt_needs_update=false
+    runner_needs_update=false
+    install_runner=false
 
     if [ "$package" = "dbt-lsp" ]; then
         err_and_exit "The standalone dbt-lsp package is no longer published. Install dbt and run 'dbt lsp' instead."
@@ -617,12 +665,28 @@ install_packages() {
         fi
     fi
 
+    # --package all opts in to the runner. Updates also preserve an existing
+    # runner so a bundled installation stays version-matched.
+    if [ "$package" = "all" ] || { [ "$update" = true ] && [ -e "$dest/dbt-db-runner" ]; }; then
+        install_runner=true
+        current_runner_version=$(check_binary_version "$dest/dbt-db-runner" "dbt-db-runner")
+        if ! compare_versions "$current_runner_version" "$target_version" "$version" "dbt-db-runner"; then
+            runner_needs_update=true
+        fi
+    fi
+
     # Exit if no updates needed
-    if [ "$dbt_needs_update" = false ]; then
+    if [ "$dbt_needs_update" = false ] && [ "$runner_needs_update" = false ]; then
         return 0
     fi
 
     # Install packages
+    if [ "$install_runner" = true ] && [ "$runner_needs_update" = true ]; then
+        if ! install_package "dbt-db-runner" "$target_version" "$target" "$dest" "$update"; then
+            return 1
+        fi
+    fi
+
     if ([ "$package" = "all" ] || [ "$package" = "dbt" ]) && [ "$dbt_needs_update" = true ]; then
         if ! install_package "dbt" "$target_version" "$target" "$dest" "$update"; then
             return 1
@@ -644,7 +708,7 @@ main() {
     package="${package:-dbt}"
     version="${version:-}"
     target="${target:-}"
-    dest="${dest:-$HOME/.local/bin}"
+    dest="${dest:-}"
     update="${update:-false}"
 
     if [ "$package" = "dbt-lsp" ]; then

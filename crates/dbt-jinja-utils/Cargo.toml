@@ -36,7 +36,6 @@ dbt-telemetry = { workspace = true }
 arrow = { workspace = true }
 chrono = { workspace = true }
 chrono-tz = { workspace = true }
-dashmap = { workspace = true }
 dbt-yaml = { workspace = true }
 indexmap = { workspace = true, features = ["serde"] }
 itertools = { workspace = true }
@@ -46,6 +45,7 @@ minijinja-contrib = { workspace = true }
 regex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sqlparser = { workspace = true }
 tracy-client = { workspace = true }
 uuid = { workspace = true }
 
@@ -54,4 +54,7 @@ dbt-fusion-workspace-hack = { version = "0.1" }
 [dev-dependencies]
 dbt-test-primitives = { workspace = true }
 dbt-test-utils = { workspace = true }
+dbt-tracing = { workspace = true, features = ["test-utils"] }
 insta = { version = "1.38.0", features = ["glob", "serde"] }
+tempfile = { workspace = true }
+tracing = { workspace = true }

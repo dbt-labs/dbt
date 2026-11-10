@@ -83,16 +83,24 @@
         );
       {% else %}
         {%- set columns = get_column_schema_from_query(compiled_code, sql_header) -%}
+        {#-- These columns are derived from the SELECT, so they carry no `quote:`
+             config of their own. Look the flag up by name in the model's yaml
+             `columns:` block, matching `default__get_column_names`; unflagged
+             columns are emitted bare rather than quoted unconditionally.
+             `or {}` guards the lookups below when `columns:` is absent. --#}
+        {%- set user_provided_columns = model['columns'] or {} -%}
         create table
           {{ relation.include(database=True, schema=True) }}
         (
           {% for col in columns -%}
-            {{ col.quoted }} {{ col.dtype }}{{ "," if not loop.last }}
+            {%- set col_name = adapter.quote(col.name) if user_provided_columns.get(col.name, {}).get('quote') else col.name -%}
+            {{ col_name }} {{ col.dtype }}{{ "," if not loop.last }}
           {% endfor -%}
         );
         insert into {{ relation }} (
           {% for col in columns -%}
-            {{ col.quoted }}{{ "," if not loop.last }}
+            {%- set col_name = adapter.quote(col.name) if user_provided_columns.get(col.name, {}).get('quote') else col.name -%}
+            {{ col_name }}{{ "," if not loop.last }}
           {% endfor -%}
         ) (
           {{ compiled_code }}

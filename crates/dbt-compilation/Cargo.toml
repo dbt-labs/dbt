@@ -21,6 +21,7 @@ dbt-cloud-config = { workspace = true }
 dbt-common = { workspace = true }
 dbt-dag = { workspace = true }
 dbt-defer = { workspace = true }
+dbt-deps = { workspace = true }
 dbt-error = { workspace = true }
 dbt-fusion-workspace-hack = { version = "0.1" }
 dbt-jinja-utils = { workspace = true }

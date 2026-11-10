@@ -64,6 +64,7 @@ message ExplainedDecision {
   optional RejectionReason skip_rejection_reason = 2;
   optional RejectionReason clone_rejection_reason = 3;
   bool is_stale = 4;
+  string decision_description = 5;
 }
 
 message NodeFuncMapping {
@@ -85,4 +86,5 @@ message DbtNodeState {
   optional string node_contract_hash = 11;
   string profile_name = 12;
   optional string project_id = 13;
+  optional string node_database_representation = 15;
 }

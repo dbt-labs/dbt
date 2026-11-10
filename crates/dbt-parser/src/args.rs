@@ -1,7 +1,8 @@
 //! Module defines the input arguments required for resolution
 
-use dbt_common::FsResult;
-use dbt_common::io_args::{IoArgs, StaticAnalysisKind};
+use dbt_adapter_core::AdapterType;
+use dbt_common::io_args::{IoArgs, MULTI_ADAPTER_ENV, StaticAnalysisKind, multi_adapter_enabled};
+use dbt_common::{ErrorCode, FsResult, fs_err};
 use dbt_common::{
     io_args::{EvalArgs, FsCommand},
     node_selector::{IndirectSelection, SelectExpression},
@@ -43,6 +44,8 @@ pub struct ResolveArgs {
     pub sample_renaming: BTreeMap<String, (String, String, String)>,
     /// Global static analysis settings
     pub static_analysis: Option<StaticAnalysisKind>,
+    /// Static analysis for nodes that configure none
+    pub default_static_analysis: Option<StaticAnalysisKind>,
     /// Store failures?
     pub store_failures: bool,
     /// Whether to skip creating generic tests
@@ -50,6 +53,15 @@ pub struct ResolveArgs {
     /// Maximum size (MiB) for seed files whose contents are hashed
     /// 1 MiB default); `0` means "no limit".
     pub maximum_seed_size_mib: u64,
+    /// `--adapter <type>`, parsed once.
+    ///
+    /// Overrides every node's `+adapter` when set, so the flag reaches the run
+    /// through the same field an authored selection does -- and is treated
+    /// identically from there on -- rather than swapping the run's adapter
+    /// afterwards.
+    pub adapter_override: Option<AdapterType>,
+    /// Adapter types of the active profile for target policy decisions.
+    pub profile_adapter_types: Option<Vec<AdapterType>>,
 }
 
 impl ResolveArgs {
@@ -70,9 +82,42 @@ impl ResolveArgs {
             sample_config: RunFilter::try_from(arg.empty, arg.sample.clone())?,
             sample_renaming: arg.sample_renaming.clone(),
             static_analysis: arg.static_analysis,
+            default_static_analysis: arg.default_static_analysis,
             store_failures: arg.store_failures,
             skip_creating_generic_tests: arg.skip_creating_generic_tests,
             maximum_seed_size_mib: arg.maximum_seed_size_mib,
+            adapter_override: arg
+                .adapter_override
+                .as_deref()
+                .map(|written| {
+                    // Same gate as the authored `+adapter` this flag overrides; see
+                    // `validate_node_adapter`.
+                    if !multi_adapter_enabled() {
+                        return Err(fs_err!(
+                            ErrorCode::InvalidArgument,
+                            "`--adapter` is experimental and not yet supported. To use it, set \
+                             the environment variable {MULTI_ADAPTER_ENV}=true. Note that \
+                             experimental features may be unstable and are not yet recommended \
+                             for production use."
+                        ));
+                    }
+                    written.parse::<AdapterType>().map_err(|_| {
+                        fs_err!(
+                            ErrorCode::InvalidArgument,
+                            "--adapter '{written}' is not a recognized adapter type"
+                        )
+                    })
+                })
+                .transpose()?,
+            profile_adapter_types: None,
         })
+    }
+
+    /// The static analysis given to a node whose config does not set one:
+    /// `--static-analysis`, then `--default-static-analysis`, then baseline.
+    pub fn unconfigured_static_analysis(&self) -> StaticAnalysisKind {
+        self.static_analysis
+            .or(self.default_static_analysis)
+            .unwrap_or_default()
     }
 }

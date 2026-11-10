@@ -108,13 +108,22 @@ impl TryFrom<&DbtModel> for RedshiftDistConfig {
             .__adapter_attr__
             .redshift_attr
             .as_ref()
-            .and_then(|attr| attr.dist.as_deref());
+            .and_then(|attr| attr.dist.as_ref());
 
         match dist {
-            Some(dist) => Ok(RedshiftDistConfig {
-                diststyle: dist.into(),
+            Some(StringOrArrayOfStrings::String(dist)) => Ok(RedshiftDistConfig {
+                diststyle: dist.as_str().into(),
             }),
-            None => Err("Failed to get Redshift Config".to_string()),
+            // No `dist` set: materialized views default to EVEN (see `Default` below).
+            None => Ok(Self::default()),
+            // A list has no diststyle. This error is load-bearing: the MV create macro reads
+            // `dist.diststyle` directly and never runs the `dist()` guard that covers tables.
+            Some(StringOrArrayOfStrings::ArrayOfStrings(_)) => Err(
+                "The 'dist' config must be a single value (e.g. dist: primary_key), not a list \
+                 or other type. Redshift distribution key accepts only one column or one of: \
+                 all, even, auto."
+                    .to_string(),
+            ),
         }
     }
 }
@@ -278,7 +287,7 @@ impl TryFrom<&DbtModel> for RedshiftMaterializedViewConfig {
             .and_then(|attr| attr.auto_refresh)
             .unwrap_or(false);
 
-        let dist = RedshiftDistConfig::try_from(model).unwrap_or_default();
+        let dist = RedshiftDistConfig::try_from(model)?;
         let sort = RedshiftSortConfig::try_from(model)?;
 
         Ok(Self {
@@ -574,5 +583,52 @@ impl Object for RedshiftSortConfig {
             })),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{RedshiftDistStyle, RedshiftMaterializedViewConfig};
+    use dbt_schemas::schemas::nodes::RedshiftAttr;
+    use dbt_schemas::schemas::serde::StringOrArrayOfStrings;
+    use dbt_schemas::schemas::{AdapterAttr, DbtModel};
+
+    fn model_with_dist(dist: Option<StringOrArrayOfStrings>) -> DbtModel {
+        DbtModel {
+            __adapter_attr__: AdapterAttr::default().with_redshift_attr(Some(Box::new(
+                RedshiftAttr {
+                    dist,
+                    ..Default::default()
+                },
+            ))),
+            ..Default::default()
+        }
+    }
+
+    /// A list-valued `dist` has no diststyle and must fail the build; the absent and scalar
+    /// cases guard the `unwrap_or_default()` -> `?` change on this path.
+    #[test]
+    fn redshift_materialized_view_config_resolves_dist_shapes() {
+        let absent = RedshiftMaterializedViewConfig::try_from(&model_with_dist(None))
+            .expect("a materialized view without `dist` must still build");
+        assert_eq!(absent.dist.diststyle, RedshiftDistStyle::Even);
+
+        let scalar = RedshiftMaterializedViewConfig::try_from(&model_with_dist(Some(
+            StringOrArrayOfStrings::String("id".to_string()),
+        )))
+        .expect("a scalar `dist` must resolve");
+        assert_eq!(
+            scalar.dist.diststyle,
+            RedshiftDistStyle::Key("id".to_string())
+        );
+
+        let list = RedshiftMaterializedViewConfig::try_from(&model_with_dist(Some(
+            StringOrArrayOfStrings::ArrayOfStrings(vec!["id".to_string()]),
+        )))
+        .expect_err("a list-valued `dist` has no diststyle");
+        assert!(
+            list.contains("The 'dist' config must be a single value"),
+            "unexpected error: {list}"
+        );
     }
 }

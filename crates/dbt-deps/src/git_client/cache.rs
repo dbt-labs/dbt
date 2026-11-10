@@ -61,7 +61,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn roundtrip_hit_and_miss() {
         let cache = ResolveCache::new();
         let p = parts("rt", "github.com", None);
@@ -76,7 +76,7 @@ mod tests {
         assert!(cache.get(&p, "v2").await.is_none());
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn token_scopes_cache_entries() {
         let cache = ResolveCache::new();
         let none = parts("tok", "github.com", None);
@@ -98,7 +98,7 @@ mod tests {
         assert_eq!(cache.get(&b, "main").await.unwrap().0, "sha-B");
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn host_owner_repo_scoped_independently() {
         let cache = ResolveCache::new();
         let gh = parts("hsc", "github.com", None);
@@ -117,7 +117,7 @@ mod tests {
         assert_eq!(cache.get(&gl, "main").await.unwrap().0, "sha-gl");
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn resolve_method_round_trips() {
         let cache = ResolveCache::new();
         // The cache records how a ref was resolved so subsequent hits can

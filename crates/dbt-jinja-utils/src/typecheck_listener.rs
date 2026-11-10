@@ -1,13 +1,16 @@
-use dbt_common::tracing::dbt_emit::emit_warn_log_from_fs_error;
 use dbt_common::{CodeLocationWithFile, ErrorCode, FsError};
 use minijinja::TypecheckingEventListener;
 use minijinja::machinery::Span;
+use std::cell::RefCell;
 use std::path::PathBuf;
 
-/// A typechecking listener that emits warnings through tracing.
+/// A side-effect-free typechecking listener that collects YAML diagnostics.
+///
+/// Collected diagnostics can be accessed with [`Self::drain_diagnostics`] after typechecking.
 pub struct YamlTypecheckingEventListener {
     current_path: PathBuf,
     current_span: Span,
+    diagnostics: RefCell<Vec<FsError>>,
 }
 
 impl YamlTypecheckingEventListener {
@@ -21,7 +24,13 @@ impl YamlTypecheckingEventListener {
         Self {
             current_path,
             current_span,
+            diagnostics: RefCell::new(Vec::new()),
         }
+    }
+
+    /// Drains and returns the collected diagnostics in reporting order.
+    pub fn drain_diagnostics(&mut self) -> Vec<FsError> {
+        self.diagnostics.get_mut().drain(..).collect()
     }
 }
 
@@ -43,9 +52,9 @@ impl TypecheckingEventListener for YamlTypecheckingEventListener {
             self.current_path.clone(),
         );
 
-        let fs_error =
+        let diagnostic =
             FsError::new(ErrorCode::JinjaError, message.to_string()).with_location(location);
-        emit_warn_log_from_fs_error(fs_error);
+        self.diagnostics.borrow_mut().push(diagnostic);
     }
 
     fn set_span(&self, _span: &Span) {

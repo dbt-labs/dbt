@@ -1,0 +1,20 @@
+version: 2
+
+sources:
+  - name: raw
+    schema: main
+    tables:
+      # Backed by models/fresh_events.sql, whose loaded_at is the build time.
+      - name: fresh_events
+        config:
+          loaded_at_field: loaded_at
+          freshness:
+            warn_after: {count: 1, period: hour}
+            error_after: {count: 24, period: hour}
+      # Backed by seeds/stale_events.csv, whose loaded_at is fixed in the past.
+      - name: stale_events
+        config:
+          loaded_at_field: loaded_at
+          freshness:
+            warn_after: {count: 1, period: hour}
+            error_after: {count: 24, period: hour}

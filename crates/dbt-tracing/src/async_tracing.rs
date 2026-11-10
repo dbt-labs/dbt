@@ -17,29 +17,14 @@ where
     F: Future + Send + 'static,
     F::Output: Send + 'static,
 {
+    if cfg!(debug_assertions) {
+        assert!(
+            tokio::runtime::Handle::try_current().is_ok(),
+            "spawn_traced called outside of a tokio runtime:\n{:?}",
+            std::backtrace::Backtrace::force_capture()
+        );
+    }
     tokio::spawn(future.in_current_span())
-}
-
-/// Helper to spawn blocking tasks while preserving tracing span context.
-///
-/// # Example
-/// ```ignore
-/// spawn_blocking_traced(|| {
-///     // This blocking task inherits the current span
-///     tracing::info!("This log will be in the parent span");
-///     expensive_computation()
-/// });
-/// ```
-pub fn spawn_blocking_traced<F, R>(f: F) -> tokio::task::JoinHandle<R>
-where
-    F: FnOnce() -> R + Send + 'static,
-    R: Send + 'static,
-{
-    let span = tracing::Span::current();
-    tokio::task::spawn_blocking(move || {
-        let _guard = span.enter();
-        f()
-    })
 }
 
 /// Helper to spawn async tasks while preserving tracing span context.
@@ -61,21 +46,4 @@ where
     let task = spawn_traced(future);
     tokio::task::block_in_place(move || tokio::runtime::Handle::current().block_on(task))
         .expect("expected to finish task")
-}
-
-/// Run an async task from sync code, reusing the active Tokio runtime if there is one.
-pub fn run_traced_async_blocking<F>(future: F) -> F::Output
-where
-    F: Future + Send + 'static,
-    F::Output: Send + 'static,
-{
-    if tokio::runtime::Handle::try_current().is_ok() {
-        spawn_traced_block_in_place(future)
-    } else {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("expected to build tokio runtime");
-        runtime.block_on(future)
-    }
 }

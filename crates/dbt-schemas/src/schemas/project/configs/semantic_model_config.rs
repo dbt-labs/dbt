@@ -38,6 +38,10 @@ impl TypedRecursiveConfig for ProjectSemanticModelConfig {
     fn iter_children(&self) -> Iter<'_, String, ShouldBe<Self>> {
         self.__additional_properties__.iter()
     }
+
+    fn has_set_fields(&self) -> bool {
+        self.enabled.is_some() || self.group.is_some() || self.meta.is_some() || self.tags.is_some()
+    }
 }
 
 // NOTE: No #[skip_serializing_none] - we handle None serialization in serialize_with_mode

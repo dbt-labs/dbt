@@ -9,7 +9,7 @@ use crate::hashers::ColumnHasher;
 use crate::hashers::TableHasher;
 
 pub struct Grouper {
-    /// Initial hasher state based on the schema of the grouping keys
+    /// Initial hasher state based on the schema of the grouping/join keys
     initial_hasher: sip128::SipHasher13,
     /// Table hasher for computing row hashes
     table_hasher: TableHasher,
@@ -47,6 +47,21 @@ impl Grouper {
         })
     }
 
+    /// Produce a unique fingerprint for the row values in the projection.
+    ///
+    /// For a grouper with `column_indices = [0, 2]`, the row hash is computed as:
+    ///
+    /// ```text
+    /// hash(row) = hash(columns[0][row], columns[2][row])
+    /// ```
+    #[inline]
+    pub(crate) fn hash_row(&self, row_idx: usize) -> SipHash128 {
+        use sip128::Hasher128 as _;
+        let mut hasher = self.initial_hasher;
+        self.table_hasher.write_row(&mut hasher, row_idx);
+        hasher.finish128().into()
+    }
+
     pub fn iter(&self) -> GroupIterator<'_> {
         GroupIterator::new(self)
     }
@@ -54,7 +69,7 @@ impl Grouper {
 
 /// A wrapper around [sip128::Hash128] to implement [Hash] and [Eq].
 #[derive(PartialEq, Eq)]
-struct SipHash128 {
+pub(crate) struct SipHash128 {
     pub h1: u64,
     pub h2: u64,
 }
@@ -98,14 +113,9 @@ impl Iterator for GroupIterator<'_> {
     type Item = usize;
 
     fn next(&mut self) -> Option<Self::Item> {
-        use sip128::Hasher128 as _;
-        let mut hasher = self.grouper.initial_hasher;
         if self.row_idx < self.grouper.num_rows {
-            self.grouper
-                .table_hasher
-                .write_row(&mut hasher, self.row_idx);
+            let hash: SipHash128 = self.grouper.hash_row(self.row_idx);
             self.row_idx += 1;
-            let hash: SipHash128 = hasher.finish128().into();
             let group_id = self.groups.entry(hash).or_insert_with(|| {
                 let group_id = self.next_group_id;
                 self.next_group_id += 1;

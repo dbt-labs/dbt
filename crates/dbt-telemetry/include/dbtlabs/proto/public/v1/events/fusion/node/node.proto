@@ -23,6 +23,10 @@ enum NodeType {
   NODE_TYPE_SAVED_QUERY = 13;
   NODE_TYPE_SEMANTIC_MODEL = 14;
   NODE_TYPE_FUNCTION = 15;
+  NODE_TYPE_CHECK = 16;
+  // A node an experimental adds to the project. Its kind is in `experimental_type`. Numbered apart
+  // from the core node types; node types must fit in a byte (node-count metric keys pack them).
+  NODE_TYPE_EXPERIMENTAL = 100;
 }
 
 // Core outcome for any node evaluation result within any phase.
@@ -95,6 +99,24 @@ enum NodeCacheReason {
   NODE_CACHE_REASON_CLONED_EXISTING_STILL_FRESH = 4;
 }
 
+// Access level of a model or function.
+enum NodeAccess {
+  NODE_ACCESS_UNSPECIFIED = 0;
+  NODE_ACCESS_PRIVATE = 1;
+  NODE_ACCESS_PROTECTED = 2;
+  NODE_ACCESS_PUBLIC = 3;
+}
+
+// Language a node's code is written in.
+enum NodeLanguage {
+  // The node has a language that this enum does not list.
+  NODE_LANGUAGE_UNSPECIFIED = 0;
+  NODE_LANGUAGE_SQL = 1;
+  NODE_LANGUAGE_PYTHON = 2;
+  // Only for functions.
+  NODE_LANGUAGE_JAVASCRIPT = 3;
+}
+
 enum NodeMaterialization {
   NODE_MATERIALIZATION_UNKNOWN = 0;
   NODE_MATERIALIZATION_SNAPSHOT = 1;
@@ -113,7 +135,22 @@ enum NodeMaterialization {
   // ONLY FOR SNOWFLAKE
   NODE_MATERIALIZATION_DYNAMIC_TABLE = 13;
   NODE_MATERIALIZATION_FUNCTION = 14;
+  // ONLY FOR SNOWFLAKE
+  NODE_MATERIALIZATION_INTERACTIVE_TABLE = 15;
+  // ONLY FOR DATABRICKS
+  NODE_MATERIALIZATION_METRIC_VIEW = 16;
   NODE_MATERIALIZATION_CUSTOM = 100;
+}
+
+// Where a node's run phase executed.
+enum NodeComputeMode {
+  NODE_COMPUTE_MODE_UNSPECIFIED = 0;
+  // On the node's warehouse.
+  NODE_COMPUTE_MODE_REMOTE = 1;
+  // On the local sidecar engine.
+  NODE_COMPUTE_MODE_LOCAL = 2;
+  // On lake compute.
+  NODE_COMPUTE_MODE_LAKE_COMPUTE = 3;
 }
 
 // Test-specific outcome details (only for TEST and UNITTEST node types).
@@ -140,6 +177,10 @@ message TestEvaluationDetail {
 
   // Whether this test passed by static checking instead of execution.
   optional bool statically_checked = 6;
+
+  // unique_id of the batched test node whose single query produced this result.
+  // Matches `QueryExecuted.unique_id` for that query. Unset when the test ran on its own.
+  optional string batch_unique_id = 7;
 }
 
 // Freshness-specific outcome details (only for SOURCE nodes with freshness checks).
@@ -193,6 +234,67 @@ enum NodeWarningOutcome {
 // appears in records written before this field existed (backward compat).
 message NodeEvaluationDetail {
   NodeWarningOutcome node_warning_outcome = 1;
+}
+
+// Time grain of a microbatch model's batches.
+enum MicrobatchBatchSize {
+  MICROBATCH_BATCH_SIZE_UNSPECIFIED = 0;
+  MICROBATCH_BATCH_SIZE_HOUR = 1;
+  MICROBATCH_BATCH_SIZE_DAY = 2;
+  MICROBATCH_BATCH_SIZE_MONTH = 3;
+  MICROBATCH_BATCH_SIZE_YEAR = 4;
+}
+
+// Response of a node's `main` statement.
+message NodeAdapterResponse {
+  // Id the warehouse assigned to the statement's query.
+  // Unset when the adapter reported none.
+  optional string query_id = 1;
+  // Status code of the statement, as the adapter reports it (e.g. "SUCCESS", "INSERT").
+  // Unset when the adapter reported none.
+  optional string code = 2;
+  // Adapter-defined statement metrics.
+  // INTERNAL METRICS ONLY. DO NOT DEPEND ON THESE KEYS. THEY MAY CHANGE OR BE REMOVED WITHOUT NOTICE.
+  map<string, AdapterResponseValue> extra = 3;
+}
+
+// Value of an adapter-defined key in `NodeAdapterResponse.extra`.
+message AdapterResponseValue {
+  oneof value {
+    int64 int = 1;
+    double float = 2;
+    bool bool = 3;
+    string string = 4;
+  }
+}
+
+// Evaluation of one time window within a microbatch model's run phase.
+// Maps to dbt-core's LogStartBatch (Q045) and LogBatchResult (Q046).
+message MicrobatchEvaluated {
+  // Unique id of the model owning this batch.
+  string unique_id = 1;
+  // Schema and identifier of the owning model's relation.
+  string schema = 2;
+  string identifier = 3;
+
+  // Stable batch id: YYYY, YYYYMM, YYYYMMDD, or YYYYMMDDHH.
+  string batch_id = 4;
+  // Time grain of the event-time window.
+  MicrobatchBatchSize batch_size = 5;
+  // 1-based index within this execution window.
+  uint32 batch_index = 6;
+  uint32 total_batches = 7;
+  // Inclusive start and exclusive end of the event-time window, in UTC RFC 3339.
+  string event_time_start = 8;
+  string event_time_end = 9;
+
+  NodeOutcome node_outcome = 10;
+  // Total time in milliseconds this batch evaluation spent idle: the summed
+  // duration of `ThreadPoolWait` spans with this `batch_id`. It does not count
+  // toward the owning `NodeEvaluated.idle_time_ms`.
+  uint64 idle_time_ms = 11;
+  // Optional legacy dbt core event code (Q045 at start, Q046 at completion).
+  optional string dbt_core_event_code = 12;
 }
 
 message NodeEvaluated {
@@ -281,13 +383,51 @@ message NodeEvaluated {
   // Optional legacy dbt core event code (e.g. "Q018") if this event has a strict mapping to a dbt core event.
   optional string dbt_core_event_code = 40;
 
-  // Number of rows affected by this node evaluation, if available.
-  // Only set for successful outcomes where row count is known (e.g., models, seeds).
+  // Rows affected by the node's `main` statement. Other named statements are ignored.
+  // Set in the Run phase whenever the node recorded a `main` response, for the node types that
+  // set `adapter_response`. This includes a test that ran and failed.
+  // For a microbatch model: the sum across batches.
+  // Unset when the materialization failed before recording one, when a microbatch batch failed,
+  // and when the adapter reported no known (non-negative) count.
   optional uint64 rows_affected = 41;
 
   // Total time in milliseconds this node evaluation spent idle.
-  // This includes time spent waiting on internal backpressure.
+  // This includes time spent waiting on internal backpressure: the summed
+  // duration of `ThreadPoolWait` spans of this node without a `batch_id`.
+  // When the evaluation runs work concurrently, e.g. microbatches, those waits
+  // cover only the time when all of that work is queued and none of it runs.
   optional uint64 idle_time_ms = 42;
+
+  // Identifier of the dbt State execution decision that governed this node's
+  // run-phase execution. Only set when the dbt State service was consulted and
+  // returned an execution decision.
+  optional string state_decision_id = 43;
+
+  // Response of the node's `main` statement, as in run_results.json minus the row count and
+  // the free-text message.
+  // Set in the Run phase whenever a model, seed, snapshot, function, unit test or data test
+  // recorded a `main` response, including a test that ran and failed.
+  // For a microbatch model: `query_id` and `code` from the last batch, `extra` metrics summed
+  // across batches.
+  // Unset for other node types, for tests that share an aggregated query, for nodes that run
+  // outside the warehouse adapter (local or lake compute), when the materialization failed
+  // before recording a response, and when a microbatch batch failed.
+  NodeAdapterResponse adapter_response = 44;
+
+  // Where the node's run executed: the path actually taken. Set in the Run phase when a
+  // regular node task (models, seeds, snapshots, tests, functions, unit tests) starts the
+  // node, before it executes, so errored nodes carry it too. A snapshot or function that
+  // `adapter: lakecompute` refuses reports LAKE_COMPUTE. Unset for a node skipped before it
+  // starts (e.g. an upstream node failed), for tests run as part of a batched (aggregated)
+  // test query, for clone and experimental-node tasks, and in other phases.
+  optional NodeComputeMode compute_mode = 45;
+
+  // Type of the catalog that the model's `catalog_name` resolves to in catalogs.yml
+  // (e.g. "horizon", "iceberg_rest"). Always lowercase.
+  // Set when the Run phase span is created by a regular node task, for models only. Unset for
+  // a node skipped when the span is created, when the model has no `catalog_name`, there is no
+  // catalogs.yml, or the name is not found.
+  optional string catalog_type = 46;
 }
 
 // Span event tracking full processing of a node across all phases.
@@ -391,8 +531,8 @@ message NodeProcessed {
   // whether the node was in the selection set.
   bool in_selection = 42;
 
-  // Number of rows affected by this node processing, if available.
-  // Only set for successful outcomes where row count is known (e.g., models, seeds).
+  // Rows affected by the node's `main` statement.
+  // Rolled up from the Run phase `NodeEvaluated`; see its `rows_affected`.
   optional uint64 rows_affected = 43;
 
   // Group identifier for model level notifications
@@ -401,4 +541,64 @@ message NodeProcessed {
   // Total time in milliseconds spent idle across all nested node evaluations.
   // This includes time spent waiting on internal backpressure.
   optional uint64 idle_time_ms = 45;
+
+  // 1-based position of this node within the invocation, assigned in the order
+  // nodes begin processing. Mirrors dbt core's `node_index`. Only set for nodes
+  // in the selection set; ephemeral models never consume an index.
+  optional uint32 node_index = 46;
+
+  // Total number of nodes in the selection set, the denominator of `node_index`.
+  // Mirrors dbt core's `num_nodes`.
+  optional uint32 node_count_total = 47;
+
+  // Adapter type this node runs on (e.g. "snowflake"). Only set when the
+  // project can run nodes on more than one adapter.
+  optional string adapter = 48;
+
+  // If node_type == NODE_TYPE_EXPERIMENTAL, the kind of node the experimental added
+  // (e.g. "widget").
+  optional string experimental_type = 49;
+
+  // Response of the node's `main` statement.
+  // Rolled up from the Run phase `NodeEvaluated`; see its `adapter_response`.
+  // Unset when the Run phase did not run, or recorded none.
+  NodeAdapterResponse adapter_response = 50;
+
+  // Where the node's run executed. Rolled up from the Run phase `NodeEvaluated`; see its
+  // `compute_mode` for when it is set.
+  optional NodeComputeMode compute_mode = 51;
+
+  // Type of the catalog that the model's `catalog_name` resolves to in catalogs.yml.
+  // Rolled up from the Run phase `NodeEvaluated`; see its `catalog_type` for when it is set.
+  optional string catalog_type = 52;
+
+  // Incremental strategy configured on the model (e.g. "merge").
+  // Only set for models, and only when the model sets one.
+  optional string incremental_strategy = 53;
+
+  // Strategy configured on the snapshot (e.g. "timestamp").
+  // Only set for snapshots, and only when the snapshot sets one.
+  optional string snapshot_strategy = 54;
+
+  // Language the node's code is written in.
+  // Unset when the node has no language, e.g. seeds and sources.
+  optional NodeLanguage language = 55;
+
+  // Whether the model's contract is enforced. Only set for models;
+  // a model without a contract is not enforced.
+  optional bool contract_enforced = 56;
+
+  // Access level of the node. Only set for models and functions.
+  optional NodeAccess access = 57;
+
+  // Whether the model has a version. Only set for models.
+  optional bool versioned = 58;
+
+  // Table format configured on the model (e.g. "iceberg").
+  // Only set for models, and only when the model sets one.
+  optional string table_format = 59;
+
+  // Catalog the model is written to. Only set for models, and only when
+  // the model sets one.
+  optional string catalog_name = 60;
 }

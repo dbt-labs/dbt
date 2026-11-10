@@ -1,4 +1,4 @@
-#![expect(unused_imports, dead_code)]
+#![expect(unused_imports)]
 
 pub(crate) mod cluster_by;
 pub(crate) use cluster_by::{ClusterBy, ClusterByLoader};

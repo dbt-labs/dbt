@@ -76,8 +76,10 @@ use std::{
 };
 
 use dbt_common::{
-    CodeLocationWithFile, ErrorCode, FsError, FsResult, fs_err, io_args::IoArgs,
-    io_utils::try_read_yml_to_str, tokiofs, tracing::dbt_emit::emit_strict_parse_error,
+    CodeLocationWithFile, ErrorCode, FsError, FsResult, fs_err,
+    io_utils::try_read_yml_to_str,
+    tokiofs,
+    tracing::dbt_emit::{emit_strict_parse_error, emit_warn_log_from_fs_error},
 };
 use dbt_schemas::schemas::serde::yaml_to_fs_error;
 use dbt_yaml::Value;
@@ -169,9 +171,7 @@ impl MinijinjaContext for LoadContext {
 ///
 /// `dependency_package_name` is used to determine if the file is part of a dependency package,
 /// which affects how errors are reported.
-#[allow(clippy::too_many_arguments)]
 pub fn into_typed_with_jinja<T, S>(
-    io_args: &IoArgs,
     value: Value,
     should_render_secrets: bool,
     env: &JinjaEnv,
@@ -184,17 +184,14 @@ where
     T: DeserializeOwned,
     S: MinijinjaContext,
 {
-    let (res, errors) = into_typed_with_jinja_error(
-        Some(io_args),
-        value,
-        should_render_secrets,
-        env,
-        ctx,
-        listeners,
-    )?;
+    let (res, diagnostics) =
+        into_typed_with_jinja_error(value, should_render_secrets, env, ctx, listeners)?;
 
     if show_errors_or_warnings {
-        for error in errors {
+        for warning in diagnostics.typechecking {
+            emit_warn_log_from_fs_error(warning);
+        }
+        for error in diagnostics.recovered {
             emit_strict_parse_error(error, dependency_package_name);
         }
     }
@@ -207,9 +204,7 @@ where
 ///
 /// `dependency_package_name` is used to determine if the file is part of a dependency package,
 /// which affects how errors are reported.
-#[allow(clippy::too_many_arguments)]
 pub fn into_typed_with_jinja_error_context<T, S>(
-    io_args: Option<&IoArgs>,
     value: Value,
     should_render_secrets: bool,
     env: &JinjaEnv,
@@ -223,15 +218,16 @@ where
     T: DeserializeOwned,
     S: MinijinjaContext,
 {
-    let (res, errors) =
-        into_typed_with_jinja_error(io_args, value, should_render_secrets, env, ctx, listeners)?;
+    let (res, diagnostics) =
+        into_typed_with_jinja_error(value, should_render_secrets, env, ctx, listeners)?;
 
-    if io_args.is_some() {
-        for error in errors {
-            let context = error_context(&error);
-            let error = error.with_context(context);
-            emit_strict_parse_error(error, dependency_package_name);
-        }
+    for warning in diagnostics.typechecking {
+        emit_warn_log_from_fs_error(warning);
+    }
+    for error in diagnostics.recovered {
+        let context = error_context(&error);
+        let error = error.with_context(context);
+        emit_strict_parse_error(error, dependency_package_name);
     }
 
     Ok(res)
@@ -365,44 +361,43 @@ fn value_from_str(
     Ok(value)
 }
 
-/// Variant of into_typed_with_jinja which returns a Vec of warnings rather
-/// than firing them.
+/// Variant of into_typed_with_jinja which returns diagnostics rather than emitting them.
 fn into_typed_with_jinja_error<T, S>(
-    io_args: Option<&IoArgs>,
     value: Value,
     should_render_secrets: bool,
     env: &JinjaEnv,
     ctx: &S,
     listeners: &[Rc<dyn RenderingEventListener>],
-) -> FsResult<(T, Vec<FsError>)>
+) -> FsResult<(T, JinjaDiagnostics)>
 where
     T: DeserializeOwned,
     S: MinijinjaContext,
 {
+    let mut typechecking = Vec::new();
     let jinja_renderer = |value: &Value| match value {
         Value::String(s, yaml_span) => {
-            let updated_ctx = ctx.with_yaml_span(yaml_span);
-            let ctx = if let Some(ctx) = &updated_ctx {
-                ctx
-            } else {
-                ctx
-            };
-            let expanded = render_jinja_str(
-                io_args,
-                s,
-                should_render_secrets,
-                env,
-                ctx,
-                listeners,
-                yaml_span,
-            )
-            .map_err(|e| e.with_location(yaml_span.clone()))?;
-            Ok(Some(expanded.with_span(yaml_span.clone())))
+            let (rendered, diagnostics) =
+                render_jinja_str(s, should_render_secrets, env, ctx, listeners, yaml_span)
+                    .map_err(|e| e.with_location(yaml_span.clone()))?;
+            typechecking.extend(diagnostics);
+            Ok(rendered.map(|rendered| rendered.with_span(yaml_span.clone())))
         }
         _ => Ok(None),
     };
 
-    into_typed_internal(value, jinja_renderer)
+    let (res, recovered) = into_typed_internal(value, jinja_renderer)?;
+    Ok((
+        res,
+        JinjaDiagnostics {
+            typechecking,
+            recovered,
+        },
+    ))
+}
+
+struct JinjaDiagnostics {
+    typechecking: Vec<FsError>,
+    recovered: Vec<FsError>,
 }
 
 fn into_typed_internal<T, F>(value: Value, transform: F) -> FsResult<(T, Vec<FsError>)>
@@ -440,37 +435,36 @@ pub fn strip_dunder_fields_from_path(path: &str) -> String {
 }
 
 /// Render a Jinja expression to a Value
-fn render_jinja_str<S: Serialize>(
-    io_args: Option<&IoArgs>,
+///
+/// Returns `None` if the string renders to itself, so the caller can keep the original value.
+fn render_jinja_str<S: MinijinjaContext>(
     s: &str,
     should_render_secrets: bool,
     env: &JinjaEnv,
     ctx: &S,
     listeners: &[Rc<dyn RenderingEventListener>],
     yaml_span: &dbt_yaml::Span,
-) -> FsResult<Value> {
-    // Fast path: if string contains no Jinja control characters, return as-is
+) -> FsResult<(Option<Value>, Vec<FsError>)> {
+    // Fast path: a string without Jinja control characters needs no context and has no
+    // diagnostics, so only its secrets are rendered.
     // Reference: https://github.com/dbt-labs/dbt-mantle/blob/main/core/dbt/clients/jinja.py#L139
     if !RE_HAS_RENDER_CHARS.is_match(s) {
-        let result = if should_render_secrets {
-            render_secrets(s.to_string())?
+        let rendered = if should_render_secrets {
+            render_secrets(s)?.map(Value::string)
         } else {
-            s.to_string()
+            None
         };
-        return Ok(Value::string(result));
+        return Ok((rendered, Vec::new()));
     }
-    if check_single_expression_without_whitepsace_control(s) {
-        let compiled = env.compile_expression(&s[2..s.len() - 2])?;
+    let ctx_with_span = ctx.with_yaml_span(yaml_span);
+    let ctx = ctx_with_span.as_deref().unwrap_or(ctx);
+    if let Some(body) = single_expression_body(s) {
+        let compiled = env.compile_expression(body)?;
 
-        // Perform static type checking if we have io_args and span information
-        perform_typecheck(
-            io_args,
-            env,
-            yaml_span,
-            |funcsigns, builtins, listener, ctx| {
+        let diagnostics =
+            perform_typecheck(env, yaml_span, |funcsigns, builtins, listener, ctx| {
                 compiled.typecheck(funcsigns, builtins, listener, ctx)
-            },
-        );
+            });
 
         let eval = compiled.eval(ctx, listeners)?;
         let val = dbt_yaml::to_value(eval).map_err(|e| {
@@ -482,104 +476,107 @@ fn render_jinja_str<S: Serialize>(
             )
         })?;
         let val = match val {
-            Value::String(s, span) if should_render_secrets => {
-                Value::string(render_secrets(s)?).with_span(span)
-            }
+            Value::String(s, span) if should_render_secrets => match render_secrets(&s)? {
+                Some(rendered) => Value::string(rendered).with_span(span),
+                None => Value::String(s, span),
+            },
             _ => val,
         };
-        Ok(val)
+        Ok((Some(val), diagnostics))
     // Otherwise, process the entire string through Jinja
     } else {
         // Compile template and perform typechecking
         let template = env.template_from_str(s)?;
 
-        // Perform static type checking if we have io_args and span information
-        perform_typecheck(
-            io_args,
-            env,
-            yaml_span,
-            |funcsigns, builtins, listener, ctx| {
+        let diagnostics =
+            perform_typecheck(env, yaml_span, |funcsigns, builtins, listener, ctx| {
                 template.typecheck(funcsigns, builtins, listener, ctx)
-            },
-        );
+            });
 
         let compiled = env.render_str(s, ctx, listeners)?;
         let compiled = if should_render_secrets {
-            render_secrets(compiled)?
+            render_secrets(&compiled)?.unwrap_or(compiled)
         } else {
             compiled
         };
 
-        Ok(Value::string(compiled))
+        Ok((Some(Value::string(compiled)), diagnostics))
     }
 }
 
 /// Helper function to perform typechecking on Jinja expressions/templates
-fn perform_typecheck<F>(
-    io_args: Option<&IoArgs>,
-    env: &JinjaEnv,
-    yaml_span: &dbt_yaml::Span,
-    typecheck_fn: F,
-) where
+fn perform_typecheck<F>(env: &JinjaEnv, yaml_span: &dbt_yaml::Span, typecheck_fn: F) -> Vec<FsError>
+where
     F: FnOnce(
         std::sync::Arc<minijinja::compiler::typecheck::FunctionRegistry>,
-        std::sync::Arc<dashmap::DashMap<String, minijinja::Type>>,
+        std::sync::Arc<minijinja::TypeRegistry>,
         Rc<dyn minijinja::TypecheckingEventListener>,
         BTreeMap<String, minijinja::Value>,
     ) -> FsResult<()>,
 {
-    if io_args.is_some() {
-        // Get file path from yaml_span
-        let path = yaml_span
-            .filename
-            .as_ref()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_default();
+    // Get file path from yaml_span
+    let path = yaml_span
+        .filename
+        .as_ref()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_default();
 
-        // Create minijinja span from yaml span
-        let minijinja_span = minijinja::machinery::Span {
-            start_line: yaml_span.start.line as u32,
-            start_col: yaml_span.start.column as u32,
-            start_offset: yaml_span.start.index as u32,
-            end_line: yaml_span.end.line as u32,
-            end_col: yaml_span.end.column as u32,
-            end_offset: yaml_span.end.index as u32,
-        };
+    // Create minijinja span from yaml span
+    let minijinja_span = minijinja::machinery::Span {
+        start_line: yaml_span.start.line as u32,
+        start_col: yaml_span.start.column as u32,
+        start_offset: yaml_span.start.index as u32,
+        end_line: yaml_span.end.line as u32,
+        end_col: yaml_span.end.column as u32,
+        end_offset: yaml_span.end.index as u32,
+    };
 
-        let typecheck_listener = Rc::new(YamlTypecheckingEventListener::new(path, minijinja_span));
+    let mut typecheck_listener = Rc::new(YamlTypecheckingEventListener::new(path, minijinja_span));
 
-        // Load builtins from the macro namespace registry
-        let macro_namespace_registry = env.env.get_macro_namespace_registry();
-        if let Ok(builtins) = minijinja::load_builtins_with_namespace(macro_namespace_registry) {
-            // Build typecheck context with required values
-            let mut typecheck_resolved_context = BTreeMap::new();
+    // Load builtins from the macro namespace registry
+    let macro_namespace_registry = env.env.get_macro_namespace_registry();
+    if let Ok(builtins) = minijinja::load_builtins_with_namespace(macro_namespace_registry) {
+        // Build typecheck context with required values
+        let mut typecheck_resolved_context = BTreeMap::new();
+        typecheck_resolved_context.insert(
+            "ROOT_PACKAGE_NAME".to_string(),
+            minijinja::Value::from("dbt"),
+        );
+
+        // Get DBT_AND_ADAPTERS_NAMESPACE directly from globals as a Value
+        let dbt_and_adapters = env
+            .env
+            .get_global("DBT_AND_ADAPTERS_NAMESPACE")
+            .unwrap_or_else(|| {
+                minijinja::Value::from_object(indexmap::IndexMap::<
+                    minijinja::Value,
+                    minijinja::Value,
+                >::new())
+            });
+        typecheck_resolved_context
+            .insert("DBT_AND_ADAPTERS_NAMESPACE".to_string(), dbt_and_adapters);
+        if let Some(dialect) = env.env.get_dialect().cloned() {
+            typecheck_resolved_context.insert(minijinja::constants::DIALECT.to_string(), dialect);
+        }
+        if let Some(registry) = env.env.get_macro_namespace_registry() {
             typecheck_resolved_context.insert(
-                "ROOT_PACKAGE_NAME".to_string(),
-                minijinja::Value::from("dbt"),
-            );
-
-            // Get DBT_AND_ADAPTERS_NAMESPACE directly from globals as a Value
-            let dbt_and_adapters = env
-                .env
-                .get_global("DBT_AND_ADAPTERS_NAMESPACE")
-                .unwrap_or_else(|| {
-                    minijinja::Value::from_object(indexmap::IndexMap::<
-                        minijinja::Value,
-                        minijinja::Value,
-                    >::new())
-                });
-            typecheck_resolved_context
-                .insert("DBT_AND_ADAPTERS_NAMESPACE".to_string(), dbt_and_adapters);
-
-            // Perform typecheck (ignore errors as they're already emitted as warnings)
-            let _ = typecheck_fn(
-                env.jinja_function_registry.clone(),
-                builtins,
-                typecheck_listener,
-                typecheck_resolved_context,
+                minijinja::constants::MACRO_NAMESPACE_REGISTRY.to_string(),
+                minijinja::Value::from_dyn_object(registry),
             );
         }
+
+        // Perform typecheck (ignore fatal errors and return reported diagnostics)
+        let _ = typecheck_fn(
+            env.jinja_function_registry.clone(),
+            builtins,
+            typecheck_listener.clone(),
+            typecheck_resolved_context,
+        );
     }
+
+    Rc::get_mut(&mut typecheck_listener)
+        .expect("typechecking listener should no longer be shared")
+        .drain_diagnostics()
 }
 
 /// Matches Jinja control sequences (open/close of expression, block, comment).
@@ -588,47 +585,41 @@ static RE_HAS_RENDER_CHARS: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(\{\{|\{\%|\{\#|%\}|#\}|\}\})").expect("valid regex"));
 
 /// Check if the input is a single Jinja expression without whitespace control.
-///
-/// Bare `{` / `}` in the body are allowed so that dict and set literals
-/// (`{{ {'a': 1} }}`, `{{ {1, 2, 3} }}`) take the typed evaluation path rather
-/// than being coerced to their Display form. Nested Jinja delimiters (`{{`,
-/// `}}`, `{%`, `%}`, `{#`, `#}`) inside the body still disqualify the input,
-/// which keeps multi-expression and statement-bearing templates on the string
-/// rendering path.
 pub fn check_single_expression_without_whitepsace_control(input: &str) -> bool {
-    if input.starts_with("{{-") || input.ends_with("-}}") {
-        return false;
-    }
-    if !input.starts_with("{{") || !input.ends_with("}}") || input.len() < 4 {
-        return false;
-    }
-    let body = &input[2..input.len() - 2];
-    // `}}}` ends with `}}` but its body ends with `}`, which the pairwise scan
-    // below misses. Fall through so the template renderer handles it correctly.
-    if body.ends_with('}') {
-        return false;
-    }
-    let bytes = body.as_bytes();
-    for i in 0..bytes.len().saturating_sub(1) {
-        if matches!(
-            &bytes[i..i + 2],
-            b"{{" | b"}}" | b"{%" | b"%}" | b"{#" | b"#}"
-        ) {
-            return false;
-        }
-    }
-    true
+    single_expression_body(input).is_some()
 }
 
-/// The inner expression of a single `{{ expr }}` string accepted by
-/// `check_single_expression_without_whitepsace_control`, or `None`.
+/// The inner expression of a single `{{ expr }}` string, or `None`.
+///
+/// Parses `input` as a full Jinja template and checks that it is structurally
+/// exactly one emitted expression, so nested dict/set literals (`{{ {'a': {'b': 1}} }}`)
+/// aren't confused with separate Jinja constructs (`{{ a }}{{ b }}`).
 pub fn single_expression_body(input: &str) -> Option<&str> {
-    check_single_expression_without_whitepsace_control(input).then(|| &input[2..input.len() - 2])
+    if input.starts_with("{{-") || input.ends_with("-}}") {
+        return None;
+    }
+    let template = minijinja::machinery::parse(
+        input,
+        "<expression>",
+        Default::default(),
+        Default::default(),
+    )
+    .ok()?;
+    let minijinja::machinery::ast::Stmt::Template(template) = template else {
+        return None;
+    };
+    match template.children.as_slice() {
+        [minijinja::machinery::ast::Stmt::EmitExpr(_)] => {
+            input.strip_prefix("{{")?.strip_suffix("}}")
+        }
+        _ => None,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dbt_schemas::schemas::properties::DbtPropertiesFile;
 
     #[test]
     fn test_check_single_expression_without_whitepsace_control() {
@@ -650,8 +641,14 @@ mod tests {
         assert!(check_single_expression_without_whitepsace_control(
             "{{ foo({'a': 1}) }}"
         ));
+        // Nested dict literals should be accepted (issue #13214).
         assert!(check_single_expression_without_whitepsace_control(
-            "{{ {1, 2, 3} }}"
+            "{{ {'warn_after': {'count': 1, 'period': 'day'}} }}"
+        ));
+        // A `{{`-like substring inside a string literal is not a nested Jinja
+        // delimiter and must not disqualify the expression.
+        assert!(check_single_expression_without_whitepsace_control(
+            "{{ 'a{{b' }}"
         ));
 
         assert!(!check_single_expression_without_whitepsace_control(
@@ -669,8 +666,14 @@ mod tests {
         assert!(!check_single_expression_without_whitepsace_control(
             "{{ foo }} suffix"
         ));
+        // This dialect has no set-literal syntax, so this never parses as a
+        // single expression regardless of the outer brace shape.
+        assert!(!check_single_expression_without_whitepsace_control(
+            "{{ {1, 2, 3} }}"
+        ));
 
-        // `}}}` body ends with `}`, missed by pairwise scan — must fall through to template renderer.
+        // Malformed/mismatched trailing delimiters must fall through to the
+        // template renderer rather than being accepted as a single expression.
         assert!(!check_single_expression_without_whitepsace_control(
             "{{ foo }}}"
         ));
@@ -697,5 +700,90 @@ mod tests {
             Value::Mapping(_, _) => {} // minimal structural check
             other => panic!("Expected top-level mapping, got: {:?}", other),
         }
+    }
+
+    /// `anchors:` as a sequence is the shape the field was originally modeled on;
+    /// it must keep working after widening the type to accept any YAML node.
+    #[test]
+    fn test_properties_file_anchors_as_a_sequence_still_parses() {
+        let file: DbtPropertiesFile = from_yaml_raw(
+            r#"
+version: 2
+anchors:
+  - &hx_base
+    name: hx_base
+    database: raw_prod
+sources:
+  - <<: *hx_base
+    name: entries
+    schema: pub
+    tables:
+      - name: entries
+"#,
+            None,
+            false,
+            None,
+        )
+        .expect("properties file should parse");
+        let sources = file.sources.expect("sources");
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].database.as_deref(), Some("raw_prod"));
+    }
+
+    /// fs#14005: a mapping-shaped anchor holder previously failed deserialization of
+    /// the whole properties file with "invalid type: map, expected a sequence",
+    /// which silently discarded the `sources:` block below it.
+    #[test]
+    fn test_properties_file_anchors_as_a_mapping_parses_and_the_source_still_registers() {
+        let file: DbtPropertiesFile = from_yaml_raw(
+            r#"
+version: 2
+anchors:
+  base: &mapping_base
+    database: pub
+    schema: pub
+sources:
+  - name: catalog
+    <<: *mapping_base
+    tables:
+      - name: entries
+"#,
+            None,
+            false,
+            None,
+        )
+        .expect("properties file should parse");
+        let sources = file.sources.expect("sources");
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].database.as_deref(), Some("pub"));
+        assert_eq!(sources[0].schema.as_deref(), Some("pub"));
+    }
+
+    /// fs#14005: an anchor with no wrapping key at all -- `anchors: &name {...}` --
+    /// is another non-sequence shape the same fix must accept.
+    #[test]
+    fn test_properties_file_anchors_as_a_bare_scalar_anchor_parses_and_the_source_still_registers()
+    {
+        let file: DbtPropertiesFile = from_yaml_raw(
+            r#"
+version: 2
+anchors: &scalar_base
+  database: pub
+  schema: pub
+sources:
+  - name: catalog_scalar
+    <<: *scalar_base
+    tables:
+      - name: entries
+"#,
+            None,
+            false,
+            None,
+        )
+        .expect("properties file should parse");
+        let sources = file.sources.expect("sources");
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].database.as_deref(), Some("pub"));
+        assert_eq!(sources[0].schema.as_deref(), Some("pub"));
     }
 }

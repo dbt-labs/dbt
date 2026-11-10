@@ -259,13 +259,14 @@ impl<'env> Context<'env> {
         current_path: PathBuf,
         current_span: Span,
         outer_stack_depth: usize,
-    ) -> Context<'env> {
+    ) -> Result<Context<'env>, Error> {
         let mut rv = Context::new(recursion_limit);
         rv.stack.push(frame);
         rv.current_path = current_path;
         rv.current_span = current_span;
         rv.outer_stack_depth = outer_stack_depth;
-        rv
+        ok!(rv.check_depth());
+        Ok(rv)
     }
 
     /// Stores a variable in the context.

@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     fmt::Display,
     path::{Path, PathBuf},
 };
@@ -10,9 +10,26 @@ use serde::{Deserialize, Serialize};
 // Type aliases for clarity
 type YmlValue = dbt_yaml::Value;
 
+#[derive(Debug, Serialize, UntaggedEnumDeserialize, Clone, DbtSchema, PartialEq, Eq, Hash)]
+#[serde(untagged)]
+pub enum EnvironmentRef {
+    Id(i64),
+    Name(String),
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, DbtSchema)]
+pub struct MeshEnvironmentRoute {
+    pub in_this_project_environment: EnvironmentRef,
+    pub use_upstream_environment: EnvironmentRef,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, DbtSchema)]
 pub struct UpstreamProject {
     pub name: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mesh_environment_routing: Vec<MeshEnvironmentRoute>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_upstream_environment: Option<EnvironmentRef>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default, DbtSchema)]
@@ -31,6 +48,35 @@ pub enum DbtPackageEntry {
     Local(LocalPackage),
     Private(PrivatePackage),
     Tarball(TarballPackage),
+}
+
+impl DbtPackageEntry {
+    /// Key identifying this entry, matching [`DbtPackageLock::entry_name`].
+    ///
+    /// Lets a lock entry be traced back to the `packages.yml` line that asked
+    /// for it — the lock itself is sorted by package name, so declaration order
+    /// is only recoverable this way.
+    pub fn entry_name(&self) -> String {
+        match self {
+            DbtPackageEntry::Hub(package) => package.package.clone(),
+            DbtPackageEntry::Git(package) => {
+                let mut key = package.git.to_string();
+                if let Some(subdirectory) = &package.subdirectory {
+                    key.push_str(&format!("#{subdirectory}"));
+                }
+                key
+            }
+            DbtPackageEntry::Local(package) => package.local.to_string_lossy().to_string(),
+            DbtPackageEntry::Private(package) => {
+                let mut key = package.private.to_string();
+                if let Some(subdirectory) = &package.subdirectory {
+                    key.push_str(&format!("#{subdirectory}"));
+                }
+                key
+            }
+            DbtPackageEntry::Tarball(package) => package.tarball.to_string(),
+        }
+    }
 }
 
 impl From<DbtPackageLock> for DbtPackageEntry {
@@ -107,18 +153,50 @@ impl From<GitPackageLock> for GitPackage {
     }
 }
 
+/// Git provider hosting a private package.
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, DbtSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PrivatePackageProvider {
+    Github,
+    Gitlab,
+    /// Azure DevOps, also spelled `azure_devops`. Requires an `org/project/repo` path.
+    #[serde(alias = "azure_devops")]
+    Ado,
+    /// Azure DevOps through Azure Active Directory. Hosted only, uses `org/repo`.
+    AzureActiveDirectory,
+}
+
+impl PrivatePackageProvider {
+    /// Every Azure DevOps spelling names the same provider.
+    pub fn is_ado(self) -> bool {
+        matches!(self, Self::Ado | Self::AzureActiveDirectory)
+    }
+
+    /// Azure DevOps spellings are interchangeable; other providers must match exactly.
+    pub fn equivalent(self, other: Self) -> bool {
+        (self.is_ado() && other.is_ado()) || self == other
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Github => "github",
+            Self::Gitlab => "gitlab",
+            Self::Ado => "ado",
+            Self::AzureActiveDirectory => "azure_active_directory",
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, DbtSchema)]
 pub struct PrivatePackage {
-    /// Private package identifier. Two-segment `org/repo` for GitHub or 2-part Azure DevOps
-    /// (`azure_active_directory`); three-or-more-segment `org/group/repo` for GitLab subgroups
-    /// or Azure DevOps `org/project/repo` (`ado` / `azure_devops`).
+    /// Private package identifier. Two-segment `org/repo` for GitHub, legacy Azure DevOps
+    /// (`azure_devops`), or Azure Active Directory (`azure_active_directory`); three-or-more-segment
+    /// `org/group/repo` for GitLab subgroups or Azure DevOps `org/project/repo` (`ado`).
     #[schemars(regex(pattern = r"^[\w\-\.]+(/[\w\-\.]+){1,}$"))]
     pub private: Verbatim<String>,
-    /// Git provider. One of `github` (default), `gitlab`, `ado`, `azure_devops`,
-    /// or `azure_active_directory`. `ado` / `azure_devops` require an `org/project/repo`
-    /// path; `azure_active_directory` is hosted-only and uses `org/repo`.
+    /// Git provider. Defaults to `github` when unset.
     #[serde(rename = "provider", skip_serializing_if = "Option::is_none")]
-    pub provider: Option<String>,
+    pub provider: Option<PrivatePackageProvider>,
     /// Revision to check out: a tag, branch, or commit SHA.
     #[serde(rename = "revision", skip_serializing_if = "Option::is_none")]
     pub revision: Option<String>,
@@ -199,7 +277,7 @@ impl DbtPackagesLock {
     }
 
     pub fn has_duplicate_package_names(&self) -> bool {
-        let mut seen = std::collections::HashSet::new();
+        let mut seen = HashSet::new();
         self.packages.iter().any(|p| !seen.insert(p.package_name()))
     }
 }
@@ -248,6 +326,18 @@ impl DbtPackageLock {
             DbtPackageLock::Tarball(tarball_package_lock) => {
                 tarball_package_lock.tarball.to_string()
             }
+        }
+    }
+
+    /// The pinned version or revision, when the package source has one.
+    ///
+    /// Local and tarball packages carry no version, so they return `None`.
+    pub fn version_string(&self) -> Option<String> {
+        match self {
+            DbtPackageLock::Hub(package) => Some(package.version.to_string()),
+            DbtPackageLock::Git(package) => Some(package.revision.clone()),
+            DbtPackageLock::Private(package) => Some(package.revision.clone()),
+            DbtPackageLock::Local(_) | DbtPackageLock::Tarball(_) => None,
         }
     }
 
@@ -313,7 +403,7 @@ pub struct PrivatePackageLock {
     pub name: String,
     pub revision: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub provider: Option<String>,
+    pub provider: Option<PrivatePackageProvider>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub warn_unpinned: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -407,7 +497,7 @@ pub struct DeprecatedPrivatePackageLock {
     pub private: String,
     pub revision: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub provider: Option<String>,
+    pub provider: Option<PrivatePackageProvider>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub warn_unpinned: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -478,5 +568,62 @@ sha1_hash: 713df304d4720d43ae7280d2363c5e1b009e7c1b
             }
             other => panic!("expected a hub lock entry, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_private_package_provider_spellings() {
+        let package = |provider: &str| {
+            dbt_yaml::from_str::<PrivatePackage>(&format!(
+                "private: dbt-labs/some-repo\nprovider: {provider}\n"
+            ))
+            .map(|package| package.provider)
+        };
+        let lock = |provider: &str| {
+            dbt_yaml::from_str::<PrivatePackageLock>(&format!(
+                "private: dbt-labs/some-repo\nname: some-repo\nrevision: main\nprovider: {provider}\n"
+            ))
+            .map(|lock| lock.provider)
+        };
+        let deprecated_lock = |provider: &str| {
+            dbt_yaml::from_str::<DeprecatedPrivatePackageLock>(&format!(
+                "private: dbt-labs/some-repo\nrevision: main\nprovider: {provider}\n"
+            ))
+            .map(|lock| lock.provider)
+        };
+
+        for (spelling, provider) in [
+            ("github", PrivatePackageProvider::Github),
+            ("gitlab", PrivatePackageProvider::Gitlab),
+            ("ado", PrivatePackageProvider::Ado),
+            (
+                "azure_active_directory",
+                PrivatePackageProvider::AzureActiveDirectory,
+            ),
+        ] {
+            assert_eq!(package(spelling).unwrap(), Some(provider));
+            assert_eq!(lock(spelling).unwrap(), Some(provider));
+            assert_eq!(deprecated_lock(spelling).unwrap(), Some(provider));
+            assert_eq!(provider.as_str(), spelling);
+            assert_eq!(dbt_yaml::to_string(&provider).unwrap().trim(), spelling);
+        }
+
+        // "azure_devops" is an alias for "ado", and normalizes to it on the way out
+        for reader in [package, lock, deprecated_lock] {
+            assert_eq!(
+                reader("azure_devops").unwrap(),
+                Some(PrivatePackageProvider::Ado)
+            );
+        }
+
+        for invalid in ["azure-devops", "githbu", "GitHub"] {
+            assert!(package(invalid).is_err(), "{invalid} should be rejected");
+        }
+    }
+
+    #[test]
+    fn test_private_package_provider_is_omitted_when_unset() {
+        let package: PrivatePackage = dbt_yaml::from_str("private: dbt-labs/some-repo\n").unwrap();
+        assert_eq!(package.provider, None);
+        assert!(!dbt_yaml::to_string(&package).unwrap().contains("provider"));
     }
 }

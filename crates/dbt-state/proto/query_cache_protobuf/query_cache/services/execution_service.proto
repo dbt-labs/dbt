@@ -8,6 +8,7 @@ import "query_cache_protobuf/query_cache/struct.proto";
 service Execution {
   rpc ConfirmExecution(ConfirmExecutionRequest) returns (ConfirmExecutionResponse);
   rpc RecordExecutions(RecordExecutionsRequest) returns (RecordExecutionsResponse);
+  rpc ResolveDeferredRelations(ResolveDeferredRelationsRequest) returns (ResolveDeferredRelationsResponse);
 }
 
 message ConfirmExecutionRequest {
@@ -61,6 +62,7 @@ message SQLExecution {
   optional DbtNodeState dbt_node_state = 10;
   optional string default_schema = 11;
   bool from_speculative_submit = 12;
+  optional string table_namespace = 13;
 }
 
 // Mirrors SubmitValuesRequest minus cache-decision-only fields. Note that
@@ -73,6 +75,7 @@ message ValuesExecution {
   map<string, string> semantic_extras = 5;
   map<string, string> labels = 6;
   optional DbtNodeState dbt_node_state = 7;
+  optional string table_namespace = 14;
 }
 
 message ExecutionOutcome {
@@ -84,4 +87,17 @@ message ExecutionOutcome {
 
 message RecordExecutionsResponse {
   uint32 records_stored = 1;
+}
+
+
+message ResolveDeferredRelationsRequest {
+  string profile_name = 1;
+  string target_name = 2; // defer-to target
+  string project_name = 3;
+  optional string project_id = 4;
+  repeated string node_unique_ids = 5;
+}
+
+message ResolveDeferredRelationsResponse {
+  map<string, string> fqn_by_unique_id = 1;
 }
