@@ -1295,6 +1295,12 @@ impl Object for Column {
             // @property methods
             Some("name") | Some("column") => Some(Value::from(&self.name)),
             Some("quoted") => Some(Value::from(self.quoted())),
+            // dbt-athena `AthenaColumn.quoted_hive`: Athena's Hive-style DDL
+            // (ALTER TABLE ... ADD COLUMNS, CREATE EXTERNAL TABLE) quotes
+            // identifiers with backticks where DML uses double quotes.
+            Some("quoted_hive") if self._adapter_type == AdapterType::Athena => {
+                Some(Value::from(format!("`{}`", self.name)))
+            }
             Some("data_type") => Some(Value::from(self.data_type())),
             // direct fields
             Some("dtype") => Some(Value::from(&self.core_dtype)),
@@ -1328,6 +1334,9 @@ impl Object for Column {
         if matches!(self._adapter_type, AdapterType::Bigquery) {
             keys.push("fields");
             keys.push("mode");
+        }
+        if matches!(self._adapter_type, AdapterType::Athena) {
+            keys.push("quoted_hive");
         }
 
         Enumerator::Iter(Box::new(keys.into_iter().map(Value::from)))
@@ -1538,6 +1547,36 @@ mod tests {
         for dtype in ["string", "STRING", "decimal(10,2)", "int"] {
             assert_eq!(databricks_column(dtype).data_type(), dtype);
         }
+    }
+
+    #[test]
+    fn test_quoted_hive_is_athena_only() {
+        let athena = Value::from_object(Column::new(
+            AdapterType::Athena,
+            "order_id".to_string(),
+            "bigint".to_string(),
+            None,
+            None,
+            None,
+        ));
+        assert_eq!(
+            athena.get_attr("quoted_hive").unwrap().as_str(),
+            Some("`order_id`")
+        );
+        assert_eq!(
+            athena.get_attr("quoted").unwrap().as_str(),
+            Some("\"order_id\"")
+        );
+
+        let postgres = Value::from_object(Column::new(
+            AdapterType::Postgres,
+            "order_id".to_string(),
+            "bigint".to_string(),
+            None,
+            None,
+            None,
+        ));
+        assert!(postgres.get_attr("quoted_hive").unwrap().is_undefined());
     }
 
     #[test]
