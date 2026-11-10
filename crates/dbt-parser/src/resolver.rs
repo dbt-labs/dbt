@@ -58,6 +58,7 @@ use dbt_schemas::state::{DbtRuntimeConfig, Operations};
 use dbt_schemas::state::{DbtState, ResolverState};
 use minijinja::constants::CURRENT_PATH;
 use minijinja::dispatch_object::{get_adapter_prefixes, get_internal_packages};
+use minijinja::value::OverlayMap;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -1027,19 +1028,14 @@ pub async fn resolve_inner(
     // Removing it means the parallel render pass must emit those warnings instead, and the
     // errors surface later or not at all. That is a breaking change that needs explicit handling.
     for (model_name, minimal_model_props) in &min_properties.models {
-        // Update base context with the relative yaml file path.
+        // Layer the relative yaml file path over the shared base context.
         // We do this for accurate error reporting.
-        // TODO: this copies the package base context for every model, and
-        // `into_typed_with_jinja` copies it again for every YAML span. Layer the path and
-        // span over the shared base with an `OverlayMap` instead.
-        let base_ctx = {
-            let mut base_ctx = BTreeMap::clone(&base_ctx);
-            base_ctx.insert(
-                CURRENT_PATH.to_string(),
-                minijinja::Value::from(minimal_model_props.relative_path.to_string_lossy()),
-            );
-            base_ctx
-        };
+        let mut model_ctx =
+            OverlayMap::new(minijinja::Value::from_dyn_object(Arc::clone(&base_ctx)));
+        model_ctx.insert(
+            CURRENT_PATH,
+            minijinja::Value::from(minimal_model_props.relative_path.to_string_lossy()),
+        );
 
         // Legacy semantic layer projects use a different `metrics` spec, so drop the key
         // rather than deserializing it against the current schema.
@@ -1052,7 +1048,7 @@ pub async fn resolve_inner(
             model_yml,
             false,
             &jinja_env,
-            &base_ctx,
+            &model_ctx,
             &[],
             dependency_package_name,
             // HACK: to avoid duplicate errors due to multiple parses of model yaml properties (once here and once in resolve_models)

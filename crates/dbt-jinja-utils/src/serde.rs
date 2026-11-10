@@ -83,7 +83,7 @@ use dbt_common::{
 };
 use dbt_schemas::schemas::serde::yaml_to_fs_error;
 use dbt_yaml::Value;
-use minijinja::{constants::CURRENT_SPAN, listener::RenderingEventListener};
+use minijinja::{constants::CURRENT_SPAN, listener::RenderingEventListener, value::OverlayMap};
 use regex::Regex;
 use serde::{Serialize, de::DeserializeOwned};
 
@@ -135,21 +135,30 @@ pub trait MinijinjaContext: Serialize {
     fn with_yaml_span(&self, span: &dbt_yaml::Span) -> Option<Box<Self>>;
 }
 
+fn current_span_value(span: &dbt_yaml::Span) -> minijinja::Value {
+    minijinja::Value::from_serialize(minijinja::compiler::tokens::Span {
+        start_line: span.start.line() as u32,
+        start_col: span.start.column() as u32,
+        start_offset: span.start.index() as u32,
+        end_line: span.end.line() as u32,
+        end_col: span.end.column() as u32,
+        end_offset: span.end.index() as u32,
+    })
+}
+
 impl MinijinjaContext for BTreeMap<String, minijinja::Value> {
     fn with_yaml_span(&self, span: &dbt_yaml::Span) -> Option<Box<Self>> {
         let mut ctx = self.clone();
-        let minijinja_span = minijinja::compiler::tokens::Span {
-            start_line: span.start.line() as u32,
-            start_col: span.start.column() as u32,
-            start_offset: span.start.index() as u32,
-            end_line: span.end.line() as u32,
-            end_col: span.end.column() as u32,
-            end_offset: span.end.index() as u32,
-        };
-        ctx.insert(
-            CURRENT_SPAN.to_string(),
-            minijinja::Value::from_serialize(minijinja_span),
-        );
+        ctx.insert(CURRENT_SPAN.to_string(), current_span_value(span));
+        Some(Box::new(ctx))
+    }
+}
+
+/// Layers the span over the overlay's base instead of copying the base.
+impl MinijinjaContext for OverlayMap {
+    fn with_yaml_span(&self, span: &dbt_yaml::Span) -> Option<Box<Self>> {
+        let mut ctx = self.clone();
+        ctx.insert(CURRENT_SPAN, current_span_value(span));
         Some(Box::new(ctx))
     }
 }
