@@ -159,6 +159,8 @@ pub mod schemas {
             pub mod snapshot_config;
             pub mod source_config;
             pub mod unit_test_config;
+            #[cfg(test)]
+            pub mod warehouse_config_test_support;
             pub mod warehouse_scope;
         }
 

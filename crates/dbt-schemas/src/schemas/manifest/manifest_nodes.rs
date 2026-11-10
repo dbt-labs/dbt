@@ -1133,7 +1133,7 @@ impl From<SeedConfig> for ManifestSeedConfig {
             tags: config.tags.into_inner(),
             quoting: config.quoting,
             materialized: config.materialized,
-            __warehouse_specific_config__: config.__warehouse_specific_config__,
+            __warehouse_specific_config__: config.__warehouse_specific_config__.into_inner(),
         }
     }
 }
@@ -1174,7 +1174,7 @@ impl From<ManifestSeedConfig> for SeedConfig {
             tags: crate::schemas::project::configs::config_merge::Tags(config.tags),
             quoting: config.quoting,
             materialized: config.materialized,
-            __warehouse_specific_config__: config.__warehouse_specific_config__,
+            __warehouse_specific_config__: config.__warehouse_specific_config__.into(),
         }
     }
 }
