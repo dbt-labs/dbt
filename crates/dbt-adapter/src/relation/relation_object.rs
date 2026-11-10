@@ -915,7 +915,7 @@ impl Object for StaticBaseRelationObject {
                 iter.finish()?;
 
                 let local_config = minijinja_value_to_typed_struct::<InternalDbtNodeWrapper>(
-                    local_config_value.clone(),
+                    local_config_value,
                 )
                 .map_err(|e| {
                     minijinja::Error::new(
@@ -1419,6 +1419,26 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(err.kind(), minijinja::ErrorKind::MissingArgument, "{err}");
+    }
+
+    #[test]
+    fn relation_exposes_quote_policy() {
+        let relation = Relation::new(
+            AdapterType::Snowflake,
+            "db".to_string(),
+            "schema".to_string(),
+            "table".to_string(),
+        )
+        .with_quoting(ResolvedQuoting {
+            database: true,
+            schema: false,
+            identifier: true,
+        });
+        jinja_assert(
+            RelationObject::new(Arc::new(relation)),
+            "{{ obj.quote_policy.database }} {{ obj.quote_policy.schema }} {{ obj.quote_policy.identifier }}",
+            "True False True",
+        );
     }
 
     #[test]

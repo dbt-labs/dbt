@@ -1,0 +1,95 @@
+version: 2
+
+models:
+  - name: a
+    description: "Base table with source data"
+    columns:
+      - name: id
+        description: "Primary key"
+        databricks_tags:
+          primary_key: "yes"
+          indexed: "true"
+      - name: name
+        description: "Customer name"
+        databricks_tags:
+          data_type: "{{ var('data_type_value', 'string') }}"
+          owner: "{{ var('owner', 'data_team') }}"
+      - name: email
+        description: "Customer email"
+        databricks_tags:
+          format: "email"
+          required: "true"
+      - name: amount
+        description: "Transaction amount"
+        databricks_tags:
+          data_category: "numeric"
+
+  - name: test_table
+    description: "Test table with column tags"
+    columns:
+      - name: id
+        description: "Primary key"
+        databricks_tags:
+          primary_key: "yes"
+          indexed: "true"
+      - name: name
+        description: "Customer name"
+        databricks_tags:
+          data_type: "{{ var('data_type_value', 'string') }}"
+          owner: "{{ var('owner', 'data_team') }}"
+      - name: email
+        description: "Customer email"
+        databricks_tags:
+          format: "email"
+          required: "true"
+      - name: amount
+        description: "Transaction amount"
+        databricks_tags:
+          data_category: "numeric"
+
+  - name: test_view
+    description: "Test view with column tags"
+    columns:
+      - name: id
+        description: "Primary key"
+        databricks_tags:
+          primary_key: "yes"
+          indexed: "true"
+      - name: name
+        description: "Customer name"
+        databricks_tags:
+          data_type: "{{ var('data_type_value', 'string') }}"
+          owner: "{{ var('owner', 'data_team') }}"
+      - name: email
+        description: "Customer email"
+        databricks_tags:
+          format: "email"
+          required: "true"
+      - name: amount
+        description: "Transaction amount"
+        databricks_tags:
+          data_category: "numeric"
+
+  - name: test_materialized_view
+    description: "Test materialized view with column tags"
+    columns:
+      - name: id
+        description: "Primary key"
+        databricks_tags:
+          primary_key: "yes"
+          indexed: "true"
+      - name: name
+        description: "Customer name"
+        databricks_tags:
+          data_type: "{{ var('data_type_value', 'string') }}"
+          owner: "{{ var('owner', 'data_team') }}"
+      - name: email
+        description: "Customer email"
+        databricks_tags:
+          format: "email"
+          required: "true"
+      - name: amount
+        description: "Transaction amount"
+        databricks_tags:
+          data_category: "numeric"
+

@@ -279,6 +279,9 @@ message ResourceCounts {
 
   // total count of checks (project quality checks under `checks/`) in the project.
   int32 checks = 20;
+
+  // total count of enabled functions (user-defined functions) in the project.
+  int32 functions = 21;
 }
 
 // Run Model Event will be emitted when Fusion runs a model or skips a model because

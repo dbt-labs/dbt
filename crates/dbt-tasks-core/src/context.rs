@@ -9,11 +9,9 @@ use std::time::Instant;
 use crate::run_cache::run_cache_service::{
     CachedTestExecutionResult, HeuristicClock, TelemetryDispatcher,
 };
-use arrow::array::RecordBatch;
-use arrow_schema::SchemaRef;
-use dbt_adapter::AdapterStore;
 use dbt_adapter::relation::create_relation_from_node;
 use dbt_adapter::response::AdapterResponse;
+use dbt_adapter::{Adapter, AdapterStore};
 use dbt_adapter_core::AdapterType;
 use dbt_common::FsResult;
 use dbt_common::collections::SccHashMap;
@@ -22,10 +20,12 @@ use dbt_common::path::DbtPath;
 use dbt_common::sources_extractor::SourcesExtractor;
 use dbt_common::stats::{ExecutionMetrics, NodeStatus, Stat};
 use dbt_dag::schedule::Schedule;
-use dbt_jinja_utils::jinja_environment::{JinjaEnv, adapter_api_value};
+use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::phases::compile::{
     DependencyValidationConfig, build_compile_node_context_inner,
 };
+use dbt_jinja_utils::phases::parse::ParseAdapterScopes;
+use dbt_jinja_utils::utils::add_task_context;
 use dbt_schema_store::{DataStoreTrait, SchemaStoreTrait};
 use dbt_schemas::materialization_resolver::MaterializationResolver;
 use dbt_schemas::schemas::common::UpdatesOn;
@@ -40,6 +40,7 @@ use dbt_state::service_config::RunCacheServiceConfig;
 use dbt_state::telemetry::SharedEventOrder;
 use dbt_state::view_traversal::ViewDefinitionTraverser;
 use minijinja::Value;
+use minijinja::value::OverlayMap;
 
 use crate::RunTasksArgs;
 use crate::span_manager::SpanManager;
@@ -47,6 +48,7 @@ use crate::task::Task;
 use crate::test_aggregation::{GenericTestRelationships, is_data_test_static_analysis_eligible};
 use crate::unit_test_schema::UnitTestSchemaState;
 use crate::visitor::SkipReason;
+use dbt_schemas::schemas::Preview;
 
 use dbt_schemas::schemas::common::DbtMaterialization;
 
@@ -168,7 +170,7 @@ pub struct TaskRunnerCtxInner {
     pub worker_id: String,
     pub schedule: Schedule<String>,
     pub runtime_deps: BTreeMap<String, BTreeSet<String>>,
-    pub base_context: BTreeMap<String, Value>,
+    pub base_context: Arc<BTreeMap<String, Value>>,
     pub analyze_stats: SccHashMap<String, Stat>,
     pub run_stats: SccHashMap<String, Stat>,
     pub data_test_execution_results: SccHashMap<String, CachedTestExecutionResult>,
@@ -193,6 +195,8 @@ pub struct TaskRunnerCtxInner {
     /// executes it, rather than re-deriving one from the profile. Its
     /// `default_adapter_type()` is what an unannotated node runs on.
     pub adapter_store: Arc<AdapterStore>,
+    /// The `target` each declared non-default adapter's nodes render with.
+    adapter_scopes: ParseAdapterScopes,
     pub sources_extractor: Arc<dyn SourcesExtractor>,
     pub dbt_profile: Arc<DbtProfile>,
     pub runtime_config: Arc<DbtRuntimeConfig>,
@@ -201,8 +205,8 @@ pub struct TaskRunnerCtxInner {
     /// every task in this run.
     pub infer_schema_registry: Arc<dbt_common::infer_schema_registry::InferSchemaRegistry>,
     span_manager: Arc<SpanManager<FsResult<NodeStatus>, SkipReason>>,
-    /// Captured show batches for the LSP preview path; set by run_show, collected after the task loop.
-    pub preview_results: parking_lot::Mutex<Option<(Vec<RecordBatch>, SchemaRef)>>,
+    /// Captured show results; set by run_show, collected after the task loop.
+    pub preview_results: parking_lot::Mutex<Option<Preview>>,
     /// Error from a failed show query; set by run_show when execution fails, collected after the task loop.
     pub preview_error: parking_lot::Mutex<Option<String>>,
     /// Coordinates unit-test schema hydration and memoization for this invocation.
@@ -264,7 +268,7 @@ impl TaskRunnerCtxInner {
             worker_id,
             schedule,
             runtime_deps,
-            base_context,
+            base_context: Arc::new(base_context),
             analyze_stats: SccHashMap::default(),
             run_stats: SccHashMap::default(),
             data_test_execution_results: SccHashMap::default(),
@@ -283,6 +287,7 @@ impl TaskRunnerCtxInner {
             materialization_resolver: Arc::new(materialization_resolver),
             root_project_name: resolver_state.root_project_name.clone(),
             adapter_store,
+            adapter_scopes: ParseAdapterScopes::from_profile(&resolver_state.dbt_profile),
             sources_extractor,
             dbt_profile: Arc::new(resolver_state.dbt_profile.clone()),
             runtime_config: resolver_state.runtime_config.clone(),
@@ -479,6 +484,43 @@ impl TaskRunnerCtx {
         &self.inner.adapter_store
     }
 
+    /// The adapter that executes `node` outside compute_platform (a lakecompute node gets the run
+    /// adapter).
+    pub fn adapter_for(&self, node: &dyn InternalDbtNodeAttributes) -> FsResult<Arc<Adapter>> {
+        self.adapter_store().get(self.adapter_type_for(node))
+    }
+
+    /// [`Self::adapter_for`]'s type; the run adapter is [`AdapterStore::run_adapter_type`].
+    pub fn adapter_type_for(&self, node: &dyn InternalDbtNodeAttributes) -> AdapterType {
+        adapter_type_outside_compute_platform(
+            node.node_adapter(),
+            self.adapter_store().run_adapter_type(),
+        )
+    }
+
+    /// [`dbt_jinja_utils::phases::insert_adapter_overlay`] with this run's store and scopes.
+    pub fn insert_adapter_overlay(
+        &self,
+        ctx: &mut impl Extend<(String, Value)>,
+        adapter_type: AdapterType,
+    ) -> FsResult<()> {
+        dbt_jinja_utils::phases::insert_adapter_overlay(
+            ctx,
+            adapter_type,
+            self.adapter_store(),
+            &self.inner.adapter_scopes,
+        )
+    }
+
+    /// One node's run-phase base context: the node's task keys and its adapter overlay
+    /// layered over the run's base context.
+    pub fn run_base_context(&self, node: &dyn InternalDbtNodeAttributes) -> FsResult<Value> {
+        let mut ctx = self.base_context_overlay();
+        add_task_context(&mut ctx, node.common(), &self.thread_id);
+        self.insert_adapter_overlay(&mut ctx, self.adapter_type_for(node))?;
+        Ok(Value::from(ctx))
+    }
+
     pub fn extended_ctx<T: ExtendedCtx + 'static>(&self) -> Option<&T> {
         self.inner.extended_ctx.as_any().downcast_ref::<T>()
     }
@@ -541,13 +583,19 @@ impl TaskRunnerCtx {
         self.resolver_state.node_resolver.clone()
     }
 
+    /// An empty overlay over the shared base context, to add a context's own
+    /// entries without copying the base.
+    pub fn base_context_overlay(&self) -> OverlayMap {
+        OverlayMap::new(Value::from_dyn_object(Arc::clone(&self.inner.base_context)))
+    }
+
     #[allow(clippy::type_complexity, clippy::too_many_arguments)]
     pub fn build_compile_node_context<T>(
         &self,
         model: Arc<T>,
-        base_context: &BTreeMap<String, Value>,
+        base_context: &Value,
         ref_validation_config: DependencyValidationConfig,
-    ) -> FsResult<(BTreeMap<String, Value>, Arc<SccHashMap<String, Value>>)>
+    ) -> FsResult<(OverlayMap, Arc<SccHashMap<String, Value>>)>
     where
         T: InternalDbtNodeAttributes + ?Sized,
     {
@@ -576,11 +624,7 @@ impl TaskRunnerCtx {
         // Only when the node differs from the default: an unannotated node then
         // resolves the identical global it always did, and a single-adapter
         // target never asks the store for a second adapter.
-        if node_adapter != self.default_adapter_type() {
-            let adapter = self.adapter_store().get(node_adapter)?;
-            ctx.insert("api".to_string(), adapter_api_value(&adapter));
-            ctx.insert("adapter".to_string(), adapter.as_value());
-        }
+        self.insert_adapter_overlay(&mut ctx, node_adapter)?;
 
         Ok((ctx, config_map))
     }
@@ -594,6 +638,18 @@ impl TaskRunnerCtx {
 
     pub fn is_sidecar(&self) -> bool {
         self.inner.extended_ctx.is_sidecar()
+    }
+}
+
+/// The adapter that prepares and reads a node's relations outside its write path:
+/// the node's own, except that a LakeCompute node uses `run_adapter`.
+pub fn adapter_type_outside_compute_platform(
+    node_adapter: AdapterType,
+    run_adapter: AdapterType,
+) -> AdapterType {
+    match node_adapter {
+        AdapterType::LakeCompute => run_adapter,
+        other => other,
     }
 }
 
@@ -710,5 +766,34 @@ mod execution_metrics_tests {
             node_execution_metrics(true, "model.none", &totals, &main),
             Some(ExecutionMetrics::default())
         );
+    }
+}
+
+#[cfg(test)]
+mod adapter_routing_tests {
+    use super::*;
+
+    #[test]
+    fn adapter_type_outside_compute_platform_routes_only_lakecompute_to_the_run_adapter() {
+        for node_adapter in [
+            AdapterType::Snowflake,
+            AdapterType::Bigquery,
+            AdapterType::DuckDB,
+        ] {
+            assert_eq!(
+                adapter_type_outside_compute_platform(node_adapter, AdapterType::Snowflake),
+                node_adapter
+            );
+        }
+        for run_adapter in [
+            AdapterType::Snowflake,
+            AdapterType::Bigquery,
+            AdapterType::LakeCompute,
+        ] {
+            assert_eq!(
+                adapter_type_outside_compute_platform(AdapterType::LakeCompute, run_adapter),
+                run_adapter
+            );
+        }
     }
 }

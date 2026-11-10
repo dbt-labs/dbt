@@ -1,0 +1,26 @@
+version: 2
+models:
+  - name: row_filter_table
+    config: &user_filter
+      row_filter:
+        function: user_filter
+        columns: [user_id]
+    columns: &columns
+      - name: user_id
+        data_type: string
+      - name: region
+        data_type: string
+      - name: amount
+        data_type: bigint
+
+  - name: row_filter_incremental
+    config: *user_filter
+    columns: *columns
+
+  - name: row_filter_materialized_view
+    config: *user_filter
+    columns: *columns
+  
+  - name: row_filter_safe_replace
+    config: *user_filter
+    columns: *columns

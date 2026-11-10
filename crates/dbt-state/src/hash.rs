@@ -1,7 +1,7 @@
 use dbt_common::path::DbtPath;
 use dbt_schemas::schemas::{
-    DbtModel, DbtSeed, DbtTest, InternalDbtNode, InternalDbtNodeAttributes,
-    common::DbtMaterialization, config_excluded_keys, macros::DbtMacro,
+    DbtModel, DbtSeed, DbtTest, InternalDbtNode, InternalDbtNodeAttributes, config_excluded_keys,
+    macros::DbtMacro,
 };
 use dbt_schemas::state::{DbtRuntimeConfig, DbtVars};
 use md5;
@@ -136,13 +136,13 @@ fn project_var_value(value: &DbtVars) -> dbt_yaml::Value {
     }
 }
 
-// JSON collapses timestamps into strings, non-finite numbers into null, and
+// JSON collapses non-finite numbers into null and
 // non-string map keys into strings. Keep a separate typed representation for
 // those values; ordinary JSON-compatible values retain their existing hash bytes.
 fn requires_yaml_types(value: &dbt_yaml::Value) -> bool {
     use dbt_yaml::Value;
     match value {
-        Value::Timestamp(..) | Value::Tagged(..) => true,
+        Value::Tagged(..) => true,
         Value::Number(number, _) => number.as_f64().is_some_and(|value| !value.is_finite()),
         Value::Sequence(values, _) => values.iter().any(requires_yaml_types),
         Value::Mapping(values, _) => values
@@ -160,7 +160,6 @@ fn typed_yaml_value(value: &dbt_yaml::Value) -> JsonValue {
         Value::Bool(value, _) => json!(["bool", value]),
         Value::String(value, _) => json!(["string", value]),
         Value::Number(value, _) => json!(["number", value.to_string()]),
-        Value::Timestamp(value, _) => json!(["timestamp", value.to_string()]),
         Value::Tagged(value, _) => {
             json!(["tag", value.tag.to_string(), typed_yaml_value(&value.value)])
         }
@@ -400,6 +399,9 @@ fn node_runtime_vars<'a>(
                 if let Some(source) = value.as_str() {
                     nested = Some(source.to_string());
                 }
+                // Hash stability depends on `serde_json::Map` being a `BTreeMap` here: it sorts
+                // keys, so project vars (`DbtVars::Vars` is an `IndexMap`) hash independent of
+                // declaration order. Enabling `serde_json/preserve_order` would change node hashes.
                 let json = serde_json::to_value(value.as_ref());
                 if requires_yaml_types(&value) || json.is_err() {
                     var_types.insert(name.clone(), typed_yaml_value(&value));
@@ -590,12 +592,7 @@ fn build_contract_checksum(node: &DbtModel) -> Option<String> {
     }
 
     let materialization = &node.__base_attr__.materialized;
-    let materialization_enforces_constraints = matches!(
-        materialization,
-        DbtMaterialization::Table | DbtMaterialization::Incremental
-    );
-
-    if materialization_enforces_constraints {
+    if materialization.enforces_constraints() {
         contract_state.push_str(&materialization.to_string());
         let constraints_str =
             to_string(&node.__model_attr__.constraints).unwrap_or_else(|_| "[]".to_owned());
@@ -658,9 +655,8 @@ fn model_node_ref_representation_hash(node: &DbtModel) -> Result<String, NodeHas
         JsonValue::from(
             node.__model_attr__
                 .deprecation_date
-                .as_ref()
-                .map(|ts| ts.with_defaults().to_string())
-                .unwrap_or_else(|| "None".to_owned()),
+                .as_deref()
+                .unwrap_or("None"),
         ),
     );
 
@@ -673,7 +669,11 @@ fn seed_node_body_hash(
 ) -> Result<String, NodeHashError> {
     // ref: https://github.com/fivetran/query-cache/blob/4ab87c72f2783c230905c5c75ec19eb76314069e/clients/dbt_state/src/dbt_state/node_hash_calculator.py#L203
     let seed_relative_path = &node.common().original_file_path;
-    let seed_full_path = project_root_path.join(seed_relative_path);
+    // Package seeds live under their package root, not the project root.
+    let seed_full_path = match node.file_path_from_root() {
+        Some(path) => path,
+        None => project_root_path.join(seed_relative_path).to_path_buf(),
+    };
 
     let mut reader = BufReader::new(File::open(seed_full_path)?);
     let mut ctx = md5::Context::new();
@@ -876,6 +876,34 @@ mod tests {
             assert_eq!(
                 seed_node_body_hash(&seed, &project_root).unwrap(),
                 expected_hash
+            );
+        }
+
+        #[test]
+        fn seed_node_body_hash_uses_root_path_for_package_seeds() {
+            let tmpdir = TempDir::new().unwrap();
+            let project_root: DbtPath = tmpdir.path().join("project").as_path().into();
+            let package_root = tmpdir.path().join("pkg");
+            fs::create_dir_all(package_root.join("seeds")).unwrap();
+            fs::write(
+                package_root.join("seeds/seed_data.csv"),
+                b"id,name\n1,Ada\n2,Grace\n",
+            )
+            .unwrap();
+
+            let mut seed = DbtSeed {
+                __common_attr__: CommonAttributes {
+                    path: "seeds/seed_data.csv".into(),
+                    original_file_path: "dbt_packages/pkg/seeds/seed_data.csv".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            seed.__seed_attr__.root_path = Some(package_root);
+
+            assert_eq!(
+                seed_node_body_hash(&seed, &project_root).unwrap(),
+                "e146991e1c07585745c5a65f06a517e9"
             );
         }
     }
@@ -1460,7 +1488,7 @@ mod tests {
             let mut node = model_node(&["project", "models", "test_model"]);
             node.__model_attr__.latest_version = Some(StringOrInteger::Integer(2));
             node.__model_attr__.access = Access::Public;
-            node.__model_attr__.deprecation_date = dbt_yaml::Timestamp::parse("2025-12-31");
+            node.__model_attr__.deprecation_date = Some("2025-12-31".to_string());
 
             assert_eq!(model_node_ref_representation_hash(&node).unwrap().len(), 32);
         }
@@ -1701,6 +1729,7 @@ mod tests {
                 ..Default::default()
             },
             __common_attr__: CommonAttributes {
+                path: "test_seed.csv".into(),
                 original_file_path: seed_file_path.get_relative_path(&project_root).unwrap(),
                 fqn: vec![
                     "project".to_string(),
@@ -2193,9 +2222,6 @@ mod runtime_vars {
             hash(&node, Some(&cfg), &[])
         };
         for (typed, plain) in [
-            ("2026-08-03", "'2026-08-03'"),
-            ("[2026-08-03]", "['2026-08-03']"),
-            ("{date: 2026-08-03}", "{date: '2026-08-03'}"),
             (".nan", "null"),
             (".inf", "-.inf"),
             ("{1: x}", "{'1': x}"),
@@ -2213,6 +2239,30 @@ mod runtime_vars {
         assert_eq!(
             with_yaml("{a: 2026-08-03, b: 1}", true),
             with_yaml("{b: 1, a: 2026-08-03}", true)
+        );
+    }
+
+    #[test]
+    fn project_var_hash_ignores_nested_dict_key_order() {
+        let node = model("select {{ var('value') }}");
+        let hash_of = |source: &str| {
+            let mut cfg = config(&[], &[]);
+            Arc::make_mut(cfg.dependencies.get_mut("pkg").unwrap())
+                .inner
+                .vars
+                .insert(
+                    "value".into(),
+                    dbt_yaml::from_str::<DbtVars>(source).unwrap(),
+                );
+            hash(&node, Some(&cfg), &[])
+        };
+        assert_eq!(
+            hash_of("{zeta: 1, alpha: {y: 2, x: 3}, mid: [{b: 1, a: 2}]}"),
+            hash_of("{mid: [{a: 2, b: 1}], alpha: {x: 3, y: 2}, zeta: 1}")
+        );
+        assert_ne!(
+            hash_of("{zeta: 1, alpha: 2}"),
+            hash_of("{zeta: 1, alpha: 3}")
         );
     }
 

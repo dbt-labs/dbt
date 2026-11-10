@@ -562,6 +562,75 @@ fn test_runtime_get_columns_in_relation_rejects_string() {
 }
 
 #[test]
+fn fixture_columns_are_scoped_to_each_render() {
+    let adapter = make_duckdb_adapter();
+    let relation = dispatch_test(
+        &make_duckdb_parse_adapter(),
+        "get_relation",
+        &[
+            Value::from("db"),
+            Value::from("schema"),
+            Value::from("input"),
+        ],
+    )
+    .unwrap();
+    let key = downcast_value_to_dyn_base_relation(&relation)
+        .unwrap()
+        .semantic_fqn();
+    let environments = ["ALPHA", "BETA"].map(|name| {
+        let mut env = minijinja::Environment::new();
+        let column = crate::Column::new(
+            AdapterType::DuckDB,
+            name.to_string(),
+            "text".to_string(),
+            Some(256),
+            None,
+            None,
+        );
+        let columns = Value::from(vec![Value::from_object(column)]);
+        env.add_global(
+            UNIT_TEST_FIXTURE_COLUMNS,
+            Value::from_iter([(
+                key.clone(),
+                fixture_columns::lazy_fixture_columns(move || Ok(columns.clone())),
+            )]),
+        );
+        env
+    });
+    for index in [0, 1, 0] {
+        let state = State::new_for_env(&environments[index]);
+        let columns = adapter
+            .call_method_impl(
+                &state,
+                "get_columns_in_relation",
+                std::slice::from_ref(&relation),
+                &[],
+            )
+            .unwrap();
+        assert_eq!(
+            columns
+                .get_item(&Value::from(0))
+                .unwrap()
+                .get_attr("name")
+                .unwrap()
+                .as_str(),
+            Some(["ALPHA", "BETA"][index])
+        );
+    }
+    // Neither render may overwrite the adapter's ordinary metadata lookup.
+    let columns = dispatch_test(&adapter, "get_columns_in_relation", &[relation]).unwrap();
+    assert_eq!(
+        columns
+            .get_item(&Value::from(0))
+            .unwrap()
+            .get_attr("name")
+            .unwrap()
+            .as_str(),
+        Some("one")
+    );
+}
+
+#[test]
 fn test_parse_mode_get_relation_result_is_tainted() {
     let adapter = make_duckdb_parse_adapter();
     let result = call_method_test(
@@ -620,6 +689,21 @@ fn adapter_type_falls_back_on_an_unknown_dialect() {
 
     let result = dispatch_test_with_dialect(&adapter, "not_an_adapter", "type", &[]).unwrap();
     assert_eq!(result.as_str().unwrap(), "duckdb");
+}
+
+#[test]
+fn adapter_quote_follows_the_nodes_selected_dialect() {
+    let adapter = make_duckdb_parse_adapter();
+    for (dialect, expected) in [
+        ("bigquery", "`x`"),
+        ("databricks", "`x`"),
+        ("snowflake", "\"x\""),
+        ("not_an_adapter", "\"x\""),
+    ] {
+        let quoted =
+            dispatch_test_with_dialect(&adapter, dialect, "quote", &[Value::from("x")]).unwrap();
+        assert_eq!(quoted.as_str(), Some(expected), "{dialect}");
+    }
 }
 
 #[test]

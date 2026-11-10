@@ -5,4 +5,6 @@
 //! test's doc comment. Tests of adapter methods and features go in `adapter`.
 
 pub mod bigquery;
+pub mod databricks;
+pub mod redshift;
 pub mod snowflake;

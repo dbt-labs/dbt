@@ -29,7 +29,6 @@ parquet = { workspace = true }
 reqwest = { workspace = true }
 
 # Basic utilities
-int-enum = { workspace = true }
 itertools = { workspace = true }
 pathdiff = { workspace = true }
 regex = { workspace = true }

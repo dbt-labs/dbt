@@ -9,7 +9,7 @@ use dbt_telemetry::{
 use indoc::{formatdoc, indoc};
 
 use super::events::{data_test, invocation, node, node_group, processed, test_detail};
-use super::support::{Case, Clock, DBT_LOG, TERMINAL, TERMINAL_QUIET, TEXT};
+use super::support::{Case, Clock, DBT_LOG, TERMINAL, TERMINAL_NO_COLOR, TERMINAL_QUIET, TEXT};
 use crate::tracing::{
     dbt_metrics::{FusionMetricKey, InvocationMetricKey},
     emit::{create_info_span, emit_error_event, emit_warn_event},
@@ -155,6 +155,37 @@ fn eventful_build_summary(cases: &mut Vec<Case>) {
                     <dim>=================== Errors and Warnings ====================</>
                     <red+bold>[error]</> [UnusedConfigKey (dbt1060)]: Model '<yellow>customers</>' failed: column '<yellow>id</>' does not exist
                     <yellow+bold>[warning]</> [InvalidConfig (dbt1005)]: Unused config key 'materialised' in `<yellow>models/schema.yml</>`
+                "#},
+            )
+            .expect(
+                TERMINAL_NO_COLOR,
+                indoc! {r#"
+                     Succeeded seed  analytics.raw_orders (seed) [3 of 12 in 0.25s]
+                        Failed test  analytics_dbt_test__audit.not_null_customers_customer_id (models/schema.yml:12:15) [3 of 12 in 0.25s]
+                        Warned test  not_null_customers_customer_id (models/schema.yml:12:15) [3 of 12 in 0.25s]
+                        Failed model analytics.customers (table) [3 of 12 in 0.25s]
+                       Skipped model analytics.orders (table) [3 of 12]
+                        Reused model analytics.payments (table) [3 of 12]
+                      Finished [  0.03s] hook  jaffle_shop-on-run-end-0
+
+                    ====================== Test Failures =======================
+                    Test failed (2 failed row(s)): not_null_customers_customer_id
+                    See test failures:
+                    select * from warehouse.analytics_dbt_test__audit.not_null_customers_customer_id
+
+                    ==================== Execution Summary =====================
+                    Finished 'build' with 1 warning and 1 error for target 'dev' [1m 15s]
+                    Processed: 1 hook | 3 models | 2 tests | 1 seed
+                    Summary: 7 total | 2 success | 1 reused | 1 warn | 2 error | 1 skipped
+                "#},
+            )
+            .expect_stderr(
+                TERMINAL_NO_COLOR,
+                indoc! {r#"
+
+                    =================== Errors and Warnings ====================
+                    [error] [UnusedConfigKey (dbt1060)]: Model 'customers' failed: column 'id' does not exist
+                    [warning] [InvalidConfig (dbt1005)]: Unused config key 'materialised' in `models/schema.yml`
                 "#},
             )
             .expect(

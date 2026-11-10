@@ -196,7 +196,35 @@ pub(crate) fn adapter_args_match_for_type(
                 |(rec_sql, act_sql)| compare_sql(rec_sql, act_sql, adapter_type).is_ok(),
             ),
         "submit_python_job" => python_job_args_match(recorded, actual),
+        "update_columns" => {
+            let (mut recorded, mut actual) = (recorded.clone(), actual.clone());
+            fill_constraint_warn_flag_defaults(&mut recorded);
+            fill_constraint_warn_flag_defaults(&mut actual);
+            values_match(&recorded, &actual)
+        }
         _ => values_match(recorded, actual),
+    }
+}
+
+/// Set each missing `warn_unenforced` and `warn_unsupported` flag to `true` in the column
+/// constraints of `update_columns(relation, columns)` args.
+///
+/// PR #16910 changed the default of these flags from unset to `true`, as in dbt-core. Older
+/// recordings omit the keys and newer binaries serialize them. An omitted flag and `true` have
+/// the same meaning, so fill the default on both sides. An explicit `false` still mismatches.
+fn fill_constraint_warn_flag_defaults(args: &mut serde_json::Value) {
+    let constraints = args
+        .get_mut(1)
+        .and_then(serde_json::Value::as_object_mut)
+        .into_iter()
+        .flat_map(|columns| columns.values_mut())
+        .filter_map(|column| column.get_mut("constraints")?.as_array_mut())
+        .flatten()
+        .filter_map(serde_json::Value::as_object_mut);
+    for constraint in constraints {
+        for flag in ["warn_unenforced", "warn_unsupported"] {
+            constraint.entry(flag).or_insert(true.into());
+        }
     }
 }
 
@@ -1008,6 +1036,29 @@ impl Recording {
         }
 
         None
+    }
+
+    /// Find a read-only `execute` event in the current segment for diagnostics.
+    ///
+    /// This does not consume the event or look beyond the next write barrier.
+    pub(crate) fn read_only_execute_candidate(
+        &self,
+        node_id: &str,
+        method: &str,
+    ) -> Option<&AdapterCallEvent> {
+        let events = self.adapter_events_by_node.get(node_id)?;
+        let state = self.semantic_adapter_state.read();
+        let search_start = state.get(node_id).map_or(0, |state| state.segment_start);
+        let search_end = events[search_start..]
+            .iter()
+            .position(|event| {
+                event.semantic_category.is_mutating() && !is_read_only_execute_event(event)
+            })
+            .map_or(events.len(), |pos| search_start + pos);
+
+        events[search_start..search_end]
+            .iter()
+            .find(|event| event.method == method && is_read_only_execute_event(event))
     }
 
     /// Find a matching read operation within the current segment (untracked).
@@ -2455,6 +2506,53 @@ mod tests {
             SemanticCategory::MetadataRead,
         );
         assert!(result.is_none(), "Should not find TABLE_C");
+    }
+
+    /// `update_columns` args with one column that carries the given constraint.
+    fn update_columns_args(constraint: serde_json::Value) -> serde_json::Value {
+        serde_json::json!([
+            { "__type__": "RelationObject", "identifier": "t" },
+            {
+                "__type__": "minijinja::value::object::mutable_map::MutableMap",
+                "id": { "constraints": [constraint], "name": "id" }
+            }
+        ])
+    }
+
+    #[test]
+    fn test_update_columns_treats_missing_constraint_warn_flags_as_true() {
+        // Recordings made before PR #16910 omit the flags. Newer binaries serialize the
+        // `true` default. The fill must not hide an explicit `false`.
+        let recorded = update_columns_args(serde_json::json!({"type": "primary_key"}));
+        let actual = update_columns_args(serde_json::json!({
+            "type": "primary_key",
+            "warn_unenforced": true,
+            "warn_unsupported": true
+        }));
+        let actual_false = update_columns_args(serde_json::json!({
+            "type": "primary_key",
+            "warn_unenforced": false,
+            "warn_unsupported": true
+        }));
+
+        assert!(adapter_args_match_for_type(
+            "update_columns",
+            &recorded,
+            &actual,
+            AdapterType::Bigquery
+        ));
+        assert!(adapter_args_match_for_type(
+            "update_columns",
+            &actual,
+            &recorded,
+            AdapterType::Bigquery
+        ));
+        assert!(!adapter_args_match_for_type(
+            "update_columns",
+            &recorded,
+            &actual_false,
+            AdapterType::Bigquery
+        ));
     }
 
     #[test]

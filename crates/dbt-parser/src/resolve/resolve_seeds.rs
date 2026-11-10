@@ -1,16 +1,13 @@
 use crate::args::ResolveArgs;
-use crate::dbt_project_config::{
-    ProjectConfigResolver, RootProjectConfigs, disallow_plus_prefix_from_flags, init_project_config,
-};
+use crate::dbt_project_config::{NodeLayers, ProjectConfigResolver, RootProjectConfigs};
 use crate::renderer::strip_warehouse_keys_in_config_block;
 use crate::resolve::resolve_utils::{
-    build_unrendered_config, err_resource_name_has_spaces, extract_config_map,
-    resolve_node_quoting, select_node_adapter,
+    RawProjectConfigsByAdapter, err_resource_name_has_spaces, extract_config_map,
+    node_effective_propagation_target, resolve_node_quoting, select_node_adapter,
 };
 use crate::utils::{
-    RelationComponents, extract_resource_config_from_raw_project, get_node_fqn,
-    node_starting_database_and_schema, register_duplicate_resource, trigger_duplicate_errors,
-    update_node_relation_components,
+    RelationComponents, get_node_fqn, node_starting_database_and_schema,
+    register_duplicate_resource, trigger_duplicate_errors, update_node_relation_components,
 };
 use crate::validation::check_node_static_analysis;
 use dbt_adapter::load_catalogs;
@@ -31,9 +28,9 @@ use dbt_schemas::schemas::dbt_catalogs_deprecated::LoadedCatalogs;
 use dbt_schemas::schemas::dbt_column::process_columns;
 use dbt_schemas::schemas::project::WarningEmission;
 use dbt_schemas::schemas::properties::SeedProperties;
+use dbt_schemas::schemas::relations::relation_owner_adapter;
 use dbt_schemas::schemas::telemetry::NodeType;
 use dbt_schemas::schemas::{CommonAttributes, DbtSeed, DbtSeedAttr, NodeBaseAttributes};
-use dbt_schemas::state::resolve_effective_propagation_target;
 use dbt_schemas::state::{DbtPackage, GenericTestAsset};
 use dbt_schemas::state::{ModelStatus, NodeResolverTracker};
 use indexmap::IndexMap;
@@ -84,20 +81,12 @@ pub async fn resolve_seeds(
     let dependency_package_name = dependency_package_name_from_ctx(jinja_env, base_ctx);
 
     let is_dependency = dependency_package_name.is_some();
-    let raw_local_project_config = extract_resource_config_from_raw_project(
+    let mut raw_project_configs_by_adapter = RawProjectConfigsByAdapter::new(
         &package.raw_project_yml,
+        is_dependency.then_some(&root_package.raw_project_yml),
         "seeds",
         default_adapter,
     )?;
-    let raw_root_project_cfg = if is_dependency {
-        Some(extract_resource_config_from_raw_project(
-            &root_package.raw_project_yml,
-            "seeds",
-            default_adapter,
-        )?)
-    } else {
-        None
-    };
 
     let raw_schema_yml_configs: BTreeMap<String, BTreeMap<String, dbt_yaml::Value>> =
         seed_properties
@@ -137,21 +126,16 @@ pub async fn resolve_seeds(
         seed_root_dirs.push("seeds".to_string());
     }
 
-    let config_resolver = ProjectConfigResolver::build(
+    let config_resolver = ProjectConfigResolver::per_adapter(
         root_project_configs.seeds.clone(),
-        is_dependency,
-        || {
-            init_project_config(
-                &package.dbt_project.seeds,
-                DbtQuoting::default(),
-                dependency_package_name,
-                disallow_plus_prefix_from_flags(root_package.dbt_project.flags.as_ref()),
-                default_adapter,
-            )
-        },
+        |root| &root.seeds,
+        root_project_configs,
+        &package.dbt_project.seeds,
+        dependency_package_name,
+        arg.unconfigured_static_analysis(),
         default_adapter,
-    )?
-    .with_resolve_defaults(arg.unconfigured_static_analysis());
+        arg.adapter_override,
+    )?;
 
     // TODO: update this to be relative of the root project
     let mut duplicate_errors = Vec::new();
@@ -237,15 +221,17 @@ pub async fn resolve_seeds(
         // `versions:`, so there is nothing version-level to double-apply here today, but if seeds
         // ever grow one, do not replicate the duplication for the same reason models don't:
         // https://github.com/dbt-labs/dbt-mantle/blob/da5abca4f829b167bd1b1d5c6666c12cd8c719c0/core/dbt/parser/base.py#L424-L426
-        let unrendered_config = build_unrendered_config(
-            &fqn,
-            &raw_local_project_config,
-            raw_root_project_cfg.as_ref(),
-            raw_schema_yml_configs.get(seed_name),
-            None,
-            true,
-            default_adapter,
-        )?;
+        let early_unrendered_config = if config_resolver.has_per_adapter_trees() {
+            None
+        } else {
+            Some(raw_project_configs_by_adapter.unrendered_config(
+                default_adapter,
+                &fqn,
+                raw_schema_yml_configs.get(seed_name),
+                None,
+                true,
+            )?)
+        };
 
         // Merge schema_file_info
         let (seed, patch_path) = if let Some(mut mpe) = seed_properties.remove(seed_name) {
@@ -275,8 +261,9 @@ pub async fn resolve_seeds(
             (SeedProperties::empty(seed_name.to_owned()), None)
         };
 
-        let mut properties_config =
-            config_resolver.resolve_with_properties(&fqn, seed.config.as_ref());
+        let resolved =
+            config_resolver.resolve_node(&NodeLayers::new(&fqn, &[seed.config.as_ref()]));
+        let mut properties_config = resolved.config;
         let static_analysis = properties_config.static_analysis.clone();
         check_node_static_analysis(
             &properties_config,
@@ -286,8 +273,23 @@ pub async fn resolve_seeds(
         );
 
         // See `resolve_models`: the flag overrides the config.
-        let selected_adapter =
-            select_node_adapter(arg, properties_config.adapter, None, default_adapter, &path)?;
+        let selected_adapter = select_node_adapter(
+            properties_config.adapter,
+            resolved.adapter,
+            default_adapter,
+            &path,
+        )?;
+        // Built above only when the alias table cannot change, which keeps the output order.
+        let unrendered_config = match early_unrendered_config {
+            Some(unrendered_config) => unrendered_config,
+            None => raw_project_configs_by_adapter.unrendered_config(
+                resolved.alias_adapter,
+                &fqn,
+                raw_schema_yml_configs.get(seed_name),
+                None,
+                true,
+            )?,
+        };
 
         // XXX: normalize column_types to uppercase if it is snowflake
         if matches!(selected_adapter, AdapterType::Snowflake)
@@ -351,12 +353,7 @@ pub async fn resolve_seeds(
         let original_file_path =
             stdfs::diff_paths(seed_file.base_path.join(&path), &io_args.in_dir)?;
 
-        // See `resolve_models`: both remaining layers depend on the node's
-        // `+adapter`, which the config merge cannot know. Written back so
-        // `deprecated_config` carries the resolved value too.
-        // `propagate` comes straight off the node's own config. Unlike
-        // `adapter` there is no target default to fall back to and nothing to
-        // inherit: an unset `+propagate` means "publish nowhere".
+        // An unset `+propagate` leaves target selection to the implicit rules.
         let selected_propagate: Vec<AdapterType> = properties_config
             .propagate
             .clone()
@@ -364,19 +361,20 @@ pub async fn resolve_seeds(
             .unwrap_or_default();
         let catalog_requires_snowflake = catalogs_state
             .catalog_requires_snowflake_propagation(properties_config.catalog_name.as_deref())?;
-        let effective_propagation_target = (selected_adapter == AdapterType::LakeCompute)
-            .then(|| {
-                arg.profile_adapter_types.as_deref().and_then(|adapters| {
-                    resolve_effective_propagation_target(
-                        &selected_propagate,
-                        adapters,
-                        catalog_requires_snowflake,
-                    )
-                })
-            })
-            .flatten();
-        properties_config.quoting =
-            resolve_node_quoting(properties_config.quoting, adapter_quoting, selected_adapter);
+        let effective_propagation_target = node_effective_propagation_target(
+            arg,
+            selected_adapter,
+            default_adapter,
+            &selected_propagate,
+            catalog_requires_snowflake,
+        );
+        // Resolve quoting against the adapter that owns the relation, as in `resolve_models`.
+        // Write it back so `deprecated_config` carries the resolved value too.
+        properties_config.quoting = resolve_node_quoting(
+            properties_config.quoting,
+            adapter_quoting,
+            relation_owner_adapter(selected_adapter, effective_propagation_target),
+        );
 
         let (node_database, node_schema) = node_starting_database_and_schema(
             Some(parse_adapter_scopes),

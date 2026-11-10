@@ -15,6 +15,7 @@ workspace = true
 [dependencies]
 dbt-adapter = { workspace = true }
 dbt-adapter-core = { workspace = true }
+dbt-adapter-engine = { workspace = true }
 dbt-adbc = { workspace = true }
 dbt-agate = { workspace = true }
 dbt-common = { workspace = true }
@@ -41,7 +42,7 @@ dbt-yaml = { workspace = true }
 vortex-events = { workspace = true }
 
 adbc-core = { workspace = true }
-arrow = { workspace = true, features = ["json"] }
+arrow = { workspace = true, features = ["json", "chrono-tz"] }
 arrow-schema = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }
@@ -51,7 +52,6 @@ futures = { workspace = true }
 itertools = { workspace = true }
 minijinja = { workspace = true }
 minijinja-contrib = { workspace = true }
-num_cpus = { workspace = true }
 parking_lot = { workspace = true }
 parquet = { workspace = true, features = ["async"] }
 petgraph = { workspace = true }

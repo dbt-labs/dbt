@@ -28,10 +28,10 @@ use dbt_adapter::errors::{AdapterError, AdapterErrorKind, Cancellable, into_fs_e
 use dbt_adapter::metadata::{
     FreshnessOverride, MetadataAdapter, MetadataFreshness, MetadataQueryOptions,
 };
-use dbt_adapter::record_batch::RecordBatchExt;
 use dbt_adapter::relation::{RelationObject, create_relation, create_relation_from_node};
 use dbt_adapter::sql_types::TypeOps;
 use dbt_adapter_core::AdapterType;
+use dbt_adapter_engine::record_batch::RecordBatchExt;
 use dbt_adbc::QueryCtx;
 use dbt_common::adapter::dialect_of;
 use dbt_common::cancellation::CancellationToken;
@@ -2475,7 +2475,7 @@ fn drop_clone_target_before_clone(ctx: &TaskRunnerCtx, target_relation: Arc<dyn 
 
     let jinja_state = ctx
         .env
-        .new_state_with_context(ctx.inner.base_context.clone());
+        .new_state_with_context((*ctx.inner.base_context).clone());
 
     let (Some(database), Some(schema), Some(identifier)) = (
         target_relation.database(),
@@ -5271,7 +5271,7 @@ mod tests {
         EventReplayer, args_freshness_with_overrides, get_or_init_recording, get_or_init_replayer,
         reset_time_machine_globals, with_time_machine_metadata_wrapper,
     };
-    use dbt_adapter::{Adapter, AdapterBuilder, AdapterImpl, AdapterStore};
+    use dbt_adapter::{Adapter, AdapterStore};
     use dbt_common::path::DbtPath;
     use dbt_schemas::schemas::common::FreshnessDefinition;
     use dbt_schemas::state::ProfileAdapter;
@@ -5292,7 +5292,6 @@ mod tests {
 
     static TIME_MACHINE_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     use dbt_adapter::sql_types::DefaultTypeOps;
-    use dbt_adapter::stmt_splitter::DefaultStmtSplitter;
     use dbt_adapter_core::ExecutionPhase;
     use dbt_common::AsyncAdapterResult;
     use dbt_common::cancellation::never_cancels;
@@ -6583,6 +6582,42 @@ mod tests {
                 .run_cache_metadata
                 .last_modified_epoch(&target_fqn),
             Some(Some(1_700_000_000_000))
+        );
+    }
+
+    /// Unlike `clear_stale_missing_last_modified_epoch_for_node` (which leaves a
+    /// valid cached epoch alone), `refresh_final_last_modified_epoch_for_node`
+    /// must not trust any previously cached value — it re-queries regardless of
+    /// what's cached. With no adapter wired into the test ctx, the re-query
+    /// fails open to `None`, so the previously cached epoch is overwritten
+    /// rather than preserved.
+    #[dbt_runtime::test]
+    async fn refresh_overwrites_a_previously_cached_epoch() {
+        let ctx = test_task_runner_ctx(None);
+        let model = make_model(
+            "model.test.user_name_model",
+            "db",
+            "dbt_test",
+            "user_name_model",
+            DbtMaterialization::Table,
+        );
+        let target_fqn = fqn_of("db", "dbt_test", "user_name_model");
+        ctx.inner
+            .run_cache_ctx
+            .run_cache_metadata
+            .insert_last_modified_epoch(&target_fqn, Some(1_700_000_000_000));
+
+        let refreshed = refresh_final_last_modified_epoch_for_node(&ctx, model.as_ref())
+            .await
+            .unwrap();
+
+        assert_eq!(refreshed, None);
+        assert_eq!(
+            ctx.inner
+                .run_cache_ctx
+                .run_cache_metadata
+                .last_modified_epoch(&target_fqn),
+            Some(None)
         );
     }
 
@@ -8289,6 +8324,7 @@ mod tests {
             _instruction: &'a dbt_scheduler::instructions::Instruction,
             _rendered_sql: &'a str,
             _unique_id: Option<&'a str>,
+            _adapter: Option<Arc<Adapter>>,
             _connection: &'a mut Option<Box<dyn dbt_adbc::Connection>>,
         ) -> Pin<Box<dyn Future<Output = FsResult<(Vec<RecordBatch>, SchemaRef)>> + Send + 'a>>
         {
@@ -8533,21 +8569,7 @@ mod tests {
     }
 
     fn test_adapter_store_for(adapter_type: AdapterType) -> Arc<AdapterStore> {
-        let build: AdapterBuilder = Box::new(|adapter_type| {
-            let adapter = AdapterImpl::new_mock(
-                adapter_type,
-                BTreeMap::new(),
-                DEFAULT_RESOLVED_QUOTING,
-                Arc::new(DefaultTypeOps::new(adapter_type)),
-                Arc::new(DefaultStmtSplitter),
-            );
-            Ok(Arc::new(Adapter::new(
-                Arc::new(adapter),
-                None,
-                never_cancels(),
-            )))
-        });
-        Arc::new(AdapterStore::new(vec![adapter_type], adapter_type, build).expect("valid store"))
+        Arc::new(AdapterStore::new_mock(vec![adapter_type], adapter_type).expect("valid store"))
     }
 
     #[dbt_runtime::test]
@@ -8633,7 +8655,7 @@ mod tests {
         let relation = clone_target(Some(relation_type));
         let jinja_state = ctx
             .env
-            .new_state_with_context(ctx.inner.base_context.clone());
+            .new_state_with_context((*ctx.inner.base_context).clone());
         adapter
             .cache_added(&jinja_state, Arc::clone(&relation))
             .expect("cache relation");

@@ -1,0 +1,22 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/a.sql
+databricks
+e2e
+adapters_databricks_expand_target_column_types
+source columns
+target columns
+after source columns
+after target columns
+ Rendering models/a.sql
+databricks
+e2e
+adapters_databricks_expand_target_column_types
+source columns
+target columns
+after source columns
+after target columns
+==================== Execution Summary =====================
+Finished 'compile' successfully for target 'databricks' [duration]
+Processed: 1 model
+Summary: 1 total | 1 success

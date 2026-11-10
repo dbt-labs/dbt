@@ -2596,7 +2596,7 @@ fn canonicalize_dbt_model_tmp_suffix(sql: &str) -> String {
     static RE: LazyLock<Regex> = LazyLock::new(|| {
         // Match __dbt_tmp followed by one or more digits
         // This captures the pattern used by dbt for temporary table suffixes
-        Regex::new(r"(?i)(__dbt_tmp_?)\d*\b").unwrap()
+        Regex::new(r"(?i)(_+dbt_tmp_*)(?:\d+|\b)").unwrap()
     });
 
     RE.replace_all(sql, "${1}SUFFIX").to_string()
@@ -4426,6 +4426,28 @@ SELECT * FROM enriched;
             result.is_ok(),
             "Should match: block comment in wrapper body"
         );
+    }
+
+    #[test]
+    fn test_compare_ephemeral_model_with_wrapper_alias() {
+        let sql1 = r#"
+create view db.schema.my_model as with __dbt__cte__base as (
+select 1 as id
+)
+--EPHEMERAL-SELECT-WRAPPER-START
+select * from (
+select id from __dbt__cte__base
+--EPHEMERAL-SELECT-WRAPPER-END
+) as my_model;
+"#;
+        let sql2 = r#"
+create view db.schema.my_model as with __dbt__cte__base as (
+select 1 as id
+)
+select id from __dbt__cte__base;
+"#;
+        let result = compare_sql(sql1, sql2, AdapterType::Snowflake);
+        assert!(result.is_ok(), "Should match: aliased wrapper");
     }
 
     #[test]
@@ -7479,5 +7501,33 @@ def model(dbt, session):
         assert_eq!(strip_sql_comments("a -- 日本語\nb"), "a \nb");
         // Multi-byte characters in a block comment are consumed.
         assert_eq!(strip_sql_comments("a /* 日本語 */ b"), "a  b");
+    }
+
+    #[test]
+    fn test_dbt_tmp_canonicalization() {
+        assert_eq!(
+            canonicalize_dbt_model_tmp_suffix(
+                "DROP TABLE IF EXISTS `db`.`schema`.table__dbt_tmp_123456578654"
+            ),
+            "DROP TABLE IF EXISTS `db`.`schema`.table__dbt_tmp_SUFFIX"
+        );
+        assert_eq!(
+            canonicalize_dbt_model_tmp_suffix(
+                "DROP TABLE IF EXISTS `db`.`schema`.`table__dbt_tmp123456578654`"
+            ),
+            "DROP TABLE IF EXISTS `db`.`schema`.`table__dbt_tmpSUFFIX`"
+        );
+        assert_eq!(
+            canonicalize_dbt_model_tmp_suffix(
+                "DROP TABLE IF EXISTS `db`.`schema`.`table___________dbt_tmp123456578654__cool_suffix`"
+            ),
+            "DROP TABLE IF EXISTS `db`.`schema`.`table___________dbt_tmpSUFFIX__cool_suffix`"
+        );
+        assert_eq!(
+            canonicalize_dbt_model_tmp_suffix(
+                "DROP TABLE IF EXISTS `db`.`schema`.`table__dbt_tmp__123456578654__cool_suffix`"
+            ),
+            "DROP TABLE IF EXISTS `db`.`schema`.`table__dbt_tmp__SUFFIX__cool_suffix`"
+        );
     }
 }

@@ -42,6 +42,7 @@ use dbt_schemas::schemas::common::NodeDependsOn;
 use dbt_schemas::schemas::common::Rows;
 use dbt_schemas::schemas::packages::DeprecatedDbtPackageLock;
 use dbt_schemas::schemas::project::DbtProject;
+use dbt_schemas::schemas::project::InlineConfigAliasing;
 use dbt_schemas::schemas::project::ResolvableConfig;
 use dbt_schemas::schemas::project::ResolvedConfig;
 use dbt_schemas::schemas::project::UnitTestConfig;
@@ -635,6 +636,8 @@ async fn resolve_given_seed(
         adapter_type,
         database,
         schema,
+        None,
+        InlineConfigAliasing::fixed(adapter_type),
         model_name,
         fqn.to_vec(),
         package_name,
@@ -866,6 +869,7 @@ mod tests {
             &package.dbt_project,
             &Default::default(),
             AdapterType::DuckDB,
+            true,
         )?;
         let entry = MinimalPropertiesEntry {
             name: "runtime_test".to_string(),

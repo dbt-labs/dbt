@@ -1,7 +1,10 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
+import type {
+  FreshnessStatusValue,
+  RunStatus,
+  TestStatusValue,
+} from 'dbt-docs-lib/domain';
 
-import type { RunStatus } from '../typings/domain/executionInfo';
-import type { FreshnessStatusValue, TestStatusValue } from '../typings/domain/status';
 import { NodeStatusIconBadge } from './NodeStatusIconBadge';
 
 const meta: Meta<typeof NodeStatusIconBadge> = {

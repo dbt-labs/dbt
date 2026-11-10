@@ -20,6 +20,7 @@ use crate::dist::{
     ManagerResolution, resolve_manager_for_manifest, sync_command_for_manager,
     uninstall_command_for_package,
 };
+use crate::packages::InstallLocation;
 use crate::probe_manager_for_manifest;
 use crate::python::{
     ManifestReplacements, PackageSpec, PackageVersion, PythonManifest, PythonManifestFormat,
@@ -454,8 +455,9 @@ async fn exec_global_install(
 }
 
 /// Upgrades a `standalone`/`unclaimed` dbt-core install in place: re-runs
-/// the dbt v2 installer with `--to <dir>` pointed at the existing binary's
-/// own directory (from `DistInfo::path`, not the installer's default) and
+/// the dbt v2 installer at the existing binary's own location (from
+/// `DistInfo::path`, not the installer's default) -- `--prefix <p>` for a
+/// binary in `<p>/bin`, else the deprecated `--to <dir>` -- and
 /// `--update` so it overwrites rather than refusing a pre-existing file.
 /// There's no separate package to uninstall afterward -- the installer
 /// replaces the file directly -- and no PATH-shadowing check is needed,
@@ -470,16 +472,17 @@ async fn exec_in_place_upgrade(dist_info: &DistInfo, yes: bool) -> FsResult<()> 
         )
     })?;
 
+    let location = InstallLocation::for_bin_dir(target_dir);
     let prompt = format!(
         "This will download and run the dbt v2 standalone installer, replacing the \
          existing dbt-core binary in place at {}:\n\n    {}\n\nProceed?",
         target_dir.display(),
-        install_command_display(Some(target_dir), true)
+        install_command_display(Some(&location), true)
     );
     if !confirm(&prompt, yes)? {
         return err!(ErrorCode::Generic, "Aborted.");
     }
-    install_dbt_v2_standalone(Some(target_dir), true).await
+    install_dbt_v2_standalone(Some(&location), true).await
 }
 
 async fn exec_fresh_install_and_replace_package(
@@ -697,15 +700,17 @@ fn run_shell_command(command: &str, dir: Option<&Path>) -> FsResult<()> {
     }
 }
 
-/// Builds `install.sh`'s argv for `--update`/`--to <dir>`, in that order.
-fn install_sh_args(to: Option<&Path>, update: bool) -> Vec<String> {
+/// Builds `install.sh`'s argv for `--update` and the location option
+/// (`--prefix <p>` or `--to <dir>`), in that order.
+fn install_sh_args(location: Option<&InstallLocation>, update: bool) -> Vec<String> {
     let mut args: Vec<String> = Vec::new();
     if update {
         args.push("--update".to_string());
     }
-    if let Some(to) = to {
-        args.push("--to".to_string());
-        args.push(to.display().to_string());
+    if let Some(location) = location {
+        let (option, path) = location.script_option();
+        args.push(format!("--{option}"));
+        args.push(path.display().to_string());
     }
     args
 }
@@ -713,9 +718,9 @@ fn install_sh_args(to: Option<&Path>, update: bool) -> Vec<String> {
 /// Unix-shaped display string for the command `install_dbt_v2_standalone`
 /// will effectively run (mirrors `install_sh_args`'s flags), for
 /// confirmation-prompt text only -- never fed to a shell.
-fn unix_install_command_display(to: Option<&Path>, update: bool) -> String {
+fn unix_install_command_display(location: Option<&InstallLocation>, update: bool) -> String {
     let mut command = format!("curl -fsSL {} | sh", install_script_url());
-    let args = install_sh_args(to, update);
+    let args = install_sh_args(location, update);
     if !args.is_empty() {
         command.push_str(" -s -- ");
         command.push_str(&args.join(" "));
@@ -724,7 +729,7 @@ fn unix_install_command_display(to: Option<&Path>, update: bool) -> String {
 }
 
 /// Windows-shaped display string, for confirmation-prompt text only.
-/// Deliberately doesn't encode `-Update`/`-To` -- there's no single
+/// Deliberately doesn't encode `-Update`/`-Prefix` -- there's no single
 /// canonical one-liner for "download, then run with args" on Windows the
 /// way `curl | sh -s -- args` is on Unix (the real mechanism is
 /// temp-file + `powershell -Command`, see `install_dbt_v2_standalone`).
@@ -737,23 +742,27 @@ fn windows_install_command_display() -> String {
 /// Selects the platform-appropriate display string. Trivial by design --
 /// all the actual logic lives in the two functions above, which are each
 /// fully unit-testable on any host regardless of `cfg!(windows)`.
-fn install_command_display(to: Option<&Path>, update: bool) -> String {
+fn install_command_display(location: Option<&InstallLocation>, update: bool) -> String {
     if cfg!(windows) {
         windows_install_command_display()
     } else {
-        unix_install_command_display(to, update)
+        unix_install_command_display(location, update)
     }
 }
 
 /// Builds the `powershell`/`pwsh -Command` string that invokes `script_path`
-/// (`install.ps1`, written to a temp file) with `-Update`/`-To <dir>`,
-/// mirroring `install_sh_args`' unix argv for the same two flags. Only
+/// (`install.ps1`, written to a temp file) with `-Update` and `-Prefix <p>` or
+/// `-To <dir>`, mirroring `install_sh_args`' unix argv for the same flags. Only
 /// called in production on Windows, but kept unguarded (rather than
 /// `#[cfg(target_os = "windows")]`) so it's exercised by unit tests on every
 /// platform; `allow(dead_code)` suppresses the resulting "never used"
 /// warning on non-Windows production builds.
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
-fn windows_ps_command(script_path: &Path, to: Option<&Path>, update: bool) -> String {
+fn windows_ps_command(
+    script_path: &Path,
+    location: Option<&InstallLocation>,
+    update: bool,
+) -> String {
     let mut command = format!(
         "& '{}'",
         escape_ps_single_quoted(&script_path.display().to_string().replace('\\', "\\\\"))
@@ -761,10 +770,12 @@ fn windows_ps_command(script_path: &Path, to: Option<&Path>, update: bool) -> St
     if update {
         command.push_str(" -Update");
     }
-    if let Some(to) = to {
+    if let Some(location) = location {
+        let (option, path) = location.script_option();
+        let option = if option == "prefix" { "Prefix" } else { "To" };
         command.push_str(&format!(
-            " -To '{}'",
-            escape_ps_single_quoted(&to.display().to_string().replace('\\', "\\\\"))
+            " -{option} '{}'",
+            escape_ps_single_quoted(&path.display().to_string().replace('\\', "\\\\"))
         ));
     }
     command
@@ -778,21 +789,24 @@ pub(crate) fn escape_ps_single_quoted(s: &str) -> String {
     s.replace('\'', "''")
 }
 
-/// Downloads and runs the dbt v2 standalone installer. `to` pins the install
-/// directory (the installer's own default, `~/.local/bin`, is used when
-/// `None`); `update` allows overwriting a file already at the destination --
+/// Downloads and runs the dbt v2 standalone installer. `location` pins where
+/// it installs (the installer's own default, the `~/.local` prefix, is used
+/// when `None`); `update` allows overwriting a file already at the destination --
 /// both are set together for [`exec_in_place_upgrade`]'s in-place overwrite
 /// of an existing native binary, and both left unset for a fresh install.
 /// Unlike `dbt system update`'s in-place self-update (which must release the
 /// currently-running exe's file lock before overwriting it), this installs a
 /// different binary, so it runs synchronously to completion on every
 /// platform.
-async fn install_dbt_v2_standalone(to: Option<&Path>, update: bool) -> FsResult<()> {
+async fn install_dbt_v2_standalone(
+    location: Option<&InstallLocation>,
+    update: bool,
+) -> FsResult<()> {
     let script = ReqwestClient.get_text(&install_script_url()).await?;
 
     #[cfg(not(target_os = "windows"))]
     {
-        let args = install_sh_args(to, update);
+        let args = install_sh_args(location, update);
         let options = run_script::ScriptOptions::new();
         let (code, output, error) = run_script::run(&script, &args, &options)
             .map_err(|e| fs_err!(ErrorCode::IoError, "failed to run install script: {e}"))?;
@@ -836,7 +850,7 @@ async fn install_dbt_v2_standalone(to: Option<&Path>, update: bool) -> FsResult<
             )
         })?;
 
-        let ps_command = windows_ps_command(tmp.path(), to, update);
+        let ps_command = windows_ps_command(tmp.path(), location, update);
 
         let ps_exe = if env::var("PSModulePath").is_ok_and(|p| p.contains("PowerShell/7")) {
             "pwsh"
@@ -924,18 +938,29 @@ mod tests {
     }
 
     #[test]
-    fn install_sh_args_in_place_upgrade_passes_update_and_to() {
+    fn install_sh_args_in_place_upgrade_passes_update_and_prefix() {
+        let location = InstallLocation::for_bin_dir(Path::new("/opt/dbt/bin"));
         assert_eq!(
-            install_sh_args(Some(Path::new("/opt/dbt/bin")), true),
-            vec!["--update", "--to", "/opt/dbt/bin"]
+            install_sh_args(Some(&location), true),
+            vec!["--update", "--prefix", "/opt/dbt"]
         );
     }
 
     #[test]
-    fn install_sh_args_to_without_update() {
+    fn install_sh_args_non_bin_directory_passes_to() {
+        let location = InstallLocation::for_bin_dir(Path::new("/opt/dbt"));
         assert_eq!(
-            install_sh_args(Some(Path::new("/opt/dbt/bin")), false),
-            vec!["--to", "/opt/dbt/bin"]
+            install_sh_args(Some(&location), true),
+            vec!["--update", "--to", "/opt/dbt"]
+        );
+    }
+
+    #[test]
+    fn install_sh_args_prefix_without_update() {
+        let location = InstallLocation::for_bin_dir(Path::new("/opt/dbt/bin"));
+        assert_eq!(
+            install_sh_args(Some(&location), false),
+            vec!["--prefix", "/opt/dbt"]
         );
     }
 
@@ -948,11 +973,12 @@ mod tests {
     }
 
     #[test]
-    fn unix_install_command_display_in_place_upgrade_passes_update_and_to() {
+    fn unix_install_command_display_in_place_upgrade_passes_update_and_prefix() {
+        let location = InstallLocation::for_bin_dir(Path::new("/opt/dbt/bin"));
         assert_eq!(
-            unix_install_command_display(Some(Path::new("/opt/dbt/bin")), true),
+            unix_install_command_display(Some(&location), true),
             format!(
-                "curl -fsSL {} | sh -s -- --update --to /opt/dbt/bin",
+                "curl -fsSL {} | sh -s -- --update --prefix /opt/dbt",
                 install_script_url()
             )
         );
@@ -975,14 +1001,21 @@ mod tests {
     }
 
     #[test]
-    fn windows_ps_command_in_place_upgrade_passes_update_and_to() {
+    fn windows_ps_command_in_place_upgrade_passes_update_and_prefix() {
+        // Built directly: `for_bin_dir` only splits Windows paths on Windows.
+        let location = InstallLocation::Prefix(PathBuf::from(r"C:\Users\me\.local"));
         assert_eq!(
-            windows_ps_command(
-                Path::new(r"C:\temp\install.ps1"),
-                Some(Path::new(r"C:\Users\me\.local\bin")),
-                true
-            ),
-            r"& 'C:\\temp\\install.ps1' -Update -To 'C:\\Users\\me\\.local\\bin'"
+            windows_ps_command(Path::new(r"C:\temp\install.ps1"), Some(&location), true),
+            r"& 'C:\\temp\\install.ps1' -Update -Prefix 'C:\\Users\\me\\.local'"
+        );
+    }
+
+    #[test]
+    fn windows_ps_command_non_bin_directory_passes_to() {
+        let location = InstallLocation::Directory(PathBuf::from(r"C:\tools\dbt"));
+        assert_eq!(
+            windows_ps_command(Path::new(r"C:\temp\install.ps1"), Some(&location), true),
+            r"& 'C:\\temp\\install.ps1' -Update -To 'C:\\tools\\dbt'"
         );
     }
 
@@ -991,10 +1024,12 @@ mod tests {
         assert_eq!(
             windows_ps_command(
                 Path::new(r"C:\Users\O'Brien\install.ps1"),
-                Some(Path::new(r"C:\Users\O'Brien\.local\bin")),
+                Some(&InstallLocation::Prefix(PathBuf::from(
+                    r"C:\Users\O'Brien\.local"
+                ))),
                 true
             ),
-            r"& 'C:\\Users\\O''Brien\\install.ps1' -Update -To 'C:\\Users\\O''Brien\\.local\\bin'"
+            r"& 'C:\\Users\\O''Brien\\install.ps1' -Update -Prefix 'C:\\Users\\O''Brien\\.local'"
         );
     }
 

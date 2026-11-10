@@ -1,0 +1,33 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/properties.yml
+   Parsing models/test_email_mask_inc.sql
+   Parsing models/test_full_mask_inc.sql
+   Parsing models/test_password_mask.sql
+   Parsing models/test_password_mask_strm.sql
+   Parsing models/test_weird_mask.sql
+   Parsing models/test_weird_mask_strm.sql
+ Rendering models/test_weird_mask.sql
+   Running models/test_weird_mask.sql
+ Succeeded model adapters_databricks_column_masks.test_weird_mask (table) [1 of 7 in duration]
+   Running ../scratch/target/run/test/seeds/base_model_seed.sql
+ Succeeded seed  adapters_databricks_column_masks.base_model_seed (table) [2 of 7 in duration]
+ Rendering models/test_weird_mask_strm.sql
+ Rendering models/test_password_mask_strm.sql
+   Running models/test_weird_mask_strm.sql
+ Succeeded model adapters_databricks_column_masks.test_weird_mask_strm (streaming) [3 of 7 in duration]
+   Running models/test_password_mask_strm.sql
+ Succeeded model adapters_databricks_column_masks.test_password_mask_strm (streaming) [4 of 7 in duration]
+ Rendering models/test_password_mask.sql
+   Running models/test_password_mask.sql
+ Succeeded model adapters_databricks_column_masks.test_password_mask (table) [5 of 7 in duration]
+ Rendering models/test_full_mask_inc.sql
+   Running models/test_full_mask_inc.sql
+ Succeeded model adapters_databricks_column_masks.test_full_mask_inc (incremental) [6 of 7 in duration]
+ Rendering models/test_email_mask_inc.sql
+   Running models/test_email_mask_inc.sql
+ Succeeded model adapters_databricks_column_masks.test_email_mask_inc (incremental) [7 of 7 in duration]
+==================== Execution Summary =====================
+Finished 'build' successfully for target 'databricks' [duration]
+Processed: 6 models | 1 seed
+Summary: 7 total | 7 success

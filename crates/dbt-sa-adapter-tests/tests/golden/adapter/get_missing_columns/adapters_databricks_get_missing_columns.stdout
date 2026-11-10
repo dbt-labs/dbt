@@ -1,0 +1,19 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/a.sql
+   Parsing models/b.sql
+   Parsing models/c.sql
+databricks
+e2e
+adapters_databricks_get_missing_columns
+ Rendering models/c.sql
+databricks
+e2e
+adapters_databricks_get_missing_columns
+Column: three
+ Rendering models/b.sql
+ Rendering models/a.sql
+==================== Execution Summary =====================
+Finished 'compile' successfully for target 'databricks' [duration]
+Processed: 3 models
+Summary: 3 total | 3 success

@@ -1,0 +1,19 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/sources.yml
+   Parsing models/use_defined.sql
+   Parsing models/use_defined_directly.sql
+   Parsing models/use_undefined.sql
+ Rendering models/use_undefined.sql
+   Running models/use_undefined.sql
+ Succeeded model databricks_use_system_relations.use_undefined (view) [1 of 3 in duration]
+ Rendering models/use_defined_directly.sql
+   Running models/use_defined_directly.sql
+ Succeeded model databricks_use_system_relations.use_defined_directly (view) [2 of 3 in duration]
+ Rendering models/use_defined.sql
+   Running models/use_defined.sql
+ Succeeded model databricks_use_system_relations.use_defined (view) [3 of 3 in duration]
+==================== Execution Summary =====================
+Finished 'run' successfully for target 'databricks' [duration]
+Processed: 3 models
+Summary: 3 total | 3 success

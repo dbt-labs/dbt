@@ -33,8 +33,8 @@ use crate::schemas::common::{Hooks, OnSchemaChange, hooks_equal};
 use crate::schemas::manifest::GrantAccessToTarget;
 use crate::schemas::project::configs::common::log_state_mod_diff;
 use crate::schemas::project::configs::common::{
-    WarehouseSpecificNodeConfig, access_eq, docs_eq, grants_equal, meta_eq, omissible_option_eq,
-    same_warehouse_config, take_databricks_catalog_alias,
+    TYPED_ALIAS_KEYS, WarehouseSpecificNodeConfig, access_eq, docs_eq, grants_equal, meta_eq,
+    omissible_option_eq, same_warehouse_config, take_databricks_catalog_alias,
 };
 use crate::schemas::project::configs::config_merge::{Classifiers, Packages, Tags, TblProperties};
 use crate::schemas::project::dbt_project::ResolvableConfig;
@@ -107,7 +107,7 @@ pub struct ProjectModelConfig {
     #[serde(rename = "+batch_size")]
     pub batch_size: Option<DbtBatchSize>,
     #[serde(rename = "+begin")]
-    pub begin: Option<dbt_yaml::Timestamp>,
+    pub begin: Option<String>,
     #[serde(default, rename = "+bind", deserialize_with = "bool_or_string_bool")]
     pub bind: Option<bool>,
     #[serde(rename = "+buckets")]
@@ -406,6 +406,8 @@ pub struct ProjectModelConfig {
     pub not_matched_by_source_action: Option<String>,
     #[serde(rename = "+not_matched_by_source_condition")]
     pub not_matched_by_source_condition: Option<String>,
+    #[serde(rename = "+merge_actions_explicit")]
+    pub merge_actions_explicit: Option<String>,
     #[serde(rename = "+not_matched_condition")]
     pub not_matched_condition: Option<String>,
     #[serde(rename = "+source_alias")]
@@ -792,6 +794,7 @@ impl TypedRecursiveConfig for ProjectModelConfig {
             || self.meta.is_some()
             || self.not_matched_by_source_action.is_some()
             || self.not_matched_by_source_condition.is_some()
+            || self.merge_actions_explicit.is_some()
             || self.not_matched_condition.is_some()
             || self.source_alias.is_some()
             || self.target_alias.is_some()
@@ -902,7 +905,7 @@ pub struct ModelConfig {
     pub batch_size: Option<DbtBatchSize>,
     #[resolved(promote, default = 1)]
     pub lookback: Option<i32>,
-    pub begin: Option<dbt_yaml::Timestamp>,
+    pub begin: Option<String>,
     pub persist_docs: Option<PersistDocsConfig>,
     #[serde(alias = "post-hook")]
     pub post_hook: Verbatim<Option<Hooks>>,
@@ -1140,6 +1143,7 @@ impl From<ProjectModelConfig> for ModelConfig {
                 matched_condition: config.matched_condition,
                 not_matched_condition: config.not_matched_condition,
                 not_matched_by_source_condition: config.not_matched_by_source_condition,
+                merge_actions_explicit: config.merge_actions_explicit,
                 not_matched_by_source_action: config.not_matched_by_source_action,
                 merge_with_schema_evolution: config.merge_with_schema_evolution,
                 skip_matched_step: config.skip_matched_step,
@@ -1369,6 +1373,7 @@ impl From<ModelConfig> for ProjectModelConfig {
             not_matched_by_source_condition: config
                 .__warehouse_specific_config__
                 .not_matched_by_source_condition,
+            merge_actions_explicit: config.__warehouse_specific_config__.merge_actions_explicit,
             not_matched_condition: config.__warehouse_specific_config__.not_matched_condition,
             source_alias: config.__warehouse_specific_config__.source_alias,
             target_alias: config.__warehouse_specific_config__.target_alias,
@@ -1448,6 +1453,10 @@ impl ResolvableConfig<ModelConfig> for ModelConfig {
         self.enabled
     }
 
+    fn get_adapter(&self) -> Option<AdapterType> {
+        self.adapter
+    }
+
     fn disable(&mut self) {
         self.enabled = Some(false);
     }
@@ -1491,9 +1500,13 @@ impl ResolvableConfig<ModelConfig> for ModelConfig {
         self.finalize_resolved()
     }
 
-    fn canonicalize_adapter_aliases(&mut self, default_adapter: AdapterType) {
+    fn typed_alias_keys() -> &'static [&'static str] {
+        TYPED_ALIAS_KEYS
+    }
+
+    fn canonicalize_adapter_aliases(&mut self, alias_adapter: AdapterType) {
         if let Some(catalog) = take_databricks_catalog_alias(
-            default_adapter,
+            alias_adapter,
             &mut self.__warehouse_specific_config__,
             !self.database.is_omitted(),
         ) {

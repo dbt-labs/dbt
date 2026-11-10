@@ -1,0 +1,9 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/hello.sql
+   Running ../scratch/target/run/hello_world/seeds/p.sql
+ Succeeded seed  adapters_databricks_repros_hello_world_seed.p (table) [1 of 1 in duration]
+==================== Execution Summary =====================
+Finished 'seed' successfully for target 'databricks' [duration]
+Processed: 1 seed
+Summary: 1 total | 1 success

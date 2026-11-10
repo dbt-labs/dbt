@@ -410,7 +410,18 @@ pub trait BaseRelation: BaseRelationProperties + Any + Send + Sync + fmt::Debug 
 
     /// Quote a relation component (database, schema, or identifier)
     fn quoted(&self, s: &str) -> String {
-        format!("{}{}{}", self.quote_character(), s, self.quote_character())
+        let quote = self.quote_character();
+        // Keep these rules in sync with `dbt_adapter_sql::ident::escape_identifier_content`.
+        let escaped = match self.adapter_type() {
+            AdapterType::Bigquery => s
+                .replace('\\', "\\\\")
+                .replace(quote, &format!("\\{quote}")),
+            AdapterType::ClickHouse => s
+                .replace('\\', "\\\\")
+                .replace(quote, &format!("{quote}{quote}")),
+            _ => s.replace(quote, &format!("{quote}{quote}")),
+        };
+        format!("{quote}{escaped}{quote}")
     }
 
     /// Get the semantic name fully qualified for a Relation

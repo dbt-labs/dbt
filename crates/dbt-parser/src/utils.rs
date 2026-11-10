@@ -17,6 +17,7 @@ use dbt_schemas::schemas::InternalDbtNodeAttributes;
 use dbt_schemas::schemas::common::{DbtMaterialization, ResolvedQuoting, normalize_quoting};
 use dbt_schemas::schemas::project::{ResolvableConfig, ResolvedConfig};
 use dbt_schemas::schemas::properties::ModelProperties;
+use dbt_schemas::schemas::relations::relation_owner_adapter;
 use dbt_schemas::schemas::telemetry::NodeType;
 use dbt_schemas::state::DbtPackage;
 use minijinja::ArgSpec;
@@ -477,13 +478,18 @@ fn generate_alias_and_relation_name<T: InternalDbtNodeAttributes + Clone>(
     } else {
         &format!("{alias}_ephemeral")
     };
+    // A node whose `effective_propagation_target` is BigQuery records `relation_name` in BigQuery
+    // spelling, which a BigQuery parser accepts. Lake Compute's own rendering would use double
+    // quotes.
+    let effective_target = node.base().effective_propagation_target;
+    let relation_adapter = relation_owner_adapter(adapter_type, effective_target);
     let relation_name = render_effective_relation(
-        adapter_type,
+        relation_adapter,
         database_name,
         schema_name,
         alias_name,
         quoting,
-        node.base().effective_propagation_target,
+        effective_target,
     )?;
 
     Ok((alias, relation_name, node))

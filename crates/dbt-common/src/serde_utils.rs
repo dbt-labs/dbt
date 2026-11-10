@@ -11,6 +11,18 @@ use serde::{
 
 type YmlValue = dbt_yaml::Value;
 
+/// Converts a scalar mapping key (string, bool or number) to a string.
+///
+/// Panics if the key is not a scalar.
+pub fn yml_key_to_string(key: &YmlValue) -> String {
+    match key {
+        YmlValue::String(s, _) => s.clone(),
+        YmlValue::Bool(b, _) => b.to_string(),
+        YmlValue::Number(n, _) => n.to_string(),
+        _ => panic!("mapping key is not a scalar"),
+    }
+}
+
 /// Converts a [dbt_yaml::Value] to a [minijinja::Value]
 fn convert_yml_value(yml: YmlValue) -> minijinja::Value {
     match yml {
@@ -18,11 +30,7 @@ fn convert_yml_value(yml: YmlValue) -> minijinja::Value {
             let mut value_map = ValueMap::new();
             for (k, v) in map {
                 value_map.insert(
-                    minijinja::Value::from(
-                        k.as_scalar_string()
-                            .expect("mapping key is not a scalar")
-                            .as_ref(),
-                    ),
+                    minijinja::Value::from(yml_key_to_string(&k)),
                     convert_yml_value(v),
                 );
             }
@@ -44,13 +52,7 @@ pub fn convert_yml_to_scc_map(yml: YmlValue) -> SccHashMap<String, minijinja::Va
         YmlValue::Mapping(map, _) => {
             let value_map = SccHashMap::default();
             for (k, v) in map {
-                // Last write wins if two keys stringify identically.
-                value_map.upsert_sync(
-                    k.as_scalar_string()
-                        .expect("mapping key is not a scalar")
-                        .into_owned(),
-                    convert_yml_value(v),
-                );
+                value_map.upsert_sync(yml_key_to_string(&k), convert_yml_value(v));
             }
             value_map
         }
@@ -63,9 +65,7 @@ pub fn convert_yml_to_scc_map(yml: YmlValue) -> SccHashMap<String, minijinja::Va
 }
 
 /// Converts a [dbt_yaml::Value] to a [minijinja::Value], preserving order of keys if the value is a mapping
-// TODO(anna): This now converts to an ordered map by using `ValueMap`, with the assertion that the key is a string.
-// But as I mentioned below, if we implement Object for IndexMap<String, minijinja::Value>, then we don't have to wrap the
-// key in a value.
+// TODO(anna): Clean this up by using IndexMap<String, Value>?
 // TODO: We are losing span info for error reporting
 fn convert_yml_value_ordered(yml: YmlValue) -> minijinja::Value {
     match yml {
@@ -73,11 +73,7 @@ fn convert_yml_value_ordered(yml: YmlValue) -> minijinja::Value {
             let mut value_map = ValueMap::new();
             for (k, v) in map {
                 value_map.insert(
-                    minijinja::Value::from(
-                        k.as_scalar_string()
-                            .expect("mapping key is not a scalar")
-                            .as_ref(),
-                    ),
+                    minijinja::Value::from(yml_key_to_string(&k)),
                     convert_yml_value(v),
                 );
             }
@@ -100,12 +96,7 @@ pub fn convert_yml_to_value_map(yml: YmlValue) -> IndexMap<String, minijinja::Va
         YmlValue::Mapping(map, _) => {
             let mut value_map = IndexMap::with_capacity(map.len());
             for (k, v) in map {
-                value_map.insert(
-                    k.as_scalar_string()
-                        .expect("mapping key is not a scalar")
-                        .into_owned(),
-                    convert_yml_value_ordered(v),
-                );
+                value_map.insert(yml_key_to_string(&k), convert_yml_value_ordered(v));
             }
             value_map
         }

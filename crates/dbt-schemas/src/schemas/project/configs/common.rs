@@ -7,6 +7,9 @@ type YmlValue = dbt_yaml::Value;
 use indexmap::IndexMap;
 use serde_with::skip_serializing_none;
 use std::collections::BTreeMap;
+use std::fmt;
+use std::ops::{Deref, DerefMut};
+use std::sync::LazyLock;
 
 use dbt_common::ErrorCode;
 use dbt_common::tracing::dbt_emit::emit_error_log_message;
@@ -202,10 +205,10 @@ pub struct WarehouseSpecificNodeConfig {
     #[serde(default, deserialize_with = "bool_or_string_bool")]
     #[warehouse(valid(all_nodes))]
     pub auto_liquid_cluster: Option<bool>,
-    #[warehouse(valid(Model))]
+    #[warehouse(valid(Model, Snapshot))]
     pub zorder: Option<StringOrArrayOfStrings>,
     #[serde(default, deserialize_with = "bool_or_string_bool")]
-    #[warehouse(valid(Model))]
+    #[warehouse(valid(Model, Snapshot))]
     pub skip_optimize: Option<bool>,
     #[warehouse(valid(all_nodes))]
     pub clustered_by: Option<StringOrArrayOfStrings>,
@@ -231,6 +234,8 @@ pub struct WarehouseSpecificNodeConfig {
     pub not_matched_condition: Option<String>,
     #[warehouse(valid(all_nodes))]
     pub not_matched_by_source_condition: Option<String>,
+    #[warehouse(valid(all_nodes))]
+    pub merge_actions_explicit: Option<String>,
     #[warehouse(valid(all_nodes))]
     pub not_matched_by_source_action: Option<String>,
     #[serde(default, deserialize_with = "bool_or_string_bool")]
@@ -374,24 +379,30 @@ pub struct WarehouseSpecificNodeConfig {
     pub category: Option<DataLakeObjectCategory>,
 
     // ClickHouse
-    // Snapshots share ClickHouse table creation; seeds also consume engine and order_by.
-    #[warehouse(valid(Model, Seed, Snapshot))]
+    // Table options, valid where the v1 macros render them: create_csv_table (seeds: engine,
+    // order_by), create_table_as (snapshots and store_failures tests: all of them), the Memory
+    // fixture tables of unit tests (settings only). v2's seed insert renders no query_settings
+    // yet, so the key is not valid on seeds until the v1 insert path is restored.
+    #[warehouse(valid(Model, Seed, Snapshot, Test))]
     pub engine: Option<String>,
-    #[warehouse(valid(Model, Seed, Snapshot))]
+    #[warehouse(valid(Model, Seed, Snapshot, Test))]
     pub order_by: Option<StringOrArrayOfStrings>,
-    #[warehouse(valid(Model, Snapshot))]
+    #[warehouse(valid(Model, Snapshot, Test))]
     pub ttl: Option<String>,
-    #[warehouse(valid(Model, Snapshot))]
+    #[warehouse(valid(Model, Snapshot, Test, UnitTest))]
     pub settings: Option<BTreeMap<String, YmlValue>>,
-    #[warehouse(valid(Model, Snapshot))]
+    #[warehouse(valid(Model, Snapshot, Test))]
     pub query_settings: Option<BTreeMap<String, YmlValue>>,
-    #[warehouse(valid(Model, Snapshot))]
+    #[warehouse(valid(Model, Snapshot, Test))]
     pub projections: Option<Vec<YmlValue>>,
     // distributed materializations
     #[warehouse(valid(Model))]
     pub sharding_key: Option<String>,
+    // Only reaches DDL through a node-built relation (`ClickHouseRelation.create_from`,
+    // dbt/adapters/clickhouse/relation.py): models and seeds. Snapshot and test targets come from
+    // api.Relation.create, where v1 ignores it too.
     #[serde(default, deserialize_with = "bool_or_string_bool")]
-    #[warehouse(valid(Model))]
+    #[warehouse(valid(Model, Seed))]
     pub disable_on_cluster: Option<bool>,
     // incremental materialization
     #[serde(default, deserialize_with = "bool_or_string_bool")]
@@ -454,6 +465,9 @@ impl ResolvedConfig for WarehouseSpecificNodeConfig {
     }
 }
 
+/// The aliases [`take_databricks_catalog_alias`] translates, for a config type that calls it.
+pub const TYPED_ALIAS_KEYS: &[&str] = &["catalog"];
+
 /// Takes the Databricks `catalog` alias value out of `warehouse_specific`, for the caller to
 /// move into its own `database` field -- mirroring dbt-core's `Credentials._ALIASES`
 /// (`catalog` -> `database`, `dbt/adapters/databricks/credentials.py:69-72`). `None` on every
@@ -483,6 +497,95 @@ pub fn take_databricks_catalog_alias(
         return None;
     }
     warehouse_specific.catalog.take()
+}
+
+static EMPTY_WAREHOUSE_SPECIFIC_NODE_CONFIG: LazyLock<WarehouseSpecificNodeConfig> =
+    LazyLock::new(WarehouseSpecificNodeConfig::default);
+
+/// A [`WarehouseSpecificNodeConfig`] that is heap-allocated only when it differs from the
+/// default, so configs that set no warehouse option don't carry the whole struct inline.
+///
+/// Derefs to the config, or to a shared default when nothing is allocated. Serialization,
+/// deserialization, equality and `Debug` all go through that logical value, so the storage is
+/// not observable.
+#[derive(Clone, Default)]
+pub struct LazyWarehouseSpecificNodeConfig(Option<Box<WarehouseSpecificNodeConfig>>);
+
+impl LazyWarehouseSpecificNodeConfig {
+    /// The allocated config, or `None` for a default.
+    pub fn get(&self) -> Option<&WarehouseSpecificNodeConfig> {
+        self.0.as_deref()
+    }
+
+    /// Mutable access to an allocated config. Returns `None`, without allocating, for a default.
+    pub fn get_mut(&mut self) -> Option<&mut WarehouseSpecificNodeConfig> {
+        self.0.as_deref_mut()
+    }
+
+    /// Frees the allocation if the config is back to the default.
+    pub fn free_if_default(&mut self) {
+        if self
+            .0
+            .as_deref()
+            .is_some_and(|config| *config == *EMPTY_WAREHOUSE_SPECIFIC_NODE_CONFIG)
+        {
+            self.0 = None;
+        }
+    }
+
+    pub fn into_inner(self) -> WarehouseSpecificNodeConfig {
+        self.0.map(|config| *config).unwrap_or_default()
+    }
+}
+
+impl From<WarehouseSpecificNodeConfig> for LazyWarehouseSpecificNodeConfig {
+    fn from(config: WarehouseSpecificNodeConfig) -> Self {
+        if config == *EMPTY_WAREHOUSE_SPECIFIC_NODE_CONFIG {
+            Self(None)
+        } else {
+            Self(Some(Box::new(config)))
+        }
+    }
+}
+
+impl Deref for LazyWarehouseSpecificNodeConfig {
+    type Target = WarehouseSpecificNodeConfig;
+
+    fn deref(&self) -> &WarehouseSpecificNodeConfig {
+        self.0
+            .as_deref()
+            .unwrap_or(&EMPTY_WAREHOUSE_SPECIFIC_NODE_CONFIG)
+    }
+}
+
+impl DerefMut for LazyWarehouseSpecificNodeConfig {
+    fn deref_mut(&mut self) -> &mut WarehouseSpecificNodeConfig {
+        self.0.get_or_insert_with(Default::default)
+    }
+}
+
+impl PartialEq for LazyWarehouseSpecificNodeConfig {
+    fn eq(&self, other: &Self) -> bool {
+        **self == **other
+    }
+}
+
+impl fmt::Debug for LazyWarehouseSpecificNodeConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&**self, f)
+    }
+}
+
+impl Serialize for LazyWarehouseSpecificNodeConfig {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        (**self).serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for LazyWarehouseSpecificNodeConfig {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        WarehouseSpecificNodeConfig::deserialize(deserializer).map(Self::from)
+    }
 }
 
 impl ResolvableConfig<WarehouseSpecificNodeConfig> for WarehouseSpecificNodeConfig {
@@ -643,6 +746,8 @@ pub fn same_warehouse_config(
     let not_matched_condition_eq = self_wh.not_matched_condition == other_wh.not_matched_condition;
     let not_matched_by_source_condition_eq =
         self_wh.not_matched_by_source_condition == other_wh.not_matched_by_source_condition;
+    let merge_actions_explicit_eq =
+        self_wh.merge_actions_explicit == other_wh.merge_actions_explicit;
     let not_matched_by_source_action_eq =
         self_wh.not_matched_by_source_action == other_wh.not_matched_by_source_action;
     let merge_with_schema_evolution_eq =
@@ -691,26 +796,23 @@ pub fn same_warehouse_config(
     let engine_eq = self_wh.engine == other_wh.engine;
     let order_by_eq = self_wh.order_by == other_wh.order_by;
     let ttl_eq = self_wh.ttl == other_wh.ttl;
-    let settings_eq = opt_yml_map_eq(&self_wh.settings, &other_wh.settings);
-    let query_settings_eq = opt_yml_map_eq(&self_wh.query_settings, &other_wh.query_settings);
-    let projections_eq = opt_yml_vec_eq(&self_wh.projections, &other_wh.projections);
+    let settings_eq = self_wh.settings == other_wh.settings;
+    let query_settings_eq = self_wh.query_settings == other_wh.query_settings;
+    let projections_eq = self_wh.projections == other_wh.projections;
     let sharding_key_eq = self_wh.sharding_key == other_wh.sharding_key;
     let disable_on_cluster_eq = self_wh.disable_on_cluster == other_wh.disable_on_cluster;
     let inserts_only_eq = self_wh.inserts_only == other_wh.inserts_only;
-    let connection_overrides_eq = opt_yml_map_eq(
-        &self_wh.connection_overrides,
-        &other_wh.connection_overrides,
-    );
-    let fields_eq = opt_yml_vec_eq(&self_wh.fields, &other_wh.fields);
+    let connection_overrides_eq = self_wh.connection_overrides == other_wh.connection_overrides;
+    let fields_eq = self_wh.fields == other_wh.fields;
     let source_type_eq = self_wh.source_type == other_wh.source_type;
     let url_eq = self_wh.url == other_wh.url;
     let format_eq = self_wh.format == other_wh.format;
     let layout_eq = self_wh.layout == other_wh.layout;
-    let lifetime_eq = opt_yml_value_eq(&self_wh.lifetime, &other_wh.lifetime);
-    let range_eq = opt_yml_value_eq(&self_wh.range, &other_wh.range);
+    let lifetime_eq = self_wh.lifetime == other_wh.lifetime;
+    let range_eq = self_wh.range == other_wh.range;
     let table_eq = self_wh.table == other_wh.table;
     let update_field_eq = self_wh.update_field == other_wh.update_field;
-    let update_lag_eq = opt_yml_value_eq(&self_wh.update_lag, &other_wh.update_lag);
+    let update_lag_eq = self_wh.update_lag == other_wh.update_lag;
     let definer_eq = self_wh.definer == other_wh.definer;
     let sql_security_eq = self_wh.sql_security == other_wh.sql_security;
     let refreshable_eq = self_wh.refreshable == other_wh.refreshable;
@@ -756,6 +858,7 @@ pub fn same_warehouse_config(
         && matched_condition_eq
         && not_matched_condition_eq
         && not_matched_by_source_condition_eq
+        && merge_actions_explicit_eq
         && not_matched_by_source_action_eq
         && merge_with_schema_evolution_eq
         && skip_matched_step_eq
@@ -1114,6 +1217,14 @@ pub fn same_warehouse_config(
                     Some((
                         format!("{:?}", &self_wh.not_matched_by_source_condition),
                         format!("{:?}", &other_wh.not_matched_by_source_condition),
+                    )),
+                ),
+                (
+                    "merge_actions_explicit",
+                    merge_actions_explicit_eq,
+                    Some((
+                        format!("{:?}", &self_wh.merge_actions_explicit),
+                        format!("{:?}", &other_wh.merge_actions_explicit),
                     )),
                 ),
                 (
@@ -1659,44 +1770,9 @@ pub fn same_warehouse_config(
     result
 }
 
-/// Equality for optional free-form YAML values, delegating to [`YmlValue::lenient_eq`]: a
-/// timestamp scalar and a string naming the same instant compare equal. The previous side of
-/// a comparison is deserialized from manifest JSON, which has no timestamp type, so a
-/// timestamp scalar always crosses the boundary as a string.
-fn opt_yml_value_eq(a: &Option<YmlValue>, b: &Option<YmlValue>) -> bool {
-    match (a, b) {
-        (Some(x), Some(y)) => x.lenient_eq(y),
-        _ => a == b,
-    }
-}
-
-fn opt_yml_vec_eq(a: &Option<Vec<YmlValue>>, b: &Option<Vec<YmlValue>>) -> bool {
-    match (a, b) {
-        (Some(x), Some(y)) => {
-            x.len() == y.len() && x.iter().zip(y.iter()).all(|(u, v)| u.lenient_eq(v))
-        }
-        _ => a == b,
-    }
-}
-
-fn opt_yml_map_eq(
-    a: &Option<BTreeMap<String, YmlValue>>,
-    b: &Option<BTreeMap<String, YmlValue>>,
-) -> bool {
-    match (a, b) {
-        (Some(x), Some(y)) => {
-            x.len() == y.len()
-                && x.iter()
-                    .all(|(k, v)| y.get(k).is_some_and(|yv| v.lenient_eq(yv)))
-        }
-        _ => a == b,
-    }
-}
-
-/// Compare two `unrendered_config` values, treating absent/`null`/empty as equivalent,
-/// canonicalizing trailing newlines on strings, and comparing scalars with
-/// [`YmlValue::lenient_eq`] (manifests store timestamps as strings). Mirrors the
-/// semantics used by `check_configs_modified`'s unrendered path in `prev_state`.
+/// Compare two `unrendered_config` values, treating absent/`null`/empty as equivalent and
+/// canonicalizing trailing newlines on strings. Mirrors the semantics used by
+/// `check_configs_modified`'s unrendered path in `prev_state`.
 pub(crate) fn unrendered_value_eq(a: Option<&YmlValue>, b: Option<&YmlValue>) -> bool {
     fn is_effectively_empty(v: &YmlValue) -> bool {
         match v {
@@ -1719,7 +1795,7 @@ pub(crate) fn unrendered_value_eq(a: Option<&YmlValue>, b: Option<&YmlValue>) ->
         (Some(YmlValue::String(sa, _)), Some(YmlValue::String(sb, _))) => {
             canonicalize_str(sa) == canonicalize_str(sb)
         }
-        (Some(va), Some(vb)) => va.lenient_eq(vb),
+        (Some(va), Some(vb)) => va == vb,
     }
 }
 
@@ -1727,17 +1803,6 @@ pub(crate) fn unrendered_value_eq(a: Option<&YmlValue>, b: Option<&YmlValue>) ->
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_unrendered_value_eq_timestamp_against_manifest_string() {
-        let ts = YmlValue::timestamp(dbt_yaml::Timestamp::parse("2024-01-01").unwrap());
-        let s = YmlValue::string("2024-01-01".to_string());
-        assert!(unrendered_value_eq(Some(&ts), Some(&s)));
-        assert!(unrendered_value_eq(Some(&s), Some(&ts)));
-        let other = YmlValue::string("2024-01-02".to_string());
-        assert!(!unrendered_value_eq(Some(&ts), Some(&other)));
-        let not_a_date = YmlValue::string("not-a-date".to_string());
-        assert!(!unrendered_value_eq(Some(&ts), Some(&not_a_date)));
-    }
     #[test]
     fn test_take_databricks_catalog_alias_moves_catalog_when_database_unset() {
         let mut wh = WarehouseSpecificNodeConfig {

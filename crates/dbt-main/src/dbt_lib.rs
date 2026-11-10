@@ -3,12 +3,13 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
+use dbt_adapter::AdapterType;
 use dbt_common::tracing::formatters::duration::FixedWidthDuration;
 use dbt_common::tracing::formatters::node::{NodeAction, NodeTypeFixedWidth};
 
 use dbt_adapter::load_store::ResultStore;
 use dbt_adapter::{
-    Adapter, AdapterType, convert_macro_result_to_record_batch,
+    Adapter, convert_macro_result_to_record_batch,
     relation::{RelationObject, create_relation},
 };
 use dbt_clap_core::{
@@ -40,7 +41,7 @@ use dbt_common::{
             get_error_count, return_exit_code_from_error_counter,
         },
         emit::emit_info_event,
-        invocation::create_invocation_attributes,
+        invocation::{create_invocation_attributes, record_resolved_full_refresh},
         metrics::get_metric,
         span_info::record_span_status,
     },
@@ -280,6 +281,10 @@ pub async fn setup_and_execute_fs(
             Err(_) => "error",
         };
         ctx.write(status);
+        // The row for this invocation only exists now, so any index or
+        // information schema written during the command is missing it. Bring
+        // that one table up to date.
+        refresh_invocation_artifacts(&eval_arg);
     }
 
     // Shutdown must be called to ensure vortex flushes all events.
@@ -330,6 +335,53 @@ is false. This should not happen."
             error,
             artifacts: artifacts_sink,
         }),
+    }
+}
+
+/// Re-materialize the invocations table in whichever artifacts were requested,
+/// once the current invocation's record has been written.
+///
+/// `--write-index` and `--generate-info-schema` both produce their output while
+/// the command is still running, and [`InvocationContext::write`] only appends
+/// the row for that command after it returns. Without this pass the invocation
+/// that produced an artifact is the one invocation missing from it, so joining
+/// `dbt_rt.run_results` to `dbt_rt.invocations` — as `dbt_rt.dag_validity` does —
+/// silently drops the run that was just recorded.
+///
+/// The two artifacts are refreshed independently, each from the metadata
+/// epochs: the information schema does not read the index, matching the write
+/// it is catching up. Each refresh no-ops when its artifact was not actually
+/// written — a command that failed, was interrupted, or never reached the write
+/// leaves nothing to bring up to date.
+///
+/// Advisory, like the writes themselves: a failure here leaves the rest of the
+/// artifact usable and must not fail the command.
+fn refresh_invocation_artifacts(eval_arg: &EvalArgs) {
+    let metadata_dir = eval_arg.metadata_dir();
+    if !metadata_dir.exists() {
+        return;
+    }
+
+    if eval_arg.generate_info_schema
+        && let Err(err) =
+            dbt_index_core::refresh_invocations(&metadata_dir, &eval_arg.info_schema_dir())
+    {
+        emit_warn_log_message(
+            ErrorCode::InfoSchemaWriteFailed,
+            format!("dbt: generate-info-schema: refreshing dbt_rt.invocations: {err}"),
+        );
+    }
+
+    if eval_arg.write_index {
+        let index_dir = eval_arg.index_dir();
+        if has_persisted_state(&index_dir)
+            && let Err(err) = dbt_index_core::ingest::rewrite_invocations(&metadata_dir, &index_dir)
+        {
+            emit_warn_log_message(
+                ErrorCode::IndexWriteFailed,
+                format!("dbt-index: refreshing dbt_rt.invocations: {err}"),
+            );
+        }
     }
 }
 
@@ -475,6 +527,18 @@ async fn do_execute_fs(
             .will_init_project(eval_arg.io.invocation_id, &cli, init_args)
             .await?;
 
+        // An extension that supports a mode handles it in its hooks and exits.
+        if let Some(mode) = &init_args.mode {
+            emit_error_log_message(
+                ErrorCode::UnsupportedFusionFeature,
+                format!(
+                    "`dbt init {}` is not available in this build of dbt.",
+                    mode.name()
+                ),
+            );
+            return Err(FsError::exit_with_status(2));
+        }
+
         emit_info_progress_message(ProgressMessage::new_from_action_and_target(
             INSTALLING.to_string(),
             "dbt project and profile setup".to_string(),
@@ -564,6 +628,28 @@ async fn do_execute_fs(
         token,
     )
     .await
+}
+
+/// [`execute_setup_and_all_phases`] as a boxed future made in this crate: a
+/// caller in another crate polls it through the box, rather than compiling its
+/// own copy of the whole pipeline (an async fn's body is compiled where it is
+/// polled).
+pub fn execute_setup_and_all_phases_boxed<'a>(
+    eval_arg: &'a EvalArgs,
+    cli: &'a Cli,
+    artifacts_sink: &'a mut DbtCommandExecutionArtifacts,
+    feature_stack: Arc<FeatureStack>,
+    task_runner_hooks_factory: Arc<dyn TaskRunnerHooksFactory>,
+    token: &'a CancellationToken,
+) -> std::pin::Pin<Box<dyn Future<Output = FsResult<()>> + Send + 'a>> {
+    Box::pin(execute_setup_and_all_phases(
+        eval_arg,
+        cli,
+        artifacts_sink,
+        feature_stack,
+        task_runner_hooks_factory,
+        token,
+    ))
 }
 
 #[allow(clippy::cognitive_complexity)]
@@ -773,6 +859,7 @@ impl<'a> AllPhasesExecutor<'a> {
             arg_for_retry.command = command_for_retry.as_command();
             arg_for_retry.static_analysis = effective_sa;
             arg_for_retry.full_refresh = retry_state.original_full_refresh;
+            record_resolved_full_refresh(retry_state.original_full_refresh);
 
             // Create a custom schedule for the retryable nodes from the original run.
             // This keeps retry bounded to nodes recorded in run_results.json instead
@@ -1252,12 +1339,13 @@ impl<'a> AllPhasesExecutor<'a> {
             "--write-metadata"
         };
         if advise_index_flags && !strict_static_analysis {
-            emit_warn_log_message(
-                ErrorCode::Generic,
-                format!(
-                    "{advised_flag}: column types will not be populated without `--static-analysis strict`, which also enables column-level lineage."
-                ),
-            );
+            // The catalog supplies the warehouse types; only inference needs strict.
+            let advice = if self.arg.write_catalog {
+                "inferred column types and column-level lineage are not written without `--static-analysis strict`."
+            } else {
+                "column types will not be populated without `--static-analysis strict`, which also enables column-level lineage."
+            };
+            emit_warn_log_message(ErrorCode::Generic, format!("{advised_flag}: {advice}"));
         } else if advise_index_flags && strict_static_analysis && !self.arg.write_lineage {
             emit_warn_log_message(
                 ErrorCode::Generic,
@@ -1488,12 +1576,12 @@ impl<'a> AllPhasesExecutor<'a> {
                                 test_outcome,
                                 freshness_outcome: None,
                                 has_warn: false,
-                                colorize: true,
+                                colorize: console::colors_enabled(),
                             },
                             FixedWidthDuration(Duration::from_secs_f64(r.execution_time)),
                             NodeTypeFixedWidth {
                                 node_type: "check",
-                                colorize: true,
+                                colorize: console::colors_enabled(),
                             },
                             r.name,
                         ));
@@ -1744,6 +1832,7 @@ impl<'a> AllPhasesExecutor<'a> {
                                         unique_id: uid.clone(),
                                         num_rows: None,
                                         rows_affected: None,
+                                        idle_time_ms: None,
                                         start_time: now,
                                         end_time: now,
                                         status: dbt_common::stats::NodeStatus::Errored,
@@ -1803,6 +1892,9 @@ impl<'a> AllPhasesExecutor<'a> {
                 }
             };
 
+        // Tasks are done. Release their freed memory before the artifacts are built.
+        crate::utils::release_free_heap_memory();
+
         let resolved_state = Arc::clone(&run_task_results.resolved_state);
 
         // Prepare artifact
@@ -1836,6 +1928,9 @@ impl<'a> AllPhasesExecutor<'a> {
 
         // Save artifact for callers
         self.captured_artifacts.run_results = Some(run_results_artifact);
+        if let Some(Ok(preview)) = &run_task_results.preview {
+            self.captured_artifacts.preview = Some(preview.clone());
+        }
 
         if self.arg.write_metadata {
             write_runtime_results_parquet(
@@ -1940,7 +2035,7 @@ impl<'a> AllPhasesExecutor<'a> {
         // warehouse round-trip. The information schema then carries no catalog_type and
         // `data_type` falls back to inferred_type — pass `--write-catalog` for the full
         // warehouse-backed types.
-        let catalog_data: Option<DbtCatalog> = if self.arg.write_metadata
+        let fetched_catalog: Option<DbtCatalog> = if self.arg.write_metadata
             && (self.arg.write_catalog || self.arg.write_index)
             && !self.arg.write_index_implied
             && matches!(self.arg.command, FsCommand::Run | FsCommand::Build)
@@ -1959,6 +2054,9 @@ impl<'a> AllPhasesExecutor<'a> {
         };
 
         if self.arg.write_metadata && self.arg.command != FsCommand::Show {
+            // `compile --write-catalog` fetched its catalog before compiling, for
+            // `catalog.json`. Reuse it so the epochs get the warehouse types too (#16514).
+            let catalog_data = fetched_catalog.or_else(|| self.captured_artifacts.catalog.take());
             let schema_store =
                 Arc::clone(&compilation_cache_state.schema_store) as Arc<dyn SchemaStoreTrait>;
             crate::metadata::write_metadata(
@@ -1969,6 +2067,7 @@ impl<'a> AllPhasesExecutor<'a> {
                     .expect("Unconditionally set earlier"),
                 resolved_state.as_ref(),
                 schema_store.as_ref(),
+                type_ops_factory.as_ref(),
                 &run_task_results,
                 catalog_data.as_ref(),
                 self.feature_stack.index.hooks.as_ref(),
@@ -2224,17 +2323,13 @@ async fn run_docs_generate(
         });
     let providers = (feature_stack.index.providers_factory)(backend);
 
-    let project_dir = &eval_arg.io.in_dir;
     let options = dbt_docs_server::ExportOptions {
         info_schema_dir,
         output_dir,
         duckdb_cdn_base: generate_args.duckdb_cdn_base,
         // Consent is resolved here because the project and profile are only
         // readable on this machine; the browser reads the answer, not the inputs.
-        analytics_enabled: std::env::var("DO_NOT_TRACK").as_deref() != Ok("1")
-            && cli
-                .common_args()
-                .get_send_anonymous_usage_stats_for_project(project_dir),
+        analytics_enabled: cli.common_args().get_send_anonymous_usage_stats(),
     };
 
     let summary = match dbt_docs_server::export_site(&providers, &options) {
@@ -2452,8 +2547,7 @@ async fn run_docs_serve(
     common_args: &dbt_clap_core::CommonArgs,
 ) -> FsResult<()> {
     let has_dbt_state = common_args.get_manage_state(project_dir, false);
-    let send_anonymous_usage_stats =
-        common_args.get_send_anonymous_usage_stats_for_project(project_dir);
+    let send_anonymous_usage_stats = common_args.get_send_anonymous_usage_stats();
     let args = dbt_docs_server::DocsServeArgs {
         target_path: serve_args.target_path,
         host: serve_args.host,
@@ -2514,8 +2608,7 @@ async fn run_docs_serve(
             info_schema_dir: info_schema_dir.clone(),
             output_dir: site_dir.clone(),
             duckdb_cdn_base: None,
-            analytics_enabled: std::env::var("DO_NOT_TRACK").as_deref() != Ok("1")
-                && send_anonymous_usage_stats,
+            analytics_enabled: send_anonymous_usage_stats,
         };
         match dbt_docs_server::export_site(&providers, &options) {
             Ok(summary) => eprintln!(

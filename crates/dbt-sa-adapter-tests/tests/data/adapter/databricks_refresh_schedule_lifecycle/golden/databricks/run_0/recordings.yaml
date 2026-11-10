@@ -1,0 +1,12 @@
+31c8ae46:
+- sequence: 0
+  type: execute
+  sql: |-
+    CREATE TABLE `e2e`.`adapters_databricks_refresh_schedule_lifecycle`.`refresh_source`
+    USING DELTA
+    TBLPROPERTIES ('delta.enableRowTracking' = 'true')
+    AS SELECT CAST(1 AS INT) AS id
+b2b16e82:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists `e2e`.`adapters_databricks_refresh_schedule_lifecycle`

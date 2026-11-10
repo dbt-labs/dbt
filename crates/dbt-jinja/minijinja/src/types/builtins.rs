@@ -43,7 +43,7 @@ fn init_jinja_builtins() -> Arc<TypeRegistry> {
     registry.upsert_sync(
         "adapter.dispatch".to_string(),
         Type::Object(DynObject::new(Arc::new(
-            crate::types::adapter::AdapterDispatchFunction::instance(),
+            crate::types::adapter::AdapterDispatchFunction::default(),
         ))),
     );
     registry.upsert_sync(

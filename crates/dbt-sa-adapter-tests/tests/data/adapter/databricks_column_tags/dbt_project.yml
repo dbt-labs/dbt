@@ -1,0 +1,21 @@
+name: test
+profile: fusion_tests
+
+macro-paths: ["macros"]
+
+models:
+  test:
+    +static_analysis: off
+
+    a:
+      +materialized: table
+
+    test_table:
+      +materialized: table
+
+    test_view:
+      +materialized: view
+
+    test_materialized_view:
+      +materialized: materialized_view
+

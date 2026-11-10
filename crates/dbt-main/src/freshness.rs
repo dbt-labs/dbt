@@ -39,10 +39,11 @@ pub async fn run_freshness_command(
     resolved_state: &ResolverState,
     schedule: &Schedule<String>,
     adapter: Arc<Adapter>,
-    base_context: &BTreeMap<String, Value>,
+    base_context: &Arc<BTreeMap<String, Value>>,
     artifacts_sink: &mut DbtCommandExecutionArtifacts,
     sources_only: bool,
 ) -> FsResult<Option<Box<dyn PreTaskRunData>>> {
+    let base_context = Value::from_dyn_object(Arc::clone(base_context));
     let empty_results: Vec<()> = vec![];
     for operation in resolved_state.operations.on_run_start.iter() {
         run_operation_on_run(
@@ -52,7 +53,7 @@ pub async fn run_freshness_command(
             &None,
             None,
             jinja_env,
-            base_context,
+            &base_context,
             Value::from_serialize(&empty_results),
         )
         .await?;
@@ -111,7 +112,7 @@ pub async fn run_freshness_command(
             &None,
             None,
             jinja_env,
-            base_context,
+            &base_context,
             Value::from_serialize(&freshness_context_results),
         )
         .await?;

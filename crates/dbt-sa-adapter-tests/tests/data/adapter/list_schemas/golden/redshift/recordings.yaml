@@ -1,0 +1,16 @@
+model.test.a:
+- sequence: 0
+  type: execute
+  sql: DROP SCHEMA IF EXISTS adapters_redshift_list_schemas_1 CASCADE
+- sequence: 1
+  type: execute
+  sql: DROP SCHEMA IF EXISTS adapters_redshift_list_schemas_2 CASCADE
+- sequence: 2
+  type: execute
+  sql: CREATE SCHEMA adapters_redshift_list_schemas_1
+- sequence: 3
+  type: execute
+  sql: CREATE SCHEMA adapters_redshift_list_schemas_2
+- sequence: 4
+  type: execute
+  sql: select distinct nspname from pg_namespace

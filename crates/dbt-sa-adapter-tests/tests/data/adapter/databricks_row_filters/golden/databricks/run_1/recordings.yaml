@@ -1,0 +1,384 @@
+85f3743c:
+- sequence: 0
+  type: execute
+  sql: SHOW SCHEMAS IN `e2e`
+function.test.hide_cool_and_finance:
+- sequence: 0
+  type: execute
+  sql: |-
+    CREATE OR REPLACE FUNCTION `e2e`.`adapters_databricks_row_filters`.`hide_cool_and_finance` (
+    
+    
+    is_cool boolean, department string
+    )
+    RETURNS boolean
+    LANGUAGE SQL
+    
+    
+    RETURN
+    is_cool is true and department = 'finance'
+model.test.row_filter_incremental:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace temporary view `row_filter_incremental__dbt_tmp` as
+    select 'user1' as user_id, 'region_a' as region, cast(100 as bigint) as amount
+- sequence: 1
+  type: execute
+  sql: DESCRIBE TABLE EXTENDED `row_filter_incremental__dbt_tmp` AS JSON
+- sequence: 2
+  type: execute
+  sql: |-
+    create or replace table `e2e`.`adapters_databricks_row_filters`.`row_filter_incremental`
+    
+    (
+    
+    
+    
+    
+    
+    
+    
+    `user_id` string,
+    
+    
+    
+    
+    
+    
+    
+    `region` string,
+    
+    
+    
+    
+    
+    
+    
+    `amount` bigint
+    
+    
+    
+    )
+    
+    
+    
+    using delta
+    
+    
+    
+    
+    WITH ROW FILTER `e2e`.`adapters_databricks_row_filters`.`region_filter` ON (`region`)
+- sequence: 3
+  type: execute
+  sql: insert into `e2e`.`adapters_databricks_row_filters`.`row_filter_incremental` by name select * from `row_filter_incremental__dbt_tmp`
+model.test.row_filter_materialized_view:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace temporary view `row_filter_materialized_view__dbt_tmp` as
+    select 'user1' as user_id, 'region_a' as region, cast(100 as bigint) as amount LIMIT 10
+- sequence: 1
+  type: execute
+  sql: DESCRIBE TABLE EXTENDED `row_filter_materialized_view__dbt_tmp` AS JSON
+- sequence: 2
+  type: execute
+  sql: |-
+    create or replace materialized view `e2e`.`adapters_databricks_row_filters`.`row_filter_materialized_view`
+    
+    (
+    
+    
+    
+    
+    
+    
+    
+    `user_id` string,
+    
+    
+    
+    
+    
+    
+    
+    `region` string,
+    
+    
+    
+    
+    
+    
+    
+    `amount` bigint
+    
+    
+    
+    )
+    
+    WITH ROW FILTER `e2e`.`adapters_databricks_row_filters`.`region_filter` ON (`region`)
+    
+    
+    
+    
+    
+    
+    
+    as
+    select 'user1' as user_id, 'region_a' as region, cast(100 as bigint) as amount
+model.test.row_filter_safe_replace:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace temporary view `row_filter_safe_replace__dbt_tmp` as
+    select 'user1' as user_id, 'region_a' as region, cast(100 as bigint) as amount
+- sequence: 1
+  type: execute
+  sql: DESCRIBE TABLE EXTENDED `row_filter_safe_replace__dbt_tmp` AS JSON
+- sequence: 2
+  type: execute
+  sql: |-
+    create or replace table `e2e`.`adapters_databricks_row_filters`.`row_filter_safe_replace`
+    
+    (
+    
+    
+    
+    
+    
+    
+    
+    `user_id` string,
+    
+    
+    
+    
+    
+    
+    
+    `region` string,
+    
+    
+    
+    
+    
+    
+    
+    `amount` bigint
+    
+    
+    
+    )
+    
+    
+    
+    using delta
+    
+    
+    
+    
+    WITH ROW FILTER `e2e`.`adapters_databricks_row_filters`.`region_filter` ON (`region`)
+- sequence: 3
+  type: execute
+  sql: insert into `e2e`.`adapters_databricks_row_filters`.`row_filter_safe_replace` by name select * from `row_filter_safe_replace__dbt_tmp`
+model.test.row_filter_table:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace temporary view `row_filter_table__dbt_tmp` as
+    select 'user1' as user_id, 'region_a' as region, cast(100 as bigint) as amount
+- sequence: 1
+  type: execute
+  sql: DESCRIBE TABLE EXTENDED `row_filter_table__dbt_tmp` AS JSON
+- sequence: 2
+  type: execute
+  sql: |-
+    create or replace table `e2e`.`adapters_databricks_row_filters`.`row_filter_table`
+    
+    (
+    
+    
+    
+    
+    
+    
+    
+    `user_id` string,
+    
+    
+    
+    
+    
+    
+    
+    `region` string,
+    
+    
+    
+    
+    
+    
+    
+    `amount` bigint
+    
+    
+    
+    )
+    
+    
+    
+    using delta
+    
+    
+    
+    
+    WITH ROW FILTER `e2e`.`adapters_databricks_row_filters`.`region_filter` ON (`region`)
+- sequence: 3
+  type: execute
+  sql: insert into `e2e`.`adapters_databricks_row_filters`.`row_filter_table` by name select * from `row_filter_table__dbt_tmp`
+model.test.test_cool_and_finance:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace temporary view `test_cool_and_finance__dbt_tmp` as
+    -- depends on `e2e`.`adapters_databricks_row_filters`.`hide_cool_and_finance`
+    select * from `e2e`.`adapters_databricks_row_filters`.`base_model_seed`
+- sequence: 1
+  type: execute
+  sql: DESCRIBE TABLE EXTENDED `test_cool_and_finance__dbt_tmp` AS JSON
+- sequence: 2
+  type: execute
+  sql: |-
+    create or replace table `e2e`.`adapters_databricks_row_filters`.`test_cool_and_finance`
+    
+    (
+    
+    
+    
+    
+    `name` STRING,
+    
+    
+    
+    
+    `department` STRING,
+    
+    
+    
+    
+    `is_cool` STRING,
+    
+    
+    
+    
+    `number` bigint
+    
+    
+    
+    )
+    
+    
+    
+    using delta
+    
+    
+    
+    
+    WITH ROW FILTER `e2e`.`adapters_databricks_row_filters`.`hide_cool_and_finance` ON (`is_cool`, `department`)
+- sequence: 3
+  type: execute
+  sql: insert into `e2e`.`adapters_databricks_row_filters`.`test_cool_and_finance` by name select * from `test_cool_and_finance__dbt_tmp`
+model.test.test_evens:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace temporary view `test_evens__dbt_tmp` as
+    select * from `e2e`.`adapters_databricks_row_filters`.`base_model_seed` LIMIT 10
+- sequence: 1
+  type: execute
+  sql: DESCRIBE TABLE EXTENDED `test_evens__dbt_tmp` AS JSON
+- sequence: 2
+  type: execute
+  sql: |-
+    CREATE FUNCTION IF NOT EXISTS e2e.adapters_databricks_row_filters.hide_even_numbers(
+    number INT
+    )
+    RETURNS BOOLEAN
+    RETURN number % 2 = 0
+- sequence: 3
+  type: execute
+  sql: |-
+    create or replace materialized view `e2e`.`adapters_databricks_row_filters`.`test_evens`
+    
+    (
+    
+    
+    
+    
+    `name` STRING,
+    
+    
+    
+    
+    `department` STRING,
+    
+    
+    
+    
+    `is_cool` STRING,
+    
+    
+    
+    
+    `number` bigint
+    
+    
+    
+    )
+    
+    WITH ROW FILTER `e2e`.`adapters_databricks_row_filters`.`hide_even_numbers` ON (`number`)
+    
+    
+    
+    
+    
+    
+    
+    as
+    select * from `e2e`.`adapters_databricks_row_filters`.`base_model_seed`
+seed.test.base_model_seed:
+- sequence: 0
+  type: execute
+  sql: |-
+    SELECT
+    table_name,
+    if(table_type IN ('EXTERNAL', 'MANAGED', 'MANAGED_SHALLOW_CLONE', 'EXTERNAL_SHALLOW_CLONE'), 'table', lower(table_type)) AS table_type,
+    lower(data_source_format) AS file_format,
+    table_schema,
+    table_owner,
+    table_catalog,
+    if(
+    table_type IN (
+    'EXTERNAL',
+    'MANAGED',
+    'MANAGED_SHALLOW_CLONE',
+    'EXTERNAL_SHALLOW_CLONE'
+    ),
+    lower(table_type),
+    NULL
+    ) AS databricks_table_type
+    FROM `system`.`information_schema`.`tables`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'adapters_databricks_row_filters'
+- sequence: 1
+  type: execute
+  sql: |-
+    create  table `e2e`.`adapters_databricks_row_filters`.`base_model_seed` (`name` string ,`department` string ,`is_cool` string ,`number` bigint )
+    
+    
+    using delta
+- sequence: 2
+  type: execute
+  sql: |-
+    insert overwrite `e2e`.`adapters_databricks_row_filters`.`base_model_seed` values
+    ('alice','finance','no',15112),('bob','marketing','yes',15210),('carol','marketing','no',15451),('dave','finance','yes',15330),('eve','platform','no',15112)

@@ -122,8 +122,7 @@ mod tests {
             }
             Backend::DuckDB | Backend::DuckDBExtended => {
                 let mut builder = database::Builder::new(backend);
-                let database_path = ":memory:".to_string();
-                builder.with_named_option("path", database_path)?;
+                builder.with_named_option("path", ":memory:")?;
                 Ok(builder)
             }
             Backend::LakeCompute => {

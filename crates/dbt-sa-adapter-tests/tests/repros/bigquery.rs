@@ -1,13 +1,17 @@
 //! Regression tests for reported BigQuery bugs: each reproduces a fixed issue
 //! (linked in its doc comment) from a project under `tests/data/repros/`.
 
+use std::sync::Arc;
+
 use crate::common::FS_RUNNER;
 
 use dbt_adapter_core::AdapterType;
 use dbt_common::{FsResult, current_function_name};
 use dbt_test_utils::adapter_record_replay::{
-    AdapterRecordReplayTurn, FileOverride, run_fs_record_replay_task_seq,
+    AdapterRecordReplayTurn, FileOverride, build_fs_record_replay_task_seq,
+    run_fs_record_replay_task_seq,
 };
+use dbt_test_utils::task::CaptureRunResults;
 
 /// Every BigQuery test runs on the Foundry driver unless it says otherwise.
 const BIGQUERY_DRIVER: &[(&str, &str)] = &[("DBT_ADBC_BIGQUERY_USE_FOUNDRY", "1")];
@@ -50,6 +54,63 @@ async fn adapters_bigquery_repros_seed_empty_column() -> FsResult<()> {
         &["seed"],
     )
     .await
+}
+
+/// Regression for https://github.com/dbt-labs/dbt/issues/15961.
+/// Dict and CSV fixtures must keep the existing parent's TIMESTAMP type.
+/// Scalar projections check UTC offsets and DATETIME wall hours.
+#[dbt_runtime::test]
+async fn bigquery_unit_test_existing_parent_timestamp_fixtures() -> FsResult<()> {
+    let (env, mut task_seq) = build_fs_record_replay_task_seq(
+        env!("CARGO_MANIFEST_DIR"),
+        &FS_RUNNER,
+        current_function_name!(),
+        "tests/data/repros/unit_test_timestamp_fixtures",
+        AdapterType::Bigquery.as_ref(),
+        None,
+        &[
+            "run --select events",
+            "test --select test_type:unit --write-json",
+        ],
+        Some("--static-analysis off".to_string()),
+    )
+    .await?;
+
+    let captured = Arc::new(CaptureRunResults::new());
+    task_seq.task(Box::new(Arc::clone(&captured)));
+    // Keep cleanup from replacing the test artifact in recording mode.
+    task_seq
+        .execute_in_with_env(
+            &env,
+            &[
+                ("DBT_ADBC_BIGQUERY_USE_FOUNDRY", "1"),
+                ("DBT_WRITE_JSON", "false"),
+            ],
+        )
+        .await?;
+
+    let artifact = captured
+        .get_run_results()
+        .expect("missing unit-test results");
+    assert_eq!(artifact.results.len(), 4);
+    for (name, status, message) in [
+        ("dict_timezone_matches", "pass", "Pass"),
+        ("csv_timezone_matches", "pass", "Pass"),
+        ("dict_wrong_id", "error", "Error"),
+        ("csv_wrong_id", "error", "Error"),
+    ] {
+        let unique_id = format!("unit_test.unit_test_timestamp_fixtures.event_projection.{name}");
+        let result = artifact
+            .results
+            .iter()
+            .find(|result| result.unique_id == unique_id)
+            .unwrap_or_else(|| panic!("missing {unique_id}"));
+        assert_eq!(result.status, status, "{unique_id}: {:?}", result.message);
+        // A row mismatch keeps the default message. SQL and fixture-rendering
+        // errors carry diagnostics and must not become accepted goldens.
+        assert_eq!(result.message.as_deref(), Some(message), "{unique_id}");
+    }
+    Ok(())
 }
 
 #[dbt_runtime::test]

@@ -46,7 +46,7 @@ use crate::register_seeds;
 use crate::run_operation::run_operation_on_run_with_ctx;
 use crate::task::effective_unit_test_execute;
 use crate::utils::filter_missing_schemas;
-use crate::utils::get_catalog_schemas_and_ids;
+use crate::utils::get_catalog_schemas_and_ids_by_adapter;
 use crate::utils::register_catalog_schemas_remote;
 use crate::visitor::visit_parallel;
 use crate::visitor::visit_sequential;
@@ -176,6 +176,7 @@ impl TaskRunner {
             &self.resolved_state.nodes.seeds,
             Arc::clone(&self.schema_store) as Arc<dyn SchemaStoreTrait>,
             Arc::clone(&self.data_store),
+            &self.adapter_store,
             Arc::clone(self.adapter.engine().type_ops()),
             &run_task_args.io.in_dir,
         )
@@ -258,26 +259,48 @@ impl TaskRunner {
 
     async fn register_schemas(
         &self,
+        ctx: &TaskRunnerCtx,
         schedule: &Schedule<String>,
-        base_context: BTreeMap<String, minijinja::Value>,
     ) -> FsResult<()> {
         // Walking the schedule is pure in-memory work; only the adapter calls
         // below talk to the warehouse and need the blocking pool.
-        let selected_catalog_schemas =
-            get_catalog_schemas_and_ids(&self.resolved_state.nodes, schedule);
+        let groups = get_catalog_schemas_and_ids_by_adapter(
+            &self.resolved_state.nodes,
+            schedule,
+            self.adapter.adapter_type(),
+        );
+        // One adapter at a time, so a recorded run keeps its order.
+        for (adapter_type, selected_catalog_schemas) in groups {
+            let adapter = self.adapter_store.get(adapter_type)?;
+            // TODO: copies the base context per adapter, and `register_adapter_schemas` copies
+            // it per schema. Layer over the shared base once `new_state_with_context` takes an
+            // `OverlayMap`.
+            let mut group_context = BTreeMap::clone(&ctx.inner.base_context);
+            ctx.insert_adapter_overlay(&mut group_context, adapter_type)?;
+            self.register_adapter_schemas(adapter, selected_catalog_schemas, group_context)
+                .await?;
+        }
+        Ok(())
+    }
 
+    async fn register_adapter_schemas(
+        &self,
+        adapter: Arc<Adapter>,
+        selected_catalog_schemas: BTreeMap<String, BTreeMap<String, String>>,
+        base_context: BTreeMap<String, minijinja::Value>,
+    ) -> FsResult<()> {
         let jinja_env = Arc::clone(&self.jinja_env);
-        let adapter = Arc::clone(&self.adapter);
+        let filter_adapter = Arc::clone(&adapter);
         let filter_context = base_context.clone();
         let missing_catalog_schemas = dbt_runtime::spawn_blocking(move || {
             let state = jinja_env.new_state_with_context(filter_context);
-            filter_missing_schemas(&adapter, &state, &selected_catalog_schemas)
+            filter_missing_schemas(&filter_adapter, &state, &selected_catalog_schemas)
         })
         .await??;
 
         // Keep schema creation sequential during recording and replay because
         // Time Machine requires writes to occur in recorded order.
-        let schema_batches = if self.adapter.time_machine().is_some() {
+        let schema_batches = if adapter.time_machine().is_some() {
             vec![missing_catalog_schemas]
         } else {
             missing_catalog_schemas
@@ -290,7 +313,7 @@ impl TaskRunner {
             .into_iter()
             .map(|catalog_schemas| {
                 let jinja_env = Arc::clone(&self.jinja_env);
-                let adapter = Arc::clone(&self.adapter);
+                let adapter = Arc::clone(&adapter);
                 let mut base_context = base_context.clone();
                 // Cloning the context shares the result store, so concurrent creates could
                 // overwrite or consume each other's statement results.
@@ -316,7 +339,6 @@ impl TaskRunner {
         mut self,
         run_task_args: Arc<RunTasksArgs>,
         schedule: Schedule<String>,
-        base_context: BTreeMap<String, minijinja::Value>,
         mut ctx: TaskRunnerCtx,
         graph: Graph<Arc<dyn Task>, ()>,
         has_dynamic_closure: bool,
@@ -326,7 +348,7 @@ impl TaskRunner {
 
         let registered_schemas = if self.should_register_schemas(run_task_args.as_ref(), &schedule)
         {
-            self.register_schemas(&schedule, base_context).await?;
+            self.register_schemas(&ctx, &schedule).await?;
             true
         } else {
             false
@@ -340,7 +362,7 @@ impl TaskRunner {
 
         // Create span for on-run-start phase if there are any hooks
         let on_run_start_span = if should_run_on_run_start_hooks(
-            run_task_args.infer_schemas_and_typeless,
+            run_task_args.infer_schemas_and_typeless || run_task_args.skip_on_run_start_hooks,
             !self.resolved_state.operations.on_run_start.is_empty(),
         ) {
             Some(create_info_span(PhaseExecuted::start_with_node_count(
@@ -500,6 +522,7 @@ impl TaskRunner {
                                 unique_id,
                                 num_rows: None,
                                 rows_affected: None,
+                                idle_time_ms: None,
                                 start_time,
                                 end_time: SystemTime::now(),
                                 status: NodeStatus::SkippedUpstreamFailed,
@@ -565,6 +588,7 @@ impl TaskRunner {
                             unique_id,
                             num_rows: None,
                             rows_affected: None,
+                            idle_time_ms: None,
                             start_time,
                             end_time: SystemTime::now(),
                             status,

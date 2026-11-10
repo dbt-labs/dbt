@@ -171,6 +171,10 @@ impl StaticBaseRelation for RelationStatic {
                 let relation_type = iter.next_kwarg::<Option<Value>>("type")?;
                 let custom_quoting = iter.next_kwarg::<Option<Value>>("quote_policy")?;
                 let temporary = iter.next_kwarg::<Option<bool>>("temporary")?;
+                let is_staging = match self.adapter_type {
+                    AdapterType::Databricks => iter.next_kwarg::<Option<bool>>("is_staging")?,
+                    _ => None,
+                };
                 iter.finish()?;
 
                 let custom_quoting = custom_quoting
@@ -181,20 +185,19 @@ impl StaticBaseRelation for RelationStatic {
                         schema: v.schema.unwrap_or_default(),
                     });
 
-                self.try_new(
-                    database,
-                    schema,
-                    identifier,
-                    relation_type.and_then(|v: Value| {
+                Relation::new(self.adapter_type, database, schema, identifier)
+                    .with_relation_type(relation_type.and_then(|v: Value| {
                         if v.is_none() || v.is_undefined() {
                             None
                         } else {
                             Some(RelationType::from(v.as_str().unwrap_or_default()))
                         }
-                    }),
-                    custom_quoting,
-                    temporary,
-                )
+                    }))
+                    .with_quoting(custom_quoting.unwrap_or(self.quoting))
+                    .with_temporary(temporary.unwrap_or(false))
+                    .with_is_staging(is_staging.unwrap_or(false))
+                    .validate()
+                    .map(|r| RelationObject::new(Arc::new(r)).into_value())
             }
         }
     }
@@ -237,6 +240,9 @@ pub struct Relation {
     pub is_delta: bool,
     /// Whether the relation is a Databricks shallow clone
     pub is_shallow_clone: bool,
+    /// Whether this is a Databricks safer-replace staging relation, whose keys are always
+    /// given staging names and renamed after the swap
+    pub is_staging: bool,
     /// Constraints to be created with the table
     pub create_constraints: Vec<databricks::typed_constraint::TypedConstraint>,
     /// Constraints to be applied during ALTER operations
@@ -407,6 +413,7 @@ impl Relation {
             metadata: None,
             is_delta: false,
             is_shallow_clone: false,
+            is_staging: false,
             create_constraints: Vec::new(),
             alter_constraints: Vec::new(),
             temporary: false,
@@ -452,6 +459,11 @@ impl Relation {
 
     pub fn with_is_shallow_clone(mut self, is_shallow_clone: bool) -> Self {
         self.is_shallow_clone = is_shallow_clone;
+        self
+    }
+
+    pub fn with_is_staging(mut self, is_staging: bool) -> Self {
+        self.is_staging = is_staging;
         self
     }
 
@@ -540,6 +552,7 @@ impl Relation {
             metadata: None,
             is_delta: false,
             is_shallow_clone: false,
+            is_staging: false,
             create_constraints: Vec::default(),
             alter_constraints: Vec::default(),
             temporary: false,
@@ -589,6 +602,8 @@ impl Relation {
     }
 
     /// Add a constraint, routing to create_constraints or alter_constraints based on type
+    ///
+    /// Reference: https://github.com/databricks/dbt-databricks/blob/fdc4ac22f4494c701d8f7d6e5b380e5f0d1fe9ff/dbt/adapters/databricks/relation.py#L259-L272
     pub fn add_constraint(&mut self, constraint: databricks::typed_constraint::TypedConstraint) {
         use dbt_schemas::schemas::common::ConstraintType;
 
@@ -597,7 +612,18 @@ impl Relation {
                 self.alter_constraints.push(constraint);
             }
             _ => {
-                self.create_constraints.push(constraint);
+                // Materialized views have no constraint diff, so they keep server-assigned names.
+                let synthesized_name = match self.path.identifier.as_deref() {
+                    Some(identifier)
+                        if (constraint.name().is_none() || self.is_staging)
+                            && !self.is_materialized_view() =>
+                    {
+                        constraint.synthesized_name(identifier)
+                    }
+                    _ => None,
+                };
+                self.create_constraints
+                    .push(constraint.with_name(synthesized_name));
             }
         }
     }
@@ -797,6 +823,7 @@ impl BaseRelation for Relation {
         .with_metadata(self.metadata.clone())
         .with_is_delta(self.is_delta)
         .with_is_shallow_clone(self.is_shallow_clone)
+        .with_is_staging(self.is_staging)
         .with_temporary(self.temporary)
         .with_can_exchange(self.can_exchange)
         .with_can_on_cluster(self.can_on_cluster)
@@ -828,7 +855,9 @@ impl BaseRelation for Relation {
         .with_metadata(self.metadata.clone())
         .with_is_delta(self.is_delta)
         .with_is_shallow_clone(self.is_shallow_clone)
+        .with_is_staging(self.is_staging)
         .with_temporary(self.temporary)
+        .with_table_format(self.table_format)
         .with_can_exchange(self.can_exchange)
         .with_can_on_cluster(self.can_on_cluster)
         .with_mvs_pointing_to_it(self.mvs_pointing_to_it.clone())
@@ -1155,7 +1184,7 @@ impl BaseRelation for Relation {
                 // TODO(serramatutu): minijinja_value_to_typed_struct does not work with references, so we
                 // have to clone the value here...
                 let local_config = minijinja_value_to_typed_struct::<InternalDbtNodeWrapper>(
-                    relation_config_value.clone(),
+                    relation_config_value,
                 )
                 .map_err(|e| {
                     minijinja::Error::new(
@@ -1194,14 +1223,15 @@ impl BaseRelation for Relation {
             AdapterType::Snowflake => {
                 // TODO(serramatutu): minijinja_value_to_typed_struct does not work with references, so we
                 // have to clone the value here...
-                let local_config =
-                    minijinja_value_to_typed_struct::<InternalDbtNodeWrapper>(config.clone())
-                        .map_err(|e| {
-                            minijinja::Error::new(
-                                minijinja::ErrorKind::SerdeDeserializeError,
-                                format!("Failed to deserialize InternalDbtNodeWrapper: {e}"),
-                            )
-                        })?;
+                let local_config = minijinja_value_to_typed_struct::<InternalDbtNodeWrapper>(
+                    config,
+                )
+                .map_err(|e| {
+                    minijinja::Error::new(
+                        minijinja::ErrorKind::SerdeDeserializeError,
+                        format!("Failed to deserialize InternalDbtNodeWrapper: {e}"),
+                    )
+                })?;
                 let local_config = match local_config {
                     InternalDbtNodeWrapper::Model(model) => model,
                     _ => {
@@ -1247,6 +1277,9 @@ impl BaseRelation for Relation {
                 .schema
                 .as_deref()
                 .expect("INFORMATION_SCHEMA relation needs dataset");
+            let dataset = dbt_adapter_sql::ident::Ident::new(dataset, AdapterType::Bigquery)
+                .display(AdapterType::Bigquery)
+                .to_string();
             let view_name = self.path.identifier.as_deref();
 
             // Detect if user has set `project == location` and normalize
@@ -1258,7 +1291,7 @@ impl BaseRelation for Relation {
 
             let fqn_no_project = if let Some(view_name) = view_name {
                 bigquery_metadata::generate_system_table_fqn(
-                    dataset,
+                    &dataset,
                     view_name,
                     self.location.as_deref(),
                 )
@@ -1270,7 +1303,7 @@ impl BaseRelation for Relation {
             };
 
             let fqn = if let Some(project) = &project {
-                format!("`{project}`.{fqn_no_project}")
+                format!("{}.{fqn_no_project}", self.quoted(project))
             } else {
                 fqn_no_project
             };
@@ -1339,6 +1372,7 @@ impl BaseRelation for Relation {
             .with_metadata(self.metadata.clone())
             .with_is_delta(self.is_delta)
             .with_is_shallow_clone(self.is_shallow_clone)
+            .with_is_staging(self.is_staging)
             .with_temporary(self.temporary)
             .with_table_format(self.table_format)
             .with_can_exchange(self.can_exchange)
@@ -1441,15 +1475,14 @@ impl BaseRelation for Relation {
 
                 // TODO(serramatutu): minijinja_value_to_typed_struct does not work with
                 // references, so we have to clone the value here...
-                let local_config = minijinja_value_to_typed_struct::<InternalDbtNodeWrapper>(
-                    local_config_value.clone(),
-                )
-                .map_err(|e| {
-                    minijinja::Error::new(
-                        minijinja::ErrorKind::SerdeDeserializeError,
-                        format!("Failed to deserialize InternalDbtNodeWrapper: {e}"),
-                    )
-                })?;
+                let local_config =
+                    minijinja_value_to_typed_struct::<InternalDbtNodeWrapper>(local_config_value)
+                        .map_err(|e| {
+                        minijinja::Error::new(
+                            minijinja::ErrorKind::SerdeDeserializeError,
+                            format!("Failed to deserialize InternalDbtNodeWrapper: {e}"),
+                        )
+                    })?;
                 let local_config = match local_config {
                     InternalDbtNodeWrapper::Model(model) => model,
                     _ => {
@@ -1988,6 +2021,35 @@ mod tests {
         }
 
         #[test]
+        fn test_render_escapes_adapter_identifier_delimiters() {
+            let relation = |adapter_type, identifier: &str| {
+                Relation::new(adapter_type, None, None, Some(identifier.to_string()))
+                    .with_quoting(ResolvedQuoting::trues())
+            };
+
+            assert_eq!(
+                relation(AdapterType::Snowflake, "a\"b").render_self_as_str(),
+                r#""a""b""#
+            );
+            assert_eq!(
+                relation(AdapterType::Databricks, "a`b").render_self_as_str(),
+                "`a``b`"
+            );
+            assert_eq!(
+                relation(AdapterType::Bigquery, r"a\`b").render_self_as_str(),
+                r"`a\\\`b`"
+            );
+            assert_eq!(
+                relation(AdapterType::ClickHouse, r"a\`b").render_self_as_str(),
+                r"`a\\``b`"
+            );
+            assert_eq!(
+                relation(AdapterType::ClickHouse, "trail\\").render_self_as_str(),
+                r"`trail\\`"
+            );
+        }
+
+        #[test]
         fn test_is_system() {
             let make = |db: Option<&str>, schema: Option<&str>| {
                 Relation::new(
@@ -2192,6 +2254,27 @@ mod tests {
             assert_eq!(
                 rendered,
                 "`test-project`.test_dataset.INFORMATION_SCHEMA.TABLE_SNAPSHOTS"
+            );
+        }
+
+        #[test]
+        fn test_information_schema_escapes_project_and_dataset() {
+            let relation = Relation::new(
+                AdapterType::Bigquery,
+                "project`; SELECT 1; --".to_string(),
+                "dataset`; SELECT 2; --".to_string(),
+                "table".to_string(),
+            )
+            .with_relation_type(RelationType::Table)
+            .with_quoting(DEFAULT_RESOLVED_QUOTING);
+
+            let rendered = relation
+                .information_schema("TABLES")
+                .unwrap()
+                .render_self_as_str();
+            assert_eq!(
+                rendered,
+                r"`project\`; SELECT 1; --`.`dataset\`; SELECT 2; --`.INFORMATION_SCHEMA.TABLES"
             );
         }
 
@@ -2503,6 +2586,14 @@ mod tests {
             let iceberg = snowflake_relation(RelationType::InteractiveTable, TableFormat::Iceberg);
             assert!(!iceberg.can_be_renamed());
             assert!(iceberg.can_be_replaced());
+        }
+
+        #[test]
+        fn quote_preserves_table_format() {
+            let iceberg = snowflake_relation(RelationType::Table, TableFormat::Iceberg);
+            let quoted = iceberg.quote(Some(true), Some(false), Some(true)).unwrap();
+            assert!(quoted.is_iceberg_format());
+            assert_eq!(quoted.quote_policy(), Policy::new(true, false, true));
         }
 
         #[test]

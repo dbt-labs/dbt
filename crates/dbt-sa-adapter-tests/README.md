@@ -40,46 +40,18 @@ Install [cargo-nextest](https://nexte.st). Each test initializes `dbt`'s
 tracing, which works once per process, so run more than one test with
 `cargo nextest`, not `cargo test`.
 
-The tests read the `fusion_tests` profile from `~/.dbt/profiles.yml`, with one
-output per adapter, named after the adapter type. They need it **in replay mode
-too**: replay opens no connection, so credentials may be placeholders, but
+Replaying needs no setup. The tests read the `fusion_tests` profile from
+`~/.dbt/profiles.yml`, and when that file does not define it, they use the
+placeholder profile in
+[`dbt-test-utils/profiles/replay_profiles.yml`](../dbt-test-utils/profiles/replay_profiles.yml).
+
+To record, add a `fusion_tests` profile to `~/.dbt/profiles.yml`, with one
+output per adapter, named after the adapter type. Start from the placeholder
+profile and put real credentials in the output for your adapter. Keep the same
+`database` (and, for Snowflake, a warehouse of one of the masked names):
 recordings match queries by their SQL text, so the names that end up in that
-SQL must be the ones the recordings were made with:
-
-```yaml
-fusion_tests:
-  target: snowflake
-  outputs:
-    snowflake:
-      type: snowflake
-      account: dummy_account
-      user: dummy_user
-      private_key: dummy_private_key
-      role: dummy_role
-      database: development
-      # Recordings mask the warehouse names FUSION_ADAPTER_TESTING,
-      # FUSION_SLT_WAREHOUSE and DBT_TESTING, so use one of them.
-      warehouse: FUSION_ADAPTER_TESTING
-      schema: fusion_tests_schema
-    bigquery:
-      type: bigquery
-      method: service-account
-      keyfile: /path/to/keyfile.json
-      database: dbt-test-env
-      schema: fusion_tests_schema
-    clickhouse:
-      type: clickhouse
-      host: localhost
-      port: 8123
-      user: default
-      password: ''
-      database: default
-      schema: fusion_tests_schema
-```
-
-To record, put real credentials in the output for your adapter, keeping the
-same `database` (and, for Snowflake, a warehouse of one of the masked names).
-The `schema` is replaced per test.
+SQL must be the ones the recordings were made with. The `schema` is replaced
+per test.
 
 ## Running
 
@@ -172,7 +144,9 @@ writes. Its diff is expected.
 
 ## Adding an adapter
 
-1. Add an output named after the adapter type to your `fusion_tests` profile.
+1. Add an output named after the adapter type to the placeholder profile, with
+   placeholder credentials and the database you record with, and to your own
+   `fusion_tests` profile.
 2. Add `tests/adapter/<adapter>.rs`, and `tests/repros/<adapter>.rs` for its
    bug repros, each with its own `run_fs_record_replay_<adapter>` helper, and
    declare them in the `mod.rs` beside them.

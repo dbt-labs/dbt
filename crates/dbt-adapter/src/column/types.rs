@@ -1,10 +1,10 @@
 use dbt_adapter_engine::cow::{lowercase, uppercase};
 use dbt_adapter_sql::types::{SqlType, StructField};
 use dbt_common::current_function_name;
-use once_cell::sync::Lazy;
 use regex::Regex;
 use std::borrow::Cow;
 use std::sync::Arc;
+use std::sync::LazyLock;
 
 use dbt_adapter_core::*;
 use dbt_schemas::schemas::dbt_column::DbtCoreBaseColumn;
@@ -18,12 +18,15 @@ use minijinja::{
 
 use dbt_schemas::schemas::dbt_column::DbtColumn;
 
-static LOG_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"([^(]+)(\([^)]+\))?").expect("A valid regex"));
+use crate::sql_types::{DefaultTypeOps, TypeOps};
+use crate::value::columns_to_value;
+
+static LOG_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"([^(]+)(\([^)]+\))?").expect("A valid regex"));
 
 /// Matches a COLLATE clause such as `COLLATE 'en-ci'` (case-insensitive).
-static COLLATION_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?i)\s+COLLATE\s+'([^']+)'").expect("A valid regex"));
+static COLLATION_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)\s+COLLATE\s+'([^']+)'").expect("A valid regex"));
 
 /// A struct representing a column type for use with static methods
 #[derive(Clone, Copy, Debug)]
@@ -85,7 +88,7 @@ impl Object for ColumnStatic {
                 // TODO: ArgsIter
                 let mut args = ArgParser::new(args, None);
                 let columns = args.get::<Value>("columns")?;
-                let columns = Column::vec_from_jinja_value(AdapterType::Databricks, columns)?;
+                let columns = Column::vec_from_jinja_value(AdapterType::Databricks, &columns)?;
 
                 Ok(Value::from(self.dbx_format_add_column_list(&columns)?))
             }
@@ -93,7 +96,7 @@ impl Object for ColumnStatic {
                 // TODO: ArgsIter
                 let mut args = ArgParser::new(args, None);
                 let columns = args.get::<Value>("columns")?;
-                let columns = Column::vec_from_jinja_value(AdapterType::Databricks, columns)?;
+                let columns = Column::vec_from_jinja_value(AdapterType::Databricks, &columns)?;
 
                 Ok(Value::from(self.dbx_format_remove_column_list(&columns)?))
             }
@@ -101,12 +104,13 @@ impl Object for ColumnStatic {
                 let mut args: ArgParser = ArgParser::new(args, None);
                 let column = args.get::<Value>("column")?;
                 // FIXME: why is this DbtColumn and not Column?
-                let column = minijinja_value_to_typed_struct::<DbtColumn>(column).map_err(|e| {
-                    minijinja::Error::new(
-                        minijinja::ErrorKind::SerdeDeserializeError,
-                        e.to_string(),
-                    )
-                })?;
+                let column =
+                    minijinja_value_to_typed_struct::<DbtColumn>(&column).map_err(|e| {
+                        minijinja::Error::new(
+                            minijinja::ErrorKind::SerdeDeserializeError,
+                            e.to_string(),
+                        )
+                    })?;
 
                 Ok(Value::from(self.dbx_get_name(&column)))
             }
@@ -309,7 +313,7 @@ impl ColumnStatic {
     /// https://github.com/databricks/dbt-databricks/blob/822b105b15e644676d9e1f47cbfd765cd4c1541f/dbt/adapters/databricks/column.py#L66
     fn dbx_format_add_column_list(
         self: &Arc<Self>,
-        columns: &[Column],
+        columns: &[Arc<Column>],
     ) -> Result<String, minijinja::Error> {
         if self.0 != AdapterType::Databricks {
             unimplemented!("Only available for Databricks")
@@ -325,7 +329,7 @@ impl ColumnStatic {
     /// https://github.com/databricks/dbt-databricks/blob/822b105b15e644676d9e1f47cbfd765cd4c1541f/dbt/adapters/databricks/column.py#L62
     fn dbx_format_remove_column_list(
         self: &Arc<Self>,
-        columns: &[Column],
+        columns: &[Arc<Column>],
     ) -> Result<String, minijinja::Error> {
         if self.0 != AdapterType::Databricks {
             unimplemented!("Only available for Databricks")
@@ -333,7 +337,7 @@ impl ColumnStatic {
 
         Ok(columns
             .iter()
-            .map(|c| c.quoted().as_str().to_owned())
+            .map(|c| c.quoted())
             .collect::<Vec<String>>()
             .join(", "))
     }
@@ -416,7 +420,7 @@ pub struct Column {
     ///
     /// This is needed to support upstream-style persist-docs behavior, including clearing existing
     /// comments by setting them to the empty string when the model column has no description.
-    comment: Option<String>,
+    pub comment: Option<String>,
 
     /// dbt Core's degenerate representation of dtype, derived from _original_sql_str
     core_dtype: String,
@@ -605,6 +609,26 @@ impl Column {
         }
     }
 
+    #[cold]
+    pub fn new_boxed(
+        adapter_type: AdapterType,
+        name: String,
+        original_sql_str: String,
+        char_size: Option<u32>,
+        numeric_precision: Option<u64>,
+        numeric_scale: Option<u64>,
+    ) -> Box<Self> {
+        let column = Self::new(
+            adapter_type,
+            name,
+            original_sql_str,
+            char_size,
+            numeric_precision,
+            numeric_scale,
+        );
+        Box::new(column)
+    }
+
     /// Construct based on a value parsed from dbt Core Jinja
     fn from_dbt_core(adapter_type: AdapterType, col: DbtCoreBaseColumn) -> Self {
         Self {
@@ -628,7 +652,7 @@ impl Column {
 
     pub fn from_jinja_value(
         adapter_type: AdapterType,
-        value: Value,
+        value: &Value,
     ) -> Result<Self, minijinja::Error> {
         let core_col =
             minijinja_value_to_typed_struct::<DbtCoreBaseColumn>(value).map_err(|e| {
@@ -640,13 +664,13 @@ impl Column {
 
     pub fn vec_from_jinja_value(
         _adapter_type: AdapterType,
-        value: Value,
-    ) -> Result<Vec<Self>, minijinja::Error> {
+        value: &Value,
+    ) -> Result<Vec<Arc<Column>>, minijinja::Error> {
         // Iterate over the jinja value which should be a sequence
         value
             .try_iter()?
             .map(|item| {
-                item.downcast_object_ref::<Self>().cloned().ok_or_else(|| {
+                item.downcast_object::<Self>().ok_or_else(|| {
                     minijinja::Error::new(
                         minijinja::ErrorKind::InvalidOperation,
                         "Failed to downcast jinja value to Column; expected Column object",
@@ -659,12 +683,13 @@ impl Column {
     /// Create a new BigQuery column
     ///
     /// `mode` ias a field is seen in BQ (https://cloud.google.com/bigquery/docs/schemas#modes)
+    #[cold]
     pub fn new_bigquery(
         name: String,
         original_sql_str: String,
-        fields: impl Into<Vec<Self>>,
+        fields: impl IntoIterator<Item = Arc<Column>>,
         mode: BigqueryColumnMode,
-    ) -> Self {
+    ) -> Box<Self> {
         use BigqueryColumnMode::*;
         let (nullable, repeated) = match mode {
             Nullable => (Some(true), None),
@@ -673,11 +698,13 @@ impl Column {
         };
         let (core_dtype, core_data_type) =
             Self::make_degenerate_types(AdapterType::Bigquery, &original_sql_str);
-        Self {
+        // TODO: change _fields to be Vec<Arc<Column>> to avoid this transformation
+        let fields = fields.into_iter().map(Arc::unwrap_or_clone).collect();
+        let column = Self {
             _adapter_type: AdapterType::Bigquery,
             _nullable: nullable,
             _repeated: repeated,
-            _fields: fields.into(),
+            _fields: fields,
             original_sql_str: Some(original_sql_str),
             name,
             comment: None,
@@ -687,7 +714,8 @@ impl Column {
             numeric_precision: None,
             numeric_scale: None,
             collation: None,
-        }
+        };
+        Box::new(column)
     }
 
     pub fn as_static(&self) -> ColumnStatic {
@@ -877,10 +905,29 @@ impl Column {
         }
     }
 
+    /// Lowercased type name before any `(`, `<`, or whitespace, e.g. `decimal` for
+    /// `DECIMAL(10, 2)` or `string` for `string COLLATE UTF8_LCASE`.
+    ///
+    /// https://github.com/databricks/dbt-databricks/blob/6cc739d473043d4e1c94be9ca391850edd02e7fb/dbt/adapters/databricks/column.py#L144-L146
+    fn databricks_base_type(&self) -> String {
+        self.core_dtype
+            .trim()
+            .split(|c: char| c.is_whitespace() || c == '(' || c == '<')
+            .next()
+            .unwrap_or_default()
+            .to_lowercase()
+    }
+
     fn is_numeric(&self) -> bool {
         match self._adapter_type {
             AdapterType::Bigquery => {
                 matches!(self.core_dtype.to_lowercase().as_str(), "numeric")
+            }
+            AdapterType::Databricks => {
+                matches!(
+                    self.databricks_base_type().as_str(),
+                    "decimal" | "dec" | "numeric"
+                )
             }
             AdapterType::Snowflake => {
                 matches!(
@@ -911,6 +958,19 @@ impl Column {
                 matches!(self.core_dtype.to_lowercase().as_str(), "int64")
             }
             AdapterType::Snowflake => false,
+            AdapterType::Databricks => {
+                matches!(
+                    self.databricks_base_type().as_str(),
+                    "tinyint"
+                        | "byte"
+                        | "smallint"
+                        | "short"
+                        | "int"
+                        | "integer"
+                        | "bigint"
+                        | "long"
+                )
+            }
             _ => {
                 matches!(
                     self.core_dtype.to_lowercase().as_str(),
@@ -942,6 +1002,12 @@ impl Column {
                     "float" | "float4" | "float8" | "double" | "double precision" | "real"
                 )
             }
+            AdapterType::Databricks => {
+                matches!(
+                    self.databricks_base_type().as_str(),
+                    "float" | "real" | "double"
+                )
+            }
             _ => {
                 matches!(
                     self.core_dtype.to_lowercase().as_str(),
@@ -961,6 +1027,12 @@ impl Column {
                 matches!(
                     self.core_dtype.to_lowercase().as_str(),
                     "string" | "fixedstring"
+                )
+            }
+            AdapterType::Databricks => {
+                matches!(
+                    self.databricks_base_type().as_str(),
+                    "string" | "varchar" | "char"
                 )
             }
             _ => {
@@ -1038,6 +1110,10 @@ impl Column {
             // which is valid DDL as-is; rebuilding it from parts would turn
             // `text` into `character varying(256)`.
             AdapterType::MariaDB => self.core_dtype.to_string(),
+            // v1 `DatabricksColumn.data_type` never renders through `string_type`, which would
+            // turn Databricks strings into `character varying(256)`.
+            // https://github.com/databricks/dbt-databricks/blob/6cc739d473043d4e1c94be9ca391850edd02e7fb/dbt/adapters/databricks/column.py#L140-L142
+            AdapterType::Databricks => self.core_dtype.clone(),
             _ => {
                 if self.is_string() {
                     self.as_static().string_type(Some(
@@ -1112,6 +1188,26 @@ impl Column {
 
     /// https://github.com/dbt-labs/dbt-adapters/blob/main/dbt-adapters/src/dbt/adapters/base/column.py#L102-L103
     pub fn can_expand_to(&self, other: &Column) -> Result<bool, minijinja::Error> {
+        match self._adapter_type {
+            // Databricks strings have no size to widen; `expand_target_column_types` would
+            // otherwise ALTER them to `character varying(256)`.
+            // https://github.com/databricks/dbt-databricks/blob/6cc739d473043d4e1c94be9ca391850edd02e7fb/dbt/adapters/databricks/column.py#L169-L172
+            AdapterType::Databricks => return Ok(false),
+            AdapterType::DuckDB => {
+                let same_type = DefaultTypeOps::new(AdapterType::DuckDB)
+                    .normalize_and_compare_sql_types(&self.data_type(), &other.data_type())
+                    .map_err(|error| {
+                        minijinja::Error::new(
+                            minijinja::ErrorKind::InvalidOperation,
+                            error.to_string(),
+                        )
+                    })?;
+                if same_type {
+                    return Ok(true);
+                }
+            }
+            _ => {}
+        }
         Ok(self.is_string()
             && other.is_string()
             && self
@@ -1122,7 +1218,7 @@ impl Column {
                 })?)
     }
 
-    fn _bq_flatten_inner(&self, prefix: &str) -> Vec<Self> {
+    fn _bq_flatten_inner(&self, prefix: &str) -> Vec<Arc<Self>> {
         let new_prefix = if prefix.is_empty() {
             self.name.clone()
         } else {
@@ -1136,12 +1232,8 @@ impl Column {
         };
 
         if self._fields.is_empty() {
-            Vec::from([Self::new_bigquery(
-                new_prefix,
-                original_sql_str,
-                &[],
-                self.mode(),
-            )])
+            let column = Self::new_bigquery(new_prefix, original_sql_str, [], self.mode());
+            Vec::from([Arc::from(column)])
         } else {
             let mut new_fields = Vec::new();
             for f in &self._fields {
@@ -1153,7 +1245,7 @@ impl Column {
     }
 
     /// https://github.com/dbt-labs/dbt-adapters/blob/c16cc7047e8678f8bb88ae294f43da2c68e9f5cc/dbt-bigquery/src/dbt/adapters/bigquery/column.py#L69
-    pub fn flatten(&self) -> Vec<Self> {
+    pub fn flatten(&self) -> Vec<Arc<Self>> {
         if !matches!(self._adapter_type, AdapterType::Bigquery) {
             unimplemented!("'flatten' is only implemented for Bigquery")
         }
@@ -1188,11 +1280,11 @@ impl Object for Column {
                 let mut parser = ArgParser::new(args, None);
                 check_num_args(current_function_name!(), &parser, 1, 1)?;
                 let other_raw = parser.get::<Value>("other_column")?;
-                let other = Column::from_jinja_value(self._adapter_type, other_raw)?;
+                let other = Column::from_jinja_value(self._adapter_type, &other_raw)?;
                 Ok(Value::from(self.can_expand_to(&other)?))
             }
             // Bigquery only
-            "flatten" => Ok(Value::from(self.flatten())),
+            "flatten" => Ok(columns_to_value(self.flatten())),
             // Databricks/Spark only - render column DDL for CREATE TABLE
             "render_for_create" => Ok(Value::from(self.render_for_create())),
 
@@ -1257,6 +1349,7 @@ impl Into<Value> for Column {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use minijinja_contrib::testing::jinja_assert;
 
     /// ClickHouseColumn.TYPE_LABELS mapping (the array macros build
     /// `emptyArray{type}` from it); unmatched types pass through.
@@ -1361,6 +1454,98 @@ mod tests {
         }
     }
 
+    fn databricks_column(dtype: &str) -> Column {
+        Column::new(
+            AdapterType::Databricks,
+            "col".to_string(),
+            dtype.to_string(),
+            None,
+            None,
+            None,
+        )
+    }
+
+    /// Same cases as dbt-databricks `tests/unit/test_column.py::TestTypePredicates`.
+    #[test]
+    fn databricks_type_predicates() {
+        let cases = [
+            ("string", "string"),
+            ("STRING", "string"),
+            ("string COLLATE UTF8_LCASE", "string"),
+            ("varchar(10)", "string"),
+            ("char(3)", "string"),
+            ("tinyint", "integer"),
+            ("byte", "integer"),
+            ("smallint", "integer"),
+            ("short", "integer"),
+            ("int", "integer"),
+            ("INTEGER", "integer"),
+            ("bigint", "integer"),
+            ("long", "integer"),
+            ("float", "float"),
+            ("real", "float"),
+            ("double", "float"),
+            ("decimal", "numeric"),
+            ("decimal(10,2)", "numeric"),
+            ("decimal(38, 0)", "numeric"),
+            ("DEC(5,1)", "numeric"),
+            ("numeric(10,2)", "numeric"),
+            ("boolean", "none"),
+            ("date", "none"),
+            ("timestamp", "none"),
+            ("binary", "none"),
+            ("variant", "none"),
+            ("array<string>", "none"),
+            ("map<string,int>", "none"),
+            ("struct<a:string>", "none"),
+        ];
+        for (dtype, category) in cases {
+            let column = databricks_column(dtype);
+            let actual = (
+                column.is_string(),
+                column.is_integer(),
+                column.is_float(),
+                column.is_numeric(),
+                column.is_number(),
+            );
+            let expected = (
+                category == "string",
+                category == "integer",
+                category == "float",
+                category == "numeric",
+                matches!(category, "integer" | "float" | "numeric"),
+            );
+            assert_eq!(actual, expected, "dtype {dtype:?}");
+        }
+    }
+
+    #[test]
+    fn databricks_strings_never_expand_or_render_as_character_varying() {
+        jinja_assert(
+            databricks_column("varchar(10)"),
+            "{{ obj.is_string() }}|{{ obj.string_size() }}|{{ obj.data_type }}",
+            "True|256|varchar(10)",
+        );
+        let sized = |dtype: &str, size| {
+            Column::new(
+                AdapterType::Databricks,
+                "col".to_string(),
+                dtype.to_string(),
+                Some(size),
+                None,
+                None,
+            )
+        };
+        assert!(
+            !sized("varchar(10)", 10)
+                .can_expand_to(&sized("varchar(20)", 20))
+                .unwrap()
+        );
+        for dtype in ["string", "STRING", "decimal(10,2)", "int"] {
+            assert_eq!(databricks_column(dtype).data_type(), dtype);
+        }
+    }
+
     #[test]
     fn test_mariadb_data_type_keeps_server_type_text() {
         for (dtype, char_size) in [
@@ -1462,7 +1647,7 @@ mod tests {
         let simple = Column::new_bigquery(
             "col".to_string(),
             "NUMBER".to_string(),
-            &[],
+            [],
             BigqueryColumnMode::Nullable,
         );
         assert!(
@@ -1473,7 +1658,7 @@ mod tests {
                     [Column::new_bigquery(
                         "col".to_string(),
                         "NUMBER".to_string(),
-                        &[],
+                        [],
                         BigqueryColumnMode::Nullable
                     )]
                     .iter()
@@ -1484,7 +1669,7 @@ mod tests {
         let nested = Column::new_bigquery(
             "parent".to_string(),
             "STRUCT<NUMBER col>".to_string(),
-            &[simple],
+            [simple.into()],
             BigqueryColumnMode::Nullable,
         );
         assert!(
@@ -1495,7 +1680,7 @@ mod tests {
                     [Column::new_bigquery(
                         "parent.col".to_string(),
                         "NUMBER".to_string(),
-                        &[],
+                        [],
                         BigqueryColumnMode::Nullable
                     ),]
                     .iter()
@@ -1506,7 +1691,7 @@ mod tests {
         let deeply_nested = Column::new_bigquery(
             "grandpa".to_string(),
             "STRUCT<NUMBER col>".to_string(),
-            &[nested],
+            [Arc::from(nested)],
             BigqueryColumnMode::Nullable,
         );
         assert!(
@@ -1517,7 +1702,7 @@ mod tests {
                     [Column::new_bigquery(
                         "grandpa.parent.col".to_string(),
                         "NUMBER".to_string(),
-                        &[],
+                        [],
                         BigqueryColumnMode::Nullable
                     ),]
                     .iter()
@@ -1528,19 +1713,19 @@ mod tests {
         let nested_with_siblings = Column::new_bigquery(
             "parent".to_string(),
             "STRUCT<NUMBER a, BOOLEAN b>".to_string(),
-            &[
-                Column::new_bigquery(
+            [
+                Arc::from(Column::new_bigquery(
                     "a".to_string(),
                     "NUMBER".to_string(),
-                    &[],
+                    [],
                     BigqueryColumnMode::Nullable,
-                ),
-                Column::new_bigquery(
+                )),
+                Arc::from(Column::new_bigquery(
                     "b".to_string(),
                     "BOOLEAN".to_string(),
-                    &[],
+                    [],
                     BigqueryColumnMode::Nullable,
-                ),
+                )),
             ],
             BigqueryColumnMode::Nullable,
         );
@@ -1553,13 +1738,13 @@ mod tests {
                         Column::new_bigquery(
                             "parent.a".to_string(),
                             "NUMBER".to_string(),
-                            &[],
+                            [],
                             BigqueryColumnMode::Nullable
                         ),
                         Column::new_bigquery(
                             "parent.b".to_string(),
                             "BOOLEAN".to_string(),
-                            &[],
+                            [],
                             BigqueryColumnMode::Nullable
                         )
                     ]
@@ -1574,26 +1759,26 @@ mod tests {
         let city = Column::new_bigquery(
             "city".to_string(),
             "STRING".to_string(),
-            &[],
+            [],
             BigqueryColumnMode::Nullable,
         );
 
         let coords = Column::new_bigquery(
             "coords".to_string(),
             "STRUCT".to_string(),
-            &[
-                Column::new_bigquery(
+            [
+                Arc::from(Column::new_bigquery(
                     "lat".to_string(),
                     "FLOAT64".to_string(),
-                    &[],
+                    [],
                     BigqueryColumnMode::Nullable,
-                ),
-                Column::new_bigquery(
+                )),
+                Arc::from(Column::new_bigquery(
                     "lon".to_string(),
                     "FLOAT64".to_string(),
-                    &[],
+                    [],
                     BigqueryColumnMode::Nullable,
-                ),
+                )),
             ],
             BigqueryColumnMode::Nullable,
         );
@@ -1601,7 +1786,7 @@ mod tests {
         let location = Column::new_bigquery(
             "location_entity".to_string(),
             "STRUCT".to_string(),
-            &[city, coords],
+            [Arc::from(city), Arc::from(coords)],
             BigqueryColumnMode::Nullable,
         );
 
@@ -1616,14 +1801,14 @@ mod tests {
         let authors = Column::new_bigquery(
             "authors".to_string(),
             "STRING".to_string(),
-            &[],
+            [],
             BigqueryColumnMode::Repeated,
         );
 
         let content = Column::new_bigquery(
             "content_entity".to_string(),
             "STRUCT".to_string(),
-            &[authors],
+            [Arc::from(authors)],
             BigqueryColumnMode::Nullable,
         );
 
@@ -1681,6 +1866,60 @@ mod tests {
             Column::try_from_snowflake_raw_data_type("c", "VARCHAR(20) COLLATE 'en-ci'").unwrap();
         assert!(small.can_expand_to(&large).unwrap());
         assert!(!large.can_expand_to(&small).unwrap());
+    }
+
+    #[test]
+    fn test_can_expand_to_duckdb_equivalent_types() {
+        let col = |ty: &str| {
+            Column::new(
+                AdapterType::DuckDB,
+                "c".to_string(),
+                ty.to_string(),
+                None,
+                None,
+                None,
+            )
+        };
+        for (source, target) in [
+            ("integer", "INTEGER"),
+            ("bigint", "BIGINT"),
+            ("double", "DOUBLE"),
+            ("decimal(18, 3)", "DECIMAL(18,3)"),
+            ("timestamp", "TIMESTAMP"),
+            ("boolean", "BOOLEAN"),
+            ("date", "DATE"),
+            ("VARCHAR", "VARCHAR"),
+        ] {
+            assert!(
+                col(source).can_expand_to(&col(target)).unwrap(),
+                "{source} vs {target}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_can_expand_to_duckdb_real_differences() {
+        let col = |ty: &str| {
+            Column::new(
+                AdapterType::DuckDB,
+                "c".to_string(),
+                ty.to_string(),
+                None,
+                None,
+                None,
+            )
+        };
+        for (source, target) in [
+            ("bigint", "INTEGER"),
+            ("decimal(18, 4)", "DECIMAL(18,3)"),
+            ("timestamptz", "TIMESTAMP"),
+            ("varchar", "INTEGER"),
+        ] {
+            assert!(
+                !col(source).can_expand_to(&col(target)).unwrap(),
+                "{source} vs {target}"
+            );
+        }
     }
 
     #[test]
