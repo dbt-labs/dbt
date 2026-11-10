@@ -822,7 +822,7 @@ pub struct SnowflakeDbConfig {
     // Configuration Parameters
     #[serde(skip_serializing_if = "Option::is_none")]
     pub method: Option<String>,
-    /// Route auth through flock-service using dbt Cloud credentials instead of
+    /// Route auth through bridge-service using dbt Cloud credentials instead of
     /// adapter-specific auth (see dbt-auth's `AdapterConfig::use_dbt_cloud_credentials`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub use_dbt_cloud_credentials: Option<bool>,
