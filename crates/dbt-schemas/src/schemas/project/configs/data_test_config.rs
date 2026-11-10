@@ -917,6 +917,10 @@ impl crate::schemas::project::configs::warehouse_scope::WarehouseConfigResource 
 mod tests {
     use super::{AdapterType, DataTestConfig, ProjectDataTestConfig};
     use crate::schemas::common::UpdatesOn;
+    use crate::schemas::project::configs::warehouse_config_test_support::{
+        assert_catalog_alias_frees_default_warehouse_config,
+        assert_warehouse_config_allocates_only_when_set, typed_from_yaml,
+    };
 
     #[test]
     fn test_data_test_query_tags_propagate_through_resolved_config() {
@@ -1123,61 +1127,24 @@ __additional_properties__: {}
         );
     }
 
-    fn typed_from_yaml(yaml: &str, borrowed: bool) -> (DataTestConfig, Vec<String>) {
-        let value: dbt_yaml::Value = dbt_yaml::from_str(yaml).unwrap();
-        let mut unused_keys = Vec::new();
-        let collect_unused = |_: dbt_yaml::Path<'_>, key: &dbt_yaml::Value, _: &dbt_yaml::Value| {
-            unused_keys.push(key.as_str().unwrap().to_string())
-        };
-        let no_transform = |_: &dbt_yaml::Value| -> Result<
-            Option<dbt_yaml::Value>,
-            Box<dyn std::error::Error + 'static + Send + Sync>,
-        > { Ok(None) };
-        let config = if borrowed {
-            value.to_typed(collect_unused, no_transform).unwrap()
-        } else {
-            value.into_typed(collect_unused, no_transform).unwrap()
-        };
-        (config, unused_keys)
-    }
-
     #[test]
     fn test_data_test_warehouse_config_deserializes_through_flattened_keys() {
-        for borrowed in [false, true] {
-            let (config, unused_keys) = typed_from_yaml(
-                "severity: warn\nsnowflake_warehouse: wh\nnot_a_config: 1\n",
-                borrowed,
-            );
-            assert_eq!(unused_keys, ["not_a_config"]);
-            let warehouse_specific = config
-                .__warehouse_specific_config__
-                .get()
-                .expect("a set warehouse option is allocated");
-            assert_eq!(
-                warehouse_specific.snowflake_warehouse.as_deref(),
-                Some("wh")
-            );
-            let serialized = dbt_yaml::to_value(&config).unwrap();
-            assert_eq!(
-                serialized.get("snowflake_warehouse").unwrap().as_str(),
-                Some("wh")
-            );
+        assert_warehouse_config_allocates_only_when_set::<DataTestConfig>(
+            "severity: warn\n",
+            |config| &config.__warehouse_specific_config__,
+        );
 
-            let (config, unused_keys) = typed_from_yaml("severity: warn\n", borrowed);
-            assert!(unused_keys.is_empty());
-            assert!(config.__warehouse_specific_config__.get().is_none());
-
-            // An allocated default is logically the same value as an unallocated one.
-            let mut allocated = config.clone();
-            allocated.__warehouse_specific_config__.snowflake_warehouse = None;
-            assert!(allocated.__warehouse_specific_config__.get().is_some());
-            assert_eq!(allocated, config);
-            assert_eq!(format!("{allocated:?}"), format!("{config:?}"));
-            assert_eq!(
-                dbt_yaml::to_value(&allocated).unwrap(),
-                dbt_yaml::to_value(&config).unwrap()
-            );
-        }
+        // An allocated default is logically the same value as an unallocated one.
+        let (config, _) = typed_from_yaml::<DataTestConfig>("severity: warn\n", false);
+        let mut allocated = config.clone();
+        allocated.__warehouse_specific_config__.snowflake_warehouse = None;
+        assert!(allocated.__warehouse_specific_config__.get().is_some());
+        assert_eq!(allocated, config);
+        assert_eq!(format!("{allocated:?}"), format!("{config:?}"));
+        assert_eq!(
+            dbt_yaml::to_value(&allocated).unwrap(),
+            dbt_yaml::to_value(&config).unwrap()
+        );
     }
 
     #[test]
@@ -1186,15 +1153,18 @@ __additional_properties__: {}
         use crate::schemas::serde::StringOrInteger;
         use dbt_common::serde_utils::Omissible;
 
-        let (parent, _) =
-            typed_from_yaml("snowflake_warehouse: wh\nhours_to_expiration: 5\n", false);
+        let (parent, _) = typed_from_yaml::<DataTestConfig>(
+            "snowflake_warehouse: wh\nhours_to_expiration: 5\n",
+            false,
+        );
 
         let mut child = DataTestConfig::default();
         child.default_to(&parent);
         assert_eq!(child, parent);
 
         // An explicit null still clears the inherited value.
-        let (mut child, _) = typed_from_yaml("hours_to_expiration: null\n", false);
+        let (mut child, _) =
+            typed_from_yaml::<DataTestConfig>("hours_to_expiration: null\n", false);
         child.default_to(&parent);
         let warehouse_specific = &child.__warehouse_specific_config__;
         assert_eq!(
@@ -1227,18 +1197,9 @@ __additional_properties__: {}
 
     #[test]
     fn test_data_test_catalog_alias_canonicalization() {
-        use crate::schemas::project::dbt_project::ResolvableConfig;
-
-        let mut config = DataTestConfig::default();
-        config.canonicalize_adapter_aliases(AdapterType::Databricks);
-        assert!(config.__warehouse_specific_config__.get().is_none());
-        assert_eq!(config.database, None);
-
-        let (mut config, _) = typed_from_yaml("catalog: main\nfile_format: delta\n", false);
-        config.canonicalize_adapter_aliases(AdapterType::Databricks);
-        assert_eq!(config.database.as_deref(), Some("main"));
-        let warehouse_specific = config.__warehouse_specific_config__.get().unwrap();
-        assert_eq!(warehouse_specific.catalog, None);
-        assert_eq!(warehouse_specific.file_format.as_deref(), Some("delta"));
+        assert_catalog_alias_frees_default_warehouse_config::<DataTestConfig>(
+            |config| &config.__warehouse_specific_config__,
+            |config| config.database.as_deref(),
+        );
     }
 }

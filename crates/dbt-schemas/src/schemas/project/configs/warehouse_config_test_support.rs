@@ -60,12 +60,18 @@ pub fn assert_warehouse_config_allocates_only_when_set<T: DeserializeOwned + Ser
     }
 }
 
-/// Checks that the Databricks `catalog` alias moves to `database` and frees a warehouse config
-/// left at the default, and that it keeps other warehouse options allocated.
+/// Checks that alias canonicalization leaves a default config unallocated, and that the
+/// Databricks `catalog` alias moves to `database`, freeing a warehouse config left at the default
+/// and keeping one with other warehouse options allocated.
 pub fn assert_catalog_alias_frees_default_warehouse_config<T: ResolvableConfig<T>>(
     warehouse_config: impl Fn(&T) -> &LazyWarehouseSpecificNodeConfig,
     database: impl Fn(&T) -> Option<&str>,
 ) {
+    let mut config = T::default();
+    config.canonicalize_adapter_aliases(AdapterType::Databricks);
+    assert!(warehouse_config(&config).get().is_none());
+    assert_eq!(database(&config), None);
+
     let (mut config, _) = typed_from_yaml::<T>("catalog: main\n", false);
     config.canonicalize_adapter_aliases(AdapterType::Databricks);
     assert_eq!(database(&config), Some("main"));
@@ -73,6 +79,7 @@ pub fn assert_catalog_alias_frees_default_warehouse_config<T: ResolvableConfig<T
 
     let (mut config, _) = typed_from_yaml::<T>("catalog: main\nfile_format: delta\n", false);
     config.canonicalize_adapter_aliases(AdapterType::Databricks);
+    assert_eq!(database(&config), Some("main"));
     let warehouse_specific = warehouse_config(&config).get().unwrap();
     assert_eq!(warehouse_specific.catalog, None);
     assert_eq!(warehouse_specific.file_format.as_deref(), Some("delta"));
