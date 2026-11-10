@@ -57,7 +57,7 @@ dependencies = [
     "dbt-common>=1.37.5,<2.0",
     "dbt-adapters>=1.24.5,<2.0",
     "dbt-protos>=1.0.514,<2.0",
-    "dbt-core-experimental-parser>=2.0.0b1,<3",
+    "dbt-core-experimental-parser>=2.0.11,<3",
     # Bundled plugin: installed by default but opt-in. PluginManager skips loading
     # unless the user passes `--manage-state` on the CLI, sets
     # `DBT_ENGINE_MANAGE_STATE=true`, or sets `manage_state: true` in dbt_project.yml's

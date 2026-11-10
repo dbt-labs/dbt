@@ -1,0 +1,6 @@
+kind: Dependencies
+body: Bump dbt-core-experimental-parser lowerbound to 2.0.11
+time: 2026-11-10T12:00:00.000000+05:30
+custom:
+    Author: tauhid621
+    Issue: ""
