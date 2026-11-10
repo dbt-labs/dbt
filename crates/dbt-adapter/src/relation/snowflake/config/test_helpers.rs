@@ -168,7 +168,7 @@ pub(crate) fn make_local_config(cfg: TestDynamicTableConfig) -> DbtModel {
 
     DbtModel {
         deprecated_config: ModelConfig {
-            __warehouse_specific_config__: wh_config,
+            __warehouse_specific_config__: wh_config.into(),
             ..Default::default()
         },
         __common_attr__: CommonAttributes {

@@ -937,7 +937,8 @@ mod tests {
                         dbt_schemas::schemas::serde::StringOrInteger::Integer(12),
                     )),
                     ..Default::default()
-                },
+                }
+                .into(),
                 ..Default::default()
             },
             __other__: Default::default(),

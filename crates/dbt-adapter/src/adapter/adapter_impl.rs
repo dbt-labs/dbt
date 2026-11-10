@@ -4597,6 +4597,7 @@ impl AdapterImpl {
                 let location_root = config
                     .__warehouse_specific_config__
                     .location_root
+                    .clone()
                     .ok_or_else(|| {
                         AdapterError::new(
                             AdapterErrorKind::Configuration,
@@ -6427,7 +6428,8 @@ mod tests {
                 location_root: Some("s3://bucket/root".to_string()),
                 include_full_name_in_path: Some(include_full_name_in_path),
                 ..Default::default()
-            },
+            }
+            .into(),
             ..Default::default()
         };
 

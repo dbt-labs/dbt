@@ -1252,7 +1252,7 @@ impl From<ModelConfig> for ManifestModelConfig {
             environment_key: config.environment_key.clone(),
             environment_dependencies: config.environment_dependencies.clone(),
             sync: config.sync,
-            __warehouse_specific_config__: config.__warehouse_specific_config__,
+            __warehouse_specific_config__: config.__warehouse_specific_config__.into_inner(),
         }
     }
 }
@@ -1336,7 +1336,7 @@ impl From<ManifestModelConfig> for ModelConfig {
             environment_key: config.environment_key.clone(),
             environment_dependencies: config.environment_dependencies.clone(),
             sync: config.sync,
-            __warehouse_specific_config__: config.__warehouse_specific_config__,
+            __warehouse_specific_config__: config.__warehouse_specific_config__.into(),
             // config_keys_used and config_keys_defaults are not in ManifestModelConfig
             // They're only in ModelConfig and not persisted to the manifest
             config_keys_used: None,

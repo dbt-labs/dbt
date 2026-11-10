@@ -2576,7 +2576,8 @@ mod interactive_table_validation_tests {
             __warehouse_specific_config__: WarehouseSpecificNodeConfig {
                 cluster_by: Some(ClusterConfig::String("id".to_string())),
                 ..Default::default()
-            },
+            }
+            .into(),
             ..Default::default()
         }
     }
@@ -2799,7 +2800,8 @@ mod interactive_table_validation_tests {
                 transient: Some(true),
                 target_lag: Some("1 minute".to_string()),
                 ..Default::default()
-            },
+            }
+            .into(),
             ..Default::default()
         };
         let resolved = resolve(cfg);
@@ -2821,7 +2823,8 @@ mod interactive_table_validation_tests {
                 transient: Some(true),
                 target_lag: Some("1 minute".to_string()),
                 ..Default::default()
-            },
+            }
+            .into(),
             ..Default::default()
         }
     }

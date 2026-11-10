@@ -148,7 +148,7 @@ pub(crate) fn create_mock_dbt_model(cfg: TestModelConfig) -> DbtModel {
                 ..Default::default()
             }),
             table_format: cfg.table_format,
-            __warehouse_specific_config__: wh_config,
+            __warehouse_specific_config__: wh_config.into(),
             ..Default::default()
         },
         __common_attr__: CommonAttributes {

@@ -1634,7 +1634,7 @@ mod tests {
     }
 
     /// `sql`'s `config()` calls under `aliasing`, in source order.
-    fn inline_config_calls(sql: &str, aliasing: InlineConfigAliasing) -> Vec<Box<ModelConfig>> {
+    fn inline_config_calls(sql: &str, aliasing: InlineConfigAliasing) -> Vec<ModelConfig> {
         let (env, sql_resources, init_config) = setup_test_env();
         let mut context = build_resolve_model_context(
             &init_config,
@@ -1670,6 +1670,9 @@ mod tests {
         let resources = sql_resources.lock().unwrap().clone();
         crate::sql_file_info::SqlFileInfo::from_sql_resources(resources, Default::default(), false)
             .config_calls
+            .into_iter()
+            .map(|call| *call)
+            .collect()
     }
 
     /// A Snowflake default that also declares BigQuery.
@@ -1691,7 +1694,7 @@ mod tests {
         let fqn = vec!["my_model".to_string()];
         let layers = crate::dbt_project_config::NodeLayers::new(&fqn, &[]);
         let calls = inline_config_calls(sql, resolver.inline_config_aliasing(&layers));
-        let calls: Vec<&ModelConfig> = calls.iter().map(|call| call.as_ref()).collect();
+        let calls: Vec<&ModelConfig> = calls.iter().collect();
         let inline = resolver.fold_inline_calls(&layers, &calls);
         resolver.with_configs(&fqn, &[inline.as_ref()])
     }
