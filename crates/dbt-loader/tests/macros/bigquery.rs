@@ -304,12 +304,11 @@ fn load_csv_rows_forwards_seed_path_from_adapter() {
 // ---------------------------------------------------------------------------
 // bq_copy_partitions
 // ---------------------------------------------------------------------------
-fn copy_partitions_calls(concurrency: Option<u32>) -> (Vec<usize>, Vec<Vec<Value>>) {
+/// The arguments of every `adapter.copy_table` call `bq_copy_partitions` makes for `partitions`.
+/// Relations are reduced to their identifier.
+fn copy_table_calls(concurrency: Option<u32>, partitions: &[i64]) -> Vec<Vec<Value>> {
     let harness = build_harness();
-    harness
-        .mock()
-        .on("copy_table", |_| Ok(Value::UNDEFINED))
-        .on("copy_partitions", |_| Ok(Value::UNDEFINED));
+    harness.mock().on("copy_table", |_| Ok(Value::UNDEFINED));
 
     let relation = |identifier| {
         let relation = harness.relation(
@@ -337,60 +336,71 @@ fn copy_partitions_calls(concurrency: Option<u32>) -> (Vec<usize>, Vec<Vec<Value
         ("tmp_relation", relation("events__dbt_tmp")),
         ("target_relation", relation("events")),
         ("partition_by", Value::from_object(partition_by)),
+        ("partitions", Value::from(partitions.to_vec())),
     ]);
 
     harness
         .render(
-            "{% do bq_copy_partitions(tmp_relation, target_relation, [0, 10, 20], partition_by) %}",
+            "{% do bq_copy_partitions(tmp_relation, target_relation, partitions, partition_by) %}",
             ctx,
         )
         .expect("bq_copy_partitions should render");
 
     let calls = harness.mock().observed_calls();
-    let serial = calls.to("copy_table").map(|call| call.args.len()).collect();
-    let batched = calls
-        .to("copy_partitions")
-        .map(|call| call.args.clone())
-        .collect();
-    (serial, batched)
-}
-
-#[test]
-fn bq_copy_partitions_copies_one_by_one_by_default() {
-    for concurrency in [None, Some(0), Some(1)] {
-        let (serial, batched) = copy_partitions_calls(concurrency);
-        assert_eq!(serial.len(), 3, "concurrency: {concurrency:?}");
-        assert!(batched.is_empty(), "concurrency: {concurrency:?}");
-    }
-}
-
-#[test]
-fn bq_copy_partitions_hands_all_partitions_to_the_adapter_when_concurrent() {
-    let (serial, batched) = copy_partitions_calls(Some(4));
-    assert!(serial.is_empty());
-
-    let [args] = batched.as_slice() else {
-        panic!("expected a single copy_partitions call, got {batched:?}");
-    };
-    let copies: Vec<(String, String)> = args[0]
-        .try_iter()
-        .expect("list of partition copies")
-        .map(|pair| {
-            let identifier = |index| {
-                let relation = pair.get_item_by_index(index).unwrap();
-                relation.get_attr("identifier").unwrap().to_string()
-            };
-            (identifier(0), identifier(1))
+    calls
+        .to("copy_table")
+        .map(|call| {
+            let mut args = call.args.clone();
+            for relation in &mut args[..2] {
+                *relation = relation.get_attr("identifier").unwrap();
+            }
+            args
         })
-        .collect();
-    assert_eq!(
-        copies,
-        [
-            ("events__dbt_tmp$0".to_string(), "events$0".to_string()),
-            ("events__dbt_tmp$10".to_string(), "events$10".to_string()),
-            ("events__dbt_tmp$20".to_string(), "events$20".to_string()),
+        .collect()
+}
+
+fn one_by_one(partitions: &[&str]) -> Vec<Vec<Value>> {
+    let copy = |partition: &&str| {
+        vec![
+            Value::from(format!("events__dbt_tmp${partition}")),
+            Value::from(format!("events${partition}")),
+            Value::from("table"),
         ]
+    };
+    partitions.iter().map(copy).collect()
+}
+
+fn one_call(partitions: &[&str], concurrency: u32) -> Vec<Vec<Value>> {
+    vec![vec![
+        Value::from("events__dbt_tmp"),
+        Value::from("events"),
+        Value::from("table"),
+        Value::from_iter(partitions.iter().map(|partition| partition.to_string())),
+        Value::from(concurrency),
+    ]]
+}
+
+#[test]
+fn bq_copy_partitions_copies_16_at_a_time_by_default() {
+    assert_eq!(
+        copy_table_calls(None, &[0, 10, 20]),
+        one_call(&["0", "10", "20"], 16)
     );
-    assert_eq!(args[1].as_str(), Some("table"));
-    assert_eq!(args[2].as_usize(), Some(4));
+    assert_eq!(
+        copy_table_calls(Some(4), &[0, 10, 20]),
+        one_call(&["0", "10", "20"], 4)
+    );
+}
+
+#[test]
+fn bq_copy_partitions_copies_one_by_one_when_asked_or_for_a_single_partition() {
+    for concurrency in [Some(0), Some(1)] {
+        assert_eq!(
+            copy_table_calls(concurrency, &[0, 10, 20]),
+            one_by_one(&["0", "10", "20"]),
+            "concurrency: {concurrency:?}"
+        );
+    }
+    assert_eq!(copy_table_calls(None, &[10]), one_by_one(&["10"]));
+    assert_eq!(copy_table_calls(None, &[]), one_by_one(&[]));
 }

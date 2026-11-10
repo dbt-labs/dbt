@@ -79,7 +79,6 @@ impl SemanticCategory {
             | "expand_target_column_types"
             | "load_dataframe"
             | "copy_table"
-            | "copy_partitions"
             | "update_columns"
             | "update_table_description"
             | "alter_table_add_columns"

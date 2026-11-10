@@ -18,8 +18,7 @@
 
 {% macro bq_copy_partitions(tmp_relation, target_relation, partitions, partition_by) %}
 
-  {% set concurrency = partition_by.copy_partitions_concurrency or 1 %}
-  {% set partition_copies = [] %}
+  {% set partition_ids = [] %}
   {% for partition in partitions %}
     {% if partition_by.data_type == 'int64' %}
       {% set partition = partition | as_text %}
@@ -32,16 +31,20 @@
     {% elif partition_by.granularity == 'year' %}
       {% set partition = partition.strftime("%Y") %}
     {% endif %}
-    {% set tmp_relation_partitioned = api.Relation.create(database=tmp_relation.database, schema=tmp_relation.schema, identifier=tmp_relation.table ~ '$' ~ partition, type=tmp_relation.type) %}
-    {% set target_relation_partitioned = api.Relation.create(database=target_relation.database, schema=target_relation.schema, identifier=target_relation.table ~ '$' ~ partition, type=target_relation.type) %}
-    {% if concurrency > 1 %}
-      {% do partition_copies.append([tmp_relation_partitioned, target_relation_partitioned]) %}
-    {% else %}
-      {% do adapter.copy_table(tmp_relation_partitioned, target_relation_partitioned, "table") %}
-    {% endif %}
+    {% do partition_ids.append(partition) %}
   {% endfor %}
-  {% if concurrency > 1 %}
-    {% do adapter.copy_partitions(partition_copies, "table", concurrency) %}
+
+  {#-- Copies up to 16 partitions at a time unless copy_partitions_concurrency says otherwise.
+       --threads still caps it, and 1 copies one by one. --#}
+  {% set concurrency = partition_by.copy_partitions_concurrency | default(16) %}
+  {% if concurrency > 1 and partition_ids | length > 1 %}
+    {% do adapter.copy_table(tmp_relation, target_relation, "table", partition_ids, concurrency) %}
+  {% else %}
+    {% for partition in partition_ids %}
+      {% set tmp_relation_partitioned = api.Relation.create(database=tmp_relation.database, schema=tmp_relation.schema, identifier=tmp_relation.table ~ '$' ~ partition, type=tmp_relation.type) %}
+      {% set target_relation_partitioned = api.Relation.create(database=target_relation.database, schema=target_relation.schema, identifier=target_relation.table ~ '$' ~ partition, type=target_relation.type) %}
+      {% do adapter.copy_table(tmp_relation_partitioned, target_relation_partitioned, "table") %}
+    {% endfor %}
   {% endif %}
 
 {% endmacro %}

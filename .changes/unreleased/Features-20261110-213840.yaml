@@ -1,7 +1,0 @@
-kind: Features
-body: Add copy_partitions_concurrency to BigQuery partition_by to copy insert_overwrite partitions in parallel
-time: 2026-11-10T21:38:40.931757+11:00
-custom:
-    author: leohoare
-    issue: "17094"
-    project: dbt-core

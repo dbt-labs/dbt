@@ -26,7 +26,8 @@ pub struct BigqueryPartitionConfig {
         deserialize_with = "crate::schemas::serde::yaml_11_bool_default"
     )]
     pub copy_partitions: bool,
-    /// How many partitions `copy_partitions` copies at a time. Unset or 1 copies them one by one.
+    /// How many partitions `copy_partitions` copies at a time. Unset copies 16 at a time, 1
+    /// copies them one by one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub copy_partitions_concurrency: Option<u32>,
 }
@@ -490,9 +491,17 @@ mod tests {
         .unwrap();
         let config: BigqueryPartitionConfig = dbt_yaml::from_value(json).unwrap();
         assert_eq!(config.copy_partitions_concurrency, Some(8));
-        assert_eq!(
-            Arc::new(config).get_value(&key),
-            Some(MinijinjaValue::from(8))
+        // a set value survives serialization and is listed
+        let round_tripped: BigqueryPartitionConfig =
+            dbt_yaml::from_value(dbt_yaml::to_value(&config).unwrap()).unwrap();
+        assert_eq!(round_tripped.copy_partitions_concurrency, Some(8));
+        let config = Arc::new(config);
+        assert_eq!(config.get_value(&key), Some(MinijinjaValue::from(8)));
+        assert!(
+            MinijinjaValue::from_dyn_object(config)
+                .try_iter()
+                .unwrap()
+                .any(|k| k == key)
         );
 
         let json = dbt_yaml::from_str("field: created_at\ncopy_partitions: true\n").unwrap();
@@ -586,16 +595,7 @@ mod tests {
     #[test]
     fn test_get_value_returns_correct_values() {
         // Test with time config
-        let time_config = Arc::new(BigqueryPartitionConfig {
-            field: "created_at".to_string(),
-            data_type: "timestamp".to_string(),
-            __inner__: BigqueryPartitionConfigInner::Time(TimeConfig {
-                granularity: "hour".to_string(),
-                time_ingestion_partitioning: true,
-            }),
-            copy_partitions: false,
-            copy_partitions_concurrency: None,
-        });
+        let time_config = Arc::new(time_config("created_at", "timestamp", "hour", true));
 
         // Test field values
         assert_eq!(
@@ -631,17 +631,8 @@ mod tests {
 
         // Test with range config (granularity should return None)
         let range_config = Arc::new(BigqueryPartitionConfig {
-            field: "user_id".to_string(),
-            data_type: "int64".to_string(),
-            __inner__: BigqueryPartitionConfigInner::Range(RangeConfig {
-                range: Range {
-                    start: 0,
-                    end: 100,
-                    interval: 10,
-                },
-            }),
             copy_partitions: true,
-            copy_partitions_concurrency: None,
+            ..range_config("user_id", 0, 100, 10)
         });
 
         assert_eq!(
