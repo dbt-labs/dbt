@@ -589,6 +589,63 @@ class ManifestTest(unittest.TestCase):
         self.assertEqual(flat_unit_test["model"], "events")
         self.assertEqual(flat_unit_test["package_name"], "root")
 
+    def _flat_graph_manifest(self):
+        manifest = Manifest(
+            nodes=deepcopy(self.nested_nodes),
+            sources=deepcopy(self.sources),
+            macros={},
+            docs={},
+            disabled={},
+            files={},
+            exposures={},
+            metrics={},
+            groups={},
+            selectors={},
+        )
+        manifest.build_flat_graph()
+        return manifest
+
+    def test_flat_graph_converts_each_node_once(self):
+        """build_flat_graph converts every node up front; reads never call to_dict
+        again, since macros commonly scan graph.nodes from every node (see #15997)."""
+        with mock.patch.object(
+            ModelNode, "to_dict", autospec=True, side_effect=ModelNode.to_dict
+        ) as to_dict:
+            manifest = self._flat_graph_manifest()
+            node = manifest.nodes["model.root.events"]
+            self.assertEqual(sum(1 for c in to_dict.call_args_list if c.args[0] is node), 1)
+
+            to_dict.reset_mock()
+            flat_nodes = manifest.flat_graph["nodes"]
+            for _ in range(5):
+                for unique_id, flat_node in flat_nodes.items():
+                    self.assertIs(flat_nodes[unique_id], flat_node)
+            to_dict.assert_not_called()
+
+        self.assertIsInstance(flat_nodes, dict)
+        self.assertEqual(flat_nodes["model.root.events"]["unique_id"], "model.root.events")
+
+    def test_flat_graph_is_parse_time_snapshot(self):
+        """Changes made to nodes after build_flat_graph (e.g. compilation) are not
+        reflected in the graph, so what macros see does not depend on thread timing."""
+        manifest = self._flat_graph_manifest()
+        unique_id = "model.root.events"
+        before = deepcopy(manifest.flat_graph["nodes"][unique_id])
+
+        node = manifest.nodes[unique_id]
+        node.compiled = True
+        node.compiled_code = "select 1 as id"
+        node.extra_ctes_injected = True
+        manifest.nodes[unique_id] = deepcopy(node)
+        del manifest.nodes["model.root.dep"]
+
+        flat_nodes = manifest.flat_graph["nodes"]
+        self.assertEqual(flat_nodes[unique_id], before)
+        # Uncompiled nodes serialize without any of the compiled fields.
+        self.assertNotIn("compiled", flat_nodes[unique_id])
+        self.assertNotIn("compiled_code", flat_nodes[unique_id])
+        self.assertIn("model.root.dep", flat_nodes)
+
     @mock.patch.object(tracking, "active_user")
     @freezegun.freeze_time("2018-02-14T09:15:13Z")
     def test_no_nodes_with_metadata(self, mock_user):
@@ -1112,8 +1169,8 @@ class MixedManifestTest(unittest.TestCase):
 
     def test_flat_graph_msgpack(self):
         """Ensure the manifest still serializes to msgpack after flat_graph has
-        been populated with the lazy FlatGraphMapping views (flat_graph itself is
-        not serialized and is rebuilt on deserialization)."""
+        been built. flat_graph itself is not serialized; it comes back empty and
+        is rebuilt by build_flat_graph once the manifest is complete."""
         from dbt.parser.manifest import (
             extended_mashumaro_encoder,
             extended_mashumuro_decoder,
@@ -1138,9 +1195,9 @@ class MixedManifestTest(unittest.TestCase):
         manifest_mp = manifest.to_msgpack(encoder=extended_mashumaro_encoder)
         roundtripped = Manifest.from_msgpack(manifest_mp, decoder=extended_mashumuro_decoder)
 
-        # flat_graph is not serialized, but __post_deserialize__ rebuilds it.
-        assert set(roundtripped.flat_graph) == set(manifest.flat_graph)
-        assert set(roundtripped.flat_graph["nodes"]) == set(manifest.flat_graph["nodes"])
+        assert roundtripped.flat_graph == {}
+        roundtripped.build_flat_graph()
+        assert roundtripped.flat_graph == manifest.flat_graph
 
     def test_merge_from_artifact(self):
         original_nodes = deepcopy(self.nested_nodes)
