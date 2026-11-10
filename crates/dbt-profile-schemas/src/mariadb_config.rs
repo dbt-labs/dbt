@@ -58,43 +58,18 @@ impl InteractiveSetup for MariaDbConfig {
     }
 
     fn set_field(&mut self, field_name: &str, value: FieldValue) -> FsResult<()> {
-        match field_name {
-            "host" => {
-                if let FieldValue::String(val) = value {
-                    self.host = Some(val);
-                }
+        if field_name == "port" {
+            if let Some(port) = parse_port(value) {
+                self.port = Some(StringOrInteger::Integer(port));
             }
-            "port" => match value {
-                FieldValue::String(val) => {
-                    if let Ok(port) = val.parse::<i64>() {
-                        self.port = Some(StringOrInteger::Integer(port));
-                    }
-                }
-                FieldValue::Integer(val) => {
-                    self.port = Some(StringOrInteger::Integer(val));
-                }
-                _ => {}
-            },
-            "user" => {
-                if let FieldValue::String(val) = value {
-                    self.user = Some(val);
-                }
-            }
-            "password" => {
-                if let FieldValue::String(val) = value {
-                    self.password = Some(val);
-                }
-            }
-            "schema" => {
-                if let FieldValue::String(val) = value {
-                    self.schema = Some(val);
-                }
-            }
-            "ssl_mode" => {
-                if let FieldValue::String(val) = value {
-                    self.ssl_mode = Some(val);
-                }
-            }
+            return Ok(());
+        }
+        let field = match field_name {
+            "host" => &mut self.host,
+            "user" => &mut self.user,
+            "password" => &mut self.password,
+            "schema" => &mut self.schema,
+            "ssl_mode" => &mut self.ssl_mode,
             _ => {
                 return Err(fs_err!(
                     ErrorCode::InvalidArgument,
@@ -102,6 +77,9 @@ impl InteractiveSetup for MariaDbConfig {
                     field_name
                 ));
             }
+        };
+        if let FieldValue::String(val) = value {
+            *field = Some(val);
         }
         Ok(())
     }
@@ -151,4 +129,13 @@ pub(crate) fn setup_mariadb_profile(
     }
 
     Ok(Box::new(config))
+}
+
+/// The port as an integer: from a number, or from a string holding one.
+fn parse_port(value: FieldValue) -> Option<i64> {
+    match value {
+        FieldValue::String(val) => val.parse().ok(),
+        FieldValue::Integer(val) => Some(val),
+        _ => None,
+    }
 }
