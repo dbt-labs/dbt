@@ -77,6 +77,10 @@ def test_singular_tests_skip_fixtures_and_generic_tests_in_nested_test_paths(tmp
     [
         (["tests", "tests/dbt"], os.path.join("dbt", "inner_test.sql")),
         (["tests/dbt", "tests"], "inner_test.sql"),
+        # Same file, differently spelled paths (as on Windows, where os.path.join
+        # mixes separators): still one registration.
+        (["tests", "./tests/dbt"], os.path.join("dbt", "inner_test.sql")),
+        (["./tests/dbt", "tests"], "inner_test.sql"),
     ],
 )
 def test_read_files_for_parser_registers_nested_file_once_from_first_test_path(
@@ -95,5 +99,10 @@ def test_read_files_for_parser_registers_nested_file_once_from_first_test_path(
         None,
     )
 
-    assert parser_files == ["repro://tests/dbt/inner_test.sql"]
-    assert files[parser_files[0]].path.relative_path == expected_relative_path
+    assert len(parser_files) == 1
+    assert len(files) == 1
+    source_file = files[parser_files[0]]
+    assert os.path.normpath(source_file.path.original_file_path) == os.path.join(
+        "tests", "dbt", "inner_test.sql"
+    )
+    assert source_file.path.relative_path == expected_relative_path
