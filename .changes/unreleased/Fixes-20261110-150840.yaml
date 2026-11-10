@@ -1,0 +1,7 @@
+kind: Fixes
+body: Skip unit-test fixtures and generic tests under every configured test-path when collecting singular tests, so nested test-paths (e.g. ["tests", "tests/dbt"]) and multi-segment test-paths (e.g. ["data/tests"]) no longer parse them as data tests
+time: 2026-11-10T15:08:40.415845+05:30
+custom:
+    author: itsnamangoyal
+    issue: "16507"
+    project: dbt-core
