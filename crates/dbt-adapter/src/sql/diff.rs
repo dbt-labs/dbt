@@ -4450,6 +4450,43 @@ select id from __dbt__cte__base;
         assert!(result.is_ok(), "Should match: aliased wrapper");
     }
 
+    /// Schema probe that wraps a model compiled with the ephemeral wrapper.
+    fn ephemeral_schema_probe(wrapper_end: &str, predicate: &str) -> String {
+        format!(
+            "select * from (\n        with __dbt__cte__active_teams as (\nselect workdayId from `prod_raw`.`enterprise`.`team_v1`\n)\n--EPHEMERAL-SELECT-WRAPPER-START\nselect * from (\n\n\nselect workdayId\nfrom __dbt__cte__active_teams\n--EPHEMERAL-SELECT-WRAPPER-END\n{wrapper_end}\n    ) as __dbt_sbq\n    where {predicate}\n    limit 0\n"
+        )
+    }
+
+    #[test]
+    fn test_compare_ephemeral_wrapper_alias_with_underscores_in_schema_probe() {
+        let recorded = ephemeral_schema_probe(")", "false");
+        for alias in [
+            "flattened_org_hierarchy",
+            "_leading__double_underscore",
+            "`quoted_model`",
+        ] {
+            let actual = ephemeral_schema_probe(&format!(") as {alias}"), "false");
+            let result = compare_sql(&actual, &recorded, AdapterType::Databricks);
+            assert!(result.is_ok(), "Should match: wrapper alias {alias}");
+        }
+    }
+
+    #[test]
+    fn test_compare_ephemeral_wrapper_alias_keeps_following_sql() {
+        let recorded = ephemeral_schema_probe(")", "false");
+        let actual = ephemeral_schema_probe(") as flattened_org_hierarchy", "true");
+        let result = compare_sql(&actual, &recorded, AdapterType::Databricks);
+        assert!(result.is_err(), "Should not match: predicate differs");
+
+        let recorded = "with __dbt__cte__base as (\nselect 1 as id\n)\n--EPHEMERAL-SELECT-WRAPPER-START\nselect * from (\nselect id from __dbt__cte__base\n--EPHEMERAL-SELECT-WRAPPER-END\n);";
+        let actual = recorded.replace("\n);", "\n) as my_model;");
+        let result = compare_sql(&actual, recorded, AdapterType::Databricks);
+        assert!(result.is_ok(), "Should match: alias before semicolon");
+        let actual = recorded.replace("\n);", "\n) as my_model");
+        let result = compare_sql(&actual, recorded, AdapterType::Databricks);
+        assert!(result.is_err(), "Should not match: semicolon removed");
+    }
+
     #[test]
     fn test_databricks_temp_view_vs_persisted_view_equivalent() {
         // Mantle recordings (dbt-databricks) may emit:
