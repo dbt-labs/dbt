@@ -564,7 +564,7 @@ impl From<SnapshotConfig> for ManifestSnapshotConfig {
             sync: config.sync,
             state: config.state,
             table_format: config.table_format,
-            __warehouse_specific_config__: config.__warehouse_specific_config__,
+            __warehouse_specific_config__: config.__warehouse_specific_config__.into_inner(),
         }
     }
 }
@@ -614,7 +614,7 @@ impl From<ManifestSnapshotConfig> for SnapshotConfig {
             sync: config.sync,
             state: config.state,
             table_format: config.table_format,
-            __warehouse_specific_config__: config.__warehouse_specific_config__,
+            __warehouse_specific_config__: config.__warehouse_specific_config__.into(),
         }
     }
 }
@@ -1133,7 +1133,7 @@ impl From<SeedConfig> for ManifestSeedConfig {
             tags: config.tags.into_inner(),
             quoting: config.quoting,
             materialized: config.materialized,
-            __warehouse_specific_config__: config.__warehouse_specific_config__,
+            __warehouse_specific_config__: config.__warehouse_specific_config__.into_inner(),
         }
     }
 }
@@ -1174,7 +1174,7 @@ impl From<ManifestSeedConfig> for SeedConfig {
             tags: crate::schemas::project::configs::config_merge::Tags(config.tags),
             quoting: config.quoting,
             materialized: config.materialized,
-            __warehouse_specific_config__: config.__warehouse_specific_config__,
+            __warehouse_specific_config__: config.__warehouse_specific_config__.into(),
         }
     }
 }
@@ -1252,7 +1252,7 @@ impl From<ModelConfig> for ManifestModelConfig {
             environment_key: config.environment_key.clone(),
             environment_dependencies: config.environment_dependencies.clone(),
             sync: config.sync,
-            __warehouse_specific_config__: config.__warehouse_specific_config__,
+            __warehouse_specific_config__: config.__warehouse_specific_config__.into_inner(),
         }
     }
 }
@@ -1336,7 +1336,7 @@ impl From<ManifestModelConfig> for ModelConfig {
             environment_key: config.environment_key.clone(),
             environment_dependencies: config.environment_dependencies.clone(),
             sync: config.sync,
-            __warehouse_specific_config__: config.__warehouse_specific_config__,
+            __warehouse_specific_config__: config.__warehouse_specific_config__.into(),
             // config_keys_used and config_keys_defaults are not in ManifestModelConfig
             // They're only in ModelConfig and not persisted to the manifest
             config_keys_used: None,
@@ -2403,7 +2403,8 @@ mod node_adapter_manifest_round_trip_tests {
             __warehouse_specific_config__: super::WarehouseSpecificNodeConfig {
                 iceberg_version: Some(2),
                 ..Default::default()
-            },
+            }
+            .into(),
             ..Default::default()
         };
 

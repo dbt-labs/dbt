@@ -1757,7 +1757,8 @@ mod tests {
             __warehouse_specific_config__: WarehouseSpecificNodeConfig {
                 cluster_by: Some(ClusterConfig::List(vec!["geo_country".to_string()])),
                 ..Default::default()
-            },
+            }
+            .into(),
             unique_key: Some(DbtUniqueKey::Multiple(vec![
                 "column_a".to_string(),
                 "column_b".to_string(),

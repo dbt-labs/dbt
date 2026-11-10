@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -29,6 +28,7 @@ use dbt_tasks_core::task::{TP, Task};
 use dbt_telemetry::{ShowDataOutput, ShowDataOutputFormat};
 
 use minijinja::Value as MinijinjaValue;
+use minijinja::value::OverlayMap;
 
 mod analysis;
 mod model;
@@ -272,8 +272,8 @@ pub(super) fn rendered_sql_for(
 fn make_show_compile_context(
     ctx: &TaskRunnerCtx,
     adapter_type: AdapterType,
-) -> FsResult<BTreeMap<String, MinijinjaValue>> {
-    let mut compile_ctx = ctx.inner.base_context.clone();
+) -> FsResult<OverlayMap> {
+    let mut compile_ctx = ctx.base_context_overlay();
     ctx.insert_adapter_overlay(&mut compile_ctx, adapter_type)?;
     Ok(compile_ctx)
 }

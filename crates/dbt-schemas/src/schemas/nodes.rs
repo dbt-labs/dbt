@@ -1,7 +1,9 @@
 use core::fmt;
 use indexmap::IndexMap;
+use std::collections::HashMap;
 use std::path::Path;
 use std::str::FromStr;
+use std::sync::LazyLock;
 use std::{any::Any, collections::BTreeMap, fmt::Display, path::PathBuf, sync::Arc};
 
 use chrono::Utc;
@@ -18,6 +20,7 @@ use dbt_telemetry::{
 };
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
+use strum::IntoEnumIterator;
 type YmlValue = dbt_yaml::Value;
 use crate::schemas::common::{
     Constraint, ConstraintSupport, ConstraintType, ExternalTable, PersistDocsConfig,
@@ -6622,29 +6625,29 @@ impl DbtModel {
 #[serde(rename_all = "snake_case")]
 #[derive(dbt_proc_macros::JinjaNodeFields)]
 pub struct AdapterAttr {
-    pub snowflake_attr: Option<Box<SnowflakeAttr>>,
-    pub databricks_attr: Option<Box<DatabricksAttr>>,
-    pub bigquery_attr: Option<Box<BigQueryAttr>>,
-    pub redshift_attr: Option<Box<RedshiftAttr>>,
+    pub snowflake_attr: Option<Arc<SnowflakeAttr>>,
+    pub databricks_attr: Option<Arc<DatabricksAttr>>,
+    pub bigquery_attr: Option<Arc<BigQueryAttr>>,
+    pub redshift_attr: Option<Arc<RedshiftAttr>>,
 }
 
 impl AdapterAttr {
-    pub fn with_snowflake_attr(mut self, snowflake_attr: Option<Box<SnowflakeAttr>>) -> Self {
+    pub fn with_snowflake_attr(mut self, snowflake_attr: Option<Arc<SnowflakeAttr>>) -> Self {
         self.snowflake_attr = snowflake_attr;
         self
     }
 
-    pub fn with_databricks_attr(mut self, databricks_attr: Option<Box<DatabricksAttr>>) -> Self {
+    pub fn with_databricks_attr(mut self, databricks_attr: Option<Arc<DatabricksAttr>>) -> Self {
         self.databricks_attr = databricks_attr;
         self
     }
 
-    pub fn with_bigquery_attr(mut self, bigquery_attr: Option<Box<BigQueryAttr>>) -> Self {
+    pub fn with_bigquery_attr(mut self, bigquery_attr: Option<Arc<BigQueryAttr>>) -> Self {
         self.bigquery_attr = bigquery_attr;
         self
     }
 
-    pub fn with_redshift_attr(mut self, redshift_attr: Option<Box<RedshiftAttr>>) -> Self {
+    pub fn with_redshift_attr(mut self, redshift_attr: Option<Arc<RedshiftAttr>>) -> Self {
         self.redshift_attr = redshift_attr;
         self
     }
@@ -6654,17 +6657,31 @@ impl AdapterAttr {
         config: &WarehouseSpecificNodeConfig,
         adapter_type: AdapterType,
     ) -> Self {
-        // TODO: Make all None inputs result in a None for that attr
+        // Nodes with a default config share one value per adapter type instead of each
+        // allocating its own empty attribute structs.
+        // TODO: Temporary until `WarehouseSpecificNodeConfig` is stored lazily on every node
+        // config. An unset lazy config then maps to these shared values without comparing
+        // against the default.
+        static DEFAULT_CONFIG_ATTRS: LazyLock<HashMap<AdapterType, AdapterAttr>> =
+            LazyLock::new(|| {
+                let config = WarehouseSpecificNodeConfig::default();
+                AdapterType::iter()
+                    .map(|adapter_type| (adapter_type, AdapterAttr::build(&config, adapter_type)))
+                    .collect()
+            });
+        if *config == WarehouseSpecificNodeConfig::default() {
+            return DEFAULT_CONFIG_ATTRS[&adapter_type].clone();
+        }
+        Self::build(config, adapter_type)
+    }
+
+    fn build(config: &WarehouseSpecificNodeConfig, adapter_type: AdapterType) -> Self {
         // TODO: Creation of configs should be delegated to the adapter specific attr struct
-        // Here we naively initialize the resolved adapter attributes.
-        // This allows propagation of configurations and switching on the adapter type
-        // allows us to save memory for unused configurations.
-        //
-        // A further optimization can be done by only setting inner fields of [AdapterAttr] if at least one field of the
-        // input is not None
+        // For a default config this runs once per adapter type, and `from_config_and_dialect`
+        // caches the result.
         match adapter_type {
             AdapterType::Snowflake => {
-                AdapterAttr::default().with_snowflake_attr(Some(Box::new(SnowflakeAttr {
+                AdapterAttr::default().with_snowflake_attr(Some(Arc::new(SnowflakeAttr {
                     table_tag: config.table_tag.clone(),
                     partition_by: config.partition_by.clone(),
                     cluster_by: config.cluster_by.clone(),
@@ -6700,7 +6717,7 @@ impl AdapterAttr {
             }
             AdapterType::Postgres => AdapterAttr::default(),
             AdapterType::Bigquery => {
-                AdapterAttr::default().with_bigquery_attr(Some(Box::new(BigQueryAttr {
+                AdapterAttr::default().with_bigquery_attr(Some(Arc::new(BigQueryAttr {
                     description: config.description.clone(),
                     adapter_properties: config.adapter_properties.clone(),
                     external_volume: config.external_volume.clone(),
@@ -6729,7 +6746,7 @@ impl AdapterAttr {
                 })))
             }
             AdapterType::Redshift => {
-                AdapterAttr::default().with_redshift_attr(Some(Box::new(RedshiftAttr {
+                AdapterAttr::default().with_redshift_attr(Some(Arc::new(RedshiftAttr {
                     auto_refresh: config.auto_refresh,
                     backup: config.backup,
                     bind: config.bind,
@@ -6739,7 +6756,7 @@ impl AdapterAttr {
                 })))
             }
             AdapterType::Databricks => {
-                AdapterAttr::default().with_databricks_attr(Some(Box::new(DatabricksAttr {
+                AdapterAttr::default().with_databricks_attr(Some(Arc::new(DatabricksAttr {
                     adapter_properties: config.adapter_properties.clone(),
                     partition_by: config.partition_by.clone(),
                     file_format: config.file_format.clone(),
@@ -6776,7 +6793,7 @@ impl AdapterAttr {
             _ => {
                 // Unknown input, populate ALL adapter attributes to maximize compatibility downstream
                 AdapterAttr::default()
-                    .with_snowflake_attr(Some(Box::new(SnowflakeAttr {
+                    .with_snowflake_attr(Some(Arc::new(SnowflakeAttr {
                         table_tag: config.table_tag.clone(),
                         partition_by: config.partition_by.clone(),
                         cluster_by: config.cluster_by.clone(),
@@ -6809,7 +6826,7 @@ impl AdapterAttr {
                         secure: config.secure,
                         transient: config.transient,
                     })))
-                    .with_bigquery_attr(Some(Box::new(BigQueryAttr {
+                    .with_bigquery_attr(Some(Arc::new(BigQueryAttr {
                         description: config.description.clone(),
                         adapter_properties: config.adapter_properties.clone(),
                         external_volume: config.external_volume.clone(),
@@ -6840,7 +6857,7 @@ impl AdapterAttr {
                         jar_file_uri: config.jar_file_uri.clone(),
                         timeout: config.timeout,
                     })))
-                    .with_redshift_attr(Some(Box::new(RedshiftAttr {
+                    .with_redshift_attr(Some(Arc::new(RedshiftAttr {
                         auto_refresh: config.auto_refresh,
                         backup: config.backup,
                         bind: config.bind,
@@ -6848,7 +6865,7 @@ impl AdapterAttr {
                         sort: config.sort.clone(),
                         sort_type: config.sort_type.clone(),
                     })))
-                    .with_databricks_attr(Some(Box::new(DatabricksAttr {
+                    .with_databricks_attr(Some(Arc::new(DatabricksAttr {
                         adapter_properties: config.adapter_properties.clone(),
                         partition_by: config.partition_by.clone(),
                         file_format: config.file_format.clone(),

@@ -11,6 +11,7 @@ export interface DagHopBarProps {
   downstreamHops: number;
   onUpstreamChange: (hops: number) => void;
   onDownstreamChange: (hops: number) => void;
+  upstreamDisabled?: boolean;
   /** Rendered on the far left, inside the same holder -- mirrors DagBottomBar's
    *  Lenses-on-the-left / cluster-on-the-right layout. FullLineagePage passes its
    *  close+breadcrumb here; LineageView's embedded panel has none, so the hop
@@ -26,6 +27,7 @@ export function DagHopBar({
   downstreamHops,
   onUpstreamChange,
   onDownstreamChange,
+  upstreamDisabled,
   leftContent,
 }: DagHopBarProps) {
   return (
@@ -41,6 +43,7 @@ export function DagHopBar({
           direction="upstream"
           hops={upstreamHops}
           onChange={onUpstreamChange}
+          disabled={upstreamDisabled}
         />
         {/* flex-1 + max-w: the path is the one element that should give up space
          *  first when the bar is squeezed (e.g. on a narrower window with the

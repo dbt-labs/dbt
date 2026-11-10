@@ -36,12 +36,12 @@ impl ParseAdapterScope {
     }
 
     /// Shadows the env's `target` and `env` in `ctx` with this adapter's.
-    pub fn insert_target(&self, ctx: &mut BTreeMap<String, MinijinjaValue>) {
-        for key in ["target", "env"] {
-            if let Some(value) = self.overlay.get(key) {
-                ctx.insert(key.to_string(), value.clone());
-            }
-        }
+    pub fn insert_target(&self, ctx: &mut impl Extend<(String, MinijinjaValue)>) {
+        ctx.extend(
+            ["target", "env"]
+                .into_iter()
+                .filter_map(|key| Some((key.to_string(), self.overlay.get(key)?.clone()))),
+        );
     }
 
     /// Shadows the env's `target`, `env`, `database`, `schema` and, when present, `dialect`.

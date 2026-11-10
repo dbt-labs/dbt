@@ -6,7 +6,7 @@ use crate::run_cache::run_cache_request::{
     snapshot_clone_table_properties, snapshot_execution_type_input,
 };
 use crate::run_cache::run_cache_service::{
-    RunCacheCloneDecision, clone_chain_depth_limit_for_adapter,
+    RunCacheCloneDecision, RunCacheCloneGrantsOrder, clone_chain_depth_limit_for_adapter,
     confirm_run_cache_service_execution, execute_run_cache_service_clone, has_metadata_address,
     legacy_freshness, run_cache_dialect, run_cache_metadata_query_options,
 };
@@ -38,7 +38,16 @@ pub async fn maybe_run_dev_clone_for_node(ctx: &TaskRunnerCtx, node_id: &str) {
         let Some(clone) = replay_dev_clone_decision(node_id) else {
             return;
         };
-        match execute_run_cache_service_clone(ctx, node.as_ref(), &clone, None, false).await {
+        match execute_run_cache_service_clone(
+            ctx,
+            node.as_ref(),
+            &clone,
+            None,
+            false,
+            RunCacheCloneGrantsOrder::BeforePostHooks,
+        )
+        .await
+        {
             Ok(_) => {
                 finish_dev_clone(
                     ctx,
@@ -112,7 +121,16 @@ pub async fn maybe_run_dev_clone_for_node(ctx: &TaskRunnerCtx, node_id: &str) {
     };
 
     let clone = RunCacheCloneDecision::from_response(&ready_to_clone, 0);
-    match execute_run_cache_service_clone(ctx, node.as_ref(), &clone, None, false).await {
+    match execute_run_cache_service_clone(
+        ctx,
+        node.as_ref(),
+        &clone,
+        None,
+        false,
+        RunCacheCloneGrantsOrder::BeforePostHooks,
+    )
+    .await
+    {
         Ok(_) => {
             record_dev_clone_decision(node_id, &clone);
             finish_dev_clone(
@@ -937,7 +955,8 @@ mod tests {
                         dbt_schemas::schemas::serde::StringOrInteger::Integer(12),
                     )),
                     ..Default::default()
-                },
+                }
+                .into(),
                 ..Default::default()
             },
             __other__: Default::default(),
@@ -954,7 +973,8 @@ mod tests {
                 __warehouse_specific_config__: WarehouseSpecificNodeConfig {
                     partition_expiration_days: Some(7),
                     ..Default::default()
-                },
+                }
+                .into(),
                 ..Default::default()
             },
             ..Default::default()

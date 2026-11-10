@@ -42,7 +42,7 @@ pub fn configure_compile_and_run_jinja_environment(env: &mut JinjaEnv, adapter: 
 /// Shadows the env's `adapter`, `api`, `dialect`, `target` and `env` globals in `ctx`
 /// with `adapter_type`'s. Inserts nothing for the store's default adapter.
 pub fn insert_adapter_overlay(
-    ctx: &mut BTreeMap<String, MinijinjaValue>,
+    ctx: &mut impl Extend<(String, MinijinjaValue)>,
     adapter_type: AdapterType,
     store: &AdapterStore,
     scopes: &ParseAdapterScopes,
@@ -52,12 +52,14 @@ pub fn insert_adapter_overlay(
     }
     let adapter = store.get(adapter_type)?;
     let scope = scopes.declared(adapter_type)?;
-    ctx.insert("api".to_string(), adapter_api_value(&adapter));
-    ctx.insert("adapter".to_string(), adapter.as_value());
-    ctx.insert(
-        DIALECT.to_string(),
-        MinijinjaValue::from(adapter_type.as_ref()),
-    );
+    ctx.extend([
+        ("api".to_string(), adapter_api_value(&adapter)),
+        ("adapter".to_string(), adapter.as_value()),
+        (
+            DIALECT.to_string(),
+            MinijinjaValue::from(adapter_type.as_ref()),
+        ),
+    ]);
     if let Some(scope) = scope {
         scope.insert_target(ctx);
     }

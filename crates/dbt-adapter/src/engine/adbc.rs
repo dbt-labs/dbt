@@ -88,7 +88,7 @@ pub struct AdbcEngine {
     /// fingerprint of that connection.
     connection_fingerprint: std::sync::atomic::AtomicU64,
     /// `ResolvedCloudConfig::project_id`, forwarded as the `dbt_cloud.project_id`
-    /// flock-adbc driver option alongside whichever credential is resolved.
+    /// bridge-adbc driver option alongside whichever credential is resolved.
     dbt_cloud_project_id: Option<String>,
     /// See [`AdapterEngine::clickhouse_capabilities`].
     clickhouse_capabilities: OnceLock<ClickHouseCapabilities>,
@@ -222,7 +222,7 @@ impl AdbcEngine {
             (false, _) => LoadStrategy::CdnCache,
         };
 
-        // This will load the "flock" driver if load_strategy is Remote.
+        // This will load the "bridge" driver if load_strategy is Remote.
         let mut driver = driver::Builder::new(backend, load_strategy)
             .try_load()
             .map_err(adbc_error_to_adapter_error)?;
@@ -309,12 +309,12 @@ impl AdbcEngine {
             AuthError::config(format!("{e}{hint}"))
         })?;
 
-        // See NOTE [flock-service-token-support] in flock-service/src/flight/handshake.rs:
-        // flock-service doesn't support service-credential fetching yet, so reject this
+        // See NOTE [bridge-service-token-support] in flock-service/src/flight/handshake.rs:
+        // bridge-service doesn't support service-credential fetching yet, so reject this
         // client-side instead of sending a token the server will reject anyway.
         if matches!(credential, Credential::ServiceToken { .. }) {
             return Err(AuthError::config(
-                "service token credentials are not yet supported for dbt Cloud/flock \
+                "service token credentials are not yet supported for dbt Cloud/bridge \
                  connections; use a personal access token or run `dbt login` instead",
             ));
         }

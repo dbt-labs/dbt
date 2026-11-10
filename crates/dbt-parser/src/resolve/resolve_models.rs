@@ -182,7 +182,7 @@ pub async fn resolve_models(
     default_adapter: AdapterType,
     package_name: &str,
     env: Arc<JinjaEnv>,
-    base_ctx: &BTreeMap<String, minijinja::Value>,
+    base_ctx: &Arc<BTreeMap<String, minijinja::Value>>,
     runtime_config: Arc<DbtRuntimeConfig>,
     root_runtime_config: Arc<DbtRuntimeConfig>,
     collected_generic_tests: &mut Vec<GenericTestAsset>,
@@ -239,7 +239,7 @@ pub async fn resolve_models(
             package_quoting,
             uses_snapshot_fqn: false,
             defer_render_errors_to_compile: true,
-            base_ctx: base_ctx.clone(),
+            base_ctx: Arc::clone(base_ctx),
             package_name: package_name.to_string(),
             adapter_type: default_adapter,
             database: database.to_string(),
@@ -2576,7 +2576,8 @@ mod interactive_table_validation_tests {
             __warehouse_specific_config__: WarehouseSpecificNodeConfig {
                 cluster_by: Some(ClusterConfig::String("id".to_string())),
                 ..Default::default()
-            },
+            }
+            .into(),
             ..Default::default()
         }
     }
@@ -2799,7 +2800,8 @@ mod interactive_table_validation_tests {
                 transient: Some(true),
                 target_lag: Some("1 minute".to_string()),
                 ..Default::default()
-            },
+            }
+            .into(),
             ..Default::default()
         };
         let resolved = resolve(cfg);
@@ -2821,7 +2823,8 @@ mod interactive_table_validation_tests {
                 transient: Some(true),
                 target_lag: Some("1 minute".to_string()),
                 ..Default::default()
-            },
+            }
+            .into(),
             ..Default::default()
         }
     }

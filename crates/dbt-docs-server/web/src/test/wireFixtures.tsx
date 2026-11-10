@@ -18,10 +18,11 @@
  * pre-nested will not round-trip.
  */
 
+import type { MetadataDataSource } from 'dbt-docs-lib';
+import type { AssetSummary, ResourceType } from 'dbt-docs-lib/domain';
+
 import { LIST_REGISTRY } from '../shared/data-sources/duckdb/lists';
-import type { MetadataDataSource } from '../shared/data-sources/MetadataDataSource';
 import { createFakeDataSource } from '../shared/testing/createFakeDataSource';
-import type { AssetSummary, ResourceType } from '../shared/typings/domain/asset';
 import type { Page } from '../shared/typings/page';
 
 /** The list envelope the server used to return. */
