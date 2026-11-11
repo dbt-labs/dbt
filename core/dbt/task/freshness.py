@@ -320,7 +320,9 @@ class FreshnessTask(RunTask):
                 Note(msg=f"Metadata freshness could not be computed in batch: {e}"),
                 EventLevel.WARN,
             )
-            return RunStatus.Error
+            # Returning Error here would make before_run skip every node when
+            # skip_nodes_if_on_run_start_fails is set, instead of falling back.
+            return RunStatus.Success
 
     def get_freshness_metadata_cache(self) -> Dict[BaseRelation, FreshnessResponse]:
         return self._metadata_freshness_cache
