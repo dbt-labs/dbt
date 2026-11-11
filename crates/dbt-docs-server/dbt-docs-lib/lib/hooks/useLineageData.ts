@@ -2,9 +2,9 @@ import { useMemo } from 'react';
 import { Edge, Node as ReactFlowNode } from '@xyflow/react';
 
 import { DAG_NODE_TYPE } from '../components/lineage/DagNode';
-import { useLineage } from './useLineage';
-import { type LineageGraph } from '../shared/typings/domain/lineage';
 import { type ResourceType } from '../shared/typings/domain/asset';
+import { type LineageGraph } from '../shared/typings/domain/lineage';
+import { useLineage } from './useLineage';
 
 export const LOCAL_PROJECT = 'local';
 export const LOCAL_PROJECT_ID = 0;

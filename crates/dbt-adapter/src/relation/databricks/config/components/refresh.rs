@@ -323,6 +323,7 @@ mod tests {
     use crate::relation::databricks::config::test_helpers;
     use dbt_agate::AgateTable;
     use indexmap::IndexMap;
+    use std::sync::Arc;
 
     fn create_mock_describe_extended_table(schedule_info: Option<&str>) -> AgateTable {
         let comment_text = schedule_info.unwrap_or("MANUAL");
@@ -443,6 +444,7 @@ mod tests {
             .__adapter_attr__
             .databricks_attr
             .as_mut()
+            .map(Arc::make_mut)
             .unwrap()
             .schedule = Some(dbt_yaml::from_str("{}").unwrap());
         let config = from_local_config(&model).unwrap();

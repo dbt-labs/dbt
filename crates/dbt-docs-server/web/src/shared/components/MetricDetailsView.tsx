@@ -1,6 +1,6 @@
 import { FC } from 'react';
+import type { MetricInfo } from 'dbt-docs-lib/domain';
 
-import { MetricInfo } from '../typings/domain/asset';
 import { ColumnTable } from './ColumnTable';
 import { DetailsSection } from './SectionWithCard';
 

@@ -10,7 +10,7 @@ use dbt_common::tracing::dbt_emit::emit_error_log_from_fs_error;
 use dbt_common::{ErrorCode, FsError, FsResult, fs_err, stdfs};
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::malformed_block_name::MalformedBlockNameListener;
-use dbt_jinja_utils::phases::parse::ParseAdapterScopes;
+use dbt_jinja_utils::phases::AdapterScopes;
 use dbt_jinja_utils::phases::parse::sql_resource::SqlResource;
 use dbt_jinja_utils::utils::generate_component_name;
 use dbt_schemas::schemas::InternalDbtNodeAttributes;
@@ -525,7 +525,7 @@ pub fn update_node_relation_components<T: InternalDbtNodeAttributes + Clone>(
     package_name: &str,
     base_ctx: &BTreeMap<String, minijinja::Value>,
     components: &RelationComponents,
-    scopes: Option<&ParseAdapterScopes>,
+    scopes: Option<&AdapterScopes>,
 ) -> FsResult<T> {
     // Source and unit test nodes do not have relation components
     if [NodeType::Source, NodeType::UnitTest].contains(&node.resource_type()) {
@@ -602,7 +602,7 @@ pub fn update_node_relation_components<T: InternalDbtNodeAttributes + Clone>(
 /// The database and schema a node of `adapter_type` starts from: its scope's, or
 /// `database`/`schema` without `scopes`. `path` locates a scope error.
 pub fn node_starting_database_and_schema<'a>(
-    scopes: Option<&'a ParseAdapterScopes>,
+    scopes: Option<&'a AdapterScopes>,
     adapter_type: AdapterType,
     database: &'a str,
     schema: &'a str,
@@ -1091,7 +1091,7 @@ mod relation_components_tests {
     use dbt_common::io_args::IoArgs;
     use dbt_jinja_utils::invocation_args::InvocationArgs;
     use dbt_jinja_utils::jinja_environment::JinjaEnv;
-    use dbt_jinja_utils::phases::parse::ParseAdapterScopes;
+    use dbt_jinja_utils::phases::AdapterScopes;
     use dbt_jinja_utils::phases::parse::init::initialize_parse_jinja_environment;
     use dbt_schemas::schemas::profiles::{DbConfig, SnowflakeDbConfig};
     use dbt_schemas::schemas::relations::DEFAULT_DBT_QUOTING;
@@ -1225,7 +1225,7 @@ mod relation_components_tests {
     #[test]
     fn unusable_connection_errors_at_the_node() {
         let env = snowflake_parse_env();
-        let scopes = ParseAdapterScopes::from_profile(&unusable_bigquery_profile());
+        let scopes = AdapterScopes::from_profile(&unusable_bigquery_profile());
         let update = |model: DbtModel| {
             update_node_relation_components(
                 model,
@@ -1256,7 +1256,7 @@ mod relation_components_tests {
     /// The starting database's scope error is located at the path the caller gives.
     #[test]
     fn starting_database_error_is_located_at_the_given_path() {
-        let scopes = ParseAdapterScopes::from_profile(&unusable_bigquery_profile());
+        let scopes = AdapterScopes::from_profile(&unusable_bigquery_profile());
         let path = std::path::Path::new("seeds/x.csv");
         let start = |adapter_type| {
             node_starting_database_and_schema(Some(&scopes), adapter_type, "db", "sch", path)

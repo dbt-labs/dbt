@@ -5,6 +5,7 @@ use std::{
     sync::Arc,
 };
 
+use chrono::Utc;
 use dbt_adapter::relation::{
     RelationObject, canonical_relation_parts, create_relation, create_relation_from_node,
     create_relation_from_source,
@@ -23,7 +24,7 @@ use dbt_schemas::{
     filter::RunFilter,
     schemas::{
         DbtFunction, DbtSource, InternalDbtNodeAttributes, IntrospectionKind, Nodes,
-        common::{DbtMaterialization, DbtQuoting, ResolvedQuoting},
+        common::{DbtMaterialization, DbtQuoting, ResolvedQuoting, parse_deprecation_date},
         ref_and_source::{DbtRef, DbtSourceWrapper},
         telemetry::NodeType,
     },
@@ -1305,14 +1306,14 @@ pub fn check_for_model_deprecations(nodes: &Nodes) {
     let mut deprecated_models: BTreeMap<String, DeprecatedModelInfo> = BTreeMap::new();
 
     for (uid, model) in &nodes.models {
-        if let Some(ts) = &model.__model_attr__.deprecation_date {
-            // Instant comparison; a missing time/zone defaults to midnight UTC.
-            let is_past = *ts < dbt_yaml::Timestamp::utc_now();
+        if let Some(dep_date_str) = &model.__model_attr__.deprecation_date {
+            let is_past = parse_deprecation_date(dep_date_str)
+                .is_some_and(|deprecation_date| deprecation_date < Utc::now());
             deprecated_models.insert(
                 uid.clone(),
                 DeprecatedModelInfo {
                     is_past,
-                    deprecation_date: ts.with_defaults().to_string(),
+                    deprecation_date: dep_date_str.clone(),
                     name: model.__common_attr__.name.clone(),
                     version: model.__model_attr__.version.as_ref().map(|v| v.to_string()),
                     latest_version: model
@@ -1463,7 +1464,7 @@ mod tests {
                 ..Default::default()
             },
             __model_attr__: DbtModelAttr {
-                deprecation_date: deprecation_date.and_then(dbt_yaml::Timestamp::parse),
+                deprecation_date: deprecation_date.map(|s| s.to_string()),
                 ..Default::default()
             },
             ..Default::default()

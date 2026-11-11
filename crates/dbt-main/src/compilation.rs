@@ -38,7 +38,7 @@ use dbt_jinja_utils::{
 };
 use dbt_loader::args::*;
 use dbt_parser::args::ResolveArgs;
-use dbt_parser::resolver::unit_test_macro_override_warnings;
+use dbt_parser::resolver::{lake_compute_unit_test_warnings, unit_test_macro_override_warnings};
 use dbt_scheduler::args::SchedulerArgs;
 use dbt_schema_store::{
     SchemaStoreTrait,
@@ -1851,6 +1851,13 @@ impl DbtProjectCompilation {
         ) {
             emit_warn_log_from_fs_error(warning);
         }
+        for warning in lake_compute_unit_test_warnings(
+            arg.command,
+            &self.resolved_state.nodes,
+            &schedule.selected_nodes,
+        ) {
+            emit_warn_log_from_fs_error(warning);
+        }
 
         // We may have elevated errors from selection
         checkpoint_error_count_maybe_exit(arg)?;
@@ -2264,7 +2271,7 @@ impl DbtProjectCompilation {
             }
         }
 
-        let base_context = build_base_context(&resolved_state, &jinja_env);
+        let base_context = Arc::new(build_base_context(&resolved_state, &jinja_env));
         token.check_cancellation()?;
 
         render_all_model_constraint_refs_in_place(&mut resolved_state, &jinja_env, &base_context)?;
@@ -2522,7 +2529,7 @@ impl DbtProjectCompilation {
                         Arc::clone(&run_task_args),
                         generic_test_relationships,
                         &graph,
-                        base_context.clone(),
+                        Arc::unwrap_or_clone(base_context),
                         schedule.clone(),
                         freshness_results,
                         shared_event_order,
@@ -2538,7 +2545,6 @@ impl DbtProjectCompilation {
                     .run(
                         Arc::clone(&run_task_args),
                         schedule,
-                        base_context,
                         ctx,
                         graph,
                         has_dynamic_closure,

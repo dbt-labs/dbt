@@ -1,6 +1,7 @@
 // use serde_repr::{Deserialize_repr, Serialize_repr};
 use std::{collections::HashMap, fmt::Display};
 
+use dbt_proc_macros::DebugNoInline;
 use dbt_proc_macros::include_frontend_error_codes;
 use strum_macros::{EnumString, FromRepr, IntoStaticStr};
 
@@ -11,7 +12,9 @@ use strum_macros::{EnumString, FromRepr, IntoStaticStr};
 #[include_frontend_error_codes]
 #[repr(u16)]
 #[non_exhaustive]
-#[derive(Debug, Copy, Clone, Eq, PartialEq, FromRepr, EnumString, IntoStaticStr, Default)]
+#[derive(
+    DebugNoInline, Copy, Clone, Eq, PartialEq, FromRepr, EnumString, IntoStaticStr, Default,
+)]
 pub enum ErrorCode {
     // ----------------- Frontend errors [0, 999] -----------------------------
     //
@@ -184,6 +187,10 @@ pub enum ErrorCode {
     /// dispatches through either, so the override has no effect.
     UnitTestMacroOverrideIgnored = 1161,
     DepsInstalledPackagesFallback = 1162,
+    /// A selected unit test of a LakeCompute model runs on another adapter, as that adapter's SQL.
+    LakeComputeUnitTestOnDefaultAdapter = 1163,
+    /// An inline `config(adapter=...)` changed a node's adapter after its parse render.
+    InlineAdapterParseTargetMismatch = 1164,
 
     // Network/HTTP [1200–1249]
     NetworkError = 1200,
@@ -245,6 +252,9 @@ pub enum ErrorCode {
     /// no longer matched the owner that ran it; a reclaim already overwrote
     /// it, so the write would have clobbered the new owner's own result.
     StateStopRejected = 1414,
+    /// A unit test's expected-schema query, run on the local engine, could not
+    /// be translated from the project's dialect, so it was not run.
+    SidecarUnitTestSchemaUntranslatable = 1417,
 
     // Serialization [1450–1460]
     JsonInvalid = 1450,
@@ -384,6 +394,9 @@ pub enum ErrorCode {
     /// No longer emitted. Retained so an existing `warn_error_options` entry naming it
     /// keeps resolving instead of failing as an unknown code.
     DocsGenerateWarning = 1705,
+    /// A node's column facts could not be inferred, so tests that they would
+    /// have let dbt skip run instead.
+    TestFactsInferenceFailed = 1706,
 
     // --------------------------------------------------------------------------------------------
     // Format
@@ -447,6 +460,9 @@ pub enum ErrorCode {
     // --------------------------------------------------------------------------------------------
     // Lineage
     InvalidLineageSchema = 3500,
+    /// A column whose relation `--infer-schemas` inferred matches more than one
+    /// candidate relation, so column lineage through it is incomplete.
+    AmbiguousInferredColumn = 3501,
 
     // --------------------------------------------------------------------------------------------
     // SQL frontend library

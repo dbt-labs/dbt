@@ -1,11 +1,16 @@
+mod timezones;
+
 use chrono::{DateTime, LocalResult, NaiveDateTime, TimeZone};
 use chrono_tz::{Tz, TZ_VARIANTS};
+use minijinja::arg_utils::ArgsIter;
 use minijinja::value::mutable_set::MutableSet;
+use minijinja::value::mutable_vec::MutableVec;
 use minijinja::value::{Enumerator, Object, ObjectRepr};
 use minijinja::{Error, ErrorKind, Value};
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::sync::{Arc, OnceLock};
+use timezones::{common_timezones, country_names, country_timezones};
 
 /// A Python-like "pytz" timezone object that wraps a `chrono_tz::Tz`.
 #[derive(Debug, Clone)]
@@ -83,29 +88,67 @@ pub fn create_pytz_namespace() -> BTreeMap<String, Value> {
     );
     pytz_module.insert(
         "all_timezones".to_string(),
-        Value::from_object(AllTimezones),
+        Value::from_object(TimezoneList(TimezoneNames::All)),
     );
     pytz_module.insert(
         "all_timezones_set".to_string(),
-        Value::from_object(AllTimezonesSet::default()),
+        Value::from_object(TimezoneSet::new(TimezoneNames::All)),
     );
-    // You could also add "utc", "country", etc.
+    pytz_module.insert(
+        "common_timezones".to_string(),
+        Value::from_object(TimezoneList(TimezoneNames::Common)),
+    );
+    pytz_module.insert(
+        "common_timezones_set".to_string(),
+        Value::from_object(TimezoneSet::new(TimezoneNames::Common)),
+    );
+    pytz_module.insert(
+        "country_timezones".to_string(),
+        Value::from_object(CountryMap::Timezones),
+    );
+    pytz_module.insert(
+        "country_names".to_string(),
+        Value::from_object(CountryMap::Names),
+    );
 
     pytz_module
 }
 
-/// `pytz.all_timezones`: a read-only list view over the static `TZ_VARIANTS`,
-/// which is already alphabetized like the pytz list.
-///
-/// XXX: This implementation avoids copying `TZ_VARIANTS` into a new list, but it
-/// does mean that the list is read-only and does not support methods like `.pop()`.
-/// Since this is a pytz constant, we're considering this a preferable tradeoff.
-/// If users end up needing to mutate `pytz.all_timezones` for some reason, we can
-/// swap this implementation to match `AllTimezonesSet`.
-#[derive(Debug)]
-struct AllTimezones;
+/// The static name lists behind `pytz.all_timezones` and `pytz.common_timezones`.
+/// `TZ_VARIANTS` is already alphabetized like the pytz list.
+#[derive(Debug, Clone, Copy)]
+enum TimezoneNames {
+    All,
+    Common,
+}
 
-impl Object for AllTimezones {
+impl TimezoneNames {
+    fn len(self) -> usize {
+        match self {
+            TimezoneNames::All => TZ_VARIANTS.len(),
+            TimezoneNames::Common => common_timezones().len(),
+        }
+    }
+
+    fn get(self, index: usize) -> Option<&'static str> {
+        match self {
+            TimezoneNames::All => TZ_VARIANTS.get(index).map(|tz| tz.name()),
+            TimezoneNames::Common => common_timezones().get(index).copied(),
+        }
+    }
+}
+
+/// `pytz.all_timezones` and `pytz.common_timezones`: a read-only list view over a static list.
+///
+/// XXX: This implementation avoids copying the static list into a new list, but it
+/// does mean that the list is read-only and does not support methods like `.pop()`.
+/// Since these are pytz constants, we're considering this a preferable tradeoff.
+/// If users end up needing to mutate `pytz.all_timezones` or `pytz.common_timezones`
+/// for some reason, we can swap this implementation to match `TimezoneSet`.
+#[derive(Debug)]
+struct TimezoneList(TimezoneNames);
+
+impl Object for TimezoneList {
     fn repr(self: &Arc<Self>) -> ObjectRepr {
         ObjectRepr::Seq
     }
@@ -116,29 +159,42 @@ impl Object for AllTimezones {
     }
 
     fn get_value(self: &Arc<Self>, key: &Value) -> Option<Value> {
-        let tz = TZ_VARIANTS.get(key.as_usize()?)?;
-        Some(Value::from(tz.name()))
+        self.0.get(key.as_usize()?).map(Value::from)
     }
 
     fn enumerate(self: &Arc<Self>) -> Enumerator {
-        Enumerator::Seq(TZ_VARIANTS.len())
+        Enumerator::Seq(self.0.len())
     }
 }
 
-/// `pytz.all_timezones_set`: like pytz, the set is only populated once it is used.
-#[derive(Debug, Default)]
-struct AllTimezonesSet {
+/// `pytz.all_timezones_set` and `pytz.common_timezones_set`: like pytz, the set is
+/// only populated once it is used.
+#[derive(Debug)]
+struct TimezoneSet {
+    names: TimezoneNames,
     set: OnceLock<Arc<MutableSet>>,
 }
 
-impl AllTimezonesSet {
+impl TimezoneSet {
+    fn new(names: TimezoneNames) -> Self {
+        TimezoneSet {
+            names,
+            set: OnceLock::new(),
+        }
+    }
+
     fn set(&self) -> &Arc<MutableSet> {
-        self.set
-            .get_or_init(|| Arc::new(TZ_VARIANTS.iter().map(|tz| tz.name()).collect()))
+        self.set.get_or_init(|| {
+            Arc::new(
+                (0..self.names.len())
+                    .filter_map(|index| self.names.get(index))
+                    .collect(),
+            )
+        })
     }
 }
 
-impl Object for AllTimezonesSet {
+impl Object for TimezoneSet {
     fn repr(self: &Arc<Self>) -> ObjectRepr {
         ObjectRepr::Seq
     }
@@ -159,6 +215,75 @@ impl Object for AllTimezonesSet {
         listeners: &[std::rc::Rc<dyn minijinja::listener::RenderingEventListener>],
     ) -> Result<Value, Error> {
         self.set().call_method(state, method, args, listeners)
+    }
+}
+
+/// `pytz.country_timezones` and `pytz.country_names`: read-only maps keyed by ISO 3166
+/// country code. Like pytz, a lookup uppercases the code.
+#[derive(Debug)]
+enum CountryMap {
+    Timezones,
+    Names,
+}
+
+impl CountryMap {
+    fn lookup(&self, code: &str) -> Option<Value> {
+        let code = code.to_ascii_uppercase();
+        match self {
+            CountryMap::Timezones => country_timezones().get(code.as_str()).map(|zones| {
+                Value::from_object(MutableVec::from(
+                    zones.iter().copied().map(Value::from).collect::<Vec<_>>(),
+                ))
+            }),
+            CountryMap::Names => country_names()
+                .get(code.as_str())
+                .map(|name| Value::from(*name)),
+        }
+    }
+}
+
+impl Object for CountryMap {
+    fn repr(self: &Arc<Self>) -> ObjectRepr {
+        ObjectRepr::Map
+    }
+
+    fn get_value(self: &Arc<Self>, key: &Value) -> Option<Value> {
+        self.lookup(key.as_str()?)
+    }
+
+    fn enumerate(self: &Arc<Self>) -> Enumerator {
+        match **self {
+            CountryMap::Timezones => Enumerator::Iter(Box::new(
+                country_timezones().keys().map(|code| Value::from(*code)),
+            )),
+            CountryMap::Names => Enumerator::Iter(Box::new(
+                country_names().keys().map(|code| Value::from(*code)),
+            )),
+        }
+    }
+
+    // `country_timezones('us')` is the older pytz spelling of `country_timezones['us']`.
+    fn call(
+        self: &Arc<Self>,
+        _state: &minijinja::State<'_, '_>,
+        args: &[Value],
+        _listeners: &[std::rc::Rc<dyn minijinja::listener::RenderingEventListener>],
+    ) -> Result<Value, Error> {
+        if let CountryMap::Names = **self {
+            return Err(Error::new(
+                ErrorKind::InvalidOperation,
+                "object is not callable",
+            ));
+        }
+        let iter = ArgsIter::new("country_timezones", &["iso3166_code"], args);
+        let code = iter.next_arg::<&str>()?;
+        iter.finish()?;
+        self.lookup(code).ok_or_else(|| {
+            Error::new(
+                ErrorKind::InvalidArgument,
+                format!("Unknown country code: {code}"),
+            )
+        })
     }
 }
 
@@ -316,6 +441,7 @@ mod tests {
     use super::*;
     use crate::modules::py_datetime::datetime::{DateTimeState, PyDateTime};
     use chrono::{NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Timelike};
+    use std::collections::HashSet;
 
     #[test]
     fn test_localize_naive_datetime() {
@@ -410,12 +536,42 @@ mod tests {
     }
 
     #[test]
-    fn test_all_timezones_set_is_lazy() {
-        let lazy = Arc::new(AllTimezonesSet::default());
-        assert!(lazy.set.get().is_none());
+    fn test_timezone_sets_are_lazy() {
+        for (names, len) in [
+            (TimezoneNames::All, TZ_VARIANTS.len()),
+            (TimezoneNames::Common, common_timezones().len()),
+        ] {
+            let lazy = Arc::new(TimezoneSet::new(names));
+            assert!(lazy.set.get().is_none());
 
-        assert_eq!(lazy.enumerator_len(), Some(TZ_VARIANTS.len()));
-        assert!(lazy.set.get().is_some());
+            assert_eq!(lazy.enumerator_len(), Some(len));
+            assert!(lazy.set.get().is_some());
+        }
+    }
+
+    #[test]
+    fn test_common_timezones_are_sorted_known_zones() {
+        assert_eq!(common_timezones().len(), 433);
+        assert!(common_timezones().windows(2).all(|w| w[0] < w[1]));
+        let all: HashSet<&str> = TZ_VARIANTS.iter().map(|tz| tz.name()).collect();
+        let unknown: Vec<&str> = common_timezones()
+            .iter()
+            .copied()
+            .filter(|name| !all.contains(name))
+            .collect();
+        assert!(unknown.is_empty(), "not in TZ_VARIANTS: {unknown:?}");
+    }
+
+    #[test]
+    fn test_country_timezones_are_known_zones() {
+        let all: HashSet<&str> = TZ_VARIANTS.iter().map(|tz| tz.name()).collect();
+        let unknown: Vec<&str> = country_timezones()
+            .values()
+            .flatten()
+            .copied()
+            .filter(|name| !all.contains(name))
+            .collect();
+        assert!(unknown.is_empty(), "not in TZ_VARIANTS: {unknown:?}");
     }
 
     #[test]

@@ -11,8 +11,8 @@ import {
   type ResourceGroup,
   useLineageGroupPartitions,
 } from '../../hooks/useLineageGroupPartitions';
-import { iconForType } from '../../utils/resourceType';
 import { useLineageStore } from '../../stores/lineageStore';
+import { iconForType } from '../../utils/resourceType';
 import { Badge } from '../ui/Badge';
 import type { DagNodeData } from './DagNode';
 import { DagResourceBadge } from './DagResourceBadge';

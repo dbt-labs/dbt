@@ -114,12 +114,18 @@ impl ViewDefinitionTraverser {
     /// `SourcesExtractor` to extract upstream references and continues the
     /// traversal with those as the next BFS frontier.
     ///
+    /// Relations whose `semantic_fqn()` is in `terminal_fqns` are recorded as
+    /// leaves (in `seen_tables` / `leaf_relations`) without fetching or
+    /// expanding their definition, wherever they appear in the traversal.
+    /// Terminal status is per call: it is never written to the shared cache.
+    ///
     /// Sequential `traverse()` calls reuse the cache, so a view fetched on one
     /// call is not re-fetched on a later one. Two concurrent calls that race
     /// on the same uncached key may both fetch.
     pub async fn traverse(
         &self,
         relations: &[Arc<dyn BaseRelation>],
+        terminal_fqns: &BTreeSet<String>,
         token: CancellationToken,
     ) -> AdapterResult<ViewTraversalResult> {
         let adapter_type = self.adapter.adapter_type();
@@ -141,6 +147,9 @@ impl ViewDefinitionTraverser {
                 seen_relations
                     .entry(fqn.clone())
                     .or_insert_with(|| Arc::clone(&rel));
+                if terminal_fqns.contains(&fqn) {
+                    continue;
+                }
                 let cached = self.cache.read_sync(&fqn, |_, e| e.clone());
                 match cached {
                     Some(CachedViewLookup::View(view_def)) => record_and_enqueue(
@@ -597,7 +606,11 @@ mod tests {
             ViewDefinitionTraverser::new(Arc::clone(&adapter), Arc::new(DefaultSourcesExtractor));
 
         let result = traverser
-            .traverse(&[rel("V")], CancellationToken::never_cancels())
+            .traverse(
+                &[rel("V")],
+                &BTreeSet::new(),
+                CancellationToken::never_cancels(),
+            )
             .await
             .expect("ok");
 
@@ -626,7 +639,11 @@ mod tests {
             ViewDefinitionTraverser::new(Arc::clone(&adapter), Arc::new(DefaultSourcesExtractor));
 
         let result = traverser
-            .traverse(&[rel("V1")], CancellationToken::never_cancels())
+            .traverse(
+                &[rel("V1")],
+                &BTreeSet::new(),
+                CancellationToken::never_cancels(),
+            )
             .await
             .expect("ok");
 
@@ -681,7 +698,11 @@ mod tests {
         let traverser = ViewDefinitionTraverser::new(adapter, Arc::new(DefaultSourcesExtractor));
 
         let result = traverser
-            .traverse(&[rel("V1")], CancellationToken::never_cancels())
+            .traverse(
+                &[rel("V1")],
+                &BTreeSet::new(),
+                CancellationToken::never_cancels(),
+            )
             .await
             .expect("ok");
 
@@ -709,7 +730,11 @@ mod tests {
         // Wrap in a timeout to fail fast.
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            traverser.traverse(&[rel("V1")], CancellationToken::never_cancels()),
+            traverser.traverse(
+                &[rel("V1")],
+                &BTreeSet::new(),
+                CancellationToken::never_cancels(),
+            ),
         )
         .await
         .expect("traverse timed out — cycle not terminated")
@@ -732,11 +757,19 @@ mod tests {
         let traverser = ViewDefinitionTraverser::new(adapter, Arc::new(DefaultSourcesExtractor));
 
         traverser
-            .traverse(&[rel("V1")], CancellationToken::never_cancels())
+            .traverse(
+                &[rel("V1")],
+                &BTreeSet::new(),
+                CancellationToken::never_cancels(),
+            )
             .await
             .expect("ok");
         traverser
-            .traverse(&[rel("V1")], CancellationToken::never_cancels())
+            .traverse(
+                &[rel("V1")],
+                &BTreeSet::new(),
+                CancellationToken::never_cancels(),
+            )
             .await
             .expect("ok");
 
@@ -754,14 +787,22 @@ mod tests {
         let traverser = ViewDefinitionTraverser::new(adapter, Arc::new(DefaultSourcesExtractor));
 
         let first = traverser
-            .traverse(&[rel("SECURE_VIEW")], CancellationToken::never_cancels())
+            .traverse(
+                &[rel("SECURE_VIEW")],
+                &BTreeSet::new(),
+                CancellationToken::never_cancels(),
+            )
             .await
             .expect("first traversal");
         assert!(first.seen_tables.contains(&secure_view));
         assert!(first.unresolvable_tables.contains(&secure_view));
 
         let second = traverser
-            .traverse(&[rel("SECURE_VIEW")], CancellationToken::never_cancels())
+            .traverse(
+                &[rel("SECURE_VIEW")],
+                &BTreeSet::new(),
+                CancellationToken::never_cancels(),
+            )
             .await
             .expect("second traversal");
         assert!(second.seen_tables.contains(&secure_view));
@@ -780,7 +821,11 @@ mod tests {
         let traverser = ViewDefinitionTraverser::new(adapter, Arc::new(DefaultSourcesExtractor));
 
         let err = traverser
-            .traverse(&[rel("V1")], CancellationToken::never_cancels())
+            .traverse(
+                &[rel("V1")],
+                &BTreeSet::new(),
+                CancellationToken::never_cancels(),
+            )
             .await
             .expect_err("expected error");
 
@@ -804,7 +849,11 @@ mod tests {
         });
 
         let result = traverser
-            .traverse(&[rel("V1")], CancellationToken::never_cancels())
+            .traverse(
+                &[rel("V1")],
+                &BTreeSet::new(),
+                CancellationToken::never_cancels(),
+            )
             .await
             .expect("ok");
 
@@ -824,7 +873,11 @@ mod tests {
         let traverser = ViewDefinitionTraverser::new(adapter, Arc::new(DefaultSourcesExtractor));
 
         traverser
-            .traverse(&[rel("V1")], CancellationToken::never_cancels())
+            .traverse(
+                &[rel("V1")],
+                &BTreeSet::new(),
+                CancellationToken::never_cancels(),
+            )
             .await
             .expect("ok");
         assert_eq!(mock.count_for(&v1), 1);
@@ -838,7 +891,11 @@ mod tests {
         });
 
         let result = traverser
-            .traverse(&[rel("V1")], CancellationToken::never_cancels())
+            .traverse(
+                &[rel("V1")],
+                &BTreeSet::new(),
+                CancellationToken::never_cancels(),
+            )
             .await
             .expect("ok");
         assert_eq!(result.view_definitions[&v1].definition, "SELECT 'compiled'");
@@ -868,7 +925,11 @@ mod tests {
         });
 
         let result = traverser
-            .traverse(&[rel("D")], CancellationToken::never_cancels())
+            .traverse(
+                &[rel("D")],
+                &BTreeSet::new(),
+                CancellationToken::never_cancels(),
+            )
             .await
             .expect("ok");
 
@@ -878,6 +939,155 @@ mod tests {
         assert!(result.seen_tables.contains(&t));
         assert_eq!(mock.count_for(&v), 0, "V must not be fetched");
         assert_eq!(mock.count_for(&t), 1, "T fetched once as leaf");
+    }
+
+    #[dbt_runtime::test]
+    async fn terminal_view_is_a_leaf_and_not_fetched() {
+        let v = rel("V").semantic_fqn();
+        let t = rel("T").semantic_fqn();
+
+        let mut graph = HashMap::new();
+        graph.insert(v.clone(), Some("SELECT * FROM T".to_string()));
+        graph.insert(t.clone(), None);
+
+        let mock = Arc::new(MockAdapter::new(graph));
+        let adapter: Arc<dyn MetadataAdapter> = mock.clone();
+        let traverser = ViewDefinitionTraverser::new(adapter, Arc::new(DefaultSourcesExtractor));
+
+        let result = traverser
+            .traverse(
+                &[rel("V")],
+                &BTreeSet::from([v.clone()]),
+                CancellationToken::never_cancels(),
+            )
+            .await
+            .expect("ok");
+
+        assert!(result.view_definitions.is_empty());
+        assert_eq!(result.seen_tables, BTreeSet::from([v.clone()]));
+        assert!(result.leaf_relations.contains_key(&v));
+        assert_eq!(mock.count_for(&v), 0, "terminal V must not be fetched");
+        assert_eq!(
+            mock.count_for(&t),
+            0,
+            "T behind terminal V must not be visited"
+        );
+    }
+
+    #[dbt_runtime::test]
+    async fn nested_terminal_view_is_a_leaf_and_not_expanded() {
+        let v1 = rel("V1").semantic_fqn();
+        let v2 = rel("V2").semantic_fqn();
+        let t1 = rel("T1").semantic_fqn();
+        let t2 = rel("T2").semantic_fqn();
+
+        let mut graph = HashMap::new();
+        graph.insert(
+            v1.clone(),
+            Some("SELECT * FROM V2 JOIN T1 ON TRUE".to_string()),
+        );
+        graph.insert(v2.clone(), Some("SELECT * FROM T2".to_string()));
+        graph.insert(t1.clone(), None);
+        graph.insert(t2.clone(), None);
+
+        let mock = Arc::new(MockAdapter::new(graph));
+        let adapter: Arc<dyn MetadataAdapter> = mock.clone();
+        let traverser = ViewDefinitionTraverser::new(adapter, Arc::new(DefaultSourcesExtractor));
+
+        let result = traverser
+            .traverse(
+                &[rel("V1")],
+                &BTreeSet::from([v2.clone()]),
+                CancellationToken::never_cancels(),
+            )
+            .await
+            .expect("ok");
+
+        assert_eq!(
+            result
+                .view_definitions
+                .keys()
+                .cloned()
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([v1.clone()])
+        );
+        assert_eq!(result.seen_tables, BTreeSet::from([v2.clone(), t1.clone()]));
+        assert_eq!(mock.count_for(&v2), 0, "terminal V2 must not be fetched");
+        assert_eq!(
+            mock.count_for(&t2),
+            0,
+            "T2 behind terminal V2 must not be visited"
+        );
+    }
+
+    #[dbt_runtime::test]
+    async fn terminal_status_is_not_cached_across_calls() {
+        let v = rel("V").semantic_fqn();
+        let t = rel("T").semantic_fqn();
+
+        let mut graph = HashMap::new();
+        graph.insert(v.clone(), Some("SELECT * FROM T".to_string()));
+        graph.insert(t.clone(), None);
+
+        let mock = Arc::new(MockAdapter::new(graph));
+        let adapter: Arc<dyn MetadataAdapter> = mock.clone();
+        let traverser = ViewDefinitionTraverser::new(adapter, Arc::new(DefaultSourcesExtractor));
+
+        traverser
+            .traverse(
+                &[rel("V")],
+                &BTreeSet::from([v.clone()]),
+                CancellationToken::never_cancels(),
+            )
+            .await
+            .expect("ok");
+        let result = traverser
+            .traverse(
+                &[rel("V")],
+                &BTreeSet::new(),
+                CancellationToken::never_cancels(),
+            )
+            .await
+            .expect("ok");
+
+        // Without the terminal set, V is expanded as usual.
+        assert!(result.view_definitions.contains_key(&v));
+        assert_eq!(result.seen_tables, BTreeSet::from([t.clone()]));
+    }
+
+    #[dbt_runtime::test]
+    async fn cached_view_is_still_terminal() {
+        let v = rel("V").semantic_fqn();
+        let t = rel("T").semantic_fqn();
+
+        let mut graph = HashMap::new();
+        graph.insert(v.clone(), Some("SELECT * FROM T".to_string()));
+        graph.insert(t.clone(), None);
+
+        let mock = Arc::new(MockAdapter::new(graph));
+        let adapter: Arc<dyn MetadataAdapter> = mock.clone();
+        let traverser = ViewDefinitionTraverser::new(adapter, Arc::new(DefaultSourcesExtractor));
+
+        // A traversal without terminals caches V's definition.
+        traverser
+            .traverse(
+                &[rel("V")],
+                &BTreeSet::new(),
+                CancellationToken::never_cancels(),
+            )
+            .await
+            .expect("ok");
+        let result = traverser
+            .traverse(
+                &[rel("V")],
+                &BTreeSet::from([v.clone()]),
+                CancellationToken::never_cancels(),
+            )
+            .await
+            .expect("ok");
+
+        assert!(result.view_definitions.is_empty());
+        assert_eq!(result.seen_tables, BTreeSet::from([v.clone()]));
     }
 
     #[dbt_runtime::test(flavor = "multi_thread", worker_threads = 2)]
@@ -894,7 +1104,11 @@ mod tests {
         // CancellationTokenSource lets us actually cancel.
         let source = dbt_common::cancellation::CancellationTokenSource::new();
         let token = source.token();
-        let handle = tokio::spawn(async move { traverser.traverse(&[rel("V1")], token).await });
+        let handle = tokio::spawn(async move {
+            traverser
+                .traverse(&[rel("V1")], &BTreeSet::new(), token)
+                .await
+        });
 
         // Give the task a moment to spawn the fetch, then cancel.
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;

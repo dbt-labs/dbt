@@ -22,9 +22,14 @@
  *   cursors, so an offset is encoded into one and stays opaque to callers.
  */
 
+import type {
+  AssetSummary,
+  Facets,
+  FacetValue,
+  ResourceType,
+} from 'dbt-docs-lib/domain';
+
 import type { AssetFilter, ListArgs, ListSort } from '../../typings/args';
-import type { AssetSummary, ResourceType } from '../../typings/domain/asset';
-import type { Facets, FacetValue } from '../../typings/domain/facets';
 import type { Page } from '../../typings/page';
 import {
   fromExposureSummary,

@@ -286,6 +286,11 @@ impl Object for DocMacro {
                 format!("Documentation depends on doc '{doc_name}' which was not found"),
             )),
             None => {
+                // TODO: return this warning to the caller as a diagnostic instead of emitting it
+                // here. Emitting inline ignores the caller's `show_errors_or_warnings`, so every
+                // render of the same YAML can warn. The empty-path check below only hides the
+                // renders without `CURRENT_PATH`: a value rendered twice with a path still warns
+                // twice, and which pass warns depends on which pass sets the path.
                 let current_span = state.current_span_of_context();
                 let current_file_path = state.current_path().clone();
                 if !current_file_path.as_os_str().is_empty() {

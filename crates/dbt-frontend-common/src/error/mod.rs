@@ -39,6 +39,8 @@ mod name_candidate;
 
 use std::backtrace::Backtrace;
 
+use dbt_proc_macros::DebugNoInline;
+
 pub use code_location::CodeLocation;
 pub use codes::ErrorCode;
 pub use name_candidate::NameCandidate;
@@ -570,7 +572,7 @@ impl DatafusionError {
     }
 }
 
-#[derive(Debug)]
+#[derive(DebugNoInline)]
 #[non_exhaustive]
 pub enum WrappedError {
     Frontend(FrontendError),
@@ -586,6 +588,7 @@ pub enum WrappedError {
 }
 
 impl std::fmt::Display for WrappedError {
+    #[inline(never)]
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             WrappedError::Antlr(e) => write!(f, "{e}"),
@@ -636,6 +639,7 @@ pub struct InternalError {
 }
 
 impl std::fmt::Display for InternalError {
+    #[inline(never)]
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         #[allow(unreachable_patterns)] // Note: this shouldn't be necessary because of
         // the #[non_exhaustive] attribute

@@ -294,6 +294,12 @@ pub fn escape_string_literal(s: &str, backend: AdapterType) -> String {
     }
 }
 
+/// Render `s` as a single-quoted SQL string literal, escaped with
+/// [`escape_string_literal`].
+pub fn quote_string_literal(s: &str, backend: AdapterType) -> String {
+    format!("'{}'", escape_string_literal(s, backend))
+}
+
 #[cfg(test)]
 mod sanitize_tests {
     use super::*;
@@ -357,6 +363,14 @@ mod sanitize_tests {
             quote_identifier("trail\\", AdapterType::ClickHouse),
             r#""trail\\""#
         );
+    }
+
+    #[test]
+    fn quote_string_literal_wraps_and_escapes() {
+        let q = |s: &str| quote_string_literal(s, AdapterType::DuckDB);
+        assert_eq!(q("plain"), "'plain'");
+        assert_eq!(q("o'brien"), "'o''brien'");
+        assert_eq!(q(""), "''");
     }
 
     #[test]

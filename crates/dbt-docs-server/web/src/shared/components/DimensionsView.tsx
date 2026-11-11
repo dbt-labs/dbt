@@ -1,6 +1,6 @@
 import { FC } from 'react';
+import type { Dimension } from 'dbt-docs-lib/domain';
 
-import { Dimension } from '../typings/domain/asset';
 import { SemanticAspectCard } from './SemanticAspectCard';
 
 type DimensionsViewProps = {

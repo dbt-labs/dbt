@@ -21,23 +21,36 @@ import type {
   AnalysisAsset,
   Asset,
   AssetColumn,
+  AssetCounts,
+  Capabilities,
+  ColumnLineageGraph,
+  Distribution,
   ExposureAsset,
   ExposureSummary,
+  Facets,
+  FacetValue,
+  FileEntry,
   FunctionAsset,
   GroupAsset,
   GroupSummary,
+  LineageGraph,
   MacroAsset,
   MacroSummary,
+  MatchedField,
   MetricAsset,
   MetricSummary,
   MetricTypeParams,
   ModelAsset,
   ModelSummary,
   OperationAsset,
+  Project,
+  ProjectOverview,
   Relation,
   ResourceType,
   SavedQueryAsset,
   SavedQuerySummary,
+  SearchFacets,
+  SearchHit,
   SeedSummary,
   SemanticModelAsset,
   SemanticModelSummary,
@@ -47,20 +60,8 @@ import type {
   TestAsset,
   TestSummary,
   UnitTestAsset,
-} from '../../typings/domain/asset';
-import type { Capabilities } from '../../typings/domain/capabilities';
-import type { AssetCounts } from '../../typings/domain/counts';
-import type { Distribution } from '../../typings/domain/distribution';
-import type { Facets, FacetValue } from '../../typings/domain/facets';
-import type { FileEntry } from '../../typings/domain/files';
-import type { ColumnLineageGraph, LineageGraph } from '../../typings/domain/lineage';
-import type { ProjectOverview } from '../../typings/domain/overview';
-import type { Project } from '../../typings/domain/project';
-import type {
-  MatchedField,
-  SearchFacets,
-  SearchHit,
-} from '../../typings/domain/search';
+} from 'dbt-docs-lib/domain';
+
 import type { Page } from '../../typings/page';
 
 // ---------------------------------------------------------------------------

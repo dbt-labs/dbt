@@ -1,14 +1,16 @@
 import type { ReactElement, ReactNode } from 'react';
 import { HelmetProvider } from 'react-helmet-async';
 import { MemoryRouter } from 'react-router-dom';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, type RenderOptions, type RenderResult } from '@testing-library/react';
-
 import {
   LinkPrefixProvider,
   MetadataDataProvider,
-  type MetadataDataSource,
-} from '../shared';
+  QueryClient,
+  QueryClientProvider,
+} from 'dbt-docs-lib';
+
+import { RouterNavigationProvider } from '../lib/routerNavigation';
+import { type MetadataDataSource } from '../shared';
 import { createFakeDataSource } from '../shared/testing/createFakeDataSource';
 
 /** A fresh QueryClient per render so cache never leaks between tests. Retries
@@ -39,7 +41,9 @@ function Providers({
           source={source ?? createFakeDataSource({}, { full: true })}
         >
           <LinkPrefixProvider prefix="/">
-            <MemoryRouter initialEntries={initialEntries}>{children}</MemoryRouter>
+            <MemoryRouter initialEntries={initialEntries}>
+              <RouterNavigationProvider>{children}</RouterNavigationProvider>
+            </MemoryRouter>
           </LinkPrefixProvider>
         </MetadataDataProvider>
       </HelmetProvider>

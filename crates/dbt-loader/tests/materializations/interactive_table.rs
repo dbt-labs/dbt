@@ -115,7 +115,7 @@ fn serialized_model(config: &LocalConfig) -> Value {
 
     let model = DbtModel {
         deprecated_config: ModelConfig {
-            __warehouse_specific_config__: wh_config,
+            __warehouse_specific_config__: wh_config.into(),
             ..Default::default()
         },
         __common_attr__: CommonAttributes {

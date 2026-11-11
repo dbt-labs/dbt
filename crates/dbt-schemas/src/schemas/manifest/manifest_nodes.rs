@@ -22,7 +22,9 @@ use crate::schemas::common::DbtUniqueKey;
 use crate::schemas::common::{DocsConfig, HardDeletes, OnConfigurationChange, OnError};
 use crate::schemas::common::{HookConfig, Hooks, OnSchemaChange};
 use crate::schemas::dbt_column::Granularity;
-use crate::schemas::project::configs::common::WarehouseSpecificNodeConfig;
+use crate::schemas::project::configs::common::{
+    LazyWarehouseSpecificNodeConfig, WarehouseSpecificNodeConfig,
+};
 use crate::schemas::project::configs::model_config::LatestVersionPointer;
 use crate::schemas::properties::{ModelFreshness, ModelState};
 
@@ -518,7 +520,7 @@ pub struct ManifestSnapshotConfig {
     pub state: Option<ModelState>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub table_format: Option<String>,
-    pub __warehouse_specific_config__: WarehouseSpecificNodeConfig,
+    pub __warehouse_specific_config__: LazyWarehouseSpecificNodeConfig,
 }
 
 impl From<SnapshotConfig> for ManifestSnapshotConfig {
@@ -904,7 +906,7 @@ pub struct ManifestModelConfig {
     pub incremental_predicates: Option<StringOrArrayOfStrings>,
     pub batch_size: Option<DbtBatchSize>,
     pub lookback: Option<i32>,
-    pub begin: Option<dbt_yaml::Timestamp>,
+    pub begin: Option<String>,
     #[serde(
         default,
         serialize_with = "crate::schemas::serde::serialize_none_as_default"
@@ -1025,7 +1027,8 @@ pub struct ManifestModelConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sync: Option<SyncConfig>,
     // Adapter specific configs
-    pub __warehouse_specific_config__: WarehouseSpecificNodeConfig,
+    #[schemars(with = "WarehouseSpecificNodeConfig")]
+    pub __warehouse_specific_config__: LazyWarehouseSpecificNodeConfig,
 }
 
 #[skip_serializing_none]
@@ -1096,7 +1099,8 @@ pub struct ManifestSeedConfig {
     pub quoting: Option<DbtQuoting>,
     pub materialized: Option<DbtMaterialization>,
     // Adapter specific configs
-    pub __warehouse_specific_config__: WarehouseSpecificNodeConfig,
+    #[schemars(with = "WarehouseSpecificNodeConfig")]
+    pub __warehouse_specific_config__: LazyWarehouseSpecificNodeConfig,
 }
 
 impl From<SeedConfig> for ManifestSeedConfig {
@@ -1399,10 +1403,7 @@ impl From<DbtModel> for ManifestModel {
             version: model.__model_attr__.version,
             latest_version: model.__model_attr__.latest_version,
             constraints: Some(model.__model_attr__.constraints),
-            deprecation_date: model
-                .__model_attr__
-                .deprecation_date
-                .map(|ts| ts.with_defaults().to_string()),
+            deprecation_date: model.__model_attr__.deprecation_date,
             primary_key: Some(model.__model_attr__.primary_key),
             time_spine: model
                 .__model_attr__
@@ -2335,9 +2336,10 @@ mod manifest_model_config_null_omission_tests {
 #[cfg(test)]
 mod node_adapter_manifest_round_trip_tests {
     use super::{
-        AdapterType, DbtModel, DbtSeed, ManifestModel, ManifestSeedConfig, ManifestSnapshotConfig,
-        NodeBaseAttributes, SeedConfig, SnapshotConfig,
+        AdapterType, DbtModel, DbtSeed, ManifestModel, ManifestModelConfig, ManifestSeedConfig,
+        ManifestSnapshotConfig, ModelConfig, NodeBaseAttributes, SeedConfig, SnapshotConfig,
     };
+    use crate::schemas::project::configs::warehouse_config_test_support::assert_warehouse_config_allocates_only_when_set;
 
     #[test]
     fn canonical_relation_marker_round_trips_for_models_and_seeds() {
@@ -2406,7 +2408,8 @@ mod node_adapter_manifest_round_trip_tests {
             __warehouse_specific_config__: super::WarehouseSpecificNodeConfig {
                 iceberg_version: Some(2),
                 ..Default::default()
-            },
+            }
+            .into(),
             ..Default::default()
         };
 
@@ -2426,6 +2429,40 @@ mod node_adapter_manifest_round_trip_tests {
         assert_eq!(
             round_tripped.__warehouse_specific_config__.iceberg_version,
             Some(2)
+        );
+    }
+
+    #[test]
+    fn default_warehouse_config_stays_unallocated_through_manifest_configs() {
+        let model: ManifestModelConfig = ModelConfig::default().into();
+        assert!(model.__warehouse_specific_config__.get().is_none());
+        let model: ModelConfig = model.into();
+        assert!(model.__warehouse_specific_config__.get().is_none());
+
+        let seed: ManifestSeedConfig = SeedConfig::default().into();
+        assert!(seed.__warehouse_specific_config__.get().is_none());
+        let seed: SeedConfig = seed.into();
+        assert!(seed.__warehouse_specific_config__.get().is_none());
+
+        let snapshot: ManifestSnapshotConfig = SnapshotConfig::default().into();
+        assert!(snapshot.__warehouse_specific_config__.get().is_none());
+        let snapshot: SnapshotConfig = snapshot.into();
+        assert!(snapshot.__warehouse_specific_config__.get().is_none());
+    }
+
+    #[test]
+    fn manifest_configs_allocate_warehouse_config_only_when_set() {
+        assert_warehouse_config_allocates_only_when_set::<ManifestModelConfig>(
+            "materialized: table\n",
+            |config| &config.__warehouse_specific_config__,
+        );
+        assert_warehouse_config_allocates_only_when_set::<ManifestSeedConfig>(
+            "delimiter: ','\n",
+            |config| &config.__warehouse_specific_config__,
+        );
+        assert_warehouse_config_allocates_only_when_set::<ManifestSnapshotConfig>(
+            "strategy: timestamp\n",
+            |config| &config.__warehouse_specific_config__,
         );
     }
 

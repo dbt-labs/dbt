@@ -36,7 +36,7 @@ use dbt_jinja_utils::jinja_arg_format::format_value_for_jinja;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::listener::JinjaTypeCheckingEventListenerFactory;
 use dbt_jinja_utils::node_resolver::NodeResolver;
-use dbt_jinja_utils::phases::parse::ParseAdapterScopes;
+use dbt_jinja_utils::phases::AdapterScopes;
 use dbt_jinja_utils::utils::dependency_package_name_from_ctx;
 use dbt_schemas::schemas::DbtTestAttr;
 use dbt_schemas::schemas::InternalDbtNodeAttributes;
@@ -374,10 +374,10 @@ pub async fn resolve_data_tests(
     test_properties: &mut BTreeMap<String, MinimalPropertiesEntry>,
     database: &str,
     schema: &str,
-    parse_adapter_scopes: &Arc<ParseAdapterScopes>,
+    parse_adapter_scopes: &Arc<AdapterScopes>,
     default_adapter: AdapterType,
     env: Arc<JinjaEnv>,
-    base_ctx: &BTreeMap<String, minijinja::Value>,
+    base_ctx: &Arc<BTreeMap<String, minijinja::Value>>,
     runtime_config: Arc<DbtRuntimeConfig>,
     root_runtime_config: Arc<DbtRuntimeConfig>,
     collected_generic_tests: &[GenericTestAsset],
@@ -455,6 +455,22 @@ pub async fn resolve_data_tests(
             })
             .collect(),
     );
+    // A YAML `adapter` is known before the render, so the render picks it over the project tree.
+    // `raw_code_config` is the map the generated `config()` call is built from.
+    let adapter_layer = Some(
+        collected_generic_tests
+            .iter()
+            .filter_map(|test_asset| {
+                let adapter = test_asset.raw_code_config.get("adapter")?;
+                let adapter = dbt_yaml::from_value::<AdapterType>(adapter.clone()).ok()?;
+                let layer = DataTestConfig {
+                    adapter: Some(adapter),
+                    ..Default::default()
+                };
+                Some((test_asset.dbt_asset.path.clone(), layer))
+            })
+            .collect(),
+    );
 
     let render_ctx = RenderCtx {
         inner: Arc::new(RenderCtxInner {
@@ -462,12 +478,13 @@ pub async fn resolve_data_tests(
             root_project_name: root_package.dbt_project.name.clone(),
             config_resolver,
             adapter_hint,
+            adapter_layer,
             parse_adapter_scopes: Some(parse_adapter_scopes.clone()),
             adapter_quoting: root_project_configs.adapter_quoting.clone(),
             package_quoting,
             uses_snapshot_fqn: false,
             defer_render_errors_to_compile: true,
-            base_ctx: base_ctx.clone(),
+            base_ctx: Arc::clone(base_ctx),
             package_name: package_name.to_string(),
             adapter_type: default_adapter,
             database: database.to_string(),
@@ -749,8 +766,7 @@ pub async fn resolve_data_tests(
             },
             __base_attr__: NodeBaseAttributes {
                 adapter: selected_adapter,
-                // A data test never runs on lake compute (see `inherited_adapter` above), so
-                // it has nothing to publish: no `+propagate` config exists for this node type.
+                // Data tests inherit their attached node's adapter but have no propagation config.
                 propagate: Vec::new(),
                 effective_propagation_target: None,
                 database: node_database.to_owned(),
@@ -938,6 +954,7 @@ pub async fn resolve_data_tests(
         package.dbt_project.name.as_str(),
         &root_package.dbt_project.name,
         runtime_config,
+        parse_adapter_scopes,
         token,
     )
     .await?;

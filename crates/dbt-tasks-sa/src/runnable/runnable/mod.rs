@@ -26,7 +26,7 @@ use dbt_common::tracing::dbt_emit::{emit_error_log_from_fs_error, emit_warn_log_
 use dbt_common::tracing::span_info::{find_and_update_span_attrs, update_span_attrs};
 use dbt_common::warn_error_options::WarnErrorOptions;
 use dbt_common::{ErrorCode, FsResult, fs_err};
-use dbt_schemas::schemas::common::Severity;
+use dbt_schemas::schemas::common::{DbtMaterialization, Severity};
 use dbt_schemas::schemas::manifest::saved_query::DbtSavedQuery;
 use dbt_schemas::schemas::{
     DbtFunction, DbtModel, DbtSeed, DbtSnapshot, DbtSource, DbtTest, DbtUnitTest,
@@ -58,12 +58,13 @@ use crate::runnable::seed::{execute_seed_remote, maybe_resolve_remote_seed_colum
 use crate::runnable::unit_test::execute_unit_test_remote;
 use dbt_tasks_core::run_cache::run_cache_service::{
     CachedTestExecutionResult, RunCacheAfterSuccess, RunCacheCloneDecision, RunCacheCloneError,
-    RunCacheReuseHookExecutor, RunCacheReuseHookPhase, RunCacheServiceDecision,
-    clear_stale_missing_last_modified_epoch_for_node, confirm_run_cache_service_execution,
-    evict_node_metadata_for_untracked_rebuild, execute_run_cache_service_clone,
-    insert_compiled_view_definition, record_run_cache_clone_decision,
-    record_run_cache_service_execution, refresh_final_last_modified_epoch_for_node,
-    replay_dev_clone_decision, replay_run_cache_clone_decision, run_cache_service_before_execution,
+    RunCacheCloneGrantsOrder, RunCacheReuseHookExecutor, RunCacheReuseHookPhase,
+    RunCacheServiceDecision, clear_stale_missing_last_modified_epoch_for_node,
+    confirm_run_cache_service_execution, evict_node_metadata_for_untracked_rebuild,
+    execute_run_cache_service_clone, insert_compiled_view_definition,
+    record_run_cache_clone_decision, record_run_cache_service_execution,
+    refresh_final_last_modified_epoch_for_node, replay_dev_clone_decision,
+    replay_run_cache_clone_decision, run_cache_service_before_execution,
     should_execute_hooks_for_skip_reuse,
 };
 use dbt_tasks_core::run_cache::state_lock::release_state_lock;
@@ -932,11 +933,24 @@ async fn execute_run_cache_service_clone_with_hooks(
     let pre_hooks_configured = hook_node
         .as_ref()
         .is_some_and(RunCacheReuseHookNode::has_pre_hooks);
+    let grants_order = hook_node
+        .as_ref()
+        .map_or(RunCacheCloneGrantsOrder::BeforePostHooks, |hook_node| {
+            hook_node.grants_order()
+        });
     let hook_executor = hook_node
         .map(|hook_node| build_reuse_hook_executor(ctx, node, task_result, hook_node))
         .transpose()
         .map_err(RunCacheCloneError::Fatal)?;
-    execute_run_cache_service_clone(ctx, node, clone, hook_executor, pre_hooks_configured).await
+    execute_run_cache_service_clone(
+        ctx,
+        node,
+        clone,
+        hook_executor,
+        pre_hooks_configured,
+        grants_order,
+    )
+    .await
 }
 
 async fn execute_hooks_for_run_cache_skip_reuse(
@@ -1007,6 +1021,38 @@ impl RunCacheReuseHookNode {
             Self::Seed(seed) => hooks_are_configured(seed.deprecated_config.pre_hook.as_ref()),
         }
     }
+
+    /// Where the node's built-in materialization applies grants relative to
+    /// its post-hooks. Custom materializations are assumed to follow the
+    /// dbt-adapters default of grants first.
+    fn grants_order(&self) -> RunCacheCloneGrantsOrder {
+        match self {
+            Self::Model(model) => {
+                model_grants_order(model.node_adapter(), &model.__base_attr__.materialized)
+            }
+            // Every built-in `seed` and `snapshot` applies grants first.
+            Self::Snapshot(_) | Self::Seed(_) => RunCacheCloneGrantsOrder::BeforePostHooks,
+        }
+    }
+}
+
+fn model_grants_order(
+    adapter_type: AdapterType,
+    materialization: &DbtMaterialization,
+) -> RunCacheCloneGrantsOrder {
+    match (adapter_type, materialization) {
+        (
+            AdapterType::Snowflake | AdapterType::Bigquery,
+            DbtMaterialization::Table | DbtMaterialization::Incremental,
+        ) => RunCacheCloneGrantsOrder::AfterPostHooks,
+        (_, DbtMaterialization::Table)
+            if model_hook_style(adapter_type, materialization)
+                == NodeHookStyle::SplitTransaction =>
+        {
+            RunCacheCloneGrantsOrder::BetweenPostHookTransactions
+        }
+        _ => RunCacheCloneGrantsOrder::BeforePostHooks,
+    }
 }
 
 fn build_reuse_hook_executor(
@@ -1032,13 +1078,15 @@ fn hooks_are_configured(hooks: &Option<dbt_schemas::schemas::common::Hooks>) -> 
 fn execute_hook_node_blocking(
     hook_node: &RunCacheReuseHookNode,
     ctx: &TaskRunnerCtx,
-    base_context: &std::collections::BTreeMap<String, minijinja::Value>,
+    base_context: &minijinja::Value,
     sql: Option<&str>,
     phase: RunCacheReuseHookPhase,
 ) -> FsResult<()> {
     let phase = match phase {
         RunCacheReuseHookPhase::Pre => NodeHookPhase::Pre,
         RunCacheReuseHookPhase::Post => NodeHookPhase::Post,
+        RunCacheReuseHookPhase::PostInsideTransaction => NodeHookPhase::PostInsideTransaction,
+        RunCacheReuseHookPhase::PostOutsideTransaction => NodeHookPhase::PostOutsideTransaction,
     };
     match hook_node {
         RunCacheReuseHookNode::Model(model) => execute_node_hooks(
@@ -1150,6 +1198,8 @@ fn elapsed_millis(started_at: Instant) -> i64 {
 struct CachedDataTestStatus {
     failures: usize,
     status: TestExecutionStatus,
+    /// `status` before `--warn-error-options` overrides.
+    verdict: TestExecutionStatus,
     stat_status: NodeStatus,
     final_status: NodeStatus,
 }
@@ -1159,6 +1209,10 @@ impl CachedDataTestStatus {
         TestReportedResult {
             failures: self.failures,
             status: self.status,
+            verdict: self.verdict,
+            // Unused: the cached path stores its own `NO-OP` message instead of `message()`.
+            error_if: None,
+            warn_if: None,
             diff: None,
             execution_result: None,
         }
@@ -1178,12 +1232,12 @@ fn cached_data_test_status(
     warn_error_options: &WarnErrorOptions,
 ) -> CachedDataTestStatus {
     let failures = result.failures.max(0) as usize;
-    let status = reported_test_verdict_from_components(
+    let verdict = reported_test_verdict_from_components(
         Some(&severity),
         result.should_warn,
         result.should_error,
     );
-    let status = status_with_warn_error_overrides(status, warn_error_options);
+    let status = status_with_warn_error_overrides(verdict, warn_error_options);
     let stat_status = match status.node_status() {
         NodeStatus::TestPassed => {
             NodeStatus::ReusedNoChanges("No new changes on any upstreams".to_string())
@@ -1199,6 +1253,7 @@ fn cached_data_test_status(
     CachedDataTestStatus {
         failures,
         status,
+        verdict,
         stat_status,
         final_status,
     }
@@ -1520,6 +1575,37 @@ pub fn runnable_remote_task(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Mirrors where each built-in materialization calls `apply_grants`
+    /// relative to `run_hooks(post_hooks)` in `dbt_macro_assets`.
+    #[test]
+    fn model_grants_order_matches_adapter_materialization_macros() {
+        use AdapterType::*;
+        use DbtMaterialization::*;
+        use RunCacheCloneGrantsOrder::*;
+
+        for (adapter_type, materialization, expected) in [
+            (Snowflake, Table, AfterPostHooks),
+            (Snowflake, Incremental, AfterPostHooks),
+            (Bigquery, Table, AfterPostHooks),
+            (Bigquery, Incremental, AfterPostHooks),
+            // Applied by the build macro before the post-hooks run.
+            (Snowflake, DynamicTable, BeforePostHooks),
+            (Databricks, Table, BeforePostHooks),
+            (Databricks, Incremental, BeforePostHooks),
+            (Spark, Table, BeforePostHooks),
+            (Redshift, Table, BetweenPostHookTransactions),
+            (Postgres, Table, BetweenPostHookTransactions),
+            (Redshift, Incremental, BeforePostHooks),
+            (Postgres, Incremental, BeforePostHooks),
+        ] {
+            assert_eq!(
+                model_grants_order(adapter_type, &materialization),
+                expected,
+                "{adapter_type:?} {materialization:?}"
+            );
+        }
+    }
     use dbt_common::tracing::dbt_metrics::InvocationMetricKey;
     use dbt_common::warn_error_options::WarnErrorOptionValue;
     use dbt_schemas::schemas::common::Hooks;

@@ -72,12 +72,14 @@ use dbt_schemas::dbt_types::RelationType;
 use dbt_schemas::schemas::common::DbtIncrementalStrategy;
 use dbt_schemas::schemas::common::DbtMaterialization;
 use dbt_schemas::schemas::common::ResolvedQuoting;
-use dbt_schemas::schemas::common::{ClusterConfig, Constraint, ConstraintSupport, PartitionConfig};
+use dbt_schemas::schemas::common::{
+    ClusterConfig, Constraint, ConstraintSupport, PartitionConfig, constraint_support,
+};
 use dbt_schemas::schemas::common::{ConstraintType, normalize_quote};
 use dbt_schemas::schemas::dbt_catalogs::CatalogType;
 use dbt_schemas::schemas::dbt_column::{DbtColumn, DbtColumnRef};
 use dbt_schemas::schemas::manifest::BigqueryPartitionConfig;
-use dbt_schemas::schemas::profiles::DuckDBPathInfo;
+use dbt_schemas::schemas::profiles::{BigqueryPriority, DuckDBPathInfo};
 use dbt_schemas::schemas::project::ModelConfig;
 use dbt_schemas::schemas::properties::ModelConstraint;
 use dbt_schemas::schemas::relations::base::{BaseRelation, ComponentName, Policy};
@@ -894,7 +896,7 @@ impl AdapterImpl {
                             err.vendor_code(),
                         ));
                     }
-                    return Err(err);
+                    return Err(with_create_or_alter_hint(adapter_type, sql, err));
                 }
             }
         }
@@ -3000,95 +3002,8 @@ impl AdapterImpl {
 
     /// https://github.com/dbt-labs/dbt-adapters/blob/5379513bad9c75661b990a5ed5f32ac9c62a0758/dbt-adapters/src/dbt/adapters/base/impl.py#L293
     pub fn get_constraint_support(&self, ct: ConstraintType) -> ConstraintSupport {
-        use ConstraintSupport::*;
-        use ConstraintType::*;
-
-        match (self.adapter_type(), ct) {
-            // Postgres
-            (Postgres, NotNull) => Enforced,
-            (Postgres, ForeignKey) => Enforced,
-            (Postgres, Unique) => NotEnforced,
-            (Postgres, PrimaryKey) => NotEnforced,
-            (Postgres, Check) => NotSupported,
-            (Postgres, Custom) => NotSupported,
-
-            // Snowflake
-            // https://github.com/dbt-labs/dbt-adapters/blob/aa1de3d16267a456326a36045701fb48a61a6b6c/dbt-snowflake/src/dbt/adapters/snowflake/impl.py#L74
-            (Snowflake, NotNull) => Enforced,
-            (Snowflake, ForeignKey) => Enforced,
-            (Snowflake, Unique) => NotEnforced,
-            (Snowflake, PrimaryKey) => NotEnforced,
-            (Snowflake, Check) => NotSupported,
-            (Snowflake, Custom) => NotSupported,
-
-            // BigQuery
-            // https://github.com/dbt-labs/dbt-adapters/blob/4a00354a497214d9043bf4122810fe2d04de17bb/dbt-bigquery/src/dbt/adapters/bigquery/impl.py#L132
-            (Bigquery, NotNull) => Enforced,
-            (Bigquery, Unique) => NotSupported,
-            (Bigquery, PrimaryKey) => NotEnforced,
-            (Bigquery, ForeignKey) => NotEnforced,
-            (Bigquery, Check) => NotSupported,
-            (Bigquery, Custom) => NotSupported,
-
-            // Databricks
-            // https://github.com/databricks/dbt-databricks/blob/822b105b15e644676d9e1f47cbfd765cd4c1541f/dbt/adapters/databricks/constraints.py#L17
-            (Databricks, NotNull) => Enforced,
-            (Databricks, Unique) => NotSupported,
-            (Databricks, PrimaryKey) => NotEnforced,
-            (Databricks, ForeignKey) => NotEnforced,
-            (Databricks, Check) => Enforced,
-            (Databricks, Custom) => NotSupported,
-
-            // Redshift
-            // https://github.com/dbt-labs/dbt-adapters/blob/2a94cc75dba1f98fa5caff1f396f5af7ee444598/dbt-redshift/src/dbt/adapters/redshift/impl.py#L53
-            (Redshift, NotNull) => Enforced,
-            (Redshift, Unique) => NotEnforced,
-            (Redshift, PrimaryKey) => NotEnforced,
-            (Redshift, ForeignKey) => NotEnforced,
-            (Redshift, Check) => NotSupported,
-            (Redshift, Custom) => NotSupported,
-
-            // DuckDB - follows Postgres
-            (DuckDB, NotNull) => Enforced,
-            (DuckDB, ForeignKey) => Enforced,
-            (DuckDB, Unique) => NotEnforced,
-            (DuckDB, PrimaryKey) => NotEnforced,
-            (DuckDB, Check) => NotSupported,
-            (DuckDB, Custom) => NotSupported,
-
-            // Lake compute - follows DuckDB
-            (LakeCompute, NotNull) => Enforced,
-            (LakeCompute, ForeignKey) => Enforced,
-            (LakeCompute, Unique) => NotEnforced,
-            (LakeCompute, PrimaryKey) => NotEnforced,
-            (LakeCompute, Check) => NotSupported,
-            (LakeCompute, Custom) => NotSupported,
-
-            // Fabric
-            (Fabric, Check) => NotSupported,
-            (Fabric, NotNull) => Enforced,
-            (Fabric, Unique) => Enforced,
-            (Fabric, PrimaryKey) => Enforced,
-            (Fabric, ForeignKey) => Enforced,
-            (Fabric, Custom) => NotSupported,
-
-            // Exasol (verified on Exasol 8)
-            (Exasol, NotNull) => Enforced,
-            (Exasol, PrimaryKey) => Enforced,
-            (Exasol, ForeignKey) => Enforced,
-            (Exasol, Unique) => NotSupported,
-            (Exasol, Check) => NotSupported,
-            (Exasol, Custom) => NotSupported,
-
-            // ClickHouse (dbt-clickhouse impl.py CONSTRAINT_SUPPORT)
-            (ClickHouse, Check) => Enforced,
-            (ClickHouse, NotNull | Unique | PrimaryKey | ForeignKey | Custom) => NotSupported,
-
-            // Salesforce
-            (Salesforce | Spark | Starburst | Athena | Trino | Datafusion | Dremio | Oracle, _) => {
-                unimplemented!("constraint support not implemented")
-            }
-        }
+        constraint_support(self.adapter_type(), ct)
+            .unwrap_or_else(|| unimplemented!("constraint support not implemented"))
     }
 
     /// Given existing columns and columns from our model
@@ -4682,6 +4597,7 @@ impl AdapterImpl {
                 let location_root = config
                     .__warehouse_specific_config__
                     .location_root
+                    .clone()
                     .ok_or_else(|| {
                         AdapterError::new(
                             AdapterErrorKind::Configuration,
@@ -5531,12 +5447,18 @@ impl AdapterImpl {
                     options.push((QUERY_JOB_TIMEOUT.to_string(), OptionValue::Int(t * 1000)));
                 }
 
-                // The profile takes Core's lowercase spelling, but the driver matches the
-                // Go constants `BATCH`/`INTERACTIVE` and errors on anything else.
-                if let Some(priority) = self.get_db_config("priority") {
+                if let Some(priority) = self.get_db_config_value("priority")
+                    && let Ok(priority) = dbt_yaml::from_value::<BigqueryPriority>(priority.clone())
+                {
+                    // The driver matches the Go constants `BATCH`/`INTERACTIVE` and
+                    // errors on anything else.
+                    let value = match priority {
+                        BigqueryPriority::Batch => "BATCH",
+                        BigqueryPriority::Interactive => "INTERACTIVE",
+                    };
                     options.push((
                         QUERY_PRIORITY.to_string(),
-                        OptionValue::String(priority.to_uppercase()),
+                        OptionValue::String(value.to_string()),
                     ));
                 }
 
@@ -5672,6 +5594,53 @@ fn transaction_boundary(sql: &str) -> Option<TransactionBoundary> {
         ("commit" | "rollback", _) => Some(TransactionBoundary::End),
         _ => None,
     }
+}
+
+/// Appended to a failed Snowflake `CREATE OR ALTER`: it declares the whole desired end state in
+/// place, and Snowflake rejects the ones it cannot apply (column reorders, type narrowing, a
+/// changed `transient` setting, ...). `CREATE OR REPLACE` always can.
+const CREATE_OR_ALTER_FAILURE_HINT: &str = "Hint: this statement was a CREATE OR ALTER, which cannot apply every change in place. \
+     If the error above is a change CREATE OR ALTER does not support, re-run with `--full-refresh` \
+     to rebuild the object with CREATE OR REPLACE.";
+
+/// Whether `sql` is a (Snowflake) `CREATE OR ALTER` statement, ignoring leading comments.
+fn is_create_or_alter(sql: &str) -> bool {
+    static CREATE_OR_ALTER: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r"(?is)^\s*(?:(?:/\*.*?\*/|--[^\n]*)\s*)*create\s+or\s+alter\b")
+            .expect("valid regex")
+    });
+    CREATE_OR_ALTER.is_match(sql)
+}
+
+/// Adds [`CREATE_OR_ALTER_FAILURE_HINT`] to a database error raised by a Snowflake `CREATE OR ALTER`.
+///
+/// Only errors whose own text names `CREATE OR ALTER` get the hint, so a failure that has nothing
+/// to do with the statement form (permissions, a suspended warehouse, a dropped connection)
+/// is passed through unchanged.
+fn with_create_or_alter_hint(
+    adapter_type: AdapterType,
+    sql: &str,
+    err: AdapterError,
+) -> AdapterError {
+    if adapter_type != Snowflake || err.kind() != AdapterErrorKind::Driver {
+        return err;
+    }
+    if !is_create_or_alter(sql) {
+        return err;
+    }
+    if !err
+        .message()
+        .to_ascii_lowercase()
+        .contains("create or alter")
+    {
+        return err;
+    }
+    AdapterError::new_with_sqlstate_and_vendor_code(
+        err.kind(),
+        format!("{}\n{CREATE_OR_ALTER_FAILURE_HINT}", err.message()),
+        err.sqlstate().as_bytes().try_into().unwrap_or([b'0'; 5]),
+        err.vendor_code(),
+    )
 }
 
 impl AdapterImpl {
@@ -6397,6 +6366,36 @@ mod tests {
         );
     }
 
+    const DT_CREATE_OR_ALTER_FLAG: &str = "snowflake_dynamic_table_create_or_alter";
+
+    #[test]
+    fn test_snowflake_dynamic_table_create_or_alter_flag_registered_and_off_by_default() {
+        let flags = adapter_specific_behavior_flags(Snowflake);
+        let flag = flags
+            .iter()
+            .find(|f| f.name == DT_CREATE_OR_ALTER_FLAG)
+            .expect("snowflake_dynamic_table_create_or_alter should be registered for Snowflake");
+
+        // The name is the public API users type under `flags:` in dbt_project.yml. Enabling it
+        // changes query-evolution behavior for every native dynamic table, so it must stay opt-in.
+        assert!(
+            !Arc::new(flag.clone()).is_true(),
+            "snowflake_dynamic_table_create_or_alter should default to off"
+        );
+    }
+
+    #[test]
+    fn test_dynamic_table_create_or_alter_flag_is_snowflake_only() {
+        for adapter_type in [Databricks, Bigquery, Redshift, Postgres, DuckDB] {
+            assert!(
+                adapter_specific_behavior_flags(adapter_type)
+                    .iter()
+                    .all(|f| f.name != DT_CREATE_OR_ALTER_FLAG),
+                "{adapter_type:?} must not register the Snowflake-only flag"
+            );
+        }
+    }
+
     fn engine(adapter_type: AdapterType) -> Arc<dyn AdapterEngine> {
         let config = match adapter_type {
             Snowflake => Mapping::from_iter([
@@ -6460,6 +6459,71 @@ mod tests {
         ))
     }
 
+    fn driver_error(message: &str) -> AdapterError {
+        AdapterError::new_with_sqlstate_and_vendor_code(
+            AdapterErrorKind::Driver,
+            message.to_string(),
+            *b"22000",
+            Some(2108),
+        )
+    }
+
+    #[test]
+    fn is_create_or_alter_matches_the_statement_header_only() {
+        let cases = [
+            ("create or alter dynamic table t as (select 1)", true),
+            ("  CREATE   OR\n ALTER TABLE t (id int)", true),
+            (
+                "/* {\"app\": \"dbt\"} */ -- note\ncreate or alter table t (id int)",
+                true,
+            ),
+            ("create or replace dynamic table t as (select 1)", false),
+            ("create dynamic table t as (select 1)", false),
+            ("select 'create or alter' from t -- create or alter", false),
+        ];
+        for (sql, expected) in cases {
+            assert_eq!(is_create_or_alter(sql), expected, "for {sql:?}");
+        }
+    }
+
+    const CREATE_OR_ALTER_SQL: &str = "create or alter dynamic table t as (select 1)";
+
+    /// Whether the hint was added to `err` for a `sql` statement run on `adapter_type`.
+    fn gets_hint(adapter_type: AdapterType, sql: &str, err: AdapterError) -> bool {
+        with_create_or_alter_hint(adapter_type, sql, err)
+            .message()
+            .contains("--full-refresh")
+    }
+
+    #[test]
+    fn create_or_alter_failure_gets_a_full_refresh_hint() {
+        let msg = "[Snowflake] 002108 (22000): CREATE OR ALTER execution failed.";
+        let hinted = with_create_or_alter_hint(Snowflake, CREATE_OR_ALTER_SQL, driver_error(msg));
+        assert!(hinted.message().starts_with(msg) && hinted.message().contains("--full-refresh"));
+        let code = (hinted.kind(), hinted.sqlstate(), hinted.vendor_code());
+        assert_eq!(code, (AdapterErrorKind::Driver, "22000", Some(2108)));
+    }
+
+    #[test]
+    fn unrelated_failures_are_not_given_the_hint() {
+        let named = "[Snowflake] CREATE OR ALTER execution failed";
+        // The error says nothing about CREATE OR ALTER: permissions, warehouse, network, ...
+        let permission = driver_error("[Snowflake] 003001 (42501): Insufficient privileges");
+        assert!(!gets_hint(Snowflake, CREATE_OR_ALTER_SQL, permission));
+        // Not a CREATE OR ALTER statement, even if the error text mentions it.
+        let replace = "create or replace dynamic table t as (select 1)";
+        assert!(!gets_hint(Snowflake, replace, driver_error(named)));
+        // Not Snowflake.
+        assert!(!gets_hint(
+            Postgres,
+            CREATE_OR_ALTER_SQL,
+            driver_error(named)
+        ));
+        // Not a driver (database) error.
+        let config = AdapterError::new(AdapterErrorKind::Configuration, "CREATE OR ALTER");
+        assert!(!gets_hint(Snowflake, CREATE_OR_ALTER_SQL, config));
+    }
+
     #[test]
     fn transaction_boundary_recognises_explicit_transaction_statements() {
         use TransactionBoundary::{Begin, End};
@@ -6506,7 +6570,8 @@ mod tests {
                 location_root: Some("s3://bucket/root".to_string()),
                 include_full_name_in_path: Some(include_full_name_in_path),
                 ..Default::default()
-            },
+            }
+            .into(),
             ..Default::default()
         };
 
@@ -7850,15 +7915,32 @@ mod tests {
         assert!(find_job_timeout(&options).is_none());
     }
     #[test]
-    fn test_bigquery_priority_is_uppercased_for_driver() {
-        let config = Mapping::from_iter([("priority".into(), "batch".into())]);
-        let adapter = AdapterImpl::new(build_engine(Bigquery, config), None);
-        let env = Environment::new();
-        let state = State::new_for_env(&env);
-        let options = adapter.get_adbc_execute_options(&state);
-        assert!(options.iter().any(
-            |(k, v)| k == QUERY_PRIORITY && matches!(v, OptionValue::String(s) if s == "BATCH")
-        ));
+    fn test_bigquery_adbc_options_priority() {
+        let configured_query_priority = |adapter_type: AdapterType, priority: Option<&str>| {
+            let config = priority.map_or_else(Mapping::new, |p| {
+                Mapping::from_iter([("priority".into(), p.into())])
+            });
+            let adapter = AdapterImpl::new(build_engine(adapter_type, config), None);
+            let env = Environment::new();
+            let state = State::new_for_env(&env);
+            adapter
+                .get_adbc_execute_options(&state)
+                .into_iter()
+                .find_map(|(k, v)| match v {
+                    OptionValue::String(p) if k == QUERY_PRIORITY => Some(p),
+                    _ => None,
+                })
+        };
+
+        for (configured, expected) in [("batch", "BATCH"), ("interactive", "INTERACTIVE")] {
+            assert_eq!(
+                configured_query_priority(Bigquery, Some(configured)).as_deref(),
+                Some(expected)
+            );
+        }
+        assert_eq!(configured_query_priority(Bigquery, None), None);
+        assert_eq!(configured_query_priority(Bigquery, Some("bath")), None);
+        assert_eq!(configured_query_priority(Snowflake, Some("batch")), None);
     }
 
     #[test]

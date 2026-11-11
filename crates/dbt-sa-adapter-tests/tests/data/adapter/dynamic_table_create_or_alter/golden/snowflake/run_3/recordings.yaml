@@ -1,0 +1,835 @@
+dbbbff64:
+- sequence: 0
+  type: execute
+  sql: |-
+    show terse schemas in database development
+    limit 10000
+model.test.attr_aggregation_policy:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: show dynamic tables like 'ATTR_AGGREGATION_POLICY' in schema "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE_CREATE_OR_ALTER"
+- sequence: 2
+  type: execute
+  sql: |-
+    create or alter dynamic table development.adapters_snowflake_dynamic_table_create_or_alter.attr_aggregation_policy
+    
+    warehouse = [MASKED_WH]
+    
+    
+    refresh_mode = FULL
+    
+    scheduler = 'DISABLE'
+    
+    
+    
+    
+    
+    as (
+    select id, value, id * 10 as id_x10 from development.adapters_snowflake_dynamic_table_create_or_alter.source_table
+    )
+- sequence: 3
+  type: execute
+  sql: alter dynamic table development.adapters_snowflake_dynamic_table_create_or_alter.attr_aggregation_policy refresh
+- sequence: 4
+  type: execute
+  sql: use warehouse [MASKED_WH]
+model.test.attr_comment:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: show dynamic tables like 'ATTR_COMMENT' in schema "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE_CREATE_OR_ALTER"
+- sequence: 2
+  type: execute
+  sql: |-
+    create or alter dynamic table development.adapters_snowflake_dynamic_table_create_or_alter.attr_comment
+    
+    warehouse = [MASKED_WH]
+    
+    
+    refresh_mode = FULL
+    
+    scheduler = 'DISABLE'
+    
+    
+    
+    
+    
+    as (
+    select id, value, id * 10 as id_x10 from development.adapters_snowflake_dynamic_table_create_or_alter.source_table
+    )
+- sequence: 3
+  type: execute
+  sql: alter dynamic table development.adapters_snowflake_dynamic_table_create_or_alter.attr_comment refresh
+- sequence: 4
+  type: execute
+  sql: use warehouse [MASKED_WH]
+model.test.attr_data_retention:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: show dynamic tables like 'ATTR_DATA_RETENTION' in schema "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE_CREATE_OR_ALTER"
+- sequence: 2
+  type: execute
+  sql: |-
+    create or alter dynamic table development.adapters_snowflake_dynamic_table_create_or_alter.attr_data_retention
+    
+    warehouse = [MASKED_WH]
+    
+    
+    refresh_mode = FULL
+    
+    scheduler = 'DISABLE'
+    
+    
+    
+    
+    
+    as (
+    select id, value, id * 10 as id_x10 from development.adapters_snowflake_dynamic_table_create_or_alter.source_table
+    )
+- sequence: 3
+  type: execute
+  sql: alter dynamic table development.adapters_snowflake_dynamic_table_create_or_alter.attr_data_retention refresh
+- sequence: 4
+  type: execute
+  sql: use warehouse [MASKED_WH]
+model.test.attr_masking_policy:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: show dynamic tables like 'ATTR_MASKING_POLICY' in schema "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE_CREATE_OR_ALTER"
+- sequence: 2
+  type: execute
+  sql: |-
+    create or alter dynamic table development.adapters_snowflake_dynamic_table_create_or_alter.attr_masking_policy
+    
+    warehouse = [MASKED_WH]
+    
+    
+    refresh_mode = FULL
+    
+    scheduler = 'DISABLE'
+    
+    
+    
+    
+    
+    as (
+    select id, value, id * 10 as id_x10 from development.adapters_snowflake_dynamic_table_create_or_alter.source_table
+    )
+- sequence: 3
+  type: execute
+  sql: alter dynamic table development.adapters_snowflake_dynamic_table_create_or_alter.attr_masking_policy refresh
+- sequence: 4
+  type: execute
+  sql: use warehouse [MASKED_WH]
+model.test.attr_max_data_extension:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: show dynamic tables like 'ATTR_MAX_DATA_EXTENSION' in schema "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE_CREATE_OR_ALTER"
+- sequence: 2
+  type: execute
+  sql: |-
+    create or alter dynamic table development.adapters_snowflake_dynamic_table_create_or_alter.attr_max_data_extension
+    
+    warehouse = [MASKED_WH]
+    
+    
+    refresh_mode = FULL
+    
+    scheduler = 'DISABLE'
+    
+    
+    
+    
+    
+    as (
+    select id, value, id * 10 as id_x10 from development.adapters_snowflake_dynamic_table_create_or_alter.source_table
+    )
+- sequence: 3
+  type: execute
+  sql: alter dynamic table development.adapters_snowflake_dynamic_table_create_or_alter.attr_max_data_extension refresh
+- sequence: 4
+  type: execute
+  sql: use warehouse [MASKED_WH]
+model.test.attr_multi:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: show dynamic tables like 'ATTR_MULTI' in schema "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE_CREATE_OR_ALTER"
+- sequence: 2
+  type: execute
+  sql: |-
+    create or alter dynamic table development.adapters_snowflake_dynamic_table_create_or_alter.attr_multi
+    
+    warehouse = [MASKED_WH]
+    
+    
+    refresh_mode = FULL
+    
+    scheduler = 'DISABLE'
+    
+    cluster by (id)
+    
+    
+    
+    as (
+    select id, value, id * 10 as id_x10 from development.adapters_snowflake_dynamic_table_create_or_alter.source_table
+    )
+- sequence: 3
+  type: execute
+  sql: alter dynamic table development.adapters_snowflake_dynamic_table_create_or_alter.attr_multi refresh
+- sequence: 4
+  type: execute
+  sql: use warehouse [MASKED_WH]
+model.test.attr_projection_policy:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: show dynamic tables like 'ATTR_PROJECTION_POLICY' in schema "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE_CREATE_OR_ALTER"
+- sequence: 2
+  type: execute
+  sql: |-
+    create or alter dynamic table development.adapters_snowflake_dynamic_table_create_or_alter.attr_projection_policy
+    
+    warehouse = [MASKED_WH]
+    
+    
+    refresh_mode = FULL
+    
+    scheduler = 'DISABLE'
+    
+    
+    
+    
+    
+    as (
+    select id, value, id * 10 as id_x10 from development.adapters_snowflake_dynamic_table_create_or_alter.source_table
+    )
+- sequence: 3
+  type: execute
+  sql: alter dynamic table development.adapters_snowflake_dynamic_table_create_or_alter.attr_projection_policy refresh
+- sequence: 4
+  type: execute
+  sql: use warehouse [MASKED_WH]
+model.test.attr_row_access_policy:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: show dynamic tables like 'ATTR_ROW_ACCESS_POLICY' in schema "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE_CREATE_OR_ALTER"
+- sequence: 2
+  type: execute
+  sql: |-
+    create or alter dynamic table development.adapters_snowflake_dynamic_table_create_or_alter.attr_row_access_policy
+    
+    warehouse = [MASKED_WH]
+    
+    
+    refresh_mode = FULL
+    
+    scheduler = 'DISABLE'
+    
+    
+    
+    
+    
+    as (
+    select id, value, id * 10 as id_x10 from development.adapters_snowflake_dynamic_table_create_or_alter.source_table
+    )
+- sequence: 3
+  type: execute
+  sql: alter dynamic table development.adapters_snowflake_dynamic_table_create_or_alter.attr_row_access_policy refresh
+- sequence: 4
+  type: execute
+  sql: use warehouse [MASKED_WH]
+model.test.attr_tag:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: show dynamic tables like 'ATTR_TAG' in schema "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE_CREATE_OR_ALTER"
+- sequence: 2
+  type: execute
+  sql: |-
+    create or alter dynamic table development.adapters_snowflake_dynamic_table_create_or_alter.attr_tag
+    
+    warehouse = [MASKED_WH]
+    
+    
+    refresh_mode = FULL
+    
+    scheduler = 'DISABLE'
+    
+    
+    
+    
+    
+    as (
+    select id, value, id * 10 as id_x10 from development.adapters_snowflake_dynamic_table_create_or_alter.source_table
+    )
+- sequence: 3
+  type: execute
+  sql: alter dynamic table development.adapters_snowflake_dynamic_table_create_or_alter.attr_tag refresh
+- sequence: 4
+  type: execute
+  sql: use warehouse [MASKED_WH]
+model.test.cfg_cluster_by:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: show dynamic tables like 'CFG_CLUSTER_BY' in schema "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE_CREATE_OR_ALTER"
+- sequence: 2
+  type: execute
+  sql: |-
+    create or alter dynamic table development.adapters_snowflake_dynamic_table_create_or_alter.cfg_cluster_by
+    
+    warehouse = [MASKED_WH]
+    
+    
+    refresh_mode = FULL
+    
+    scheduler = 'DISABLE'
+    
+    cluster by (id)
+    
+    
+    
+    as (
+    select id, value from development.adapters_snowflake_dynamic_table_create_or_alter.source_table
+    )
+- sequence: 3
+  type: execute
+  sql: alter dynamic table development.adapters_snowflake_dynamic_table_create_or_alter.cfg_cluster_by refresh
+- sequence: 4
+  type: execute
+  sql: use warehouse [MASKED_WH]
+model.test.cfg_init_warehouse:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: show dynamic tables like 'CFG_INIT_WAREHOUSE' in schema "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE_CREATE_OR_ALTER"
+- sequence: 2
+  type: execute
+  sql: |-
+    create or alter dynamic table development.adapters_snowflake_dynamic_table_create_or_alter.cfg_init_warehouse
+    
+    warehouse = [MASKED_WH]
+    initialization_warehouse = [MASKED_WH]
+    
+    refresh_mode = FULL
+    
+    scheduler = 'DISABLE'
+    
+    
+    
+    
+    
+    as (
+    select id, value from development.adapters_snowflake_dynamic_table_create_or_alter.source_table
+    )
+- sequence: 3
+  type: execute
+  sql: alter dynamic table development.adapters_snowflake_dynamic_table_create_or_alter.cfg_init_warehouse refresh
+- sequence: 4
+  type: execute
+  sql: use warehouse [MASKED_WH]
+model.test.cfg_warehouse:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: show dynamic tables like 'CFG_WAREHOUSE' in schema "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE_CREATE_OR_ALTER"
+- sequence: 2
+  type: execute
+  sql: |-
+    create or alter dynamic table development.adapters_snowflake_dynamic_table_create_or_alter.cfg_warehouse
+    
+    warehouse = [MASKED_WH]
+    
+    
+    refresh_mode = FULL
+    
+    scheduler = 'DISABLE'
+    
+    
+    
+    
+    
+    as (
+    select id, value from development.adapters_snowflake_dynamic_table_create_or_alter.source_table
+    )
+- sequence: 3
+  type: execute
+  sql: alter dynamic table development.adapters_snowflake_dynamic_table_create_or_alter.cfg_warehouse refresh
+- sequence: 4
+  type: execute
+  sql: use warehouse [MASKED_WH]
+model.test.continue_skips_both:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: show dynamic tables like 'CONTINUE_SKIPS_BOTH' in schema "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE_CREATE_OR_ALTER"
+- sequence: 2
+  type: execute
+  sql: alter dynamic table development.adapters_snowflake_dynamic_table_create_or_alter.continue_skips_both refresh
+- sequence: 3
+  type: execute
+  sql: use warehouse [MASKED_WH]
+model.test.dm_auto_disable:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: show dynamic tables like 'DM_AUTO_DISABLE' in schema "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE_CREATE_OR_ALTER"
+- sequence: 2
+  type: execute
+  sql: |-
+    create or alter dynamic table development.adapters_snowflake_dynamic_table_create_or_alter.dm_auto_disable
+    
+    warehouse = [MASKED_WH]
+    
+    
+    refresh_mode = AUTO
+    
+    scheduler = 'DISABLE'
+    
+    
+    
+    
+    
+    as (
+    select id, value, id * 10 as id_x10 from development.adapters_snowflake_dynamic_table_create_or_alter.source_table
+    )
+- sequence: 3
+  type: execute
+  sql: alter dynamic table development.adapters_snowflake_dynamic_table_create_or_alter.dm_auto_disable refresh
+- sequence: 4
+  type: execute
+  sql: use warehouse [MASKED_WH]
+model.test.dm_auto_enable:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: show dynamic tables like 'DM_AUTO_ENABLE' in schema "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE_CREATE_OR_ALTER"
+- sequence: 2
+  type: execute
+  sql: |-
+    create or alter dynamic table development.adapters_snowflake_dynamic_table_create_or_alter.dm_auto_enable
+    target_lag = '1 hour'
+    warehouse = [MASKED_WH]
+    
+    
+    refresh_mode = AUTO
+    
+    scheduler = 'ENABLE'
+    
+    
+    
+    
+    
+    as (
+    select id, value, id * 10 as id_x10 from development.adapters_snowflake_dynamic_table_create_or_alter.source_table
+    )
+- sequence: 3
+  type: execute
+  sql: use warehouse [MASKED_WH]
+model.test.dm_full_disable:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: show dynamic tables like 'DM_FULL_DISABLE' in schema "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE_CREATE_OR_ALTER"
+- sequence: 2
+  type: execute
+  sql: |-
+    create or alter dynamic table development.adapters_snowflake_dynamic_table_create_or_alter.dm_full_disable
+    
+    warehouse = [MASKED_WH]
+    
+    
+    refresh_mode = FULL
+    
+    scheduler = 'DISABLE'
+    
+    
+    
+    
+    
+    as (
+    select id, value, id * 10 as id_x10 from development.adapters_snowflake_dynamic_table_create_or_alter.source_table
+    )
+- sequence: 3
+  type: execute
+  sql: alter dynamic table development.adapters_snowflake_dynamic_table_create_or_alter.dm_full_disable refresh
+- sequence: 4
+  type: execute
+  sql: use warehouse [MASKED_WH]
+model.test.dm_full_enable:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: show dynamic tables like 'DM_FULL_ENABLE' in schema "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE_CREATE_OR_ALTER"
+- sequence: 2
+  type: execute
+  sql: |-
+    create or alter dynamic table development.adapters_snowflake_dynamic_table_create_or_alter.dm_full_enable
+    target_lag = '1 hour'
+    warehouse = [MASKED_WH]
+    
+    
+    refresh_mode = FULL
+    
+    scheduler = 'ENABLE'
+    
+    
+    
+    
+    
+    as (
+    select id, value, id * 10 as id_x10 from development.adapters_snowflake_dynamic_table_create_or_alter.source_table
+    )
+- sequence: 3
+  type: execute
+  sql: use warehouse [MASKED_WH]
+model.test.dm_incremental_disable:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: show dynamic tables like 'DM_INCREMENTAL_DISABLE' in schema "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE_CREATE_OR_ALTER"
+- sequence: 2
+  type: execute
+  sql: |-
+    create or alter dynamic table development.adapters_snowflake_dynamic_table_create_or_alter.dm_incremental_disable
+    
+    warehouse = [MASKED_WH]
+    
+    
+    refresh_mode = INCREMENTAL
+    
+    scheduler = 'DISABLE'
+    
+    
+    
+    
+    
+    as (
+    select id, value, id * 10 as id_x10 from development.adapters_snowflake_dynamic_table_create_or_alter.source_table
+    )
+- sequence: 3
+  type: execute
+  sql: alter dynamic table development.adapters_snowflake_dynamic_table_create_or_alter.dm_incremental_disable refresh
+- sequence: 4
+  type: execute
+  sql: use warehouse [MASKED_WH]
+model.test.dm_incremental_enable:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: show dynamic tables like 'DM_INCREMENTAL_ENABLE' in schema "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE_CREATE_OR_ALTER"
+- sequence: 2
+  type: execute
+  sql: |-
+    create or alter dynamic table development.adapters_snowflake_dynamic_table_create_or_alter.dm_incremental_enable
+    target_lag = '1 hour'
+    warehouse = [MASKED_WH]
+    
+    
+    refresh_mode = INCREMENTAL
+    
+    scheduler = 'ENABLE'
+    
+    
+    
+    
+    
+    as (
+    select id, value, id * 10 as id_x10 from development.adapters_snowflake_dynamic_table_create_or_alter.source_table
+    )
+- sequence: 3
+  type: execute
+  sql: use warehouse [MASKED_WH]
+model.test.idempotent_noop:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: show dynamic tables like 'IDEMPOTENT_NOOP' in schema "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE_CREATE_OR_ALTER"
+- sequence: 2
+  type: execute
+  sql: |-
+    create or alter dynamic table development.adapters_snowflake_dynamic_table_create_or_alter.idempotent_noop
+    
+    warehouse = [MASKED_WH]
+    
+    
+    refresh_mode = FULL
+    
+    scheduler = 'DISABLE'
+    
+    
+    
+    
+    
+    as (
+    select id, value from development.adapters_snowflake_dynamic_table_create_or_alter.source_table
+    )
+- sequence: 3
+  type: execute
+  sql: alter dynamic table development.adapters_snowflake_dynamic_table_create_or_alter.idempotent_noop refresh
+- sequence: 4
+  type: execute
+  sql: use warehouse [MASKED_WH]
+model.test.inc_noop:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: show dynamic tables like 'INC_NOOP' in schema "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE_CREATE_OR_ALTER"
+- sequence: 2
+  type: execute
+  sql: |-
+    create or alter dynamic table development.adapters_snowflake_dynamic_table_create_or_alter.inc_noop
+    
+    warehouse = [MASKED_WH]
+    
+    
+    refresh_mode = INCREMENTAL
+    
+    scheduler = 'DISABLE'
+    
+    
+    
+    
+    
+    as (
+    select id, value from development.adapters_snowflake_dynamic_table_create_or_alter.source_table
+    )
+- sequence: 3
+  type: execute
+  sql: alter dynamic table development.adapters_snowflake_dynamic_table_create_or_alter.inc_noop refresh
+- sequence: 4
+  type: execute
+  sql: use warehouse [MASKED_WH]
+model.test.inc_props:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: show dynamic tables like 'INC_PROPS' in schema "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE_CREATE_OR_ALTER"
+- sequence: 2
+  type: execute
+  sql: |-
+    create or alter dynamic table development.adapters_snowflake_dynamic_table_create_or_alter.inc_props
+    
+    warehouse = [MASKED_WH]
+    
+    
+    refresh_mode = INCREMENTAL
+    
+    scheduler = 'DISABLE'
+    
+    cluster by (id)
+    
+    
+    
+    as (
+    select id, value from development.adapters_snowflake_dynamic_table_create_or_alter.source_table
+    )
+- sequence: 3
+  type: execute
+  sql: alter dynamic table development.adapters_snowflake_dynamic_table_create_or_alter.inc_props refresh
+- sequence: 4
+  type: execute
+  sql: use warehouse [MASKED_WH]
+model.test.refresh_mode_replace:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: show dynamic tables like 'REFRESH_MODE_REPLACE' in schema "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE_CREATE_OR_ALTER"
+- sequence: 2
+  type: execute
+  sql: |-
+    create or replace dynamic table development.adapters_snowflake_dynamic_table_create_or_alter.refresh_mode_replace
+    
+    warehouse = [MASKED_WH]
+    
+    
+    refresh_mode = FULL
+    
+    initialize = ON_CREATE
+    
+    
+    scheduler = 'DISABLE'
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    as (
+    select id, value from development.adapters_snowflake_dynamic_table_create_or_alter.source_table
+    )
+- sequence: 3
+  type: execute
+  sql: alter dynamic table development.adapters_snowflake_dynamic_table_create_or_alter.refresh_mode_replace refresh
+- sequence: 4
+  type: execute
+  sql: use warehouse [MASKED_WH]
+model.test.refresh_mode_to_auto:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: show dynamic tables like 'REFRESH_MODE_TO_AUTO' in schema "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE_CREATE_OR_ALTER"
+- sequence: 2
+  type: execute
+  sql: |-
+    create or alter dynamic table development.adapters_snowflake_dynamic_table_create_or_alter.refresh_mode_to_auto
+    
+    warehouse = [MASKED_WH]
+    
+    
+    refresh_mode = AUTO
+    
+    scheduler = 'DISABLE'
+    
+    
+    
+    
+    
+    as (
+    select id, value from development.adapters_snowflake_dynamic_table_create_or_alter.source_table
+    )
+- sequence: 3
+  type: execute
+  sql: alter dynamic table development.adapters_snowflake_dynamic_table_create_or_alter.refresh_mode_to_auto refresh
+- sequence: 4
+  type: execute
+  sql: use warehouse [MASKED_WH]
+model.test.transient_flip:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: show dynamic tables like 'TRANSIENT_FLIP' in schema "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE_CREATE_OR_ALTER"
+- sequence: 2
+  type: execute
+  sql: show tables like 'TRANSIENT_FLIP' in schema "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE_CREATE_OR_ALTER"
+- sequence: 3
+  type: execute
+  sql: |-
+    create or replace dynamic table development.adapters_snowflake_dynamic_table_create_or_alter.transient_flip
+    
+    warehouse = [MASKED_WH]
+    
+    
+    refresh_mode = FULL
+    
+    initialize = ON_CREATE
+    
+    
+    scheduler = 'DISABLE'
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    as (
+    select id, value from development.adapters_snowflake_dynamic_table_create_or_alter.source_table
+    )
+- sequence: 4
+  type: execute
+  sql: alter dynamic table development.adapters_snowflake_dynamic_table_create_or_alter.transient_flip refresh
+- sequence: 5
+  type: execute
+  sql: use warehouse [MASKED_WH]
+model.test.transient_preserved:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: SHOW OBJECTS IN SCHEMA "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE_CREATE_OR_ALTER" LIMIT 10000
+- sequence: 2
+  type: execute
+  sql: show dynamic tables like 'TRANSIENT_PRESERVED' in schema "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE_CREATE_OR_ALTER"
+- sequence: 3
+  type: execute
+  sql: show tables like 'TRANSIENT_PRESERVED' in schema "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE_CREATE_OR_ALTER"
+- sequence: 4
+  type: execute
+  sql: |-
+    create or alter transient dynamic table development.adapters_snowflake_dynamic_table_create_or_alter.transient_preserved
+    
+    warehouse = [MASKED_WH]
+    
+    
+    refresh_mode = FULL
+    
+    scheduler = 'DISABLE'
+    
+    
+    
+    
+    
+    as (
+    select id, value, id * 10 as id_x10 from development.adapters_snowflake_dynamic_table_create_or_alter.source_table
+    )
+- sequence: 5
+  type: execute
+  sql: alter dynamic table development.adapters_snowflake_dynamic_table_create_or_alter.transient_preserved refresh
+- sequence: 6
+  type: execute
+  sql: use warehouse [MASKED_WH]

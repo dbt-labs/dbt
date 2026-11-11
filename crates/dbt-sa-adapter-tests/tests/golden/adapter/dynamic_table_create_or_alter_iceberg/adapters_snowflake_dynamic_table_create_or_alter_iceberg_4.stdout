@@ -1,0 +1,15 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/ice_evolve.sql
+   Parsing models/ice_idempotent.sql
+   Parsing models/ice_identity_change.sql
+   Parsing models/ice_refresh_mode_replace.sql
+   Parsing models/ice_to_native.sql
+   Parsing models/native_to_ice.sql
+ Rendering models/ice_identity_change.sql
+   Running models/ice_identity_change.sql
+ Succeeded model adapters_snowflake_dynamic_table_create_or_alter_iceberg.ice_identity_change (dynamic_table) [1 of 1 in duration]
+==================== Execution Summary =====================
+Finished 'run' successfully for target 'snowflake' [duration]
+Processed: 1 model
+Summary: 1 total | 1 success

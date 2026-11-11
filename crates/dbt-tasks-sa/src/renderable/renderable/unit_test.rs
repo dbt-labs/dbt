@@ -14,7 +14,7 @@ use dbt_adapter::metadata::BIGQUERY_PSEUDOCOLUMNS;
 use dbt_adapter::relation::{RelationObject, create_relation_from_node};
 use dbt_adapter::sql_types::{TypeOps, make_arrow_field};
 use dbt_adapter::stmt_splitter::{DefaultStmtSplitter, StmtSplitter};
-use dbt_adapter::{Adapter, Column};
+use dbt_adapter::{Adapter, Column, ColumnBuilder};
 use dbt_adapter_core::{AdapterType, ExecutionPhase, quote_char};
 use dbt_common::cancellation::Cancellable;
 use dbt_common::collections::SccHashMap;
@@ -23,12 +23,12 @@ use dbt_common::io_args::{ReplayMode, TimeMachineMode};
 use dbt_common::static_analysis::is_static_analysis_off_or_baseline;
 use dbt_common::stats::NodeStatus;
 use dbt_common::stdfs;
+use dbt_common::tracing::dbt_emit::emit_trace_log_message;
 use dbt_common::{ErrorCode, FsResult, MacroSpansOnly, err, fs_err};
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::phases::compile::DependencyValidationConfig;
 use dbt_jinja_utils::phases::run::build_run_node_context;
 use dbt_jinja_utils::serde::single_expression_body;
-use dbt_jinja_utils::utils::add_task_context;
 use dbt_jinja_utils::utils::macro_spans_to_macro_span_vec;
 use dbt_jinja_utils::utils::render_sql;
 use dbt_jinja_utils::{ConfiguredVar, env_var};
@@ -50,7 +50,7 @@ use dbt_tasks_core::unit_test_schema::{
 use dbt_telemetry::{ExecutionPhase as TelemetryExecutionPhase, NodeType};
 
 use crate::renderable::unit_test_typing::{BigqueryTyping, DatabricksTyping, SnowflakeTyping};
-use crate::task::effective_unit_test_execute;
+use crate::task::{effective_unit_test_execute, is_replay_active};
 
 use super::common::handle_render_result;
 use crate::sql::dialect::sqlparser_dialect_for;
@@ -58,7 +58,7 @@ use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use csv::ReaderBuilder;
 use itertools::Itertools;
 use minijinja::listener::RenderingEventListener;
-use minijinja::value::Object;
+use minijinja::value::{Object, OverlayMap};
 use minijinja::{CodeLocation, State, Value, Value as MinijinjaValue};
 use regex::Regex;
 use sqlparser::tokenizer::{Token, Tokenizer, Whitespace};
@@ -373,7 +373,7 @@ fn requires_adapter_scoped_relation_schema(
     schema_target: UnitTestSchemaTarget,
 ) -> bool {
     is_adapter_scoped_schema_target(schema_target)
-        && ctx.inner.adapter_store.declared().len() > 1
+        && ctx.adapter_store().declared().len() > 1
         && adapter.as_replay().is_none()
         && !is_replay_active(ctx)
 }
@@ -594,16 +594,6 @@ fn schema_policy_for_recording(
     }
 }
 
-fn is_replay_active(ctx: &TaskRunnerCtx) -> bool {
-    ctx.inner.arg.replay.as_ref().is_some_and(|mode| {
-        matches!(mode, ReplayMode::MantleReplay(_) | ReplayMode::FsReplay(_))
-            || mode.is_time_machine_replay()
-    }) || ctx
-        .env
-        .get_base_adapter()
-        .is_some_and(|adapter| adapter.as_replay().is_some())
-}
-
 /// Small utility for merging objects: a key resolves in the first object that
 /// defines it.
 #[derive(Debug, Clone)]
@@ -704,7 +694,7 @@ pub(crate) async fn run_unit_test_render(
     // Phase 3 — Render (uses fetched schemas + discovered relations)
     run_blocking_task_operation(move || {
         let mut ctx = ctx;
-        let res = render_unit_test(&node, &mut ctx, given_relations, task_hooks.as_ref());
+        let res = render_unit_test(&node, &mut ctx, given_relations, task_hooks);
         handle_render_result(
             res,
             &node.unique_id(),
@@ -820,15 +810,7 @@ async fn hydrate_unit_test_relation_schema(
             &relation,
             adapter.engine().type_ops(),
         )
-        .await
-        .map_err(|e| {
-            fs_err!(
-                ErrorCode::Generic,
-                "Failed to query schema for {}: {}",
-                err_subject(),
-                e.message()
-            )
-        })?;
+        .await?;
 
     // `fetched` tracks fqns whose schemas are already populated in `schema_cache`
     // during this call. On repeat, short-circuit to the cache.
@@ -1088,14 +1070,15 @@ fn infer_unit_test_expected_schema(
         &unit_test.deprecated_config,
         unit_test.node_adapter(),
         None,
-        &ctx.inner.base_context,
+        &Value::from_dyn_object(Arc::clone(&ctx.inner.base_context)),
         &ctx.inner.arg.io,
         TelemetryExecutionPhase::Render,
         None,
         ctx.runtime_config().dependencies.keys().cloned().collect(),
     );
     // Not `run_base_context`: it would also add `thread_id` to this render.
-    ctx.insert_adapter_overlay(&mut run_context, ctx.adapter_type_for(unit_test))?;
+    ctx.adapter_globals()
+        .insert_for_node(&mut run_context, ctx.adapter_type_for(unit_test))?;
 
     // Ensure schema inference macro evaluation is node-scoped for replay and any other
     // context-dependent adapter behavior.
@@ -1128,10 +1111,10 @@ fn infer_unit_test_expected_schema(
     // rendered for the default's dialect.
     // ClickHouse: the probe's session-scoped TEMPORARY table is invisible to
     // introspection (never in system.columns), so infer via the query schema.
-    let materialization = if unit_test.node_adapter() == AdapterType::DuckDB
+    let uses_query_schema = unit_test.node_adapter() == AdapterType::DuckDB
         || unit_test.node_adapter() == AdapterType::ClickHouse
-        || options.use_query_schema_fallback
-    {
+        || options.use_query_schema_fallback;
+    let materialization = if uses_query_schema {
         r#"
   {% macro get_expected_columns(sql, select_sql_header) -%}
       {%- if select_sql_header is not none -%}
@@ -1139,6 +1122,12 @@ fn infer_unit_test_expected_schema(
       {%- endif -%}
       {%- set columns_in_relation = get_column_schema_from_query(sql, select_sql_header) -%}
       {{ return(columns_in_relation) }}
+  {%- endmacro %}
+  {% macro get_expected_schema_query(sql, select_sql_header) -%}
+      {%- if select_sql_header is not none -%}
+          {%- set select_sql_header = render(select_sql_header) -%}
+      {%- endif -%}
+      {{ return(get_empty_subquery_sql(sql, select_sql_header)) }}
   {%- endmacro %}"#
     } else {
         r#"
@@ -1303,6 +1292,33 @@ fn infer_unit_test_expected_schema(
             args.push(Value::from(format!("WITH {ctes} ")));
         }
 
+        // Only local compute runs the statement on an engine that may not accept the
+        // project's dialect, so only then is it rendered and checked.
+        if uses_query_schema
+            && effective_unit_test_execute(unit_test, ctx.inner.execute)
+                == schemas::profiles::Execute::Sidecar
+        {
+            // The statement `get_column_schema_from_query` runs: the same macro, arguments and state.
+            let query_macro = state
+                .lookup("get_expected_schema_query", &[])
+                .ok_or_else(|| {
+                    fs_err!(
+                        ErrorCode::Unexpected,
+                        "Internal error: macro lookup failed while checking the schema query of unit test {}",
+                        unique_id
+                    )
+                })?;
+            let query = query_macro.call(&state, &args, &[]).map_err(|e| {
+                fs_err!(
+                    ErrorCode::JinjaError,
+                    "Internal error while rendering the schema query of unit test {}: {}",
+                    unique_id,
+                    e
+                )
+            })?;
+            task_hooks.check_unit_test_schema_query(ctx, unit_test, &query.to_string())?;
+        }
+
         let columns_as_value = func.call(&state, &args, &[]).map_err(|e| {
             fs_err!(
                 ErrorCode::JinjaError,
@@ -1343,7 +1359,7 @@ fn infer_schema_from_compiled_sql(
     ctx: &TaskRunnerCtx,
     unit_test: &DbtUnitTest,
     raw_model_sql: &str,
-    compile_context: &BTreeMap<String, Value>,
+    compile_context: &OverlayMap,
     original_file_path: &Path,
     subqueries: &[(String, String)],
     fixture_shape_subqueries: &[(String, String)],
@@ -1376,7 +1392,7 @@ fn infer_schema_from_compiled_sql(
 /// resulting `Value` directly.
 fn bind_run_started_at_override(
     macro_value: &YmlValue,
-    compile_context: &BTreeMap<String, Value>,
+    compile_context: &OverlayMap,
     env: &JinjaEnv,
 ) -> Value {
     macro_value
@@ -1393,7 +1409,7 @@ fn bind_run_started_at_override(
 
 fn bind_override_macros(
     macros: &BTreeMap<String, YmlValue>,
-    compile_context: &mut BTreeMap<String, Value>,
+    compile_context: &mut OverlayMap,
     env: &JinjaEnv,
 ) {
     for (macro_name, macro_value) in macros.iter() {
@@ -1410,14 +1426,11 @@ fn bind_override_macros(
         // If a package already exists, merge the override in
         if let Some((pkg, attr)) = macro_name.split_once(".") {
             let object_stub = Value::from(BTreeMap::from([(attr, fn_stub)]));
-            let new_pkg = if let Some(og) = compile_context.remove(pkg) {
+            compile_context.update(pkg, |og| match og {
                 // Check `object_stub` first
-                Value::from_object(ObjectOverlay(vec![object_stub, og]))
-            } else {
-                object_stub
-            };
-
-            compile_context.insert(pkg.to_string(), new_pkg);
+                Some(og) => Value::from_object(ObjectOverlay(vec![object_stub, og])),
+                None => object_stub,
+            });
         } else {
             compile_context.insert(macro_name.to_string(), fn_stub);
         }
@@ -1426,7 +1439,7 @@ fn bind_override_macros(
 
 /// Apply overrides to the compile context for unit tests
 pub fn apply_unit_test_overrides(
-    compile_context: &mut BTreeMap<String, MinijinjaValue>,
+    compile_context: &mut OverlayMap,
     overrides: &UnitTestOverrides,
     ctx: &TaskRunnerCtx,
 ) -> FsResult<()> {
@@ -1710,8 +1723,7 @@ fn discover_given_relations(
         .as_any()
         .downcast_ref::<DbtUnitTest>()
         .expect("run_unit_test_render called on non-DbtUnitTest");
-    let mut base_context = ctx.inner.base_context.clone();
-    add_task_context(&mut base_context, ut.common(), &ctx.thread_id);
+    let base_context = ctx.run_base_context(ut)?;
 
     let (compile_context, _config_map) = ctx.build_compile_node_context(
         node.clone(),
@@ -2027,11 +2039,56 @@ fn check_defer_relation(
         .map(|r| Arc::from(r) as Arc<dyn BaseRelation>)
 }
 
+/// Columns of a SQL `given` fixture for `adapter.get_columns_in_relation`.
+/// Inference runs only when model Jinja asks for them. An undefined result
+/// keeps the ordinary metadata lookup. Fixture columns are optional: an
+/// inference or column-build error also returns undefined, so it cannot fail
+/// a render that the ordinary lookup can serve.
+fn sql_fixture_columns(
+    ctx: Arc<TaskRunnerCtx>,
+    unit_test: Arc<DbtUnitTest>,
+    task_hooks: Arc<dyn RenderTaskHooks>,
+    type_ops: Arc<dyn TypeOps>,
+    fixture_sql: String,
+) -> Value {
+    dbt_adapter::adapter::fixture_columns::lazy_fixture_columns(move || {
+        let columns = task_hooks
+            .try_infer_unit_test_fixture_schema(&ctx, &unit_test, &fixture_sql)
+            .map_err(|error| error.to_string())
+            .and_then(|schema| {
+                let Some(schema) = schema else {
+                    return Ok(None);
+                };
+                let builder = ColumnBuilder::new(unit_test.node_adapter());
+                schema
+                    .fields()
+                    .iter()
+                    .map(|field| builder.build(field, type_ops.as_ref()).map(Arc::from))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map(Some)
+                    .map_err(|error| error.to_string())
+            });
+        match columns {
+            Ok(Some(columns)) => Ok(dbt_adapter::value::columns_to_value_mut(columns)),
+            Ok(None) => Ok(Value::UNDEFINED),
+            Err(error) => {
+                emit_trace_log_message(|| {
+                    format!(
+                        "SQL fixture columns are unavailable for '{}': {error}",
+                        unit_test.__common_attr__.unique_id
+                    )
+                });
+                Ok(Value::UNDEFINED)
+            }
+        }
+    })
+}
+
 fn render_unit_test(
     unit_test: &Arc<dyn InternalDbtNodeAttributes>,
     ctx: &mut TaskRunnerCtx,
     given_relations: DiscoveredGivenRelations,
-    task_hooks: &dyn RenderTaskHooks,
+    task_hooks: Arc<dyn RenderTaskHooks>,
 ) -> FsResult<(SqlInstruction, Arc<SccHashMap<String, MinijinjaValue>>)> {
     let node = unit_test
         .as_any()
@@ -2043,9 +2100,7 @@ fn render_unit_test(
         given_relation_ids,
         ..
     } = given_relations;
-    let mut base_context = ctx.inner.base_context.clone();
-
-    add_task_context(&mut base_context, node.common(), &ctx.thread_id);
+    let base_context = ctx.run_base_context(node)?;
 
     // Compiled path lives at target/compiled/<package>/<dir-of-yaml>/<unit_test_name>.sql.
     let absolute_path_unit_test = node.get_node_path_abs(
@@ -2126,6 +2181,14 @@ fn render_unit_test(
     // schemas (now cached from Fetch phase).
     let mut subqueries = Vec::new();
     let mut fixture_shape_subqueries = Vec::new();
+    let mut fixture_columns = BTreeMap::new();
+    let has_sql_given = node
+        .__unit_test_attr__
+        .given
+        .iter()
+        .any(|given| given.format == schemas::common::Formats::Sql);
+    let fixture_owner = (cache_expected_schema && has_sql_given)
+        .then(|| (Arc::new(ctx.clone()), Arc::new(node.clone())));
     for (given_idx, ((fqn_string, relation), given)) in given_relations
         .iter()
         .zip(&node.__unit_test_attr__.given)
@@ -2239,10 +2302,33 @@ fn render_unit_test(
             }
         };
 
+        // Model Jinja can inspect an input before fixture CTE substitution.
+        // Keep these columns in this render's context, never the shared schema
+        // cache: another test may mock the same relation with different types.
+        if let Some((fixture_ctx, fixture_test)) = &fixture_owner
+            && given.format == schemas::common::Formats::Sql
+        {
+            fixture_columns.insert(
+                relation.semantic_fqn(),
+                sql_fixture_columns(
+                    Arc::clone(fixture_ctx),
+                    Arc::clone(fixture_test),
+                    Arc::clone(&task_hooks),
+                    Arc::clone(adapter.engine().type_ops()),
+                    given_values.clone(),
+                ),
+            );
+        }
         subqueries.push((fqn_string.clone(), given_values));
         if let Some(fixture_shape_values) = fixture_shape_values {
             fixture_shape_subqueries.push((fqn_string.clone(), fixture_shape_values));
         }
+    }
+    if !fixture_columns.is_empty() {
+        compile_context.insert(
+            dbt_adapter::adapter::UNIT_TEST_FIXTURE_COLUMNS.to_string(),
+            Value::from_iter(fixture_columns),
+        );
     }
     // create a subquery for expect...
     // todo: updating the model with a unique id should be done already in parse?
@@ -2311,9 +2397,8 @@ fn render_unit_test(
             && !schema_policy.preserve_recorded_probe_sql)
             .then(|| {
                 compile_context
-                    .get("this")
-                    .and_then(Value::as_object)
-                    .and_then(|object| object.downcast_ref::<RelationObject>())
+                    .get("this")?
+                    .downcast_object_ref::<RelationObject>()
                     .map(|relation| relation.render_self_as_str())
             })
             .flatten(),
@@ -2328,7 +2413,7 @@ fn render_unit_test(
             &subqueries,
             &fixture_shape_subqueries,
             schema_inference_options.clone(),
-            task_hooks,
+            task_hooks.as_ref(),
         )
     };
 
@@ -2959,10 +3044,6 @@ fn yml_value_to_sql_literal(
         YmlValue::Null(_) => Ok(literal_formatter.none_value()),
         YmlValue::Bool(b, _) => Ok(literal_formatter.format_bool(b)),
         YmlValue::Number(n, _) => Ok(n.to_string()),
-        // A date/timestamp fixture is rendered in its canonical YAML form as a
-        // string literal; the fixture builder wraps it in a cast to the
-        // column's declared type, same as a quoted string fixture.
-        YmlValue::Timestamp(t, _) => Ok(literal_formatter.format_unit_test_str(&t.to_string())),
         // A string fixture for a type that cannot be produced by casting a
         // string literal (e.g. BigQuery STRUCT/GEOGRAPHY) is a SQL expression
         // that must be injected verbatim. See dbt-labs/dbt-core#14625.
@@ -4939,27 +5020,6 @@ mod tests {
     }
 
     #[test]
-    fn test_unit_test_timestamp_fixture_renders_as_string_literal() {
-        // Expected values are `Timestamp`'s canonical Display form (RFC 3339-style `T`
-        // separator); the fixture builder wraps the literal in a cast to the column type.
-        let cases = [
-            ("2020-01-01", "'2020-01-01'"),
-            ("2020-01-01 10:30:00", "'2020-01-01T10:30:00'"),
-            ("2020-01-01T10:30:00+05:00", "'2020-01-01T10:30:00+05:00'"),
-        ];
-        for (authored, expected) in cases {
-            let ts = dbt_yaml::Timestamp::parse(authored).expect("valid timestamp");
-            let literal = yml_value_to_sql_literal(
-                AdapterType::Snowflake,
-                &DefaultTypeOps::new(AdapterType::Snowflake),
-                YmlValue::timestamp(ts),
-                &DataType::Date32,
-            )
-            .expect("timestamp fixture should render as a string literal");
-            assert_eq!(literal, expected, "for authored value {authored}");
-        }
-    }
-    #[test]
     fn test_parse_csv_rows_preserves_non_empty_scalar_text_and_nulls_empty_cells() {
         let rows =
             parse_csv_rows(b"id,code,enabled,ratio,empty,quoted_empty\n1,000001,true,1.5,,\"\"\n")
@@ -5006,7 +5066,7 @@ mod tests {
         let mut macros = BTreeMap::new();
         macros.insert("run_started_at".to_string(), value);
 
-        let mut compile_context: BTreeMap<String, Value> = BTreeMap::new();
+        let mut compile_context = OverlayMap::new(Value::from(BTreeMap::<String, Value>::new()));
         bind_override_macros(&macros, &mut compile_context, &env);
 
         env.render_str(template, &compile_context, &[])
@@ -5111,10 +5171,10 @@ mod tests {
         let env = JinjaEnv::new(raw_env);
 
         let macros = BTreeMap::from([(macro_name.to_string(), value)]);
-        let mut compile_context = BTreeMap::from([(
+        let mut compile_context = OverlayMap::new(Value::from(BTreeMap::from([(
             "my_project".to_string(),
             Value::from_object(PackageNamespace("my_project")),
-        )]);
+        )])));
         bind_override_macros(&macros, &mut compile_context, &env);
 
         env.render_str("{{ my_project.pick_label() }}", &compile_context, &[])
@@ -7043,7 +7103,7 @@ mod tests {
     #[test]
     fn columns_to_schema_preserves_snowflake_decimal_round_trip() {
         let type_ops = DefaultTypeOps::new(AdapterType::Snowflake);
-        let builder = dbt_adapter::column::ColumnBuilder::new(AdapterType::Snowflake);
+        let builder = ColumnBuilder::new(AdapterType::Snowflake);
 
         for (precision, scale) in [(11, 4), (38, 0), (38, 37), (4, 4)] {
             let data_type = DataType::Decimal128(precision, scale);

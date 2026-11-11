@@ -3,11 +3,9 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { renderHook, waitFor } from '@testing-library/react';
 import { describe, expect, test, vi } from 'vitest';
 
-import {
-  MetadataDataProvider,
-} from '../context/MetadataDataProvider';
+import { MetadataDataProvider } from '../context/MetadataDataProvider';
 import { createFakeDataSource } from '../shared/testing/createFakeDataSource';
-import { type LineageGraph } from '../shared/typings/domain/lineage'
+import { type LineageGraph } from '../shared/typings/domain/lineage';
 import { useLineageData } from './useLineageData';
 
 const GRAPH: LineageGraph = {

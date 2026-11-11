@@ -15,11 +15,11 @@ import {
   Tag,
 } from 'lucide-react';
 
-import { paths } from '../../routes';
-import { buildRelationName, RelationName } from '../ui/RelationName';
-import { DescriptionDisplay } from '../ui/DescriptionDisplay';
+import { useNavigation } from '../../context/NavigationProvider';
 import type { Asset } from '../../shared/typings/domain/asset';
 import { Badge } from '../ui/Badge';
+import { DescriptionDisplay } from '../ui/DescriptionDisplay';
+import { buildRelationName, RelationName } from '../ui/RelationName';
 
 /** How many tag pills render before collapsing the rest into a "+N" pill. */
 const MAX_VISIBLE_TAGS = 3;
@@ -47,11 +47,12 @@ function DetailRow({ icon, label, children }: DetailRowProps) {
  *  `packageName`, so these are two different rows (see PackageRow). Links
  *  out to the project overview, matching the mockups' underlined project name. */
 function ProjectRow({ projectName }: { projectName: string }) {
+  const { navigate, paths } = useNavigation();
   return (
     <DetailRow icon={<Package size={16} />} label="Project">
       <button
         type="button"
-        onClick={() => window.location.assign(paths.home())}
+        onClick={() => navigate(paths.home())}
         className="text-fgBrand hover:underline"
       >
         {projectName}

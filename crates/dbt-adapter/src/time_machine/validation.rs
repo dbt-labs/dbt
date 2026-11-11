@@ -14,6 +14,7 @@ use regex::Regex;
 use similar::{ChangeTag, TextDiff};
 
 use crate::AdapterType;
+use crate::sql::complex_types::canonicalize_complex_types_for;
 use crate::sql::diff::PrivilegeStatement;
 use crate::sql::normalize::strip_sql_comments;
 use crate::time_machine::event::AdapterCallEvent;
@@ -267,6 +268,7 @@ impl TimeMachineEventValidationEngine {
         engine.register_sanitizer(Box::new(UuidSanitizer));
         engine.register_sanitizer(Box::new(TmpSuffixSanitizer));
         engine.register_sanitizer(Box::new(GrantOrderingSanitizer));
+        engine.register_sanitizer(Box::new(EphemeralWrapperAliasSanitizer));
         // Strip SQL comments before whitespace normalization so dynamic text in comments
         // (timestamps, state fingerprints, etc.) does not cause false mismatches.
         engine.register_sanitizer(Box::new(SqlCommentSanitizer));
@@ -368,7 +370,9 @@ impl TimeMachineEventValidationEngine {
         match (incoming_sql, recorded_sql) {
             (Some(inc), Some(rec)) => {
                 // Compare using fully sanitized SQL
-                if inc.sanitized_sql == rec.sanitized_sql {
+                if canonicalize_complex_types_for(&inc.sanitized_sql, self.adapter_type)
+                    == canonicalize_complex_types_for(&rec.sanitized_sql, self.adapter_type)
+                {
                     ValidationResult::Match
                 } else {
                     // Format the sanitized SQL for readable diff display
@@ -673,6 +677,30 @@ impl SqlSanitizer for TmpSuffixSanitizer {
         static RE: LazyLock<Regex> =
             LazyLock::new(|| Regex::new(r"(?i)(__dbt_tmp)_?\d*\b").expect("valid regex"));
         RE.replace_all(sql, "${1}SUFFIX").to_string()
+    }
+}
+
+/// Sanitizer that removes the derived-table alias (`as <model_name>`) that ends the ephemeral
+/// select wrapper, so recordings made before the alias existed still match.
+///
+/// Register it before [`SqlCommentSanitizer`], which removes the wrapper marker comment.
+pub struct EphemeralWrapperAliasSanitizer;
+
+impl SqlSanitizer for EphemeralWrapperAliasSanitizer {
+    fn name(&self) -> &'static str {
+        "ephemeral_wrapper_alias"
+    }
+
+    fn sanitize(&self, sql: &str) -> String {
+        const MARKER: &str = "--EPHEMERAL-SELECT-WRAPPER-END";
+        if !sql.contains(MARKER) {
+            return sql.to_string();
+        }
+        static RE: LazyLock<Regex> = LazyLock::new(|| {
+            Regex::new(r#"(--EPHEMERAL-SELECT-WRAPPER-END\s*\))\s*(?i:as)\s+[\w"`\[\]]+"#)
+                .expect("valid regex")
+        });
+        RE.replace_all(sql, "${1}").to_string()
     }
 }
 
@@ -1124,6 +1152,73 @@ mod tests {
             matches!(result, ValidationResult::Match),
             "Expected match when only line comments differ, got {:?}",
             result
+        );
+    }
+
+    #[test]
+    fn test_engine_matches_ephemeral_wrapper_alias() {
+        let engine = TimeMachineEventValidationEngine::new();
+        let probe = |wrapper_end: &str, predicate: &str| {
+            serde_json::json!([format!(
+                "select * from (\nwith __dbt__cte__base as (\nselect 1 as id\n)\n--EPHEMERAL-SELECT-WRAPPER-START\nselect * from (\nselect id from __dbt__cte__base\n--EPHEMERAL-SELECT-WRAPPER-END\n{wrapper_end}\n) as __dbt_sbq\nwhere {predicate}\nlimit 0"
+            )])
+        };
+        let recorded = make_recorded_event("model.p.my_model", "execute", probe(")", "false"));
+        for alias in [
+            "flattened_org_hierarchy",
+            "_leading__double",
+            "`quoted_model`",
+        ] {
+            let incoming_args = probe(&format!(") as {alias}"), "false");
+            let incoming = IncomingEvent::new("model.p.my_model", "execute", &incoming_args);
+            let result = engine.validate(&incoming, &recorded);
+            assert!(
+                matches!(result, ValidationResult::Match),
+                "Expected match for wrapper alias {alias}, got {result:?}"
+            );
+        }
+
+        let incoming_args = probe(") as flattened_org_hierarchy", "true");
+        let incoming = IncomingEvent::new("model.p.my_model", "execute", &incoming_args);
+        let result = engine.validate(&incoming, &recorded);
+        assert!(
+            matches!(result, ValidationResult::Mismatch(_)),
+            "Expected mismatch when the predicate differs, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_engine_matches_complex_type_spelling_on_databricks() {
+        let cast = |ty: &str| serde_json::json!([format!("select cast(null as {ty}) as payload")]);
+        let recorded = make_recorded_event(
+            "unit_test.p.m.t",
+            "execute",
+            cast("struct<id:string,tags:array<string>>"),
+        );
+        let incoming_args = cast("STRUCT<`id` string, `tags` ARRAY<string>>");
+        let incoming = IncomingEvent::new("unit_test.p.m.t", "execute", &incoming_args);
+
+        let databricks =
+            TimeMachineEventValidationEngine::new().with_adapter_type(AdapterType::Databricks);
+        let result = databricks.validate(&incoming, &recorded);
+        assert!(
+            matches!(result, ValidationResult::Match),
+            "Expected match on Databricks, got {result:?}"
+        );
+
+        let snowflake = TimeMachineEventValidationEngine::new();
+        let result = snowflake.validate(&incoming, &recorded);
+        assert!(
+            matches!(result, ValidationResult::Mismatch(_)),
+            "Expected mismatch on Snowflake, got {result:?}"
+        );
+
+        let incoming_args = cast("STRUCT<`id` string, `tags` ARRAY<int>>");
+        let incoming = IncomingEvent::new("unit_test.p.m.t", "execute", &incoming_args);
+        let result = databricks.validate(&incoming, &recorded);
+        assert!(
+            matches!(result, ValidationResult::Mismatch(_)),
+            "Expected mismatch when a field type differs, got {result:?}"
         );
     }
 
