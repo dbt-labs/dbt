@@ -21,18 +21,18 @@
 # Manual `workflow_dispatch` only — every release goes through
 # `cargo ci bump-cargo-version` for the workspace version bump.
 #
-# Flow: prepare-release → { build (matrix), test } → pack → tag →
-# github-release → { publish-pypi, publish-homebrew, publish-winget }.
-# build and test fan out from prepare-release in parallel and both gate
-# pack — a failing test (Rust or dbt-python; `test` runs both) aborts the
-# release before any wheels are written. tag is a small gate that everything
-# downstream depends on. github-release uploads the wheels + tarballs the
-# downstream publishers consume, so they all run after it: publish-pypi
-# builds its download-at-install sdist from the uploaded wheels, and
-# publish-homebrew renders its formula from the uploaded SHA256SUMS.
-# publish-homebrew is gated to non-pre-release versions that GitHub marked
-# as "Latest". See **Test-PyPI-only mode** below for the alternate flow
-# that skips everything past publish-pypi.
+# Flow: prepare-release → { build (matrix), build-musl (matrix), test } →
+# pack → tag → github-release → { publish-pypi, publish-homebrew,
+# publish-winget }. build, build-musl and test fan out from prepare-release
+# in parallel and all gate pack — a failing test (Rust or dbt-python; `test`
+# runs both) aborts the release before any wheels are written. tag is a
+# small gate that everything downstream depends on. github-release uploads
+# the wheels + tarballs the downstream publishers consume, so they all run
+# after it: publish-pypi builds its download-at-install sdist from the
+# uploaded wheels, and publish-homebrew renders its formula from the
+# uploaded SHA256SUMS. publish-homebrew is gated to non-pre-release versions
+# that GitHub marked as "Latest". See **Test-PyPI-only mode** below for the
+# alternate flow that skips everything past publish-pypi.
 #
 # Repo setup (required `vars.*` runner labels, branch protection, secret
 # provisioning) is documented in `crates/dbt-ci/README.md`.
@@ -578,6 +578,106 @@ jobs:
           if-no-files-found: error
 
   # ------------------------------------------------------------------
+  # Static musl binaries for the parser wheel's musllinux platforms only
+  # (no maturin wheels, archives or Homebrew). Built with cargo-zigbuild
+  # in manylinux containers because GitHub's JS actions don't run in
+  # Alpine containers on arm64. Static musl can't dlopen, so ADBC drivers
+  # won't load; the parser doesn't need them.
+  # ------------------------------------------------------------------
+  build-musl:
+    name: Build binary (${{ matrix.target }})
+    needs: [prepare-release]
+    runs-on: ${{ matrix.os }}
+    container:
+      image: ${{ matrix.container }}
+    permissions:
+      contents: read
+    env:
+      CARGO_INCREMENTAL: 0
+      RUST_BACKTRACE: 1
+      RUSTC_WRAPPER: sccache
+      BINARY_NAME: dbt
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            os: ${{ vars.UBUNTU_RUNNER_32 }}
+            container: quay.io/pypa/manylinux_2_28_x86_64
+          - target: aarch64-unknown-linux-musl
+            os: ${{ vars.UBUNTU_RUNNER_ARM_32 }}
+            container: quay.io/pypa/manylinux_2_28_aarch64
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare-release.outputs.branch }}
+
+      # rust-toolchain.toml pins the channel but not every musl target.
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # dtolnay/rust-toolchain@stable
+
+      - name: Add musl target to pinned toolchain
+        run: rustup target add "${{ matrix.target }}"
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # Swatinem/rust-cache@v2.9.1
+        with:
+          key: ${{ matrix.target }}
+          cache-bin: "false"
+
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # mozilla-actions/sccache-action@v0.0.9
+        with:
+          version: "v0.12.0"
+
+      - name: Install Protocol Buffer Compiler
+        run: |
+          PB_VERSION="29.4"
+          case "$(uname -m)" in
+            x86_64) PB_ARCH="x86_64" ;;
+            aarch64) PB_ARCH="aarch_64" ;;
+            *) echo "::error::Unsupported arch: $(uname -m)"; exit 1 ;;
+          esac
+          curl -LsSf "https://github.com/protocolbuffers/protobuf/releases/download/v$PB_VERSION/protoc-$PB_VERSION-linux-$PB_ARCH.zip" -o /tmp/protoc.zip
+          unzip -q /tmp/protoc.zip -d /tmp/protoc
+          echo "/tmp/protoc/bin" >> "$GITHUB_PATH"
+
+      # The `ziglang` wheel ships the zig toolchain itself.
+      - name: Install cargo-zigbuild
+        run: |
+          /opt/python/cp310-cp310/bin/python -m venv /opt/zig-venv
+          /opt/zig-venv/bin/pip install --disable-pip-version-check "cargo-zigbuild==0.24.1" "ziglang==0.15.2"
+          echo "/opt/zig-venv/bin" >> "$GITHUB_PATH"
+
+      - name: Build release binary
+        uses: nick-fields/retry@ce71cc2ab81d554ebbe88c79ab5975992d79ba08 # nick-fields/retry@v3
+        with:
+          timeout_minutes: 45
+          max_attempts: 2
+          shell: bash
+          command: |
+            cargo zigbuild --release --locked --bin "$BINARY_NAME" --target "${{ matrix.target }}"
+
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats || true
+
+      - name: Strip and stage binary for pack
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          mkdir -p binaries
+          cp "target/${TARGET}/release/${BINARY_NAME}" "binaries/${TARGET}"
+          strip "binaries/${TARGET}"
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.target }}
+          path: binaries/*
+          if-no-files-found: error
+
+  # ------------------------------------------------------------------
   # Run the workspace test suite, then the dbt-python crate's pytest suite
   # (crates/dbt-sa-python) in the same job so both reuse the Rust
   # toolchain/sccache/protoc setup instead of paying for it twice. No
@@ -699,7 +799,7 @@ jobs:
   # ------------------------------------------------------------------
   pack:
     name: Pack wheels
-    needs: [prepare-release, build, test]
+    needs: [prepare-release, build, build-musl, test]
     runs-on: ${{ vars.UBUNTU_RUNNER_32 }}
     permissions:
       contents: read
@@ -957,6 +1057,8 @@ jobs:
             --download-base-url "$BASE_URL" \
             --target x86_64-unknown-linux-gnu \
             --target aarch64-unknown-linux-gnu \
+            --target x86_64-unknown-linux-musl \
+            --target aarch64-unknown-linux-musl \
             --target x86_64-apple-darwin \
             --target aarch64-apple-darwin \
             --target x86_64-pc-windows-msvc
