@@ -38,4 +38,16 @@ pub trait RenderTaskHooks: Send + Sync {
     ) -> FsResult<Option<SchemaRef>> {
         Ok(None)
     }
+
+    /// Called before a unit test's expected-schema query runs through the
+    /// adapter. Returns an error when the query can't run on the unit test's
+    /// execution engine as written. The default accepts every query.
+    fn check_unit_test_schema_query(
+        &self,
+        _ctx: &TaskRunnerCtx,
+        _unit_test: &DbtUnitTest,
+        _sql: &str,
+    ) -> FsResult<()> {
+        Ok(())
+    }
 }
