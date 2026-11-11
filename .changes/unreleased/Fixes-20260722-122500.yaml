@@ -1,0 +1,8 @@
+kind: Fixes
+body: Fall back to per-source freshness checks when batch metadata freshness computation
+  fails, instead of skipping every selected source now that `skip_nodes_if_on_run_start_fails`
+  defaults to True
+time: 2026-07-22T12:25:00.000000+09:00
+custom:
+    Author: ota2000
+    Issue: "15634"
