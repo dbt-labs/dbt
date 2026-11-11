@@ -602,9 +602,13 @@ impl TaskRunnerCtx {
             ref_validation_config,
         )?;
 
-        // On-run hooks keep the env's globals, which follow `--adapter` while the hook node stays
-        // on the default.
-        if !is_operation {
+        // A hook's `DbtOperation` is parsed on the default adapter, but the hook runs on the
+        // run adapter, which `--adapter` sets.
+        if is_operation {
+            let run_adapter = self.adapter_store().run_adapter_type();
+            self.adapter_globals()
+                .insert_for_hook(&mut ctx, run_adapter)?;
+        } else {
             self.adapter_globals()
                 .insert_for_node(&mut ctx, node_adapter)?;
         }

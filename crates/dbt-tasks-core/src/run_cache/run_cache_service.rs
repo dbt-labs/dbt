@@ -8983,7 +8983,7 @@ mod tests {
             Default::default(),
             Arc::new(crate::span_manager::SpanManager::new_empty()),
             Execute::Remote,
-            test_adapter_globals(&resolver_state.dbt_profile, AdapterType::Snowflake),
+            test_adapter_globals(&resolver_state.dbt_profile),
             sources_extractor,
             RunCacheCtx {
                 run_cache_metadata: Arc::new(RunCacheMetadataCache::new()),
@@ -9015,26 +9015,28 @@ mod tests {
         }
     }
 
-    fn test_task_runner_ctx_with_adapter_type(adapter_type: AdapterType) -> TaskRunnerCtx {
+    fn test_task_runner_ctx_with_db_config(db_config: DbConfig) -> TaskRunnerCtx {
         let mut ctx = test_task_runner_ctx(None);
-        let adapter_globals = test_adapter_globals(&ctx.resolver_state.dbt_profile, adapter_type);
+        let adapter_globals = test_adapter_globals(&test_dbt_profile(db_config));
         Arc::get_mut(&mut ctx.inner)
             .expect("sole owner of inner right after construction")
             .adapter_globals = adapter_globals;
         ctx
     }
 
-    fn test_adapter_globals(profile: &DbtProfile, adapter_type: AdapterType) -> NodeAdapterGlobals {
-        NodeAdapterGlobals::new(test_adapter_store_for(adapter_type), profile)
-    }
-
-    fn test_adapter_store_for(adapter_type: AdapterType) -> Arc<AdapterStore> {
-        Arc::new(AdapterStore::new_mock(vec![adapter_type], adapter_type).expect("valid store"))
+    /// Mock adapters for the adapters `profile` declares, with the scopes of the same profile.
+    fn test_adapter_globals(profile: &DbtProfile) -> NodeAdapterGlobals {
+        let store = AdapterStore::new_mock(
+            profile.adapters.keys().copied().collect(),
+            profile.default_adapter,
+        )
+        .expect("valid store");
+        NodeAdapterGlobals::new(Arc::new(store), profile)
     }
 
     #[dbt_runtime::test]
     async fn run_cache_dialect_sets_plain_dialect_for_default_redshift() {
-        let ctx = test_task_runner_ctx_with_adapter_type(AdapterType::Redshift);
+        let ctx = test_task_runner_ctx_with_db_config(DbConfig::Redshift(Box::default()));
         assert_eq!(run_cache_dialect(&ctx), "redshift");
     }
 
@@ -9046,7 +9048,7 @@ mod tests {
 
     #[dbt_runtime::test]
     async fn run_cache_dialect_sets_normalization_dialect_for_redshift_case_sensitive() {
-        let ctx = test_task_runner_ctx_with_adapter_type(AdapterType::Redshift);
+        let ctx = test_task_runner_ctx_with_db_config(DbConfig::Redshift(Box::default()));
         ctx.inner
             .run_cache_ctx
             .redshift_case_sensitivity_enabled
@@ -9074,7 +9076,7 @@ mod tests {
 
     #[dbt_runtime::test]
     async fn run_cache_service_redshift_case_sensitivity_enabled_defaults_false() {
-        let ctx = test_task_runner_ctx_with_adapter_type(AdapterType::Redshift);
+        let ctx = test_task_runner_ctx_with_db_config(DbConfig::Redshift(Box::default()));
 
         let adapter = ctx
             .adapter_store()
@@ -9096,7 +9098,7 @@ mod tests {
 
     #[dbt_runtime::test]
     async fn run_cache_service_before_run_without_run_phase_skips_warehouse_work() {
-        let ctx = test_task_runner_ctx_with_adapter_type(AdapterType::Redshift);
+        let ctx = test_task_runner_ctx_with_db_config(DbConfig::Redshift(Box::default()));
 
         let adapter = ctx
             .adapter_store()
@@ -9333,6 +9335,24 @@ mod tests {
                 .get_relation(target.as_ref())
                 .is_none()
         );
+    }
+
+    /// A one-adapter profile on `db_config`.
+    fn test_dbt_profile(db_config: DbConfig) -> DbtProfile {
+        let default_adapter = db_config.adapter_type();
+        let adapters = IndexMap::from([(default_adapter, ProfileAdapter::single(db_config))]);
+        DbtProfile {
+            profile: "default".to_string(),
+            target: "dev".to_string(),
+            defer_to_target: None,
+            allow_clones: true,
+            adapters,
+            default_adapter,
+            schema: "dbt_test".to_string(),
+            database: "db".to_string(),
+            relative_profile_path: PathBuf::new(),
+            threads: None,
+        }
     }
 
     use dbt_common::serde_utils::Omissible;
@@ -9704,24 +9724,7 @@ mod tests {
             disabled_nodes: Nodes::default(),
             macros,
             operations: Operations::default(),
-            dbt_profile: {
-                let db_config = DbConfig::Snowflake(Box::<SnowflakeDbConfig>::default());
-                let default_adapter = db_config.adapter_type();
-                let adapters =
-                    IndexMap::from([(default_adapter, ProfileAdapter::single(db_config))]);
-                DbtProfile {
-                    profile: "default".to_string(),
-                    target: "dev".to_string(),
-                    defer_to_target: None,
-                    allow_clones: true,
-                    adapters,
-                    default_adapter,
-                    schema: "dbt_test".to_string(),
-                    database: "db".to_string(),
-                    relative_profile_path: PathBuf::new(),
-                    threads: None,
-                }
-            },
+            dbt_profile: test_dbt_profile(DbConfig::Snowflake(Box::<SnowflakeDbConfig>::default())),
             cloud_config: None,
             render_results: Arc::new(RenderResults::default()),
             node_resolver: Arc::new(DummyNodeResolverTracker),

@@ -48,6 +48,12 @@ pub struct NodeAdapterGlobals {
 impl NodeAdapterGlobals {
     /// `store` must be built from `profile`.
     pub fn new(store: Arc<AdapterStore>, profile: &DbtProfile) -> Self {
+        debug_assert!(
+            store.default_adapter_type() == profile.default_adapter
+                && store.declared().iter().eq(profile.adapters.keys()),
+            "the adapter store {store:?} is not built from profile '{}'",
+            profile.profile
+        );
         Self {
             scopes: AdapterScopes::from_profile(profile),
             store,
@@ -60,7 +66,8 @@ impl NodeAdapterGlobals {
     }
 
     /// Shadows the env's `adapter`, `api` and `dialect` in `ctx` with `adapter_type`'s, and
-    /// `target`/`env` for a declared non-default adapter.
+    /// `target`/`env` for a declared non-default adapter. The node context already holds the
+    /// node's own `database` and `schema`.
     pub fn insert_for_node(
         &self,
         ctx: &mut impl Extend<(String, MinijinjaValue)>,
@@ -82,6 +89,29 @@ impl NodeAdapterGlobals {
         if let Some(scope) = self.insert_adapter(ctx, adapter_type)? {
             // The overlay's `dialect`, when present, equals the one `insert_adapter` just wrote.
             scope.insert_overlay(ctx);
+        }
+        Ok(())
+    }
+
+    /// [`Self::insert_for_node`] plus the `database` and `schema` a node of `adapter_type` starts
+    /// from, for an on-run hook, whose `DbtOperation` holds the default adapter's.
+    pub fn insert_for_hook(
+        &self,
+        ctx: &mut impl Extend<(String, MinijinjaValue)>,
+        adapter_type: AdapterType,
+    ) -> FsResult<()> {
+        if let Some(scope) = self.insert_adapter(ctx, adapter_type)? {
+            scope.insert_target(ctx);
+            ctx.extend([
+                (
+                    "database".to_string(),
+                    MinijinjaValue::from(scope.database.as_str()),
+                ),
+                (
+                    "schema".to_string(),
+                    MinijinjaValue::from(scope.schema.as_str()),
+                ),
+            ]);
         }
         Ok(())
     }
@@ -1247,14 +1277,19 @@ mod tests {
     #[test]
     fn default_adapter_globals_are_the_store_default() {
         let globals = snowflake_default_globals();
-        for connection in [false, true] {
+        type Insert = fn(
+            &NodeAdapterGlobals,
+            &mut BTreeMap<String, MinijinjaValue>,
+            AdapterType,
+        ) -> FsResult<()>;
+        let inserts: [Insert; 3] = [
+            NodeAdapterGlobals::insert_for_node,
+            NodeAdapterGlobals::insert_for_connection,
+            NodeAdapterGlobals::insert_for_hook,
+        ];
+        for insert in inserts {
             let mut ctx = BTreeMap::new();
-            let inserted = if connection {
-                globals.insert_for_connection(&mut ctx, AdapterType::Snowflake)
-            } else {
-                globals.insert_for_node(&mut ctx, AdapterType::Snowflake)
-            };
-            inserted.expect("default globals");
+            insert(&globals, &mut ctx, AdapterType::Snowflake).expect("default globals");
             // No `target`/`env`/`database`/`schema`: the env globals already hold the default's.
             assert_eq!(keys(&ctx), ["adapter", "api", "dialect"]);
             let adapter = ctx["adapter"]
@@ -1336,6 +1371,27 @@ mod tests {
         assert_eq!(ctx["database"].as_str(), Some("bq-proj"));
         assert_eq!(ctx["schema"].as_str(), Some("bq_ds"));
         assert_eq!(ctx["dialect"].as_str(), Some("bigquery"));
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "is not built from profile")]
+    fn adapter_globals_reject_a_store_with_another_default() {
+        let store = AdapterStore::new_mock(
+            vec![AdapterType::Snowflake, AdapterType::Bigquery],
+            AdapterType::Bigquery,
+        )
+        .expect("valid store");
+        NodeAdapterGlobals::new(Arc::new(store), &snowflake_default_profile());
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "is not built from profile")]
+    fn adapter_globals_reject_a_store_with_other_declared_adapters() {
+        let store = AdapterStore::new_mock(vec![AdapterType::Snowflake], AdapterType::Snowflake)
+            .expect("valid store");
+        NodeAdapterGlobals::new(Arc::new(store), &snowflake_default_profile());
     }
 
     #[test]

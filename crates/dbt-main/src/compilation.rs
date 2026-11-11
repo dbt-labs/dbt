@@ -34,7 +34,10 @@ use dbt_jinja_utils::{
     jinja_environment::JinjaEnv,
     listener::JinjaTypeCheckingEventListenerFactory,
     node_resolver::{NodeResolver, PackageSearchOrder},
-    phases::{build_operation_context_btreemap, configure_compile_and_run_jinja_environment},
+    phases::{
+        NodeAdapterGlobals, build_operation_context_btreemap,
+        configure_compile_and_run_jinja_environment,
+    },
 };
 use dbt_loader::args::*;
 use dbt_parser::args::ResolveArgs;
@@ -2330,6 +2333,14 @@ impl DbtProjectCompilation {
             // path hands the resolved state to the blocking pool, so it needs an
             // owned handle. `Nodes` is maps of `Arc`s, so the clone below is shallow.
             let resolved_state = Arc::new(resolved_state);
+            // No node: the render takes the run adapter's connection, as `get_show_sql` does.
+            let mut base_context = base_context;
+            NodeAdapterGlobals::new(Arc::clone(&adapter_store), &resolved_state.dbt_profile)
+                .insert_for_connection(
+                    Arc::get_mut(&mut base_context)
+                        .expect("run-operation's base context has one owner"),
+                    adapter_store.run_adapter_type(),
+                )?;
 
             // Macro path returns the macro author's `return` value (any `Value`,
             // stringified for display); inline-SQL path returns the Phase 1 rendered
