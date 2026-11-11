@@ -623,7 +623,7 @@ pub async fn resolve_snapshots(
                         .clone(),
                     table_format: snapshot_config.table_format.clone(),
                 },
-                __adapter_attr__: AdapterAttr::from_config_and_dialect(
+                __adapter_attr__: AdapterAttr::from_lazy_config_and_dialect(
                     &snapshot_config.__warehouse_specific_config__,
                     selected_adapter,
                 ),

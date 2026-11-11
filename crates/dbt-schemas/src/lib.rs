@@ -177,7 +177,9 @@ pub mod schemas {
             CheckConfig, DEFAULT_CHECK_SEVERITY, InfoSchemaConfig, ProjectCheckConfig,
             ResolvedCheckConfig, SUPPORTED_INFO_SCHEMA_VERSIONS, SelectionFilterOn,
         };
-        pub use configs::common::{WarehouseSpecificNodeConfig, same_warehouse_config};
+        pub use configs::common::{
+            LazyWarehouseSpecificNodeConfig, WarehouseSpecificNodeConfig, same_warehouse_config,
+        };
         pub use configs::config_keys::ConfigKeys;
         pub use configs::config_merge::{DefaultTo, Packages, Tags, TblProperties};
         pub use configs::data_test_config::{

@@ -101,7 +101,7 @@ pub(crate) fn create_mock_dbt_model(cfg: TestModelConfig) -> DbtModel {
         depends_on: NodeDependsOn::default(),
     };
 
-    let wh_config = WarehouseSpecificNodeConfig {
+    let wh_config: LazyWarehouseSpecificNodeConfig = WarehouseSpecificNodeConfig {
         tblproperties: Some(TblProperties(
             cfg.tbl_properties
                 .into_iter()
@@ -137,9 +137,11 @@ pub(crate) fn create_mock_dbt_model(cfg: TestModelConfig) -> DbtModel {
             )),
         }),
         ..Default::default()
-    };
+    }
+    .into();
 
-    let adapter_attr = AdapterAttr::from_config_and_dialect(&wh_config, AdapterType::Databricks);
+    let adapter_attr =
+        AdapterAttr::from_lazy_config_and_dialect(&wh_config, AdapterType::Databricks);
 
     DbtModel {
         deprecated_config: ModelConfig {
@@ -148,7 +150,7 @@ pub(crate) fn create_mock_dbt_model(cfg: TestModelConfig) -> DbtModel {
                 ..Default::default()
             }),
             table_format: cfg.table_format,
-            __warehouse_specific_config__: wh_config.into(),
+            __warehouse_specific_config__: wh_config,
             ..Default::default()
         },
         __common_attr__: CommonAttributes {

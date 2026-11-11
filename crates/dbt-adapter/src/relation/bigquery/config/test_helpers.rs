@@ -195,7 +195,7 @@ pub(crate) fn make_local_config(cfg: TestTableConfig) -> DbtModel {
         unrendered_config: Default::default(),
     };
 
-    let wh_config = WarehouseSpecificNodeConfig {
+    let wh_config: LazyWarehouseSpecificNodeConfig = WarehouseSpecificNodeConfig {
         partition_by: cfg
             .partition_by
             .map(PartitionConfig::BigqueryPartitionConfig),
@@ -247,13 +247,14 @@ pub(crate) fn make_local_config(cfg: TestTableConfig) -> DbtModel {
             },
         ),
         ..Default::default()
-    };
+    }
+    .into();
 
-    let adapter_attr = AdapterAttr::from_config_and_dialect(&wh_config, AdapterType::Bigquery);
+    let adapter_attr = AdapterAttr::from_lazy_config_and_dialect(&wh_config, AdapterType::Bigquery);
 
     DbtModel {
         deprecated_config: ModelConfig {
-            __warehouse_specific_config__: wh_config.into(),
+            __warehouse_specific_config__: wh_config,
             ..Default::default()
         },
         __common_attr__: CommonAttributes {

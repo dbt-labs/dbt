@@ -1127,7 +1127,7 @@ async fn build_model_nodes(
                 sync: model_config.sync.clone(),
                 compiled_code: None,
             },
-            __adapter_attr__: AdapterAttr::from_config_and_dialect(
+            __adapter_attr__: AdapterAttr::from_lazy_config_and_dialect(
                 &model_config.__warehouse_specific_config__,
                 selected_adapter,
             ),

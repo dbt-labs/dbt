@@ -29,7 +29,9 @@ use crate::schemas::common::{
 use crate::schemas::dbt_column::{DbtColumnRef, deserialize_dbt_columns, serialize_dbt_columns};
 use crate::schemas::manifest::GrantAccessToTarget;
 use crate::schemas::project::configs::common::log_state_mod_diff;
-use crate::schemas::project::configs::common::{grants_equal, tags_eq_vec};
+use crate::schemas::project::configs::common::{
+    LazyWarehouseSpecificNodeConfig, grants_equal, tags_eq_vec,
+};
 use crate::schemas::project::{TblProperties, WarehouseSpecificNodeConfig, same_warehouse_config};
 use crate::schemas::relations::default_dbt_quoting_for;
 use crate::schemas::serde::{PartitionsConfig, QueryTag, StringOrArrayOfStrings};
@@ -6652,16 +6654,13 @@ impl AdapterAttr {
         self
     }
 
-    /// Creates a new [AdapterAttr] from a given [&WarehouseSpecificNodeConfig] and adapter type string
-    pub fn from_config_and_dialect(
-        config: &WarehouseSpecificNodeConfig,
+    /// Creates a new [AdapterAttr] from a given [&LazyWarehouseSpecificNodeConfig] and adapter type
+    pub fn from_lazy_config_and_dialect(
+        config: &LazyWarehouseSpecificNodeConfig,
         adapter_type: AdapterType,
     ) -> Self {
         // Nodes with a default config share one value per adapter type instead of each
         // allocating its own empty attribute structs.
-        // TODO: Temporary until `WarehouseSpecificNodeConfig` is stored lazily on every node
-        // config. An unset lazy config then maps to these shared values without comparing
-        // against the default.
         static DEFAULT_CONFIG_ATTRS: LazyLock<HashMap<AdapterType, AdapterAttr>> =
             LazyLock::new(|| {
                 let config = WarehouseSpecificNodeConfig::default();
@@ -6669,15 +6668,15 @@ impl AdapterAttr {
                     .map(|adapter_type| (adapter_type, AdapterAttr::build(&config, adapter_type)))
                     .collect()
             });
-        if *config == WarehouseSpecificNodeConfig::default() {
-            return DEFAULT_CONFIG_ATTRS[&adapter_type].clone();
+        match config.get() {
+            Some(config) => Self::build(config, adapter_type),
+            None => DEFAULT_CONFIG_ATTRS[&adapter_type].clone(),
         }
-        Self::build(config, adapter_type)
     }
 
     fn build(config: &WarehouseSpecificNodeConfig, adapter_type: AdapterType) -> Self {
         // TODO: Creation of configs should be delegated to the adapter specific attr struct
-        // For a default config this runs once per adapter type, and `from_config_and_dialect`
+        // For a default config this runs once per adapter type, and `from_lazy_config_and_dialect`
         // caches the result.
         match adapter_type {
             AdapterType::Snowflake => {
@@ -8962,6 +8961,52 @@ catalogs:
         let m: ModelConstraint = dbt_yaml::from_str("type: primary_key").unwrap();
         assert_eq!(m.warn_unsupported, Some(true));
         assert_eq!(m.warn_unenforced, Some(true));
+    }
+
+    #[test]
+    fn adapter_attr_from_lazy_config_matches_built_config() {
+        use super::AdapterAttr;
+        use crate::schemas::project::WarehouseSpecificNodeConfig;
+        use crate::schemas::project::configs::common::LazyWarehouseSpecificNodeConfig;
+        use strum::IntoEnumIterator;
+
+        let set = WarehouseSpecificNodeConfig {
+            transient: Some(true),
+            labels_from_meta: Some(true),
+            backup: Some(true),
+            use_uniform: Some(true),
+            ..Default::default()
+        };
+        for adapter_type in AdapterType::iter() {
+            for config in [WarehouseSpecificNodeConfig::default(), set.clone()] {
+                let built = AdapterAttr::build(&config, adapter_type);
+                let lazy = AdapterAttr::from_lazy_config_and_dialect(
+                    &LazyWarehouseSpecificNodeConfig::from(config),
+                    adapter_type,
+                );
+                assert_eq!(
+                    serde_json::to_value(&built).unwrap(),
+                    serde_json::to_value(&lazy).unwrap(),
+                    "{adapter_type}"
+                );
+            }
+
+            let unset = || {
+                AdapterAttr::from_lazy_config_and_dialect(
+                    &LazyWarehouseSpecificNodeConfig::default(),
+                    adapter_type,
+                )
+            };
+            let ptrs = |attr: &AdapterAttr| {
+                (
+                    attr.snowflake_attr.as_ref().map(Arc::as_ptr),
+                    attr.databricks_attr.as_ref().map(Arc::as_ptr),
+                    attr.bigquery_attr.as_ref().map(Arc::as_ptr),
+                    attr.redshift_attr.as_ref().map(Arc::as_ptr),
+                )
+            };
+            assert_eq!(ptrs(&unset()), ptrs(&unset()), "{adapter_type}");
+        }
     }
 }
 

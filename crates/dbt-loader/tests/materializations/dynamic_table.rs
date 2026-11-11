@@ -15,7 +15,9 @@ use dbt_jinja_utils::mock_object::MockJinjaObject;
 use dbt_schemas::dbt_types::RelationType;
 use dbt_schemas::schemas::common::DbtMaterialization;
 use dbt_schemas::schemas::dbt_catalogs::TableFormat;
-use dbt_schemas::schemas::project::{ModelConfig, WarehouseSpecificNodeConfig};
+use dbt_schemas::schemas::project::{
+    LazyWarehouseSpecificNodeConfig, ModelConfig, WarehouseSpecificNodeConfig,
+};
 use dbt_schemas::schemas::relations::SNOWFLAKE_RESOLVED_QUOTING;
 use dbt_schemas::schemas::{
     AdapterAttr, CommonAttributes, DbtModel, DbtModelAttr, NodeBaseAttributes,
@@ -127,7 +129,7 @@ fn serialized_model(config: &LocalConfig) -> Value {
         depends_on: Default::default(),
     };
 
-    let wh_config = WarehouseSpecificNodeConfig {
+    let wh_config: LazyWarehouseSpecificNodeConfig = WarehouseSpecificNodeConfig {
         target_lag: config.target_lag.clone(),
         snowflake_warehouse: config.snowflake_warehouse.clone(),
         snowflake_initialization_warehouse: config.snowflake_initialization_warehouse.clone(),
@@ -144,12 +146,13 @@ fn serialized_model(config: &LocalConfig) -> Value {
         base_location_root: config.iceberg.then(|| "_dbt".to_string()),
         iceberg_version: config.iceberg.then_some(2),
         ..Default::default()
-    };
-    let adapter_attr = AdapterAttr::from_config_and_dialect(&wh_config, ADAPTER);
+    }
+    .into();
+    let adapter_attr = AdapterAttr::from_lazy_config_and_dialect(&wh_config, ADAPTER);
 
     let model = DbtModel {
         deprecated_config: ModelConfig {
-            __warehouse_specific_config__: wh_config.into(),
+            __warehouse_specific_config__: wh_config,
             ..Default::default()
         },
         __model_attr__: DbtModelAttr {

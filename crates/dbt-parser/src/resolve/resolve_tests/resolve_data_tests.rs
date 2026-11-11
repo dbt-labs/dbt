@@ -848,7 +848,7 @@ pub async fn resolve_data_tests(
                     state: test_config.state.clone(),
                 }
             },
-            __adapter_attr__: AdapterAttr::from_config_and_dialect(
+            __adapter_attr__: AdapterAttr::from_lazy_config_and_dialect(
                 &test_config.__warehouse_specific_config__,
                 selected_adapter,
             ),
