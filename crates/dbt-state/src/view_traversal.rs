@@ -51,6 +51,10 @@ pub struct ViewTraversalResult {
 
     /// A subset of `seen_tables` whose view definitions could not be fetched.
     pub unresolvable_tables: BTreeSet<String>,
+
+    /// Raw text of references skipped because they are not tables (for
+    /// example, Snowflake stage paths); nothing can check their freshness.
+    pub unsupported_references: BTreeSet<String>,
 }
 
 /// Drives recursive, concurrent traversal of view definitions across a
@@ -133,6 +137,7 @@ impl ViewDefinitionTraverser {
         let mut seen_relations: BTreeMap<String, Arc<dyn BaseRelation>> = BTreeMap::new();
         let mut view_definitions: BTreeMap<String, Arc<ViewDefinition>> = BTreeMap::new();
         let mut unresolvable_tables: BTreeSet<String> = BTreeSet::new();
+        let mut unsupported_references: BTreeSet<String> = BTreeSet::new();
         let mut queue: VecDeque<Arc<dyn BaseRelation>> = relations.iter().cloned().collect();
         let mut inflight: JoinSet<AdapterResult<FetchTaskResult>> = JoinSet::new();
 
@@ -157,6 +162,7 @@ impl ViewDefinitionTraverser {
                         &mut view_definitions,
                         &mut queue,
                         &seen_fqns,
+                        &mut unsupported_references,
                         &view_def,
                         self.sources_extractor.as_ref(),
                     )?,
@@ -245,6 +251,7 @@ impl ViewDefinitionTraverser {
                     &mut view_definitions,
                     &mut queue,
                     &seen_fqns,
+                    &mut unsupported_references,
                     &v,
                     self.sources_extractor.as_ref(),
                 )?;
@@ -271,6 +278,7 @@ impl ViewDefinitionTraverser {
             seen_tables,
             leaf_relations,
             unresolvable_tables,
+            unsupported_references,
         })
     }
 }
@@ -312,6 +320,16 @@ fn extract_referenced_tables(
         .map(|upstreams| upstreams.into_iter().map(|nr| nr.into_inner()).collect())
 }
 
+/// Whether `fqn` names a Snowflake stage rather than a table.
+///
+/// The `SourcesExtractor` boundary returns plain names, so a stage is
+/// recognizable only by its leading `@` (an unquoted Snowflake identifier
+/// cannot start with `@`). Other engines give `@` other meanings, so only
+/// Snowflake references are checked.
+pub fn is_snowflake_stage_reference(adapter_type: AdapterType, fqn: &FullyQualifiedName) -> bool {
+    adapter_type == AdapterType::Snowflake && fqn.table().name().starts_with('@')
+}
+
 /// Record a fetched view in the result map and enqueue any newly-seen
 /// upstream references onto the BFS queue.
 ///
@@ -322,12 +340,17 @@ fn record_and_enqueue(
     view_definitions: &mut BTreeMap<String, Arc<ViewDefinition>>,
     queue: &mut VecDeque<Arc<dyn BaseRelation>>,
     seen_tables: &BTreeSet<String>,
+    unsupported_references: &mut BTreeSet<String>,
     view_def: &Arc<ViewDefinition>,
     sources_extractor: &dyn SourcesExtractor,
 ) -> AdapterResult<()> {
     view_definitions.insert(view_def.fqn.clone(), Arc::clone(view_def));
     let refs = extract_referenced_tables(adapter_type, view_def, sources_extractor)?;
     for ref_fqn in refs {
+        if is_snowflake_stage_reference(adapter_type, &ref_fqn) {
+            unsupported_references.insert(ref_fqn.table().name().to_string());
+            continue;
+        }
         // `ref_fqn` is a `FullyQualifiedName` with separate catalog/schema/table
         // identifiers. Build a synthetic `BaseRelation` from those parts so
         // the cache key derives from `semantic_fqn()`, matching seed relations.
@@ -380,6 +403,8 @@ mod tests {
     use dbt_adapter_core::ExecutionPhase;
     use dbt_common::AsyncAdapterResult;
     use dbt_common::cancellation::CancellationToken;
+    use dbt_frontend_common::error::FrontendResult;
+    use dbt_frontend_common::named_reference::NamedReference;
     use dbt_schemas::schemas::common::ResolvedQuoting;
     use dbt_schemas::schemas::legacy_catalog::{CatalogTable, ColumnMetadata};
     use dbt_schemas::schemas::relations::base::{BaseRelation, RelationPattern};
@@ -1124,5 +1149,111 @@ mod tests {
             "elapsed: {elapsed:?}"
         );
         let _ = result; // either Err(cancelled) or Ok depending on timing — both acceptable
+    }
+
+    struct StageExtractor;
+
+    impl SourcesExtractor for StageExtractor {
+        fn extract_upstreams(
+            &self,
+            _adapter_type: AdapterType,
+            _sql: &str,
+            _default_catalog: &str,
+            _default_schema: &str,
+            _quoted_name_ignore_case: bool,
+        ) -> FrontendResult<Vec<NamedReference<FullyQualifiedName>>> {
+            Ok(vec![NamedReference::new(
+                FullyQualifiedName::new("DB", "S", "@S.STG"),
+                false,
+            )])
+        }
+
+        fn extract_standalone_expression_upstreams(
+            &self,
+            adapter_type: AdapterType,
+            sql: &str,
+            default_catalog: &str,
+            default_schema: &str,
+            quoted_name_ignore_case: bool,
+        ) -> FrontendResult<Vec<NamedReference<FullyQualifiedName>>> {
+            self.extract_upstreams(
+                adapter_type,
+                sql,
+                default_catalog,
+                default_schema,
+                quoted_name_ignore_case,
+            )
+        }
+    }
+
+    #[test]
+    fn is_snowflake_stage_reference_detects_leading_at_on_snowflake_only() {
+        let stage = FullyQualifiedName::new("DB", "S", "@S.STG");
+        assert!(is_snowflake_stage_reference(AdapterType::Snowflake, &stage));
+        assert!(!is_snowflake_stage_reference(
+            AdapterType::Snowflake,
+            &FullyQualifiedName::new("DB", "S", "STG")
+        ));
+        assert!(!is_snowflake_stage_reference(
+            AdapterType::Databricks,
+            &stage
+        ));
+    }
+
+    fn stage_graph() -> (String, Arc<MockAdapter>) {
+        let v1 = rel("V1").semantic_fqn();
+        let mut graph = HashMap::new();
+        graph.insert(v1.clone(), Some("SELECT $1 FROM @s.stg".to_string()));
+        (v1, Arc::new(MockAdapter::new(graph)))
+    }
+
+    #[dbt_runtime::test]
+    async fn view_over_stage_reports_unsupported_reference() {
+        let (_, mock) = stage_graph();
+        let adapter: Arc<dyn MetadataAdapter> = mock.clone();
+        let traverser = ViewDefinitionTraverser::new(adapter, Arc::new(StageExtractor));
+
+        let result = traverser
+            .traverse(
+                &[rel("V1")],
+                &BTreeSet::new(),
+                CancellationToken::never_cancels(),
+            )
+            .await
+            .expect("ok");
+
+        assert_eq!(
+            result.unsupported_references,
+            BTreeSet::from(["@S.STG".to_string()])
+        );
+        assert!(result.seen_tables.is_empty());
+        assert!(result.unresolvable_tables.is_empty());
+        assert!(
+            mock.call_counts.lock().keys().all(|k| !k.contains('@')),
+            "stage reference was fetched"
+        );
+    }
+
+    #[dbt_runtime::test]
+    async fn stage_in_cached_view_is_reported_again() {
+        let (v1, mock) = stage_graph();
+        let adapter: Arc<dyn MetadataAdapter> = mock.clone();
+        let traverser = ViewDefinitionTraverser::new(adapter, Arc::new(StageExtractor));
+
+        for _ in 0..2 {
+            let result = traverser
+                .traverse(
+                    &[rel("V1")],
+                    &BTreeSet::new(),
+                    CancellationToken::never_cancels(),
+                )
+                .await
+                .expect("ok");
+            assert_eq!(
+                result.unsupported_references,
+                BTreeSet::from(["@S.STG".to_string()])
+            );
+        }
+        assert_eq!(mock.count_for(&v1), 1, "V1 fetched more than once");
     }
 }
