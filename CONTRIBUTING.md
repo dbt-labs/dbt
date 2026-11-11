@@ -74,7 +74,7 @@ There are some tools that will be helpful to you in developing locally. While th
 
 These are the tools used in `dbt-core` development and testing:
 
-- [`hatch`](https://hatch.pypa.io/) for build backend, environment management, and running tests across Python versions (3.10, 3.11, 3.12, and 3.13)
+- [`hatch`](https://hatch.pypa.io/) for build backend, environment management, and running tests across Python versions (3.11, 3.12, 3.13, and 3.14)
 - [`pytest`](https://docs.pytest.org/en/latest/) to define, discover, and run tests
 - [`flake8`](https://flake8.pycqa.org/en/latest/) for code linting
 - [`black`](https://github.com/psf/black) for code formatting
@@ -108,7 +108,7 @@ brew install postgresql
 
 ### Installation
 
-First make sure you have Python 3.10 or later installed. Ensure you have the latest version of pip installed with `pip install --upgrade pip`. Next, install `hatch`.  Finally set up `dbt-core` for development:
+First make sure you have Python 3.11 or later installed. Ensure you have the latest version of pip installed with `pip install --upgrade pip`. Next, install `hatch`.  Finally set up `dbt-core` for development:
 
 ```sh
 cd core

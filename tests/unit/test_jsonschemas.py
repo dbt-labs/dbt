@@ -178,6 +178,11 @@ class TestDatabricksConfigKeys:
         "use_safer_relation_operations": True,
         "unique_tmp_table_suffix": True,
         "skip_optimize": True,
+        "use_materialization_v2": True,
+        "access_control_list": [{"group_name": "analysts", "permission_level": "CAN_VIEW"}],
+        "notebook_access_control_list": [
+            {"group_name": "analysts", "permission_level": "CAN_READ"}
+        ],
     }
 
     def test_model_config_no_warning(self):

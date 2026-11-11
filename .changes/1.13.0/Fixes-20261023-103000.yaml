@@ -1,0 +1,6 @@
+kind: Fixes
+body: Supply credentials for `dbt deps` git packages through a git credential helper instead of embedding them in the clone URL, so clones of redirecting repositories keep working with libcurl 7.81.0-1ubuntu1.30 and later
+time: 2026-10-23T10:30:00.000000+05:30
+custom:
+    Author: ash2shukla
+    Issue: "16861"

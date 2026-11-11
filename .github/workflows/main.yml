@@ -59,7 +59,10 @@ jobs:
           python-version: "3.11"
 
       - name: "Install hatch"
-        uses: pypa/hatch@257e27e51a6a5616ed08a39a408a21c35c9931bc # pypa/hatch@install
+        run: |
+          # From PyPI: pypa/hatch@install curls a GitHub release asset with no retry,
+          # and has been failing intermittently with "gzip: stdin: not in gzip format".
+          python -m pip install hatch==1.18.2
 
       - name: Install python dependencies
         run: |
@@ -85,7 +88,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
     env:
       HATCH_PYTHON: ${{ matrix.python-version }}
 
@@ -99,7 +102,10 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: "Install hatch"
-        uses: pypa/hatch@257e27e51a6a5616ed08a39a408a21c35c9931bc # pypa/hatch@install
+        run: |
+          # From PyPI: pypa/hatch@install curls a GitHub release asset with no retry,
+          # and has been failing intermittently with "gzip: stdin: not in gzip format".
+          python -m pip install hatch==1.18.2
 
       - name: Run unit tests
         uses: nick-fields/retry@ce71cc2ab81d554ebbe88c79ab5975992d79ba08 # nick-fields/retry@v3
@@ -146,9 +152,11 @@ jobs:
       - name: generate include
         id: generate-include
         run: |
-          INCLUDE=('"python-version":"3.10","os":"windows-latest"' '"python-version":"3.10","os":"macos-14"' )
+          # macOS is pinned to macos-15, not macos-latest: GitHub retired macos-14 (2026-11-02) and
+          # macos-latest has moved to a newer image, so a fixed label keeps the image from changing under CI.
+          INCLUDE=('"python-version":"3.11","os":"windows-latest"' '"python-version":"3.11","os":"macos-15"' )
           INCLUDE_GROUPS="["
-          for include in ${INCLUDE[@]}; do
+          for include in "${INCLUDE[@]}"; do
               for group in $(seq 1 ${{ env.PYTHON_INTEGRATION_TEST_WORKERS }}); do
                   INCLUDE_GROUPS+=$(sed 's/$/, /' <<< "{\"split-group\":\"${group}\",${include}}")
               done
@@ -168,7 +176,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
         os: ["ubuntu-latest"]
         split-group: ${{ fromJson(needs.integration-metadata.outputs.split-groups) }}
     env:
@@ -219,7 +227,10 @@ jobs:
           PGPASSWORD: password
 
       - name: "Install hatch"
-        uses: pypa/hatch@257e27e51a6a5616ed08a39a408a21c35c9931bc # pypa/hatch@install
+        run: |
+          # From PyPI: pypa/hatch@install curls a GitHub release asset with no retry,
+          # and has been failing intermittently with "gzip: stdin: not in gzip format".
+          python -m pip install hatch==1.18.2
 
       - name: Run integration tests
         uses: nick-fields/retry@ce71cc2ab81d554ebbe88c79ab5975992d79ba08 # nick-fields/retry@v3
@@ -297,7 +308,10 @@ jobs:
         uses: ./.github/actions/setup-postgres-windows
 
       - name: "Install hatch"
-        uses: pypa/hatch@257e27e51a6a5616ed08a39a408a21c35c9931bc # pypa/hatch@install
+        run: |
+          # From PyPI: pypa/hatch@install curls a GitHub release asset with no retry,
+          # and has been failing intermittently with "gzip: stdin: not in gzip format".
+          python -m pip install hatch==1.18.2
 
       - name: Run integration tests
         uses: nick-fields/retry@ce71cc2ab81d554ebbe88c79ab5975992d79ba08 # nick-fields/retry@v3
@@ -360,7 +374,10 @@ jobs:
           python-version: "3.11"
 
       - name: "Install hatch"
-        uses: pypa/hatch@257e27e51a6a5616ed08a39a408a21c35c9931bc # pypa/hatch@install
+        run: |
+          # From PyPI: pypa/hatch@install curls a GitHub release asset with no retry,
+          # and has been failing intermittently with "gzip: stdin: not in gzip format".
+          python -m pip install hatch==1.18.2
 
       - name: Install python dependencies
         run: |

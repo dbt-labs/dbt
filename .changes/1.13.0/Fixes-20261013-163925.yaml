@@ -1,0 +1,11 @@
+kind: Fixes
+body: Add the `builtin_macros_prefer_overrides` behavior flag (default false). When
+  enabled and the macro search package is itself internal (e.g. dbt or dbt_postgres,
+  as for builtin macros run via `adapter.execute_macro`), the adapter override is
+  preferred over the base dbt implementation and a root-project macro always wins.
+  It is off by default because a root-project macro that shares a builtin's name
+  can otherwise hijack calls made inside dbt's own macros.
+time: 2026-10-13T16:39:25.938064+02:00
+custom:
+    Author: piotrbator2 tauhid621
+    Issue: "16540"
