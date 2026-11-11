@@ -1150,8 +1150,8 @@ pub async fn resolve_inner(
     nodes.groups.extend(groups);
     disabled_nodes.groups.extend(disabled_groups);
 
-    // Resolve SQLs and get nodes and rendered SQLs except refs and sources
-    let (models, rendering_results, disabled_models) = resolve_models(
+    // Resolve SQLs and get nodes except refs and sources
+    let (models, disabled_models) = resolve_models(
         arg,
         package,
         package_quoting,
@@ -1412,9 +1412,8 @@ pub async fn resolve_inner(
     }
 
     let collector = RenderResults {
-        rendering_results: rendering_results
+        rendering_results: analyses_rendering_results
             .into_iter()
-            .chain(analyses_rendering_results)
             .chain(checks_rendering_results)
             .chain(functions_rendering_results)
             .collect(),

@@ -86,7 +86,6 @@ use dbt_schemas::state::ModelStatus;
 use dbt_schemas::state::NodeResolverTracker;
 use dbt_schemas::state::ResourcePathKind;
 use dbt_yaml::Spanned;
-use minijinja::MacroSpans;
 use minijinja::constants::CURRENT_PATH;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -193,13 +192,11 @@ pub async fn resolve_models(
     jinja_type_checking_event_listener_factory: Arc<dyn JinjaTypeCheckingEventListenerFactory>,
 ) -> FsResult<(
     HashMap<String, Arc<DbtModel>>,
-    HashMap<String, (String, MacroSpans)>,
     HashMap<String, Arc<DbtModel>>,
 )> {
     let mut models: HashMap<String, Arc<DbtModel>> = HashMap::new();
     let mut models_with_execute: HashMap<String, DbtModel> = HashMap::new();
     let mut disabled_models: HashMap<String, Arc<DbtModel>> = HashMap::new();
-    let mut rendering_results: HashMap<String, (String, MacroSpans)> = HashMap::new();
     let dependency_package_name = dependency_package_name_from_ctx(&env, base_ctx);
 
     let is_dependency = dependency_package_name.is_some();
@@ -382,7 +379,6 @@ pub async fn resolve_models(
         &mut models,
         &mut models_with_execute,
         &mut disabled_models,
-        &mut rendering_results,
         &mut duplicates,
     )
     .await?;
@@ -465,7 +461,7 @@ pub async fn resolve_models(
             .into_iter()
             .map(|(v, _)| (v.__common_attr__.unique_id.to_string(), Arc::new(v))),
     );
-    Ok((models, rendering_results, disabled_models))
+    Ok((models, disabled_models))
 }
 
 /// Builds a `DbtModel` node for each rendered model file, routing it into `models`,
@@ -516,7 +512,6 @@ async fn build_model_nodes(
     models: &mut HashMap<String, Arc<DbtModel>>,
     models_with_execute: &mut HashMap<String, DbtModel>,
     disabled_models: &mut HashMap<String, Arc<DbtModel>>,
-    rendering_results: &mut HashMap<String, (String, MacroSpans)>,
     duplicates: &mut Vec<(String, String, Option<String>, PathBuf)>,
 ) -> FsResult<()> {
     let mut node_names = HashSet::new();
@@ -535,8 +530,8 @@ async fn build_model_nodes(
         adapter,
         alias_adapter,
         raw_code,
-        rendered_sql,
-        macro_spans,
+        rendered_sql: _,
+        macro_spans: _,
         properties: maybe_properties,
         status,
         render_error_deferred,
@@ -1187,7 +1182,6 @@ async fn build_model_nodes(
                     models.insert(unique_id.to_owned(), Arc::new(dbt_model));
                 }
                 node_names.insert(model_name.to_owned());
-                rendering_results.insert(unique_id, (rendered_sql.clone(), macro_spans.clone()));
 
                 if !arg.skip_creating_generic_tests {
                     properties.as_testable().persist(
