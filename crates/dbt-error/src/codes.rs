@@ -252,9 +252,6 @@ pub enum ErrorCode {
     /// no longer matched the owner that ran it; a reclaim already overwrote
     /// it, so the write would have clobbered the new owner's own result.
     StateStopRejected = 1414,
-    /// A unit test's expected-schema query, run on the local engine, could not
-    /// be translated from the project's dialect, so it was not run.
-    SidecarUnitTestSchemaUntranslatable = 1417,
 
     // Serialization [1450–1460]
     JsonInvalid = 1450,

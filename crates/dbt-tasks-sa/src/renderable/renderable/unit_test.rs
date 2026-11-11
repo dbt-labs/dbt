@@ -1111,10 +1111,10 @@ fn infer_unit_test_expected_schema(
     // rendered for the default's dialect.
     // ClickHouse: the probe's session-scoped TEMPORARY table is invisible to
     // introspection (never in system.columns), so infer via the query schema.
-    let uses_query_schema = unit_test.node_adapter() == AdapterType::DuckDB
+    let materialization = if unit_test.node_adapter() == AdapterType::DuckDB
         || unit_test.node_adapter() == AdapterType::ClickHouse
-        || options.use_query_schema_fallback;
-    let materialization = if uses_query_schema {
+        || options.use_query_schema_fallback
+    {
         r#"
   {% macro get_expected_columns(sql, select_sql_header) -%}
       {%- if select_sql_header is not none -%}
@@ -1122,12 +1122,6 @@ fn infer_unit_test_expected_schema(
       {%- endif -%}
       {%- set columns_in_relation = get_column_schema_from_query(sql, select_sql_header) -%}
       {{ return(columns_in_relation) }}
-  {%- endmacro %}
-  {% macro get_expected_schema_query(sql, select_sql_header) -%}
-      {%- if select_sql_header is not none -%}
-          {%- set select_sql_header = render(select_sql_header) -%}
-      {%- endif -%}
-      {{ return(get_empty_subquery_sql(sql, select_sql_header)) }}
   {%- endmacro %}"#
     } else {
         r#"
@@ -1173,20 +1167,30 @@ fn infer_unit_test_expected_schema(
         options.preserve_recorded_probe_sql,
     );
     let local_probe_sql = if options.try_structural_inference {
-        if options.use_query_schema_fallback {
-            Some(fallback_probe.query_sql.clone())
-        } else {
-            Some(
-                build_unit_test_schema_probe(
-                    unit_test.node_adapter(),
-                    type_ops.as_ref(),
-                    compiled_model_sql,
-                    subqueries,
-                    options.preserve_recorded_probe_sql,
-                )
-                .query_sql,
+        // Generated dict/CSV fixtures contain Jinja raw blocks. Render those
+        // before SQL analysis, keeping SQL fixtures and compiled model SQL intact.
+        let rendered_subqueries = subqueries
+            .iter()
+            .zip(&unit_test.__unit_test_attr__.given)
+            .map(|((id, sql), given)| {
+                let sql = if given.format == schemas::common::Formats::Sql {
+                    sql.clone()
+                } else {
+                    ctx.env.render_str(sql, &run_context, &[])?
+                };
+                Ok((id.clone(), sql))
+            })
+            .collect::<FsResult<Vec<_>>>()?;
+        Some(
+            build_unit_test_schema_probe(
+                unit_test.node_adapter(),
+                type_ops.as_ref(),
+                compiled_model_sql,
+                &rendered_subqueries,
+                options.preserve_recorded_probe_sql,
             )
-        }
+            .query_sql,
+        )
     } else {
         None
     };
@@ -1290,33 +1294,6 @@ fn infer_unit_test_expected_schema(
             args.push(Value::from(()));
         } else {
             args.push(Value::from(format!("WITH {ctes} ")));
-        }
-
-        // Only local compute runs the statement on an engine that may not accept the
-        // project's dialect, so only then is it rendered and checked.
-        if uses_query_schema
-            && effective_unit_test_execute(unit_test, ctx.inner.execute)
-                == schemas::profiles::Execute::Sidecar
-        {
-            // The statement `get_column_schema_from_query` runs: the same macro, arguments and state.
-            let query_macro = state
-                .lookup("get_expected_schema_query", &[])
-                .ok_or_else(|| {
-                    fs_err!(
-                        ErrorCode::Unexpected,
-                        "Internal error: macro lookup failed while checking the schema query of unit test {}",
-                        unique_id
-                    )
-                })?;
-            let query = query_macro.call(&state, &args, &[]).map_err(|e| {
-                fs_err!(
-                    ErrorCode::JinjaError,
-                    "Internal error while rendering the schema query of unit test {}: {}",
-                    unique_id,
-                    e
-                )
-            })?;
-            task_hooks.check_unit_test_schema_query(ctx, unit_test, &query.to_string())?;
         }
 
         let columns_as_value = func.call(&state, &args, &[]).map_err(|e| {
@@ -2386,7 +2363,8 @@ fn render_unit_test(
     );
     let schema_inference_options = ExpectedSchemaInferenceOptions {
         use_query_schema_fallback,
-        try_structural_inference: use_query_schema_fallback,
+        try_structural_inference: use_query_schema_fallback
+            || effective_execute == schemas::profiles::Execute::Sidecar,
         cache_result: cache_expected_schema,
         preserve_recorded_probe_sql: schema_policy.preserve_recorded_probe_sql,
         // Use the same identity as fixture discovery and model rendering.
