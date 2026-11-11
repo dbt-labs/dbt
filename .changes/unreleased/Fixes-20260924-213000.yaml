@@ -1,0 +1,6 @@
+kind: Fixes
+body: Parse inline semantic models and metrics declared on versioned models instead of silently dropping them
+time: 2026-09-24T21:30:00.000000-04:00
+custom:
+    Author: TTMichaelA pgoslatara
+    Issue: "15294"

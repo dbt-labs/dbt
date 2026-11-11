@@ -779,11 +779,7 @@ class NodePatchParser(PatchParser[NodeTarget, ParsedNodePatch], Generic[NodeTarg
         # code consistency.
         deprecation_date: Optional[datetime.datetime] = None
         time_spine: Optional[TimeSpine] = None
-        semantic_model = None
-        metrics = None
-        derived_semantics = None
-        agg_time_dimension = None
-        primary_entity = None
+        semantic_fields: Dict[str, Any] = {}
 
         if isinstance(block.target, UnparsedModelUpdate):
             deprecation_date = block.target.deprecation_date
@@ -801,11 +797,7 @@ class NodePatchParser(PatchParser[NodeTarget, ParsedNodePatch], Generic[NodeTarg
                 if block.target.time_spine
                 else None
             )
-            semantic_model = block.target.semantic_model
-            metrics = block.target.metrics
-            derived_semantics = block.target.derived_semantics
-            agg_time_dimension = block.target.agg_time_dimension
-            primary_entity = block.target.primary_entity
+            semantic_fields = self._semantic_patch_fields(block.target)
         return ParsedNodePatch(
             name=block.target.name,
             original_file_path=block.target.original_file_path,
@@ -822,12 +814,22 @@ class NodePatchParser(PatchParser[NodeTarget, ParsedNodePatch], Generic[NodeTarg
             constraints=block.target.constraints,
             deprecation_date=deprecation_date,
             time_spine=time_spine,
-            semantic_model=semantic_model,
-            metrics=metrics,
-            derived_semantics=derived_semantics,
-            agg_time_dimension=agg_time_dimension,
-            primary_entity=primary_entity,
+            **semantic_fields,
         )
+
+    @staticmethod
+    def _semantic_patch_fields(
+        target: UnparsedModelUpdate, include: bool = True
+    ) -> Dict[str, Any]:
+        if not include:
+            return {}
+        return {
+            "semantic_model": target.semantic_model,
+            "metrics": target.metrics,
+            "derived_semantics": target.derived_semantics,
+            "agg_time_dimension": target.agg_time_dimension,
+            "primary_entity": target.primary_entity,
+        }
 
     def parse_patch(self, block: TargetBlock[NodeTarget], refs: ParserRef) -> None:
         patch = self._get_node_patch(block, refs)
@@ -1078,6 +1080,9 @@ class ModelPatchParser(NodePatchParser[UnparsedModelUpdate]):
                     block.target, unparsed_version.v
                 )
 
+                semantic_fields = self._semantic_patch_fields(
+                    target, include=unparsed_version.v == latest_version
+                )
                 versioned_model_patch = ParsedNodePatch(
                     name=target.name,
                     original_file_path=target.original_file_path,
@@ -1093,6 +1098,7 @@ class ModelPatchParser(NodePatchParser[UnparsedModelUpdate]):
                     latest_version=latest_version,
                     constraints=unparsed_version.constraints or target.constraints,
                     deprecation_date=unparsed_version.deprecation_date,
+                    **semantic_fields,
                 )
                 # Node patched before config because config patching depends on model name,
                 # which may have been updated in the version patch
