@@ -8,7 +8,6 @@ pub use dbt_common::error::{
 /// Convert [AuthError] to [AdapterError].
 ///
 /// Use with `.map_err(auth_error_to_adapter_error)` where needed.
-#[inline]
 pub fn auth_error_to_adapter_error(err: AuthError) -> AdapterError {
     match err {
         AuthError::Adbc(adbc_err) => adbc_error_to_adapter_error(adbc_err),
@@ -22,7 +21,6 @@ pub fn auth_error_to_adapter_error(err: AuthError) -> AdapterError {
 /// Convert [ArrowError] to [AdapterError].
 ///
 /// Use with `.map_err(arrow_error_to_adapter_error)` where needed.
-#[inline]
 pub fn arrow_error_to_adapter_error(err: ArrowError) -> AdapterError {
     AdapterError::new(AdapterErrorKind::Arrow, err.to_string())
 }

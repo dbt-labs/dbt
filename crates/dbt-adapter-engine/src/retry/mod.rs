@@ -1,13 +1,15 @@
-use std::borrow::Cow;
 use std::time::Duration;
 
-use crate::cow::lowercase;
 use dbt_adapter_core::AdapterType;
 use dbt_adbc::Connection;
 use dbt_adbc::duration::parse_duration;
 use dbt_auth::AdapterConfig;
 use dbt_common::Cancellable;
 use dbt_common::tracing::dbt_emit::emit_info_log_message;
+
+mod databricks;
+mod redshift;
+mod snowflake;
 
 #[derive(Debug)]
 pub enum BackoffStrategy {
@@ -33,33 +35,6 @@ impl BackoffStrategy {
             BackoffStrategy::Exponential => {
                 let seconds = 2u64.saturating_pow(attempt.saturating_sub(1));
                 Duration::from_secs(seconds.min(60))
-            }
-        }
-    }
-}
-
-/// Shared retry-loop skeleton for [`ConnectionRetryPolicy`] and [`QueryRetryPolicy`].
-fn retry_loop<T, E>(
-    max_retries: u32,
-    mut attempt_fn: impl FnMut() -> Result<T, E>,
-    is_retryable: impl Fn(&E) -> bool,
-    delay_for: impl Fn(u32) -> Duration,
-    on_retry: impl Fn(u32, Duration, &E),
-) -> Result<T, E> {
-    let mut attempt: u32 = 0;
-    loop {
-        match attempt_fn() {
-            Ok(v) => return Ok(v),
-            Err(err) => {
-                if attempt >= max_retries || !is_retryable(&err) {
-                    return Err(err);
-                }
-                let delay = delay_for(attempt + 1);
-                on_retry(attempt + 1, delay, &err);
-                if !delay.is_zero() {
-                    std::thread::sleep(delay);
-                }
-                attempt += 1;
             }
         }
     }
@@ -185,11 +160,39 @@ impl ConnectionRetryPolicy {
     fn is_retryable(&self, config: &AdapterConfig, err: &adbc_core::error::Error) -> bool {
         use AdapterType::*;
         match self.adapter_type {
-            Snowflake => is_retryable_snowflake_login_error(config, err),
-            Databricks => is_retryable_databricks_error(config, err),
-            Redshift => is_retryable_redshift_login_error(config, err),
+            Snowflake => snowflake::is_retryable_snowflake_login_error(config, err),
+            Databricks => databricks::is_retryable_databricks_error(config, err),
+            Redshift => redshift::is_retryable_redshift_login_error(config, err),
             // Other adapters don't have a retryable-error criteria implemented here yet.
             _ => false,
+        }
+    }
+}
+
+/// Shared retry-loop skeleton for [`ConnectionRetryPolicy`] and [`QueryRetryPolicy`].
+#[inline(always)]
+fn retry_loop<T, E>(
+    max_retries: u32,
+    mut attempt_fn: impl FnMut() -> Result<T, E>,
+    is_retryable: impl Fn(&E) -> bool,
+    delay_for: impl Fn(u32) -> Duration,
+    on_retry: impl Fn(u32, Duration, &E),
+) -> Result<T, E> {
+    let mut attempt: u32 = 0;
+    loop {
+        match attempt_fn() {
+            Ok(v) => return Ok(v),
+            Err(err) => {
+                if attempt >= max_retries || !is_retryable(&err) {
+                    return Err(err);
+                }
+                let delay = delay_for(attempt + 1);
+                on_retry(attempt + 1, delay, &err);
+                if !delay.is_zero() {
+                    std::thread::sleep(delay);
+                }
+                attempt += 1;
+            }
         }
     }
 }
@@ -205,59 +208,10 @@ const GO_NET_TRANSIENT_PATTERNS: &[&str] = &[
     "context deadline exceeded",
 ];
 
-fn matches_go_net_transient(msg_lowercase: &str) -> bool {
+pub(crate) fn matches_go_net_transient(msg_lowercase: &str) -> bool {
     GO_NET_TRANSIENT_PATTERNS
         .iter()
         .any(|p| msg_lowercase.contains(p))
-}
-
-/// The Snowflake error number, from the ADBC vendor code when the driver sets
-/// it, otherwise from the leading `NNNNNN (SQLSTATE):`
-fn snowflake_error_number(err: &adbc_core::error::Error) -> Option<i32> {
-    if err.vendor_code > 0 {
-        return Some(err.vendor_code);
-    }
-    let msg = err.message.trim_start().trim_start_matches("[Snowflake] ");
-    let (number, rest) = msg.split_once(' ')?;
-    if number.len() == 6 && rest.starts_with('(') {
-        number.parse().ok()
-    } else {
-        None
-    }
-}
-
-/// A login or SSO endpoint answered with a non-200 status, which the message
-/// carries as `HTTP: <status>`. These four gosnowflake codes are contiguous:
-/// `ErrFailedToAuth`, `ErrFailedToAuthSAML`, `ErrFailedToAuthOKTA` and
-/// `ErrFailedToGetSSO`.
-///
-/// https://github.com/dbt-labs/gosnowflake/blob/v1.17.11/errors.go#L161-L168
-const SNOWFLAKE_ERR_FAILED_TO_AUTH: i32 = 261004;
-const SNOWFLAKE_ERR_FAILED_TO_GET_SSO: i32 = 261007;
-
-/// Snowflake answered the login request and refused it: bad credentials, SSO
-/// not configured on the account, and the rest of the `390xxx` family.
-const SNOWFLAKE_LOGIN_REFUSED_FIRST: i32 = 390000;
-const SNOWFLAKE_LOGIN_REFUSED_LAST: i32 = 390999;
-
-fn is_retryable_http_status(status: u16) -> bool {
-    const REQUEST_TIMEOUT: u16 = 408;
-    const TOO_MANY_REQUESTS: u16 = 429;
-    const SERVER_ERROR_FIRST: u16 = 500;
-    const SERVER_ERROR_LAST: u16 = 599;
-    matches!(
-        status,
-        REQUEST_TIMEOUT | TOO_MANY_REQUESTS | SERVER_ERROR_FIRST..=SERVER_ERROR_LAST
-    )
-}
-
-/// The status in gosnowflake's `... HTTP: <status>, URL: ...` login errors.
-fn http_status_in_message(msg: &str) -> Option<u16> {
-    let tail = msg.split_once("HTTP: ")?.1;
-    let end = tail
-        .find(|c: char| !c.is_ascii_digit())
-        .unwrap_or(tail.len());
-    tail[..end].parse().ok()
 }
 
 /// Retries a transient query-*execution* failure (as opposed to
@@ -310,179 +264,8 @@ impl QueryRetryPolicy {
     }
 
     fn is_retryable(&self, err: &adbc_core::error::Error) -> bool {
-        is_retryable_redshift_query_error(self.retry_all, &err.message)
+        redshift::is_retryable_redshift_query_error(self.retry_all, &err.message)
     }
-}
-
-/// Substring heuristics for known-transient Redshift errors, not proof that
-/// every match is actually transient. `retry_all` widens to any error.
-fn is_retryable_redshift_query_error(retry_all: bool, message: &str) -> bool {
-    if retry_all {
-        return true;
-    }
-
-    let msg = lowercase(Cow::Borrowed(message));
-    // Catalog race after a concurrent DROP/CREATE.
-    msg.contains("could not open relation with oid")
-        // MVCC serialization conflict.
-        || msg.contains("conflict with concurrent transaction")
-        // Schema catalog race (can also be a genuine permanent error).
-        || (msg.contains("schema") && msg.contains("does not exist"))
-}
-
-/// Mirrors the Python dbt-snowflake retryable exception list:
-///
-/// ```text
-/// InternalError, InternalServerError, ServiceUnavailableError,
-/// GatewayTimeoutError, RequestTimeoutError, BadGatewayError,
-/// OtherHTTPRetryableError, BindUploadError
-/// ```
-///
-/// We don't have those exception types directly in ADBC; the same failures
-/// surface as `Status::IO` (network-level) or `Status::Internal` with the
-/// gosnowflake error string preserved. We match on both the status and
-/// well-known substrings of the underlying Go error.
-///
-/// - `retry_all`: catch every error class (Python's `retry_all=True` →
-///   `retryable_exceptions = [Error]`).
-/// - `retry_on_database_errors`: broaden to internal/unknown statuses
-///   (Python's `retry_on_database_errors=True` → adds `DatabaseError`).
-fn is_retryable_snowflake_login_error(
-    config: &AdapterConfig,
-    err: &adbc_core::error::Error,
-) -> bool {
-    use adbc_core::error::Status;
-
-    let retry_all = config.get_bool("retry_all").unwrap_or(false);
-    if retry_all {
-        return true;
-    }
-
-    // Known-permanent: do not retry real auth failures.
-    if matches!(err.status, Status::Unauthenticated | Status::Unauthorized) {
-        return false;
-    }
-
-    let msg = lowercase(Cow::Borrowed(&err.message));
-    if matches_go_net_transient(&msg) {
-        return true;
-    }
-    // Snowflake-specific patterns on top of the shared Go transport set.
-    const SNOWFLAKE_TRANSIENT_PATTERNS: &[&str] = &[
-        // gosnowflake HTTP client (net/http Client.Timeout fired)
-        "client.timeout exceeded while awaiting headers",
-        // Snowflake / HTTP gateway responses
-        "internal server error",
-        "bad gateway",
-        "service unavailable",
-        "gateway timeout",
-        "request timeout",
-        // gosnowflake stage-file upload transient
-        "bindupload",
-    ];
-    if SNOWFLAKE_TRANSIENT_PATTERNS.iter().any(|p| msg.contains(p)) {
-        return true;
-    }
-
-    // The driver reports every connect failure as `Status::IO`, so the Snowflake
-    // error number is the only thing separating permanent from transient below.
-    match snowflake_error_number(err) {
-        Some(SNOWFLAKE_ERR_FAILED_TO_AUTH..=SNOWFLAKE_ERR_FAILED_TO_GET_SSO) => {
-            return http_status_in_message(&err.message).is_some_and(is_retryable_http_status);
-        }
-        Some(SNOWFLAKE_LOGIN_REFUSED_FIRST..=SNOWFLAKE_LOGIN_REFUSED_LAST) => {
-            return config.get_bool("retry_on_database_errors").unwrap_or(false);
-        }
-        _ => {}
-    }
-
-    // gosnowflake blocks external-browser sign-in for 60s after a failure, so a retry
-    // inside that window always fails, and one past it opens another browser tab.
-    // This error carries no Snowflake number, so the message is the only handle.
-    //
-    // https://github.com/dbt-labs/gosnowflake/blob/v1.17.11/auth.go#L760-L995
-    if msg.contains("external browser sign-in failed recently") {
-        return false;
-    }
-
-    // Network-level failures.
-    if matches!(err.status, Status::IO) {
-        return true;
-    }
-
-    // `retry_on_database_errors=true` broadens to internal/unknown statuses,
-    // mirroring Python's inclusion of `DatabaseError` in the retryable list.
-    let retry_on_database_errors = config.get_bool("retry_on_database_errors").unwrap_or(false);
-    if retry_on_database_errors && matches!(err.status, Status::Internal | Status::Unknown) {
-        return true;
-    }
-
-    false
-}
-
-/// Mirrors dbt-databricks (Python) `retry_all` and the databricks-sql-go driver's
-/// classification of transient HTTP failures.
-///
-/// Transient errors are wrapped as `databricks: retryableError: ...
-/// https://github.com/databricks/databricks-sql-go/blob/47829480ca775b0e16c43969414fdf908c0a7894/internal/errors/err.go#L225-L226
-///
-/// - `retry_all`: retry any error (Python's `retryable_exceptions = [Error]`).
-fn is_retryable_databricks_error(config: &AdapterConfig, err: &adbc_core::error::Error) -> bool {
-    if config.get_bool("retry_all").unwrap_or(false) {
-        return true;
-    }
-
-    lowercase(Cow::Borrowed(&err.message)).contains("retryableerror")
-}
-
-/// Mirrors the Python dbt-redshift retryable exception list:
-///
-/// Uses **message-substring matching** rather than ADBC status codes. Statuses are
-/// unreliable on this path because the amazon ADBC driver
-/// deliberately collapses categories:
-/// - `errToAdbcErr(adbc.StatusInternal, err, "connect to Redshift")`
-///   (`shared_connection.go:439,494`) is the single sink for every pgx failure —
-///   dial timeouts, DNS `no such host`, `tls error`, AND server-side
-///   `FATAL: password authentication failed` all surface as `Status::Internal`.
-/// - `Status::Unauthenticated` is used for both permanent OAuth misconfig (`Failed to
-///   get access token`) AND transient file-lock contention on the token cache
-///   (`failed to acquire lease`, `shared_connection.go:417`). A status-based predicate
-///   can't tell them apart.
-///
-/// Message matching mirrors how Python's `_handle_execute_exception`
-/// https://github.com/dbt-labs/dbt-adapters/blob/802d40f0f0eb663c17e5be08d1e3fb2e55b9ee34/dbt-redshift/src/dbt/adapters/redshift/connections.py#L670-L671
-/// classifies retryable errors — check substrings of the driver's error text against a
-/// known-transient allowlist.
-fn is_retryable_redshift_login_error(
-    config: &AdapterConfig,
-    err: &adbc_core::error::Error,
-) -> bool {
-    if config.get_bool("retry_all").unwrap_or(false) {
-        return true;
-    }
-
-    let msg = err.message.to_lowercase();
-    if matches_go_net_transient(&msg) {
-        return true;
-    }
-    // Redshift-specific patterns on top of the shared Go transport set. Cross-reference
-    // against `amazon-redshift-python-driver` (`redshift_connector/core.py`)
-    // https://github.com/dbt-labs/dbt-adapters/blob/802d40f0f0eb663c17e5be08d1e3fb2e55b9ee34/dbt-redshift/src/dbt/adapters/redshift/connections.py#L668-L669
-    const REDSHIFT_TRANSIENT_PATTERNS: &[&str] = &[
-        // SQL:2003 Class 08 (Connection Exception).
-        // When Redshift returns one of these, pgx renders it as `... (SQLSTATE 08XXX)`.
-        // v1 catches all of them via `ProgrammingError` → `DatabaseError` (part of the default retryable set).
-        // Search for "Class 08" in the reference: https://www.postgresql.org/docs/8.0/errcodes-appendix.html
-        "sqlstate 0800",
-        // Amazon driver: transient file-lock contention on the token cache
-        // https://github.com/adbc-drivers/amazon/blob/bc8fd6d014cc0ffe7436ec8930ddde081a0029e9/go/shared_connection.go#L418-L419
-        "failed to acquire lease",
-        // AWS specifics (DescribeClusters, GetCredentials, GetWorkgroup)
-        "throttlingexception",
-        "serviceunavailable",
-        "internalservererror",
-    ];
-    REDSHIFT_TRANSIENT_PATTERNS.iter().any(|p| msg.contains(p))
 }
 
 #[cfg(test)]
@@ -491,8 +274,19 @@ mod tests {
     use adbc_core::error::{Error as AdbcError, Status};
     use std::time::Instant;
 
-    fn adbc_err(status: Status, msg: &str) -> AdbcError {
+    pub(crate) fn adbc_err(status: Status, msg: &str) -> AdbcError {
         AdbcError::with_message_and_status(msg, status)
+    }
+
+    pub(crate) fn cfg_default() -> AdapterConfig {
+        AdapterConfig::new(dbt_yaml::Mapping::new())
+    }
+
+    pub(crate) fn cfg_retry_all() -> AdapterConfig {
+        AdapterConfig::new(dbt_yaml::Mapping::from_iter([(
+            "retry_all".into(),
+            true.into(),
+        )]))
     }
 
     #[test]
@@ -686,195 +480,6 @@ mod tests {
         );
     }
 
-    // -- Snowflake retryable-error classifier ---------------------------------
-
-    fn cfg_default() -> AdapterConfig {
-        AdapterConfig::new(dbt_yaml::Mapping::new())
-    }
-
-    fn cfg_retry_all() -> AdapterConfig {
-        AdapterConfig::new(dbt_yaml::Mapping::from_iter([(
-            "retry_all".into(),
-            true.into(),
-        )]))
-    }
-
-    fn cfg_retry_on_database_errors() -> AdapterConfig {
-        AdapterConfig::new(dbt_yaml::Mapping::from_iter([(
-            "retry_on_database_errors".into(),
-            true.into(),
-        )]))
-    }
-
-    #[test]
-    fn snowflake_matches_gosnowflake_client_timeout() {
-        let e = adbc_err(
-            Status::Internal,
-            "Post \"https://acct.snowflakecomputing.com:443/session/v1/login-request\": \
-             context deadline exceeded (Client.Timeout exceeded while awaiting headers)",
-        );
-        assert!(is_retryable_snowflake_login_error(&cfg_default(), &e));
-    }
-
-    #[test]
-    fn snowflake_matches_io_status() {
-        let e = adbc_err(Status::IO, "dial tcp 1.2.3.4:443: i/o timeout");
-        assert!(is_retryable_snowflake_login_error(&cfg_default(), &e));
-    }
-
-    #[test]
-    fn snowflake_matches_http_5xx_substring() {
-        let cfg = cfg_default();
-        for substr in [
-            "Internal Server Error",
-            "Bad Gateway",
-            "Service Unavailable",
-            "Gateway Timeout",
-            "Request Timeout",
-        ] {
-            let e = adbc_err(Status::Internal, &format!("response: 5xx {substr}"));
-            assert!(
-                is_retryable_snowflake_login_error(&cfg, &e),
-                "expected retry for substring {substr:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn snowflake_skips_real_auth_failures_by_default() {
-        let e = adbc_err(
-            Status::Unauthenticated,
-            "Snowflake authentication failed: bad password",
-        );
-        assert!(!is_retryable_snowflake_login_error(&cfg_default(), &e));
-        // retry_all matches Python: catches every Error class, including auth.
-        assert!(is_retryable_snowflake_login_error(&cfg_retry_all(), &e));
-    }
-
-    #[test]
-    fn snowflake_respects_retry_on_database_errors_flag() {
-        let e = adbc_err(Status::Unknown, "some snowflake DB-level failure");
-        assert!(!is_retryable_snowflake_login_error(&cfg_default(), &e));
-        assert!(is_retryable_snowflake_login_error(
-            &cfg_retry_on_database_errors(),
-            &e
-        ));
-    }
-
-    #[test]
-    fn snowflake_skips_truly_unrelated_failure() {
-        let e = adbc_err(Status::InvalidArguments, "bad config option");
-        assert!(!is_retryable_snowflake_login_error(&cfg_default(), &e));
-        assert!(!is_retryable_snowflake_login_error(
-            &cfg_retry_on_database_errors(),
-            &e
-        ));
-    }
-
-    #[test]
-    fn snowflake_skips_saml_404() {
-        let e = adbc_err(
-            Status::IO,
-            "[Snowflake] 261005 (08004): failed to auth via SAML for unknown reason. \
-             HTTP: 404, URL: https://acct.snowflakecomputing.com:443/session/authenticator-request?requestId=x",
-        );
-        assert!(!is_retryable_snowflake_login_error(&cfg_default(), &e));
-        assert!(is_retryable_snowflake_login_error(&cfg_retry_all(), &e));
-    }
-
-    #[test]
-    fn snowflake_skips_login_404() {
-        let e = adbc_err(
-            Status::IO,
-            "261004 (08004): failed to auth for unknown reason. \
-             HTTP: 404, URL: https://acct.snowflakecomputing.com:443/session/v1/login-request",
-        );
-        assert!(!is_retryable_snowflake_login_error(&cfg_default(), &e));
-    }
-
-    #[test]
-    fn snowflake_skips_get_sso_4xx() {
-        let forbidden = adbc_err(
-            Status::IO,
-            "261007 (08004): failed to auth via OKTA for unknown reason. HTTP: 403, URL: https://x",
-        );
-        assert!(!is_retryable_snowflake_login_error(
-            &cfg_default(),
-            &forbidden
-        ));
-
-        let unavailable = adbc_err(
-            Status::IO,
-            "261007 (08004): failed to auth via OKTA for unknown reason. HTTP: 503, URL: https://x",
-        );
-        assert!(is_retryable_snowflake_login_error(
-            &cfg_default(),
-            &unavailable
-        ));
-    }
-
-    #[test]
-    fn snowflake_retries_auth_5xx_and_throttling() {
-        for status in [408, 429, 500, 503] {
-            let e = adbc_err(
-                Status::IO,
-                &format!(
-                    "261004 (08004): failed to auth for unknown reason. HTTP: {status}, URL: https://x"
-                ),
-            );
-            assert!(
-                is_retryable_snowflake_login_error(&cfg_default(), &e),
-                "expected retry for HTTP {status}"
-            );
-        }
-    }
-
-    #[test]
-    fn snowflake_login_rejection_follows_retry_on_database_errors() {
-        let e = adbc_err(
-            Status::IO,
-            "390190 (08004): There was an error related to the SAML Identity Provider account parameter.",
-        );
-        assert!(!is_retryable_snowflake_login_error(&cfg_default(), &e));
-        assert!(is_retryable_snowflake_login_error(
-            &cfg_retry_on_database_errors(),
-            &e
-        ));
-    }
-
-    #[test]
-    fn snowflake_skips_external_browser_backoff() {
-        let e = adbc_err(
-            Status::IO,
-            "External browser sign-in failed recently due to an unrecoverable \
-             authentication failure (e.g., IP restriction, IDP error)",
-        );
-        assert!(!is_retryable_snowflake_login_error(&cfg_default(), &e));
-        assert!(is_retryable_snowflake_login_error(&cfg_retry_all(), &e));
-    }
-
-    #[test]
-    fn snowflake_error_number_prefers_vendor_code() {
-        let mut e = adbc_err(Status::IO, "connection failed with no numeric prefix");
-        e.vendor_code = 390100;
-        assert_eq!(snowflake_error_number(&e), Some(390100));
-        assert!(!is_retryable_snowflake_login_error(&cfg_default(), &e));
-    }
-
-    #[test]
-    fn snowflake_still_retries_uncoded_failures() {
-        for msg in [
-            "timeout after 5s and 3 attempts. HTTP Status: 503. Hanging?",
-            "dial tcp 1.2.3.4:443: connect: connection refused",
-        ] {
-            let e = adbc_err(Status::IO, msg);
-            assert!(
-                is_retryable_snowflake_login_error(&cfg_default(), &e),
-                "expected retry for {msg:?}"
-            );
-        }
-    }
-
     #[test]
     fn retry_loop_calls_on_retry_only_before_another_attempt() {
         use std::cell::Cell;
@@ -930,35 +535,6 @@ mod tests {
         assert_eq!(recovered, Ok(7));
         assert_eq!(attempts.get(), 2);
         assert_eq!(reported.get(), 1);
-    }
-
-    // -- Databricks retryable-error classifier ---------------------------------
-
-    #[test]
-    fn databricks_matches_retryable_error_marker() {
-        let e = adbc_err(
-            Status::Internal,
-            "databricks: request error: get operation status request error: \
-             request error after 1 attempt(s): databricks: retryableError: \
-             unexpected HTTP status 503 Service Unavailable",
-        );
-        assert!(is_retryable_databricks_error(&cfg_default(), &e));
-    }
-
-    #[test]
-    fn databricks_skips_non_retryable_errors() {
-        let e = adbc_err(
-            Status::Internal,
-            "databricks: execution error: Table or view not found",
-        );
-        assert!(!is_retryable_databricks_error(&cfg_default(), &e));
-    }
-
-    #[test]
-    fn databricks_respects_retry_all_flag() {
-        let e = adbc_err(Status::InvalidArguments, "bad config option");
-        assert!(!is_retryable_databricks_error(&cfg_default(), &e));
-        assert!(is_retryable_databricks_error(&cfg_retry_all(), &e));
     }
 
     // -- `retries` alias for `connect_retries` --------------------------------
@@ -1020,141 +596,12 @@ mod tests {
         ] {
             let e = adbc_err(Status::Internal, msg);
             assert!(
-                is_retryable_snowflake_login_error(&cfg_default(), &e),
+                snowflake::is_retryable_snowflake_login_error(&cfg_default(), &e),
                 "snowflake should retry {msg:?}"
             );
             assert!(
-                is_retryable_redshift_login_error(&cfg_default(), &e),
+                redshift::is_retryable_redshift_login_error(&cfg_default(), &e),
                 "redshift should retry {msg:?}"
-            );
-        }
-    }
-
-    // -- Redshift retryable-error classifier ----------------------------------
-
-    #[test]
-    fn redshift_matches_pgx_dial_via_shared_go_net_set() {
-        // pgx dial failures land as `Status::Internal` via the amazon driver's
-        // `errToAdbcErr(adbc.StatusInternal, ..., "connect to Redshift")` sink
-        // (`shared_connection.go:439`). The Redshift predicate has no pgx-wrapper
-        // patterns of its own — it relies entirely on the shared Go-transport set
-        // catching the inner substring (`i/o timeout`, `connection refused`,
-        // `no such host`, …).
-        //
-        // Known gap: on macOS the OS-level TCP `ETIMEDOUT` stringifies as
-        // `dial tcp X: connect: operation timed out`, which contains none of the
-        // shared substrings and therefore does NOT retry. Linux emits
-        // `dial tcp X: i/o timeout` for the same failure and does retry.
-        // `retry_all: true` is the escape hatch for macOS users on the bad path.
-        for msg in [
-            "lookup my-cluster.redshift.amazonaws.com: no such host",
-            "Post http://x/: context deadline exceeded",
-        ] {
-            let e = adbc_err(Status::Internal, msg);
-            assert!(
-                is_retryable_redshift_login_error(&cfg_default(), &e),
-                "expected retry for msg {msg:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn redshift_matches_sqlstate_class_08_connection_exception() {
-        for msg in [
-            // 08000 connection_exception
-            "server terminated (SQLSTATE 08000)",
-            // 08003 connection_does_not_exist
-            "connection does not exist (SQLSTATE 08003)",
-            // 08006 connection_failure
-            "FATAL: connection reset by administrator (SQLSTATE 08006)",
-            // 08007 transaction_resolution_unknown
-            "transaction resolution unknown (SQLSTATE 08007)",
-            // Case-insensitive: pgx renders `SQLSTATE` but nothing prevents an
-            // intermediate wrapper from re-casing along the way.
-            "server terminated (SqlState 08006)",
-        ] {
-            let e = adbc_err(Status::Internal, msg);
-            assert!(
-                is_retryable_redshift_login_error(&cfg_default(), &e),
-                "expected retry for msg {msg:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn redshift_skips_sqlstate_08p01_protocol_violation() {
-        let e = adbc_err(Status::Internal, "protocol violation (SQLSTATE 08P01)");
-        assert!(!is_retryable_redshift_login_error(&cfg_default(), &e));
-    }
-
-    #[test]
-    fn redshift_matches_transient_lease_contention() {
-        let e = adbc_err(
-            Status::Unauthenticated,
-            "[redshift] failed to acquire lease: timeout waiting for lock on /home/x/.dbt/leases/redshift-token",
-        );
-        assert!(is_retryable_redshift_login_error(&cfg_default(), &e));
-    }
-
-    #[test]
-    fn redshift_matches_aws_control_plane_transients() {
-        for msg in [
-            "ThrottlingException: Your request rate is too high",
-            "ServiceUnavailable: The service is temporarily unavailable",
-        ] {
-            let e = adbc_err(Status::Internal, msg);
-            assert!(
-                is_retryable_redshift_login_error(&cfg_default(), &e),
-                "expected retry for msg {msg:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn redshift_skips_class_28_auth_failure_by_default() {
-        // SQL Class 28 (invalid_authorization_specification / invalid_password) is
-        // permanent. Auth failures surface as `Status::Internal` via the amazon
-        // driver's "connect to Redshift" sink, but no transient substring matches
-        // — so this correctly does NOT retry.
-        //
-        // Stricter than Python (which classifies this as `OperationalError` and
-        // retries it via the exception-class set). `retry_all: true` is the escape
-        // hatch for users who want the Python-style behavior.
-        let e = adbc_err(
-            Status::Internal,
-            "[redshift] Could not connect to Redshift: FATAL: password authentication \
-             failed for user \"root\" (SQLSTATE 28P01)",
-        );
-        assert!(!is_retryable_redshift_login_error(&cfg_default(), &e));
-        assert!(is_retryable_redshift_login_error(&cfg_retry_all(), &e));
-    }
-
-    #[test]
-    fn redshift_skips_permanent_oauth_config_errors() {
-        // OAuth misconfig via IdC (`Failed to get access token`,
-        // `shared_connection.go:469`) is permanent — doesn't match any transient
-        // pattern.
-        let e = adbc_err(
-            Status::Unauthenticated,
-            "[redshift] Failed to get access token: invalid_client",
-        );
-        assert!(!is_retryable_redshift_login_error(&cfg_default(), &e));
-    }
-
-    #[test]
-    fn redshift_skips_config_errors() {
-        // Config / URI-parse errors from `database.go` (many `Status::InvalidArgument`
-        // sites) are permanent — no transient substring matches.
-        for msg in [
-            "[redshift] Unknown URI parameter: 'foo'",
-            "[redshift] Invalid redshift.connect_timeout: time: missing unit",
-            "[redshift] No cluster 'my-cluster' found",
-            "[redshift] URI is missing host",
-        ] {
-            let e = adbc_err(Status::InvalidArguments, msg);
-            assert!(
-                !is_retryable_redshift_login_error(&cfg_default(), &e),
-                "expected NO retry for msg {msg:?}"
             );
         }
     }

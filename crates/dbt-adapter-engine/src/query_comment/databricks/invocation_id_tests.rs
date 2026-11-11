@@ -5,7 +5,7 @@ use minijinja::{Environment, Error, ErrorKind, Value, context};
 use minijinja_contrib::pycompat::unknown_method_callback;
 use serde_json::{Value as JsonValue, json};
 
-use super::QueryCommentConfig;
+use crate::query_comment::QueryCommentConfig;
 
 fn target() -> BTreeMap<String, Value> {
     BTreeMap::from([

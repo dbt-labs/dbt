@@ -1,11 +1,20 @@
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
+use std::sync::OnceLock;
 
 use arrow_array::RecordBatch;
 use arrow_schema::Schema;
+use minijinja::State;
+use parking_lot::RwLock;
+
 use dbt_adapter_core::AdapterType;
+use dbt_adapter_engine::Options;
+use dbt_adapter_engine::behavior::make_behavior;
+use dbt_adapter_engine::clickhouse::ClickHouseCapabilities;
+use dbt_adapter_engine::databricks;
+use dbt_adapter_engine::noop_connection::NoopConnection;
 use dbt_adbc::*;
 use dbt_agate::hashers::IdentityBuildHasher;
 use dbt_auth::{AdapterConfig, Auth, AuthError};
@@ -15,21 +24,14 @@ use dbt_common::cancellation::CancellationToken;
 use dbt_common::tracing::emit::emit_trace_event;
 use dbt_schemas::schemas::common::ResolvedQuoting;
 use dbt_telemetry::AdapterConnectionOpen;
-use minijinja::State;
-use parking_lot::RwLock;
 
 use crate::cache::RelationCache;
+use crate::engine::adapter_engine::*;
 use crate::engine::query_comment::QueryCommentConfig;
+use crate::engine::retry::{ConnectionRetryPolicy, QueryRetryPolicy};
 use crate::errors::{AdapterError, adbc_error_to_adapter_error};
 use crate::sql_types::TypeOps;
 use crate::stmt_splitter::StmtSplitter;
-use dbt_adapter_engine::clickhouse::ClickHouseCapabilities;
-
-use super::adapter_engine::*;
-use super::retry::{ConnectionRetryPolicy, QueryRetryPolicy};
-use dbt_adapter_engine::behavior::make_behavior;
-use dbt_adapter_engine::databricks;
-use dbt_adapter_engine::noop_connection::NoopConnection;
 
 #[derive(Default)]
 pub struct DatabaseMap {

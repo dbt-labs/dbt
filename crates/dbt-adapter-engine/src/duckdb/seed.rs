@@ -7,6 +7,7 @@ use std::sync::{Condvar, Mutex, OnceLock, PoisonError};
 
 use adbc_core::options::{OptionStatement, OptionValue};
 use arrow_schema::Schema;
+
 use dbt_adapter_core::AdapterType;
 use dbt_adapter_sql::ident::{escape_string_literal, quote_identifier};
 use dbt_adapter_sql::types::SqlType;
