@@ -695,7 +695,8 @@ jobs:
       contents: read
     env:
       CARGO_INCREMENTAL: 0
-      RUST_BACKTRACE: 1
+      # Stderr goldens are recorded without backtraces (matches ci.yml).
+      RUST_BACKTRACE: "0"
       RUST_MIN_STACK: "8388608"
       RUSTC_WRAPPER: sccache
     steps:
