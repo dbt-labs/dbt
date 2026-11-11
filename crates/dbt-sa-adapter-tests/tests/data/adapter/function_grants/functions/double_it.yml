@@ -1,0 +1,7 @@
+functions:
+  - name: double_it
+    arguments:
+      - name: x
+        data_type: integer
+    returns:
+      data_type: integer

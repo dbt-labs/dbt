@@ -591,3 +591,22 @@ async fn adapters_redshift_run_catalog_with_extended_stats() -> FsResult<()> {
     task_seq.execute_in_with_env(&env, &[]).await?;
     Ok(())
 }
+
+/// Grants on a function name the object as a function
+/// (https://github.com/dbt-labs/fs/issues/17585). Redshift also needs the argument
+/// types: `grant execute on function <name>(integer) to public`.
+#[dbt_runtime::test]
+async fn adapters_redshift_function_grants() -> FsResult<()> {
+    run_fs_record_replay_task_seq(
+        env!("CARGO_MANIFEST_DIR"),
+        &FS_RUNNER,
+        current_function_name!(),
+        "tests/data/adapter/function_grants",
+        AdapterType::Redshift.as_ref(),
+        None,
+        &["build"],
+        None,
+        &[],
+    )
+    .await
+}

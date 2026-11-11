@@ -761,3 +761,22 @@ async fn adapters_snowflake_dynamic_table_create_or_alter_flag_off() -> FsResult
     )
     .await
 }
+
+/// Grants on a function name the object as a function
+/// (https://github.com/dbt-labs/fs/issues/17585). Snowflake also needs the
+/// argument types: `grant usage on function <name>(integer) to public`.
+#[dbt_runtime::test]
+async fn adapters_snowflake_function_grants() -> FsResult<()> {
+    run_fs_record_replay_task_seq(
+        env!("CARGO_MANIFEST_DIR"),
+        &FS_RUNNER,
+        current_function_name!(),
+        "tests/data/adapter/function_grants",
+        AdapterType::Snowflake.as_ref(),
+        None,
+        &["build"],
+        None,
+        &[],
+    )
+    .await
+}

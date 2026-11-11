@@ -419,6 +419,8 @@ impl Object for RelationObject {
                 Some(Value::from(RelationType::MaterializedView.to_string()))
             }
             Some("Table") => Some(Value::from(RelationType::Table.to_string())),
+            // `this.incorporate(type=this.Function)` in the function materialization reads this.
+            Some("Function") => Some(Value::from(RelationType::Function.to_string())),
             Some("DynamicTable") => Some(Value::from(RelationType::DynamicTable.to_string())),
             Some("InteractiveTable") => {
                 Some(Value::from(RelationType::InteractiveTable.to_string()))
@@ -1395,6 +1397,36 @@ mod tests {
             relation.get_value(&Value::from("type")),
             Some(Value::from("interactive_table"))
         );
+    }
+
+    /// The function materialization builds its target with
+    /// `this.incorporate(type=this.Function)`. If `Function` were undefined, the
+    /// target would keep the node's unset type and GRANT statements could not
+    /// tell it is a function.
+    #[test]
+    fn function_type_name_is_exposed_and_incorporates() {
+        let relation = do_create_relation(
+            AdapterType::Snowflake,
+            "d".to_string(),
+            "s".to_string(),
+            Some("f".to_string()),
+            None,
+            DEFAULT_RESOLVED_QUOTING,
+        )
+        .unwrap();
+        let relation = Arc::new(RelationObject::new(relation.into()));
+
+        assert_eq!(
+            relation.get_value(&Value::from("Function")),
+            Some(Value::from("function"))
+        );
+
+        let mut env = minijinja::Environment::new();
+        env.add_global("this", Value::from_dyn_object(relation));
+        let rendered = env
+            .render_str("{{ this.incorporate(type=this.Function).type }}", (), &[])
+            .unwrap();
+        assert_eq!(rendered, "function");
     }
 
     /// Asserts on `ErrorKind`, not the message: both this arm and the catch-all name the called
