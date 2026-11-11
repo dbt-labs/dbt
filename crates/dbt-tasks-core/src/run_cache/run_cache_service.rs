@@ -2580,9 +2580,7 @@ fn drop_clone_target_before_clone(
         return None;
     };
 
-    let jinja_state = ctx
-        .env
-        .new_state_with_context((*ctx.inner.base_context).clone());
+    let jinja_state = ctx.env.new_state_with_context(ctx.base_context_overlay());
 
     let (Some(database), Some(schema), Some(identifier)) = (
         target_relation.database(),
@@ -9142,9 +9140,7 @@ mod tests {
         relation_type: RelationType,
     ) -> Arc<dyn BaseRelation> {
         let relation = clone_target(Some(relation_type));
-        let jinja_state = ctx
-            .env
-            .new_state_with_context((*ctx.inner.base_context).clone());
+        let jinja_state = ctx.env.new_state_with_context(ctx.base_context_overlay());
         adapter
             .cache_added(&jinja_state, Arc::clone(&relation))
             .expect("cache relation");

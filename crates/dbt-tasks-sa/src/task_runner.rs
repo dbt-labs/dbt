@@ -39,6 +39,7 @@ use dbt_tasks_core::{CompiledSqlCache, PreTaskRunData};
 use dbt_telemetry::{ExecutionPhase, PhaseExecuted};
 use dbt_telemetry::{HookOutcome, HookProcessed, HookType};
 
+use minijinja::value::OverlayMap;
 use petgraph::Graph;
 use tracing::Instrument;
 use tracing::instrument;
@@ -276,10 +277,7 @@ impl TaskRunner {
         // One adapter at a time, so a recorded run keeps its order.
         for (adapter_type, selected_catalog_schemas) in groups {
             let adapter = ctx.adapter_store().get(adapter_type)?;
-            // TODO: copies the base context per adapter, and `register_adapter_schemas` copies
-            // it per schema. Layer over the shared base once `new_state_with_context` takes an
-            // `OverlayMap`.
-            let mut group_context = BTreeMap::clone(&ctx.inner.base_context);
+            let mut group_context = ctx.base_context_overlay();
             ctx.adapter_globals()
                 .insert_for_connection(&mut group_context, adapter_type)?;
             self.register_adapter_schemas(adapter, selected_catalog_schemas, group_context)
@@ -292,7 +290,7 @@ impl TaskRunner {
         &self,
         adapter: Arc<Adapter>,
         selected_catalog_schemas: BTreeMap<String, BTreeMap<String, String>>,
-        base_context: BTreeMap<String, minijinja::Value>,
+        base_context: OverlayMap,
     ) -> FsResult<()> {
         let jinja_env = Arc::clone(&self.jinja_env);
         let filter_adapter = Arc::clone(&adapter);

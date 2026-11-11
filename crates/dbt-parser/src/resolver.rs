@@ -832,12 +832,11 @@ fn unit_test_sql_macro(
     use minijinja::Value;
     use minijinja::constants::{DIALECT, TARGET_PACKAGE_NAME};
     use minijinja::dispatch_object::macro_namespace_template_resolver;
-    use minijinja::value::mutable_map::MutableMap;
 
     let dialect = adapter_type.as_ref();
-    let context = MutableMap::new();
-    context.insert(Value::from(DIALECT), Value::from(dialect));
-    context.insert(Value::from(TARGET_PACKAGE_NAME), Value::from(package_name));
+    let mut context = OverlayMap::default();
+    context.insert(DIALECT, Value::from(dialect));
+    context.insert(TARGET_PACKAGE_NAME, Value::from(package_name));
     let state = env.new_state_with_context(context);
     let direct = macro_namespace_template_resolver(&state, "get_unit_test_sql", &mut vec![])?;
     let internal_packages = get_internal_packages(dialect);
