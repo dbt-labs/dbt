@@ -34,7 +34,8 @@ on:
         type: choice
         options:
           - "ubuntu-latest"
-          - "macos-14"
+          # Pinned, not macos-latest: GitHub retired macos-14, and a fixed label keeps the image stable.
+          - "macos-15"
           - "windows-latest"
       num_runs_per_batch:
         description: "Max number of times to run the test per batch.  We always run 10 batches."
@@ -91,7 +92,10 @@ jobs:
           python-version: "${{ inputs.python_version }}"
 
       - name: "Install hatch"
-        uses: pypa/hatch@257e27e51a6a5616ed08a39a408a21c35c9931bc # pypa/hatch@install
+        run: |
+          # From PyPI: pypa/hatch@install curls a GitHub release asset with no retry,
+          # and has been failing intermittently with "gzip: stdin: not in gzip format".
+          python -m pip install hatch==1.18.2
 
       - name: "Setup Dev Environment"
         run: |
