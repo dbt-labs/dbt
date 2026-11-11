@@ -34,7 +34,9 @@ dependencies = [
     # Pin to the patch or minor version, and bump in each new minor version of dbt-core.
     "agate>=1.7.0,<1.15",
     "Jinja2>=3.1.3,<4",
-    "mashumaro[msgpack]>=3.9,<3.18",
+    # 3.15+ is required so Union[int, float, str] (NodeVersion) does not
+    # truncate unquoted YAML floats such as `v: 4.1` to int 4. See #16284.
+    "mashumaro[msgpack]>=3.15,<3.18",
     # ----
     # dbt-core uses these packages in standard ways. Pin to the major version, and check compatibility
     # with major versions in each new minor version of dbt-core.
