@@ -656,7 +656,7 @@ pub(crate) async fn run_unit_test_render(
         Err(e) => {
             return handle_render_result(
                 Err(e),
-                &node.unique_id(),
+                node.unique_id(),
                 &node.materialized(),
                 &mut ctx,
                 &result_sender,
@@ -682,7 +682,7 @@ pub(crate) async fn run_unit_test_render(
             Err(e) => {
                 return handle_render_result(
                     Err(e),
-                    &node.unique_id(),
+                    node.unique_id(),
                     &node.materialized(),
                     &mut ctx,
                     &result_sender,
@@ -697,7 +697,7 @@ pub(crate) async fn run_unit_test_render(
         let res = render_unit_test(&node, &mut ctx, given_relations, task_hooks);
         handle_render_result(
             res,
-            &node.unique_id(),
+            node.unique_id(),
             &node.materialized(),
             &mut ctx,
             &result_sender,
@@ -763,7 +763,7 @@ fn try_get_schema_from_cache(
             // If we have a hit
             if node_canonical_fqn.as_ref() == Some(&canonical_fqn) {
                 node_static_analysis_off =
-                    is_static_analysis_off_or_baseline(node.static_analysis().into_inner());
+                    is_static_analysis_off_or_baseline(**node.static_analysis());
                 break;
             }
         }
@@ -1920,9 +1920,8 @@ fn discover_given_relations(
         node.materialized() == DbtMaterialization::Incremental
             && !use_compiled_schema_for_incremental
     });
-    let model_static_analysis_off = tested_model.is_some_and(|node| {
-        is_static_analysis_off_or_baseline(node.static_analysis().into_inner())
-    });
+    let model_static_analysis_off = tested_model
+        .is_some_and(|node| is_static_analysis_off_or_baseline(**node.static_analysis()));
 
     if should_fetch_expected_schema
         && let Some(expect_relation) = ctx.try_get_relation_from_node(&model_unique_id)
@@ -2368,9 +2367,8 @@ fn render_unit_test(
     })?;
 
     let tested_model = resolver_state.nodes.get_node(&model_unique_id);
-    let model_static_analysis_off = tested_model.is_some_and(|node| {
-        is_static_analysis_off_or_baseline(node.static_analysis().into_inner())
-    });
+    let model_static_analysis_off = tested_model
+        .is_some_and(|node| is_static_analysis_off_or_baseline(**node.static_analysis()));
     let model_materialization = tested_model.map(|node| node.materialized());
     let is_incremental = model_materialization == Some(DbtMaterialization::Incremental);
     let schema_policy = unit_test_schema_policy(ctx, node)?;

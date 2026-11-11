@@ -1195,7 +1195,7 @@ mod tests {
             node.base_mut()
                 .depends_on
                 .nodes
-                .push(upstream_node.unique_id());
+                .push(upstream_node.unique_id().to_string());
 
             assert!(!node.base().depends_on.nodes.is_empty());
             assert!(node.base().depends_on.macros.is_empty());

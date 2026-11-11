@@ -254,7 +254,7 @@ pub fn create_task_span_for_node(
         Some(Box::new(task_span_on_skip)),
     );
     builder.with_parent(SpanLevel::Info, phase_span_key(phase));
-    let key = node_processed_span_key(&node.unique_id());
+    let key = node_processed_span_key(node.unique_id());
     builder.add_related_span(SpanLevel::Info, &key);
     let request = builder.build();
     span_manager.get_task_span(request)
@@ -311,7 +311,7 @@ pub fn node_task_span_request<T: Task + ?Sized>(
 
     // Reference NodeProcessed span as direct related span (must be pre-registered)
     // Span manager will automatically create its parent (TuiAllProcessingNodesGroup)
-    let node_key = node_processed_span_key(&node.unique_id());
+    let node_key = node_processed_span_key(node.unique_id());
     builder.add_related_span(SpanLevel::Info, &node_key);
 
     builder.build()

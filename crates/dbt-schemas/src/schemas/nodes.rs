@@ -663,36 +663,36 @@ pub trait InternalDbtNodeAttributes: InternalDbtNode {
         false
     }
 
-    fn database(&self) -> String {
-        self.base().database.clone()
+    fn database(&self) -> &str {
+        &self.base().database
     }
 
     fn skip_generate_schema_name_macro(&self) -> bool {
         false
     }
 
-    fn schema(&self) -> String {
-        self.base().schema.clone()
+    fn schema(&self) -> &str {
+        &self.base().schema
     }
 
-    fn unique_id(&self) -> String {
-        self.common().unique_id.clone()
+    fn unique_id(&self) -> &str {
+        &self.common().unique_id
     }
 
-    fn name(&self) -> String {
-        self.common().name.clone()
+    fn name(&self) -> &str {
+        &self.common().name
     }
 
     fn name_span(&self) -> Span {
         self.common().name_span.clone()
     }
 
-    fn description(&self) -> Option<String> {
-        self.common().description.clone()
+    fn description(&self) -> Option<&str> {
+        self.common().description.as_deref()
     }
 
-    fn columns(&self) -> Vec<DbtColumnRef> {
-        self.base().columns.clone()
+    fn columns(&self) -> &[DbtColumnRef] {
+        &self.base().columns
     }
 
     /// The node's compiled SQL, when the caller has populated it.
@@ -703,20 +703,20 @@ pub trait InternalDbtNodeAttributes: InternalDbtNode {
         None
     }
 
-    fn alias(&self) -> String {
-        self.base().alias.clone()
+    fn alias(&self) -> &str {
+        &self.base().alias
     }
 
-    fn path(&self) -> PathBuf {
-        self.common().path.to_path_buf()
+    fn path(&self) -> &Path {
+        &self.common().path
     }
 
-    fn original_file_path(&self) -> PathBuf {
-        self.common().original_file_path.to_path_buf()
+    fn original_file_path(&self) -> &Path {
+        &self.common().original_file_path
     }
 
-    fn package_name(&self) -> String {
-        self.common().package_name.clone()
+    fn package_name(&self) -> &str {
+        &self.common().package_name
     }
 
     fn materialized(&self) -> DbtMaterialization {
@@ -727,30 +727,30 @@ pub trait InternalDbtNodeAttributes: InternalDbtNode {
         self.base().quoting
     }
 
-    fn tags(&self) -> Vec<String> {
-        self.common().tags.clone()
+    fn tags(&self) -> &[String] {
+        &self.common().tags
     }
 
-    fn meta(&self) -> IndexMap<String, YmlValue> {
-        self.common().meta.clone()
+    fn meta(&self) -> &IndexMap<String, YmlValue> {
+        &self.common().meta
     }
 
     fn compute(&self) -> Option<ComputeArg> {
         self.base().compute
     }
 
-    fn static_analysis(&self) -> Spanned<StaticAnalysisKind> {
-        self.base().static_analysis.clone()
+    fn static_analysis(&self) -> &Spanned<StaticAnalysisKind> {
+        &self.base().static_analysis
     }
 
     fn static_analysis_baseline(&self) -> Spanned<bool> {
-        self.static_analysis().map(|static_analysis| {
+        self.static_analysis().clone().map(|static_analysis| {
             dbt_common::static_analysis::is_baseline_static_analysis(static_analysis)
         })
     }
 
     fn static_analysis_enabled(&self) -> Spanned<bool> {
-        self.static_analysis().map(|static_analysis| {
+        self.static_analysis().clone().map(|static_analysis| {
             dbt_common::static_analysis::is_static_analysis_enabled(static_analysis)
         })
     }
@@ -3163,32 +3163,32 @@ impl InternalDbtNodeAttributes for DbtSnapshot {
         self.deprecated_config.target_schema.is_some()
     }
 
-    fn schema(&self) -> String {
+    fn schema(&self) -> &str {
         // prefer legacy config
         self.deprecated_config
             .target_schema
-            .clone()
-            .unwrap_or_else(|| self.base().schema.clone())
+            .as_deref()
+            .unwrap_or(&self.base().schema)
     }
 
     fn skip_generate_database_name_macro(&self) -> bool {
         self.deprecated_config.target_database.is_some()
     }
 
-    fn database(&self) -> String {
+    fn database(&self) -> &str {
         // prefer legacy config
         self.deprecated_config
             .target_database
-            .clone()
-            .unwrap_or_else(|| self.base().database.clone())
+            .as_deref()
+            .unwrap_or(&self.base().database)
     }
 
-    fn tags(&self) -> Vec<String> {
-        self.__common_attr__.tags.clone()
+    fn tags(&self) -> &[String] {
+        &self.__common_attr__.tags
     }
 
-    fn meta(&self) -> IndexMap<String, YmlValue> {
-        self.__common_attr__.meta.clone()
+    fn meta(&self) -> &IndexMap<String, YmlValue> {
+        &self.__common_attr__.meta
     }
 
     fn search_name(&self) -> String {
@@ -3555,11 +3555,11 @@ impl InternalDbtNodeAttributes for DbtCheck {
     fn quoting(&self) -> ResolvedQuoting {
         self.__base_attr__.quoting
     }
-    fn tags(&self) -> Vec<String> {
-        self.__common_attr__.tags.clone()
+    fn tags(&self) -> &[String] {
+        &self.__common_attr__.tags
     }
-    fn meta(&self) -> IndexMap<String, YmlValue> {
-        self.__common_attr__.meta.clone()
+    fn meta(&self) -> &IndexMap<String, YmlValue> {
+        &self.__common_attr__.meta
     }
     fn serialized_config(&self) -> YmlValue {
         dbt_yaml::to_value(&self.deprecated_config).expect("Failed to serialize to YAML")
@@ -3639,11 +3639,11 @@ impl InternalDbtNodeAttributes for DbtExperimentalNode {
     fn quoting(&self) -> ResolvedQuoting {
         self.__base_attr__.quoting
     }
-    fn tags(&self) -> Vec<String> {
-        self.__common_attr__.tags.clone()
+    fn tags(&self) -> &[String] {
+        &self.__common_attr__.tags
     }
-    fn meta(&self) -> IndexMap<String, YmlValue> {
-        self.__common_attr__.meta.clone()
+    fn meta(&self) -> &IndexMap<String, YmlValue> {
+        &self.__common_attr__.meta
     }
     fn serialized_config(&self) -> YmlValue {
         #[derive(Serialize)]
@@ -3674,11 +3674,11 @@ impl InternalDbtNodeAttributes for DbtExposure {
     fn quoting(&self) -> ResolvedQuoting {
         self.__base_attr__.quoting
     }
-    fn tags(&self) -> Vec<String> {
-        self.__common_attr__.tags.clone()
+    fn tags(&self) -> &[String] {
+        &self.__common_attr__.tags
     }
-    fn meta(&self) -> IndexMap<String, YmlValue> {
-        self.__common_attr__.meta.clone()
+    fn meta(&self) -> &IndexMap<String, YmlValue> {
+        &self.__common_attr__.meta
     }
     fn serialized_config(&self) -> YmlValue {
         dbt_yaml::to_value(&self.deprecated_config).expect("Failed to serialize to YAML")
@@ -3860,7 +3860,7 @@ impl InternalDbtNodeAttributes for DbtSemanticModel {
     }
     fn set_static_analysis(&mut self, _static_analysis: Spanned<StaticAnalysisKind>) {}
     fn search_name(&self) -> String {
-        self.name()
+        self.name().to_string()
     }
     fn selector_string(&self) -> String {
         format!(
@@ -4018,7 +4018,7 @@ impl InternalDbtNodeAttributes for DbtMetric {
     }
     fn set_static_analysis(&mut self, _static_analysis: Spanned<StaticAnalysisKind>) {}
     fn search_name(&self) -> String {
-        self.name()
+        self.name().to_string()
     }
     fn selector_string(&self) -> String {
         format!("metric:{}.{}", self.package_name(), self.search_name())
@@ -4243,7 +4243,7 @@ impl InternalDbtNodeAttributes for DbtSavedQuery {
     }
     fn set_static_analysis(&mut self, _static_analysis: Spanned<StaticAnalysisKind>) {}
     fn search_name(&self) -> String {
-        self.name()
+        self.name().to_string()
     }
     fn selector_string(&self) -> String {
         format!("saved_query:{}.{}", self.package_name(), self.search_name())
@@ -4389,8 +4389,8 @@ impl InternalDbtNode for DbtFunction {
 }
 
 impl InternalDbtNodeAttributes for DbtFunction {
-    fn static_analysis(&self) -> Spanned<StaticAnalysisKind> {
-        self.__base_attr__.static_analysis.clone()
+    fn static_analysis(&self) -> &Spanned<StaticAnalysisKind> {
+        &self.__base_attr__.static_analysis
     }
 
     fn set_quoting(&mut self, quoting: ResolvedQuoting) {
@@ -9144,8 +9144,8 @@ impl InternalDbtNode for DbtAnalysis {
 }
 
 impl InternalDbtNodeAttributes for DbtAnalysis {
-    fn static_analysis(&self) -> Spanned<StaticAnalysisKind> {
-        self.__base_attr__.static_analysis.clone()
+    fn static_analysis(&self) -> &Spanned<StaticAnalysisKind> {
+        &self.__base_attr__.static_analysis
     }
 
     fn set_quoting(&mut self, quoting: ResolvedQuoting) {

@@ -643,8 +643,8 @@ pub fn create_relation_from_node(
     if let Some(source) = node.as_any().downcast_ref::<DbtSource>() {
         return create_relation_from_source(
             adapter_type,
-            node.database(),
-            node.schema(),
+            node.database().to_string(),
+            node.schema().to_string(),
             node.base().alias.clone(), // all identifiers are consolidated to alias in InternalDbtNode
             node.quoting(),
             source,
@@ -653,8 +653,8 @@ pub fn create_relation_from_node(
 
     let mut relation = create_relation(
         adapter_type,
-        node.database(),
-        node.schema(),
+        node.database().to_string(),
+        node.schema().to_string(),
         Some(node.base().alias.clone()), // all identifiers are consolidated to alias in InternalDbtNode
         Some(RelationType::from(node.materialized())),
         node.quoting(),

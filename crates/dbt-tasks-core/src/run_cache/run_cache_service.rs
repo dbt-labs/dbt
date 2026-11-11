@@ -610,7 +610,7 @@ pub fn insert_compiled_view_definition(
             parsed.catalog().name().to_string(),
             parsed.schema().name().to_string(),
         ),
-        Err(_) => (node.database(), node.schema()),
+        Err(_) => (node.database().to_string(), node.schema().to_string()),
     };
     traverser.insert_view_definition(dbt_adapter::metadata::ViewDefinition {
         fqn,
@@ -1573,7 +1573,7 @@ pub async fn run_cache_service_before_execution(
     match result {
         Ok(Some(RunCacheSubmitResult::Outcome(outcome))) => {
             let decision = record_service_decision(
-                node.unique_id().as_str(),
+                node.unique_id(),
                 &outcome.response,
                 outcome.freshness_tolerance_seconds,
                 should_honor_service_skip(ctx),
@@ -1585,7 +1585,7 @@ pub async fn run_cache_service_before_execution(
                 .inner
                 .run_cache_ctx
                 .run_cache_dev_cloned_nodes
-                .contains_sync(node.unique_id().as_str());
+                .contains_sync(node.unique_id());
             let decision = relabel_skip_for_dev_cloned_node(is_dev_cloned, decision);
             let execution_decision_id =
                 state_explain_execution_decision_id(Some(&outcome.response), &decision);
@@ -1654,8 +1654,8 @@ fn write_state_explain_node(
         return;
     };
     let record = StateExplainLogRecord::Node(StateExplainNode {
-        node_unique_id: node.unique_id(),
-        node_name: node.name(),
+        node_unique_id: node.unique_id().to_string(),
+        node_name: node.name().to_string(),
         node_info: state_explain_node_info(ctx, node),
         execution_decision_id,
         execution_id: None,
@@ -1677,7 +1677,7 @@ fn write_state_explain_execution_confirmed(
         return;
     };
     let record = StateExplainLogRecord::ExecutionConfirmed(StateExplainExecutionConfirmed {
-        node_unique_id: node.unique_id(),
+        node_unique_id: node.unique_id().to_string(),
         execution_id,
     });
     if let Err(err) = append_state_explain_log_record(path, &record) {
@@ -1714,7 +1714,7 @@ fn state_explain_node_info(
         .inner
         .run_cache_ctx
         .run_cache_dev_cloned_nodes
-        .read_sync(node.unique_id().as_str(), |_, dev_clone| dev_clone.clone());
+        .read_sync(node.unique_id(), |_, dev_clone| dev_clone.clone());
     node_info.deferrals = state_explain_deferrals(ctx, node);
     node_info
 }
@@ -2046,7 +2046,7 @@ async fn execute_clone_with_grants(
     ) {
         clone_sqls.insert(0, drop_sql);
     }
-    let node_unique_id = node.unique_id();
+    let node_unique_id = node.unique_id().to_string();
     let node_adapter_type = node.node_adapter();
     let ctx_inner = ctx.clone();
     let target_relation: Arc<dyn BaseRelation> =
@@ -2430,7 +2430,7 @@ fn collect_source_freshness_overrides(
     node: &dyn InternalDbtNodeAttributes,
 ) -> BTreeMap<String, FreshnessOverride> {
     let mut overrides: BTreeMap<String, FreshnessOverride> = BTreeMap::new();
-    let Some(deps) = ctx.inner.runtime_deps.get(node.unique_id().as_str()) else {
+    let Some(deps) = ctx.inner.runtime_deps.get(node.unique_id()) else {
         return overrides;
     };
     for dep_id in deps {
@@ -2708,7 +2708,7 @@ impl CloneGrants {
             ctx.runtime_config().dependencies.keys().cloned().collect(),
         );
         Ok(Some(Self {
-            unique_id: node.unique_id(),
+            unique_id: node.unique_id().to_string(),
             context,
             _result_store: result_store,
         }))
@@ -3534,7 +3534,7 @@ async fn build_sql_context(
             allow_clones: Some(active_profile.allow_clones),
             is_defer_to_profile,
             defer_enabled,
-            default_schema: node.schema(),
+            default_schema: node.schema().to_string(),
             stale_upstream_policy,
             // Populated by the model submit paths for microbatch models; other
             // node types never carry a window.
@@ -3923,7 +3923,7 @@ async fn collect_table_modified_infos(
 
     let mut freshness_overrides: BTreeMap<String, FreshnessOverride> = BTreeMap::new();
 
-    if !target_only && let Some(deps) = ctx.inner.runtime_deps.get(node.unique_id().as_str()) {
+    if !target_only && let Some(deps) = ctx.inner.runtime_deps.get(node.unique_id()) {
         for dep_id in deps {
             let Some(dep_node) = ctx.nodes().get_node(dep_id) else {
                 continue;
@@ -4885,8 +4885,8 @@ async fn collect_query_dependencies(
     let relations = match parse_sql_relations_for_run_cache(
         ctx,
         sql,
-        &node.database(),
-        &node.schema(),
+        node.database(),
+        node.schema(),
         node.base().quoting_ignore_case,
     ) {
         Ok(relations) => relations,
@@ -4994,8 +4994,8 @@ async fn query_dependencies_for_parse_error(
     let upstreams = match extract_standalone_expression_upstreams_for_run_cache(
         node.node_adapter(),
         sql,
-        &node.database(),
-        &node.schema(),
+        node.database(),
+        node.schema(),
         node.base().quoting_ignore_case,
         ctx.inner.sources_extractor.as_ref(),
     ) {

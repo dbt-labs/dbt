@@ -1156,9 +1156,9 @@ async fn build_model_nodes(
 
         // Update time_spine node_relation with the resolved relation components
         if dbt_model.__model_attr__.time_spine.is_some() {
-            let database = dbt_model.database();
-            let schema = dbt_model.schema();
-            let alias = dbt_model.alias();
+            let database = dbt_model.database().to_string();
+            let schema = dbt_model.schema().to_string();
+            let alias = dbt_model.alias().to_string();
             let relation_name = dbt_model.__base_attr__.relation_name.clone();
 
             if let Some(ref mut ts) = dbt_model.__model_attr__.time_spine {

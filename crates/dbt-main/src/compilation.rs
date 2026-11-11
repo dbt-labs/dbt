@@ -2266,7 +2266,7 @@ impl DbtProjectCompilation {
             // ephemeral+versioned model's own node_id can't be traced back to the CTE name
             // dbt-core compiled it under without this. See fs#11684.
             for model in resolved_state.nodes.models.values() {
-                replay_adapter.record_node_alias(&model.unique_id(), &model.alias());
+                replay_adapter.record_node_alias(model.unique_id(), model.alias());
             }
         }
 

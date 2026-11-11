@@ -116,7 +116,7 @@ impl Task for RunTask {
         Box::pin(async move {
             // The visitor instruments this future with the node's `NodeEvaluated` span.
             let task_span = tracing::Span::current();
-            let unique_id = self.node.unique_id();
+            let unique_id = self.node.unique_id().to_string();
             let mut result_receiver = { self.result_receiver.lock().take() };
             let task_result = receive_task_result(&unique_id, &mut result_receiver)?;
             let start_time = chrono::Utc::now();
@@ -203,7 +203,7 @@ impl Task for RunTask {
                 (None, Err(e)) => Err(e),
                 (None, Ok(RunExecutionPath::Remote)) => {
                     // Step 0: Replay a cached result if one was recorded.
-                    let replayed_cache_decision = maybe_replay_remote_run(&self.node.unique_id());
+                    let replayed_cache_decision = maybe_replay_remote_run(self.node.unique_id());
 
                     // Nodes without a task_result (e.g. sources) go straight to execution
                     let Some(task_result) = task_result else {
@@ -233,7 +233,7 @@ impl Task for RunTask {
                             .inner
                             .run_cache_ctx
                             .run_cache_dev_cloned_nodes
-                            .contains_sync(&self.node.unique_id())
+                            .contains_sync(self.node.unique_id())
                     {
                         let status = replay_dev_clone_decision(&unique_id)
                             .map(|clone| clone.replay_status())
@@ -244,7 +244,7 @@ impl Task for RunTask {
                             cached_test_result: None,
                         }
                     } else if let Some(clone) =
-                        replay_run_cache_clone_decision(&self.node.unique_id())
+                        replay_run_cache_clone_decision(self.node.unique_id())
                     {
                         // Replaying a recorded Clone decision: route straight into the
                         // Clone branch below so the clone SQL is re-executed and matched
@@ -1020,7 +1020,7 @@ async fn run_cache_after_success_action(
                 if let Some(result) = ctx
                     .inner
                     .data_test_execution_results
-                    .read_sync(node.unique_id().as_str(), |_, result| *result)
+                    .read_sync(node.unique_id(), |_, result| *result)
                 {
                     confirmation.set_test_execution_results(result);
                 }
@@ -1239,7 +1239,7 @@ fn emit_run_usage_stats(
     let is_microbatch = try_get_microbatch_model(node).is_some();
     let execution_metrics = node_execution_metrics(
         is_microbatch,
-        &unique_id,
+        unique_id,
         &ctx.inner.microbatch_execution_metrics,
         &ctx.inner.main_adapter_responses,
     );
@@ -1506,7 +1506,7 @@ mod tests {
             let err = lake_compute_execution_path(node.as_ref(), AdapterType::Snowflake)
                 .expect_err("only models, seeds and tests run on lakecompute");
             assert_eq!(err.code, ErrorCode::InvalidConfig, "{err}");
-            assert!(err.to_string().contains(node.unique_id().as_str()), "{err}");
+            assert!(err.to_string().contains(node.unique_id()), "{err}");
         }
     }
 

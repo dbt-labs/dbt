@@ -384,7 +384,8 @@ fn generate_database_and_schema<T: InternalDbtNodeAttributes + Clone>(
     node: T,
     adapter_type: AdapterType,
 ) -> FsResult<(String, String, ResolvedQuoting, T)> {
-    let (default_database, default_schema) = (node.database(), node.schema());
+    let (default_database, default_schema) =
+        (node.database().to_string(), node.schema().to_string());
 
     // Generate database name
     let (database, node) = if node.skip_generate_database_name_macro() {
@@ -536,7 +537,7 @@ pub fn update_node_relation_components<T: InternalDbtNodeAttributes + Clone>(
     let ctx = match scopes {
         Some(scopes) => scopes
             .ctx_for(adapter_type, base_ctx)
-            .map_err(|e| e.with_location(node.original_file_path()))?,
+            .map_err(|e| e.with_location(node.original_file_path().to_path_buf()))?,
         None => Cow::Borrowed(base_ctx),
     };
 

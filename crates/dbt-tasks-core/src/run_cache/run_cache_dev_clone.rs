@@ -179,7 +179,7 @@ async fn finish_dev_clone(
     ctx.inner
         .run_cache_ctx
         .run_cache_dev_cloned_nodes
-        .upsert_async(node.unique_id(), explain_dev_clone)
+        .upsert_async(node.unique_id().to_string(), explain_dev_clone)
         .await;
     confirm_run_cache_service_execution(ctx, node, clone.success_confirmation(), None).await;
 }
@@ -461,7 +461,7 @@ async fn prepare_dev_clone_request(
     let request = CloneRequestInput {
         target_table: target_table.clone(),
         dialect: run_cache_dialect(ctx),
-        default_catalog: candidate.local().database(),
+        default_catalog: candidate.local().database().to_string(),
         execution_type: candidate.execution_type(&ctx.inner.materialization_resolver)?,
         clone_source_table: clone_source_table.clone(),
         clone_source_last_modified_epoch: source_last_modified_epoch,
@@ -848,7 +848,7 @@ mod tests {
         let request = CloneRequestInput {
             target_table: target_relation.semantic_fqn(),
             dialect: "snowflake".to_string(),
-            default_catalog: candidate.local().database(),
+            default_catalog: candidate.local().database().to_string(),
             execution_type: candidate.execution_type(&test_resolver()).unwrap(),
             clone_source_table: source_relation.semantic_fqn(),
             clone_source_last_modified_epoch: Some(123),

@@ -59,7 +59,7 @@ impl RenderTask {
             // eligible (non-incremental tables, views, seeds, unit tests, etc.).
             let node_id = self.node.unique_id();
             dbt_tasks_core::run_cache::run_cache_dev_clone::maybe_run_dev_clone_for_node(
-                ctx, &node_id,
+                ctx, node_id,
             )
             .await;
 
