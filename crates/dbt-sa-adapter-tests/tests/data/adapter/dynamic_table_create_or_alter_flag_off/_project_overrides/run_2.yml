@@ -1,0 +1,19 @@
+flags:
+  send_anonymous_usage_stats: false
+name: test
+profile: fusion_tests
+
+macro-paths: ["macros"]
+
+vars:
+  evolved: true
+
+models:
+  test:
+    +static_analysis: off
+    +materialized: dynamic_table
+    +snowflake_warehouse: FUSION_ADAPTER_TESTING
+
+    dt_flag_off:
+      +refresh_mode: FULL
+      +scheduler: disable
