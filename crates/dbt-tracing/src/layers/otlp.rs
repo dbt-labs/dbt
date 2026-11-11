@@ -17,6 +17,7 @@ use opentelemetry_sdk::resource::EnvResourceDetector;
 use opentelemetry_sdk::trace::{SdkTracer, SdkTracerProvider};
 use opentelemetry_sdk::{logs as sdk_logs, trace as sdk_trace};
 use opentelemetry_semantic_conventions::resource::{SERVICE_NAME, SERVICE_VERSION};
+use tracing::level_filters::LevelFilter;
 
 #[derive(Clone, Debug)]
 pub struct OtlpResourceConfig {
@@ -54,9 +55,14 @@ impl OtlpResourceConfig {
 
 /// Build an OTLP layer with HTTP exporters. If exporters cannot be built,
 /// it will return None.
+///
+/// The layer honours `max_log_verbosity` (`--log-level`) the same way the
+/// console and stdout sinks do: records and spans below the configured level
+/// are not exported to the OTLP endpoint (dbt-labs/dbt#17066).
 pub fn build_otlp_layer(
     resource_config: OtlpResourceConfig,
     log_preprocessor_hook: Option<LogPreprocessorHook>,
+    max_log_verbosity: LevelFilter,
 ) -> Option<(ConsumerLayer, Vec<TelemetryShutdownItem>)> {
     let layer = OTLPExporterLayer::new_with_http_export(resource_config, log_preprocessor_hook)?;
 
@@ -65,7 +71,10 @@ pub fn build_otlp_layer(
         Box::new(layer.logger_provider()),
     ];
 
-    Some((Box::new(layer), shutdown_items))
+    Some((
+        Box::new(layer.with_filter(max_log_verbosity)),
+        shutdown_items,
+    ))
 }
 
 /// A tracing layer that reads telemetry data and sends it over HTTP to OTLP endpoint
