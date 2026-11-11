@@ -398,6 +398,78 @@ Released September 02, 2026
 - [@tauhid621](https://github.com/tauhid621)
 - [@wizardxz](https://github.com/wizardxz) ([#16080](https://github.com/dbt-labs/dbt-core/issues/16080))
 
+## 2.0.0-dev.44
+
+Released November 11, 2026
+
+### Features
+
+- [Lake Compute] Read AWS Databricks Unity Catalog tables using Databricks profile PAT/OAuth M2M credentials, declaration-aware validation, and `dbt debug` attach parity. Existing fs `catalogs.yml` entries continue to use `type: unity`. Existing local Unity attach options in `config.lakecompute` must move to `config.duckdb`; Lake Compute access is read-only and Unity model writes are unsupported.
+- [ClickHouse] Adds cluster support and distributed_table / distributed_incremental materializations. ([#14580](https://github.com/dbt-labs/dbt-core/issues/14580))
+- Accept Databricks use_materialization_v2 as a model config so a project or individual model can choose its materialization path
+- [ClickHouse] Adds support for grants and dbt clone ([#14652](https://github.com/dbt-labs/dbt-core/issues/14652), [#14585](https://github.com/dbt-labs/dbt-core/issues/14585))
+- [ClickHouse] Accept the ClickHouse table options on snapshots and tests, engine, order_by and disable_on_cluster on seeds, and settings on unit tests, in dbt_project.yml and node config.
+- [Lake Compute] Lake Compute models can now ref() Databricks table and incremental models stored as managed Delta, without setting catalog_name
+- Accept Databricks merge_actions_explicit config to supply the full WHEN … THEN block of a merge incremental model as raw SQL ([#16835](https://github.com/dbt-labs/dbt-core/issues/16835))
+
+### Fixes
+
+- Fixes array_construct bug for Databricks with new adapter-specific macro. ([#15893](https://github.com/dbt-labs/dbt-core/issues/15893))
+- Preserve BigQuery relation column types when rendering unit test fixtures. ([#15961](https://github.com/dbt-labs/dbt-core/issues/15961))
+- Support Iceberg snapshots by preserving table format metadata and Snowflake-compatible timestamp precision ([#15776](https://github.com/dbt-labs/dbt-core/issues/15776))
+- BigQuery: make the `priority` profile setting a schema enum instead of a string ([#16021](https://github.com/dbt-labs/dbt-core/issues/16021))
+- Honor Snowflake catalog-linked database identifier case sensitivity during static analysis. ([#16389](https://github.com/dbt-labs/dbt-core/issues/16389))
+- ClickHouse: list relations per schema so get_relation is served from the relation cache instead of one catalog query per relation ([#16427](https://github.com/dbt-labs/dbt-core/issues/16427))
+- BigQuery seeds now load correctly when dbt runs outside the project root by resolving data files from each seed's package root. ([#16127](https://github.com/dbt-labs/dbt-core/issues/16127))
+- Indexing a modules.re match object (m[1], m['name']) returns the group instead of an empty string, matching dbt-core ([#16451](https://github.com/dbt-labs/dbt-core/issues/16451))
+- run_results.json reports why a data test failed or warned ("Got 2 results, configured to fail if != 0") instead of just Error or Warn, matching dbt-core ([#16408](https://github.com/dbt-labs/dbt-core/issues/16408))
+- Databricks: avoid synchronous OPTIMIZE when only automatic liquid clustering is configured. ([#16539](https://github.com/dbt-labs/dbt-core/issues/16539))
+- Exclude connection-limit wait time from the execution time reported in run results ([#15724](https://github.com/dbt-labs/dbt-core/issues/15724))
+- Accept `--resource-type all` and `--resource-type default` on v2 commands ([#16589](https://github.com/dbt-labs/dbt-core/issues/16589))
+- Name unnamed Databricks primary and foreign keys deterministically so safer replace and incremental runs keep stable key names ([#16603](https://github.com/dbt-labs/dbt-core/issues/16603))
+- Lowercase Databricks catalog, schema, and table names in information_schema constraint and column mask lookups so mixed-case schemas find existing constraints ([#16611](https://github.com/dbt-labs/dbt-core/issues/16611))
+- Stop dropping and re-adding unchanged Databricks primary and foreign keys on incremental runs by comparing keys on name and columns ([#16612](https://github.com/dbt-labs/dbt-core/issues/16612))
+- Emit Databricks constraint ALTER statements in a stable sorted order on incremental runs, matching dbt-databricks ([#16617](https://github.com/dbt-labs/dbt-core/issues/16617))
+- Scope the Databricks foreign-key metadata lookup joins to the constraint's catalog and schema so a same-named constraint elsewhere in the catalog no longer makes incremental runs drop and re-add the foreign key ([#16737](https://github.com/dbt-labs/dbt-core/issues/16737))
+- dbt retry reports 'Nothing to do' and exits 0 when the previous run has no retryable nodes, matching dbt-core
+- Databricks snapshots now accept `zorder` and `skip_optimize` from every config source, including `dbt_project.yml`, so the post-snapshot `OPTIMIZE` honors them as in dbt-databricks ([#16699](https://github.com/dbt-labs/dbt-core/issues/16699))
+- Replace a Databricks Hive metastore table with a view without renaming the table, which fails for managed Delta tables on S3. ([#16760](https://github.com/dbt-labs/dbt-core/issues/16760))
+- [ClickHouse] persist_docs descriptions containing ';' reach the server intact: ClickHouse SQL is split by a ClickHouse-aware scanner ($tag$ heredocs, backslash escapes, comments) instead of the Databricks lexer ([#14585](https://github.com/dbt-labs/dbt-core/issues/14585))
+- [ClickHouse] Replacing a view falls back to drop + create on servers without atomic EXCHANGE support (filesystems without renameat2); existing dictionaries are typed as dictionary relations
+- dbt retry after a parse-time failure no longer retries nodes outside the original --select
+- Recognize Databricks type names such as string, int, tinyint and decimal(p,s) in the Column is_string, is_number, is_integer, is_float and is_numeric checks, and never widen Databricks string columns during snapshot column expansion ([#16791](https://github.com/dbt-labs/dbt-core/issues/16791))
+- Add support for Databricks GEOGRAPHY and GEOMETRY metadata ([#14601](https://github.com/dbt-labs/dbt-core/issues/14601))
+- Databricks views updated with view_update_via_alter now enforce model contracts and reject column masks and row filters on ALTER and no-op runs, and keep column comments after ALTER VIEW AS changes the query ([#16882](https://github.com/dbt-labs/dbt-core/issues/16882))
+- Add `zone` attribute to pytz timezone objects so `modules.pytz.utc.zone` and `modules.pytz.timezone(...).zone` return the timezone name ([#16970](https://github.com/dbt-labs/dbt-core/issues/16970))
+- Implement `modules.pytz.all_timezones` and `modules.pytz.all_timezones_set` ([#16966](https://github.com/dbt-labs/dbt-core/issues/16966))
+- Ensure column-level foreign_key constraints on versioned models create DAG dependencies ([#17023](https://github.com/dbt-labs/dbt-core/issues/17023))
+
+### Under the Hood
+
+- Add PyPI banner for dbt-oss mirroring the existing dbt-core banner, without the dbt-core namespace deprecation notice
+- Run Databricks seeds through a single materialization path regardless of use_materialization_v2, matching dbt-databricks. ([#16523](https://github.com/dbt-labs/dbt-core/issues/16523))
+- Drop the no-op create_indexes and adapter.commit() calls from the Databricks snapshot materialization, matching dbt-databricks. ([#16532](https://github.com/dbt-labs/dbt-core/issues/16532))
+
+### Contributors
+- [@AnnasMazhar](https://github.com/AnnasMazhar) ([#16589](https://github.com/dbt-labs/dbt-core/issues/16589))
+- [@HannanNaeem](https://github.com/HannanNaeem)
+- [@ShaneMcGovern](https://github.com/ShaneMcGovern) ([#15724](https://github.com/dbt-labs/dbt-core/issues/15724))
+- [@ansh-rohilla](https://github.com/ansh-rohilla) ([#17023](https://github.com/dbt-labs/dbt-core/issues/17023))
+- [@benjamin-awd](https://github.com/benjamin-awd) ([#16427](https://github.com/dbt-labs/dbt-core/issues/16427))
+- [@danmawdsleyoaknorth](https://github.com/danmawdsleyoaknorth) ([#15961](https://github.com/dbt-labs/dbt-core/issues/15961))
+- [@fornwall](https://github.com/fornwall) ([#16021](https://github.com/dbt-labs/dbt-core/issues/16021), [#16127](https://github.com/dbt-labs/dbt-core/issues/16127))
+- [@geethasagarb](https://github.com/geethasagarb) ([#16970](https://github.com/dbt-labs/dbt-core/issues/16970), [#16966](https://github.com/dbt-labs/dbt-core/issues/16966))
+- [@ikhudur](https://github.com/ikhudur) ([#14601](https://github.com/dbt-labs/dbt-core/issues/14601))
+- [@koletzilla](https://github.com/koletzilla) ([#14580](https://github.com/dbt-labs/dbt-core/issues/14580), [#14652](https://github.com/dbt-labs/dbt-core/issues/14652), [#14585](https://github.com/dbt-labs/dbt-core/issues/14585), [#14585](https://github.com/dbt-labs/dbt-core/issues/14585))
+- [@luc-pimentel](https://github.com/luc-pimentel) ([#16451](https://github.com/dbt-labs/dbt-core/issues/16451), [#16408](https://github.com/dbt-labs/dbt-core/issues/16408))
+- [@mach-kernel](https://github.com/mach-kernel) ([#16389](https://github.com/dbt-labs/dbt-core/issues/16389))
+- [@mattevans](https://github.com/mattevans) ([#15776](https://github.com/dbt-labs/dbt-core/issues/15776))
+- [@sd-db](https://github.com/sd-db) ([#16835](https://github.com/dbt-labs/dbt-core/issues/16835), [#16539](https://github.com/dbt-labs/dbt-core/issues/16539), [#16603](https://github.com/dbt-labs/dbt-core/issues/16603), [#16611](https://github.com/dbt-labs/dbt-core/issues/16611), [#16612](https://github.com/dbt-labs/dbt-core/issues/16612), [#16617](https://github.com/dbt-labs/dbt-core/issues/16617), [#16737](https://github.com/dbt-labs/dbt-core/issues/16737), [#16699](https://github.com/dbt-labs/dbt-core/issues/16699), [#16760](https://github.com/dbt-labs/dbt-core/issues/16760), [#16791](https://github.com/dbt-labs/dbt-core/issues/16791), [#16882](https://github.com/dbt-labs/dbt-core/issues/16882), [#16523](https://github.com/dbt-labs/dbt-core/issues/16523), [#16532](https://github.com/dbt-labs/dbt-core/issues/16532))
+- [@tauhidanjum](https://github.com/tauhidanjum)
+- [@tvtonnu](https://github.com/tvtonnu) ([#15893](https://github.com/dbt-labs/dbt-core/issues/15893))
+- [@vchan](https://github.com/vchan)
+- [@vincent.chan](https://github.com/vincent.chan)
+
 ## 2.0.0-beta.2
 
 Released August 18, 2026
@@ -793,6 +865,11 @@ Released July 06, 2026
 - [dbt-fusion] DuckDB: read-write Horizon and Unity (Iceberg REST) catalogs via duckdb 1.5.4 / duckdb-iceberg#1017 write-compat ATTACH options (stage_create_tables, disable_multi_table_commit, etc.). Upgrades the read-only support from the base PR.
 - [dbt-fusion] DuckDB catalogs.yml v2: DuckLake, Iceberg REST, and local filesystem catalogs with catalog-aware materializations, plus read-only Horizon and Unity attachments (writes land with duckdb 1.5.4, #10950)
 - [dbt-fusion] [Redshift] Switch the database context per node via `USE` / `RESET USE` when datasharing is enabled and the node targets a non-default database
+- [dbt-fusion] dbt-agent: add guidance for surrogate key dbt_project.yml vars, incremental full-refresh after logic changes, staging enrichment LEFT JOIN, fct-to-dim LEFT JOIN, pre-computed age field warning, and cumulative standings MAX vs ROW_NUMBER
+- [dbt-fusion] dbt-agent: add guidance for propagating source column type changes (INT→VARCHAR) to all downstream models
+- [dbt-fusion] dbt-agent: add guidance for staging column inference vs source reuse, missing-column add-not-remove, enumerate-all-affected-models, time-bounded seed+JOIN pattern, mandatory full-refresh after surrogate_key rename
+- [dbt-fusion] dbt-agent: mandatory --full-refresh after surrogate_key rename prominently in surrogate_key.md
+- [dbt-fusion] Extract dbt-agent into dedicated crate with prompts, runner, integration tests, and benchmark scripts
 - [fusion] Add GET /api/v1/identity endpoint to dbt-docs-server
 - [fusion] Bump bundled dbt-docs-v2 UI to 862e5855aaa42463d3b5c34f4b53622ca32721fb
 - [fusion] Add compiled code toggle to the Code tab and consolidate exposure metadata fields into the unified Metadata section
