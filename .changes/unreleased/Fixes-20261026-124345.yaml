@@ -1,0 +1,6 @@
+kind: Fixes
+body: Recognize Databricks use_materialization_v2 config in JSON schema validation
+time: 2026-10-26T12:43:45.152707+05:30
+custom:
+    Author: tauhid621
+    Issue: "16879"

@@ -39,13 +39,15 @@ _HIERARCHICAL_CONFIG_KEYS = {
 
 _ADAPTER_TO_EXTRA_KEYS = {
     "bigquery": ["dataset", "project"],
-    # databricks/dbt-databricks#1540, #1302
+    # databricks/dbt-databricks#1540, #1302, #1661
     "databricks": [
         "query_tags",
         "zorder",
         "options",
         "unique_tmp_table_suffix",
         "skip_optimize",
+        "access_control_list",
+        "notebook_access_control_list",
     ],
 }
 

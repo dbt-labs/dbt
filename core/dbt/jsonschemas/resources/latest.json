@@ -1866,6 +1866,16 @@
             "null"
           ]
         },
+        "state": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/DataTestState"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "tags": {
           "default": [],
           "anyOf": [
@@ -1927,6 +1937,20 @@
           ]
         },
         "transient": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
+        "use_materialization_v2": {
           "anyOf": [
             {
               "type": [
@@ -2027,6 +2051,51 @@
           "anyOf": [
             {
               "$ref": "#/definitions/StaticAnalysisOffReason"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "DataTestState": {
+      "description": "The dbt State configs supported on data tests",
+      "type": "object",
+      "properties": {
+        "compare_unrendered_code": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
+        "evaluate_volatile_sql": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
+        "require_fresh_data_from": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/UpdatesOn"
             },
             {
               "type": "null"
@@ -3880,6 +3949,20 @@
             },
             {
               "type": "null"
+            }
+          ]
+        },
+        "use_materialization_v2": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
             }
           ]
         },
@@ -6226,6 +6309,20 @@
             }
           ]
         },
+        "use_materialization_v2": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "use_safer_relation_operations": {
           "anyOf": [
             {
@@ -6645,6 +6742,20 @@
     "ModelState": {
       "type": "object",
       "properties": {
+        "compare_unrendered_code": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "evaluate_volatile_sql": {
           "anyOf": [
             {
@@ -6659,7 +6770,35 @@
             }
           ]
         },
+        "execute_hooks_on_any_reuse": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "execute_hooks_on_reuse": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
+        "ignore_external_modifications": {
           "anyOf": [
             {
               "type": [
@@ -8217,6 +8356,20 @@
             }
           ]
         },
+        "use_materialization_v2": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "use_safer_relation_operations": {
           "anyOf": [
             {
@@ -9369,6 +9522,16 @@
             "null"
           ]
         },
+        "state": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ModelState"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "tags": {
           "default": [],
           "anyOf": [
@@ -9469,6 +9632,20 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "use_materialization_v2": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
           ]
         },
         "use_safer_relation_operations": {
@@ -10571,6 +10748,20 @@
           ]
         },
         "transient": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
+        "use_materialization_v2": {
           "anyOf": [
             {
               "type": [
@@ -11892,6 +12083,20 @@
           ]
         },
         "transient": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
+        "use_materialization_v2": {
           "anyOf": [
             {
               "type": [

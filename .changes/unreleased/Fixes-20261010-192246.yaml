@@ -1,0 +1,8 @@
+kind: Fixes
+body: Recognize Databricks Python model config keys (`access_control_list`, `notebook_access_control_list`)
+  in jsonschema validation so they no longer raise spurious `CustomKeyInConfigDeprecation`
+  warnings (dbt-databricks#1661)
+time: 2026-10-10T19:22:46.000000+05:30
+custom:
+    Author: sd-db
+    Issue: "N/A"
