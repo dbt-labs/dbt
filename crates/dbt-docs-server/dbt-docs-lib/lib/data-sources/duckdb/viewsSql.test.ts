@@ -1,10 +1,17 @@
+// @vitest-environment node
+
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 // The real document, copied verbatim out of a `--generate-info-schema` run.
 // Parsing a hand-written approximation would prove nothing: the point of
 // reading `views.sql` at all is that the generator owns its shape.
-import realViewsSql from '../../../test/fixtures/info-schema/views.sql?raw';
 import { parseViewsSql, splitStatements } from './viewsSql';
+
+const realViewsSql = readFileSync(
+  new URL('./fixtures/views.sql', import.meta.url),
+  'utf8',
+);
 
 describe('splitStatements', () => {
   it('splits on semicolons and drops comments', () => {

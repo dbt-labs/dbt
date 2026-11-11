@@ -1,5 +1,5 @@
 /**
- * The `views.sql` the information schema ships beside its parquet.
+ * The generator-owned `views.sql` shipped beside information-schema parquet.
  *
  * The browser used to author its own `CREATE OR REPLACE VIEW` per artifact,
  * which made this app a second definition of the view surface — the same drift
@@ -160,9 +160,12 @@ function mentions(sql: string, name: string): boolean {
  * has no view definitions at all, and guessing them is exactly what this
  * replaced.
  */
-export async function fetchViewsSql(dataBaseUrl: string): Promise<ViewsDocument> {
+export async function fetchViewsSql(
+  dataBaseUrl: string,
+  signal?: AbortSignal,
+): Promise<ViewsDocument> {
   const url = new URL('views.sql', dataBaseUrl).href;
-  const res = await fetch(url);
+  const res = await fetch(url, { signal });
   if (!res.ok) {
     throw new Error(
       `${res.status} ${res.statusText} fetching ${url} — the site's data directory ` +

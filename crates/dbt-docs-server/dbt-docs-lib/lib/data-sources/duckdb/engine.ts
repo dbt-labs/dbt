@@ -66,6 +66,8 @@ export interface EngineOptions {
    * `/dist/*.wasm` plus `/dist/*.worker.js` for the bundles.
    */
   cdnBase: string;
+  /** Omit or use `auto` for capability detection; `mvp` forces the compatibility bundle. */
+  bundlePreference?: 'auto' | 'mvp';
 }
 
 export interface DuckDbEngine {
@@ -80,6 +82,14 @@ export interface DuckDbEngine {
   hasTable(table: TableName): boolean;
   /** Resolve once the engine is usable. Callers that only need readiness, not a query. */
   ready(): Promise<void>;
+  /**
+   * Release the worker. This engine cannot be reused afterward.
+   *
+   * Work still in flight — a query, a readiness wait, an artifact fetch —
+   * rejects with "DuckDB engine has been disposed" rather than being awaited, so
+   * a stalled fetch cannot hold disposal open.
+   */
+  dispose(): Promise<void>;
 }
 
 interface Loaded {
@@ -93,18 +103,35 @@ export function createEngine(options: EngineOptions): DuckDbEngine {
   // Single-flight: many hooks fire at once on first paint and must share one
   // engine, one worker, and one fetch per artifact.
   let loading: Promise<Loaded> | null = null;
+  let disposing: Promise<void> | null = null;
   const registered = new Map<TableName, Promise<boolean>>();
   const present = new Set<TableName>();
+
+  // Disposal aborts this: fetches take its signal, and every other wait races
+  // `disposal`. duckdb-wasm's `terminate()` never settles requests pending on
+  // the worker, so without the race a caller mid-query would hang forever.
+  const lifetime = new AbortController();
+  const disposal = new Promise<never>((_, reject) => {
+    lifetime.signal.addEventListener('abort', () => reject(disposedError()), {
+      once: true,
+    });
+  });
+  void disposal.catch(() => {});
+  function untilDisposed<T>(work: Promise<T>): Promise<T> {
+    return Promise.race([work, disposal]);
+  }
 
   async function load(): Promise<Loaded> {
     // `@vite-ignore` keeps Rollup from trying to resolve and inline the CDN URL,
     // which is the whole point: the wasm must not end up in `web/dist/`.
     // In parallel with the engine: both are needed before the first query, and
     // the document is a few kilobytes next to the engine's ~6.8 MB.
-    const docPromise = fetchViewsSql(options.dataBaseUrl);
+    const docPromise = fetchViewsSql(options.dataBaseUrl, lifetime.signal);
+    // Observe an early fetch failure while the runtime module is still loading.
+    void docPromise.catch(() => {});
 
-    const wasm: typeof duckdb = await import(
-      /* @vite-ignore */ `${options.cdnBase}/+esm`
+    const wasm: typeof duckdb = await untilDisposed(
+      import(/* @vite-ignore */ `${options.cdnBase}/+esm`),
     );
 
     // Build the bundle map from `cdnBase` rather than calling
@@ -113,7 +140,7 @@ export function createEngine(options: EngineOptions): DuckDbEngine {
     // Only `mvp` and `eh` are offered, deliberately: the `coi` bundle needs
     // COOP/COEP cross-origin-isolation headers, which a static host generally
     // cannot set.
-    const bundle = await wasm.selectBundle({
+    const bundles: duckdb.DuckDBBundles = {
       mvp: {
         mainModule: `${options.cdnBase}/dist/duckdb-mvp.wasm`,
         mainWorker: `${options.cdnBase}/dist/duckdb-browser-mvp.worker.js`,
@@ -122,7 +149,11 @@ export function createEngine(options: EngineOptions): DuckDbEngine {
         mainModule: `${options.cdnBase}/dist/duckdb-eh.wasm`,
         mainWorker: `${options.cdnBase}/dist/duckdb-browser-eh.worker.js`,
       },
-    });
+    };
+    const bundle: duckdb.DuckDBBundle =
+      options.bundlePreference === 'mvp'
+        ? { ...bundles.mvp, pthreadWorker: null }
+        : await wasm.selectBundle(bundles);
 
     if (!bundle.mainWorker) {
       throw new Error('duckdb-wasm returned a bundle with no worker entry');
@@ -134,28 +165,58 @@ export function createEngine(options: EngineOptions): DuckDbEngine {
     const workerUrl = URL.createObjectURL(
       new Blob([`importScripts("${bundle.mainWorker}");`], { type: 'text/javascript' }),
     );
+    let worker: Worker | undefined;
+    let db: duckdb.AsyncDuckDB | undefined;
+    let conn: duckdb.AsyncDuckDBConnection | undefined;
     try {
-      const worker = new Worker(workerUrl);
-      const db = new wasm.AsyncDuckDB(
-        new wasm.ConsoleLogger(wasm.LogLevel.WARNING),
-        worker,
-      );
-      await db.instantiate(bundle.mainModule, bundle.pthreadWorker);
-      const conn = await db.connect();
+      worker = new Worker(workerUrl);
+      db = new wasm.AsyncDuckDB(new wasm.ConsoleLogger(wasm.LogLevel.WARNING), worker);
+      let onError: (event: ErrorEvent) => void = () => {};
+      const workerFailure = new Promise<never>((_, reject) => {
+        onError = (event) => {
+          reject(new Error(`DuckDB-WASM worker failed to start: ${event.message}`));
+        };
+        worker!.addEventListener('error', onError);
+      });
+      try {
+        await Promise.race([
+          db.instantiate(bundle.mainModule, bundle.pthreadWorker),
+          workerFailure,
+          disposal,
+        ]);
+      } finally {
+        worker.removeEventListener('error', onError);
+      }
+      conn = await untilDisposed(db.connect());
       // The schemas the document declares, not a list of our own: it knows about
       // `dbt_internal`, which the index layout had no equivalent of.
-      const doc = await docPromise;
+      const doc = await untilDisposed(docPromise);
       for (const schema of doc.schemas) {
-        await conn.query(schema);
+        await untilDisposed(conn.query(schema));
       }
       return { db, conn, doc };
+    } catch (error) {
+      // Not `conn.close()`: a disposal can land while the worker is busy, and
+      // terminating the worker releases the connection with it.
+      if (db) await db.terminate().catch(() => {});
+      worker?.terminate();
+      throw error;
     } finally {
       URL.revokeObjectURL(workerUrl);
     }
   }
 
   function loaded(): Promise<Loaded> {
-    loading ??= load();
+    if (lifetime.signal.aborted) return Promise.reject(disposedError());
+    if (!loading) {
+      // A failed load is forgotten so the next caller retries: `load()` has
+      // already released whatever it created, so a fresh attempt is safe.
+      const attempt = load();
+      loading = attempt;
+      attempt.catch(() => {
+        if (loading === attempt) loading = null;
+      });
+    }
     return loading;
   }
 
@@ -182,7 +243,9 @@ export function createEngine(options: EngineOptions): DuckDbEngine {
    * unknown paths to `index.html` reports a missing artifact as 200 and a
    * document, and registering that leaves DuckDB to fail on it with "No magic
    * bytes found at end of file". A status that is neither — a 500, a timeout — is
-   * still an error and still throws; those are worth surfacing.
+   * still an error and still throws; those are worth surfacing. A throw is not
+   * cached, so the next query that needs the view tries again; an absent
+   * artifact (`false`) is.
    */
   function register(table: TableName): Promise<boolean> {
     const existing = registered.get(table);
@@ -210,7 +273,9 @@ export function createEngine(options: EngineOptions): DuckDbEngine {
         return true;
       }
 
-      const res = await fetch(new URL(view.file, options.dataBaseUrl).href);
+      const res = await fetch(new URL(view.file, options.dataBaseUrl).href, {
+        signal: lifetime.signal,
+      });
       if (!res.ok && res.status !== 404) {
         throw new Error(`${res.status} ${res.statusText} fetching ${view.file}`);
       }
@@ -224,15 +289,26 @@ export function createEngine(options: EngineOptions): DuckDbEngine {
     })();
 
     registered.set(table, attempt);
+    attempt.catch(() => {
+      if (registered.get(table) === attempt) registered.delete(table);
+    });
     return attempt;
   }
 
   return {
     async query<T>(sql: string, tables: TableName[]): Promise<T[]> {
-      const { conn } = await loaded();
-      await Promise.all(tables.map(register));
-      const result = await conn.query(sql);
-      return result.toArray().map((row) => normalizeRow(row.toJSON())) as T[];
+      if (lifetime.signal.aborted) throw disposedError();
+      // Overlapping queries need no lock of ours: the worker runs messages on
+      // the connection one at a time, and `register` is single-flight per table.
+      // Queuing here would only serialize the artifact fetches.
+      return untilDisposed(
+        (async () => {
+          const { conn } = await loaded();
+          await Promise.all(tables.map(register));
+          const rows = await conn.query(sql);
+          return rows.toArray().map((row) => normalizeRow(row.toJSON())) as T[];
+        })(),
+      );
     },
 
     hasTable(table: TableName): boolean {
@@ -242,7 +318,33 @@ export function createEngine(options: EngineOptions): DuckDbEngine {
     async ready(): Promise<void> {
       await loaded();
     },
+
+    dispose(): Promise<void> {
+      disposing ??= (async () => {
+        const pending = loading;
+        lifetime.abort();
+        registered.clear();
+        present.clear();
+        if (!pending) return;
+        let state: Loaded;
+        try {
+          // Settles promptly: every wait inside `load()` races the abort.
+          state = await pending;
+        } catch {
+          // Initialization owns cleanup of partially created resources.
+          return;
+        }
+        // Not `conn.close()`: it would queue behind whatever the worker is
+        // running, and terminating the worker releases the connection with it.
+        await state.db.terminate();
+      })();
+      return disposing;
+    },
   };
+}
+
+function disposedError(): Error {
+  return new Error('DuckDB engine has been disposed');
 }
 
 /**

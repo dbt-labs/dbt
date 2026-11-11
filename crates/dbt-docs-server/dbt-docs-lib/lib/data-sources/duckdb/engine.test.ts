@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { isParquetBytes } from './engine';
+import { createEngine, isParquetBytes } from '../../duckdb';
 
 /**
  * The engine itself is not unit-testable — it dynamically imports DuckDB-WASM from a
@@ -45,5 +45,17 @@ describe('isParquetBytes', () => {
     expect(isParquetBytes(bytes('PAR1'))).toBe(false);
     // Both magics present but overlapping: 8 bytes cannot hold a footer length.
     expect(isParquetBytes(bytes('PAR1', 'PAR1'))).toBe(false);
+  });
+
+  it('can dispose a cold engine repeatedly without fetching artifacts', async () => {
+    const engine = createEngine({
+      dataBaseUrl: 'https://example.test/data/',
+      cdnBase: 'https://example.test/duckdb',
+    });
+    await Promise.all([engine.dispose(), engine.dispose()]);
+    await expect(engine.ready()).rejects.toThrow('DuckDB engine has been disposed');
+    await expect(engine.query('SELECT 1', [])).rejects.toThrow(
+      'DuckDB engine has been disposed',
+    );
   });
 });
