@@ -1094,7 +1094,12 @@ async fn bulk_prefetch_last_modified_by_schema(
 
 /// Start-of-run hook. Fires once before any model executes.
 ///
-/// Starts a background task that batch-prefetches `last_modified_epoch` for all
+/// `runs_nodes` is whether the task graph has Run-phase tasks. Only those
+/// tasks submit to the dbt State service. A command without them (for
+/// example `compile` or `show`) uses the service only for auto-deferral, so
+/// this hook then starts the session telemetry and does nothing else.
+///
+/// Otherwise it starts a background task that batch-prefetches `last_modified_epoch` for all
 /// selected nodes and their runtime dependencies into `run_cache_metadata`, so
 /// per-node submits resolve freshness from the in-process cache instead of
 /// issuing individual warehouse queries.
@@ -1117,8 +1122,17 @@ async fn bulk_prefetch_last_modified_by_schema(
 /// plugin's approach), and the traverser's shared cache means each view is
 /// fetched at most once per run. Total IO is identical — only the timing
 /// changes from eager/pre-run to lazy/per-node.
-pub async fn run_cache_service_before_run(ctx: &TaskRunnerCtx) -> AdapterResult<()> {
+pub async fn run_cache_service_before_run(
+    ctx: &TaskRunnerCtx,
+    runs_nodes: bool,
+) -> AdapterResult<()> {
     run_cache_service_start_telemetry(ctx).await;
+
+    // The prefetch, the run-start clock and the Redshift probe only feed
+    // per-node submits. Skip their warehouse queries when no node submits.
+    if !runs_nodes {
+        return Ok(());
+    }
 
     let prefetch = ctx.inner.run_cache_ctx.prefetch.clone();
     prefetch.mark_started();
@@ -8812,7 +8826,7 @@ mod tests {
 
         let ctx = ctx_with_adapter_in_env(&ctx, &adapter);
 
-        run_cache_service_before_run(&ctx).await.unwrap();
+        run_cache_service_before_run(&ctx, true).await.unwrap();
 
         assert_eq!(
             ctx.inner
@@ -8820,6 +8834,33 @@ mod tests {
                 .redshift_case_sensitivity_enabled
                 .get(),
             Some(&false)
+        );
+    }
+
+    #[dbt_runtime::test]
+    async fn run_cache_service_before_run_without_run_phase_skips_warehouse_work() {
+        let ctx = test_task_runner_ctx_with_adapter_type(AdapterType::Redshift);
+
+        let adapter = ctx
+            .adapter_store()
+            .get(AdapterType::Redshift)
+            .expect("mock Redshift adapter");
+
+        let ctx = ctx_with_adapter_in_env(&ctx, &adapter);
+
+        run_cache_service_before_run(&ctx, false).await.unwrap();
+
+        assert!(
+            !ctx.inner.run_cache_ctx.prefetch.is_started(),
+            "no last-modified prefetch without Run-phase tasks"
+        );
+        assert!(ctx.inner.run_cache_ctx.heuristic_clock.get().is_none());
+        assert!(
+            ctx.inner
+                .run_cache_ctx
+                .redshift_case_sensitivity_enabled
+                .get()
+                .is_none()
         );
     }
 
