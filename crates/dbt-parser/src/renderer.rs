@@ -25,13 +25,11 @@ use dbt_jinja_utils::listener::{
     JinjaTypeCheckingEventListenerFactory, RenderingEventListenerFactory,
 };
 use dbt_jinja_utils::node_resolver::NodeResolver;
-use dbt_jinja_utils::phases::build_operation_context_btreemap;
 use dbt_jinja_utils::phases::compile::{
     DependencyValidationConfig, build_compile_node_context_inner,
 };
-use dbt_jinja_utils::phases::parse::{
-    ParseAdapterScopes, build_resolve_model_context, update_resolve_model_relation,
-};
+use dbt_jinja_utils::phases::parse::{build_resolve_model_context, update_resolve_model_relation};
+use dbt_jinja_utils::phases::{AdapterScopes, build_operation_context_btreemap};
 use dbt_jinja_utils::serde::into_typed_with_jinja_error_context;
 use dbt_jinja_utils::silence_base_context;
 use dbt_jinja_utils::utils::{
@@ -959,7 +957,7 @@ pub struct RenderCtxInner<T: ResolvableConfig<T>> {
     /// `adapter`, which its generated `config()` otherwise sets only during the render.
     pub adapter_layer: Option<HashMap<PathBuf, T>>,
     /// Per-adapter parse identity of the active target. `None` renders every node as the default.
-    pub parse_adapter_scopes: Option<Arc<ParseAdapterScopes>>,
+    pub parse_adapter_scopes: Option<Arc<AdapterScopes>>,
     /// Quoting policies authored for the target's adapters.
     pub adapter_quoting: IndexMap<AdapterType, DbtQuoting>,
     /// The resource paths
@@ -1102,7 +1100,7 @@ pub async fn collect_adapter_identifiers_detect_unsafe<
     package_name: &str,
     root_project_name: &str,
     runtime_config: Arc<DbtRuntimeConfig>,
-    parse_adapter_scopes: &Arc<ParseAdapterScopes>,
+    parse_adapter_scopes: &Arc<AdapterScopes>,
     token: &CancellationToken,
 ) -> FsResult<Vec<(T, bool)>> {
     if node_map.is_empty() {
@@ -1179,7 +1177,7 @@ async fn process_model_chunk_for_unsafe_detection<
     root_project_name: String,
     runtime_config: Arc<DbtRuntimeConfig>,
     parse_adapter: Arc<dbt_adapter::Adapter>,
-    parse_adapter_scopes: &ParseAdapterScopes,
+    parse_adapter_scopes: &AdapterScopes,
     token: &CancellationToken,
 ) -> FsResult<Vec<(T, bool)>> {
     let mut nodes = Vec::new();

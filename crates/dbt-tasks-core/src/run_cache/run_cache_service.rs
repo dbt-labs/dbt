@@ -1998,6 +1998,31 @@ pub async fn execute_run_cache_service_clone(
     pre_hooks_configured: bool,
     grants_order: RunCacheCloneGrantsOrder,
 ) -> FsResult<NodeStatus, RunCacheCloneError> {
+    execute_clone_with_grants(
+        ctx,
+        node,
+        clone,
+        hook_executor,
+        pre_hooks_configured,
+        grants_order,
+        CloneGrants::for_node,
+    )
+    .await
+}
+
+/// [`execute_run_cache_service_clone`] with the node's grants built by `clone_grants_for`.
+async fn execute_clone_with_grants(
+    ctx: &TaskRunnerCtx,
+    node: &dyn InternalDbtNodeAttributes,
+    clone: &RunCacheCloneDecision,
+    hook_executor: Option<RunCacheReuseHookExecutor>,
+    pre_hooks_configured: bool,
+    grants_order: RunCacheCloneGrantsOrder,
+    clone_grants_for: impl FnOnce(
+        &TaskRunnerCtx,
+        &dyn InternalDbtNodeAttributes,
+    ) -> FsResult<Option<CloneGrants>>,
+) -> FsResult<NodeStatus, RunCacheCloneError> {
     verify_clone_source_freshness(ctx, node, clone)
         .await
         .map_err(RunCacheCloneError::Recoverable)?;
@@ -2028,7 +2053,7 @@ pub async fn execute_run_cache_service_clone(
         relation_from_rendered_name(node, &clone.clone_target)
             .map_err(RunCacheCloneError::Fatal)?;
     let drop_target_relation = target_relation.clone();
-    let clone_grants = CloneGrants::for_node(ctx, node).map_err(RunCacheCloneError::Recoverable)?;
+    let clone_grants = clone_grants_for(ctx, node).map_err(RunCacheCloneError::Recoverable)?;
     let clone_result = run_blocking_task_operation(move || {
         if let Some(hook_executor) = &hook_executor {
             hook_executor(&ctx_inner, RunCacheReuseHookPhase::Pre)
@@ -5511,6 +5536,7 @@ mod tests {
     use dbt_frontend_common::span::ReclassifySpan;
     use dbt_jinja_utils::jinja_environment::JinjaEnv;
     use dbt_jinja_utils::listener::DefaultRenderingEventListenerFactory;
+    use dbt_jinja_utils::phases::NodeAdapterGlobals;
     use dbt_schema_store::mock_store::{MockDataStore, MockSchemaStore};
     use dbt_schemas::schemas::Nodes;
     use dbt_schemas::schemas::common::{FreshnessPeriod, ResolvedQuoting, UpdatesOn};
@@ -8727,7 +8753,7 @@ mod tests {
             Default::default(),
             Arc::new(crate::span_manager::SpanManager::new_empty()),
             Execute::Remote,
-            test_adapter_store(),
+            test_adapter_globals(&resolver_state.dbt_profile, AdapterType::Snowflake),
             sources_extractor,
             RunCacheCtx {
                 run_cache_metadata: Arc::new(RunCacheMetadataCache::new()),
@@ -8761,14 +8787,15 @@ mod tests {
 
     fn test_task_runner_ctx_with_adapter_type(adapter_type: AdapterType) -> TaskRunnerCtx {
         let mut ctx = test_task_runner_ctx(None);
+        let adapter_globals = test_adapter_globals(&ctx.resolver_state.dbt_profile, adapter_type);
         Arc::get_mut(&mut ctx.inner)
             .expect("sole owner of inner right after construction")
-            .adapter_store = test_adapter_store_for(adapter_type);
+            .adapter_globals = adapter_globals;
         ctx
     }
 
-    fn test_adapter_store() -> Arc<AdapterStore> {
-        test_adapter_store_for(AdapterType::Snowflake)
+    fn test_adapter_globals(profile: &DbtProfile, adapter_type: AdapterType) -> NodeAdapterGlobals {
+        NodeAdapterGlobals::new(test_adapter_store_for(adapter_type), profile)
     }
 
     fn test_adapter_store_for(adapter_type: AdapterType) -> Arc<AdapterStore> {
@@ -9102,8 +9129,7 @@ mod tests {
         )]))
     }
 
-    /// Replaces the grant macros with stubs that record their arguments, and
-    /// gives them a `commit` to call.
+    /// Replaces the grant macros with stubs that record their arguments.
     fn ctx_recording_grant_macros(ctx: &TaskRunnerCtx) -> (TaskRunnerCtx, Arc<Mutex<Vec<String>>>) {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let mut mj = minijinja::Environment::new();
@@ -9144,17 +9170,27 @@ mod tests {
             },
         );
 
-        let commit_calls = Arc::clone(&calls);
-        mj.add_global(
-            "adapter",
-            minijinja::Value::from_object(RecordingAdapter(commit_calls)),
-        );
-
         let ctx = TaskRunnerCtx {
             env: Arc::new(JinjaEnv::new(mj)),
             ..ctx.clone()
         };
         (ctx, calls)
+    }
+
+    /// The node's clone grants, with an `adapter` whose `commit()` records into `calls`.
+    fn recording_clone_grants(
+        ctx: &TaskRunnerCtx,
+        node: &dyn InternalDbtNodeAttributes,
+        calls: &Arc<Mutex<Vec<String>>>,
+    ) -> FsResult<Option<CloneGrants>> {
+        let mut grants = CloneGrants::for_node(ctx, node)?;
+        if let Some(grants) = &mut grants {
+            grants.context.insert(
+                "adapter".to_string(),
+                minijinja::Value::from_object(RecordingAdapter(Arc::clone(calls))),
+            );
+        }
+        Ok(grants)
     }
 
     #[derive(Debug)]
@@ -9193,7 +9229,7 @@ mod tests {
         let (ctx, calls) = ctx_recording_grant_macros(&test_task_runner_ctx(None));
         let model = model_with_grants(Some(select_to_public()));
 
-        CloneGrants::for_node(&ctx, &model)
+        recording_clone_grants(&ctx, &model, &calls)
             .unwrap()
             .expect("grants are configured")
             .apply(
@@ -9219,7 +9255,7 @@ mod tests {
         let (ctx, calls) = ctx_recording_grant_macros(&test_task_runner_ctx(None));
         let model = model_with_grants(Some(select_to_public()));
 
-        CloneGrants::for_node(&ctx, &model)
+        recording_clone_grants(&ctx, &model, &calls)
             .unwrap()
             .expect("grants are configured")
             .apply(&ctx.env, None, true)
@@ -9236,7 +9272,7 @@ mod tests {
         let (ctx, calls) = ctx_recording_grant_macros(&test_task_runner_ctx(None));
         let model = model_with_grants(Some(select_to_public()));
 
-        CloneGrants::for_node(&ctx, &model)
+        recording_clone_grants(&ctx, &model, &calls)
             .unwrap()
             .expect("grants are configured")
             .apply(&ctx.env, None, false)
@@ -9316,13 +9352,14 @@ mod tests {
         let (ctx, calls) = ctx_recording_grant_macros(&test_task_runner_ctx(None));
         let model = model_with_grants(Some(select_to_public()));
 
-        let result = execute_run_cache_service_clone(
+        let result = execute_clone_with_grants(
             &ctx,
             &model,
             &clone_decision_for_target(),
             Some(recording_hook_executor(&calls)),
             false,
             grants_order,
+            |ctx, node| recording_clone_grants(ctx, node, &calls),
         )
         .await;
         assert!(

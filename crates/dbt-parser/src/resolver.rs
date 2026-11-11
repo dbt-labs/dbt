@@ -20,9 +20,9 @@ use dbt_jinja_utils::listener::JinjaTypeCheckingEventListenerFactory;
 use dbt_jinja_utils::node_resolver::{
     NodeResolver, PackageSearchOrder, check_for_model_deprecations, resolve_dependencies,
 };
+use dbt_jinja_utils::phases::AdapterScopes;
 use dbt_jinja_utils::phases::parse::{
-    ParseAdapterScopes, build_docs_jinja_environment, build_docs_resolve_context,
-    build_resolve_context,
+    build_docs_jinja_environment, build_docs_resolve_context, build_resolve_context,
 };
 use dbt_jinja_utils::serde::into_typed_with_jinja;
 use dbt_jinja_utils::utils::dependency_package_name_from_ctx;
@@ -184,7 +184,7 @@ pub async fn resolve(
     inject_default_overview(&mut macros.docs_macros);
 
     let adapter_type = dbt_state.dbt_profile.default_db_config().adapter_type();
-    let parse_adapter_scopes = Arc::new(ParseAdapterScopes::from_profile(&dbt_state.dbt_profile));
+    let parse_adapter_scopes = Arc::new(AdapterScopes::from_profile(&dbt_state.dbt_profile));
     arg.profile_adapter_types = Some(dbt_state.dbt_profile.adapter_types());
 
     // Build the root project config
@@ -944,7 +944,7 @@ pub async fn resolve_inner(
     root_package_name: &str,
     root_project_configs: &RootProjectConfigs,
     adapter_type: AdapterType,
-    parse_adapter_scopes: &Arc<ParseAdapterScopes>,
+    parse_adapter_scopes: &Arc<AdapterScopes>,
     macros: &Macros,
     jinja_env: Arc<JinjaEnv>,
     mut node_resolver: NodeResolver,
@@ -1829,7 +1829,7 @@ async fn resolve_package(
     root_project_name: String,
     root_project_configs: Arc<RootProjectConfigs>,
     adapter_type: AdapterType,
-    parse_adapter_scopes: &Arc<ParseAdapterScopes>,
+    parse_adapter_scopes: &Arc<AdapterScopes>,
     macros: &Macros,
     jinja_env: Arc<JinjaEnv>,
     node_resolver: NodeResolver,
@@ -1919,7 +1919,7 @@ async fn resolve_package_waves(
     root_project_name: &str,
     root_project_configs: Arc<RootProjectConfigs>,
     adapter_type: AdapterType,
-    parse_adapter_scopes: Arc<ParseAdapterScopes>,
+    parse_adapter_scopes: Arc<AdapterScopes>,
     macros: &Macros,
     jinja_env: Arc<JinjaEnv>,
     node_resolver: &mut NodeResolver,

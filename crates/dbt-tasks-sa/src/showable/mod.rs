@@ -274,7 +274,8 @@ fn make_show_compile_context(
     adapter_type: AdapterType,
 ) -> FsResult<OverlayMap> {
     let mut compile_ctx = ctx.base_context_overlay();
-    ctx.insert_adapter_overlay(&mut compile_ctx, adapter_type)?;
+    ctx.adapter_globals()
+        .insert_for_connection(&mut compile_ctx, adapter_type)?;
     Ok(compile_ctx)
 }
 

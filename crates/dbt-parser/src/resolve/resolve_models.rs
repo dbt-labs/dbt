@@ -39,7 +39,7 @@ use dbt_common::tracing::event_info::store_event_attributes;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::listener::JinjaTypeCheckingEventListenerFactory;
 use dbt_jinja_utils::node_resolver::NodeResolver;
-use dbt_jinja_utils::phases::parse::ParseAdapterScopes;
+use dbt_jinja_utils::phases::AdapterScopes;
 use dbt_jinja_utils::utils::dependency_package_name_from_ctx;
 use dbt_schemas::schemas::CommonAttributes;
 use dbt_schemas::schemas::DbtModel;
@@ -178,7 +178,7 @@ pub async fn resolve_models(
     models_properties: &BTreeMap<String, MinimalPropertiesEntry>,
     database: &str,
     schema: &str,
-    parse_adapter_scopes: &Arc<ParseAdapterScopes>,
+    parse_adapter_scopes: &Arc<AdapterScopes>,
     default_adapter: AdapterType,
     package_name: &str,
     env: Arc<JinjaEnv>,
@@ -502,7 +502,7 @@ async fn build_model_nodes(
     model_sql_resources_map: Vec<SqlFileRenderResult<ModelConfig, ModelProperties>>,
     database: &str,
     schema: &str,
-    parse_adapter_scopes: &ParseAdapterScopes,
+    parse_adapter_scopes: &AdapterScopes,
     default_adapter: AdapterType,
     package_name: &str,
     dependency_package_name: Option<&str>,

@@ -21,10 +21,10 @@ use dbt_common::sources_extractor::SourcesExtractor;
 use dbt_common::stats::{ExecutionMetrics, NodeStatus, Stat};
 use dbt_dag::schedule::Schedule;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
+use dbt_jinja_utils::phases::NodeAdapterGlobals;
 use dbt_jinja_utils::phases::compile::{
     DependencyValidationConfig, build_compile_node_context_inner,
 };
-use dbt_jinja_utils::phases::parse::ParseAdapterScopes;
 use dbt_jinja_utils::utils::add_task_context;
 use dbt_schema_store::{DataStoreTrait, SchemaStoreTrait};
 use dbt_schemas::materialization_resolver::MaterializationResolver;
@@ -39,6 +39,7 @@ use dbt_state::service_client::SharedRunCacheServiceClient;
 use dbt_state::service_config::RunCacheServiceConfig;
 use dbt_state::telemetry::SharedEventOrder;
 use dbt_state::view_traversal::ViewDefinitionTraverser;
+use dbt_telemetry::NodeType;
 use minijinja::Value;
 use minijinja::value::OverlayMap;
 
@@ -189,14 +190,8 @@ pub struct TaskRunnerCtxInner {
     pub adhoc_runner: Arc<dyn crate::AdhocRunner>,
     pub materialization_resolver: Arc<MaterializationResolver>,
     pub root_project_name: String,
-    /// Every adapter the active target declares, built on first use.
-    ///
-    /// A task that knows its node's adapter type asks this for the adapter that
-    /// executes it, rather than re-deriving one from the profile. Its
-    /// `default_adapter_type()` is what an unannotated node runs on.
-    pub adapter_store: Arc<AdapterStore>,
-    /// The `target` each declared non-default adapter's nodes render with.
-    adapter_scopes: ParseAdapterScopes,
+    /// The run's adapter store and the adapter globals each node render takes from it.
+    pub(crate) adapter_globals: NodeAdapterGlobals,
     pub sources_extractor: Arc<dyn SourcesExtractor>,
     pub dbt_profile: Arc<DbtProfile>,
     pub runtime_config: Arc<DbtRuntimeConfig>,
@@ -231,7 +226,7 @@ impl TaskRunnerCtxInner {
         generic_test_relationships: GenericTestRelationships,
         span_manager: Arc<SpanManager<FsResult<NodeStatus>, SkipReason>>,
         execute: dbt_schemas::schemas::profiles::Execute,
-        adapter_store: Arc<AdapterStore>,
+        adapter_globals: NodeAdapterGlobals,
         sources_extractor: Arc<dyn SourcesExtractor>,
         run_cache_ctx: RunCacheCtx,
     ) -> Self {
@@ -286,8 +281,7 @@ impl TaskRunnerCtxInner {
             adhoc_runner,
             materialization_resolver: Arc::new(materialization_resolver),
             root_project_name: resolver_state.root_project_name.clone(),
-            adapter_store,
-            adapter_scopes: ParseAdapterScopes::from_profile(&resolver_state.dbt_profile),
+            adapter_globals,
             sources_extractor,
             dbt_profile: Arc::new(resolver_state.dbt_profile.clone()),
             runtime_config: resolver_state.runtime_config.clone(),
@@ -378,7 +372,7 @@ pub struct BlockingTaskCtx {
 
 impl BlockingTaskCtx {
     pub fn adapter_store(&self) -> &Arc<AdapterStore> {
-        &self.inner.adapter_store
+        self.inner.adapter_globals.store()
     }
 
     pub fn dbt_profile(&self) -> &DbtProfile {
@@ -475,13 +469,18 @@ impl TaskRunnerCtx {
     /// to "what is the default" and it cannot drift from the adapter the store
     /// hands out for it.
     pub fn default_adapter_type(&self) -> AdapterType {
-        self.inner.adapter_store.default_adapter_type()
+        self.adapter_store().default_adapter_type()
     }
 
     /// Every adapter the active target declares. Ask it for the adapter that
     /// executes a given adapter type; see [`AdapterStore`].
     pub fn adapter_store(&self) -> &Arc<AdapterStore> {
-        &self.inner.adapter_store
+        self.inner.adapter_globals.store()
+    }
+
+    /// The adapter globals every node render takes; see [`NodeAdapterGlobals`].
+    pub fn adapter_globals(&self) -> &NodeAdapterGlobals {
+        &self.inner.adapter_globals
     }
 
     /// The adapter that executes `node` outside compute_platform (a lakecompute node gets the run
@@ -498,26 +497,13 @@ impl TaskRunnerCtx {
         )
     }
 
-    /// [`dbt_jinja_utils::phases::insert_adapter_overlay`] with this run's store and scopes.
-    pub fn insert_adapter_overlay(
-        &self,
-        ctx: &mut impl Extend<(String, Value)>,
-        adapter_type: AdapterType,
-    ) -> FsResult<()> {
-        dbt_jinja_utils::phases::insert_adapter_overlay(
-            ctx,
-            adapter_type,
-            self.adapter_store(),
-            &self.inner.adapter_scopes,
-        )
-    }
-
     /// One node's run-phase base context: the node's task keys and its adapter overlay
     /// layered over the run's base context.
     pub fn run_base_context(&self, node: &dyn InternalDbtNodeAttributes) -> FsResult<Value> {
         let mut ctx = self.base_context_overlay();
         add_task_context(&mut ctx, node.common(), &self.thread_id);
-        self.insert_adapter_overlay(&mut ctx, self.adapter_type_for(node))?;
+        self.adapter_globals()
+            .insert_for_node(&mut ctx, self.adapter_type_for(node))?;
         Ok(Value::from(ctx))
     }
 
@@ -605,6 +591,7 @@ impl TaskRunnerCtx {
         // dispatches to one adapter's macros while talking to another's
         // connection.
         let node_adapter = model.node_adapter();
+        let is_operation = model.resource_type() == NodeType::Operation;
         let (mut ctx, config_map) = build_compile_node_context_inner(
             model,
             node_adapter,
@@ -615,16 +602,12 @@ impl TaskRunnerCtx {
             ref_validation_config,
         )?;
 
-        // `adapter` and `api` are environment globals bound to a single adapter,
-        // and the environment is shared by every render. Shadow them in this
-        // node's own context -- the same context-then-globals lookup `DIALECT`
-        // relies on -- so `adapter.get_relation`, `adapter.execute` and friends
-        // reach the connection the node actually runs on.
-        //
-        // Only when the node differs from the default: an unannotated node then
-        // resolves the identical global it always did, and a single-adapter
-        // target never asks the store for a second adapter.
-        self.insert_adapter_overlay(&mut ctx, node_adapter)?;
+        // On-run hooks keep the env's globals, which follow `--adapter` while the hook node stays
+        // on the default.
+        if !is_operation {
+            self.adapter_globals()
+                .insert_for_node(&mut ctx, node_adapter)?;
+        }
 
         Ok((ctx, config_map))
     }

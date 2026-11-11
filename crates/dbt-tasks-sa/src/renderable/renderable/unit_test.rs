@@ -373,7 +373,7 @@ fn requires_adapter_scoped_relation_schema(
     schema_target: UnitTestSchemaTarget,
 ) -> bool {
     is_adapter_scoped_schema_target(schema_target)
-        && ctx.inner.adapter_store.declared().len() > 1
+        && ctx.adapter_store().declared().len() > 1
         && adapter.as_replay().is_none()
         && !is_replay_active(ctx)
 }
@@ -1077,7 +1077,8 @@ fn infer_unit_test_expected_schema(
         ctx.runtime_config().dependencies.keys().cloned().collect(),
     );
     // Not `run_base_context`: it would also add `thread_id` to this render.
-    ctx.insert_adapter_overlay(&mut run_context, ctx.adapter_type_for(unit_test))?;
+    ctx.adapter_globals()
+        .insert_for_node(&mut run_context, ctx.adapter_type_for(unit_test))?;
 
     // Ensure schema inference macro evaluation is node-scoped for replay and any other
     // context-dependent adapter behavior.

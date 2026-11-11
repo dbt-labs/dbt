@@ -17,7 +17,7 @@ use crate::phases::utils::{TargetGlobals, build_target_globals};
 
 /// What a node of one adapter type starts from at parse and renders with at compile and run.
 #[derive(Debug, Clone)]
-pub struct ParseAdapterScope {
+pub struct AdapterScope {
     /// The adapter type of the nodes in this scope.
     pub adapter_type: AdapterType,
     /// The database a node starts from, before `generate_database_name`.
@@ -29,7 +29,7 @@ pub struct ParseAdapterScope {
     overlay: BTreeMap<String, MinijinjaValue>,
 }
 
-impl ParseAdapterScope {
+impl AdapterScope {
     /// The overlay's dialect: `None` for the default and undeclared adapters.
     pub fn dialect(&self) -> Option<&MinijinjaValue> {
         self.overlay.get(DIALECT)
@@ -45,7 +45,7 @@ impl ParseAdapterScope {
     }
 
     /// Shadows the env's `target`, `env`, `database`, `schema` and, when present, `dialect`.
-    pub(crate) fn insert_overlay(&self, ctx: &mut BTreeMap<String, MinijinjaValue>) {
+    pub(crate) fn insert_overlay(&self, ctx: &mut impl Extend<(String, MinijinjaValue)>) {
         ctx.extend(self.overlay.iter().map(|(k, v)| (k.clone(), v.clone())));
     }
 }
@@ -59,19 +59,19 @@ struct ScopeOverlay {
     schema: Option<String>,
 }
 
-/// One [`ParseAdapterScope`] per adapter type the active target declares.
+/// One [`AdapterScope`] per adapter type the active target declares.
 #[derive(Debug, Clone)]
-pub struct ParseAdapterScopes {
-    default: ParseAdapterScope,
+pub struct AdapterScopes {
+    default: AdapterScope,
     /// Declared non-default adapters. An `Err` holds why that connection cannot
     /// form a target context.
-    by_type: HashMap<AdapterType, Result<ParseAdapterScope, String>>,
+    by_type: HashMap<AdapterType, Result<AdapterScope, String>>,
 }
 
-impl ParseAdapterScopes {
+impl AdapterScopes {
     /// The scopes of every adapter `profile`'s active target declares.
     pub fn from_profile(profile: &DbtProfile) -> Self {
-        let default = ParseAdapterScope {
+        let default = AdapterScope {
             adapter_type: profile.default_adapter,
             database: profile.database.clone(),
             schema: profile.schema.clone(),
@@ -95,12 +95,12 @@ impl ParseAdapterScopes {
     }
 
     /// The scope of `adapter_type`. An undeclared type gets the default's scope.
-    pub fn get(&self, adapter_type: AdapterType) -> FsResult<&ParseAdapterScope> {
+    pub fn get(&self, adapter_type: AdapterType) -> FsResult<&AdapterScope> {
         Ok(self.declared(adapter_type)?.unwrap_or(&self.default))
     }
 
     /// The scope of a declared non-default adapter; `None` for the default and undeclared ones.
-    pub fn declared(&self, adapter_type: AdapterType) -> FsResult<Option<&ParseAdapterScope>> {
+    pub fn declared(&self, adapter_type: AdapterType) -> FsResult<Option<&AdapterScope>> {
         match self.by_type.get(&adapter_type) {
             None => Ok(None),
             Some(Ok(scope)) => Ok(Some(scope)),
@@ -150,7 +150,7 @@ fn declared_scope(
     adapter_type: AdapterType,
     config: &DbConfig,
     default_threads: Option<&MinijinjaValue>,
-) -> Result<ParseAdapterScope, String> {
+) -> Result<AdapterScope, String> {
     let (database, schema) = config.profile_database_and_schema();
     let TargetGlobals {
         mut target,
@@ -172,7 +172,7 @@ fn declared_scope(
         DIALECT.to_string(),
         MinijinjaValue::from(adapter_type.as_ref()),
     );
-    Ok(ParseAdapterScope {
+    Ok(AdapterScope {
         adapter_type,
         database,
         schema,
@@ -238,7 +238,7 @@ mod tests {
         }
     }
 
-    fn target_field(scope: &ParseAdapterScope, key: &str) -> MinijinjaValue {
+    fn target_field(scope: &AdapterScope, key: &str) -> MinijinjaValue {
         scope.overlay["target"].get_attr(key).unwrap()
     }
 
@@ -269,7 +269,7 @@ mod tests {
     #[test]
     fn default_and_undeclared_ctx_borrow_base() {
         let scopes =
-            ParseAdapterScopes::from_profile(&profile(vec![snowflake(), bigquery(Some("bq_ds"))]));
+            AdapterScopes::from_profile(&profile(vec![snowflake(), bigquery(Some("bq_ds"))]));
         let base = BTreeMap::from([("k".to_string(), MinijinjaValue::from(1))]);
         for adapter_type in [AdapterType::Snowflake, AdapterType::Postgres] {
             let ctx = scopes.ctx_for(adapter_type, &base).unwrap();
@@ -283,7 +283,7 @@ mod tests {
     #[test]
     fn default_scope_matches_the_profile_database_and_schema() {
         let profile = profile(vec![snowflake(), bigquery(Some("bq_ds"))]);
-        let scopes = ParseAdapterScopes::from_profile(&profile);
+        let scopes = AdapterScopes::from_profile(&profile);
         let scope = scopes.get(AdapterType::Snowflake).unwrap();
         assert_eq!(
             (scope.database.as_str(), scope.schema.as_str()),
@@ -301,7 +301,7 @@ mod tests {
         let mut profile = profile(vec![snowflake()]);
         profile.database = "db".to_string();
         profile.schema = "dbt_test".to_string();
-        let scopes = ParseAdapterScopes::from_profile(&profile);
+        let scopes = AdapterScopes::from_profile(&profile);
         for adapter_type in [AdapterType::Snowflake, AdapterType::Postgres] {
             let scope = scopes.get(adapter_type).unwrap();
             assert_eq!(
@@ -317,7 +317,7 @@ mod tests {
     fn declared_target_matches_the_parse_env_global() {
         let env = parse_env(bigquery(Some("bq_ds")));
         let scopes =
-            ParseAdapterScopes::from_profile(&profile(vec![snowflake(), bigquery(Some("bq_ds"))]));
+            AdapterScopes::from_profile(&profile(vec![snowflake(), bigquery(Some("bq_ds"))]));
         let scope = scopes.get(AdapterType::Bigquery).unwrap();
         for key in ["target", "env", "database", "schema", "dialect"] {
             assert_eq!(scope.overlay[key], env.get_global(key).unwrap(), "{key}");
@@ -336,7 +336,7 @@ mod tests {
         assert_eq!(global, MinijinjaValue::from(4));
 
         let scopes =
-            ParseAdapterScopes::from_profile(&profile(vec![sf.clone(), bigquery(Some("bq_ds"))]));
+            AdapterScopes::from_profile(&profile(vec![sf.clone(), bigquery(Some("bq_ds"))]));
         let scope = scopes.get(AdapterType::Bigquery).unwrap();
         for key in ["target", "env"] {
             assert_eq!(
@@ -346,7 +346,7 @@ mod tests {
             );
         }
 
-        let scopes = ParseAdapterScopes::from_profile(&profile(vec![bigquery(Some("bq_ds")), sf]));
+        let scopes = AdapterScopes::from_profile(&profile(vec![bigquery(Some("bq_ds")), sf]));
         let scope = scopes.get(AdapterType::Snowflake).unwrap();
         for key in ["target", "env"] {
             let threads = scope.overlay[key].get_attr("threads").unwrap();
@@ -357,7 +357,7 @@ mod tests {
     #[test]
     fn bigquery_scope_on_a_snowflake_default() {
         let scopes =
-            ParseAdapterScopes::from_profile(&profile(vec![snowflake(), bigquery(Some("bq_ds"))]));
+            AdapterScopes::from_profile(&profile(vec![snowflake(), bigquery(Some("bq_ds"))]));
         let scope = scopes.get(AdapterType::Bigquery).unwrap();
         assert_eq!(scope.adapter_type, AdapterType::Bigquery);
         assert_eq!(
@@ -376,7 +376,7 @@ mod tests {
     #[test]
     fn insert_target_and_insert_overlay_shadow_the_scope_keys() {
         let scopes =
-            ParseAdapterScopes::from_profile(&profile(vec![snowflake(), bigquery(Some("bq_ds"))]));
+            AdapterScopes::from_profile(&profile(vec![snowflake(), bigquery(Some("bq_ds"))]));
         let scope = scopes.get(AdapterType::Bigquery).unwrap();
         let mut ctx = BTreeMap::new();
         scope.insert_target(&mut ctx);
@@ -404,7 +404,7 @@ mod tests {
 
     #[test]
     fn a_misconfigured_secondary_fails_only_for_itself() {
-        let scopes = ParseAdapterScopes::from_profile(&profile(vec![snowflake(), bigquery(None)]));
+        let scopes = AdapterScopes::from_profile(&profile(vec![snowflake(), bigquery(None)]));
         let err = scopes.get(AdapterType::Bigquery).unwrap_err();
         assert!(err.to_string().contains("'bigquery'"), "{err}");
         assert!(
@@ -418,7 +418,7 @@ mod tests {
     #[test]
     fn declared_is_only_for_declared_non_default_adapters() {
         let scopes =
-            ParseAdapterScopes::from_profile(&profile(vec![snowflake(), bigquery(Some("bq_ds"))]));
+            AdapterScopes::from_profile(&profile(vec![snowflake(), bigquery(Some("bq_ds"))]));
         for adapter_type in [AdapterType::Postgres, AdapterType::Snowflake] {
             assert!(
                 scopes.declared(adapter_type).unwrap().is_none(),
@@ -428,14 +428,14 @@ mod tests {
         let scope = scopes.declared(AdapterType::Bigquery).unwrap().unwrap();
         assert_eq!(scope.adapter_type, AdapterType::Bigquery);
 
-        let scopes = ParseAdapterScopes::from_profile(&profile(vec![snowflake(), bigquery(None)]));
+        let scopes = AdapterScopes::from_profile(&profile(vec![snowflake(), bigquery(None)]));
         let err = scopes.declared(AdapterType::Bigquery).unwrap_err();
         assert!(err.to_string().contains("'bigquery'"), "{err}");
     }
 
     #[test]
     fn an_undeclared_adapter_gets_the_default_fields() {
-        let scopes = ParseAdapterScopes::from_profile(&profile(vec![snowflake()]));
+        let scopes = AdapterScopes::from_profile(&profile(vec![snowflake()]));
         let scope = scopes.get(AdapterType::Postgres).unwrap();
         assert_eq!(scope.adapter_type, AdapterType::Snowflake);
         assert_eq!(
@@ -454,7 +454,7 @@ mod tests {
             schema: Some("DBT_X".to_string()),
             ..Default::default()
         }));
-        let scopes = ParseAdapterScopes::from_profile(&profile(vec![snowflake(), lake_compute]));
+        let scopes = AdapterScopes::from_profile(&profile(vec![snowflake(), lake_compute]));
         let scope = scopes.get(AdapterType::LakeCompute).unwrap();
         assert_eq!(
             (scope.database.as_str(), scope.schema.as_str()),
