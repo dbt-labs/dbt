@@ -1,0 +1,7 @@
+kind: Fixes
+body: Apply unit-test `overrides.macros` to both the unprefixed and `dbt.`-namespaced spelling of a macro (e.g. `current_timestamp` and `dbt.current_timestamp`), so overriding one freezes both, matching dbt-core. When both spellings are overridden the unprefixed value wins.
+time: 2026-11-11T11:42:37.322589+00:00
+custom:
+    author: Shanmukh-l33t
+    issue: "17042"
+    project: dbt-core

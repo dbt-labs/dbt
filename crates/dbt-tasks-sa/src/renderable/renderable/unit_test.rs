@@ -1412,29 +1412,71 @@ fn bind_override_macros(
     compile_context: &mut OverlayMap,
     env: &JinjaEnv,
 ) {
+    // `run_started_at` is a plain datetime global, not a macro invoked with
+    // `()`, so it binds a real value rather than a callable stub (see
+    // `bind_run_started_at_override`). Handle it first and out of band.
     for (macro_name, macro_value) in macros.iter() {
         if macro_name == "run_started_at" {
             let value = bind_run_started_at_override(macro_value, compile_context, env);
             compile_context.insert(macro_name.clone(), value);
-            continue;
-        }
-
-        let return_value = MinijinjaValue::from_serialize(macro_value.clone());
-        let fn_stub =
-            MinijinjaValue::from_function(move |_args: &[MinijinjaValue]| Ok(return_value.clone()));
-
-        // If a package already exists, merge the override in
-        if let Some((pkg, attr)) = macro_name.split_once(".") {
-            let object_stub = Value::from(BTreeMap::from([(attr, fn_stub)]));
-            compile_context.update(pkg, |og| match og {
-                // Check `object_stub` first
-                Some(og) => Value::from_object(ObjectOverlay(vec![object_stub, og])),
-                None => object_stub,
-            });
-        } else {
-            compile_context.insert(macro_name.to_string(), fn_stub);
         }
     }
+
+    // dbt-core treats the unprefixed `macro` and the namespaced `dbt.macro`
+    // spellings as the *same* macro (dbt-labs/dbt-core#9626): an override of
+    // either form must apply to both `{{ macro() }}` and `{{ dbt.macro() }}`, and
+    // when both forms are given the unprefixed (global) value wins. Other package
+    // namespaces (e.g. `dbt_utils.macro`) only receive their own override.
+    //
+    // So apply namespaced overrides first, then unprefixed ones (which mirror into
+    // the `dbt.` namespace). The unprefixed pass runs last so its stub is bound
+    // outermost and therefore wins when both spellings are overridden.
+
+    // Pass 1: namespaced `pkg.macro` overrides.
+    for (macro_name, macro_value) in macros.iter() {
+        let Some((pkg, attr)) = macro_name.split_once('.') else {
+            // Bare names are handled in pass 2.
+            continue;
+        };
+        let fn_stub = macro_fn_stub(macro_value);
+        wrap_namespace_stub(compile_context, pkg, attr, fn_stub.clone());
+        if pkg == "dbt" {
+            // A `dbt.macro` override also overrides the unprefixed `macro()`.
+            compile_context.insert(attr.to_string(), fn_stub);
+        }
+    }
+
+    // Pass 2: unprefixed `macro` overrides, applied last so they win over any
+    // `dbt.macro` override of the same macro.
+    for (macro_name, macro_value) in macros.iter() {
+        if macro_name == "run_started_at" || macro_name.contains('.') {
+            continue;
+        }
+        let fn_stub = macro_fn_stub(macro_value);
+        compile_context.insert(macro_name.clone(), fn_stub.clone());
+        // An unprefixed override also overrides `dbt.macro()`.
+        wrap_namespace_stub(compile_context, "dbt", macro_name, fn_stub);
+    }
+}
+
+/// Build the callable stub that unit-test `overrides.macros` entries bind in
+/// place of the real macro: it ignores any arguments and returns the literal
+/// override value.
+fn macro_fn_stub(macro_value: &YmlValue) -> Value {
+    let return_value = MinijinjaValue::from_serialize(macro_value.clone());
+    MinijinjaValue::from_function(move |_args: &[MinijinjaValue]| Ok(return_value.clone()))
+}
+
+/// Bind `fn_stub` as the `pkg.attr` macro override, merging it over the existing
+/// `pkg` namespace (if any) via [`ObjectOverlay`] so the rest of the namespace
+/// stays callable.
+fn wrap_namespace_stub(compile_context: &mut OverlayMap, pkg: &str, attr: &str, fn_stub: Value) {
+    let object_stub = Value::from(BTreeMap::from([(attr, fn_stub)]));
+    compile_context.update(pkg, |og| match og {
+        // Check `object_stub` first
+        Some(og) => Value::from_object(ObjectOverlay(vec![object_stub, og])),
+        None => object_stub,
+    });
 }
 
 /// Apply overrides to the compile context for unit tests
@@ -5197,6 +5239,88 @@ mod tests {
             YmlValue::string("stub".to_string()),
         );
         assert_eq!(rendered, "local");
+    }
+
+    /// Binds the given `overrides.macros` entries over a `dbt` package namespace
+    /// that exposes a `current_timestamp` macro (returning `REAL_DBT`), and a bare
+    /// `current_timestamp` global (returning `REAL_BARE`), then renders both
+    /// `{{ current_timestamp() }}` and `{{ dbt.current_timestamp() }}`. Returns
+    /// `"<bare>|<dbt>"`.
+    ///
+    /// This mirrors the reported bug (https://github.com/dbt-labs/dbt/issues/17042):
+    /// a unit-test macro override must apply to *both* the unprefixed and the
+    /// `dbt.`-namespaced call of the same macro, as in dbt-core (dbt-core#9626).
+    fn render_current_timestamp_override(overrides: &[(&str, YmlValue)]) -> String {
+        assert!(
+            dbt_runtime::is_pool_worker(),
+            "Jinja must render on a dbt-runtime worker"
+        );
+        let mut raw_env = minijinja::Environment::new();
+        minijinja_contrib::add_to_environment(&mut raw_env);
+        raw_env
+            .add_template(
+                "dbt.current_timestamp",
+                "{% macro current_timestamp() %}{{ return('REAL_DBT') }}{% endmacro %}",
+            )
+            .expect("dbt.current_timestamp template should parse");
+        raw_env.add_global(
+            "current_timestamp",
+            MinijinjaValue::from_function(|_args: &[MinijinjaValue]| {
+                Ok(MinijinjaValue::from("REAL_BARE"))
+            }),
+        );
+        let env = JinjaEnv::new(raw_env);
+
+        let macros: BTreeMap<String, YmlValue> = overrides
+            .iter()
+            .map(|(name, value)| (name.to_string(), value.clone()))
+            .collect();
+        let mut compile_context = OverlayMap::new(Value::from(BTreeMap::from([(
+            "dbt".to_string(),
+            Value::from_object(PackageNamespace("dbt")),
+        )])));
+        bind_override_macros(&macros, &mut compile_context, &env);
+
+        env.render_str(
+            "{{ current_timestamp() }}|{{ dbt.current_timestamp() }}",
+            &compile_context,
+            &[],
+        )
+        .expect("override render should not fail")
+    }
+
+    /// Regression test for https://github.com/dbt-labs/dbt/issues/17042: an
+    /// unprefixed override of `current_timestamp` must also apply to
+    /// `{{ dbt.current_timestamp() }}`, not just the bare call.
+    #[dbt_runtime::worker_test]
+    fn test_unprefixed_macro_override_applies_to_dbt_namespaced_call() {
+        let rendered = render_current_timestamp_override(&[(
+            "current_timestamp",
+            YmlValue::string("OVERRIDE".to_string()),
+        )]);
+        assert_eq!(rendered, "OVERRIDE|OVERRIDE");
+    }
+
+    /// A `dbt.`-namespaced override must also apply to the unprefixed call, as in
+    /// dbt-core (dbt-core#9626).
+    #[dbt_runtime::worker_test]
+    fn test_dbt_namespaced_macro_override_applies_to_unprefixed_call() {
+        let rendered = render_current_timestamp_override(&[(
+            "dbt.current_timestamp",
+            YmlValue::string("OVERRIDE".to_string()),
+        )]);
+        assert_eq!(rendered, "OVERRIDE|OVERRIDE");
+    }
+
+    /// When both spellings are overridden, the unprefixed (global) value wins for
+    /// both calls, matching dbt-core (dbt-core#9626).
+    #[dbt_runtime::worker_test]
+    fn test_unprefixed_macro_override_wins_over_dbt_namespaced() {
+        let rendered = render_current_timestamp_override(&[
+            ("current_timestamp", YmlValue::string("GLOBAL".to_string())),
+            ("dbt.current_timestamp", YmlValue::string("NS".to_string())),
+        ]);
+        assert_eq!(rendered, "GLOBAL|GLOBAL");
     }
 
     #[test]
