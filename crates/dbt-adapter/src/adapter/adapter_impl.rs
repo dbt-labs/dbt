@@ -2603,6 +2603,21 @@ impl AdapterImpl {
         }
     }
 
+    fn athena_convert_type_name(data_type: &DataType) -> Option<&'static str> {
+        Some(match data_type {
+            DataType::Utf8 | DataType::Utf8View | DataType::LargeUtf8 => "string",
+            DataType::Int8
+            | DataType::Int16
+            | DataType::Int32
+            | DataType::Int64
+            | DataType::UInt8
+            | DataType::UInt16
+            | DataType::UInt32
+            | DataType::UInt64 => "integer",
+            _ => return None,
+        })
+    }
+
     /// BaseAdapter https://github.com/dbt-labs/dbt-adapters/blob/0efd8d3d1081e1ab43e38797d5104f7b424a6284/dbt-adapters/src/dbt/adapters/base/impl.py#L1231
     pub fn convert_type(
         &self,
@@ -2656,21 +2671,10 @@ impl AdapterImpl {
         }
 
         // dbt-athena macros match convert_type's string/integer, not the DDL spellings.
-        if self.adapter_type() == Athena {
-            match data_type {
-                DataType::Utf8 | DataType::Utf8View | DataType::LargeUtf8 => {
-                    return Ok("string".to_string());
-                }
-                DataType::Int8
-                | DataType::Int16
-                | DataType::Int32
-                | DataType::Int64
-                | DataType::UInt8
-                | DataType::UInt16
-                | DataType::UInt32
-                | DataType::UInt64 => return Ok("integer".to_string()),
-                _ => {}
-            }
+        if self.adapter_type() == Athena
+            && let Some(name) = Self::athena_convert_type_name(data_type)
+        {
+            return Ok(name.to_string());
         }
 
         let mut out = String::new();
