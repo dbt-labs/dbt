@@ -42,7 +42,8 @@
     a hint to that effect to any failed CREATE OR ALTER (see `with_create_or_alter_hint` in
     adapter_impl.rs), so the run's error output points at --full-refresh.
 -#}
-    {%- set configuration_changes = snowflake__get_dynamic_table_configuration_changes(existing_relation, config) -%}
+    {%- set existing_dynamic_table = snowflake__describe_dynamic_table_for_changes(existing_relation, config) -%}
+    {%- set configuration_changes = snowflake__get_dynamic_table_configuration_changes(existing_relation, config, existing_dynamic_table) -%}
     {%- set on_configuration_change = config.get('on_configuration_change') -%}
     {%- set dynamic_table = target_relation.from_config(config.model) -%}
     {%- set catalog_relation = adapter.build_catalog_relation(config.model) -%}

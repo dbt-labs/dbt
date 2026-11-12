@@ -132,9 +132,10 @@
 {%- endmacro %}
 
 
-{% macro snowflake__get_dynamic_table_configuration_changes(existing_relation, new_config, existing_dynamic_table=none) -%}
-    {#- DIVERGENCE: `existing_dynamic_table` lets the materialization reuse its describe result instead of describing twice. -#}
-    {%- set _existing_dynamic_table = existing_dynamic_table if existing_dynamic_table is not none else snowflake__describe_dynamic_table_for_changes(existing_relation, new_config) -%}
-    {% set _configuration_changes = existing_relation.dynamic_table_config_changeset(_existing_dynamic_table, new_config.model) %}
+{% macro snowflake__get_dynamic_table_configuration_changes(existing_relation, new_config, existing_dynamic_table) -%}
+    {#- DIVERGENCE: core takes (existing_relation, new_config) and describes the relation itself. Fusion takes the
+        describe result (`snowflake__describe_dynamic_table_for_changes`) so callers that also check for a switch
+        between a regular and a custom incremental dynamic table describe it once. -#}
+    {% set _configuration_changes = existing_relation.dynamic_table_config_changeset(existing_dynamic_table, new_config.model) %}
     {% do return(_configuration_changes) %}
 {%- endmacro %}
