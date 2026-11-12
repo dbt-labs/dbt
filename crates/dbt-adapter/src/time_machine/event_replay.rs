@@ -27,6 +27,7 @@ use super::semantic::SemanticCategory;
 use super::serde::values_match;
 use super::validation::{SqlSanitizer, TmpSuffixSanitizer, UuidSanitizer};
 use crate::AdapterType;
+use crate::sql::complex_types::canonicalize_complex_types_for;
 use crate::sql::diff::{canonicalize_python_model_pair, compare_sql};
 
 /// Marker for temp-relation identifiers, which carry a non-deterministic suffix.
@@ -185,7 +186,14 @@ pub(crate) fn adapter_args_match_for_type(
                 .map_or_else(
                     || values_match(recorded, actual),
                     |(rec_sql, act_sql)| {
-                        UuidSanitizer.sanitize(rec_sql) == UuidSanitizer.sanitize(act_sql)
+                        let canonical = |sql: &str| {
+                            canonicalize_complex_types_for(
+                                &UuidSanitizer.sanitize(sql),
+                                adapter_type,
+                            )
+                            .into_owned()
+                        };
+                        canonical(rec_sql) == canonical(act_sql)
                     },
                 )
         }
@@ -2553,6 +2561,35 @@ mod tests {
             &actual_false,
             AdapterType::Bigquery
         ));
+    }
+
+    #[test]
+    fn test_column_schema_query_matches_complex_type_spelling() {
+        // Unit test fixtures used to cast to `struct<a:t>` and now cast to ``STRUCT<`a` t>``.
+        let args = |ty: &str| serde_json::json!([format!("select cast(null as {ty}) as payload")]);
+        let recorded = args("struct<id:string,tags:array<string>>");
+        let actual = args("STRUCT<`id` string, `tags` ARRAY<string>>");
+        let other_type = args("STRUCT<`id` string, `tags` ARRAY<int>>");
+
+        for method in ["get_column_schema_from_query", "execute"] {
+            assert!(
+                adapter_args_match_for_type(method, &recorded, &actual, AdapterType::Databricks),
+                "{method}"
+            );
+            assert!(
+                !adapter_args_match_for_type(
+                    method,
+                    &recorded,
+                    &other_type,
+                    AdapterType::Databricks
+                ),
+                "{method}"
+            );
+            assert!(
+                !adapter_args_match_for_type(method, &recorded, &actual, AdapterType::Snowflake),
+                "{method}"
+            );
+        }
     }
 
     #[test]

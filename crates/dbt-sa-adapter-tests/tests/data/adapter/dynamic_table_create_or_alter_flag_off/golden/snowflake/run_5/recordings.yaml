@@ -1,0 +1,8 @@
+18ae31ca:
+- sequence: 0
+  type: execute
+  sql: select "created_on"::varchar, "text", "refresh_mode", "cluster_by", "warehouse", "initialization_warehouse", "configured_refresh_mode" from table(result_scan(last_query_id())) where upper("name") = upper('dt_flag_off')
+ddac70ab:
+- sequence: 0
+  type: execute
+  sql: show dynamic tables like 'dt_flag_off' in schema development.adapters_snowflake_dynamic_table_create_or_alter_flag_off

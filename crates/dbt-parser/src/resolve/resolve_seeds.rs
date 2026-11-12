@@ -19,7 +19,7 @@ use dbt_common::{ErrorCode, FsResult, fs_err, stdfs};
 use dbt_frontend_common::Dialect;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::node_resolver::NodeResolver;
-use dbt_jinja_utils::phases::parse::ParseAdapterScopes;
+use dbt_jinja_utils::phases::AdapterScopes;
 use dbt_jinja_utils::serde::into_typed_with_jinja;
 use dbt_jinja_utils::utils::dependency_package_name_from_ctx;
 use dbt_schemas::dbt_utils::validate_delimiter;
@@ -58,7 +58,7 @@ pub async fn resolve_seeds(
     root_project_configs: &RootProjectConfigs,
     database: &str,
     schema: &str,
-    parse_adapter_scopes: &ParseAdapterScopes,
+    parse_adapter_scopes: &AdapterScopes,
     default_adapter: AdapterType,
     package_name: &str,
     jinja_env: &JinjaEnv,

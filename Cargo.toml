@@ -375,10 +375,26 @@ toml_edit = { version = "0.25.5" }
 
 # cloud providers
 aws-config = { version = "1.1.7", features = ["behavior-version-latest"] }
-aws-sdk-codeartifact = "1.60.0"
-aws-sdk-ecr = "1.60.0"
-aws-sdk-s3 = "1.78.0"
-aws-sdk-secretsmanager = "1.63.0"
+# No default features: the SDK's legacy `rustls` feature pulls in rustls 0.21 and
+# rustls-webpki 0.101. The default HTTPS client uses rustls 0.23.
+aws-sdk-codeartifact = { version = "1.60.0", default-features = false, features = [
+  "default-https-client",
+  "rt-tokio",
+] }
+aws-sdk-ecr = { version = "1.60.0", default-features = false, features = [
+  "default-https-client",
+  "rt-tokio",
+] }
+aws-sdk-s3 = { version = "1.78.0", default-features = false, features = [
+  "sigv4a",
+  "http-1x",
+  "default-https-client",
+  "rt-tokio",
+] }
+aws-sdk-secretsmanager = { version = "1.63.0", default-features = false, features = [
+  "default-https-client",
+  "rt-tokio",
+] }
 aws-smithy-types = ">=1.4, <1.7.0"
 
 # arrow + parquet

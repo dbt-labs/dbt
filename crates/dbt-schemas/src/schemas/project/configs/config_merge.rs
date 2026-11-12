@@ -346,6 +346,20 @@ impl DefaultTo for crate::schemas::project::configs::common::WarehouseSpecificNo
     }
 }
 
+/// Inheriting from a default parent changes nothing, and a default child inherits a copy of the
+/// parent, so only the case where both are allocated merges field by field.
+impl DefaultTo for crate::schemas::project::configs::common::LazyWarehouseSpecificNodeConfig {
+    fn inherit_from(&mut self, parent: &Self) {
+        let Some(parent_config) = parent.get() else {
+            return;
+        };
+        match self.get_mut() {
+            Some(config) => config.inherit_from(parent_config),
+            None => *self = parent.clone(),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // ReplaceIfNone implementations for all config field types.
 // ---------------------------------------------------------------------------

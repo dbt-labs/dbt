@@ -7,6 +7,9 @@ type YmlValue = dbt_yaml::Value;
 use indexmap::IndexMap;
 use serde_with::skip_serializing_none;
 use std::collections::BTreeMap;
+use std::fmt;
+use std::ops::{Deref, DerefMut};
+use std::sync::LazyLock;
 
 use dbt_common::ErrorCode;
 use dbt_common::tracing::dbt_emit::emit_error_log_message;
@@ -494,6 +497,95 @@ pub fn take_databricks_catalog_alias(
         return None;
     }
     warehouse_specific.catalog.take()
+}
+
+static EMPTY_WAREHOUSE_SPECIFIC_NODE_CONFIG: LazyLock<WarehouseSpecificNodeConfig> =
+    LazyLock::new(WarehouseSpecificNodeConfig::default);
+
+/// A [`WarehouseSpecificNodeConfig`] that is heap-allocated only when it differs from the
+/// default, so configs that set no warehouse option don't carry the whole struct inline.
+///
+/// Derefs to the config, or to a shared default when nothing is allocated. Serialization,
+/// deserialization, equality and `Debug` all go through that logical value, so the storage is
+/// not observable.
+#[derive(Clone, Default)]
+pub struct LazyWarehouseSpecificNodeConfig(Option<Box<WarehouseSpecificNodeConfig>>);
+
+impl LazyWarehouseSpecificNodeConfig {
+    /// The allocated config, or `None` for a default.
+    pub fn get(&self) -> Option<&WarehouseSpecificNodeConfig> {
+        self.0.as_deref()
+    }
+
+    /// Mutable access to an allocated config. Returns `None`, without allocating, for a default.
+    pub fn get_mut(&mut self) -> Option<&mut WarehouseSpecificNodeConfig> {
+        self.0.as_deref_mut()
+    }
+
+    /// Frees the allocation if the config is back to the default.
+    pub fn free_if_default(&mut self) {
+        if self
+            .0
+            .as_deref()
+            .is_some_and(|config| *config == *EMPTY_WAREHOUSE_SPECIFIC_NODE_CONFIG)
+        {
+            self.0 = None;
+        }
+    }
+
+    pub fn into_inner(self) -> WarehouseSpecificNodeConfig {
+        self.0.map(|config| *config).unwrap_or_default()
+    }
+}
+
+impl From<WarehouseSpecificNodeConfig> for LazyWarehouseSpecificNodeConfig {
+    fn from(config: WarehouseSpecificNodeConfig) -> Self {
+        if config == *EMPTY_WAREHOUSE_SPECIFIC_NODE_CONFIG {
+            Self(None)
+        } else {
+            Self(Some(Box::new(config)))
+        }
+    }
+}
+
+impl Deref for LazyWarehouseSpecificNodeConfig {
+    type Target = WarehouseSpecificNodeConfig;
+
+    fn deref(&self) -> &WarehouseSpecificNodeConfig {
+        self.0
+            .as_deref()
+            .unwrap_or(&EMPTY_WAREHOUSE_SPECIFIC_NODE_CONFIG)
+    }
+}
+
+impl DerefMut for LazyWarehouseSpecificNodeConfig {
+    fn deref_mut(&mut self) -> &mut WarehouseSpecificNodeConfig {
+        self.0.get_or_insert_with(Default::default)
+    }
+}
+
+impl PartialEq for LazyWarehouseSpecificNodeConfig {
+    fn eq(&self, other: &Self) -> bool {
+        **self == **other
+    }
+}
+
+impl fmt::Debug for LazyWarehouseSpecificNodeConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&**self, f)
+    }
+}
+
+impl Serialize for LazyWarehouseSpecificNodeConfig {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        (**self).serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for LazyWarehouseSpecificNodeConfig {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        WarehouseSpecificNodeConfig::deserialize(deserializer).map(Self::from)
+    }
 }
 
 impl ResolvableConfig<WarehouseSpecificNodeConfig> for WarehouseSpecificNodeConfig {

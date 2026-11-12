@@ -693,7 +693,8 @@ impl SqlType {
             },
             (Postgres | Redshift, Float(_)) => write!(out, "REAL"),
             (Postgres | Redshift, Clob) => write!(out, "TEXT"),
-            (Postgres | Redshift | Salesforce, Array(Some(inner))) => {
+            // https://duckdb.org/docs/stable/sql/data_types/list
+            (Postgres | Redshift | Salesforce | DuckDB, Array(Some(inner))) => {
                 inner.write(backend, out)?;
                 write!(out, "[]")
             }
@@ -1028,8 +1029,10 @@ impl SqlType {
             (_, Struct(Some(fields))) => {
                 match backend {
                     Snowflake => write!(out, "OBJECT(")?,
+                    // https://duckdb.org/docs/stable/sql/data_types/struct
+                    DuckDB => write!(out, "STRUCT(")?,
                     Bigquery | Databricks | Spark | Athena => write!(out, "STRUCT<")?,
-                    Postgres | Salesforce | DuckDB | ClickHouse | Exasol => write!(out, "(")?,
+                    Postgres | Salesforce | ClickHouse | Exasol => write!(out, "(")?,
                     // Redshift doesn't support object/struct types
                     Redshift => write!(out, "(")?,
                     Fabric => unimplemented!("SQL Server does't have a struct type"),
@@ -1058,8 +1061,11 @@ impl SqlType {
                         }
                     )?;
                     sql_type.write(backend, out)?;
-                    if !nullable {
-                        write!(out, " NOT NULL")?;
+                    match (backend, nullable) {
+                        // DuckDB struct fields take no constraints.
+                        // https://duckdb.org/docs/stable/sql/data_types/struct
+                        (DuckDB, _) | (_, true) => {}
+                        _ => write!(out, " NOT NULL")?,
                     }
                     if let Some(tok) = comment_tok {
                         write!(out, " COMMENT {tok}")?;
@@ -1128,6 +1134,23 @@ impl SqlType {
         match data_type {
             DataType::Null => SqlType::Varchar(None, Default::default()),
             DataType::Boolean => SqlType::Boolean,
+            // https://duckdb.org/docs/stable/sql/data_types/numeric
+            DataType::Int8
+            | DataType::UInt8
+            | DataType::UInt16
+            | DataType::UInt32
+            | DataType::UInt64
+                if backend == AdapterType::DuckDB =>
+            {
+                match data_type {
+                    DataType::Int8 => SqlType::TinyInt,
+                    DataType::UInt8 => SqlType::UTinyInt,
+                    DataType::UInt16 => SqlType::USmallInt,
+                    DataType::UInt32 => SqlType::UInteger,
+                    DataType::UInt64 => SqlType::UBigInt,
+                    _ => unreachable!("guarded by the outer pattern"),
+                }
+            }
             DataType::Int8 | DataType::UInt8 | DataType::Int16 => SqlType::SmallInt,
             DataType::UInt16 | DataType::Int32 => SqlType::Integer,
             DataType::UInt32 | DataType::Int64 | DataType::UInt64 => SqlType::BigInt,
@@ -1269,7 +1292,19 @@ impl SqlType {
                 ))),
             },
 
-            // XXX: things get tricky here and conversions don't really work well yet
+            // DuckDB keeps the element type: an untyped `ARRAY` is not a DuckDB type.
+            // Other backends keep the untyped array until each one is checked.
+            DataType::List(item)
+            | DataType::LargeList(item)
+            | DataType::ListView(item)
+            | DataType::LargeListView(item)
+                if backend == AdapterType::DuckDB =>
+            {
+                SqlType::Array(Some(Box::new(Self::from_arrow_type(
+                    backend,
+                    item.data_type(),
+                ))))
+            }
             DataType::List(_)
             | DataType::LargeList(_)
             | DataType::ListView(_)

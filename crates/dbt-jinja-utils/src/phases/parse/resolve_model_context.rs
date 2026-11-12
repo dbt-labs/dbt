@@ -41,7 +41,7 @@ use minijinja::{
     listener::RenderingEventListener,
     machinery::Span,
     value::{
-        Enumerator, Object, ObjectRepr, Value as MinijinjaValue, ValueKind,
+        Enumerator, Object, ObjectRepr, OverlayMap, Value as MinijinjaValue, ValueKind,
         function_object::FunctionObject,
     },
 };
@@ -51,10 +51,12 @@ use serde::Serialize;
 use dbt_jinja_ctx::{JinjaObject, ParseExecute, ResolveModelCtx, to_jinja_btreemap};
 
 use crate::{
-    invocation_graph::invocation_graph, phases::MacroLookupContext, serde::into_typed_with_error,
+    invocation_graph::invocation_graph,
+    phases::{AdapterScope, MacroLookupContext},
+    serde::into_typed_with_error,
 };
 
-use super::{adapter_scope::ParseAdapterScope, sql_resource::SqlResource};
+use super::sql_resource::SqlResource;
 
 /// Builds a context for resolving models
 #[allow(clippy::too_many_arguments)]
@@ -65,7 +67,7 @@ pub fn build_resolve_model_context<T: ResolvableConfig<T> + Serialize + 'static>
     database: &str,
     schema: &str,
     // The node's target, dialect and starting relation, when known before rendering.
-    node_scope: Option<&ParseAdapterScope>,
+    node_scope: Option<&AdapterScope>,
     // Picks the alias table the in-SQL config() applies.
     config_aliasing: InlineConfigAliasing,
     model_name: &str,
@@ -334,14 +336,16 @@ pub fn build_resolve_model_context<T: ResolvableConfig<T> + Serialize + 'static>
 
 /// Replaces the node's own relation without changing upstream placeholders.
 pub fn update_resolve_model_relation<T: ResolvableConfig<T> + 'static>(
-    context: &mut BTreeMap<String, MinijinjaValue>,
+    context: &mut OverlayMap,
     relation: MinijinjaValue,
 ) {
-    let this = context["this"]
+    let this = context.get("this").expect("parse this");
+    let this = this
         .downcast_object_ref::<ResolveThisFunction<T>>()
         .expect("parse this object");
     let resources = this.sql_resources.clone();
-    let model = context["model"]
+    let model = context.get("model").expect("parse model");
+    let model = model
         .downcast_object_ref::<dbt_schemas::jinja_node::LazyNodeContext>()
         .expect("parse model object");
     for (field, attribute) in [
@@ -1094,7 +1098,7 @@ mod test {
 
     #[test]
     fn previewed_relation_controls_database_and_schema_ref_branches() {
-        use crate::phases::parse::ParseAdapterScopes;
+        use crate::phases::AdapterScopes;
         use dbt_schemas::state::{DbtProfile, ProfileAdapter};
 
         let mut profile: DbtProfile = dbt_yaml::from_str(
@@ -1114,12 +1118,13 @@ mod test {
         profile
             .adapters
             .insert(AdapterType::Bigquery, ProfileAdapter::single(bigquery));
-        let scopes = ParseAdapterScopes::from_profile(&profile);
+        let scopes = AdapterScopes::from_profile(&profile);
         let resources = Arc::new(Mutex::new(Vec::new()));
         let config: ModelConfig =
             crate::serde::from_yaml_raw("database: analytics\nschema: marts\n", None, false, None)
                 .unwrap();
-        let mut ctx = build_resolve_model_context(
+        let mut ctx = OverlayMap::default();
+        ctx.extend(build_resolve_model_context(
             &config,
             false,
             AdapterType::Snowflake,
@@ -1140,7 +1145,7 @@ mod test {
             Path::new("branch.sql"),
             None,
             Some(NodeType::Model),
-        );
+        ));
         let relation = dbt_adapter::relation::do_create_relation(
             AdapterType::Bigquery,
             "analytics".to_string(),
@@ -1170,24 +1175,30 @@ mod test {
             .collect::<Vec<_>>();
         assert_eq!(refs, ["configured"]);
         for key in ["database", "schema"] {
-            assert_eq!(ctx[key], ctx["this"].get_attr(key).unwrap());
-            assert_eq!(ctx[key], ctx["model"].get_attr(key).unwrap());
+            assert_eq!(
+                ctx.get(key).unwrap(),
+                ctx.get("this").unwrap().get_attr(key).unwrap()
+            );
+            assert_eq!(
+                ctx.get(key).unwrap(),
+                ctx.get("model").unwrap().get_attr(key).unwrap()
+            );
         }
         for key in ["target", "env"] {
             assert_eq!(
-                ctx[key].get_attr("type").unwrap().as_str(),
+                ctx.get(key).unwrap().get_attr("type").unwrap().as_str(),
                 Some("bigquery")
             );
             assert_eq!(
-                ctx[key].get_attr("project").unwrap().as_str(),
+                ctx.get(key).unwrap().get_attr("project").unwrap().as_str(),
                 Some("bq-proj")
             );
             assert_eq!(
-                ctx[key].get_attr("dataset").unwrap().as_str(),
+                ctx.get(key).unwrap().get_attr("dataset").unwrap().as_str(),
                 Some("bq_ds")
             );
         }
-        assert_eq!(ctx["dialect"].as_str(), Some("bigquery"));
+        assert_eq!(ctx.get("dialect").unwrap().as_str(), Some("bigquery"));
     }
 
     #[test]

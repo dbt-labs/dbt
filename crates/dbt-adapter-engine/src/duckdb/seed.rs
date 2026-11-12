@@ -7,6 +7,7 @@ use std::sync::{Condvar, Mutex, OnceLock, PoisonError};
 
 use adbc_core::options::{OptionStatement, OptionValue};
 use arrow_schema::Schema;
+
 use dbt_adapter_core::AdapterType;
 use dbt_adapter_sql::ident::{escape_string_literal, quote_identifier};
 use dbt_adapter_sql::types::SqlType;
@@ -382,10 +383,17 @@ mod tests {
 
     /// The first column of every row of `sql`, as text.
     fn values(conn: &mut dyn Connection, sql: &str) -> Vec<String> {
+        try_values(conn, sql).unwrap()
+    }
+
+    /// Like [values], but returns the error when `sql` fails.
+    fn try_values(conn: &mut dyn Connection, sql: &str) -> Result<Vec<String>, String> {
         let mut stmt = conn.new_statement().unwrap();
-        stmt.set_sql_query(sql).unwrap();
-        stmt.execute()
-            .unwrap()
+        let reader = stmt
+            .set_sql_query(sql)
+            .and_then(|_| stmt.execute())
+            .map_err(|e| e.message)?;
+        Ok(reader
             .flat_map(|batch| {
                 let batch = batch.unwrap();
                 let column = batch
@@ -398,7 +406,19 @@ mod tests {
                     .map(|v| v.unwrap().to_string())
                     .collect::<Vec<_>>()
             })
-            .collect()
+            .collect())
+    }
+
+    /// An in-memory DuckDB.
+    fn memory_connection() -> (Box<dyn Database>, Box<dyn Connection>) {
+        let mut driver = DriverBuilder::new(Backend::DuckDB, LoadStrategy::SystemThenCdnCache)
+            .try_load()
+            .unwrap();
+        let mut builder = database::Builder::new(Backend::DuckDB);
+        builder.with_named_option("path", ":memory:").unwrap();
+        let database = builder.build(&mut driver).unwrap();
+        let conn = database.new_connection().unwrap();
+        (database, conn)
     }
 
     /// A target DuckDB with file access disabled, holding the `ddl` table `raw`, and the
@@ -412,13 +432,7 @@ mod tests {
         let path = seeds_dir().join("seeds").join(name);
         std::fs::write(&path, contents).unwrap();
 
-        let mut driver = DriverBuilder::new(Backend::DuckDB, LoadStrategy::SystemThenCdnCache)
-            .try_load()
-            .unwrap();
-        let mut builder = database::Builder::new(Backend::DuckDB);
-        builder.with_named_option("path", ":memory:").unwrap();
-        let database = builder.build(&mut driver).unwrap();
-        let mut conn = database.new_connection().unwrap();
+        let (database, mut conn) = memory_connection();
         for sql in [
             "SET enable_external_access = false",
             "SET TimeZone = 'UTC'",
@@ -515,59 +529,102 @@ mod tests {
         );
     }
 
-    // Records #17394. The fix for #17394 flips this assertion.
-    #[test]
-    fn seed_load_list_column_records_type_rendering_gap() {
-        let (_database, _conn, result) =
-            load_seed("list.csv", "tags\n\"[a, b]\"\n", "tags VARCHAR[]", ",");
-        // The target type `VARCHAR[]` is read as `ARRAY`.
-        let err = result.unwrap_err().to_string();
-        assert!(
-            err.contains(r#"Value "ARRAY" can not be converted to a DuckDB Type"#),
-            "{err}"
-        );
-    }
-
-    // Records #17394. The fix for #17394 flips this assertion.
-    #[test]
-    fn seed_load_ubigint_column_records_type_rendering_gap() {
-        let (_database, conn, result) = load_seed(
-            "ubigint.csv",
-            "big\n18446744073709551615\n",
-            "big UBIGINT",
-            ",",
-        );
-        // The target type `UBIGINT` is read as `BIGINT`, which cannot hold the value.
-        let target = conn
-            .get_table_schema(Some("memory"), Some("main"), "raw")
-            .unwrap();
-        assert_eq!(target.field(0).data_type(), &arrow_schema::DataType::UInt64);
+    /// Loads the one-column seed `contents` into a `c <ty>` target and checks the
+    /// `typeof(c):c` text of its single row.
+    fn assert_seed_loads_as(name: &str, contents: &str, ty: &str, expected: &str) {
+        let (_database, mut conn, result) = load_seed(name, contents, &format!("c {ty}"), ",");
+        result.unwrap_or_else(|err| panic!("{ty}: {err}"));
         assert_eq!(
-            SqlType::from_arrow_type(AdapterType::DuckDB, target.field(0).data_type())
-                .to_string(AdapterType::DuckDB),
-            "BIGINT"
-        );
-        let err = result.unwrap_err().to_string();
-        assert!(
-            err.contains("Conversion Error: CSV Error on Line: 2"),
-            "{err}"
+            values(
+                conn.as_mut(),
+                "SELECT typeof(c) || ':' || c::VARCHAR FROM raw"
+            ),
+            [expected],
+            "{ty}"
         );
     }
 
-    // Records #17394. The fix for #17394 flips this assertion.
     #[test]
-    fn seed_load_struct_column_records_type_rendering_gap() {
-        let (_database, _conn, result) = load_seed(
+    fn seed_load_reads_list_column_as_its_type() {
+        assert_seed_loads_as(
+            "list.csv",
+            "c\n\"[a, b]\"\n",
+            "VARCHAR[]",
+            "VARCHAR[]:[a, b]",
+        );
+    }
+
+    #[test]
+    fn seed_load_reads_ubigint_column_as_its_type() {
+        // The value is above the BIGINT range.
+        assert_seed_loads_as(
+            "ubigint.csv",
+            "c\n18446744073709551615\n",
+            "UBIGINT",
+            "UBIGINT:18446744073709551615",
+        );
+    }
+
+    #[test]
+    fn seed_load_reads_struct_column_as_its_type() {
+        assert_seed_loads_as(
             "struct.csv",
-            "s\n\"{'a': 1, 'b': x}\"\n",
-            "s STRUCT(a BIGINT, b VARCHAR)",
-            ",",
+            "c\n\"{'a': 1, 'b': x}\"\n",
+            "STRUCT(a BIGINT, b VARCHAR)",
+            "STRUCT(a BIGINT, b VARCHAR):{'a': 1, 'b': x}",
         );
-        // The target type is read as `(a BIGINT, b VARCHAR)`, without `STRUCT`.
-        let err = result.unwrap_err().to_string();
-        assert!(
-            err.contains(r#"Value "(a BIGINT, b VARCHAR)" can not be converted to a DuckDB Type"#),
-            "{err}"
-        );
+    }
+
+    /// Seed loading reads each column as the target type rendered by `SqlType`. DuckDB
+    /// must accept each rendered type as the same type.
+    #[test]
+    fn target_column_types_render_as_the_same_duckdb_types() {
+        let types = [
+            "TINYINT",
+            "SMALLINT",
+            "INTEGER",
+            "BIGINT",
+            "UTINYINT",
+            "USMALLINT",
+            "UINTEGER",
+            "UBIGINT",
+            "DOUBLE",
+            "DECIMAL(10,2)",
+            "VARCHAR",
+            "BOOLEAN",
+            "DATE",
+            "TIMESTAMP",
+            "TIMESTAMP WITH TIME ZONE",
+            "VARCHAR[]",
+            "INTEGER[][]",
+            "STRUCT(a BIGINT, b VARCHAR)",
+            "STRUCT(a INTEGER[], b STRUCT(c VARCHAR))",
+            "STRUCT(d DATE, v DOUBLE)[]",
+        ];
+        let (_database, mut conn) = memory_connection();
+        let ddl = types
+            .iter()
+            .enumerate()
+            .map(|(i, ty)| format!("c{i} {ty}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        execute(conn.as_mut(), &format!("CREATE TABLE t ({ddl})"));
+        let schema = conn
+            .get_table_schema(Some("memory"), Some("main"), "t")
+            .unwrap();
+
+        let duckdb = AdapterType::DuckDB;
+        let mut mismatches = Vec::new();
+        for (ty, field) in types.iter().zip(schema.fields()) {
+            let rendered = SqlType::from_arrow_type(duckdb, field.data_type()).to_string(duckdb);
+            let sql = format!(
+                "SELECT CAST(typeof(CAST(NULL AS {ty})) = typeof(CAST(NULL AS {rendered})) AS VARCHAR)"
+            );
+            let same = try_values(conn.as_mut(), &sql);
+            if same.as_deref() != Ok(&["true".to_string()][..]) {
+                mismatches.push(format!("{ty} -> {rendered}: {same:?}"));
+            }
+        }
+        assert!(mismatches.is_empty(), "{mismatches:#?}");
     }
 }

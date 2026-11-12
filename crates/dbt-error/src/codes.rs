@@ -222,6 +222,12 @@ pub enum ErrorCode {
     ReplayDataMissing = 1310,
     ShallowCloneCheckFailed = 1311,
     BigqueryMaximumBytesBilledNotEnforced = 1312,
+    /// The latest refresh of a Databricks materialized view or streaming table failed or was
+    /// cancelled; its config is read anyway.
+    DbRefreshFailedWarning = 1313,
+    /// Waiting for a Databricks materialized view or streaming table refresh to finish reached
+    /// its cap; its config is read anyway.
+    DbRefreshWaitTimeoutWarning = 1314,
 
     // Execution/runtime [1400–1449]
     PlannerFailed = 1400,

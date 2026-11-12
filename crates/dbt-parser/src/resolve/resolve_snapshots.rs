@@ -34,7 +34,7 @@ use dbt_common::{ErrorCode, FsResult, fs_err, stdfs, unexpected_fs_err};
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::listener::DefaultJinjaTypeCheckEventListenerFactory;
 use dbt_jinja_utils::node_resolver::NodeResolver;
-use dbt_jinja_utils::phases::parse::ParseAdapterScopes;
+use dbt_jinja_utils::phases::AdapterScopes;
 use dbt_jinja_utils::serde::into_typed_with_jinja;
 use dbt_schemas::schemas::common::{
     DbtChecksum, DbtQuoting, ModelFreshnessRules, NodeDependsOn,
@@ -73,11 +73,11 @@ pub async fn resolve_snapshots(
     macros: &BTreeMap<String, DbtMacro>,
     database: &str,
     schema: &str,
-    parse_adapter_scopes: &Arc<ParseAdapterScopes>,
+    parse_adapter_scopes: &Arc<AdapterScopes>,
     default_adapter: AdapterType,
     adapter_quoting: &IndexMap<AdapterType, DbtQuoting>,
     jinja_env: Arc<JinjaEnv>,
-    base_ctx: &BTreeMap<String, MinijinjaValue>,
+    base_ctx: &Arc<BTreeMap<String, MinijinjaValue>>,
     runtime_config: Arc<DbtRuntimeConfig>,
     root_runtime_config: Arc<DbtRuntimeConfig>,
     node_resolver: &mut NodeResolver,
@@ -228,7 +228,7 @@ pub async fn resolve_snapshots(
                 schema_value,
                 false,
                 &jinja_env,
-                base_ctx,
+                base_ctx.as_ref(),
                 &[],
                 dependency_package_name,
                 true,
@@ -318,7 +318,7 @@ pub async fn resolve_snapshots(
             package_quoting,
             uses_snapshot_fqn: true,
             defer_render_errors_to_compile: true,
-            base_ctx: base_ctx.clone(),
+            base_ctx: Arc::clone(base_ctx),
             package_name: package_name.to_string(),
             adapter_type: default_adapter,
             database: database.to_string(),
@@ -623,7 +623,7 @@ pub async fn resolve_snapshots(
                         .clone(),
                     table_format: snapshot_config.table_format.clone(),
                 },
-                __adapter_attr__: AdapterAttr::from_config_and_dialect(
+                __adapter_attr__: AdapterAttr::from_lazy_config_and_dialect(
                     &snapshot_config.__warehouse_specific_config__,
                     selected_adapter,
                 ),

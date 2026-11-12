@@ -20,6 +20,7 @@ use crate::io_args::FsCommand;
 
 pub(super) fn cases(cases: &mut Vec<Case>) {
     node_results(cases);
+    rows_written(cases);
     reused_nodes(cases);
     test_results(cases);
     freshness_results(cases);
@@ -352,6 +353,81 @@ fn node_results(cases: &mut Vec<Case>) {
             | NodeType::SemanticModel => {}
         }
     }
+}
+
+/// The result line shows the rows the node's `main` statement wrote, if the adapter gave a
+/// count. It does not depend on the outcome, which the count's producer decides, but on the
+/// node type: the `main` statement of a test is not a write.
+fn rows_written(cases: &mut Vec<Case>) {
+    let mut table = node(NodeType::Model);
+    table.rows_affected = Some(499);
+    cases.push(
+        node_case("table model shows the rows it wrote", table)
+            .expect(
+                DBT_LOG,
+                indoc! {"
+                    03:04:05.678901 [info ]: Started model analytics.customers
+                    03:04:05.928901 [info ]:  Succeeded model analytics.customers (table) [3 of 12 in 0.25s, 499 rows]
+                "},
+            )
+            .expect(
+                TERMINAL,
+                "<green+bold> Succeeded</> model <cyan+bold>analytics.</><blue+bold>customers</> (table) [3 of 12 in 0.25s, 499 rows]\n",
+            ),
+    );
+
+    let mut single = model("order_items", NodeMaterialization::Incremental);
+    single.rows_affected = Some(1);
+    cases.push(
+        node_case("incremental model that wrote one row", single).expect(
+            DBT_LOG,
+            indoc! {"
+                03:04:05.678901 [info ]: Started model analytics.order_items
+                03:04:05.928901 [info ]:  Succeeded model analytics.order_items (incremental) [3 of 12 in 0.25s, 1 row]
+            "},
+        ),
+    );
+
+    let mut empty = model("daily_orders", NodeMaterialization::Table);
+    empty.rows_affected = Some(0);
+    cases.push(
+        node_case("table model that wrote no rows", empty).expect(
+            DBT_LOG,
+            indoc! {"
+                03:04:05.678901 [info ]: Started model analytics.daily_orders
+                03:04:05.928901 [info ]:  Succeeded model analytics.daily_orders (table) [3 of 12 in 0.25s, 0 rows]
+            "},
+        ),
+    );
+
+    // A node can fail after its `main` statement wrote the rows, for example when a later step
+    // fails, and the rows are then still there.
+    let mut failed = model("orders", NodeMaterialization::View);
+    failed.set_node_outcome(NodeOutcome::Error);
+    failed.duration_ms = Some(1_234);
+    failed.rows_affected = Some(499);
+    cases.push(
+        node_case("failed model shows the rows it wrote", failed).expect(
+            DBT_LOG,
+            indoc! {"
+                03:04:05.678901 [info ]: Started model analytics.orders
+                03:04:06.912901 [info ]:     Failed model analytics.orders (view) [3 of 12 in 1.23s, 499 rows]
+            "},
+        ),
+    );
+
+    // A test's `main` statement returns the verdict, not written rows.
+    let mut passed = data_test(TestOutcome::Passed, 0);
+    passed.rows_affected = Some(1);
+    cases.push(
+        node_case("data test hides the rows of its query", passed).expect(
+            DBT_LOG,
+            indoc! {"
+                03:04:05.678901 [info ]: Started test analytics_dbt_test__audit.not_null_customers_customer_id
+                03:04:05.928901 [info ]:     Passed test  not_null_customers_customer_id [3 of 12 in 0.25s]
+            "},
+        ),
+    );
 }
 
 /// A node of `node` reused for `reason`.

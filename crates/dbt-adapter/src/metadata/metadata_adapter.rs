@@ -124,9 +124,9 @@ pub trait MetadataAdapter: Send + Sync {
             .map(|node| {
                 create_relation(
                     adapter_type,
-                    node.database(),
-                    node.schema(),
-                    Some(node.alias()),
+                    node.database().to_string(),
+                    node.schema().to_string(),
+                    Some(node.alias().to_string()),
                     None,
                     node.quoting(),
                 )

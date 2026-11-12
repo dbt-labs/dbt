@@ -1141,12 +1141,14 @@ pub fn reconstruct_package_metadata(snapshot: &PackageSnapshot) -> FsResult<DbtP
         "macro-paths": &paths.macro_paths,
         "docs-paths": &paths.docs_paths,
     });
-    let dbt_project = serde_json::from_value(minimal_project_json).map_err(|e| {
-        fs_err!(
-            ErrorCode::Generic,
-            "Failed to construct DbtProject stub: {e}"
-        )
-    })?;
+    let dbt_project = dbt_yaml::to_value(&minimal_project_json)
+        .and_then(dbt_schemas::schemas::project::DbtProject::from_yml_value)
+        .map_err(|e| {
+            fs_err!(
+                ErrorCode::Generic,
+                "Failed to construct DbtProject stub: {e}"
+            )
+        })?;
 
     Ok(DbtPackage {
         dbt_project,

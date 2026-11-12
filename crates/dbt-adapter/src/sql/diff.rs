@@ -6,6 +6,7 @@ use dbt_common::{AdapterError, AdapterErrorKind, AdapterResult};
 use dbt_frontend_common::Dialect;
 use dbt_sql_utils::{SqlToken as DialectToken, sql_lex_tokens, sql_split_statements};
 
+use super::complex_types::canonicalize_complex_types_for;
 use super::tokenizer::{AbstractToken, Token, abstract_tokenize, tokenize};
 use regex::Regex;
 
@@ -87,6 +88,8 @@ pub fn compare_sql(actual: &str, expected: &str, adapter_type: AdapterType) -> A
     let expected = canonicalize_privilege_statement_order(&expected);
     let actual = canonicalize_numeric_to_decimal(&actual);
     let expected = canonicalize_numeric_to_decimal(&expected);
+    let actual = canonicalize_complex_types_for(&actual, adapter_type).into_owned();
+    let expected = canonicalize_complex_types_for(&expected, adapter_type).into_owned();
     let actual = canonicalize_alter_table_set_tblproperties_order(&actual);
     let expected = canonicalize_alter_table_set_tblproperties_order(&expected);
     let actual = canonicalize_alter_set_tags_order(&actual);
@@ -1464,7 +1467,7 @@ fn is_word_char(b: char) -> bool {
     b.is_ascii_alphanumeric() || b == '_'
 }
 
-fn is_word_byte(b: u8) -> bool {
+pub(super) fn is_word_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
 }
 
@@ -4448,6 +4451,43 @@ select id from __dbt__cte__base;
 "#;
         let result = compare_sql(sql1, sql2, AdapterType::Snowflake);
         assert!(result.is_ok(), "Should match: aliased wrapper");
+    }
+
+    /// Schema probe that wraps a model compiled with the ephemeral wrapper.
+    fn ephemeral_schema_probe(wrapper_end: &str, predicate: &str) -> String {
+        format!(
+            "select * from (\n        with __dbt__cte__active_teams as (\nselect workdayId from `prod_raw`.`enterprise`.`team_v1`\n)\n--EPHEMERAL-SELECT-WRAPPER-START\nselect * from (\n\n\nselect workdayId\nfrom __dbt__cte__active_teams\n--EPHEMERAL-SELECT-WRAPPER-END\n{wrapper_end}\n    ) as __dbt_sbq\n    where {predicate}\n    limit 0\n"
+        )
+    }
+
+    #[test]
+    fn test_compare_ephemeral_wrapper_alias_with_underscores_in_schema_probe() {
+        let recorded = ephemeral_schema_probe(")", "false");
+        for alias in [
+            "flattened_org_hierarchy",
+            "_leading__double_underscore",
+            "`quoted_model`",
+        ] {
+            let actual = ephemeral_schema_probe(&format!(") as {alias}"), "false");
+            let result = compare_sql(&actual, &recorded, AdapterType::Databricks);
+            assert!(result.is_ok(), "Should match: wrapper alias {alias}");
+        }
+    }
+
+    #[test]
+    fn test_compare_ephemeral_wrapper_alias_keeps_following_sql() {
+        let recorded = ephemeral_schema_probe(")", "false");
+        let actual = ephemeral_schema_probe(") as flattened_org_hierarchy", "true");
+        let result = compare_sql(&actual, &recorded, AdapterType::Databricks);
+        assert!(result.is_err(), "Should not match: predicate differs");
+
+        let recorded = "with __dbt__cte__base as (\nselect 1 as id\n)\n--EPHEMERAL-SELECT-WRAPPER-START\nselect * from (\nselect id from __dbt__cte__base\n--EPHEMERAL-SELECT-WRAPPER-END\n);";
+        let actual = recorded.replace("\n);", "\n) as my_model;");
+        let result = compare_sql(&actual, recorded, AdapterType::Databricks);
+        assert!(result.is_ok(), "Should match: alias before semicolon");
+        let actual = recorded.replace("\n);", "\n) as my_model");
+        let result = compare_sql(&actual, recorded, AdapterType::Databricks);
+        assert!(result.is_err(), "Should not match: semicolon removed");
     }
 
     #[test]

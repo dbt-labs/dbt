@@ -52,6 +52,7 @@ struct SchemaEntry {
     relations: SccHashMap<RelationCacheKey, RelationCacheEntry>,
     // Tracks whether or not we have complete knowledge of this schema
     is_complete: bool,
+    routines_complete: bool,
 }
 
 /// A dialect agnostic cache of [RelationCacheEntry]
@@ -163,8 +164,25 @@ impl RelationCache {
             SchemaEntry {
                 relations: cached_relations,
                 is_complete: true,
+                routines_complete: false,
             },
         );
+    }
+
+    /// Caches listed routines without replacing existing relations.
+    pub fn insert_routines(&self, schema: &CatalogAndSchema, routines: RelationVec) {
+        let schema_key = schema.to_string();
+        let mut entry = self
+            .schemas_and_relations
+            .entry_sync(schema_key.clone())
+            .or_default();
+        for routine in routines {
+            let key = Self::normalize_relation_key(&schema_key, routine.as_ref());
+            let _ = entry
+                .relations
+                .insert_sync(key, RelationCacheEntry::new(routine, None));
+        }
+        entry.routines_complete = true;
     }
 
     pub fn insert_many(
@@ -209,6 +227,12 @@ impl RelationCache {
     pub fn contains_full_schema(&self, schema: &CatalogAndSchema) -> bool {
         self.schemas_and_relations
             .read_sync(&schema.to_string(), |_, entry| entry.is_complete)
+            .unwrap_or(false)
+    }
+
+    pub fn contains_routines(&self, schema: &CatalogAndSchema) -> bool {
+        self.schemas_and_relations
+            .read_sync(&schema.to_string(), |_, entry| entry.routines_complete)
             .unwrap_or(false)
     }
 
@@ -861,41 +885,75 @@ mod tests {
         assert!(cache.project_has_functions());
     }
 
-    #[test]
-    fn test_insert_relation_into_complete_schema() {
+    mod routines {
+        use super::*;
         use crate::metadata::CatalogAndSchema;
         use crate::relation::do_create_relation;
+        use dbt_schemas::dbt_types::RelationType;
+        use dbt_schemas::schemas::relations::DEFAULT_RESOLVED_QUOTING;
 
-        let bq_relation = |identifier: &str| -> Arc<dyn BaseRelation> {
+        fn bq_relation(identifier: &str, relation_type: RelationType) -> Arc<dyn BaseRelation> {
             do_create_relation(
                 AdapterType::Bigquery,
                 "my_project".to_string(),
                 "my_dataset".to_string(),
                 Some(identifier.to_string()),
-                None,
+                Some(relation_type),
                 DEFAULT_RESOLVED_QUOTING,
             )
             .unwrap()
             .into()
-        };
+        }
 
-        let cache = RelationCache::default();
+        #[test]
+        fn test_insert_routines_into_complete_schema() {
+            let cache = RelationCache::default();
+            let table = bq_relation("my_table", RelationType::Table);
+            let udf = bq_relation("add_one", RelationType::Function);
+            let schema = CatalogAndSchema::from(table.as_ref());
 
-        let table = bq_relation("my_table");
-        cache.insert_schema(CatalogAndSchema::from(table.as_ref()), vec![table.clone()]);
+            cache.insert_schema(schema.clone(), vec![table.clone()]);
+            assert!(cache.contains_full_schema_for_relation(udf.as_ref()));
+            assert!(!cache.contains_routines(&schema));
+            assert!(!cache.contains_relation(udf.as_ref()));
 
-        let udf = bq_relation("add_one");
-        assert!(cache.contains_full_schema_for_relation(udf.as_ref()));
-        assert!(!cache.contains_relation(udf.as_ref()));
+            cache.insert_routines(&schema, vec![udf.clone()]);
+            assert!(cache.contains_routines(&schema));
+            assert!(cache.contains_relation(udf.as_ref()));
+            assert!(cache.contains_relation(table.as_ref()));
+            assert!(cache.contains_full_schema_for_relation(udf.as_ref()));
+        }
 
-        // Listing routines afterwards makes the UDF findable...
-        cache.insert_relation(udf.clone(), None);
-        assert!(cache.contains_relation(udf.as_ref()));
-        assert!(cache.get_relation(udf.as_ref()).is_some());
+        #[test]
+        fn test_relisting_or_evicting_schema_forgets_routines() {
+            let cache = RelationCache::default();
+            let table = bq_relation("my_table", RelationType::Table);
+            let udf = bq_relation("add_one", RelationType::Function);
+            let schema = CatalogAndSchema::from(table.as_ref());
 
-        // ...without evicting the listed relations or clearing completeness.
-        assert!(cache.contains_relation(table.as_ref()));
-        assert!(cache.contains_full_schema_for_relation(udf.as_ref()));
+            cache.insert_schema(schema.clone(), vec![table.clone()]);
+            cache.insert_routines(&schema, vec![udf.clone()]);
+            cache.insert_schema(schema.clone(), vec![table.clone()]);
+            assert!(!cache.contains_routines(&schema));
+            assert!(!cache.contains_relation(udf.as_ref()));
+
+            cache.insert_routines(&schema, vec![udf.clone()]);
+            cache.evict_schema_for_relation(udf.as_ref());
+            assert!(!cache.contains_routines(&schema));
+        }
+
+        #[test]
+        fn test_insert_routines_keeps_same_name_table() {
+            let cache = RelationCache::default();
+            let table = bq_relation("shared", RelationType::Table);
+            let udf = bq_relation("shared", RelationType::Function);
+            let schema = CatalogAndSchema::from(table.as_ref());
+
+            cache.insert_schema(schema.clone(), vec![table]);
+            cache.insert_routines(&schema, vec![udf.clone()]);
+            let cached = cache.get_relation(udf.as_ref()).unwrap();
+            assert_eq!(cached.relation().relation_type(), Some(RelationType::Table));
+        }
     }
 
     /// Helpers + tests ported from

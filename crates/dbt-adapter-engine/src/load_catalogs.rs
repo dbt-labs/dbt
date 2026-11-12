@@ -1,4 +1,6 @@
 //! Loads and validates `<project_root>/catalogs.yml` into a global holder.
+use std::path::Path;
+use std::sync::{Arc, RwLock};
 
 use dbt_common::tracing::dbt_emit::emit_warn_log_message;
 use dbt_common::warn_error_options::project_flags_get_value;
@@ -8,8 +10,6 @@ use dbt_schemas::schemas::{
     dbt_catalogs_deprecated::{DbtCatalogs, deprecated_validate_catalogs},
 };
 use dbt_yaml as yml;
-use std::path::Path;
-use std::sync::{Arc, RwLock};
 
 const CATALOGS_V2_DISCUSSION_URL: &str = "https://github.com/dbt-labs/dbt-core/discussions/12723";
 

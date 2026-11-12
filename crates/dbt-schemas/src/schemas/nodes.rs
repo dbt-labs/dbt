@@ -1,7 +1,9 @@
 use core::fmt;
 use indexmap::IndexMap;
+use std::collections::HashMap;
 use std::path::Path;
 use std::str::FromStr;
+use std::sync::LazyLock;
 use std::{any::Any, collections::BTreeMap, fmt::Display, path::PathBuf, sync::Arc};
 
 use chrono::Utc;
@@ -18,6 +20,7 @@ use dbt_telemetry::{
 };
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
+use strum::IntoEnumIterator;
 type YmlValue = dbt_yaml::Value;
 use crate::schemas::common::{
     Constraint, ConstraintSupport, ConstraintType, ExternalTable, PersistDocsConfig,
@@ -26,7 +29,9 @@ use crate::schemas::common::{
 use crate::schemas::dbt_column::{DbtColumnRef, deserialize_dbt_columns, serialize_dbt_columns};
 use crate::schemas::manifest::GrantAccessToTarget;
 use crate::schemas::project::configs::common::log_state_mod_diff;
-use crate::schemas::project::configs::common::{grants_equal, tags_eq_vec};
+use crate::schemas::project::configs::common::{
+    LazyWarehouseSpecificNodeConfig, grants_equal, tags_eq_vec,
+};
 use crate::schemas::project::{TblProperties, WarehouseSpecificNodeConfig, same_warehouse_config};
 use crate::schemas::relations::default_dbt_quoting_for;
 use crate::schemas::serde::{PartitionsConfig, QueryTag, StringOrArrayOfStrings};
@@ -658,36 +663,36 @@ pub trait InternalDbtNodeAttributes: InternalDbtNode {
         false
     }
 
-    fn database(&self) -> String {
-        self.base().database.clone()
+    fn database(&self) -> &str {
+        &self.base().database
     }
 
     fn skip_generate_schema_name_macro(&self) -> bool {
         false
     }
 
-    fn schema(&self) -> String {
-        self.base().schema.clone()
+    fn schema(&self) -> &str {
+        &self.base().schema
     }
 
-    fn unique_id(&self) -> String {
-        self.common().unique_id.clone()
+    fn unique_id(&self) -> &str {
+        &self.common().unique_id
     }
 
-    fn name(&self) -> String {
-        self.common().name.clone()
+    fn name(&self) -> &str {
+        &self.common().name
     }
 
     fn name_span(&self) -> Span {
         self.common().name_span.clone()
     }
 
-    fn description(&self) -> Option<String> {
-        self.common().description.clone()
+    fn description(&self) -> Option<&str> {
+        self.common().description.as_deref()
     }
 
-    fn columns(&self) -> Vec<DbtColumnRef> {
-        self.base().columns.clone()
+    fn columns(&self) -> &[DbtColumnRef] {
+        &self.base().columns
     }
 
     /// The node's compiled SQL, when the caller has populated it.
@@ -698,20 +703,20 @@ pub trait InternalDbtNodeAttributes: InternalDbtNode {
         None
     }
 
-    fn alias(&self) -> String {
-        self.base().alias.clone()
+    fn alias(&self) -> &str {
+        &self.base().alias
     }
 
-    fn path(&self) -> PathBuf {
-        self.common().path.to_path_buf()
+    fn path(&self) -> &Path {
+        &self.common().path
     }
 
-    fn original_file_path(&self) -> PathBuf {
-        self.common().original_file_path.to_path_buf()
+    fn original_file_path(&self) -> &Path {
+        &self.common().original_file_path
     }
 
-    fn package_name(&self) -> String {
-        self.common().package_name.clone()
+    fn package_name(&self) -> &str {
+        &self.common().package_name
     }
 
     fn materialized(&self) -> DbtMaterialization {
@@ -722,30 +727,30 @@ pub trait InternalDbtNodeAttributes: InternalDbtNode {
         self.base().quoting
     }
 
-    fn tags(&self) -> Vec<String> {
-        self.common().tags.clone()
+    fn tags(&self) -> &[String] {
+        &self.common().tags
     }
 
-    fn meta(&self) -> IndexMap<String, YmlValue> {
-        self.common().meta.clone()
+    fn meta(&self) -> &IndexMap<String, YmlValue> {
+        &self.common().meta
     }
 
     fn compute(&self) -> Option<ComputeArg> {
         self.base().compute
     }
 
-    fn static_analysis(&self) -> Spanned<StaticAnalysisKind> {
-        self.base().static_analysis.clone()
+    fn static_analysis(&self) -> &Spanned<StaticAnalysisKind> {
+        &self.base().static_analysis
     }
 
     fn static_analysis_baseline(&self) -> Spanned<bool> {
-        self.static_analysis().map(|static_analysis| {
+        self.static_analysis().clone().map(|static_analysis| {
             dbt_common::static_analysis::is_baseline_static_analysis(static_analysis)
         })
     }
 
     fn static_analysis_enabled(&self) -> Spanned<bool> {
-        self.static_analysis().map(|static_analysis| {
+        self.static_analysis().clone().map(|static_analysis| {
             dbt_common::static_analysis::is_static_analysis_enabled(static_analysis)
         })
     }
@@ -3158,32 +3163,32 @@ impl InternalDbtNodeAttributes for DbtSnapshot {
         self.deprecated_config.target_schema.is_some()
     }
 
-    fn schema(&self) -> String {
+    fn schema(&self) -> &str {
         // prefer legacy config
         self.deprecated_config
             .target_schema
-            .clone()
-            .unwrap_or_else(|| self.base().schema.clone())
+            .as_deref()
+            .unwrap_or(&self.base().schema)
     }
 
     fn skip_generate_database_name_macro(&self) -> bool {
         self.deprecated_config.target_database.is_some()
     }
 
-    fn database(&self) -> String {
+    fn database(&self) -> &str {
         // prefer legacy config
         self.deprecated_config
             .target_database
-            .clone()
-            .unwrap_or_else(|| self.base().database.clone())
+            .as_deref()
+            .unwrap_or(&self.base().database)
     }
 
-    fn tags(&self) -> Vec<String> {
-        self.__common_attr__.tags.clone()
+    fn tags(&self) -> &[String] {
+        &self.__common_attr__.tags
     }
 
-    fn meta(&self) -> IndexMap<String, YmlValue> {
-        self.__common_attr__.meta.clone()
+    fn meta(&self) -> &IndexMap<String, YmlValue> {
+        &self.__common_attr__.meta
     }
 
     fn search_name(&self) -> String {
@@ -3550,11 +3555,11 @@ impl InternalDbtNodeAttributes for DbtCheck {
     fn quoting(&self) -> ResolvedQuoting {
         self.__base_attr__.quoting
     }
-    fn tags(&self) -> Vec<String> {
-        self.__common_attr__.tags.clone()
+    fn tags(&self) -> &[String] {
+        &self.__common_attr__.tags
     }
-    fn meta(&self) -> IndexMap<String, YmlValue> {
-        self.__common_attr__.meta.clone()
+    fn meta(&self) -> &IndexMap<String, YmlValue> {
+        &self.__common_attr__.meta
     }
     fn serialized_config(&self) -> YmlValue {
         dbt_yaml::to_value(&self.deprecated_config).expect("Failed to serialize to YAML")
@@ -3634,11 +3639,11 @@ impl InternalDbtNodeAttributes for DbtExperimentalNode {
     fn quoting(&self) -> ResolvedQuoting {
         self.__base_attr__.quoting
     }
-    fn tags(&self) -> Vec<String> {
-        self.__common_attr__.tags.clone()
+    fn tags(&self) -> &[String] {
+        &self.__common_attr__.tags
     }
-    fn meta(&self) -> IndexMap<String, YmlValue> {
-        self.__common_attr__.meta.clone()
+    fn meta(&self) -> &IndexMap<String, YmlValue> {
+        &self.__common_attr__.meta
     }
     fn serialized_config(&self) -> YmlValue {
         #[derive(Serialize)]
@@ -3669,11 +3674,11 @@ impl InternalDbtNodeAttributes for DbtExposure {
     fn quoting(&self) -> ResolvedQuoting {
         self.__base_attr__.quoting
     }
-    fn tags(&self) -> Vec<String> {
-        self.__common_attr__.tags.clone()
+    fn tags(&self) -> &[String] {
+        &self.__common_attr__.tags
     }
-    fn meta(&self) -> IndexMap<String, YmlValue> {
-        self.__common_attr__.meta.clone()
+    fn meta(&self) -> &IndexMap<String, YmlValue> {
+        &self.__common_attr__.meta
     }
     fn serialized_config(&self) -> YmlValue {
         dbt_yaml::to_value(&self.deprecated_config).expect("Failed to serialize to YAML")
@@ -3855,7 +3860,7 @@ impl InternalDbtNodeAttributes for DbtSemanticModel {
     }
     fn set_static_analysis(&mut self, _static_analysis: Spanned<StaticAnalysisKind>) {}
     fn search_name(&self) -> String {
-        self.name()
+        self.name().to_string()
     }
     fn selector_string(&self) -> String {
         format!(
@@ -4013,7 +4018,7 @@ impl InternalDbtNodeAttributes for DbtMetric {
     }
     fn set_static_analysis(&mut self, _static_analysis: Spanned<StaticAnalysisKind>) {}
     fn search_name(&self) -> String {
-        self.name()
+        self.name().to_string()
     }
     fn selector_string(&self) -> String {
         format!("metric:{}.{}", self.package_name(), self.search_name())
@@ -4238,7 +4243,7 @@ impl InternalDbtNodeAttributes for DbtSavedQuery {
     }
     fn set_static_analysis(&mut self, _static_analysis: Spanned<StaticAnalysisKind>) {}
     fn search_name(&self) -> String {
-        self.name()
+        self.name().to_string()
     }
     fn selector_string(&self) -> String {
         format!("saved_query:{}.{}", self.package_name(), self.search_name())
@@ -4384,8 +4389,8 @@ impl InternalDbtNode for DbtFunction {
 }
 
 impl InternalDbtNodeAttributes for DbtFunction {
-    fn static_analysis(&self) -> Spanned<StaticAnalysisKind> {
-        self.__base_attr__.static_analysis.clone()
+    fn static_analysis(&self) -> &Spanned<StaticAnalysisKind> {
+        &self.__base_attr__.static_analysis
     }
 
     fn set_quoting(&mut self, quoting: ResolvedQuoting) {
@@ -6622,49 +6627,60 @@ impl DbtModel {
 #[serde(rename_all = "snake_case")]
 #[derive(dbt_proc_macros::JinjaNodeFields)]
 pub struct AdapterAttr {
-    pub snowflake_attr: Option<Box<SnowflakeAttr>>,
-    pub databricks_attr: Option<Box<DatabricksAttr>>,
-    pub bigquery_attr: Option<Box<BigQueryAttr>>,
-    pub redshift_attr: Option<Box<RedshiftAttr>>,
+    pub snowflake_attr: Option<Arc<SnowflakeAttr>>,
+    pub databricks_attr: Option<Arc<DatabricksAttr>>,
+    pub bigquery_attr: Option<Arc<BigQueryAttr>>,
+    pub redshift_attr: Option<Arc<RedshiftAttr>>,
 }
 
 impl AdapterAttr {
-    pub fn with_snowflake_attr(mut self, snowflake_attr: Option<Box<SnowflakeAttr>>) -> Self {
+    pub fn with_snowflake_attr(mut self, snowflake_attr: Option<Arc<SnowflakeAttr>>) -> Self {
         self.snowflake_attr = snowflake_attr;
         self
     }
 
-    pub fn with_databricks_attr(mut self, databricks_attr: Option<Box<DatabricksAttr>>) -> Self {
+    pub fn with_databricks_attr(mut self, databricks_attr: Option<Arc<DatabricksAttr>>) -> Self {
         self.databricks_attr = databricks_attr;
         self
     }
 
-    pub fn with_bigquery_attr(mut self, bigquery_attr: Option<Box<BigQueryAttr>>) -> Self {
+    pub fn with_bigquery_attr(mut self, bigquery_attr: Option<Arc<BigQueryAttr>>) -> Self {
         self.bigquery_attr = bigquery_attr;
         self
     }
 
-    pub fn with_redshift_attr(mut self, redshift_attr: Option<Box<RedshiftAttr>>) -> Self {
+    pub fn with_redshift_attr(mut self, redshift_attr: Option<Arc<RedshiftAttr>>) -> Self {
         self.redshift_attr = redshift_attr;
         self
     }
 
-    /// Creates a new [AdapterAttr] from a given [&WarehouseSpecificNodeConfig] and adapter type string
-    pub fn from_config_and_dialect(
-        config: &WarehouseSpecificNodeConfig,
+    /// Creates a new [AdapterAttr] from a given [&LazyWarehouseSpecificNodeConfig] and adapter type
+    pub fn from_lazy_config_and_dialect(
+        config: &LazyWarehouseSpecificNodeConfig,
         adapter_type: AdapterType,
     ) -> Self {
-        // TODO: Make all None inputs result in a None for that attr
+        // Nodes with a default config share one value per adapter type instead of each
+        // allocating its own empty attribute structs.
+        static DEFAULT_CONFIG_ATTRS: LazyLock<HashMap<AdapterType, AdapterAttr>> =
+            LazyLock::new(|| {
+                let config = WarehouseSpecificNodeConfig::default();
+                AdapterType::iter()
+                    .map(|adapter_type| (adapter_type, AdapterAttr::build(&config, adapter_type)))
+                    .collect()
+            });
+        match config.get() {
+            Some(config) => Self::build(config, adapter_type),
+            None => DEFAULT_CONFIG_ATTRS[&adapter_type].clone(),
+        }
+    }
+
+    fn build(config: &WarehouseSpecificNodeConfig, adapter_type: AdapterType) -> Self {
         // TODO: Creation of configs should be delegated to the adapter specific attr struct
-        // Here we naively initialize the resolved adapter attributes.
-        // This allows propagation of configurations and switching on the adapter type
-        // allows us to save memory for unused configurations.
-        //
-        // A further optimization can be done by only setting inner fields of [AdapterAttr] if at least one field of the
-        // input is not None
+        // For a default config this runs once per adapter type, and `from_lazy_config_and_dialect`
+        // caches the result.
         match adapter_type {
             AdapterType::Snowflake => {
-                AdapterAttr::default().with_snowflake_attr(Some(Box::new(SnowflakeAttr {
+                AdapterAttr::default().with_snowflake_attr(Some(Arc::new(SnowflakeAttr {
                     table_tag: config.table_tag.clone(),
                     partition_by: config.partition_by.clone(),
                     cluster_by: config.cluster_by.clone(),
@@ -6700,7 +6716,7 @@ impl AdapterAttr {
             }
             AdapterType::Postgres => AdapterAttr::default(),
             AdapterType::Bigquery => {
-                AdapterAttr::default().with_bigquery_attr(Some(Box::new(BigQueryAttr {
+                AdapterAttr::default().with_bigquery_attr(Some(Arc::new(BigQueryAttr {
                     description: config.description.clone(),
                     adapter_properties: config.adapter_properties.clone(),
                     external_volume: config.external_volume.clone(),
@@ -6729,7 +6745,7 @@ impl AdapterAttr {
                 })))
             }
             AdapterType::Redshift => {
-                AdapterAttr::default().with_redshift_attr(Some(Box::new(RedshiftAttr {
+                AdapterAttr::default().with_redshift_attr(Some(Arc::new(RedshiftAttr {
                     auto_refresh: config.auto_refresh,
                     backup: config.backup,
                     bind: config.bind,
@@ -6739,7 +6755,7 @@ impl AdapterAttr {
                 })))
             }
             AdapterType::Databricks => {
-                AdapterAttr::default().with_databricks_attr(Some(Box::new(DatabricksAttr {
+                AdapterAttr::default().with_databricks_attr(Some(Arc::new(DatabricksAttr {
                     adapter_properties: config.adapter_properties.clone(),
                     partition_by: config.partition_by.clone(),
                     file_format: config.file_format.clone(),
@@ -6776,7 +6792,7 @@ impl AdapterAttr {
             _ => {
                 // Unknown input, populate ALL adapter attributes to maximize compatibility downstream
                 AdapterAttr::default()
-                    .with_snowflake_attr(Some(Box::new(SnowflakeAttr {
+                    .with_snowflake_attr(Some(Arc::new(SnowflakeAttr {
                         table_tag: config.table_tag.clone(),
                         partition_by: config.partition_by.clone(),
                         cluster_by: config.cluster_by.clone(),
@@ -6809,7 +6825,7 @@ impl AdapterAttr {
                         secure: config.secure,
                         transient: config.transient,
                     })))
-                    .with_bigquery_attr(Some(Box::new(BigQueryAttr {
+                    .with_bigquery_attr(Some(Arc::new(BigQueryAttr {
                         description: config.description.clone(),
                         adapter_properties: config.adapter_properties.clone(),
                         external_volume: config.external_volume.clone(),
@@ -6840,7 +6856,7 @@ impl AdapterAttr {
                         jar_file_uri: config.jar_file_uri.clone(),
                         timeout: config.timeout,
                     })))
-                    .with_redshift_attr(Some(Box::new(RedshiftAttr {
+                    .with_redshift_attr(Some(Arc::new(RedshiftAttr {
                         auto_refresh: config.auto_refresh,
                         backup: config.backup,
                         bind: config.bind,
@@ -6848,7 +6864,7 @@ impl AdapterAttr {
                         sort: config.sort.clone(),
                         sort_type: config.sort_type.clone(),
                     })))
-                    .with_databricks_attr(Some(Box::new(DatabricksAttr {
+                    .with_databricks_attr(Some(Arc::new(DatabricksAttr {
                         adapter_properties: config.adapter_properties.clone(),
                         partition_by: config.partition_by.clone(),
                         file_format: config.file_format.clone(),
@@ -8946,6 +8962,52 @@ catalogs:
         assert_eq!(m.warn_unsupported, Some(true));
         assert_eq!(m.warn_unenforced, Some(true));
     }
+
+    #[test]
+    fn adapter_attr_from_lazy_config_matches_built_config() {
+        use super::AdapterAttr;
+        use crate::schemas::project::WarehouseSpecificNodeConfig;
+        use crate::schemas::project::configs::common::LazyWarehouseSpecificNodeConfig;
+        use strum::IntoEnumIterator;
+
+        let set = WarehouseSpecificNodeConfig {
+            transient: Some(true),
+            labels_from_meta: Some(true),
+            backup: Some(true),
+            use_uniform: Some(true),
+            ..Default::default()
+        };
+        for adapter_type in AdapterType::iter() {
+            for config in [WarehouseSpecificNodeConfig::default(), set.clone()] {
+                let built = AdapterAttr::build(&config, adapter_type);
+                let lazy = AdapterAttr::from_lazy_config_and_dialect(
+                    &LazyWarehouseSpecificNodeConfig::from(config),
+                    adapter_type,
+                );
+                assert_eq!(
+                    serde_json::to_value(&built).unwrap(),
+                    serde_json::to_value(&lazy).unwrap(),
+                    "{adapter_type}"
+                );
+            }
+
+            let unset = || {
+                AdapterAttr::from_lazy_config_and_dialect(
+                    &LazyWarehouseSpecificNodeConfig::default(),
+                    adapter_type,
+                )
+            };
+            let ptrs = |attr: &AdapterAttr| {
+                (
+                    attr.snowflake_attr.as_ref().map(Arc::as_ptr),
+                    attr.databricks_attr.as_ref().map(Arc::as_ptr),
+                    attr.bigquery_attr.as_ref().map(Arc::as_ptr),
+                    attr.redshift_attr.as_ref().map(Arc::as_ptr),
+                )
+            };
+            assert_eq!(ptrs(&unset()), ptrs(&unset()), "{adapter_type}");
+        }
+    }
 }
 
 #[skip_serializing_none]
@@ -9082,8 +9144,8 @@ impl InternalDbtNode for DbtAnalysis {
 }
 
 impl InternalDbtNodeAttributes for DbtAnalysis {
-    fn static_analysis(&self) -> Spanned<StaticAnalysisKind> {
-        self.__base_attr__.static_analysis.clone()
+    fn static_analysis(&self) -> &Spanned<StaticAnalysisKind> {
+        &self.__base_attr__.static_analysis
     }
 
     fn set_quoting(&mut self, quoting: ResolvedQuoting) {

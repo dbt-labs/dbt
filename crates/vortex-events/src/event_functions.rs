@@ -242,7 +242,7 @@ pub fn run_model_event(
     execution_metrics: Option<ExecutionMetrics>,
 ) {
     let unique_id = node.unique_id();
-    let Some(stat) = run_stats.read_sync(&unique_id, |_, stat| stat.clone()) else {
+    let Some(stat) = run_stats.read_sync(unique_id, |_, stat| stat.clone()) else {
         // Seeds are expected to not have stats. Any other node type missing
         // stats indicates a bug (see PR #9146 regression).
         debug_assert!(

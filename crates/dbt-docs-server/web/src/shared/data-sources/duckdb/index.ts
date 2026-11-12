@@ -17,6 +17,30 @@
  * Every surface the REST source served is here.
  */
 
+import {
+  isProjectLineageRoot,
+  type MetadataDataSource,
+  PROJECT_LINEAGE_MAX_WALK,
+  PROJECT_LINEAGE_UNBOUNDED_FROM,
+} from 'dbt-docs-lib';
+import type {
+  Asset,
+  AssetCounts,
+  AssetSummary,
+  Capabilities,
+  ColumnLineageResult,
+  Distribution,
+  Facets,
+  FileEntry,
+  LineageGraph,
+  Project,
+  ProjectOverview,
+  SearchFacets,
+  SearchFilter,
+  SearchResult,
+} from 'dbt-docs-lib/domain';
+import { createEngine, type DuckDbEngine } from 'dbt-docs-lib/duckdb';
+
 import type { SiteBootstrap } from '../../../lib/siteBootstrap';
 import type {
   AssetArgs,
@@ -26,26 +50,7 @@ import type {
   LineageArgs,
   ListArgs,
 } from '../../typings/args';
-import type { Asset, AssetSummary } from '../../typings/domain/asset';
-import type { Capabilities } from '../../typings/domain/capabilities';
-import type { AssetCounts } from '../../typings/domain/counts';
-import type { Distribution } from '../../typings/domain/distribution';
-import type { Facets } from '../../typings/domain/facets';
-import type { FileEntry } from '../../typings/domain/files';
-import type { ColumnLineageResult, LineageGraph } from '../../typings/domain/lineage';
-import type { ProjectOverview } from '../../typings/domain/overview';
-import type { Project } from '../../typings/domain/project';
-import type {
-  SearchFacets,
-  SearchFilter,
-  SearchResult,
-} from '../../typings/domain/search';
 import type { Page } from '../../typings/page';
-import {
-  isProjectLineageRoot,
-  PROJECT_LINEAGE_MAX_WALK,
-  PROJECT_LINEAGE_UNBOUNDED_FROM,
-} from '../../util/projectLineage';
 import {
   fromCapabilities,
   fromColumnLineageResponse,
@@ -64,10 +69,8 @@ import {
   type RestNodeCounts,
   type RestProjectOverview,
 } from '../mappers/fromWire';
-import type { MetadataDataSource } from '../MetadataDataSource';
 import type { BootstrapData } from './bootstrap';
 import { detailSpecFor, nodeColumnsSql } from './details';
-import { createEngine, type DuckDbEngine } from './engine';
 import {
   buildListQuery,
   constantFacets,

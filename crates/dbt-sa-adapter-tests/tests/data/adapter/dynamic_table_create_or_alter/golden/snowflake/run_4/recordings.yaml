@@ -1,0 +1,372 @@
+'14980382':
+- sequence: 0
+  type: execute
+  sql: select "created_on"::varchar, "text", "refresh_mode", "cluster_by", "warehouse", "initialization_warehouse", "configured_refresh_mode" from table(result_scan(last_query_id())) where upper("name") = upper('attr_aggregation_policy')
+14c0e153:
+- sequence: 0
+  type: execute
+  sql: show dynamic tables like 'attr_aggregation_policy' in schema development.adapters_snowflake_dynamic_table_create_or_alter
+1764f16e:
+- sequence: 0
+  type: execute
+  sql: select count(*) from development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks where name = 'cfg_cluster_by' and created_on = 'Mon, 02 Nov 2026 01:50:15 -0800'
+1caf4060:
+- sequence: 0
+  type: execute
+  sql: select "created_on"::varchar, "text", "refresh_mode", "cluster_by", "warehouse", "initialization_warehouse", "configured_refresh_mode" from table(result_scan(last_query_id())) where upper("name") = upper('continue_skips_both')
+23f103da:
+- sequence: 0
+  type: execute
+  sql: show dynamic tables like 'cfg_warehouse' in schema development.adapters_snowflake_dynamic_table_create_or_alter
+252ef290:
+- sequence: 0
+  type: execute
+  sql: select "created_on"::varchar, "text", "refresh_mode", "cluster_by", "warehouse", "initialization_warehouse", "configured_refresh_mode" from table(result_scan(last_query_id())) where upper("name") = upper('attr_data_retention')
+2678f3fa:
+- sequence: 0
+  type: execute
+  sql: select "created_on"::varchar, "text", "refresh_mode", "cluster_by", "warehouse", "initialization_warehouse", "configured_refresh_mode" from table(result_scan(last_query_id())) where upper("name") = upper('inc_props')
+27b9e9a2:
+- sequence: 0
+  type: execute
+  sql: select "created_on"::varchar, "text", "refresh_mode", "cluster_by", "warehouse", "initialization_warehouse", "configured_refresh_mode" from table(result_scan(last_query_id())) where upper("name") = upper('dm_auto_disable')
+- sequence: 1
+  type: execute
+  sql: select "created_on"::varchar, "text", "refresh_mode", "cluster_by", "warehouse", "initialization_warehouse", "configured_refresh_mode" from table(result_scan(last_query_id())) where upper("name") = upper('dm_auto_disable')
+2815d37c:
+- sequence: 0
+  type: execute
+  sql: show dynamic tables like 'attr_row_access_policy' in schema development.adapters_snowflake_dynamic_table_create_or_alter
+2e47955a:
+- sequence: 0
+  type: execute
+  sql: show dynamic tables like 'dm_auto_enable' in schema development.adapters_snowflake_dynamic_table_create_or_alter
+2e49d4a4:
+- sequence: 0
+  type: execute
+  sql: show parameters like 'MAX_DATA_EXTENSION_TIME_IN_DAYS' in table development.adapters_snowflake_dynamic_table_create_or_alter.attr_max_data_extension
+2e507f18:
+- sequence: 0
+  type: execute
+  sql: select "created_on"::varchar, "text", "refresh_mode", "cluster_by", "warehouse", "initialization_warehouse", "configured_refresh_mode" from table(result_scan(last_query_id())) where upper("name") = upper('attr_row_access_policy')
+30d33973:
+- sequence: 0
+  type: execute
+  sql: show dynamic tables like 'idempotent_noop' in schema development.adapters_snowflake_dynamic_table_create_or_alter
+355f4129:
+- sequence: 0
+  type: execute
+  sql: select policy_name from table(development.information_schema.policy_references(ref_entity_name => 'development.adapters_snowflake_dynamic_table_create_or_alter.attr_multi', ref_entity_domain => 'table'))
+3ce1bf4d:
+- sequence: 0
+  type: execute
+  sql: show dynamic tables like 'attr_data_retention' in schema development.adapters_snowflake_dynamic_table_create_or_alter
+3ddf3b97:
+- sequence: 0
+  type: execute
+  sql: select count(*) from development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks where name = 'dm_full_disable' and created_on = 'Mon, 02 Nov 2026 01:50:11 -0800'
+3e7a56c2:
+- sequence: 0
+  type: execute
+  sql: show dynamic tables like 'attr_projection_policy' in schema development.adapters_snowflake_dynamic_table_create_or_alter
+405781ae:
+- sequence: 0
+  type: execute
+  sql: select refresh_action from table(development.information_schema.dynamic_table_refresh_history(name => 'DEVELOPMENT.ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE_CREATE_OR_ALTER.INC_PROPS')) order by data_timestamp, refresh_start_time
+432e1f5d:
+- sequence: 0
+  type: execute
+  sql: show dynamic tables like 'dm_full_disable' in schema development.adapters_snowflake_dynamic_table_create_or_alter
+4623a349:
+- sequence: 0
+  type: execute
+  sql: select count(*) from development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks where name = 'dm_incremental_enable' and created_on = 'Mon, 02 Nov 2026 01:50:09 -0800'
+47e22719:
+- sequence: 0
+  type: execute
+  sql: select count(*) from development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks where name = 'idempotent_noop' and created_on = 'Mon, 02 Nov 2026 01:50:08 -0800'
+47f99041:
+- sequence: 0
+  type: execute
+  sql: select tag_name from table(development.information_schema.tag_references('development.adapters_snowflake_dynamic_table_create_or_alter.attr_multi', 'table'))
+493eb630:
+- sequence: 0
+  type: execute
+  sql: select count(*) from development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks where name = 'cfg_warehouse' and created_on = 'Mon, 02 Nov 2026 01:50:13 -0800'
+49e3b1cc:
+- sequence: 0
+  type: execute
+  sql: show dynamic tables like 'dm_full_enable' in schema development.adapters_snowflake_dynamic_table_create_or_alter
+4d2d69b2:
+- sequence: 0
+  type: execute
+  sql: select policy_name from table(development.information_schema.policy_references(ref_entity_name => 'development.adapters_snowflake_dynamic_table_create_or_alter.attr_projection_policy', ref_entity_domain => 'table'))
+4e87b73b:
+- sequence: 0
+  type: execute
+  sql: show dynamic tables like 'dm_auto_disable' in schema development.adapters_snowflake_dynamic_table_create_or_alter
+- sequence: 1
+  type: execute
+  sql: show dynamic tables like 'dm_auto_disable' in schema development.adapters_snowflake_dynamic_table_create_or_alter
+'52098857':
+- sequence: 0
+  type: execute
+  sql: select "created_on"::varchar, "text", "refresh_mode", "cluster_by", "warehouse", "initialization_warehouse", "configured_refresh_mode" from table(result_scan(last_query_id())) where upper("name") = upper('cfg_cluster_by')
+52eb5ac9:
+- sequence: 0
+  type: execute
+  sql: select "created_on"::varchar, "text", "refresh_mode", "cluster_by", "warehouse", "initialization_warehouse", "configured_refresh_mode" from table(result_scan(last_query_id())) where upper("name") = upper('dm_incremental_disable')
+562b7e31:
+- sequence: 0
+  type: execute
+  sql: select retention_time from development.information_schema.tables where table_schema ilike 'adapters_snowflake_dynamic_table_create_or_alter' and table_name ilike 'attr_multi'
+5ac41d26:
+- sequence: 0
+  type: execute
+  sql: select count(*) from development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks where name = 'inc_props' and created_on = 'Mon, 02 Nov 2026 01:50:06 -0800'
+5b9a2066:
+- sequence: 0
+  type: execute
+  sql: select count(*) from development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks where name = 'dm_auto_enable' and created_on = 'Mon, 02 Nov 2026 01:50:11 -0800'
+5f7332d0:
+- sequence: 0
+  type: execute
+  sql: select count(*) from development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks where name = 'cfg_init_warehouse' and created_on = 'Mon, 02 Nov 2026 01:50:14 -0800'
+5f8bdbc2:
+- sequence: 0
+  type: execute
+  sql: show dynamic tables like 'attr_masking_policy' in schema development.adapters_snowflake_dynamic_table_create_or_alter
+5fbf8440:
+- sequence: 0
+  type: execute
+  sql: select tag_name from table(development.information_schema.tag_references('development.adapters_snowflake_dynamic_table_create_or_alter.attr_tag', 'table'))
+64eaac0c:
+- sequence: 0
+  type: execute
+  sql: select "created_on"::varchar, "text", "refresh_mode", "cluster_by", "warehouse", "initialization_warehouse", "configured_refresh_mode" from table(result_scan(last_query_id())) where upper("name") = upper('transient_preserved')
+65ea1f6c:
+- sequence: 0
+  type: execute
+  sql: select "created_on"::varchar, "text", "refresh_mode", "cluster_by", "warehouse", "initialization_warehouse", "configured_refresh_mode" from table(result_scan(last_query_id())) where upper("name") = upper('attr_tag')
+67b2e163:
+- sequence: 0
+  type: execute
+  sql: show dynamic tables like 'refresh_mode_replace' in schema development.adapters_snowflake_dynamic_table_create_or_alter
+733b50c6:
+- sequence: 0
+  type: execute
+  sql: select refresh_action from table(development.information_schema.dynamic_table_refresh_history(name => 'DEVELOPMENT.ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE_CREATE_OR_ALTER.DM_AUTO_DISABLE')) order by data_timestamp, refresh_start_time
+74c53596:
+- sequence: 0
+  type: execute
+  sql: select count(*) from development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks where name = 'continue_skips_both' and created_on = 'Mon, 02 Nov 2026 01:50:13 -0800'
+'77909996':
+- sequence: 0
+  type: execute
+  sql: show dynamic tables like 'transient_preserved' in schema development.adapters_snowflake_dynamic_table_create_or_alter
+7b2ea861:
+- sequence: 0
+  type: execute
+  sql: select "created_on"::varchar, "text", "refresh_mode", "cluster_by", "warehouse", "initialization_warehouse", "configured_refresh_mode" from table(result_scan(last_query_id())) where upper("name") = upper('transient_flip')
+7bdb903d:
+- sequence: 0
+  type: execute
+  sql: show dynamic tables like 'attr_comment' in schema development.adapters_snowflake_dynamic_table_create_or_alter
+7e63bcf1:
+- sequence: 0
+  type: execute
+  sql: select count(*) from development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks where name = 'dm_full_enable' and created_on = 'Mon, 02 Nov 2026 01:50:10 -0800'
+7ebb67bb:
+- sequence: 0
+  type: execute
+  sql: select "created_on"::varchar, "text", "refresh_mode", "cluster_by", "warehouse", "initialization_warehouse", "configured_refresh_mode" from table(result_scan(last_query_id())) where upper("name") = upper('dm_incremental_enable')
+7fe053ec:
+- sequence: 0
+  type: execute
+  sql: select "created_on"::varchar, "text", "refresh_mode", "cluster_by", "warehouse", "initialization_warehouse", "configured_refresh_mode" from table(result_scan(last_query_id())) where upper("name") = upper('dm_full_enable')
+8087ddc2:
+- sequence: 0
+  type: execute
+  sql: show dynamic tables like 'continue_skips_both' in schema development.adapters_snowflake_dynamic_table_create_or_alter
+823edfa6:
+- sequence: 0
+  type: execute
+  sql: select count(*) from development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks where name = 'refresh_mode_to_auto' and created_on = 'Mon, 02 Nov 2026 01:50:05 -0800'
+855fb543:
+- sequence: 0
+  type: execute
+  sql: select "created_on"::varchar, "text", "refresh_mode", "cluster_by", "warehouse", "initialization_warehouse", "configured_refresh_mode" from table(result_scan(last_query_id())) where upper("name") = upper('attr_multi')
+- sequence: 1
+  type: execute
+  sql: select "created_on"::varchar, "text", "refresh_mode", "cluster_by", "warehouse", "initialization_warehouse", "configured_refresh_mode" from table(result_scan(last_query_id())) where upper("name") = upper('attr_multi')
+8767d1c3:
+- sequence: 0
+  type: execute
+  sql: show dynamic tables like 'dm_incremental_disable' in schema development.adapters_snowflake_dynamic_table_create_or_alter
+90ad3702:
+- sequence: 0
+  type: execute
+  sql: show dynamic tables like 'attr_multi' in schema development.adapters_snowflake_dynamic_table_create_or_alter
+- sequence: 1
+  type: execute
+  sql: show dynamic tables like 'attr_multi' in schema development.adapters_snowflake_dynamic_table_create_or_alter
+94758f7d:
+- sequence: 0
+  type: execute
+  sql: show dynamic tables like 'cfg_cluster_by' in schema development.adapters_snowflake_dynamic_table_create_or_alter
+94c9db4f:
+- sequence: 0
+  type: execute
+  sql: select retention_time from development.information_schema.tables where table_schema ilike 'adapters_snowflake_dynamic_table_create_or_alter' and table_name ilike 'attr_data_retention'
+967566cf:
+- sequence: 0
+  type: execute
+  sql: select "created_on"::varchar, "text", "refresh_mode", "cluster_by", "warehouse", "initialization_warehouse", "configured_refresh_mode" from table(result_scan(last_query_id())) where upper("name") = upper('refresh_mode_to_auto')
+9772ff31:
+- sequence: 0
+  type: execute
+  sql: select refresh_action from table(development.information_schema.dynamic_table_refresh_history(name => 'DEVELOPMENT.ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE_CREATE_OR_ALTER.DM_INCREMENTAL_DISABLE')) order by data_timestamp, refresh_start_time
+97f23250:
+- sequence: 0
+  type: execute
+  sql: select count(*) from development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks where name = 'dm_auto_disable' and created_on = 'Mon, 02 Nov 2026 01:50:12 -0800'
+9c72b1a8:
+- sequence: 0
+  type: execute
+  sql: select count(*) from development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks where name = 'transient_preserved' and created_on = 'Mon, 02 Nov 2026 01:50:03 -0800'
+9c7573b9:
+- sequence: 0
+  type: execute
+  sql: select count(*) from development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks where name = 'transient_flip' and created_on = 'Mon, 02 Nov 2026 01:50:38 -0800'
+9f0b07d2:
+- sequence: 0
+  type: execute
+  sql: select "created_on"::varchar, "text", "refresh_mode", "cluster_by", "warehouse", "initialization_warehouse", "configured_refresh_mode" from table(result_scan(last_query_id())) where upper("name") = upper('attr_masking_policy')
+9f587208:
+- sequence: 0
+  type: execute
+  sql: select "created_on"::varchar, "text", "refresh_mode", "cluster_by", "warehouse", "initialization_warehouse", "configured_refresh_mode" from table(result_scan(last_query_id())) where upper("name") = upper('idempotent_noop')
+a2472e4d:
+- sequence: 0
+  type: execute
+  sql: select "created_on"::varchar, "text", "refresh_mode", "cluster_by", "warehouse", "initialization_warehouse", "configured_refresh_mode" from table(result_scan(last_query_id())) where upper("name") = upper('attr_max_data_extension')
+a3f3378b:
+- sequence: 0
+  type: execute
+  sql: select "created_on"::varchar, "text", "refresh_mode", "cluster_by", "warehouse", "initialization_warehouse", "configured_refresh_mode" from table(result_scan(last_query_id())) where upper("name") = upper('dm_auto_enable')
+a4c85d7d:
+- sequence: 0
+  type: execute
+  sql: select policy_name from table(development.information_schema.policy_references(ref_entity_name => 'development.adapters_snowflake_dynamic_table_create_or_alter.attr_aggregation_policy', ref_entity_domain => 'table'))
+a6223fd2:
+- sequence: 0
+  type: execute
+  sql: show tables like 'transient_flip' in schema development.adapters_snowflake_dynamic_table_create_or_alter
+a7ef3979:
+- sequence: 0
+  type: execute
+  sql: show dynamic tables like 'refresh_mode_to_auto' in schema development.adapters_snowflake_dynamic_table_create_or_alter
+a9454981:
+- sequence: 0
+  type: execute
+  sql: show dynamic tables like 'transient_flip' in schema development.adapters_snowflake_dynamic_table_create_or_alter
+ac94be75:
+- sequence: 0
+  type: execute
+  sql: select "created_on"::varchar, "text", "refresh_mode", "cluster_by", "warehouse", "initialization_warehouse", "configured_refresh_mode" from table(result_scan(last_query_id())) where upper("name") = upper('cfg_init_warehouse')
+b428a774:
+- sequence: 0
+  type: execute
+  sql: select "kind" from table(result_scan(last_query_id())) where upper("name") = upper('transient_preserved')
+b4c15425:
+- sequence: 0
+  type: execute
+  sql: show dynamic tables like 'dm_incremental_enable' in schema development.adapters_snowflake_dynamic_table_create_or_alter
+b8a804fe:
+- sequence: 0
+  type: execute
+  sql: show dynamic tables like 'inc_props' in schema development.adapters_snowflake_dynamic_table_create_or_alter
+ba90be6e:
+- sequence: 0
+  type: execute
+  sql: show dynamic tables like 'inc_noop' in schema development.adapters_snowflake_dynamic_table_create_or_alter
+bc9d19cd:
+- sequence: 0
+  type: execute
+  sql: show dynamic tables like 'attr_max_data_extension' in schema development.adapters_snowflake_dynamic_table_create_or_alter
+c47f54fc:
+- sequence: 0
+  type: execute
+  sql: select comment from development.information_schema.tables where table_schema ilike 'adapters_snowflake_dynamic_table_create_or_alter' and table_name ilike 'attr_comment'
+c4cba632:
+- sequence: 0
+  type: execute
+  sql: select policy_name from table(development.information_schema.policy_references(ref_entity_name => 'development.adapters_snowflake_dynamic_table_create_or_alter.attr_masking_policy', ref_entity_domain => 'table'))
+c72b7cae:
+- sequence: 0
+  type: execute
+  sql: select "value" from table(result_scan(last_query_id()))
+cf4cfad1:
+- sequence: 0
+  type: execute
+  sql: select "created_on"::varchar, "text", "refresh_mode", "cluster_by", "warehouse", "initialization_warehouse", "configured_refresh_mode" from table(result_scan(last_query_id())) where upper("name") = upper('attr_projection_policy')
+d1ff4f1c:
+- sequence: 0
+  type: execute
+  sql: select "created_on"::varchar, "text", "refresh_mode", "cluster_by", "warehouse", "initialization_warehouse", "configured_refresh_mode" from table(result_scan(last_query_id())) where upper("name") = upper('dm_full_disable')
+d780678e:
+- sequence: 0
+  type: execute
+  sql: select refresh_action from table(development.information_schema.dynamic_table_refresh_history(name => 'DEVELOPMENT.ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE_CREATE_OR_ALTER.DM_FULL_DISABLE')) order by data_timestamp, refresh_start_time
+e193e2af:
+- sequence: 0
+  type: execute
+  sql: select "kind" from table(result_scan(last_query_id())) where upper("name") = upper('transient_flip')
+e1f9dec4:
+- sequence: 0
+  type: execute
+  sql: select count(*) from development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks where name = 'refresh_mode_replace' and created_on = 'Mon, 02 Nov 2026 01:50:39 -0800'
+e3b47feb:
+- sequence: 0
+  type: execute
+  sql: select policy_name from table(development.information_schema.policy_references(ref_entity_name => 'development.adapters_snowflake_dynamic_table_create_or_alter.attr_row_access_policy', ref_entity_domain => 'table'))
+e4f735fc:
+- sequence: 0
+  type: execute
+  sql: select "created_on"::varchar, "text", "refresh_mode", "cluster_by", "warehouse", "initialization_warehouse", "configured_refresh_mode" from table(result_scan(last_query_id())) where upper("name") = upper('cfg_warehouse')
+e752c1f9:
+- sequence: 0
+  type: execute
+  sql: show dynamic tables like 'cfg_init_warehouse' in schema development.adapters_snowflake_dynamic_table_create_or_alter
+e94acbb4:
+- sequence: 0
+  type: execute
+  sql: show dynamic tables like 'attr_tag' in schema development.adapters_snowflake_dynamic_table_create_or_alter
+e94cdf50:
+- sequence: 0
+  type: execute
+  sql: select "created_on"::varchar, "text", "refresh_mode", "cluster_by", "warehouse", "initialization_warehouse", "configured_refresh_mode" from table(result_scan(last_query_id())) where upper("name") = upper('attr_comment')
+ebfc6bd9:
+- sequence: 0
+  type: execute
+  sql: select "created_on"::varchar, "text", "refresh_mode", "cluster_by", "warehouse", "initialization_warehouse", "configured_refresh_mode" from table(result_scan(last_query_id())) where upper("name") = upper('refresh_mode_replace')
+f2516f30:
+- sequence: 0
+  type: execute
+  sql: select count(*) from development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks where name = 'inc_noop' and created_on = 'Mon, 02 Nov 2026 01:50:07 -0800'
+f5aa256d:
+- sequence: 0
+  type: execute
+  sql: show tables like 'transient_preserved' in schema development.adapters_snowflake_dynamic_table_create_or_alter
+f85e3b34:
+- sequence: 0
+  type: execute
+  sql: select count(*) from development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks where name = 'dm_incremental_disable' and created_on = 'Mon, 02 Nov 2026 01:50:09 -0800'
+f986a3fd:
+- sequence: 0
+  type: execute
+  sql: select "created_on"::varchar, "text", "refresh_mode", "cluster_by", "warehouse", "initialization_warehouse", "configured_refresh_mode" from table(result_scan(last_query_id())) where upper("name") = upper('inc_noop')
+fab8a0bb:
+- sequence: 0
+  type: execute
+  sql: select refresh_action from table(development.information_schema.dynamic_table_refresh_history(name => 'DEVELOPMENT.ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE_CREATE_OR_ALTER.INC_NOOP')) order by data_timestamp, refresh_start_time

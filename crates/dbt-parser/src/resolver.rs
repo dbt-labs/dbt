@@ -20,9 +20,9 @@ use dbt_jinja_utils::listener::JinjaTypeCheckingEventListenerFactory;
 use dbt_jinja_utils::node_resolver::{
     NodeResolver, PackageSearchOrder, check_for_model_deprecations, resolve_dependencies,
 };
+use dbt_jinja_utils::phases::AdapterScopes;
 use dbt_jinja_utils::phases::parse::{
-    ParseAdapterScopes, build_docs_jinja_environment, build_docs_resolve_context,
-    build_resolve_context,
+    build_docs_jinja_environment, build_docs_resolve_context, build_resolve_context,
 };
 use dbt_jinja_utils::serde::into_typed_with_jinja;
 use dbt_jinja_utils::utils::dependency_package_name_from_ctx;
@@ -58,6 +58,7 @@ use dbt_schemas::state::{DbtRuntimeConfig, Operations};
 use dbt_schemas::state::{DbtState, ResolverState};
 use minijinja::constants::CURRENT_PATH;
 use minijinja::dispatch_object::{get_adapter_prefixes, get_internal_packages};
+use minijinja::value::OverlayMap;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -183,7 +184,7 @@ pub async fn resolve(
     inject_default_overview(&mut macros.docs_macros);
 
     let adapter_type = dbt_state.dbt_profile.default_db_config().adapter_type();
-    let parse_adapter_scopes = Arc::new(ParseAdapterScopes::from_profile(&dbt_state.dbt_profile));
+    let parse_adapter_scopes = Arc::new(AdapterScopes::from_profile(&dbt_state.dbt_profile));
     arg.profile_adapter_types = Some(dbt_state.dbt_profile.adapter_types());
 
     // Build the root project config
@@ -831,12 +832,11 @@ fn unit_test_sql_macro(
     use minijinja::Value;
     use minijinja::constants::{DIALECT, TARGET_PACKAGE_NAME};
     use minijinja::dispatch_object::macro_namespace_template_resolver;
-    use minijinja::value::mutable_map::MutableMap;
 
     let dialect = adapter_type.as_ref();
-    let context = MutableMap::new();
-    context.insert(Value::from(DIALECT), Value::from(dialect));
-    context.insert(Value::from(TARGET_PACKAGE_NAME), Value::from(package_name));
+    let mut context = OverlayMap::default();
+    context.insert(DIALECT, Value::from(dialect));
+    context.insert(TARGET_PACKAGE_NAME, Value::from(package_name));
     let state = env.new_state_with_context(context);
     let direct = macro_namespace_template_resolver(&state, "get_unit_test_sql", &mut vec![])?;
     let internal_packages = get_internal_packages(dialect);
@@ -943,7 +943,7 @@ pub async fn resolve_inner(
     root_package_name: &str,
     root_project_configs: &RootProjectConfigs,
     adapter_type: AdapterType,
-    parse_adapter_scopes: &Arc<ParseAdapterScopes>,
+    parse_adapter_scopes: &Arc<AdapterScopes>,
     macros: &Macros,
     jinja_env: Arc<JinjaEnv>,
     mut node_resolver: NodeResolver,
@@ -976,14 +976,14 @@ pub async fn resolve_inner(
         .get_macro_namespace_registry()
         .map(|r| r.keys().map(|k| k.to_string()).collect())
         .unwrap_or_default();
-    let base_ctx = build_resolve_context(
+    let base_ctx = Arc::new(build_resolve_context(
         root_package_name,
         package.dbt_project.name.as_str(),
         &macros.docs_macros,
         DISPATCH_CONFIG.get().unwrap().read().unwrap().clone(),
         namespace_keys,
         Some(root_runtime_config.clone()),
-    );
+    ));
     // Resolve the dbt properties (schema.yml) files
     let mut min_properties = resolve_minimal_properties(
         arg,
@@ -1027,16 +1027,14 @@ pub async fn resolve_inner(
     // Removing it means the parallel render pass must emit those warnings instead, and the
     // errors surface later or not at all. That is a breaking change that needs explicit handling.
     for (model_name, minimal_model_props) in &min_properties.models {
-        // Update base context with the relative yaml file path.
+        // Layer the relative yaml file path over the shared base context.
         // We do this for accurate error reporting.
-        let base_ctx = {
-            let mut base_ctx = base_ctx.clone();
-            base_ctx.insert(
-                CURRENT_PATH.to_string(),
-                minijinja::Value::from(minimal_model_props.relative_path.to_string_lossy()),
-            );
-            base_ctx
-        };
+        let mut model_ctx =
+            OverlayMap::new(minijinja::Value::from_dyn_object(Arc::clone(&base_ctx)));
+        model_ctx.insert(
+            CURRENT_PATH,
+            minijinja::Value::from(minimal_model_props.relative_path.to_string_lossy()),
+        );
 
         // Legacy semantic layer projects use a different `metrics` spec, so drop the key
         // rather than deserializing it against the current schema.
@@ -1049,7 +1047,7 @@ pub async fn resolve_inner(
             model_yml,
             false,
             &jinja_env,
-            &base_ctx,
+            &model_ctx,
             &[],
             dependency_package_name,
             // HACK: to avoid duplicate errors due to multiple parses of model yaml properties (once here and once in resolve_models)
@@ -1152,8 +1150,8 @@ pub async fn resolve_inner(
     nodes.groups.extend(groups);
     disabled_nodes.groups.extend(disabled_groups);
 
-    // Resolve SQLs and get nodes and rendered SQLs except refs and sources
-    let (models, rendering_results, disabled_models) = resolve_models(
+    // Resolve SQLs and get nodes except refs and sources
+    let (models, disabled_models) = resolve_models(
         arg,
         package,
         package_quoting,
@@ -1414,9 +1412,8 @@ pub async fn resolve_inner(
     }
 
     let collector = RenderResults {
-        rendering_results: rendering_results
+        rendering_results: analyses_rendering_results
             .into_iter()
-            .chain(analyses_rendering_results)
             .chain(checks_rendering_results)
             .chain(functions_rendering_results)
             .collect(),
@@ -1830,7 +1827,7 @@ async fn resolve_package(
     root_project_name: String,
     root_project_configs: Arc<RootProjectConfigs>,
     adapter_type: AdapterType,
-    parse_adapter_scopes: &Arc<ParseAdapterScopes>,
+    parse_adapter_scopes: &Arc<AdapterScopes>,
     macros: &Macros,
     jinja_env: Arc<JinjaEnv>,
     node_resolver: NodeResolver,
@@ -1920,7 +1917,7 @@ async fn resolve_package_waves(
     root_project_name: &str,
     root_project_configs: Arc<RootProjectConfigs>,
     adapter_type: AdapterType,
-    parse_adapter_scopes: Arc<ParseAdapterScopes>,
+    parse_adapter_scopes: Arc<AdapterScopes>,
     macros: &Macros,
     jinja_env: Arc<JinjaEnv>,
     node_resolver: &mut NodeResolver,
@@ -2957,7 +2954,7 @@ catalogs:
             model.__model_attr__.table_format = table_format.map(str::to_string);
             // Parsing under a Databricks default adapter resolves Databricks attrs.
             model.__adapter_attr__ =
-                AdapterAttr::default().with_databricks_attr(Some(Box::new(DatabricksAttr {
+                AdapterAttr::default().with_databricks_attr(Some(Arc::new(DatabricksAttr {
                     file_format: file_format.map(str::to_string),
                     ..Default::default()
                 })));

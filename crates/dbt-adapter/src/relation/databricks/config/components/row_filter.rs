@@ -443,6 +443,7 @@ mod tests {
             .__adapter_attr__
             .databricks_attr
             .as_mut()
+            .map(Arc::make_mut)
             .unwrap()
             .row_filter
             .as_mut()
@@ -468,6 +469,7 @@ mod tests {
             .__adapter_attr__
             .databricks_attr
             .as_mut()
+            .map(Arc::make_mut)
             .unwrap()
             .row_filter
             .as_mut()
@@ -485,6 +487,7 @@ mod tests {
             .__adapter_attr__
             .databricks_attr
             .as_mut()
+            .map(Arc::make_mut)
             .unwrap()
             .row_filter
             .as_mut()

@@ -34,7 +34,10 @@ use dbt_jinja_utils::{
     jinja_environment::JinjaEnv,
     listener::JinjaTypeCheckingEventListenerFactory,
     node_resolver::{NodeResolver, PackageSearchOrder},
-    phases::{build_operation_context_btreemap, configure_compile_and_run_jinja_environment},
+    phases::{
+        NodeAdapterGlobals, build_operation_context_btreemap,
+        configure_compile_and_run_jinja_environment,
+    },
 };
 use dbt_loader::args::*;
 use dbt_parser::args::ResolveArgs;
@@ -2266,11 +2269,11 @@ impl DbtProjectCompilation {
             // ephemeral+versioned model's own node_id can't be traced back to the CTE name
             // dbt-core compiled it under without this. See fs#11684.
             for model in resolved_state.nodes.models.values() {
-                replay_adapter.record_node_alias(&model.unique_id(), &model.alias());
+                replay_adapter.record_node_alias(model.unique_id(), model.alias());
             }
         }
 
-        let base_context = build_base_context(&resolved_state, &jinja_env);
+        let base_context = Arc::new(build_base_context(&resolved_state, &jinja_env));
         token.check_cancellation()?;
 
         render_all_model_constraint_refs_in_place(&mut resolved_state, &jinja_env, &base_context)?;
@@ -2330,6 +2333,14 @@ impl DbtProjectCompilation {
             // path hands the resolved state to the blocking pool, so it needs an
             // owned handle. `Nodes` is maps of `Arc`s, so the clone below is shallow.
             let resolved_state = Arc::new(resolved_state);
+            // No node: the render takes the run adapter's connection, as `get_show_sql` does.
+            let mut base_context = base_context;
+            NodeAdapterGlobals::new(Arc::clone(&adapter_store), &resolved_state.dbt_profile)
+                .insert_for_connection(
+                    Arc::get_mut(&mut base_context)
+                        .expect("run-operation's base context has one owner"),
+                    adapter_store.run_adapter_type(),
+                )?;
 
             // Macro path returns the macro author's `return` value (any `Value`,
             // stringified for display); inline-SQL path returns the Phase 1 rendered
@@ -2528,7 +2539,7 @@ impl DbtProjectCompilation {
                         Arc::clone(&run_task_args),
                         generic_test_relationships,
                         &graph,
-                        base_context.clone(),
+                        Arc::unwrap_or_clone(base_context),
                         schedule.clone(),
                         freshness_results,
                         shared_event_order,
@@ -2544,7 +2555,6 @@ impl DbtProjectCompilation {
                     .run(
                         Arc::clone(&run_task_args),
                         schedule,
-                        base_context,
                         ctx,
                         graph,
                         has_dynamic_closure,

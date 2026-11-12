@@ -83,7 +83,7 @@ pub fn filter_select(
             Some(nodes),
             adapter_type,
         )? {
-            result.insert(node.unique_id());
+            result.insert(node.unique_id().to_string());
         }
     }
     Ok(result)
@@ -118,7 +118,7 @@ pub fn filter_select_criteria(
             )
             .map(|include| {
                 if include {
-                    acc.insert(node.unique_id());
+                    acc.insert(node.unique_id().to_string());
                 }
                 acc
             })
@@ -788,7 +788,7 @@ fn match_group(pattern: &str, group: Option<String>) -> FsResult<bool> {
     Ok(group.as_deref() == Some(pattern))
 }
 
-fn match_tag(pattern: &str, tags: Vec<String>) -> FsResult<bool> {
+fn match_tag(pattern: &str, tags: &[String]) -> FsResult<bool> {
     Ok(tags.iter().any(|t| fnmatch(pattern, t)))
 }
 
@@ -1757,7 +1757,8 @@ mod tests {
             __warehouse_specific_config__: WarehouseSpecificNodeConfig {
                 cluster_by: Some(ClusterConfig::List(vec!["geo_country".to_string()])),
                 ..Default::default()
-            },
+            }
+            .into(),
             unique_key: Some(DbtUniqueKey::Multiple(vec![
                 "column_a".to_string(),
                 "column_b".to_string(),
