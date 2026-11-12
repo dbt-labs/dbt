@@ -445,22 +445,47 @@ mod tests {
 
     #[test]
     fn postgres_like_backends_fold_credentials_into_uri_options() {
-        let mut builder = Builder::new(Backend::Postgres);
+        for backend in [Backend::Postgres, Backend::Redshift] {
+            let mut builder = Builder::new(backend);
+            builder
+                .with_parse_uri("postgres://db.example/app")
+                .unwrap()
+                .with_username("alice")
+                .with_password("secret");
+
+            let options = builder.into_iter().collect::<Vec<_>>();
+            assert_eq!(options.len(), 1, "{backend}");
+
+            let (name, value) = &options[0];
+            assert_eq!(name, &OptionDatabase::Uri, "{backend}");
+            let uri = option_string(value);
+            assert!(uri.starts_with("postgres://db.example/app?"), "{backend}");
+            assert!(uri.contains("user=alice"), "{backend}");
+            assert!(uri.contains("password=secret"), "{backend}");
+        }
+    }
+
+    #[test]
+    fn motherduck_keeps_username_and_password_as_database_options() {
+        let mut builder = Builder::new(Backend::MotherDuck);
         builder
-            .with_parse_uri("postgres://db.example/app")
+            .with_parse_uri("postgresql://db.example/app")
             .unwrap()
             .with_username("alice")
             .with_password("secret");
 
         let options = builder.into_iter().collect::<Vec<_>>();
-        assert_eq!(options.len(), 1);
+        assert_eq!(options.len(), 3);
 
-        let (name, value) = &options[0];
-        assert_eq!(name, &OptionDatabase::Uri);
-        let uri = option_string(value);
-        assert!(uri.starts_with("postgres://db.example/app?"));
-        assert!(uri.contains("user=alice"));
-        assert!(uri.contains("password=secret"));
+        assert_eq!(options[0].0, OptionDatabase::Uri);
+        let uri = option_string(&options[0].1);
+        assert_eq!(uri, "postgresql://db.example/app");
+        assert!(!uri.contains("user="));
+        assert!(!uri.contains("password="));
+        assert_eq!(options[1].0, OptionDatabase::Username);
+        assert_eq!(option_string(&options[1].1), "alice");
+        assert_eq!(options[2].0, OptionDatabase::Password);
+        assert_eq!(option_string(&options[2].1), "secret");
     }
 
     #[test]
