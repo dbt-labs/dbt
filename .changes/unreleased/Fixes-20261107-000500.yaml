@@ -1,0 +1,6 @@
+kind: Fixes
+body: Apply graph operators on a `selector:` reference before the command's resource-type filter, and select the tests of nodes the operator adds
+time: 2026-11-07T00:05:00.000000+01:00
+custom:
+    Author: Daniel-Wiszowaty
+    Issue: "16212"
