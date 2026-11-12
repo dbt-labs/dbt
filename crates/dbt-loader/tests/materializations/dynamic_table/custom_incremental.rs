@@ -457,12 +457,12 @@ fn ci_empty_run_keeps_the_table_name_before_hand_written_changes() {
     render_run(&fixture, &ci_local_config(), sql, false, "apply", true)
         .expect("CI DT should render");
 
-    let stored = r#"select o.id from (select * from "RAW DB"."PUBLIC"."ORDERS" changes(information => default) where false limit 0) as o"#;
+    let stored = r#"select o.id from (select * from "RAW DB"."PUBLIC"."ORDERS" changes(information => default) limit 0) as o"#;
     let executed = fixture.executed();
     assert_eq!(
         executed[0],
         format!(
-            r#"create or replace temporary table {CI_TEMP_RELATION} as ( select * from ( select o.id from (select * from "RAW DB"."PUBLIC"."ORDERS" changes(information => default) at(offset => 0) where false limit 0) as o ) limit 0 ) ;"#
+            r#"create or replace temporary table {CI_TEMP_RELATION} as ( select * from ( select o.id from (select * from "RAW DB"."PUBLIC"."ORDERS" changes(information => default) at(offset => 0) limit 0) as o ) limit 0 ) ;"#
         )
     );
     assert_eq!(executed[1], ci_ddl("create", &ci_merge_body(stored)));
@@ -487,7 +487,7 @@ fn ci_discovery_only_bounds_the_changes_clause() {
 fn ci_empty_run_leaves_the_changes_macro_form_alone() {
     // `{{ changes() }}` renders its own empty form; only discovery's start point is added.
     let fixture = fixture(None, RemoteState::default());
-    let sql = "select o.id from (select * from RAW.PUBLIC.ORDERS changes(information => DEFAULT) where false limit 0) as o";
+    let sql = "select o.id from (select * from RAW.PUBLIC.ORDERS changes(information => DEFAULT) limit 0) as o";
     render_run(&fixture, &ci_local_config(), sql, false, "apply", true)
         .expect("CI DT should render");
 
@@ -495,7 +495,7 @@ fn ci_empty_run_leaves_the_changes_macro_form_alone() {
     assert_eq!(
         executed[0],
         format!(
-            "create or replace temporary table {CI_TEMP_RELATION} as ( select * from ( select o.id from (select * from RAW.PUBLIC.ORDERS changes(information => DEFAULT) at(offset => 0) where false limit 0) as o ) limit 0 ) ;"
+            "create or replace temporary table {CI_TEMP_RELATION} as ( select * from ( select o.id from (select * from RAW.PUBLIC.ORDERS changes(information => DEFAULT) at(offset => 0) limit 0) as o ) limit 0 ) ;"
         )
     );
     assert_eq!(executed[1], ci_ddl("create", &ci_merge_body(sql)));

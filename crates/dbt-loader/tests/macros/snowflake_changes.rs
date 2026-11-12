@@ -135,7 +135,7 @@ fn empty_run_filters_after_changes() {
     );
     assert_eq!(
         render_with("{{ changes(orders, 'default') }} as o", run_context(true)).unwrap(),
-        "(select * from RAW.PUBLIC.ORDERS changes(information => DEFAULT) where false limit 0) as o"
+        "(select * from RAW.PUBLIC.ORDERS changes(information => DEFAULT) limit 0) as o"
     );
 }
 

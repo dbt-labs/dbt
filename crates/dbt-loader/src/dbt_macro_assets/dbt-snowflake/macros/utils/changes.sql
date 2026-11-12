@@ -6,8 +6,10 @@
 
     Renders `<relation> changes(information => DEFAULT|APPEND_ONLY)` with no time bounds, which a
     CI DT refresh binds to its interval. Under `dbt run --empty` it renders
-    `(select * from <relation> changes(...) where false limit 0)` instead: the relation renders as
-    a zero-row subquery there, and CHANGES must directly follow a table name.
+    `(select * from <relation> changes(...) limit 0)` instead: the relation renders as a zero-row
+    subquery there, and CHANGES must directly follow a table name. (Not `where false`: a constant
+    false filter on a CI DT's change source fails with 002707 "depends on one or more dropped base
+    table".)
 
     The table name is the relation's own (`relation.render()`), so a `--sample` or event_time
     filter on the relation does not apply to its CHANGES.
@@ -31,7 +33,7 @@
     {%- set table = relation if relation is string else relation.render() -%}
     {%- set clause = table ~ ' changes(information => ' ~ information ~ ')' -%}
     {%- if flags is defined and flags.EMPTY -%}
-        (select * from {{ clause }} where false limit 0)
+        (select * from {{ clause }} limit 0)
     {%- else -%}
         {{ clause }}
     {%- endif -%}
