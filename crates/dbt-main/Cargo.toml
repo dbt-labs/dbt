@@ -71,7 +71,6 @@ git-version = { version = "0.3.9" }
 minijinja = { workspace = true }
 rand = { workspace = true }
 reqwest = { workspace = true }
-run_script = { workspace = true }
 rustls = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
