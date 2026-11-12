@@ -5,7 +5,9 @@ use minijinja::Value;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use crate::macro_test_harness::{MacroTestHarness, assert_executed_contains, default_mock_config};
+use crate::macro_test_harness::{
+    MacroTestHarness, assert_executed_contains, cache_added_types, default_mock_config,
+};
 
 #[test]
 fn databricks_metric_view_rejects_an_empty_yaml_definition() {
@@ -51,6 +53,8 @@ fn assert_incompatible_relation_uses_safe_replacement(existing_type: RelationTyp
         .mock()
         .on("rename_relation", |_| Ok(Value::UNDEFINED));
     harness.mock().on("drop_relation", |_| Ok(Value::UNDEFINED));
+    harness.mock().on("cache_dropped", |_| Ok(Value::UNDEFINED));
+    harness.mock().on("cache_added", |_| Ok(Value::UNDEFINED));
 
     let existing = harness.relation(
         "TEST_DB",
@@ -83,6 +87,7 @@ fn assert_incompatible_relation_uses_safe_replacement(existing_type: RelationTyp
         .mock()
         .observed_calls()
         .assert_called("rename_relation");
+    assert_eq!(cache_added_types(harness.mock()), ["metric_view"]);
     assert_executed_contains(harness.mock(), "with metrics");
     // The `databricks__yaml_quote_backtick_values` helper quotes the backticked `source:` value.
     assert_executed_contains(

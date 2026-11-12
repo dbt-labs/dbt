@@ -8,7 +8,8 @@ use dbt_schemas::dbt_types::RelationType;
 use minijinja::Value;
 
 use crate::macro_test_harness::{
-    MacroTestHarness, assert_executed_contains, default_mock_config, executed_sql,
+    MacroTestHarness, assert_executed_contains, cache_added_types, default_mock_config,
+    executed_sql,
 };
 
 // ---------------------------------------------------------------------------
@@ -38,6 +39,7 @@ fn build_view_harness(adapter_type: AdapterType) -> MacroTestHarness {
     mock.on("rename_relation", |_| Ok(Value::UNDEFINED));
     mock.on("drop_relation", |_| Ok(Value::UNDEFINED));
     mock.on("cache_dropped", |_| Ok(Value::UNDEFINED));
+    mock.on("cache_added", |_| Ok(Value::UNDEFINED));
     mock.on("commit", |_| Ok(Value::UNDEFINED));
     mock.on("clean_sql", |args| {
         Ok(args.first().cloned().unwrap_or(Value::UNDEFINED))
@@ -206,6 +208,7 @@ fn assert_hive_metastore_table_not_renamed(harness: &MacroTestHarness) {
         !executed.contains("alter table"),
         "the Hive metastore table must not be renamed: {executed}"
     );
+    assert_eq!(cache_added_types(harness.mock()), ["view"]);
 }
 
 mod snowflake {
@@ -267,6 +270,7 @@ mod databricks {
         );
         h.mock().observed_calls().assert_called("rename_relation");
         assert_executed_contains(h.mock(), "rename to");
+        assert_eq!(cache_added_types(h.mock()), ["view"]);
     }
 
     #[test]

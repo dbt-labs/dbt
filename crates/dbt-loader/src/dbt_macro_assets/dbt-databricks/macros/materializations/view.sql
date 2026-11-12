@@ -47,6 +47,7 @@
 
     {%- if existing_relation is not none and not existing_relation.is_view -%}
       {{ execute_multiple_statements(get_replace_sql(existing_relation, target_relation, sql)) }}
+      {% do cache_replaced_relation(target_relation) %}
     {%- else -%}
       {% call statement('main') -%}
         {{ get_create_view_as_sql(target_relation, sql) }}
@@ -74,6 +75,7 @@
   {% set sql = adapter.clean_sql(sql) %}
   {% set tags = config.get('databricks_tags') %}
   {{ execute_multiple_statements(get_replace_sql(existing_relation, target_relation, sql)) }}
+  {% do cache_replaced_relation(target_relation) %}
   {%- do apply_tags(target_relation, tags) -%}
   
   {% set column_tags = adapter.get_column_tags_from_model(config.model) %}

@@ -24,14 +24,19 @@
     {% else %}
       {% if safe_create and existing_relation.can_be_renamed %}
         {{ safe_relation_replace(existing_relation, staging_relation, intermediate_relation, compiled_code) }}
+        {% do cache_replaced_relation(target_relation) %}
       {% else %}
         {# DIVERGENCE BEGIN: upstream uses relation.type != 'table'. No
        dbt_version guard needed: v1 BaseRelation also exposes the `is_table` property. #}
-        {% if existing_relation and (existing_relation.is_shallow_clone or not existing_relation.is_table or not (existing_relation.can_be_replaced and adapter.resolve_file_format(config) in ('delta', 'iceberg'))) -%}
+        {% set drop_existing = existing_relation.is_shallow_clone or not existing_relation.is_table or not (existing_relation.can_be_replaced and adapter.resolve_file_format(config) in ('delta', 'iceberg')) %}
         {# DIVERGENCE END #}
+        {% if drop_existing -%}
           {{ adapter.drop_relation(existing_relation) }}
         {%- endif %}
         {{ create_table_at(target_relation, intermediate_relation, compiled_code) }}
+        {% if drop_existing %}
+          {% do cache_replaced_relation(target_relation) %}
+        {% endif %}
       {% endif %}
     {% endif %}
 
@@ -53,8 +58,9 @@
     -- create or replace table instead of dropping, so we don't have the table unavailable
     {# DIVERGENCE BEGIN: upstream uses existing_relation.type != 'table'. No
        dbt_version guard needed: v1 BaseRelation also exposes the `is_table` property. #}
-    {% if existing_relation and (existing_relation.is_shallow_clone or not existing_relation.is_table or not (existing_relation.can_be_replaced and adapter.resolve_file_format(config) in ('delta', 'iceberg'))) -%}
+    {% set drop_existing = existing_relation and (existing_relation.is_shallow_clone or not existing_relation.is_table or not (existing_relation.can_be_replaced and adapter.resolve_file_format(config) in ('delta', 'iceberg'))) %}
     {# DIVERGENCE END #}
+    {% if drop_existing -%}
       {{ adapter.drop_relation(existing_relation) }}
     {%- endif %}
 
@@ -63,6 +69,9 @@
     {%- call statement('main', language=language) -%}
       {{ create_table_as(False, target_relation, compiled_code, language) }}
     {%- endcall -%}
+    {% if drop_existing %}
+      {% do cache_replaced_relation(target_relation) %}
+    {% endif %}
 
     {% set should_revoke = should_revoke(existing_relation, full_refresh_mode=True) %}
     {% do apply_grants(target_relation, grant_config, should_revoke) %}
