@@ -315,7 +315,7 @@ pub struct ProjectSeedConfig {
     )]
     pub as_columnstore: Option<bool>,
 
-    // Athena specific fields: the configs dbt-athena's seed macros read
+    // Athena specific fields
     #[serde(default, rename = "+table_type")]
     pub table_type: Option<String>,
     #[serde(rename = "+external_location")]
