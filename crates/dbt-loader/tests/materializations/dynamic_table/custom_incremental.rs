@@ -431,7 +431,7 @@ fn ci_ephemeral_upstream_is_rejected_before_discovery_runs() {
     let fixture = fixture(None, RemoteState::default());
     let local = LocalConfig {
         raw_code: Some(
-            "select o.* from {{ changes('RAW.PUBLIC.ORDERS') }} as o join __dbt__cte__dim as d on o.id = d.id",
+            "select o.* from {{ changes('RAW.PUBLIC.ORDERS', 'default') }} as o join __dbt__cte__dim as d on o.id = d.id",
         ),
         ..ci_local_config()
     };

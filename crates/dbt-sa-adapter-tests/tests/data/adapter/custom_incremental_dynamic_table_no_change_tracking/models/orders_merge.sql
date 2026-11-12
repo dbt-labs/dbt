@@ -7,4 +7,4 @@
 ) }}
 
 select o.order_id, o.amount
-from {{ changes(source('raw', 'orders')) }} as o
+from {{ changes(source('raw', 'orders'), 'default') }} as o

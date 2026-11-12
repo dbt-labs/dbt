@@ -16,7 +16,7 @@ with stock_changes as (
         s.quantity,
         s.METADATA$ACTION as change_action,
         s.METADATA$ISUPDATE as change_is_update
-    from {{ changes(source('raw', 'stock')) }} as s
+    from {{ changes(source('raw', 'stock'), 'default') }} as s
 )
 
 select

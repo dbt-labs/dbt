@@ -13,7 +13,7 @@ select
     o.customer_id,
     o.amount,
     o.METADATA$ACTION = 'DELETE' and not o.METADATA$ISUPDATE as is_deleted
-from {{ changes(source('raw', 'orders')) }} as o
+from {{ changes(source('raw', 'orders'), 'default') }} as o
 qualify row_number() over (
     partition by o.order_id
     order by case when o.METADATA$ACTION = 'INSERT' then 0 else 1 end

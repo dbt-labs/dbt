@@ -42,7 +42,7 @@ const RENDERED_RELATION: &str = "TEST_DB.TEST_SCHEMA.MY_DT";
 const MODEL_SQL: &str = "select 1 as id";
 
 /// A CI DT model's template, and its compiled SQL as the run context passes it in `sql`.
-const CI_RAW_CODE: &str = "select o.id, o.amount, o.METADATA$ACTION = 'DELETE' as is_deleted from {{ changes('RAW.PUBLIC.ORDERS') }} as o";
+const CI_RAW_CODE: &str = "select o.id, o.amount, o.METADATA$ACTION = 'DELETE' as is_deleted from {{ changes('RAW.PUBLIC.ORDERS', 'default') }} as o";
 const CI_SQL: &str = "select o.id, o.amount, o.METADATA$ACTION = 'DELETE' as is_deleted from RAW.PUBLIC.ORDERS changes(information => DEFAULT) as o";
 /// What CI DT column discovery reads back from the temporary relation.
 const CI_COLUMNS: &[(&str, &str)] = &[
