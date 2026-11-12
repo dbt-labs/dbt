@@ -26,7 +26,6 @@ use dbt_schemas::{
     },
     state::{DbtPackage, DbtRuntimeConfig},
 };
-use minijinja::MacroSpans;
 
 use super::resolve_properties::MinimalPropertiesEntry;
 use crate::dbt_project_config::{
@@ -62,12 +61,8 @@ pub async fn resolve_analyses(
     runtime_config: Arc<DbtRuntimeConfig>,
     root_runtime_config: Arc<DbtRuntimeConfig>,
     token: &CancellationToken,
-) -> FsResult<(
-    HashMap<String, Arc<DbtAnalysis>>,
-    HashMap<String, (String, MacroSpans)>,
-)> {
+) -> FsResult<HashMap<String, Arc<DbtAnalysis>>> {
     let mut analyses: HashMap<String, Arc<DbtAnalysis>> = HashMap::new();
-    let mut rendering_results: HashMap<String, (String, MacroSpans)> = HashMap::new();
     let jinja_type_checking_event_listener_factory =
         Arc::new(DefaultJinjaTypeCheckEventListenerFactory::default());
 
@@ -148,8 +143,6 @@ pub async fn resolve_analyses(
         adapter,
         raw_code,
         macro_dependencies,
-        rendered_sql,
-        macro_spans,
         properties: maybe_properties,
         status,
         render_error_deferred,
@@ -339,12 +332,6 @@ pub async fn resolve_analyses(
 
         if status == ModelStatus::Enabled || render_error_deferred {
             analyses.insert(unique_id.to_owned(), Arc::new(dbt_analysis));
-            if status == ModelStatus::Enabled {
-                rendering_results.insert(
-                    unique_id.to_owned(),
-                    (rendered_sql.clone(), macro_spans.clone()),
-                );
-            }
         }
     }
 
@@ -360,5 +347,5 @@ pub async fn resolve_analyses(
         }
     }
 
-    Ok((analyses, rendering_results))
+    Ok(analyses)
 }

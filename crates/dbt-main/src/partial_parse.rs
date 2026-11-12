@@ -216,7 +216,7 @@ pub fn try_load_prev_compilation(
         operations: state.operations,
         dbt_profile: state.dbt_profile,
         cloud_config: dbt_state.cloud_config.clone(),
-        render_results: Default::default(),
+        function_bodies: Default::default(),
         node_resolver,
         get_relation_calls: reconstruct_relation_calls(
             &state.get_relation_calls,

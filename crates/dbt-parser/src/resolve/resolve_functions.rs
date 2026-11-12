@@ -31,7 +31,6 @@ use dbt_schemas::{
     state::{DbtPackage, DbtRuntimeConfig, NodeResolverTracker},
 };
 use indexmap::IndexMap;
-use minijinja::MacroSpans;
 
 use crate::dbt_project_config::{ProjectConfigResolver, RootProjectConfigs};
 use crate::renderer::{RenderCtx, RenderCtxInner};
@@ -85,12 +84,9 @@ pub async fn resolve_functions(
     root_runtime_config: Arc<DbtRuntimeConfig>,
     node_resolver: &mut NodeResolver,
     token: &CancellationToken,
-) -> FsResult<(
-    HashMap<String, Arc<DbtFunction>>,
-    HashMap<String, (String, MacroSpans)>,
-)> {
+) -> FsResult<(HashMap<String, Arc<DbtFunction>>, HashMap<String, String>)> {
     let mut functions: HashMap<String, Arc<DbtFunction>> = HashMap::new();
-    let mut rendering_results: HashMap<String, (String, MacroSpans)> = HashMap::new();
+    let mut function_bodies: HashMap<String, String> = HashMap::new();
     let dependency_package_name = dependency_package_name_from_ctx(&env, base_ctx);
 
     let config_resolver = ProjectConfigResolver::per_adapter(
@@ -232,7 +228,6 @@ pub async fn resolve_functions(
         alias_adapter,
         raw_code,
         rendered_sql,
-        macro_spans,
         properties: maybe_properties,
         status,
         patch_path,
@@ -365,7 +360,7 @@ pub async fn resolve_functions(
             nodes_with_ref_location: vec![],
         };
 
-        rendering_results.insert(unique_id.clone(), (rendered_sql.clone(), macro_spans));
+        function_bodies.insert(unique_id.clone(), rendered_sql);
 
         let (node_database, node_schema) = node_starting_database_and_schema(
             Some(parse_adapter_scopes),
@@ -628,5 +623,5 @@ pub async fn resolve_functions(
         }
     }
 
-    Ok((functions, rendering_results))
+    Ok((functions, function_bodies))
 }

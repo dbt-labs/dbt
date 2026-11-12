@@ -1529,7 +1529,6 @@ mod tests {
     use dbt_schemas::schemas::properties::ModelFreshness;
     use dbt_schemas::state::{
         DbtProfile, DbtRuntimeConfig, DummyNodeResolverTracker, Macros, Operations, ProfileAdapter,
-        RenderResults,
     };
 
     fn rules(count: i64, period: FreshnessPeriod) -> FreshnessRules {
@@ -1571,7 +1570,7 @@ mod tests {
                 }
             },
             cloud_config: None,
-            render_results: Arc::new(RenderResults::default()),
+            function_bodies: Default::default(),
             node_resolver: Arc::new(DummyNodeResolverTracker),
             get_relation_calls: Default::default(),
             get_columns_in_relation_calls: Default::default(),

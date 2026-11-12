@@ -5605,8 +5605,7 @@ mod tests {
     use dbt_schemas::schemas::relations::DEFAULT_RESOLVED_QUOTING;
     use dbt_schemas::schemas::relations::base::RelationPattern;
     use dbt_schemas::state::{
-        DbtProfile, DbtRuntimeConfig, DummyNodeResolverTracker, Macros, Operations, RenderResults,
-        ResolverState,
+        DbtProfile, DbtRuntimeConfig, DummyNodeResolverTracker, Macros, Operations, ResolverState,
     };
     use dbt_state::metadata_cache::RunCacheMetadataCache;
     use dbt_state::proto::query_cache::{
@@ -9726,7 +9725,7 @@ mod tests {
             operations: Operations::default(),
             dbt_profile: test_dbt_profile(DbConfig::Snowflake(Box::<SnowflakeDbConfig>::default())),
             cloud_config: None,
-            render_results: Arc::new(RenderResults::default()),
+            function_bodies: Default::default(),
             node_resolver: Arc::new(DummyNodeResolverTracker),
             get_relation_calls: Default::default(),
             get_columns_in_relation_calls: Default::default(),
