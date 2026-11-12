@@ -1,11 +1,17 @@
 from unittest import mock
 
+import pytest
+
 from dbt.artifacts.resources import DependsOn, UnitTestConfig, UnitTestFormat
 from dbt.contracts.graph.nodes import NodeType, UnitTestDefinition
-from dbt.contracts.graph.unparsed import UnitTestOutputFixture
+from dbt.contracts.graph.unparsed import UnitTestInputFixture, UnitTestOutputFixture
 from dbt.exceptions import ParsingError
 from dbt.parser import SchemaParser
-from dbt.parser.unit_tests import UnitTestParser, process_models_for_unit_test
+from dbt.parser.unit_tests import (
+    UnitTestManifestLoader,
+    UnitTestParser,
+    process_models_for_unit_test,
+)
 from dbt_common.events.event_catcher import EventCatcher
 from dbt_common.events.event_manager_client import add_callback_to_manager
 from dbt_common.events.types import SystemStdErr
@@ -422,3 +428,77 @@ class UnitTestParserTest(SchemaParserTest):
         UnitTestParser(self.parser, block).parse()
 
         assert len(catcher.caught_events) == 1
+
+
+def make_unit_test_with_input(tested_model, given):
+    return UnitTestDefinition(
+        name="test_ephemeral_input",
+        model=tested_model.name,
+        package_name=tested_model.package_name,
+        resource_type=NodeType.Unit,
+        path="unit_tests.yml",
+        original_file_path="models/unit_tests.yml",
+        unique_id=f"unit.{tested_model.package_name}.{tested_model.name}__test_ephemeral_input",
+        given=[given],
+        expect=UnitTestOutputFixture(rows=[{"id": 1}]),
+        fqn=[tested_model.package_name, tested_model.name, "test_ephemeral_input"],
+        depends_on=DependsOn(nodes=[tested_model.unique_id]),
+    )
+
+
+class TestEphemeralInputFormat:
+    @pytest.fixture
+    def parse_input(self, manifest, runtime_config, postgres_adapter, table_model):
+        def parse(given):
+            unit_test = make_unit_test_with_input(table_model, given)
+            loader = UnitTestManifestLoader(manifest, runtime_config, {unit_test.unique_id})
+            loader.parse_unit_test_case(unit_test)
+            return loader
+
+        return parse
+
+    @pytest.mark.parametrize(
+        "given",
+        [
+            UnitTestInputFixture(
+                input="ref('ephemeral_model')", rows=[{"id": 1}], format=UnitTestFormat.Dict
+            ),
+            UnitTestInputFixture(
+                input="ref('ephemeral_model')", rows=[{"id": "1"}], format=UnitTestFormat.CSV
+            ),
+            # format left unset defaults to dict
+            UnitTestInputFixture(input="ref('ephemeral_model')", rows=[{"id": 1}]),
+        ],
+        ids=["dict", "csv", "default"],
+    )
+    def test_non_sql_input_for_ephemeral_model_raises(self, parse_input, given):
+        with pytest.raises(ParsingError) as exc_info:
+            parse_input(given)
+
+        message = str(exc_info.value)
+        assert "ref('ephemeral_model')" in message
+        assert f"format: {given.format}" in message
+        assert "format: sql" in message
+
+    @pytest.mark.parametrize(
+        "given, input_node",
+        [
+            (
+                UnitTestInputFixture(
+                    input="ref('ephemeral_model')",
+                    rows="select 1 as id",
+                    format=UnitTestFormat.SQL,
+                ),
+                "model.pkg.ephemeral_model",
+            ),
+            (
+                UnitTestInputFixture(input="ref('view_model')", rows=[{"id": 1}]),
+                "model.pkg.view_model",
+            ),
+        ],
+        ids=["sql_on_ephemeral", "dict_on_non_ephemeral"],
+    )
+    def test_allowed_input_is_parsed(self, parse_input, given, input_node):
+        loader = parse_input(given)
+
+        assert input_node in loader.unit_test_manifest.nodes

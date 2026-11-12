@@ -1,0 +1,6 @@
+kind: Fixes
+body: 'Point unit tests that give an ephemeral model''s input as dict or csv to format: sql instead of reporting a missing relation'
+time: 2026-10-30T19:28:16.041908-03:00
+custom:
+    Author: luc-pimentel
+    Issue: "11618"

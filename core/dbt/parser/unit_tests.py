@@ -126,6 +126,15 @@ class UnitTestManifestLoader:
             original_input_node = self._get_original_input_node(
                 given.input, tested_node, test_case.name, ctx, unit_test_node
             )
+            # Only format: sql works here: get_fixture_sql reads the column types from the
+            # input's relation, and an ephemeral model has none.
+            if original_input_node.is_ephemeral and given.format != UnitTestFormat.SQL:
+                raise ParsingError(
+                    f"Unit test '{test_case.name}' has input ({given.input}) using "
+                    f"format: {given.format}, but '{original_input_node.name}' is an "
+                    "ephemeral model and has no relation to read column types from. "
+                    "Use format: sql for this input."
+                )
             input_name = original_input_node.name
             common_fields = {
                 "resource_type": NodeType.Model,
