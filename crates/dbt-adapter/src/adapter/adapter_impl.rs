@@ -57,6 +57,7 @@ use arrow_schema::{DataType, Field, Schema};
 use dbt_adapter_core::AdapterType;
 use dbt_adapter_engine::cow::lowercase;
 use dbt_adapter_engine::databricks::query_tags::QueryTags;
+use dbt_adapter_sql::ident::escaped_identifier;
 use dbt_adapter_sql::is_keyword_ignore_ascii_case;
 use dbt_adbc::bigquery::*;
 use dbt_adbc::salesforce::DATA_TRANSFORM_RUN_TIMEOUT;
@@ -300,8 +301,7 @@ pub(crate) fn get_bool_config(engine: &dyn AdapterEngine, key: &str) -> AdapterR
 
 pub fn quote_ident(adapter_type: AdapterType, identifier: &str) -> String {
     let quote = dbt_adapter_core::quote_char(adapter_type);
-    let escaped =
-        dbt_adapter_sql::ident::escape_identifier_content(identifier, adapter_type, quote);
+    let escaped = escaped_identifier(identifier.into(), adapter_type, quote);
     format!("{quote}{escaped}{quote}")
 }
 
