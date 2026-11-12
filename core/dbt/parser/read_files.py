@@ -150,21 +150,37 @@ def load_seed_source_file(match: FilePath, project_name) -> SourceFile:
 
 # Use the FilesystemSearcher to get a bunch of FilePaths, then turn
 # them into a bunch of FileSource objects
+def _excluded_dirs_for_parse_type(project, parse_file_type) -> List[pathlib.PurePath]:
+    # singular tests live in /tests but only generic tests live
+    # in /tests/generic and fixtures in /tests/fixtures so we want to skip those.
+    # Compare against every configured generic test and fixture path, not just the
+    # path relative to the searched test path, so nested test paths (e.g.
+    # ["tests", "tests/dbt"]) don't pick up tests/dbt/fixtures as singular tests.
+    if parse_file_type != ParseFileType.SingularTest:
+        return []
+    return [
+        pathlib.PurePath(os.path.normpath(p))
+        for p in project.generic_test_paths + project.fixture_paths
+    ]
+
+
+def _is_in_any_dir(fp: FilePath, dirs: List[pathlib.PurePath]) -> bool:
+    path = pathlib.PurePath(os.path.normpath(fp.original_file_path))
+    return any(path.is_relative_to(d) for d in dirs)
+
+
 def get_source_files(project, paths, extension, parse_file_type, saved_files, ignore_spec):
     # file path list
     fp_list = filesystem_search(project, paths, extension, ignore_spec)
+    excluded_dirs = _excluded_dirs_for_parse_type(project, parse_file_type)
     # file block list
     fb_list = []
     for fp in fp_list:
         if parse_file_type == ParseFileType.Seed:
             fb_list.append(load_seed_source_file(fp, project.project_name))
-        # singular tests live in /tests but only generic tests live
-        # in /tests/generic and fixtures in /tests/fixture so we want to skip those
         else:
-            if parse_file_type == ParseFileType.SingularTest:
-                path = pathlib.Path(fp.relative_path)
-                if path.parts[0] in ["generic", "fixtures"]:
-                    continue
+            if _is_in_any_dir(fp, excluded_dirs):
+                continue
             file = load_source_file(fp, parse_file_type, project.project_name, saved_files)
             # only append the list if it has contents. added to fix #3568
             if file:
@@ -175,11 +191,21 @@ def get_source_files(project, paths, extension, parse_file_type, saved_files, ig
 def read_files_for_parser(project, files, parse_ft, file_type_info, saved_files, ignore_spec):
     dirs = file_type_info["paths"]
     parser_files = []
+    seen_paths = set()
     for extension in file_type_info["extensions"]:
         source_files = get_source_files(
             project, dirs, extension, parse_ft, saved_files, ignore_spec
         )
         for sf in source_files:
+            # With nested paths (e.g. ["tests", "tests/dbt"]) a file is found once per
+            # path containing it. Keep the first, so its path (and fqn) comes from the
+            # first configured path, matching dbt v2, and it isn't parsed twice.
+            # Compare normalized paths: file_ids can differ in spelling ("./tests/dbt",
+            # or mixed separators on Windows) for the same file.
+            normalized_path = os.path.normpath(sf.path.original_file_path)
+            if normalized_path in seen_paths:
+                continue
+            seen_paths.add(normalized_path)
             files[sf.file_id] = sf
             parser_files.append(sf.file_id)
     return parser_files
