@@ -58,7 +58,7 @@ dependencies = [
     "dbt-common>=1.37.5,<2.0",
     "dbt-adapters>=1.24.5,<2.0",
     "dbt-protos>=1.0.514,<2.0",
-    "dbt-core-experimental-parser>=2.0.0b1,<3",
+    "dbt-core-experimental-parser>=2.0.11,<3",
     "pydantic<3",
     # ----
     # Expect compatibility with all new versions of these packages, so lower bounds only.
