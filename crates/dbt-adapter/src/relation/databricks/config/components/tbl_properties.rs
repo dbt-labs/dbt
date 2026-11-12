@@ -20,6 +20,20 @@ pub(crate) const PIPELINE_ID_KEY: &str = "pipelines.pipelineId";
 /// Component for Databricks table properties.
 pub type TblProperties = SimpleComponentConfigImpl<IndexMap<String, String>>;
 
+fn stringify_property_value(value: &YmlValue) -> String {
+    match value {
+        YmlValue::Null(_) => "None".to_string(),
+        YmlValue::Bool(value, _) => if *value { "True" } else { "False" }.to_string(),
+        YmlValue::Number(value, _) => value.to_string(),
+        YmlValue::String(value, _) => value.clone(),
+        YmlValue::Tagged(value, _) => stringify_property_value(&value.value),
+        value => dbt_yaml::to_string(value)
+            .unwrap_or_default()
+            .trim()
+            .to_string(),
+    }
+}
+
 fn to_jinja(v: &IndexMap<String, String>) -> Value {
     // FIXME: is there a way to ignore a key and serialize into Value without an extra allocation?
     let ignore_pipeline = v
@@ -110,9 +124,7 @@ fn from_local_config(
         && let Some(props_map) = &databricks_attr.tblproperties
     {
         for (key, value) in &props_map.0 {
-            if let YmlValue::String(value_str, _) = value {
-                tblproperties.insert(key.clone(), value_str.clone());
-            }
+            tblproperties.insert(key.clone(), stringify_property_value(value));
         }
     }
 
@@ -154,6 +166,17 @@ mod tests {
     use dbt_schemas::schemas::DbtModel;
     use indexmap::IndexMap;
     use std::sync::Arc;
+
+    #[test]
+    fn test_scalar_values_use_python_stringification() {
+        let integer = dbt_yaml::from_str("1").unwrap();
+        let null = dbt_yaml::from_str("null").unwrap();
+        let boolean = dbt_yaml::from_str("false").unwrap();
+
+        assert_eq!(stringify_property_value(&integer), "1");
+        assert_eq!(stringify_property_value(&null), "None");
+        assert_eq!(stringify_property_value(&boolean), "False");
+    }
 
     fn create_mock_show_tblproperties_table(properties: Vec<(&str, &str)>) -> AgateTable {
         use arrow::csv::ReaderBuilder;
