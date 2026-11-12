@@ -1,5 +1,6 @@
 use dbt_cancel::CancelledError;
 use dbt_frontend_common::error::{FrontendError, FrontendResult, NameCandidate, format_candidates};
+use dbt_proc_macros::DebugNoInline;
 use itertools::Itertools as _;
 use regex::Regex;
 use std::{
@@ -910,7 +911,7 @@ impl NameError {
 /// Note: you don't have to add all third-party library error types here, only
 /// those that may be useful for debugging or error handling. If not, then just
 /// use the [Generic(String)] variant.
-#[derive(Debug)]
+#[derive(DebugNoInline)]
 #[non_exhaustive]
 pub enum WrappedError {
     Antlr(String),

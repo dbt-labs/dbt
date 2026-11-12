@@ -373,7 +373,7 @@ pub fn build_seed_values_request<'a>(
     Ok(SubmitValuesRequestInput {
         target_table: target_table_for_node(context.adapter_type, seed)?,
         dialect: context.dialect,
-        default_catalog: seed.database(),
+        default_catalog: seed.database().to_string(),
         values_hash,
         semantic_extras,
         last_modified_epoch: context.last_modified_epoch,
@@ -575,7 +575,7 @@ fn build_sql_request_input(
     Ok(SubmitEnrichedSqlRequestInput {
         target_table: Some(target_table_for_node(context.adapter_type, node)?),
         dialect: context.dialect,
-        default_catalog: node.database(),
+        default_catalog: node.database().to_string(),
         default_schema: Some(context.default_schema),
         execution_type,
         sql: context.sql,
@@ -1503,7 +1503,7 @@ mod tests {
         let mut test = make_test();
         test.__base_attr__.schema = "ANALYTICS".to_string();
         let mut context = sql_context(false);
-        context.default_schema = test.schema();
+        context.default_schema = test.schema().to_string();
 
         let request = build_test_sql_request(&test, context, |_| None).unwrap();
 

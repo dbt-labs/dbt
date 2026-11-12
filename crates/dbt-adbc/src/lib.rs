@@ -51,6 +51,7 @@ pub mod redshift;
 pub mod salesforce;
 pub mod snowflake;
 pub mod spark;
+pub mod trino;
 
 // REPL for ADBC drivers
 #[cfg(feature = "repl")]
@@ -72,15 +73,15 @@ pub fn str_from_sqlstate(sqlstate: &[c_char; 5]) -> &str {
 
 pub const SNOWFLAKE_DRIVER_VERSION: &str = "0.21.0.dev+dbt0.21.21";
 /// Legacy driver built from `dbt-labs/arrow-adbc` repository
-pub const BIGQUERY_DRIVER_VERSION: &str = "0.21.0.dev+dbt0.21.24";
+pub const BIGQUERY_DRIVER_VERSION: &str = "0.21.0.dev+dbt0.21.27";
 /// Built from `dbt-labs/bigquery-adbc repository
-pub const BIGQUERY_FOUNDRY_DRIVER_VERSION: &str = "0.21.0.dev+dbt0.1.12";
+pub const BIGQUERY_FOUNDRY_DRIVER_VERSION: &str = "0.21.0.dev+dbt0.1.16";
 pub const POSTGRES_DRIVER_VERSION: &str = "0.21.0+dbt0.21.0";
 pub const DATABRICKS_DRIVER_VERSION: &str = "0.21.0.dev+dbt0.21.15";
 pub const REDSHIFT_DRIVER_VERSION: &str = "0.21.0.dev+dbt0.18.11";
 pub const DUCKDB_DRIVER_VERSION: &str = "1.5.4";
-pub const DUCKDB_EXTENDED_DRIVER_VERSION: &str = "0.21.0.dev+dbt0.0.38";
-pub const LAKE_COMPUTE_DRIVER_VERSION: &str = "0.4.0+dbt0.1.14.g6611400";
+pub const DUCKDB_EXTENDED_DRIVER_VERSION: &str = "0.21.0.dev+dbt0.0.40";
+pub const LAKE_COMPUTE_DRIVER_VERSION: &str = "0.4.0+dbt0.1.16.gce336c2";
 pub const CLICKHOUSE_DRIVER_VERSION: &str = "0.1.1";
 pub const SALESFORCE_DRIVER_VERSION: &str = "0.21.0.dev+dbt0.22.1";
 pub const SPARK_DRIVER_VERSION: &str = "0.21.0.dev+dbt0.1.4";

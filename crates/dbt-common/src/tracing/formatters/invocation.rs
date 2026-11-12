@@ -15,6 +15,7 @@ use crate::tracing::{
     },
 };
 
+use super::counter::CountText;
 use super::duration::SummaryDuration;
 
 /// Commands that skip the entire Execution Summary banner (no status line, no result breakdown).
@@ -45,7 +46,7 @@ const fn node_type_to_order(node_type: NodeType) -> u8 {
         NodeType::Macro => 15,
         NodeType::DocsMacro => 16,
         NodeType::Unspecified => 17,
-        NodeType::Plugin => u8::MAX,
+        NodeType::Experimental => u8::MAX,
     }
 }
 
@@ -69,7 +70,7 @@ pub fn node_type_plural(node: NodeType) -> &'static str {
         NodeType::SemanticModel => "semantic models",
         NodeType::Function => "functions",
         NodeType::Check => "checks",
-        NodeType::Plugin => "plugin nodes",
+        NodeType::Experimental => "experimental nodes",
     }
 }
 
@@ -505,29 +506,6 @@ struct Metric(u64, &'static str);
 impl fmt::Display for Metric {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{} {}", self.0, self.1)
-    }
-}
-
-/// `{value} {label}`, with the label singular for a value of one.
-struct CountText {
-    value: u64,
-    label: &'static str,
-}
-
-impl CountText {
-    fn new(value: u64, label_single: &'static str, label_plural: &'static str) -> Self {
-        let label = if value == 1 {
-            label_single
-        } else {
-            label_plural
-        };
-        Self { value, label }
-    }
-}
-
-impl fmt::Display for CountText {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} {}", self.value, self.label)
     }
 }
 

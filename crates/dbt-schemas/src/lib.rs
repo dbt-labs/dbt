@@ -12,6 +12,7 @@ pub mod man;
 pub mod materialization_resolver;
 pub mod state;
 pub mod stats;
+pub mod yml_view;
 
 pub mod schemas {
     pub mod common;
@@ -44,7 +45,7 @@ pub mod schemas {
         ModificationType, OnManifestLoadFailure, StateArtifacts, config_excluded_keys,
     };
     pub use run_results::{
-        BatchResults, ContextRunResult, DbtCommandExecutionArtifacts, RunResultOutput,
+        BatchResults, ContextRunResult, DbtCommandExecutionArtifacts, Preview, RunResultOutput,
         RunResultsArgs, RunResultsArtifact, RunResultsMetadata, TimingInfo,
     };
     pub use user_settings::UserSettings;
@@ -52,12 +53,12 @@ pub mod schemas {
     pub mod nodes;
     pub use nodes::{
         AbsorbedOverload, AdapterAttr, CommonAttributes, DbtAnalysis, DbtAnalysisAttr, DbtCheck,
-        DbtCheckAttr, DbtExposure, DbtExposureAttr, DbtFunction, DbtFunctionAttr, DbtModel,
-        DbtModelAttr, DbtPluginNode, DbtPluginNodeAttr, DbtSeed, DbtSeedAttr, DbtSnapshot,
+        DbtCheckAttr, DbtExperimentalNode, DbtExperimentalNodeAttr, DbtExposure, DbtExposureAttr,
+        DbtFunction, DbtFunctionAttr, DbtModel, DbtModelAttr, DbtSeed, DbtSeedAttr, DbtSnapshot,
         DbtSnapshotAttr, DbtSource, DbtSourceAttr, DbtTest, DbtTestAttr, DbtUnitTest,
-        DbtUnitTestAttr, ExposureType, InternalDbtNode, InternalDbtNodeAttributes,
-        InternalDbtNodeWrapper, IntrospectionKind, NodeBaseAttributes, NodePathKind, Nodes,
-        PluginData, TestMetadata, TimeSpine, TimeSpinePrimaryColumn,
+        DbtUnitTestAttr, ExperimentalData, ExposureType, InternalDbtNode,
+        InternalDbtNodeAttributes, InternalDbtNodeWrapper, IntrospectionKind, NodeBaseAttributes,
+        NodePathKind, Nodes, TestMetadata, TimeSpine, TimeSpinePrimaryColumn,
         deserialize_empty_string_as_none, serialize_none_as_empty_string,
     };
 
@@ -146,11 +147,11 @@ pub mod schemas {
             pub mod config_merge;
             pub mod config_merge_tests;
             pub mod data_test_config;
+            pub mod experimental_node_config;
             pub mod exposure_config;
             pub mod function_config;
             pub mod metric_config;
             pub mod model_config;
-            pub mod plugin_node_config;
             pub mod saved_query_config;
             pub mod seed_config;
             pub mod semantic_model_config;
@@ -158,6 +159,8 @@ pub mod schemas {
             pub mod snapshot_config;
             pub mod source_config;
             pub mod unit_test_config;
+            #[cfg(test)]
+            pub mod warehouse_config_test_support;
             pub mod warehouse_scope;
         }
 
@@ -174,13 +177,18 @@ pub mod schemas {
             CheckConfig, DEFAULT_CHECK_SEVERITY, InfoSchemaConfig, ProjectCheckConfig,
             ResolvedCheckConfig, SUPPORTED_INFO_SCHEMA_VERSIONS, SelectionFilterOn,
         };
-        pub use configs::common::{WarehouseSpecificNodeConfig, same_warehouse_config};
+        pub use configs::common::{
+            LazyWarehouseSpecificNodeConfig, WarehouseSpecificNodeConfig, same_warehouse_config,
+        };
         pub use configs::config_keys::ConfigKeys;
         pub use configs::config_merge::{DefaultTo, Packages, Tags, TblProperties};
         pub use configs::data_test_config::{
             DEFAULT_DATA_TEST_ERROR_IF, DEFAULT_DATA_TEST_FAIL_CALC, DEFAULT_DATA_TEST_SEVERITY,
             DEFAULT_DATA_TEST_WARN_IF, DataTestConfig, ProjectDataTestConfig,
             ResolvedDataTestConfig,
+        };
+        pub use configs::experimental_node_config::{
+            ExperimentalNodeConfig, ResolvedExperimentalNodeConfig,
         };
         pub use configs::exposure_config::{
             ExposureConfig, ProjectExposureConfig, ResolvedExposureConfig,
@@ -194,7 +202,6 @@ pub mod schemas {
         pub use configs::model_config::{
             LatestVersionPointer, ModelConfig, ProjectModelConfig, ResolvedModelConfig,
         };
-        pub use configs::plugin_node_config::{PluginNodeConfig, ResolvedPluginNodeConfig};
         pub use configs::saved_query_config::{
             ExportConfigExportAs, ResolvedSavedQueryConfig, SavedQueryCache, SavedQueryConfig,
         };
@@ -257,7 +264,7 @@ pub mod schemas {
         pub use properties::GroupProperties;
         pub use properties::MacrosProperties;
         pub use properties::{
-            DbtPropertiesFile, DbtPropertiesFileValues, GetConfig, MinimalPluginEntryValue,
+            DbtPropertiesFile, DbtPropertiesFileValues, GetConfig, MinimalExperimentalEntryValue,
             MinimalSchemaValue, MinimalTableValue, MinimalUnitTestValue,
         };
         pub use saved_queries_properties::SavedQueriesProperties;

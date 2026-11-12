@@ -9,7 +9,7 @@ use crate::output::Output;
 use crate::template::Template;
 use crate::utils::{AutoEscape, UndefinedBehavior};
 use crate::value::mutable_map::MutableMap;
-use crate::value::{ArgType, Value};
+use crate::value::{ArgType, OverlayMap, Value};
 use crate::vm::context::Context;
 
 #[cfg(feature = "fuel")]
@@ -196,44 +196,28 @@ impl<'template, 'env> State<'template, 'env> {
     }
 
     /// Returns the base context of the state and add file_stack to it.
-    /// This should always be a mutable map wrapped in a Value:from_object
+    /// The result layers the current path and span over the root context
+    /// without copying it.
     pub fn get_base_context(&self) -> Value {
-        let base = self.ctx.clone_base();
-        // Add file_stack to the base value
-        if let Some(obj) = base.as_object() {
-            if let Some(map) = obj.downcast_ref::<MutableMap>() {
-                let map = map.clone();
-                map.insert(
-                    Value::from(CURRENT_PATH),
-                    Value::from(self.ctx.current_path.clone().to_string_lossy()),
-                );
-                map.insert(
-                    Value::from(CURRENT_SPAN),
-                    Value::from_serialize(self.ctx.current_span),
-                );
-                Value::from_object(map)
-            } else {
-                Value::from_object(MutableMap::new())
-            }
-        } else {
-            Value::from_object(MutableMap::new())
-        }
+        self.get_base_context_with_path_and_span(
+            &Value::from(self.ctx.current_path.clone().to_string_lossy()),
+            &Value::from_serialize(self.ctx.current_span),
+        )
     }
 
     /// Returns the base context of the state and add file_stack to it.
-    /// This should always be a mutable map wrapped in a Value:from_object
+    /// The result layers `path` and `span` over the root context without
+    /// copying it. A root that is neither a `MutableMap` nor an `OverlayMap`
+    /// gives an empty map.
     pub fn get_base_context_with_path_and_span(&self, path: &Value, span: &Value) -> Value {
         let base = self.ctx.clone_base();
-        // Add file_stack to the base value
-        if let Some(obj) = base.as_object() {
-            if let Some(map) = obj.downcast_ref::<MutableMap>() {
-                let map = map.clone();
-                map.insert(Value::from(CURRENT_PATH), path.clone());
-                map.insert(Value::from(CURRENT_SPAN), span.clone());
-                Value::from_object(map)
-            } else {
-                Value::from_object(MutableMap::new())
-            }
+        if base.downcast_object_ref::<MutableMap>().is_some()
+            || base.downcast_object_ref::<OverlayMap>().is_some()
+        {
+            let mut context = OverlayMap::extending(&base);
+            context.insert(CURRENT_PATH, path.clone());
+            context.insert(CURRENT_SPAN, span.clone());
+            Value::from_object(context)
         } else {
             Value::from_object(MutableMap::new())
         }

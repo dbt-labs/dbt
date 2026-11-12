@@ -1,9 +1,9 @@
-528e848e:
+f012167b:
 - sequence: 0
   type: execute
   sql: |-
     create schema if not exists `dbt-test-env`.`adapters_bigquery_query_comment`
-    /* {"app": "dbt", "dbt_version": "2.0.0", "profile_name": "fusion_tests", "target_name": "bigquery"} */
+    /* {"app": "dbt", "dbt_version": "DBT_VERSION", "profile_name": "fusion_tests", "target_name": "bigquery"} */
 model.test.a:
 - sequence: 0
   type: execute
@@ -13,4 +13,4 @@ model.test.a:
     as select 1 as id;
     
     
-    /* {"app": "dbt", "dbt_version": "2.0.0", "profile_name": "fusion_tests", "target_name": "bigquery"} */
+    /* {"app": "dbt", "dbt_version": "DBT_VERSION", "profile_name": "fusion_tests", "target_name": "bigquery"} */

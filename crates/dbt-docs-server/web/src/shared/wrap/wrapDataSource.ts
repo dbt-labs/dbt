@@ -1,6 +1,6 @@
-import type { QueryClient } from '@tanstack/react-query';
+import type { QueryClient } from 'dbt-docs-lib';
+import type { MetadataDataSource } from 'dbt-docs-lib';
 
-import type { MetadataDataSource } from '../data-sources/MetadataDataSource';
 import type { AssetArgs } from '../typings/args';
 import { assetKey } from '../util/queryKeys';
 

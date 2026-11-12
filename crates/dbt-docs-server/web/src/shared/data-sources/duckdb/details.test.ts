@@ -1,6 +1,6 @@
+import type { ResourceType } from 'dbt-docs-lib/domain';
 import { describe, expect, it } from 'vitest';
 
-import type { ResourceType } from '../../typings/domain/asset';
 import { DETAIL_REGISTRY, detailSpecFor, nodeColumnsSql } from './details';
 
 describe('the detail registry', () => {

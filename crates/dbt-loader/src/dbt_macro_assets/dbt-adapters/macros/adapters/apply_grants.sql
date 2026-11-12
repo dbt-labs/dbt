@@ -61,6 +61,46 @@
 
 {# ------- DCL STATEMENT TEMPLATES --------- #}
 
+{#-- DIVERGENCE BEGIN: name the object type when the relation is a function.
+  -- `grant <privilege> on <name>` means `on table <name>` on most warehouses, so a
+  -- grant on a function failed with "table does not exist". Adapters whose GRANT
+  -- syntax needs the argument types (one name can have several overloads) override
+  -- `get_function_grant_signature_sql`. --#}
+-- funcsign: (relation) -> string
+{% macro get_grant_object_sql(relation) %}
+    {{ return(adapter.dispatch('get_grant_object_sql', 'dbt')(relation)) }}
+{% endmacro %}
+
+-- funcsign: (relation) -> string
+{%- macro default__get_grant_object_sql(relation) -%}
+    {%- if relation.type == 'function' -%}
+        function {{ relation.render() }}{{ get_function_grant_signature_sql() }}
+    {%- else -%}
+        {{ relation.render() }}
+    {%- endif -%}
+{%- endmacro -%}
+
+-- funcsign: () -> string
+{% macro get_function_grant_signature_sql() %}
+    {{ return(adapter.dispatch('get_function_grant_signature_sql', 'dbt')()) }}
+{% endmacro %}
+
+-- funcsign: () -> string
+{%- macro default__get_function_grant_signature_sql() -%}
+{%- endmacro -%}
+
+-- funcsign: () -> string
+{%- macro function_grant_argument_types_sql() -%}
+    {%- set arg_types = [] -%}
+    {%- if model is defined and model.arguments -%}
+        {%- for arg in model.arguments -%}
+            {%- do arg_types.append(arg.data_type) -%}
+        {%- endfor -%}
+    {%- endif -%}
+    ({{ arg_types | join(', ') }})
+{%- endmacro -%}
+{#-- DIVERGENCE END --#}
+
 -- funcsign: (relation) -> string
 {% macro get_show_grant_sql(relation) %}
     {{ return(adapter.dispatch("get_show_grant_sql", "dbt")(relation)) }}
@@ -68,7 +108,7 @@
 
 -- funcsign: (relation) -> string
 {% macro default__get_show_grant_sql(relation) %}
-    show grants on {{ relation.render() }}
+    show grants on {{ get_grant_object_sql(relation) }}
 {% endmacro %}
 
 
@@ -79,7 +119,7 @@
 
 -- funcsign: (relation, string, list[string]) -> string
 {%- macro default__get_grant_sql(relation, privilege, grantees) -%}
-    grant {{ privilege }} on {{ relation.render() }} to {{ grantees | join(', ') }}
+    grant {{ privilege }} on {{ get_grant_object_sql(relation) }} to {{ grantees | join(', ') }}
 {%- endmacro -%}
 
 
@@ -94,7 +134,7 @@
     {%- for grantee in grantees -%}
         {%- do quoted_grantees.append(adapter.quote(grantee)) -%}
     {%- endfor -%}
-    revoke {{ privilege }} on {{ relation.render() }} from {{ quoted_grantees | join(', ') }}
+    revoke {{ privilege }} on {{ get_grant_object_sql(relation) }} from {{ quoted_grantees | join(', ') }}
 {%- endmacro -%}
 
 

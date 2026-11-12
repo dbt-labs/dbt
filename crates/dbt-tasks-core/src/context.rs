@@ -9,8 +9,6 @@ use std::time::Instant;
 use crate::run_cache::run_cache_service::{
     CachedTestExecutionResult, HeuristicClock, TelemetryDispatcher,
 };
-use arrow::array::RecordBatch;
-use arrow_schema::SchemaRef;
 use dbt_adapter::relation::create_relation_from_node;
 use dbt_adapter::response::AdapterResponse;
 use dbt_adapter::{Adapter, AdapterStore};
@@ -23,6 +21,7 @@ use dbt_common::sources_extractor::SourcesExtractor;
 use dbt_common::stats::{ExecutionMetrics, NodeStatus, Stat};
 use dbt_dag::schedule::Schedule;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
+use dbt_jinja_utils::phases::NodeAdapterGlobals;
 use dbt_jinja_utils::phases::compile::{
     DependencyValidationConfig, build_compile_node_context_inner,
 };
@@ -40,7 +39,9 @@ use dbt_state::service_client::SharedRunCacheServiceClient;
 use dbt_state::service_config::RunCacheServiceConfig;
 use dbt_state::telemetry::SharedEventOrder;
 use dbt_state::view_traversal::ViewDefinitionTraverser;
+use dbt_telemetry::NodeType;
 use minijinja::Value;
+use minijinja::value::OverlayMap;
 
 use crate::RunTasksArgs;
 use crate::span_manager::SpanManager;
@@ -48,6 +49,7 @@ use crate::task::Task;
 use crate::test_aggregation::{GenericTestRelationships, is_data_test_static_analysis_eligible};
 use crate::unit_test_schema::UnitTestSchemaState;
 use crate::visitor::SkipReason;
+use dbt_schemas::schemas::Preview;
 
 use dbt_schemas::schemas::common::DbtMaterialization;
 
@@ -169,7 +171,7 @@ pub struct TaskRunnerCtxInner {
     pub worker_id: String,
     pub schedule: Schedule<String>,
     pub runtime_deps: BTreeMap<String, BTreeSet<String>>,
-    pub base_context: BTreeMap<String, Value>,
+    pub base_context: Arc<BTreeMap<String, Value>>,
     pub analyze_stats: SccHashMap<String, Stat>,
     pub run_stats: SccHashMap<String, Stat>,
     pub data_test_execution_results: SccHashMap<String, CachedTestExecutionResult>,
@@ -188,12 +190,8 @@ pub struct TaskRunnerCtxInner {
     pub adhoc_runner: Arc<dyn crate::AdhocRunner>,
     pub materialization_resolver: Arc<MaterializationResolver>,
     pub root_project_name: String,
-    /// Every adapter the active target declares, built on first use.
-    ///
-    /// A task that knows its node's adapter type asks this for the adapter that
-    /// executes it, rather than re-deriving one from the profile. Its
-    /// `default_adapter_type()` is what an unannotated node runs on.
-    pub adapter_store: Arc<AdapterStore>,
+    /// The run's adapter store and the adapter globals each node render takes from it.
+    pub(crate) adapter_globals: NodeAdapterGlobals,
     pub sources_extractor: Arc<dyn SourcesExtractor>,
     pub dbt_profile: Arc<DbtProfile>,
     pub runtime_config: Arc<DbtRuntimeConfig>,
@@ -202,8 +200,8 @@ pub struct TaskRunnerCtxInner {
     /// every task in this run.
     pub infer_schema_registry: Arc<dbt_common::infer_schema_registry::InferSchemaRegistry>,
     span_manager: Arc<SpanManager<FsResult<NodeStatus>, SkipReason>>,
-    /// Captured show batches for the LSP preview path; set by run_show, collected after the task loop.
-    pub preview_results: parking_lot::Mutex<Option<(Vec<RecordBatch>, SchemaRef)>>,
+    /// Captured show results; set by run_show, collected after the task loop.
+    pub preview_results: parking_lot::Mutex<Option<Preview>>,
     /// Error from a failed show query; set by run_show when execution fails, collected after the task loop.
     pub preview_error: parking_lot::Mutex<Option<String>>,
     /// Coordinates unit-test schema hydration and memoization for this invocation.
@@ -228,7 +226,7 @@ impl TaskRunnerCtxInner {
         generic_test_relationships: GenericTestRelationships,
         span_manager: Arc<SpanManager<FsResult<NodeStatus>, SkipReason>>,
         execute: dbt_schemas::schemas::profiles::Execute,
-        adapter_store: Arc<AdapterStore>,
+        adapter_globals: NodeAdapterGlobals,
         sources_extractor: Arc<dyn SourcesExtractor>,
         run_cache_ctx: RunCacheCtx,
     ) -> Self {
@@ -265,7 +263,7 @@ impl TaskRunnerCtxInner {
             worker_id,
             schedule,
             runtime_deps,
-            base_context,
+            base_context: Arc::new(base_context),
             analyze_stats: SccHashMap::default(),
             run_stats: SccHashMap::default(),
             data_test_execution_results: SccHashMap::default(),
@@ -283,7 +281,7 @@ impl TaskRunnerCtxInner {
             adhoc_runner,
             materialization_resolver: Arc::new(materialization_resolver),
             root_project_name: resolver_state.root_project_name.clone(),
-            adapter_store,
+            adapter_globals,
             sources_extractor,
             dbt_profile: Arc::new(resolver_state.dbt_profile.clone()),
             runtime_config: resolver_state.runtime_config.clone(),
@@ -374,7 +372,7 @@ pub struct BlockingTaskCtx {
 
 impl BlockingTaskCtx {
     pub fn adapter_store(&self) -> &Arc<AdapterStore> {
-        &self.inner.adapter_store
+        self.inner.adapter_globals.store()
     }
 
     pub fn dbt_profile(&self) -> &DbtProfile {
@@ -471,13 +469,18 @@ impl TaskRunnerCtx {
     /// to "what is the default" and it cannot drift from the adapter the store
     /// hands out for it.
     pub fn default_adapter_type(&self) -> AdapterType {
-        self.inner.adapter_store.default_adapter_type()
+        self.adapter_store().default_adapter_type()
     }
 
     /// Every adapter the active target declares. Ask it for the adapter that
     /// executes a given adapter type; see [`AdapterStore`].
     pub fn adapter_store(&self) -> &Arc<AdapterStore> {
-        &self.inner.adapter_store
+        self.inner.adapter_globals.store()
+    }
+
+    /// The adapter globals every node render takes; see [`NodeAdapterGlobals`].
+    pub fn adapter_globals(&self) -> &NodeAdapterGlobals {
+        &self.inner.adapter_globals
     }
 
     /// The adapter that executes `node` outside compute_platform (a lakecompute node gets the run
@@ -494,25 +497,14 @@ impl TaskRunnerCtx {
         )
     }
 
-    /// [`dbt_jinja_utils::phases::insert_adapter_overlay`] with this run's store.
-    pub fn insert_adapter_overlay(
-        &self,
-        ctx: &mut BTreeMap<String, Value>,
-        adapter_type: AdapterType,
-    ) -> FsResult<()> {
-        dbt_jinja_utils::phases::insert_adapter_overlay(ctx, adapter_type, self.adapter_store())
-    }
-
-    /// One node's run-phase base context: the run's base context, the node's task keys and its
-    /// adapter overlay.
-    pub fn run_base_context(
-        &self,
-        node: &dyn InternalDbtNodeAttributes,
-    ) -> FsResult<BTreeMap<String, Value>> {
-        let mut ctx = self.inner.base_context.clone();
+    /// One node's run-phase base context: the node's task keys and its adapter overlay
+    /// layered over the run's base context.
+    pub fn run_base_context(&self, node: &dyn InternalDbtNodeAttributes) -> FsResult<Value> {
+        let mut ctx = self.base_context_overlay();
         add_task_context(&mut ctx, node.common(), &self.thread_id);
-        self.insert_adapter_overlay(&mut ctx, self.adapter_type_for(node))?;
-        Ok(ctx)
+        self.adapter_globals()
+            .insert_for_node(&mut ctx, self.adapter_type_for(node))?;
+        Ok(Value::from(ctx))
     }
 
     pub fn extended_ctx<T: ExtendedCtx + 'static>(&self) -> Option<&T> {
@@ -577,13 +569,19 @@ impl TaskRunnerCtx {
         self.resolver_state.node_resolver.clone()
     }
 
+    /// An empty overlay over the shared base context, to add a context's own
+    /// entries without copying the base.
+    pub fn base_context_overlay(&self) -> OverlayMap {
+        OverlayMap::new(Value::from_dyn_object(Arc::clone(&self.inner.base_context)))
+    }
+
     #[allow(clippy::type_complexity, clippy::too_many_arguments)]
     pub fn build_compile_node_context<T>(
         &self,
         model: Arc<T>,
-        base_context: &BTreeMap<String, Value>,
+        base_context: &Value,
         ref_validation_config: DependencyValidationConfig,
-    ) -> FsResult<(BTreeMap<String, Value>, Arc<SccHashMap<String, Value>>)>
+    ) -> FsResult<(OverlayMap, Arc<SccHashMap<String, Value>>)>
     where
         T: InternalDbtNodeAttributes + ?Sized,
     {
@@ -593,6 +591,7 @@ impl TaskRunnerCtx {
         // dispatches to one adapter's macros while talking to another's
         // connection.
         let node_adapter = model.node_adapter();
+        let is_operation = model.resource_type() == NodeType::Operation;
         let (mut ctx, config_map) = build_compile_node_context_inner(
             model,
             node_adapter,
@@ -603,16 +602,16 @@ impl TaskRunnerCtx {
             ref_validation_config,
         )?;
 
-        // `adapter` and `api` are environment globals bound to a single adapter,
-        // and the environment is shared by every render. Shadow them in this
-        // node's own context -- the same context-then-globals lookup `DIALECT`
-        // relies on -- so `adapter.get_relation`, `adapter.execute` and friends
-        // reach the connection the node actually runs on.
-        //
-        // Only when the node differs from the default: an unannotated node then
-        // resolves the identical global it always did, and a single-adapter
-        // target never asks the store for a second adapter.
-        self.insert_adapter_overlay(&mut ctx, node_adapter)?;
+        // A hook's `DbtOperation` is parsed on the default adapter, but the hook runs on the
+        // run adapter, which `--adapter` sets.
+        if is_operation {
+            let run_adapter = self.adapter_store().run_adapter_type();
+            self.adapter_globals()
+                .insert_for_hook(&mut ctx, run_adapter)?;
+        } else {
+            self.adapter_globals()
+                .insert_for_node(&mut ctx, node_adapter)?;
+        }
 
         Ok((ctx, config_map))
     }

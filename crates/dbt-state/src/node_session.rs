@@ -54,10 +54,16 @@ pub fn run_id_from_owner_id(owner_id: &str) -> Option<&str> {
 ///
 /// Surfaced through the `on_contention` callback so the caller can emit
 /// UI/telemetry without the cache crate knowing about either.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Contention {
     /// Another worker holds the slot; we're sleeping with backoff.
-    Waiting,
+    Waiting {
+        /// Run ID recorded in the holder's owner ID
+        /// ([`run_id_from_owner_id`]), if the holder's `start` value could be
+        /// read and has one. `None` for a local-run holder or when the read
+        /// failed.
+        blocking_run_id: Option<String>,
+    },
     /// A prior owner's heartbeat stopped; we're cleaning up their slot.
     Aborted,
 }
@@ -82,14 +88,23 @@ pub enum Acquired {
 /// Holds the distributed lock acquired during [`NodeCacheSession::acquire`].
 ///
 /// On the happy path, call [`ExecutionGuard::finalize`] to record the stop
-/// value and release the lock. On error or panic, `Drop` stops the heartbeat.
+/// value and release the lock. On error or panic, `Drop` stops the heartbeat
+/// and CAS-deletes the `start` key, the same cleanup [`ExecutionGuard::release`]
+/// performs explicitly — so a caller that exits early (e.g. via `?`) without
+/// calling either doesn't leak the slot until the heartbeat goes stale.
 pub struct ExecutionGuard {
     task_cache: Arc<dyn TaskCache>,
     unique_id: String,
     owner_id: String,
     /// Hash passed to [`NodeCacheSession::acquire`]; written on [`ExecutionGuard::finalize`].
     hash: String,
+    /// The `start` value we won the slot with; the CAS token for [`ExecutionGuard::release`].
+    start_value: TaskValue,
     stop_signal: Arc<AtomicBool>,
+    /// Set once [`ExecutionGuard::finalize`] or [`ExecutionGuard::release`] has
+    /// resolved the `start` key's fate, so `Drop` doesn't delete a `start` key
+    /// that `finalize` deliberately left in place to record a completion.
+    released: AtomicBool,
 }
 
 impl ExecutionGuard {
@@ -106,12 +121,35 @@ impl ExecutionGuard {
         let stop_value = TaskValue::new(self.owner_id.clone(), Utc::now(), Some(self.hash.clone()));
         let info = TaskInfo { upstreams };
         self.task_cache
-            .stop_task(&self.unique_id, &stop_value, &info)
+            .stop_task(&self.unique_id, &stop_value, &info, &self.start_value)
             .await?;
         // Heartbeat is also stopped by Drop, but explicit stop avoids a brief delay.
         self.stop_signal
             .store(true, std::sync::atomic::Ordering::Release);
+        // The `start` key records the completion; Drop must leave it alone.
+        self.released
+            .store(true, std::sync::atomic::Ordering::Release);
         Ok(())
+    }
+
+    /// Release the lock without recording a completion.
+    ///
+    /// Deletes our own `start` key, so the next acquirer finds the slot
+    /// `NotStarted` instead of a `Completed` entry it would have to evict.
+    /// The delete is a CAS on the value we wrote: if another worker already
+    /// judged us stale and took the slot, their `start` is left alone.
+    pub async fn release(self) -> Result<(), String> {
+        self.stop_signal
+            .store(true, std::sync::atomic::Ordering::Release);
+        let result = self
+            .task_cache
+            .try_cleanup_task(&self.unique_id, &Some(self.start_value.clone()))
+            .await;
+        if result.is_ok() {
+            self.released
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+        result
     }
 }
 
@@ -119,6 +157,20 @@ impl Drop for ExecutionGuard {
     fn drop(&mut self) {
         self.stop_signal
             .store(true, std::sync::atomic::Ordering::Release);
+        if self.released.load(std::sync::atomic::Ordering::Acquire) {
+            return;
+        }
+        // Neither `finalize` nor `release` ran (e.g. an early `?` return), so
+        // the `start` key is still live. CAS-delete it the same way `release`
+        // would, fire-and-forget since `Drop` can't be async.
+        let task_cache = Arc::clone(&self.task_cache);
+        let unique_id = self.unique_id.clone();
+        let start_value = Some(self.start_value.clone());
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                let _ = task_cache.try_cleanup_task(&unique_id, &start_value).await;
+            });
+        }
     }
 }
 
@@ -170,6 +222,8 @@ impl NodeCacheSession {
     /// The caller's `on_contention` is invoked each time we have to wait for
     /// another worker ([`Contention::Waiting`]) or clean up a stale slot
     /// ([`Contention::Aborted`]).
+    ///
+    /// Waits for as long as the holder keeps its heartbeat alive.
     pub async fn acquire<F>(
         &self,
         current_hash: &str,
@@ -196,6 +250,9 @@ impl NodeCacheSession {
                         .try_start_task(&self.unique_id, &new_start_value, &old_start_value)
                         .await?;
                     if !ok {
+                        // Another worker won the CAS between our read and our
+                        // write. Whatever we see next (its progress, or its
+                        // finish) may be newer than anything we'd cached.
                         delay = INITIAL_DELAY;
                         continue;
                     }
@@ -207,7 +264,12 @@ impl NodeCacheSession {
                         Some(current_hash.to_string()),
                     );
                     Arc::clone(&self.task_cache)
-                        .start_heartbeat(&self.unique_id, &heartbeat_value, stop_signal.clone())
+                        .start_heartbeat(
+                            &self.unique_id,
+                            &heartbeat_value,
+                            &new_start_value,
+                            stop_signal.clone(),
+                        )
                         .await?;
 
                     return Ok(Acquired::Execute(ExecutionGuard {
@@ -215,12 +277,18 @@ impl NodeCacheSession {
                         unique_id: self.unique_id.clone(),
                         owner_id: self.owner_id.clone(),
                         hash: current_hash.to_string(),
+                        start_value: new_start_value,
                         stop_signal,
+                        released: AtomicBool::new(false),
                     }));
                 }
 
                 TaskState::InProgress => {
-                    on_contention(Contention::Waiting);
+                    let blocking_run_id = old_start_value
+                        .as_ref()
+                        .and_then(|v| run_id_from_owner_id(&v.owner_id))
+                        .map(str::to_string);
+                    on_contention(Contention::Waiting { blocking_run_id });
                     tokio::time::sleep(std::time::Duration::from_micros(
                         delay.num_microseconds().unwrap_or(1_000) as u64,
                     ))
@@ -292,13 +360,19 @@ impl NodeCacheSession {
         let stop_value = TaskValue::new(self.owner_id.clone(), long_ago, Some(hash.to_string()));
         let info = TaskInfo { upstreams };
 
-        self.task_cache
+        let started = self
+            .task_cache
             .try_start_task(&self.unique_id, &start_value, &None)
             .await?;
+        if !started {
+            // Someone else already holds this slot — another pre-seed call, or
+            // a real in-progress/completed run. Don't write a completion for a
+            // start value we never actually won.
+            return Ok(());
+        }
         self.task_cache
-            .stop_task(&self.unique_id, &stop_value, &info)
-            .await?;
-        Ok(())
+            .stop_task(&self.unique_id, &stop_value, &info, &start_value)
+            .await
     }
 }
 
@@ -316,7 +390,305 @@ impl TaskCacheExt for Arc<dyn TaskCache> {
 
 #[cfg(test)]
 mod tests {
-    use super::{lock_owner_id_from, run_id_from_owner_id};
+    use async_trait::async_trait;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    use super::{Acquired, Contention, NodeCacheSession, lock_owner_id_from, run_id_from_owner_id};
+    use crate::task_cache::{TaskCache, TaskInfo, TaskState, TaskValue, TaskValues};
+
+    /// A slot that's free from the very first check.
+    struct ImmediatelyFree;
+
+    #[async_trait]
+    impl TaskCache for ImmediatelyFree {
+        async fn check_connection(&self) -> Result<(), String> {
+            Ok(())
+        }
+        async fn try_start_task(
+            &self,
+            _key: &str,
+            _new_value: &TaskValue,
+            _old_value: &Option<TaskValue>,
+        ) -> Result<bool, String> {
+            Ok(true)
+        }
+        async fn stop_task(
+            &self,
+            _key: &str,
+            _value: &TaskValue,
+            _info: &TaskInfo,
+            _expected_start: &TaskValue,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+        async fn get_task_state(&self, _key: &str) -> Result<(TaskState, TaskValues), String> {
+            Ok((TaskState::NotStarted, (None, None, None)))
+        }
+        async fn start_heartbeat(
+            self: Arc<Self>,
+            _key: &str,
+            _value: &TaskValue,
+            _start_value: &TaskValue,
+            _stop_signal: Arc<AtomicBool>,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+        async fn stop_heartbeat(&self, _stop_signal: Arc<AtomicBool>) {}
+        async fn try_cleanup_task(
+            &self,
+            _key: &str,
+            _old_value: &Option<TaskValue>,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+        async fn get_heartbeat(&self, _key: &str) -> Result<TaskValue, String> {
+            Err("unused".into())
+        }
+        async fn get_start(&self, _key: &str) -> Result<TaskValue, String> {
+            Err("unused".into())
+        }
+        async fn get_stop(&self, _key: &str) -> Result<TaskValue, String> {
+            Err("unused".into())
+        }
+        async fn get_info(&self, _key: &str) -> Result<Option<TaskInfo>, String> {
+            Ok(None)
+        }
+        async fn invalidate_task(&self, _key: &str) -> Result<(), String> {
+            Ok(())
+        }
+        async fn clear_all(&self) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    /// A slot another worker holds for exactly one check, then frees.
+    struct HeldOnceThenFree {
+        holder: String,
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl TaskCache for HeldOnceThenFree {
+        async fn check_connection(&self) -> Result<(), String> {
+            Ok(())
+        }
+        async fn try_start_task(
+            &self,
+            _key: &str,
+            _new_value: &TaskValue,
+            _old_value: &Option<TaskValue>,
+        ) -> Result<bool, String> {
+            Ok(true)
+        }
+        async fn stop_task(
+            &self,
+            _key: &str,
+            _value: &TaskValue,
+            _info: &TaskInfo,
+            _expected_start: &TaskValue,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+        async fn get_task_state(&self, _key: &str) -> Result<(TaskState, TaskValues), String> {
+            if self.calls.fetch_add(1, Ordering::Relaxed) == 0 {
+                let start = TaskValue::new_now(self.holder.clone(), None);
+                Ok((TaskState::InProgress, (Some(start), None, None)))
+            } else {
+                Ok((TaskState::NotStarted, (None, None, None)))
+            }
+        }
+        async fn start_heartbeat(
+            self: Arc<Self>,
+            _key: &str,
+            _value: &TaskValue,
+            _start_value: &TaskValue,
+            _stop_signal: Arc<AtomicBool>,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+        async fn stop_heartbeat(&self, _stop_signal: Arc<AtomicBool>) {}
+        async fn try_cleanup_task(
+            &self,
+            _key: &str,
+            _old_value: &Option<TaskValue>,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+        async fn get_heartbeat(&self, _key: &str) -> Result<TaskValue, String> {
+            Err("unused".into())
+        }
+        async fn get_start(&self, _key: &str) -> Result<TaskValue, String> {
+            Err("unused".into())
+        }
+        async fn get_stop(&self, _key: &str) -> Result<TaskValue, String> {
+            Err("unused".into())
+        }
+        async fn get_info(&self, _key: &str) -> Result<Option<TaskInfo>, String> {
+            Ok(None)
+        }
+        async fn invalidate_task(&self, _key: &str) -> Result<(), String> {
+            Ok(())
+        }
+        async fn clear_all(&self) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    #[dbt_runtime::test]
+    async fn acquire_succeeds_immediately_when_slot_is_free() {
+        let cache: Arc<dyn TaskCache> = Arc::new(ImmediatelyFree);
+        let session =
+            NodeCacheSession::new(cache, "model.pkg.orders".to_string(), "1/me".to_string());
+
+        let Acquired::Execute(_guard) = session.acquire("hash", &|_| {}).await.unwrap() else {
+            panic!("expected to win a free slot immediately");
+        };
+    }
+
+    /// Our own CAS to claim a free-looking slot loses the race once, then wins.
+    struct LostStartRaceThenWon {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl TaskCache for LostStartRaceThenWon {
+        async fn check_connection(&self) -> Result<(), String> {
+            Ok(())
+        }
+        async fn try_start_task(
+            &self,
+            _key: &str,
+            _new_value: &TaskValue,
+            _old_value: &Option<TaskValue>,
+        ) -> Result<bool, String> {
+            Ok(self.calls.fetch_add(1, Ordering::Relaxed) > 0)
+        }
+        async fn stop_task(
+            &self,
+            _key: &str,
+            _value: &TaskValue,
+            _info: &TaskInfo,
+            _expected_start: &TaskValue,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+        async fn get_task_state(&self, _key: &str) -> Result<(TaskState, TaskValues), String> {
+            Ok((TaskState::NotStarted, (None, None, None)))
+        }
+        async fn start_heartbeat(
+            self: Arc<Self>,
+            _key: &str,
+            _value: &TaskValue,
+            _start_value: &TaskValue,
+            _stop_signal: Arc<AtomicBool>,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+        async fn stop_heartbeat(&self, _stop_signal: Arc<AtomicBool>) {}
+        async fn try_cleanup_task(
+            &self,
+            _key: &str,
+            _old_value: &Option<TaskValue>,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+        async fn get_heartbeat(&self, _key: &str) -> Result<TaskValue, String> {
+            Err("unused".into())
+        }
+        async fn get_start(&self, _key: &str) -> Result<TaskValue, String> {
+            Err("unused".into())
+        }
+        async fn get_stop(&self, _key: &str) -> Result<TaskValue, String> {
+            Err("unused".into())
+        }
+        async fn get_info(&self, _key: &str) -> Result<Option<TaskInfo>, String> {
+            Ok(None)
+        }
+        async fn invalidate_task(&self, _key: &str) -> Result<(), String> {
+            Ok(())
+        }
+        async fn clear_all(&self) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    #[dbt_runtime::test]
+    async fn acquire_retries_after_losing_the_start_race() {
+        let cache: Arc<dyn TaskCache> = Arc::new(LostStartRaceThenWon {
+            calls: AtomicUsize::new(0),
+        });
+        let session =
+            NodeCacheSession::new(cache, "model.pkg.orders".to_string(), "1/me".to_string());
+
+        let Acquired::Execute(_guard) = session.acquire("hash", &|_| {}).await.unwrap() else {
+            panic!("expected to win the slot on the retry");
+        };
+    }
+
+    #[dbt_runtime::test]
+    async fn acquire_succeeds_after_waiting_out_a_holder() {
+        let cache: Arc<dyn TaskCache> = Arc::new(HeldOnceThenFree {
+            holder: "999/invocation-holder".to_string(),
+            calls: AtomicUsize::new(0),
+        });
+        let session =
+            NodeCacheSession::new(cache, "model.pkg.orders".to_string(), "1/me".to_string());
+
+        let Acquired::Execute(_guard) = session.acquire("hash", &|_| {}).await.unwrap() else {
+            panic!("expected to win the slot once the holder freed it");
+        };
+    }
+
+    #[dbt_runtime::test]
+    async fn waiting_contention_carries_the_blocking_run_id() {
+        let cache: Arc<dyn TaskCache> = Arc::new(HeldOnceThenFree {
+            holder: "999/invocation-holder".to_string(),
+            calls: AtomicUsize::new(0),
+        });
+        let session =
+            NodeCacheSession::new(cache, "model.pkg.orders".to_string(), "1/me".to_string());
+
+        let observed = std::sync::Mutex::new(None);
+        let on_contention = |c| {
+            if let Contention::Waiting { blocking_run_id } = c {
+                *observed.lock().unwrap() = Some(blocking_run_id);
+            }
+        };
+
+        session.acquire("hash", &on_contention).await.unwrap();
+
+        assert_eq!(
+            observed.into_inner().unwrap(),
+            Some(Some("999".to_string())),
+            "blocking_run_id should resolve to the holder's run ID, extracted from its <run_id>/<invocation_id> owner"
+        );
+    }
+
+    #[dbt_runtime::test]
+    async fn waiting_contention_has_no_blocking_run_id_for_a_local_run_holder() {
+        let cache: Arc<dyn TaskCache> = Arc::new(HeldOnceThenFree {
+            holder: "invocation-local-holder".to_string(),
+            calls: AtomicUsize::new(0),
+        });
+        let session =
+            NodeCacheSession::new(cache, "model.pkg.orders".to_string(), "1/me".to_string());
+
+        let observed = std::sync::Mutex::new(None);
+        let on_contention = |c| {
+            if let Contention::Waiting { blocking_run_id } = c {
+                *observed.lock().unwrap() = Some(blocking_run_id);
+            }
+        };
+
+        session.acquire("hash", &on_contention).await.unwrap();
+
+        assert_eq!(
+            observed.into_inner().unwrap(),
+            Some(None),
+            "a bare invocation-ID owner (local run) has no run ID to surface"
+        );
+    }
 
     #[test]
     fn prefixes_invocation_id_with_cloud_run_id() {

@@ -4,9 +4,13 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
-use adbc_record_replay::{RecordConnection, RecordingContext, ReplayConnection};
 use arrow_array::RecordBatch;
+use minijinja::State;
+
+use adbc_record_replay::{RecordConnection, RecordingContext, ReplayConnection};
 use dbt_adapter_core::AdapterType;
+use dbt_adapter_engine::Options;
+use dbt_adapter_engine::clickhouse::ClickHouseCapabilities;
 use dbt_adbc::{Backend, Connection, QueryCtx};
 use dbt_auth::AdapterConfig;
 use dbt_common::behavior_flags::Behavior;
@@ -14,17 +18,14 @@ use dbt_common::cancellation::CancellationToken;
 use dbt_common::tracing::emit::emit_trace_event;
 use dbt_schemas::schemas::common::ResolvedQuoting;
 use dbt_telemetry::AdapterConnectionOpen;
-use minijinja::State;
 
 use crate::cache::RelationCache;
+use crate::engine::adapter_engine::AdapterEngine;
+use crate::engine::adbc::assert_connection_on_pool_worker;
 use crate::engine::query_comment::QueryCommentConfig;
 use crate::engine::retry::QueryRetryPolicy;
-use crate::metadata::clickhouse::ClickHouseCapabilities;
 use crate::sql_types::TypeOps;
 use crate::stmt_splitter::StmtSplitter;
-
-use super::adapter_engine::{AdapterEngine, Options};
-use super::adbc::assert_connection_on_pool_worker;
 
 static GENERATION: AtomicU64 = AtomicU64::new(1);
 
@@ -311,6 +312,9 @@ static DEBUG_PROBE_TABLE: std::sync::LazyLock<regex::Regex> =
 static DEBUG_PROPAGATION_PROBE_TABLE: std::sync::LazyLock<regex::Regex> =
     std::sync::LazyLock::new(|| regex::Regex::new(r"__dbt_debug_propagation_\d+").unwrap());
 
+static QUERY_COMMENT_DBT_VERSION: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new(r#""dbt_version"\s*:\s*"[^"]*""#).unwrap());
+
 impl adbc_record_replay::SqlNormalizer for DbtSqlNormalizer {
     fn normalize(&self, sql: &str) -> String {
         use crate::sql::normalize::normalize_dbt_tmp_name;
@@ -333,6 +337,9 @@ impl adbc_record_replay::SqlNormalizer for DbtSqlNormalizer {
             .into_owned();
         let collapsed = DEBUG_PROPAGATION_PROBE_TABLE
             .replace_all(&collapsed, "__dbt_debug_propagation_[MASKED_ID]")
+            .into_owned();
+        let collapsed = QUERY_COMMENT_DBT_VERSION
+            .replace_all(&collapsed, r#""dbt_version": "DBT_VERSION""#)
             .into_owned();
         collapsed
             .replace("DBT_TESTING_ALT", "[MASKED_ALT_WH]")

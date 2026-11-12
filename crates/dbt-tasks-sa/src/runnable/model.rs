@@ -27,6 +27,7 @@ use dbt_telemetry::{
 };
 
 use minijinja::Value;
+use minijinja::value::OverlayMap;
 use tracing::debug;
 
 use dbt_tasks_core::task::TaskResult;
@@ -49,7 +50,7 @@ pub struct MicrobatchExecUnit {
     pub batch_ctx: BatchContext,
     pub raw_sql: Arc<String>,
     pub node: Arc<dyn InternalDbtNodeAttributes>,
-    pub run_node_context: Arc<std::collections::BTreeMap<String, Value>>,
+    pub run_node_context: Arc<OverlayMap>,
     pub event_time_mapping: Arc<std::collections::BTreeMap<String, String>>,
     pub is_incremental: bool,
 }
@@ -208,7 +209,7 @@ async fn resolve_batch_window(
 ) -> FsResult<(MicrobatchBuilder, DateTime<Utc>, DateTime<Utc>, bool)> {
     let batch_builder = MicrobatchBuilder::from_config(
         model.deprecated_config.batch_size.clone(),
-        model.deprecated_config.begin,
+        model.deprecated_config.begin.as_deref(),
         model.deprecated_config.lookback,
     )?;
 
@@ -281,9 +282,9 @@ pub fn create_microbatch_span(mb_unit: &MicrobatchExecUnit) -> tracing::Span {
     };
     let batch = &mb_unit.batch_ctx;
     create_info_span(MicrobatchEvaluated::start(
-        mb_unit.node.unique_id(),
-        mb_unit.node.schema(),
-        mb_unit.node.alias(),
+        mb_unit.node.unique_id().to_string(),
+        mb_unit.node.schema().to_string(),
+        mb_unit.node.alias().to_string(),
         batch.id.clone(),
         batch_size,
         batch.batch_index as u32 + 1,

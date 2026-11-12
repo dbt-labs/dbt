@@ -41,7 +41,7 @@ use dbt_common::{
             get_error_count, return_exit_code_from_error_counter,
         },
         emit::emit_info_event,
-        invocation::create_invocation_attributes,
+        invocation::{create_invocation_attributes, record_resolved_full_refresh},
         metrics::get_metric,
         span_info::record_span_status,
     },
@@ -527,6 +527,18 @@ async fn do_execute_fs(
             .will_init_project(eval_arg.io.invocation_id, &cli, init_args)
             .await?;
 
+        // An extension that supports a mode handles it in its hooks and exits.
+        if let Some(mode) = &init_args.mode {
+            emit_error_log_message(
+                ErrorCode::UnsupportedFusionFeature,
+                format!(
+                    "`dbt init {}` is not available in this build of dbt.",
+                    mode.name()
+                ),
+            );
+            return Err(FsError::exit_with_status(2));
+        }
+
         emit_info_progress_message(ProgressMessage::new_from_action_and_target(
             INSTALLING.to_string(),
             "dbt project and profile setup".to_string(),
@@ -616,6 +628,28 @@ async fn do_execute_fs(
         token,
     )
     .await
+}
+
+/// [`execute_setup_and_all_phases`] as a boxed future made in this crate: a
+/// caller in another crate polls it through the box, rather than compiling its
+/// own copy of the whole pipeline (an async fn's body is compiled where it is
+/// polled).
+pub fn execute_setup_and_all_phases_boxed<'a>(
+    eval_arg: &'a EvalArgs,
+    cli: &'a Cli,
+    artifacts_sink: &'a mut DbtCommandExecutionArtifacts,
+    feature_stack: Arc<FeatureStack>,
+    task_runner_hooks_factory: Arc<dyn TaskRunnerHooksFactory>,
+    token: &'a CancellationToken,
+) -> std::pin::Pin<Box<dyn Future<Output = FsResult<()>> + Send + 'a>> {
+    Box::pin(execute_setup_and_all_phases(
+        eval_arg,
+        cli,
+        artifacts_sink,
+        feature_stack,
+        task_runner_hooks_factory,
+        token,
+    ))
 }
 
 #[allow(clippy::cognitive_complexity)]
@@ -825,6 +859,7 @@ impl<'a> AllPhasesExecutor<'a> {
             arg_for_retry.command = command_for_retry.as_command();
             arg_for_retry.static_analysis = effective_sa;
             arg_for_retry.full_refresh = retry_state.original_full_refresh;
+            record_resolved_full_refresh(retry_state.original_full_refresh);
 
             // Create a custom schedule for the retryable nodes from the original run.
             // This keeps retry bounded to nodes recorded in run_results.json instead
@@ -1797,6 +1832,7 @@ impl<'a> AllPhasesExecutor<'a> {
                                         unique_id: uid.clone(),
                                         num_rows: None,
                                         rows_affected: None,
+                                        idle_time_ms: None,
                                         start_time: now,
                                         end_time: now,
                                         status: dbt_common::stats::NodeStatus::Errored,
@@ -1892,6 +1928,9 @@ impl<'a> AllPhasesExecutor<'a> {
 
         // Save artifact for callers
         self.captured_artifacts.run_results = Some(run_results_artifact);
+        if let Some(Ok(preview)) = &run_task_results.preview {
+            self.captured_artifacts.preview = Some(preview.clone());
+        }
 
         if self.arg.write_metadata {
             write_runtime_results_parquet(
@@ -2284,17 +2323,13 @@ async fn run_docs_generate(
         });
     let providers = (feature_stack.index.providers_factory)(backend);
 
-    let project_dir = &eval_arg.io.in_dir;
     let options = dbt_docs_server::ExportOptions {
         info_schema_dir,
         output_dir,
         duckdb_cdn_base: generate_args.duckdb_cdn_base,
         // Consent is resolved here because the project and profile are only
         // readable on this machine; the browser reads the answer, not the inputs.
-        analytics_enabled: std::env::var("DO_NOT_TRACK").as_deref() != Ok("1")
-            && cli
-                .common_args()
-                .get_send_anonymous_usage_stats_for_project(project_dir),
+        analytics_enabled: cli.common_args().get_send_anonymous_usage_stats(),
     };
 
     let summary = match dbt_docs_server::export_site(&providers, &options) {
@@ -2512,8 +2547,7 @@ async fn run_docs_serve(
     common_args: &dbt_clap_core::CommonArgs,
 ) -> FsResult<()> {
     let has_dbt_state = common_args.get_manage_state(project_dir, false);
-    let send_anonymous_usage_stats =
-        common_args.get_send_anonymous_usage_stats_for_project(project_dir);
+    let send_anonymous_usage_stats = common_args.get_send_anonymous_usage_stats();
     let args = dbt_docs_server::DocsServeArgs {
         target_path: serve_args.target_path,
         host: serve_args.host,
@@ -2574,8 +2608,7 @@ async fn run_docs_serve(
             info_schema_dir: info_schema_dir.clone(),
             output_dir: site_dir.clone(),
             duckdb_cdn_base: None,
-            analytics_enabled: std::env::var("DO_NOT_TRACK").as_deref() != Ok("1")
-                && send_anonymous_usage_stats,
+            analytics_enabled: send_anonymous_usage_stats,
         };
         match dbt_docs_server::export_site(&providers, &options) {
             Ok(summary) => eprintln!(

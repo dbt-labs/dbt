@@ -10,13 +10,14 @@ use dbt_common::tracing::dbt_emit::emit_error_log_from_fs_error;
 use dbt_common::{ErrorCode, FsError, FsResult, fs_err, stdfs};
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::malformed_block_name::MalformedBlockNameListener;
-use dbt_jinja_utils::phases::parse::ParseAdapterScopes;
+use dbt_jinja_utils::phases::AdapterScopes;
 use dbt_jinja_utils::phases::parse::sql_resource::SqlResource;
 use dbt_jinja_utils::utils::generate_component_name;
 use dbt_schemas::schemas::InternalDbtNodeAttributes;
 use dbt_schemas::schemas::common::{DbtMaterialization, ResolvedQuoting, normalize_quoting};
 use dbt_schemas::schemas::project::{ResolvableConfig, ResolvedConfig};
 use dbt_schemas::schemas::properties::ModelProperties;
+use dbt_schemas::schemas::relations::relation_owner_adapter;
 use dbt_schemas::schemas::telemetry::NodeType;
 use dbt_schemas::state::DbtPackage;
 use minijinja::ArgSpec;
@@ -383,7 +384,8 @@ fn generate_database_and_schema<T: InternalDbtNodeAttributes + Clone>(
     node: T,
     adapter_type: AdapterType,
 ) -> FsResult<(String, String, ResolvedQuoting, T)> {
-    let (default_database, default_schema) = (node.database(), node.schema());
+    let (default_database, default_schema) =
+        (node.database().to_string(), node.schema().to_string());
 
     // Generate database name
     let (database, node) = if node.skip_generate_database_name_macro() {
@@ -477,13 +479,18 @@ fn generate_alias_and_relation_name<T: InternalDbtNodeAttributes + Clone>(
     } else {
         &format!("{alias}_ephemeral")
     };
+    // A node whose `effective_propagation_target` is BigQuery records `relation_name` in BigQuery
+    // spelling, which a BigQuery parser accepts. Lake Compute's own rendering would use double
+    // quotes.
+    let effective_target = node.base().effective_propagation_target;
+    let relation_adapter = relation_owner_adapter(adapter_type, effective_target);
     let relation_name = render_effective_relation(
-        adapter_type,
+        relation_adapter,
         database_name,
         schema_name,
         alias_name,
         quoting,
-        node.base().effective_propagation_target,
+        effective_target,
     )?;
 
     Ok((alias, relation_name, node))
@@ -519,7 +526,7 @@ pub fn update_node_relation_components<T: InternalDbtNodeAttributes + Clone>(
     package_name: &str,
     base_ctx: &BTreeMap<String, minijinja::Value>,
     components: &RelationComponents,
-    scopes: Option<&ParseAdapterScopes>,
+    scopes: Option<&AdapterScopes>,
 ) -> FsResult<T> {
     // Source and unit test nodes do not have relation components
     if [NodeType::Source, NodeType::UnitTest].contains(&node.resource_type()) {
@@ -530,7 +537,7 @@ pub fn update_node_relation_components<T: InternalDbtNodeAttributes + Clone>(
     let ctx = match scopes {
         Some(scopes) => scopes
             .ctx_for(adapter_type, base_ctx)
-            .map_err(|e| e.with_location(node.original_file_path()))?,
+            .map_err(|e| e.with_location(node.original_file_path().to_path_buf()))?,
         None => Cow::Borrowed(base_ctx),
     };
 
@@ -596,7 +603,7 @@ pub fn update_node_relation_components<T: InternalDbtNodeAttributes + Clone>(
 /// The database and schema a node of `adapter_type` starts from: its scope's, or
 /// `database`/`schema` without `scopes`. `path` locates a scope error.
 pub fn node_starting_database_and_schema<'a>(
-    scopes: Option<&'a ParseAdapterScopes>,
+    scopes: Option<&'a AdapterScopes>,
     adapter_type: AdapterType,
     database: &'a str,
     schema: &'a str,
@@ -1085,7 +1092,7 @@ mod relation_components_tests {
     use dbt_common::io_args::IoArgs;
     use dbt_jinja_utils::invocation_args::InvocationArgs;
     use dbt_jinja_utils::jinja_environment::JinjaEnv;
-    use dbt_jinja_utils::phases::parse::ParseAdapterScopes;
+    use dbt_jinja_utils::phases::AdapterScopes;
     use dbt_jinja_utils::phases::parse::init::initialize_parse_jinja_environment;
     use dbt_schemas::schemas::profiles::{DbConfig, SnowflakeDbConfig};
     use dbt_schemas::schemas::relations::DEFAULT_DBT_QUOTING;
@@ -1219,7 +1226,7 @@ mod relation_components_tests {
     #[test]
     fn unusable_connection_errors_at_the_node() {
         let env = snowflake_parse_env();
-        let scopes = ParseAdapterScopes::from_profile(&unusable_bigquery_profile());
+        let scopes = AdapterScopes::from_profile(&unusable_bigquery_profile());
         let update = |model: DbtModel| {
             update_node_relation_components(
                 model,
@@ -1250,7 +1257,7 @@ mod relation_components_tests {
     /// The starting database's scope error is located at the path the caller gives.
     #[test]
     fn starting_database_error_is_located_at_the_given_path() {
-        let scopes = ParseAdapterScopes::from_profile(&unusable_bigquery_profile());
+        let scopes = AdapterScopes::from_profile(&unusable_bigquery_profile());
         let path = std::path::Path::new("seeds/x.csv");
         let start = |adapter_type| {
             node_starting_database_and_schema(Some(&scopes), adapter_type, "db", "sch", path)

@@ -194,21 +194,25 @@ async fn checkout_revision(
     // Intentionally ignore `run_git` errors here only (see `run_git` doc).
     if let Some(subdir) = subdirectory {
         let _ = run_git(
-            &["sparse-checkout", "set", "--no-cone", subdir],
+            &["sparse-checkout", "set", "--no-cone", "--", subdir],
             Some(clone_dir),
         )
         .await;
     }
 
-    run_git(&["fetch", "--depth=1", repo, revision], Some(clone_dir))
-        .await
-        .map_err(|e| match e {
-            GitErr::Io(e) => fs_err!(ErrorCode::GitError, "Error fetching: {e}"),
-            GitErr::Failed { stderr } => {
-                let (code, msg) = parse_git_clone_error(&stderr, repo, Some(revision));
-                fs_err!(code, "{}", msg)
-            }
-        })?;
+    // `--` keeps git from parsing the package URL or revision as an option.
+    run_git(
+        &["fetch", "--depth=1", "--", repo, revision],
+        Some(clone_dir),
+    )
+    .await
+    .map_err(|e| match e {
+        GitErr::Io(e) => fs_err!(ErrorCode::GitError, "Error fetching: {e}"),
+        GitErr::Failed { stderr } => {
+            let (code, msg) = parse_git_clone_error(&stderr, repo, Some(revision));
+            fs_err!(code, "{}", msg)
+        }
+    })?;
 
     run_git(&["checkout", "FETCH_HEAD"], Some(clone_dir))
         .await
@@ -239,7 +243,7 @@ async fn checkout_revision(
 /// Resolve a ref to its 40-char SHA via `git ls-remote`. No rate limit.
 async fn ls_remote_resolve(repo_url: &str, revision: &str) -> FsResult<String> {
     let sanitized = crate::utils::sanitize_git_url(repo_url);
-    let stdout = run_git(&["ls-remote", repo_url, revision], None)
+    let stdout = run_git(&["ls-remote", "--", repo_url, revision], None)
         .await
         .map_err(|e| match e {
             GitErr::Io(e) => fs_err!(ErrorCode::GitError, "git ls-remote failed: {e}"),
@@ -261,4 +265,30 @@ async fn ls_remote_resolve(repo_url: &str, revision: &str) -> FsResult<String> {
         ErrorCode::PackageDownloadFailed,
         "Could not resolve ref '{revision}' via ls-remote"
     ))
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    /// The URL and revision come from `packages.yml`, so git must not parse
+    /// them as options.
+    #[tokio::test]
+    async fn package_url_and_revision_are_not_git_options() {
+        let tmp = tempfile::tempdir().unwrap();
+        let marker = tmp.path().join("marker");
+        let option = format!("--upload-pack=touch {};false", marker.display());
+        let repo = "file:///nonexistent/repo.git";
+
+        for (url, revision) in [(repo, option.as_str()), (option.as_str(), repo)] {
+            let clone_dir = tempfile::tempdir().unwrap();
+            assert!(
+                checkout_revision(url, clone_dir.path(), revision, None)
+                    .await
+                    .is_err()
+            );
+            assert!(ls_remote_resolve(url, revision).await.is_err());
+        }
+        assert!(!marker.exists(), "git ran a command from a package field");
+    }
 }

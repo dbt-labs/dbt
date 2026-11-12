@@ -1,11 +1,20 @@
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
+use std::sync::OnceLock;
 
 use arrow_array::RecordBatch;
 use arrow_schema::Schema;
+use minijinja::State;
+use parking_lot::RwLock;
+
 use dbt_adapter_core::AdapterType;
+use dbt_adapter_engine::Options;
+use dbt_adapter_engine::behavior::make_behavior;
+use dbt_adapter_engine::clickhouse::ClickHouseCapabilities;
+use dbt_adapter_engine::databricks;
+use dbt_adapter_engine::noop_connection::NoopConnection;
 use dbt_adbc::*;
 use dbt_agate::hashers::IdentityBuildHasher;
 use dbt_auth::{AdapterConfig, Auth, AuthError};
@@ -15,21 +24,14 @@ use dbt_common::cancellation::CancellationToken;
 use dbt_common::tracing::emit::emit_trace_event;
 use dbt_schemas::schemas::common::ResolvedQuoting;
 use dbt_telemetry::AdapterConnectionOpen;
-use minijinja::State;
-use parking_lot::RwLock;
 
 use crate::cache::RelationCache;
+use crate::engine::adapter_engine::*;
 use crate::engine::query_comment::QueryCommentConfig;
+use crate::engine::retry::{ConnectionRetryPolicy, QueryRetryPolicy};
 use crate::errors::{AdapterError, adbc_error_to_adapter_error};
-use crate::metadata::clickhouse::ClickHouseCapabilities;
 use crate::sql_types::TypeOps;
 use crate::stmt_splitter::StmtSplitter;
-
-use super::adapter_engine::*;
-use super::databricks;
-use super::make_behavior;
-use super::noop_connection::NoopConnection;
-use super::retry::{ConnectionRetryPolicy, QueryRetryPolicy};
 
 #[derive(Default)]
 pub struct DatabaseMap {
@@ -88,7 +90,7 @@ pub struct AdbcEngine {
     /// fingerprint of that connection.
     connection_fingerprint: std::sync::atomic::AtomicU64,
     /// `ResolvedCloudConfig::project_id`, forwarded as the `dbt_cloud.project_id`
-    /// flock-adbc driver option alongside whichever credential is resolved.
+    /// bridge-adbc driver option alongside whichever credential is resolved.
     dbt_cloud_project_id: Option<String>,
     /// See [`AdapterEngine::clickhouse_capabilities`].
     clickhouse_capabilities: OnceLock<ClickHouseCapabilities>,
@@ -222,7 +224,7 @@ impl AdbcEngine {
             (false, _) => LoadStrategy::CdnCache,
         };
 
-        // This will load the "flock" driver if load_strategy is Remote.
+        // This will load the "bridge" driver if load_strategy is Remote.
         let mut driver = driver::Builder::new(backend, load_strategy)
             .try_load()
             .map_err(adbc_error_to_adapter_error)?;
@@ -253,7 +255,10 @@ impl AdbcEngine {
                         let mut conn = database
                             .new_connection()
                             .map_err(adbc_error_to_adapter_error)?;
-                        super::clickhouse::ensure_database(conn.as_mut(), config)?
+                        dbt_adapter_engine::clickhouse::bootstrap::ensure_database(
+                            conn.as_mut(),
+                            config,
+                        )?
                     }
                     _ => {}
                 }
@@ -306,12 +311,12 @@ impl AdbcEngine {
             AuthError::config(format!("{e}{hint}"))
         })?;
 
-        // See NOTE [flock-service-token-support] in flock-service/src/flight/handshake.rs:
-        // flock-service doesn't support service-credential fetching yet, so reject this
+        // See NOTE [bridge-service-token-support] in flock-service/src/flight/handshake.rs:
+        // bridge-service doesn't support service-credential fetching yet, so reject this
         // client-side instead of sending a token the server will reject anyway.
         if matches!(credential, Credential::ServiceToken { .. }) {
             return Err(AuthError::config(
-                "service token credentials are not yet supported for dbt Cloud/flock \
+                "service token credentials are not yet supported for dbt Cloud/bridge \
                  connections; use a personal access token or run `dbt login` instead",
             ));
         }
@@ -387,7 +392,7 @@ impl AdbcEngine {
         } else {
             AdapterType::DuckDB.as_ref()
         };
-        super::duckdb_attach::compose_catalog_attach_stmts(&view, platform)
+        dbt_adapter_engine::duckdb::attach::compose_catalog_attach_stmts(&view, platform)
     }
 }
 
@@ -596,7 +601,8 @@ impl AdapterEngine for AdbcEngine {
             // dbclient.py `_set_client_database` parity; ensure_database
             // guarantees it exists.
             if self.adapter_type == AdapterType::ClickHouse
-                && let Some(schema) = super::clickhouse::target_schema(config)
+                && let Some(schema) =
+                    dbt_adapter_engine::clickhouse::bootstrap::target_schema(config)
             {
                 builder.with_option(
                     adbc_core::options::OptionConnection::CurrentSchema,

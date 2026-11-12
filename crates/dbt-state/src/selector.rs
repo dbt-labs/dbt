@@ -8,6 +8,8 @@ use crate::service_client::{RunCacheServiceError, SharedRunCacheServiceClient};
 use crate::service_config::RunCacheServiceConfigError;
 use crate::telemetry::SharedEventOrder;
 use dbt_common::path::DbtPath;
+use dbt_common::tracing::dbt_emit::emit_debug_log_message;
+use dbt_common::tracing::spawn_traced;
 use dbt_schemas::schemas::{Nodes, macros::DbtMacro};
 use dbt_schemas::state::DbtRuntimeConfig;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -86,8 +88,8 @@ pub async fn evaluate_state_selector(
     let macro_resolver = |macro_id: &str| args.macros.get(macro_id);
     let mut node_data_list = Vec::new();
     for (unique_id, node) in nodes.iter() {
-        // Plugin nodes are not in the manifest, and `state:` never selects them.
-        if nodes.plugins.contains_key(unique_id) {
+        // Experimental nodes are not in the manifest, and `state:` never selects them.
+        if nodes.experimentals.contains_key(unique_id) {
             continue;
         }
         let runtime_vars = resolve_compare_unrendered_code(node, args.compare_unrendered_code)
@@ -170,9 +172,13 @@ fn emit_state_selector_telemetry(
         events: vec![event],
     };
     let client = args.client.clone();
-    tokio::spawn(async move {
+    // Fire-and-forget: the command can finish before this completes. Spawn it in the current
+    // span so that whatever it emits after the invocation ends, including the gRPC stack's own
+    // events, which run in the caller's span, is suppressed when the invocation span is force
+    // closed instead of being logged outside any span.
+    spawn_traced(async move {
         if let Err(e) = client.submit_telemetry_batch(request).await {
-            tracing::debug!("Failed to submit state selector telemetry: {e}");
+            emit_debug_log_message(format!("Failed to submit state selector telemetry: {e}"));
         }
     });
 }
@@ -350,18 +356,21 @@ mod tests {
 
     #[tokio::test]
     async fn evaluate_state_selector_folds_vars_into_configs_hash_when_comparing_unrendered_code() {
-        use dbt_schemas::schemas::DbtPluginNode;
+        use dbt_schemas::schemas::DbtExperimentalNode;
         use dbt_schemas::state::DbtVars;
 
         let mut model = model_node("model.pkg.model_0");
         model.__common_attr__.package_name = "pkg".to_string();
         model.__common_attr__.raw_code = Some("select {{ var('dry_run', false) }}".to_string());
-        let mut plugin = DbtPluginNode::default();
-        plugin.__common_attr__.unique_id = "widget.pkg.widget_0".to_string();
-        plugin.__plugin_attr__.plugin_type = "widget".to_string();
+        let mut experimental = DbtExperimentalNode::default();
+        experimental.__common_attr__.unique_id = "widget.pkg.widget_0".to_string();
+        experimental.__experimental_attr__.experimental_type = "widget".to_string();
         let nodes = Nodes {
             models: BTreeMap::from([("model.pkg.model_0".to_string(), Arc::new(model))]),
-            plugins: BTreeMap::from([("widget.pkg.widget_0".to_string(), Arc::new(plugin))]),
+            experimentals: BTreeMap::from([(
+                "widget.pkg.widget_0".to_string(),
+                Arc::new(experimental),
+            )]),
             ..Default::default()
         };
 

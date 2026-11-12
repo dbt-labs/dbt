@@ -1,0 +1,7 @@
+kind: Fixes
+body: Implement `modules.pytz.all_timezones` and `modules.pytz.all_timezones_set`
+time: 2026-10-31T03:15:56.822135-04:00
+custom:
+    author: geethasagarb
+    issue: "16966"
+    project: dbt-core

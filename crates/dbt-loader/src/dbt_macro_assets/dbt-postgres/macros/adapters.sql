@@ -226,6 +226,13 @@
     {{ return(False) }}
 {% endmacro %}
 
+{#-- DIVERGENCE: Postgres and Redshift (which dispatches here) name a function in
+  -- GRANT and REVOKE by its argument types. Redshift requires them; Postgres needs
+  -- them when the name has several overloads. --#}
+{%- macro postgres__get_function_grant_signature_sql() -%}
+    {{ function_grant_argument_types_sql() }}
+{%- endmacro -%}
+
 
 {% macro postgres__get_show_indexes_sql(relation) %}
     select

@@ -79,6 +79,21 @@ pub static LOCK_WITH_STATE: FlagDef = FlagDef {
     docs_url: None,
 };
 
+/// Whether `dbt init` offers, for a Snowflake profile, a `lakecompute` output
+/// beside the Snowflake one.
+pub static LAKECOMPUTE_PROFILE_SETUP: FlagDef = FlagDef {
+    name: "lakecompute_profile_setup",
+    description: "In dbt init, offer a lakecompute output beside a Snowflake profile's output.",
+    stage: Stage::Internal,
+    default: false,
+    remote: Remote::Default,
+    aliases: &[],
+    legacy_env: &[],
+    tracking: None,
+    remove_by: None,
+    docs_url: None,
+};
+
 /// Every flag declared in this crate.
 pub static ALL: &[&FlagDef] = &[
     &GIT_DEPS_FAST_PATH,
@@ -86,6 +101,7 @@ pub static ALL: &[&FlagDef] = &[
     &LATEST_VERSION_POINTER_ENABLED_BY_DEFAULT,
     &FRONTEND_LIBRARY,
     &LOCK_WITH_STATE,
+    &LAKECOMPUTE_PROFILE_SETUP,
 ];
 
 #[cfg(test)]

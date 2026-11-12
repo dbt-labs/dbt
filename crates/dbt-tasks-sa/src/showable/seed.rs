@@ -25,6 +25,7 @@ impl Showable for DbtSeed {
 
             run_show(
                 ctx,
+                self,
                 &unique_id,
                 "seed",
                 false,

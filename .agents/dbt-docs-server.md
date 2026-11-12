@@ -141,29 +141,51 @@ Two things follow, and both have bitten:
 ## Tech stack
 
 **Frontend** — paths relative to `crates/dbt-docs-server/web/`:
-- React 19 + TypeScript + Vite, standalone pnpm project (not part of any workspace)
+- React 19 + TypeScript + Vite. This package (`dbt-docs-web`) and `../dbt-docs-lib/`
+  (shared components) form a pnpm workspace rooted at `crates/dbt-docs-server/`.
+  `dbt-docs-web` depends on the lib through `workspace:*` and bundles the lib's built
+  `dist/`. Turborepo orders the tasks: run `pnpm` commands from the workspace root,
+  and turbo builds the lib before any task that imports it.
+- Keep `dbt-docs-lib/package.json` self-contained, with no `workspace:` or `catalog:`
+  specifiers, so that a project outside this workspace can consume the lib as a
+  `file:` dependency.
+- Lint: one ESLint config (`eslint.config.mjs`) and one Prettier config
+  (`.prettierrc.cjs`) at the workspace root cover both packages, and the lint
+  toolchain is a root devDependency. `pnpm lint` runs ESLint in each package, which
+  finds the root config by walking up. Do not add a config inside a package: ESLint
+  would use it instead. Prettier sorts Tailwind classes in both packages by
+  `web/tailwind.config.cjs`.
 - Routing: `react-router-dom` **`HashRouter`**, Vite `base: './'`, `LinkPrefixProvider
   prefix="/"` (the router owns the `#`). All three are required for subpath-agnostic
   static hosting: a plain file host rewrites nothing, so real paths would 404 on a
   deep-link reload. The hash also never reaches the server, which keeps
   `document.baseURI` stable for resolving the data directory.
-- Data: `@tanstack/react-query` over the `MetadataDataSource` adapter in `src/shared/`.
-  `createDuckDbDataSource` is the only production implementation.
-- Styling: Tailwind (configured in `tailwind.config.cjs`, with the sourdough and
-  dbt-dag presets) **plus** hand-written CSS in `src/app.css` keyed by BEM-style
-  class prefixes (e.g. `locate-pane__`). Both are in use — check `app.css` before
-  adding a utility-class-only solution, and prefer sourdough CSS custom properties
-  (`var(--fgMain)`, `var(--bgMainHover)`, …) over literal colors.
-- Icons: `@dbt-labs/sourdough` (Ryecon) and `@dbt-labs/dbt-dag` (`DbtResourceIcon`)
+- Data: `@tanstack/react-query` over the `MetadataDataSource` adapter. The interface
+  comes from `dbt-docs-lib` and its domain types from `dbt-docs-lib/domain`, so web
+  implements the same contract the lib's providers consume. `createDuckDbDataSource`
+  in `src/shared/data-sources/duckdb/` is the only production implementation.
+- Styling: Tailwind (configured in `tailwind.config.cjs`, with a vendored copy of
+  sourdough's preset in `src/styles/sourdough-preset.cjs`) **plus** hand-written CSS
+  in `src/app.css` keyed by BEM-style class prefixes (e.g. `locate-pane__`). Both are
+  in use — check `app.css` before adding a utility-class-only solution, and prefer
+  the CSS custom properties in `src/styles/tokens.css` (`var(--fgMain)`,
+  `var(--bgMainHover)`, …) over literal colors.
+- Icons: `lucide-react`; `src/lib/resourceType.tsx` maps resource types to theirs.
 - `src/shared/` is a **fork** of the docs-v2 slice of `@dbt-labs/metadata-shared`
   (dbt-ui). It mirrors upstream's layout and barrel so the two can be diffed. Treat
   it as vendored: prefer additive local changes, and expect upstream drift.
-- Private deps (`@dbt-labs/sourdough`, `dbt-dag`, `biga`) come from GitHub Packages,
-  so `pnpm install` needs `GITHUB_TOKEN` with `read:packages`. `cargo build` does
-  not — `web/dist/` is committed.
-- **After any `web/` source edit, run `pnpm build` and commit `web/dist/` in the same
-  change.** Nothing enforces this — no CI job, no git hook — so a source-only commit
-  silently ships a stale UI.
+- Every dependency is on the public npm registry, so `pnpm install` needs no token.
+  `cargo build` needs no JS toolchain at all — `web/dist/` is committed.
+- **After any `web/` or `dbt-docs-lib/` source edit, run `pnpm build` and commit
+  `web/dist/` in the same change.** The lib ships only inside `web/dist/`, so a lib
+  edit needs the rebuild too. Nothing enforces this — no CI job, no git hook — so a
+  source-only commit silently ships a stale UI.
+- Every `web/` script that reads the lib builds it through turbo first, so they all
+  work from `web/` as well as from the root. One-shot scripts start with
+  `node scripts/build-deps.mjs &&`. Long-running ones go through `scripts/watch.mjs`,
+  which runs them under `turbo watch` so the lib is also rebuilt on change. Both skip
+  the build under turbo, which sets `TURBO_HASH`. A new script that reads the lib
+  needs one of the two, and a long-running one also needs a turbo task of its name.
 - `pnpm dev` needs a generated site to read: point `DBT_DOCS_DEV_SITE` at one and the
   `devSite` plugin injects a dev bootstrap and serves its `data/`.
 
@@ -192,7 +214,7 @@ All paths relative to `crates/dbt-docs-server/`.
 | `web/src/shared/data-sources/duckdb/realArtifacts.test.ts` | Every query in the app, bound against a real information schema. Opt-in: `DBT_DOCS_REAL_ARTIFACTS=<target>/info_schema/v1 pnpm test`. This is the mechanical form of the habit below, and it has caught column-name bugs no other test can |
 | `web/src/shared/data-sources/mappers/fromWire.ts` | The single mapping layer, 46 tests. Column names in every SQL projection match what these mappers read — that is the guard against drift |
 | `web/src/shared/data-sources/conformance.test.ts` | Protocol-agnostic suite over `MetadataDataSource`; holds the fake and the DuckDB source to one contract |
-| `web/src/shared/typings/domain/` | Domain types (`Asset`, `ModelSummary`, `Capabilities`, …) |
+| `dbt-docs-lib/lib/shared/typings/domain/` | Domain types (`Asset`, `ModelSummary`, `Capabilities`, …). Import them from `dbt-docs-lib/domain`: the root entry's `ResourceType` is the lineage type, not the domain union |
 | `web/src/lib/resourceType.tsx` | Resource type order, labels, icons, badge colors — single source of truth |
 | `web/src/components/LocatePane.tsx` | Sidebar: AssetMode, TreeMode, FilterMode |
 | `web/src/app.css` | Hand-written CSS (alongside Tailwind utilities in the TSX) |

@@ -1,5 +1,5 @@
 use dbt_adapter_core::AdapterType;
-use dbt_common::{ErrorCode, FsResult, fs_err};
+use dbt_common::FsResult;
 use dbt_schemas::schemas::profiles::DbConfig;
 
 mod bigquery_config;
@@ -124,13 +124,31 @@ impl ProfileSetup {
                 todo!("setup_oracle_profile")
             }
             LakeCompute => {
-                let _c0 = unwrap_db_config!(LakeCompute);
-                // TODO: Create proper lake compute profile setup
-                Err(fs_err!(
-                    ErrorCode::Generic,
-                    "lake_compute profile setup not yet implemented."
-                ))
+                // Nothing to ask: it signs in with a Fivetran token, read from
+                // the environment so it stays out of profiles.yml.
+                let existing = unwrap_db_config!(LakeCompute);
+                Ok(DbConfig::LakeCompute(Box::new(lake_compute_config(
+                    existing.map(|c| c.as_ref()),
+                ))))
             }
         }
     }
+}
+
+/// The env var a lakecompute output reads its Fivetran token from.
+pub const LAKE_COMPUTE_TOKEN_ENV: &str = "DBT_LAKE_COMPUTE_TOKEN";
+
+/// A lakecompute output: `method: fivetran`, its token from
+/// [`LAKE_COMPUTE_TOKEN_ENV`]. Empty by default, so a profile with it loads where
+/// the token isn't set (dbt renders every output of a target). An existing
+/// output keeps its settings.
+fn lake_compute_config(
+    existing: Option<&dbt_schemas::schemas::profiles::LakeComputeConfig>,
+) -> dbt_schemas::schemas::profiles::LakeComputeConfig {
+    let mut config = existing.cloned().unwrap_or_default();
+    config.method.get_or_insert_with(|| "fivetran".to_string());
+    config
+        .fivetran_credential
+        .get_or_insert_with(|| format!("{{{{ env_var('{LAKE_COMPUTE_TOKEN_ENV}', '') }}}}"));
+    config
 }

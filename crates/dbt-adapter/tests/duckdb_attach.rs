@@ -1,13 +1,13 @@
 //! Snapshot tests for `compose_catalog_attach_stmts`.
 //!
-//! Each scenario under `tests/duckdb_attach_fixtures/<scenario>/catalogs.yml`
-//! is parsed and the joined ATTACH (and optional `INSTALL ducklake`) statements
-//! are snapshotted to a sibling `output.snap` for side-by-side reviewability.
+//! Each scenario under `tests/data/duckdb_attach/<scenario>/catalogs.yml` is parsed and the
+//! joined ATTACH (and optional `INSTALL ducklake`) statements are snapshotted to a sibling
+//! `output.snap` for side-by-side reviewability.
 //! Update goldens: `cargo insta review` or `cargo insta accept`.
-//! Run: `cargo xtask test --llm --no-external-deps -p dbt-adapter duckdb_attach_fixtures`
-
-use dbt_adapter::engine::duckdb_attach::compose_catalog_attach_stmts;
+//! Run: `cargo xtask test --llm --no-external-deps -p dbt-adapter --test duckdb_attach`
 use dbt_schemas::schemas::dbt_catalogs_deprecated::DbtCatalogs;
+
+use dbt_adapter_engine::duckdb::attach::compose_catalog_attach_stmts;
 
 const SCENARIOS: &[&str] = &[
     "alias_collision_error",
@@ -43,9 +43,9 @@ fn render(yaml: &str) -> String {
 }
 
 #[test]
-fn duckdb_attach_fixtures() {
+fn attach_fixtures() {
     let fixtures_root =
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/duckdb_attach_fixtures");
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/duckdb_attach");
     for scenario in SCENARIOS {
         let scenario_dir = fixtures_root.join(scenario);
         let yaml = std::fs::read_to_string(scenario_dir.join("catalogs.yml"))

@@ -54,6 +54,7 @@ use std::sync::Arc;
 
 pub mod adapter_factory;
 pub mod adapter_impl;
+pub mod fixture_columns;
 pub mod store;
 pub use adapter_factory::*;
 pub use adapter_impl::{AdapterImpl, alias_types_from_state, quote_component, quote_ident};
@@ -80,6 +81,9 @@ enum InnerAdapter {
 }
 
 use InnerAdapter::*;
+
+/// Per-render column metadata for mocked unit-test relations.
+pub const UNIT_TEST_FIXTURE_COLUMNS: &str = "__dbt_unit_test_fixture_columns";
 
 /// Per-node connection state that must be reset after materialization.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1626,7 +1630,7 @@ impl Adapter {
                 iter.finish()?;
 
                 let columns = adapter.get_missing_columns(state, &from_relation, &to_relation)?;
-                Ok(columns_to_value(columns))
+                Ok(columns_to_value_mut(columns))
             }
             Parse(_) => Ok(empty_mutable_vec_value()),
         }
@@ -1648,6 +1652,15 @@ impl Adapter {
     ) -> Result<Value, minijinja::Error> {
         match &self.inner {
             Typed { adapter, .. } => {
+                if let Some(fixtures) = state.lookup(UNIT_TEST_FIXTURE_COLUMNS, &[]) {
+                    let lookup = fixtures.get_item(&Value::from(relation.semantic_fqn()))?;
+                    if !lookup.is_undefined() {
+                        let columns = lookup.call(state, &[], &[])?;
+                        if !columns.is_undefined() {
+                            return Ok(columns);
+                        }
+                    }
+                }
                 // Replay Mode: Re-use recordings and compare with cache result
                 if let Some(replay_adapter) = adapter.as_replay() {
                     let cached = adapter.get_columns_in_relation_via_cache(state, relation)?;
@@ -1658,7 +1671,7 @@ impl Adapter {
                     )
                 } else {
                     let columns = adapter.get_columns_in_relation(state, relation)?;
-                    Ok(columns_to_value(columns))
+                    Ok(columns_to_value_mut(columns))
                 }
             }
             Parse(parse_adapter_state) => {
@@ -2911,9 +2924,11 @@ impl Adapter {
                     _ => config
                         .__warehouse_specific_config__
                         .tblproperties
-                        .iter()
-                        .flat_map(|tp| tp.0.iter())
-                        .map(|(k, v)| (k.to_string(), yml_value_to_minijinja(v)))
+                        .clone()
+                        .unwrap_or_default()
+                        .0
+                        .into_iter()
+                        .map(|(k, v)| (k, yml_value_to_minijinja(v)))
                         .collect(),
                 };
 
@@ -4361,6 +4376,16 @@ impl Adapter {
                     Parse(_) => Ok(Value::from(false)),
                 }
             }
+            "supports_atomic_exchange" => {
+                // (no args) -> bool (server passed the EXCHANGE TABLES probe)
+                ArgsIter::new("supports_atomic_exchange", &[], args).finish()?;
+                match &self.inner {
+                    Typed { adapter, .. } => Ok(Value::from(
+                        adapter.supports_atomic_exchange(state, self.cancellation_token.clone()),
+                    )),
+                    Parse(_) => Ok(Value::from(false)),
+                }
+            }
             "should_on_cluster" => {
                 // materialized: str = '', engine: str = '', relation: BaseRelation = None -> bool
                 // (materialized/engine ignored, as in impl.py; `relation` is v2's on_cluster_clause
@@ -4694,7 +4719,6 @@ impl Adapter {
             None
         }
     }
-
     /// (state change) Lists the schema's routines and inserts each into
     /// the relation cache. Returns `temp_relation` if it turns out to
     /// be one of them
@@ -4709,7 +4733,8 @@ impl Adapter {
         if adapter.adapter_type() != AdapterType::Bigquery {
             return Ok(None);
         }
-        if !adapter.engine().relation_cache().project_has_functions() {
+        let relation_cache = adapter.engine().relation_cache();
+        if !relation_cache.project_has_functions() {
             return Ok(None);
         }
         if temp_relation
@@ -4725,25 +4750,25 @@ impl Adapter {
         }
 
         let db_schema = CatalogAndSchema::from(temp_relation);
-        let mut conn = adapter.borrow_tlocal_connection(Some(state), node_id_from_state(state))?;
-        let query_ctx = query_ctx_from_state(state)?.with_desc("get_relation > list_routines call");
-        let routines = match bigquery::list_routines(
-            adapter.engine().as_ref(),
-            &query_ctx,
-            &mut conn,
-            &db_schema,
-            self.cancellation_token.clone(),
-        ) {
-            Ok(routines) => routines,
-            Err(e) => {
-                tracing::warn!("relation_cache: list_routines failed: {e}");
-                return Ok(None);
-            }
-        };
-
-        let relation_cache = adapter.engine().relation_cache();
-        for routine in routines {
-            relation_cache.insert_relation(routine, None);
+        if !relation_cache.contains_routines(&db_schema) {
+            let mut conn =
+                adapter.borrow_tlocal_connection(Some(state), node_id_from_state(state))?;
+            let query_ctx =
+                query_ctx_from_state(state)?.with_desc("get_relation > list_routines call");
+            let routines = match bigquery::list_routines(
+                adapter.engine().as_ref(),
+                &query_ctx,
+                &mut conn,
+                &db_schema,
+                self.cancellation_token.clone(),
+            ) {
+                Ok(routines) => routines,
+                Err(e) => {
+                    tracing::warn!("relation_cache: list_routines failed: {e}");
+                    return Ok(None);
+                }
+            };
+            relation_cache.insert_routines(&db_schema, routines);
         }
 
         Ok(relation_cache

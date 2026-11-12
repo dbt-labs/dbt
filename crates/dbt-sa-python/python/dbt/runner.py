@@ -42,6 +42,10 @@ class dbtRunnerResult:
         nothing was captured.
     catalog: CatalogArtifact when --write-catalog produced one, else None. Kept
         off `result` so that stays dbt-core-compatible.
+    preview: the rows a show previewed, as one Arrow IPC stream in chunks
+        (the schema, each batch, the end marker), so no single allocation holds
+        it all; readable with e.g. `pyarrow.ipc.open_stream(b"".join(preview))`.
+        None unless a show ran to completion. Kept off `result` like `catalog`.
     exception: set on an engine error or a caught panic; a handled failure that its
         result artifact accounts for (a failing test, a stale source) has
         success=False and no exception.
@@ -56,12 +60,14 @@ class dbtRunnerResult:
         exception: Optional[BaseException] = None,
         exit_code: Optional[int] = None,
         catalog: Any = None,
+        preview: Optional[List[bytes]] = None,
     ):
         self.success = success
         self.result = result
         self.exception = exception
         self.exit_code = exit_code
         self.catalog = catalog
+        self.preview = preview
 
     def __repr__(self) -> str:
         return (
@@ -134,4 +140,5 @@ class dbtRunner:
             exception=exception,
             exit_code=core.exit_code,
             catalog=catalog,
+            preview=core.preview,
         )

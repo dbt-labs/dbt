@@ -61,6 +61,7 @@ use dbt_yaml::Verbatim;
 use minijinja::Value;
 use minijinja::constants::TARGET_UNIQUE_ID;
 use minijinja::listener::RenderingEventListener;
+use minijinja::value::OverlayMap;
 use serde_json::value::RawValue;
 use tracing::debug;
 
@@ -87,7 +88,7 @@ pub struct CompareRecordBatchResult {
 fn execute_materialization_macro(
     jinja_env: Arc<JinjaEnv>,
     macro_name: &str,
-    context: &mut BTreeMap<String, Value>,
+    context: &mut OverlayMap,
     resource_type: &str,
     unique_id: &str,
     node_alias: &str,
@@ -241,6 +242,11 @@ fn dump_jinja_trace(listener: &JinjaTraceListener, compiled_path: &Path, unique_
 pub enum NodeHookPhase {
     Pre,
     Post,
+    /// The post-hooks that run inside the transaction, without the commit
+    /// that follows them.
+    PostInsideTransaction,
+    /// The post-hooks that run after the commit, without the commit itself.
+    PostOutsideTransaction,
 }
 
 /// Describes how a node's materialization macro invokes pre/post hooks.
@@ -271,7 +277,7 @@ pub fn model_hook_style(
 }
 
 fn node_hook_expression(
-    context: &BTreeMap<String, Value>,
+    context: &OverlayMap,
     style: NodeHookStyle,
     phase: NodeHookPhase,
 ) -> Option<&'static str> {
@@ -280,9 +286,12 @@ fn node_hook_expression(
             NodeHookPhase::Pre => context
                 .contains_key("pre_hooks")
                 .then_some("run_hooks(pre_hooks)"),
-            NodeHookPhase::Post => context
+            // A plain materialization runs its post-hooks in one step, with
+            // no transaction to split them around.
+            NodeHookPhase::Post | NodeHookPhase::PostInsideTransaction => context
                 .contains_key("post_hooks")
                 .then_some("run_hooks(post_hooks)"),
+            NodeHookPhase::PostOutsideTransaction => None,
         },
         NodeHookStyle::SplitTransaction => match phase {
             NodeHookPhase::Pre => context.contains_key("pre_hooks").then_some(
@@ -297,6 +306,12 @@ fn node_hook_expression(
                     Some("adapter.commit()")
                 }
             }
+            NodeHookPhase::PostInsideTransaction => context
+                .contains_key("post_hooks")
+                .then_some("run_hooks(post_hooks, inside_transaction=True)"),
+            NodeHookPhase::PostOutsideTransaction => context
+                .contains_key("post_hooks")
+                .then_some("run_hooks(post_hooks, inside_transaction=False)"),
         },
     }
 }
@@ -308,7 +323,7 @@ pub fn execute_node_hooks<S: serde::Serialize>(
     adapter_type: AdapterType,
     runtime_config: &DbtRuntimeConfig,
     jinja_env: Arc<JinjaEnv>,
-    base_context: &BTreeMap<String, Value>,
+    base_context: &Value,
     io_args: &IoArgs,
     sql: Option<&str>,
     style: NodeHookStyle,
@@ -334,7 +349,9 @@ pub fn execute_node_hooks<S: serde::Serialize>(
 
     let hook_name = match phase {
         NodeHookPhase::Pre => "pre_hooks",
-        NodeHookPhase::Post => "post_hooks",
+        NodeHookPhase::Post
+        | NodeHookPhase::PostInsideTransaction
+        | NodeHookPhase::PostOutsideTransaction => "post_hooks",
     };
     let Some(hook_expression) = node_hook_expression(&context, style, phase) else {
         return Ok(());
@@ -368,7 +385,7 @@ mod tests {
     use dbt_adapter_core::AdapterType;
     use dbt_schemas::schemas::common::DbtMaterialization;
     use minijinja::Value;
-    use std::collections::BTreeMap;
+    use minijinja::value::OverlayMap;
 
     /// Pins no `use warehouse` connection borrow on a non-Snowflake adapter. Without the gate the
     /// mock trips `use_warehouse`'s debug assert, so the test only fails in debug builds.
@@ -430,8 +447,8 @@ mod tests {
 
     #[test]
     fn split_transaction_post_hooks_commit_even_when_post_hooks_are_absent() {
-        let mut context = BTreeMap::new();
-        context.insert("pre_hooks".to_string(), Value::from(Vec::<Value>::new()));
+        let mut context = OverlayMap::default();
+        context.insert("pre_hooks", Value::from(Vec::<Value>::new()));
 
         assert_eq!(
             node_hook_expression(
@@ -445,8 +462,8 @@ mod tests {
 
     #[test]
     fn split_transaction_post_hooks_preserve_post_hook_execution_when_configured() {
-        let mut context = BTreeMap::new();
-        context.insert("post_hooks".to_string(), Value::from(Vec::<Value>::new()));
+        let mut context = OverlayMap::default();
+        context.insert("post_hooks", Value::from(Vec::<Value>::new()));
 
         assert_eq!(
             node_hook_expression(
@@ -460,11 +477,71 @@ mod tests {
         );
     }
 
+    /// A clone applies grants between the two halves, so neither half commits.
+    #[test]
+    fn split_transaction_post_hooks_split_around_the_commit() {
+        let mut context = OverlayMap::default();
+        context.insert("post_hooks", Value::from(Vec::<Value>::new()));
+
+        assert_eq!(
+            node_hook_expression(
+                &context,
+                NodeHookStyle::SplitTransaction,
+                NodeHookPhase::PostInsideTransaction
+            ),
+            Some("run_hooks(post_hooks, inside_transaction=True)")
+        );
+        assert_eq!(
+            node_hook_expression(
+                &context,
+                NodeHookStyle::SplitTransaction,
+                NodeHookPhase::PostOutsideTransaction
+            ),
+            Some("run_hooks(post_hooks, inside_transaction=False)")
+        );
+        for phase in [
+            NodeHookPhase::PostInsideTransaction,
+            NodeHookPhase::PostOutsideTransaction,
+        ] {
+            assert_eq!(
+                node_hook_expression(
+                    &OverlayMap::default(),
+                    NodeHookStyle::SplitTransaction,
+                    phase
+                ),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn plain_post_hooks_run_whole_in_the_inside_transaction_half() {
+        let mut context = OverlayMap::default();
+        context.insert("post_hooks", Value::from(Vec::<Value>::new()));
+
+        assert_eq!(
+            node_hook_expression(
+                &context,
+                NodeHookStyle::Plain,
+                NodeHookPhase::PostInsideTransaction
+            ),
+            Some("run_hooks(post_hooks)")
+        );
+        assert_eq!(
+            node_hook_expression(
+                &context,
+                NodeHookStyle::Plain,
+                NodeHookPhase::PostOutsideTransaction
+            ),
+            None
+        );
+    }
+
     #[test]
     fn split_transaction_pre_hooks_skip_when_pre_hooks_are_absent() {
         assert_eq!(
             node_hook_expression(
-                &BTreeMap::new(),
+                &OverlayMap::default(),
                 NodeHookStyle::SplitTransaction,
                 NodeHookPhase::Pre
             ),
@@ -474,9 +551,9 @@ mod tests {
 
     #[test]
     fn plain_hooks_match_non_transactional_adapter_materializations() {
-        let mut context = BTreeMap::new();
-        context.insert("pre_hooks".to_string(), Value::from(Vec::<Value>::new()));
-        context.insert("post_hooks".to_string(), Value::from(Vec::<Value>::new()));
+        let mut context = OverlayMap::default();
+        context.insert("pre_hooks", Value::from(Vec::<Value>::new()));
+        context.insert("post_hooks", Value::from(Vec::<Value>::new()));
 
         assert_eq!(
             node_hook_expression(&context, NodeHookStyle::Plain, NodeHookPhase::Pre),
@@ -491,7 +568,11 @@ mod tests {
     #[test]
     fn plain_post_hooks_skip_when_post_hooks_are_absent() {
         assert_eq!(
-            node_hook_expression(&BTreeMap::new(), NodeHookStyle::Plain, NodeHookPhase::Post),
+            node_hook_expression(
+                &OverlayMap::default(),
+                NodeHookStyle::Plain,
+                NodeHookPhase::Post
+            ),
             None
         );
     }
@@ -560,7 +641,7 @@ pub fn materialize_clone<S: serde::Serialize>(
     defer_nodes: Option<&Nodes>,
     materialization_resolver: &Arc<MaterializationResolver>,
     jinja_env: Arc<JinjaEnv>,
-    base_context: &BTreeMap<String, Value>,
+    base_context: &Value,
     io_args: &IoArgs,
     custom_warehouse: Option<String>,
 ) -> FsResult<Value> {
@@ -638,7 +719,7 @@ pub fn materialize_seed(
     runtime_config: &DbtRuntimeConfig,
     materialization_resolver: &Arc<MaterializationResolver>,
     jinja_env: Arc<JinjaEnv>,
-    base_context: &BTreeMap<String, Value>,
+    base_context: &Value,
     agate_table: AgateTable,
     io_args: &IoArgs,
 ) -> FsResult<(Value, Option<AdapterResponse>)> {
@@ -717,7 +798,7 @@ pub fn materialize_model(
     runtime_config: &DbtRuntimeConfig,
     materialization_resolver: &Arc<MaterializationResolver>,
     jinja_env: Arc<JinjaEnv>,
-    base_context: &BTreeMap<String, Value>,
+    base_context: &Value,
     io_args: &IoArgs,
     sql_header: Option<Value>,
 ) -> FsResult<(Value, Option<AdapterResponse>)> {
@@ -835,7 +916,7 @@ pub fn should_create_latest_version_pointer(
 fn latest_version_pointer_identifier(
     model: &DbtModel,
     jinja_env: &JinjaEnv,
-    context: &mut BTreeMap<String, Value>,
+    context: &mut OverlayMap,
 ) -> FsResult<String> {
     let custom_alias = model
         .deprecated_config
@@ -853,7 +934,7 @@ fn latest_version_pointer_identifier(
 
     let macro_template = "{{ generate_latest_version_pointer_alias(__lvp_custom_alias__, model) }}";
     let render_result = jinja_env.render_str(macro_template, &mut *context, &[]);
-    context.remove("__lvp_custom_alias__");
+    context.remove_entry("__lvp_custom_alias__");
 
     let rendered = render_result.map_err(|e| {
         fs_err!(
@@ -893,7 +974,7 @@ pub fn materialize_latest_version_pointer(
     runtime_config: &DbtRuntimeConfig,
     materialization_resolver: &Arc<MaterializationResolver>,
     jinja_env: Arc<JinjaEnv>,
-    base_context: &BTreeMap<String, Value>,
+    base_context: &Value,
     io_args: &IoArgs,
 ) -> FsResult<Value> {
     // Build a context from the original model first so macros can access `model`
@@ -1087,7 +1168,7 @@ pub fn materialize_microbatch_model(
     jinja_env: Arc<JinjaEnv>,
     batch_ctx: &BatchContext,
     adapter: &Adapter,
-    mut run_node_context: BTreeMap<String, Value>,
+    mut run_node_context: OverlayMap,
     event_time_mapping: Arc<BTreeMap<String, String>>,
     io_args: &IoArgs,
 ) -> FsResult<Value> {
@@ -1120,8 +1201,9 @@ pub fn materialize_microbatch_model(
     ));
 
     // Databricks incremental materialization reads `model['compiled_code']`.
-    let batch_model = run_node_context
-        .get("model")
+    let batch_model = run_node_context.get("model");
+    let batch_model = batch_model
+        .as_ref()
         .and_then(|model| model.downcast_object_ref::<dbt_schemas::jinja_node::LazyNodeContext>())
         .ok_or_else(|| {
             unexpected_fs_err!(
@@ -1181,7 +1263,7 @@ pub fn materialize_snapshot(
     runtime_config: &DbtRuntimeConfig,
     materialization_resolver: &Arc<MaterializationResolver>,
     jinja_env: Arc<JinjaEnv>,
-    base_context: &BTreeMap<String, Value>,
+    base_context: &Value,
     io_args: &IoArgs,
 ) -> FsResult<(Value, Option<AdapterResponse>)> {
     let adapter_type = adapter.adapter_type();
@@ -1248,7 +1330,7 @@ pub fn materialize_unit_test(
     resolver_state: Arc<ResolverState>,
     materialization_resolver: Arc<MaterializationResolver>,
     jinja_env: Arc<JinjaEnv>,
-    base_context: &BTreeMap<String, Value>,
+    base_context: &Value,
     io_args: &IoArgs,
 ) -> FsResult<bool> {
     // The unit test's own adapter, not the target default: `resolve_unit_tests`
@@ -1342,10 +1424,10 @@ pub fn materialize_unit_test_fast_pass(
     adapter_type: AdapterType,
     runtime_config: &DbtRuntimeConfig,
     jinja_env: Arc<JinjaEnv>,
-    base_context: &BTreeMap<String, Value>,
+    base_context: &Value,
     io_args: &IoArgs,
-) -> FsResult<(bool, usize, String)> {
-    let (mut context, _result_store) = build_run_node_context(
+) -> FsResult<(bool, usize, String, Option<AdapterResponse>)> {
+    let (mut context, result_store) = build_run_node_context(
         unit_test,
         &unit_test.deprecated_config,
         adapter_type,
@@ -1408,19 +1490,24 @@ pub fn materialize_unit_test_fast_pass(
     } = compare_record_batches(table.original_record_batch().as_ref())?;
     let diff_num_rows = diff_batch.num_rows();
 
-    Ok((!has_differences, diff_num_rows, {
-        let mut s = pretty_format_batches(&[diff_batch])?.to_string();
-        s.push('\n');
-        s.push_str(&format!("{diff_num_rows} row(s) differ."));
+    Ok((
+        !has_differences,
+        diff_num_rows,
+        {
+            let mut s = pretty_format_batches(&[diff_batch])?.to_string();
+            s.push('\n');
+            s.push_str(&format!("{diff_num_rows} row(s) differ."));
 
-        if actual_rows != expected_rows {
-            s.push_str(&format!(
-                "\nExpected {expected_rows} row(s), got {actual_rows} row(s)."
-            ))
-        }
+            if actual_rows != expected_rows {
+                s.push_str(&format!(
+                    "\nExpected {expected_rows} row(s), got {actual_rows} row(s)."
+                ))
+            }
 
-        s
-    }))
+            s
+        },
+        result_store.main_adapter_response(),
+    ))
 }
 
 #[derive(Debug)]
@@ -1559,7 +1646,7 @@ pub fn materialize_test(
     runtime_config: &DbtRuntimeConfig,
     materialization_resolver: &Arc<MaterializationResolver>,
     jinja_env: Arc<JinjaEnv>,
-    base_context: &BTreeMap<String, Value>,
+    base_context: &Value,
     io_args: &IoArgs,
 ) -> FsResult<(
     Vec<TestResult>,
@@ -2412,7 +2499,8 @@ mod compare_record_batches_tests {
         Schema, TimeUnit,
     };
     use arrow::util::pretty::pretty_format_batches;
-    use dbt_adapter::record_batch::RecordBatchExt;
+    use dbt_adapter::record_batch::jsonify_column;
+    use dbt_adapter_engine::record_batch::RecordBatchExt;
     use dbt_agate::AgateTable;
     use std::sync::Arc;
 
@@ -2421,8 +2509,8 @@ mod compare_record_batches_tests {
     }
 
     fn databricks_table(batch: arrow::array::RecordBatch) -> AgateTable {
-        let display = batch.clone().jsonify_nested_columns();
-        AgateTable::from_record_batch_with_original(Arc::new(display), Arc::new(batch))
+        let display = batch.clone().jsonify_nested_columns(jsonify_column);
+        AgateTable::from_record_batch_impl(Arc::new(display), Some(Arc::new(batch)), None)
     }
 
     #[test]
@@ -3383,10 +3471,10 @@ pub fn materialize_function(
     runtime_config: &DbtRuntimeConfig,
     materialization_resolver: &Arc<MaterializationResolver>,
     jinja_env: Arc<JinjaEnv>,
-    base_context: &BTreeMap<String, Value>,
+    base_context: &Value,
     io_args: &IoArgs,
-) -> FsResult<Value> {
-    let (mut context, _result_store) = build_run_node_context(
+) -> FsResult<(Value, Option<AdapterResponse>)> {
+    let (mut context, result_store) = build_run_node_context(
         function,
         &function.deprecated_config,
         adapter_type,
@@ -3430,5 +3518,5 @@ pub fn materialize_function(
     }
     let _ = std::fs::write(&compiled_path, sql);
 
-    result
+    result.map(|value| (value, result_store.main_adapter_response()))
 }

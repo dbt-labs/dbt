@@ -17,6 +17,7 @@ dbt-common = { workspace = true }
 dbt-flags = { workspace = true }
 dbt-fusion-workspace-hack = { version = "0.1" }
 dbt-jinja-utils = { workspace = true }
+dbt-path = { workspace = true }
 dbt-schemas = { workspace = true }
 dbt-skills = { workspace = true }
 dbt-telemetry = { workspace = true }
@@ -26,7 +27,6 @@ astral-tokio-tar = { workspace = true }
 async-compression = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
-normalize-path = { workspace = true }
 regex = { workspace = true }
 reqwest = { workspace = true, features = ['json', 'stream'] }
 reqwest-middleware = { workspace = true, features = ['json'] }

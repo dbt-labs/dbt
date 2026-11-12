@@ -68,9 +68,13 @@ model.hello_world.incremental:
     ukcu.column_name AS to_column
     FROM `e2e`.information_schema.key_column_usage kcu
     JOIN `e2e`.information_schema.referential_constraints rc
-    ON kcu.constraint_name = rc.constraint_name
+    ON kcu.constraint_catalog = rc.constraint_catalog
+    AND kcu.constraint_schema = rc.constraint_schema
+    AND kcu.constraint_name = rc.constraint_name
     JOIN `e2e`.information_schema.key_column_usage ukcu
-    ON rc.unique_constraint_name = ukcu.constraint_name
+    ON rc.unique_constraint_catalog = ukcu.constraint_catalog
+    AND rc.unique_constraint_schema = ukcu.constraint_schema
+    AND rc.unique_constraint_name = ukcu.constraint_name
     AND kcu.ordinal_position = ukcu.ordinal_position
     WHERE kcu.table_catalog = 'e2e'
     AND kcu.table_schema = 'databricks_incremental_simple'
@@ -156,9 +160,6 @@ model.hello_world.incremental:
     
     
     
-    
-    
-    
     merge
     into
     `e2e`.`databricks_incremental_simple`.`incremental` as DBT_INTERNAL_DEST
@@ -175,6 +176,12 @@ model.hello_world.incremental:
     then insert
     (`id`, `field1`, `field2`, `field3`, `field4`) VALUES (DBT_INTERNAL_SOURCE.`id`, DBT_INTERNAL_SOURCE.`field1`, DBT_INTERNAL_SOURCE.`field2`, DBT_INTERNAL_SOURCE.`field3`, DBT_INTERNAL_SOURCE.`field4`)
 - sequence: 15
+  type: execute
+  sql: |-
+    ALTER 
+    TABLE
+    `e2e`.`databricks_incremental_simple`.`incremental` CLUSTER BY NONE
+- sequence: 16
   type: execute
   sql: |-
     COMMENT ON 
@@ -247,6 +254,7 @@ model.hello_world.view_a:
     with multiple
     lines
     '
+    
     as (
     select * from `e2e`.`databricks_incremental_simple`.`model_a`
     )

@@ -14,7 +14,7 @@
    Running models/view_a.sql
  Succeeded model bigquery_incremental_simple.view_a (view) [2 of 3 in duration]
    Running models/incremental.sql
- Succeeded model bigquery_incremental_simple.incremental (incremental) [3 of 3 in duration]
+ Succeeded model bigquery_incremental_simple.incremental (incremental) [3 of 3 in duration, 1 row]
 ==================== Execution Summary =====================
 Finished 'run' with 1 warning for target 'bigquery' [duration]
 Processed: 3 models

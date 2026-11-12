@@ -1,15 +1,5 @@
 //! A mini-framework for running parallel Key-to-Value tasks over a bounded
 //! number of workers in dbt-runtime and reducing the results.
-
-use dbt_cancel::{Cancellable, CancellationToken, CancelledError};
-use dbt_runtime::{Handle, JoinHandle};
-use futures::FutureExt;
-use futures::stream::{FuturesUnordered, StreamExt};
-use tokio::sync::mpsc;
-use tokio::sync::mpsc::error::SendError;
-use tokio::sync::oneshot;
-use tracy_client::span;
-
 use std::future::Future;
 use std::panic;
 use std::pin::Pin;
@@ -17,6 +7,16 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::task::{Context, Poll};
 use std::time::Duration;
+
+use futures::FutureExt;
+use futures::stream::{FuturesUnordered, StreamExt};
+use tokio::sync::mpsc;
+use tokio::sync::mpsc::error::SendError;
+use tokio::sync::oneshot;
+use tracy_client::span;
+
+use dbt_cancel::{Cancellable, CancellationToken, CancelledError};
+use dbt_runtime::{Handle, JoinHandle};
 
 /// Encapsulates connection creation and recycling.
 pub trait ConnectionFactory: Send + Sync {

@@ -1063,7 +1063,7 @@ fn create_relation_and_map(
     name_map
         .entry(relation.semantic_fqn())
         .or_default()
-        .push(node.unique_id());
+        .push(node.unique_id().to_string());
     Ok(relation.into())
 }
 

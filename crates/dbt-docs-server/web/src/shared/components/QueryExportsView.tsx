@@ -1,6 +1,6 @@
 import { FC } from 'react';
+import type { QueryExport } from 'dbt-docs-lib/domain';
 
-import { QueryExport } from '../typings/domain/asset';
 import { ColumnTable } from './ColumnTable';
 import { DetailsSection } from './SectionWithCard';
 

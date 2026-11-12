@@ -419,6 +419,8 @@ impl Object for RelationObject {
                 Some(Value::from(RelationType::MaterializedView.to_string()))
             }
             Some("Table") => Some(Value::from(RelationType::Table.to_string())),
+            // `this.incorporate(type=this.Function)` in the function materialization reads this.
+            Some("Function") => Some(Value::from(RelationType::Function.to_string())),
             Some("DynamicTable") => Some(Value::from(RelationType::DynamicTable.to_string())),
             Some("InteractiveTable") => {
                 Some(Value::from(RelationType::InteractiveTable.to_string()))
@@ -643,8 +645,8 @@ pub fn create_relation_from_node(
     if let Some(source) = node.as_any().downcast_ref::<DbtSource>() {
         return create_relation_from_source(
             adapter_type,
-            node.database(),
-            node.schema(),
+            node.database().to_string(),
+            node.schema().to_string(),
             node.base().alias.clone(), // all identifiers are consolidated to alias in InternalDbtNode
             node.quoting(),
             source,
@@ -653,8 +655,8 @@ pub fn create_relation_from_node(
 
     let mut relation = create_relation(
         adapter_type,
-        node.database(),
-        node.schema(),
+        node.database().to_string(),
+        node.schema().to_string(),
         Some(node.base().alias.clone()), // all identifiers are consolidated to alias in InternalDbtNode
         Some(RelationType::from(node.materialized())),
         node.quoting(),
@@ -1397,6 +1399,36 @@ mod tests {
         );
     }
 
+    /// The function materialization builds its target with
+    /// `this.incorporate(type=this.Function)`. If `Function` were undefined, the
+    /// target would keep the node's unset type and GRANT statements could not
+    /// tell it is a function.
+    #[test]
+    fn function_type_name_is_exposed_and_incorporates() {
+        let relation = do_create_relation(
+            AdapterType::Snowflake,
+            "d".to_string(),
+            "s".to_string(),
+            Some("f".to_string()),
+            None,
+            DEFAULT_RESOLVED_QUOTING,
+        )
+        .unwrap();
+        let relation = Arc::new(RelationObject::new(relation.into()));
+
+        assert_eq!(
+            relation.get_value(&Value::from("Function")),
+            Some(Value::from("function"))
+        );
+
+        let mut env = minijinja::Environment::new();
+        env.add_global("this", Value::from_dyn_object(relation));
+        let rendered = env
+            .render_str("{{ this.incorporate(type=this.Function).type }}", (), &[])
+            .unwrap();
+        assert_eq!(rendered, "function");
+    }
+
     /// Asserts on `ErrorKind`, not the message: both this arm and the catch-all name the called
     /// method in their message text, so a message-only assertion would pass either way.
     #[test]
@@ -1419,6 +1451,26 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(err.kind(), minijinja::ErrorKind::MissingArgument, "{err}");
+    }
+
+    #[test]
+    fn relation_exposes_quote_policy() {
+        let relation = Relation::new(
+            AdapterType::Snowflake,
+            "db".to_string(),
+            "schema".to_string(),
+            "table".to_string(),
+        )
+        .with_quoting(ResolvedQuoting {
+            database: true,
+            schema: false,
+            identifier: true,
+        });
+        jinja_assert(
+            RelationObject::new(Arc::new(relation)),
+            "{{ obj.quote_policy.database }} {{ obj.quote_policy.schema }} {{ obj.quote_policy.identifier }}",
+            "True False True",
+        );
     }
 
     #[test]
