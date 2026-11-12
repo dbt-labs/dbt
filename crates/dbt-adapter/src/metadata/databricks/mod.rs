@@ -62,6 +62,7 @@ use dbt_adapter_engine::record_batch::RecordBatchExt;
 pub mod dbr_capabilities;
 pub mod describe_json;
 pub mod describe_table;
+mod refresh_wait;
 pub mod schemas;
 pub(crate) mod version;
 
@@ -680,10 +681,8 @@ impl DatabricksMetadataAdapter {
             RelationType::MaterializedView => {
                 metadata.insert(
                     DatabricksRelationMetadataKey::DescribeExtended,
-                    self.describe_extended(
-                        &database,
-                        &schema,
-                        &identifier,
+                    self.describe_extended_after_refresh(
+                        &**base_relation,
                         state,
                         &mut *conn,
                         token.clone(),
@@ -800,10 +799,8 @@ impl DatabricksMetadataAdapter {
             RelationType::StreamingTable => {
                 metadata.insert(
                     DatabricksRelationMetadataKey::DescribeExtended,
-                    self.describe_extended(
-                        &database,
-                        &schema,
-                        &identifier,
+                    self.describe_extended_after_refresh(
+                        &**base_relation,
                         state,
                         &mut *conn,
                         token.clone(),
@@ -991,11 +988,6 @@ impl DatabricksMetadataAdapter {
             }
         };
 
-        // https://github.com/databricks/dbt-databricks/blob/13686739eb59566c7a90ee3c357d12fe52ec02ea/dbt/adapters/databricks/impl.py#L908
-        // TODO: Implement polling for DLT pipeline status
-        // we don't have the dbx client here
-        // we might need to query internal delta system tables or expose something via ADBC
-
         Ok((relation_type, metadata))
     }
 
@@ -1019,6 +1011,47 @@ impl DatabricksMetadataAdapter {
             None,  // limit
             None,  // options
             token,
+        )
+    }
+
+    /// `describe extended` of a materialized view / streaming table, re-run until its refresh is
+    /// no longer running. Same first query as [`Self::describe_extended`].
+    fn describe_extended_after_refresh(
+        &self,
+        relation: &dyn BaseRelation,
+        state: &State,
+        conn: &mut ConnectionGuard<'_>,
+        token: CancellationToken,
+    ) -> AdapterResult<AgateTable> {
+        let (database, schema, identifier) = (
+            relation.database_as_str()?,
+            relation.schema_as_str()?,
+            relation.identifier_as_str()?,
+        );
+        let first =
+            self.describe_extended(&database, &schema, &identifier, state, conn, token.clone())?;
+        let replay = self.adapter.engine().is_replay() || crate::time_machine::is_replaying();
+        let strategy: &dyn refresh_wait::WaitStrategy = if replay {
+            &refresh_wait::Replay
+        } else {
+            &refresh_wait::Live::DEFAULT
+        };
+        refresh_wait::wait_for_refresh_to_finish(
+            first,
+            &relation.render_self_as_str(),
+            &token,
+            &refresh_wait::RefreshWait::DEFAULT,
+            strategy,
+            || {
+                self.describe_extended(
+                    &database,
+                    &schema,
+                    &identifier,
+                    state,
+                    &mut *conn,
+                    token.clone(),
+                )
+            },
         )
     }
 
