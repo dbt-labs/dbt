@@ -4719,7 +4719,6 @@ impl Adapter {
             None
         }
     }
-
     /// (state change) Lists the schema's routines and inserts each into
     /// the relation cache. Returns `temp_relation` if it turns out to
     /// be one of them
@@ -4734,7 +4733,8 @@ impl Adapter {
         if adapter.adapter_type() != AdapterType::Bigquery {
             return Ok(None);
         }
-        if !adapter.engine().relation_cache().project_has_functions() {
+        let relation_cache = adapter.engine().relation_cache();
+        if !relation_cache.project_has_functions() {
             return Ok(None);
         }
         if temp_relation
@@ -4750,25 +4750,25 @@ impl Adapter {
         }
 
         let db_schema = CatalogAndSchema::from(temp_relation);
-        let mut conn = adapter.borrow_tlocal_connection(Some(state), node_id_from_state(state))?;
-        let query_ctx = query_ctx_from_state(state)?.with_desc("get_relation > list_routines call");
-        let routines = match bigquery::list_routines(
-            adapter.engine().as_ref(),
-            &query_ctx,
-            &mut conn,
-            &db_schema,
-            self.cancellation_token.clone(),
-        ) {
-            Ok(routines) => routines,
-            Err(e) => {
-                tracing::warn!("relation_cache: list_routines failed: {e}");
-                return Ok(None);
-            }
-        };
-
-        let relation_cache = adapter.engine().relation_cache();
-        for routine in routines {
-            relation_cache.insert_relation(routine, None);
+        if !relation_cache.contains_routines(&db_schema) {
+            let mut conn =
+                adapter.borrow_tlocal_connection(Some(state), node_id_from_state(state))?;
+            let query_ctx =
+                query_ctx_from_state(state)?.with_desc("get_relation > list_routines call");
+            let routines = match bigquery::list_routines(
+                adapter.engine().as_ref(),
+                &query_ctx,
+                &mut conn,
+                &db_schema,
+                self.cancellation_token.clone(),
+            ) {
+                Ok(routines) => routines,
+                Err(e) => {
+                    tracing::warn!("relation_cache: list_routines failed: {e}");
+                    return Ok(None);
+                }
+            };
+            relation_cache.insert_routines(&db_schema, routines);
         }
 
         Ok(relation_cache
