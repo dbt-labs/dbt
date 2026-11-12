@@ -1,0 +1,7 @@
+kind: Fixes
+body: Render the whole docs block body, so text after {% raw %}, {{ }} or a tag is kept and blocks that start with one are collected
+time: 2026-10-23T12:11:23.000000-05:00
+custom:
+    author: mitalauskas
+    issue: "16876"
+    project: dbt-core
