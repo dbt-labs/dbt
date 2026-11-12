@@ -33,9 +33,16 @@
         -- get config options
         {% set on_configuration_change = config.get('on_configuration_change') %}
         {% set configuration_changes = get_configuration_changes(existing_relation) %}
+        {#- Schema drift is a configuration change the components cannot see, so it joins them
+            here and is then subject to the same `on_configuration_change` handling. REFRESH
+            cannot reconcile a drifted schema, so it demands a full refresh. -#}
+        {% set schema_drifted = dlt_inferred_query_schema_changed(existing_relation, sql) %}
+        {%- if schema_drifted and configuration_changes is not none -%}
+            {%- set configuration_changes = configuration_changes.model_copy(update={'requires_full_refresh': true}) -%}
+        {%- endif -%}
 
         {# Skip manual REFRESH on no-op re-runs for auto-refreshed modes. #}
-        {% if configuration_changes is none %}
+        {% if configuration_changes is none and not schema_drifted %}
             {# DIVERGENCE: Relation config exposes components directly, without Python's .config wrapper. #}
             {%- set refresh = adapter.get_config_from_model(config.model)["refresh"] -%}
             {%- if refresh.auto_refreshed -%}
@@ -45,7 +52,12 @@
             {%- endif -%}
 
         {% elif on_configuration_change == 'apply' %}
-            {% set build_sql = get_alter_materialized_view_as_sql(target_relation, configuration_changes, sql, existing_relation, None, None) %}
+            {%- if configuration_changes is none -%}
+                {#- Drift alone: no component changes to alter, so replace outright. -#}
+                {% set build_sql = get_replace_sql(existing_relation, target_relation, sql) %}
+            {%- else -%}
+                {% set build_sql = get_alter_materialized_view_as_sql(target_relation, configuration_changes, sql, existing_relation, None, None) %}
+            {%- endif -%}
         {% elif on_configuration_change == 'continue' %}
             {% set build_sql = "" %}
             {{ exceptions.warn("Configuration changes were identified and `on_configuration_change` was set to `continue` for `" ~ target_relation ~ "`") }}
