@@ -1,0 +1,9 @@
+name: 'bigquery_seed_empty_description'
+version: '1.0.0'
+config-version: 2
+
+profile: 'fusion_tests'
+
+seeds:
+  +persist_docs:
+    relation: true

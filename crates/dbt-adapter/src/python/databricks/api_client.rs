@@ -46,6 +46,7 @@ impl DatabricksApiClient {
 
         let base_url = Self::normalize_host(host.as_ref());
         let agent: Agent = Agent::config_builder()
+            .tls_config(dbt_adbc::install::build_tls_config())
             .http_status_as_error(false)
             .timeout_global(Some(Duration::from_secs(REQUEST_TIMEOUT_SECS)))
             .build()
@@ -745,11 +746,72 @@ struct RunWorkflowResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
-    use std::net::TcpListener;
+    use std::collections::VecDeque;
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::{TcpListener, TcpStream};
     use std::sync::{Arc, Mutex};
+    use ureq::SendBody;
+    use ureq::middleware::{Middleware, MiddlewareNext};
 
-    /// Serves `responses` in order (one per request) and records "METHOD path" lines.
+    /// Answers `responses` in order and records "METHOD path" lines.
+    ///
+    /// The handler returns the body itself and does not continue the ureq chain, so the
+    /// client never resolves a host or opens a socket.
+    struct ScriptedApi {
+        responses: Mutex<VecDeque<(u16, &'static str)>>,
+        requests: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl Middleware for ScriptedApi {
+        fn handle(
+            &self,
+            request: http::Request<SendBody>,
+            _next: MiddlewareNext,
+        ) -> Result<http::Response<Body>, UreqError> {
+            let method = request.method();
+            let path = request.uri().path();
+            self.requests
+                .lock()
+                .unwrap()
+                .push(format!("{method} {path}"));
+
+            let (status, body) = self
+                .responses
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("scripted Databricks API ran out of responses");
+
+            Ok(http::Response::builder()
+                .status(status)
+                .body(Body::builder().data(body))
+                .expect("scripted response"))
+        }
+    }
+
+    fn fake_databricks_scripted(
+        responses: Vec<(u16, &'static str)>,
+    ) -> (DatabricksApiClient, Arc<Mutex<Vec<String>>>) {
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let agent = Agent::config_builder()
+            .http_status_as_error(false)
+            .middleware(ScriptedApi {
+                responses: Mutex::new(responses.into()),
+                requests: requests.clone(),
+            })
+            .build()
+            .into();
+        let client = DatabricksApiClient {
+            agent,
+            base_url: "http://databricks.invalid".to_string(),
+            auth_header: "Bearer test".to_string(),
+            use_user_folder: false,
+            cached_user: RefCell::new(None),
+            cluster_poll_interval: Duration::from_millis(1),
+        };
+        (client, requests)
+    }
+
     fn fake_databricks(
         responses: Vec<(u16, &'static str)>,
     ) -> (DatabricksApiClient, Arc<Mutex<Vec<String>>>) {
@@ -760,10 +822,24 @@ mod tests {
         thread::spawn(move || {
             for ((status, body), stream) in responses.into_iter().zip(listener.incoming()) {
                 let mut stream = stream.unwrap();
-                let mut buf = [0u8; 4096];
-                let n = stream.read(&mut buf).unwrap();
-                let request_line = String::from_utf8_lossy(&buf[..n]);
-                let request_line = request_line.lines().next().unwrap_or_default();
+                let mut reader = BufReader::new(&stream);
+                let mut request_line = String::new();
+                reader.read_line(&mut request_line).unwrap();
+                let mut content_length = 0;
+                loop {
+                    let mut header = String::new();
+                    reader.read_line(&mut header).unwrap();
+                    let header = header.trim_end();
+                    if header.is_empty() {
+                        break;
+                    }
+                    if let Some((name, value)) = header.split_once(':')
+                        && name.eq_ignore_ascii_case("content-length")
+                    {
+                        content_length = value.trim().parse().unwrap();
+                    }
+                }
+                reader.read_exact(&mut vec![0; content_length]).unwrap();
                 let mut parts = request_line.split(' ');
                 let (method, path) = (parts.next().unwrap(), parts.next().unwrap());
                 let path = path.split('?').next().unwrap();
@@ -794,6 +870,39 @@ mod tests {
     const START: &str = "POST /api/2.0/clusters/start";
 
     #[test]
+    fn fake_databricks_responds_only_after_the_full_request_body() {
+        let (client, requests) = fake_databricks(vec![(200, "{}")]);
+        let address = client.base_url.strip_prefix("http://").unwrap();
+        let mut stream = TcpStream::connect(address).unwrap();
+        let body = r#"{"cluster_id":"c1"}"#;
+        write!(
+            stream,
+            "POST /api/2.0/clusters/start HTTP/1.1\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        )
+        .unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_millis(200)))
+            .unwrap();
+        let mut early = [0u8; 1];
+        let early_read = stream.read(&mut early);
+        assert!(
+            early_read.is_err(),
+            "responded before the request body arrived: {early_read:?}"
+        );
+
+        stream.write_all(body.as_bytes()).unwrap();
+        stream.set_read_timeout(None).unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        assert_eq!(
+            response,
+            "HTTP/1.1 200 X\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}"
+        );
+        assert_eq!(*requests.lock().unwrap(), [START]);
+    }
+
+    #[test]
     fn terminated_cluster_is_started_and_awaited() {
         let (client, requests) = fake_databricks(vec![
             (200, r#"{"state":"TERMINATED"}"#),
@@ -820,7 +929,7 @@ mod tests {
 
     #[test]
     fn cluster_error_state_fails_fast() {
-        let (client, _) = fake_databricks(vec![
+        let (client, _) = fake_databricks_scripted(vec![
             (200, r#"{"state":"PENDING"}"#),
             (200, r#"{"state":"ERROR"}"#),
         ]);

@@ -34,8 +34,6 @@ dbt-yaml = { workspace = true }
 async-trait = { workspace = true }
 base64 = { workspace = true }
 chrono = { workspace = true }
-crossbeam-queue = { workspace = true }
-dashmap = { workspace = true }
 dirs = { workspace = true }
 futures = { workspace = true }
 gcloud-auth = { workspace = true }
@@ -67,6 +65,7 @@ tonic-prost-build = { workspace = true }
 [dev-dependencies]
 arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
+crossbeam-queue = { workspace = true }
 dbt-adapter-core = { workspace = true }
 dbt-runtime = { workspace = true }
 dbt-tasks-sa = { workspace = true }

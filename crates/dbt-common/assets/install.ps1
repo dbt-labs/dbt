@@ -3,7 +3,8 @@ param(
     [switch]$Update,
     [string]$Version,
     [string]$Target,
-    [string]$To = "$env:USERPROFILE\.local\bin",
+    [string]$Prefix,
+    [string]$To,
     [ValidateSet('dbt', 'all')]
     [string]$Package = 'dbt'
 )
@@ -16,16 +17,20 @@ Install the dbt CLI Binary for Windows.
 This script installs the dbt CLI Binary. It allows specifying the version, target platform, and installation location.
 
 .PARAMETER Update
-Updates to latest or specified version.
+Updates to stable or specified version.
 
 .PARAMETER Version
-Version of dbt to install. Default is the latest release.
+Version of dbt to install. Default is the stable release.
 
 .PARAMETER Target
 Install the release compiled for the specified target OS.
 
+.PARAMETER Prefix
+Install prefix: dbt.exe goes in <prefix>\bin and drivers in <prefix>\lib\dbt.
+Default is $env:USERPROFILE\.local.
+
 .PARAMETER To
-Location to install the binary. Default is $env:USERPROFILE\.local\bin.
+Deprecated: install dbt.exe into this directory, without its drivers. Use -Prefix.
 
 .PARAMETER Package
 Package to install: 'dbt' or 'all'. Default is 'dbt'. The 'all' option is retained for compatibility and installs dbt.
@@ -34,7 +39,7 @@ Package to install: 'dbt' or 'all'. Default is 'dbt'. The 'all' option is retain
 .\install.ps1 -Update
 
 .EXAMPLE
-.\install.ps1 -Version "1.2.3" -Target "Windows" -To "C:\MyFolder"
+.\install.ps1 -Version "1.2.3" -Target "Windows" -Prefix "C:\MyFolder"
 
 .\install.ps1 -Package "all" -Update
 #>
@@ -291,9 +296,9 @@ function Get-VersionInfo {
             Write-ErrorAndExit 'Invalid version information received from server'
         }
 
-        # Validate latest version exists
-        if (-not ($versionInfo.PSObject.Properties.Name -contains 'latest')) {
-            Write-ErrorAndExit 'No latest version information available'
+        # Validate stable version exists
+        if (-not ($versionInfo.PSObject.Properties.Name -contains 'stable')) {
+            Write-ErrorAndExit 'No stable version information available'
         }
 
         return $versionInfo
@@ -303,7 +308,7 @@ function Get-VersionInfo {
             "*Could not establish trust relationship*" { "SSL/TLS connection failed. Check your internet security settings" }
             "*Unable to connect*" { "Connection failed. Check your internet connection" }
             "*Invalid version information*" { "Invalid version information received from server" }
-            "*No latest version*" { "No latest version information available" }
+            "*No stable version*" { "No stable version information available" }
             default { "Failed to fetch version information: $($_.Exception.Message)" }
         }
         Write-ErrorAndExit $errorMsg -AdditionalInfo "URL: $versionsUrl"
@@ -325,22 +330,22 @@ function Get-TargetVersion {
 
     try {
         if ([string]::IsNullOrEmpty($SpecificVersion)) {
-            Write-GrayLog 'Checking for latest version'
+            Write-GrayLog 'Checking for stable version'
 
-            if (-not $VersionInfo.PSObject.Properties['latest']) {
-                Write-ErrorAndExit 'No latest version found in versions.json'
+            if (-not $VersionInfo.PSObject.Properties['stable']) {
+                Write-ErrorAndExit 'No stable version found in versions.json'
             }
 
-            if (-not $VersionInfo.latest.PSObject.Properties['tag']) {
-                Write-ErrorAndExit 'No tag field found in latest version'
+            if (-not $VersionInfo.stable.PSObject.Properties['tag']) {
+                Write-ErrorAndExit 'No tag field found in stable version'
             }
 
-            $script:version = $VersionInfo.latest.tag -replace '^v', ''
+            $version = $VersionInfo.stable.tag -replace '^v', ''
             if (-not $version) {
-                Write-ErrorAndExit 'Empty version tag in latest version'
+                Write-ErrorAndExit 'Empty version tag in stable version'
             }
 
-            Write-Log ('Latest version: ' + $version)
+            Write-Log ('Stable version: ' + $version)
             return $version
         } else {
             Write-GrayLog ("Checking for " + $SpecificVersion + " version")
@@ -353,8 +358,8 @@ function Get-TargetVersion {
                 }
 
                 # For direct version input, verify it exists on CDN
-                $script:target = Get-Architecture
-                $null = Test-VersionExists -Version $SpecificVersion -Target $target
+                $versionTarget = Get-Architecture
+                $null = Test-VersionExists -Version $SpecificVersion -Target $versionTarget
             }
 
             if ($VersionInfo.PSObject.Properties[$SpecificVersion]) {
@@ -422,18 +427,24 @@ function Get-Architecture {
         return $Target
     }
 
-    $script:target = 'x86_64-pc-windows-msvc'
+    $target = 'x86_64-pc-windows-msvc'
     Write-GrayLog "Target: $target"
     return $target
 }
 
 function Set-InstallationDestination {
-    # Setting the default installation destination if not specified
-    if ([string]::IsNullOrEmpty($To)) {
-        # Install to user's AppData folder which doesn't require admin privileges
-        $script:dest = Join-Path -Path $env:USERPROFILE -ChildPath ".local\bin"
+    if ($Prefix -and $To) {
+        Write-ErrorAndExit '-Prefix and -To cannot be combined'
+    }
+    if ($To) {
+        Write-Log 'WARNING: -To is deprecated and does not install the drivers dbt needs. Use -Prefix <prefix> instead: dbt.exe goes in <prefix>\bin and its drivers in <prefix>\lib\dbt.'
+        $dest = $To
+        $script:libDir = $null
     } else {
-        $script:dest = $To
+        # Install to the user's profile, which doesn't require admin privileges
+        $installPrefix = if ($Prefix) { $Prefix.TrimEnd('\', '/') } else { Join-Path -Path $env:USERPROFILE -ChildPath '.local' }
+        $dest = Join-Path -Path $installPrefix -ChildPath 'bin'
+        $script:libDir = Join-Path -Path $installPrefix -ChildPath 'lib\dbt'
     }
 
     # Check write permissions to destination
@@ -543,6 +554,31 @@ function Show-AsciiArt {
 #endregion
 
 #region Main Installation Functions
+# Replace only the archive's libraries; other packages own the rest.
+function Install-SidecarPackages {
+    param([string]$Source)
+    if (-not $script:libDir -or -not (Test-Path $Source)) { return }
+    $libDir = $script:libDir
+    try {
+        New-Item -Path $libDir -ItemType Directory -Force | Out-Null
+    }
+    catch {
+        Write-ErrorAndExit "Cannot create $libDir" -AdditionalInfo 'Make the install prefix writable, or install with another -Prefix.'
+    }
+    Get-ChildItem -Path $Source -File | ForEach-Object {
+        $staged = Join-Path $libDir ('.' + $_.Name + '.tmp')
+        $installed = Join-Path $libDir $_.Name
+        try {
+            Copy-Item -LiteralPath $_.FullName -Destination $staged -Force
+            Move-Item -LiteralPath $staged -Destination $installed -Force
+        }
+        catch {
+            Remove-Item -LiteralPath $staged -Force -ErrorAction SilentlyContinue
+            Write-ErrorAndExit "Cannot replace $installed" -AdditionalInfo 'It is probably in use. Quit every other dbt process, including IDE extensions such as the dbt VS Code extension, then run the update again.'
+        }
+    }
+}
+
 function Install-Package {
     [CmdletBinding()]
     param(
@@ -599,7 +635,7 @@ function Install-Package {
         # Find the executable
         $sourceFile = $null
         Get-ChildItem -Path $td -File -Recurse | ForEach-Object {
-            if ($_.Extension -eq '.exe') {
+            if ($_.Name -eq $binaryName) {
                 $sourceFile = $_.FullName
             }
         }
@@ -628,6 +664,9 @@ function Install-Package {
                     $parentProcess.WaitForExit()
                 }
 
+                if ($PackageName -eq 'dbt') {
+                    Install-SidecarPackages -Source (Join-Path $td 'lib\dbt')
+                }
                 # Now we can safely replace the file
                 Move-Item -Path $sourceFile -Destination $destFilePath -Force
             }
@@ -638,6 +677,9 @@ function Install-Package {
         else {
             # For new installations, just copy the file
             try {
+                if ($PackageName -eq 'dbt') {
+                    Install-SidecarPackages -Source (Join-Path $td 'lib\dbt')
+                }
                 Copy-Item -Path $sourceFile -Destination $destFilePath -Force
             }
             catch {
@@ -765,11 +807,17 @@ function main {
     # Determine target version
     $version = Get-TargetVersion -SpecificVersion $Version -VersionInfo $versionInfo
 
-    # Determine target architecture
-    $script:target = Get-Architecture
+    # Determine target architecture. These are locals, not $script: variables: run as
+    # `& ([scriptblock]::Create(...))`, $script: is the caller's scope, while $target
+    # would resolve to the -Target parameter.
+    $target = Get-Architecture
 
     # Set installation destination
-    $script:dest = Set-InstallationDestination
+    $dest = Set-InstallationDestination
+
+    if ($Update) {
+        Write-Log 'Before updating, quit every other dbt process, including IDE extensions such as the dbt VS Code extension. Windows cannot replace dbt files that a running process has open.'
+    }
 
     # Install selected packages
     $installedPackages = Install-SelectedPackages -PackageSelection $Package -Version $version -Target $target -Destination $dest -Update:$Update

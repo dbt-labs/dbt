@@ -24,8 +24,7 @@ use crate::machinery::Span;
 use crate::output::Output;
 use crate::template::{CompiledTemplate, CompiledTemplateRef, Template, TemplateConfig};
 use crate::utils::{AutoEscape, BTreeMapKeysDebug, UndefinedBehavior};
-use crate::value::mutable_map::MutableMap;
-use crate::value::{FunctionArgs, FunctionResult, Value, ValueMap};
+use crate::value::{FunctionArgs, FunctionResult, OverlayMap, Value, ValueMap};
 use crate::vm::{Context, Frame, State};
 use crate::{defaults, filters, functions, tests};
 
@@ -947,8 +946,9 @@ impl<'source> Environment<'source> {
         State::new_for_env(self)
     }
 
-    /// Returns state with initialized first frame
-    pub fn new_state_with_context(&self, ctx: MutableMap) -> State<'_, '_> {
+    /// Returns state whose first frame is `ctx`, which layers over its base
+    /// without copying it.
+    pub fn new_state_with_context(&self, ctx: OverlayMap) -> State<'_, '_> {
         let frame = Frame::new(Value::from_object(ctx));
         State::new(
             self,

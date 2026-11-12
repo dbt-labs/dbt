@@ -3,7 +3,6 @@ use std::fmt;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use dashmap::DashMap;
 use serde::Serialize;
 
 use crate::compiler::ast;
@@ -19,7 +18,6 @@ use crate::value::Value;
 use crate::vm::listeners::TypecheckingEventListener;
 use crate::vm::typemeta::TypeChecker;
 use crate::vm::Vm;
-use crate::Type;
 
 /// A handle to a compiled expression.
 ///
@@ -128,7 +126,7 @@ impl<'env, 'source> Expression<'env, 'source> {
     pub fn typecheck(
         &self,
         funcsigns: Arc<FunctionRegistry>,
-        builtins: Arc<DashMap<String, Type>>,
+        builtins: Arc<crate::types::builtins::TypeRegistry>,
         warning_printer: Rc<dyn TypecheckingEventListener>,
         typecheck_resolved_context: BTreeMap<String, Value>,
     ) -> Result<(), Error> {

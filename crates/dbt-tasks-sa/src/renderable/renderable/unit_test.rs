@@ -1,55 +1,56 @@
-extern crate num_cpus;
-
 use std::borrow::Cow;
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Debug;
+use std::future::Future;
 use std::io::Cursor;
 use std::path::Path;
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock, Weak};
 
 use dbt_adapter::errors::into_fs_error;
 use dbt_adapter::formatter::SqlLiteralFormatter;
 use dbt_adapter::metadata::BIGQUERY_PSEUDOCOLUMNS;
 use dbt_adapter::relation::{RelationObject, create_relation_from_node};
-use dbt_adapter::sql_types::DefaultTypeOps;
 use dbt_adapter::sql_types::{TypeOps, make_arrow_field};
-use dbt_adapter::{Adapter, Column};
+use dbt_adapter::stmt_splitter::{DefaultStmtSplitter, StmtSplitter};
+use dbt_adapter::{Adapter, Column, ColumnBuilder};
 use dbt_adapter_core::{AdapterType, ExecutionPhase, quote_char};
 use dbt_common::cancellation::Cancellable;
-use dbt_common::collections::DashMap;
+use dbt_common::collections::SccHashMap;
 use dbt_common::constants::DBT_CTE_PREFIX;
 use dbt_common::io_args::{ReplayMode, TimeMachineMode};
 use dbt_common::static_analysis::is_static_analysis_off_or_baseline;
 use dbt_common::stats::NodeStatus;
 use dbt_common::stdfs;
+use dbt_common::tracing::dbt_emit::emit_trace_log_message;
 use dbt_common::{ErrorCode, FsResult, MacroSpansOnly, err, fs_err};
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::phases::compile::DependencyValidationConfig;
 use dbt_jinja_utils::phases::run::build_run_node_context;
 use dbt_jinja_utils::serde::single_expression_body;
-use dbt_jinja_utils::utils::add_task_context;
 use dbt_jinja_utils::utils::macro_spans_to_macro_span_vec;
 use dbt_jinja_utils::utils::render_sql;
-use dbt_jinja_utils::{Var, env_var};
+use dbt_jinja_utils::{ConfiguredVar, env_var};
 use dbt_scheduler::instructions::SqlInstruction;
+use dbt_schema_store::{CanonicalFqn, CanonicalIdentifier, SchemaStoreTrait};
 use dbt_schemas::schemas;
 use dbt_schemas::schemas::InternalDbtNode;
 use dbt_schemas::schemas::common::{DbtMaterialization, Rows};
 use dbt_schemas::schemas::properties::UnitTestOverrides;
 use dbt_schemas::schemas::relations::base::BaseRelation;
 use dbt_schemas::schemas::{DbtUnitTest, InternalDbtNodeAttributes, NodePathKind};
-use dbt_tasks_core::context::TaskRunnerCtx;
+use dbt_tasks_core::context::{TaskRunnerCtx, TaskRunnerCtxInner};
 use dbt_tasks_core::render_task_hooks::RenderTaskHooks;
 use dbt_tasks_core::task::TaskResult;
 use dbt_tasks_core::unit_test_schema::{
     FixtureSchemaCachePolicy, UnitTestExpectedSchemaKey, UnitTestExpectedSchemaKeyInput,
+    UnitTestSchemaState,
 };
 use dbt_telemetry::{ExecutionPhase as TelemetryExecutionPhase, NodeType};
 
 use crate::renderable::unit_test_typing::{BigqueryTyping, DatabricksTyping, SnowflakeTyping};
-use crate::task::effective_unit_test_execute;
+use crate::task::{effective_unit_test_execute, is_replay_active};
 
 use super::common::handle_render_result;
 use crate::sql::dialect::sqlparser_dialect_for;
@@ -57,7 +58,7 @@ use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use csv::ReaderBuilder;
 use itertools::Itertools;
 use minijinja::listener::RenderingEventListener;
-use minijinja::value::Object;
+use minijinja::value::{Object, OverlayMap};
 use minijinja::{CodeLocation, State, Value, Value as MinijinjaValue};
 use regex::Regex;
 use sqlparser::tokenizer::{Token, Tokenizer, Whitespace};
@@ -65,9 +66,76 @@ use sqlparser::tokenizer::{Token, Tokenizer, Whitespace};
 type YmlValue = dbt_yaml::Value;
 
 const COMPILED_INCREMENTAL_SCHEMA_MARKER: &str = ".compiled_incremental_unit_test_schema_v1";
+const UNIT_TEST_SCHEMA_PROBE_MARKER: &str = ".unit_test_schema_probe_v2";
+
+type FetchedRelationSchemas = HashMap<(AdapterType, UnitTestSchemaTarget, CanonicalFqn), SchemaRef>;
+type FixtureSchemaFetchKey = (usize, CanonicalFqn);
+
+#[derive(Default)]
+struct FixtureSchemaFetchState {
+    cached_default_schema: parking_lot::RwLock<Option<SchemaRef>>,
+    coordinated_schemas: parking_lot::RwLock<Vec<(AdapterType, SchemaRef)>>,
+    schemas: tokio::sync::Mutex<HashMap<AdapterType, SchemaRef>>,
+}
+
+impl FixtureSchemaFetchState {
+    fn coordinated_schema_adapter(&self, schema: &SchemaRef) -> Option<AdapterType> {
+        self.coordinated_schemas.read().iter().rev().find_map(
+            |(adapter_type, coordinated_schema)| {
+                Arc::ptr_eq(schema, coordinated_schema).then_some(*adapter_type)
+            },
+        )
+    }
+
+    fn record_coordinated_schema(&self, adapter_type: AdapterType, schema: &SchemaRef) {
+        let mut schemas = self.coordinated_schemas.write();
+        if let Some((producer, _)) = schemas
+            .iter_mut()
+            .find(|(_, coordinated_schema)| Arc::ptr_eq(schema, coordinated_schema))
+        {
+            *producer = adapter_type;
+            return;
+        }
+        schemas.push((adapter_type, Arc::clone(schema)));
+    }
+}
+
+fn schema_adapter_for_reuse(
+    state: &FixtureSchemaFetchState,
+    schema: &SchemaRef,
+    declared_adapter: AdapterType,
+) -> AdapterType {
+    state
+        .coordinated_schema_adapter(schema)
+        .unwrap_or(declared_adapter)
+}
+
+fn cached_fixture_schema_requires_refresh(
+    adapter_is_mock: bool,
+    from_prior_invocation: bool,
+) -> bool {
+    from_prior_invocation && !adapter_is_mock
+}
+
+struct FixtureSchemaFetchEntry {
+    invocation: Weak<TaskRunnerCtxInner>,
+    state: Arc<FixtureSchemaFetchState>,
+}
+
+// The shared schema store is relation-keyed. Keep exact adapter results while the invocation is
+// alive, and keep foreign fixture schemas out of that store.
+static FIXTURE_SCHEMA_FETCH_STATES: LazyLock<
+    parking_lot::Mutex<HashMap<FixtureSchemaFetchKey, FixtureSchemaFetchEntry>>,
+> = LazyLock::new(|| parking_lot::Mutex::new(HashMap::new()));
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct UnitTestSchemaPolicy {
+    use_compiled_incremental: bool,
+    preserve_recorded_probe_sql: bool,
+}
 
 /// Identifies which unit test relation schema is being resolved for error reporting.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 enum UnitTestSchemaTarget {
     GivenUpstream,
     ExpectedModel { incremental_expected_path: bool },
@@ -87,17 +155,360 @@ impl UnitTestSchemaTarget {
     }
 }
 
+fn fetched_relation_schema(
+    schemas: &FetchedRelationSchemas,
+    adapter_type: AdapterType,
+    schema_target: UnitTestSchemaTarget,
+    canonical_fqn: &CanonicalFqn,
+) -> Option<SchemaRef> {
+    schemas
+        .get(&(adapter_type, schema_target, canonical_fqn.clone()))
+        .map(Arc::clone)
+}
+
+fn fixture_schema_fetch_state(
+    ctx: &TaskRunnerCtx,
+    canonical_fqn: &CanonicalFqn,
+) -> Arc<FixtureSchemaFetchState> {
+    let invocation = Arc::as_ptr(&ctx.inner) as usize;
+    let key = (invocation, canonical_fqn.clone());
+    let mut states = FIXTURE_SCHEMA_FETCH_STATES.lock();
+    states.retain(|_, entry| entry.invocation.strong_count() > 0);
+    if let Some(entry) = states.get(&key) {
+        return Arc::clone(&entry.state);
+    }
+
+    let state = Arc::new(FixtureSchemaFetchState::default());
+    states.insert(
+        key,
+        FixtureSchemaFetchEntry {
+            invocation: Arc::downgrade(&ctx.inner),
+            state: Arc::clone(&state),
+        },
+    );
+    state
+}
+
+async fn fetch_adapter_fixture_schema<F, Fut, L>(
+    state: &FixtureSchemaFetchState,
+    adapter_type: AdapterType,
+    default_adapter_type: AdapterType,
+    owner_adapter_type: Option<AdapterType>,
+    latest_schema: L,
+    fetch: F,
+) -> FsResult<SchemaRef>
+where
+    F: FnOnce(Option<Arc<dyn SchemaStoreTrait>>) -> Fut,
+    Fut: Future<Output = FsResult<SchemaRef>>,
+    L: FnOnce() -> Option<(AdapterType, SchemaRef)>,
+{
+    let mut schemas = state.schemas.lock().await;
+    if let Some(cached_schema) = schemas.get(&adapter_type).map(Arc::clone) {
+        let schema = latest_schema()
+            .filter(|_| owner_adapter_type == Some(adapter_type))
+            .filter(|(declared_adapter, schema)| {
+                state
+                    .coordinated_schema_adapter(schema)
+                    .unwrap_or(*declared_adapter)
+                    == adapter_type
+            })
+            .map(|(_, schema)| schema)
+            .unwrap_or(cached_schema);
+        if adapter_type == default_adapter_type {
+            *state.cached_default_schema.write() = Some(Arc::clone(&schema));
+        }
+        schemas.insert(adapter_type, Arc::clone(&schema));
+        return Ok(schema);
+    }
+
+    // Only the relation's owner may refresh its shared or persistent schema.
+    let schema_cache = (owner_adapter_type != Some(adapter_type)).then(|| {
+        Arc::new(dbt_schema_store::mock_store::MockSchemaStore::new()) as Arc<dyn SchemaStoreTrait>
+    });
+    let schema = fetch(schema_cache).await?;
+    state.record_coordinated_schema(adapter_type, &schema);
+    if adapter_type == default_adapter_type {
+        *state.cached_default_schema.write() = Some(Arc::clone(&schema));
+    }
+    schemas.insert(adapter_type, Arc::clone(&schema));
+    Ok(schema)
+}
+
+fn adapter_fixture_schema_coordination_key(
+    canonical_fqn: &CanonicalFqn,
+    adapter_type: AdapterType,
+) -> CanonicalFqn {
+    let adapter_name: &'static str = adapter_type.into();
+    let table = CanonicalIdentifier::new(format!(
+        "\0unit-test-fixture-schema:{adapter_name}:{}",
+        canonical_fqn.table().name()
+    ));
+    CanonicalFqn::new(canonical_fqn.catalog(), canonical_fqn.schema(), &table)
+}
+
+async fn coordinate_adapter_fixture_schema_fetch<F, Fut, L>(
+    state: &FixtureSchemaFetchState,
+    schema_state: &UnitTestSchemaState,
+    schema_cache: &dyn SchemaStoreTrait,
+    adapter_type: AdapterType,
+    default_adapter_type: AdapterType,
+    owner_adapter_type: Option<AdapterType>,
+    canonical_fqn: &CanonicalFqn,
+    latest_schema: L,
+    fetch: F,
+) -> FsResult<SchemaRef>
+where
+    F: FnOnce(Option<Arc<dyn SchemaStoreTrait>>) -> Fut,
+    Fut: Future<Output = FsResult<SchemaRef>>,
+    L: Fn() -> Option<(AdapterType, SchemaRef)>,
+{
+    // NUL cannot occur in warehouse identifiers, so this adapter-qualified key cannot collide
+    // with a relation in the shared schema cache.
+    let coordination_key = adapter_fixture_schema_coordination_key(canonical_fqn, adapter_type);
+    let latest_schema = &latest_schema;
+    let coordinated_schema = schema_state
+        .get_or_try_fetch_fixture_schema(
+            coordination_key,
+            schema_cache,
+            FixtureSchemaCachePolicy::Refresh,
+            || {
+                fetch_adapter_fixture_schema(
+                    state,
+                    adapter_type,
+                    default_adapter_type,
+                    owner_adapter_type,
+                    latest_schema,
+                    fetch,
+                )
+            },
+        )
+        .await?;
+
+    // The shared coordinator provides metrics and cross-task serialization. Recheck the local
+    // adapter entry so a later same-adapter schema update is still observed.
+    fetch_adapter_fixture_schema(
+        state,
+        adapter_type,
+        default_adapter_type,
+        owner_adapter_type,
+        latest_schema,
+        |_| async move { Ok(coordinated_schema) },
+    )
+    .await
+}
+
+async fn serialize_fixture_schema_fetch<F, Fut>(
+    ctx: &TaskRunnerCtx,
+    adapter_type: AdapterType,
+    canonical_fqn: &CanonicalFqn,
+    fetch: F,
+) -> FsResult<SchemaRef>
+where
+    F: FnOnce(Option<Arc<dyn SchemaStoreTrait>>) -> Fut,
+    Fut: Future<Output = FsResult<SchemaRef>>,
+{
+    let state = fixture_schema_fetch_state(ctx, canonical_fqn);
+    let owner_adapter_type = fixture_schema_owner(ctx, canonical_fqn);
+    coordinate_adapter_fixture_schema_fetch(
+        state.as_ref(),
+        &ctx.inner.unit_test_schema,
+        ctx.schema_cache.as_ref(),
+        adapter_type,
+        ctx.default_adapter_type(),
+        owner_adapter_type,
+        canonical_fqn,
+        || {
+            let owner_adapter = owner_adapter_type?;
+            let schema = ctx.schema_cache.get_schema(canonical_fqn)?.into_inner();
+            let schema_adapter = schema_adapter_for_reuse(state.as_ref(), &schema, owner_adapter);
+            Some((schema_adapter, schema))
+        },
+        fetch,
+    )
+    .await
+}
+
+fn schema_owner_adapter(
+    schema_cache: &dyn SchemaStoreTrait,
+    canonical_fqn: &CanonicalFqn,
+    current_adapter: impl FnOnce(&str) -> Option<AdapterType>,
+    deferred_adapter: impl FnOnce(&str) -> Option<AdapterType>,
+) -> Option<AdapterType> {
+    match schema_cache.schema_owner(canonical_fqn)? {
+        dbt_schema_store::SchemaOwner::Current(unique_id) => current_adapter(&unique_id),
+        dbt_schema_store::SchemaOwner::Deferred(unique_id) => deferred_adapter(&unique_id),
+    }
+}
+
+fn fixture_schema_owner(ctx: &TaskRunnerCtx, canonical_fqn: &CanonicalFqn) -> Option<AdapterType> {
+    schema_owner_adapter(
+        ctx.schema_cache.as_ref(),
+        canonical_fqn,
+        |unique_id| {
+            ctx.nodes()
+                .get_node(unique_id)
+                .map(|node| ctx.adapter_type_for(node))
+        },
+        |unique_id| {
+            ctx.defer_nodes()?
+                .get_node(unique_id)
+                .map(|node| ctx.adapter_type_for(node))
+        },
+    )
+}
+
+fn is_adapter_scoped_schema_target(schema_target: UnitTestSchemaTarget) -> bool {
+    matches!(
+        schema_target,
+        UnitTestSchemaTarget::GivenUpstream
+            | UnitTestSchemaTarget::ExpectedModel {
+                incremental_expected_path: true
+            }
+    )
+}
+
+fn requires_adapter_scoped_relation_schema(
+    ctx: &TaskRunnerCtx,
+    adapter: &Adapter,
+    schema_target: UnitTestSchemaTarget,
+) -> bool {
+    is_adapter_scoped_schema_target(schema_target)
+        && ctx.adapter_store().declared().len() > 1
+        && adapter.as_replay().is_none()
+        && !is_replay_active(ctx)
+}
+
+fn cached_deferred_schema_for_adapter(
+    schema_cache: &dyn SchemaStoreTrait,
+    canonical_fqn: &CanonicalFqn,
+    deferred_relation: Option<(&CanonicalFqn, AdapterType)>,
+    adapter_type: AdapterType,
+    fetch_state: &FixtureSchemaFetchState,
+) -> Option<SchemaRef> {
+    let (deferred_fqn, deferred_adapter) = deferred_relation?;
+    if deferred_fqn != canonical_fqn || deferred_adapter != adapter_type {
+        return None;
+    }
+
+    let _fetch_guard = fetch_state.schemas.try_lock().ok()?;
+    let schema = schema_cache
+        .get_schema(canonical_fqn)
+        .map(|entry| entry.inner().clone())?;
+    let schema_adapter = schema_adapter_for_reuse(fetch_state, &schema, deferred_adapter);
+    (schema_adapter == adapter_type).then_some(schema)
+}
+
+fn cached_schema_for_adapter(
+    ctx: &TaskRunnerCtx,
+    canonical_fqn: &CanonicalFqn,
+    relation_unique_id: Option<&str>,
+    deferred_relation_unique_id: Option<&str>,
+    adapter_type: AdapterType,
+    fetch_state: &FixtureSchemaFetchState,
+) -> Option<SchemaRef> {
+    let owner_adapter = fixture_schema_owner(ctx, canonical_fqn);
+    if owner_adapter != Some(adapter_type) {
+        return None;
+    }
+    let adapter = ctx.adapter_store().get(adapter_type).ok()?;
+    let adapter_is_mock = adapter.engine().is_mock();
+    let from_prior_invocation = ctx
+        .schema_cache
+        .schema_is_from_prior_invocation(canonical_fqn);
+    if cached_fixture_schema_requires_refresh(adapter_is_mock, from_prior_invocation) {
+        return None;
+    }
+
+    let current_schema = relation_unique_id.and_then(|_| {
+        let _fetch_guard = fetch_state.schemas.try_lock().ok()?;
+        let schema = ctx.schema_cache.get_schema(canonical_fqn)?.into_inner();
+        let schema_adapter = schema_adapter_for_reuse(fetch_state, &schema, adapter_type);
+        (schema_adapter == adapter_type).then_some(schema)
+    });
+    if current_schema.is_some() {
+        return current_schema;
+    }
+
+    if !adapter_is_mock {
+        return None;
+    }
+    let deferred_unique_id = deferred_relation_unique_id?;
+    let defer_node = ctx.defer_nodes()?.get_node(deferred_unique_id)?;
+    let deferred_relation =
+        create_relation_from_node(defer_node.node_adapter(), defer_node, None).ok()?;
+    let deferred_fqn = deferred_relation.get_canonical_fqn().ok()?;
+    cached_deferred_schema_for_adapter(
+        ctx.schema_cache.as_ref(),
+        canonical_fqn,
+        Some((&deferred_fqn, ctx.adapter_type_for(defer_node))),
+        adapter_type,
+        fetch_state,
+    )
+}
+
+fn matching_captured_relation_unique_id<'a>(
+    relations: impl IntoIterator<Item = (&'a str, &'a CanonicalFqn)>,
+    canonical_fqn: &CanonicalFqn,
+) -> Option<String> {
+    let mut matching_unique_id = None;
+    for (unique_id, relation_fqn) in relations {
+        if relation_fqn != canonical_fqn {
+            continue;
+        }
+        match matching_unique_id {
+            Some(previous) if previous != unique_id => return None,
+            Some(_) => {}
+            None => matching_unique_id = Some(unique_id),
+        }
+    }
+    matching_unique_id.map(str::to_string)
+}
+
+fn fixture_relation_unique_id(
+    given_input: &str,
+    captured_unique_id: Option<String>,
+    tested_node: Option<(&str, &CanonicalFqn)>,
+    canonical_fqn: &CanonicalFqn,
+) -> Option<String> {
+    if given_input != "this" {
+        return captured_unique_id;
+    }
+
+    tested_node
+        .filter(|(_, tested_fqn)| *tested_fqn == canonical_fqn)
+        .map(|(unique_id, _)| unique_id.to_string())
+}
+
+fn given_fixture_schema_fetch_policy(
+    adapter_scoped_schema: bool,
+    adapter_schema_exists: bool,
+    should_refresh: bool,
+    schema_exists: bool,
+) -> Option<FixtureSchemaCachePolicy> {
+    let refresh_for_adapter = adapter_scoped_schema && schema_exists && !adapter_schema_exists;
+    (refresh_for_adapter || should_refresh || !schema_exists).then_some(
+        if refresh_for_adapter || should_refresh {
+            FixtureSchemaCachePolicy::Refresh
+        } else {
+            FixtureSchemaCachePolicy::Reuse
+        },
+    )
+}
+
 struct UnitTestSchemaProbe {
     schema_sql: String,
     ctes: String,
     query_sql: String,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct ExpectedSchemaInferenceOptions {
     use_query_schema_fallback: bool,
     try_structural_inference: bool,
     cache_result: bool,
+    preserve_recorded_probe_sql: bool,
+    /// Match the relation resolved for `this`, including its version and quoting.
+    mock_self_relation: Option<String>,
 }
 
 fn should_use_query_schema_fallback(
@@ -110,7 +521,7 @@ fn should_use_query_schema_fallback(
     is_tested_model_ephemeral || (!effective_execute.is_default() && !replay_active)
 }
 
-fn has_is_incremental_false_override(unit_test: &DbtUnitTest) -> bool {
+fn is_incremental_override(unit_test: &DbtUnitTest) -> Option<bool> {
     unit_test
         .__unit_test_attr__
         .overrides
@@ -118,11 +529,14 @@ fn has_is_incremental_false_override(unit_test: &DbtUnitTest) -> bool {
         .and_then(|overrides| overrides.macros.as_ref().as_ref())
         .and_then(|macros| macros.get("is_incremental"))
         .and_then(YmlValue::as_bool)
-        == Some(false)
 }
 
-fn recording_uses_compiled_incremental_schema(ctx: &TaskRunnerCtx) -> FsResult<bool> {
-    let marker_path = match ctx.inner.arg.replay.as_ref() {
+fn unit_test_schema_policy(
+    ctx: &TaskRunnerCtx,
+    unit_test: &DbtUnitTest,
+) -> FsResult<UnitTestSchemaPolicy> {
+    let override_value = is_incremental_override(unit_test);
+    let recording = match ctx.inner.arg.replay.as_ref() {
         Some(ReplayMode::FsRecord(path)) => Some((path.clone(), true)),
         Some(ReplayMode::FsReplay(path)) => Some((path.clone(), false)),
         Some(ReplayMode::FsTimeMachine(TimeMachineMode::Record(config))) => Some((
@@ -132,44 +546,56 @@ fn recording_uses_compiled_incremental_schema(ctx: &TaskRunnerCtx) -> FsResult<b
         Some(ReplayMode::FsTimeMachine(TimeMachineMode::Replay(config))) => {
             Some((config.artifact_path.clone(), false))
         }
-        Some(ReplayMode::MantleReplay(_)) => None,
-        None => return Ok(true),
+        Some(ReplayMode::MantleReplay(_)) => {
+            return Ok(UnitTestSchemaPolicy {
+                use_compiled_incremental: false,
+                preserve_recorded_probe_sql: true,
+            });
+        }
+        None => None,
     };
+    schema_policy_for_recording(
+        override_value,
+        recording
+            .as_ref()
+            .map(|(path, record)| (path.as_path(), *record)),
+    )
+}
 
-    let Some((recording_path, is_recording)) = marker_path else {
-        return Ok(false);
+fn schema_policy_for_recording(
+    override_value: Option<bool>,
+    recording: Option<(&Path, bool)>,
+) -> FsResult<UnitTestSchemaPolicy> {
+    let Some((path, is_recording)) = recording else {
+        return Ok(UnitTestSchemaPolicy {
+            use_compiled_incremental: override_value.is_some(),
+            preserve_recorded_probe_sql: false,
+        });
     };
-    let marker = recording_path.join(COMPILED_INCREMENTAL_SCHEMA_MARKER);
+    let marker = path.join(UNIT_TEST_SCHEMA_PROBE_MARKER);
     if is_recording {
-        stdfs::create_dir_all(&recording_path)?;
+        stdfs::create_dir_all(path)?;
         stdfs::write(marker, b"1\n")?;
-        Ok(true)
+        Ok(UnitTestSchemaPolicy {
+            use_compiled_incremental: override_value.is_some(),
+            preserve_recorded_probe_sql: false,
+        })
     } else {
-        Ok(marker.is_file())
+        let current = marker.is_file();
+        Ok(UnitTestSchemaPolicy {
+            // v1 enabled compiled inference only for false overrides. A mixed
+            // recording can carry its marker while true still used DESCRIBE.
+            use_compiled_incremental: override_value.is_some()
+                && (current
+                    || (override_value == Some(false)
+                        && path.join(COMPILED_INCREMENTAL_SCHEMA_MARKER).is_file())),
+            preserve_recorded_probe_sql: !current,
+        })
     }
 }
 
-fn use_compiled_schema_for_incremental(
-    ctx: &TaskRunnerCtx,
-    unit_test: &DbtUnitTest,
-) -> FsResult<bool> {
-    if !has_is_incremental_false_override(unit_test) {
-        return Ok(false);
-    }
-    recording_uses_compiled_incremental_schema(ctx)
-}
-
-fn is_replay_active(ctx: &TaskRunnerCtx) -> bool {
-    ctx.inner.arg.replay.as_ref().is_some_and(|mode| {
-        matches!(mode, ReplayMode::MantleReplay(_) | ReplayMode::FsReplay(_))
-            || mode.is_time_machine_replay()
-    }) || ctx
-        .env
-        .get_base_adapter()
-        .is_some_and(|adapter| adapter.as_replay().is_some())
-}
-
-/// Small utility for merging objects
+/// Small utility for merging objects: a key resolves in the first object that
+/// defines it.
 #[derive(Debug, Clone)]
 struct ObjectOverlay(pub Vec<Value>);
 
@@ -177,9 +603,26 @@ impl Object for ObjectOverlay {
     fn get_value(self: &Arc<Self>, key: &Value) -> Option<Value> {
         self.0
             .iter()
-            // Err if undefined
+            // `get_item` returns `Ok(UNDEFINED)` for a missing key, so skip
+            // undefined values or the first object answers every key.
             .filter_map(|o| o.get_item(key).ok())
-            .next()
+            .find(|v| !v.is_undefined())
+    }
+
+    // Package namespaces (`DbtNamespace`) resolve their macros here rather than
+    // in `get_value`, because the lookup needs the render state.
+    fn get_property(
+        self: &Arc<Self>,
+        state: &State<'_, '_>,
+        name: &str,
+        listeners: &[Rc<dyn RenderingEventListener>],
+    ) -> Result<Value, minijinja::Error> {
+        Ok(self
+            .0
+            .iter()
+            .filter_map(|o| o.as_object()?.get_property(state, name, listeners).ok())
+            .find(|v| !v.is_undefined())
+            .unwrap_or(Value::UNDEFINED))
     }
 }
 
@@ -187,7 +630,7 @@ impl Object for ObjectOverlay {
 ///
 /// ```text
 /// Phase 1 — Discover (blocking): discover_given_relations → (given_relations, to_fetch)
-/// Phase 2 — Fetch    (async):    fetch_missing_schemas(to_fetch) → schemas in cache
+/// Phase 2 — Fetch    (async):    fetch_missing_schemas(to_fetch) → fetched schemas
 /// Phase 3 — Render   (blocking): render_unit_test(given_relations) → SqlInstruction
 /// ```
 ///
@@ -199,28 +642,21 @@ pub(crate) async fn run_unit_test_render(
     result_sender: Option<std::sync::mpsc::SyncSender<TaskResult>>,
     task_hooks: Arc<dyn RenderTaskHooks>,
 ) -> FsResult<NodeStatus> {
-    use dbt_tasks_core::task::TaskOp;
+    use dbt_tasks_core::task::run_blocking_task_operation;
 
     // Phase 1 — Discover
     let ut = node.clone();
     let mut discover_ctx = ctx.clone();
-    let discover_outcome = TaskOp::Blocking(Box::new(move || {
-        // Downcast to DbtUnitTest for access to unit test fields
-        let ut_ref = ut
-            .as_any()
-            .downcast_ref::<DbtUnitTest>()
-            .expect("run_unit_test_render called on non-DbtUnitTest");
-        discover_given_relations(ut_ref, &mut discover_ctx)
-    }))
-    .run()
-    .await
-    .and_then(|inner| inner);
-    let given_relations = match discover_outcome {
+    let discover_outcome =
+        run_blocking_task_operation(move || discover_given_relations(&ut, &mut discover_ctx))
+            .await
+            .and_then(|inner| inner);
+    let mut given_relations = match discover_outcome {
         Ok(r) => r,
         Err(e) => {
             return handle_render_result(
                 Err(e),
-                &node.unique_id(),
+                node.unique_id(),
                 &node.materialized(),
                 &mut ctx,
                 &result_sender,
@@ -230,51 +666,64 @@ pub(crate) async fn run_unit_test_render(
 
     // Phase 2 — Fetch
     if !given_relations.relations_to_fetch.is_empty() {
-        let fetch_outcome = TaskOp::r#async(fetch_missing_schemas(
+        let fetch_outcome = fetch_missing_schemas(
             &given_relations.relations_to_fetch,
-            &node.common().unique_id,
+            node.as_ref(),
             &mut ctx,
             Arc::clone(&task_hooks),
-        ))
+        )
         .await;
-        if let Err(e) = fetch_outcome {
-            return handle_render_result(
-                Err(e),
-                &node.unique_id(),
-                &node.materialized(),
-                &mut ctx,
-                &result_sender,
-            );
+        match fetch_outcome {
+            Ok(fetched_relation_schemas) => {
+                given_relations
+                    .fetched_relation_schemas
+                    .extend(fetched_relation_schemas);
+            }
+            Err(e) => {
+                return handle_render_result(
+                    Err(e),
+                    node.unique_id(),
+                    &node.materialized(),
+                    &mut ctx,
+                    &result_sender,
+                );
+            }
         }
     }
 
-    // Phase 3 — Render (uses cached schemas + discovered relations)
-    TaskOp::Blocking(Box::new(move || {
+    // Phase 3 — Render (uses fetched schemas + discovered relations)
+    run_blocking_task_operation(move || {
         let mut ctx = ctx;
-        let ut_ref = node
-            .as_any()
-            .downcast_ref::<DbtUnitTest>()
-            .expect("run_unit_test_render called on non-DbtUnitTest");
-        let res = render_unit_test(ut_ref, &mut ctx, given_relations, task_hooks.as_ref());
+        let res = render_unit_test(&node, &mut ctx, given_relations, task_hooks);
         handle_render_result(
             res,
-            &node.unique_id(),
+            node.unique_id(),
             &node.materialized(),
             &mut ctx,
             &result_sender,
         )
-    }))
-    .run()
+    })
     .await?
 }
 
-/// Get schema for upstream unit test inputs, using cache first and remote fallback.
-/// Used during the Render phase (after the Fetch phase has populated the cache).
+/// Get a relation schema, preferring the exact adapter fetch from this unit test.
 fn get_schema_for_unit_test_relation(
     ctx: &TaskRunnerCtx,
     relation: Arc<dyn BaseRelation>,
     schema_target: UnitTestSchemaTarget,
+    adapter_type: AdapterType,
+    fetched_relation_schemas: &FetchedRelationSchemas,
 ) -> FsResult<SchemaRef> {
+    let canonical_fqn = relation.get_canonical_fqn()?;
+    if let Some(schema) = fetched_relation_schema(
+        fetched_relation_schemas,
+        adapter_type,
+        schema_target,
+        &canonical_fqn,
+    ) {
+        return Ok(schema);
+    }
+
     try_get_schema_from_cache(ctx, relation.as_ref(), schema_target)?.ok_or_else(|| {
         fs_err!(
             ErrorCode::Generic,
@@ -314,7 +763,7 @@ fn try_get_schema_from_cache(
             // If we have a hit
             if node_canonical_fqn.as_ref() == Some(&canonical_fqn) {
                 node_static_analysis_off =
-                    is_static_analysis_off_or_baseline(node.static_analysis().into_inner());
+                    is_static_analysis_off_or_baseline(**node.static_analysis());
                 break;
             }
         }
@@ -361,15 +810,7 @@ async fn hydrate_unit_test_relation_schema(
             &relation,
             adapter.engine().type_ops(),
         )
-        .await
-        .map_err(|e| {
-            fs_err!(
-                ErrorCode::Generic,
-                "Failed to query schema for {}: {}",
-                err_subject(),
-                e.message()
-            )
-        })?;
+        .await?;
 
     // `fetched` tracks fqns whose schemas are already populated in `schema_cache`
     // during this call. On repeat, short-circuit to the cache.
@@ -446,6 +887,7 @@ async fn hydrate_unit_test_relation_schema(
 
 async fn fetch_schema_for_unit_test_relation(
     ctx: &TaskRunnerCtx,
+    adapter: &Adapter,
     relation: Arc<dyn BaseRelation>,
     unit_test_unique_id: &str,
     fetched: &mut HashSet<String>,
@@ -455,14 +897,33 @@ async fn fetch_schema_for_unit_test_relation(
 ) -> FsResult<SchemaRef> {
     let canonical_fqn = relation.get_canonical_fqn()?;
     let semantic_fqn = relation.semantic_fqn();
-    let adapter = ctx.env.get_base_adapter().ok_or_else(|| {
-        fs_err!(
-            ErrorCode::Generic,
-            "Failed to fetch schema for {} '{}': adapter unavailable",
-            schema_target.subject(),
-            relation.render_self_as_str()
+    if requires_adapter_scoped_relation_schema(ctx, adapter, schema_target) {
+        return serialize_fixture_schema_fetch(
+            ctx,
+            adapter.adapter_type(),
+            &canonical_fqn,
+            |schema_cache| {
+                let mut fetch_ctx = ctx.clone();
+                if let Some(schema_cache) = schema_cache {
+                    fetch_ctx.schema_cache = schema_cache;
+                }
+                async move {
+                    let mut fetched = HashSet::new();
+                    hydrate_unit_test_relation_schema(
+                        &fetch_ctx,
+                        relation,
+                        unit_test_unique_id,
+                        &mut fetched,
+                        schema_target,
+                        task_hooks,
+                        adapter,
+                    )
+                    .await
+                }
+            },
         )
-    })?;
+        .await;
+    }
 
     let coordinate_fetch = matches!(schema_target, UnitTestSchemaTarget::GivenUpstream)
         && adapter.as_replay().is_none()
@@ -476,7 +937,7 @@ async fn fetch_schema_for_unit_test_relation(
             fetched,
             schema_target,
             task_hooks,
-            &adapter,
+            adapter,
         )
         .await;
     }
@@ -497,7 +958,7 @@ async fn fetch_schema_for_unit_test_relation(
                     fetched_for_fetch,
                     schema_target,
                     task_hooks,
-                    &adapter,
+                    adapter,
                 )
                 .await
             },
@@ -507,18 +968,24 @@ async fn fetch_schema_for_unit_test_relation(
     Ok(schema)
 }
 
+/// Prefer the original SQL type unless it is a bare NUMBER. `ColumnBuilder` stores
+/// its precision and scale separately; [`Column::data_type`] restores them.
+fn column_sql_type(column: &Column) -> Cow<'_, str> {
+    match column.original_sql_str() {
+        Some(sql_type) if !sql_type.eq_ignore_ascii_case("NUMBER") => Cow::Borrowed(sql_type),
+        _ => Cow::Owned(column.data_type()),
+    }
+}
+
 fn columns_to_schema(
     type_ops: &dyn TypeOps,
-    columns: Vec<Column>,
+    columns: &[Arc<Column>],
     unique_id: &str,
 ) -> FsResult<SchemaRef> {
     let mut fields = Vec::with_capacity(columns.len());
 
     for column in columns {
-        let sql_type_str: Cow<str> = column
-            .original_sql_str()
-            .map(Cow::from)
-            .unwrap_or_else(|| column.data_type().into());
+        let sql_type_str = column_sql_type(column.as_ref());
 
         let field = make_arrow_field(
             type_ops,
@@ -547,6 +1014,7 @@ fn build_unit_test_schema_probe(
     type_ops: &dyn TypeOps,
     compiled_model_sql: &str,
     rewrite_targets: &[(String, String)],
+    preserve_recorded_sql: bool,
 ) -> UnitTestSchemaProbe {
     let schema_sql = replace_subquery_refs_with_cte_names(
         adapter_type,
@@ -558,16 +1026,26 @@ fn build_unit_test_schema_probe(
         .iter()
         .filter_map(|(id, query)| {
             let cte_name = create_cte_name_from_fqn(adapter_type, type_ops, id);
-            schema_sql
-                .contains(&cte_name)
-                .then(|| format!("{cte_name} as ({query})"))
+            schema_sql.contains(&cte_name).then(|| {
+                if preserve_recorded_sql {
+                    format!("{cte_name} as ({query})")
+                } else {
+                    format_unit_test_subquery(adapter_type, &cte_name, query)
+                }
+            })
         })
         .collect::<Vec<_>>()
         .join(",");
     let query_sql = if ctes.is_empty() {
         schema_sql.clone()
-    } else {
+    } else if preserve_recorded_sql {
         format!("WITH {ctes} {schema_sql}")
+    } else {
+        let body =
+            DefaultStmtSplitter.strip_trailing_statement_terminator(&schema_sql, adapter_type);
+        // A nested query keeps the model's WITH clause in its own scope.
+        // Newlines keep trailing comments from consuming generated delimiters.
+        format!("WITH {ctes} SELECT * FROM (\n{body}\n) AS __dbt_schema_probe")
     };
     UnitTestSchemaProbe {
         schema_sql,
@@ -585,24 +1063,22 @@ fn infer_unit_test_expected_schema(
     options: ExpectedSchemaInferenceOptions,
     task_hooks: &dyn RenderTaskHooks,
 ) -> FsResult<SchemaRef> {
-    let adapter = ctx.env.get_base_adapter().ok_or_else(|| {
-        fs_err!(
-            ErrorCode::Generic,
-            "Failed to fetch unit test schema: adapter unavailable"
-        )
-    })?;
+    let adapter = ctx.adapter_for(unit_test)?;
 
     let (mut run_context, _result_store) = build_run_node_context(
         unit_test,
         &unit_test.deprecated_config,
         unit_test.node_adapter(),
         None,
-        &ctx.inner.base_context,
+        &Value::from_dyn_object(Arc::clone(&ctx.inner.base_context)),
         &ctx.inner.arg.io,
         TelemetryExecutionPhase::Render,
         None,
         ctx.runtime_config().dependencies.keys().cloned().collect(),
     );
+    // Not `run_base_context`: it would also add `thread_id` to this render.
+    ctx.adapter_globals()
+        .insert_for_node(&mut run_context, ctx.adapter_type_for(unit_test))?;
 
     // Ensure schema inference macro evaluation is node-scoped for replay and any other
     // context-dependent adapter behavior.
@@ -619,7 +1095,7 @@ fn infer_unit_test_expected_schema(
     );
 
     if let Some(overrides) = &unit_test.__unit_test_attr__.overrides {
-        apply_unit_test_overrides(&mut run_context, overrides, ctx);
+        apply_unit_test_overrides(&mut run_context, overrides, ctx)?;
     }
 
     // This is a small part of the dbt-core unit test materialization logic that infers
@@ -670,12 +1146,15 @@ fn infer_unit_test_expected_schema(
     // query. When it runs against the real warehouse, only rewrite ephemerals —
     // non-ephemeral upstreams must remain real relation refs so the warehouse
     // provides their schemas (e.g. for type-checking expect-row literals).
+    let rewrite_as_cte = |id: &str| {
+        id.starts_with(DBT_CTE_PREFIX) || options.mock_self_relation.as_deref() == Some(id)
+    };
     let fallback_rewrite_targets: Vec<(String, String)> = if options.use_query_schema_fallback {
         subqueries.to_vec()
     } else {
         subqueries
             .iter()
-            .filter(|(id, _)| id.starts_with(DBT_CTE_PREFIX))
+            .filter(|(id, _)| rewrite_as_cte(id))
             .cloned()
             .collect()
     };
@@ -685,21 +1164,33 @@ fn infer_unit_test_expected_schema(
         type_ops.as_ref(),
         compiled_model_sql,
         &fallback_rewrite_targets,
+        options.preserve_recorded_probe_sql,
     );
     let local_probe_sql = if options.try_structural_inference {
-        if options.use_query_schema_fallback {
-            Some(fallback_probe.query_sql.clone())
-        } else {
-            Some(
-                build_unit_test_schema_probe(
-                    unit_test.node_adapter(),
-                    type_ops.as_ref(),
-                    compiled_model_sql,
-                    subqueries,
-                )
-                .query_sql,
+        // Generated dict/CSV fixtures contain Jinja raw blocks. Render those
+        // before SQL analysis, keeping SQL fixtures and compiled model SQL intact.
+        let rendered_subqueries = subqueries
+            .iter()
+            .zip(&unit_test.__unit_test_attr__.given)
+            .map(|((id, sql), given)| {
+                let sql = if given.format == schemas::common::Formats::Sql {
+                    sql.clone()
+                } else {
+                    ctx.env.render_str(sql, &run_context, &[])?
+                };
+                Ok((id.clone(), sql))
+            })
+            .collect::<FsResult<Vec<_>>>()?;
+        Some(
+            build_unit_test_schema_probe(
+                unit_test.node_adapter(),
+                type_ops.as_ref(),
+                compiled_model_sql,
+                &rendered_subqueries,
+                options.preserve_recorded_probe_sql,
             )
-        }
+            .query_sql,
+        )
     } else {
         None
     };
@@ -711,7 +1202,7 @@ fn infer_unit_test_expected_schema(
             } else {
                 fixture_shape_subqueries
                     .iter()
-                    .filter(|(id, _)| id.starts_with(DBT_CTE_PREFIX))
+                    .filter(|(id, _)| rewrite_as_cte(id))
                     .cloned()
                     .collect()
             };
@@ -720,6 +1211,7 @@ fn infer_unit_test_expected_schema(
             type_ops.as_ref(),
             compiled_model_sql,
             &fallback_shape_rewrite_targets,
+            options.preserve_recorded_probe_sql,
         )
         .query_sql;
         let distinct_local_probe_shape_sql =
@@ -729,6 +1221,7 @@ fn infer_unit_test_expected_schema(
                     type_ops.as_ref(),
                     compiled_model_sql,
                     fixture_shape_subqueries,
+                    options.preserve_recorded_probe_sql,
                 )
                 .query_sql
             });
@@ -812,7 +1305,7 @@ fn infer_unit_test_expected_schema(
             )
         })?;
 
-        let columns = Column::vec_from_jinja_value(unit_test.node_adapter(), columns_as_value)
+        let columns = Column::vec_from_jinja_value(unit_test.node_adapter(), &columns_as_value)
             .map_err(|e| {
                 fs_err!(
                     ErrorCode::Generic,
@@ -824,7 +1317,7 @@ fn infer_unit_test_expected_schema(
 
         columns_to_schema(
             adapter.engine().type_ops().as_ref(),
-            columns,
+            &columns,
             &unit_test.__common_attr__.unique_id,
         )
     };
@@ -843,7 +1336,7 @@ fn infer_schema_from_compiled_sql(
     ctx: &TaskRunnerCtx,
     unit_test: &DbtUnitTest,
     raw_model_sql: &str,
-    compile_context: &BTreeMap<String, Value>,
+    compile_context: &OverlayMap,
     original_file_path: &Path,
     subqueries: &[(String, String)],
     fixture_shape_subqueries: &[(String, String)],
@@ -876,7 +1369,7 @@ fn infer_schema_from_compiled_sql(
 /// resulting `Value` directly.
 fn bind_run_started_at_override(
     macro_value: &YmlValue,
-    compile_context: &BTreeMap<String, Value>,
+    compile_context: &OverlayMap,
     env: &JinjaEnv,
 ) -> Value {
     macro_value
@@ -893,7 +1386,7 @@ fn bind_run_started_at_override(
 
 fn bind_override_macros(
     macros: &BTreeMap<String, YmlValue>,
-    compile_context: &mut BTreeMap<String, Value>,
+    compile_context: &mut OverlayMap,
     env: &JinjaEnv,
 ) {
     for (macro_name, macro_value) in macros.iter() {
@@ -910,14 +1403,11 @@ fn bind_override_macros(
         // If a package already exists, merge the override in
         if let Some((pkg, attr)) = macro_name.split_once(".") {
             let object_stub = Value::from(BTreeMap::from([(attr, fn_stub)]));
-            let new_pkg = if let Some(og) = compile_context.remove(pkg) {
+            compile_context.update(pkg, |og| match og {
                 // Check `object_stub` first
-                Value::from_object(ObjectOverlay(vec![object_stub, og]))
-            } else {
-                object_stub
-            };
-
-            compile_context.insert(pkg.to_string(), new_pkg);
+                Some(og) => Value::from_object(ObjectOverlay(vec![object_stub, og])),
+                None => object_stub,
+            });
         } else {
             compile_context.insert(macro_name.to_string(), fn_stub);
         }
@@ -926,10 +1416,10 @@ fn bind_override_macros(
 
 /// Apply overrides to the compile context for unit tests
 pub fn apply_unit_test_overrides(
-    compile_context: &mut BTreeMap<String, MinijinjaValue>,
+    compile_context: &mut OverlayMap,
     overrides: &UnitTestOverrides,
     ctx: &TaskRunnerCtx,
-) {
+) -> FsResult<()> {
     // Override for Macros
     if let Some(macros) = overrides.macros.as_ref() {
         bind_override_macros(macros, compile_context, &ctx.env);
@@ -960,13 +1450,23 @@ pub fn apply_unit_test_overrides(
 
     // Override for Variables
     if let Some(vars) = &overrides.vars {
-        let base_vars = ctx.inner.arg.vars.clone();
-        let overrides_map = Some(vars.clone());
+        // Layer overrides over the CLI vars so project vars stay visible, like Core's UnitTestVar.
+        let configured = ctx
+            .env
+            .get_global("var")
+            .and_then(|var| var.downcast_object::<ConfiguredVar>())
+            .ok_or_else(|| {
+                fs_err!(
+                    ErrorCode::InvalidConfig,
+                    "unit test environment `var` global is not a ConfiguredVar"
+                )
+            })?;
         compile_context.insert(
             "var".to_string(),
-            MinijinjaValue::from_object(Var::with_overrides(base_vars, overrides_map)),
+            MinijinjaValue::from_object(configured.with_cli_overrides(vars)),
         );
     }
+    Ok(())
 }
 
 fn create_cte_name_from_fqn(
@@ -1019,6 +1519,7 @@ type RelationsToFetch = Vec<RelationToFetch>;
 struct DiscoveredGivenRelations {
     given_relations: GivenRelations,
     relations_to_fetch: RelationsToFetch,
+    fetched_relation_schemas: FetchedRelationSchemas,
     given_relation_ids: Vec<String>,
 }
 
@@ -1062,8 +1563,11 @@ fn row_column_names_or_default<'a>(
     if rows.is_empty() {
         column_names
     } else {
-        let names = rows[0]
-            .keys()
+        // Compare the union of asserted columns. `create_values` fills omitted
+        // cells with NULL; columns omitted from every row remain uncompared.
+        let names = rows
+            .iter()
+            .flat_map(|row| row.keys())
             .map(|k| k.to_ascii_lowercase())
             .collect::<HashSet<_>>();
         expect_schema
@@ -1083,16 +1587,9 @@ fn row_column_names_or_default<'a>(
 fn extract_expect_values<'a>(
     ctx: &TaskRunnerCtx,
     unit_test: &DbtUnitTest,
+    type_ops: &dyn TypeOps,
     expect_schema: &'a SchemaRef,
 ) -> FsResult<(String, Vec<&'a str>)> {
-    let type_ops_arc = ctx
-        .env
-        .get_base_adapter()
-        .map(|a| a.engine().type_ops().clone())
-        .unwrap_or_else(|| {
-            Arc::new(DefaultTypeOps::new(unit_test.node_adapter())) as Arc<dyn TypeOps>
-        });
-    let type_ops = type_ops_arc.as_ref();
     let column_names = Vec::from_iter(
         expect_schema
             .fields()
@@ -1157,7 +1654,11 @@ fn extract_expect_values<'a>(
             "Unit test {} is invalid. Format `sql` only supports inline string rows or fixture files",
             unit_test.__common_attr__.name
         )),
-        // sql (raw fixture, or inline string)
+        // sql: the parser already read a resolved `fixture:` into `rows`, so
+        // `rows` is the normalized value and is matched first. The `fixture`
+        // arm below is a fallback for a node that reached here without that
+        // eager read; it is not where fixture-vs-rows precedence is decided.
+        // That rule lives once, in `resolve_unit_tests` (dbt-labs/fs#15487).
         (schemas::common::Formats::Sql, _, Some(Rows::String(sql))) => {
             Ok((sql.to_string(), column_names))
         }
@@ -1192,20 +1693,24 @@ fn extract_expect_values<'a>(
 /// Step 0 (blocking): Eval Jinja for each `given` input to discover relations.
 /// Returns the resolved relations and any that need async schema fetching.
 fn discover_given_relations(
-    ut: &DbtUnitTest,
+    node: &Arc<dyn InternalDbtNodeAttributes>,
     ctx: &mut TaskRunnerCtx,
 ) -> FsResult<DiscoveredGivenRelations> {
-    let mut base_context = ctx.inner.base_context.clone();
-    add_task_context(&mut base_context, ut.common(), &ctx.thread_id);
+    let ut = node
+        .as_any()
+        .downcast_ref::<DbtUnitTest>()
+        .expect("run_unit_test_render called on non-DbtUnitTest");
+    let base_context = ctx.run_base_context(ut)?;
 
     let (compile_context, _config_map) = ctx.build_compile_node_context(
-        ut,
+        node.clone(),
         &base_context,
         DependencyValidationConfig::new_unvalidated(),
     )?;
 
     let mut given_relations = Vec::new();
     let mut relations_to_fetch = Vec::new();
+    let mut fetched_relation_schemas = HashMap::new();
     let mut listeners = ctx.rendering_listener_factory.create_listeners(
         &ut.__common_attr__.path,
         &dbt_frontend_common::error::CodeLocation::start_of_file(),
@@ -1217,14 +1722,14 @@ fn discover_given_relations(
     // ClickHouse runs with static analysis off and the persisted schema cache
     // has no TTL, so a cached schema goes stale when an upstream model is
     // rebuilt with different column types between invocations.
+    let adapter = ctx.adapter_for(ut)?;
     let force_refetch = ut.node_adapter() == AdapterType::ClickHouse;
-    let refresh_persisted_given_schemas = !is_replay_active(ctx)
-        && ctx
-            .env
-            .get_base_adapter()
-            .is_some_and(|adapter| !adapter.engine().is_mock());
+    let refresh_persisted_given_schemas = !is_replay_active(ctx) && !adapter.engine().is_mock();
+    let adapter_scoped_schema =
+        requires_adapter_scoped_relation_schema(ctx, &adapter, UnitTestSchemaTarget::GivenUpstream);
 
     for given in &ut.__unit_test_attr__.given {
+        let captured_uid_count = given_capture.uids.borrow().len();
         let given_relation = {
             ctx.env
                 .compile_expression(&given.input)?
@@ -1243,21 +1748,130 @@ fn discover_given_relations(
         // Only check/fetch schemas for Dict and Csv formats.
         if given.format != schemas::common::Formats::Sql {
             let canonical_fqn = relation.get_canonical_fqn()?;
+            let (captured_relations, captured_deferred_relations) = {
+                let captured_unique_ids = given_capture.uids.borrow();
+                let mut captured_relations = Vec::new();
+                let mut captured_deferred_relations = Vec::new();
+                for unique_id in &captured_unique_ids[captured_uid_count..] {
+                    if let Some(relation_fqn) = ctx
+                        .try_get_relation_from_node(unique_id)
+                        .and_then(|relation| relation.get_canonical_fqn().ok())
+                    {
+                        captured_relations.push((unique_id.clone(), relation_fqn));
+                    }
+                    if let Some(relation_fqn) = check_defer_relation(unique_id, ctx)
+                        .and_then(|relation| relation.get_canonical_fqn().ok())
+                    {
+                        captured_deferred_relations.push((unique_id.clone(), relation_fqn));
+                    }
+                }
+                (captured_relations, captured_deferred_relations)
+            };
+            let captured_relation_unique_id = matching_captured_relation_unique_id(
+                captured_relations
+                    .iter()
+                    .map(|(unique_id, relation_fqn)| (unique_id.as_str(), relation_fqn)),
+                &canonical_fqn,
+            );
+            let captured_deferred_relation_unique_id = matching_captured_relation_unique_id(
+                captured_deferred_relations
+                    .iter()
+                    .map(|(unique_id, relation_fqn)| (unique_id.as_str(), relation_fqn)),
+                &canonical_fqn,
+            );
+            let tested_node_fqn = if given.input.as_str() == "this" {
+                ut.tested_node_unique_id
+                    .as_deref()
+                    .and_then(|unique_id| ctx.try_get_relation_from_node(unique_id))
+                    .map(|relation| relation.get_canonical_fqn())
+                    .transpose()?
+            } else {
+                None
+            };
+            let tested_node = ut
+                .tested_node_unique_id
+                .as_deref()
+                .zip(tested_node_fqn.as_ref());
+            let relation_unique_id = fixture_relation_unique_id(
+                given.input.as_str(),
+                captured_relation_unique_id,
+                tested_node,
+                &canonical_fqn,
+            );
+            let deferred_relation_unique_id = if given.input.as_str() == "this" {
+                ut.tested_node_unique_id.clone()
+            } else {
+                captured_deferred_relation_unique_id
+            };
             let should_refresh = force_refetch
                 || (refresh_persisted_given_schemas
                     && ctx
                         .schema_cache
                         .schema_is_from_prior_invocation(&canonical_fqn));
-            if should_refresh || !ctx.schema_cache.exists(&canonical_fqn) {
+            let is_default_adapter = adapter.adapter_type() == ctx.default_adapter_type();
+            let fetch_state =
+                adapter_scoped_schema.then(|| fixture_schema_fetch_state(ctx, &canonical_fqn));
+            let current_adapter_schema = fetch_state.as_deref().and_then(|fetch_state| {
+                cached_schema_for_adapter(
+                    ctx,
+                    &canonical_fqn,
+                    relation_unique_id.as_deref(),
+                    deferred_relation_unique_id.as_deref(),
+                    adapter.adapter_type(),
+                    fetch_state,
+                )
+            });
+            if let Some(fetch_state) = fetch_state.as_deref() {
+                if fetch_state.cached_default_schema.read().is_none() {
+                    let current_default_schema = if is_default_adapter {
+                        current_adapter_schema.clone()
+                    } else {
+                        cached_schema_for_adapter(
+                            ctx,
+                            &canonical_fqn,
+                            relation_unique_id.as_deref(),
+                            deferred_relation_unique_id.as_deref(),
+                            ctx.default_adapter_type(),
+                            fetch_state,
+                        )
+                    };
+                    if let Some(schema) = current_default_schema {
+                        let mut cached_default_schema = fetch_state.cached_default_schema.write();
+                        if cached_default_schema.is_none() {
+                            *cached_default_schema = Some(schema);
+                        }
+                    }
+                }
+            }
+            let cached_default_schema = if is_default_adapter {
+                fetch_state
+                    .as_deref()
+                    .and_then(|fetch_state| fetch_state.cached_default_schema.read().clone())
+            } else {
+                None
+            };
+            let adapter_schema = current_adapter_schema.or(cached_default_schema);
+            let schema_exists = adapter_schema.is_some() || ctx.schema_cache.exists(&canonical_fqn);
+            if let Some(cache_policy) = given_fixture_schema_fetch_policy(
+                adapter_scoped_schema,
+                adapter_schema.is_some(),
+                should_refresh,
+                schema_exists,
+            ) {
                 relations_to_fetch.push(RelationToFetch {
                     relation: Arc::clone(&relation),
                     schema_target: UnitTestSchemaTarget::GivenUpstream,
-                    cache_policy: if should_refresh {
-                        FixtureSchemaCachePolicy::Refresh
-                    } else {
-                        FixtureSchemaCachePolicy::Reuse
-                    },
+                    cache_policy,
                 });
+            } else if let Some(schema) = adapter_schema {
+                fetched_relation_schemas.insert(
+                    (
+                        adapter.adapter_type(),
+                        UnitTestSchemaTarget::GivenUpstream,
+                        canonical_fqn,
+                    ),
+                    schema,
+                );
             }
         }
 
@@ -1265,7 +1879,7 @@ fn discover_given_relations(
     }
 
     // Incremental tests read the existing model relation's schema; fetch it if uncached.
-    // An `is_incremental: false` override instead uses compiled SQL.
+    // An `is_incremental` override instead uses compiled SQL, either value.
     let model_unique_id = get_unique_id(
         &ut.__unit_test_attr__.model,
         &ut.__common_attr__.package_name,
@@ -1276,15 +1890,15 @@ fn discover_given_relations(
         "model",
     );
     let resolver_state = ctx.resolver_state();
-    let use_compiled_schema_for_incremental = use_compiled_schema_for_incremental(ctx, ut)?;
+    let use_compiled_schema_for_incremental =
+        unit_test_schema_policy(ctx, ut)?.use_compiled_incremental;
     let tested_model = resolver_state.nodes.get_node(&model_unique_id);
     let should_fetch_expected_schema = tested_model.is_some_and(|node| {
         node.materialized() == DbtMaterialization::Incremental
             && !use_compiled_schema_for_incremental
     });
-    let model_static_analysis_off = tested_model.is_some_and(|node| {
-        is_static_analysis_off_or_baseline(node.static_analysis().into_inner())
-    });
+    let model_static_analysis_off = tested_model
+        .is_some_and(|node| is_static_analysis_off_or_baseline(**node.static_analysis()));
 
     if should_fetch_expected_schema
         && let Some(expect_relation) = ctx.try_get_relation_from_node(&model_unique_id)
@@ -1296,18 +1910,50 @@ fn discover_given_relations(
             expect_relation
         };
         let canonical_fqn = schema_relation.get_canonical_fqn()?;
-        if force_refetch || !ctx.schema_cache.exists(&canonical_fqn) {
+        // The model ID proves deferred cache ownership, but is a fetch identity only when the
+        // current and schema relations have the same FQN.
+        let schema_relation_unique_id = ctx
+            .try_get_relation_from_node(&model_unique_id)
+            .and_then(|relation| relation.get_canonical_fqn().ok())
+            .filter(|relation_fqn| relation_fqn == &canonical_fqn)
+            .map(|_| model_unique_id.clone());
+        let schema_target = UnitTestSchemaTarget::ExpectedModel {
+            incremental_expected_path: true,
+        };
+        let adapter_scoped_expected_schema =
+            requires_adapter_scoped_relation_schema(ctx, &adapter, schema_target);
+        let expected_fetch_state =
+            adapter_scoped_expected_schema.then(|| fixture_schema_fetch_state(ctx, &canonical_fqn));
+        let current_adapter_schema = expected_fetch_state.as_deref().and_then(|fetch_state| {
+            cached_schema_for_adapter(
+                ctx,
+                &canonical_fqn,
+                schema_relation_unique_id.as_deref(),
+                Some(model_unique_id.as_str()),
+                adapter.adapter_type(),
+                fetch_state,
+            )
+        });
+        let schema_exists = if adapter_scoped_expected_schema {
+            current_adapter_schema.is_some()
+        } else {
+            ctx.schema_cache.exists(&canonical_fqn)
+        };
+        if force_refetch || !schema_exists {
             relations_to_fetch.push(RelationToFetch {
                 relation: schema_relation,
-                schema_target: UnitTestSchemaTarget::ExpectedModel {
-                    incremental_expected_path: true,
-                },
+                schema_target,
                 cache_policy: if force_refetch {
                     FixtureSchemaCachePolicy::Refresh
                 } else {
                     FixtureSchemaCachePolicy::Reuse
                 },
             });
+        } else if let Some(schema) = current_adapter_schema {
+            fetched_relation_schemas.insert(
+                (adapter.adapter_type(), schema_target, canonical_fqn),
+                schema,
+            );
         }
     }
 
@@ -1320,21 +1966,27 @@ fn discover_given_relations(
     Ok(DiscoveredGivenRelations {
         given_relations,
         relations_to_fetch,
+        fetched_relation_schemas,
         given_relation_ids,
     })
 }
 
-/// Step 1 (async): Fetch missing schemas into the cache.
+/// Step 1 (async): Fetch missing schemas and retain this unit test's exact results.
 async fn fetch_missing_schemas(
     to_fetch: &[RelationToFetch],
-    unit_test_unique_id: &str,
+    unit_test: &dyn InternalDbtNodeAttributes,
     ctx: &mut TaskRunnerCtx,
     task_hooks: Arc<dyn RenderTaskHooks>,
-) -> FsResult<()> {
+) -> FsResult<FetchedRelationSchemas> {
+    let adapter = ctx.adapter_for(unit_test)?;
+    let unit_test_unique_id = unit_test.common().unique_id.as_str();
     let mut fetched = HashSet::new();
+    let mut fetched_relation_schemas = HashMap::new();
     for request in to_fetch {
-        fetch_schema_for_unit_test_relation(
+        let canonical_fqn = request.relation.get_canonical_fqn()?;
+        let schema = fetch_schema_for_unit_test_relation(
             ctx,
+            &adapter,
             Arc::clone(&request.relation),
             unit_test_unique_id,
             &mut fetched,
@@ -1343,8 +1995,12 @@ async fn fetch_missing_schemas(
             task_hooks.clone(),
         )
         .await?;
+        fetched_relation_schemas.insert(
+            (adapter.adapter_type(), request.schema_target, canonical_fqn),
+            schema,
+        );
     }
-    Ok(())
+    Ok(fetched_relation_schemas)
 }
 
 fn check_defer_relation(
@@ -1359,20 +2015,68 @@ fn check_defer_relation(
         .map(|r| Arc::from(r) as Arc<dyn BaseRelation>)
 }
 
+/// Columns of a SQL `given` fixture for `adapter.get_columns_in_relation`.
+/// Inference runs only when model Jinja asks for them. An undefined result
+/// keeps the ordinary metadata lookup. Fixture columns are optional: an
+/// inference or column-build error also returns undefined, so it cannot fail
+/// a render that the ordinary lookup can serve.
+fn sql_fixture_columns(
+    ctx: Arc<TaskRunnerCtx>,
+    unit_test: Arc<DbtUnitTest>,
+    task_hooks: Arc<dyn RenderTaskHooks>,
+    type_ops: Arc<dyn TypeOps>,
+    fixture_sql: String,
+) -> Value {
+    dbt_adapter::adapter::fixture_columns::lazy_fixture_columns(move || {
+        let columns = task_hooks
+            .try_infer_unit_test_fixture_schema(&ctx, &unit_test, &fixture_sql)
+            .map_err(|error| error.to_string())
+            .and_then(|schema| {
+                let Some(schema) = schema else {
+                    return Ok(None);
+                };
+                let builder = ColumnBuilder::new(unit_test.node_adapter());
+                schema
+                    .fields()
+                    .iter()
+                    .map(|field| builder.build(field, type_ops.as_ref()).map(Arc::from))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map(Some)
+                    .map_err(|error| error.to_string())
+            });
+        match columns {
+            Ok(Some(columns)) => Ok(dbt_adapter::value::columns_to_value_mut(columns)),
+            Ok(None) => Ok(Value::UNDEFINED),
+            Err(error) => {
+                emit_trace_log_message(|| {
+                    format!(
+                        "SQL fixture columns are unavailable for '{}': {error}",
+                        unit_test.__common_attr__.unique_id
+                    )
+                });
+                Ok(Value::UNDEFINED)
+            }
+        }
+    })
+}
+
 fn render_unit_test(
-    node: &DbtUnitTest,
+    unit_test: &Arc<dyn InternalDbtNodeAttributes>,
     ctx: &mut TaskRunnerCtx,
     given_relations: DiscoveredGivenRelations,
-    task_hooks: &dyn RenderTaskHooks,
-) -> FsResult<(SqlInstruction, Arc<DashMap<String, MinijinjaValue>>)> {
+    task_hooks: Arc<dyn RenderTaskHooks>,
+) -> FsResult<(SqlInstruction, Arc<SccHashMap<String, MinijinjaValue>>)> {
+    let node = unit_test
+        .as_any()
+        .downcast_ref::<DbtUnitTest>()
+        .expect("run_unit_test_render called on non-DbtUnitTest");
     let DiscoveredGivenRelations {
         given_relations,
+        fetched_relation_schemas,
         given_relation_ids,
         ..
     } = given_relations;
-    let mut base_context = ctx.inner.base_context.clone();
-
-    add_task_context(&mut base_context, node.common(), &ctx.thread_id);
+    let base_context = ctx.run_base_context(node)?;
 
     // Compiled path lives at target/compiled/<package>/<dir-of-yaml>/<unit_test_name>.sql.
     let absolute_path_unit_test = node.get_node_path_abs(
@@ -1388,16 +2092,11 @@ fn render_unit_test(
         .unwrap_or_else(|_| absolute_path_unit_test.clone());
 
     let adapter_type = node.node_adapter();
-    let base_adapter = ctx.env.get_base_adapter();
-    let type_ops_arc = base_adapter
-        .as_ref()
-        .map(|a| a.engine().type_ops().clone())
-        .unwrap_or_else(|| Arc::new(DefaultTypeOps::new(adapter_type)) as Arc<dyn TypeOps>);
-    let type_ops = type_ops_arc.as_ref();
+    let adapter = ctx.adapter_for(node)?;
+    let fetched_schema_adapter_type = ctx.adapter_type_for(node);
+    let type_ops = adapter.engine().type_ops().as_ref();
     let replay_active = is_replay_active(ctx);
-    let is_mock = base_adapter
-        .as_ref()
-        .is_some_and(|adapter| adapter.engine().is_mock());
+    let is_mock = adapter.engine().is_mock();
     let effective_execute = effective_unit_test_execute(node, ctx.inner.execute);
     let cache_expected_schema =
         effective_execute == schemas::profiles::Execute::Sidecar && !replay_active && !is_mock;
@@ -1439,7 +2138,7 @@ fn render_unit_test(
 
     // Build compile context first so we can use it for rendering given_fqn
     let (mut compile_context, config_map) = ctx.build_compile_node_context(
-        node,
+        unit_test.clone(),
         &base_context,
         DependencyValidationConfig::new_for_node(node)
             .validate()
@@ -1449,7 +2148,7 @@ fn render_unit_test(
 
     // Apply overrides to the compile context
     if let Some(overrides) = &node.__unit_test_attr__.overrides {
-        apply_unit_test_overrides(&mut compile_context, overrides, ctx);
+        apply_unit_test_overrides(&mut compile_context, overrides, ctx)?;
     }
 
     let resolver_state = ctx.resolver_state();
@@ -1458,19 +2157,36 @@ fn render_unit_test(
     // schemas (now cached from Fetch phase).
     let mut subqueries = Vec::new();
     let mut fixture_shape_subqueries = Vec::new();
+    let mut fixture_columns = BTreeMap::new();
+    let has_sql_given = node
+        .__unit_test_attr__
+        .given
+        .iter()
+        .any(|given| given.format == schemas::common::Formats::Sql);
+    let fixture_owner = (cache_expected_schema && has_sql_given)
+        .then(|| (Arc::new(ctx.clone()), Arc::new(node.clone())));
     for (given_idx, ((fqn_string, relation), given)) in given_relations
         .iter()
         .zip(&node.__unit_test_attr__.given)
         .enumerate()
     {
         let (given_values, fixture_shape_values) = match given.format {
-            // SQL uses the string value verbatim
+            // SQL uses the string value verbatim.
+            //
+            // `rows` is consulted before `fixture` on purpose. `resolve_unit_tests`
+            // resolves a `fixture:` name to a path, reads its content into
+            // `rows` as raw text, and applies dbt-core's fixture-always-wins
+            // rule while doing so, so `rows` is already the normalized value.
+            // Reading `fixture` first re-read the same file from disk on every
+            // `dbt test`/`dbt build` and discarded what the parser had computed
+            // (dbt-labs/fs#15487). The `fixture` branch stays as a fallback for
+            // a node that reached here without the parser's eager read.
             schemas::common::Formats::Sql => {
-                let sql = if let Some(fixture) = &given.fixture {
+                let sql = if let Some(Rows::String(sql)) = &given.rows {
+                    sql.clone()
+                } else if let Some(fixture) = &given.fixture {
                     let filename = ctx.inner.arg.io.in_dir.join(fixture.clone());
                     stdfs::read_to_string(filename)?
-                } else if let Some(Rows::String(sql)) = &given.rows {
-                    sql.clone()
                 } else {
                     return Err(fs_err!(
                         ErrorCode::InvalidConfig,
@@ -1488,6 +2204,8 @@ fn render_unit_test(
                         ctx,
                         Arc::clone(relation),
                         UnitTestSchemaTarget::GivenUpstream,
+                        fetched_schema_adapter_type,
+                        &fetched_relation_schemas,
                     )?,
                     node.node_adapter(),
                 );
@@ -1515,6 +2233,8 @@ fn render_unit_test(
                         ctx,
                         Arc::clone(relation),
                         UnitTestSchemaTarget::GivenUpstream,
+                        fetched_schema_adapter_type,
+                        &fetched_relation_schemas,
                     )?,
                     node.node_adapter(),
                 );
@@ -1558,10 +2278,33 @@ fn render_unit_test(
             }
         };
 
+        // Model Jinja can inspect an input before fixture CTE substitution.
+        // Keep these columns in this render's context, never the shared schema
+        // cache: another test may mock the same relation with different types.
+        if let Some((fixture_ctx, fixture_test)) = &fixture_owner
+            && given.format == schemas::common::Formats::Sql
+        {
+            fixture_columns.insert(
+                relation.semantic_fqn(),
+                sql_fixture_columns(
+                    Arc::clone(fixture_ctx),
+                    Arc::clone(fixture_test),
+                    Arc::clone(&task_hooks),
+                    Arc::clone(adapter.engine().type_ops()),
+                    given_values.clone(),
+                ),
+            );
+        }
         subqueries.push((fqn_string.clone(), given_values));
         if let Some(fixture_shape_values) = fixture_shape_values {
             fixture_shape_subqueries.push((fqn_string.clone(), fixture_shape_values));
         }
+    }
+    if !fixture_columns.is_empty() {
+        compile_context.insert(
+            dbt_adapter::adapter::UNIT_TEST_FIXTURE_COLUMNS.to_string(),
+            Value::from_iter(fixture_columns),
+        );
     }
     // create a subquery for expect...
     // todo: updating the model with a unique id should be done already in parse?
@@ -1601,12 +2344,12 @@ fn render_unit_test(
     })?;
 
     let tested_model = resolver_state.nodes.get_node(&model_unique_id);
-    let model_static_analysis_off = tested_model.is_some_and(|node| {
-        is_static_analysis_off_or_baseline(node.static_analysis().into_inner())
-    });
+    let model_static_analysis_off = tested_model
+        .is_some_and(|node| is_static_analysis_off_or_baseline(**node.static_analysis()));
     let model_materialization = tested_model.map(|node| node.materialized());
     let is_incremental = model_materialization == Some(DbtMaterialization::Incremental);
-    let use_compiled_schema_for_incremental = use_compiled_schema_for_incremental(ctx, node)?;
+    let schema_policy = unit_test_schema_policy(ctx, node)?;
+    let use_compiled_schema_for_incremental = schema_policy.use_compiled_incremental;
 
     // Ephemeral models have no registered dataset, so the temp-table fallback in
     // `infer_unit_test_expected_schema` fails with "Dataset not found".
@@ -1620,8 +2363,21 @@ fn render_unit_test(
     );
     let schema_inference_options = ExpectedSchemaInferenceOptions {
         use_query_schema_fallback,
-        try_structural_inference: use_query_schema_fallback,
+        try_structural_inference: use_query_schema_fallback
+            || effective_execute == schemas::profiles::Execute::Sidecar,
         cache_result: cache_expected_schema,
+        preserve_recorded_probe_sql: schema_policy.preserve_recorded_probe_sql,
+        // Use the same identity as fixture discovery and model rendering.
+        // A model-config FQN can differ for versioned or deferred relations.
+        mock_self_relation: (use_compiled_schema_for_incremental
+            && !schema_policy.preserve_recorded_probe_sql)
+            .then(|| {
+                compile_context
+                    .get("this")?
+                    .downcast_object_ref::<RelationObject>()
+                    .map(|relation| relation.render_self_as_str())
+            })
+            .flatten(),
     };
     let infer_compiled_schema = || {
         infer_schema_from_compiled_sql(
@@ -1632,13 +2388,13 @@ fn render_unit_test(
             original_file_path,
             &subqueries,
             &fixture_shape_subqueries,
-            schema_inference_options,
-            task_hooks,
+            schema_inference_options.clone(),
+            task_hooks.as_ref(),
         )
     };
 
-    // Keep the existing analyzed/hydrated schema paths unless an explicit
-    // override changes an incremental model into its full-refresh SQL branch.
+    // An explicit override selects the model branch used to type expect rows.
+    // Historical recordings retain the schema source they recorded.
     let fetched_expect_schema = match (model_static_analysis_off, is_incremental) {
         (_, true) if use_compiled_schema_for_incremental => infer_compiled_schema()?,
         // (static analysis is off) + (incremental model): use prod relation from defer
@@ -1652,29 +2408,20 @@ fn render_unit_test(
                 UnitTestSchemaTarget::ExpectedModel {
                     incremental_expected_path: true,
                 },
+                fetched_schema_adapter_type,
+                &fetched_relation_schemas,
             )?
         }
         // (static analysis is on) + (incremental model): require cached schema.
-        (false, true) => {
-            let expect_cfqn = expect_relation.get_canonical_fqn().map_err(|e| {
-                fs_err!(
-                    ErrorCode::Unexpected,
-                    "Failed to get canonical FQN for unit test '{}': {}",
-                    node.__common_attr__.unique_id,
-                    e
-                )
-            })?;
-            ctx.schema_cache
-                .get_schema(&expect_cfqn)
-                .map(|entry| entry.inner().clone())
-                .ok_or_else(|| {
-                    fs_err!(
-                        ErrorCode::Unexpected,
-                        "Missing cached schema for unit test '{}'",
-                        node.__common_attr__.unique_id
-                    )
-                })?
-        }
+        (false, true) => get_schema_for_unit_test_relation(
+            ctx,
+            expect_relation.clone(),
+            UnitTestSchemaTarget::ExpectedModel {
+                incremental_expected_path: true,
+            },
+            fetched_schema_adapter_type,
+            &fetched_relation_schemas,
+        )?,
         // (static analysis is off) + (not incremental): infer schema via empty relation.
         // (static analysis is on) + (not incremental): try cache, then infer schema.
         (_, false) => {
@@ -1709,7 +2456,7 @@ fn render_unit_test(
     }
 
     let (expect_values, expected_column_names_to_compare) =
-        extract_expect_values(ctx, node, &expect_schema)?;
+        extract_expect_values(ctx, node, type_ops, &expect_schema)?;
 
     let model_catalog = expect_relation.get_database()?;
     let model_schema = expect_relation.get_schema()?;
@@ -1880,6 +2627,7 @@ fn is_orderable_type(adapter_type: AdapterType, data_type: &DataType) -> bool {
                 && !BigqueryTyping::is_json(data_type)
                 && !BigqueryTyping::is_geography(data_type)
         }
+        AdapterType::Databricks if databricks::contains_map(data_type) => false,
         // TODO(jason): Update this as more complex types are supported
         _ => is_supported_type(adapter_type, data_type),
     }
@@ -1911,13 +2659,19 @@ fn is_supported_type(adapter_type: AdapterType, ref_type: &DataType) -> bool {
             AdapterType::Bigquery => {
                 // Support Arrays and Structs for BigQuery
                 matches!(ref_type, DataType::List(_) | DataType::Struct(_))
-                    || BigqueryTyping::is_json(ref_type)
-                    || BigqueryTyping::is_geography(ref_type)
+                    || BigqueryTyping::is_distinct_type(ref_type)
             }
-            AdapterType::Databricks => DatabricksTyping::is_timestamp_ntz(ref_type),
+            AdapterType::Databricks => {
+                DatabricksTyping::is_timestamp_ntz(ref_type)
+                    || dbt_adapter::sql_types::databricks::is_complex_type(ref_type)
+            }
             AdapterType::DuckDB => {
                 // DuckDB distinct types are wrapped as FixedSizeList(Field(name, ..), 1)
-                matches!(ref_type, DataType::FixedSizeList(_, 1))
+                match ref_type {
+                    DataType::FixedSizeList(_, 1) => true,
+                    DataType::List(element) => is_supported_type(adapter_type, element.data_type()),
+                    _ => false,
+                }
             }
             _ => false,
         }
@@ -1942,21 +2696,34 @@ fn yml_sequence_to_sql_literal(
             parent_data_type
         ));
     };
-    let mut element_type_literal = String::new();
-    type_ops
-        .format_arrow_type_as_sql(element_field.data_type(), true, &mut element_type_literal)
-        .map_err(|e| {
-            fs_err!(
-                ErrorCode::InvalidConfig,
-                "Failed to format element type {:?}: {}",
-                element_field.data_type(),
-                e
-            )
-        })?;
+    let element_type_literal = match adapter_type {
+        AdapterType::Databricks => {
+            databricks::format_type(type_ops, element_field.data_type(), true)?
+        }
+        _ => {
+            let mut out = String::new();
+            type_ops
+                .format_arrow_type_as_sql(element_field.data_type(), true, &mut out)
+                .map_err(|e| {
+                    fs_err!(
+                        ErrorCode::InvalidConfig,
+                        "Failed to format element type {:?}: {}",
+                        element_field.data_type(),
+                        e
+                    )
+                })?;
+            out
+        }
+    };
 
     // Snowflake's containers are 'untyped' and can be heterogeneous, e.g.
     // SELECT ARRAY_CONSTRUCT(1, 'two')
     let supports_hlist = adapter_type == AdapterType::Snowflake;
+
+    let (open, close) = match adapter_type {
+        AdapterType::Databricks => ("array(", ")"),
+        _ => ("[", "]"),
+    };
 
     let child_literals = value
         .into_iter()
@@ -1975,7 +2742,7 @@ fn yml_sequence_to_sql_literal(
         })
         .collect::<FsResult<Vec<_>>>()?;
 
-    Ok(format!("[{}]", child_literals.join(", ")))
+    Ok(format!("{open}{}{close}", child_literals.join(", ")))
 }
 
 /// Renders a `dbt_yaml::value::Mapping` to a SQL literal expression. All dialects
@@ -2004,6 +2771,9 @@ fn yml_mapping_to_sql_literal(
             ))
         }
         // We have type information for individual struct fields
+        AdapterType::Databricks if matches!(parent_data_type, DataType::Map(_, _)) => {
+            databricks::map_literal(type_ops, mapping, parent_data_type)
+        }
         _ => {
             let DataType::Struct(fields) = parent_data_type else {
                 return Err(fs_err!(
@@ -2032,12 +2802,151 @@ fn yml_mapping_to_sql_literal(
                             field.data_type(),
                         )?,
                     };
-                    let name_literal = type_ops.format_ident(field_name);
+                    let name_literal = match adapter_type {
+                        AdapterType::Databricks => databricks::quote_field_name(field_name),
+                        _ => type_ops.format_ident(field_name),
+                    };
                     Ok(format!("{value_literal} AS {name_literal}"))
                 })
                 .collect::<FsResult<Vec<_>>>()?;
             Ok(format!("STRUCT({})", struct_fields.join(", ")))
         }
+    }
+}
+
+mod databricks {
+    use super::*;
+
+    /// "MAP is not a comparable data type", so ORDER BY also fails on a STRUCT or ARRAY containing one.
+    /// https://docs.databricks.com/aws/en/sql/language-manual/data-types/map-type
+    pub(super) fn contains_map(data_type: &DataType) -> bool {
+        match data_type {
+            DataType::Map(_, _) => true,
+            DataType::List(f) => contains_map(f.data_type()),
+            DataType::Struct(fields) => fields.iter().any(|f| contains_map(f.data_type())),
+            _ => false,
+        }
+    }
+
+    /// Struct field names may be reserved words or contain spaces, and `format_ident` knows no
+    /// Databricks keywords, so always quote them.
+    pub(super) fn quote_field_name(name: &str) -> String {
+        format!("`{}`", name.replace('`', "``"))
+    }
+
+    /// Format cast types without seed-style numeric coercions. Quote struct field names.
+    pub(super) fn format_type(
+        type_ops: &dyn TypeOps,
+        data_type: &DataType,
+        nullable: bool,
+    ) -> FsResult<String> {
+        Ok(match data_type {
+            DataType::Null => "VOID".to_string(),
+            DataType::Decimal128(precision, scale) | DataType::Decimal256(precision, scale) => {
+                format!("DECIMAL({precision}, {scale})")
+            }
+            DataType::List(f) => format!(
+                "ARRAY<{}>",
+                format_type(type_ops, f.data_type(), f.is_nullable())?
+            ),
+            DataType::Struct(fields) => {
+                let fields = fields
+                    .iter()
+                    .map(|f| {
+                        Ok(format!(
+                            "{} {}",
+                            quote_field_name(f.name()),
+                            format_type(type_ops, f.data_type(), f.is_nullable())?
+                        ))
+                    })
+                    .collect::<FsResult<Vec<_>>>()?;
+                format!("STRUCT<{}>", fields.join(", "))
+            }
+            DataType::Map(entries, _) => match entries.data_type() {
+                DataType::Struct(kv) if kv.len() == 2 => format!(
+                    "MAP<{}, {}>",
+                    format_type(type_ops, kv[0].data_type(), kv[0].is_nullable())?,
+                    format_type(type_ops, kv[1].data_type(), kv[1].is_nullable())?
+                ),
+                other => {
+                    return Err(fs_err!(
+                        ErrorCode::InvalidConfig,
+                        "Unexpected MAP entry type: {other:?}"
+                    ));
+                }
+            },
+            _ => {
+                let mut out = String::new();
+                type_ops
+                    .format_arrow_type_as_sql(data_type, nullable, &mut out)
+                    .map_err(|e| {
+                        fs_err!(
+                            ErrorCode::InvalidConfig,
+                            "Failed to format type {data_type:?}: {e}"
+                        )
+                    })?;
+                out
+            }
+        })
+    }
+
+    fn typed_literal(type_ops: &dyn TypeOps, value: YmlValue, field: &Field) -> FsResult<String> {
+        let data_type = field.data_type();
+        let literal =
+            yml_value_to_sql_literal(AdapterType::Databricks, type_ops, value, data_type)?;
+        if dbt_adapter::sql_types::databricks::is_complex_type(data_type) {
+            return Ok(literal);
+        }
+        let formatted_type =
+            format_type(type_ops, data_type, field.is_nullable()).map_err(|e| {
+                fs_err!(
+                    ErrorCode::InvalidConfig,
+                    "Failed to format MAP key/value type {data_type:?}: {e}"
+                )
+            })?;
+        Ok(format!("CAST({literal} AS {formatted_type})"))
+    }
+
+    /// Renders a YAML mapping for a MAP column as `map(k1, v1, k2, v2)`.
+    pub(super) fn map_literal(
+        type_ops: &dyn TypeOps,
+        mapping: dbt_yaml::mapping::Mapping,
+        map_type: &DataType,
+    ) -> FsResult<String> {
+        let DataType::Map(entries, _) = map_type else {
+            unreachable!("map_literal is only called for MAP types");
+        };
+        let DataType::Struct(kv) = entries.data_type() else {
+            return Err(fs_err!(
+                ErrorCode::InvalidConfig,
+                "Unexpected MAP entry type: {:?}",
+                entries.data_type()
+            ));
+        };
+        let [key_field, value_field] = &kv[..] else {
+            return Err(fs_err!(
+                ErrorCode::InvalidConfig,
+                "Unexpected MAP entry type: {:?}",
+                entries.data_type()
+            ));
+        };
+        let args = mapping
+            .into_iter()
+            .map(|(k, v)| {
+                if k.is_null() {
+                    return Err(fs_err!(
+                        ErrorCode::InvalidConfig,
+                        "MAP fixture keys cannot be null"
+                    ));
+                }
+                Ok(format!(
+                    "{}, {}",
+                    typed_literal(type_ops, k, key_field)?,
+                    typed_literal(type_ops, v, value_field)?
+                ))
+            })
+            .collect::<FsResult<Vec<_>>>()?;
+        Ok(format!("map({})", args.join(", ")))
     }
 }
 
@@ -2062,8 +2971,9 @@ mod bigquery {
             return Ok(literal);
         }
 
-        let formatted_type = type_ops
-            .get_original_sql_type_from_field(field)
+        let mut formatted_type = String::new();
+        type_ops
+            .format_field_as_cast_type(field, &mut formatted_type)
             .map_err(|e| {
                 fs_err!(
                     ErrorCode::InvalidConfig,
@@ -2110,10 +3020,6 @@ fn yml_value_to_sql_literal(
         YmlValue::Null(_) => Ok(literal_formatter.none_value()),
         YmlValue::Bool(b, _) => Ok(literal_formatter.format_bool(b)),
         YmlValue::Number(n, _) => Ok(n.to_string()),
-        // A date/timestamp fixture is rendered in its canonical YAML form as a
-        // string literal; the fixture builder wraps it in a cast to the
-        // column's declared type, same as a quoted string fixture.
-        YmlValue::Timestamp(t, _) => Ok(literal_formatter.format_unit_test_str(&t.to_string())),
         // A string fixture for a type that cannot be produced by casting a
         // string literal (e.g. BigQuery STRUCT/GEOGRAPHY) is a SQL expression
         // that must be injected verbatim. See dbt-labs/dbt-core#14625.
@@ -2146,16 +3052,29 @@ fn columns_to_formatted_types<'a>(
         .iter()
         .map(|f| {
             let mut formatted = String::new();
-            type_ops
-                .format_arrow_type_as_sql(f.data_type(), f.is_nullable(), &mut formatted)
-                .map_err(|e| {
-                    fs_err!(
-                        ErrorCode::InvalidConfig,
-                        "Failed to format type {:?}: {}",
+            match type_ops.adapter_type() {
+                AdapterType::Bigquery => type_ops.format_field_as_cast_type(f, &mut formatted),
+                AdapterType::Databricks => {
+                    return Ok((
+                        f.name(),
                         f.data_type(),
-                        e
-                    )
-                })?;
+                        databricks::format_type(type_ops, f.data_type(), f.is_nullable())?,
+                    ));
+                }
+                _ => type_ops.format_arrow_type_as_sql(
+                    f.data_type(),
+                    f.is_nullable(),
+                    &mut formatted,
+                ),
+            }
+            .map_err(|e| {
+                fs_err!(
+                    ErrorCode::InvalidConfig,
+                    "Failed to format type {:?}: {}",
+                    f.data_type(),
+                    e
+                )
+            })?;
             Ok((f.name(), f.data_type(), formatted))
         })
         .collect::<FsResult<Vec<_>>>()
@@ -2355,6 +3274,8 @@ fn create_values(
                     ref_type.to_string(),
                     match adapter_type {
                         AdapterType::Bigquery => ", plus ARRAY and STRUCT types for BigQuery",
+                        AdapterType::Databricks =>
+                            ", plus ARRAY, STRUCT and MAP types for Databricks",
                         _ => "",
                     }
                 );
@@ -2735,13 +3656,1307 @@ fn get_fixture_rows(
 mod tests {
     use super::*;
     use std::collections::HashMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
+    use dbt_adapter::sql_types::DefaultTypeOps;
     use dbt_common::io_args::ComputeArg;
     use dbt_schemas::schemas::profiles::Execute;
+    use dbt_tasks_core::context::adapter_type_outside_compute_platform;
     use dbt_test_primitives::assert_contains;
+    use minijinja::dispatch_object::DispatchObject;
 
     type YmlValue = dbt_yaml::Value;
+
+    #[test]
+    fn fetched_relation_schemas_are_adapter_scoped() {
+        let canonical_fqn = CanonicalFqn::default();
+        let mut schemas = FetchedRelationSchemas::new();
+        schemas.insert(
+            (
+                AdapterType::Snowflake,
+                UnitTestSchemaTarget::GivenUpstream,
+                canonical_fqn.clone(),
+            ),
+            Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)])),
+        );
+        schemas.insert(
+            (
+                AdapterType::Bigquery,
+                UnitTestSchemaTarget::GivenUpstream,
+                canonical_fqn.clone(),
+            ),
+            Arc::new(Schema::new(vec![Field::new("id", DataType::Utf8, false)])),
+        );
+
+        let snowflake = fetched_relation_schema(
+            &schemas,
+            AdapterType::Snowflake,
+            UnitTestSchemaTarget::GivenUpstream,
+            &canonical_fqn,
+        )
+        .unwrap();
+        let bigquery = fetched_relation_schema(
+            &schemas,
+            AdapterType::Bigquery,
+            UnitTestSchemaTarget::GivenUpstream,
+            &canonical_fqn,
+        )
+        .unwrap();
+        assert_eq!(snowflake.field(0).data_type(), &DataType::Int64);
+        assert_eq!(bigquery.field(0).data_type(), &DataType::Utf8);
+    }
+
+    #[dbt_runtime::test]
+    async fn incremental_expected_schemas_are_adapter_scoped_in_both_orders() {
+        async fn assert_order(order: [(AdapterType, DataType); 2]) {
+            let schema_target = UnitTestSchemaTarget::ExpectedModel {
+                incremental_expected_path: true,
+            };
+            assert!(is_adapter_scoped_schema_target(schema_target));
+            let canonical_fqn = CanonicalFqn::default();
+            let state = FixtureSchemaFetchState::default();
+            let mut schemas = FetchedRelationSchemas::new();
+
+            for (adapter_type, data_type) in order {
+                let schema = fetch_adapter_fixture_schema(
+                    &state,
+                    adapter_type,
+                    AdapterType::Snowflake,
+                    Some(AdapterType::Snowflake),
+                    || None,
+                    |_| async move {
+                        Ok(Arc::new(Schema::new(vec![Field::new(
+                            "id", data_type, false,
+                        )])))
+                    },
+                )
+                .await
+                .unwrap();
+                schemas.insert((adapter_type, schema_target, canonical_fqn.clone()), schema);
+            }
+
+            let snowflake = fetched_relation_schema(
+                &schemas,
+                AdapterType::Snowflake,
+                schema_target,
+                &canonical_fqn,
+            )
+            .unwrap();
+            let bigquery = fetched_relation_schema(
+                &schemas,
+                AdapterType::Bigquery,
+                schema_target,
+                &canonical_fqn,
+            )
+            .unwrap();
+            assert_eq!(snowflake.field(0).data_type(), &DataType::Int64);
+            assert_eq!(bigquery.field(0).data_type(), &DataType::Utf8);
+        }
+
+        assert_order([
+            (AdapterType::Snowflake, DataType::Int64),
+            (AdapterType::Bigquery, DataType::Utf8),
+        ])
+        .await;
+        assert_order([
+            (AdapterType::Bigquery, DataType::Utf8),
+            (AdapterType::Snowflake, DataType::Int64),
+        ])
+        .await;
+        assert!(!is_adapter_scoped_schema_target(
+            UnitTestSchemaTarget::ExpectedModel {
+                incremental_expected_path: false,
+            }
+        ));
+    }
+
+    #[test]
+    fn lakecompute_fetched_schema_uses_run_adapter_key() {
+        let canonical_fqn = CanonicalFqn::default();
+        let run_adapter =
+            adapter_type_outside_compute_platform(AdapterType::LakeCompute, AdapterType::DuckDB);
+        assert_eq!(run_adapter, AdapterType::DuckDB);
+        assert_ne!(
+            adapter_fixture_schema_coordination_key(&canonical_fqn, run_adapter),
+            adapter_fixture_schema_coordination_key(&canonical_fqn, AdapterType::LakeCompute)
+        );
+
+        let mut schemas = FetchedRelationSchemas::new();
+        schemas.insert(
+            (
+                run_adapter,
+                UnitTestSchemaTarget::GivenUpstream,
+                canonical_fqn.clone(),
+            ),
+            Arc::new(Schema::empty()),
+        );
+        assert!(
+            fetched_relation_schema(
+                &schemas,
+                run_adapter,
+                UnitTestSchemaTarget::GivenUpstream,
+                &canonical_fqn,
+            )
+            .is_some()
+        );
+        assert!(
+            fetched_relation_schema(
+                &schemas,
+                AdapterType::LakeCompute,
+                UnitTestSchemaTarget::GivenUpstream,
+                &canonical_fqn,
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn mock_adapter_reuses_warm_fixture_schema() {
+        assert!(!cached_fixture_schema_requires_refresh(true, true));
+        assert!(cached_fixture_schema_requires_refresh(false, true));
+        assert!(!cached_fixture_schema_requires_refresh(false, false));
+        assert_eq!(
+            given_fixture_schema_fetch_policy(true, true, false, true),
+            None
+        );
+    }
+
+    #[test]
+    fn deferred_schema_reuse_requires_matching_adapter_provenance() {
+        fn canonical_fqn(table: &str) -> CanonicalFqn {
+            let database = CanonicalIdentifier::new("database");
+            let schema = CanonicalIdentifier::new("schema");
+            let table = CanonicalIdentifier::new(table);
+            CanonicalFqn::new(&database, &schema, &table)
+        }
+
+        let deferred_fqn = canonical_fqn("prod_model");
+        let current_fqn = canonical_fqn("dev_model");
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "deferred_id",
+            DataType::Int64,
+            false,
+        )]));
+        let schema_cache = dbt_schema_store::mock_store::MockSchemaStore::new();
+        schema_cache
+            .register_schema(&deferred_fqn, None, Arc::clone(&schema), true)
+            .unwrap();
+        let state = FixtureSchemaFetchState::default();
+
+        let reused = cached_deferred_schema_for_adapter(
+            &schema_cache,
+            &deferred_fqn,
+            Some((&deferred_fqn, AdapterType::Snowflake)),
+            AdapterType::Snowflake,
+            &state,
+        )
+        .unwrap();
+        assert_eq!(reused.field(0).name(), "deferred_id");
+        assert!(
+            cached_deferred_schema_for_adapter(
+                &schema_cache,
+                &deferred_fqn,
+                Some((&current_fqn, AdapterType::Snowflake)),
+                AdapterType::Snowflake,
+                &state,
+            )
+            .is_none()
+        );
+        assert!(
+            cached_deferred_schema_for_adapter(
+                &schema_cache,
+                &deferred_fqn,
+                Some((&deferred_fqn, AdapterType::DuckDB)),
+                AdapterType::Snowflake,
+                &state,
+            )
+            .is_none()
+        );
+
+        state.record_coordinated_schema(AdapterType::DuckDB, &schema);
+        assert!(
+            cached_deferred_schema_for_adapter(
+                &schema_cache,
+                &deferred_fqn,
+                Some((&deferred_fqn, AdapterType::Snowflake)),
+                AdapterType::Snowflake,
+                &state,
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn this_fixture_uses_only_the_matching_tested_node() {
+        fn canonical_fqn(table: &str) -> CanonicalFqn {
+            let database = CanonicalIdentifier::new("database");
+            let schema = CanonicalIdentifier::new("schema");
+            let table = CanonicalIdentifier::new(table);
+            CanonicalFqn::new(&database, &schema, &table)
+        }
+
+        let tested_fqn = canonical_fqn("tested");
+        let other_fqn = canonical_fqn("other");
+        let tested_node = "model.package.tested";
+        assert_eq!(
+            fixture_relation_unique_id(
+                "this",
+                None,
+                Some((tested_node, &tested_fqn)),
+                &tested_fqn,
+            )
+            .as_deref(),
+            Some(tested_node)
+        );
+        assert_eq!(
+            fixture_relation_unique_id("this", None, Some((tested_node, &tested_fqn)), &other_fqn,),
+            None
+        );
+        assert_eq!(
+            fixture_relation_unique_id(
+                "ref('upstream')",
+                Some("model.package.upstream".to_string()),
+                None,
+                &other_fqn,
+            )
+            .as_deref(),
+            Some("model.package.upstream")
+        );
+    }
+
+    #[test]
+    fn captured_relation_id_matches_returned_relation() {
+        fn canonical_fqn(table: &str) -> CanonicalFqn {
+            let database = CanonicalIdentifier::new("database");
+            let schema = CanonicalIdentifier::new("schema");
+            let table = CanonicalIdentifier::new(table);
+            CanonicalFqn::new(&database, &schema, &table)
+        }
+
+        let first_fqn = canonical_fqn("first");
+        let returned_fqn = canonical_fqn("returned");
+        let captured_relations = [
+            ("model.package.first", first_fqn),
+            ("model.package.returned", returned_fqn.clone()),
+        ];
+        assert_eq!(
+            matching_captured_relation_unique_id(
+                captured_relations
+                    .iter()
+                    .map(|(unique_id, relation_fqn)| (*unique_id, relation_fqn)),
+                &returned_fqn,
+            )
+            .as_deref(),
+            Some("model.package.returned")
+        );
+
+        let ambiguous_relations = [
+            ("model.package.returned", returned_fqn.clone()),
+            ("model.other.returned", returned_fqn.clone()),
+        ];
+        assert_eq!(
+            matching_captured_relation_unique_id(
+                ambiguous_relations
+                    .iter()
+                    .map(|(unique_id, relation_fqn)| (*unique_id, relation_fqn)),
+                &returned_fqn,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn mock_fixture_schema_reuse_uses_matching_producer() {
+        let state = FixtureSchemaFetchState::default();
+        let duckdb_schema = Arc::new(Schema::new(vec![Field::new(
+            "created_at",
+            DataType::Timestamp(TimeUnit::Microsecond, None),
+            false,
+        )]));
+
+        assert_eq!(
+            schema_adapter_for_reuse(&state, &duckdb_schema, AdapterType::Snowflake),
+            AdapterType::Snowflake
+        );
+
+        state.record_coordinated_schema(AdapterType::DuckDB, &duckdb_schema);
+        assert_eq!(
+            schema_adapter_for_reuse(&state, &duckdb_schema, AdapterType::Snowflake),
+            AdapterType::DuckDB
+        );
+    }
+
+    #[dbt_runtime::test]
+    async fn fixture_schema_cache_selection_uses_owner_in_both_directions() {
+        use dbt_schema_store::mock_store::MockSchemaStore;
+
+        for default_adapter in [AdapterType::Snowflake, AdapterType::DuckDB] {
+            for owner_adapter in [
+                None,
+                Some(AdapterType::Snowflake),
+                Some(AdapterType::DuckDB),
+            ] {
+                for fixture_adapter in [AdapterType::Snowflake, AdapterType::DuckDB] {
+                    let canonical_fqn = CanonicalFqn::default();
+                    let shared: Arc<dyn SchemaStoreTrait> = Arc::new(MockSchemaStore::new());
+                    let original =
+                        Arc::new(Schema::new(vec![Field::new("id", DataType::Utf8, false)]));
+                    let refreshed =
+                        Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+                    shared
+                        .register_schema(&canonical_fqn, None, Arc::clone(&original), true)
+                        .unwrap();
+                    let state = FixtureSchemaFetchState::default();
+                    let fetched = fetch_adapter_fixture_schema(
+                        &state,
+                        fixture_adapter,
+                        default_adapter,
+                        owner_adapter,
+                        || None,
+                        |fixture_cache| {
+                            assert_eq!(
+                                fixture_cache.is_none(),
+                                owner_adapter == Some(fixture_adapter)
+                            );
+                            let cache = fixture_cache.unwrap_or_else(|| Arc::clone(&shared));
+                            let canonical_fqn = canonical_fqn.clone();
+                            let refreshed = Arc::clone(&refreshed);
+                            async move {
+                                Ok(cache
+                                    .register_schema(&canonical_fqn, None, refreshed, true)?
+                                    .into_inner())
+                            }
+                        },
+                    )
+                    .await
+                    .unwrap();
+                    assert_eq!(fetched, refreshed);
+                    let expected_shared = if owner_adapter == Some(fixture_adapter) {
+                        &refreshed
+                    } else {
+                        &original
+                    };
+                    assert_eq!(
+                        shared.get_schema(&canonical_fqn).unwrap().inner(),
+                        expected_shared
+                    );
+                    // A producer hint cannot grant ownership of the shared entry.
+                    let reused = fetch_adapter_fixture_schema(
+                        &state,
+                        fixture_adapter,
+                        default_adapter,
+                        owner_adapter,
+                        || {
+                            shared
+                                .get_schema(&canonical_fqn)
+                                .map(|entry| (fixture_adapter, entry.into_inner()))
+                        },
+                        |_| async { Ok(Arc::new(Schema::empty())) },
+                    )
+                    .await
+                    .unwrap();
+                    assert_eq!(reused, refreshed);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fixture_schema_owner_uses_store_identity_and_manifest() {
+        use dbt_schema_store::SchemaOwner;
+        use dbt_schema_store::mock_store::MockSchemaStore;
+
+        let store = MockSchemaStore::new();
+        let canonical_fqn = CanonicalFqn::default();
+        let unique_id = "model.package.tested";
+        assert_eq!(
+            schema_owner_adapter(
+                &store,
+                &canonical_fqn,
+                |_| Some(AdapterType::Snowflake),
+                |_| None
+            ),
+            None
+        );
+        for adapter_type in [AdapterType::Snowflake, AdapterType::DuckDB] {
+            store.set_schema_owner(
+                canonical_fqn.clone(),
+                SchemaOwner::Current(unique_id.to_string()),
+            );
+            assert_eq!(
+                schema_owner_adapter(
+                    &store,
+                    &canonical_fqn,
+                    |owner| (owner == unique_id).then_some(adapter_type),
+                    |_| None,
+                ),
+                Some(adapter_type)
+            );
+            store.set_schema_owner(
+                canonical_fqn.clone(),
+                SchemaOwner::Deferred(unique_id.to_string()),
+            );
+            assert_eq!(
+                schema_owner_adapter(
+                    &store,
+                    &canonical_fqn,
+                    |_| Some(AdapterType::Bigquery),
+                    |owner| (owner == unique_id).then_some(adapter_type),
+                ),
+                Some(adapter_type)
+            );
+        }
+    }
+
+    #[dbt_runtime::test]
+    async fn source_alias_fixture_preserves_selected_model_schema_in_both_directions() {
+        use dbt_schema_store::SchemaOwner;
+        use dbt_schema_store::store::SchemaStore;
+
+        for (model_adapter, source_adapter) in [
+            (AdapterType::DuckDB, AdapterType::Snowflake),
+            (AdapterType::Snowflake, AdapterType::DuckDB),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let canonical_fqn = CanonicalFqn::default();
+            let model_id = "model.package.b";
+            let source_id = "source.package.raw.b";
+            let store = SchemaStore::new(
+                dir.path().to_path_buf(),
+                HashMap::from([(canonical_fqn.clone(), model_id.to_string())]),
+                HashMap::from([(canonical_fqn.clone(), source_id.to_string())]),
+                HashMap::new(),
+                vec![],
+                HashMap::new(),
+            );
+            let adapters = HashMap::from([(model_id, model_adapter), (source_id, source_adapter)]);
+            let resolve_owner = |cache: &dyn SchemaStoreTrait| {
+                schema_owner_adapter(
+                    cache,
+                    &canonical_fqn,
+                    |unique_id| adapters.get(unique_id).copied(),
+                    |_| None,
+                )
+            };
+            assert_eq!(
+                store.schema_owner(&canonical_fqn),
+                Some(SchemaOwner::Current(model_id.to_string()))
+            );
+            assert_eq!(resolve_owner(&store), Some(model_adapter));
+            let model_schema = Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Utf8, false),
+                Field::new("name", DataType::Utf8, true),
+            ]));
+            store
+                .register_schema(&canonical_fqn, None, Arc::clone(&model_schema), true)
+                .unwrap();
+            assert!(store.get_schema_by_unique_id(source_id).is_none());
+            let state = FixtureSchemaFetchState::default();
+            let schema_state = UnitTestSchemaState::default();
+            let source_schema = coordinate_adapter_fixture_schema_fetch(
+                &state,
+                &schema_state,
+                &store,
+                source_adapter,
+                AdapterType::Snowflake,
+                resolve_owner(&store),
+                &canonical_fqn,
+                || {
+                    Some((
+                        model_adapter,
+                        store.get_schema(&canonical_fqn).unwrap().into_inner(),
+                    ))
+                },
+                |fixture_cache| {
+                    let cache =
+                        fixture_cache.expect("an aliased source cannot write the model slot");
+                    let canonical_fqn = canonical_fqn.clone();
+                    async move {
+                        let schema =
+                            Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+                        Ok(cache
+                            .register_schema(&canonical_fqn, None, schema, true)?
+                            .into_inner())
+                    }
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(source_schema.field(0).data_type(), &DataType::Int64);
+            assert_eq!(
+                store.get_schema(&canonical_fqn).unwrap().inner(),
+                &model_schema
+            );
+            assert_eq!(
+                store.get_schema_by_unique_id(model_id).unwrap().inner(),
+                &model_schema
+            );
+
+            store.promote_to_frontier(&canonical_fqn).unwrap();
+            store.save(dir.path()).unwrap();
+            drop(store);
+            drop(state);
+            drop(schema_state);
+            let reloaded = SchemaStore::new(
+                dir.path().to_path_buf(),
+                HashMap::new(),
+                HashMap::from([(canonical_fqn.clone(), model_id.to_string())]),
+                HashMap::new(),
+                vec![],
+                HashMap::new(),
+            );
+            assert_eq!(resolve_owner(&reloaded), Some(model_adapter));
+            assert!(reloaded.schema_is_from_prior_invocation(&canonical_fqn));
+            assert!(!cached_fixture_schema_requires_refresh(true, true));
+            let schema = reloaded.get_schema(&canonical_fqn).unwrap().into_inner();
+            let mut metadata = model_schema.metadata().clone();
+            metadata.insert(
+                dbt_frontend_common::error::DBT_CACHED_PARQUET_PATH_KEY.to_string(),
+                canonical_fqn.to_string(),
+            );
+            assert_eq!(
+                schema,
+                Arc::new(Schema::new_with_metadata(
+                    model_schema.fields().clone(),
+                    metadata
+                ))
+            );
+            let reused = cached_deferred_schema_for_adapter(
+                &reloaded,
+                &canonical_fqn,
+                Some((&canonical_fqn, model_adapter)),
+                model_adapter,
+                &FixtureSchemaFetchState::default(),
+            )
+            .unwrap();
+            assert_eq!(reused, schema);
+            let rows: Vec<BTreeMap<String, YmlValue>> =
+                dbt_yaml::from_str("- {id: '001', name: alice}\n- {id: '002', name: null}")
+                    .unwrap();
+            let type_ops = DefaultTypeOps::new(model_adapter);
+            assert!(
+                create_values(
+                    &source_schema,
+                    &rows,
+                    model_adapter,
+                    &type_ops,
+                    None,
+                    "b",
+                    false
+                )
+                .is_err()
+            );
+            let sql =
+                create_values(&schema, &rows, model_adapter, &type_ops, None, "b", false).unwrap();
+            let cast = if model_adapter == AdapterType::Snowflake {
+                "TRY_CAST"
+            } else {
+                "CAST"
+            };
+            for literal in ["'001'", "'alice'", "NULL"] {
+                let expected = format!("{cast}({literal} AS text)");
+                assert_contains!(sql, expected.as_str());
+            }
+        }
+    }
+
+    #[dbt_runtime::test]
+    async fn secondary_fixture_schema_does_not_satisfy_default_adapter() {
+        let state = FixtureSchemaFetchState::default();
+        let secondary_schema = fetch_adapter_fixture_schema(
+            &state,
+            AdapterType::Bigquery,
+            AdapterType::Snowflake,
+            Some(AdapterType::Snowflake),
+            || None,
+            |_| async {
+                Ok(Arc::new(Schema::new(vec![Field::new(
+                    "id",
+                    DataType::Utf8,
+                    false,
+                )])))
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            state.coordinated_schema_adapter(&secondary_schema),
+            Some(AdapterType::Bigquery)
+        );
+        assert!(state.cached_default_schema.read().is_none());
+        assert_eq!(
+            given_fixture_schema_fetch_policy(true, false, false, true),
+            Some(FixtureSchemaCachePolicy::Refresh)
+        );
+    }
+
+    #[dbt_runtime::test]
+    async fn secondary_fixture_hydration_preserves_shared_expected_schema() {
+        assert_fixture_hydration_preserves_shared_expected_schema(
+            AdapterType::Snowflake,
+            AdapterType::DuckDB,
+        )
+        .await;
+    }
+
+    #[dbt_runtime::test]
+    async fn default_fixture_hydration_preserves_shared_expected_schema() {
+        assert_fixture_hydration_preserves_shared_expected_schema(
+            AdapterType::DuckDB,
+            AdapterType::Snowflake,
+        )
+        .await;
+    }
+
+    async fn assert_fixture_hydration_preserves_shared_expected_schema(
+        owner_adapter: AdapterType,
+        fixture_adapter: AdapterType,
+    ) {
+        let canonical_fqn = CanonicalFqn::default();
+        let schema_cache = dbt_schema_store::mock_store::MockSchemaStore::new();
+        let owning_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Utf8, false),
+            Field::new("name", DataType::Utf8, false),
+        ]));
+        schema_cache
+            .register_schema(&canonical_fqn, None, Arc::clone(&owning_schema), true)
+            .unwrap();
+        let secondary_schema =
+            Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+        let state = FixtureSchemaFetchState::default();
+        let schema_state = UnitTestSchemaState::default();
+        let fetched = coordinate_adapter_fixture_schema_fetch(
+            &state,
+            &schema_state,
+            &schema_cache,
+            fixture_adapter,
+            AdapterType::Snowflake,
+            Some(owner_adapter),
+            &canonical_fqn,
+            || Some((owner_adapter, Arc::clone(&owning_schema))),
+            |fixture_cache| {
+                let fixture_cache = fixture_cache.unwrap();
+                let canonical_fqn = canonical_fqn.clone();
+                let secondary_schema = Arc::clone(&secondary_schema);
+                async move {
+                    // Both the render hook and metadata fallback register by relation.
+                    let entry = fixture_cache.register_schema(
+                        &canonical_fqn,
+                        None,
+                        secondary_schema,
+                        true,
+                    )?;
+                    Ok(entry.into_inner())
+                }
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(fetched, secondary_schema);
+
+        // Non-incremental expected rows with static analysis read this shared entry.
+        let expected_schema = schema_cache
+            .get_schema(&canonical_fqn)
+            .unwrap()
+            .into_inner();
+        assert_eq!(expected_schema, owning_schema);
+        let rows: Vec<BTreeMap<String, YmlValue>> =
+            dbt_yaml::from_str("- {id: '001', name: alice}").unwrap();
+        let type_ops = DefaultTypeOps::new(owner_adapter);
+        assert!(
+            create_values(&fetched, &rows, owner_adapter, &type_ops, None, "s", false,).is_err()
+        );
+        let sql = create_values(
+            &expected_schema,
+            &rows,
+            owner_adapter,
+            &type_ops,
+            None,
+            "s",
+            false,
+        )
+        .unwrap();
+        let cast = if owner_adapter == AdapterType::Snowflake {
+            "TRY_CAST"
+        } else {
+            "CAST"
+        };
+        let expected = format!(
+            "{cast}('alice' AS text) AS {}",
+            type_ops.format_ident("name")
+        );
+        assert_contains!(sql, expected.as_str());
+    }
+
+    #[dbt_runtime::test]
+    async fn secondary_fixture_hydration_does_not_persist_foreign_schema() {
+        assert_fixture_hydration_does_not_persist_foreign_schema(
+            AdapterType::Snowflake,
+            AdapterType::DuckDB,
+        )
+        .await;
+    }
+
+    #[dbt_runtime::test]
+    async fn default_fixture_hydration_does_not_persist_foreign_schema() {
+        assert_fixture_hydration_does_not_persist_foreign_schema(
+            AdapterType::DuckDB,
+            AdapterType::Snowflake,
+        )
+        .await;
+    }
+
+    async fn assert_fixture_hydration_does_not_persist_foreign_schema(
+        owner_adapter: AdapterType,
+        fixture_adapter: AdapterType,
+    ) {
+        use dbt_schema_store::store::SchemaStore;
+
+        for has_owning_schema in [false, true] {
+            let target_dir = tempfile::tempdir().unwrap();
+            let canonical_fqn = CanonicalFqn::default();
+            let unique_id = "model.package.s";
+            let frontier = HashMap::from([(canonical_fqn.clone(), unique_id.to_string())]);
+            let schema_cache = SchemaStore::new(
+                target_dir.path().to_path_buf(),
+                HashMap::new(),
+                frontier.clone(),
+                HashMap::new(),
+                vec![],
+                HashMap::new(),
+            );
+            let owning_schema =
+                Arc::new(Schema::new(vec![Field::new("id", DataType::Utf8, false)]));
+            if has_owning_schema {
+                schema_cache
+                    .register_schema(&canonical_fqn, None, Arc::clone(&owning_schema), true)
+                    .unwrap();
+            }
+            let state = FixtureSchemaFetchState::default();
+            let schema_state = UnitTestSchemaState::default();
+            let secondary_schema = coordinate_adapter_fixture_schema_fetch(
+                &state,
+                &schema_state,
+                &schema_cache,
+                fixture_adapter,
+                AdapterType::Snowflake,
+                Some(owner_adapter),
+                &canonical_fqn,
+                || None,
+                |fixture_cache| {
+                    let fixture_cache = fixture_cache.unwrap();
+                    let canonical_fqn = canonical_fqn.clone();
+                    async move {
+                        let schema =
+                            Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+                        Ok(fixture_cache
+                            .register_schema(&canonical_fqn, None, schema, true)?
+                            .into_inner())
+                    }
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(secondary_schema.field(0).data_type(), &DataType::Int64);
+            schema_cache.save(target_dir.path()).unwrap();
+            drop(schema_cache);
+            drop(schema_state);
+            drop(state);
+
+            // A fresh invocation has no in-memory producer records.
+            let reloaded = SchemaStore::new(
+                target_dir.path().to_path_buf(),
+                HashMap::new(),
+                frontier,
+                HashMap::new(),
+                vec![],
+                HashMap::new(),
+            );
+            if !has_owning_schema {
+                assert!(!reloaded.exists(&canonical_fqn));
+                continue;
+            }
+            assert!(reloaded.schema_is_from_prior_invocation(&canonical_fqn));
+            assert!(!cached_fixture_schema_requires_refresh(true, true));
+            let schema = reloaded
+                .get_schema_by_unique_id(unique_id)
+                .unwrap()
+                .into_inner();
+            let mut expected_metadata = owning_schema.metadata().clone();
+            expected_metadata.insert(
+                dbt_frontend_common::error::DBT_CACHED_PARQUET_PATH_KEY.to_string(),
+                canonical_fqn.to_string(),
+            );
+            let expected_schema = Arc::new(Schema::new_with_metadata(
+                owning_schema.fields().clone(),
+                expected_metadata,
+            ));
+            assert_eq!(schema, expected_schema);
+            let state = FixtureSchemaFetchState::default();
+            let reused = cached_deferred_schema_for_adapter(
+                &reloaded,
+                &canonical_fqn,
+                Some((&canonical_fqn, owner_adapter)),
+                owner_adapter,
+                &state,
+            )
+            .unwrap();
+            assert_eq!(reused, schema);
+            assert!(
+                cached_deferred_schema_for_adapter(
+                    &reloaded,
+                    &canonical_fqn,
+                    Some((&canonical_fqn, owner_adapter)),
+                    fixture_adapter,
+                    &state,
+                )
+                .is_none()
+            );
+            let rows: Vec<BTreeMap<String, YmlValue>> =
+                dbt_yaml::from_str("- {id: '001'}").unwrap();
+            let sql = create_values(
+                &schema,
+                &rows,
+                owner_adapter,
+                &DefaultTypeOps::new(owner_adapter),
+                None,
+                "s",
+                true,
+            )
+            .unwrap();
+            let cast = if owner_adapter == AdapterType::Snowflake {
+                "TRY_CAST"
+            } else {
+                "CAST"
+            };
+            let type_ops = DefaultTypeOps::new(owner_adapter);
+            let expected = format!("{cast}('001' AS text) AS {}", type_ops.format_ident("id"));
+            assert_contains!(sql, expected.as_str());
+        }
+    }
+
+    #[dbt_runtime::test]
+    async fn default_fixture_refresh_updates_cached_schema() {
+        assert_eq!(
+            given_fixture_schema_fetch_policy(true, false, false, true),
+            Some(FixtureSchemaCachePolicy::Refresh)
+        );
+
+        let cached_schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+        let state = FixtureSchemaFetchState {
+            cached_default_schema: parking_lot::RwLock::new(Some(cached_schema)),
+            ..Default::default()
+        };
+        fetch_adapter_fixture_schema(
+            &state,
+            AdapterType::Bigquery,
+            AdapterType::Snowflake,
+            Some(AdapterType::Snowflake),
+            || None,
+            |_| async { Ok(Arc::new(Schema::empty())) },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            state
+                .cached_default_schema
+                .read()
+                .as_ref()
+                .unwrap()
+                .field(0)
+                .data_type(),
+            &DataType::Int64
+        );
+
+        fetch_adapter_fixture_schema(
+            &state,
+            AdapterType::Snowflake,
+            AdapterType::Snowflake,
+            Some(AdapterType::Snowflake),
+            || None,
+            |_| async {
+                Ok(Arc::new(Schema::new(vec![Field::new(
+                    "id",
+                    DataType::Utf8,
+                    false,
+                )])))
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            state
+                .cached_default_schema
+                .read()
+                .as_ref()
+                .unwrap()
+                .field(0)
+                .data_type(),
+            &DataType::Utf8
+        );
+    }
+
+    #[dbt_runtime::test]
+    async fn adapter_scoped_fixture_fetches_coalesce_and_report_metrics() {
+        let state = FixtureSchemaFetchState::default();
+        let schema_state = UnitTestSchemaState::default();
+        let schema_cache = dbt_schema_store::mock_store::MockSchemaStore::new();
+        let canonical_fqn = CanonicalFqn::default();
+        let fetch_count = AtomicUsize::new(0);
+        let first = coordinate_adapter_fixture_schema_fetch(
+            &state,
+            &schema_state,
+            &schema_cache,
+            AdapterType::Snowflake,
+            AdapterType::Snowflake,
+            Some(AdapterType::Snowflake),
+            &canonical_fqn,
+            || None,
+            |_| async {
+                fetch_count.fetch_add(1, Ordering::Relaxed);
+                tokio::task::yield_now().await;
+                Ok(Arc::new(Schema::new(vec![Field::new(
+                    "id",
+                    DataType::Int64,
+                    false,
+                )])))
+            },
+        );
+        let second = coordinate_adapter_fixture_schema_fetch(
+            &state,
+            &schema_state,
+            &schema_cache,
+            AdapterType::Snowflake,
+            AdapterType::Snowflake,
+            Some(AdapterType::Snowflake),
+            &canonical_fqn,
+            || None,
+            |_| async {
+                fetch_count.fetch_add(1, Ordering::Relaxed);
+                Ok(Arc::new(Schema::empty()))
+            },
+        );
+        let (first, second) = tokio::join!(first, second);
+
+        assert_eq!(fetch_count.load(Ordering::Relaxed), 1);
+        assert_eq!(first.unwrap().field(0).name(), "id");
+        assert_eq!(second.unwrap().field(0).name(), "id");
+        let stats = schema_state.stats_snapshot();
+        assert_eq!(stats.fixture_requests, 2);
+        assert_eq!(stats.fixture_owners, 1);
+        assert_eq!(stats.fixture_coalesced, 1);
+    }
+
+    #[dbt_runtime::test]
+    async fn same_adapter_fixture_fetch_reads_latest_schema() {
+        let state = FixtureSchemaFetchState::default();
+        let schema_state = UnitTestSchemaState::default();
+        let schema_cache = dbt_schema_store::mock_store::MockSchemaStore::new();
+        let canonical_fqn = CanonicalFqn::default();
+        let latest_schema: parking_lot::RwLock<Option<SchemaRef>> = parking_lot::RwLock::new(None);
+        let fetch_count = AtomicUsize::new(0);
+
+        let first = coordinate_adapter_fixture_schema_fetch(
+            &state,
+            &schema_state,
+            &schema_cache,
+            AdapterType::Snowflake,
+            AdapterType::Snowflake,
+            Some(AdapterType::Snowflake),
+            &canonical_fqn,
+            || {
+                latest_schema
+                    .read()
+                    .clone()
+                    .map(|schema| (AdapterType::Snowflake, schema))
+            },
+            |_| async {
+                fetch_count.fetch_add(1, Ordering::Relaxed);
+                Ok(Arc::new(Schema::new(vec![Field::new(
+                    "id",
+                    DataType::Int64,
+                    false,
+                )])))
+            },
+        )
+        .await
+        .unwrap();
+
+        *latest_schema.write() = Some(Arc::new(Schema::new(vec![Field::new(
+            "id",
+            DataType::Utf8,
+            false,
+        )])));
+
+        let second = coordinate_adapter_fixture_schema_fetch(
+            &state,
+            &schema_state,
+            &schema_cache,
+            AdapterType::Snowflake,
+            AdapterType::Snowflake,
+            Some(AdapterType::Snowflake),
+            &canonical_fqn,
+            || {
+                latest_schema
+                    .read()
+                    .clone()
+                    .map(|schema| (AdapterType::Snowflake, schema))
+            },
+            |_| async {
+                fetch_count.fetch_add(1, Ordering::Relaxed);
+                Ok(Arc::new(Schema::empty()))
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(fetch_count.load(Ordering::Relaxed), 1);
+        assert_eq!(first.field(0).data_type(), &DataType::Int64);
+        assert_eq!(second.field(0).data_type(), &DataType::Utf8);
+        let stats = schema_state.stats_snapshot();
+        assert_eq!(stats.fixture_requests, 2);
+        assert_eq!(stats.fixture_owners, 1);
+        assert_eq!(stats.fixture_coalesced, 1);
+    }
+
+    #[dbt_runtime::test]
+    async fn repeated_adapter_fixture_fetch_keeps_producer_schema() {
+        async fn fetch(data_type: DataType) -> FsResult<SchemaRef> {
+            Ok(Arc::new(Schema::new(vec![Field::new(
+                "id", data_type, false,
+            )])))
+        }
+
+        let state = FixtureSchemaFetchState::default();
+        let snowflake = fetch_adapter_fixture_schema(
+            &state,
+            AdapterType::Snowflake,
+            AdapterType::Snowflake,
+            Some(AdapterType::Snowflake),
+            || None,
+            |_| fetch(DataType::Int64),
+        )
+        .await
+        .unwrap();
+        let bigquery = fetch_adapter_fixture_schema(
+            &state,
+            AdapterType::Bigquery,
+            AdapterType::Snowflake,
+            Some(AdapterType::Snowflake),
+            || None,
+            |_| fetch(DataType::Utf8),
+        )
+        .await
+        .unwrap();
+        let repeated_snowflake = fetch_adapter_fixture_schema(
+            &state,
+            AdapterType::Snowflake,
+            AdapterType::Snowflake,
+            Some(AdapterType::Snowflake),
+            || Some((AdapterType::Snowflake, Arc::clone(&bigquery))),
+            |_| fetch(DataType::Null),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(snowflake.field(0).data_type(), &DataType::Int64);
+        assert_eq!(bigquery.field(0).data_type(), &DataType::Utf8);
+        assert_eq!(repeated_snowflake.field(0).data_type(), &DataType::Int64);
+    }
+
+    #[dbt_runtime::test]
+    async fn concurrent_adapter_fixture_fetches_keep_their_schema() {
+        async fn fetch(data_type: DataType) -> FsResult<SchemaRef> {
+            tokio::task::yield_now().await;
+            Ok(Arc::new(Schema::new(vec![Field::new(
+                "id", data_type, false,
+            )])))
+        }
+
+        let canonical_fqn = CanonicalFqn::default();
+        let fetch_state = FixtureSchemaFetchState::default();
+        let snowflake = fetch_adapter_fixture_schema(
+            &fetch_state,
+            AdapterType::Snowflake,
+            AdapterType::Snowflake,
+            Some(AdapterType::Snowflake),
+            || None,
+            |_| fetch(DataType::Int64),
+        );
+        let bigquery = fetch_adapter_fixture_schema(
+            &fetch_state,
+            AdapterType::Bigquery,
+            AdapterType::Snowflake,
+            Some(AdapterType::Snowflake),
+            || None,
+            |_| fetch(DataType::Utf8),
+        );
+        let (snowflake, bigquery) = tokio::join!(snowflake, bigquery);
+
+        let mut schemas = FetchedRelationSchemas::new();
+        schemas.insert(
+            (
+                AdapterType::Snowflake,
+                UnitTestSchemaTarget::GivenUpstream,
+                canonical_fqn.clone(),
+            ),
+            snowflake.unwrap(),
+        );
+        schemas.insert(
+            (
+                AdapterType::Bigquery,
+                UnitTestSchemaTarget::GivenUpstream,
+                canonical_fqn.clone(),
+            ),
+            bigquery.unwrap(),
+        );
+        assert_eq!(
+            fetched_relation_schema(
+                &schemas,
+                AdapterType::Snowflake,
+                UnitTestSchemaTarget::GivenUpstream,
+                &canonical_fqn,
+            )
+            .unwrap()
+            .field(0)
+            .data_type(),
+            &DataType::Int64
+        );
+        assert_eq!(
+            fetched_relation_schema(
+                &schemas,
+                AdapterType::Bigquery,
+                UnitTestSchemaTarget::GivenUpstream,
+                &canonical_fqn,
+            )
+            .unwrap()
+            .field(0)
+            .data_type(),
+            &DataType::Utf8
+        );
+    }
+
+    #[test]
+    fn schema_policy_preserves_old_mixed_recordings() {
+        let dir = tempfile::tempdir().unwrap();
+        for (legacy, current, override_value, compiled, preserve) in [
+            (false, false, None, false, true),
+            (false, false, Some(false), false, true),
+            (false, false, Some(true), false, true),
+            (true, false, None, false, true),
+            (true, false, Some(false), true, true),
+            (true, false, Some(true), false, true),
+            (false, true, None, false, false),
+            (false, true, Some(false), true, false),
+            (false, true, Some(true), true, false),
+            (true, true, Some(true), true, false),
+        ] {
+            let path = dir
+                .path()
+                .join(format!("{legacy}-{current}-{override_value:?}"));
+            stdfs::create_dir_all(&path).unwrap();
+            if legacy {
+                stdfs::write(path.join(COMPILED_INCREMENTAL_SCHEMA_MARKER), b"1\n").unwrap();
+            }
+            if current {
+                stdfs::write(path.join(UNIT_TEST_SCHEMA_PROBE_MARKER), b"1\n").unwrap();
+            }
+            assert_eq!(
+                schema_policy_for_recording(override_value, Some((&path, false))).unwrap(),
+                UnitTestSchemaPolicy {
+                    use_compiled_incremental: compiled,
+                    preserve_recorded_probe_sql: preserve,
+                },
+            );
+        }
+    }
+
+    #[test]
+    fn schema_policy_versions_all_new_recordings() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("recording");
+        let policy = schema_policy_for_recording(None, Some((&path, true))).unwrap();
+        assert!(!policy.preserve_recorded_probe_sql);
+        assert!(path.join(UNIT_TEST_SCHEMA_PROBE_MARKER).is_file());
+        assert!(!path.join(COMPILED_INCREMENTAL_SCHEMA_MARKER).exists());
+        for override_value in [None, Some(false), Some(true)] {
+            let recorded =
+                schema_policy_for_recording(override_value, Some((&path, true))).unwrap();
+            let replayed =
+                schema_policy_for_recording(override_value, Some((&path, false))).unwrap();
+            assert_eq!(recorded, replayed);
+            assert_eq!(
+                recorded,
+                schema_policy_for_recording(override_value, None).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn schema_probe_preserves_model_cte_scope_and_comments() {
+        for adapter in [
+            AdapterType::Snowflake,
+            AdapterType::Bigquery,
+            AdapterType::DuckDB,
+        ] {
+            let type_ops = DefaultTypeOps::new(adapter);
+            for suffix in ["", ";", ";;", " -- model comment", "; -- model comment"] {
+                let sql = format!(
+                    "WITH staged AS (SELECT * FROM raw.events) SELECT id FROM staged{suffix}"
+                );
+                let probe = build_unit_test_schema_probe(
+                    adapter,
+                    &type_ops,
+                    &sql,
+                    &[(
+                        "raw.events".to_string(),
+                        "SELECT 1 AS id -- fixture comment".to_string(),
+                    )],
+                    false,
+                );
+                sqlparser::parser::Parser::parse_sql(
+                    sqlparser_dialect_for(adapter),
+                    &probe.query_sql,
+                )
+                .unwrap_or_else(|error| panic!("{adapter:?}: {error}: {}", probe.query_sql));
+                let wrapped = format!(
+                    "WITH {} SELECT * FROM (\n{}\n) AS probe WHERE false",
+                    probe.ctes,
+                    DefaultStmtSplitter
+                        .strip_trailing_statement_terminator(&probe.schema_sql, adapter)
+                );
+                sqlparser::parser::Parser::parse_sql(sqlparser_dialect_for(adapter), &wrapped)
+                    .expect("the warehouse header and wrapped model must remain valid SQL");
+            }
+        }
+    }
+
+    #[test]
+    fn schema_probe_keeps_historical_sql_exactly() {
+        let adapter = AdapterType::Snowflake;
+        let type_ops = DefaultTypeOps::new(adapter);
+        let model = "WITH staged AS (SELECT * FROM raw.events) SELECT id FROM staged; -- trailing";
+        let fixture = "SELECT 1 AS id -- fixture comment";
+        let probe = build_unit_test_schema_probe(
+            adapter,
+            &type_ops,
+            model,
+            &[("raw.events".to_string(), fixture.to_string())],
+            true,
+        );
+        let name = create_cte_name_from_fqn(adapter, &type_ops, "raw.events");
+        assert_eq!(probe.ctes, format!("{name} as ({fixture})"));
+        assert_eq!(
+            probe.schema_sql,
+            format!("WITH staged AS (SELECT * FROM {name}) SELECT id FROM staged; -- trailing")
+        );
+        assert_eq!(
+            probe.query_sql,
+            format!("WITH {} {}", probe.ctes, probe.schema_sql)
+        );
+    }
 
     #[test]
     fn configured_local_unit_test_uses_query_schema_fallback() {
@@ -2781,27 +4996,6 @@ mod tests {
     }
 
     #[test]
-    fn test_unit_test_timestamp_fixture_renders_as_string_literal() {
-        // Expected values are `Timestamp`'s canonical Display form (RFC 3339-style `T`
-        // separator); the fixture builder wraps the literal in a cast to the column type.
-        let cases = [
-            ("2020-01-01", "'2020-01-01'"),
-            ("2020-01-01 10:30:00", "'2020-01-01T10:30:00'"),
-            ("2020-01-01T10:30:00+05:00", "'2020-01-01T10:30:00+05:00'"),
-        ];
-        for (authored, expected) in cases {
-            let ts = dbt_yaml::Timestamp::parse(authored).expect("valid timestamp");
-            let literal = yml_value_to_sql_literal(
-                AdapterType::Snowflake,
-                &DefaultTypeOps::new(AdapterType::Snowflake),
-                YmlValue::timestamp(ts),
-                &DataType::Date32,
-            )
-            .expect("timestamp fixture should render as a string literal");
-            assert_eq!(literal, expected, "for authored value {authored}");
-        }
-    }
-    #[test]
     fn test_parse_csv_rows_preserves_non_empty_scalar_text_and_nulls_empty_cells() {
         let rows =
             parse_csv_rows(b"id,code,enabled,ratio,empty,quoted_empty\n1,000001,true,1.5,,\"\"\n")
@@ -2837,6 +5031,10 @@ mod tests {
     /// Binds `value` as the `run_started_at` override and renders `template`,
     /// exercising the same path unit tests use.
     fn render_run_started_at_override(value: YmlValue, template: &str) -> String {
+        assert!(
+            dbt_runtime::is_pool_worker(),
+            "Jinja must render on a dbt-runtime worker"
+        );
         let mut raw_env = minijinja::Environment::new();
         minijinja_contrib::add_to_environment(&mut raw_env);
         let env = JinjaEnv::new(raw_env);
@@ -2844,7 +5042,7 @@ mod tests {
         let mut macros = BTreeMap::new();
         macros.insert("run_started_at".to_string(), value);
 
-        let mut compile_context: BTreeMap<String, Value> = BTreeMap::new();
+        let mut compile_context = OverlayMap::new(Value::from(BTreeMap::<String, Value>::new()));
         bind_override_macros(&macros, &mut compile_context, &env);
 
         env.render_str(template, &compile_context, &[])
@@ -2855,7 +5053,7 @@ mod tests {
     /// dbt-core lets `overrides.macros` freeze `run_started_at`, but unlike a
     /// real macro override it's accessed without `()`, so wrapping it as a
     /// callable stub broke `.strftime()`/`.astimezone()`.
-    #[test]
+    #[dbt_runtime::worker_test]
     fn test_run_started_at_override_binds_a_real_value_not_a_callable_stub() {
         let rendered = render_run_started_at_override(
             YmlValue::string(
@@ -2870,7 +5068,7 @@ mod tests {
     // Unhappy paths: a non-datetime override must still bind as a plain value,
     // never a callable stub, so bare interpolation renders it. `.strftime()` on
     // these would error the same as it does in dbt-core.
-    #[test]
+    #[dbt_runtime::worker_test]
     fn test_run_started_at_override_plain_string_binds_as_value() {
         let rendered = render_run_started_at_override(
             YmlValue::string("2025-09-04 20:00:00".to_string()),
@@ -2879,7 +5077,7 @@ mod tests {
         assert_eq!(rendered, "2025-09-04 20:00:00");
     }
 
-    #[test]
+    #[dbt_runtime::worker_test]
     fn test_run_started_at_override_non_datetime_expression_evaluates() {
         let rendered = render_run_started_at_override(
             YmlValue::string("{{ 'hello' }}".to_string()),
@@ -2888,11 +5086,93 @@ mod tests {
         assert_eq!(rendered, "hello");
     }
 
-    #[test]
+    #[dbt_runtime::worker_test]
     fn test_run_started_at_override_non_string_binds_as_value() {
         let rendered =
             render_run_started_at_override(YmlValue::number(12345.into()), "{{ run_started_at }}");
         assert_eq!(rendered, "12345");
+    }
+
+    /// A package namespace that, like `DbtNamespace`, resolves macros only in
+    /// `get_property` and dispatches to the `<package>.<macro>` template.
+    #[derive(Debug)]
+    struct PackageNamespace(&'static str);
+
+    impl Object for PackageNamespace {
+        fn get_property(
+            self: &Arc<Self>,
+            state: &State<'_, '_>,
+            name: &str,
+            _listeners: &[Rc<dyn RenderingEventListener>],
+        ) -> Result<Value, minijinja::Error> {
+            let template = format!("{}.{name}", self.0);
+            if state.env().get_template(&template).is_err() {
+                return Ok(Value::UNDEFINED);
+            }
+            Ok(Value::from_object(DispatchObject {
+                macro_name: name.to_string(),
+                package_name: Some(self.0.to_string()),
+                strict: true,
+                auto_execute: false,
+                context: None,
+            }))
+        }
+    }
+
+    /// Binds one `overrides.macros` entry over a `my_project` package and renders
+    /// `{{ my_project.pick_label() }}`, where `pick_label` calls `my_project.is_ci()`.
+    fn render_package_macro_override(macro_name: &str, value: YmlValue) -> String {
+        assert!(
+            dbt_runtime::is_pool_worker(),
+            "Jinja must render on a dbt-runtime worker"
+        );
+        let mut raw_env = minijinja::Environment::new();
+        let pick_label = "{% macro pick_label() %}{% if my_project.is_ci() %}{{ return('ci') }}\
+                          {% else %}{{ return('local') }}{% endif %}{% endmacro %}";
+        for (name, source) in [
+            (
+                "my_project.is_ci",
+                "{% macro is_ci() %}{{ return(false) }}{% endmacro %}",
+            ),
+            ("my_project.pick_label", pick_label),
+            (
+                "my_project.unused_macro",
+                "{% macro unused_macro() %}{{ return('unused') }}{% endmacro %}",
+            ),
+        ] {
+            raw_env
+                .add_template(name, source)
+                .expect("macro template should parse");
+        }
+        let env = JinjaEnv::new(raw_env);
+
+        let macros = BTreeMap::from([(macro_name.to_string(), value)]);
+        let mut compile_context = OverlayMap::new(Value::from(BTreeMap::from([(
+            "my_project".to_string(),
+            Value::from_object(PackageNamespace("my_project")),
+        )])));
+        bind_override_macros(&macros, &mut compile_context, &env);
+
+        env.render_str("{{ my_project.pick_label() }}", &compile_context, &[])
+            .expect("the package's other macros should stay callable")
+    }
+
+    /// Regression test for https://github.com/dbt-labs/dbt/issues/16477: overriding
+    /// one package macro must keep the package's other macros callable, and they
+    /// must see the override, as in dbt-core.
+    #[dbt_runtime::worker_test]
+    fn test_package_macro_override_is_seen_by_other_package_macros() {
+        let rendered = render_package_macro_override("my_project.is_ci", YmlValue::bool(true));
+        assert_eq!(rendered, "ci");
+    }
+
+    #[dbt_runtime::worker_test]
+    fn test_package_macro_override_keeps_unrelated_package_macros() {
+        let rendered = render_package_macro_override(
+            "my_project.unused_macro",
+            YmlValue::string("stub".to_string()),
+        );
+        assert_eq!(rendered, "local");
     }
 
     #[test]
@@ -2973,6 +5253,365 @@ mod tests {
         );
 
         assert!(is_supported_type(AdapterType::Snowflake, &time_type));
+    }
+
+    fn map_type(value: DataType) -> DataType {
+        DataType::Map(
+            Arc::new(Field::new(
+                "entries",
+                DataType::Struct(
+                    vec![
+                        Field::new("key", DataType::Utf8, false),
+                        Field::new("value", value, true),
+                    ]
+                    .into(),
+                ),
+                false,
+            )),
+            false,
+        )
+    }
+
+    fn list_of(item: DataType) -> DataType {
+        DataType::List(Arc::new(Field::new("item", item, true)))
+    }
+
+    fn struct_of(fields: Vec<Field>) -> DataType {
+        DataType::Struct(fields.into())
+    }
+
+    #[test]
+    fn test_duckdb_list_fixture_element_types() {
+        let type_ops = DefaultTypeOps::new(AdapterType::DuckDB);
+        for element in [
+            struct_of(vec![Field::new("x", DataType::Int64, true)]),
+            map_type(DataType::Int64),
+        ] {
+            for data_type in [list_of(element.clone()), list_of(list_of(element))] {
+                let schema = Arc::new(Schema::new(vec![Field::new("items", data_type, true)]));
+                let rows = vec![BTreeMap::from([(
+                    "items".to_string(),
+                    yml_seq(vec![yml_map(vec![("x", YmlValue::number(1.into()))])]),
+                )])];
+                let error = create_values(
+                    &schema,
+                    &rows,
+                    AdapterType::DuckDB,
+                    &type_ops,
+                    None,
+                    "fixture_input",
+                    false,
+                )
+                .unwrap_err();
+                assert_contains!(error.to_string(), "Only primitive types");
+            }
+        }
+
+        for (data_type, value) in [
+            (
+                list_of(DataType::Int64),
+                yml_seq(vec![YmlValue::number(1.into())]),
+            ),
+            (
+                list_of(list_of(DataType::Int64)),
+                yml_seq(vec![yml_seq(vec![YmlValue::number(1.into())])]),
+            ),
+        ] {
+            let schema = Arc::new(Schema::new(vec![Field::new("items", data_type, true)]));
+            let rows = vec![BTreeMap::from([("items".to_string(), value)])];
+            let sql = create_values(
+                &schema,
+                &rows,
+                AdapterType::DuckDB,
+                &type_ops,
+                None,
+                "fixture_input",
+                false,
+            )
+            .unwrap();
+            let sql = sql
+                .strip_prefix("{% raw %}")
+                .unwrap()
+                .strip_suffix("{% endraw %}")
+                .unwrap();
+            sqlparser::parser::Parser::parse_sql(&sqlparser::dialect::DuckDbDialect {}, sql)
+                .expect("scalar list fixtures must produce valid DuckDB SQL");
+        }
+    }
+
+    #[test]
+    fn test_databricks_complex_types_are_supported_and_orderable_unless_they_contain_a_map() {
+        let map = map_type(DataType::Int32);
+        let orderable = [
+            list_of(DataType::Int32),
+            struct_of(vec![Field::new("a", DataType::Int32, true)]),
+            list_of(struct_of(vec![Field::new("a", DataType::Int32, true)])),
+        ];
+        let unorderable = [
+            map.clone(),
+            struct_of(vec![Field::new("m", map.clone(), true)]),
+            list_of(map.clone()),
+            list_of(struct_of(vec![Field::new("m", map, true)])),
+        ];
+        for ty in orderable.iter().chain(&unorderable) {
+            assert!(is_supported_type(AdapterType::Databricks, ty), "{ty}");
+        }
+        for ty in &orderable {
+            assert!(is_orderable_type(AdapterType::Databricks, ty), "{ty}");
+        }
+        for ty in &unorderable {
+            assert!(!is_orderable_type(AdapterType::Databricks, ty), "{ty}");
+        }
+        // other adapters keep rejecting complex types
+        assert!(!is_supported_type(
+            AdapterType::Snowflake,
+            &list_of(DataType::Int32)
+        ));
+    }
+
+    fn render_databricks(fields: Vec<Field>, row: Vec<YmlValue>) -> String {
+        let type_ops = DefaultTypeOps::new(AdapterType::Databricks);
+        let schema = Arc::new(Schema::new(fields));
+        let columns = columns_to_formatted_types(&schema, &type_ops).unwrap();
+        create_select_with_union_all(
+            AdapterType::Databricks,
+            &type_ops,
+            vec![row],
+            &schema,
+            &columns,
+            "",
+        )
+        .unwrap()
+    }
+
+    fn yml_seq(v: Vec<YmlValue>) -> YmlValue {
+        YmlValue::Sequence(v, Default::default())
+    }
+
+    fn yml_map(entries: Vec<(&str, YmlValue)>) -> YmlValue {
+        let mut m = dbt_yaml::mapping::Mapping::new();
+        for (k, v) in entries {
+            m.insert(YmlValue::string(k.to_string()), v);
+        }
+        YmlValue::Mapping(m, Default::default())
+    }
+
+    #[test]
+    fn test_databricks_string_fixtures_for_complex_columns_are_sql_expressions() {
+        let sql = render_databricks(
+            vec![
+                Field::new("m", map_type(DataType::Int32), true),
+                Field::new(
+                    "s",
+                    struct_of(vec![Field::new("a", DataType::Int32, true)]),
+                    true,
+                ),
+            ],
+            vec![
+                YmlValue::string("map('k', 1)".to_string()),
+                YmlValue::string("named_struct('a', 1)".to_string()),
+            ],
+        );
+        assert_contains!(sql, "CAST(map('k', 1) AS ");
+        assert_contains!(sql, "CAST(named_struct('a', 1) AS STRUCT<`a` ");
+    }
+
+    #[test]
+    fn test_databricks_timestamp_ntz_string_fixture_stays_a_quoted_cast() {
+        let ntz = DataType::FixedSizeList(
+            Arc::new(Field::new("timestamp_ntz", DataType::Int64, true)),
+            1,
+        );
+        assert!(
+            !DefaultTypeOps::new(AdapterType::Databricks)
+                .cast_from_quoted_string_literal_unsupported_for(&ntz)
+        );
+        assert!(is_orderable_type(AdapterType::Databricks, &ntz));
+        let sql = render_databricks(
+            vec![Field::new("ts", ntz, true)],
+            vec![YmlValue::string("2024-01-01 10:00:00".to_string())],
+        );
+        assert_contains!(sql, "CAST('2024-01-01 10:00:00' AS TIMESTAMP_NTZ)");
+    }
+
+    #[test]
+    fn test_databricks_nested_string_fixtures_escape_backslashes() {
+        let sql = render_databricks(
+            vec![
+                Field::new("m", map_type(DataType::Utf8), true),
+                Field::new(
+                    "s",
+                    struct_of(vec![Field::new("txt", DataType::Utf8, true)]),
+                    true,
+                ),
+                Field::new("a", list_of(DataType::Utf8), true),
+            ],
+            vec![
+                yml_map(vec![(r"k\", YmlValue::string(r"a\".to_string()))]),
+                yml_map(vec![("txt", YmlValue::string(r"a\nb".to_string()))]),
+                yml_seq(vec![YmlValue::string(r"a\'b".to_string())]),
+            ],
+        );
+        assert_contains!(sql, r"CAST('k\\' AS");
+        assert_contains!(sql, r"CAST('a\\' AS");
+        assert_contains!(sql, r"STRUCT('a\\nb' AS `txt`)");
+        assert_contains!(sql, r"array(CAST('a\\\'b' AS");
+    }
+
+    #[test]
+    fn test_databricks_null_only_complex_fixtures_use_void() {
+        let sql = render_databricks(
+            vec![
+                Field::new("m", map_type(DataType::Null), true),
+                Field::new(
+                    "s",
+                    struct_of(vec![Field::new("n", DataType::Null, true)]),
+                    true,
+                ),
+                Field::new("a", list_of(DataType::Null), true),
+            ],
+            vec![
+                yml_map(vec![("k", YmlValue::null())]),
+                yml_map(vec![("n", YmlValue::null())]),
+                yml_seq(vec![YmlValue::null()]),
+            ],
+        );
+        assert_contains!(sql, "AS MAP<string, VOID>");
+        assert_contains!(sql, "AS STRUCT<`n` VOID>");
+        assert_contains!(sql, "array(CAST(NULL AS VOID))");
+        assert_contains!(sql, "AS ARRAY<VOID>");
+    }
+
+    #[test]
+    fn test_databricks_complex_fixtures_preserve_decimal_precision() {
+        for (data_type, value, formatted_type) in [
+            (
+                DataType::Decimal128(38, 10),
+                "12345678901234567890.1234567891",
+                "DECIMAL(38, 10)",
+            ),
+            (
+                DataType::Decimal128(38, 0),
+                "100000000000000000000",
+                "DECIMAL(38, 0)",
+            ),
+        ] {
+            let sql = render_databricks(
+                vec![
+                    Field::new("m", map_type(data_type.clone()), true),
+                    Field::new(
+                        "s",
+                        struct_of(vec![Field::new("n", data_type.clone(), true)]),
+                        true,
+                    ),
+                    Field::new("a", list_of(data_type.clone()), true),
+                    Field::new("ma", map_type(list_of(data_type)), true),
+                ],
+                vec![
+                    yml_map(vec![("k", YmlValue::string(value.to_string()))]),
+                    yml_map(vec![("n", YmlValue::string(value.to_string()))]),
+                    yml_seq(vec![YmlValue::string(value.to_string())]),
+                    yml_map(vec![(
+                        "k",
+                        yml_seq(vec![YmlValue::string(value.to_string())]),
+                    )]),
+                ],
+            );
+            assert_contains!(sql, &format!("AS MAP<string, {formatted_type}>"));
+            assert_contains!(sql, &format!("AS STRUCT<`n` {formatted_type}>"));
+            assert_contains!(sql, &format!("AS ARRAY<{formatted_type}>"));
+            assert_contains!(sql, &format!("array(CAST('{value}' AS {formatted_type}))"));
+            assert!(!sql.contains("double"), "{sql}");
+            assert!(!sql.contains("bigint"), "{sql}");
+        }
+    }
+
+    #[test]
+    fn test_databricks_map_fixture_rejects_null_key() {
+        let type_ops = DefaultTypeOps::new(AdapterType::Databricks);
+        let mut m = dbt_yaml::mapping::Mapping::new();
+        m.insert(YmlValue::null(), YmlValue::number(1.into()));
+        let err = yml_value_to_sql_literal(
+            AdapterType::Databricks,
+            &type_ops,
+            YmlValue::Mapping(m, Default::default()),
+            &map_type(DataType::Int32),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("keys cannot be null"), "{err}");
+    }
+
+    #[test]
+    fn test_databricks_yaml_list_fixture_renders_array_constructor() {
+        let sql = render_databricks(
+            vec![
+                Field::new("ints", list_of(DataType::Int32), true),
+                Field::new("strs", list_of(DataType::Utf8), true),
+            ],
+            vec![
+                yml_seq(vec![YmlValue::number(1.into()), YmlValue::number(2.into())]),
+                yml_seq(vec![YmlValue::string("x".to_string())]),
+            ],
+        );
+        assert_contains!(sql, "array(CAST(1 AS ");
+        assert_contains!(sql, "AS ARRAY<");
+        assert_contains!(sql, "array(CAST('x' AS ");
+        assert!(!sql.contains('['), "{sql}");
+    }
+
+    #[test]
+    fn test_databricks_yaml_list_of_structs_fixture() {
+        let sql = render_databricks(
+            vec![Field::new(
+                "items",
+                list_of(struct_of(vec![
+                    Field::new("a", DataType::Int32, true),
+                    Field::new("b", DataType::Utf8, true),
+                ])),
+                true,
+            )],
+            vec![yml_seq(vec![yml_map(vec![
+                ("a", YmlValue::number(1.into())),
+                ("b", YmlValue::string("x".to_string())),
+            ])])],
+        );
+        assert_contains!(sql, "array(STRUCT(1 AS `a`, 'x' AS `b`))");
+        assert_contains!(sql, "AS ARRAY<STRUCT<`a` ");
+    }
+
+    #[test]
+    fn test_databricks_yaml_mapping_fixture_for_map_column() {
+        let sql = render_databricks(
+            vec![Field::new("m", map_type(DataType::Int32), true)],
+            vec![yml_map(vec![
+                ("k1", YmlValue::number(1.into())),
+                ("k2", YmlValue::number(2.into())),
+            ])],
+        );
+        assert_contains!(sql, "map(CAST('k1' AS ");
+        assert_contains!(sql, ", CAST(1 AS ");
+        assert_contains!(sql, "CAST('k2' AS ");
+    }
+
+    #[test]
+    fn test_databricks_yaml_mapping_fixture_for_struct_column_with_odd_field_names() {
+        let sql = render_databricks(
+            vec![Field::new(
+                "s",
+                struct_of(vec![
+                    Field::new("order", DataType::Int32, true),
+                    Field::new("my field", DataType::Utf8, true),
+                ]),
+                true,
+            )],
+            vec![yml_map(vec![
+                ("order", YmlValue::number(1.into())),
+                ("my field", YmlValue::string("x".to_string())),
+            ])],
+        );
+        assert_contains!(sql, "STRUCT(1 AS `order`, 'x' AS `my field`)");
+        assert_contains!(sql, "STRUCT<`order` ");
+        assert_contains!(sql, ", `my field` ");
     }
 
     #[test]
@@ -3139,6 +5778,112 @@ mod tests {
     }
 
     #[test]
+    fn test_create_values_bigquery_preserves_original_relation_types() {
+        let type_ops = DefaultTypeOps::new(AdapterType::Bigquery);
+        let fields = [
+            ("event_timestamp", "TIMESTAMP"),
+            ("local_datetime", "DATETIME"),
+            ("event_id", "INT64"),
+            ("event_name", "STRING"),
+            ("amount", "NUMERIC(10, 2)"),
+            ("tag_ids", "ARRAY<INT64>"),
+            ("actor", "STRUCT<id INT64, name STRING>"),
+        ]
+        .into_iter()
+        .map(|(name, sql_type)| {
+            make_arrow_field(&type_ops, name.to_string(), sql_type, None, None).unwrap()
+        })
+        .collect::<Vec<_>>();
+        let schema = Arc::new(Schema::new(fields));
+        let rows: Vec<BTreeMap<String, YmlValue>> = dbt_yaml::from_str(
+            r#"
+- event_timestamp: '2026-01-01 00:00:00+00:00'
+  local_datetime: '2026-01-01 00:00:00'
+  event_id: 42
+  event_name: created
+  amount: '12.34'
+  tag_ids: [1, 2]
+  actor: {id: 7, name: alice}
+"#,
+        )
+        .unwrap();
+
+        let result = create_values(
+            &schema,
+            &rows,
+            AdapterType::Bigquery,
+            &type_ops,
+            None,
+            "events",
+            true,
+        )
+        .unwrap();
+
+        for expected in [
+            "CAST('2026-01-01 00:00:00+00:00' AS TIMESTAMP) AS event_timestamp",
+            "CAST('2026-01-01 00:00:00' AS DATETIME) AS local_datetime",
+            "CAST(42 AS INT64) AS event_id",
+            "CAST('created' AS STRING) AS event_name",
+            "CAST('12.34' AS NUMERIC) AS amount",
+            "CAST([CAST(1 AS INT64), CAST(2 AS INT64)] AS ARRAY<INT64>) AS tag_ids",
+            "CAST(STRUCT(CAST(7 AS INT64) AS id, CAST('alice' AS STRING) AS name) AS STRUCT<id INT64, name STRING>) AS actor",
+        ] {
+            assert_contains!(result, expected);
+        }
+    }
+
+    #[test]
+    fn test_create_values_bigquery_range_literals() {
+        let ops = DefaultTypeOps::new(AdapterType::Bigquery);
+        let schema = Arc::new(Schema::new(vec![
+            make_arrow_field(&ops, "period".to_string(), "RANGE<DATE>", None, None).unwrap(),
+        ]));
+        for (value, literal) in [
+            (YmlValue::null(), "NULL"),
+            (
+                YmlValue::string("[2026-01-01, 2026-02-01)".to_string()),
+                "'[2026-01-01, 2026-02-01)'",
+            ),
+        ] {
+            let rows = vec![BTreeMap::from([("period".to_string(), value)])];
+            let result = create_values(
+                &schema,
+                &rows,
+                AdapterType::Bigquery,
+                &ops,
+                None,
+                "fixture_input",
+                false,
+            )
+            .unwrap();
+            assert_contains!(result, &format!("CAST({literal} AS RANGE<DATE>) AS period"));
+        }
+    }
+
+    /// The original-SQL-type preference is BigQuery-only: other adapters keep
+    /// formatting from the Arrow type even when the metadata is present.
+    #[test]
+    fn test_columns_to_formatted_types_non_bigquery_uses_arrow_type() {
+        let type_ops = DefaultTypeOps::new(AdapterType::Snowflake);
+        let schema = Arc::new(Schema::new(vec![
+            make_arrow_field(&type_ops, "amount".to_string(), "NUMBER(10,2)", None, None).unwrap(),
+            make_arrow_field(&type_ops, "name".to_string(), "VARCHAR(16)", None, None).unwrap(),
+            make_arrow_field(&type_ops, "ts".to_string(), "TIMESTAMP_NTZ(9)", None, None).unwrap(),
+        ]));
+
+        let formatted: Vec<String> = columns_to_formatted_types(&schema, &type_ops)
+            .unwrap()
+            .into_iter()
+            .map(|(_, _, formatted)| formatted)
+            .collect();
+
+        assert_eq!(
+            formatted,
+            vec!["float8", "text", "timestamp without time zone"]
+        );
+    }
+
+    #[test]
     fn test_create_values_bigquery_preserves_inferred_logical_types() {
         let type_ops = DefaultTypeOps::new(AdapterType::Bigquery);
         let fields = [
@@ -3272,7 +6017,7 @@ mod tests {
             );
             assert_contains!(
                 result,
-                "CAST('2.12345678901234567890' AS BIGNUMERIC(30, 20)) AS amount"
+                "CAST('2.12345678901234567890' AS BIGNUMERIC) AS amount"
             );
             assert_contains!(
                 result,
@@ -4306,5 +7051,72 @@ mod tests {
         ]));
         let result = strip_pseudocolumns(&schema, AdapterType::Snowflake);
         assert!(Arc::ptr_eq(&schema, &result));
+    }
+
+    #[test]
+    fn column_sql_type_keeps_snowflake_number_precision_and_scale() {
+        let column = Column::new(
+            AdapterType::Snowflake,
+            "HALF_OF_ONE".to_string(),
+            "NUMBER".to_string(),
+            None,
+            Some(11),
+            Some(4),
+        );
+        assert_eq!(column_sql_type(&column), "NUMBER(11,4)");
+
+        let no_precision = Column::new(
+            AdapterType::Snowflake,
+            "ID".to_string(),
+            "NUMBER".to_string(),
+            None,
+            None,
+            None,
+        );
+        assert_eq!(column_sql_type(&no_precision), "NUMBER");
+    }
+
+    #[test]
+    fn columns_to_schema_preserves_snowflake_decimal_round_trip() {
+        let type_ops = DefaultTypeOps::new(AdapterType::Snowflake);
+        let builder = ColumnBuilder::new(AdapterType::Snowflake);
+
+        for (precision, scale) in [(11, 4), (38, 0), (38, 37), (4, 4)] {
+            let data_type = DataType::Decimal128(precision, scale);
+            let field = Arc::new(Field::new("AMOUNT", data_type.clone(), true));
+            let column: Arc<Column> = Arc::from(builder.build(&field, &type_ops).unwrap());
+            assert_eq!(column.original_sql_str(), Some("NUMBER"));
+            assert_eq!(column.data_type(), format!("NUMBER({precision},{scale})"));
+
+            let schema = columns_to_schema(&type_ops, &[column], "unit_test.decimal").unwrap();
+            assert_eq!(schema.field(0).data_type(), &data_type);
+            assert_eq!(
+                type_ops
+                    .get_original_sql_type_from_field(schema.field(0))
+                    .unwrap(),
+                format!("NUMBER({precision},{scale})")
+            );
+        }
+    }
+
+    #[test]
+    fn column_sql_type_preserves_explicit_types_and_missing_metadata() {
+        for (sql_type, precision, scale) in [
+            ("NUMBER(9,2)", Some(11), Some(4)),
+            ("VARCHAR(40)", None, None),
+            ("TIMESTAMP_NTZ(6)", Some(6), None),
+            ("NUMBER", Some(11), None),
+            ("NUMBER", None, Some(4)),
+        ] {
+            let column = Column::new(
+                AdapterType::Snowflake,
+                "VALUE".to_string(),
+                sql_type.to_string(),
+                None,
+                precision,
+                scale,
+            );
+            assert_eq!(column_sql_type(&column), sql_type);
+        }
     }
 }

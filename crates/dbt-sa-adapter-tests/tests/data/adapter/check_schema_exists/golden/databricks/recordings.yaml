@@ -1,0 +1,13 @@
+model.test.b:
+- sequence: 0
+  type: execute
+  sql: DROP SCHEMA IF EXISTS adapters_databricks_check_schema_exists CASCADE
+- sequence: 1
+  type: execute
+  sql: CREATE SCHEMA adapters_databricks_check_schema_exists
+- sequence: 2
+  type: execute
+  sql: select count(*) from information_schema.schemata WHERE schema_name = 'adapters_databricks_check_schema_exists'
+- sequence: 3
+  type: execute
+  sql: select count(*) from information_schema.schemata WHERE schema_name = 'nonexistent_schema'

@@ -1,0 +1,22 @@
+4b771e1b:
+- sequence: 0
+  type: execute
+  sql: CREATE SCHEMA IF NOT EXISTS `e2e`.`adapters_databricks_row_filters_v1`
+74d28fd4:
+- sequence: 0
+  type: execute
+  sql: |-
+    CREATE OR REPLACE FUNCTION e2e.adapters_databricks_row_filters_v1.region_filter(
+    region STRING
+    )
+    RETURNS BOOLEAN
+    RETURN region = 'region_a'
+ec5f5543:
+- sequence: 0
+  type: execute
+  sql: |-
+    CREATE OR REPLACE FUNCTION e2e.adapters_databricks_row_filters_v1.user_filter(
+    user_id STRING
+    )
+    RETURNS BOOLEAN
+    RETURN user_id = 'user1'

@@ -295,7 +295,7 @@ pub async fn resolve_sources(
         adapter_type,
     )?
     .with_resolve_defaults((
-        arg.static_analysis.unwrap_or_default(),
+        arg.unconfigured_static_analysis(),
         root_package.dbt_project.sync.clone(),
     ));
     // Source properties repeat per table; warn once while validating every copy.

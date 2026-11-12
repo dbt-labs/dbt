@@ -1,0 +1,4 @@
+model.test.c:
+- sequence: 0
+  type: execute
+  sql: select 1 as one

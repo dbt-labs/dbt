@@ -1,0 +1,21 @@
+dbbbff64:
+- sequence: 0
+  type: execute
+  sql: |-
+    show terse schemas in database development
+    limit 10000
+model.run_filter_flags.empty_model:
+- sequence: 0
+  type: execute
+  sql: SHOW OBJECTS IN SCHEMA "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_RUN_FILTER_FLAGS" LIMIT 10000
+- sequence: 1
+  type: execute
+  sql: |-
+    create or replace   view development.adapters_snowflake_run_filter_flags.empty_model
+    
+    
+    
+    
+    as (
+    select * from (select * from development.adapters_snowflake_run_filter_flags.data where false limit 0)
+    )

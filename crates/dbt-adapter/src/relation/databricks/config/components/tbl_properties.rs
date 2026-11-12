@@ -110,15 +110,9 @@ fn from_local_config(
         && let Some(props_map) = &databricks_attr.tblproperties
     {
         for (key, value) in &props_map.0 {
-            let value_str = match value {
-                YmlValue::String(s, _) => s.clone(),
-                // A bare date/datetime scalar resolves to a Timestamp; render its
-                // canonical form, as it was a plain string before YAML 1.1
-                // timestamp resolution.
-                YmlValue::Timestamp(t, _) => t.to_string(),
-                _ => continue,
-            };
-            tblproperties.insert(key.clone(), value_str);
+            if let YmlValue::String(value_str, _) = value {
+                tblproperties.insert(key.clone(), value_str.clone());
+            }
         }
     }
 

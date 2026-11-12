@@ -1,0 +1,1 @@
+SELECT PART AS ID FROM {{ ref('table_udf') }}

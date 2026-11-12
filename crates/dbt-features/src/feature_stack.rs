@@ -5,6 +5,7 @@ use dbt_common::DiscreteEventEmitter;
 use crate::adapter::AdapterFeature;
 use crate::antlr_parser::AntlrParserFeature;
 use crate::cli::CliFeature;
+use crate::experimental::ExperimentalFeature;
 use crate::index::IndexFeature;
 use crate::jinja::JinjaFeature;
 use crate::lake_compute::LakeComputeFeature;
@@ -62,6 +63,7 @@ pub struct FeatureStack {
     pub metricflow: MetricflowFeature,
     pub task_runner: TaskRunnerFeature,
     pub resolver: ResolverFeature,
+    pub experimentals: ExperimentalFeature,
     pub loader: LoaderFeature,
     pub jinja: JinjaFeature,
     pub lake_compute: LakeComputeFeature,

@@ -1,0 +1,1 @@
+show objects like 'b' in schema development.adapters_snowflake_rename_relation

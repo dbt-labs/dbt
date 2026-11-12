@@ -1,0 +1,31 @@
+model.test.a:
+- sequence: 0
+  type: execute
+  sql: USE DATABASE development
+- sequence: 1
+  type: execute
+  sql: ' CREATE OR REPLACE SCHEMA adapters_snowflake_expand_collated_columns'
+- sequence: 2
+  type: execute
+  sql: CREATE OR REPLACE TABLE a (id VARCHAR(20) COLLATE 'en-ci')
+- sequence: 3
+  type: execute
+  sql: CREATE OR REPLACE TABLE b (id VARCHAR(10) COLLATE 'en-ci')
+- sequence: 4
+  type: execute
+  sql: describe table development.adapters_snowflake_expand_collated_columns.a
+- sequence: 5
+  type: execute
+  sql: describe table development.adapters_snowflake_expand_collated_columns.b
+- sequence: 6
+  type: execute
+  sql: describe table development.adapters_snowflake_expand_collated_columns.a
+- sequence: 7
+  type: execute
+  sql: describe table development.adapters_snowflake_expand_collated_columns.b
+- sequence: 8
+  type: execute
+  sql: alter  table development.adapters_snowflake_expand_collated_columns.b alter "ID" set data type character varying(20) collate 'en-ci'
+- sequence: 9
+  type: execute
+  sql: describe table development.adapters_snowflake_expand_collated_columns.b

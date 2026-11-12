@@ -1,0 +1,10 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/format_change.sql
+ Rendering models/format_change.sql
+   Running models/format_change.sql
+ Succeeded model adapters_snowflake_catalog_v2_format_change_drop.format_change (table) [1 of 1 in duration]
+==================== Execution Summary =====================
+Finished 'run' successfully for target 'snowflake' [duration]
+Processed: 1 model
+Summary: 1 total | 1 success

@@ -1,9 +1,11 @@
 use dbt_adapter::{Adapter, column::ColumnStatic, relation::factory::create_static_relation};
+use dbt_adapter_core::AdapterType;
 use dbt_common::{FsError, FsResult};
+use dbt_schemas::schemas::common::ResolvedQuoting;
 use minijinja::{
     Environment, Error as MinijinjaError, State, Template, UndefinedBehavior, Value,
     listener::RenderingEventListener,
-    value::{ValueMap, mutable_map::MutableMap},
+    value::{OverlayMap, ValueMap},
 };
 use serde::Serialize;
 use std::{
@@ -54,7 +56,7 @@ impl<'env: 'source, 'source> JinjaExpression<'env, 'source> {
     pub fn typecheck(
         &self,
         funcsigns: Arc<minijinja::compiler::typecheck::FunctionRegistry>,
-        builtins: Arc<dashmap::DashMap<String, minijinja::Type>>,
+        builtins: Arc<minijinja::TypeRegistry>,
         warning_printer: Rc<dyn minijinja::TypecheckingEventListener>,
         typecheck_resolved_context: BTreeMap<String, Value>,
     ) -> FsResult<()> {
@@ -98,7 +100,7 @@ impl<'env: 'source, 'source> JinjaTemplate<'env, 'source> {
     pub fn typecheck(
         &self,
         funcsigns: Arc<minijinja::compiler::typecheck::FunctionRegistry>,
-        builtins: Arc<dashmap::DashMap<String, minijinja::Type>>,
+        builtins: Arc<minijinja::TypeRegistry>,
         warning_printer: Rc<dyn minijinja::TypecheckingEventListener>,
         typecheck_resolved_context: BTreeMap<String, Value>,
     ) -> FsResult<()> {
@@ -148,11 +150,15 @@ impl AsRef<JinjaEnv> for JinjaEnv {
 /// own -- built here rather than duplicated, so the environment-wide default and
 /// a per-node override cannot drift.
 pub fn adapter_api_value(adapter: &Adapter) -> Value {
-    let adapter_type = adapter.adapter_type();
+    adapter_api_value_for_type(adapter.adapter_type(), adapter.engine().quoting())
+}
+
+/// Builds the type-only API without creating an adapter or connection.
+pub fn adapter_api_value_for_type(adapter_type: AdapterType, quoting: ResolvedQuoting) -> Value {
     let mut api_map = BTreeMap::new();
     api_map.insert(
         "Relation".to_string(),
-        create_static_relation(adapter_type, adapter.engine().quoting()),
+        create_static_relation(adapter_type, quoting),
     );
     api_map.insert(
         "Column".to_string(),
@@ -191,13 +197,11 @@ impl JinjaEnv {
         self.env.empty_state()
     }
 
-    /// Create a new state with a pre-interned string map.
-    pub fn new_state_with_context(&self, ctx: BTreeMap<String, Value>) -> State<'_, '_> {
-        self.env.new_state_with_context(MutableMap::from(
-            ctx.into_iter()
-                .map(|(k, v)| (Value::from(k), v))
-                .collect::<ValueMap>(),
-        ))
+    /// Create a new state whose context is an `OverlayMap`. A map becomes the
+    /// overlay's base as is, and an `OverlayMap` keeps its shared base, so
+    /// neither is copied.
+    pub fn new_state_with_context(&self, ctx: impl Into<OverlayMap>) -> State<'_, '_> {
+        self.env.new_state_with_context(ctx.into())
     }
 
     /// Render a template from a string.

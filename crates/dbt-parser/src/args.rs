@@ -44,6 +44,8 @@ pub struct ResolveArgs {
     pub sample_renaming: BTreeMap<String, (String, String, String)>,
     /// Global static analysis settings
     pub static_analysis: Option<StaticAnalysisKind>,
+    /// Static analysis for nodes that configure none
+    pub default_static_analysis: Option<StaticAnalysisKind>,
     /// Store failures?
     pub store_failures: bool,
     /// Whether to skip creating generic tests
@@ -58,8 +60,7 @@ pub struct ResolveArgs {
     /// identically from there on -- rather than swapping the run's adapter
     /// afterwards.
     pub adapter_override: Option<AdapterType>,
-    /// Adapter types declared by the active profile, made available to node resolution for
-    /// target policy decisions. Credentials are intentionally not carried here.
+    /// Adapter types of the active profile for target policy decisions.
     pub profile_adapter_types: Option<Vec<AdapterType>>,
 }
 
@@ -81,6 +82,7 @@ impl ResolveArgs {
             sample_config: RunFilter::try_from(arg.empty, arg.sample.clone())?,
             sample_renaming: arg.sample_renaming.clone(),
             static_analysis: arg.static_analysis,
+            default_static_analysis: arg.default_static_analysis,
             store_failures: arg.store_failures,
             skip_creating_generic_tests: arg.skip_creating_generic_tests,
             maximum_seed_size_mib: arg.maximum_seed_size_mib,
@@ -109,5 +111,13 @@ impl ResolveArgs {
                 .transpose()?,
             profile_adapter_types: None,
         })
+    }
+
+    /// The static analysis given to a node whose config does not set one:
+    /// `--static-analysis`, then `--default-static-analysis`, then baseline.
+    pub fn unconfigured_static_analysis(&self) -> StaticAnalysisKind {
+        self.static_analysis
+            .or(self.default_static_analysis)
+            .unwrap_or_default()
     }
 }

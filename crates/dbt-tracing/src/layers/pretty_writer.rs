@@ -3,8 +3,10 @@ use crate::{
     data_provider::DataProvider, layer::TelemetryConsumer, shared_writer::SharedWriter,
 };
 
+/// Writes the lines rendering a telemetry record, if any, given whether the writer is a
+/// terminal. Lines are formatted straight into the writer.
 pub type TelemetryRecordPrettyFormatter =
-    Box<dyn Fn(TelemetryRecordRef, bool) -> Option<String> + Send + Sync>;
+    Box<dyn Fn(TelemetryRecordRef, bool, &dyn SharedWriter) + Send + Sync>;
 
 /// A tracing layer that renders telemetry events in a human-readable format.
 ///
@@ -22,7 +24,7 @@ impl TelemetryPrettyWriterLayer {
     pub fn new<W, F>(writer: W, formatter: F) -> Self
     where
         W: SharedWriter + 'static,
-        F: Fn(TelemetryRecordRef, bool) -> Option<String> + Send + Sync + 'static,
+        F: Fn(TelemetryRecordRef, bool, &dyn SharedWriter) + Send + Sync + 'static,
     {
         let is_tty = writer.is_terminal();
 
@@ -52,20 +54,26 @@ impl TelemetryConsumer for TelemetryPrettyWriterLayer {
     }
 
     fn on_span_start(&self, span: &SpanStartInfo, _: &mut DataProvider<'_>) {
-        if let Some(line) = (self.formatter)(TelemetryRecordRef::SpanStart(span), self.is_tty) {
-            self.writer.writeln(&line);
-        }
+        (self.formatter)(
+            TelemetryRecordRef::SpanStart(span),
+            self.is_tty,
+            self.writer.as_ref(),
+        );
     }
 
     fn on_span_end(&self, span: &SpanEndInfo, _: &mut DataProvider<'_>) {
-        if let Some(line) = (self.formatter)(TelemetryRecordRef::SpanEnd(span), self.is_tty) {
-            self.writer.writeln(&line);
-        }
+        (self.formatter)(
+            TelemetryRecordRef::SpanEnd(span),
+            self.is_tty,
+            self.writer.as_ref(),
+        );
     }
 
     fn on_log_record(&self, record: &LogRecordInfo, _: &mut DataProvider<'_>) {
-        if let Some(line) = (self.formatter)(TelemetryRecordRef::LogRecord(record), self.is_tty) {
-            self.writer.writeln(&line);
-        }
+        (self.formatter)(
+            TelemetryRecordRef::LogRecord(record),
+            self.is_tty,
+            self.writer.as_ref(),
+        );
     }
 }

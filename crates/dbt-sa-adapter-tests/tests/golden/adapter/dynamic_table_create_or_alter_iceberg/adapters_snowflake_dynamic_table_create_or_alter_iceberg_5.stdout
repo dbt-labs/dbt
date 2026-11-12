@@ -1,0 +1,27 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/ice_evolve.sql
+   Parsing models/ice_idempotent.sql
+   Parsing models/ice_identity_change.sql
+   Parsing models/ice_refresh_mode_replace.sql
+   Parsing models/ice_to_native.sql
+   Parsing models/native_to_ice.sql
+[PASS] ice_evolve: still Iceberg
+[PASS] ice_evolve: definition deployed
+[PASS] ice_evolve: target lag applied
+[PASS] ice_evolve: synced in place (created_on unchanged)
+[PASS] ice_idempotent: not rebuilt (created_on unchanged)
+[PASS] ice_refresh_mode_replace: now INCREMENTAL
+[PASS] ice_refresh_mode_replace: rebuilt (created_on changed)
+[PASS] ice_refresh_mode_replace: still Iceberg
+[PASS] ice_to_native: now native
+[PASS] ice_to_native: rebuilt (created_on changed)
+[PASS] ice_to_native: definition deployed
+[PASS] native_to_ice: now Iceberg
+[PASS] native_to_ice: rebuilt (created_on changed)
+[PASS] native_to_ice: definition deployed
+[PASS] ice_identity_change: recovered with the new base location
+[PASS] ice_identity_change: recovered with the evolved definition
+[PASS] ice_identity_change: rebuilt (created_on changed)
+==================== Execution Summary =====================
+Finished 'run-operation' successfully for target 'snowflake' [duration]

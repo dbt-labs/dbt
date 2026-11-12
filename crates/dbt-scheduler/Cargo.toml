@@ -13,16 +13,17 @@ edition.workspace = true
 workspace = true
 
 [dependencies]
+arrow-schema = { workspace = true }
 dbt-adapter = { workspace = true }
 dbt-adapter-core = { workspace = true }
 dbt-common = { workspace = true }
 dbt-dag = { workspace = true }
 dbt-frontend-common = { workspace = true }
 dbt-schemas = { workspace = true }
+dbt-sql-base = { workspace = true }
 dbt-yaml = { workspace = true }
 
 clean-path = { workspace = true }
-datafusion-expr = { workspace = true }
 glob = { workspace = true }
 indexmap = { workspace = true }
 

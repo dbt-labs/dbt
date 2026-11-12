@@ -115,7 +115,7 @@ pub trait Cloneable: InternalDbtNodeAttributes {
                 Ok(status) => status,
                 Err(e) => {
                     // Insert error stats so it appears in run_results.json
-                    ctx.inner.run_stats.insert(
+                    ctx.inner.run_stats.upsert_sync(
                         unique_id.to_string(),
                         Stat::new(
                             unique_id.to_string(),
@@ -130,7 +130,7 @@ pub trait Cloneable: InternalDbtNodeAttributes {
                 }
             };
 
-            ctx.inner.run_stats.insert(
+            ctx.inner.run_stats.upsert_sync(
                 unique_id.to_string(),
                 Stat::new(
                     unique_id.to_string(),

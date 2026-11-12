@@ -25,8 +25,8 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use anyhow::{Context, Result};
-use once_cell::sync::Lazy;
 use serde::Deserialize;
+use std::sync::LazyLock;
 
 /// Assert the golden file matches.
 #[macro_export]
@@ -162,10 +162,10 @@ impl Goldie {
         };
         let modified_filename = PathBuf::from("w").join(&rel).to_string_lossy().to_string();
 
-        let patch = diffy::DiffOptions::new()
-            .set_original_filename(original_filename)
-            .set_modified_filename(modified_filename)
-            .create_patch(&golden, actual);
+        let patch = similar::TextDiff::from_lines(golden.as_str(), actual)
+            .unified_diff()
+            .header(&original_filename, &modified_filename)
+            .to_string();
 
         eprintln!("<<<<<<<< BEGIN PATCH");
         eprintln!("{patch}");
@@ -210,8 +210,8 @@ fn relative_to_git_root(path: &Path) -> Option<PathBuf> {
 /// Not public API.
 #[doc(hidden)]
 pub fn cargo_workspace_dir(manifest_dir: &str) -> PathBuf {
-    static DIRS: Lazy<Mutex<BTreeMap<String, Arc<Path>>>> =
-        Lazy::new(|| Mutex::new(BTreeMap::new()));
+    static DIRS: LazyLock<Mutex<BTreeMap<String, Arc<Path>>>> =
+        LazyLock::new(|| Mutex::new(BTreeMap::new()));
 
     let mut dirs = DIRS.lock().unwrap();
 

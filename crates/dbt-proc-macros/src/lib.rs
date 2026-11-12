@@ -961,3 +961,32 @@ fn resolve_warehouse_items(items: Vec<Ident>, groups: &HashMap<String, Vec<Ident
     }
     out
 }
+
+mod jinja_node_fields;
+
+/// Generate field-level YAML access using the node's serde field attributes.
+///
+/// Fields of a scalar type (strings, bools, chars, numbers, `PathBuf`, or an `Option` of one)
+/// without `serialize_with` are served uncached. `#[jinja_node(disable_cache)]` does the same for
+/// another type that always serializes to a string, number, bool or none.
+/// `#[jinja_node(allow_uncached_transform)]` allows a transform on an uncached field. See
+/// `dbt_schemas::jinja_node::FieldKind`.
+#[proc_macro_derive(JinjaNodeFields, attributes(serde, jinja_node))]
+pub fn derive_jinja_node_fields(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let input = syn::parse_macro_input!(input as syn::DeriveInput);
+    jinja_node_fields::derive(input)
+        .unwrap_or_else(|err| err.to_compile_error())
+        .into()
+}
+
+mod debug_no_inline;
+
+/// Derive structural [`Debug`](std::fmt::Debug) formatting for an enum, keeping
+/// the formatter out of line to avoid duplicating it at call sites.
+#[proc_macro_derive(DebugNoInline)]
+pub fn derive_debug_no_inline(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let input = syn::parse_macro_input!(input as syn::DeriveInput);
+    debug_no_inline::derive_impl(input)
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}

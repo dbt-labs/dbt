@@ -9,11 +9,11 @@ use dbt_common::{
     node_selector::{MethodName, SelectExpression, SelectionCriteria, SelectionValue},
     tracing::dbt_emit::emit_warn_log_message,
 };
-use dbt_frontend_common::Dialect;
 use dbt_schemas::schemas::{
     CommonAttributes, DbtSource, DbtTest, InternalDbtNode, InternalDbtNodeAttributes,
     ModificationType, Nodes, StateArtifacts, common::Access, telemetry::NodeType,
 };
+use dbt_sql_base::Dialect;
 use glob::Pattern;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -83,7 +83,7 @@ pub fn filter_select(
             Some(nodes),
             adapter_type,
         )? {
-            result.insert(node.unique_id());
+            result.insert(node.unique_id().to_string());
         }
     }
     Ok(result)
@@ -118,7 +118,7 @@ pub fn filter_select_criteria(
             )
             .map(|include| {
                 if include {
-                    acc.insert(node.unique_id());
+                    acc.insert(node.unique_id().to_string());
                 }
                 acc
             })
@@ -139,22 +139,27 @@ pub fn filter_select_criteria_with_state_selector_results(
     if criteria.method == MethodName::State {
         // Reuse the selection an external state-selector implementation already made, if it
         // evaluated this exact `state:` value. Deliberately ahead of the manifest check below.
-        if let Some(selected) =
+        let mut selected = if let Some(selected) =
             state_selector_results.and_then(|results| results.get(criteria.value.as_str()?))
         {
-            return Ok(selected.clone());
-        }
-
-        // Otherwise every `state:*` criterion needs something to compare against. This is the
-        // single point every user-authored state criterion reaches — however it was written
-        // (`--select state:modified`, a top-level `--selector`, or a `{selector: name}` reference
-        // nested arbitrarily deep inside a composed selector).
-        if previous_state.is_none() {
-            return err!(
-                ErrorCode::SelectorError,
-                "Got a state selector method, but no comparison manifest"
-            );
-        }
+            selected.clone()
+        } else {
+            // Otherwise every `state:*` criterion needs something to compare against. This is
+            // the single point every user-authored state criterion reaches — however it was
+            // written (`--select state:modified`, a top-level `--selector`, or a
+            // `{selector: name}` reference nested arbitrarily deep inside a composed selector).
+            if previous_state.is_none() {
+                return err!(
+                    ErrorCode::SelectorError,
+                    "Got a state selector method, but no comparison manifest"
+                );
+            }
+            filter_select_criteria(nodes, criteria, previous_state, adapter_type)?
+        };
+        // Experimental nodes are not written to the manifest, so every one of them would compare as
+        // new. `state:` never selects them.
+        selected.retain(|unique_id| !nodes.experimentals.contains_key(unique_id));
+        return Ok(selected);
     }
 
     filter_select_criteria(nodes, criteria, previous_state, adapter_type)
@@ -264,12 +269,20 @@ fn match_source(pattern: &str, node: &dyn InternalDbtNode) -> FsResult<bool> {
 }
 
 fn match_resource_type(pattern: &str, node: &dyn InternalDbtNode) -> FsResult<bool> {
-    // Checks produce no database relation, so they are never a `relation`. (This arm remains an
-    // approximation for other non-relational types like exposures and metrics; not widened here.)
-    if pattern == "relation" && !matches!(node.resource_type(), NodeType::Test | NodeType::Check) {
+    // Checks and experimental nodes produce no database relation, so they are never a `relation`.
+    // (This arm remains an approximation for other non-relational types like exposures and metrics;
+    // not widened here.)
+    if pattern == "relation"
+        && !matches!(
+            node.resource_type(),
+            NodeType::Test | NodeType::Check | NodeType::Experimental
+        )
+    {
         Ok(true)
     } else {
-        Ok(pattern == node.resource_type().as_static_ref())
+        // An experimental node is also its own experimental type: `resource_type:widget`.
+        Ok(pattern == node.resource_type().as_static_ref()
+            || node.experimental_type().is_some_and(|kind| pattern == kind))
     }
 }
 
@@ -754,13 +767,11 @@ fn match_config_recursive(
         match &val {
             YmlValue::String(s, _) => Ok(fnmatch(pattern, s)),
             YmlValue::Bool(b, _) => Ok(pattern.eq_ignore_ascii_case(&b.to_string())),
-            YmlValue::Timestamp(t, _) => Ok(fnmatch(pattern, &t.to_string())),
             YmlValue::Number(n, _) => Ok(n.to_string() == *pattern),
-            YmlValue::Sequence(arr, _) => Ok(arr.iter().any(|v| match v {
-                YmlValue::String(s, _) => fnmatch(pattern, s),
-                YmlValue::Timestamp(t, _) => fnmatch(pattern, &t.to_string()),
-                _ => false,
-            })),
+            YmlValue::Sequence(arr, _) => Ok(arr
+                .iter()
+                .filter_map(YmlValue::as_str)
+                .any(|s| fnmatch(pattern, s))),
             YmlValue::Mapping(..) => match_config_recursive(pattern, args, val, args_index + 1),
             _ => Ok(false),
         }
@@ -777,7 +788,7 @@ fn match_group(pattern: &str, group: Option<String>) -> FsResult<bool> {
     Ok(group.as_deref() == Some(pattern))
 }
 
-fn match_tag(pattern: &str, tags: Vec<String>) -> FsResult<bool> {
+fn match_tag(pattern: &str, tags: &[String]) -> FsResult<bool> {
     Ok(tags.iter().any(|t| fnmatch(pattern, t)))
 }
 
@@ -1746,7 +1757,8 @@ mod tests {
             __warehouse_specific_config__: WarehouseSpecificNodeConfig {
                 cluster_by: Some(ClusterConfig::List(vec!["geo_country".to_string()])),
                 ..Default::default()
-            },
+            }
+            .into(),
             unique_key: Some(DbtUniqueKey::Multiple(vec![
                 "column_a".to_string(),
                 "column_b".to_string(),
@@ -2340,6 +2352,7 @@ mod tests {
             __test_attr__: DbtTestAttr {
                 column_name: None,
                 attached_node: None,
+                test_subject_unique_id: None,
                 test_metadata: None,
                 file_key_name: None,
                 introspection: IntrospectionKind::None,
@@ -2374,6 +2387,7 @@ mod tests {
             __test_attr__: DbtTestAttr {
                 column_name: None,
                 attached_node: None,
+                test_subject_unique_id: None,
                 test_metadata: None,
                 file_key_name: None,
                 introspection: IntrospectionKind::None,
@@ -2653,6 +2667,7 @@ mod tests {
             __test_attr__: DbtTestAttr {
                 column_name: Some("column".to_string()),
                 attached_node: Some("model.my_project.my_model".to_string()),
+                test_subject_unique_id: Some("model.my_project.my_model".to_string()),
                 test_metadata: Some(TestMetadata {
                     name: "not_null".to_string(), // Base test name
                     kwargs: BTreeMap::new(),
@@ -2711,6 +2726,7 @@ mod tests {
             __test_attr__: DbtTestAttr {
                 column_name: None,
                 attached_node: None,
+                test_subject_unique_id: None,
                 test_metadata: None, // No test_metadata for singular tests
                 file_key_name: None,
                 introspection: IntrospectionKind::None,

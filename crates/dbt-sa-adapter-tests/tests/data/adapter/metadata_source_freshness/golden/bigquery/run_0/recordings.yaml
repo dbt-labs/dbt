@@ -1,0 +1,12 @@
+1fd45cf6:
+- sequence: 0
+  type: execute
+  sql: "\n    create schema if not exists `dbt-test-env`.`adapters_bigquery_metadata_source_freshness`\n  "
+3a183e28:
+- sequence: 0
+  type: execute
+  sql: "\n    create or replace table adapters_bigquery_metadata_source_freshness.a (val int)\n  "
+6ba39269:
+- sequence: 0
+  type: execute
+  sql: "\n    create table adapters_bigquery_metadata_source_freshness.source (id STRING, name STRING, amount DECIMAL(10,2))\n  "

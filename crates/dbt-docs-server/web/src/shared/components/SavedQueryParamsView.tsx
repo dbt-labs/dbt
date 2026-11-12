@@ -1,6 +1,6 @@
 import { FC } from 'react';
+import type { SavedQueryParams } from 'dbt-docs-lib/domain';
 
-import { SavedQueryParams } from '../typings/domain/asset';
 import { CollapsibleSection } from './CollapsibleSection';
 import { DetailsSection } from './SectionWithCard';
 

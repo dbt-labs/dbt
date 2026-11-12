@@ -4,7 +4,7 @@ use std::time::Duration;
 use tokio::task::JoinError;
 
 // re-export symbols that used to live here, but are now in dbt-cancel
-pub use dbt_base::cancel::{
+pub use dbt_cancel::{
     Cancellable, CancellationToken, CancellationTokenSource, CancelledError, never_cancels,
 };
 

@@ -1,8 +1,9 @@
+import type { Asset, AssetColumn } from 'dbt-docs-lib/domain';
+
 import { useAssetDetail } from '../hooks/useAssetDetail';
 import { assetToHeaderProps } from '../mappers/assetToHeaderProps';
 import { assetToMetadataProps } from '../mappers/assetToMetadataProps';
 import type { AssetArgs } from '../typings/args';
-import type { Asset, AssetColumn } from '../typings/domain/asset';
 import { AssetCode } from './AssetCode';
 import { AssetColumns } from './AssetColumns';
 import { AssetHeader } from './AssetHeader';

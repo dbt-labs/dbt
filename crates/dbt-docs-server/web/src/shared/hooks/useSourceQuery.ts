@@ -1,7 +1,5 @@
-import { useQuery } from '@tanstack/react-query';
-
-import { useMetadataDataSource } from '../context/MetadataDataProvider';
-import type { MetadataDataSource } from '../data-sources/MetadataDataSource';
+import type { MetadataDataSource } from 'dbt-docs-lib';
+import { useMetadataDataSource, useQuery } from 'dbt-docs-lib';
 
 /**
  * Shared substrate for the capability-gated read hooks (`useLineage`,

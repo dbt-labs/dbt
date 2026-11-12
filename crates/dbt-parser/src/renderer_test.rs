@@ -91,6 +91,7 @@ mod tests {
             sample_config: RunFilter::default(),
             sample_renaming: BTreeMap::new(),
             static_analysis: Some(dbt_common::io_args::StaticAnalysisKind::Strict),
+            default_static_analysis: None,
             store_failures: false,
             skip_creating_generic_tests: false,
             adapter_override: None,
@@ -109,7 +110,7 @@ mod tests {
         let render_ctx = RenderCtx {
             inner: Arc::new(RenderCtxInner {
                 args: args.clone(),
-                base_ctx,
+                base_ctx: Arc::new(base_ctx),
                 root_project_name: "root_project".to_string(),
                 package_name: "test_package".to_string(), // Different from root - this triggers the override logic
                 adapter_type: AdapterType::Postgres,
@@ -120,6 +121,10 @@ mod tests {
                     root_config,
                     AdapterType::Postgres,
                 ),
+                adapter_hint: None,
+                adapter_layer: None,
+                parse_adapter_scopes: None,
+                adapter_quoting: Default::default(),
                 resource_paths: vec!["models".to_string()],
                 package_quoting: DbtQuoting {
                     database: Some(true),
@@ -271,6 +276,7 @@ mod tests {
             sample_config: RunFilter::default(),
             sample_renaming: BTreeMap::new(),
             static_analysis: Some(dbt_common::io_args::StaticAnalysisKind::Strict),
+            default_static_analysis: None,
             store_failures: false,
             skip_creating_generic_tests: false,
             adapter_override: None,
@@ -287,7 +293,7 @@ mod tests {
         let render_ctx = RenderCtx {
             inner: Arc::new(RenderCtxInner {
                 args: args.clone(),
-                base_ctx,
+                base_ctx: Arc::new(base_ctx),
                 root_project_name: "test_package".to_string(),
                 package_name: "test_package".to_string(),
                 adapter_type: AdapterType::Postgres,
@@ -297,6 +303,10 @@ mod tests {
                     root_config,
                     AdapterType::Postgres,
                 ),
+                adapter_hint: None,
+                adapter_layer: None,
+                parse_adapter_scopes: None,
+                adapter_quoting: Default::default(),
                 resource_paths: vec!["models".to_string()],
                 package_quoting: DbtQuoting {
                     database: Some(true),

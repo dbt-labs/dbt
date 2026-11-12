@@ -108,6 +108,19 @@ Add formatting behavior here when the output is intended for dbt users. Add
 generic rendering behavior to `dbt-tracing` only when it can stay independent of
 dbt event schemas and CLI conventions.
 
+Formatters are `Display` types (for example `NodeProcessedEnd { node, duration,
+colorize }`), not functions returning `String`. Layers pass them to
+`SharedWriter::writeln` or `writeln!` on the locked stream, so a line is
+formatted straight into its destination. Compose new formatters from the
+existing `Display` building blocks (`MaybeColored`, `RightAligned`,
+`QualifierAlias`, `FixedWidthDuration`, ...). Call `.to_string()` only where a
+`String` is needed, e.g. to embed a message in a JSON value or to hold it until
+later.
+
+The exact terminal and `dbt.log` output is pinned by inline cases in
+`tests/output/`. Update a case's expected text when a formatting change is
+intended.
+
 ## Emitting From dbt Code
 
 Use the re-exported structured span helpers from `dbt_common`:
@@ -140,7 +153,7 @@ emit_error_log_from_fs_error(error);
 ```
 
 `dbt_emit.rs` also contains helpers for package-scoped messages, strict parse
-errors, progress messages, and stdout/stderr-oriented messages. Prefer these
+errors, progress messages, and stdout/stderr-oriented messages. Always use these
 helpers when emitting user-facing dbt logs so locations, error codes, and
 middleware expectations stay consistent. Error and warning helpers that receive
 an `FsError` retain a borrowed-only error view for in-process consumers while

@@ -1,9 +1,9 @@
 import { FC, isValidElement } from 'react';
+import type { RunStatus } from 'dbt-docs-lib/domain';
 import { twMerge } from 'tailwind-merge';
 
 import { Link } from '../../components/ui/Link';
 import { Tooltip } from '../../components/ui/Tooltip';
-import type { RunStatus } from '../typings/domain/executionInfo';
 import { formatDateCommon } from '../util/dateUtils';
 import { camelToTitleCase } from '../util/string';
 import { NodeStatusIconBadge } from './NodeStatusIconBadge';

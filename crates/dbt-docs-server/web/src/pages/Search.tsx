@@ -234,17 +234,6 @@ export default function Search({ query, filters, onSetFilters }: SearchProps) {
   const showLoadingMore = isFetchingNextPage;
   const activeChips = useMemo(() => getActiveChips(filters), [filters]);
 
-  /**
-   * Backend ANDs all filters, and only models carry a `modeling_layer`. If the
-   * user has narrowed the type filter to a set that excludes `model`, combining
-   * with any modeling layer guarantees an empty page — surface that as a
-   * warning so the empty state is self-explanatory.
-   */
-  const modelingLayerConflict =
-    filters.modelingLayer.length > 0 &&
-    filters.resourceType.length > 0 &&
-    !filters.resourceType.includes('model');
-
   const removeChip = (chip: ActiveChip) => {
     onSetFilters({
       ...filters,
@@ -280,22 +269,12 @@ export default function Search({ query, filters, onSetFilters }: SearchProps) {
           onClearAll={clearAllChips}
         />
       )}
-      {error && !modelingLayerConflict && (
+      {error && (
         <NotificationBanner
           notification={{
             id: 'search-bad-request',
             type: 'warning',
             header: formatSearchError(error.code, error.message),
-          }}
-        />
-      )}
-      {modelingLayerConflict && (
-        <NotificationBanner
-          notification={{
-            id: 'search-modeling-layer-conflict',
-            type: 'info',
-            header:
-              'Modeling layer only applies to models. Clear the modeling layer filter, or add "Models" to the resource type filter, to see results.',
           }}
         />
       )}

@@ -6,6 +6,7 @@ import "query_cache_protobuf/query_cache/shared.proto";
 
 service Explain {
   rpc GetExplainMessages(GetExplainMessagesRequest) returns (GetExplainMessagesResponse);
+  rpc GetUpstreamDependencyChanges(GetUpstreamDependencyChangesRequest) returns (GetUpstreamDependencyChangesResponse);
 }
 
 enum ExplainMarker {
@@ -48,4 +49,17 @@ message GetExplainMessagesRequest {
 
 message GetExplainMessagesResponse {
   repeated ExplainMessageEntry messages = 1;
+}
+
+message GetUpstreamDependencyChangesRequest {
+  repeated string execution_ids = 1;
+}
+
+message GetUpstreamDependencyChangesResponse {
+  repeated UpstreamDependencyChanges dependency_changes = 1;
+}
+
+message UpstreamDependencyChanges {
+  string execution_id = 1;
+  repeated ExplainLine lines = 2;
 }

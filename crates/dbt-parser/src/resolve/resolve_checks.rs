@@ -14,6 +14,7 @@ use dbt_jinja_utils::utils::dependency_package_name_from_ctx;
 use dbt_schemas::schemas::common::{DbtMaterialization, DbtQuoting, ResolvedQuoting};
 use dbt_schemas::schemas::project::{CheckConfig, SUPPORTED_INFO_SCHEMA_VERSIONS};
 use dbt_schemas::schemas::properties::CheckProperties;
+use dbt_schemas::schemas::telemetry::NodeType;
 use dbt_schemas::state::ModelStatus;
 use dbt_schemas::{
     schemas::{
@@ -48,7 +49,7 @@ pub async fn resolve_checks(
     adapter_type: AdapterType,
     package_name: &str,
     env: Arc<JinjaEnv>,
-    base_ctx: &BTreeMap<String, minijinja::Value>,
+    base_ctx: &Arc<BTreeMap<String, minijinja::Value>>,
     runtime_config: Arc<DbtRuntimeConfig>,
     root_runtime_config: Arc<DbtRuntimeConfig>,
     token: &CancellationToken,
@@ -85,9 +86,14 @@ pub async fn resolve_checks(
             args: arg.clone(),
             root_project_name: root_package.dbt_project.name.clone(),
             config_resolver,
+            adapter_hint: None,
+            adapter_layer: None,
+            // A check's adapter is always the default (`adapter` below), even under `--adapter`.
+            parse_adapter_scopes: None,
+            adapter_quoting: root_project_configs.adapter_quoting.clone(),
             package_quoting,
             uses_snapshot_fqn: false,
-            base_ctx: base_ctx.clone(),
+            base_ctx: Arc::clone(base_ctx),
             package_name: package_name.to_string(),
             adapter_type,
             database: database.to_string(),
@@ -103,7 +109,7 @@ pub async fn resolve_checks(
             // (matches resolve_functions.rs, the other resource type with no compile-time
             // re-render).
             defer_render_errors_to_compile: false,
-            resource_type: None,
+            resource_type: Some(NodeType::Check),
         }),
         jinja_env: env.clone(),
         runtime_config: runtime_config.clone(),

@@ -1,0 +1,15 @@
+# this test example doesn't need any remote execution so all connection values here are unused
+# this profile exercises the Redshift `datasharing` config: it should relax
+# `verify_database` cross-db checks and make `adapter.has_feature("datasharing")` return true
+fusion_tests:
+  outputs:
+    redshift:
+      database: dummy_database
+      schema: dummy_schema
+      host: dummy_host
+      port: 5439
+      user: dummy_user
+      password: dummy_password
+      datasharing: true
+      type: redshift
+  target: redshift

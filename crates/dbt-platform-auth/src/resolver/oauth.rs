@@ -192,11 +192,21 @@ impl OAuthPassiveResolver {
             });
         }
 
-        // All matching sessions are expired. Try to refresh if a refresh token is available.
-        if let Some(session) = matching.iter().copied().find(|s| s.refresh_token.is_some()) {
-            return self.refresh_session(&path, session).await;
+        // All matching sessions are expired. Refresh the first one the server accepts: `dbt login`
+        // appends a session per account, so a revoked refresh token must not shadow a later
+        // account that still refreshes. Any other failure stops here.
+        let mut result = Err(AuthError::AuthenticationExpired);
+        for session in matching
+            .iter()
+            .copied()
+            .filter(|s| s.refresh_token.is_some())
+        {
+            result = self.refresh_session(&path, session).await;
+            if !matches!(result, Err(AuthError::AuthenticationExpired)) {
+                return result;
+            }
         }
-        Err(AuthError::AuthenticationExpired)
+        result
     }
 
     /// Refreshes a matching cached session even when its access token has not
@@ -1260,7 +1270,7 @@ mod tests {
     use std::io::Write as _;
     use std::time::{Duration, UNIX_EPOCH};
     use tempfile::NamedTempFile;
-    use tokio::sync::oneshot;
+    use tokio::sync::{mpsc, oneshot};
 
     fn write_cache(cache: &OAuthSessionCache) -> NamedTempFile {
         let mut f = NamedTempFile::new().unwrap();
@@ -1356,6 +1366,46 @@ mod tests {
             write.shutdown().await.unwrap();
         });
         (addr, request_receiver)
+    }
+
+    /// Serves `responses` in order, one per connection, and forwards each request body.
+    async fn mock_token_server_sequence(
+        responses: Vec<(u16, String)>,
+    ) -> (std::net::SocketAddr, mpsc::UnboundedReceiver<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (body_sender, body_receiver) = mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            for (status, body) in responses {
+                let (stream, _) = listener.accept().await.unwrap();
+                let (read, mut write) = stream.into_split();
+                let mut reader = BufReader::new(read);
+                let mut content_length: usize = 0;
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).await.unwrap();
+                    if line == "\r\n" {
+                        break;
+                    }
+                    let lower = line.to_lowercase();
+                    if let Some(rest) = lower.strip_prefix("content-length:") {
+                        content_length = rest.trim().parse().unwrap_or(0);
+                    }
+                }
+                use tokio::io::AsyncReadExt as _;
+                let mut request_body = vec![0u8; content_length];
+                reader.read_exact(&mut request_body).await.unwrap();
+                let _ = body_sender.send(String::from_utf8(request_body).unwrap());
+                let status_text = if status == 200 { "OK" } else { "Error" };
+                let resp = format!(
+                    "HTTP/1.1 {status} {status_text}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                write.write_all(resp.as_bytes()).await.unwrap();
+                write.shutdown().await.unwrap();
+            }
+        });
+        (addr, body_receiver)
     }
 
     fn make_fake_jwt(user_id: u64, account_id: u64, account_host: &str) -> String {
@@ -1730,6 +1780,109 @@ mod tests {
             matches!(err, AuthError::AuthenticationExpired),
             "expected AuthenticationExpired, got {err:?}"
         );
+    }
+
+    #[dbt_runtime::test]
+    async fn expired_refresh_skips_a_revoked_session_for_a_later_account() {
+        let new_access_token = make_fake_jwt(7, 42, "ab123.us1.dbt.com");
+        let token_response = serde_json::json!({
+            "access_token": new_access_token,
+            "refresh_token": "live_new_refresh",
+            "scope": "account:read offline_access",
+            "expires_in": 3600.0
+        })
+        .to_string();
+        let (addr, mut request_bodies) = mock_token_server_sequence(vec![
+            (401, r#"{"error":"invalid_grant"}"#.into()),
+            (200, token_response),
+        ])
+        .await;
+
+        let mut revoked = make_session(past_time(), Some("revoked_refresh".into()));
+        revoked.account_id = 41;
+        revoked.access_token = "revoked_access".into();
+        let live = make_session(past_time(), Some("live_refresh".into()));
+        let cache = OAuthSessionCache {
+            version: 1,
+            sessions: vec![revoked.clone(), live],
+        };
+        let f = write_cache(&cache);
+        let mut r = resolver_at(f.path().to_path_buf());
+        r.token_endpoint_override = Some(format!("http://127.0.0.1:{}", addr.port()));
+
+        let cred = r.resolve().await.unwrap();
+        assert_eq!(cred.token(), new_access_token);
+        assert_eq!(cred.account_id(), 42);
+        assert!(
+            request_bodies
+                .recv()
+                .await
+                .unwrap()
+                .contains("refresh_token=revoked_refresh")
+        );
+        assert!(
+            request_bodies
+                .recv()
+                .await
+                .unwrap()
+                .contains("refresh_token=live_refresh")
+        );
+
+        let bytes = std::fs::read(f.path()).unwrap();
+        let updated: OAuthSessionCache = serde_json::from_slice(&bytes).unwrap();
+        let updated_revoked = updated
+            .sessions
+            .iter()
+            .find(|s| s.account_id == 41)
+            .unwrap();
+        let updated_live = updated
+            .sessions
+            .iter()
+            .find(|s| s.account_id == 42)
+            .unwrap();
+        assert_eq!(updated_revoked.access_token, revoked.access_token);
+        assert_eq!(updated_revoked.refresh_token, revoked.refresh_token);
+        assert_eq!(updated_live.access_token, new_access_token);
+    }
+
+    #[dbt_runtime::test]
+    async fn expired_refresh_server_error_does_not_try_later_accounts() {
+        let token_response = serde_json::json!({
+            "access_token": make_fake_jwt(7, 42, "ab123.us1.dbt.com"),
+            "refresh_token": "live_new_refresh",
+            "scope": "account:read offline_access",
+            "expires_in": 3600.0
+        })
+        .to_string();
+        let (addr, mut request_bodies) =
+            mock_token_server_sequence(vec![(500, "{}".into()), (200, token_response)]).await;
+
+        let mut first = make_session(past_time(), Some("first_refresh".into()));
+        first.account_id = 41;
+        let cache = OAuthSessionCache {
+            version: 1,
+            sessions: vec![
+                first,
+                make_session(past_time(), Some("live_refresh".into())),
+            ],
+        };
+        let f = write_cache(&cache);
+        let mut r = resolver_at(f.path().to_path_buf());
+        r.token_endpoint_override = Some(format!("http://127.0.0.1:{}", addr.port()));
+
+        let err = r.resolve().await.unwrap_err();
+        assert!(
+            matches!(err, AuthError::RefreshFailed(_)),
+            "expected RefreshFailed, got {err:?}"
+        );
+        assert!(
+            request_bodies
+                .recv()
+                .await
+                .unwrap()
+                .contains("refresh_token=first_refresh")
+        );
+        assert!(request_bodies.try_recv().is_err());
     }
 
     #[dbt_runtime::test]

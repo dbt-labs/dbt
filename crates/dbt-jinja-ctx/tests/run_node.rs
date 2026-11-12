@@ -11,13 +11,14 @@
 //! 4. The `RunNodeCtx` JsonSchema has stable shape (snapshot test).
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
+use std::sync::Arc;
 
 use dbt_jinja_ctx::{
-    CompileBaseCtx, DbtNamespace, JinjaObject, LazyModelWrapper, MacroLookupContext, RunNodeCtx,
-    to_jinja_btreemap, to_model_context_map,
+    CompileBaseCtx, DbtNamespace, JinjaObject, MacroLookupContext, RunNodeCtx, to_jinja_btreemap,
 };
-use indexmap::IndexMap;
+use dbt_schemas::jinja_node::LazyNodeContext;
+use dbt_schemas::schemas::DbtModel;
+use dbt_schemas::schemas::serialization_utils::SerializationMode;
 use minijinja::Value as MinijinjaValue;
 use minijinja::machinery::Span;
 
@@ -26,13 +27,12 @@ fn fixture_run_node_ctx(
     post_hooks: Option<MinijinjaValue>,
     load_agate_table: Option<MinijinjaValue>,
 ) -> RunNodeCtx {
-    let mut model_inner: IndexMap<String, MinijinjaValue> = IndexMap::new();
-    model_inner.insert(
-        "name".to_string(),
-        MinijinjaValue::from("dbt_columns".to_string()),
-    );
-
-    let shared_model_map = to_model_context_map(model_inner);
+    let mut node = DbtModel::default();
+    node.__common_attr__.name = "dbt_columns".to_string();
+    let model = Arc::new(LazyNodeContext::from_node(
+        Arc::new(node),
+        SerializationMode::OmitNone,
+    ));
 
     let mut builtins_inner: BTreeMap<String, MinijinjaValue> = BTreeMap::new();
     builtins_inner.insert("ref".to_string(), MinijinjaValue::from("ref-fn-stub"));
@@ -47,14 +47,8 @@ fn fixture_run_node_ctx(
         pre_hooks,
         post_hooks,
         config: MinijinjaValue::from("run-config-stub"),
-        model: JinjaObject::new(LazyModelWrapper::new(
-            shared_model_map.clone(),
-            PathBuf::from("/tmp/nonexistent.sql"),
-        )),
-        node: JinjaObject::new(LazyModelWrapper::new(
-            shared_model_map,
-            PathBuf::from("/tmp/nonexistent.sql"),
-        )),
+        node: MinijinjaValue::from_object(model.alias()),
+        model: MinijinjaValue::from_dyn_object(model),
         connection_name: String::new(),
         store_result: MinijinjaValue::from("store-result-stub"),
         load_result: MinijinjaValue::from("load-result-stub"),
@@ -222,11 +216,11 @@ fn base_some_flattens_and_is_shadowed_by_per_node_fields() {
         Some("store-result-stub"),
         "overlay store_result must shadow the base closure"
     );
-    // `node` is a `LazyModelWrapper` object on the overlay vs a plain string
-    // on the base — the overlay object must win.
+    // `node` is an object on the overlay vs a plain string on the base — the
+    // overlay object must win.
     assert!(
         registered.get("node").and_then(|v| v.as_object()).is_some(),
-        "overlay `node` (LazyModelWrapper) must shadow the base string node"
+        "overlay `node` object must shadow the base string node"
     );
 }
 

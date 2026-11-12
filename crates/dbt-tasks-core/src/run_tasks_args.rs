@@ -77,6 +77,8 @@ pub struct RunTasksArgs {
 
     /// Whether to favor state over current environment
     pub favor_state: bool,
+    /// False when --no-defer is explicitly passed
+    pub defer: bool,
     /// The mode to use for the run cache
     pub run_cache_mode: RunCacheMode,
     /// The url to use for the run cache
@@ -113,6 +115,8 @@ pub struct RunTasksArgs {
     pub fail_fast_flag: bool,
     /// Whether to skip running post hook operations.
     pub skip_post_hooks: bool,
+    /// Whether to skip running on-run-start hook operations.
+    pub skip_on_run_start_hooks: bool,
     /// Hidden test optimization flags.
     pub optimize_tests: dbt_common::collections::HashSet<OptimizeTestsOptions>,
     /// Whether the gRPC run-cache service is explicitly requested via CLI flag.
@@ -168,6 +172,7 @@ impl RunTasksArgs {
             skip_unreferenced_table_check: arg.skip_unreferenced_table_check,
             task_cache_url: arg.task_cache_url.clone(),
             favor_state: arg.favor_state,
+            defer: arg.defer,
             run_cache_mode: arg.run_cache_mode.clone(),
             sample_renaming: arg.sample_renaming.clone(),
             select: arg.select.clone(),
@@ -183,6 +188,7 @@ impl RunTasksArgs {
             fail_fast,
             fail_fast_flag: arg.fail_fast,
             skip_post_hooks: arg.skip_post_hooks,
+            skip_on_run_start_hooks: arg.skip_on_run_start_hooks,
             optimize_tests: arg.optimize_tests.clone(),
             run_cache_service: arg.run_cache_service,
             warn_error_options: arg.warn_error_options.clone(),
@@ -246,6 +252,7 @@ impl fmt::Debug for RunTasksArgs {
             .field("limit", &self.limit)
             .field("run_cache_url", &self.task_cache_url)
             .field("run_cache_mode", &self.run_cache_mode)
+            .field("defer", &self.defer)
             .finish()
     }
 }

@@ -8,8 +8,8 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 use dbt_schema_store::{LocalSchemaEntry, store::LookupEntry};
 
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
-use dbt_ident::Ident;
 use dbt_schema_store::{CanonicalFqn, SchemaStoreTrait, store::SchemaStore};
+use dbt_sql_base::Ident;
 use tempfile::TempDir;
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -53,6 +53,85 @@ fn store_with_frontier(dir: &TempDir, c: &CanonicalFqn, uid: &str) -> SchemaStor
 }
 
 // ── basic contract ─────────────────────────────────────────────────────────────
+
+#[test]
+fn schema_owner_follows_registration_lookup_precedence() {
+    use dbt_schema_store::SchemaOwner;
+
+    let c = cfqn("db", "s", "aliased");
+    let selected_id = "model.pkg.selected";
+    let local_id = "source.pkg.local";
+    let frontier_id = "source.pkg.remote";
+    let deferred_id = "model.pkg.deferred";
+    let expected = [
+        Some(SchemaOwner::Current(selected_id.to_string())),
+        Some(SchemaOwner::Current(local_id.to_string())),
+        Some(SchemaOwner::Current(frontier_id.to_string())),
+        Some(SchemaOwner::Deferred(deferred_id.to_string())),
+        None,
+    ];
+    for (first, owner) in expected.into_iter().enumerate() {
+        let dir = TempDir::new().unwrap();
+        let mapping = |rank, unique_id: &str| {
+            if first <= rank {
+                HashMap::from([(c.clone(), unique_id.to_string())])
+            } else {
+                HashMap::new()
+            }
+        };
+        let store = SchemaStore::new(
+            dir.path().to_path_buf(),
+            mapping(0, selected_id),
+            mapping(2, frontier_id),
+            mapping(1, local_id),
+            vec![],
+            HashMap::new(),
+        );
+        if first <= 3 {
+            store.set_deferred(HashMap::from([(c.clone(), deferred_id.to_string())]));
+        }
+        assert_eq!(store.schema_owner(&c), owner);
+        assert!(!store.exists(&c));
+        let schema = make_schema("name");
+        store
+            .register_schema(&c, None, Arc::clone(&schema), true)
+            .unwrap();
+        assert_eq!(store.get_schema(&c).unwrap().inner(), &schema);
+        assert_eq!(store.schema_owner(&c), owner);
+        if first == 0 {
+            assert_eq!(
+                store.get_schema_by_unique_id(selected_id).unwrap().inner(),
+                &schema
+            );
+            assert!(store.get_schema_by_unique_id(frontier_id).is_none());
+        }
+    }
+}
+
+#[test]
+fn mock_schema_owner_is_explicit_and_independent_of_schema_pointers() {
+    use dbt_schema_store::SchemaOwner;
+    use dbt_schema_store::mock_store::MockSchemaStore;
+
+    let store = MockSchemaStore::new();
+    let c = cfqn("db", "s", "aliased");
+    assert_eq!(store.schema_owner(&c), None);
+    let owner = SchemaOwner::Current("model.pkg.selected".to_string());
+    store.set_schema_owner(c.clone(), owner.clone());
+    assert_eq!(store.schema_owner(&c), Some(owner.clone()));
+    assert!(!store.exists(&c));
+    let schema = make_schema("name");
+    store
+        .register_schema(&c, None, Arc::clone(&schema), true)
+        .unwrap();
+    store
+        .register_schema_by_unique_id("source.pkg.alias".to_string(), None, schema, true)
+        .unwrap();
+    assert_eq!(store.schema_owner(&c), Some(owner));
+    let deferred = SchemaOwner::Deferred("model.pkg.deferred".to_string());
+    store.set_schema_owner(c.clone(), deferred.clone());
+    assert_eq!(store.schema_owner(&c), Some(deferred));
+}
 
 #[test]
 fn register_and_get_by_cfqn() {

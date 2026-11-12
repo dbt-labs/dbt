@@ -21,9 +21,7 @@
   {% set is_replaceable_format = is_delta or is_iceberg %}
   {% set compiled_code = adapter.clean_sql(model['compiled_code']) %}
 
-  {#-- DIVERGENCE BEGIN: v2 adapter doesn't expose get_behavior_flag_no_warn as a Jinja-callable method; use the direct attribute-access form, which fs supports and is functionally equivalent for this if-check. --#}
-  {% if adapter.behavior.use_materialization_v2 %}
-  {#-- DIVERGENCE END --#}
+  {% if use_materialization_v2() %}
     {{ log("USING V2 MATERIALIZATION") }}
     {#-- Set vars --#}
     {% set safe_create = config.get('use_safer_relation_operations', False) | as_bool  %}
@@ -44,6 +42,7 @@
     {%- if existing_relation is none -%}
       {{ log("No existing relation found") }}
       {{ create_table_at(target_relation, intermediate_relation, compiled_code) }}
+      {% do persist_docs(target_relation, model, for_relation=language=='python') %}
     {%- elif should_replace -%}
       {{ log("Existing relation found that requires replacement") }}
       {% if safe_create and existing_relation.can_be_renamed %}
@@ -58,6 +57,7 @@
         {{ log("Replacing target relation") }}
         {{ create_table_at(target_relation, intermediate_relation, compiled_code) }}
       {% endif %}
+      {% do persist_docs(target_relation, model, for_relation=language=='python') %}
     {%- else -%}
       {{ log("Existing relation found, proceeding with incremental work")}}
       {#-- Set Overwrite Mode to DYNAMIC for subsequent incremental operations --#}

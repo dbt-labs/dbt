@@ -18,6 +18,10 @@ pub(crate) fn yml_value_to_string<'a>(value: &'a YmlValue) -> Cow<'a, str> {
     // a newline to the end of every string. And, less importantly, it
     // also copies values that are strings already.
     match value {
+        YmlValue::Null(_) => Cow::Borrowed("null"),
+        YmlValue::Bool(b, _) => Cow::Borrowed(if *b { "true" } else { "false" }),
+        YmlValue::Number(n, _) => Cow::Owned(n.to_string()),
+        YmlValue::String(s, _) => Cow::Borrowed(s),
         YmlValue::Sequence(_, _) | YmlValue::Mapping(_, _) => {
             let res = dbt_yaml::to_string(value);
             debug_assert!(
@@ -31,7 +35,6 @@ pub(crate) fn yml_value_to_string<'a>(value: &'a YmlValue) -> Cow<'a, str> {
             Cow::Owned(s)
         }
         YmlValue::Tagged(tagged_value, _) => yml_value_to_string(&tagged_value.value),
-        other => other.as_scalar_string().expect("is a scalar"),
     }
 }
 
@@ -75,6 +78,18 @@ impl AdapterConfig {
         self.get(field)?.as_str()
     }
 
+    /// Get a direct reference to a string value if it exists and is a string,
+    /// and is non-empty.
+    /// This returns a borrow tied to the lifetime of the AdapterConfig itself.
+    ///
+    /// TODO: It's possible this behavior is what we just want from get_str, but
+    /// we would need to investigate this to make sure we aren't breaking anything.
+    /// Is there ever a case where we want to explicitly distinguish between
+    /// not setting an option and setting an empty string?
+    pub fn get_str_non_empty(&self, field: &str) -> Option<&str> {
+        self.get(field)?.as_str().filter(|s| !s.is_empty())
+    }
+
     /// Like `require`, but returns a borrowed string.
     pub fn require_str(&self, field: &str) -> Result<&str, dbt_yaml::Error> {
         use serde::de::Error as _;
@@ -96,7 +111,7 @@ impl AdapterConfig {
     }
 
     /// Whether this config indicates that authentication should be handled by
-    /// dbt Cloud credentials (via the flock/remote driver) instead of
+    /// dbt Cloud credentials (via the bridge/remote driver) instead of
     /// adapter-specific auth.
     pub fn use_dbt_cloud_credentials(&self) -> bool {
         self.get("use_dbt_cloud_credentials")

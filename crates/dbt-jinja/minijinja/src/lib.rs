@@ -270,7 +270,7 @@ pub use self::value::Value;
 pub use self::macros::__context;
 pub use self::vm::{deserialize_path, deserialize_span, State};
 pub use crate::types::adapter::AdapterDispatchFunction;
-pub use crate::types::builtins::load_builtins_with_namespace;
+pub use crate::types::builtins::{load_builtins_with_namespace, TypeRegistry};
 pub use crate::types::funcsign_parser;
 pub use crate::types::function::{
     ArgSpec, Argument, AsBoolFilterType, AsNativeFilterType, AsNumberFilterType, AsTextFilterType,

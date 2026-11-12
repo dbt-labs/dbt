@@ -48,9 +48,7 @@ pub use dbt_handles::AdapterHandle;
 pub use docs::DocsContext;
 pub use jinja_object::JinjaObject;
 pub use load::LoadCtx;
-pub use objects::{
-    DbtNamespace, DummyConfig, HookConfig, LazyModelWrapper, MacroLookupContext, ParseExecute,
-};
+pub use objects::{DbtNamespace, DummyConfig, HookConfig, MacroLookupContext, ParseExecute};
 pub use register::{register_globals_from_serialize, to_jinja_btreemap};
 pub use resolve::{ResolveBaseCtx, ResolveModelCtx};
 pub use run::RunNodeCtx;
@@ -58,21 +56,3 @@ pub use run::RunNodeCtx;
 /// Shape used by the `target` Jinja global. Cheap-cloned (`Arc`) across the
 /// resolve / model loop.
 pub type TargetContextMap = std::sync::Arc<std::collections::BTreeMap<String, minijinja::Value>>;
-
-/// Shape backing the `{{ model }}` / `{{ node }}` Jinja slots. dbt Core hands
-/// materialization macros a plain Python dict they are allowed to mutate
-/// (`{% do model.update({...}) %}`), so the map is mutable and shared (`Arc`):
-/// the `model` and `node` slots of one render observe each other's writes.
-pub type ModelContextMap = std::sync::Arc<minijinja::value::mutable_map::MutableMap>;
-
-/// Build a [`ModelContextMap`] from a serialized node map.
-pub fn to_model_context_map(
-    model_map: indexmap::IndexMap<String, minijinja::Value>,
-) -> ModelContextMap {
-    std::sync::Arc::new(minijinja::value::mutable_map::MutableMap::from(
-        model_map
-            .into_iter()
-            .map(|(key, value)| (minijinja::Value::from(key), value))
-            .collect::<minijinja::value::ValueMap>(),
-    ))
-}

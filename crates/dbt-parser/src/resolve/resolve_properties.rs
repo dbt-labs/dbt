@@ -2,6 +2,8 @@ use crate::args::ResolveArgs;
 use crate::dbt_project_config::{
     ProjectConfigResolver, RootProjectConfigs, disallow_plus_prefix_from_flags, init_project_config,
 };
+use crate::experimental::ActiveExperimentals;
+use crate::resolve::resolve_tests::resolve_unit_tests::unit_test_jinja_join_error;
 use crate::resolve::resolve_utils::deep_merge_yaml;
 use dbt_adapter_core::AdapterType;
 use dbt_common::cancellation::CancellationToken;
@@ -13,8 +15,8 @@ use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::serde::{from_yaml_raw, into_typed_with_jinja};
 use dbt_jinja_utils::utils::dependency_package_name_from_ctx;
 use dbt_schemas::schemas::properties::{
-    AnalysesProperties, CheckProperties, DbtPropertiesFileValues, MinimalSchemaValue,
-    MinimalTableValue, MinimalUnitTestValue,
+    AnalysesProperties, CheckProperties, DbtPropertiesFileValues, MinimalExperimentalEntryValue,
+    MinimalSchemaValue, MinimalTableValue, MinimalUnitTestValue,
 };
 use dbt_schemas::schemas::serde::{FloatOrString, strip_one_trailing_newline_at_keys};
 use dbt_schemas::state::DbtPackage;
@@ -22,8 +24,10 @@ use dbt_telemetry::AssetParsed;
 use dbt_yaml::{Span, Spanned, Verbatim};
 use itertools::Itertools;
 use minijinja::Value as MinijinjaValue;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use tracing::Instrument;
 
 #[derive(Debug, Clone)]
 pub struct MinimalPropertiesEntry {
@@ -58,16 +62,72 @@ pub struct MinimalProperties {
     pub saved_queries: BTreeMap<String, MinimalPropertiesEntry>,
     pub groups: BTreeMap<String, MinimalPropertiesEntry>,
     pub macros: BTreeMap<String, MinimalPropertiesEntry>,
+    /// Entries under `experimental:`, by key (an experimental type or a definition key) and then
+    /// name.
+    pub experimental: BTreeMap<String, BTreeMap<String, MinimalPropertiesEntry>>,
     pub semantic_layer_spec_is_legacy: bool,
 }
 
 // impl try extend from MinimalResolvedProperties
 #[allow(clippy::cognitive_complexity)]
 impl MinimalProperties {
-    pub fn extend_from_minimal_properties_file(
+    /// Collects the entries under `experimental:` in one properties file.
+    pub fn extend_from_experimental_values(
+        &mut self,
+        experimental_values: Vec<(String, dbt_yaml::Value)>,
+        jinja_env: &JinjaEnv,
+        properties_path: &Path,
+        base_ctx: &BTreeMap<String, MinijinjaValue>,
+    ) -> FsResult<()> {
+        for (key, value) in experimental_values {
+            let entries = self.experimental.entry(key.clone()).or_default();
+            if value.is_null() {
+                continue;
+            }
+            let Some(values) = value.as_sequence() else {
+                return Err(fs_err!(
+                    code => ErrorCode::InvalidConfig,
+                    loc => properties_path.to_path_buf(),
+                    "`experimental: {}` must be a list",
+                    key
+                ));
+            };
+            for entry_value in values {
+                let entry = into_typed_with_jinja::<MinimalExperimentalEntryValue, _>(
+                    name_stripped(entry_value),
+                    false,
+                    jinja_env,
+                    base_ctx,
+                    &[],
+                    dependency_package_name_from_ctx(jinja_env, base_ctx),
+                    true,
+                )?;
+                let name = validate_resource_name(&entry.name)?;
+                if let Some(existing) = entries.get_mut(&name) {
+                    existing.duplicate_paths.push(properties_path.to_path_buf());
+                    continue;
+                }
+                entries.insert(
+                    name.clone(),
+                    MinimalPropertiesEntry {
+                        name,
+                        name_span: Span::default(),
+                        relative_path: properties_path.to_path_buf(),
+                        schema_value: entry_value.clone(),
+                        table_value: None,
+                        version_info: None,
+                        duplicate_paths: vec![],
+                    },
+                );
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn extend_from_minimal_properties_file(
         &mut self,
         other: DbtPropertiesFileValues,
-        jinja_env: &JinjaEnv,
+        jinja_env: &Arc<JinjaEnv>,
         properties_path: &Path,
         base_ctx: &BTreeMap<String, MinijinjaValue>,
     ) -> FsResult<()> {
@@ -453,15 +513,24 @@ impl MinimalProperties {
         }
         if let Some(unit_tests) = other.unit_tests {
             for unit_test_value in unit_tests {
-                let unit_test = into_typed_with_jinja::<MinimalUnitTestValue, _>(
-                    name_stripped(&unit_test_value),
-                    false,
-                    jinja_env,
-                    base_ctx,
-                    &[],
-                    dependency_package_name_from_ctx(jinja_env, base_ctx),
-                    true,
-                )?;
+                let value = name_stripped(&unit_test_value);
+                let env = Arc::clone(jinja_env);
+                let context = base_ctx.clone();
+                let dependency_package =
+                    dependency_package_name_from_ctx(jinja_env, base_ctx).map(str::to_owned);
+                let unit_test = dbt_runtime::spawn_blocking(move || {
+                    into_typed_with_jinja::<MinimalUnitTestValue, _>(
+                        value,
+                        false,
+                        &env,
+                        &context,
+                        &[],
+                        dependency_package.as_deref(),
+                        true,
+                    )
+                })
+                .await
+                .map_err(unit_test_jinja_join_error)??;
                 if let Some(existing_unit_test) = self.unit_tests.get_mut(unit_test.name.as_ref()) {
                     existing_unit_test
                         .duplicate_paths
@@ -629,16 +698,17 @@ fn validate_resource_name(name: &str) -> FsResult<String> {
 }
 
 #[allow(clippy::cognitive_complexity)]
-pub fn resolve_minimal_properties(
+pub async fn resolve_minimal_properties(
     arg: &ResolveArgs,
     package: &DbtPackage,
     root_package: &DbtPackage,
     root_package_name: &str,
     root_project_configs: &RootProjectConfigs,
-    jinja_env: &JinjaEnv,
+    jinja_env: &Arc<JinjaEnv>,
     base_ctx: &BTreeMap<String, MinijinjaValue>,
     token: &CancellationToken,
     adapter_type: AdapterType,
+    experimentals: &ActiveExperimentals,
 ) -> FsResult<MinimalProperties> {
     let mut minimal_resolved_properties = MinimalProperties {
         semantic_layer_spec_is_legacy: false,
@@ -660,6 +730,10 @@ pub fn resolve_minimal_properties(
         },
         adapter_type,
     )?;
+
+    // Entries under `experimental:` for an experimental that is on are collected; any others are
+    // ignored.
+    let mut ignored_experimental_keys: BTreeSet<String> = BTreeSet::new();
 
     for dbt_asset in package.dbt_properties.iter().dedup() {
         token.check_cancellation()?;
@@ -684,8 +758,7 @@ pub fn resolve_minimal_properties(
             None
         };
 
-        {
-            let _guard = span.enter();
+        async {
             let input = try_read_yml_to_str(&absolute_path)?;
 
             let result = match from_yaml_raw::<DbtPropertiesFileValues>(
@@ -696,8 +769,23 @@ pub fn resolve_minimal_properties(
             ) {
                 Ok(properties_file_values) => {
                     let properties_path = &dbt_asset.path;
-                    minimal_resolved_properties.extend_from_minimal_properties_file(
-                        properties_file_values.clone(),
+                    minimal_resolved_properties
+                        .extend_from_minimal_properties_file(
+                            properties_file_values.clone(),
+                            jinja_env,
+                            properties_path,
+                            base_ctx,
+                        )
+                        .await?;
+                    let (experimental_values, ignored): (Vec<_>, Vec<_>) = properties_file_values
+                        .experimental
+                        .clone()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .partition(|(key, _)| experimentals.reading(key).is_some());
+                    ignored_experimental_keys.extend(ignored.into_iter().map(|(key, _)| key));
+                    minimal_resolved_properties.extend_from_experimental_values(
+                        experimental_values,
                         jinja_env,
                         properties_path,
                         base_ctx,
@@ -739,6 +827,29 @@ pub fn resolve_minimal_properties(
             if let Err(e) = result {
                 emit_strict_parse_error(*e, dependency_package_name);
             }
+            Ok::<(), Box<dbt_common::FsError>>(())
+        }
+        .instrument(span.clone())
+        .await?;
+    }
+    for key in ignored_experimental_keys {
+        let package_name = &package.dbt_project.name;
+        if experimentals.is_reserved(&key) {
+            emit_warn_log_message(
+                ErrorCode::ExperimentalNotEnabled,
+                format!(
+                    "Ignoring `experimental: {key}` in package '{package_name}': {}",
+                    experimentals.why_ignored(&key)
+                ),
+            );
+        } else {
+            emit_warn_log_message(
+                ErrorCode::UnknownExperimental,
+                format!(
+                    "Ignoring `experimental: {key}` in package '{package_name}': there is no \
+                     `{key}` experimental"
+                ),
+            );
         }
     }
     Ok(minimal_resolved_properties)

@@ -206,29 +206,44 @@ cargo build -p dbt-cli   # embeds the committed web/dist/ as-is
 
 ### Rebuilding the UI
 
-Only needed if you change anything under `web/`. The SPA has no private
-dependencies — everything it needs is on the public npm registry, no token
-required:
+Only needed if you change anything under `web/` or `dbt-docs-lib/`. The UI is a
+pnpm workspace of two packages, run with [Turborepo](https://turborepo.com):
+
+- `web/` (`dbt-docs-web`) — the SPA, built into `web/dist/`
+- `dbt-docs-lib/` — shared components, bundled into the SPA
+
+Neither has private dependencies — everything is on the public npm registry, no
+token required. You need Node 22 or newer and pnpm 10, as pinned in
+[`.tool-versions`](./.tool-versions). Run these from the workspace root, where turbo
+builds `dbt-docs-lib` before anything that imports it:
 
 ```bash
-cd crates/dbt-docs-server/web
+cd crates/dbt-docs-server
 pnpm install
-pnpm build          # writes web/dist/
+pnpm build          # builds dbt-docs-lib, then writes web/dist/
 ```
 
-Other useful commands, all from `web/`:
+Other useful commands, also from the workspace root:
 
 ```bash
-pnpm dev            # vite dev server on :3002; set DBT_DOCS_DEV_SITE=<a generated site> for real data
-pnpm test           # vitest
+pnpm dev            # vite dev server on :3002 that rebuilds dbt-docs-lib on change; set DBT_DOCS_DEV_SITE=<a generated site> for real data
+pnpm test           # vitest, both packages
 pnpm typecheck
-pnpm lint           # eslint + prettier
+pnpm lint           # eslint + prettier, one root config for both packages
+pnpm turbo run storybook --filter=dbt-docs-web   # one package's script, after its dependencies build
 ```
+
+Every script in `web/` works there too, and builds `dbt-docs-lib` through turbo
+first when it needs the lib. The long-running ones (`dev`, `storybook`, `test:watch`
+and `build:watch`) run under `turbo watch`, as `pnpm dev` does at the root, so they
+also rebuild the lib on change, but vite's and vitest's keyboard shortcuts are off.
+The tests and type checks there cover `web/` only.
 
 > [!IMPORTANT]
-> **Always rebuild `web/dist/` and commit it in the same change as any `web/` source
-> edit.** This is a manual step — nothing in CI or in a git hook rebuilds or checks
-> the bundle, so a source-only commit will silently ship a stale UI.
+> **Always rebuild `web/dist/` and commit it in the same change as any `web/` or
+> `dbt-docs-lib/` source edit.** This is a manual step — nothing in CI or in a git
+> hook rebuilds or checks the bundle, so a source-only commit will silently ship a
+> stale UI.
 
 ### Customizing the look
 

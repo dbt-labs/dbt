@@ -1,0 +1,14 @@
+94174fdb:
+- sequence: 0
+  type: execute
+  sql: |-
+    SELECT
+    legacy.dataset_id AS table_schema,
+    legacy.table_id AS table_name,
+    IF(info.table_type = 'EXTERNAL', NULL, TIMESTAMP_MILLIS(legacy.last_modified_time)) AS last_altered,
+    (legacy.type = 2) AS is_view
+    FROM `dbt-test-env`.adapters_bigquery_metadata_source_freshness.__TABLES__ legacy
+    LEFT JOIN `dbt-test-env`.adapters_bigquery_metadata_source_freshness.INFORMATION_SCHEMA.TABLES info
+    ON info.table_schema = legacy.dataset_id
+    AND info.table_name = legacy.table_id
+    WHERE table_id = 'source'

@@ -1,0 +1,1 @@
+Unknown: [BigQuery] googleapi: Error 400: The project foo has not enabled BigQuery., invalid (sqlstate: 00000, vendor_code: -2147483648)

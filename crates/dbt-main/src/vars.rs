@@ -125,10 +125,12 @@ const USED_ENGINE_ENV_VARS: &[&str] = &[
     BATCH_TESTS_ENV,
     "DBT_ENGINE_BETA_PACKAGE_PARSING",
     "DBT_ENGINE_BETA_PARSING",
+    "DBT_ENGINE_DEFAULT_STATIC_ANALYSIS",
     "DBT_ENGINE_EXPERIMENTAL_LIST_UDFS",
     LOCAL_UNIT_TESTS_ENV,
     MULTI_ADAPTER_ENV,
     "DBT_ENGINE_EXPERIMENTAL_SNAPSHOT_COLUMNS",
+    dbt_flags::FEATURES_ENV,
     "DBT_ENGINE_GENERATE_INFO_SCHEMA",
     "DBT_ENGINE_INFO_SCHEMA_DIR",
     "DBT_ENGINE_MANAGE_STATE",
@@ -153,6 +155,7 @@ const USED_ENGINE_ENV_VARS: &[&str] = &[
 // 1. USED_ENGINE_ENV_VARS - engine-specific vars used by fusion
 // 2. KNOWN_UNUSED_ENGINE_ENV_VARS - dbt-core vars not supported by fusion
 // 3. Aliases derived from ALIASABLE_ENV_VARS (DBT_* -> DBT_ENGINE_*)
+// 4. Legacy env vars of registered feature flags
 static KNOWN_ENGINE_ENV_VARS: std::sync::LazyLock<std::collections::HashSet<String>> =
     std::sync::LazyLock::new(|| {
         let mut set = std::collections::HashSet::new();
@@ -171,6 +174,12 @@ static KNOWN_ENGINE_ENV_VARS: std::sync::LazyLock<std::collections::HashSet<Stri
         for dbt_var in ALIASABLE_ENV_VARS {
             if let Some(suffix) = dbt_var.strip_prefix("DBT_") {
                 set.insert(format!("DBT_ENGINE_{}", suffix));
+            }
+        }
+
+        for def in dbt_flags::ALL {
+            for var in def.legacy_env {
+                set.insert((*var).to_string());
             }
         }
 

@@ -125,17 +125,34 @@ pub trait TaskCache: Send + Sync {
     ) -> Result<bool, String>;
 
     /// Stop the task and write the final result under the stop key.
-    async fn stop_task(&self, key: &str, value: &TaskValue, info: &TaskInfo) -> Result<(), String>;
+    ///
+    /// `expected_start` is the value this owner CAS'd into the start key when
+    /// it acquired the task; the write is skipped if the start key no longer
+    /// matches it, so a worker reclaimed by another owner can't clobber the
+    /// new owner's `stop`/`info` entries with its own stale completion.
+    async fn stop_task(
+        &self,
+        key: &str,
+        value: &TaskValue,
+        info: &TaskInfo,
+        expected_start: &TaskValue,
+    ) -> Result<(), String>;
 
     /// Retrieve the current state and structured task values (start, heartbeat, stop).
     /// For Stale state, the stop value is the last completed stop value.
     async fn get_task_state(&self, key: &str) -> Result<(TaskState, TaskValues), String>;
 
     /// Start sending heartbeats for this task until `stop_signal` is set.
+    ///
+    /// `start_value` is the value this owner CAS'd into the start key when it
+    /// acquired the task; each write checks the start key still matches it,
+    /// so a worker that has since been reclaimed by another owner can't keep
+    /// clobbering that owner's heartbeat with its own stale writes.
     async fn start_heartbeat(
         self: Arc<Self>,
         key: &str,
         value: &TaskValue,
+        start_value: &TaskValue,
         stop_signal: Arc<AtomicBool>,
     ) -> Result<(), String>;
 

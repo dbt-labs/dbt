@@ -1,0 +1,11 @@
+c5d8f1de:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists `dbt-test-env`.`adapters_bigquery_repros_seed_empty_column`
+seed.hello_world.p:
+- sequence: 0
+  type: execute
+  sql: ''
+- sequence: 1
+  type: execute
+  sql: "\n    alter table `dbt-test-env`.`adapters_bigquery_repros_seed_empty_column`.`p` set OPTIONS()\n  "

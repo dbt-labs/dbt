@@ -1,0 +1,91 @@
+17caa9c7:
+- sequence: 0
+  type: execute
+  sql: select distinct nspname from pg_namespace
+41b06498:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists "redshift_two_views_dag"
+model.redshift_two_views_dag.a:
+- sequence: 0
+  type: execute
+  sql: |-
+    select
+    table_catalog as database,
+    table_name as name,
+    table_schema as schema,
+    'table' as type
+    from information_schema.tables
+    where table_schema ilike 'redshift_two_views_dag'
+    and table_type = 'BASE TABLE'
+    union all
+    select
+    table_catalog as database,
+    table_name as name,
+    table_schema as schema,
+    case
+    when view_definition ilike '%create materialized view%'
+    then 'materialized_view'
+    else 'view'
+    end as type
+    from information_schema.views
+    where table_schema ilike 'redshift_two_views_dag'
+- sequence: 1
+  type: execute
+  sql: |-
+    with relation as (
+    select
+    pg_class.oid as relation_id,
+    pg_class.relname as relation_name,
+    pg_class.relnamespace as schema_id,
+    pg_namespace.nspname as schema_name
+    from pg_class
+    join pg_namespace
+    on pg_class.relnamespace = pg_namespace.oid
+    where pg_namespace.nspname != 'information_schema'
+    and pg_namespace.nspname not like 'pg\_%'
+    ),
+    dependency as (
+    select distinct
+    coalesce(pg_rewrite.ev_class, pg_depend.objid) as dep_relation_id,
+    pg_depend.refobjid as ref_relation_id
+    from pg_depend
+    left join pg_rewrite
+    on pg_depend.objid = pg_rewrite.oid
+    where coalesce(pg_rewrite.ev_class, pg_depend.objid) != pg_depend.refobjid
+    )
+    select distinct
+    dep.schema_name as dependent_schema,
+    dep.relation_name as dependent_name,
+    ref.schema_name as referenced_schema,
+    ref.relation_name as referenced_name
+    from dependency
+    join relation ref
+    on dependency.ref_relation_id = ref.relation_id
+    join relation dep
+    on dependency.dep_relation_id = dep.relation_id
+- sequence: 2
+  type: execute
+  sql: |-
+    create view "ci"."redshift_two_views_dag"."a__dbt_tmp" as (
+    select 1 as id
+    ) 
+- sequence: 3
+  type: execute
+  sql: alter table "ci"."redshift_two_views_dag"."a__dbt_tmp" rename to "a"
+- sequence: 4
+  type: execute
+  sql: drop view if exists "ci"."redshift_two_views_dag"."a__dbt_backup" cascade
+model.redshift_two_views_dag.b:
+- sequence: 0
+  type: execute
+  sql: |-
+    create view "ci"."redshift_two_views_dag"."b__dbt_tmp" as (
+    select * from "ci"."redshift_two_views_dag"."a"
+    ) 
+- sequence: 1
+  type: execute
+  sql: alter table "ci"."redshift_two_views_dag"."b__dbt_tmp" rename to "b"
+- sequence: 2
+  type: execute
+  sql: drop view if exists "ci"."redshift_two_views_dag"."b__dbt_backup" cascade

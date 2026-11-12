@@ -1,0 +1,52 @@
+# Placeholder `fusion_tests` profile for replaying adapter record/replay tests
+# without credentials. The harness uses it when ~/.dbt/profiles.yml does not
+# define `fusion_tests`.
+#
+# Replay opens no connection, so the credentials are never used. The other
+# values matter: recordings match queries by their SQL text, so each output's
+# `database` (and, for Snowflake, `warehouse`) must be the one the recordings
+# were made with.
+fusion_tests:
+  outputs:
+    snowflake:
+      type: snowflake
+      account: 'dummy_account'
+      user: 'dummy_username'
+      private_key: 'dummy_private_key'
+      role: 'dummy_role'
+      # Recordings mask this warehouse name, so record with a warehouse of
+      # this name too.
+      warehouse: 'FUSION_ADAPTER_TESTING'
+      database: 'development'
+      schema: "fusion_tests_schema"
+    bigquery:
+      type: bigquery
+      method: service-account
+      database: 'dbt-test-env'
+      keyfile: 'dummy_path'
+      schema: "fusion_tests_schema"
+    databricks:
+      type: databricks
+      host: 'dummy_hostname'
+      http_path: 'dummy_path'
+      token: 'dummy_token'
+      database: 'e2e'
+      schema: "fusion_tests_schema"
+    redshift:
+      type: redshift
+      host: 'dummy_hostname'
+      port: 5439
+      user: 'dummy_username'
+      password: 'dummy_password'
+      database: 'ci'
+      schema: "fusion_tests_schema"
+    clickhouse:
+      type: clickhouse
+      host: 'localhost'
+      port: 8123
+      user: 'default'
+      password: ''
+      database: 'default'
+      schema: "fusion_tests_schema"
+      threads: 4
+  target: unset

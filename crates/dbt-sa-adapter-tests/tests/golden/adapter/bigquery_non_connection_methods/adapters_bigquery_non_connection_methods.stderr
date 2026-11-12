@@ -1,0 +1,6 @@
+[error] [InvalidConfig (dbt1005)]: Configuration Error: invalid argument: Expect a BigqueryPartitionConfigStruct
+(in models/string_partition_by.sql:15:39)
+  --> models/string_partition_by.sql:15:39
+[error] [InvalidConfig (dbt1005)]: Configuration Error: invalid argument: Expect a BigqueryPartitionConfigStruct
+(in models/list_partition_by.sql:14:39)
+  --> models/list_partition_by.sql:14:39

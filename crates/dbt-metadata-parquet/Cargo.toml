@@ -20,7 +20,6 @@ arrow = { workspace = true }
 parquet = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_arrow = { workspace = true }
-serde_json = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

@@ -85,6 +85,8 @@
         {{ apply_column_tags(target_relation, column_tags) }}
     {% endif %}
 
+    {% do validate_persist_doc_columns(target_relation, model) %}
+
     {{ run_hooks(post_hooks, inside_transaction=True) }}
 
 {% endmacro %}

@@ -609,6 +609,9 @@ pub struct EvalArgs {
     pub update_deps: bool,
     pub replay: Option<ReplayMode>,
     pub static_analysis: Option<StaticAnalysisKind>,
+    /// Static analysis for nodes that configure none. Unlike `static_analysis`, it does not
+    /// override configured nodes, and `static_analysis` wins when both are set.
+    pub default_static_analysis: Option<StaticAnalysisKind>,
     /// A signal used to keep sidecar runners alive (no idle timeout).
     /// Set programmatically by `dbt-repl`; not exposed as a CLI flag on `dbt`.
     pub long_living: bool,
@@ -663,6 +666,8 @@ pub struct EvalArgs {
     pub skip_checkpoints: bool,
     /// Skip installation of private dependencies (useful for build conformance testing)
     pub skip_private_deps: bool,
+    /// Skip dependency resolution entirely (`dbt lint --no-deps`)
+    pub no_deps: bool,
     /// Override end datetime when generating microbatches
     pub event_time_end: Option<String>,
     /// Override start datetime when generating microbatches
@@ -676,6 +681,9 @@ pub struct EvalArgs {
     /// Mirrors the `--classify-with-warehouse-tags` CLI flag.
     pub classify_with_warehouse_tags: bool,
     pub skip_post_hooks: bool,
+    /// Don't run on-run-start hooks: for a caller that compiles only to read
+    /// the compiled nodes, with no warehouse to run them against.
+    pub skip_on_run_start_hooks: bool,
     /// Write metadata parquet epoch files (parse/nodes, compile/nodes, compile/columns, etc.)
     pub write_metadata: bool,
     /// Also write snapshot index parquet to target/private/index/ (implies write_metadata)
@@ -955,6 +963,44 @@ pub enum ClapResourceType {
     SavedQuery,
     Check,
     Exposure,
+    /// Nodes added by experimentals.
+    Experimental,
+    All,
+    /// Selects the resource types a command uses when no filter is given.
+    Default,
+}
+
+impl ClapResourceType {
+    /// Expand the `all` and `default` shorthands into resource types.
+    ///
+    /// `defaults` is the calling command's own default set and is only used
+    /// when `default` was requested.
+    pub fn resolve(requested: &[ClapResourceType], defaults: &[ClapResourceType]) -> Vec<Self> {
+        let mut resolved = Vec::new();
+        for resource_type in requested {
+            match resource_type {
+                ClapResourceType::All => resolved.extend([
+                    ClapResourceType::Model,
+                    ClapResourceType::Source,
+                    ClapResourceType::Seed,
+                    ClapResourceType::Snapshot,
+                    ClapResourceType::Test,
+                    ClapResourceType::UnitTest,
+                    ClapResourceType::Analysis,
+                    ClapResourceType::Function,
+                    ClapResourceType::SemanticModel,
+                    ClapResourceType::Metric,
+                    ClapResourceType::SavedQuery,
+                    ClapResourceType::Check,
+                    ClapResourceType::Exposure,
+                    ClapResourceType::Experimental,
+                ]),
+                ClapResourceType::Default => resolved.extend_from_slice(defaults),
+                resource_type => resolved.push(*resource_type),
+            }
+        }
+        resolved
+    }
 }
 
 impl Display for ClapResourceType {
@@ -973,6 +1019,9 @@ impl Display for ClapResourceType {
             ClapResourceType::SavedQuery => "saved_query",
             ClapResourceType::Check => "check",
             ClapResourceType::Exposure => "exposure",
+            ClapResourceType::Experimental => "experimental",
+            ClapResourceType::All => "all",
+            ClapResourceType::Default => "default",
         };
         write!(f, "{s}")
     }
@@ -994,6 +1043,13 @@ impl From<&ClapResourceType> for NodeType {
             ClapResourceType::SavedQuery => NodeType::SavedQuery,
             ClapResourceType::Check => NodeType::Check,
             ClapResourceType::Exposure => NodeType::Exposure,
+            ClapResourceType::Experimental => NodeType::Experimental,
+            // `all` and `default` are expanded by `resolve` before conversion.
+            ClapResourceType::All | ClapResourceType::Default => {
+                unreachable!(
+                    "{value} is not a NodeType; expand `all`/`default` with ClapResourceType::resolve first"
+                )
+            }
         }
     }
 }
@@ -1372,6 +1428,7 @@ pub enum Runtime {
     ValueEnum,
     Display,
     Serialize,
+    Deserialize,
     JsonSchema,
 )]
 #[serde(rename_all = "lowercase")]
@@ -1379,59 +1436,14 @@ pub enum Runtime {
 pub enum StaticAnalysisKind {
     #[value(hide = true)]
     Unsafe,
+    #[serde(alias = "False", alias = "false", alias = "FALSE")]
     Off,
     Strict,
     #[default]
     Baseline,
     #[value(hide = true)]
+    #[serde(alias = "True", alias = "true", alias = "TRUE")]
     On,
-}
-
-/// Accepts a boolean alongside the mode names, since YAML 1.1 resolves an unquoted `on`/`off`
-/// to `true`/`false`. The boolean spellings are also accepted as strings to accommodate
-/// dbt-core, which writes them (e.g. `"False"`) rather than `"on"`/`"off"` into manifests.
-impl<'de> Deserialize<'de> for StaticAnalysisKind {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        struct StaticAnalysisKindVisitor;
-
-        impl serde::de::Visitor<'_> for StaticAnalysisKindVisitor {
-            type Value = StaticAnalysisKind;
-
-            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str("a static analysis mode or a boolean")
-            }
-
-            fn visit_bool<E>(self, v: bool) -> Result<Self::Value, E> {
-                Ok(if v {
-                    StaticAnalysisKind::On
-                } else {
-                    StaticAnalysisKind::Off
-                })
-            }
-
-            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
-            where
-                E: serde::de::Error,
-            {
-                match v {
-                    "unsafe" => Ok(StaticAnalysisKind::Unsafe),
-                    "off" | "False" | "false" | "FALSE" => Ok(StaticAnalysisKind::Off),
-                    "strict" => Ok(StaticAnalysisKind::Strict),
-                    "baseline" => Ok(StaticAnalysisKind::Baseline),
-                    "on" | "True" | "true" | "TRUE" => Ok(StaticAnalysisKind::On),
-                    _ => Err(E::unknown_variant(
-                        v,
-                        &["unsafe", "off", "strict", "baseline", "on"],
-                    )),
-                }
-            }
-        }
-
-        deserializer.deserialize_any(StaticAnalysisKindVisitor)
-    }
 }
 
 #[derive(
@@ -1696,31 +1708,21 @@ pub const LATEST_VERSION_POINTER_ENABLED_BY_DEFAULT_ENV: &str =
     "DBT_LATEST_VERSION_POINTER_ENABLED_BY_DEFAULT";
 
 pub fn resolve_latest_version_pointer_enabled_by_default(project_flags: Option<&Value>) -> bool {
-    resolve_latest_version_pointer_enabled_by_default_with_env_lookup(project_flags, |name| {
-        std::env::var_os(name)
-    })
+    dbt_flags::LATEST_VERSION_POINTER_ENABLED_BY_DEFAULT
+        .resolve_with_project(&project_flag_bool(project_flags))
+        .value
 }
 
+#[cfg(test)]
 fn resolve_latest_version_pointer_enabled_by_default_with_env_lookup(
     project_flags: Option<&Value>,
     get_env: impl Fn(&str) -> Option<OsString>,
 ) -> bool {
-    if let Some(value) = get_env(LATEST_VERSION_POINTER_ENABLED_BY_DEFAULT_ENV) {
-        if let Some(resolved) = parse_boolish_env(value.as_ref()) {
-            return resolved;
-        }
-    }
-
-    if let Some(enabled) = project_flags
-        .and_then(|flags| {
-            project_flags_get_value(flags, "latest_version_pointer_enabled_by_default")
-        })
-        .and_then(Value::as_bool)
-    {
-        return enabled;
-    }
-
-    true
+    resolve_flag_with_env_lookup(
+        &dbt_flags::LATEST_VERSION_POINTER_ENABLED_BY_DEFAULT,
+        project_flags,
+        get_env,
+    )
 }
 
 pub const REQUIRE_REF_SEARCHES_NODE_PACKAGE_BEFORE_ROOT_ENV: &str =
@@ -1734,31 +1736,56 @@ pub const REQUIRE_REF_SEARCHES_NODE_PACKAGE_BEFORE_ROOT_ENV: &str =
 pub fn resolve_require_ref_searches_node_package_before_root(
     project_flags: Option<&Value>,
 ) -> bool {
-    resolve_require_ref_searches_node_package_before_root_with_env_lookup(project_flags, |name| {
-        std::env::var_os(name)
-    })
+    dbt_flags::REQUIRE_REF_SEARCHES_NODE_PACKAGE_BEFORE_ROOT
+        .resolve_with_project(&project_flag_bool(project_flags))
+        .value
 }
 
+#[cfg(test)]
 fn resolve_require_ref_searches_node_package_before_root_with_env_lookup(
     project_flags: Option<&Value>,
     get_env: impl Fn(&str) -> Option<OsString>,
 ) -> bool {
-    if let Some(value) = get_env(REQUIRE_REF_SEARCHES_NODE_PACKAGE_BEFORE_ROOT_ENV) {
-        if let Some(resolved) = parse_boolish_env(value.as_ref()) {
-            return resolved;
-        }
-    }
+    resolve_flag_with_env_lookup(
+        &dbt_flags::REQUIRE_REF_SEARCHES_NODE_PACKAGE_BEFORE_ROOT,
+        project_flags,
+        get_env,
+    )
+}
 
-    if let Some(enabled) = project_flags
-        .and_then(|flags| {
-            project_flags_get_value(flags, "require_ref_searches_node_package_before_root")
+/// Reads a boolean from the root project's `flags:` block, for
+/// [`dbt_flags::FlagDef::resolve_with_project`].
+pub fn project_flag_bool(project_flags: Option<&Value>) -> impl Fn(&str) -> Option<bool> + '_ {
+    move |name| {
+        project_flags
+            .and_then(|flags| project_flags_get_value(flags, name))
+            .and_then(Value::as_bool)
+    }
+}
+
+/// Resolves `def` against `project_flags` with env layers read through `get_env`
+/// instead of the process environment.
+#[cfg(test)]
+fn resolve_flag_with_env_lookup(
+    def: &dbt_flags::FlagDef,
+    project_flags: Option<&Value>,
+    get_env: impl Fn(&str) -> Option<OsString>,
+) -> bool {
+    let env: Vec<(&str, OsString)> = def
+        .legacy_env
+        .iter()
+        .copied()
+        .chain([dbt_flags::FEATURES_ENV])
+        .filter_map(|name| get_env(name).map(|value| (name, value)))
+        .collect();
+    dbt_flags::FlagSnapshot::builder()
+        .env_lookup(move |name| {
+            env.iter()
+                .find_map(|(key, value)| (*key == name).then(|| value.clone()))
         })
-        .and_then(Value::as_bool)
-    {
-        return enabled;
-    }
-
-    true
+        .build()
+        .resolve(def, &project_flag_bool(project_flags))
+        .value
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ValueEnum, EnumIter)]
@@ -1982,6 +2009,52 @@ mod tests {
     }
 
     #[test]
+    fn resolve_all_expands_every_resource_type() {
+        let all = ClapResourceType::resolve(&[ClapResourceType::All], &[]);
+        for resource_type in [
+            ClapResourceType::Model,
+            ClapResourceType::Source,
+            ClapResourceType::Seed,
+            ClapResourceType::Snapshot,
+            ClapResourceType::Test,
+            ClapResourceType::UnitTest,
+            ClapResourceType::Analysis,
+            ClapResourceType::Function,
+            ClapResourceType::SemanticModel,
+            ClapResourceType::Metric,
+            ClapResourceType::SavedQuery,
+            ClapResourceType::Check,
+            ClapResourceType::Exposure,
+            ClapResourceType::Experimental,
+        ] {
+            assert!(all.contains(&resource_type), "{resource_type} missing");
+        }
+        assert!(!all.contains(&ClapResourceType::All));
+        assert!(!all.contains(&ClapResourceType::Default));
+    }
+
+    #[test]
+    fn resolve_default_uses_caller_defaults() {
+        let defaults = [ClapResourceType::Model, ClapResourceType::Seed];
+        assert_eq!(
+            ClapResourceType::resolve(&[ClapResourceType::Default], &defaults),
+            defaults
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "not a NodeType")]
+    fn converting_all_to_node_type_is_a_programming_error() {
+        let _ = NodeType::from(&ClapResourceType::All);
+    }
+
+    #[test]
+    #[should_panic(expected = "not a NodeType")]
+    fn converting_default_to_node_type_is_a_programming_error() {
+        let _ = NodeType::from(&ClapResourceType::Default);
+    }
+
+    #[test]
     fn local_execution_backend_support_matrix() {
         let cases: &[(LocalExecutionBackendKind, &[AdapterType])] = &[
             (
@@ -2063,6 +2136,36 @@ mod tests {
                     .find_map(|(key, value)| (*key == name).then(|| OsString::from(*value)))
             },
         )
+    }
+
+    #[test]
+    fn behavior_flag_env_vars_are_registered_as_legacy_env() {
+        assert_eq!(
+            dbt_flags::REQUIRE_REF_SEARCHES_NODE_PACKAGE_BEFORE_ROOT.legacy_env,
+            [REQUIRE_REF_SEARCHES_NODE_PACKAGE_BEFORE_ROOT_ENV]
+        );
+        assert_eq!(
+            dbt_flags::LATEST_VERSION_POINTER_ENABLED_BY_DEFAULT.legacy_env,
+            [LATEST_VERSION_POINTER_ENABLED_BY_DEFAULT_ENV]
+        );
+    }
+
+    #[test]
+    fn behavior_flags_can_be_set_through_the_features_env() {
+        assert!(!require_ref_searches_node_package_before_root_with_env(
+            None,
+            &[(
+                dbt_flags::FEATURES_ENV,
+                "require_ref_searches_node_package_before_root=false"
+            )]
+        ));
+        assert!(latest_version_pointer_with_env(
+            Some("latest_version_pointer_enabled_by_default: false\n"),
+            &[(
+                dbt_flags::FEATURES_ENV,
+                "latest_version_pointer_enabled_by_default"
+            )]
+        ));
     }
 
     #[test]
@@ -2461,36 +2564,6 @@ mod tests {
             dbt_yaml::from_str::<StaticAnalysisKind>("\"True\"").unwrap(),
             StaticAnalysisKind::On
         );
-    }
-
-    /// YAML 1.1 resolves an unquoted `on`/`off` to a boolean, which must still select the mode,
-    /// both when deserialized from text and from an already-parsed `Value`.
-    #[test]
-    fn test_static_analysis_deserializes_yaml_11_bool_tokens() {
-        for (token, expected) in [
-            ("off", StaticAnalysisKind::Off),
-            ("on", StaticAnalysisKind::On),
-            ("false", StaticAnalysisKind::Off),
-            ("true", StaticAnalysisKind::On),
-            ("'off'", StaticAnalysisKind::Off),
-            ("strict", StaticAnalysisKind::Strict),
-        ] {
-            assert_eq!(
-                dbt_yaml::from_str::<StaticAnalysisKind>(token).unwrap(),
-                expected,
-                "from_str: {token}"
-            );
-            let value: Value = dbt_yaml::from_str(token).unwrap();
-            assert_eq!(
-                value
-                    .into_typed::<StaticAnalysisKind, _, _>(|_, _, _| {}, |_| Ok(None))
-                    .unwrap(),
-                expected,
-                "into_typed: {token}"
-            );
-        }
-
-        assert!(dbt_yaml::from_str::<StaticAnalysisKind>("maybe").is_err());
     }
 
     #[test]

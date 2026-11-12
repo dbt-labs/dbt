@@ -1,26 +1,37 @@
 use core::fmt;
 use indexmap::IndexMap;
+use std::collections::HashMap;
 use std::path::Path;
 use std::str::FromStr;
+use std::sync::LazyLock;
 use std::{any::Any, collections::BTreeMap, fmt::Display, path::PathBuf, sync::Arc};
 
+use chrono::Utc;
 use dbt_adapter_core::{AdapterType, MICROBATCH_SUPPORTED_ADAPTERS};
 use dbt_common::constants::{DBT_COMPILED_DIR_NAME, DBT_RUN_DIR_NAME};
-use dbt_common::io_args::{ComputeArg, StaticAnalysisKind, StaticAnalysisOffReason};
+use dbt_common::io_args::{
+    ComputeArg, StaticAnalysisKind, StaticAnalysisOffReason, multi_adapter_enabled,
+};
 use dbt_common::path::{DbtPath, get_snapshot_write_path, get_target_write_path};
 use dbt_common::tracing::dbt_emit::{emit_error_log_message, emit_warn_log_message};
 use dbt_common::{ErrorCode, FsResult, Span, err};
-use dbt_telemetry::{ExecutionPhase, NodeEvaluated, NodeProcessed, NodeType};
+use dbt_telemetry::{
+    ExecutionPhase, NodeAccess, NodeEvaluated, NodeLanguage, NodeProcessed, NodeType,
+};
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
+use strum::IntoEnumIterator;
 type YmlValue = dbt_yaml::Value;
 use crate::schemas::common::{
-    ExternalTable, PersistDocsConfig, RowFilterConfig, hooks_equal, normalize_sql,
+    Constraint, ConstraintSupport, ConstraintType, ExternalTable, PersistDocsConfig,
+    RowFilterConfig, constraint_support, hooks_equal, normalize_sql,
 };
 use crate::schemas::dbt_column::{DbtColumnRef, deserialize_dbt_columns, serialize_dbt_columns};
 use crate::schemas::manifest::GrantAccessToTarget;
 use crate::schemas::project::configs::common::log_state_mod_diff;
-use crate::schemas::project::configs::common::{grants_equal, tags_eq_vec};
+use crate::schemas::project::configs::common::{
+    LazyWarehouseSpecificNodeConfig, grants_equal, tags_eq_vec,
+};
 use crate::schemas::project::{TblProperties, WarehouseSpecificNodeConfig, same_warehouse_config};
 use crate::schemas::relations::default_dbt_quoting_for;
 use crate::schemas::serde::{PartitionsConfig, QueryTag, StringOrArrayOfStrings};
@@ -40,6 +51,7 @@ use crate::schemas::{
         SnapshotConfig, SnapshotMetaColumnNames, SourceConfig, UnitTestConfig,
     },
     properties::{
+        FUNCTION_LANGUAGE_JAVASCRIPT, FUNCTION_LANGUAGE_PYTHON, FUNCTION_LANGUAGE_SQL,
         FunctionArgument, FunctionReturnType, ModelConstraint, ModelFreshness, UnitTestOverrides,
     },
     ref_and_source::{
@@ -209,7 +221,15 @@ impl From<ExecutionPhase> for NodePathKind {
     }
 }
 
-pub trait InternalDbtNode: Any + Send + Sync + fmt::Debug {
+pub trait InternalDbtNode:
+    Any + Send + Sync + fmt::Debug + crate::jinja_node::JinjaNodeFields
+{
+    /// Deep-copies this node behind the trait object.
+    ///
+    /// This copies every field, so use it sparingly and generally avoid it:
+    /// prefer passing an owned node or an existing `Arc` instead.
+    fn clone_node(&self) -> Box<dyn InternalDbtNode>;
+    fn into_jinja_fields(self: Arc<Self>) -> Arc<dyn crate::jinja_node::JinjaNodeFields>;
     fn common(&self) -> &CommonAttributes;
     fn base(&self) -> &NodeBaseAttributes;
     fn base_mut(&mut self) -> &mut NodeBaseAttributes;
@@ -243,6 +263,10 @@ pub trait InternalDbtNode: Any + Send + Sync + fmt::Debug {
         None
     }
     fn resource_type(&self) -> NodeType;
+    /// For a node of type [`NodeType::Experimental`], the kind of node the experimental added.
+    fn experimental_type(&self) -> Option<&str> {
+        None
+    }
     fn as_any(&self) -> &dyn Any;
     fn serialize(&self) -> YmlValue {
         self.serialize_with_mode(crate::schemas::serialization_utils::SerializationMode::OmitNone)
@@ -589,7 +613,7 @@ pub trait InternalDbtNode: Any + Send + Sync + fmt::Debug {
 
         let node_checksum = common.checksum.to_checksum_string();
 
-        NodeProcessed::start(
+        let mut event = NodeProcessed::start(
             common.unique_id.clone(),
             self.original_name().unwrap_or(&common.name).to_string(),
             Some(database),
@@ -605,7 +629,16 @@ pub trait InternalDbtNode: Any + Send + Sync + fmt::Debug {
             node_checksum,
             in_selection,
             self.get_group(),
-        )
+        );
+        // Only worth reporting when nodes can run on different adapters.
+        if multi_adapter_enabled() {
+            event.adapter = Some(base.adapter.as_ref().to_string());
+        }
+        event.experimental_type = self.experimental_type().map(str::to_string);
+        if let Some(language) = &common.language {
+            event.set_language(node_language(language));
+        }
+        event
     }
 }
 
@@ -630,36 +663,36 @@ pub trait InternalDbtNodeAttributes: InternalDbtNode {
         false
     }
 
-    fn database(&self) -> String {
-        self.base().database.clone()
+    fn database(&self) -> &str {
+        &self.base().database
     }
 
     fn skip_generate_schema_name_macro(&self) -> bool {
         false
     }
 
-    fn schema(&self) -> String {
-        self.base().schema.clone()
+    fn schema(&self) -> &str {
+        &self.base().schema
     }
 
-    fn unique_id(&self) -> String {
-        self.common().unique_id.clone()
+    fn unique_id(&self) -> &str {
+        &self.common().unique_id
     }
 
-    fn name(&self) -> String {
-        self.common().name.clone()
+    fn name(&self) -> &str {
+        &self.common().name
     }
 
     fn name_span(&self) -> Span {
         self.common().name_span.clone()
     }
 
-    fn description(&self) -> Option<String> {
-        self.common().description.clone()
+    fn description(&self) -> Option<&str> {
+        self.common().description.as_deref()
     }
 
-    fn columns(&self) -> Vec<DbtColumnRef> {
-        self.base().columns.clone()
+    fn columns(&self) -> &[DbtColumnRef] {
+        &self.base().columns
     }
 
     /// The node's compiled SQL, when the caller has populated it.
@@ -670,20 +703,20 @@ pub trait InternalDbtNodeAttributes: InternalDbtNode {
         None
     }
 
-    fn alias(&self) -> String {
-        self.base().alias.clone()
+    fn alias(&self) -> &str {
+        &self.base().alias
     }
 
-    fn path(&self) -> PathBuf {
-        self.common().path.to_path_buf()
+    fn path(&self) -> &Path {
+        &self.common().path
     }
 
-    fn original_file_path(&self) -> PathBuf {
-        self.common().original_file_path.to_path_buf()
+    fn original_file_path(&self) -> &Path {
+        &self.common().original_file_path
     }
 
-    fn package_name(&self) -> String {
-        self.common().package_name.clone()
+    fn package_name(&self) -> &str {
+        &self.common().package_name
     }
 
     fn materialized(&self) -> DbtMaterialization {
@@ -694,30 +727,30 @@ pub trait InternalDbtNodeAttributes: InternalDbtNode {
         self.base().quoting
     }
 
-    fn tags(&self) -> Vec<String> {
-        self.common().tags.clone()
+    fn tags(&self) -> &[String] {
+        &self.common().tags
     }
 
-    fn meta(&self) -> IndexMap<String, YmlValue> {
-        self.common().meta.clone()
+    fn meta(&self) -> &IndexMap<String, YmlValue> {
+        &self.common().meta
     }
 
     fn compute(&self) -> Option<ComputeArg> {
         self.base().compute
     }
 
-    fn static_analysis(&self) -> Spanned<StaticAnalysisKind> {
-        self.base().static_analysis.clone()
+    fn static_analysis(&self) -> &Spanned<StaticAnalysisKind> {
+        &self.base().static_analysis
     }
 
     fn static_analysis_baseline(&self) -> Spanned<bool> {
-        self.static_analysis().map(|static_analysis| {
+        self.static_analysis().clone().map(|static_analysis| {
             dbt_common::static_analysis::is_baseline_static_analysis(static_analysis)
         })
     }
 
     fn static_analysis_enabled(&self) -> Spanned<bool> {
-        self.static_analysis().map(|static_analysis| {
+        self.static_analysis().clone().map(|static_analysis| {
             dbt_common::static_analysis::is_static_analysis_enabled(static_analysis)
         })
     }
@@ -788,6 +821,17 @@ pub trait InternalDbtNodeAttributes: InternalDbtNode {
 
     // TO BE DEPRECATED
     fn serialized_config(&self) -> YmlValue;
+}
+
+fn node_language(language: &str) -> NodeLanguage {
+    match language {
+        FUNCTION_LANGUAGE_SQL => NodeLanguage::Sql,
+        FUNCTION_LANGUAGE_PYTHON => NodeLanguage::Python,
+        FUNCTION_LANGUAGE_JAVASCRIPT => NodeLanguage::Javascript,
+        // Parse sets no other language: models and snapshots set their own, and
+        // `validate_function_config` rejects any other function language.
+        _ => NodeLanguage::Unspecified,
+    }
 }
 
 // Shared helper functions for has_same_content implementation across node types
@@ -1136,39 +1180,35 @@ fn latest_version_eq(a: &Option<StringOrInteger>, b: &Option<StringOrInteger>) -
     }
 }
 
-/// A "lenient" form of timestamp equality, where the timezone portion is
-/// potentially ignored.
+/// `deprecation_date` equality, compared as a **date** rather than as a string.
 ///
-/// FIXME: !!HACK!! In no world is this actually correct! The ONLY reason we need
-/// this for now is to tolerate manifest.json produced by dbt v1:
+/// dbt-core compares `datetime` objects, so date semantics — not spelling — is the faithful
+/// transcription here. The two sides can legitimately disagree on spelling in two ways:
 ///
-/// - When we serialize naive Yaml Timestamp values to manifest.json, the value
-///   is first normalized to some timezone. This normalization is performed
-///   differently between v1 and v2: v1 normalizes to the system time zone
-///   (dbt-mantle `core/dbt/contracts/graph/unparsed.py:1012-1024`), while v2
-///   normalizes to UTC. This means that a same naive timestamp authored in Yaml
-///   could differ by up to a day in manifest.json, depending on whether its
-///   produced by v1 or v2.
+/// - Fusion normalizes an authored date to RFC 3339 on the parse side
+///   (`normalize_deprecation_date`), so an authored `2099-01-01` faces a manifest's
+///   `2099-01-01T00:00:00+00:00`.
+/// - The normalizations do not agree on the *offset* of a naive authored date: Fusion reads it as
+///   UTC, while dbt-core's `normalize_date` re-interprets it in the **system** time zone
+///   (dbt-mantle `core/dbt/contracts/graph/unparsed.py:1012-1024`). A Mantle-produced previous
+///   manifest can therefore carry `2020-01-01T00:00:00-05:00` where this run parses
+///   `2020-01-01T00:00:00+00:00` from the same authored `2020-01-01`.
 ///
-/// - When a timestamp value is read back from manifest.json, we do not preserve
-///   which version of dbt produced the manifest, and thus at this point we're
-///   just blindly comparing two timestamp values that could have completely
-///   bogus timezones
-///
-/// Deprecate this as soon as we get over the v1 -> v2 migration.
-fn timestamp_eq_maybe_ignore_tz(
-    a: &Option<dbt_yaml::Timestamp>,
-    b: &Option<dbt_yaml::Timestamp>,
-) -> bool {
-    let wall_clock = |ts: &dbt_yaml::Timestamp| {
-        (
-            ts.date(),
-            ts.time().unwrap_or(dbt_yaml::TimeOfDay::MIDNIGHT),
-        )
-    };
+/// So two parseable values are equal when they name the same instant *or* the same wall-clock
+/// time. String equality is the fast path, and the fallback when either side fails to parse.
+fn deprecation_date_eq(a: &Option<String>, b: &Option<String>) -> bool {
     match (a, b) {
         (None, None) => true,
-        (Some(a), Some(b)) => a == b || wall_clock(a) == wall_clock(b),
+        (Some(a), Some(b)) => {
+            a == b
+                || match (
+                    crate::schemas::common::parse_deprecation_date(a),
+                    crate::schemas::common::parse_deprecation_date(b),
+                ) {
+                    (Some(a), Some(b)) => a == b || a.naive_local() == b.naive_local(),
+                    _ => false,
+                }
+        }
         _ => false,
     }
 }
@@ -1247,6 +1287,41 @@ fn same_database_representation_snapshot(
 }
 
 impl InternalDbtNode for DbtModel {
+    fn get_node_processed_event(
+        &self,
+        last_phase: Option<ExecutionPhase>,
+        in_dir: &Path,
+        out_dir: &Path,
+        in_selection: bool,
+    ) -> NodeProcessed {
+        let mut event =
+            self.get_node_processed_event_base(last_phase, in_dir, out_dir, in_selection);
+        let model_attr = &self.__model_attr__;
+        event.incremental_strategy = model_attr
+            .incremental_strategy
+            .as_ref()
+            .map(|strategy| strategy.to_string());
+        // A model without a contract is not enforced.
+        event.contract_enforced = Some(
+            model_attr
+                .contract
+                .as_ref()
+                .is_some_and(|contract| contract.enforced),
+        );
+        event.set_access(NodeAccess::from(&model_attr.access));
+        event.versioned = Some(self.is_versioned());
+        event.table_format = model_attr.table_format.clone();
+        event.catalog_name = model_attr.catalog_name.clone();
+        event
+    }
+
+    fn into_jinja_fields(self: Arc<Self>) -> Arc<dyn crate::jinja_node::JinjaNodeFields> {
+        self
+    }
+    fn clone_node(&self) -> Box<dyn InternalDbtNode> {
+        Box::new(Clone::clone(self))
+    }
+
     fn common(&self) -> &CommonAttributes {
         &self.__common_attr__
     }
@@ -1339,7 +1414,7 @@ impl InternalDbtNode for DbtModel {
         }
     }
 
-    fn has_same_content(&self, other: &dyn InternalDbtNode, _adapter_type: AdapterType) -> bool {
+    fn has_same_content(&self, other: &dyn InternalDbtNode, adapter_type: AdapterType) -> bool {
         // TODO: the checksum for extended model is always different in mantle and fusion, dig more into this
         if self.is_extended_model() {
             return true;
@@ -1363,7 +1438,7 @@ impl InternalDbtNode for DbtModel {
                 &self.deprecated_config,
                 &other_model.deprecated_config,
             );
-            let same_contract_result = self.same_contract(other_model);
+            let same_contract_result = self.same_contract(other_model, adapter_type);
             let same_ref_repr_result = self.same_ref_representation(other_model);
 
             let result = same_body_result
@@ -1643,19 +1718,12 @@ fn indexmap_yml_value_equal(
 ) -> bool {
     match (left, right) {
         (None, None) => true,
-        (Some(l), Some(r)) => yml_map_eq_lenient(l, r),
+        (Some(l), Some(r)) => l == r,
         (None, Some(r)) => r.is_empty(),
         (Some(l), None) => l.is_empty(),
     }
 }
 
-/// Element-wise map equality via [`YmlValue::lenient_eq`]: a timestamp scalar in the
-/// current parse compares equal to a string naming the same instant from a manifest.
-fn yml_map_eq_lenient(l: &IndexMap<String, YmlValue>, r: &IndexMap<String, YmlValue>) -> bool {
-    l.len() == r.len()
-        && l.iter()
-            .all(|(k, v)| r.get(k).is_some_and(|rv| v.lenient_eq(rv)))
-}
 /// Compare DocsConfig considering None vs Some(default) as equal
 fn docs_config_equal(
     left: &Option<crate::schemas::common::DocsConfig>,
@@ -1680,6 +1748,90 @@ fn docs_config_equal(
         ) => true,
         _ => false,
     }
+}
+
+struct ColumnContractChanges {
+    columns_removed: Vec<String>,
+    column_type_changes: Vec<BTreeMap<String, String>>,
+    enforced_column_constraint_removed: Vec<BTreeMap<String, YmlValue>>,
+    column_constraints_exist: bool,
+}
+
+// Omitted warn flags default to true; manifests written before that default carry null.
+fn warn_flag(v: Option<bool>) -> bool {
+    v.unwrap_or(true)
+}
+
+// dbt-core rewrites a foreign key `to` into the compiled relation in run and build manifests,
+// so `to` can only be compared while both sides are still `ref()`/`source()` calls.
+fn foreign_key_to_equal(a: Option<&str>, b: Option<&str>) -> bool {
+    let is_rendered = |to: &str| !to.contains("ref(") && !to.contains("source(");
+    match (a, b) {
+        (Some(a), Some(b)) if is_rendered(a) || is_rendered(b) => true,
+        _ => a == b,
+    }
+}
+
+// Compares the fields `Constraint` and `ModelConstraint` share.
+// `to_columns: None` is serialized as `[]`, so a state manifest reads back `Some([])`.
+macro_rules! shared_constraint_fields_equal {
+    ($a:expr, $b:expr) => {
+        $a.type_ == $b.type_
+            && $a.expression == $b.expression
+            && $a.name == $b.name
+            && foreign_key_to_equal(
+                $a.to.as_ref().map(|to| to.as_str()),
+                $b.to.as_ref().map(|to| to.as_str()),
+            )
+            && $a.to_columns.as_deref().unwrap_or_default()
+                == $b.to_columns.as_deref().unwrap_or_default()
+            && warn_flag($a.warn_unsupported) == warn_flag($b.warn_unsupported)
+            && warn_flag($a.warn_unenforced) == warn_flag($b.warn_unenforced)
+    };
+}
+
+fn constraint_equal(a: &Constraint, b: &Constraint) -> bool {
+    shared_constraint_fields_equal!(a, b)
+}
+
+// dbt-core writes an omitted `columns` as `[]`, while Fusion parses it as `None`.
+fn model_constraint_equal(a: &ModelConstraint, b: &ModelConstraint) -> bool {
+    shared_constraint_fields_equal!(a, b)
+        && a.columns.as_deref().unwrap_or_default() == b.columns.as_deref().unwrap_or_default()
+}
+
+fn all_equal<T>(a: &[T], b: &[T], eq: impl Fn(&T, &T) -> bool) -> bool {
+    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| eq(x, y))
+}
+
+// Mirrors dbt-core, which only reports removed constraints the adapter enforces.
+fn is_enforced(adapter_type: AdapterType, constraint_type: ConstraintType) -> bool {
+    constraint_support(adapter_type, constraint_type) == Some(ConstraintSupport::Enforced)
+}
+
+// Mirrors dbt-core: `varchar(3)` -> `VARCHAR(10)` is not a breaking type change.
+fn normalize_data_type(data_type: &Option<String>) -> Option<String> {
+    data_type
+        .as_deref()
+        .map(|dt| dt.split('(').next().unwrap_or(dt).trim().to_lowercase())
+}
+
+fn removed_constraint(
+    name: &Option<String>,
+    constraint_type: ConstraintType,
+) -> BTreeMap<String, YmlValue> {
+    let mut removed = BTreeMap::new();
+    if let Some(name) = name {
+        removed.insert(
+            "constraint_name".to_string(),
+            YmlValue::string(name.clone()),
+        );
+    }
+    removed.insert(
+        "constraint_type".to_string(),
+        YmlValue::string(constraint_type.as_str().to_string()),
+    );
+    removed
 }
 
 /// Compare DbtQuoting structures with more nuanced logic
@@ -1740,6 +1892,13 @@ pub(crate) fn test_alias_config_equal(
 }
 
 impl InternalDbtNode for DbtSeed {
+    fn into_jinja_fields(self: Arc<Self>) -> Arc<dyn crate::jinja_node::JinjaNodeFields> {
+        self
+    }
+    fn clone_node(&self) -> Box<dyn InternalDbtNode> {
+        Box::new(Clone::clone(self))
+    }
+
     fn resource_type(&self) -> NodeType {
         NodeType::Seed
     }
@@ -1893,6 +2052,13 @@ impl InternalDbtNodeAttributes for DbtSeed {
 }
 
 impl InternalDbtNode for DbtTest {
+    fn into_jinja_fields(self: Arc<Self>) -> Arc<dyn crate::jinja_node::JinjaNodeFields> {
+        self
+    }
+    fn clone_node(&self) -> Box<dyn InternalDbtNode> {
+        Box::new(Clone::clone(self))
+    }
+
     fn common(&self) -> &CommonAttributes {
         &self.__common_attr__
     }
@@ -2125,6 +2291,13 @@ impl InternalDbtNodeAttributes for DbtTest {
 }
 
 impl InternalDbtNode for DbtUnitTest {
+    fn into_jinja_fields(self: Arc<Self>) -> Arc<dyn crate::jinja_node::JinjaNodeFields> {
+        self
+    }
+    fn clone_node(&self) -> Box<dyn InternalDbtNode> {
+        Box::new(Clone::clone(self))
+    }
+
     fn common(&self) -> &CommonAttributes {
         &self.__common_attr__
     }
@@ -2265,6 +2438,13 @@ impl InternalDbtNodeAttributes for DbtUnitTest {
 }
 
 impl InternalDbtNode for DbtSource {
+    fn into_jinja_fields(self: Arc<Self>) -> Arc<dyn crate::jinja_node::JinjaNodeFields> {
+        self
+    }
+    fn clone_node(&self) -> Box<dyn InternalDbtNode> {
+        Box::new(Clone::clone(self))
+    }
+
     fn common(&self) -> &CommonAttributes {
         &self.__common_attr__
     }
@@ -2556,6 +2736,26 @@ impl InternalDbtNodeAttributes for DbtSource {
 }
 
 impl InternalDbtNode for DbtSnapshot {
+    fn get_node_processed_event(
+        &self,
+        last_phase: Option<ExecutionPhase>,
+        in_dir: &Path,
+        out_dir: &Path,
+        in_selection: bool,
+    ) -> NodeProcessed {
+        let mut event =
+            self.get_node_processed_event_base(last_phase, in_dir, out_dir, in_selection);
+        event.snapshot_strategy = self.deprecated_config.strategy.clone();
+        event
+    }
+
+    fn into_jinja_fields(self: Arc<Self>) -> Arc<dyn crate::jinja_node::JinjaNodeFields> {
+        self
+    }
+    fn clone_node(&self) -> Box<dyn InternalDbtNode> {
+        Box::new(Clone::clone(self))
+    }
+
     fn common(&self) -> &CommonAttributes {
         &self.__common_attr__
     }
@@ -2661,6 +2861,7 @@ impl InternalDbtNode for DbtSnapshot {
                 self_config.invalidate_hard_deletes == other_config.invalidate_hard_deletes;
             // dbt State configs (mirror `ModelConfig::same_config`).
             let state_eq = self_config.state == other_config.state;
+            let table_format_eq = self_config.table_format == other_config.table_format;
 
             // Adapter specific configs
             let warehouse_config_eq = same_warehouse_config(
@@ -2691,6 +2892,7 @@ impl InternalDbtNode for DbtSnapshot {
                 && quote_columns_eq
                 && invalidate_hard_deletes_eq
                 && state_eq
+                && table_format_eq
                 // Adapter specific configs
                 && warehouse_config_eq;
 
@@ -2868,6 +3070,14 @@ impl InternalDbtNode for DbtSnapshot {
                                 format!("{:?}", &other_config.state),
                             )),
                         ),
+                        (
+                            "table_format",
+                            table_format_eq,
+                            Some((
+                                format!("{:?}", &self_config.table_format),
+                                format!("{:?}", &other_config.table_format),
+                            )),
+                        ),
                         ("warehouse_config", warehouse_config_eq, None),
                     ],
                 );
@@ -2953,32 +3163,32 @@ impl InternalDbtNodeAttributes for DbtSnapshot {
         self.deprecated_config.target_schema.is_some()
     }
 
-    fn schema(&self) -> String {
+    fn schema(&self) -> &str {
         // prefer legacy config
         self.deprecated_config
             .target_schema
-            .clone()
-            .unwrap_or_else(|| self.base().schema.clone())
+            .as_deref()
+            .unwrap_or(&self.base().schema)
     }
 
     fn skip_generate_database_name_macro(&self) -> bool {
         self.deprecated_config.target_database.is_some()
     }
 
-    fn database(&self) -> String {
+    fn database(&self) -> &str {
         // prefer legacy config
         self.deprecated_config
             .target_database
-            .clone()
-            .unwrap_or_else(|| self.base().database.clone())
+            .as_deref()
+            .unwrap_or(&self.base().database)
     }
 
-    fn tags(&self) -> Vec<String> {
-        self.__common_attr__.tags.clone()
+    fn tags(&self) -> &[String] {
+        &self.__common_attr__.tags
     }
 
-    fn meta(&self) -> IndexMap<String, YmlValue> {
-        self.__common_attr__.meta.clone()
+    fn meta(&self) -> &IndexMap<String, YmlValue> {
+        &self.__common_attr__.meta
     }
 
     fn search_name(&self) -> String {
@@ -3019,6 +3229,13 @@ impl InternalDbtNodeAttributes for DbtSnapshot {
 }
 
 impl InternalDbtNode for DbtExposure {
+    fn into_jinja_fields(self: Arc<Self>) -> Arc<dyn crate::jinja_node::JinjaNodeFields> {
+        self
+    }
+    fn clone_node(&self) -> Box<dyn InternalDbtNode> {
+        Box::new(Clone::clone(self))
+    }
+
     fn common(&self) -> &CommonAttributes {
         &self.__common_attr__
     }
@@ -3156,6 +3373,13 @@ impl InternalDbtNode for DbtExposure {
 }
 
 impl InternalDbtNode for DbtCheck {
+    fn into_jinja_fields(self: Arc<Self>) -> Arc<dyn crate::jinja_node::JinjaNodeFields> {
+        self
+    }
+    fn clone_node(&self) -> Box<dyn InternalDbtNode> {
+        Box::new(Clone::clone(self))
+    }
+
     fn common(&self) -> &CommonAttributes {
         &self.__common_attr__
     }
@@ -3199,13 +3423,10 @@ impl InternalDbtNode for DbtCheck {
             // `meta` is compared for the same reason models compare it: a user editing `meta:`
             // expects the node to be selected, and this was the one key where a check behaved
             // differently from a model. Read from common_attr, like tags: that field holds the
-            // resolved value and is not an `Option`, so the `None`/empty-map handling of
-            // `indexmap_yml_value_equal` is not needed -- but the timestamp-vs-string leniency
-            // is, since the previous value comes from manifest JSON.
-            let meta_eq = yml_map_eq_lenient(
-                &self.__common_attr__.meta,
-                &other_check.__common_attr__.meta,
-            );
+            // resolved value and is not an `Option`, so plain equality is enough --
+            // `indexmap_yml_value_equal` exists to treat `None` and an empty map as equal, which
+            // only arises for the `Option` config wrappers.
+            let meta_eq = self.__common_attr__.meta == other_check.__common_attr__.meta;
 
             let result = enabled_eq && severity_eq && selection_filter_on_eq && tags_eq && meta_eq;
 
@@ -3334,14 +3555,109 @@ impl InternalDbtNodeAttributes for DbtCheck {
     fn quoting(&self) -> ResolvedQuoting {
         self.__base_attr__.quoting
     }
-    fn tags(&self) -> Vec<String> {
-        self.__common_attr__.tags.clone()
+    fn tags(&self) -> &[String] {
+        &self.__common_attr__.tags
     }
-    fn meta(&self) -> IndexMap<String, YmlValue> {
-        self.__common_attr__.meta.clone()
+    fn meta(&self) -> &IndexMap<String, YmlValue> {
+        &self.__common_attr__.meta
     }
     fn serialized_config(&self) -> YmlValue {
         dbt_yaml::to_value(&self.deprecated_config).expect("Failed to serialize to YAML")
+    }
+    fn search_name(&self) -> String {
+        self.__common_attr__.name.clone()
+    }
+    fn selector_string(&self) -> String {
+        self.__common_attr__.fqn.join(".")
+    }
+}
+
+impl InternalDbtNode for DbtExperimentalNode {
+    fn into_jinja_fields(self: Arc<Self>) -> Arc<dyn crate::jinja_node::JinjaNodeFields> {
+        self
+    }
+    fn clone_node(&self) -> Box<dyn InternalDbtNode> {
+        Box::new(Clone::clone(self))
+    }
+    fn common(&self) -> &CommonAttributes {
+        &self.__common_attr__
+    }
+    fn base(&self) -> &NodeBaseAttributes {
+        &self.__base_attr__
+    }
+    fn base_mut(&mut self) -> &mut NodeBaseAttributes {
+        &mut self.__base_attr__
+    }
+    fn common_mut(&mut self) -> &mut CommonAttributes {
+        &mut self.__common_attr__
+    }
+    fn resource_type(&self) -> NodeType {
+        NodeType::Experimental
+    }
+    fn experimental_type(&self) -> Option<&str> {
+        Some(&self.__experimental_attr__.experimental_type)
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn serialize_inner(
+        &self,
+        mode: crate::schemas::serialization_utils::SerializationMode,
+    ) -> YmlValue {
+        crate::schemas::serialization_utils::serialize_with_mode(self, mode)
+    }
+    fn has_same_config(&self, other: &dyn InternalDbtNode, _adapter_type: AdapterType) -> bool {
+        other
+            .as_any()
+            .downcast_ref::<DbtExperimentalNode>()
+            .is_some_and(|other| {
+                self.__base_attr__.enabled == other.__base_attr__.enabled
+                    && tags_eq_vec(&self.__common_attr__.tags, &other.__common_attr__.tags)
+                    && self.__common_attr__.meta == other.__common_attr__.meta
+            })
+    }
+    /// The checksum covers the node's whole properties entry.
+    fn has_same_content(&self, other: &dyn InternalDbtNode, _adapter_type: AdapterType) -> bool {
+        other
+            .as_any()
+            .downcast_ref::<DbtExperimentalNode>()
+            .is_some_and(|other| {
+                self.__experimental_attr__.experimental_type
+                    == other.__experimental_attr__.experimental_type
+                    && self.__common_attr__.checksum == other.__common_attr__.checksum
+            })
+    }
+    fn set_detected_introspection(&mut self, _introspection: IntrospectionKind) {
+        panic!("DbtExperimentalNode does not support setting detected_unsafe");
+    }
+}
+
+impl InternalDbtNodeAttributes for DbtExperimentalNode {
+    fn materialized(&self) -> DbtMaterialization {
+        self.__base_attr__.materialized.clone()
+    }
+    fn quoting(&self) -> ResolvedQuoting {
+        self.__base_attr__.quoting
+    }
+    fn tags(&self) -> &[String] {
+        &self.__common_attr__.tags
+    }
+    fn meta(&self) -> &IndexMap<String, YmlValue> {
+        &self.__common_attr__.meta
+    }
+    fn serialized_config(&self) -> YmlValue {
+        #[derive(Serialize)]
+        struct Config<'a> {
+            enabled: bool,
+            tags: &'a [String],
+            meta: &'a IndexMap<String, YmlValue>,
+        }
+        dbt_yaml::to_value(Config {
+            enabled: self.__base_attr__.enabled,
+            tags: &self.__common_attr__.tags,
+            meta: &self.__common_attr__.meta,
+        })
+        .expect("Failed to serialize to YAML")
     }
     fn search_name(&self) -> String {
         self.__common_attr__.name.clone()
@@ -3358,11 +3674,11 @@ impl InternalDbtNodeAttributes for DbtExposure {
     fn quoting(&self) -> ResolvedQuoting {
         self.__base_attr__.quoting
     }
-    fn tags(&self) -> Vec<String> {
-        self.__common_attr__.tags.clone()
+    fn tags(&self) -> &[String] {
+        &self.__common_attr__.tags
     }
-    fn meta(&self) -> IndexMap<String, YmlValue> {
-        self.__common_attr__.meta.clone()
+    fn meta(&self) -> &IndexMap<String, YmlValue> {
+        &self.__common_attr__.meta
     }
     fn serialized_config(&self) -> YmlValue {
         dbt_yaml::to_value(&self.deprecated_config).expect("Failed to serialize to YAML")
@@ -3376,6 +3692,13 @@ impl InternalDbtNodeAttributes for DbtExposure {
 }
 
 impl InternalDbtNode for DbtSemanticModel {
+    fn into_jinja_fields(self: Arc<Self>) -> Arc<dyn crate::jinja_node::JinjaNodeFields> {
+        self
+    }
+    fn clone_node(&self) -> Box<dyn InternalDbtNode> {
+        Box::new(Clone::clone(self))
+    }
+
     fn common(&self) -> &CommonAttributes {
         &self.__common_attr__
     }
@@ -3537,7 +3860,7 @@ impl InternalDbtNodeAttributes for DbtSemanticModel {
     }
     fn set_static_analysis(&mut self, _static_analysis: Spanned<StaticAnalysisKind>) {}
     fn search_name(&self) -> String {
-        self.name()
+        self.name().to_string()
     }
     fn selector_string(&self) -> String {
         format!(
@@ -3552,6 +3875,13 @@ impl InternalDbtNodeAttributes for DbtSemanticModel {
 }
 
 impl InternalDbtNode for DbtMetric {
+    fn into_jinja_fields(self: Arc<Self>) -> Arc<dyn crate::jinja_node::JinjaNodeFields> {
+        self
+    }
+    fn clone_node(&self) -> Box<dyn InternalDbtNode> {
+        Box::new(Clone::clone(self))
+    }
+
     fn common(&self) -> &CommonAttributes {
         &self.__common_attr__
     }
@@ -3688,7 +4018,7 @@ impl InternalDbtNodeAttributes for DbtMetric {
     }
     fn set_static_analysis(&mut self, _static_analysis: Spanned<StaticAnalysisKind>) {}
     fn search_name(&self) -> String {
-        self.name()
+        self.name().to_string()
     }
     fn selector_string(&self) -> String {
         format!("metric:{}.{}", self.package_name(), self.search_name())
@@ -3699,6 +4029,13 @@ impl InternalDbtNodeAttributes for DbtMetric {
 }
 
 impl InternalDbtNode for DbtSavedQuery {
+    fn into_jinja_fields(self: Arc<Self>) -> Arc<dyn crate::jinja_node::JinjaNodeFields> {
+        self
+    }
+    fn clone_node(&self) -> Box<dyn InternalDbtNode> {
+        Box::new(Clone::clone(self))
+    }
+
     fn common(&self) -> &CommonAttributes {
         &self.__common_attr__
     }
@@ -3906,7 +4243,7 @@ impl InternalDbtNodeAttributes for DbtSavedQuery {
     }
     fn set_static_analysis(&mut self, _static_analysis: Spanned<StaticAnalysisKind>) {}
     fn search_name(&self) -> String {
-        self.name()
+        self.name().to_string()
     }
     fn selector_string(&self) -> String {
         format!("saved_query:{}.{}", self.package_name(), self.search_name())
@@ -3917,6 +4254,26 @@ impl InternalDbtNodeAttributes for DbtSavedQuery {
 }
 
 impl InternalDbtNode for DbtFunction {
+    fn get_node_processed_event(
+        &self,
+        last_phase: Option<ExecutionPhase>,
+        in_dir: &Path,
+        out_dir: &Path,
+        in_selection: bool,
+    ) -> NodeProcessed {
+        let mut event =
+            self.get_node_processed_event_base(last_phase, in_dir, out_dir, in_selection);
+        event.set_access(NodeAccess::from(&self.__function_attr__.access));
+        event
+    }
+
+    fn into_jinja_fields(self: Arc<Self>) -> Arc<dyn crate::jinja_node::JinjaNodeFields> {
+        self
+    }
+    fn clone_node(&self) -> Box<dyn InternalDbtNode> {
+        Box::new(Clone::clone(self))
+    }
+
     fn common(&self) -> &CommonAttributes {
         &self.__common_attr__
     }
@@ -4032,8 +4389,8 @@ impl InternalDbtNode for DbtFunction {
 }
 
 impl InternalDbtNodeAttributes for DbtFunction {
-    fn static_analysis(&self) -> Spanned<StaticAnalysisKind> {
-        self.__base_attr__.static_analysis.clone()
+    fn static_analysis(&self) -> &Spanned<StaticAnalysisKind> {
+        &self.__base_attr__.static_analysis
     }
 
     fn set_quoting(&mut self, quoting: ResolvedQuoting) {
@@ -4066,6 +4423,13 @@ impl InternalDbtNodeAttributes for DbtFunction {
 // macros live in a separate `Nodes.macros` map and are never iterated as
 // `&dyn InternalDbtNode` into the runnable/event APIs, so those paths are unreachable.
 impl InternalDbtNode for DbtMacro {
+    fn into_jinja_fields(self: Arc<Self>) -> Arc<dyn crate::jinja_node::JinjaNodeFields> {
+        self
+    }
+    fn clone_node(&self) -> Box<dyn InternalDbtNode> {
+        Box::new(Clone::clone(self))
+    }
+
     fn common(&self) -> &CommonAttributes {
         unimplemented!("macro common attributes access")
     }
@@ -4173,6 +4537,11 @@ pub struct Nodes {
     pub functions: BTreeMap<String, Arc<DbtFunction>>,
     pub checks: BTreeMap<String, Arc<DbtCheck>>,
     pub macros: BTreeMap<String, Arc<DbtMacro>>,
+    /// Nodes added by experimentals, of any experimental type. Not in
+    /// [`Nodes::materializable_keys`]: an experimental node runs only when it is selected directly.
+    /// Never serialized: experimental data is opaque.
+    #[serde(skip)]
+    pub experimentals: BTreeMap<String, Arc<DbtExperimentalNode>>,
     /// The root project name. Used to resolve the `package:this` selector.
     pub project_name: Option<String>,
 }
@@ -4260,6 +4629,11 @@ impl Nodes {
             .iter()
             .map(|(id, node)| (id.clone(), Arc::new((**node).clone())))
             .collect();
+        let experimentals = self
+            .experimentals
+            .iter()
+            .map(|(id, node)| (id.clone(), Arc::new((**node).clone())))
+            .collect();
         Nodes {
             models,
             seeds,
@@ -4276,6 +4650,7 @@ impl Nodes {
             functions,
             checks,
             macros,
+            experimentals,
             project_name: self.project_name.clone(),
         }
     }
@@ -4367,6 +4742,11 @@ impl Nodes {
                     .get(unique_id)
                     .map(|n| Arc::as_ref(n) as &dyn InternalDbtNodeAttributes)
             })
+            .or_else(|| {
+                self.experimentals
+                    .get(unique_id)
+                    .map(|n| Arc::as_ref(n) as &dyn InternalDbtNodeAttributes)
+            })
     }
 
     pub fn get_node_owned(&self, unique_id: &str) -> Option<Arc<dyn InternalDbtNodeAttributes>> {
@@ -4433,6 +4813,11 @@ impl Nodes {
                     .get(unique_id)
                     .map(|n| n.clone() as Arc<dyn InternalDbtNodeAttributes>)
             })
+            .or_else(|| {
+                self.experimentals
+                    .get(unique_id)
+                    .map(|n| n.clone() as Arc<dyn InternalDbtNodeAttributes>)
+            })
     }
 
     /// Check if a node exists in the graph.
@@ -4452,6 +4837,7 @@ impl Nodes {
             || self.functions.contains_key(unique_id)
             || self.checks.contains_key(unique_id)
             || self.saved_queries.contains_key(unique_id)
+            || self.experimentals.contains_key(unique_id)
     }
 
     /// Number of nodes yielded by [`Self::iter`].
@@ -4469,6 +4855,7 @@ impl Nodes {
             + self.semantic_models.len()
             + self.metrics.len()
             + self.saved_queries.len()
+            + self.experimentals.len()
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (&String, &dyn InternalDbtNodeAttributes)> + '_ {
@@ -4535,6 +4922,11 @@ impl Nodes {
                     .iter()
                     .map(|(id, node)| (id, Arc::as_ref(node) as &dyn InternalDbtNodeAttributes)),
             )
+            .chain(
+                self.experimentals
+                    .iter()
+                    .map(|(id, node)| (id, Arc::as_ref(node) as &dyn InternalDbtNodeAttributes)),
+            )
     }
 
     pub fn into_iter(
@@ -4592,6 +4984,10 @@ impl Nodes {
             .saved_queries
             .iter()
             .map(|(id, node)| (id.clone(), upcast(node.clone())));
+        let experimentals = self
+            .experimentals
+            .iter()
+            .map(|(id, node)| (id.clone(), upcast(node.clone())));
 
         models
             .chain(seeds)
@@ -4606,6 +5002,7 @@ impl Nodes {
             .chain(semantic_models)
             .chain(metrics)
             .chain(saved_queries)
+            .chain(experimentals)
     }
 
     pub fn iter_values_mut(
@@ -4663,6 +5060,10 @@ impl Nodes {
             .saved_queries
             .values_mut()
             .map(|arc| Arc::make_mut(arc) as &mut dyn InternalDbtNodeAttributes);
+        let map_experimentals = self
+            .experimentals
+            .values_mut()
+            .map(|arc| Arc::make_mut(arc) as &mut dyn InternalDbtNodeAttributes);
 
         map_models
             .chain(map_seeds)
@@ -4677,6 +5078,7 @@ impl Nodes {
             .chain(map_semantic_models)
             .chain(map_metrics)
             .chain(map_saved_queries)
+            .chain(map_experimentals)
     }
 
     pub fn get_value_mut(&mut self, unique_id: &str) -> Option<&mut dyn InternalDbtNodeAttributes> {
@@ -4740,6 +5142,11 @@ impl Nodes {
             })
             .or_else(|| {
                 self.saved_queries
+                    .get_mut(unique_id)
+                    .map(|arc| Arc::make_mut(arc) as &mut dyn InternalDbtNodeAttributes)
+            })
+            .or_else(|| {
+                self.experimentals
                     .get_mut(unique_id)
                     .map(|arc| Arc::make_mut(arc) as &mut dyn InternalDbtNodeAttributes)
             })
@@ -4849,6 +5256,7 @@ impl Nodes {
         self.groups.extend(other.groups);
         self.functions.extend(other.functions);
         self.checks.extend(other.checks);
+        self.experimentals.extend(other.experimentals);
     }
 
     pub fn warn_on_custom_materializations(&self) -> FsResult<()> {
@@ -4959,6 +5367,7 @@ where
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
+#[derive(dbt_proc_macros::JinjaNodeFields)]
 pub struct CommonAttributes {
     // Identifiers
     pub unique_id: String,
@@ -4967,6 +5376,7 @@ pub struct CommonAttributes {
     pub fqn: Vec<String>,
 
     // Paths
+    #[jinja_node(disable_cache, allow_uncached_transform)]
     pub path: DbtPath,
 
     /// The original file path where this node was defined
@@ -4974,6 +5384,7 @@ pub struct CommonAttributes {
     /// **NOTE**: For [DbtTest] nodes, this is currently the path to the
     /// generated SQL file, *NOT* the path to the YAML file where the test was
     /// defined!
+    #[jinja_node(disable_cache)]
     pub original_file_path: DbtPath,
 
     #[serde(
@@ -4981,7 +5392,9 @@ pub struct CommonAttributes {
         serialize_with = "serialize_none_as_empty_string",
         deserialize_with = "deserialize_empty_string_as_none"
     )]
+    #[jinja_node(disable_cache)]
     pub raw_code: Option<String>,
+    #[jinja_node(disable_cache)]
     pub patch_path: Option<DbtPath>,
     pub name_span: Span,
 
@@ -4990,6 +5403,7 @@ pub struct CommonAttributes {
     pub language: Option<String>,
 
     // Meta
+    #[jinja_node(allow_uncached_transform)]
     pub description: Option<String>,
 
     // Tags, Classifiers, and Meta
@@ -5005,6 +5419,7 @@ pub struct CommonAttributes {
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(dbt_proc_macros::JinjaNodeFields)]
 pub struct NodeBaseAttributes {
     // Identifiers
     #[serde(default)]
@@ -5131,6 +5546,7 @@ impl Default for NodeBaseAttributes {
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
+#[derive(dbt_proc_macros::JinjaNodeFields)]
 pub struct DbtSeed {
     pub __common_attr__: CommonAttributes,
 
@@ -5162,6 +5578,7 @@ impl DbtSeed {
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
+#[derive(dbt_proc_macros::JinjaNodeFields)]
 pub struct DbtSeedAttr {
     #[serde(default, skip_serializing_if = "is_false")]
     pub quote_columns: bool,
@@ -5178,6 +5595,7 @@ fn is_false(b: &bool) -> bool {
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
+#[derive(dbt_proc_macros::JinjaNodeFields)]
 pub struct DbtExposure {
     pub __common_attr__: CommonAttributes,
 
@@ -5205,6 +5623,7 @@ pub enum ExposureType {
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
+#[derive(dbt_proc_macros::JinjaNodeFields)]
 pub struct DbtExposureAttr {
     pub owner: DbtOwner,
     pub label: Option<String>,
@@ -5224,6 +5643,7 @@ pub struct DbtExposureAttr {
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
+#[derive(dbt_proc_macros::JinjaNodeFields)]
 pub struct DbtCheck {
     pub __common_attr__: CommonAttributes,
 
@@ -5239,6 +5659,7 @@ pub struct DbtCheck {
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
+#[derive(dbt_proc_macros::JinjaNodeFields)]
 pub struct DbtCheckAttr {
     /// The check's Jinja-rendered SQL, carried from parse to execution.
     ///
@@ -5251,6 +5672,71 @@ pub struct DbtCheckAttr {
     /// every warm run report "no rendered SQL". (It does duplicate `raw_code` for checks that
     /// contain no Jinja, which is the accepted cost of the round-trip.)
     pub compiled_sql: Option<String>,
+}
+
+/// A node an experimental adds to the project. Its kind is
+/// [`DbtExperimentalNodeAttr::experimental_type`].
+///
+/// The node holds what dbt needs to select, schedule and report it; the experimental's own data for
+/// it is opaque ([`ExperimentalData`]).
+///
+/// Experimental nodes write no relation. They are not part of the manifest, are never selected by
+/// default, and are only ever selected directly (not through graph operators or `state:`).
+#[skip_serializing_none]
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+#[derive(dbt_proc_macros::JinjaNodeFields)]
+pub struct DbtExperimentalNode {
+    pub __common_attr__: CommonAttributes,
+
+    pub __base_attr__: NodeBaseAttributes,
+
+    pub __experimental_attr__: DbtExperimentalNodeAttr,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+#[derive(dbt_proc_macros::JinjaNodeFields)]
+pub struct DbtExperimentalNodeAttr {
+    /// The kind of node, named by the experimental that added it (e.g. `widget`).
+    pub experimental_type: String,
+    /// The experimental's own data for this node. Never serialized.
+    #[serde(skip)]
+    pub data: ExperimentalData,
+}
+
+/// An experimental's data for one of its nodes, of a type only the experimental knows.
+#[derive(Clone)]
+pub struct ExperimentalData(Arc<dyn Any + Send + Sync>);
+
+impl ExperimentalData {
+    pub fn new<T: Any + Send + Sync>(data: T) -> Self {
+        Self(Arc::new(data))
+    }
+
+    /// The data, if it is a `T`.
+    pub fn get<T: Any>(&self) -> Option<&T> {
+        self.0.downcast_ref()
+    }
+}
+
+impl Default for ExperimentalData {
+    fn default() -> Self {
+        Self::new(())
+    }
+}
+
+impl fmt::Debug for ExperimentalData {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("ExperimentalData(..)")
+    }
+}
+
+impl DbtExperimentalNode {
+    /// The experimental's data for this node, if it is a `T`.
+    pub fn experimental_data<T: Any>(&self) -> Option<&T> {
+        self.__experimental_attr__.data.get()
+    }
 }
 
 #[skip_serializing_none]
@@ -5272,6 +5758,7 @@ pub struct DbtGroupAttr {
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
+#[derive(dbt_proc_macros::JinjaNodeFields)]
 pub struct DbtUnitTest {
     pub __common_attr__: CommonAttributes,
 
@@ -5308,7 +5795,7 @@ impl DbtUnitTest {
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-#[derive(Default)]
+#[derive(Default, dbt_proc_macros::JinjaNodeFields)]
 pub struct DbtUnitTestAttr {
     pub model: String,
     /// The adapter of the model under test, so the unit test runs where its
@@ -5323,6 +5810,7 @@ pub struct DbtUnitTestAttr {
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
+#[derive(dbt_proc_macros::JinjaNodeFields)]
 pub struct DbtTest {
     pub __common_attr__: CommonAttributes,
     pub __base_attr__: NodeBaseAttributes,
@@ -5374,11 +5862,16 @@ impl DbtTest {
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
+#[derive(dbt_proc_macros::JinjaNodeFields)]
 pub struct DbtTestAttr {
     /// The column this test is attached to, from its position in the schema file. `None`
     /// for a model-level test; a `column_name` macro kwarg lives in `test_metadata.kwargs`.
     pub column_name: Option<String>,
     pub attached_node: Option<String>,
+    /// The resource declared as a generic test's subject. Unlike `attached_node`, this is
+    /// populated for source tests and is not part of the dbt manifest contract.
+    #[serde(default, skip_serializing)]
+    pub test_subject_unique_id: Option<String>,
     pub test_metadata: Option<TestMetadata>,
     pub file_key_name: Option<String>,
     /// dbt State configs (restricted subset), read by the run-cache at run time.
@@ -5407,6 +5900,7 @@ pub struct TestMetadata {
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
+#[derive(dbt_proc_macros::JinjaNodeFields)]
 pub struct DbtSnapshot {
     pub __common_attr__: CommonAttributes,
     pub __base_attr__: NodeBaseAttributes,
@@ -5427,6 +5921,7 @@ pub struct DbtSnapshot {
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
+#[derive(dbt_proc_macros::JinjaNodeFields)]
 pub struct DbtSnapshotAttr {
     pub snapshot_meta_column_names: SnapshotMetaColumnNames,
     #[serde(skip_serializing, default = "default_introspection")]
@@ -5434,11 +5929,16 @@ pub struct DbtSnapshotAttr {
     pub sync: Option<SyncConfig>,
     /// dbt State configs, read by the run-cache at run time.
     pub state: Option<crate::schemas::properties::ModelState>,
+    // Exposed top-level on the node (like DbtModelAttr) so catalog resolution
+    // can classify snapshot targets such as Snowflake-managed Iceberg.
+    pub catalog_name: Option<String>,
+    pub table_format: Option<String>,
 }
 
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
+#[derive(dbt_proc_macros::JinjaNodeFields)]
 pub struct DbtSource {
     pub __common_attr__: CommonAttributes,
 
@@ -5469,6 +5969,7 @@ impl DbtSource {
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
+#[derive(dbt_proc_macros::JinjaNodeFields)]
 pub struct DbtSourceAttr {
     pub identifier: String,
     pub source_name: String,
@@ -5583,6 +6084,7 @@ impl DbtSource {
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
+#[derive(dbt_proc_macros::JinjaNodeFields)]
 pub struct DbtModel {
     pub __common_attr__: CommonAttributes,
 
@@ -5600,6 +6102,32 @@ pub struct DbtModel {
 }
 
 impl DbtModel {
+    /// Whether this is a BigQuery table or incremental model stored as Iceberg in a
+    /// resolved `biglake_metastore` catalog without `lakehouse_catalog`.
+    pub fn is_bigquery_managed_iceberg_table(
+        &self,
+        catalogs: Option<&crate::schemas::dbt_catalogs::DbtCatalogs>,
+    ) -> FsResult<bool> {
+        if self.node_adapter() != AdapterType::Bigquery
+            || !matches!(
+                self.base().materialized,
+                DbtMaterialization::Table | DbtMaterialization::Incremental
+            )
+        {
+            return Ok(false);
+        }
+        let Some(catalogs) = catalogs else {
+            return Ok(false);
+        };
+        // A malformed catalog is an error, not evidence that this table is
+        // unmanaged: the neighbouring parse checks propagate the same failure.
+        let view = catalogs.view()?;
+        Ok(view.catalogs.iter().any(|catalog| {
+            Some(catalog.name) == self.__model_attr__.catalog_name.as_deref()
+                && catalog.is_bigquery_managed_iceberg()
+        }))
+    }
+
     /// Transcribes dbt-core's `ModelNode.same_ref_representation` (dbt-mantle
     /// `core/dbt/contracts/graph/nodes.py:684-691`), which is ANDed into `ModelNode.same_contents`
     /// at `:677-682`:
@@ -5636,7 +6164,7 @@ impl DbtModel {
         // `manifest_model_access_falls_back_to_node_attribute` guard that.
         let same_access = current.access == previous.access;
         let same_deprecation_date =
-            timestamp_eq_maybe_ignore_tz(&current.deprecation_date, &previous.deprecation_date);
+            deprecation_date_eq(&current.deprecation_date, &previous.deprecation_date);
 
         let result = same_latest_version && same_access && same_deprecation_date;
 
@@ -5673,10 +6201,10 @@ impl DbtModel {
         result
     }
 
-    pub fn same_contract(&self, old: &DbtModel) -> bool {
+    pub fn same_contract(&self, old: &DbtModel, adapter_type: AdapterType) -> bool {
         match (&self.__model_attr__.contract, &old.__model_attr__.contract) {
             (Some(current_contract), Some(old_contract)) => {
-                self.same_contract_both_present(old, old_contract, current_contract)
+                self.same_contract_both_present(old, old_contract, current_contract, adapter_type)
             }
             (Some(_self_contract), None) => false,
             (None, Some(old_contract)) => self.same_contract_removed(old, old_contract),
@@ -5691,6 +6219,7 @@ impl DbtModel {
         old: &DbtModel,
         old_contract: &DbtContract,
         current_contract: &DbtContract,
+        adapter_type: AdapterType,
     ) -> bool {
         // Contract was not previously enforced
         if !old_contract.enforced && !current_contract.enforced {
@@ -5704,18 +6233,23 @@ impl DbtModel {
 
         // Otherwise: The contract was previously enforced, and we need to check for changes.
         // Happy path: The contract is still being enforced, and the checksums are identical.
-        if current_contract.enforced && current_contract.checksum == old_contract.checksum {
-            // No change -- same_contract: True
-            return true;
+        if current_contract.enforced {
+            let unchanged = match (&current_contract.checksum, &old_contract.checksum) {
+                (Some(current), Some(previous)) => current == previous,
+                // Neither Fusion nor dbt-core writes a checksum into `config.contract`, so compare
+                // the fields dbt-core's contract checksum covers.
+                _ => self.same_contract_fields(old),
+            };
+            if unchanged {
+                // No change -- same_contract: True
+                return true;
+            }
         }
 
         // Otherwise: There has been a change.
         // We need to determine if it is a **breaking** change.
         // These are the categories of breaking changes:
         let mut contract_enforced_disabled: bool = false;
-        let mut columns_removed: Vec<String> = Vec::new();
-        let mut column_type_changes: Vec<BTreeMap<String, String>> = Vec::new();
-        let mut enforced_column_constraint_removed: Vec<BTreeMap<String, YmlValue>> = Vec::new(); // column_name, constraint_type
         let mut enforced_model_constraint_removed: Vec<BTreeMap<String, YmlValue>> = Vec::new(); // constraint_type, columns
         let mut materialization_changed: Vec<String> = Vec::new();
 
@@ -5723,117 +6257,50 @@ impl DbtModel {
             // Breaking change: the contract was previously enforced, and it no longer is
             contract_enforced_disabled = true;
         }
-        let mut column_constraints_exist: bool = false;
-
-        // Helper function to check if materialization enforces constraints
-        let materialization_enforces_constraints = |mat: &DbtMaterialization| -> bool {
-            matches!(
-                mat,
-                DbtMaterialization::Table | DbtMaterialization::Incremental
-            )
-        };
-
-        // Next, compare each column from the previous contract (old.columns)
-        for old_value in old.__base_attr__.columns.iter() {
-            // Has this column been removed?
-            if !self.__base_attr__.columns.contains(old_value) {
-                columns_removed.push(old_value.name.clone());
-            }
-            // Has this column's data type changed?
-            else if let Some(current_column) = self
-                .__base_attr__
-                .columns
-                .iter()
-                .find(|col| col == &old_value)
-            {
-                if old_value.data_type != current_column.data_type {
-                    let mut type_change = BTreeMap::new();
-                    type_change.insert("column_name".to_string(), old_value.name.clone());
-                    type_change.insert(
-                        "previous_column_type".to_string(),
-                        old_value
-                            .data_type
-                            .clone()
-                            .unwrap_or_else(|| "unknown".to_string()),
-                    );
-                    type_change.insert(
-                        "current_column_type".to_string(),
-                        current_column
-                            .data_type
-                            .clone()
-                            .unwrap_or_else(|| "unknown".to_string()),
-                    );
-                    column_type_changes.push(type_change);
-                }
-            }
-
-            // track if there are any column level constraints for the materialization check later
-            if !old_value.constraints.is_empty() {
-                column_constraints_exist = true;
-            }
-
-            // Have enforced columns level constraints changed?
-            // Constraints are only enforced for table and incremental materializations.
-            // We only really care if the old node was one of those materializations for breaking changes
-            if let Some(current_column) = self
-                .__base_attr__
-                .columns
-                .iter()
-                .find(|col| col == &old_value)
-            {
-                if old_value.constraints != current_column.constraints
-                    && materialization_enforces_constraints(&old.materialized())
-                {
-                    for old_constraint in &old_value.constraints {
-                        if !current_column.constraints.contains(old_constraint) {
-                            let mut constraint_removed = BTreeMap::new();
-                            constraint_removed.insert(
-                                "column_name".to_string(),
-                                YmlValue::string(old_value.name.clone()),
-                            );
-                            constraint_removed.insert(
-                                "constraint_name".to_string(),
-                                YmlValue::string(old_constraint.name.clone().unwrap_or_default()),
-                            );
-                            constraint_removed.insert(
-                                "constraint_type".to_string(),
-                                YmlValue::string(format!("{:?}", old_constraint.type_)),
-                            );
-                            enforced_column_constraint_removed.push(constraint_removed);
-                        }
-                    }
-                }
-            }
-        }
+        let ColumnContractChanges {
+            columns_removed,
+            column_type_changes,
+            enforced_column_constraint_removed,
+            column_constraints_exist,
+        } = self.column_contract_changes(old, adapter_type);
 
         // Now compare the model level constraints
-        if old.__model_attr__.constraints != self.__model_attr__.constraints
-            && materialization_enforces_constraints(&old.materialized())
-        {
+        if old.materialized().enforces_constraints() {
             for old_constraint in &old.__model_attr__.constraints {
-                if !self.__model_attr__.constraints.contains(old_constraint) {
-                    let mut constraint_removed = BTreeMap::new();
-                    constraint_removed.insert(
-                        "constraint_name".to_string(),
-                        YmlValue::string(old_constraint.name.clone().unwrap_or_default()),
+                if !self
+                    .__model_attr__
+                    .constraints
+                    .iter()
+                    .any(|c| model_constraint_equal(c, old_constraint))
+                    && is_enforced(adapter_type, old_constraint.type_)
+                {
+                    let mut removed =
+                        removed_constraint(&old_constraint.name, old_constraint.type_);
+                    removed.insert(
+                        "columns".to_string(),
+                        YmlValue::sequence(
+                            old_constraint
+                                .columns
+                                .as_deref()
+                                .unwrap_or_default()
+                                .iter()
+                                .map(|c| YmlValue::string(c.clone()))
+                                .collect(),
+                        ),
                     );
-                    constraint_removed.insert(
-                        "constraint_type".to_string(),
-                        YmlValue::string(format!("{:?}", old_constraint.type_)),
-                    );
-                    enforced_model_constraint_removed.push(constraint_removed);
+                    enforced_model_constraint_removed.push(removed);
                 }
             }
         }
 
         // Check for relevant materialization changes.
-        if materialization_enforces_constraints(&old.materialized())
-            && !materialization_enforces_constraints(&self.materialized())
+        if old.materialized().enforces_constraints()
+            && !self.materialized().enforces_constraints()
             && (!old.__model_attr__.constraints.is_empty() || column_constraints_exist)
         {
             materialization_changed = vec![
-                format!("{:?}", old.materialized()),
-                format!("{:?}", self.materialized()),
+                old.materialized().to_string(),
+                self.materialized().to_string(),
             ];
         }
 
@@ -5963,7 +6430,7 @@ impl DbtModel {
 
             // Generate warning or error depending on if the model is versioned
             let reasons = breaking_changes.join("\n  - ");
-            if old.is_versioned() {
+            if self.is_versioned() {
                 self.log_contract_breaking_change_error(&reasons, &old.__common_attr__.name);
             } else {
                 self.log_unversioned_breaking_change_warning(
@@ -5976,15 +6443,134 @@ impl DbtModel {
         // Otherwise, the contract has changed -- same_contract: False
         false
     }
+
+    // The fields dbt-core's `build_contract_checksum` hashes: each column's name, data_type and
+    // constraints, plus the materialization and model constraints when constraints are enforced.
+    fn same_contract_fields(&self, old: &DbtModel) -> bool {
+        fn sorted_columns(model: &DbtModel) -> Vec<&DbtColumnRef> {
+            let mut columns: Vec<_> = model.__base_attr__.columns.iter().collect();
+            columns.sort_by(|a, b| a.name.cmp(&b.name));
+            columns
+        }
+        let current_columns = sorted_columns(self);
+        let old_columns = sorted_columns(old);
+        let same_columns = all_equal(&current_columns, &old_columns, |a, b| {
+            a.name == b.name
+                && a.data_type == b.data_type
+                && all_equal(&a.constraints, &b.constraints, constraint_equal)
+        });
+        if !same_columns {
+            return false;
+        }
+
+        let current_materialized = self.materialized();
+        let old_materialized = old.materialized();
+        let enforces = current_materialized.enforces_constraints();
+        enforces == old_materialized.enforces_constraints()
+            && (!enforces
+                || (current_materialized == old_materialized
+                    && all_equal(
+                        &self.__model_attr__.constraints,
+                        &old.__model_attr__.constraints,
+                        model_constraint_equal,
+                    )))
+    }
+
+    fn column_contract_changes(
+        &self,
+        old: &DbtModel,
+        adapter_type: AdapterType,
+    ) -> ColumnContractChanges {
+        let mut columns_removed: Vec<String> = Vec::new();
+        let mut column_type_changes: Vec<BTreeMap<String, String>> = Vec::new();
+        let mut enforced_column_constraint_removed: Vec<BTreeMap<String, YmlValue>> = Vec::new();
+        let mut column_constraints_exist: bool = false;
+
+        // Constraints are only enforced for table and incremental materializations.
+        // We only really care if the old node was one of those materializations for breaking changes
+        let old_enforces_constraints = old.materialized().enforces_constraints();
+
+        // Next, compare each column from the previous contract (old.columns)
+        for old_value in old.__base_attr__.columns.iter() {
+            // track if there are any column level constraints for the materialization check later
+            if !old_value.constraints.is_empty() {
+                column_constraints_exist = true;
+            }
+
+            // Has this column been removed?
+            let Some(current_column) = self
+                .__base_attr__
+                .columns
+                .iter()
+                .find(|col| col.name == old_value.name)
+            else {
+                columns_removed.push(old_value.name.clone());
+                continue;
+            };
+
+            // Has this column's data type changed?
+            if normalize_data_type(&old_value.data_type)
+                != normalize_data_type(&current_column.data_type)
+            {
+                let mut type_change = BTreeMap::new();
+                type_change.insert("column_name".to_string(), old_value.name.clone());
+                type_change.insert(
+                    "previous_column_type".to_string(),
+                    old_value
+                        .data_type
+                        .clone()
+                        .unwrap_or_else(|| "unknown".to_string()),
+                );
+                type_change.insert(
+                    "current_column_type".to_string(),
+                    current_column
+                        .data_type
+                        .clone()
+                        .unwrap_or_else(|| "unknown".to_string()),
+                );
+                column_type_changes.push(type_change);
+            }
+
+            // Have enforced columns level constraints changed?
+            if !old_enforces_constraints {
+                continue;
+            }
+            for old_constraint in &old_value.constraints {
+                if !current_column
+                    .constraints
+                    .iter()
+                    .any(|c| constraint_equal(c, old_constraint))
+                    && is_enforced(adapter_type, old_constraint.type_)
+                {
+                    let mut constraint_removed =
+                        removed_constraint(&old_constraint.name, old_constraint.type_);
+                    constraint_removed.insert(
+                        "column_name".to_string(),
+                        YmlValue::string(old_value.name.clone()),
+                    );
+                    enforced_column_constraint_removed.push(constraint_removed);
+                }
+            }
+        }
+
+        ColumnContractChanges {
+            columns_removed,
+            column_type_changes,
+            enforced_column_constraint_removed,
+            column_constraints_exist,
+        }
+    }
+
     fn same_contract_removed(&self, old: &DbtModel, old_contract: &DbtContract) -> bool {
         // If the contract wasn't previously enforced, no contract change has occurred
         if !old_contract.enforced {
             return true;
         }
         // Removed node is past its deprecation_date, so deletion does not constitute a contract change
-        // Instant comparison; a missing time/zone defaults to midnight UTC.
-        if let Some(ts) = &old.__model_attr__.deprecation_date
-            && *ts < dbt_yaml::Timestamp::utc_now()
+        if let Some(deprecation_date_str) = &old.__model_attr__.deprecation_date
+            && let Some(deprecation_date) =
+                crate::schemas::common::parse_deprecation_date(deprecation_date_str)
+            && deprecation_date < Utc::now()
         {
             return true;
         }
@@ -6039,50 +6625,62 @@ impl DbtModel {
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
+#[derive(dbt_proc_macros::JinjaNodeFields)]
 pub struct AdapterAttr {
-    pub snowflake_attr: Option<Box<SnowflakeAttr>>,
-    pub databricks_attr: Option<Box<DatabricksAttr>>,
-    pub bigquery_attr: Option<Box<BigQueryAttr>>,
-    pub redshift_attr: Option<Box<RedshiftAttr>>,
+    pub snowflake_attr: Option<Arc<SnowflakeAttr>>,
+    pub databricks_attr: Option<Arc<DatabricksAttr>>,
+    pub bigquery_attr: Option<Arc<BigQueryAttr>>,
+    pub redshift_attr: Option<Arc<RedshiftAttr>>,
 }
 
 impl AdapterAttr {
-    pub fn with_snowflake_attr(mut self, snowflake_attr: Option<Box<SnowflakeAttr>>) -> Self {
+    pub fn with_snowflake_attr(mut self, snowflake_attr: Option<Arc<SnowflakeAttr>>) -> Self {
         self.snowflake_attr = snowflake_attr;
         self
     }
 
-    pub fn with_databricks_attr(mut self, databricks_attr: Option<Box<DatabricksAttr>>) -> Self {
+    pub fn with_databricks_attr(mut self, databricks_attr: Option<Arc<DatabricksAttr>>) -> Self {
         self.databricks_attr = databricks_attr;
         self
     }
 
-    pub fn with_bigquery_attr(mut self, bigquery_attr: Option<Box<BigQueryAttr>>) -> Self {
+    pub fn with_bigquery_attr(mut self, bigquery_attr: Option<Arc<BigQueryAttr>>) -> Self {
         self.bigquery_attr = bigquery_attr;
         self
     }
 
-    pub fn with_redshift_attr(mut self, redshift_attr: Option<Box<RedshiftAttr>>) -> Self {
+    pub fn with_redshift_attr(mut self, redshift_attr: Option<Arc<RedshiftAttr>>) -> Self {
         self.redshift_attr = redshift_attr;
         self
     }
 
-    /// Creates a new [AdapterAttr] from a given [&WarehouseSpecificNodeConfig] and adapter type string
-    pub fn from_config_and_dialect(
-        config: &WarehouseSpecificNodeConfig,
+    /// Creates a new [AdapterAttr] from a given [&LazyWarehouseSpecificNodeConfig] and adapter type
+    pub fn from_lazy_config_and_dialect(
+        config: &LazyWarehouseSpecificNodeConfig,
         adapter_type: AdapterType,
     ) -> Self {
-        // TODO: Make all None inputs result in a None for that attr
+        // Nodes with a default config share one value per adapter type instead of each
+        // allocating its own empty attribute structs.
+        static DEFAULT_CONFIG_ATTRS: LazyLock<HashMap<AdapterType, AdapterAttr>> =
+            LazyLock::new(|| {
+                let config = WarehouseSpecificNodeConfig::default();
+                AdapterType::iter()
+                    .map(|adapter_type| (adapter_type, AdapterAttr::build(&config, adapter_type)))
+                    .collect()
+            });
+        match config.get() {
+            Some(config) => Self::build(config, adapter_type),
+            None => DEFAULT_CONFIG_ATTRS[&adapter_type].clone(),
+        }
+    }
+
+    fn build(config: &WarehouseSpecificNodeConfig, adapter_type: AdapterType) -> Self {
         // TODO: Creation of configs should be delegated to the adapter specific attr struct
-        // Here we naively initialize the resolved adapter attributes.
-        // This allows propagation of configurations and switching on the adapter type
-        // allows us to save memory for unused configurations.
-        //
-        // A further optimization can be done by only setting inner fields of [AdapterAttr] if at least one field of the
-        // input is not None
+        // For a default config this runs once per adapter type, and `from_lazy_config_and_dialect`
+        // caches the result.
         match adapter_type {
             AdapterType::Snowflake => {
-                AdapterAttr::default().with_snowflake_attr(Some(Box::new(SnowflakeAttr {
+                AdapterAttr::default().with_snowflake_attr(Some(Arc::new(SnowflakeAttr {
                     table_tag: config.table_tag.clone(),
                     partition_by: config.partition_by.clone(),
                     cluster_by: config.cluster_by.clone(),
@@ -6118,7 +6716,7 @@ impl AdapterAttr {
             }
             AdapterType::Postgres => AdapterAttr::default(),
             AdapterType::Bigquery => {
-                AdapterAttr::default().with_bigquery_attr(Some(Box::new(BigQueryAttr {
+                AdapterAttr::default().with_bigquery_attr(Some(Arc::new(BigQueryAttr {
                     description: config.description.clone(),
                     adapter_properties: config.adapter_properties.clone(),
                     external_volume: config.external_volume.clone(),
@@ -6147,7 +6745,7 @@ impl AdapterAttr {
                 })))
             }
             AdapterType::Redshift => {
-                AdapterAttr::default().with_redshift_attr(Some(Box::new(RedshiftAttr {
+                AdapterAttr::default().with_redshift_attr(Some(Arc::new(RedshiftAttr {
                     auto_refresh: config.auto_refresh,
                     backup: config.backup,
                     bind: config.bind,
@@ -6157,7 +6755,7 @@ impl AdapterAttr {
                 })))
             }
             AdapterType::Databricks => {
-                AdapterAttr::default().with_databricks_attr(Some(Box::new(DatabricksAttr {
+                AdapterAttr::default().with_databricks_attr(Some(Arc::new(DatabricksAttr {
                     adapter_properties: config.adapter_properties.clone(),
                     partition_by: config.partition_by.clone(),
                     file_format: config.file_format.clone(),
@@ -6181,6 +6779,7 @@ impl AdapterAttr {
                     matched_condition: config.matched_condition.clone(),
                     not_matched_condition: config.not_matched_condition.clone(),
                     not_matched_by_source_condition: config.not_matched_by_source_condition.clone(),
+                    merge_actions_explicit: config.merge_actions_explicit.clone(),
                     not_matched_by_source_action: config.not_matched_by_source_action.clone(),
                     merge_with_schema_evolution: config.merge_with_schema_evolution,
                     skip_matched_step: config.skip_matched_step,
@@ -6193,7 +6792,7 @@ impl AdapterAttr {
             _ => {
                 // Unknown input, populate ALL adapter attributes to maximize compatibility downstream
                 AdapterAttr::default()
-                    .with_snowflake_attr(Some(Box::new(SnowflakeAttr {
+                    .with_snowflake_attr(Some(Arc::new(SnowflakeAttr {
                         table_tag: config.table_tag.clone(),
                         partition_by: config.partition_by.clone(),
                         cluster_by: config.cluster_by.clone(),
@@ -6226,7 +6825,7 @@ impl AdapterAttr {
                         secure: config.secure,
                         transient: config.transient,
                     })))
-                    .with_bigquery_attr(Some(Box::new(BigQueryAttr {
+                    .with_bigquery_attr(Some(Arc::new(BigQueryAttr {
                         description: config.description.clone(),
                         adapter_properties: config.adapter_properties.clone(),
                         external_volume: config.external_volume.clone(),
@@ -6257,7 +6856,7 @@ impl AdapterAttr {
                         jar_file_uri: config.jar_file_uri.clone(),
                         timeout: config.timeout,
                     })))
-                    .with_redshift_attr(Some(Box::new(RedshiftAttr {
+                    .with_redshift_attr(Some(Arc::new(RedshiftAttr {
                         auto_refresh: config.auto_refresh,
                         backup: config.backup,
                         bind: config.bind,
@@ -6265,7 +6864,7 @@ impl AdapterAttr {
                         sort: config.sort.clone(),
                         sort_type: config.sort_type.clone(),
                     })))
-                    .with_databricks_attr(Some(Box::new(DatabricksAttr {
+                    .with_databricks_attr(Some(Arc::new(DatabricksAttr {
                         adapter_properties: config.adapter_properties.clone(),
                         partition_by: config.partition_by.clone(),
                         file_format: config.file_format.clone(),
@@ -6291,6 +6890,7 @@ impl AdapterAttr {
                         not_matched_by_source_condition: config
                             .not_matched_by_source_condition
                             .clone(),
+                        merge_actions_explicit: config.merge_actions_explicit.clone(),
                         not_matched_by_source_action: config.not_matched_by_source_action.clone(),
                         merge_with_schema_evolution: config.merge_with_schema_evolution,
                         skip_matched_step: config.skip_matched_step,
@@ -6306,7 +6906,7 @@ impl AdapterAttr {
 
 /// A resolved Snowflake configuration
 #[skip_serializing_none]
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, dbt_proc_macros::JinjaNodeFields)]
 pub struct SnowflakeAttr {
     pub adapter_properties: Option<BTreeMap<String, YmlValue>>,
     pub partition_by: Option<PartitionConfig>,
@@ -6341,7 +6941,7 @@ pub struct SnowflakeAttr {
 
 /// A resolved Databricks configuration
 #[skip_serializing_none]
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, dbt_proc_macros::JinjaNodeFields)]
 pub struct DatabricksAttr {
     pub adapter_properties: Option<BTreeMap<String, YmlValue>>,
     pub partition_by: Option<PartitionConfig>,
@@ -6366,6 +6966,7 @@ pub struct DatabricksAttr {
     pub matched_condition: Option<String>,
     pub not_matched_condition: Option<String>,
     pub not_matched_by_source_condition: Option<String>,
+    pub merge_actions_explicit: Option<String>,
     pub not_matched_by_source_action: Option<String>,
     pub merge_with_schema_evolution: Option<bool>,
     pub skip_matched_step: Option<bool>,
@@ -6377,7 +6978,7 @@ pub struct DatabricksAttr {
 
 /// A resolved BigQuery configuration
 #[skip_serializing_none]
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, dbt_proc_macros::JinjaNodeFields)]
 pub struct BigQueryAttr {
     pub description: Option<String>,
     pub adapter_properties: Option<BTreeMap<String, YmlValue>>,
@@ -6408,7 +7009,7 @@ pub struct BigQueryAttr {
 
 /// A resolved Redshift configuration
 #[skip_serializing_none]
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, dbt_proc_macros::JinjaNodeFields)]
 pub struct RedshiftAttr {
     pub auto_refresh: Option<bool>,
     pub backup: Option<bool>,
@@ -6418,7 +7019,7 @@ pub struct RedshiftAttr {
     pub sort_type: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, dbt_proc_macros::JinjaNodeFields)]
 pub struct DbtModelAttr {
     pub access: Access,
     pub group: Option<String>,
@@ -6431,8 +7032,7 @@ pub struct DbtModelAttr {
     pub version: Option<StringOrInteger>,
     pub latest_version: Option<StringOrInteger>,
     pub constraints: Vec<ModelConstraint>,
-    #[serde(serialize_with = "crate::schemas::serde::serialize_timestamp_as_rfc3339")]
-    pub deprecation_date: Option<dbt_yaml::Timestamp>,
+    pub deprecation_date: Option<String>,
     // TODO: Investigate why primary_key is needed here (constraints already exist)
     pub primary_key: Vec<String>,
     pub time_spine: Option<TimeSpine>,
@@ -6451,6 +7051,7 @@ pub struct DbtModelAttr {
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
+#[derive(dbt_proc_macros::JinjaNodeFields)]
 pub struct DbtFunction {
     pub __common_attr__: CommonAttributes,
 
@@ -6480,6 +7081,7 @@ pub struct AbsorbedOverload {
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
+#[derive(dbt_proc_macros::JinjaNodeFields)]
 pub struct DbtFunctionAttr {
     pub access: Access,
     pub group: Option<String>,
@@ -6518,18 +7120,22 @@ mod tests {
     use super::{
         AbsorbedOverload, DbtAnalysis, DbtExposure, DbtFunction, DbtMacro, DbtModel, DbtSeed,
         DbtSnapshot, DbtSource, DbtTest, InternalDbtNode, InternalDbtNodeAttributes, ModelConfig,
-        ModelFreshness, NodePathKind, hooks_equal, normalize_description,
-        persist_docs_configs_equal, quoting_equal, test_alias_config_equal,
+        ModelFreshness, NodePathKind, constraint_equal, hooks_equal, model_constraint_equal,
+        normalize_description, persist_docs_configs_equal, quoting_equal, test_alias_config_equal,
     };
     use crate::schemas::common::{
-        FreshnessPeriod, FreshnessRules, Hooks, ModelFreshnessRules, PersistDocsConfig,
+        Access, FreshnessPeriod, FreshnessRules, Hooks, ModelFreshnessRules, PersistDocsConfig,
     };
+    use crate::schemas::common::{Constraint, ConstraintType, DbtContract, DbtMaterialization};
+    use crate::schemas::dbt_column::DbtColumn;
     use crate::schemas::manifest::{DbtMetric, DbtOperation, DbtSavedQuery};
     use crate::schemas::project::SnapshotMetaColumnNames;
+    use crate::schemas::properties::ModelConstraint;
     use dbt_adapter_core::AdapterType;
     use dbt_common::path::{DbtPath, path_separator_eq};
-    use dbt_telemetry::ExecutionPhase;
+    use dbt_telemetry::{ExecutionPhase, NodeAccess, NodeLanguage};
     use dbt_yaml::Verbatim;
+    use std::sync::Arc;
 
     type YmlValue = dbt_yaml::Value;
 
@@ -6690,6 +7296,22 @@ mod tests {
             path_separator_eq(&actual_run_path, expected_run_path),
             "left: {actual_run_path:?}\nright: {expected_run_path:?}"
         );
+    }
+
+    #[test]
+    fn function_node_processed_has_access_and_language() {
+        let mut function = function_with_paths("my_function", "functions/my_function.py");
+        function.__function_attr__.access = Access::Public;
+        function.__common_attr__.language = Some("python".to_string());
+
+        let event = function.get_node_processed_event(
+            None,
+            Path::new("/workspace"),
+            Path::new("/workspace/target"),
+            true,
+        );
+        assert_eq!(event.access(), NodeAccess::Public);
+        assert_eq!(event.language(), NodeLanguage::Python);
     }
 
     #[test]
@@ -7462,6 +8084,82 @@ mod tests {
         }
     }
 
+    /// Parse and run both consult this predicate, so its matrix lives here and nowhere else.
+    #[test]
+    fn bigquery_managed_iceberg_table_classification() {
+        use crate::schemas::common::DbtMaterialization;
+        use crate::schemas::dbt_catalogs::DbtCatalogs;
+
+        let value: dbt_yaml::Value = dbt_yaml::from_str(
+            r#"
+catalogs:
+  - name: bq
+    type: biglake_metastore
+    table_format: iceberg
+    config:
+      bigquery:
+        external_volume: gs://example-bucket
+        file_format: parquet
+  - name: runtime
+    type: biglake_metastore
+    table_format: iceberg
+    config:
+      bigquery:
+        lakehouse_catalog: example-catalog
+        file_format: parquet
+"#,
+        )
+        .unwrap();
+        let catalogs = DbtCatalogs::new(value.as_mapping().unwrap().clone(), value.span().clone());
+
+        for (name, format, materialized, readable) in [
+            (Some("bq"), None, DbtMaterialization::Table, true),
+            (Some("bq"), None, DbtMaterialization::Incremental, true),
+            (
+                Some("bq"),
+                None,
+                DbtMaterialization::MaterializedView,
+                false,
+            ),
+            (Some("runtime"), None, DbtMaterialization::Table, false),
+            (None, None, DbtMaterialization::Table, false),
+            (None, Some("iceberg"), DbtMaterialization::Table, false),
+            (Some("unknown"), None, DbtMaterialization::Table, false),
+            (Some("bq"), Some("iceberg"), DbtMaterialization::View, false),
+            (
+                Some("bq"),
+                Some("iceberg"),
+                DbtMaterialization::Ephemeral,
+                false,
+            ),
+        ] {
+            let mut model = DbtModel::default();
+            model.__base_attr__.adapter = AdapterType::Bigquery;
+            model.__model_attr__.catalog_name = name.map(str::to_string);
+            model.__model_attr__.table_format = format.map(str::to_string);
+            model.__base_attr__.materialized = materialized.clone();
+            assert_eq!(
+                model
+                    .is_bigquery_managed_iceberg_table(Some(&catalogs))
+                    .unwrap(),
+                readable,
+                "{name:?} {format:?} {materialized:?}"
+            );
+        }
+
+        // The adapter is part of the predicate: a Snowflake model declaring the same Iceberg
+        // catalog is not a BigQuery-managed table.
+        let mut snowflake = DbtModel::default();
+        snowflake.__base_attr__.adapter = AdapterType::Snowflake;
+        snowflake.__model_attr__.catalog_name = Some("bq".into());
+        snowflake.__base_attr__.materialized = DbtMaterialization::Table;
+        assert!(
+            !snowflake
+                .is_bigquery_managed_iceberg_table(Some(&catalogs))
+                .unwrap()
+        );
+    }
+
     fn model_with_freshness(freshness: Option<ModelFreshness>) -> DbtModel {
         let mut model = DbtModel::default();
         model.__model_attr__.freshness = freshness;
@@ -7860,11 +8558,462 @@ mod tests {
             ));
         }
     }
+
+    fn not_null_constraint(flag: Option<bool>) -> Constraint {
+        Constraint {
+            type_: ConstraintType::NotNull,
+            warn_unsupported: flag,
+            warn_unenforced: flag,
+            ..Default::default()
+        }
+    }
+
+    fn col(name: &str, data_type: &str, description: &str, c: Vec<Constraint>) -> Arc<DbtColumn> {
+        Arc::new(DbtColumn {
+            name: name.to_string(),
+            data_type: Some(data_type.to_string()),
+            description: Some(description.to_string()),
+            constraints: c,
+            ..Default::default()
+        })
+    }
+
+    fn model_with_columns(columns: Vec<Arc<DbtColumn>>) -> DbtModel {
+        let mut m = DbtModel::default();
+        m.__base_attr__.materialized = DbtMaterialization::Table;
+        m.__base_attr__.columns = columns;
+        m
+    }
+
+    #[test]
+    fn contract_description_change_is_not_column_removed() {
+        let old = model_with_columns(vec![col("id", "int", "old", vec![])]);
+        let new = model_with_columns(vec![col("id", "int", "new", vec![])]);
+        let c = new.column_contract_changes(&old, AdapterType::DuckDB);
+        assert!(c.columns_removed.is_empty());
+        assert!(c.column_type_changes.is_empty());
+    }
+
+    #[test]
+    fn contract_removed_column_is_reported() {
+        let old = model_with_columns(vec![
+            col("id", "int", "", vec![]),
+            col("x", "int", "", vec![]),
+        ]);
+        let new = model_with_columns(vec![col("id", "int", "", vec![])]);
+        assert_eq!(
+            new.column_contract_changes(&old, AdapterType::DuckDB)
+                .columns_removed,
+            vec!["x"]
+        );
+    }
+
+    #[test]
+    fn contract_data_type_change_is_reported() {
+        let old = model_with_columns(vec![col("id", "int", "", vec![])]);
+        let new = model_with_columns(vec![col("id", "text", "", vec![])]);
+        let c = new.column_contract_changes(&old, AdapterType::DuckDB);
+        assert!(c.columns_removed.is_empty());
+        assert_eq!(c.column_type_changes.len(), 1);
+        assert_eq!(c.column_type_changes[0]["previous_column_type"], "int");
+        assert_eq!(c.column_type_changes[0]["current_column_type"], "text");
+    }
+
+    #[test]
+    fn contract_removed_column_constraint_is_reported() {
+        let old = model_with_columns(vec![col("id", "int", "", vec![not_null_constraint(None)])]);
+        let new = model_with_columns(vec![col("id", "int", "", vec![])]);
+        let c = new.column_contract_changes(&old, AdapterType::DuckDB);
+        assert!(c.columns_removed.is_empty());
+        assert_eq!(c.enforced_column_constraint_removed.len(), 1);
+        assert!(c.column_constraints_exist);
+    }
+
+    #[test]
+    fn contract_constraint_unset_flags_equal_default_true_flags() {
+        let old = model_with_columns(vec![col("id", "int", "", vec![not_null_constraint(None)])]);
+        let new = model_with_columns(vec![col(
+            "id",
+            "int",
+            "",
+            vec![not_null_constraint(Some(true))],
+        )]);
+        assert!(
+            new.column_contract_changes(&old, AdapterType::DuckDB)
+                .enforced_column_constraint_removed
+                .is_empty()
+        );
+    }
+
+    fn enforced(mut m: DbtModel) -> DbtModel {
+        m.__model_attr__.contract = Some(DbtContract {
+            enforced: true,
+            ..Default::default()
+        });
+        m
+    }
+
+    #[test]
+    fn same_contract_without_checksums_compares_contract_fields() {
+        let base = || vec![col("id", "int", "old", vec![not_null_constraint(None)])];
+        let old = enforced(model_with_columns(base()));
+        let same =
+            |cols| enforced(model_with_columns(cols)).same_contract(&old, AdapterType::DuckDB);
+
+        assert!(same(base()));
+        assert!(same(vec![col(
+            "id",
+            "int",
+            "new",
+            vec![not_null_constraint(None)]
+        )]));
+        assert!(same(vec![col(
+            "id",
+            "int",
+            "old",
+            vec![not_null_constraint(Some(true))]
+        )]));
+        assert!(!same(vec![col("id", "int", "old", vec![])]));
+        assert!(!same(vec![col(
+            "id",
+            "bigint",
+            "old",
+            vec![not_null_constraint(None)]
+        )]));
+        let mut added = base();
+        added.push(col("x", "int", "", vec![]));
+        assert!(!same(added));
+    }
+
+    #[test]
+    fn same_contract_uses_checksums_when_both_present() {
+        let with_checksum = |cols| {
+            let mut m = enforced(model_with_columns(cols));
+            m.__model_attr__.contract.as_mut().unwrap().checksum =
+                Some(YmlValue::string("abc".to_string()));
+            m
+        };
+        let old = with_checksum(vec![col("id", "int", "", vec![])]);
+        let new = with_checksum(vec![col("id", "bigint", "", vec![])]);
+        assert!(new.same_contract(&old, AdapterType::DuckDB));
+    }
+
+    #[test]
+    fn contract_data_type_change_ignores_case_and_size() {
+        let old = model_with_columns(vec![
+            col("a", "INT", "", vec![]),
+            col("b", "varchar(3)", "", vec![]),
+        ]);
+        let new = model_with_columns(vec![
+            col("a", "int", "", vec![]),
+            col("b", "VARCHAR(10)", "", vec![]),
+        ]);
+        assert!(
+            new.column_contract_changes(&old, AdapterType::DuckDB)
+                .column_type_changes
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn contract_removed_constraint_reported_only_when_enforced_by_adapter() {
+        let pk = Constraint {
+            type_: ConstraintType::PrimaryKey,
+            ..Default::default()
+        };
+        let old = model_with_columns(vec![col("id", "int", "", vec![pk])]);
+        let new = model_with_columns(vec![col("id", "int", "", vec![])]);
+        assert!(
+            new.column_contract_changes(&old, AdapterType::DuckDB)
+                .enforced_column_constraint_removed
+                .is_empty()
+        );
+        assert!(
+            new.column_contract_changes(&old, AdapterType::Trino)
+                .enforced_column_constraint_removed
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn contract_removed_unnamed_constraint_has_no_name() {
+        let old = model_with_columns(vec![col("id", "int", "", vec![not_null_constraint(None)])]);
+        let new = model_with_columns(vec![col("id", "int", "", vec![])]);
+        let removed = &new
+            .column_contract_changes(&old, AdapterType::DuckDB)
+            .enforced_column_constraint_removed[0];
+        assert!(!removed.contains_key("constraint_name"));
+        assert_eq!(
+            removed["constraint_type"],
+            YmlValue::string("not_null".to_string())
+        );
+    }
+
+    #[test]
+    fn constraint_flags_none_equals_some_true_but_not_some_false() {
+        assert!(constraint_equal(
+            &not_null_constraint(None),
+            &not_null_constraint(Some(true))
+        ));
+        assert!(!constraint_equal(
+            &not_null_constraint(Some(false)),
+            &not_null_constraint(None)
+        ));
+        assert!(!constraint_equal(
+            &not_null_constraint(Some(false)),
+            &not_null_constraint(Some(true))
+        ));
+    }
+
+    #[test]
+    fn constraint_to_columns_none_equals_empty() {
+        let with_to_columns = |to_columns| Constraint {
+            to_columns,
+            ..not_null_constraint(None)
+        };
+        assert!(constraint_equal(
+            &with_to_columns(None),
+            &with_to_columns(Some(vec![]))
+        ));
+        assert!(!constraint_equal(
+            &with_to_columns(None),
+            &with_to_columns(Some(vec!["id".to_string()]))
+        ));
+    }
+
+    #[test]
+    fn constraint_foreign_key_to_ignored_when_rendered() {
+        let fk = |to: &str| Constraint {
+            type_: ConstraintType::ForeignKey,
+            to: Some(dbt_yaml::Spanned::new(to.to_string())),
+            ..Default::default()
+        };
+        assert!(constraint_equal(
+            &fk("ref('parent')"),
+            &fk("\"db\".\"schema\".\"parent\"")
+        ));
+        assert!(!constraint_equal(&fk("ref('parent')"), &fk("ref('other')")));
+        assert!(!constraint_equal(
+            &fk("ref('parent')"),
+            &Constraint {
+                to: None,
+                ..fk("ref('parent')")
+            }
+        ));
+    }
+
+    #[test]
+    fn model_constraint_columns_none_equals_empty() {
+        let mc = |columns| ModelConstraint {
+            type_: ConstraintType::Check,
+            expression: Some("id > 0".to_string()),
+            columns,
+            ..Default::default()
+        };
+        assert!(model_constraint_equal(&mc(None), &mc(Some(vec![]))));
+        assert!(!model_constraint_equal(
+            &mc(None),
+            &mc(Some(vec!["id".to_string()]))
+        ));
+    }
+
+    #[test]
+    fn model_constraint_flags_none_equals_some_true_but_not_some_false() {
+        let mc = |flag| ModelConstraint {
+            type_: ConstraintType::PrimaryKey,
+            columns: Some(vec!["id".to_string()]),
+            warn_unsupported: flag,
+            warn_unenforced: flag,
+            ..Default::default()
+        };
+        assert!(model_constraint_equal(&mc(None), &mc(Some(true))));
+        assert!(!model_constraint_equal(&mc(Some(false)), &mc(None)));
+    }
+
+    fn with_model_constraints(
+        mut m: DbtModel,
+        materialized: DbtMaterialization,
+        constraints: Vec<ModelConstraint>,
+    ) -> DbtModel {
+        m.__base_attr__.materialized = materialized;
+        m.__model_attr__.constraints = constraints;
+        m
+    }
+
+    fn check_constraint(expression: &str) -> ModelConstraint {
+        ModelConstraint {
+            type_: ConstraintType::Check,
+            expression: Some(expression.to_string()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn same_contract_model_constraint_change_detected_only_when_enforced_by_materialization() {
+        let cols = || vec![col("id", "int", "", vec![])];
+        let build = |materialized, constraints| {
+            with_model_constraints(
+                enforced(model_with_columns(cols())),
+                materialized,
+                constraints,
+            )
+        };
+        for (materialized, expect_same) in [
+            (DbtMaterialization::Table, false),
+            (DbtMaterialization::Incremental, false),
+            (DbtMaterialization::View, true),
+        ] {
+            let old = build(materialized.clone(), vec![check_constraint("id > 0")]);
+            let changed = build(materialized.clone(), vec![check_constraint("id > 1")]);
+            let removed = build(materialized.clone(), vec![]);
+            assert_eq!(
+                changed.same_contract(&old, AdapterType::DuckDB),
+                expect_same,
+                "changed expression on {materialized}"
+            );
+            assert_eq!(
+                removed.same_contract(&old, AdapterType::DuckDB),
+                expect_same,
+                "removed constraint on {materialized}"
+            );
+            assert!(old.same_contract(&old, AdapterType::DuckDB));
+        }
+    }
+
+    #[test]
+    fn same_contract_materialization_change_detected() {
+        let build = |materialized, constraints| {
+            with_model_constraints(
+                enforced(model_with_columns(vec![col("id", "int", "", vec![])])),
+                materialized,
+                constraints,
+            )
+        };
+        let old_table = build(DbtMaterialization::Table, vec![check_constraint("id > 0")]);
+        let same = |new: &DbtModel, old: &DbtModel| new.same_contract(old, AdapterType::DuckDB);
+
+        assert!(same(&old_table, &old_table));
+        let incremental = build(
+            DbtMaterialization::Incremental,
+            vec![check_constraint("id > 0")],
+        );
+        assert!(!same(&incremental, &old_table));
+        let view = build(DbtMaterialization::View, vec![check_constraint("id > 0")]);
+        assert!(!same(&view, &old_table));
+    }
+
+    #[test]
+    fn same_contract_breaking_change_returns_false_for_versioned_and_unversioned() {
+        let mut new = enforced(model_with_columns(vec![col("id", "int", "", vec![])]));
+        let old = enforced(model_with_columns(vec![
+            col("id", "int", "", vec![]),
+            col("x", "int", "", vec![]),
+        ]));
+        assert!(!new.is_versioned());
+        assert!(!new.same_contract(&old, AdapterType::DuckDB));
+
+        new.__model_attr__.version = Some(crate::schemas::serde::StringOrInteger::Integer(1));
+        assert!(new.is_versioned());
+        assert!(!new.same_contract(&old, AdapterType::DuckDB));
+    }
+
+    #[test]
+    fn contract_removed_foreign_key_is_breaking_only_where_enforced() {
+        let fk = Constraint {
+            type_: ConstraintType::ForeignKey,
+            ..Default::default()
+        };
+        let old = enforced(model_with_columns(vec![col("id", "int", "", vec![fk])]));
+        let new = enforced(model_with_columns(vec![col("id", "int", "", vec![])]));
+
+        let snowflake = new.column_contract_changes(&old, AdapterType::Snowflake);
+        assert!(snowflake.enforced_column_constraint_removed.is_empty());
+        assert!(snowflake.column_constraints_exist);
+        assert!(!new.same_contract(&old, AdapterType::Snowflake));
+
+        let postgres = new.column_contract_changes(&old, AdapterType::Postgres);
+        assert_eq!(postgres.enforced_column_constraint_removed.len(), 1);
+    }
+
+    #[test]
+    fn contract_removed_not_null_is_breaking_on_snowflake() {
+        let old = enforced(model_with_columns(vec![col(
+            "id",
+            "int",
+            "",
+            vec![not_null_constraint(None)],
+        )]));
+        let new = enforced(model_with_columns(vec![col("id", "int", "", vec![])]));
+        let c = new.column_contract_changes(&old, AdapterType::Snowflake);
+        assert_eq!(c.enforced_column_constraint_removed.len(), 1);
+    }
+
+    #[test]
+    fn constraint_warn_flags_default_true_when_omitted() {
+        let c: Constraint = dbt_yaml::from_str("type: not_null").unwrap();
+        assert_eq!(c.warn_unsupported, Some(true));
+        assert_eq!(c.warn_unenforced, Some(true));
+        let c: Constraint =
+            dbt_yaml::from_str("type: not_null\nwarn_unsupported: false\nwarn_unenforced: false")
+                .unwrap();
+        assert_eq!(c.warn_unsupported, Some(false));
+        assert_eq!(c.warn_unenforced, Some(false));
+        let m: ModelConstraint = dbt_yaml::from_str("type: primary_key").unwrap();
+        assert_eq!(m.warn_unsupported, Some(true));
+        assert_eq!(m.warn_unenforced, Some(true));
+    }
+
+    #[test]
+    fn adapter_attr_from_lazy_config_matches_built_config() {
+        use super::AdapterAttr;
+        use crate::schemas::project::WarehouseSpecificNodeConfig;
+        use crate::schemas::project::configs::common::LazyWarehouseSpecificNodeConfig;
+        use strum::IntoEnumIterator;
+
+        let set = WarehouseSpecificNodeConfig {
+            transient: Some(true),
+            labels_from_meta: Some(true),
+            backup: Some(true),
+            use_uniform: Some(true),
+            ..Default::default()
+        };
+        for adapter_type in AdapterType::iter() {
+            for config in [WarehouseSpecificNodeConfig::default(), set.clone()] {
+                let built = AdapterAttr::build(&config, adapter_type);
+                let lazy = AdapterAttr::from_lazy_config_and_dialect(
+                    &LazyWarehouseSpecificNodeConfig::from(config),
+                    adapter_type,
+                );
+                assert_eq!(
+                    serde_json::to_value(&built).unwrap(),
+                    serde_json::to_value(&lazy).unwrap(),
+                    "{adapter_type}"
+                );
+            }
+
+            let unset = || {
+                AdapterAttr::from_lazy_config_and_dialect(
+                    &LazyWarehouseSpecificNodeConfig::default(),
+                    adapter_type,
+                )
+            };
+            let ptrs = |attr: &AdapterAttr| {
+                (
+                    attr.snowflake_attr.as_ref().map(Arc::as_ptr),
+                    attr.databricks_attr.as_ref().map(Arc::as_ptr),
+                    attr.bigquery_attr.as_ref().map(Arc::as_ptr),
+                    attr.redshift_attr.as_ref().map(Arc::as_ptr),
+                )
+            };
+            assert_eq!(ptrs(&unset()), ptrs(&unset()), "{adapter_type}");
+        }
+    }
 }
 
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
+#[derive(dbt_proc_macros::JinjaNodeFields)]
 pub struct DbtAnalysis {
     pub __common_attr__: CommonAttributes,
 
@@ -7882,12 +9031,20 @@ pub struct DbtAnalysis {
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
+#[derive(dbt_proc_macros::JinjaNodeFields)]
 pub struct DbtAnalysisAttr {
     // Analysis nodes have minimal attributes since they're for ad-hoc querying
     // Most functionality comes from the base attributes and config
 }
 
 impl InternalDbtNode for DbtAnalysis {
+    fn into_jinja_fields(self: Arc<Self>) -> Arc<dyn crate::jinja_node::JinjaNodeFields> {
+        self
+    }
+    fn clone_node(&self) -> Box<dyn InternalDbtNode> {
+        Box::new(Clone::clone(self))
+    }
+
     fn common(&self) -> &CommonAttributes {
         &self.__common_attr__
     }
@@ -7987,8 +9144,8 @@ impl InternalDbtNode for DbtAnalysis {
 }
 
 impl InternalDbtNodeAttributes for DbtAnalysis {
-    fn static_analysis(&self) -> Spanned<StaticAnalysisKind> {
-        self.__base_attr__.static_analysis.clone()
+    fn static_analysis(&self) -> &Spanned<StaticAnalysisKind> {
+        &self.__base_attr__.static_analysis
     }
 
     fn set_quoting(&mut self, quoting: ResolvedQuoting) {
@@ -8377,8 +9534,7 @@ mod seed_has_same_content_tests {
 #[cfg(test)]
 mod model_same_ref_representation_tests {
     use super::{
-        Access, DbtModel, InternalDbtNode, StringOrInteger, latest_version_eq,
-        timestamp_eq_maybe_ignore_tz,
+        Access, DbtModel, InternalDbtNode, StringOrInteger, deprecation_date_eq, latest_version_eq,
     };
     use dbt_adapter_core::AdapterType;
 
@@ -8443,21 +9599,17 @@ mod model_same_ref_representation_tests {
 
     // --- comparator 3: `deprecation_date` (date semantics, not string equality) ---
 
-    fn ts(s: &str) -> Option<dbt_yaml::Timestamp> {
-        dbt_yaml::Timestamp::parse(s)
-    }
-
-    /// A manifest records a normalized datetime, so the authored and manifest spellings of one
-    /// date routinely differ.
+    /// Fusion normalizes an authored date to RFC 3339 on the parse side, so the authored and
+    /// manifest spellings of one date routinely differ.
     #[test]
     fn deprecation_date_eq_tolerates_authored_vs_normalized_spelling() {
-        assert!(timestamp_eq_maybe_ignore_tz(
-            &ts("2099-01-01"),
-            &ts("2099-01-01T00:00:00+00:00")
+        assert!(deprecation_date_eq(
+            &Some("2099-01-01".to_string()),
+            &Some("2099-01-01T00:00:00+00:00".to_string())
         ));
-        assert!(timestamp_eq_maybe_ignore_tz(
-            &ts("2099-01-01T00:00:00Z"),
-            &ts("2099-01-01T00:00:00+00:00")
+        assert!(deprecation_date_eq(
+            &Some("2099-01-01T00:00:00Z".to_string()),
+            &Some("2099-01-01T00:00:00+00:00".to_string())
         ));
     }
 
@@ -8466,30 +9618,43 @@ mod model_same_ref_representation_tests {
     /// two different offsets whenever the previous manifest was produced by dbt-core outside UTC.
     #[test]
     fn deprecation_date_eq_tolerates_a_mantle_local_offset() {
-        assert!(timestamp_eq_maybe_ignore_tz(
-            &ts("2020-01-01T00:00:00+00:00"),
-            &ts("2020-01-01T00:00:00-05:00")
+        assert!(deprecation_date_eq(
+            &Some("2020-01-01T00:00:00+00:00".to_string()),
+            &Some("2020-01-01T00:00:00-05:00".to_string())
         ));
     }
 
     /// dbt-core compares `datetime` objects, so two spellings of one instant are not a change.
     #[test]
     fn deprecation_date_eq_tolerates_equal_instants() {
-        assert!(timestamp_eq_maybe_ignore_tz(
-            &ts("2020-01-01T05:00:00+00:00"),
-            &ts("2020-01-01T00:00:00-05:00")
+        assert!(deprecation_date_eq(
+            &Some("2020-01-01T05:00:00+00:00".to_string()),
+            &Some("2020-01-01T00:00:00-05:00".to_string())
         ));
     }
 
     #[test]
     fn deprecation_date_eq_still_sees_a_real_change() {
-        assert!(!timestamp_eq_maybe_ignore_tz(
-            &ts("2099-01-01"),
-            &ts("2098-01-01")
+        assert!(!deprecation_date_eq(
+            &Some("2099-01-01".to_string()),
+            &Some("2098-01-01".to_string())
         ));
-        assert!(!timestamp_eq_maybe_ignore_tz(&ts("2099-01-01"), &None));
-        assert!(!timestamp_eq_maybe_ignore_tz(&None, &ts("2099-01-01")));
-        assert!(timestamp_eq_maybe_ignore_tz(&None, &None));
+        assert!(!deprecation_date_eq(&Some("2099-01-01".to_string()), &None));
+        assert!(!deprecation_date_eq(&None, &Some("2099-01-01".to_string())));
+        assert!(deprecation_date_eq(&None, &None));
+    }
+
+    /// Unparseable values fall back to string equality rather than comparing equal by accident.
+    #[test]
+    fn deprecation_date_eq_falls_back_to_string_equality() {
+        assert!(deprecation_date_eq(
+            &Some("not-a-date".to_string()),
+            &Some("not-a-date".to_string())
+        ));
+        assert!(!deprecation_date_eq(
+            &Some("not-a-date".to_string()),
+            &Some("2099-01-01".to_string())
+        ));
     }
 
     // --- the conjunct as wired into `has_same_content` ---
@@ -8525,7 +9690,7 @@ mod model_same_ref_representation_tests {
     #[test]
     fn deprecation_date_change_is_state_modified() {
         let mut current = model();
-        current.__model_attr__.deprecation_date = ts("2099-01-01T00:00:00+00:00");
+        current.__model_attr__.deprecation_date = Some("2099-01-01T00:00:00+00:00".to_string());
         let previous = model();
 
         assert!(
@@ -8548,5 +9713,84 @@ mod model_same_ref_representation_tests {
         assert!(current.__model_attr__.latest_version.is_none());
         assert!(current.__model_attr__.deprecation_date.is_none());
         assert!(same_content(&current, &previous));
+    }
+}
+
+#[cfg(test)]
+mod experimental_node_tests {
+    use super::*;
+
+    fn nodes_with_experimental_node() -> Nodes {
+        let mut node = DbtExperimentalNode::default();
+        node.__common_attr__.unique_id = "widget.shop.orders_widget".to_string();
+        node.__experimental_attr__.experimental_type = "widget".to_string();
+        let mut nodes = Nodes::default();
+        nodes
+            .experimentals
+            .insert(node.__common_attr__.unique_id.clone(), Arc::new(node));
+        nodes
+    }
+
+    /// An experimental node is found and iterated like any other node, but is not in the default
+    /// selection.
+    #[test]
+    fn experimental_nodes_are_nodes_but_not_selected_by_default() {
+        let nodes = nodes_with_experimental_node();
+        let id = "widget.shop.orders_widget";
+
+        assert!(nodes.contains(id));
+        assert_eq!(nodes.node_count(), 1);
+        assert_eq!(nodes.iter().count(), 1);
+        assert_eq!(nodes.into_iter().count(), 1);
+        let node = nodes
+            .get_node(id)
+            .expect("experimental node is found by unique id");
+        assert_eq!(node.resource_type(), NodeType::Experimental);
+        assert_eq!(node.experimental_type(), Some("widget"));
+        assert!(nodes.get_node_owned(id).is_some());
+        assert_eq!(nodes.materializable_keys().count(), 0);
+    }
+
+    /// An experimental gets back the value it stored, by type; nothing else can read it.
+    #[test]
+    fn experimental_data_is_typed_and_opaque() {
+        #[derive(Debug, PartialEq)]
+        struct Widget {
+            size: u64,
+        }
+        let node = DbtExperimentalNode {
+            __experimental_attr__: DbtExperimentalNodeAttr {
+                experimental_type: "widget".to_string(),
+                data: ExperimentalData::new(Widget { size: 3 }),
+            },
+            ..Default::default()
+        };
+        assert_eq!(
+            node.experimental_data::<Widget>(),
+            Some(&Widget { size: 3 })
+        );
+        assert_eq!(node.experimental_data::<u64>(), None);
+        let serialized = dbt_yaml::to_string(&node.__experimental_attr__).unwrap();
+        assert!(!serialized.contains("data"), "{serialized}");
+    }
+
+    /// Dependency resolution fills in an experimental node's `depends_on` through
+    /// `iter_values_mut`.
+    #[test]
+    fn experimental_nodes_are_mutable_in_place() {
+        let mut nodes = nodes_with_experimental_node();
+        for node in nodes.iter_values_mut() {
+            node.base_mut()
+                .depends_on
+                .nodes
+                .push("model.shop.orders".to_string());
+        }
+        assert_eq!(
+            nodes.experimentals["widget.shop.orders_widget"]
+                .__base_attr__
+                .depends_on
+                .nodes,
+            vec!["model.shop.orders".to_string()]
+        );
     }
 }

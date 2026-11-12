@@ -212,6 +212,16 @@ impl ParsedMetric {
     }
 }
 
+/// Fusion serialises a node's resolved config as `config`, except for saved queries and
+/// semantic models, where it is `deprecated_config`.
+fn node_config(payload: &Value) -> Option<Value> {
+    payload
+        .get("config")
+        .filter(|v| !v.is_null())
+        .or_else(|| payload.get("deprecated_config").filter(|v| !v.is_null()))
+        .cloned()
+}
+
 pub struct SemanticEntity {
     pub name: String,
     pub entity_type: String,
@@ -219,6 +229,7 @@ pub struct SemanticEntity {
     pub label: Option<String>,
     pub entity_role: Option<String>,
     pub expr: Option<String>,
+    pub config: Option<Value>,
 }
 
 pub struct SemanticMeasure {
@@ -231,6 +242,7 @@ pub struct SemanticMeasure {
     pub agg_time_dimension: Option<String>,
     pub agg_params: Option<Value>,
     pub non_additive_dimension: Option<Value>,
+    pub config: Option<Value>,
 }
 
 pub struct SemanticDimension {
@@ -242,6 +254,7 @@ pub struct SemanticDimension {
     pub is_partition: bool,
     pub time_granularity: Option<String>,
     pub validity_params: Option<Value>,
+    pub config: Option<Value>,
 }
 
 pub struct ParsedSemanticModel {
@@ -257,6 +270,7 @@ pub struct ParsedSemanticModel {
     pub depends_on_macros: Vec<String>,
     pub group_name: Option<String>,
     pub created_at: Option<f64>,
+    pub config: Option<Value>,
     pub entities: Vec<SemanticEntity>,
     pub measures: Vec<SemanticMeasure>,
     pub dimensions: Vec<SemanticDimension>,
@@ -293,6 +307,7 @@ impl ParsedSemanticModel {
                             label: str_field(ent, "label"),
                             entity_role: str_field(ent, "role"),
                             expr: str_field(ent, "expr"),
+                            config: ent.get("config").filter(|v| !v.is_null()).cloned(),
                         })
                     })
                     .collect()
@@ -319,6 +334,7 @@ impl ParsedSemanticModel {
                             agg_time_dimension: str_field(meas, "agg_time_dimension"),
                             agg_params: meas.get("agg_params").cloned(),
                             non_additive_dimension: meas.get("non_additive_dimension").cloned(),
+                            config: meas.get("config").filter(|v| !v.is_null()).cloned(),
                         })
                     })
                     .collect()
@@ -355,6 +371,7 @@ impl ParsedSemanticModel {
                                 .unwrap_or(false),
                             time_granularity,
                             validity_params: dim.get("validity_params").cloned(),
+                            config: dim.get("config").filter(|v| !v.is_null()).cloned(),
                         })
                     })
                     .collect()
@@ -378,6 +395,7 @@ impl ParsedSemanticModel {
             depends_on_macros: depends_on_macros(payload),
             group_name: str_field(&attr, "group"),
             created_at: attr.get("created_at").and_then(|v| v.as_f64()),
+            config: node_config(payload),
             entities,
             measures,
             dimensions,
@@ -400,6 +418,7 @@ pub struct ParsedSavedQuery {
     pub tags: Vec<String>,
     pub group_name: Option<String>,
     pub created_at: Option<f64>,
+    pub config: Option<Value>,
 }
 
 impl ParsedSavedQuery {
@@ -444,6 +463,7 @@ impl ParsedSavedQuery {
             tags,
             group_name: str_field(&attr, "group"),
             created_at: attr.get("created_at").and_then(|v| v.as_f64()),
+            config: node_config(payload),
         }
     }
 }
@@ -464,6 +484,8 @@ pub struct ParsedExposure {
     pub depends_on_nodes: Vec<String>,
     pub depends_on_macros: Vec<String>,
     pub tags: Vec<String>,
+    pub meta: Option<Value>,
+    pub config: Option<Value>,
     pub created_at: Option<f64>,
 }
 
@@ -500,6 +522,12 @@ impl ParsedExposure {
             depends_on_nodes: depends_on_nodes(payload),
             depends_on_macros: depends_on_macros(payload),
             tags: tags.to_vec(),
+            meta: common
+                .get("meta")
+                .filter(|v| !v.is_null())
+                .or_else(|| payload.get("meta"))
+                .cloned(),
+            config: payload.get("config").filter(|v| !v.is_null()).cloned(),
             created_at: attr.get("created_at").and_then(|v| v.as_f64()),
         }
     }
@@ -630,6 +658,7 @@ pub struct ParsedUnitTest {
     pub schema_name: String,
     pub depends_on_nodes: Vec<String>,
     pub depends_on_macros: Vec<String>,
+    pub config: Option<Value>,
 }
 
 impl ParsedUnitTest {
@@ -668,6 +697,7 @@ impl ParsedUnitTest {
             schema_name: str_field_default(&common, "schema", ""),
             depends_on_nodes: depends_on_nodes(payload),
             depends_on_macros: depends_on_macros(payload),
+            config: payload.get("config").filter(|v| !v.is_null()).cloned(),
         }
     }
 }

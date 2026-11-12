@@ -106,6 +106,34 @@
 {% endmacro %}
 
 
+-- funcsign: (string|list[string]|none, list[base_column], any) -> string|list[string]|none
+{% macro snowflake__quote_glue_columns(names, dest_columns, catalog_relation) %}
+  {#--
+    Glue catalog-linked tables have quoted lowercase columns, so an unquoted column name from
+    config (unique_key, merge_update_columns, event_time) resolves to uppercase and misses them.
+    For Glue, swap each name that names a target column for that column, quoted as Snowflake
+    reports it. Quoted names and expressions pass through, as does everything outside Glue.
+  --#}
+  {%- if not names or catalog_relation is none -%}
+    {{ return(names) }}
+  {%- endif -%}
+  {# DIVERGENCE: is_glue_catalog_linked_database covers both the use_catalogs_v2 and the v1 catalog shapes #}
+  {%- if not is_glue_catalog_linked_database(catalog_relation) -%}
+    {{ return(names) }}
+  {%- endif -%}
+  {%- set quoted_columns = {} -%}
+  {%- for column in dest_columns -%}
+    {%- do quoted_columns.update({column.name.lower(): column.quoted}) -%}
+  {%- endfor -%}
+  {%- set name_list = [names] if names is string else names -%}
+  {%- set quoted_names = [] -%}
+  {%- for name in name_list -%}
+    {%- do quoted_names.append(quoted_columns.get(name.strip().lower(), name)) -%}
+  {%- endfor -%}
+  {{ return(quoted_names[0] if names is string else quoted_names) }}
+{% endmacro %}
+
+
 {% materialization incremental, adapter='snowflake', supported_languages=['sql', 'python'] -%}
 
   {% set original_query_tag = set_query_tag() %}
@@ -205,6 +233,8 @@
     {% if not dest_columns %}
       {% set dest_columns = adapter.get_columns_in_relation(existing_relation) %}
     {% endif %}
+
+    {% set unique_key = snowflake__quote_glue_columns(unique_key, dest_columns, catalog_relation) %}
 
     {#-- Get the incremental_strategy, the macro to use for the strategy, and build the sql --#}
     {% set incremental_predicates = config.get('predicates', none) or config.get('incremental_predicates', none) %}
