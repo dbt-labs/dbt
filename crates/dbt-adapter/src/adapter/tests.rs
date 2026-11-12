@@ -263,6 +263,21 @@ fn make_mock_adapter(adapter_type: AdapterType) -> Arc<Adapter> {
     Arc::new(Adapter::new(Arc::new(concrete), None, never_cancels()))
 }
 
+// Athena checks the schemas a run needs one by one rather than listing a
+// whole Glue catalog (https://github.com/dbt-labs/dbt/issues/12461).
+#[test]
+fn test_checks_required_schemas_only() {
+    assert!(make_mock_adapter(AdapterType::Athena).checks_required_schemas_only());
+    for adapter_type in [
+        AdapterType::Snowflake,
+        AdapterType::Bigquery,
+        AdapterType::Postgres,
+        AdapterType::DuckDB,
+    ] {
+        assert!(!make_mock_adapter(adapter_type).checks_required_schemas_only());
+    }
+}
+
 #[test]
 fn test_render_equals_flag_off_returns_simple_eq() {
     let adapter = make_duckdb_adapter();
