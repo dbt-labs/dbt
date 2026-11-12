@@ -62,6 +62,16 @@ pub fn adapter_fields(adapter: AdapterType) -> FsResult<Vec<ConfigField>> {
     Ok(fields)
 }
 
+fn athena_profile(values: &HashMap<String, FieldValue>) -> FsResult<Box<AthenaDbConfig>> {
+    let mut config = apply_values(&AthenaDbConfig::default(), values)?;
+    if config.threads.is_none() {
+        config.threads = Some(StringOrInteger::Integer(
+            crate::athena_config::default_threads(),
+        ));
+    }
+    Ok(Box::new(config))
+}
+
 /// Apply a map of collected field values to a base config.
 ///
 /// Iterates the config type's declarative fields in order, evaluating each
@@ -262,15 +272,7 @@ pub fn build_profile_target(
             let config = apply_values(&default_fabric_config(), values)?;
             DbConfig::Fabric(Box::new(config))
         }
-        AdapterType::Athena => {
-            let mut config = apply_values(&AthenaDbConfig::default(), values)?;
-            if config.threads.is_none() {
-                config.threads = Some(StringOrInteger::Integer(
-                    crate::athena_config::default_threads(),
-                ));
-            }
-            DbConfig::Athena(Box::new(config))
-        }
+        AdapterType::Athena => DbConfig::Athena(athena_profile(values)?),
         other => {
             return Err(fs_err!(
                 ErrorCode::InvalidConfig,

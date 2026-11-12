@@ -53,70 +53,18 @@ impl InteractiveSetup for AthenaDbConfig {
 
     fn set_field(&mut self, field_name: &str, value: FieldValue) -> FsResult<()> {
         match field_name {
-            "region_name" => {
-                if let FieldValue::String(s) = value {
-                    self.region_name = Some(s);
-                }
-            }
-            "s3_staging_dir" => {
-                if let FieldValue::String(s) = value {
-                    self.s3_staging_dir = Some(s);
-                }
-            }
-            "s3_data_dir" => {
-                if let FieldValue::String(s) = value {
-                    self.s3_data_dir = non_empty(s);
-                }
-            }
-            "database" => {
-                if let FieldValue::String(s) = value {
-                    self.database = non_empty(s);
-                }
-            }
-            "schema" => {
-                if let FieldValue::String(s) = value {
-                    self.schema = Some(s);
-                }
-            }
-            "work_group" => {
-                if let FieldValue::String(s) = value {
-                    self.work_group = non_empty(s);
-                }
-            }
-            // Clear the other methods; leftover keys override a chosen profile.
-            "auth_method" => {
-                if let FieldValue::Integer(method) = value {
-                    if method != AUTH_PROFILE {
-                        self.aws_profile_name = None;
-                    }
-                    if method != AUTH_ACCESS_KEY {
-                        self.aws_access_key_id = None;
-                        self.aws_secret_access_key = None;
-                        self.aws_session_token = None;
-                    }
-                }
-            }
-            "aws_profile_name" => {
-                if let FieldValue::String(s) = value {
-                    self.aws_profile_name = Some(s);
-                }
-            }
-            "aws_access_key_id" => {
-                if let FieldValue::String(s) = value {
-                    self.aws_access_key_id = Some(s);
-                }
-            }
-            "aws_secret_access_key" => {
-                if let FieldValue::String(s) = value {
-                    self.aws_secret_access_key = Some(s);
-                }
-            }
-            "aws_session_token" => {
-                if let FieldValue::String(s) = value {
-                    self.aws_session_token = non_empty(s);
-                }
-            }
-            _ => {} // Ignore temporary fields
+            "region_name" => assign_string(&mut self.region_name, value, false),
+            "s3_staging_dir" => assign_string(&mut self.s3_staging_dir, value, false),
+            "s3_data_dir" => assign_string(&mut self.s3_data_dir, value, true),
+            "database" => assign_string(&mut self.database, value, true),
+            "schema" => assign_string(&mut self.schema, value, false),
+            "work_group" => assign_string(&mut self.work_group, value, true),
+            "auth_method" => apply_auth_method(self, value),
+            "aws_profile_name" => assign_string(&mut self.aws_profile_name, value, false),
+            "aws_access_key_id" => assign_string(&mut self.aws_access_key_id, value, false),
+            "aws_secret_access_key" => assign_string(&mut self.aws_secret_access_key, value, false),
+            "aws_session_token" => assign_string(&mut self.aws_session_token, value, true),
+            _ => {}
         }
         Ok(())
     }
@@ -155,8 +103,30 @@ impl InteractiveSetup for AthenaDbConfig {
     }
 }
 
-fn non_empty(s: String) -> Option<String> {
-    if s.is_empty() { None } else { Some(s) }
+fn assign_string(slot: &mut Option<String>, value: FieldValue, drop_blank: bool) {
+    let FieldValue::String(s) = value else {
+        return;
+    };
+    *slot = if drop_blank && s.is_empty() {
+        None
+    } else {
+        Some(s)
+    };
+}
+
+/// Clear the other methods; leftover keys override a chosen profile.
+fn apply_auth_method(config: &mut AthenaDbConfig, value: FieldValue) {
+    let FieldValue::Integer(method) = value else {
+        return;
+    };
+    if method != AUTH_PROFILE {
+        config.aws_profile_name = None;
+    }
+    if method != AUTH_ACCESS_KEY {
+        config.aws_access_key_id = None;
+        config.aws_secret_access_key = None;
+        config.aws_session_token = None;
+    }
 }
 
 pub fn setup_athena_profile(

@@ -2266,6 +2266,27 @@ fn threads_from_profile(threads: Option<StringOrInteger>) -> Result<Option<u16>,
     }
 }
 
+fn athena_target_context(
+    config: Box<AthenaDbConfig>,
+    adapter_type: String,
+) -> Result<TargetContext, String> {
+    Ok(TargetContext::Athena(AthenaTargetEnv {
+        region_name: config.region_name.clone(),
+        s3_staging_dir: config.s3_staging_dir.clone(),
+        work_group: config.work_group.clone(),
+        aws_profile_name: config.aws_profile_name.clone(),
+        __common__: CommonTargetContext {
+            database: config
+                .database
+                .clone()
+                .unwrap_or_else(|| DEFAULT_ATHENA_CATALOG.to_string()),
+            schema: config.schema.ok_or_else(|| missing("schema"))?,
+            type_: adapter_type,
+            threads: threads_from_profile(config.threads)?,
+        },
+    }))
+}
+
 // This target context is only to be used in rendering yml's
 // See: https://docs.getdbt.com/reference/dbt-jinja-functions/target
 impl TryFrom<DbConfig> for TargetContext {
@@ -2598,21 +2619,7 @@ impl TryFrom<DbConfig> for TargetContext {
                     },
                 },
             })),
-            DbConfig::Athena(config) => Ok(TargetContext::Athena(AthenaTargetEnv {
-                region_name: config.region_name.clone(),
-                s3_staging_dir: config.s3_staging_dir.clone(),
-                work_group: config.work_group.clone(),
-                aws_profile_name: config.aws_profile_name.clone(),
-                __common__: CommonTargetContext {
-                    database: config
-                        .database
-                        .clone()
-                        .unwrap_or_else(|| DEFAULT_ATHENA_CATALOG.to_string()),
-                    schema: config.schema.ok_or_else(|| missing("schema"))?,
-                    type_: adapter_type,
-                    threads: threads_from_profile(config.threads)?,
-                },
-            })),
+            DbConfig::Athena(config) => athena_target_context(config, adapter_type),
         }
     }
 }
