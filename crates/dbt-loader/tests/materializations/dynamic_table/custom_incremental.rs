@@ -562,3 +562,129 @@ fn ci_rejects_immutable_where() {
         "does not support on a custom incremental dynamic table",
     );
 }
+
+// ---------------------------------------------------------------------------
+// With `snowflake_dynamic_table_create_or_alter` on
+// ---------------------------------------------------------------------------
+
+fn ci_create_or_alter_fixture(remote: RemoteState) -> Fixture {
+    fixture_with(
+        Some(RelationType::DynamicTable),
+        remote,
+        FixtureOptions {
+            create_or_alter: true,
+            ..Default::default()
+        },
+    )
+}
+
+/// The `create or alter` DDL for a CI DT with `target_lag`. `initialize` is create-time only, so
+/// CREATE OR ALTER omits it.
+fn ci_create_or_alter_ddl(target_lag: &str, body: &str) -> String {
+    format!(
+        "create or alter dynamic table {RENDERED_RELATION} {CI_COLUMNS_DDL} target_lag = '{target_lag}' warehouse = WH refresh_mode = CUSTOM_INCREMENTAL scheduler = 'ENABLE' refresh using ( {body} )"
+    )
+}
+
+#[test]
+fn ci_create_or_alter_syncs_the_definition_in_place() {
+    // A SQL edit deploys without --full-refresh: the body is re-declared on every run.
+    let fixture = ci_create_or_alter_fixture(ci_matching_remote_state());
+    render_ci(&fixture, &ci_local_config(), false).expect("CI DT should render");
+
+    assert_eq!(
+        fixture.executed(),
+        vec![
+            ci_discovery_sql(),
+            ci_create_or_alter_ddl("1 minute", &ci_merge_body(CI_SQL))
+        ]
+    );
+    assert_eq!(fixture.describe_calls(), 1);
+}
+
+#[test]
+fn ci_create_or_alter_applies_config_changes_with_the_definition() {
+    let fixture = ci_create_or_alter_fixture(ci_matching_remote_state());
+    let local = LocalConfig {
+        target_lag: Some("5 minutes".to_string()),
+        ..ci_local_config()
+    };
+    render_ci(&fixture, &local, false).expect("CI DT should render");
+
+    assert_eq!(
+        fixture.executed(),
+        vec![
+            ci_discovery_sql(),
+            ci_create_or_alter_ddl("5 minutes", &ci_merge_body(CI_SQL))
+        ]
+    );
+}
+
+#[test]
+fn ci_create_or_alter_body_matches_create_and_replace_byte_for_byte() {
+    // Snowflake compares the stored definition literally, so CREATE OR ALTER must send the exact
+    // `refresh using (...)` text CREATE and CREATE OR REPLACE stored.
+    let created = fixture(None, RemoteState::default());
+    render_ci(&created, &ci_local_config(), false).expect("create should render");
+    let replaced = fixture(Some(RelationType::DynamicTable), ci_matching_remote_state());
+    render_ci(&replaced, &ci_local_config(), true).expect("replace should render");
+    let synced = ci_create_or_alter_fixture(ci_matching_remote_state());
+    render_ci(&synced, &ci_local_config(), false).expect("create or alter should render");
+
+    let created_body = raw_refresh_using_body(&created.executed_raw()[1]);
+    assert_eq!(
+        raw_refresh_using_body(&replaced.executed_raw()[1]),
+        created_body
+    );
+    assert_eq!(
+        raw_refresh_using_body(&synced.executed_raw()[1]),
+        created_body
+    );
+}
+
+#[test]
+fn ci_create_or_alter_replaces_a_regular_dynamic_table() {
+    let fixture = ci_create_or_alter_fixture(RemoteState {
+        refresh_mode: Some("INCREMENTAL".to_string()),
+        ..matching_remote_state()
+    });
+    render_ci(&fixture, &ci_local_config(), false).expect("switch should render");
+
+    assert_eq!(
+        fixture.executed(),
+        vec![
+            ci_discovery_sql(),
+            ci_ddl("create or replace", &ci_merge_body(CI_SQL))
+        ]
+    );
+}
+
+#[test]
+fn ci_create_or_alter_replaces_when_switching_to_a_regular_dynamic_table() {
+    // The changeset sees no change (a desired AUTO matches anything); the kind check does.
+    let fixture = ci_create_or_alter_fixture(ci_matching_remote_state());
+    render_ok(&fixture, &base_local_config(), false, "apply");
+
+    assert_eq!(
+        fixture.executed(),
+        vec![format!(
+            "create or replace dynamic table {RENDERED_RELATION} target_lag = '1 minute' warehouse = WH refresh_mode = AUTO initialize = ON_CREATE scheduler = 'ENABLE' as ( {MODEL_SQL} )"
+        )]
+    );
+}
+
+#[test]
+fn ci_create_or_alter_switch_respects_on_configuration_change() {
+    let fixture_continue = ci_create_or_alter_fixture(ci_matching_remote_state());
+    render_ok(&fixture_continue, &base_local_config(), false, "continue");
+    assert!(
+        fixture_continue.executed().is_empty(),
+        "got: {:?}",
+        fixture_continue.executed()
+    );
+
+    let fixture_fail = ci_create_or_alter_fixture(ci_matching_remote_state());
+    let result = render(&fixture_fail, &base_local_config(), false, "fail");
+    assert!(result.is_err(), "`fail` must raise, got: {result:?}");
+    assert!(fixture_fail.executed().is_empty());
+}

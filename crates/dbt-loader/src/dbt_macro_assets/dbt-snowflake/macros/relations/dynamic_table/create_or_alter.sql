@@ -49,15 +49,22 @@
     {%- set catalog_relation = adapter.build_catalog_relation(config.model) -%}
     {%- set target_is_iceberg = catalog_relation.catalog_type == 'BUILT_IN' -%}
 
+    {#- A switch between a regular and a custom incremental dynamic table is a change the
+        changeset can miss (a desired AUTO refresh_mode matches anything), and CREATE OR ALTER
+        cannot convert one into the other. -#}
+    {%- set kind_changed = snowflake__dynamic_table_kind_changed(existing_dynamic_table) -%}
     {%- if existing_relation.is_iceberg_format != target_is_iceberg -%}
         {{ return(get_replace_sql(existing_relation, target_relation, sql)) }}
 
-    {%- elif configuration_changes is none -%}
+    {%- elif configuration_changes is none and not kind_changed -%}
         {#- query-only edit (or no change): sync the definition in place. -#}
         {{ return(snowflake__create_or_alter_dynamic_table_sql(dynamic_table, target_relation, sql)) }}
 
     {%- elif on_configuration_change == 'apply' -%}
-        {%- if configuration_changes.requires_full_refresh -%}
+        {%- if kind_changed -%}
+            {{ log("Replacing " ~ target_relation ~ " because it switches between a custom incremental and a regular dynamic table.") }}
+            {{ return(get_replace_sql(existing_relation, target_relation, sql)) }}
+        {%- elif configuration_changes.requires_full_refresh -%}
             {#- transient / refresh_mode: dbt flags these as requires_full_refresh -> rebuild. -#}
             {{ return(get_replace_sql(existing_relation, target_relation, sql)) }}
         {%- else -%}
@@ -144,8 +151,13 @@
         {%- set is_transient = false -%}
     {%- endif -%}
     {%- set transient_keyword = 'transient ' if is_transient else '' -%}
+    {%- set custom_incremental = snowflake__dynamic_table_is_custom_incremental() -%}
+    {%- if custom_incremental -%}
+        {%- set sql = snowflake__custom_incremental_sql(sql) -%}
+        {%- set columns = snowflake__custom_incremental_discover_columns(relation, sql) -%}
+    {%- endif -%}
 
-create or alter {{ transient_keyword }}dynamic table {{ relation }}
+create or alter {{ transient_keyword }}dynamic table {{ relation }}{% if custom_incremental %} {{ snowflake__custom_incremental_columns_ddl(columns) }}{% endif %}
     {% if dynamic_table.target_lag is not none %}target_lag = '{{ dynamic_table.target_lag }}'{% endif %}
     warehouse = {{ dynamic_table.snowflake_warehouse }}
     {{ optional('initialization_warehouse', dynamic_table.snowflake_initialization_warehouse) }}
@@ -159,9 +171,15 @@ create or alter {{ transient_keyword }}dynamic table {{ relation }}
     {% endif %}
     {{ optional('cluster by', dynamic_table.cluster_by, quote_char='(', equals_char='') }}
     {{ optional('immutable where', dynamic_table.immutable_where, quote_char='(', equals_char='') }}
+    {%- if custom_incremental %}
+    refresh using (
+{{ snowflake__custom_incremental_refresh_using_sql(sql, columns) }}
+    )
+    {%- else %}
     as (
         {{ sql }}
     )
+    {%- endif %}
 
 {%- endmacro %}
 
