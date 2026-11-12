@@ -333,7 +333,7 @@ impl BaseRelationProperties for Relation {
             }
         };
 
-        let schema = if self.quote_policy().database {
+        let schema = if self.quote_policy().schema {
             schema_str
         } else {
             match self.adapter_type {
@@ -343,7 +343,7 @@ impl BaseRelationProperties for Relation {
             }
         };
 
-        let ident = if self.quote_policy().database {
+        let ident = if self.quote_policy().identifier {
             ident_str
         } else {
             match self.adapter_type {
@@ -2397,6 +2397,30 @@ mod tests {
             assert_eq!(relation.relation_type, None);
             assert_eq!(relation.table_format, TableFormat::Default);
             assert_eq!(relation.render_self_as_str(), r#""d"."s"."i""#);
+        }
+
+        // Each part keeps its case only when its own quote policy quotes it.
+        #[test]
+        fn test_canonical_fqn_cases_each_part_by_its_own_quote_policy() {
+            for (policy, expected) in [
+                (Policy::new(true, false, false), "analytics.STAGING.ORDERS"),
+                (Policy::new(false, true, false), "ANALYTICS.Staging.ORDERS"),
+                (Policy::new(false, false, true), "ANALYTICS.STAGING.Orders"),
+                (Policy::new(false, true, true), "ANALYTICS.Staging.Orders"),
+            ] {
+                let relation = Relation::new(
+                    AdapterType::Snowflake,
+                    "analytics".to_string(),
+                    "Staging".to_string(),
+                    "Orders".to_string(),
+                )
+                .with_quoting(policy);
+                assert_eq!(
+                    relation.get_canonical_fqn().unwrap().to_string(),
+                    expected,
+                    "{policy:?}"
+                );
+            }
         }
 
         #[test]

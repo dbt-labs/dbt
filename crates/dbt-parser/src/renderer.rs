@@ -55,10 +55,10 @@ use tracing::Instrument as _;
 
 use dbt_frontend_common::error::CodeLocation;
 use dbt_jinja_utils::phases::parse::sql_resource::SqlResource;
+use minijinja::Value as MinijinjaValue;
 use minijinja::compiler::meta::{StaticFunctionCall, find_string_arg_calls, find_undeclared};
 use minijinja::constants::{TARGET_PACKAGE_NAME, TARGET_UNIQUE_ID};
 use minijinja::value::OverlayMap;
-use minijinja::{MacroSpans, Value as MinijinjaValue};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -89,8 +89,6 @@ pub struct SqlFileRenderResult<T: ResolvableConfig<T>, S> {
     pub raw_code: String,
     /// The rendered SQL
     pub rendered_sql: String,
-    /// The macro spans for the rendered SQL
-    pub macro_spans: MacroSpans,
     /// The properties for the model
     pub properties: Option<S>,
     /// The path to the properties file that defines this model
@@ -547,7 +545,6 @@ where
             alias_adapter: resolved.alias_adapter,
             raw_code: String::new(),
             rendered_sql: String::new(),
-            macro_spans: MacroSpans::default(),
             properties: maybe_model,
             status: ModelStatus::Disabled,
             render_error_deferred: false,
@@ -709,7 +706,7 @@ where
             ..pre_render_layers
         })
     };
-    let (sql_file_info, resolved, status, rendered_sql, macro_spans, macro_dependencies) =
+    let (sql_file_info, resolved, status, rendered_sql, macro_dependencies) =
         match render_sql_with_listeners(
             &sql,
             jinja_env.as_ref(),
@@ -811,7 +808,6 @@ where
                     resolved,
                     (status, false),
                     rendered_sql,
-                    macro_spans,
                     macro_dependencies,
                 )
             }
@@ -861,7 +857,6 @@ where
                     resolved,
                     (status, render_error_deferred),
                     String::new(),
-                    MacroSpans::default(),
                     Vec::new(),
                 )
             }
@@ -920,7 +915,6 @@ where
         // which trims leading/trailing whitespace before storing as raw_code.
         raw_code: sql.trim().to_owned(),
         rendered_sql,
-        macro_spans,
         properties: maybe_model,
         status,
         render_error_deferred,

@@ -45,7 +45,6 @@ minijinja-contrib = { workspace = true }
 pathdiff = { workspace = true }
 schemars = { workspace = true }
 serde = { workspace = true, features = ["rc"] }
-serde_derive = { workspace = true }
 serde_json = { workspace = true }
 serde_with = { workspace = true }
 sha2 = { workspace = true }

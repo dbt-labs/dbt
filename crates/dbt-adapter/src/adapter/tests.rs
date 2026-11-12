@@ -263,6 +263,51 @@ fn make_mock_adapter(adapter_type: AdapterType) -> Arc<Adapter> {
     Arc::new(Adapter::new(Arc::new(concrete), None, never_cancels()))
 }
 
+#[dbt_runtime::worker_test]
+fn test_completed_routine_listing_is_reused() {
+    use crate::relation::do_create_relation;
+    use dbt_schemas::dbt_types::RelationType;
+
+    let adapter = make_mock_adapter(AdapterType::Bigquery);
+    let Typed { adapter: concrete } = &adapter.inner else {
+        unreachable!();
+    };
+    let cache = concrete.engine().relation_cache();
+    cache.set_project_has_functions(true);
+    let routine: Arc<dyn BaseRelation> = do_create_relation(
+        AdapterType::Bigquery,
+        "my_project".to_string(),
+        "my_dataset".to_string(),
+        Some("add_one".to_string()),
+        Some(RelationType::Function),
+        DEFAULT_RESOLVED_QUOTING,
+    )
+    .unwrap()
+    .into();
+    let schema = CatalogAndSchema::from(routine.as_ref());
+    let env = minijinja::Environment::new();
+    let state = State::new_for_env(&env);
+
+    for routines in [vec![], vec![routine.clone()]] {
+        let has_routine = !routines.is_empty();
+        cache.insert_schema(schema.clone(), vec![]);
+        assert!(cache.get_relation(routine.as_ref()).is_none());
+
+        cache.insert_routines(&schema, routines);
+        let result = adapter
+            .cache_routines_and_get_relation(&state, routine.as_ref())
+            .unwrap();
+        if has_routine {
+            let value = result.expect("the completed listing must return the requested routine");
+            let cached = downcast_value_to_dyn_base_relation(&value).unwrap();
+            assert_eq!(cached.relation_type(), Some(RelationType::Function));
+            assert_eq!(cached.identifier(), routine.identifier());
+        } else {
+            assert!(result.is_none());
+        }
+    }
+}
+
 #[test]
 fn test_render_equals_flag_off_returns_simple_eq() {
     let adapter = make_duckdb_adapter();

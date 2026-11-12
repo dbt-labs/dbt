@@ -575,6 +575,62 @@ mod tests {
         );
     }
 
+    /// Loads the one-column seed `contents` into a `c <ty>` target and returns the
+    /// error. The load must fail.
+    fn seed_load_error(name: &str, contents: &str, ty: &str) -> String {
+        let (_database, _conn, result) = load_seed(name, contents, &format!("c {ty}"), ",");
+        match result {
+            Ok(()) => panic!("{ty}: the seed load succeeded"),
+            Err(err) => err.to_string(),
+        }
+    }
+
+    // Records #17438. The fix for each type changes its test to `assert_seed_loads_as`.
+    #[test]
+    fn seed_load_records_time_column_rendering_gap() {
+        // `SqlType` renders the column as `TIME(6) WITHOUT TIME ZONE`.
+        let err = seed_load_error("time.csv", "c\n13:45:00\n", "TIME");
+        assert!(
+            err.contains("Type 'TIME' does not take any type parameters"),
+            "{err}"
+        );
+    }
+
+    // Records #17438.
+    #[test]
+    fn seed_load_records_interval_column_rendering_gap() {
+        let err = seed_load_error("interval.csv", "c\n1 day\n", "INTERVAL");
+        assert!(err.contains(r#""INTERVAL MONTH TO NANOSECOND""#), "{err}");
+    }
+
+    // Records #17438.
+    #[test]
+    fn seed_load_records_fixed_size_array_column_rendering_gap() {
+        let err = seed_load_error("fixed_array.csv", "c\n\"[1, 2, 3]\"\n", "INTEGER[3]");
+        assert!(
+            err.contains(r#"Value "ARRAY" can not be converted"#),
+            "{err}"
+        );
+    }
+
+    // Records #17438.
+    #[test]
+    fn seed_load_records_map_column_rendering_gap() {
+        let err = seed_load_error("map.csv", "c\n\"{a=1}\"\n", "MAP(VARCHAR, INTEGER)");
+        assert!(err.contains(r#"Value "MAP" can not be converted"#), "{err}");
+    }
+
+    // Records #17438.
+    #[test]
+    fn seed_load_records_struct_field_name_quoting_gap() {
+        let err = seed_load_error(
+            "struct_names.csv",
+            "c\n\"{'my col': 1, 'order': 2}\"\n",
+            r#"STRUCT("my col" INTEGER, "order" INTEGER)"#,
+        );
+        assert!(err.contains(r#""STRUCT(my col INT, order INT)""#), "{err}");
+    }
+
     /// Seed loading reads each column as the target type rendered by `SqlType`. DuckDB
     /// must accept each rendered type as the same type.
     #[test]

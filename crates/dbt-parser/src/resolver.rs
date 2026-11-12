@@ -52,7 +52,7 @@ use dbt_schemas::schemas::common::DbtQuoting;
 use dbt_schemas::schemas::telemetry::{ExecutionPhase, NodeType, PhaseExecuted};
 use dbt_schemas::state::{
     DbtPackage, GenericTestAsset, GetColumnsInRelationCalls, GetRelationCalls, Macros,
-    ManifestPathConfig, PatternedDanglingSources, RenderResults,
+    ManifestPathConfig, PatternedDanglingSources,
 };
 use dbt_schemas::state::{DbtRuntimeConfig, Operations};
 use dbt_schemas::state::{DbtState, ResolverState};
@@ -253,9 +253,6 @@ pub async fn resolve(
         arg.command == FsCommand::Compile || arg.command == FsCommand::Test,
         PackageSearchOrder::resolve(dbt_state.root_project().flags.as_ref()),
     )?;
-    let mut collector = RenderResults {
-        rendering_results: BTreeMap::new(),
-    };
 
     let package_waves = utils::prepare_package_dependency_levels(dbt_state.clone());
 
@@ -313,7 +310,7 @@ pub async fn resolve(
     let (
         resolved_nodes,
         resolved_disabled_nodes,
-        resolved_collector,
+        function_bodies,
         resolved_semantic_layer_spec_is_legacy,
         resolved_test_name_truncations,
         resolved_macro_properties,
@@ -337,9 +334,6 @@ pub async fn resolve(
     .await?;
     nodes.extend(resolved_nodes);
     disabled_nodes.extend(resolved_disabled_nodes);
-    collector
-        .rendering_results
-        .extend(resolved_collector.rendering_results);
     semantic_layer_spec_is_legacy |= resolved_semantic_layer_spec_is_legacy;
     test_name_truncations.extend(resolved_test_name_truncations);
     all_macro_properties = resolved_macro_properties;
@@ -520,7 +514,7 @@ pub async fn resolve(
             operations,
             dbt_profile: dbt_state.dbt_profile.clone(),
             cloud_config: dbt_state.cloud_config.clone(),
-            render_results: Arc::new(collector),
+            function_bodies: Arc::new(function_bodies),
             run_started_at: dbt_state.run_started_at,
             nodes_with_resolution_errors,
             nodes_with_access_errors,
@@ -957,7 +951,7 @@ pub async fn resolve_inner(
 ) -> FsResult<(
     Nodes,
     Nodes,
-    RenderResults,
+    HashMap<String, String>,
     NodeResolver,
     bool,
     BTreeMap<String, resolve_properties::MinimalPropertiesEntry>,
@@ -1182,7 +1176,7 @@ pub async fn resolve_inner(
 
     // TODO: resolve_analyses still creates its own local JinjaTypeCheckingEventListenerFactory
     // instead of receiving the top-level one — same issue as resolve_snapshots. Out of scope for now.
-    let (analyses, analyses_rendering_results) = resolve_analyses(
+    let analyses = resolve_analyses(
         arg,
         package,
         package_quoting,
@@ -1204,7 +1198,7 @@ pub async fn resolve_inner(
     nodes.analyses.extend(analyses);
 
     // Resolve checks
-    let (checks, disabled_checks, checks_rendering_results) = resolve_checks(
+    let (checks, disabled_checks) = resolve_checks(
         arg,
         package,
         package_quoting,
@@ -1226,7 +1220,7 @@ pub async fn resolve_inner(
     disabled_nodes.checks.extend(disabled_checks);
 
     // Resolve functions
-    let (functions, functions_rendering_results) = resolve_functions(
+    let (functions, function_bodies) = resolve_functions(
         arg,
         package,
         package_quoting,
@@ -1411,20 +1405,12 @@ pub async fn resolve_inner(
         resolve_query_comment(query_comment, &jinja_env, &base_ctx)?;
     }
 
-    let collector = RenderResults {
-        rendering_results: analyses_rendering_results
-            .into_iter()
-            .chain(checks_rendering_results)
-            .chain(functions_rendering_results)
-            .collect(),
-    };
-
     clear_package_diagnostics(&arg.io, package);
 
     Ok((
         nodes,
         disabled_nodes,
-        collector,
+        function_bodies,
         node_resolver,
         semantic_layer_spec_is_legacy,
         macro_properties,
@@ -1840,7 +1826,7 @@ async fn resolve_package(
     String,
     Nodes,
     Nodes,
-    RenderResults,
+    HashMap<String, String>,
     NodeResolver,
     bool,
     HashMap<String, String>,
@@ -1870,7 +1856,7 @@ async fn resolve_package(
     let (
         new_nodes,
         new_disabled_nodes,
-        rendering_results,
+        function_bodies,
         updated_node_resolver,
         semantic_layer_spec_is_legacy,
         macro_properties,
@@ -1900,7 +1886,7 @@ async fn resolve_package(
         package_name,
         new_nodes,
         new_disabled_nodes,
-        rendering_results,
+        function_bodies,
         updated_node_resolver,
         semantic_layer_spec_is_legacy,
         test_name_truncations,
@@ -1929,7 +1915,7 @@ async fn resolve_package_waves(
 ) -> FsResult<(
     Nodes,
     Nodes,
-    RenderResults,
+    BTreeMap<String, String>,
     bool,
     HashMap<String, String>,
     BTreeMap<String, BTreeMap<String, resolve_properties::MinimalPropertiesEntry>>,
@@ -1940,9 +1926,7 @@ async fn resolve_package_waves(
 
     let mut nodes = Nodes::default();
     let mut disabled_nodes = Nodes::default();
-    let mut collector = RenderResults {
-        rendering_results: BTreeMap::new(),
-    };
+    let mut function_bodies: BTreeMap<String, String> = BTreeMap::new();
     let mut semantic_layer_spec_is_legacy = false;
     let mut test_name_truncations: HashMap<String, String> = HashMap::new();
     let mut all_macro_properties: BTreeMap<
@@ -2021,7 +2005,7 @@ async fn resolve_package_waves(
                 package_name,
                 new_nodes,
                 new_disabled_nodes,
-                rendering_results,
+                package_function_bodies,
                 updated_node_resolver,
                 resolved_semantic_layer_spec_is_legacy,
                 resolved_test_name_truncations,
@@ -2036,9 +2020,7 @@ async fn resolve_package_waves(
 
             nodes.extend(new_nodes);
             disabled_nodes.extend(new_disabled_nodes);
-            collector
-                .rendering_results
-                .extend(rendering_results.rendering_results);
+            function_bodies.extend(package_function_bodies);
             test_name_truncations.extend(resolved_test_name_truncations);
             node_resolver.merge(updated_node_resolver);
         }
@@ -2047,7 +2029,7 @@ async fn resolve_package_waves(
     Ok((
         nodes,
         disabled_nodes,
-        collector,
+        function_bodies,
         semantic_layer_spec_is_legacy,
         test_name_truncations,
         all_macro_properties,

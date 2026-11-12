@@ -18,6 +18,7 @@ use super::{
         ACTION_WIDTH, DURATION_WIDTH, MAX_QUALIFIER_DISPLAY_LEN, MEMBER_TREE_INDENT,
         MIN_NODE_TYPE_WIDTH, UNIT_TEST_SCHEMA_SUFFIX,
     },
+    counter::CountText,
     duration::FixedWidthDuration,
     layout::RightAligned,
     phase::{get_phase_action, get_phase_progress_text},
@@ -693,10 +694,29 @@ impl fmt::Display for NodeProcessedEnd<'_> {
         )?;
         if let Some(progress) = ProgressField::new(node.node_index, node.node_count_total, elapsed)
         {
-            write!(f, " [{progress}]")?;
+            write!(f, " [{progress}")?;
+            // A node with a row count has run, so it always has an elapsed time and a progress field.
+            if let Some(rows) = rows_written(node) {
+                write!(f, ", {}", CountText::new(rows, "row", "rows"))?;
+            }
+            f.write_str("]")?;
         }
         Ok(())
     }
+}
+
+/// Rows the warehouse reported writing for the node's `main` statement, if the adapter gave a
+/// count. Only models, seeds and snapshots show it: the `main` statement of a test, unit test or
+/// function returns a verdict or a result set, not written rows. Whether a count exists at all
+/// is decided when the response is recorded, which only happens once the materialization has
+/// succeeded, so skipped and reused nodes carry none.
+fn rows_written(node: &NodeProcessed) -> Option<u64> {
+    node.rows_affected.filter(|_| {
+        matches!(
+            node.node_type(),
+            NodeType::Model | NodeType::Seed | NodeType::Snapshot
+        )
+    })
 }
 
 /// Displays a NodeEvaluated event for the start of evaluation (no duration)

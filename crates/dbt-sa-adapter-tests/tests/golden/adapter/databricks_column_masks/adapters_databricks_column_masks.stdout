@@ -11,7 +11,7 @@
    Running models/test_weird_mask.sql
  Succeeded model adapters_databricks_column_masks.test_weird_mask (table) [1 of 7 in duration]
    Running ../scratch/target/run/test/seeds/base_model_seed.sql
- Succeeded seed  adapters_databricks_column_masks.base_model_seed (table) [2 of 7 in duration]
+ Succeeded seed  adapters_databricks_column_masks.base_model_seed (table) [2 of 7 in duration, 1 row]
  Rendering models/test_weird_mask_strm.sql
  Rendering models/test_password_mask_strm.sql
    Running models/test_weird_mask_strm.sql

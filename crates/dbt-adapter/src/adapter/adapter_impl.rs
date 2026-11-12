@@ -23,6 +23,7 @@ use crate::metadata::clickhouse::ClickHouseMetadataAdapter;
 use crate::metadata::databricks::DatabricksMetadataAdapter;
 use crate::metadata::databricks::dbr_capabilities;
 use crate::metadata::databricks::dbr_capabilities::DbrComputeContext;
+use crate::metadata::databricks::is_databricks_relation_not_found;
 use crate::metadata::databricks::version::EngineVersion;
 use crate::metadata::duckdb::DuckDBMetadataAdapter;
 use crate::metadata::duckdb::{classify_attach_entry, duckdb_table_format_for_database};
@@ -2158,7 +2159,7 @@ impl AdapterImpl {
                             }
                         }
                         Err(ref e) => {
-                            if e.message().contains("[TABLE_OR_VIEW_NOT_FOUND]") {
+                            if is_databricks_relation_not_found(e) {
                                 return Ok(Vec::new());
                             }
                             // PARSE_SYNTAX_ERROR / UNSUPPORTED_FEATURE -> DBR < 16.2;
@@ -2174,7 +2175,7 @@ impl AdapterImpl {
                     "dbt_databricks",
                 );
                 match result {
-                    Err(ref e) if e.message().contains("[TABLE_OR_VIEW_NOT_FOUND]") => {
+                    Err(ref e) if is_databricks_relation_not_found(e) => {
                         return Ok(Vec::new());
                     }
                     _ => result,

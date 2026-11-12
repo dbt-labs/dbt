@@ -1,0 +1,7 @@
+kind: Features
+body: Add the Trino ADBC driver backend.
+time: 2026-11-09T19:14:32.063191+01:00
+custom:
+    author: lucargir
+    issue: "17101"
+    project: dbt-core
