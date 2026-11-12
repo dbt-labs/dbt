@@ -3,6 +3,7 @@ import os
 from unittest.mock import ANY
 
 import dbt
+from dbt.parser.sql_whitespace import normalize_sql_whitespace
 from dbt.tests.util import AnyStringWith
 
 # This produces an "expected manifest", with a number of the fields
@@ -208,18 +209,19 @@ def relation_name_format(quote_database: bool, quote_schema: bool, quote_identif
 def checksum_file(path):
     """Compute the expected sha256 checksum for a file the same way dbt does.
 
-    For seed files (.csv), dbt uses FileHash.from_path() which opens in text
-    mode ("r") — this normalizes \\r\\n to \\n on Windows — then strips and
-    hashes the UTF-8 encoding.  For other files dbt normalizes whitespace via
-    normalize_file_contents before hashing.
+    Seeds use text-mode reads, which normalize CRLF line endings. Other files
+    preserve line endings, matching load_file_contents(). Both strip outer whitespace.
+    Eligible SQL also canonicalizes horizontal spacing outside quoted contents.
     """
     if path.endswith(".csv"):
-        # Mirror FileHash.from_path(): text-mode open, strip, encode, hash
-        with open(path, "r") as fp:
+        with open(path, "r", encoding="utf-8") as fp:
             file_contents = fp.read().strip().encode("utf-8")
     else:
         with open(path, "rb") as fp:
-            file_contents = " ".join(fp.read().decode("utf-8").split()).encode("utf-8")
+            contents = fp.read().decode("utf-8").strip()
+        if path.endswith((".sql", ".sql.j2", ".sql.jinja", ".sql.jinja2")):
+            contents = normalize_sql_whitespace(contents)
+        file_contents = contents.encode("utf-8")
 
     hashed = hashlib.sha256(file_contents).hexdigest()
 
