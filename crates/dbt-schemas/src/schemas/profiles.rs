@@ -11,8 +11,8 @@ use dbt_common::tracing::dbt_emit::emit_warn_log_message;
 use dbt_yaml::DbtSchema;
 use dbt_yaml::UntaggedEnumDeserialize;
 use merge::Merge;
-use serde_derive::Deserialize;
-use serde_derive::Serialize;
+use serde::Deserialize;
+use serde::Serialize;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::convert::TryFrom;
