@@ -94,8 +94,38 @@ pub(crate) fn describe_fallback_error(
     )
 }
 
+/// `DESCRIBE TABLE EXTENDED` of a relation, as JSON where the runtime supports it. The flag is
+/// `true` when the plain output was used. `None` when the relation does not exist.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn describe_relation_batch(
+    adapter: &AdapterImpl,
+    state: &State,
+    ctx: &QueryCtx,
+    conn: &mut ConnectionGuard<'_>,
+    database: &str,
+    schema: &str,
+    identifier: &str,
+    token: CancellationToken,
+) -> AdapterResult<Option<(RecordBatch, bool)>> {
+    match describe_relation(
+        adapter, state, ctx, conn, database, schema, identifier, token,
+    ) {
+        Ok(described) => Ok(Some(described)),
+        Err(e) if is_relation_missing(&e) => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+/// Whether a describe error means there is nothing to describe: the relation, or its catalog or
+/// schema, is missing.
+fn is_relation_missing(e: &AdapterError) -> bool {
+    e.to_string().contains("cannot be found")
+        || e.to_string().contains("TABLE_OR_VIEW_NOT_FOUND")
+        || is_databricks_relation_not_found(e)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn describe_relation(
     adapter: &AdapterImpl,
     state: &State,
     ctx: &QueryCtx,
@@ -199,6 +229,17 @@ pub(crate) fn databricks_query_identifier(value: &str, quote: bool) -> String {
             .display(AdapterType::Databricks)
             .to_string()
     }
+}
+
+/// Whether a Databricks error means the relation does not exist: a `NotFound`
+/// with SQLSTATE 42P01 (TABLE_OR_VIEW_NOT_FOUND), or that error class in the message.
+///
+/// `NotFound` alone is not enough, since the driver also reports it for other
+/// missing objects (SQLSTATE 42704, 42883), so this fails closed.
+pub(crate) fn is_databricks_relation_not_found(e: &AdapterError) -> bool {
+    // https://docs.databricks.com/aws/en/error-messages/table-or-view-not-found-error-class
+    (e.kind() == AdapterErrorKind::NotFound && e.sqlstate() == "42P01")
+        || e.message().contains("[TABLE_OR_VIEW_NOT_FOUND]")
 }
 
 // Reference: https://github.com/databricks/dbt-databricks/blob/92f1442faabe0fce6f0375b95e46ebcbfcea4c67/dbt/include/databricks/macros/adapters/metadata.sql
@@ -2988,5 +3029,58 @@ mod tests {
         // bulk order is preserved
         assert_eq!(bulk[0].semantic_fqn(), r_bulk1.semantic_fqn());
         assert_eq!(bulk[1].semantic_fqn(), r_bulk2.semantic_fqn());
+    }
+
+    #[test]
+    fn relation_not_found_requires_sqlstate_with_typed_kind() {
+        assert!(is_databricks_relation_not_found(
+            &AdapterError::new_with_sqlstate_and_vendor_code(
+                AdapterErrorKind::NotFound,
+                "no text".to_string(),
+                *b"42P01",
+                None
+            )
+        ));
+        // missing catalog or schema: NotFound with another SQLSTATE
+        assert!(!is_databricks_relation_not_found(
+            &AdapterError::new_with_sqlstate_and_vendor_code(
+                AdapterErrorKind::NotFound,
+                "The schema `s` cannot be found.".to_string(),
+                *b"42704",
+                None
+            )
+        ));
+        assert!(!is_databricks_relation_not_found(&AdapterError::new(
+            AdapterErrorKind::NotFound,
+            "no sqlstate"
+        )));
+    }
+
+    #[test]
+    fn describing_a_missing_relation_catalog_or_schema_is_not_an_error() {
+        assert!(is_relation_missing(&AdapterError::new(
+            AdapterErrorKind::NotFound,
+            "The schema `s` cannot be found."
+        )));
+        assert!(is_relation_missing(&AdapterError::new(
+            AdapterErrorKind::Driver,
+            "[TABLE_OR_VIEW_NOT_FOUND] The table or view `t` cannot be found."
+        )));
+        assert!(!is_relation_missing(&AdapterError::new(
+            AdapterErrorKind::Driver,
+            "[PARSE_SYNTAX_ERROR] bad"
+        )));
+    }
+
+    #[test]
+    fn relation_not_found_keeps_legacy_text_match() {
+        assert!(is_databricks_relation_not_found(&AdapterError::new(
+            AdapterErrorKind::Driver,
+            "[TABLE_OR_VIEW_NOT_FOUND] The table or view `t` cannot be found."
+        )));
+        assert!(!is_databricks_relation_not_found(&AdapterError::new(
+            AdapterErrorKind::Driver,
+            "[PARSE_SYNTAX_ERROR] bad"
+        )));
     }
 }
