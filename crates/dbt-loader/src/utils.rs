@@ -5,7 +5,10 @@ use dbt_common::{
     constants::{DBT_DEPENDENCIES_YML, DBT_PACKAGES_YML},
     fs_err, stdfs,
 };
-use dbt_jinja_utils::serde::from_yaml_raw;
+use dbt_jinja_utils::jinja_environment::JinjaEnv;
+use dbt_jinja_utils::phases::load::LoadContext;
+use dbt_jinja_utils::serde::{from_yaml_raw, into_typed_with_jinja};
+use dbt_yaml::Verbatim;
 use pathdiff::diff_paths;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -140,11 +143,63 @@ pub fn load_raw_yml<T: DeserializeOwned>(
     from_yaml_raw(&data, Some(path), true, dependency_package_name)
 }
 
+fn render_jinja<S: serde::Serialize, T: DeserializeOwned>(
+    value: &S,
+    env: &JinjaEnv,
+    ctx: &LoadContext,
+    dependency_package_name: Option<&str>,
+) -> FsResult<T> {
+    let value = dbt_yaml::to_value(value).map_err(|e| {
+        fs_err!(
+            ErrorCode::InvalidConfig,
+            "Failed to serialize package entry: {}",
+            e
+        )
+    })?;
+    into_typed_with_jinja(value, true, env, ctx, &[], dependency_package_name, true)
+}
+
+/// Render the Jinja in one packages.yml / dependencies.yml entry (e.g.
+/// `local: "{{ env_var('PKG_DIR') }}"`), the way `dbt deps` does before it resolves the
+/// package and writes package-lock.yml. Without this, the lookup key is the raw template
+/// and never matches the rendered key in the lock.
+///
+/// Like `dbt deps`, this takes two passes: the `git` / `private` / `tarball` URLs are
+/// `Verbatim` and survive the entry-level render untouched, so they are rendered on their own.
+fn render_package_entry(
+    package: &DbtPackageEntry,
+    env: &JinjaEnv,
+    ctx: &LoadContext,
+    dependency_package_name: Option<&str>,
+) -> FsResult<DbtPackageEntry> {
+    let mut package: DbtPackageEntry = render_jinja(package, env, ctx, dependency_package_name)?;
+    match &mut package {
+        DbtPackageEntry::Git(git_package) => {
+            let git: String = render_jinja(&git_package.git, env, ctx, dependency_package_name)?;
+            git_package.git = Verbatim::from(git);
+        }
+        DbtPackageEntry::Private(private_package) => {
+            let private: String =
+                render_jinja(&private_package.private, env, ctx, dependency_package_name)?;
+            private_package.private = Verbatim::from(private);
+        }
+        DbtPackageEntry::Tarball(tarball_package) => {
+            let tarball: String =
+                render_jinja(&tarball_package.tarball, env, ctx, dependency_package_name)?;
+            tarball_package.tarball = Verbatim::from(tarball);
+        }
+        DbtPackageEntry::Hub(_) | DbtPackageEntry::Local(_) => {}
+    }
+    Ok(package)
+}
+
 fn process_package_file(
     io_args: &IoArgs,
     package_file_path: &Path,
     package_lookup_map: &BTreeMap<String, String>,
     dependency_package_name: Option<&str>,
+    env: &JinjaEnv,
+    vars: &BTreeMap<String, dbt_yaml::Value>,
 ) -> FsResult<BTreeSet<String>> {
     // If the lookup map is empty, it means no packages were defined in the main project.
     // We can't resolve any dependencies, so return an empty set.
@@ -154,7 +209,10 @@ fn process_package_file(
 
     let mut dependencies = BTreeSet::new();
     let dbt_packages: DbtPackages = load_raw_yml(package_file_path, dependency_package_name)?;
+    // Same context as `dbt deps` (env_var, var, target), so both build the same key.
+    let ctx = LoadContext::new(vars.clone());
     for package in dbt_packages.packages {
+        let package = render_package_entry(&package, env, &ctx, dependency_package_name)?;
         let entry_name = match package {
             DbtPackageEntry::Hub(hub_package) => hub_package.package,
             DbtPackageEntry::Git(git_package) => {
@@ -211,6 +269,8 @@ pub fn identify_package_dependencies(
     in_dir: &Path,
     package_lookup_map: &BTreeMap<String, String>,
     dependency_package_name: Option<&str>,
+    env: &JinjaEnv,
+    vars: &BTreeMap<String, dbt_yaml::Value>,
 ) -> FsResult<BTreeSet<String>> {
     let mut dependencies = BTreeSet::new();
 
@@ -222,6 +282,8 @@ pub fn identify_package_dependencies(
             &dependencies_yml_path,
             package_lookup_map,
             dependency_package_name,
+            env,
+            vars,
         )?);
     }
 
@@ -233,6 +295,8 @@ pub fn identify_package_dependencies(
             &packages_yml_path,
             package_lookup_map,
             dependency_package_name,
+            env,
+            vars,
         )?);
     }
 
@@ -313,5 +377,86 @@ mod tests {
                     .to_string(),
             ]
         );
+    }
+}
+
+#[cfg(test)]
+mod package_dependency_tests {
+    use super::*;
+    use dbt_jinja_utils::phases::load::init::initialize_load_profile_jinja_environment;
+
+    /// Dependencies found for `packages_yml`, looked up in a lock that maps each
+    /// rendered key to a package name, as `dbt deps` writes it.
+    fn dependencies_of(
+        packages_yml: &str,
+        lock: &[(String, &str)],
+        vars: &[(&str, String)],
+    ) -> BTreeSet<String> {
+        let project = tempfile::tempdir().unwrap();
+        std::fs::write(project.path().join(DBT_PACKAGES_YML), packages_yml).unwrap();
+        let io_args = IoArgs {
+            in_dir: project.path().to_path_buf(),
+            ..Default::default()
+        };
+        let lookup_map: BTreeMap<String, String> = lock
+            .iter()
+            .map(|(key, name)| (key.clone(), (*name).to_string()))
+            .collect();
+        let vars: BTreeMap<String, dbt_yaml::Value> = vars
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), dbt_yaml::Value::string(v.clone())))
+            .collect();
+        let env = initialize_load_profile_jinja_environment();
+        identify_package_dependencies(&io_args, project.path(), &lookup_map, None, &env, &vars)
+            .unwrap()
+    }
+
+    fn canonical(path: &Path) -> String {
+        stdfs::canonicalize(path)
+            .unwrap()
+            .to_string_lossy()
+            .to_string()
+    }
+
+    #[test]
+    fn templated_local_package_matches_the_rendered_lock_key() {
+        let pkg = tempfile::tempdir().unwrap();
+        let deps = dependencies_of(
+            "packages:\n  - local: \"{{ var('pkg_dir') }}\"\n",
+            &[(canonical(pkg.path()), "my_pkg")],
+            &[("pkg_dir", pkg.path().to_string_lossy().to_string())],
+        );
+        assert_eq!(deps, BTreeSet::from(["my_pkg".to_string()]));
+    }
+
+    #[test]
+    fn templated_git_package_matches_the_rendered_lock_key() {
+        let deps = dependencies_of(
+            "packages:\n  - git: \"https://{{ var('git_host') }}/org/repo.git\"\n    revision: v1\n",
+            &[("https://github.com/org/repo.git".to_string(), "repo")],
+            &[("git_host", "github.com".to_string())],
+        );
+        assert_eq!(deps, BTreeSet::from(["repo".to_string()]));
+    }
+
+    #[test]
+    fn templated_tarball_package_matches_the_rendered_lock_key() {
+        let deps = dependencies_of(
+            "packages:\n  - tarball: \"https://{{ var('host') }}/pkg.tar.gz\"\n",
+            &[("https://example.com/pkg.tar.gz".to_string(), "pkg")],
+            &[("host", "example.com".to_string())],
+        );
+        assert_eq!(deps, BTreeSet::from(["pkg".to_string()]));
+    }
+
+    #[test]
+    fn plain_local_package_still_matches() {
+        let pkg = tempfile::tempdir().unwrap();
+        let deps = dependencies_of(
+            &format!("packages:\n  - local: \"{}\"\n", pkg.path().display()),
+            &[(canonical(pkg.path()), "plain_pkg")],
+            &[],
+        );
+        assert_eq!(deps, BTreeSet::from(["plain_pkg".to_string()]));
     }
 }
