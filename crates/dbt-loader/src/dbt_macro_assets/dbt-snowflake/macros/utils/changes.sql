@@ -9,6 +9,9 @@
     `(select * from <relation> changes(...) where false limit 0)` instead: the relation renders as
     a zero-row subquery there, and CHANGES must directly follow a table name.
 
+    The table name is the relation's own (`relation.render()`), so a `--sample` or event_time
+    filter on the relation does not apply to its CHANGES.
+
     Args:
     - relation: the change source, usually `ref(...)` or `source(...)`
     - mode: 'default' (inserts, updates and deletes) or 'append_only' (inserts only), any case
@@ -31,6 +34,5 @@
         (select * from {{ clause }} where false limit 0)
     {%- else -%}
         {{ clause }}
-        {%- if model is defined and model.get('_dbt_changes_discovery') %} at(offset => 0){% endif -%}
     {%- endif -%}
 {%- endmacro %}

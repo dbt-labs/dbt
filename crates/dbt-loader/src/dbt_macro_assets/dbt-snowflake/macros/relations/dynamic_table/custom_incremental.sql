@@ -90,13 +90,15 @@
 {% macro snowflake__custom_incremental_sql(sql) -%}
 {#-
     The model SQL a CI DT is built from. Under `dbt run --empty` every ref() / source() renders as
-    `(select * from <table> where false limit 0)`, which a hand-written CHANGES clause can't follow,
-    so the plain table name is kept there. `{{ changes() }}` already renders its own empty form.
+    `(select * from <table> where false limit 0)`, which a hand-written CHANGES clause can't follow.
+    There the table name moves back in front of CHANGES and the zero-row filter after it, the form
+    `{{ changes() }}` renders itself: `(select * from <table> changes(...) where false limit 0)`.
+    Not handled: --empty together with a --sample or event_time filter, which nests the subquery.
 -#}
     {%- if flags is defined and flags.EMPTY -%}
         {{ return(modules.re.sub(
-            '\\(select \\* from ([^()\\s]+) where false limit 0\\)(\\s+changes\\s*\\()',
-            '\\1\\2',
+            '\\(select \\* from ([^()]+?) where false limit 0\\)\\s+(changes\\s*\\(\\s*information\\s*=>\\s*(?:default|append_only)\\s*\\))',
+            '(select * from \\1 \\2 where false limit 0)',
             sql,
             flags=modules.re.IGNORECASE
         )) }}
@@ -115,7 +117,7 @@
     AT / BEFORE / END, so none is there to collide with.)
 -#}
     {%- set discovery_sql = modules.re.sub(
-        '(changes\\s*\\(\\s*information\\s*=>\\s*(?:default|append_only)\\s*\\))',
+        '\\b(changes\\s*\\(\\s*information\\s*=>\\s*(?:default|append_only)\\s*\\))',
         '\\1 at(offset => 0)',
         sql,
         flags=modules.re.IGNORECASE

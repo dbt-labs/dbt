@@ -449,21 +449,38 @@ fn ci_ephemeral_upstream_is_carried_into_discovery() {
 
 #[test]
 fn ci_empty_run_keeps_the_table_name_before_hand_written_changes() {
-    // `dbt run --empty` renders the source as a zero-row subquery, which CHANGES can't follow.
+    // `dbt run --empty` renders the source as a zero-row subquery, which CHANGES can't follow. The
+    // table name moves back in front of CHANGES and the zero-row filter after it, so the CI DT is
+    // still built empty, in the form `{{ changes() }}` renders.
     let fixture = fixture(None, RemoteState::default());
-    let sql = "select o.id from (select * from RAW.PUBLIC.ORDERS where false limit 0) changes(information => default) as o";
+    let sql = r#"select o.id from (select * from "RAW DB"."PUBLIC"."ORDERS" where false limit 0) changes(information => default) as o"#;
     render_run(&fixture, &ci_local_config(), sql, false, "apply", true)
         .expect("CI DT should render");
 
-    let stored = "select o.id from RAW.PUBLIC.ORDERS changes(information => default) as o";
+    let stored = r#"select o.id from (select * from "RAW DB"."PUBLIC"."ORDERS" changes(information => default) where false limit 0) as o"#;
     let executed = fixture.executed();
     assert_eq!(
         executed[0],
         format!(
-            "create or replace temporary table {CI_TEMP_RELATION} as ( select * from ( select o.id from RAW.PUBLIC.ORDERS changes(information => default) at(offset => 0) as o ) limit 0 ) ;"
+            r#"create or replace temporary table {CI_TEMP_RELATION} as ( select * from ( select o.id from (select * from "RAW DB"."PUBLIC"."ORDERS" changes(information => default) at(offset => 0) where false limit 0) as o ) limit 0 ) ;"#
         )
     );
     assert_eq!(executed[1], ci_ddl("create", &ci_merge_body(stored)));
+}
+
+#[test]
+fn ci_discovery_only_bounds_the_changes_clause() {
+    // `xchanges(...)` is not a CHANGES clause, so discovery leaves it alone.
+    let fixture = fixture(None, RemoteState::default());
+    let sql = "select o.id, xchanges(information => default) as c from RAW.PUBLIC.ORDERS changes(information => default) as o";
+    render_sql(&fixture, &ci_local_config(), sql, false, "apply").expect("CI DT should render");
+
+    assert_eq!(
+        fixture.executed()[0],
+        format!(
+            "create or replace temporary table {CI_TEMP_RELATION} as ( select * from ( select o.id, xchanges(information => default) as c from RAW.PUBLIC.ORDERS changes(information => default) at(offset => 0) as o ) limit 0 ) ;"
+        )
+    );
 }
 
 #[test]

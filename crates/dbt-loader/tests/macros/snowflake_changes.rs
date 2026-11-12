@@ -140,18 +140,6 @@ fn empty_run_filters_after_changes() {
 }
 
 #[test]
-fn discovery_starts_the_changes_now() {
-    assert_eq!(
-        render(
-            "{{ changes('DB.SC.ORDERS', 'default') }} as o",
-            &[("_dbt_changes_discovery", Value::from(true))]
-        )
-        .unwrap(),
-        "DB.SC.ORDERS changes(information => DEFAULT) at(offset => 0) as o"
-    );
-}
-
-#[test]
 fn renders_without_a_model_in_context() {
     assert_eq!(
         render_with("{{ changes('DB.SC.ORDERS', 'default') }}", BTreeMap::new()).unwrap(),
