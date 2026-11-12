@@ -66,10 +66,10 @@ use dbt_loader::{
 };
 use dbt_login::{execute_login, execute_login_status};
 use dbt_schema_store::{DataStoreTrait, SchemaStoreTrait};
-use dbt_schemas::schemas::DbtCommandExecutionArtifacts;
 use dbt_schemas::schemas::selection_override::{
     SAMPLE_CAP, format_sample, reconcile_reported_nodes, resolve_selection_override,
 };
+use dbt_schemas::schemas::{DbtCommandExecutionArtifacts, InvocationFacts};
 use dbt_schemas::{
     man::execute_man_command,
     schemas::legacy_catalog::{DbtCatalog, build_catalog},
@@ -239,12 +239,15 @@ pub async fn setup_and_execute_fs(
     // Written at exit so every path (success / error / warm-parse / Ctrl+C) is covered.
     let invocation_ctx = if eval_arg.write_metadata {
         let common = cli.common_args();
-        Some(InvocationContext::new(
-            eval_arg.metadata_dir(),
-            &eval_arg.io,
-            eval_arg.command,
-            &common,
-        ))
+        Some(
+            InvocationContext::new(
+                eval_arg.metadata_dir(),
+                &eval_arg.io,
+                eval_arg.command,
+                &common,
+            )
+            .with_vars(&eval_arg.vars),
+        )
     } else {
         None
     };
@@ -280,7 +283,7 @@ pub async fn setup_and_execute_fs(
             Err(e) if e.exit_status() == Some(0) => "success",
             Err(_) => "error",
         };
-        ctx.write(status);
+        ctx.write(status, artifacts_sink.invocation_facts.as_ref());
         // The row for this invocation only exists now, so any index or
         // information schema written during the command is missing it. Bring
         // that one table up to date.
@@ -335,6 +338,19 @@ is false. This should not happen."
             error,
             artifacts: artifacts_sink,
         }),
+    }
+}
+
+/// What the loaded project says about the target the run resolved, for the invocation record.
+fn invocation_facts(resolved_state: &ResolverState) -> InvocationFacts {
+    let profile = &resolved_state.dbt_profile;
+    InvocationFacts {
+        target_name: Some(profile.target.clone()).filter(|t| !t.is_empty()),
+        adapter_type: Some(resolved_state.adapter_type.to_string()),
+        target_database: Some(profile.database.clone()).filter(|d| !d.is_empty()),
+        target_schema: Some(profile.schema.clone()).filter(|s| !s.is_empty()),
+        target_threads: profile.threads.and_then(|t| i32::try_from(t).ok()),
+        node_count: i32::try_from(resolved_state.nodes.node_count()).ok(),
     }
 }
 
@@ -1302,6 +1318,8 @@ impl<'a> AllPhasesExecutor<'a> {
 
         let (mut compilation, jinja_env, compilation_cache_changes) =
             self.load_and_resolve_state(token).await?;
+        self.captured_artifacts.invocation_facts =
+            Some(invocation_facts(&compilation.resolved_state));
 
         // Inform the user that schemas and CLL require --static-analysis strict.
         // CLL is auto-enabled when generate-info-schema (or write-index) meets
@@ -2499,7 +2517,9 @@ async fn build_index_for_docs(
         &compile_arg.io,
         FsCommand::Compile,
         &compile_cli.common_args(),
-    );
+    )
+    .with_vars(&compile_arg.vars);
+    let mut compile_artifacts = DbtCommandExecutionArtifacts::default();
 
     let hooks_factory = Arc::clone(&feature_stack.task_runner.hooks_factory);
     // Boxed: this nests the whole phase pipeline's future inside the one `do_execute_fs`
@@ -2508,7 +2528,7 @@ async fn build_index_for_docs(
     let result = Box::pin(execute_setup_and_all_phases(
         &compile_arg,
         &compile_cli,
-        &mut DbtCommandExecutionArtifacts::default(),
+        &mut compile_artifacts,
         feature_stack,
         hooks_factory,
         token,
@@ -2523,11 +2543,14 @@ async fn build_index_for_docs(
         Err(err) if err.exit_status() == Some(0) => None,
         Err(err) => Some(err),
     };
-    invocation_ctx.write(if failure.is_some() {
-        "error"
-    } else {
-        "success"
-    });
+    invocation_ctx.write(
+        if failure.is_some() {
+            "error"
+        } else {
+            "success"
+        },
+        compile_artifacts.invocation_facts.as_ref(),
+    );
     if let Some(err) = failure {
         return Err(err);
     }

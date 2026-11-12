@@ -342,7 +342,11 @@ fn project_all(staging_dir: &Path, out_dir: &Path) -> Result<usize, IndexError> 
             Src::Join { left, right, .. } => {
                 let l = read_source(staging_dir, left);
                 let r = read_source(staging_dir, right);
-                project::project_join(spec, &l, &r, &out)?
+                let mut projected = project::project_join(spec, &l, &r, &out)?;
+                if spec.name == "data_tests" {
+                    fill_singular_test_config(&out, &mut projected)?;
+                }
+                projected
             }
             Src::Own => build_own(staging_dir, spec, &out)?,
         };
@@ -650,6 +654,88 @@ fn fill_last_full_parse_at(
     for batch in batches.iter_mut() {
         let mut cols: Vec<arrow_array::ArrayRef> = batch.columns().to_vec();
         cols[idx] = Arc::new(timestamps(vec![stamp; batch.num_rows()], out, idx));
+        *batch = RecordBatch::try_new(Arc::clone(out), cols)
+            .map_err(|e| IndexError::Other(format!("info schema project: {e}")))?;
+    }
+    Ok(())
+}
+
+/// A singular test has no `test_metadata`, so the join leaves its severity and thresholds NULL,
+/// but its `config` carries them and dbt's manifest gives it the same defaults a generic test
+/// gets. Fill them from `config`, as the COPY path does from the payload.
+fn fill_singular_test_config(
+    out: &SchemaRef,
+    batches: &mut [RecordBatch],
+) -> Result<(), IndexError> {
+    use arrow_array::{BooleanArray, Int64Array};
+    let index = |name: &str| out.index_of(name).ok();
+    let (Some(config), Some(test_name)) = (index("config"), index("test_name")) else {
+        return Ok(());
+    };
+    for batch in batches.iter_mut() {
+        let (Some(configs), Some(names)) = (
+            batch.column(config).as_any().downcast_ref::<StringArray>(),
+            batch
+                .column(test_name)
+                .as_any()
+                .downcast_ref::<StringArray>(),
+        ) else {
+            continue;
+        };
+        let parsed: Vec<Option<serde_json::Value>> = (0..batch.num_rows())
+            .map(|i| {
+                (names.is_null(i) && !configs.is_null(i))
+                    .then(|| serde_json::from_str(configs.value(i)).ok())
+                    .flatten()
+            })
+            .collect();
+        let mut cols: Vec<arrow_array::ArrayRef> = batch.columns().to_vec();
+        for (name, default) in [
+            ("severity", None),
+            ("warn_if", Some("!= 0")),
+            ("error_if", Some("!= 0")),
+            ("fail_calc", Some("count(*)")),
+            ("store_failures_as", None),
+            ("where", None),
+        ] {
+            let Some(i) = index(name) else { continue };
+            let Some(current) = cols[i].as_any().downcast_ref::<StringArray>() else {
+                continue;
+            };
+            let filled: StringArray = (0..current.len())
+                .map(|row| match (&parsed[row], current.is_null(row)) {
+                    (Some(config), true) => config
+                        .get(name)
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string)
+                        .or_else(|| default.map(str::to_string)),
+                    _ => (!current.is_null(row)).then(|| current.value(row).to_string()),
+                })
+                .collect();
+            cols[i] = Arc::new(filled);
+        }
+        if let Some(i) = index("store_failures")
+            && let Some(current) = cols[i].as_any().downcast_ref::<BooleanArray>()
+        {
+            let filled: BooleanArray = (0..current.len())
+                .map(|row| match (&parsed[row], current.is_null(row)) {
+                    (Some(config), true) => config.get("store_failures").and_then(|v| v.as_bool()),
+                    _ => (!current.is_null(row)).then(|| current.value(row)),
+                })
+                .collect();
+            cols[i] = Arc::new(filled);
+        }
+        if let Some(i) = index("limit")
+            && let Some(current) = cols[i].as_any().downcast_ref::<Int64Array>()
+        {
+            let filled: Int64Array = (0..current.len())
+                .map(|row| match (&parsed[row], current.is_null(row)) {
+                    (Some(config), true) => config.get("limit").and_then(|v| v.as_i64()),
+                    _ => (!current.is_null(row)).then(|| current.value(row)),
+                })
+                .collect();
+            cols[i] = Arc::new(filled);
+        }
         *batch = RecordBatch::try_new(Arc::clone(out), cols)
             .map_err(|e| IndexError::Other(format!("info schema project: {e}")))?;
     }
