@@ -4,6 +4,7 @@ import shutil
 import pytest
 
 from dbt.tests.util import run_dbt
+from tests.functional.utils import installed_package_dirs
 
 
 class TestDepsOptions(object):
@@ -52,7 +53,7 @@ class TestDepsOptions(object):
 
     def test_deps_default(self, clean_start):
         run_dbt(["deps"])
-        assert len(os.listdir("dbt_packages")) == 2
+        assert len(installed_package_dirs()) == 2
         assert os.path.exists("package-lock.yml")
         with open("package-lock.yml") as fp:
             contents = fp.read()
@@ -85,7 +86,7 @@ class TestDepsOptions(object):
     version: 0.9.0
 """
         )
-        assert len(os.listdir("dbt_packages")) == 3
+        assert len(installed_package_dirs()) == 3
 
     def test_deps_add_without_install(self, clean_start):
         os.rename("packages.yml", "dependencies.yml")
