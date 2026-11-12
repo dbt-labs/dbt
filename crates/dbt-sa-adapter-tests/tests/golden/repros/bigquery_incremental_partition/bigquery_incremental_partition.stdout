@@ -3,7 +3,7 @@
    Parsing models/sources.yml
    Parsing models/model.sql
    Running ../scratch/target/run/BigQueryPartitionConfigRender/seeds/animal.sql
- Succeeded seed  bigquery_incremental_partition.animal (table) [1 of 1 in duration]
+ Succeeded seed  bigquery_incremental_partition.animal (table) [1 of 1 in duration, 2 rows]
 ==================== Execution Summary =====================
 Finished 'seed' successfully for target 'bigquery' [duration]
 Processed: 1 seed
