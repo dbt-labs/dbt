@@ -413,10 +413,6 @@ impl AdapterImpl {
                             Box::new(ExasolMetadataAdapter::new(engine)) as Box<dyn MetadataAdapter>
                         }
                         Starburst => todo!("Starburst"),
-                        // Execution layer: needs an AthenaMetadataAdapter
-                        // implementing MetadataAdapter against a live
-                        // connection. Out of scope for parse-only profile
-                        // work; parse never constructs a metadata adapter.
                         Athena => todo!("Athena"),
                         Trino => todo!("Trino"),
                         Datafusion => todo!("Datafusion"),
@@ -1355,8 +1351,7 @@ impl AdapterImpl {
                 ClickHouse => "name",
                 Exasol => "name",
                 Starburst => todo!("Starburst"),
-                // Athena's information_schema is Trino's, where the schema
-                // listing column is `schema_name`.
+                // Trino's information_schema lists schemas in `schema_name`.
                 Athena => "schema_name",
                 Trino => todo!("Trino"),
                 Datafusion => todo!("Datafusion"),
@@ -2660,17 +2655,7 @@ impl AdapterImpl {
             return Ok("text".to_string());
         }
 
-        // dbt-athena's `convert_text_type` returns `string` and
-        // `convert_number_type` returns `integer` for whole numbers, with no
-        // width distinction. The macros compare against those names:
-        // `get_partition_batches` and `delete_overlapping_partitions` only
-        // handle `integer` / `string` / `date` / `timestamp`, so an
-        // `insert_overwrite` model partitioned on a text or bigint column
-        // fails on its second run with "Need to add support for column type".
-        // The DDL spellings stay in `format_arrow_type_as_sql`, which the
-        // seed macros reach through `ddl_data_type`.
-        //
-        // AthenaAdapter https://github.com/dbt-labs/dbt-adapters/blob/4dc395b42dae78e895adf9c66ad6811534e879a6/dbt-athena/src/dbt/adapters/athena/impl.py#L158-L164
+        // dbt-athena macros match convert_type's string/integer, not the DDL spellings.
         if self.adapter_type() == Athena {
             match data_type {
                 DataType::Utf8 | DataType::Utf8View | DataType::LargeUtf8 => {

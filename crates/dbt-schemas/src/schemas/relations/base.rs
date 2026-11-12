@@ -599,12 +599,7 @@ pub trait BaseRelation: BaseRelationProperties + Any + Send + Sync + fmt::Debug 
                 )
             }
             AdapterType::Starburst => todo!("Starburst"),
-            // Athena is Trino, which will not coerce a varchar literal to a
-            // timestamp — `ts_col >= '2024-01-01T00:00:00+00:00'` fails with
-            // "Cannot apply operator: timestamp >= varchar". So the boundary
-            // needs an explicit TIMESTAMP literal, and Trino's literal syntax
-            // takes no 'T' separator and no zone offset (the rfc3339 boundary
-            // is always +00:00 here).
+            // Trino rejects timestamp compared with varchar; its TIMESTAMP literal has no 'T' or zone.
             AdapterType::Athena => {
                 let to_athena_ts = |s: &str| {
                     let s = s

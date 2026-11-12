@@ -209,9 +209,7 @@ pub fn infer_seed_column_name_strategy(
         (false, AdapterType::ClickHouse) => InferColumnNameStrategy::Verbatim,
         (false, AdapterType::Exasol) => InferColumnNameStrategy::Uppercase,
         (false, AdapterType::Starburst) => todo!("Starburst"),
-        // The Glue catalog stores column names lowercase whatever the DDL
-        // says, so inferring anything else leaves the manifest disagreeing
-        // with the table it describes.
+        // Glue stores column names lowercase regardless of the DDL.
         (false, AdapterType::Athena) => InferColumnNameStrategy::Lowercase,
         (false, AdapterType::Trino) => todo!("Trino"),
         (false, AdapterType::Dremio) => todo!("Dremio"),

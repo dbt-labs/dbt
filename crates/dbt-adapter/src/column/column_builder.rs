@@ -33,9 +33,7 @@ impl ColumnBuilder {
             ClickHouse => Self::build_clickhouse(field, type_ops),
             Exasol => Ok(Self::build_exasol(field, type_ops)),
             Starburst => todo!("Starburst"),
-            // Deliberately NOT routed to build_postgres_like: that path renders
-            // Timestamp as "datetime", a legacy quirk it documents as broken.
-            // Athena is Trino — timestamps are `timestamp`.
+            // build_postgres_like renders Timestamp as datetime; Athena uses timestamp.
             Athena => Ok(Self::build_athena(field, type_ops)),
             Trino => todo!("Trino"),
             Dremio => todo!("Dremio"),
@@ -567,11 +565,6 @@ impl ColumnBuilder {
         ))
     }
 
-    /// Athena columns.
-    ///
-    /// Structurally identical to the Exasol path: every adapter-specific
-    /// decision is delegated to `sql_types`, which already carries an Athena
-    /// entry (`ATHENA_KEYS`). Nothing here hard-codes a type name.
     fn build_athena(field: &FieldRef, type_ops: &dyn TypeOps) -> Box<Column> {
         use AdapterType::Athena;
         let data_type = field.data_type();
