@@ -3,6 +3,7 @@ from unittest import mock
 
 import pytest
 
+from dbt.contracts.results import RunStatus
 from dbt.task.freshness import FreshnessResponse, FreshnessTask
 
 
@@ -150,6 +151,9 @@ class TestFreshnessTaskMetadataCache:
         adapter.calculate_freshness_from_metadata_batch.side_effect = Exception()
         task = FreshnessTask(args=args, config=config, manifest=manifest, catalogs=[])
 
-        task.populate_metadata_freshness_cache(adapter, {source_no_loaded_at_field.unique_id})
+        result = task.populate_metadata_freshness_cache(
+            adapter, {source_no_loaded_at_field.unique_id}
+        )
 
+        assert result == RunStatus.Success
         assert task.get_freshness_metadata_cache() == {}
