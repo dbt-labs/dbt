@@ -422,6 +422,17 @@ impl minijinja::value::Object for PytzTimezone {
         }
     }
 
+    // pytz keeps one timezone object per zone name, so two timezones are equal
+    // only when they name the same zone: `US/Eastern` != `America/New_York`.
+    fn custom_cmp(
+        self: &Arc<Self>,
+        other: &minijinja::value::DynObject,
+    ) -> Option<std::cmp::Ordering> {
+        other
+            .downcast_ref::<Self>()
+            .map(|other| self.tz.name().cmp(other.tz.name()))
+    }
+
     fn get_value(self: &Arc<Self>, key: &Value) -> Option<Value> {
         match key.as_str()? {
             // pytz exposes the canonical zone name, e.g. `utc.zone` => 'UTC'
@@ -526,6 +537,94 @@ mod tests {
         assert_eq!(
             new_york.get_attr("zone").unwrap(),
             Value::from("America/New_York")
+        );
+    }
+
+    fn render_pytz_expression(expression: &str) -> String {
+        let mut env = minijinja::Environment::new();
+        env.add_global("pytz", Value::from(create_pytz_namespace()));
+        let source = format!("{{{{ {expression} }}}}");
+        let template = env.template_from_str(&source).unwrap();
+        template.render(minijinja::context!(), &[]).unwrap()
+    }
+
+    #[test]
+    fn test_timezones_with_same_name_are_equal() {
+        assert_eq!(
+            render_pytz_expression(
+                "pytz.timezone('America/New_York') == pytz.timezone('America/New_York')"
+            ),
+            "True"
+        );
+        // Lookup is case-insensitive, so both spellings are the same zone
+        assert_eq!(
+            render_pytz_expression(
+                "pytz.timezone('america/new_york') == pytz.timezone('America/New_York')"
+            ),
+            "True"
+        );
+        assert_eq!(
+            render_pytz_expression("pytz.timezone('UTC') == pytz.utc"),
+            "True"
+        );
+        assert_eq!(
+            render_pytz_expression(
+                "pytz.timezone('America/New_York') != pytz.timezone('America/New_York')"
+            ),
+            "False"
+        );
+    }
+
+    #[test]
+    fn test_timezones_for_different_zones_are_not_equal() {
+        assert_eq!(
+            render_pytz_expression(
+                "pytz.timezone('America/New_York') == pytz.timezone('Europe/Paris')"
+            ),
+            "False"
+        );
+        assert_eq!(
+            render_pytz_expression(
+                "pytz.timezone('America/New_York') != pytz.timezone('Europe/Paris')"
+            ),
+            "True"
+        );
+    }
+
+    #[test]
+    fn test_timezones_with_alias_names_are_not_equal() {
+        // pytz keeps one object per name, so an alias is a different timezone
+        assert_eq!(
+            render_pytz_expression(
+                "pytz.timezone('US/Eastern') == pytz.timezone('America/New_York')"
+            ),
+            "False"
+        );
+        assert_eq!(
+            render_pytz_expression(
+                "pytz.timezone('US/Eastern') != pytz.timezone('America/New_York')"
+            ),
+            "True"
+        );
+        assert_eq!(
+            render_pytz_expression("pytz.timezone('Etc/UTC') == pytz.utc"),
+            "False"
+        );
+    }
+
+    #[test]
+    fn test_timezone_membership_compares_zones() {
+        assert_eq!(
+            render_pytz_expression(
+                "pytz.timezone('America/New_York') in [pytz.timezone('America/New_York')]"
+            ),
+            "True"
+        );
+        assert_eq!(
+            render_pytz_expression(
+                "pytz.timezone('US/Eastern') in [pytz.timezone('America/New_York')]"
+            ),
+            "False"
         );
     }
 
