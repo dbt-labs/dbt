@@ -8,17 +8,20 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
+use dbt_adapter::Column;
 use dbt_adapter::relation::{RelationObject, create_relation};
 use dbt_adapter_core::AdapterType;
 use dbt_agate::AgateTable;
 use dbt_jinja_utils::mock_object::MockJinjaObject;
 use dbt_schemas::dbt_types::RelationType;
+use dbt_schemas::jinja_node::LazyNodeContext;
 use dbt_schemas::schemas::common::DbtMaterialization;
 use dbt_schemas::schemas::dbt_catalogs::TableFormat;
 use dbt_schemas::schemas::project::{
     LazyWarehouseSpecificNodeConfig, ModelConfig, WarehouseSpecificNodeConfig,
 };
 use dbt_schemas::schemas::relations::SNOWFLAKE_RESOLVED_QUOTING;
+use dbt_schemas::schemas::serialization_utils::SerializationMode;
 use dbt_schemas::schemas::{
     AdapterAttr, CommonAttributes, DbtModel, DbtModelAttr, NodeBaseAttributes,
 };
@@ -37,6 +40,16 @@ const SCHEMA: &str = "TEST_SCHEMA";
 const IDENTIFIER: &str = "MY_DT";
 const RENDERED_RELATION: &str = "TEST_DB.TEST_SCHEMA.MY_DT";
 const MODEL_SQL: &str = "select 1 as id";
+
+/// A CI DT model's template, and its compiled SQL as the run context passes it in `sql`.
+const CI_RAW_CODE: &str = "select o.id, o.amount, o.METADATA$ACTION = 'DELETE' as is_deleted from {{ changes('RAW.PUBLIC.ORDERS') }} as o";
+const CI_SQL: &str = "select o.id, o.amount, o.METADATA$ACTION = 'DELETE' as is_deleted from RAW.PUBLIC.ORDERS changes(information => DEFAULT) as o";
+/// What CI DT column discovery reads back from the temporary relation.
+const CI_COLUMNS: &[(&str, &str)] = &[
+    ("ID", "NUMBER(38,0)"),
+    ("AMOUNT", "NUMBER(38,2)"),
+    ("IS_DELETED", "BOOLEAN"),
+];
 
 /// The columns `describe_relation` returns for a dynamic table, spelled as `SHOW DYNAMIC TABLES`
 /// reports them (`adapter_impl.rs`'s `describe_dynamic_table` selects exactly these 11 columns,
@@ -99,10 +112,18 @@ struct LocalConfig {
     /// Configure a managed Iceberg table (`table_format`, `external_volume`, `base_location_root`,
     /// `iceberg_version`); the catalog relation is then resolved from this config for real.
     iceberg: bool,
+    incremental_strategy: Option<&'static str>,
+    unique_key: Option<Value>,
+    delete_condition: Option<&'static str>,
+    merge_update_columns: Option<Value>,
+    merge_exclude_columns: Option<Value>,
+    /// The model's template. When set, `model` is a run-time `LazyNodeContext` carrying it as
+    /// `raw_code`, which CI DT column discovery re-renders.
+    raw_code: Option<&'static str>,
 }
 
-/// A serialized model node, built the way the run context builds `config.model`.
-fn serialized_model(config: &LocalConfig) -> Value {
+/// The model node behind `config.model` and `model`.
+fn model_node(config: &LocalConfig) -> DbtModel {
     let base_attr = NodeBaseAttributes {
         adapter: AdapterType::Snowflake,
         propagate: Vec::new(),
@@ -150,7 +171,7 @@ fn serialized_model(config: &LocalConfig) -> Value {
     .into();
     let adapter_attr = AdapterAttr::from_lazy_config_and_dialect(&wh_config, ADAPTER);
 
-    let model = DbtModel {
+    DbtModel {
         deprecated_config: ModelConfig {
             __warehouse_specific_config__: wh_config,
             ..Default::default()
@@ -162,13 +183,18 @@ fn serialized_model(config: &LocalConfig) -> Value {
         __common_attr__: CommonAttributes {
             name: IDENTIFIER.to_string(),
             fqn: vec!["test".to_string(), IDENTIFIER.to_string()],
+            raw_code: config.raw_code.map(str::to_string),
             ..Default::default()
         },
         __adapter_attr__: adapter_attr,
         __base_attr__: base_attr,
         ..Default::default()
-    };
+    }
+}
 
+/// A serialized model node, built the way the run context builds `config.model`.
+fn serialized_model(config: &LocalConfig) -> Value {
+    let model = model_node(config);
     Value::from_serialize(dbt_common::serde_utils::convert_yml_to_value_map(
         dbt_schemas::schemas::InternalDbtNode::serialize(&model),
     ))
@@ -180,6 +206,13 @@ fn dynamic_config(
     on_configuration_change: &'static str,
 ) -> Arc<MockJinjaObject> {
     let mock = default_mock_config();
+    let refresh_mode = local.refresh_mode.clone();
+    let immutable_where = local.immutable_where.clone();
+    let incremental_strategy = local.incremental_strategy;
+    let unique_key = local.unique_key.clone();
+    let delete_condition = local.delete_condition;
+    let merge_update_columns = local.merge_update_columns.clone();
+    let merge_exclude_columns = local.merge_exclude_columns.clone();
     mock.on("get", move |args| {
         let key = args.first().and_then(|v| v.as_str());
         // `default` may arrive positionally or as a keyword (`default=...`), which minijinja
@@ -197,6 +230,13 @@ fn dynamic_config(
             )]))),
             Some("full_refresh") => Ok(Value::from(full_refresh)),
             Some("on_configuration_change") => Ok(Value::from(on_configuration_change)),
+            Some("refresh_mode") => Ok(refresh_mode.clone().map_or(default, Value::from)),
+            Some("immutable_where") => Ok(immutable_where.clone().map_or(default, Value::from)),
+            Some("incremental_strategy") => Ok(incremental_strategy.map_or(default, Value::from)),
+            Some("unique_key") => Ok(unique_key.clone().unwrap_or(default)),
+            Some("delete_condition") => Ok(delete_condition.map_or(default, Value::from)),
+            Some("merge_update_columns") => Ok(merge_update_columns.clone().unwrap_or(default)),
+            Some("merge_exclude_columns") => Ok(merge_exclude_columns.clone().unwrap_or(default)),
             _ => Ok(default),
         }
     });
@@ -267,6 +307,9 @@ struct FixtureOptions {
     iceberg_target: bool,
     /// The live relation is a dynamic Iceberg table (`SHOW OBJECTS` reports `is_iceberg`).
     iceberg_existing: bool,
+    /// What CI DT column discovery reads back, as `(name, data type)` pairs; [`CI_COLUMNS`] when
+    /// unset.
+    columns: Option<&'static [(&'static str, &'static str)]>,
 }
 
 /// Build a harness whose `describe_relation` returns `remote` for a dynamic-table relation.
@@ -298,11 +341,36 @@ fn fixture_with(
     harness
         .mock()
         .on("describe_relation", move |_| Ok(described.clone()));
+    install_column_discovery(&harness, options.columns.unwrap_or(CI_COLUMNS));
 
     Fixture {
         harness,
         raw_results,
     }
+}
+
+/// `get_columns_in_relation` (CI DT column discovery) returns `columns`; the temporary relation
+/// is dropped through `drop_relation`.
+fn install_column_discovery(harness: &MacroTestHarness, columns: &[(&str, &str)]) {
+    let columns = Value::from(
+        columns
+            .iter()
+            .map(|(name, data_type)| {
+                Value::from_object(Column::new(
+                    ADAPTER,
+                    name.to_string(),
+                    data_type.to_string(),
+                    None,
+                    None,
+                    None,
+                ))
+            })
+            .collect::<Vec<_>>(),
+    );
+    harness
+        .mock()
+        .on("get_columns_in_relation", move |_| Ok(columns.clone()));
+    harness.mock().on("drop_relation", |_| Ok(Value::UNDEFINED));
 }
 
 /// Capture `store_raw_result` calls (returned) and swallow `log`.
@@ -396,9 +464,27 @@ fn render(
     full_refresh: bool,
     on_configuration_change: &'static str,
 ) -> dbt_common::FsResult<String> {
-    let ctx = fixture
+    render_sql(
+        fixture,
+        local,
+        MODEL_SQL,
+        full_refresh,
+        on_configuration_change,
+    )
+}
+
+/// [`render`] with `sql` as the compiled model SQL. A `local.raw_code` makes `model` a run-time
+/// `LazyNodeContext` carrying it.
+fn render_sql(
+    fixture: &Fixture,
+    local: &LocalConfig,
+    sql: &str,
+    full_refresh: bool,
+    on_configuration_change: &'static str,
+) -> dbt_common::FsResult<String> {
+    let mut ctx = fixture
         .harness
-        .materialization_context(IDENTIFIER, MODEL_SQL)
+        .materialization_context(IDENTIFIER, sql)
         .database(DATABASE)
         .schema(SCHEMA)
         .relation_type(RelationType::DynamicTable)
@@ -406,9 +492,15 @@ fn render(
             local,
             full_refresh,
             on_configuration_change,
-        )))
-        .build();
-    fixture.harness.render(MATERIALIZATION, ctx)
+        )));
+    if local.raw_code.is_some() {
+        let model =
+            LazyNodeContext::from_node(Arc::new(model_node(local)), SerializationMode::OmitNone)
+                .with_eager_nested_maps()
+                .with_original_view();
+        ctx = ctx.with("model", Value::from_object(model));
+    }
+    fixture.harness.render(MATERIALIZATION, ctx.build())
 }
 
 fn render_ok(
@@ -612,4 +704,5 @@ fn on_configuration_change_continue_skips_the_build() {
 }
 
 mod create_or_alter;
+mod custom_incremental;
 mod iceberg;

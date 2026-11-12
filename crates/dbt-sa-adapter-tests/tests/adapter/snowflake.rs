@@ -426,6 +426,73 @@ async fn adapters_snowflake_dynamic_table() -> FsResult<()> {
 }
 
 #[dbt_runtime::test]
+async fn adapters_snowflake_custom_incremental_dynamic_table() -> FsResult<()> {
+    const ORDERS: &str = "models/orders_merge.sql";
+    run_fs_record_replay_task_seq(
+        env!("CARGO_MANIFEST_DIR"),
+        &FS_RUNNER,
+        current_function_name!(),
+        "tests/data/adapter/custom_incremental_dynamic_table",
+        AdapterType::Snowflake.as_ref(),
+        None,
+        &[
+            AdapterRecordReplayTurn::new("run-operation set_up", &[]), // run_0: source tables
+            AdapterRecordReplayTurn::new("run", &[]), // run_1: CREATE, columns discovered
+            AdapterRecordReplayTurn::new("run-operation apply_changes", &[]), // run_2
+            AdapterRecordReplayTurn::new("run", &[]), // run_3: no-op build, manual refresh
+            AdapterRecordReplayTurn::new("test --exclude orders_transient_after_full_refresh", &[]), // run_4: updates and deletes merged
+            AdapterRecordReplayTurn::new("run --full-refresh", &[]), // run_5: CREATE OR REPLACE
+            AdapterRecordReplayTurn::new("test --exclude orders_transient_after_refresh", &[]), // run_6: rows after the rebuild
+            AdapterRecordReplayTurn::new(
+                "run --select stock_merge",
+                &[FileOverride {
+                    original: "models/stock_merge.sql",
+                    overriding_file: "_project_overrides/stock_merge_target_lag.sql",
+                }],
+            ), // run_7: a CI DT target_lag change is altered in place, like a regular DT
+            AdapterRecordReplayTurn::new("test --select stock_merge_matches_source", &[]), // run_8
+            AdapterRecordReplayTurn::new(
+                "run --select orders_merge",
+                &[FileOverride {
+                    original: ORDERS,
+                    overriding_file: "_project_overrides/orders_merge_regular.sql",
+                }],
+            ), // run_9: CI DT -> regular DT replaces
+            AdapterRecordReplayTurn::new("test --select orders_merge_matches_source", &[]), // run_10
+            AdapterRecordReplayTurn::new(
+                "run --select orders_merge",
+                &[FileOverride {
+                    original: ORDERS,
+                    overriding_file: "_project_overrides/orders_merge_custom_incremental.sql",
+                }],
+            ), // run_11: regular DT -> CI DT replaces
+            AdapterRecordReplayTurn::new("test --select orders_merge_matches_source", &[]), // run_12
+        ],
+        None,
+        &[],
+    )
+    .await
+}
+
+/// Column discovery reads the source's CHANGES before the dynamic table, whose creation would
+/// enable change tracking, exists. Pins the error a source without change tracking gives.
+#[dbt_runtime::test]
+async fn adapters_snowflake_custom_incremental_dynamic_table_no_change_tracking() -> FsResult<()> {
+    run_fs_record_replay_task_seq(
+        env!("CARGO_MANIFEST_DIR"),
+        &FS_RUNNER,
+        current_function_name!(),
+        "tests/data/adapter/custom_incremental_dynamic_table_no_change_tracking",
+        AdapterType::Snowflake.as_ref(),
+        None,
+        &["run-operation set_up", "run"],
+        None,
+        &[],
+    )
+    .await
+}
+
+#[dbt_runtime::test]
 async fn adapters_snowflake_seed_datatypes() -> FsResult<()> {
     run_fs_record_replay_task_seq(
         env!("CARGO_MANIFEST_DIR"),
