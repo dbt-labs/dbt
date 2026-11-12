@@ -50,6 +50,7 @@ drivers = [
   "clickhouse-0.1.0-alpha.2",
   "clickhouse-0.1.0",
   "clickhouse-0.1.1",
+  "clickhouse-0.1.2",
   "dbt-0.4.0+dbt0.1.0.ga3f6df3",
   "dbt-0.4.0+dbt0.1.2.gd85701a",
   "dbt-0.4.0+dbt0.1.3.g55b4a60",
