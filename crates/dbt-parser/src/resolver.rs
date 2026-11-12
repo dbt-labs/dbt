@@ -477,6 +477,10 @@ pub async fn resolve(
     // Check access
     let nodes_with_access_errors = check_access(&nodes, &all_runtime_configs);
 
+    for err in invalid_group_errors(&nodes) {
+        emit_error_log_from_fs_error(err);
+    }
+
     // Validate function configuration against per-adapter capabilities:
     // JS UDF language support, JS-aggregate restrictions, default arguments.
     validate_function_config(&nodes, adapter_type);
@@ -592,6 +596,42 @@ fn check_access(
     }
 
     violations
+}
+
+fn invalid_group_errors(nodes: &Nodes) -> Vec<FsError> {
+    let group_names: BTreeSet<&str> = nodes
+        .groups
+        .values()
+        .map(|group| group.__common_attr__.name.as_str())
+        .collect();
+    let expected = format_python_str_list(&group_names);
+    nodes
+        .models
+        .values()
+        .filter_map(|model| {
+            let group = model.__model_attr__.group.as_deref()?;
+            if group_names.contains(group) {
+                return None;
+            }
+            Some(*fs_err!(
+                code => ErrorCode::InvalidConfig,
+                loc => model.__common_attr__.original_file_path.to_path_buf(),
+                "Invalid group '{}', expected one of {}",
+                group,
+                expected,
+            ))
+        })
+        .collect()
+}
+
+/// dbt-core prints the expected names with `str(sorted(...))`, e.g. `['finance', 'marketing']`.
+fn format_python_str_list(names: &BTreeSet<&str>) -> String {
+    let items = names
+        .iter()
+        .map(|name| format!("'{name}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("[{items}]")
 }
 
 /// Validate function configuration against per-adapter capabilities:
@@ -2085,11 +2125,15 @@ fn inject_default_overview(docs: &mut BTreeMap<String, DbtDocsMacro>) {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::sync::Arc;
 
     use dbt_common::path::DbtPath;
     use dbt_schemas::schemas::macros::DbtDocsMacro;
+    use dbt_schemas::schemas::nodes::DbtGroup;
+    use dbt_schemas::schemas::{CommonAttributes, DbtModel, Nodes};
 
     use super::inject_default_overview;
+    use super::invalid_group_errors;
     use crate::constants::DEFAULT_OVERVIEW_CONTENTS;
 
     mod unit_test_macro_overrides {
@@ -2473,6 +2517,67 @@ mod tests {
                 .block_contents,
             DEFAULT_OVERVIEW_CONTENTS,
         );
+    }
+
+    fn model_with_group(group: Option<&str>) -> DbtModel {
+        let mut model = DbtModel::default();
+        model.__common_attr__.unique_id = "model.test.orders".to_string();
+        model.__common_attr__.name = "orders".to_string();
+        model.__common_attr__.original_file_path = DbtPath::from("models/orders.sql");
+        model.__model_attr__.group = group.map(str::to_string);
+        model
+    }
+
+    fn group_named(name: &str) -> DbtGroup {
+        DbtGroup {
+            __common_attr__: CommonAttributes {
+                unique_id: format!("group.test.{name}"),
+                name: name.to_string(),
+                package_name: "test".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_invalid_group_errors_unknown_group() {
+        let mut nodes = Nodes::default();
+        nodes.models.insert(
+            "model.test.orders".to_string(),
+            Arc::new(model_with_group(Some("analytics"))),
+        );
+        let errors = invalid_group_errors(&nodes);
+        assert_eq!(errors.len(), 1);
+        assert!(
+            errors[0]
+                .message()
+                .contains("Invalid group 'analytics', expected one of []")
+        );
+    }
+
+    #[test]
+    fn test_invalid_group_errors_known_group() {
+        let mut nodes = Nodes::default();
+        nodes.models.insert(
+            "model.test.orders".to_string(),
+            Arc::new(model_with_group(Some("analytics"))),
+        );
+        nodes.groups.insert(
+            "group.test.analytics".to_string(),
+            Arc::new(group_named("analytics")),
+        );
+        assert!(invalid_group_errors(&nodes).is_empty());
+    }
+
+    #[test]
+    fn test_invalid_group_errors_no_group() {
+        let mut nodes = Nodes::default();
+        nodes.models.insert(
+            "model.test.orders".to_string(),
+            Arc::new(model_with_group(None)),
+        );
+        assert!(invalid_group_errors(&nodes).is_empty());
     }
 
     /// A microbatch model whose only upstream is a seed with `event_time`
