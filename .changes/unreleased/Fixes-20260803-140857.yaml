@@ -1,0 +1,7 @@
+kind: Fixes
+body: Fix partial parsing dropping YAML snapshot changes when the snapshot's upstream
+  source changes in the same run
+time: 2026-08-03T14:08:57.208068+01:00
+custom:
+    Author: antoniabadarau
+    Issue: "15785"
