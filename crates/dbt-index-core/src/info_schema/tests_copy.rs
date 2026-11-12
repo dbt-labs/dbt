@@ -729,6 +729,168 @@ fn meta_and_config_reach_exposures_unit_tests_and_node_columns() {
     }
 }
 
+/// The freshness columns an epoch records reach `dbt_rt.freshness`, a failed check is a row
+/// carrying its error, and an epoch written before the columns existed still reads.
+#[test]
+fn freshness_details_reach_freshness_and_old_epochs_still_read() {
+    if crate::db::Db::open_memory().is_err() {
+        eprintln!("skipping: DuckDB driver unavailable");
+        return;
+    }
+    let metadata = tempfile::tempdir().unwrap();
+    let dir = metadata.path().join(crate::ingest::RUN_FRESHNESS_SUBDIR);
+    std::fs::create_dir_all(&dir).unwrap();
+    let ts = DataType::Timestamp(TimeUnit::Microsecond, Some(Arc::from("UTC")));
+    let utf8 = |name: &str| Field::new(name, DataType::Utf8, true);
+    let mut old_fields = vec![
+        Field::new("invocation_id", DataType::Utf8, false),
+        Field::new("unique_id", DataType::Utf8, false),
+        utf8("resource_type"),
+        Field::new("status", DataType::Utf8, false),
+        utf8("max_loaded_at"),
+        utf8("snapshotted_at"),
+        Field::new("max_loaded_at_time_ago", DataType::Float64, true),
+        Field::new("execution_time", DataType::Float64, true),
+        Field::new("warn_after_count", DataType::Int32, true),
+        utf8("warn_after_period"),
+        Field::new("error_after_count", DataType::Int32, true),
+        utf8("error_after_period"),
+    ];
+    let mut new_fields = old_fields.clone();
+    new_fields.extend(
+        [
+            "freshness_filter",
+            "thread_id",
+            "adapter_response",
+            "timing",
+            "error",
+        ]
+        .map(utf8),
+    );
+    let schema = |fields: &mut Vec<Field>| {
+        let mut f = fields.clone();
+        f.push(Field::new("ingested_at", ts.clone(), false));
+        Arc::new(Schema::new(f))
+    };
+    let row = |id: &str, uid: &str, status: &str| {
+        json!({
+            "invocation_id": id,
+            "unique_id": uid,
+            "resource_type": "source",
+            "status": status,
+            "ingested_at": "2026-09-08T12:00:00Z",
+        })
+    };
+    crate::parquet::write_table(
+        &dir.join("v1_0.parquet"),
+        schema(&mut old_fields),
+        &[row("old", "source.pkg.s.old", "pass")],
+    )
+    .unwrap();
+    let mut measured = row("new", "source.pkg.s.ok", "pass");
+    measured["execution_time"] = json!(1.5);
+    measured["freshness_filter"] = json!("id > 0");
+    measured["thread_id"] = json!("Thread-3");
+    measured["adapter_response"] = json!("{}");
+    measured["timing"] = json!("[]");
+    let mut failed = row("new", "source.pkg.s.bad", "error");
+    failed["error"] = json!("relation does not exist");
+    crate::parquet::write_table(
+        &dir.join("v1_1.parquet"),
+        schema(&mut new_fields),
+        &[measured, failed],
+    )
+    .unwrap();
+    for how in [super::Materializer::Arrow, super::Materializer::Copy] {
+        let root = tempfile::tempdir().unwrap();
+        let staging = tempfile::tempdir().unwrap();
+        super::write_info_schema_with(how, metadata.path(), root.path(), staging.path()).unwrap();
+        let out = super::versioned_dir(root.path());
+        let rows = super::tests::out_rows(&out, "dbt_rt.freshness.parquet");
+        let by_id = |uid: &str| {
+            rows.iter()
+                .find(|r| r["unique_id"] == json!(uid))
+                .unwrap_or_else(|| panic!("{how:?}: no {uid}"))
+        };
+        let ok = by_id("source.pkg.s.ok");
+        assert_eq!(ok["execution_time"], json!(1.5), "{how:?}");
+        assert_eq!(ok["freshness_filter"], json!("id > 0"), "{how:?}");
+        assert_eq!(ok["thread_id"], json!("Thread-3"), "{how:?}");
+        assert_eq!(ok["adapter_response"], json!("{}"), "{how:?}");
+        assert_eq!(ok["timing"], json!("[]"), "{how:?}");
+        assert_eq!(ok["error"], Value::Null, "{how:?}");
+        let bad = by_id("source.pkg.s.bad");
+        assert_eq!(bad["status"], json!("error"), "{how:?}");
+        assert_eq!(bad["error"], json!("relation does not exist"), "{how:?}");
+        let old = by_id("source.pkg.s.old");
+        assert_eq!(old["thread_id"], Value::Null, "{how:?}");
+        assert_eq!(old["error"], Value::Null, "{how:?}");
+    }
+}
+
+/// A freshness epoch written after the information schema was built reaches
+/// `dbt_rt.freshness` through `refresh_freshness`, and a directory no write finished is left
+/// alone.
+#[test]
+fn refresh_freshness_brings_the_table_up_to_date() {
+    let metadata = tempfile::tempdir().unwrap();
+    let dir = metadata.path().join(crate::ingest::RUN_FRESHNESS_SUBDIR);
+    std::fs::create_dir_all(&dir).unwrap();
+    let ts = DataType::Timestamp(TimeUnit::Microsecond, Some(Arc::from("UTC")));
+    let utf8 = |name: &str| Field::new(name, DataType::Utf8, true);
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("invocation_id", DataType::Utf8, false),
+        Field::new("unique_id", DataType::Utf8, false),
+        utf8("resource_type"),
+        Field::new("status", DataType::Utf8, false),
+        Field::new("ingested_at", ts, false),
+    ]));
+    let row = |id: &str| {
+        json!({
+            "invocation_id": id,
+            "unique_id": format!("source.pkg.s.{id}"),
+            "resource_type": "source",
+            "status": "pass",
+            "ingested_at": "2026-09-08T12:00:00Z",
+        })
+    };
+    let root = tempfile::tempdir().unwrap();
+    // Nothing was written yet: there is nothing to refresh, and nothing is created.
+    super::refresh_freshness(metadata.path(), root.path()).unwrap();
+    assert!(!super::versioned_dir(root.path()).exists());
+
+    crate::parquet::write_table(&dir.join("v1_0.parquet"), schema.clone(), &[row("before")])
+        .unwrap();
+    let staging = tempfile::tempdir().unwrap();
+    super::write_info_schema_with(
+        super::Materializer::Arrow,
+        metadata.path(),
+        root.path(),
+        staging.path(),
+    )
+    .unwrap();
+    let out = super::versioned_dir(root.path());
+    let ids = |rows: Vec<Value>| -> Vec<String> {
+        let mut ids: Vec<String> = rows
+            .iter()
+            .map(|r| r["invocation_id"].as_str().unwrap().to_string())
+            .collect();
+        ids.sort();
+        ids
+    };
+    assert_eq!(
+        ids(super::tests::out_rows(&out, "dbt_rt.freshness.parquet")),
+        vec!["before"]
+    );
+
+    crate::parquet::write_table(&dir.join("v1_1.parquet"), schema, &[row("after")]).unwrap();
+    super::refresh_freshness(metadata.path(), root.path()).unwrap();
+    assert_eq!(
+        ids(super::tests::out_rows(&out, "dbt_rt.freshness.parquet")),
+        vec!["after", "before"]
+    );
+}
+
 /// YAML-declared columns in manifest casing, and a Snowflake-style catalog that
 /// uppercases every name and also has a column the YAML never declared.
 fn write_catalog_casing_corpus(metadata_dir: &Path) {

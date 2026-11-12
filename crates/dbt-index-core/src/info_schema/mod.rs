@@ -209,6 +209,27 @@ pub fn refresh_invocations(metadata_dir: &Path, info_schema_dir: &Path) -> Resul
     write_output(&out_dir, spec, &out, &batches)
 }
 
+/// Refresh `dbt_rt.freshness` on its own, after a freshness command has recorded its results.
+///
+/// The information schema a command writes is built before `dbt source freshness` records
+/// its own results, so without this the published table shows the previous run's rows, or
+/// none on the first run. Like [`refresh_invocations`], it projects that one table straight
+/// from the epochs over the directory already written, and no-ops when no write finished.
+pub fn refresh_freshness(metadata_dir: &Path, info_schema_dir: &Path) -> Result<(), IndexError> {
+    let out_dir = versioned_dir(info_schema_dir);
+    if !out_dir.join(views::VIEWS_SQL_FILE_NAME).exists() {
+        return Ok(());
+    }
+    let spec = INFO_SCHEMA
+        .iter()
+        .find(|spec| spec.ns == spec::Ns::DbtRt && spec.name == "freshness")
+        .ok_or_else(|| IndexError::Other("info schema: no dbt_rt.freshness spec".to_string()))?;
+    let out = project::out_schema(spec)?;
+    let src = crate::ingest::freshness_batches(metadata_dir)?;
+    let batches = project::project_table(spec, &src, &out)?;
+    write_output(&out_dir, spec, &out, &batches)
+}
+
 fn write_via_arrow(
     metadata_dir: &Path,
     info_schema_dir: &Path,

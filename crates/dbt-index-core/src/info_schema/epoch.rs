@@ -310,7 +310,14 @@ pub const EPOCH_RELATIONS: &[EpochRelation] = &[
         dir: RUN_FRESHNESS_SUBDIR,
         single_file: false,
         supersede: Supersede::KeepAll,
-        backfill: &[],
+        // Epochs written before these were recorded lack them.
+        backfill: &[
+            ("freshness_filter", "VARCHAR"),
+            ("thread_id", "VARCHAR"),
+            ("adapter_response", "VARCHAR"),
+            ("timing", "VARCHAR"),
+            ("error", "VARCHAR"),
+        ],
     },
     EpochRelation {
         view: "epoch_run_catalog_stats",
@@ -770,13 +777,13 @@ const SOURCE_FRESHNESS: &[(&str, EpochExpr)] = &[
     ("error_after_count", EpochExpr::Same),
     ("error_after_period", EpochExpr::Same),
     ("ingested_at", EpochExpr::Same),
-    // Declared in the staging schema, never written by `write_run_freshness`.
-    ("adapter_response", EpochExpr::Null),
+    ("adapter_response", EpochExpr::Same),
+    // The epoch holds `ingested_at`, which the published table already has.
     ("created_at", EpochExpr::Null),
-    ("error", EpochExpr::Null),
-    ("freshness_filter", EpochExpr::Null),
-    ("thread_id", EpochExpr::Null),
-    ("timing", EpochExpr::Null),
+    ("error", EpochExpr::Same),
+    ("freshness_filter", EpochExpr::Same),
+    ("thread_id", EpochExpr::Same),
+    ("timing", EpochExpr::Same),
 ];
 
 /// `dbt.column_lineage` ← `compile/column_lineage`. `project_cll_batches` is a

@@ -3329,6 +3329,93 @@ fn write_run_results(
 // Run freshness → dbt.source_freshness (published as dbt_rt.freshness)
 // ---------------------------------------------------------------------------
 
+/// Source-shape `source_freshness` rows read from the given epochs, with the highest epoch
+/// number seen.
+fn read_freshness_epochs(
+    epochs: &[(u32, std::path::PathBuf)],
+    now: &str,
+) -> Result<(Vec<Value>, u32), IndexError> {
+    let mut rows: Vec<Value> = Vec::new();
+    let mut last_epoch = 0u32;
+    for (epoch_num, path) in epochs {
+        let batches = read_parquet_batches(path)?;
+        for batch in &batches {
+            let uid_col = str_col(batch, "unique_id");
+            let inv_col = str_col(batch, "invocation_id");
+            let stat_col = str_col(batch, "status");
+            // `source` or `model`. The epoch has carried it since model freshness shipped;
+            // dropping it here is what left the published table unable to tell them apart.
+            let rt_col = str_col(batch, "resource_type");
+            let mla_col = str_col(batch, "max_loaded_at");
+            let snap_col = str_col(batch, "snapshotted_at");
+            let ago_col = f64_col(batch, "max_loaded_at_time_ago");
+            let exec_col = f64_col(batch, "execution_time");
+            let wc_col = i64_col(batch, "warn_after_count");
+            let wp_col = str_col(batch, "warn_after_period");
+            let ec_col = i64_col(batch, "error_after_count");
+            let ep_col = str_col(batch, "error_after_period");
+            let filter_col = str_col(batch, "freshness_filter");
+            let thread_col = str_col(batch, "thread_id");
+            let resp_col = str_col(batch, "adapter_response");
+            let timing_col = str_col(batch, "timing");
+            let error_col = str_col(batch, "error");
+            let ts_col = i64_col(batch, "ingested_at");
+            for i in 0..batch.num_rows() {
+                let Some(uid) = get_str(uid_col, i) else {
+                    continue;
+                };
+                let ts = get_i64(ts_col, i)
+                    .map(micros_to_ts)
+                    .unwrap_or_else(|| now.to_string());
+                rows.push(json!({
+                    "unique_id": uid,
+                    "resource_type": get_str(rt_col, i),
+                    "invocation_id": get_str(inv_col, i),
+                    "status": get_str(stat_col, i),
+                    "max_loaded_at": get_str(mla_col, i),
+                    "snapshotted_at": get_str(snap_col, i),
+                    "max_loaded_at_time_ago": get_f64(ago_col, i),
+                    "execution_time": get_f64(exec_col, i),
+                    "warn_after_count": get_i64(wc_col, i),
+                    "warn_after_period": get_str(wp_col, i),
+                    "error_after_count": get_i64(ec_col, i),
+                    "error_after_period": get_str(ep_col, i),
+                    "freshness_filter": get_str(filter_col, i),
+                    "thread_id": get_str(thread_col, i),
+                    "adapter_response": get_str(resp_col, i),
+                    "timing": get_str(timing_col, i),
+                    "error": get_str(error_col, i),
+                    "ingested_at": ts,
+                }));
+            }
+        }
+        last_epoch = *epoch_num;
+    }
+
+    Ok((rows, last_epoch))
+}
+
+/// Source-shape `source_freshness` rows as Arrow batches, read straight from the epochs.
+///
+/// The counterpart to [`invocation_batches`], for the information schema's freshness refresh.
+pub fn freshness_batches(metadata_dir: &Path) -> Result<Vec<arrow_array::RecordBatch>, IndexError> {
+    let dir = metadata_dir.join(RUN_FRESHNESS_SUBDIR);
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+    let now = chrono::Utc::now().to_rfc3339();
+    let (rows, _) = read_freshness_epochs(&epoch_layers::existing_epochs(&dir), &now)?;
+    if rows.is_empty() {
+        return Ok(Vec::new());
+    }
+    let schema = crate::parquet::schema_for("source_freshness");
+    let fields: Vec<arrow_schema::FieldRef> =
+        schema.fields().iter().map(std::sync::Arc::clone).collect();
+    let batch = serde_arrow::to_record_batch(&fields, &rows)
+        .map_err(|e| IndexError::Other(format!("serde_arrow: source_freshness: {e}")))?;
+    Ok(vec![batch])
+}
+
 fn write_run_freshness(
     writer: &mut IndexWriter,
     metadata_dir: &Path,
@@ -3355,52 +3442,7 @@ fn write_run_freshness(
         return Ok(0);
     }
 
-    let mut rows: Vec<Value> = Vec::new();
-    let mut last_epoch = 0u32;
-    for (epoch_num, path) in &new_epochs {
-        let batches = read_parquet_batches(path)?;
-        for batch in &batches {
-            let uid_col = str_col(batch, "unique_id");
-            let inv_col = str_col(batch, "invocation_id");
-            let stat_col = str_col(batch, "status");
-            // `source` or `model`. The epoch has carried it since model freshness shipped;
-            // dropping it here is what left the published table unable to tell them apart.
-            let rt_col = str_col(batch, "resource_type");
-            let mla_col = str_col(batch, "max_loaded_at");
-            let snap_col = str_col(batch, "snapshotted_at");
-            let ago_col = f64_col(batch, "max_loaded_at_time_ago");
-            let exec_col = f64_col(batch, "execution_time");
-            let wc_col = i64_col(batch, "warn_after_count");
-            let wp_col = str_col(batch, "warn_after_period");
-            let ec_col = i64_col(batch, "error_after_count");
-            let ep_col = str_col(batch, "error_after_period");
-            let ts_col = i64_col(batch, "ingested_at");
-            for i in 0..batch.num_rows() {
-                let Some(uid) = get_str(uid_col, i) else {
-                    continue;
-                };
-                let ts = get_i64(ts_col, i)
-                    .map(micros_to_ts)
-                    .unwrap_or_else(|| now.to_string());
-                rows.push(json!({
-                    "unique_id": uid,
-                    "resource_type": get_str(rt_col, i),
-                    "invocation_id": get_str(inv_col, i),
-                    "status": get_str(stat_col, i),
-                    "max_loaded_at": get_str(mla_col, i),
-                    "snapshotted_at": get_str(snap_col, i),
-                    "max_loaded_at_time_ago": get_f64(ago_col, i),
-                    "execution_time": get_f64(exec_col, i),
-                    "warn_after_count": get_i64(wc_col, i),
-                    "warn_after_period": get_str(wp_col, i),
-                    "error_after_count": get_i64(ec_col, i),
-                    "error_after_period": get_str(ep_col, i),
-                    "ingested_at": ts,
-                }));
-            }
-        }
-        last_epoch = *epoch_num;
-    }
+    let (rows, last_epoch) = read_freshness_epochs(&new_epochs, now)?;
 
     let count = rows.len();
     if need_full {
