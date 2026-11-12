@@ -1,18 +1,4 @@
-//! Athena metadata adapter.
-//!
-//! Athena is Trino over the Glue catalog, so every metadata read here is a
-//! query against `information_schema` executed through the ADBC connection.
-//! Provides the schema-creation preflight (`create_schemas_if_not_exists` ->
-//! `athena__create_schema`), per-relation schema fetch for unit tests and
-//! contracts (`list_relations_schemas_inner`, via a zero-row probe — Athena
-//! returns `ResultSetMetadata` even for empty result sets, which the driver
-//! maps to an Arrow schema), relation-cache hydration over
-//! `information_schema.tables` (`list_relations`), and catalog parsing for
-//! `compile --write-catalog` (`build_schemas_from_stats_sql` /
-//! `build_columns_from_get_columns` over an `information_schema`-shaped
-//! RecordBatch). Metadata-based source freshness is not available: Glue does
-//! not expose a last-altered timestamp through `information_schema`, and
-//! dbt-athena's own implementation reads it from S3 object metadata.
+//! Athena metadata comes from information_schema; Glue has no last-altered timestamp there.
 
 use crate::AdapterEngine;
 use crate::adapter::adapter_impl::AdapterImpl;
@@ -42,16 +28,12 @@ use std::collections::{BTreeMap, HashMap};
 use std::future;
 use std::sync::Arc;
 
-/// Athena folds every unquoted identifier to lowercase and Glue stores names
-/// lowercased, so `information_schema` literals are compared in lowercase.
-/// Single quotes are doubled to keep the literal well-formed.
+/// Lowercase and double quotes for an information_schema literal.
 pub(crate) fn athena_string_literal(value: &str) -> String {
     value.to_lowercase().replace('\'', "''")
 }
 
-/// Map an `information_schema.tables.table_type` value to a dbt
-/// [`RelationType`]. Trino reports `BASE TABLE` and `VIEW`; anything else is
-/// treated as a table.
+/// Trino reports `BASE TABLE` and `VIEW`; anything else is a table.
 pub(crate) fn relation_type_from_table_type(table_type: &str) -> RelationType {
     match table_type.trim().to_ascii_uppercase().as_str() {
         "VIEW" => RelationType::View,
@@ -199,12 +181,7 @@ impl MetadataAdapter for AthenaMetadataAdapter {
     ) -> AsyncAdapterResult<'_, HashMap<String, AdapterResult<Arc<Schema>>>> {
         type Acc = HashMap<String, AdapterResult<Arc<Schema>>>;
 
-        // The Arrow schema comes from a zero-row probe: Athena returns the
-        // result-set metadata even when no rows match, and the ADBC driver
-        // maps it to an Arrow schema. The probe renders the name exactly as
-        // materializations do (quote policy included). The HashMap key must
-        // match `relation.semantic_fqn()`, so both forms are carried as a
-        // tuple.
+        // Zero-row probe still returns result metadata; the key must match semantic_fqn().
         let keys: Vec<(String, String)> = relations
             .iter()
             .map(|relation| (relation.semantic_fqn(), relation.render_self_as_str()))
@@ -326,7 +303,6 @@ impl MetadataAdapter for AthenaMetadataAdapter {
     }
 }
 
-/// The `list_relations` query for a schema, in the given catalog when there is one.
 fn list_relations_sql(catalog: &str, schema: &str) -> String {
     let schema_literal = athena_string_literal(schema);
     let catalog_filter = if catalog.is_empty() {
@@ -349,13 +325,7 @@ fn list_relations_sql(catalog: &str, schema: &str) -> String {
     )
 }
 
-/// List every table and view in a schema by querying `information_schema.tables`.
-///
-/// A schema that does not exist yields zero rows rather than an error, which
-/// is what cache hydration wants for not-yet-created target schemas. Athena's
-/// `information_schema` covers only the catalog it is read from, so it is
-/// qualified with the resolved catalog (S3 Tables: `s3tablescatalog/<bucket>`);
-/// with no resolved database, the connection's catalog is read.
+/// `information_schema.tables` for one catalog; a missing schema yields no rows.
 pub fn list_relations(
     engine: &dyn AdapterEngine,
     ctx: &QueryCtx,

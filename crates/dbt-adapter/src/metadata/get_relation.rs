@@ -986,10 +986,7 @@ fn athena_get_relation(
     identifier: &str,
     token: CancellationToken,
 ) -> AdapterResult<Option<Box<dyn BaseRelation>>> {
-    // Athena (Trino over Glue) lowercases every identifier, quoted or not, so
-    // the lookup is case-insensitive on both sides. `information_schema.tables`
-    // reports `BASE TABLE` / `VIEW`; a missing schema yields zero rows rather
-    // than an error.
+    // Athena lowercases identifiers, and a missing schema yields zero rows.
     let q_schema = athena_string_literal(schema);
     let q_ident = athena_string_literal(identifier);
     let catalog_filter = if database.is_empty() {
