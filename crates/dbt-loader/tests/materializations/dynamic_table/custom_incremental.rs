@@ -14,7 +14,6 @@ fn ci_local_config() -> LocalConfig {
         refresh_mode: Some("CUSTOM_INCREMENTAL".to_string()),
         incremental_strategy: Some("merge"),
         unique_key: Some(Value::from("id")),
-        raw_code: Some(CI_RAW_CODE),
         ..base_local_config()
     }
 }
@@ -345,17 +344,22 @@ fn ci_delete_condition_cannot_reference_the_target_row() {
 }
 
 #[test]
-fn ci_raw_changes_clause_is_rejected_with_a_hint() {
+fn ci_hand_written_changes_is_discovered_and_stored_as_written() {
+    // CHANGES written without `{{ changes() }}` is accepted: discovery starts it now, and the
+    // stored body keeps it as written.
     let fixture = fixture(None, RemoteState::default());
-    let local = LocalConfig {
-        raw_code: Some("select * from RAW.PUBLIC.ORDERS CHANGES ( INFORMATION => DEFAULT )"),
-        ..ci_local_config()
-    };
-    assert_render_error(
-        render_ci(&fixture, &local, false),
-        &fixture,
-        "{{ changes(ref(",
+    let sql =
+        "select o.id, o.amount from RAW.PUBLIC.ORDERS CHANGES ( INFORMATION => default ) as o";
+    render_sql(&fixture, &ci_local_config(), sql, false, "apply").expect("CI DT should render");
+
+    let executed = fixture.executed();
+    assert_eq!(
+        executed[0],
+        format!(
+            "create or replace temporary table {CI_TEMP_RELATION} as ( select * from ( select o.id, o.amount from RAW.PUBLIC.ORDERS CHANGES ( INFORMATION => default ) at(offset => 0) as o ) limit 0 ) ;"
+        )
     );
+    assert_eq!(executed[1], ci_ddl("create", &ci_merge_body(sql)));
 }
 
 #[test]
@@ -427,19 +431,57 @@ fn ci_strategy_is_case_insensitive() {
 }
 
 #[test]
-fn ci_ephemeral_upstream_is_rejected_before_discovery_runs() {
+fn ci_ephemeral_upstream_is_carried_into_discovery() {
+    // Discovery runs the compiled SQL, so an ephemeral model's injected CTE comes along.
     let fixture = fixture(None, RemoteState::default());
-    let local = LocalConfig {
-        raw_code: Some(
-            "select o.* from {{ changes('RAW.PUBLIC.ORDERS', 'default') }} as o join __dbt__cte__dim as d on o.id = d.id",
-        ),
-        ..ci_local_config()
-    };
-    assert_render_error(
-        render_ci(&fixture, &local, false),
-        &fixture,
-        "refs an ephemeral model",
+    let sql = "with __dbt__cte__dim as (select 1 as id) select o.* from RAW.PUBLIC.ORDERS changes(information => DEFAULT) as o join __dbt__cte__dim as d on o.id = d.id";
+    render_sql(&fixture, &ci_local_config(), sql, false, "apply").expect("CI DT should render");
+
+    let executed = fixture.executed();
+    assert_eq!(
+        executed[0],
+        format!(
+            "create or replace temporary table {CI_TEMP_RELATION} as ( select * from ( with __dbt__cte__dim as (select 1 as id) select o.* from RAW.PUBLIC.ORDERS changes(information => DEFAULT) at(offset => 0) as o join __dbt__cte__dim as d on o.id = d.id ) limit 0 ) ;"
+        )
     );
+    assert_eq!(executed[1], ci_ddl("create", &ci_merge_body(sql)));
+}
+
+#[test]
+fn ci_empty_run_keeps_the_table_name_before_hand_written_changes() {
+    // `dbt run --empty` renders the source as a zero-row subquery, which CHANGES can't follow.
+    let fixture = fixture(None, RemoteState::default());
+    let sql = "select o.id from (select * from RAW.PUBLIC.ORDERS where false limit 0) changes(information => default) as o";
+    render_run(&fixture, &ci_local_config(), sql, false, "apply", true)
+        .expect("CI DT should render");
+
+    let stored = "select o.id from RAW.PUBLIC.ORDERS changes(information => default) as o";
+    let executed = fixture.executed();
+    assert_eq!(
+        executed[0],
+        format!(
+            "create or replace temporary table {CI_TEMP_RELATION} as ( select * from ( select o.id from RAW.PUBLIC.ORDERS changes(information => default) at(offset => 0) as o ) limit 0 ) ;"
+        )
+    );
+    assert_eq!(executed[1], ci_ddl("create", &ci_merge_body(stored)));
+}
+
+#[test]
+fn ci_empty_run_leaves_the_changes_macro_form_alone() {
+    // `{{ changes() }}` renders its own empty form; only discovery's start point is added.
+    let fixture = fixture(None, RemoteState::default());
+    let sql = "select o.id from (select * from RAW.PUBLIC.ORDERS changes(information => DEFAULT) where false limit 0) as o";
+    render_run(&fixture, &ci_local_config(), sql, false, "apply", true)
+        .expect("CI DT should render");
+
+    let executed = fixture.executed();
+    assert_eq!(
+        executed[0],
+        format!(
+            "create or replace temporary table {CI_TEMP_RELATION} as ( select * from ( select o.id from (select * from RAW.PUBLIC.ORDERS changes(information => DEFAULT) at(offset => 0) where false limit 0) as o ) limit 0 ) ;"
+        )
+    );
+    assert_eq!(executed[1], ci_ddl("create", &ci_merge_body(sql)));
 }
 
 #[test]

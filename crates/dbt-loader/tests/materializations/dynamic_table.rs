@@ -14,14 +14,12 @@ use dbt_adapter_core::AdapterType;
 use dbt_agate::AgateTable;
 use dbt_jinja_utils::mock_object::MockJinjaObject;
 use dbt_schemas::dbt_types::RelationType;
-use dbt_schemas::jinja_node::LazyNodeContext;
 use dbt_schemas::schemas::common::DbtMaterialization;
 use dbt_schemas::schemas::dbt_catalogs::TableFormat;
 use dbt_schemas::schemas::project::{
     LazyWarehouseSpecificNodeConfig, ModelConfig, WarehouseSpecificNodeConfig,
 };
 use dbt_schemas::schemas::relations::SNOWFLAKE_RESOLVED_QUOTING;
-use dbt_schemas::schemas::serialization_utils::SerializationMode;
 use dbt_schemas::schemas::{
     AdapterAttr, CommonAttributes, DbtModel, DbtModelAttr, NodeBaseAttributes,
 };
@@ -41,8 +39,7 @@ const IDENTIFIER: &str = "MY_DT";
 const RENDERED_RELATION: &str = "TEST_DB.TEST_SCHEMA.MY_DT";
 const MODEL_SQL: &str = "select 1 as id";
 
-/// A CI DT model's template, and its compiled SQL as the run context passes it in `sql`.
-const CI_RAW_CODE: &str = "select o.id, o.amount, o.METADATA$ACTION = 'DELETE' as is_deleted from {{ changes('RAW.PUBLIC.ORDERS', 'default') }} as o";
+/// A CI DT model's compiled SQL, as the run context passes it in `sql`.
 const CI_SQL: &str = "select o.id, o.amount, o.METADATA$ACTION = 'DELETE' as is_deleted from RAW.PUBLIC.ORDERS changes(information => DEFAULT) as o";
 /// What CI DT column discovery reads back from the temporary relation.
 const CI_COLUMNS: &[(&str, &str)] = &[
@@ -117,13 +114,10 @@ struct LocalConfig {
     delete_condition: Option<&'static str>,
     merge_update_columns: Option<Value>,
     merge_exclude_columns: Option<Value>,
-    /// The model's template. When set, `model` is a run-time `LazyNodeContext` carrying it as
-    /// `raw_code`, which CI DT column discovery re-renders.
-    raw_code: Option<&'static str>,
 }
 
-/// The model node behind `config.model` and `model`.
-fn model_node(config: &LocalConfig) -> DbtModel {
+/// A serialized model node, built the way the run context builds `config.model`.
+fn serialized_model(config: &LocalConfig) -> Value {
     let base_attr = NodeBaseAttributes {
         adapter: AdapterType::Snowflake,
         propagate: Vec::new(),
@@ -171,7 +165,7 @@ fn model_node(config: &LocalConfig) -> DbtModel {
     .into();
     let adapter_attr = AdapterAttr::from_lazy_config_and_dialect(&wh_config, ADAPTER);
 
-    DbtModel {
+    let model = DbtModel {
         deprecated_config: ModelConfig {
             __warehouse_specific_config__: wh_config,
             ..Default::default()
@@ -183,18 +177,13 @@ fn model_node(config: &LocalConfig) -> DbtModel {
         __common_attr__: CommonAttributes {
             name: IDENTIFIER.to_string(),
             fqn: vec!["test".to_string(), IDENTIFIER.to_string()],
-            raw_code: config.raw_code.map(str::to_string),
             ..Default::default()
         },
         __adapter_attr__: adapter_attr,
         __base_attr__: base_attr,
         ..Default::default()
-    }
-}
+    };
 
-/// A serialized model node, built the way the run context builds `config.model`.
-fn serialized_model(config: &LocalConfig) -> Value {
-    let model = model_node(config);
     Value::from_serialize(dbt_common::serde_utils::convert_yml_to_value_map(
         dbt_schemas::schemas::InternalDbtNode::serialize(&model),
     ))
@@ -473,14 +462,32 @@ fn render(
     )
 }
 
-/// [`render`] with `sql` as the compiled model SQL. A `local.raw_code` makes `model` a run-time
-/// `LazyNodeContext` carrying it.
+/// [`render`] with `sql` as the compiled model SQL.
 fn render_sql(
     fixture: &Fixture,
     local: &LocalConfig,
     sql: &str,
     full_refresh: bool,
     on_configuration_change: &'static str,
+) -> dbt_common::FsResult<String> {
+    render_run(
+        fixture,
+        local,
+        sql,
+        full_refresh,
+        on_configuration_change,
+        false,
+    )
+}
+
+/// [`render_sql`] as `dbt run`, or `dbt run --empty` when `empty` (`flags.EMPTY`).
+fn render_run(
+    fixture: &Fixture,
+    local: &LocalConfig,
+    sql: &str,
+    full_refresh: bool,
+    on_configuration_change: &'static str,
+    empty: bool,
 ) -> dbt_common::FsResult<String> {
     let mut ctx = fixture
         .harness
@@ -493,12 +500,14 @@ fn render_sql(
             full_refresh,
             on_configuration_change,
         )));
-    if local.raw_code.is_some() {
-        let model =
-            LazyNodeContext::from_node(Arc::new(model_node(local)), SerializationMode::OmitNone)
-                .with_eager_nested_maps()
-                .with_original_view();
-        ctx = ctx.with("model", Value::from_object(model));
+    if empty {
+        ctx = ctx.with(
+            "flags",
+            Value::from_serialize(BTreeMap::from([
+                ("EMPTY", true),
+                ("FULL_REFRESH", full_refresh),
+            ])),
+        );
     }
     fixture.harness.render(MATERIALIZATION, ctx.build())
 }

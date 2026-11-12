@@ -86,28 +86,40 @@
 {%- endmacro %}
 
 
--- funcsign: (relation) -> list[base_column]
-{% macro snowflake__custom_incremental_discover_columns(relation) -%}
+-- funcsign: (string) -> string
+{% macro snowflake__custom_incremental_sql(sql) -%}
+{#-
+    The model SQL a CI DT is built from. Under `dbt run --empty` every ref() / source() renders as
+    `(select * from <table> where false limit 0)`, which a hand-written CHANGES clause can't follow,
+    so the plain table name is kept there. `{{ changes() }}` already renders its own empty form.
+-#}
+    {%- if flags is defined and flags.EMPTY -%}
+        {{ return(modules.re.sub(
+            '\\(select \\* from ([^()\\s]+) where false limit 0\\)(\\s+changes\\s*\\()',
+            '\\1\\2',
+            sql,
+            flags=modules.re.IGNORECASE
+        )) }}
+    {%- endif -%}
+    {{ return(sql) }}
+{%- endmacro %}
+
+
+-- funcsign: (relation, string) -> list[base_column]
+{% macro snowflake__custom_incremental_discover_columns(relation, sql) -%}
 {#-
     Learn the model's output columns, which a CI DT must declare because Snowflake cannot infer
-    them from DML. The model is rendered again with `changes()` in its discovery form (unbounded
-    CHANGES only runs inside a refresh), run zero-row into a temporary table, and described.
+    them from DML. The compiled model SQL runs zero-row into a temporary table, which is described.
+    An unbounded CHANGES only runs inside a refresh, so each `changes(information => ...)` starts
+    now here: `at(offset => 0)` returns no rows but the same columns. (A refresh body can't carry
+    AT / BEFORE / END, so none is there to collide with.)
 -#}
-    {%- set raw_code = model.get('raw_code') or '' -%}
-    {%- if modules.re.search('changes\\s*\\(\\s*information\\s*=>', raw_code, modules.re.IGNORECASE) -%}
-        {% do exceptions.raise_compiler_error(
-            "Dynamic table `" ~ relation ~ "` reads CHANGES(INFORMATION => ...) directly. dbt cannot learn the columns of a custom incremental dynamic table from raw CHANGES; read the source with `{{ changes(ref('...')) }}` or `{{ changes(source('...', '...')) }}` instead."
-        ) %}
-    {%- endif -%}
-
-    {%- do model.update({'_dbt_changes_discovery': true}) -%}
-    {%- set discovery_sql = render(raw_code) -%}
-    {%- do model.update({'_dbt_changes_discovery': false}) -%}
-    {%- if '__dbt__cte__' in discovery_sql -%}
-        {% do exceptions.raise_compiler_error(
-            "Dynamic table `" ~ relation ~ "` refs an ephemeral model, which custom incremental dynamic tables do not support yet. Materialize the upstream model as a view or table."
-        ) %}
-    {%- endif -%}
+    {%- set discovery_sql = modules.re.sub(
+        '(changes\\s*\\(\\s*information\\s*=>\\s*(?:default|append_only)\\s*\\))',
+        '\\1 at(offset => 0)',
+        sql,
+        flags=modules.re.IGNORECASE
+    ) -%}
 
     {%- set tmp_relation = make_temp_relation(relation).incorporate(type='table') -%}
     {% call statement('custom_incremental_discovery') -%}
