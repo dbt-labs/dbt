@@ -1019,21 +1019,47 @@ where
     if model_sql_files.len() < 50 {
         max_concurrency = 1;
     }
+    // Split the files into chunks, each with its own subset of node_properties. Each chunk gets
+    // its own entry: the last file with a name takes the original, earlier files with that name
+    // take a clone. Names repeat only when files share a file name (a model and its disabled
+    // copies), so nearly every entry moves. Sharing entries behind an `Arc` would not save that
+    // rare clone: rendering takes `schema_value` by value, so a shared entry would be cloned out
+    // of the `Arc` anyway.
     let chunk_size = model_sql_files.len().div_ceil(max_concurrency);
 
-    // Split node_properties into per-chunk subsets
-    let chunks: Vec<(Vec<DbtAsset>, BTreeMap<String, MinimalPropertiesEntry>)> = model_sql_files
+    let (files, mut remaining_files_per_ref_name) = model_sql_files.iter().fold(
+        (Vec::with_capacity(model_sql_files.len()), HashMap::new()),
+        |(mut files, mut remaining_files_per_ref_name), dbt_asset| {
+            let ref_name = node_name_from_path(&dbt_asset.path).unwrap();
+            *remaining_files_per_ref_name
+                .entry(ref_name)
+                .or_insert(0usize) += 1;
+            files.push((dbt_asset, ref_name));
+            (files, remaining_files_per_ref_name)
+        },
+    );
+
+    let chunks: Vec<(Vec<DbtAsset>, BTreeMap<String, MinimalPropertiesEntry>)> = files
         .chunks(chunk_size)
         .map(|chunk| {
-            let chunk_vec = chunk.to_vec();
+            let mut chunk_assets = Vec::with_capacity(chunk.len());
             let mut chunk_props = BTreeMap::new();
-            for dbt_asset in &chunk_vec {
-                let ref_name = node_name_from_path(&dbt_asset.path).unwrap();
-                if let Some(entry) = node_properties.get(ref_name) {
-                    chunk_props.insert(ref_name.to_string(), entry.clone());
+            for &(dbt_asset, ref_name) in chunk {
+                chunk_assets.push(dbt_asset.clone());
+                let remaining_files = remaining_files_per_ref_name
+                    .get_mut(ref_name)
+                    .expect("every ref name in `files` was counted");
+                *remaining_files -= 1;
+                let entry = if *remaining_files == 0 {
+                    node_properties.remove(ref_name)
+                } else {
+                    node_properties.get(ref_name).cloned()
+                };
+                if let Some(entry) = entry {
+                    chunk_props.insert(ref_name.to_string(), entry);
                 }
             }
-            (chunk_vec, chunk_props)
+            (chunk_assets, chunk_props)
         })
         .collect();
 
