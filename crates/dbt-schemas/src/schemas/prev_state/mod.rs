@@ -140,6 +140,30 @@ fn unrendered_hook_value_eq(a: Option<&dbt_yaml::Value>, b: Option<&dbt_yaml::Va
     unrendered_value_eq(a, b)
 }
 
+/// Compare the relation parts (`database` and `schema`) of two source versions.
+///
+/// Each part compares through its unrendered value when both versions carry one,
+/// and through the rendered base value otherwise. dbt-core compares the two
+/// fields independently, so a source with an unrendered `database` but no
+/// `schema` still compares its database (gh-17121).
+fn source_relation_parts_eq(current: &DbtSource, previous: &DbtSource) -> (bool, bool) {
+    let db_eq = match (
+        &current.__source_attr__.unrendered_database,
+        &previous.__source_attr__.unrendered_database,
+    ) {
+        (Some(current), Some(previous)) => current == previous,
+        _ => current.__base_attr__.database == previous.__base_attr__.database,
+    };
+    let schema_eq = match (
+        &current.__source_attr__.unrendered_schema,
+        &previous.__source_attr__.unrendered_schema,
+    ) {
+        (Some(current), Some(previous)) => current == previous,
+        _ => current.__base_attr__.schema == previous.__base_attr__.schema,
+    };
+    (db_eq, schema_eq)
+}
+
 /// Builds a source's unique_id the way dbt-core does: resource type, package name, source
 /// name and table name joined with `.`, all verbatim
 /// (`core/dbt/parser/schemas.py`, `add_source_definitions`).
@@ -822,32 +846,19 @@ impl StateArtifacts {
             // If so, we need to compare them and use unrendered keys.
             //
             // Each field gates itself: dbt-core compares `unrendered_database` and
-            // `unrendered_schema` independently, so a source without a `schema` still
-            // compares its `database` unrendered. Gating both fields together made
-            // such sources fall back to the rendered `database`, which differs across
-            // targets when it comes from `env_var()` (gh-17121).
-            let unrendered_database_in_both =
-                current_source.__source_attr__.unrendered_database.is_some()
-                    && previous_source
-                        .__source_attr__
-                        .unrendered_database
-                        .is_some();
-            let unrendered_schema_in_both =
-                current_source.__source_attr__.unrendered_schema.is_some()
-                    && previous_source.__source_attr__.unrendered_schema.is_some();
-            if unrendered_database_in_both || unrendered_schema_in_both {
-                let db_eq = if unrendered_database_in_both {
-                    current_source.__source_attr__.unrendered_database
-                        == previous_source.__source_attr__.unrendered_database
-                } else {
-                    current_node.base().database == previous_node.base().database
-                };
-                let schema_eq = if unrendered_schema_in_both {
-                    current_source.__source_attr__.unrendered_schema
-                        == previous_source.__source_attr__.unrendered_schema
-                } else {
-                    current_node.base().schema == previous_node.base().schema
-                };
+            // `unrendered_schema` independently (`source_relation_parts_eq`), so a
+            // source without a `schema` still compares its `database` unrendered.
+            // Gating both fields together regressed sources whose `database` comes
+            // from `env_var()` and renders differently across targets (gh-17121).
+            if (current_source.__source_attr__.unrendered_database.is_some()
+                && previous_source
+                    .__source_attr__
+                    .unrendered_database
+                    .is_some())
+                || (current_source.__source_attr__.unrendered_schema.is_some()
+                    && previous_source.__source_attr__.unrendered_schema.is_some())
+            {
+                let (db_eq, schema_eq) = source_relation_parts_eq(current_source, previous_source);
                 let alias_eq = get(current_uc, "alias") == get(previous_uc, "alias");
                 let is_same_relation = db_eq && schema_eq && alias_eq;
 
