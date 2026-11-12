@@ -1,0 +1,8 @@
+kind: Fixes
+body: Carry ref/source/function dependencies declared inside an overloaded UDF's
+  overload body onto the root function node, so they are not dropped from the DAG
+  when the overload SQL file is absorbed
+time: 2026-07-10T12:18:00.000000000Z
+custom:
+    Author: aahel
+    Issue: "15501"
