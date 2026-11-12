@@ -1,0 +1,7 @@
+kind: Fixes
+body: Harden path handling so that a snapshot's compiled output path is always resolved
+  and validated against its expected base directory before being written
+time: 2026-10-26T12:00:00.000000+00:00
+custom:
+    Author: ash2shukla
+    Issue: ""
