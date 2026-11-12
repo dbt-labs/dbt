@@ -492,6 +492,84 @@ async fn adapters_snowflake_custom_incremental_dynamic_table_no_change_tracking(
     .await
 }
 
+/// A custom incremental dynamic table with `snowflake_dynamic_table_create_or_alter` on: model SQL
+/// edits deploy through CREATE OR ALTER (for changes made after them), a switch to a regular
+/// dynamic table and back replaces.
+#[dbt_runtime::test]
+async fn adapters_snowflake_custom_incremental_dynamic_table_create_or_alter() -> FsResult<()> {
+    const ORDERS: &str = "models/orders_merge.sql";
+    run_fs_record_replay_task_seq(
+        env!("CARGO_MANIFEST_DIR"),
+        &FS_RUNNER,
+        current_function_name!(),
+        "tests/data/adapter/custom_incremental_dynamic_table_create_or_alter",
+        AdapterType::Snowflake.as_ref(),
+        None,
+        &[
+            AdapterRecordReplayTurn::new("run-operation set_up", &[]), // run_0: source table
+            AdapterRecordReplayTurn::new("run", &[]), // run_1: CREATE, columns discovered
+            AdapterRecordReplayTurn::new("run-operation apply_changes", &[]), // run_2
+            AdapterRecordReplayTurn::new("run", &[]), // run_3: CREATE OR ALTER, manual refresh
+            AdapterRecordReplayTurn::new("test --select tag:after_refresh", &[]), // run_4
+            AdapterRecordReplayTurn::new(
+                "run",
+                &[FileOverride {
+                    original: ORDERS,
+                    overriding_file: "_project_overrides/orders_merge_body_edit.sql",
+                }],
+            ), // run_5: body edit (appends a column) via CREATE OR ALTER
+            AdapterRecordReplayTurn::new("run-operation apply_more_changes", &[]), // run_6
+            AdapterRecordReplayTurn::new("run", &[]), // run_7: the edited body merges the change
+            AdapterRecordReplayTurn::new("test --select tag:after_body_edit", &[]), // run_8
+            AdapterRecordReplayTurn::new(
+                "run",
+                &[FileOverride {
+                    original: ORDERS,
+                    overriding_file: "_project_overrides/orders_merge_regular.sql",
+                }],
+            ), // run_9: CI DT -> regular DT replaces
+            AdapterRecordReplayTurn::new(
+                "run",
+                &[FileOverride {
+                    original: ORDERS,
+                    overriding_file: "_project_overrides/orders_merge_custom_incremental.sql",
+                }],
+            ), // run_10: regular DT -> CI DT replaces
+            AdapterRecordReplayTurn::new("test --select tag:after_switch_back", &[]), // run_11
+        ],
+        None,
+        &[],
+    )
+    .await
+}
+
+/// Custom incremental dynamic tables reading their change source through `{{ changes() }}`, through
+/// CHANGES written by hand, and joined to an ephemeral model, under `dbt run --empty` and a normal
+/// run.
+#[dbt_runtime::test]
+async fn adapters_snowflake_custom_incremental_dynamic_table_changes_forms() -> FsResult<()> {
+    run_fs_record_replay_task_seq(
+        env!("CARGO_MANIFEST_DIR"),
+        &FS_RUNNER,
+        current_function_name!(),
+        "tests/data/adapter/custom_incremental_dynamic_table_changes_forms",
+        AdapterType::Snowflake.as_ref(),
+        None,
+        &[
+            AdapterRecordReplayTurn::new("run-operation set_up", &[]), // run_0: source tables
+            AdapterRecordReplayTurn::new("run --empty", &[]), // run_1: every form builds empty
+            AdapterRecordReplayTurn::new("test --select tag:after_empty", &[]), // run_2: no rows
+            AdapterRecordReplayTurn::new("run --full-refresh", &[]), // run_3: real bodies
+            AdapterRecordReplayTurn::new("run-operation apply_changes", &[]), // run_4
+            AdapterRecordReplayTurn::new("run", &[]),         // run_5: no-op build, manual refresh
+            AdapterRecordReplayTurn::new("test --exclude tag:after_empty", &[]), // run_6: rows per form
+        ],
+        None,
+        &[],
+    )
+    .await
+}
+
 #[dbt_runtime::test]
 async fn adapters_snowflake_seed_datatypes() -> FsResult<()> {
     run_fs_record_replay_task_seq(

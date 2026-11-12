@@ -1,0 +1,17 @@
+flags:
+  send_anonymous_usage_stats: false
+name: test
+profile: fusion_tests
+
+macro-paths: ["macros"]
+
+models:
+  test:
+    +static_analysis: off
+    +materialized: dynamic_table
+    +snowflake_warehouse: FUSION_SLT_WAREHOUSE
+    +refresh_mode: CUSTOM_INCREMENTAL
+    +incremental_strategy: merge
+    +unique_key: order_id
+    customers_dim:
+      +materialized: ephemeral

@@ -1,0 +1,23 @@
+test.test.empty_run_builds_empty_tables:
+- sequence: 0
+  type: execute
+  sql: |-
+    select
+    count(*) as failures,
+    count(*) != 0 as should_warn,
+    count(*) != 0 as should_error
+    from (
+    
+    
+    
+    -- After dbt run --empty (and the manual refresh scheduler = 'DISABLE' implies), every form is
+    -- built empty although the sources have rows.
+    select 'orders_macro' as model, order_id from development.adapters_snowflake_custom_incremental_dynamic_table_changes_forms.orders_macro
+    union all
+    select 'orders_hand_written', order_id from development.adapters_snowflake_custom_incremental_dynamic_table_changes_forms.orders_hand_written
+    union all
+    select 'orders_with_region', order_id from development.adapters_snowflake_custom_incremental_dynamic_table_changes_forms.orders_with_region
+    
+    
+    
+    ) dbt_internal_test

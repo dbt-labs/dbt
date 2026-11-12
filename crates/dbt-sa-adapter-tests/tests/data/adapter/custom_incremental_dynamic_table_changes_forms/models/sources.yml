@@ -1,0 +1,6 @@
+sources:
+  - name: raw
+    schema: "{{ target.schema }}"
+    tables:
+      - name: orders
+      - name: customers

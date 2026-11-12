@@ -1,0 +1,12 @@
+1c109b01:
+- sequence: 0
+  type: execute
+  sql: INSERT INTO development.adapters_snowflake_custom_incremental_dynamic_table_create_or_alter.orders VALUES (4, 40.00)
+8320a1da:
+- sequence: 0
+  type: execute
+  sql: UPDATE development.adapters_snowflake_custom_incremental_dynamic_table_create_or_alter.orders SET amount = 15.00 WHERE order_id = 1
+91f0bdd4:
+- sequence: 0
+  type: execute
+  sql: DELETE FROM development.adapters_snowflake_custom_incremental_dynamic_table_create_or_alter.orders WHERE order_id = 2

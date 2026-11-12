@@ -1,0 +1,82 @@
+test.test.orders_hand_written_rows:
+- sequence: 0
+  type: execute
+  sql: |-
+    select
+    count(*) as failures,
+    count(*) != 0 as should_warn,
+    count(*) != 0 as should_error
+    from (
+    
+    
+    -- After --full-refresh, apply_changes and a refresh: order 1 updated, order 3 inserted.
+    with expected as (
+    select * from values (1, 15.00), (2, 20.00), (3, 30.00) as t (order_id, amount)
+    ),
+    
+    actual as (
+    select order_id, amount from development.adapters_snowflake_custom_incremental_dynamic_table_changes_forms.orders_hand_written
+    )
+    
+    (select 'missing' as problem, * from expected minus select 'missing', * from actual)
+    union all
+    (select 'unexpected' as problem, * from actual minus select 'unexpected', * from expected)
+    
+    
+    
+    ) dbt_internal_test
+test.test.orders_macro_rows:
+- sequence: 0
+  type: execute
+  sql: |-
+    select
+    count(*) as failures,
+    count(*) != 0 as should_warn,
+    count(*) != 0 as should_error
+    from (
+    
+    
+    -- After --full-refresh, apply_changes and a refresh: order 1 updated, order 3 inserted.
+    with expected as (
+    select * from values (1, 15.00), (2, 20.00), (3, 30.00) as t (order_id, amount)
+    ),
+    
+    actual as (
+    select order_id, amount from development.adapters_snowflake_custom_incremental_dynamic_table_changes_forms.orders_macro
+    )
+    
+    (select 'missing' as problem, * from expected minus select 'missing', * from actual)
+    union all
+    (select 'unexpected' as problem, * from actual minus select 'unexpected', * from expected)
+    
+    
+    
+    ) dbt_internal_test
+test.test.orders_with_region_rows:
+- sequence: 0
+  type: execute
+  sql: |-
+    select
+    count(*) as failures,
+    count(*) != 0 as should_warn,
+    count(*) != 0 as should_error
+    from (
+    
+    
+    -- After --full-refresh, apply_changes and a refresh, joined to the ephemeral customers_dim.
+    with expected as (
+    select * from values (1, 15.00, 'EU'), (2, 20.00, 'US'), (3, 30.00, 'APAC')
+    as t (order_id, amount, region)
+    ),
+    
+    actual as (
+    select order_id, amount, region from development.adapters_snowflake_custom_incremental_dynamic_table_changes_forms.orders_with_region
+    )
+    
+    (select 'missing' as problem, * from expected minus select 'missing', * from actual)
+    union all
+    (select 'unexpected' as problem, * from actual minus select 'unexpected', * from expected)
+    
+    
+    
+    ) dbt_internal_test

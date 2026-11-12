@@ -1,0 +1,24 @@
+4a2a66a0:
+- sequence: 0
+  type: execute
+  sql: INSERT INTO development.adapters_snowflake_custom_incremental_dynamic_table_changes_forms.customers VALUES (10, 'EU'), (20, 'US'), (30, 'APAC')
+84bdc9d1:
+- sequence: 0
+  type: execute
+  sql: USE DATABASE development
+a3ed8ba4:
+- sequence: 0
+  type: execute
+  sql: CREATE OR REPLACE TABLE development.adapters_snowflake_custom_incremental_dynamic_table_changes_forms.customers (customer_id int, region varchar(8)) CHANGE_TRACKING = TRUE
+a489a5ca:
+- sequence: 0
+  type: execute
+  sql: INSERT INTO development.adapters_snowflake_custom_incremental_dynamic_table_changes_forms.orders VALUES (1, 10, 10.00), (2, 20, 20.00)
+a9cdb650:
+- sequence: 0
+  type: execute
+  sql: CREATE OR ALTER SCHEMA development.adapters_snowflake_custom_incremental_dynamic_table_changes_forms
+f4e739a9:
+- sequence: 0
+  type: execute
+  sql: CREATE OR REPLACE TABLE development.adapters_snowflake_custom_incremental_dynamic_table_changes_forms.orders (order_id int, customer_id int, amount number(10,2)) CHANGE_TRACKING = TRUE
