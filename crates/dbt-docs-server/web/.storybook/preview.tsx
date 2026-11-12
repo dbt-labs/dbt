@@ -1,20 +1,23 @@
 import { useState, type ReactNode } from 'react';
 import { HelmetProvider } from 'react-helmet-async';
 import { MemoryRouter } from 'react-router-dom';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import {
+  LinkPrefixProvider,
+  MetadataDataProvider,
+  QueryClient,
+  QueryClientProvider,
+  ReactFlow,
+  ReactFlowProvider,
+} from 'dbt-docs-lib';
 import { withThemeByClassName } from '@storybook/addon-themes';
 import type { Decorator, Preview } from '@storybook/react-vite';
 
 import { BootstrapProvider } from '../src/lib/bootstrapContext';
-import {
-  LinkPrefixProvider,
-  MetadataDataProvider,
-  type MetadataDataSource,
-} from '../src/shared';
+import { RouterNavigationProvider } from '../src/lib/routerNavigation';
+import { type MetadataDataSource } from '../src/shared';
 import type { BootstrapData } from '../src/shared/data-sources/duckdb/bootstrap';
 import { storyBootstrapData } from '../src/shared/testing/storyFixtures';
 import { storyDataSource } from '../src/shared/testing/storySources';
-import { ReactFlow, ReactFlowProvider } from '@xyflow/react';
 
 // The whole app stylesheet: biga tokens, dbt-dag's react-flow CSS, sourdough, tailwind,
 // then `app.css`. Components here are styled almost entirely by CSS custom properties
@@ -72,7 +75,7 @@ function Providers({
             <BootstrapProvider value={read}>
               <ReactFlowProvider>
                 <MemoryRouter initialEntries={initialEntries ?? ['/']}>
-                  {children}
+                  <RouterNavigationProvider>{children}</RouterNavigationProvider>
                 </MemoryRouter>
               </ReactFlowProvider>
             </BootstrapProvider>

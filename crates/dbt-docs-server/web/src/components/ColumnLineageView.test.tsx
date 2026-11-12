@@ -7,8 +7,8 @@ import { ColumnLineageMini } from './ColumnLineageView';
 // Capture the node ids the subgraph hands to ReactFlow so we can assert it
 // was built from `graph.edges` (not reconstructed by string-parsing).
 const dagNodeIds = vi.fn<(ids: string[]) => void>();
-vi.mock('@xyflow/react', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@xyflow/react')>();
+vi.mock('dbt-docs-lib', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('dbt-docs-lib')>();
   return {
     ...actual,
     ReactFlow: ({ nodes }: { nodes: Array<{ id: string }> }) => {

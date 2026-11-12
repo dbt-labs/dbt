@@ -1,6 +1,7 @@
+import type { Asset, Relation } from 'dbt-docs-lib/domain';
+
 import type { ResourceTypeExplorer } from '../../lib/resourceType';
 import type { AssetHeaderProps } from '../components/AssetHeader';
-import type { Asset, Relation } from '../typings/domain/asset';
 
 function relationOf(asset: Asset): Relation | null {
   return 'relation' in asset ? (asset.relation ?? null) : null;

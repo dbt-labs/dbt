@@ -20,9 +20,9 @@ use dbt_jinja_utils::listener::JinjaTypeCheckingEventListenerFactory;
 use dbt_jinja_utils::node_resolver::{
     NodeResolver, PackageSearchOrder, check_for_model_deprecations, resolve_dependencies,
 };
+use dbt_jinja_utils::phases::AdapterScopes;
 use dbt_jinja_utils::phases::parse::{
-    ParseAdapterScopes, build_docs_jinja_environment, build_docs_resolve_context,
-    build_resolve_context,
+    build_docs_jinja_environment, build_docs_resolve_context, build_resolve_context,
 };
 use dbt_jinja_utils::serde::into_typed_with_jinja;
 use dbt_jinja_utils::utils::dependency_package_name_from_ctx;
@@ -58,6 +58,7 @@ use dbt_schemas::state::{DbtRuntimeConfig, Operations};
 use dbt_schemas::state::{DbtState, ResolverState};
 use minijinja::constants::CURRENT_PATH;
 use minijinja::dispatch_object::{get_adapter_prefixes, get_internal_packages};
+use minijinja::value::OverlayMap;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -183,7 +184,7 @@ pub async fn resolve(
     inject_default_overview(&mut macros.docs_macros);
 
     let adapter_type = dbt_state.dbt_profile.default_db_config().adapter_type();
-    let parse_adapter_scopes = Arc::new(ParseAdapterScopes::from_profile(&dbt_state.dbt_profile));
+    let parse_adapter_scopes = Arc::new(AdapterScopes::from_profile(&dbt_state.dbt_profile));
     arg.profile_adapter_types = Some(dbt_state.dbt_profile.adapter_types());
 
     // Build the root project config
@@ -471,7 +472,7 @@ pub async fn resolve(
     } else {
         None
     };
-    check_compute_platform_upstreams(&nodes, catalogs)?;
+    check_compute_platform_upstreams(&nodes, catalogs, dbt_state.dbt_profile.default_adapter)?;
 
     // Check access
     let nodes_with_access_errors = check_access(&nodes, &all_runtime_configs);
@@ -781,6 +782,47 @@ pub fn unit_test_macro_override_warnings(
         .collect()
 }
 
+/// Report selected unit tests of LakeCompute models that run on another adapter.
+/// Call after scheduling, before running tasks, so promoted warnings stop the run.
+pub fn lake_compute_unit_test_warnings(
+    command: FsCommand,
+    nodes: &Nodes,
+    selected_nodes: &BTreeSet<String>,
+) -> Vec<FsError> {
+    if !matches!(command, FsCommand::Build | FsCommand::Test) {
+        return vec![];
+    }
+    nodes
+        .unit_tests
+        .iter()
+        .filter(|(id, _)| selected_nodes.contains(*id))
+        .filter_map(|(_, unit_test)| {
+            let model = nodes
+                .models
+                .get(unit_test.tested_node_unique_id.as_deref()?)?;
+            let adapter = unit_test.node_adapter();
+            if model.node_adapter() != AdapterType::LakeCompute
+                || adapter == AdapterType::LakeCompute
+            {
+                return None;
+            }
+            Some(
+                FsError::new(
+                    ErrorCode::LakeComputeUnitTestOnDefaultAdapter,
+                    format!(
+                        "Unit test '{}' tests the LakeCompute model '{}', but it runs on the \
+                         default adapter '{adapter}'. dbt renders the model as {adapter} SQL, with \
+                         {adapter}'s `target` and macros, and runs it on {adapter}, not as \
+                         LakeCompute SQL. The test does not check what LakeCompute runs.",
+                        unit_test.__common_attr__.name, model.__common_attr__.name,
+                    ),
+                )
+                .with_location(unit_test.__common_attr__.original_file_path.to_path_buf()),
+            )
+        })
+        .collect()
+}
+
 fn unit_test_sql_macro(
     env: &minijinja::Environment<'_>,
     adapter_type: AdapterType,
@@ -790,12 +832,11 @@ fn unit_test_sql_macro(
     use minijinja::Value;
     use minijinja::constants::{DIALECT, TARGET_PACKAGE_NAME};
     use minijinja::dispatch_object::macro_namespace_template_resolver;
-    use minijinja::value::mutable_map::MutableMap;
 
     let dialect = adapter_type.as_ref();
-    let context = MutableMap::new();
-    context.insert(Value::from(DIALECT), Value::from(dialect));
-    context.insert(Value::from(TARGET_PACKAGE_NAME), Value::from(package_name));
+    let mut context = OverlayMap::default();
+    context.insert(DIALECT, Value::from(dialect));
+    context.insert(TARGET_PACKAGE_NAME, Value::from(package_name));
     let state = env.new_state_with_context(context);
     let direct = macro_namespace_template_resolver(&state, "get_unit_test_sql", &mut vec![])?;
     let internal_packages = get_internal_packages(dialect);
@@ -902,7 +943,7 @@ pub async fn resolve_inner(
     root_package_name: &str,
     root_project_configs: &RootProjectConfigs,
     adapter_type: AdapterType,
-    parse_adapter_scopes: &Arc<ParseAdapterScopes>,
+    parse_adapter_scopes: &Arc<AdapterScopes>,
     macros: &Macros,
     jinja_env: Arc<JinjaEnv>,
     mut node_resolver: NodeResolver,
@@ -935,14 +976,14 @@ pub async fn resolve_inner(
         .get_macro_namespace_registry()
         .map(|r| r.keys().map(|k| k.to_string()).collect())
         .unwrap_or_default();
-    let base_ctx = build_resolve_context(
+    let base_ctx = Arc::new(build_resolve_context(
         root_package_name,
         package.dbt_project.name.as_str(),
         &macros.docs_macros,
         DISPATCH_CONFIG.get().unwrap().read().unwrap().clone(),
         namespace_keys,
         Some(root_runtime_config.clone()),
-    );
+    ));
     // Resolve the dbt properties (schema.yml) files
     let mut min_properties = resolve_minimal_properties(
         arg,
@@ -973,21 +1014,31 @@ pub async fn resolve_inner(
 
     let semantic_layer_spec_is_legacy = min_properties.semantic_layer_spec_is_legacy;
 
+    // TODO: this eager pass should not exist. Only semantic model and metric resolution read
+    // `typed_models_properties`, so it should be a lazy closure that types only the models
+    // with `semantic_model` or `metrics`, called by those two readers.
+    // It must stay eager over every model for now because of two side effects:
+    // - It is the only pass that renders the properties of SQL models with `CURRENT_PATH` set,
+    //   so it is the only emitter of their missing `doc()` warnings (see the TODO in
+    //   `DocMacro`). The render pass in `resolve_models` does not set the path, so it stays
+    //   silent for them.
+    // - It fails the parse on a hard Jinja or typing error in any model's YAML before other
+    //   resources resolve, including entries with no model file.
+    // Removing it means the parallel render pass must emit those warnings instead, and the
+    // errors surface later or not at all. That is a breaking change that needs explicit handling.
     for (model_name, minimal_model_props) in &min_properties.models {
-        // Update base context with the relative yaml file path.
+        // Layer the relative yaml file path over the shared base context.
         // We do this for accurate error reporting.
-        let base_ctx = {
-            let mut base_ctx = base_ctx.clone();
-            base_ctx.insert(
-                CURRENT_PATH.to_string(),
-                minijinja::Value::from(minimal_model_props.relative_path.to_string_lossy()),
-            );
-            base_ctx
-        };
+        let mut model_ctx =
+            OverlayMap::new(minijinja::Value::from_dyn_object(Arc::clone(&base_ctx)));
+        model_ctx.insert(
+            CURRENT_PATH,
+            minijinja::Value::from(minimal_model_props.relative_path.to_string_lossy()),
+        );
 
         // Legacy semantic layer projects use a different `metrics` spec, so drop the key
         // rather than deserializing it against the current schema.
-        let mut model_yml = minimal_model_props.clone().schema_value;
+        let mut model_yml = minimal_model_props.schema_value.clone();
         if semantic_layer_spec_is_legacy && let Some(m) = model_yml.as_mapping_mut() {
             m.remove("metrics");
         }
@@ -996,7 +1047,7 @@ pub async fn resolve_inner(
             model_yml,
             false,
             &jinja_env,
-            &base_ctx,
+            &model_ctx,
             &[],
             dependency_package_name,
             // HACK: to avoid duplicate errors due to multiple parses of model yaml properties (once here and once in resolve_models)
@@ -1004,7 +1055,11 @@ pub async fn resolve_inner(
             false,
         )?;
 
-        typed_models_properties.insert(model_name.clone(), typed_model_props);
+        // Only semantic model and metric resolution read this map, and both skip
+        // models that declare neither, so keep only the models they need.
+        if typed_model_props.semantic_model.is_some() || typed_model_props.metrics.is_some() {
+            typed_models_properties.insert(model_name.clone(), typed_model_props);
+        }
     }
 
     // Resolve sources based on the dbt_state, database, schema, and project name
@@ -1095,8 +1150,8 @@ pub async fn resolve_inner(
     nodes.groups.extend(groups);
     disabled_nodes.groups.extend(disabled_groups);
 
-    // Resolve SQLs and get nodes and rendered SQLs except refs and sources
-    let (models, rendering_results, disabled_models) = resolve_models(
+    // Resolve SQLs and get nodes except refs and sources
+    let (models, disabled_models) = resolve_models(
         arg,
         package,
         package_quoting,
@@ -1357,9 +1412,8 @@ pub async fn resolve_inner(
     }
 
     let collector = RenderResults {
-        rendering_results: rendering_results
+        rendering_results: analyses_rendering_results
             .into_iter()
-            .chain(analyses_rendering_results)
             .chain(checks_rendering_results)
             .chain(functions_rendering_results)
             .collect(),
@@ -1378,8 +1432,6 @@ pub async fn resolve_inner(
 }
 
 fn catalog_is_lake_compute_reachable(catalogs: &DbtCatalogs, name: &str) -> FsResult<bool> {
-    use dbt_schemas::schemas::dbt_catalogs::CatalogType;
-
     let view = catalogs.view()?;
     // Catalog names are validated as unique before resolution, so this lookup
     // has at most one matching declaration.
@@ -1387,40 +1439,23 @@ fn catalog_is_lake_compute_reachable(catalogs: &DbtCatalogs, name: &str) -> FsRe
         // Preserve the historical permissive behavior for an unknown catalog.
         return Ok(true);
     };
-
-    if !catalog.catalog_type.lake_compute_can_read() {
-        return Ok(false);
-    }
-
-    Ok(match catalog.catalog_type {
-        CatalogType::Glue => {
-            catalog.config_block("lakecompute").is_some()
-                || catalog.config_block("snowflake").is_some()
-        }
-        CatalogType::Unity => catalog.config_block("lakecompute").is_some(),
-        CatalogType::Horizon | CatalogType::IcebergRest | CatalogType::SnowflakeBuiltIn => {
-            catalog.config_block("snowflake").is_some()
-        }
-        _ => false,
-    })
+    Ok(catalog.lake_compute_can_read())
 }
 
-/// Returns `true` if `upstream` is readable as an input for a node running on
-/// `lake_compute`.
+/// Returns `true` if `upstream` is readable as an input for a node running on `lake_compute`.
 ///
-/// Where a `catalog_name` is declared, it decides: a BigQuery model landing
-/// in a lake-compute-readable catalog is a legal input, while a Snowflake
-/// model in warehouse-native storage is not. Without a `catalog_name`, Iceberg
-/// is reachable, and so is Databricks managed Delta when a declared attach
-/// covers it (see [`databricks_lands_delta`]); other warehouses' native
-/// storage is not.
+/// A BigQuery upstream is readable only under a BigQuery `default_adapter` (the profile's
+/// default adapter), and then only when [`DbtModel::is_bigquery_managed_iceberg_table`] holds.
+/// Under any other default it is never readable: `table_format: iceberg` and `catalog_name`
+/// cannot make it so, because only a BigQuery target attaches the project it lives in.
 ///
-/// Where a catalog name cannot be resolved (no `catalogs.yml`, or a name that
-/// is not a v2 catalog), a named catalog stays permissive, so this only ever
-/// tightens on positive knowledge.
+/// Other upstreams are readable through a reachable named catalog, Iceberg storage, or
+/// Databricks managed Delta covered by a declared attach (see [`databricks_lands_delta`]). An
+/// unresolved catalog name stays permissive.
 fn upstream_is_catalog_reachable(
     upstream: &DbtModel,
     catalogs: Option<&DbtCatalogs>,
+    default_adapter: AdapterType,
 ) -> FsResult<bool> {
     let attr = &upstream.__model_attr__;
 
@@ -1439,6 +1474,17 @@ fn upstream_is_catalog_reachable(
         DbtMaterialization::View | DbtMaterialization::Ephemeral
     ) {
         return Ok(false);
+    }
+
+    if upstream.node_adapter() == AdapterType::Bigquery {
+        // A BigQuery-adapter upstream is executed and published by BigQuery, so nothing
+        // reaches it through the MDLS namespace. Only a BigQuery target attaches its
+        // project, which makes it unreadable under any other default whatever its
+        // `catalog_name` says: an unresolved name is not evidence of a reachable table.
+        if default_adapter != AdapterType::Bigquery {
+            return Ok(false);
+        }
+        return upstream.is_bigquery_managed_iceberg_table(catalogs);
     }
 
     match attr.catalog_name.as_deref() {
@@ -1566,6 +1612,7 @@ fn check_upstreams_reachable(
     depends_on: &[String],
     nodes: &Nodes,
     catalogs: Option<&DbtCatalogs>,
+    default_adapter: AdapterType,
 ) -> FsResult<()> {
     for upstream_id in depends_on {
         let upstream_model = nodes.models.get(upstream_id);
@@ -1577,7 +1624,7 @@ fn check_upstreams_reachable(
             // source-resolution phase report its own error.
             Ok(true)
         } else if let Some(up) = upstream_model {
-            upstream_is_catalog_reachable(up, catalogs)
+            upstream_is_catalog_reachable(up, catalogs, default_adapter)
         } else if let Some(seed) = nodes.seeds.get(upstream_id) {
             seed_upstream_is_catalog_reachable(seed, catalogs)
         } else {
@@ -1608,10 +1655,35 @@ fn check_upstreams_reachable(
             // misleading if that config is already set and just being
             // ignored. Name the real fix instead.
             if let Some(up) = upstream_model {
-                if matches!(
+                let no_storage = matches!(
                     up.base().materialized,
                     DbtMaterialization::View | DbtMaterialization::Ephemeral
-                ) {
+                );
+                if up.node_adapter() == AdapterType::Bigquery {
+                    return err!(
+                        ErrorCode::InvalidConfig,
+                        "{} '{}' runs on adapter: '{}' but its {} {}",
+                        node_label,
+                        unique_id,
+                        AdapterType::LakeCompute.as_ref(),
+                        if no_storage {
+                            format!(
+                                "upstream '{upstream_id}' materializes as '{}', which has no physical storage format \
+                                 and so it can never be catalog-reachable.",
+                                up.base().materialized
+                            )
+                        } else {
+                            format!(
+                                "BigQuery upstream '{upstream_id}' is not reachable through a catalog."
+                            )
+                        },
+                        format!(
+                            "Materialize '{upstream_id}' as 'table' or 'incremental' with 'catalog_name' set to a \
+                             'biglake_metastore' catalog whose 'bigquery' config has no 'lakehouse_catalog', \
+                             and make BigQuery the profile's default adapter, or run '{unique_id}' on BigQuery."
+                        )
+                    );
+                } else if no_storage {
                     return err!(
                         ErrorCode::InvalidConfig,
                         "{} '{}' runs on adapter: '{}' but its upstream '{}' \
@@ -1683,6 +1755,7 @@ fn check_upstreams_reachable(
 pub fn check_compute_platform_upstreams(
     nodes: &Nodes,
     catalogs: Option<&DbtCatalogs>,
+    default_adapter: AdapterType,
 ) -> FsResult<()> {
     for (unique_id, model) in nodes.models.iter() {
         if model.node_adapter() != AdapterType::LakeCompute {
@@ -1694,6 +1767,7 @@ pub fn check_compute_platform_upstreams(
             &model.__base_attr__.depends_on.nodes,
             nodes,
             catalogs,
+            default_adapter,
         )?;
     }
     for (unique_id, test) in nodes.tests.iter() {
@@ -1706,6 +1780,7 @@ pub fn check_compute_platform_upstreams(
             &test.__base_attr__.depends_on.nodes,
             nodes,
             catalogs,
+            default_adapter,
         )?;
     }
     Ok(())
@@ -1752,7 +1827,7 @@ async fn resolve_package(
     root_project_name: String,
     root_project_configs: Arc<RootProjectConfigs>,
     adapter_type: AdapterType,
-    parse_adapter_scopes: &Arc<ParseAdapterScopes>,
+    parse_adapter_scopes: &Arc<AdapterScopes>,
     macros: &Macros,
     jinja_env: Arc<JinjaEnv>,
     node_resolver: NodeResolver,
@@ -1842,7 +1917,7 @@ async fn resolve_package_waves(
     root_project_name: &str,
     root_project_configs: Arc<RootProjectConfigs>,
     adapter_type: AdapterType,
-    parse_adapter_scopes: Arc<ParseAdapterScopes>,
+    parse_adapter_scopes: Arc<AdapterScopes>,
     macros: &Macros,
     jinja_env: Arc<JinjaEnv>,
     node_resolver: &mut NodeResolver,
@@ -2274,6 +2349,75 @@ mod tests {
         }
     }
 
+    mod lake_compute_unit_test_warnings {
+        use std::collections::BTreeSet;
+        use std::sync::Arc;
+
+        use dbt_adapter_core::AdapterType;
+        use dbt_common::{ErrorCode, io_args::FsCommand};
+        use dbt_schemas::schemas::{DbtModel, DbtUnitTest, Nodes};
+
+        use super::super::lake_compute_unit_test_warnings;
+
+        fn nodes() -> Nodes {
+            let mut nodes = Nodes::default();
+            for (name, adapter) in [
+                ("lc", AdapterType::LakeCompute),
+                ("sf", AdapterType::Snowflake),
+            ] {
+                let mut model = DbtModel::default();
+                model.__common_attr__.unique_id = format!("model.root.{name}");
+                model.__common_attr__.name = name.to_string();
+                model.__base_attr__.adapter = adapter;
+                nodes
+                    .models
+                    .insert(model.__common_attr__.unique_id.clone(), Arc::new(model));
+            }
+            for (name, adapter, tested) in [
+                ("lc_on_default", AdapterType::Snowflake, Some("lc")),
+                ("lc_on_lakecompute", AdapterType::LakeCompute, Some("lc")),
+                ("sf_on_default", AdapterType::Snowflake, Some("sf")),
+                ("untested", AdapterType::Snowflake, None),
+            ] {
+                let mut unit_test = DbtUnitTest::default();
+                unit_test.__common_attr__.unique_id = format!("unit_test.root.{name}");
+                unit_test.__common_attr__.name = name.to_string();
+                unit_test.__base_attr__.adapter = adapter;
+                unit_test.tested_node_unique_id = tested.map(|model| format!("model.root.{model}"));
+                nodes.unit_tests.insert(
+                    unit_test.__common_attr__.unique_id.clone(),
+                    Arc::new(unit_test),
+                );
+            }
+            nodes
+        }
+
+        #[test]
+        fn only_selected_lakecompute_subjects_off_lakecompute_warn() {
+            let nodes = nodes();
+            let all: BTreeSet<String> = nodes.unit_tests.keys().cloned().collect();
+            let mut unselected = all.clone();
+            unselected.remove("unit_test.root.lc_on_default");
+            for command in [FsCommand::Build, FsCommand::Test] {
+                let warnings = lake_compute_unit_test_warnings(command, &nodes, &all);
+                assert_eq!(warnings.len(), 1);
+                assert_eq!(
+                    warnings[0].code,
+                    ErrorCode::LakeComputeUnitTestOnDefaultAdapter
+                );
+                assert!(lake_compute_unit_test_warnings(command, &nodes, &unselected).is_empty());
+            }
+            for command in [
+                FsCommand::Run,
+                FsCommand::Compile,
+                FsCommand::Parse,
+                FsCommand::List,
+            ] {
+                assert!(lake_compute_unit_test_warnings(command, &nodes, &all).is_empty());
+            }
+        }
+    }
+
     /// When a project defines no {% docs %} blocks, `doc.dbt.__overview__`
     /// must be present in the manifest so the dbt Docs HTML doesn't crash.
     #[test]
@@ -2473,6 +2617,166 @@ mod tests {
         assert!(catalog_is_lake_compute_reachable(&declared, "unknown").unwrap());
     }
 
+    #[test]
+    fn check_compute_platform_upstreams_bigquery_models() {
+        use super::check_compute_platform_upstreams;
+        use dbt_adapter_core::AdapterType;
+        use dbt_schemas::schemas::{
+            DbtModel, DbtTest, Nodes, common::DbtMaterialization, dbt_catalogs::DbtCatalogs,
+        };
+        use std::sync::Arc;
+        let value: dbt_yaml::Value = dbt_yaml::from_str(
+            r#"
+catalogs:
+  - name: bq
+    type: biglake_metastore
+    table_format: iceberg
+    config:
+      bigquery:
+        external_volume: gs://example-bucket
+        file_format: parquet
+"#,
+        )
+        .unwrap();
+        let catalogs = DbtCatalogs::new(value.as_mapping().unwrap().clone(), value.span().clone());
+        // `as_test` is this check's own dimension: models and tests are both checked, and the
+        // hint names the node kind it rejected. Which upstreams classify as reachable is
+        // `DbtModel::is_bigquery_managed_iceberg_table`'s test.
+        for as_test in [false, true] {
+            for (catalog_name, format, materialized, accepted, rejected_because) in [
+                (Some("bq"), None, DbtMaterialization::Table, true, ""),
+                (
+                    Some("bq"),
+                    None,
+                    DbtMaterialization::View,
+                    false,
+                    "has no physical storage format",
+                ),
+                (
+                    None,
+                    Some("iceberg"),
+                    DbtMaterialization::Table,
+                    false,
+                    "is not reachable through a catalog",
+                ),
+            ] {
+                let mut parent = DbtModel::default();
+                parent.__base_attr__.adapter = AdapterType::Bigquery;
+                parent.__model_attr__.catalog_name = catalog_name.map(str::to_string);
+                parent.__model_attr__.table_format = format.map(str::to_string);
+                parent.__base_attr__.materialized = materialized.clone();
+                let mut nodes = Nodes::default();
+                nodes
+                    .models
+                    .insert("model.test.parent".into(), Arc::new(parent));
+                if as_test {
+                    let mut child = DbtTest::default();
+                    child.__base_attr__.adapter = AdapterType::LakeCompute;
+                    child.__base_attr__.depends_on.nodes = vec!["model.test.parent".into()];
+                    nodes
+                        .tests
+                        .insert("test.test.child".into(), Arc::new(child));
+                } else {
+                    let mut child = DbtModel::default();
+                    child.__base_attr__.adapter = AdapterType::LakeCompute;
+                    child.__base_attr__.depends_on.nodes = vec!["model.test.parent".into()];
+                    nodes
+                        .models
+                        .insert("model.test.child".into(), Arc::new(child));
+                }
+                let result = check_compute_platform_upstreams(
+                    &nodes,
+                    Some(&catalogs),
+                    AdapterType::Bigquery,
+                );
+                assert_eq!(
+                    result.is_ok(),
+                    accepted,
+                    "as_test={as_test} {catalog_name:?} {format:?} {materialized:?}"
+                );
+                if let Err(error) = result {
+                    assert!(
+                        error.context.contains(rejected_because),
+                        "{catalog_name:?} {format:?}: {}",
+                        error.context
+                    );
+                    let unique_id = if as_test {
+                        "test.test.child"
+                    } else {
+                        "model.test.child"
+                    };
+                    assert!(error.context.contains(&format!(
+                        "Materialize 'model.test.parent' as 'table' or 'incremental' with 'catalog_name' set to a 'biglake_metastore' catalog whose 'bigquery' config has no 'lakehouse_catalog', and make BigQuery the profile's default adapter, or run '{unique_id}' on BigQuery."
+                    )));
+                }
+            }
+        }
+        // Under a non-BigQuery default adapter a BigQuery upstream is never readable: only a
+        // BigQuery target attaches the project it lives in, and BigQuery built the table, so
+        // nothing reaches it through the MDLS namespace. These rows pin the caller's own rule,
+        // which the predicate cannot state: an unresolved `catalog_name` is not evidence of a
+        // reachable table, and `table_format: iceberg` does not rescue one either.
+        for (catalog_name, format) in [
+            (Some("unknown"), None),
+            (None, None),
+            (Some("bq"), None),
+            (None, Some("iceberg")),
+        ] {
+            let mut parent = DbtModel::default();
+            parent.__base_attr__.adapter = AdapterType::Bigquery;
+            parent.__base_attr__.materialized = DbtMaterialization::Table;
+            parent.__model_attr__.catalog_name = catalog_name.map(str::to_string);
+            parent.__model_attr__.table_format = format.map(str::to_string);
+            let mut child = DbtModel::default();
+            child.__base_attr__.adapter = AdapterType::LakeCompute;
+            child.__base_attr__.depends_on.nodes = vec!["model.test.parent".into()];
+            let mut nodes = Nodes::default();
+            nodes
+                .models
+                .insert("model.test.parent".into(), Arc::new(parent));
+            nodes
+                .models
+                .insert("model.test.child".into(), Arc::new(child));
+            let result =
+                check_compute_platform_upstreams(&nodes, Some(&catalogs), AdapterType::Snowflake);
+            assert!(
+                result.is_err(),
+                "{catalog_name:?} {format:?}: a BigQuery upstream is unreadable under a non-BigQuery default"
+            );
+            let context = result.unwrap_err().context;
+            assert!(
+                context.contains("is not reachable through a catalog"),
+                "{catalog_name:?} {format:?}: {context}"
+            );
+            // The CLI test that asserted this remedy end to end is gone: a fixture that
+            // declares a BigLake catalog cannot make another adapter the default, since
+            // the default adapter has to map that catalog.
+            assert!(
+                context.contains("make BigQuery the profile's default adapter"),
+                "{catalog_name:?} {format:?}: {context}"
+            );
+        }
+        for available in [None, Some(&catalogs)] {
+            let mut parent = DbtModel::default();
+            parent.__base_attr__.adapter = AdapterType::Bigquery;
+            parent.__base_attr__.materialized = DbtMaterialization::Table;
+            parent.__model_attr__.catalog_name = Some("unknown".into());
+            let mut child = DbtModel::default();
+            child.__base_attr__.adapter = AdapterType::LakeCompute;
+            child.__base_attr__.depends_on.nodes = vec!["model.test.parent".into()];
+            let mut nodes = Nodes::default();
+            nodes
+                .models
+                .insert("model.test.parent".into(), Arc::new(parent));
+            nodes
+                .models
+                .insert("model.test.child".into(), Arc::new(child));
+            assert!(
+                check_compute_platform_upstreams(&nodes, available, AdapterType::Bigquery).is_err()
+            );
+        }
+    }
+
     /// WS1 rule 5: an `adapter: lake_compute` model requires each of its model upstreams to
     /// be reachable through a catalog; a plain warehouse-native upstream is
     /// rejected, while catalog-backed / Iceberg / lake compute upstreams pass.
@@ -2528,7 +2832,7 @@ mod tests {
             nodes
                 .models
                 .insert(upstream_uid.to_string(), Arc::new(upstream));
-            check_compute_platform_upstreams(&nodes, None)
+            check_compute_platform_upstreams(&nodes, None, AdapterType::Snowflake)
         };
 
         // Catalog-backed / Iceberg / dbt upstreams are reachable.
@@ -2591,7 +2895,7 @@ mod tests {
         nodes
             .models
             .insert(upstream_uid.to_string(), Arc::new(upstream));
-        assert!(check_compute_platform_upstreams(&nodes, None).is_ok());
+        assert!(check_compute_platform_upstreams(&nodes, None, AdapterType::Snowflake).is_ok());
 
         // A `source.*` upstream is skipped (validated elsewhere), so no error even
         // though it is not present in `nodes.models`.
@@ -2606,7 +2910,7 @@ mod tests {
         nodes
             .models
             .insert(consumer_uid.to_string(), Arc::new(consumer));
-        assert!(check_compute_platform_upstreams(&nodes, None).is_ok());
+        assert!(check_compute_platform_upstreams(&nodes, None, AdapterType::Snowflake).is_ok());
     }
 
     /// A Databricks upstream that lands as managed Delta (see
@@ -2650,7 +2954,7 @@ mod tests {
             model.__model_attr__.table_format = table_format.map(str::to_string);
             // Parsing under a Databricks default adapter resolves Databricks attrs.
             model.__adapter_attr__ =
-                AdapterAttr::default().with_databricks_attr(Some(Box::new(DatabricksAttr {
+                AdapterAttr::default().with_databricks_attr(Some(Arc::new(DatabricksAttr {
                     file_format: file_format.map(str::to_string),
                     ..Default::default()
                 })));
@@ -2690,7 +2994,7 @@ mod tests {
             nodes
                 .models
                 .insert(upstream_uid.to_string(), Arc::new(upstream));
-            check_compute_platform_upstreams(&nodes, catalogs)
+            check_compute_platform_upstreams(&nodes, catalogs, Snowflake)
         };
 
         let declared = attach_catalogs("quack_demo", true);
@@ -2850,9 +3154,19 @@ mod tests {
             Arc::new(model_upstream()),
         );
         let blockless = catalogs(false);
-        assert!(check_compute_platform_upstreams(&model_nodes, Some(&blockless)).is_err());
+        assert!(
+            check_compute_platform_upstreams(
+                &model_nodes,
+                Some(&blockless),
+                AdapterType::Snowflake
+            )
+            .is_err()
+        );
         let declared = catalogs(true);
-        assert!(check_compute_platform_upstreams(&model_nodes, Some(&declared)).is_ok());
+        assert!(
+            check_compute_platform_upstreams(&model_nodes, Some(&declared), AdapterType::Snowflake)
+                .is_ok()
+        );
 
         let mut seed = DbtSeed {
             __common_attr__: CommonAttributes {
@@ -2873,8 +3187,14 @@ mod tests {
         seed_nodes
             .seeds
             .insert("seed.test.raw".to_string(), Arc::new(seed));
-        assert!(check_compute_platform_upstreams(&seed_nodes, Some(&blockless)).is_err());
-        assert!(check_compute_platform_upstreams(&seed_nodes, Some(&declared)).is_ok());
+        assert!(
+            check_compute_platform_upstreams(&seed_nodes, Some(&blockless), AdapterType::Snowflake)
+                .is_err()
+        );
+        assert!(
+            check_compute_platform_upstreams(&seed_nodes, Some(&declared), AdapterType::Snowflake)
+                .is_ok()
+        );
 
         let mut source = DbtSource::default();
         source.__common_attr__.unique_id = "source.test.raw".to_string();
@@ -2887,10 +3207,22 @@ mod tests {
         source_nodes
             .sources
             .insert("source.test.raw".to_string(), Arc::new(source));
-        let error = check_compute_platform_upstreams(&source_nodes, Some(&blockless)).unwrap_err();
+        let error = check_compute_platform_upstreams(
+            &source_nodes,
+            Some(&blockless),
+            AdapterType::Snowflake,
+        )
+        .unwrap_err();
         assert!(error.to_string().contains("source"));
         assert!(error.to_string().contains("catalog declaration"));
-        assert!(check_compute_platform_upstreams(&source_nodes, Some(&declared)).is_ok());
+        assert!(
+            check_compute_platform_upstreams(
+                &source_nodes,
+                Some(&declared),
+                AdapterType::Snowflake
+            )
+            .is_ok()
+        );
     }
 
     /// WS1 rule 5 for a `view`/`ephemeral` upstream: `catalog_name` and
@@ -2951,7 +3283,7 @@ mod tests {
             nodes
                 .models
                 .insert(upstream_uid.to_string(), Arc::new(upstream));
-            check_compute_platform_upstreams(&nodes, None)
+            check_compute_platform_upstreams(&nodes, None, AdapterType::Snowflake)
         };
 
         // A `view` upstream declaring `table_format: iceberg` is still
@@ -3055,7 +3387,7 @@ mod tests {
             seed_uid.to_string(),
             Arc::new(make_seed(AdapterType::LakeCompute, None)),
         );
-        assert!(check_compute_platform_upstreams(&nodes, None).is_ok());
+        assert!(check_compute_platform_upstreams(&nodes, None, AdapterType::Snowflake).is_ok());
 
         // A plain warehouse-native seed (no `lake_compute`, no `catalog_name`) is
         // rejected, same as a plain warehouse-native model would be.
@@ -3067,6 +3399,6 @@ mod tests {
             seed_uid.to_string(),
             Arc::new(make_seed(AdapterType::Snowflake, None)),
         );
-        assert!(check_compute_platform_upstreams(&nodes, None).is_err());
+        assert!(check_compute_platform_upstreams(&nodes, None, AdapterType::Snowflake).is_err());
     }
 }

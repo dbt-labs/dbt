@@ -1,25 +1,28 @@
+import type { MetadataDataSource } from 'dbt-docs-lib';
+import type {
+  Asset,
+  AssetCounts,
+  AssetSummary,
+  Capabilities,
+  Distribution,
+  ExecutionInfo,
+  Facets,
+  FileEntry,
+  ModelAsset,
+  ModelSummary,
+  Project,
+  ProjectOverview,
+  ResourceType,
+  SearchFacets,
+  SearchHit,
+  SearchResult,
+} from 'dbt-docs-lib/domain';
+
 // Imported only so the `{@link LIST_REGISTRY}` reference below resolves; eslint
 // cannot see JSDoc links as usage.
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 import { LIST_REGISTRY } from '../data-sources/duckdb/lists';
-import type { MetadataDataSource } from '../data-sources/MetadataDataSource';
 import type { AssetArgs } from '../typings/args';
-import type {
-  Asset,
-  AssetSummary,
-  ModelAsset,
-  ModelSummary,
-  ResourceType,
-} from '../typings/domain/asset';
-import type { Capabilities } from '../typings/domain/capabilities';
-import type { AssetCounts } from '../typings/domain/counts';
-import type { Distribution } from '../typings/domain/distribution';
-import type { ExecutionInfo } from '../typings/domain/executionInfo';
-import type { Facets } from '../typings/domain/facets';
-import type { FileEntry } from '../typings/domain/files';
-import type { ProjectOverview } from '../typings/domain/overview';
-import type { Project } from '../typings/domain/project';
-import type { SearchFacets, SearchHit, SearchResult } from '../typings/domain/search';
 import type { Page } from '../typings/page';
 
 /** An {@link Asset} optionally carrying execution state, used by the fake to

@@ -1,7 +1,7 @@
 import { useMemo } from 'react';
 import { useParams } from 'react-router-dom';
-import { useQueries } from '@tanstack/react-query';
 import { type ColumnDef } from '@tanstack/react-table';
+import { useMetadataDataSource, useQueries } from 'dbt-docs-lib';
 import { Clock, Copy, Table } from 'lucide-react';
 
 import type { ResourceTypeExplorer } from '../lib/resourceType';
@@ -16,7 +16,6 @@ import {
   DetailsSection,
   NodeStatusIconBadge,
   TimestampCell,
-  useMetadataDataSource,
 } from '../shared';
 import { type NodeSummary } from '../types';
 import { ResourceFilterTable } from './ResourceFilterTable';

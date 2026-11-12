@@ -1,0 +1,6 @@
+---
+source: fs/sa/crates/dbt-adapter/tests/duckdb_attach.rs
+input_file: fs/sa/crates/dbt-adapter/tests/data/duckdb_attach/ducklake_minimal/catalogs.yml
+---
+INSTALL ducklake
+ATTACH IF NOT EXISTS 'ducklake:metadata.db' AS lake_demo

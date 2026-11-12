@@ -407,20 +407,10 @@ pub fn new_arrow_field_with_metadata(
 pub fn get_input_schema_database_and_table<'a>(
     relation: &'a Arc<dyn BaseRelation>,
 ) -> AdapterResult<(Cow<'a, str>, Cow<'a, str>, Cow<'a, str>)> {
-    let table_name = relation.semantic_fqn();
-
-    let parts: Vec<&str> = table_name.split('.').collect();
-    if parts.len() != 3 {
-        return Err(AdapterError::new(
-            AdapterErrorKind::UnexpectedResult,
-            format!("Invalid table name format: {table_name}"),
-        ));
-    }
-    // database will be used as an identifier
-    let database = table_name.split('.').next().ok_or_else(|| {
+    let database = relation.database_as_resolved_str().map_err(|e| {
         AdapterError::new(
             AdapterErrorKind::UnexpectedResult,
-            "relation database should not be None",
+            format!("relation database should not be None: {e}"),
         )
     })?;
 
@@ -438,13 +428,14 @@ pub fn get_input_schema_database_and_table<'a>(
         )
     })?;
 
-    Ok((input_schema, Cow::Owned(database.to_owned()), input_table))
+    Ok((input_schema, database, input_table))
 }
 
-/// Builds and returns ([WhereClausesByDb], [RelationsByDb]) from a list of [BaseRelation]
-/// [WhereClausesByDb] maps databases to statements that select their schema+tables in the relation
-/// [RelationsByDb] keys the database to the cloned [BaseRelation]
-/// We expect a fqn from the relation in format <database>.<schema>.<table>
+/// Builds and returns ([WhereClausesByDb], [RelationsByDb]) from a list of [BaseRelation].
+/// Both maps use the relation's resolved, unquoted database name as the key;
+/// consumers must render that key safely before interpolating it into SQL.
+/// [WhereClausesByDb] maps databases to escaped schema/table predicates, and
+/// [RelationsByDb] maps databases to the cloned relations.
 pub fn build_relation_clauses(
     relations: &[Arc<dyn BaseRelation>],
 ) -> AdapterResult<(WhereClausesByDb, RelationsByDb)> {
@@ -453,6 +444,10 @@ pub fn build_relation_clauses(
     let mut relations_by_database = BTreeMap::new();
     for relation in relations {
         let (input_schema, database, input_table) = get_input_schema_database_and_table(relation)?;
+        let adapter_type = relation.adapter_type();
+        let input_schema =
+            dbt_adapter_sql::ident::escape_string_literal(&input_schema, adapter_type);
+        let input_table = dbt_adapter_sql::ident::escape_string_literal(&input_table, adapter_type);
 
         where_clauses_by_database
             .entry(database.as_ref().to_owned())
@@ -503,7 +498,6 @@ mod tests {
     use super::*;
     use crate::relation::Relation;
     use dbt_schemas::schemas::relations::DEFAULT_RESOLVED_QUOTING;
-    use dbt_test_primitives::assert_contains;
 
     #[test]
     fn test_build_relation_clauses() {
@@ -542,38 +536,40 @@ mod tests {
         // Test where clauses
         assert_eq!(where_clauses.len(), 2);
         assert_eq!(
-            where_clauses.get("\"db1\"").unwrap(),
+            where_clauses.get("db1").unwrap(),
             &vec![
                 "table_schema = 'schema1' and table_name = 'table1'",
                 "table_schema = 'schema2' and table_name = 'table2'"
             ]
         );
         assert_eq!(
-            where_clauses.get("\"db2\"").unwrap(),
+            where_clauses.get("db2").unwrap(),
             &vec!["table_schema = 'schema1' and table_name = 'table3'"]
         );
 
         // Test relations by database
         assert_eq!(relations_by_db.len(), 2);
-        assert_eq!(relations_by_db.get("\"db1\"").unwrap().len(), 2);
-        assert_eq!(relations_by_db.get("\"db2\"").unwrap().len(), 1);
+        assert_eq!(relations_by_db.get("db1").unwrap().len(), 2);
+        assert_eq!(relations_by_db.get("db2").unwrap().len(), 1);
     }
 
     #[test]
-    fn test_build_relation_clauses_invalid_fqn() {
+    fn test_build_relation_clauses_escapes_untrusted_components() {
         let relations = vec![Arc::new(
             Relation::new(
                 AdapterType::Snowflake,
-                "invalid.fqn".to_string(), // This will cause an error as it contains a dot
-                "schema1".to_string(),
-                "table1".to_string(),
+                "db.with.dot".to_string(),
+                r"schema\name'".to_string(),
+                "table'; select 1; --".to_string(),
             )
             .with_quoting(DEFAULT_RESOLVED_QUOTING),
         ) as Arc<dyn BaseRelation>];
 
-        let result = build_relation_clauses(&relations);
-        assert!(result.is_err());
-        assert_contains!(result.unwrap_err().to_string(), "Invalid table name format");
+        let (where_clauses, _) = build_relation_clauses(&relations).unwrap();
+        assert_eq!(
+            where_clauses.get("db.with.dot").unwrap(),
+            &[r"table_schema = 'schema\\name''' and table_name = 'table''; select 1; --'"]
+        );
     }
 
     #[test]

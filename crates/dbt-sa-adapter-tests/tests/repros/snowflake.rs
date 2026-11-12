@@ -258,3 +258,16 @@ async fn snowflake_microbatch_full_refresh_guard() -> FsResult<()> {
     )
     .await
 }
+
+/// From https://github.com/dbt-labs/dbt/issues/16596
+/// With an enforced contract whose column order differs from the model SQL,
+/// the second run's `insert overwrite ... select *` maps columns by position.
+#[dbt_runtime::test]
+async fn snowflake_insert_overwrite_contract_column_order() -> FsResult<()> {
+    run_fs_record_replay_snowflake(
+        current_function_name!(),
+        "tests/data/repros/snowflake_insert_overwrite_contract_column_order",
+        &["run", "run"],
+    )
+    .await
+}

@@ -11,7 +11,7 @@
  Succeeded batch 2025-01-03 of snowflake_microbatch_full_refresh_guard.microbatch_guard [1 of 2 in duration]
    Started batch 2025-01-04 of snowflake_microbatch_full_refresh_guard.microbatch_guard [2 of 2]
  Succeeded batch 2025-01-04 of snowflake_microbatch_full_refresh_guard.microbatch_guard [2 of 2 in duration]
- Succeeded model snowflake_microbatch_full_refresh_guard.microbatch_guard (incremental) [2 of 2 in duration]
+ Succeeded model snowflake_microbatch_full_refresh_guard.microbatch_guard (incremental) [2 of 2 in duration, 2 rows]
 ==================== Execution Summary =====================
 Finished 'run' successfully for target 'snowflake' [duration]
 Processed: 2 models

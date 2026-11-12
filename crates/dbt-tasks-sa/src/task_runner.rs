@@ -15,7 +15,7 @@ use dbt_common::tracing::dbt_emit::emit_error_log_from_fs_error;
 use dbt_common::tracing::span_info::{SpanStatusRecorder, record_span_status_with_attrs};
 use dbt_dag::schedule::Schedule;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
-use dbt_jinja_utils::phases::insert_adapter_overlay;
+use dbt_jinja_utils::phases::NodeAdapterGlobals;
 use dbt_jinja_utils::phases::run::reset_result_store;
 use dbt_scheduler::schedule::summarize_stats;
 use dbt_schema_store::DataStoreTrait;
@@ -39,6 +39,7 @@ use dbt_tasks_core::{CompiledSqlCache, PreTaskRunData};
 use dbt_telemetry::{ExecutionPhase, PhaseExecuted};
 use dbt_telemetry::{HookOutcome, HookProcessed, HookType};
 
+use minijinja::value::OverlayMap;
 use petgraph::Graph;
 use tracing::Instrument;
 use tracing::instrument;
@@ -227,7 +228,10 @@ impl TaskRunner {
                 freshness_results,
                 Arc::clone(&self.static_analysis_buckets),
                 Arc::clone(&self.adapter),
-                Arc::clone(&self.adapter_store),
+                NodeAdapterGlobals::new(
+                    Arc::clone(&self.adapter_store),
+                    &self.resolved_state.dbt_profile,
+                ),
                 self.run_cache.clone(),
                 shared_event_order,
             )
@@ -260,8 +264,8 @@ impl TaskRunner {
 
     async fn register_schemas(
         &self,
+        ctx: &TaskRunnerCtx,
         schedule: &Schedule<String>,
-        base_context: BTreeMap<String, minijinja::Value>,
     ) -> FsResult<()> {
         // Walking the schedule is pure in-memory work; only the adapter calls
         // below talk to the warehouse and need the blocking pool.
@@ -272,9 +276,10 @@ impl TaskRunner {
         );
         // One adapter at a time, so a recorded run keeps its order.
         for (adapter_type, selected_catalog_schemas) in groups {
-            let adapter = self.adapter_store.get(adapter_type)?;
-            let mut group_context = base_context.clone();
-            insert_adapter_overlay(&mut group_context, adapter_type, &self.adapter_store)?;
+            let adapter = ctx.adapter_store().get(adapter_type)?;
+            let mut group_context = ctx.base_context_overlay();
+            ctx.adapter_globals()
+                .insert_for_connection(&mut group_context, adapter_type)?;
             self.register_adapter_schemas(adapter, selected_catalog_schemas, group_context)
                 .await?;
         }
@@ -285,7 +290,7 @@ impl TaskRunner {
         &self,
         adapter: Arc<Adapter>,
         selected_catalog_schemas: BTreeMap<String, BTreeMap<String, String>>,
-        base_context: BTreeMap<String, minijinja::Value>,
+        base_context: OverlayMap,
     ) -> FsResult<()> {
         let jinja_env = Arc::clone(&self.jinja_env);
         let filter_adapter = Arc::clone(&adapter);
@@ -337,7 +342,6 @@ impl TaskRunner {
         mut self,
         run_task_args: Arc<RunTasksArgs>,
         schedule: Schedule<String>,
-        base_context: BTreeMap<String, minijinja::Value>,
         mut ctx: TaskRunnerCtx,
         graph: Graph<Arc<dyn Task>, ()>,
         has_dynamic_closure: bool,
@@ -347,7 +351,7 @@ impl TaskRunner {
 
         let registered_schemas = if self.should_register_schemas(run_task_args.as_ref(), &schedule)
         {
-            self.register_schemas(&schedule, base_context).await?;
+            self.register_schemas(&ctx, &schedule).await?;
             true
         } else {
             false
@@ -361,7 +365,7 @@ impl TaskRunner {
 
         // Create span for on-run-start phase if there are any hooks
         let on_run_start_span = if should_run_on_run_start_hooks(
-            run_task_args.infer_schemas_and_typeless,
+            run_task_args.infer_schemas_and_typeless || run_task_args.skip_on_run_start_hooks,
             !self.resolved_state.operations.on_run_start.is_empty(),
         ) {
             Some(create_info_span(PhaseExecuted::start_with_node_count(

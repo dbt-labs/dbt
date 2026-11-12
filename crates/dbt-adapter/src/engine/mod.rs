@@ -9,15 +9,16 @@ use dbt_adbc::*;
 use dbt_common::AdapterResult;
 use dbt_common::cancellation::CancellationToken;
 
+pub use dbt_adapter_engine::Options;
 pub use dbt_adapter_engine::noop_connection::NoopConnection;
 pub use dbt_adapter_engine::query_comment;
 pub use dbt_adapter_engine::retry;
 pub use dbt_adapter_engine::sidecar_client::ColumnInfo;
 pub use dbt_adapter_engine::sidecar_client::SidecarClient;
+pub use dbt_adapter_engine::sidecar_client::sidecar_relation_name;
 
 mod adapter_engine;
 pub use adapter_engine::AdapterEngine;
-pub use adapter_engine::Options;
 
 mod adbc;
 pub use adbc::AdbcEngine;
@@ -28,9 +29,6 @@ pub use record_replay::RecordReplayEngine;
 
 mod sidecar;
 pub use sidecar::SidecarEngine;
-
-pub(crate) mod clickhouse;
-pub(crate) mod duckdb;
 
 /// Execute query and retry in case of an error. Retry is done (up to
 /// the given limit) regardless of the error encountered.

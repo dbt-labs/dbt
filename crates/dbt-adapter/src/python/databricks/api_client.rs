@@ -19,6 +19,7 @@ const USER_AGENT: &str = "dbt-fs";
 const REQUEST_TIMEOUT_SECS: u64 = 60;
 const POLL_INTERVAL_SECS: u64 = 10;
 const CLUSTER_POLL_INTERVAL_SECS: u64 = 5;
+const JOBS_RESET_ENDPOINT: &str = "/api/2.1/jobs/reset";
 
 pub(crate) struct DatabricksApiClient {
     agent: Agent,
@@ -631,18 +632,18 @@ impl DatabricksApiClient {
         Ok(response.job_id)
     }
 
-    /// https://docs.databricks.com/api/workspace/jobs/update
+    /// Overwrites all settings of the job, like dbt-databricks `update_job_settings`:
+    /// https://github.com/databricks/dbt-databricks/blob/8fb1f22/dbt/adapters/databricks/api_client.py#L836
+    /// https://docs.databricks.com/api/workspace/jobs/reset
     pub(crate) fn update_workflow(
         &self,
         job_id: u64,
         workflow_spec: serde_json::Value,
     ) -> AdapterResult<()> {
-        let mut payload = workflow_spec;
-        if let serde_json::Value::Object(ref mut map) = payload {
-            map.insert("job_id".to_string(), json!(job_id));
-        }
-
-        self.post_json::<serde_json::Value>("/api/2.1/jobs/update", payload)?;
+        self.post_json::<serde_json::Value>(
+            JOBS_RESET_ENDPOINT,
+            json!({ "job_id": job_id, "new_settings": workflow_spec }),
+        )?;
         Ok(())
     }
 
@@ -747,19 +748,33 @@ struct RunWorkflowResponse {
 mod tests {
     use super::*;
     use std::collections::VecDeque;
-    use std::io::{BufRead, BufReader, Write};
-    use std::net::{TcpListener, TcpStream};
-    use std::sync::{Arc, Mutex};
+    use std::sync::Mutex;
+    use std::sync::mpsc::{Receiver, Sender, channel};
     use ureq::SendBody;
     use ureq::middleware::{Middleware, MiddlewareNext};
 
-    /// Answers `responses` in order and records "METHOD path" lines.
+    /// What the fake received, in order, as ("METHOD path", request body).
+    struct Calls(Receiver<(String, String)>);
+
+    impl Calls {
+        /// Everything received since the last call.
+        fn take(&self) -> Vec<(String, String)> {
+            self.0.try_iter().collect()
+        }
+
+        /// The "METHOD path" of everything received since the last call.
+        fn lines(&self) -> Vec<String> {
+            self.take().into_iter().map(|(line, _)| line).collect()
+        }
+    }
+
+    /// Answers `responses` in order and records each request.
     ///
     /// The handler returns the body itself and does not continue the ureq chain, so the
     /// client never resolves a host or opens a socket.
     struct ScriptedApi {
         responses: Mutex<VecDeque<(u16, &'static str)>>,
-        requests: Arc<Mutex<Vec<String>>>,
+        calls: Sender<(String, String)>,
     }
 
     impl Middleware for ScriptedApi {
@@ -768,12 +783,15 @@ mod tests {
             request: http::Request<SendBody>,
             _next: MiddlewareNext,
         ) -> Result<http::Response<Body>, UreqError> {
-            let method = request.method();
-            let path = request.uri().path();
-            self.requests
-                .lock()
-                .unwrap()
-                .push(format!("{method} {path}"));
+            let (parts, body) = request.into_parts();
+            let mut sent = String::new();
+            body.into_reader()
+                .read_to_string(&mut sent)
+                .expect("request body");
+            // A test that ignores the calls may have dropped its receiver.
+            let _ = self
+                .calls
+                .send((format!("{} {}", parts.method, parts.uri.path()), sent));
 
             let (status, body) = self
                 .responses
@@ -789,15 +807,13 @@ mod tests {
         }
     }
 
-    fn fake_databricks_scripted(
-        responses: Vec<(u16, &'static str)>,
-    ) -> (DatabricksApiClient, Arc<Mutex<Vec<String>>>) {
-        let requests = Arc::new(Mutex::new(Vec::new()));
+    fn fake_databricks(responses: Vec<(u16, &'static str)>) -> (DatabricksApiClient, Calls) {
+        let (sender, receiver) = channel();
         let agent = Agent::config_builder()
             .http_status_as_error(false)
             .middleware(ScriptedApi {
                 responses: Mutex::new(responses.into()),
-                requests: requests.clone(),
+                calls: sender,
             })
             .build()
             .into();
@@ -809,114 +825,39 @@ mod tests {
             cached_user: RefCell::new(None),
             cluster_poll_interval: Duration::from_millis(1),
         };
-        (client, requests)
+        (client, Calls(receiver))
     }
 
-    fn fake_databricks(
-        responses: Vec<(u16, &'static str)>,
-    ) -> (DatabricksApiClient, Arc<Mutex<Vec<String>>>) {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let base_url = format!("http://{}", listener.local_addr().unwrap());
-        let requests = Arc::new(Mutex::new(Vec::new()));
-        let seen = requests.clone();
-        thread::spawn(move || {
-            for ((status, body), stream) in responses.into_iter().zip(listener.incoming()) {
-                let mut stream = stream.unwrap();
-                let mut reader = BufReader::new(&stream);
-                let mut request_line = String::new();
-                reader.read_line(&mut request_line).unwrap();
-                let mut content_length = 0;
-                loop {
-                    let mut header = String::new();
-                    reader.read_line(&mut header).unwrap();
-                    let header = header.trim_end();
-                    if header.is_empty() {
-                        break;
-                    }
-                    if let Some((name, value)) = header.split_once(':')
-                        && name.eq_ignore_ascii_case("content-length")
-                    {
-                        content_length = value.trim().parse().unwrap();
-                    }
-                }
-                reader.read_exact(&mut vec![0; content_length]).unwrap();
-                let mut parts = request_line.split(' ');
-                let (method, path) = (parts.next().unwrap(), parts.next().unwrap());
-                let path = path.split('?').next().unwrap();
-                seen.lock().unwrap().push(format!("{method} {path}"));
-                write!(
-                    stream,
-                    "HTTP/1.1 {status} X\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                    body.len()
-                )
-                .unwrap();
-            }
-        });
-        let client = DatabricksApiClient {
-            agent: Agent::config_builder()
-                .http_status_as_error(false)
-                .build()
-                .into(),
-            base_url,
-            auth_header: "Bearer test".to_string(),
-            use_user_folder: false,
-            cached_user: RefCell::new(None),
-            cluster_poll_interval: Duration::from_millis(1),
-        };
-        (client, requests)
+    #[test]
+    fn update_workflow_resets_job_with_spec_under_new_settings() {
+        let (client, calls) = fake_databricks(vec![(200, "{}")]);
+        let spec = json!({"name": "j", "tasks": [{"notebook_task": {"notebook_path": "/b/m"}}]});
+        client.update_workflow(7, spec.clone()).unwrap();
+        let calls = calls.take();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "POST /api/2.1/jobs/reset");
+        let body: serde_json::Value = serde_json::from_str(&calls[0].1).unwrap();
+        assert_eq!(body, json!({"job_id": 7, "new_settings": spec}));
     }
 
     const GET: &str = "GET /api/2.0/clusters/get";
     const START: &str = "POST /api/2.0/clusters/start";
 
     #[test]
-    fn fake_databricks_responds_only_after_the_full_request_body() {
-        let (client, requests) = fake_databricks(vec![(200, "{}")]);
-        let address = client.base_url.strip_prefix("http://").unwrap();
-        let mut stream = TcpStream::connect(address).unwrap();
-        let body = r#"{"cluster_id":"c1"}"#;
-        write!(
-            stream,
-            "POST /api/2.0/clusters/start HTTP/1.1\r\nContent-Length: {}\r\n\r\n",
-            body.len()
-        )
-        .unwrap();
-        stream
-            .set_read_timeout(Some(Duration::from_millis(200)))
-            .unwrap();
-        let mut early = [0u8; 1];
-        let early_read = stream.read(&mut early);
-        assert!(
-            early_read.is_err(),
-            "responded before the request body arrived: {early_read:?}"
-        );
-
-        stream.write_all(body.as_bytes()).unwrap();
-        stream.set_read_timeout(None).unwrap();
-        let mut response = String::new();
-        stream.read_to_string(&mut response).unwrap();
-        assert_eq!(
-            response,
-            "HTTP/1.1 200 X\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}"
-        );
-        assert_eq!(*requests.lock().unwrap(), [START]);
-    }
-
-    #[test]
     fn terminated_cluster_is_started_and_awaited() {
-        let (client, requests) = fake_databricks(vec![
+        let (client, calls) = fake_databricks(vec![
             (200, r#"{"state":"TERMINATED"}"#),
             (200, "{}"),
             (200, r#"{"state":"PENDING"}"#),
             (200, r#"{"state":"RUNNING"}"#),
         ]);
         client.ensure_cluster_ready("c1").unwrap();
-        assert_eq!(*requests.lock().unwrap(), [GET, START, GET, GET]);
+        assert_eq!(calls.lines(), [GET, START, GET, GET]);
     }
 
     #[test]
     fn terminating_cluster_waits_for_terminated_before_start() {
-        let (client, requests) = fake_databricks(vec![
+        let (client, calls) = fake_databricks(vec![
             (200, r#"{"state":"TERMINATING"}"#),
             (200, r#"{"state":"TERMINATING"}"#),
             (200, r#"{"state":"TERMINATED"}"#),
@@ -924,12 +865,12 @@ mod tests {
             (200, r#"{"state":"RUNNING"}"#),
         ]);
         client.ensure_cluster_ready("c1").unwrap();
-        assert_eq!(*requests.lock().unwrap(), [GET, GET, GET, START, GET]);
+        assert_eq!(calls.lines(), [GET, GET, GET, START, GET]);
     }
 
     #[test]
     fn cluster_error_state_fails_fast() {
-        let (client, _) = fake_databricks_scripted(vec![
+        let (client, _) = fake_databricks(vec![
             (200, r#"{"state":"PENDING"}"#),
             (200, r#"{"state":"ERROR"}"#),
         ]);

@@ -855,6 +855,7 @@ impl BaseRelation for Relation {
         .with_is_shallow_clone(self.is_shallow_clone)
         .with_is_staging(self.is_staging)
         .with_temporary(self.temporary)
+        .with_table_format(self.table_format)
         .with_can_exchange(self.can_exchange)
         .with_can_on_cluster(self.can_on_cluster)
         .with_mvs_pointing_to_it(self.mvs_pointing_to_it.clone())
@@ -1274,6 +1275,9 @@ impl BaseRelation for Relation {
                 .schema
                 .as_deref()
                 .expect("INFORMATION_SCHEMA relation needs dataset");
+            let dataset = dbt_adapter_sql::ident::Ident::new(dataset, AdapterType::Bigquery)
+                .display(AdapterType::Bigquery)
+                .to_string();
             let view_name = self.path.identifier.as_deref();
 
             // Detect if user has set `project == location` and normalize
@@ -1285,7 +1289,7 @@ impl BaseRelation for Relation {
 
             let fqn_no_project = if let Some(view_name) = view_name {
                 bigquery_metadata::generate_system_table_fqn(
-                    dataset,
+                    &dataset,
                     view_name,
                     self.location.as_deref(),
                 )
@@ -1297,7 +1301,7 @@ impl BaseRelation for Relation {
             };
 
             let fqn = if let Some(project) = &project {
-                format!("`{project}`.{fqn_no_project}")
+                format!("{}.{fqn_no_project}", self.quoted(project))
             } else {
                 fqn_no_project
             };
@@ -1971,6 +1975,35 @@ mod tests {
         }
 
         #[test]
+        fn test_render_escapes_adapter_identifier_delimiters() {
+            let relation = |adapter_type, identifier: &str| {
+                Relation::new(adapter_type, None, None, Some(identifier.to_string()))
+                    .with_quoting(ResolvedQuoting::trues())
+            };
+
+            assert_eq!(
+                relation(AdapterType::Snowflake, "a\"b").render_self_as_str(),
+                r#""a""b""#
+            );
+            assert_eq!(
+                relation(AdapterType::Databricks, "a`b").render_self_as_str(),
+                "`a``b`"
+            );
+            assert_eq!(
+                relation(AdapterType::Bigquery, r"a\`b").render_self_as_str(),
+                r"`a\\\`b`"
+            );
+            assert_eq!(
+                relation(AdapterType::ClickHouse, r"a\`b").render_self_as_str(),
+                r"`a\\``b`"
+            );
+            assert_eq!(
+                relation(AdapterType::ClickHouse, "trail\\").render_self_as_str(),
+                r"`trail\\`"
+            );
+        }
+
+        #[test]
         fn test_is_system() {
             let make = |db: Option<&str>, schema: Option<&str>| {
                 Relation::new(
@@ -2175,6 +2208,27 @@ mod tests {
             assert_eq!(
                 rendered,
                 "`test-project`.test_dataset.INFORMATION_SCHEMA.TABLE_SNAPSHOTS"
+            );
+        }
+
+        #[test]
+        fn test_information_schema_escapes_project_and_dataset() {
+            let relation = Relation::new(
+                AdapterType::Bigquery,
+                "project`; SELECT 1; --".to_string(),
+                "dataset`; SELECT 2; --".to_string(),
+                "table".to_string(),
+            )
+            .with_relation_type(RelationType::Table)
+            .with_quoting(DEFAULT_RESOLVED_QUOTING);
+
+            let rendered = relation
+                .information_schema("TABLES")
+                .unwrap()
+                .render_self_as_str();
+            assert_eq!(
+                rendered,
+                r"`project\`; SELECT 1; --`.`dataset\`; SELECT 2; --`.INFORMATION_SCHEMA.TABLES"
             );
         }
 
@@ -2486,6 +2540,14 @@ mod tests {
             let iceberg = snowflake_relation(RelationType::InteractiveTable, TableFormat::Iceberg);
             assert!(!iceberg.can_be_renamed());
             assert!(iceberg.can_be_replaced());
+        }
+
+        #[test]
+        fn quote_preserves_table_format() {
+            let iceberg = snowflake_relation(RelationType::Table, TableFormat::Iceberg);
+            let quoted = iceberg.quote(Some(true), Some(false), Some(true)).unwrap();
+            assert!(quoted.is_iceberg_format());
+            assert_eq!(quoted.quote_policy(), Policy::new(true, false, true));
         }
 
         #[test]

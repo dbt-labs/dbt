@@ -30,9 +30,10 @@
 //! invocation, so removing the output directory is enough to force a rebuild
 //! even when staging is up to date.
 //!
-//! The COPY path skips staging. It executes [`epoch_views::generate`] on one
-//! in-memory connection and `COPY (SELECT * FROM <view>) TO '<file>'` per
-//! table. Cold and steady cost the same: every run re-reads the epochs.
+//! The COPY path skips staging. It executes [`epoch_views::generate_with`] on one
+//! in-memory connection, with the latest-row lookups as tables, and
+//! `COPY (SELECT * FROM <view>) TO '<file>'` per table. Cold and steady cost the
+//! same: every run re-reads the epochs.
 //!
 //! Tables are described declaratively so the schema can be reviewed as data
 //! rather than as code, and so output column types are derived from their

@@ -1698,7 +1698,7 @@ pub mod mutable_map {
         #[cfg(feature = "preserve_order")]
         /// Remove a key-value pair from the map.
         pub fn remove(&self, key: &Value) -> Option<Value> {
-            lock_write!(self).swap_remove(key)
+            lock_write!(self).shift_remove(key)
         }
 
         #[cfg(not(feature = "preserve_order"))]

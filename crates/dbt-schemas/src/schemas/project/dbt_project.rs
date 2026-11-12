@@ -270,6 +270,14 @@ impl Default for DbtProject {
 }
 
 impl DbtProject {
+    /// Deserializes a `dbt_project.yml` value with no Jinja rendering.
+    ///
+    /// Non-generic on purpose: crates that call this share one compiled copy
+    /// of `DbtProject`'s deserializer instead of each instantiating their own.
+    pub fn from_yml_value(value: dbt_yaml::Value) -> Result<Self, dbt_yaml::Error> {
+        value.into_typed(|_, _, _| {}, |_| Ok(None))
+    }
+
     pub fn get_project_id(&self) -> String {
         /*
         Returns the hash of the project name. Can be used for telemetry.

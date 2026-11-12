@@ -242,7 +242,7 @@ pub fn run_model_event(
     execution_metrics: Option<ExecutionMetrics>,
 ) {
     let unique_id = node.unique_id();
-    let Some(stat) = run_stats.read_sync(&unique_id, |_, stat| stat.clone()) else {
+    let Some(stat) = run_stats.read_sync(unique_id, |_, stat| stat.clone()) else {
         // Seeds are expected to not have stats. Any other node type missing
         // stats indicates a bug (see PR #9146 regression).
         debug_assert!(
@@ -455,8 +455,14 @@ pub fn resource_counts_event(
     let operation_count = (resolved_state.operations.on_run_start.len()
         + resolved_state.operations.on_run_end.len()) as i32;
     let analysis_count = resolved_state.nodes.analyses.len() as i32;
-    // We need to add functions to ResourceCounts proto
-    let _function_count = resolved_state.nodes.functions.len() as i32;
+    // Disabled functions stay in `nodes.functions` (as in dbt-core's
+    // `manifest.functions`), so count only enabled ones, like the other counts.
+    let function_count = resolved_state
+        .nodes
+        .functions
+        .values()
+        .filter(|function| function.deprecated_config.enabled != Some(false))
+        .count() as i32;
 
     let source_count = resolved_state.nodes.sources.len() as i32;
     let macro_count = resolved_state.macros.macros.len() as i32;
@@ -505,6 +511,8 @@ pub fn resource_counts_event(
         catalogs: catalog_count,
         // total count of checks in the project.
         checks: check_count,
+        // total count of functions in the project.
+        functions: function_count,
         // This field is a toggle to enable enrichment of the message by the Vortex service.
         enrichment: None,
         common_context: None,

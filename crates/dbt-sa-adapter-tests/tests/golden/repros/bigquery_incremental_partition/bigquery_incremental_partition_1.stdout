@@ -4,7 +4,7 @@
    Parsing models/model.sql
  Rendering models/model.sql
    Running models/model.sql
- Succeeded model bigquery_incremental_partition.model (incremental) [1 of 1 in duration]
+ Succeeded model bigquery_incremental_partition.model (incremental) [1 of 1 in duration, 2 rows]
 ==================== Execution Summary =====================
 Finished 'run' successfully for target 'bigquery' [duration]
 Processed: 1 model

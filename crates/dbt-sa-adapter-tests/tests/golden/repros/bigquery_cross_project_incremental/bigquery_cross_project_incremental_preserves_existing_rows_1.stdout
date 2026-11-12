@@ -6,7 +6,7 @@
   Finished [duration] downloading referenced relations (1 items)
  Rendering models/incremental_model.sql
    Running models/incremental_model.sql
- Succeeded model bigquery_cross_project_incremental_preserves_existing_rows.incremental_model (incremental) [1 of 1 in duration]
+ Succeeded model bigquery_cross_project_incremental_preserves_existing_rows.incremental_model (incremental) [1 of 1 in duration, 1 row]
 ==================== Execution Summary =====================
 Finished 'run' successfully for target 'bigquery' [duration]
 Processed: 1 model

@@ -263,6 +263,51 @@ fn make_mock_adapter(adapter_type: AdapterType) -> Arc<Adapter> {
     Arc::new(Adapter::new(Arc::new(concrete), None, never_cancels()))
 }
 
+#[dbt_runtime::worker_test]
+fn test_completed_routine_listing_is_reused() {
+    use crate::relation::do_create_relation;
+    use dbt_schemas::dbt_types::RelationType;
+
+    let adapter = make_mock_adapter(AdapterType::Bigquery);
+    let Typed { adapter: concrete } = &adapter.inner else {
+        unreachable!();
+    };
+    let cache = concrete.engine().relation_cache();
+    cache.set_project_has_functions(true);
+    let routine: Arc<dyn BaseRelation> = do_create_relation(
+        AdapterType::Bigquery,
+        "my_project".to_string(),
+        "my_dataset".to_string(),
+        Some("add_one".to_string()),
+        Some(RelationType::Function),
+        DEFAULT_RESOLVED_QUOTING,
+    )
+    .unwrap()
+    .into();
+    let schema = CatalogAndSchema::from(routine.as_ref());
+    let env = minijinja::Environment::new();
+    let state = State::new_for_env(&env);
+
+    for routines in [vec![], vec![routine.clone()]] {
+        let has_routine = !routines.is_empty();
+        cache.insert_schema(schema.clone(), vec![]);
+        assert!(cache.get_relation(routine.as_ref()).is_none());
+
+        cache.insert_routines(&schema, routines);
+        let result = adapter
+            .cache_routines_and_get_relation(&state, routine.as_ref())
+            .unwrap();
+        if has_routine {
+            let value = result.expect("the completed listing must return the requested routine");
+            let cached = downcast_value_to_dyn_base_relation(&value).unwrap();
+            assert_eq!(cached.relation_type(), Some(RelationType::Function));
+            assert_eq!(cached.identifier(), routine.identifier());
+        } else {
+            assert!(result.is_none());
+        }
+    }
+}
+
 #[test]
 fn test_render_equals_flag_off_returns_simple_eq() {
     let adapter = make_duckdb_adapter();
@@ -559,6 +604,75 @@ fn test_runtime_get_columns_in_relation_rejects_string() {
     )
     .unwrap_err();
     assert_eq!(err.detail(), Some("relation must be an object"));
+}
+
+#[test]
+fn fixture_columns_are_scoped_to_each_render() {
+    let adapter = make_duckdb_adapter();
+    let relation = dispatch_test(
+        &make_duckdb_parse_adapter(),
+        "get_relation",
+        &[
+            Value::from("db"),
+            Value::from("schema"),
+            Value::from("input"),
+        ],
+    )
+    .unwrap();
+    let key = downcast_value_to_dyn_base_relation(&relation)
+        .unwrap()
+        .semantic_fqn();
+    let environments = ["ALPHA", "BETA"].map(|name| {
+        let mut env = minijinja::Environment::new();
+        let column = crate::Column::new(
+            AdapterType::DuckDB,
+            name.to_string(),
+            "text".to_string(),
+            Some(256),
+            None,
+            None,
+        );
+        let columns = Value::from(vec![Value::from_object(column)]);
+        env.add_global(
+            UNIT_TEST_FIXTURE_COLUMNS,
+            Value::from_iter([(
+                key.clone(),
+                fixture_columns::lazy_fixture_columns(move || Ok(columns.clone())),
+            )]),
+        );
+        env
+    });
+    for index in [0, 1, 0] {
+        let state = State::new_for_env(&environments[index]);
+        let columns = adapter
+            .call_method_impl(
+                &state,
+                "get_columns_in_relation",
+                std::slice::from_ref(&relation),
+                &[],
+            )
+            .unwrap();
+        assert_eq!(
+            columns
+                .get_item(&Value::from(0))
+                .unwrap()
+                .get_attr("name")
+                .unwrap()
+                .as_str(),
+            Some(["ALPHA", "BETA"][index])
+        );
+    }
+    // Neither render may overwrite the adapter's ordinary metadata lookup.
+    let columns = dispatch_test(&adapter, "get_columns_in_relation", &[relation]).unwrap();
+    assert_eq!(
+        columns
+            .get_item(&Value::from(0))
+            .unwrap()
+            .get_attr("name")
+            .unwrap()
+            .as_str(),
+        Some("one")
+    );
 }
 
 #[test]

@@ -467,6 +467,7 @@ __additional_properties__: {}
         let model_config: ModelConfig = project_config.into();
         let tblproperties = model_config
             .__warehouse_specific_config__
+            .into_inner()
             .tblproperties
             .expect("tblproperties should be present");
         let config = IndexMap::from([(

@@ -11,7 +11,7 @@ use crate::utils::{
 use dbt_adapter_core::AdapterType;
 use dbt_common::cancellation::CancellationToken;
 use dbt_common::constants::{DBT_SNAPSHOTS_DIR_NAME, DBT_TARGET_DIR_NAME, PARSING};
-use dbt_common::io_args::{FsCommand, IoArgs, StaticAnalysisKind};
+use dbt_common::io_args::{FsCommand, IoArgs, StaticAnalysisKind, multi_adapter_enabled};
 use dbt_common::path::node_name_from_path;
 use dbt_common::tokiofs::read_to_string;
 use dbt_common::tracing::dbt_emit::{
@@ -25,13 +25,11 @@ use dbt_jinja_utils::listener::{
     JinjaTypeCheckingEventListenerFactory, RenderingEventListenerFactory,
 };
 use dbt_jinja_utils::node_resolver::NodeResolver;
-use dbt_jinja_utils::phases::build_operation_context_btreemap;
 use dbt_jinja_utils::phases::compile::{
     DependencyValidationConfig, build_compile_node_context_inner,
 };
-use dbt_jinja_utils::phases::parse::{
-    ParseAdapterScopes, build_resolve_model_context, update_resolve_model_relation,
-};
+use dbt_jinja_utils::phases::parse::{build_resolve_model_context, update_resolve_model_relation};
+use dbt_jinja_utils::phases::{AdapterScopes, build_operation_context_btreemap};
 use dbt_jinja_utils::serde::into_typed_with_jinja_error_context;
 use dbt_jinja_utils::silence_base_context;
 use dbt_jinja_utils::utils::{
@@ -50,15 +48,16 @@ use dbt_schemas::schemas::{InternalDbtNodeAttributes, IntrospectionKind, Nodes};
 use dbt_schemas::state::{DbtAsset, DbtRuntimeConfig, ModelStatus};
 use dbt_telemetry::AssetParsed;
 use indexmap::IndexMap;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::fmt::Debug;
 use std::rc::Rc;
 use tracing::Instrument as _;
 
 use dbt_frontend_common::error::CodeLocation;
 use dbt_jinja_utils::phases::parse::sql_resource::SqlResource;
-use minijinja::compiler::meta::{StaticFunctionCall, find_string_arg_calls};
+use minijinja::compiler::meta::{StaticFunctionCall, find_string_arg_calls, find_undeclared};
 use minijinja::constants::{TARGET_PACKAGE_NAME, TARGET_UNIQUE_ID};
+use minijinja::value::OverlayMap;
 use minijinja::{MacroSpans, Value as MinijinjaValue};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -252,12 +251,12 @@ fn augment_sql_resources_with_static_sources<T: ResolvableConfig<T>>(
 
 fn preview_node_relation<T: ResolvableConfig<T> + 'static>(
     render_ctx: &RenderCtx<T>,
-    context: &mut BTreeMap<String, MinijinjaValue>,
+    context: &mut OverlayMap,
     config: &dbt_yaml::Value,
     adapter: AdapterType,
 ) -> FsResult<()> {
     let inner = &render_ctx.inner;
-    let model = &context["model"];
+    let model = context.get("model").expect("parse model");
     let mut node = BTreeMap::new();
     for key in model.try_iter().expect("parse model keys") {
         let name = key.as_str().expect("model field name");
@@ -298,7 +297,7 @@ fn preview_node_relation<T: ResolvableConfig<T> + 'static>(
     naming_config["quoting"] = dbt_yaml::to_value(quoting).expect("resolved node quoting config");
     node.insert(
         "config".to_string(),
-        dbt_schemas::schemas::serde::yml_value_to_minijinja(&naming_config),
+        dbt_schemas::schemas::serde::yml_value_to_minijinja(naming_config),
     );
     let quoting: ResolvedQuoting = quoting.try_into().expect("resolved node quoting");
     let (database, schema) = {
@@ -450,6 +449,7 @@ where
         schema,
         config_resolver,
         adapter_hint,
+        adapter_layer,
         parse_adapter_scopes,
         adapter_quoting,
         resource_paths,
@@ -512,7 +512,10 @@ where
     };
 
     let model_properties_config = maybe_model.as_ref().and_then(|m| m.get_config());
-    let properties_configs: &[Option<&T>] = &[model_properties_config];
+    let adapter_layer_config = adapter_layer
+        .as_ref()
+        .and_then(|layers| layers.get(&dbt_asset.path));
+    let properties_configs: &[Option<&T>] = &[model_properties_config, adapter_layer_config];
     let inherited_adapter = adapter_hint
         .as_ref()
         .and_then(|hint| hint.get(&dbt_asset.path).copied());
@@ -577,11 +580,10 @@ where
         (Some(adapter), Some(scopes)) => scopes.declared(adapter).ok().flatten(),
         _ => None,
     };
-    let render_adapter = scope
-        .filter(|scope| scope.dialect().is_some())
-        .map_or(*adapter_type, |scope| scope.adapter_type);
+    let render_adapter = scope.map_or(*adapter_type, |scope| scope.adapter_type);
 
-    let mut resolve_model_context = base_ctx.clone();
+    let mut resolve_model_context =
+        OverlayMap::new(MinijinjaValue::from_dyn_object(Arc::clone(base_ctx)));
     resolve_model_context.extend(build_resolve_model_context(
         &properties_config,
         root_overlay_forces_enabled,
@@ -658,7 +660,9 @@ where
             unique_id,
             render_adapter,
             true,
-            resolve_model_context.get(minijinja::constants::MACRO_DISPATCH_ORDER),
+            resolve_model_context
+                .get(minijinja::constants::MACRO_DISPATCH_ORDER)
+                .as_ref(),
         );
     }
 
@@ -681,17 +685,25 @@ where
         RefCell::new(None);
     // Populated by `ast_visitor` below; see `augment_sql_resources_with_static_sources`.
     let static_source_calls_cell: RefCell<Vec<StaticFunctionCall>> = RefCell::new(Vec::new());
+    // Populated by `ast_visitor` below: whether the node's own SQL reads `target` or `env`.
+    let reads_target_or_env_cell = Cell::new(false);
     let mut ast_visitor = |ast: &minijinja::compiler::ast::Stmt<'_>| {
         *raw_config_call_dict_cell.borrow_mut() =
             extract_unrendered_config_from_ast(ast, *uses_snapshot_fqn, sql.as_bytes());
         *static_source_calls_cell.borrow_mut() = find_string_arg_calls(ast, &["source"]);
+        let free_vars = find_undeclared(ast, false);
+        reads_target_or_env_cell.set(free_vars.contains("target") || free_vars.contains("env"));
     };
 
     // With the inline `config()` layer known, the node's adapter is picked again.
     let resolve_with_inline = |config_calls: &[Box<T>]| {
         let calls: Vec<&T> = config_calls.iter().map(|call| call.as_ref()).collect();
         let inline_config = config_resolver.fold_inline_calls(&pre_render_layers, &calls);
-        let configs = [model_properties_config, inline_config.as_ref()];
+        let configs = [
+            model_properties_config,
+            adapter_layer_config,
+            inline_config.as_ref(),
+        ];
         config_resolver.resolve_node(&NodeLayers {
             configs: &configs,
             ..pre_render_layers
@@ -859,18 +871,27 @@ where
     let raw_config_call_dict = raw_config_call_dict_cell.into_inner();
 
     // An adapter set only by the inline `config()` takes effect after the render that sets it.
-    if sql_file_info
-        .config_calls
-        .iter()
-        .any(|call| call.get_adapter().is_some())
+    // Only a node whose own SQL reads `target` or `env` warns; macros it calls are not checked.
+    if multi_adapter_enabled()
+        && status != ModelStatus::Disabled
+        && reads_target_or_env_cell.get()
+        && sql_file_info
+            .config_calls
+            .iter()
+            .any(|call| call.get_adapter().is_some())
     {
-        let known_before = pre_render_adapter.unwrap_or(*adapter_type);
+        // The adapter whose `target` and `env` the parse render had.
+        let rendered_with = scope.map_or(*adapter_type, |scope| scope.adapter_type);
         let resolved_to = resolved.adapter.unwrap_or(*adapter_type);
-        if known_before != resolved_to {
-            emit_debug_log_message(format!(
-                "{}: adapter '{resolved_to}' from an inline config() differs from \
-                 '{known_before}', known before the render",
-                display_path.display()
+        if rendered_with != resolved_to {
+            emit_warn_log_from_fs_error(*fs_err!(
+                code => ErrorCode::InlineAdapterParseTargetMismatch,
+                loc => display_path.clone(),
+                "The inline `config(adapter='{resolved_to}')` sets this node's adapter after its \
+                 parse render, so parse used the '{rendered_with}' adapter's `target` and `env` \
+                 while compile uses the '{resolved_to}' adapter's. A `target` or `env` branch around \
+                 `ref()` can then pick different refs and fail with dbt1501. To avoid this, set \
+                 `adapter` in `dbt_project.yml` or in the node's properties."
             ));
         }
     }
@@ -917,7 +938,7 @@ pub struct RenderCtxInner<T: ResolvableConfig<T>> {
     /// The arguments for the resolve
     pub args: ResolveArgs,
     /// The base context for the jinja environment
-    pub base_ctx: BTreeMap<String, MinijinjaValue>,
+    pub base_ctx: Arc<BTreeMap<String, MinijinjaValue>>,
     /// The name of the root project
     pub root_project_name: String,
     /// The name of the package
@@ -932,8 +953,11 @@ pub struct RenderCtxInner<T: ResolvableConfig<T>> {
     pub config_resolver: ProjectConfigResolver<T>,
     /// The adapter each node file inherits when none of its config layers sets one.
     pub adapter_hint: Option<HashMap<PathBuf, AdapterType>>,
+    /// An adapter-only config layer per node file, above its properties: a generic test's YAML
+    /// `adapter`, which its generated `config()` otherwise sets only during the render.
+    pub adapter_layer: Option<HashMap<PathBuf, T>>,
     /// Per-adapter parse identity of the active target. `None` renders every node as the default.
-    pub parse_adapter_scopes: Option<Arc<ParseAdapterScopes>>,
+    pub parse_adapter_scopes: Option<Arc<AdapterScopes>>,
     /// Quoting policies authored for the target's adapters.
     pub adapter_quoting: IndexMap<AdapterType, DbtQuoting>,
     /// The resource paths
@@ -995,21 +1019,47 @@ where
     if model_sql_files.len() < 50 {
         max_concurrency = 1;
     }
+    // Split the files into chunks, each with its own subset of node_properties. Each chunk gets
+    // its own entry: the last file with a name takes the original, earlier files with that name
+    // take a clone. Names repeat only when files share a file name (a model and its disabled
+    // copies), so nearly every entry moves. Sharing entries behind an `Arc` would not save that
+    // rare clone: rendering takes `schema_value` by value, so a shared entry would be cloned out
+    // of the `Arc` anyway.
     let chunk_size = model_sql_files.len().div_ceil(max_concurrency);
 
-    // Split node_properties into per-chunk subsets
-    let chunks: Vec<(Vec<DbtAsset>, BTreeMap<String, MinimalPropertiesEntry>)> = model_sql_files
+    let (files, mut remaining_files_per_ref_name) = model_sql_files.iter().fold(
+        (Vec::with_capacity(model_sql_files.len()), HashMap::new()),
+        |(mut files, mut remaining_files_per_ref_name), dbt_asset| {
+            let ref_name = node_name_from_path(&dbt_asset.path).unwrap();
+            *remaining_files_per_ref_name
+                .entry(ref_name)
+                .or_insert(0usize) += 1;
+            files.push((dbt_asset, ref_name));
+            (files, remaining_files_per_ref_name)
+        },
+    );
+
+    let chunks: Vec<(Vec<DbtAsset>, BTreeMap<String, MinimalPropertiesEntry>)> = files
         .chunks(chunk_size)
         .map(|chunk| {
-            let chunk_vec = chunk.to_vec();
+            let mut chunk_assets = Vec::with_capacity(chunk.len());
             let mut chunk_props = BTreeMap::new();
-            for dbt_asset in &chunk_vec {
-                let ref_name = node_name_from_path(&dbt_asset.path).unwrap();
-                if let Some(entry) = node_properties.get(ref_name) {
-                    chunk_props.insert(ref_name.to_string(), entry.clone());
+            for &(dbt_asset, ref_name) in chunk {
+                chunk_assets.push(dbt_asset.clone());
+                let remaining_files = remaining_files_per_ref_name
+                    .get_mut(ref_name)
+                    .expect("every ref name in `files` was counted");
+                *remaining_files -= 1;
+                let entry = if *remaining_files == 0 {
+                    node_properties.remove(ref_name)
+                } else {
+                    node_properties.get(ref_name).cloned()
+                };
+                if let Some(entry) = entry {
+                    chunk_props.insert(ref_name.to_string(), entry);
                 }
             }
-            (chunk_vec, chunk_props)
+            (chunk_assets, chunk_props)
         })
         .collect();
 
@@ -1076,6 +1126,7 @@ pub async fn collect_adapter_identifiers_detect_unsafe<
     package_name: &str,
     root_project_name: &str,
     runtime_config: Arc<DbtRuntimeConfig>,
+    parse_adapter_scopes: &Arc<AdapterScopes>,
     token: &CancellationToken,
 ) -> FsResult<Vec<(T, bool)>> {
     if node_map.is_empty() {
@@ -1096,6 +1147,7 @@ pub async fn collect_adapter_identifiers_detect_unsafe<
     let node_resolver = Arc::new(node_resolver.clone());
     let package_name = package_name.to_string();
     let root_project_name = root_project_name.to_string();
+    let parse_adapter_scopes = parse_adapter_scopes.clone();
     let token = token.clone();
 
     let chunk_results =
@@ -1107,6 +1159,7 @@ pub async fn collect_adapter_identifiers_detect_unsafe<
             let root_project_name = root_project_name.clone();
             let runtime_config = runtime_config.clone();
             let parse_adapter = parse_adapter.clone();
+            let parse_adapter_scopes = parse_adapter_scopes.clone();
             let token = token.clone();
             async move {
                 process_model_chunk_for_unsafe_detection(
@@ -1118,6 +1171,7 @@ pub async fn collect_adapter_identifiers_detect_unsafe<
                     root_project_name,
                     runtime_config,
                     parse_adapter,
+                    &parse_adapter_scopes,
                     &token,
                 )
                 .await
@@ -1149,6 +1203,7 @@ async fn process_model_chunk_for_unsafe_detection<
     root_project_name: String,
     runtime_config: Arc<DbtRuntimeConfig>,
     parse_adapter: Arc<dbt_adapter::Adapter>,
+    parse_adapter_scopes: &AdapterScopes,
     token: &CancellationToken,
 ) -> FsResult<Vec<(T, bool)>> {
     let mut nodes = Vec::new();
@@ -1167,6 +1222,7 @@ async fn process_model_chunk_for_unsafe_detection<
         None,
     );
     silence_base_context(&mut render_base_context);
+    let render_base_context = MinijinjaValue::from(render_base_context);
 
     for (_key, model) in chunk {
         token.check_cancellation()?;
@@ -1179,12 +1235,13 @@ async fn process_model_chunk_for_unsafe_detection<
         };
         let sql = read_to_string(&absolute_path).await?;
 
-        render_base_context.insert(
-            TARGET_PACKAGE_NAME.to_string(),
+        let mut model_base_context = OverlayMap::new(render_base_context.clone());
+        model_base_context.insert(
+            TARGET_PACKAGE_NAME,
             MinijinjaValue::from(model.common().package_name.clone()),
         );
-        render_base_context.insert(
-            TARGET_UNIQUE_ID.to_string(),
+        model_base_context.insert(
+            TARGET_UNIQUE_ID,
             MinijinjaValue::from(model.common().unique_id.clone()),
         );
 
@@ -1192,12 +1249,21 @@ async fn process_model_chunk_for_unsafe_detection<
         let (mut render_resolved_context, _) = build_compile_node_context_inner(
             model.clone(),
             model.node_adapter(),
-            &render_base_context,
+            &MinijinjaValue::from(model_base_context),
             &root_project_name,
             node_resolver.clone(),
             runtime_config.clone(),
             DependencyValidationConfig::new_for_node(&*model).skip_validation(),
         )?;
+        // The node adapter's `target`/`env`, as its compile render has them. The node-build lookup
+        // reports an unusable connection.
+        if let Some(scope) = parse_adapter_scopes
+            .declared(model.node_adapter())
+            .ok()
+            .flatten()
+        {
+            scope.insert_target(&mut render_resolved_context);
+        }
 
         // Inject the DbtNamespace to intercept dbt macro calls
         let dbt_namespace = DbtNamespace::new(parse_adapter.clone());
@@ -1260,7 +1326,7 @@ pub fn collect_hook_dependencies_from_config(
     adapter_type: AdapterType,
     resource_path: &Path,
     io: IoArgs,
-    hook_context: &BTreeMap<String, MinijinjaValue>,
+    hook_context: &OverlayMap,
     jinja_type_checking_event_listener_factory: Arc<dyn JinjaTypeCheckingEventListenerFactory>,
 ) -> FsResult<()> {
     // Helper function to extract SQL strings from hooks
@@ -1314,7 +1380,9 @@ pub fn collect_hook_dependencies_from_config(
                 unique_id,
                 adapter_type,
                 true,
-                hook_context.get(minijinja::constants::MACRO_DISPATCH_ORDER),
+                hook_context
+                    .get(minijinja::constants::MACRO_DISPATCH_ORDER)
+                    .as_ref(),
             );
         }
         let listener_factory = DefaultRenderingEventListenerFactory::default();

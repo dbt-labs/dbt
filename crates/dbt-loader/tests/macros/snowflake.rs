@@ -524,6 +524,26 @@ fn alter_relation_comment_uses_iceberg_syntax_after_incorporate() {
     );
 }
 
+/// The catalog runtimes the Snowflake macros branch on via `dbt_version` and
+/// `adapter.behavior.use_catalogs_v2`.
+struct Runtime {
+    dbt_version: &'static str,
+    use_catalogs_v2: Option<bool>,
+}
+
+const V2: Runtime = Runtime {
+    dbt_version: "2.0.0",
+    use_catalogs_v2: Some(true),
+};
+const FUSION_V1: Runtime = Runtime {
+    dbt_version: "2.0.0",
+    use_catalogs_v2: Some(false),
+};
+const CORE_1X: Runtime = Runtime {
+    dbt_version: "1.10.0",
+    use_catalogs_v2: None,
+};
+
 mod cld_base_location {
     use super::*;
 
@@ -535,24 +555,6 @@ mod cld_base_location {
         Rest,
         Glue,
     }
-
-    struct Runtime {
-        dbt_version: &'static str,
-        use_catalogs_v2: Option<bool>,
-    }
-
-    const V2: Runtime = Runtime {
-        dbt_version: "2.0.0",
-        use_catalogs_v2: Some(true),
-    };
-    const FUSION_V1: Runtime = Runtime {
-        dbt_version: "2.0.0",
-        use_catalogs_v2: Some(false),
-    };
-    const CORE_1X: Runtime = Runtime {
-        dbt_version: "1.10.0",
-        use_catalogs_v2: None,
-    };
 
     fn catalog_relation(
         catalog_database: Value,
@@ -755,5 +757,241 @@ mod cld_base_location {
             1,
             "BASE_LOCATION must render exactly once, got:\n{rendered}"
         );
+    }
+}
+
+mod glue_incremental_quoting {
+    use super::*;
+
+    const EVENT_TIME_START: &str = "2026-10-28 00:00:00+00:00";
+    const EVENT_TIME_END: &str = "2026-10-30 00:00:00+00:00";
+
+    fn dest_columns() -> Value {
+        Value::from_serialize(["id", "order_id", "name", "event_ts"].map(|name| {
+            BTreeMap::from([
+                ("name", name.to_string()),
+                ("quoted", format!("\"{name}\"")),
+            ])
+        }))
+    }
+
+    /// A Glue CLD relation carrying both the v2 (`linked_catalog_provider.is_glue`) and the
+    /// v1 (`catalog_linked_database_type`) surfaces, so one fixture serves every runtime.
+    fn glue_relation() -> Value {
+        let provider = Arc::new(MockJinjaObject::new());
+        provider.set_attr("is_glue", Value::from(true));
+        let relation = Arc::new(MockJinjaObject::new());
+        relation.set_attr("linked_catalog_provider", Value::from_dyn_object(provider));
+        relation.set_attr("catalog_linked_database_type", Value::from("glue"));
+        Value::from_dyn_object(relation)
+    }
+
+    /// What `build_catalog_relation` yields for a native table: both surfaces are `none`.
+    fn native_relation() -> Value {
+        let relation = Arc::new(MockJinjaObject::new());
+        relation.set_attr("linked_catalog_provider", Value::from(()));
+        relation.set_attr("catalog_linked_database_type", Value::from(()));
+        Value::from_dyn_object(relation)
+    }
+
+    fn harness(runtime: &Runtime) -> MacroTestHarness {
+        let harness = MacroTestHarness::for_adapter(AdapterType::Snowflake)
+            .load_all_macros()
+            .build()
+            .expect("harness should build");
+        if let Some(use_catalogs_v2) = runtime.use_catalogs_v2 {
+            harness.mock().set_attr(
+                "behavior",
+                Value::from_serialize(BTreeMap::from([(
+                    "use_catalogs_v2",
+                    BTreeMap::from([("no_warn", use_catalogs_v2)]),
+                )])),
+            );
+        }
+        harness.mock().on("quote", |args| {
+            Ok(Value::from(format!(
+                "\"{}\"",
+                args.first().and_then(Value::as_str).unwrap_or_default()
+            )))
+        });
+        harness
+    }
+
+    /// Renders the helper; a string result prints as is, a list joins with `|`.
+    fn quote(runtime: &Runtime, names: Value, catalog_relation: Value) -> String {
+        let ctx = BTreeMap::from([
+            ("dbt_version".to_string(), Value::from(runtime.dbt_version)),
+            ("names".to_string(), names),
+            ("dest_columns".to_string(), dest_columns()),
+            ("catalog_relation".to_string(), catalog_relation),
+        ]);
+        harness(runtime)
+            .render(
+                "{% set out = snowflake__quote_glue_columns(names, dest_columns, catalog_relation) %}\
+                 {{ out if out is string else out | join('|') }}",
+                ctx,
+            )
+            .expect("snowflake__quote_glue_columns should render")
+            .trim()
+            .to_string()
+    }
+
+    fn microbatch_ctx(runtime: &Runtime) -> BTreeMap<String, Value> {
+        let config = BTreeMap::from([
+            ("event_time", "event_ts"),
+            (
+                "__dbt_internal_microbatch_event_time_start",
+                EVENT_TIME_START,
+            ),
+            ("__dbt_internal_microbatch_event_time_end", EVENT_TIME_END),
+        ]);
+        let batch = BTreeMap::from([
+            ("event_time_start", EVENT_TIME_START),
+            ("event_time_end", EVENT_TIME_END),
+        ]);
+        BTreeMap::from([
+            ("dbt_version".to_string(), Value::from(runtime.dbt_version)),
+            (
+                "model".to_string(),
+                Value::from_serialize(BTreeMap::from([
+                    ("config", Value::from_serialize(config)),
+                    ("batch", Value::from_serialize(batch)),
+                ])),
+            ),
+            ("dest_columns".to_string(), dest_columns()),
+            ("catalog_relation".to_string(), glue_relation()),
+        ])
+    }
+
+    fn render_microbatch(runtime: &Runtime, with_catalog_relation: bool) -> String {
+        let catalog_entry = if with_catalog_relation {
+            ", 'catalog_relation': catalog_relation"
+        } else {
+            ""
+        };
+        let template = format!(
+            "{{% set arg_dict = {{'target_relation': 'T', 'temp_relation': 'S', 'dest_columns': dest_columns{catalog_entry}}} %}}\
+             {{{{ snowflake__get_incremental_microbatch_sql(arg_dict) }}}}"
+        );
+        harness(runtime)
+            .render(&template, microbatch_ctx(runtime))
+            .expect("microbatch sql should render")
+    }
+
+    #[test]
+    fn glue_quote_columns_quotes_a_matching_name() {
+        for runtime in [V2, FUSION_V1] {
+            assert_eq!(
+                quote(&runtime, Value::from("id"), glue_relation()),
+                "\"id\""
+            );
+            assert_eq!(
+                quote(&runtime, Value::from("ID"), glue_relation()),
+                "\"id\""
+            );
+        }
+    }
+
+    #[test]
+    fn glue_quote_columns_quotes_each_name_in_a_list() {
+        for runtime in [V2, FUSION_V1] {
+            assert_eq!(
+                quote(
+                    &runtime,
+                    Value::from(vec!["id", "Order_Id"]),
+                    glue_relation()
+                ),
+                "\"id\"|\"order_id\""
+            );
+        }
+    }
+
+    #[test]
+    fn glue_quote_columns_passes_quoted_names_and_expressions_through() {
+        for runtime in [V2, FUSION_V1] {
+            assert_eq!(
+                quote(&runtime, Value::from("\"id\""), glue_relation()),
+                "\"id\""
+            );
+            assert_eq!(
+                quote(
+                    &runtime,
+                    Value::from("id || '-' || order_id"),
+                    glue_relation()
+                ),
+                "id || '-' || order_id"
+            );
+        }
+    }
+
+    #[test]
+    fn glue_quote_columns_is_a_no_op_for_none_relation() {
+        for runtime in [V2, FUSION_V1] {
+            assert_eq!(
+                quote(&runtime, Value::from(vec!["id"]), Value::from(())),
+                "id"
+            );
+        }
+    }
+
+    #[test]
+    fn glue_quote_columns_is_a_no_op_for_native_relation() {
+        for runtime in [V2, FUSION_V1] {
+            assert_eq!(
+                quote(&runtime, Value::from(vec!["id"]), native_relation()),
+                "id"
+            );
+        }
+    }
+
+    #[test]
+    fn microbatch_delete_quotes_event_time_for_glue() {
+        for runtime in [V2, FUSION_V1] {
+            let rendered = render_microbatch(&runtime, true);
+            assert!(
+                rendered.contains(&format!(
+                    "DBT_INTERNAL_TARGET.\"event_ts\" >= to_timestamp_tz('{EVENT_TIME_START}')"
+                )) && rendered.contains(&format!(
+                    "DBT_INTERNAL_TARGET.\"event_ts\" < to_timestamp_tz('{EVENT_TIME_END}')"
+                )),
+                "expected quoted event_time in both batch predicates, got:\n{rendered}"
+            );
+        }
+    }
+
+    #[test]
+    fn microbatch_delete_is_unchanged_without_catalog_relation() {
+        for runtime in [V2, FUSION_V1] {
+            let rendered = render_microbatch(&runtime, false);
+            assert!(
+                rendered.contains("DBT_INTERNAL_TARGET.event_ts >= to_timestamp_tz(")
+                    && !rendered.contains("\"event_ts\" >="),
+                "a strategy dict without catalog_relation must render as before, got:\n{rendered}"
+            );
+        }
+    }
+
+    #[test]
+    fn merge_update_columns_are_quoted_for_glue() {
+        for runtime in [V2, FUSION_V1] {
+            let h = harness(&runtime);
+            h.mock()
+                .on("build_catalog_relation", |_| Ok(glue_relation()));
+            let ctx = BTreeMap::from([
+                ("dbt_version".to_string(), Value::from(runtime.dbt_version)),
+                (
+                    "config".to_string(),
+                    Value::from_dyn_object(default_mock_config()),
+                ),
+                ("dest_columns".to_string(), dest_columns()),
+            ]);
+            let rendered = h
+                .render(
+                    "{{ get_merge_update_columns(['name'], none, dest_columns) | join('|') }}",
+                    ctx,
+                )
+                .expect("get_merge_update_columns should render");
+            assert_eq!(rendered.trim(), "\"name\"");
+        }
     }
 }
