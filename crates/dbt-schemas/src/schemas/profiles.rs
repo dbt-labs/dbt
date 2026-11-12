@@ -313,8 +313,7 @@ impl DbConfig {
                 "organization",
                 "fivetran_auth_url",
             ],
-            // Mirrors dbt-athena `_connection_keys`; `aws_secret_access_key` and
-            // `aws_session_token` are secrets and stay out.
+            // Mirrors dbt-athena `_connection_keys`; the secret key and session token stay out.
             AdapterType::Athena => &[
                 "region_name",
                 "s3_staging_dir",
@@ -1807,17 +1806,10 @@ fn default_clickhouse_compress_block_size() -> Option<i64> {
     Some(1_048_576)
 }
 
-/// Glue catalog used when `database` is not set; the same default lives in
-/// `dbt-auth`'s Athena module, which reads the profile through `to_mapping()`.
+/// Glue catalog when `database` is unset; dbt-auth reads this same default.
 pub const DEFAULT_ATHENA_CATALOG: &str = "awsdatacatalog";
 
-/// Field set of dbt-athena's `AthenaCredentials`
-/// (https://github.com/dbt-labs/dbt-adapters/blob/main/dbt-athena/src/dbt/adapters/athena/connections.py).
-///
-/// Every dbt-athena field is declared, including the ones `dbt-auth` currently
-/// rejects (`assume_role_*`, `s3_data_dir`, ...): the auth layer only sees the
-/// mapping produced by `to_mapping()`, so a field missing here would be dropped
-/// silently instead of raising the "not yet supported" error.
+/// dbt-athena credentials, including fields dbt-auth rejects so they are not dropped first.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, DbtSchema, Merge)]
 #[merge(strategy = merge_strategies_extend::overwrite_option)]
 #[serde(rename_all = "snake_case")]

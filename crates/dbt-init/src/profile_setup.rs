@@ -299,9 +299,7 @@ impl ProfileSetup {
         }
     }
 
-    /// Adapters the interactive wizard offers, in display order.
-    ///
-    /// Same order as `dbt_profile_schemas::headless::supported_adapters`.
+    /// Adapters the wizard offers, same order as `headless::supported_adapters`.
     pub fn get_available_adapters() -> &'static [AdapterType] {
         &[
             AdapterType::Snowflake,

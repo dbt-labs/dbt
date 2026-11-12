@@ -3,16 +3,12 @@ use dbt_common::FsResult;
 use dbt_schemas::schemas::profiles::AthenaDbConfig;
 use dbt_schemas::schemas::serde::StringOrInteger;
 
-// Auth choices, in the order `AthenaAuth` resolves them (dbt-auth
-// `crates/dbt-auth/src/athena/mod.rs`): explicit keys win over a named
-// profile, which wins over the default credential chain.
+// AthenaAuth precedence: explicit keys, then a named profile, then the default chain.
 const AUTH_DEFAULT_CHAIN: i64 = 0;
 const AUTH_PROFILE: i64 = 1;
 const AUTH_ACCESS_KEY: i64 = 2;
 
-// Prompt set and defaults follow dbt-athena's `profile_template.yml`
-// (vendored under `dbt-loader/src/dbt_macro_assets/dbt-athena/`), plus an
-// auth-method selector because the template assumes ambient credentials.
+// Prompts follow dbt-athena's profile_template.yml, plus an auth selector it lacks.
 impl InteractiveSetup for AthenaDbConfig {
     fn get_fields() -> Vec<ConfigField> {
         vec![
@@ -87,9 +83,7 @@ impl InteractiveSetup for AthenaDbConfig {
                     self.work_group = non_empty(s);
                 }
             }
-            // Selecting a method clears the credentials of the other methods:
-            // `AthenaAuth` gives keys precedence over a profile name, so a stale
-            // key pair left in place would silently override a chosen profile.
+            // Clear the other methods; leftover keys override a chosen profile.
             "auth_method" => {
                 if let FieldValue::Integer(method) = value {
                     if method != AUTH_PROFILE {
