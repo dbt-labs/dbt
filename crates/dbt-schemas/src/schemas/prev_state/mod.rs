@@ -820,18 +820,34 @@ impl StateArtifacts {
         ) {
             // dbt-core might also produce `unrendered_database` and `unrendered_schema` outside of the unrendered config.
             // If so, we need to compare them and use unrendered keys.
-            if (current_source.__source_attr__.unrendered_database.is_some()
-                && previous_source
-                    .__source_attr__
-                    .unrendered_database
-                    .is_some())
-                && (current_source.__source_attr__.unrendered_schema.is_some()
-                    && previous_source.__source_attr__.unrendered_schema.is_some())
-            {
-                let db_eq = current_source.__source_attr__.unrendered_database
-                    == previous_source.__source_attr__.unrendered_database;
-                let schema_eq = current_source.__source_attr__.unrendered_schema
-                    == previous_source.__source_attr__.unrendered_schema;
+            //
+            // Each field gates itself: dbt-core compares `unrendered_database` and
+            // `unrendered_schema` independently, so a source without a `schema` still
+            // compares its `database` unrendered. Gating both fields together made
+            // such sources fall back to the rendered `database`, which differs across
+            // targets when it comes from `env_var()` (gh-17121).
+            let unrendered_database_in_both =
+                current_source.__source_attr__.unrendered_database.is_some()
+                    && previous_source
+                        .__source_attr__
+                        .unrendered_database
+                        .is_some();
+            let unrendered_schema_in_both =
+                current_source.__source_attr__.unrendered_schema.is_some()
+                    && previous_source.__source_attr__.unrendered_schema.is_some();
+            if unrendered_database_in_both || unrendered_schema_in_both {
+                let db_eq = if unrendered_database_in_both {
+                    current_source.__source_attr__.unrendered_database
+                        == previous_source.__source_attr__.unrendered_database
+                } else {
+                    current_node.base().database == previous_node.base().database
+                };
+                let schema_eq = if unrendered_schema_in_both {
+                    current_source.__source_attr__.unrendered_schema
+                        == previous_source.__source_attr__.unrendered_schema
+                } else {
+                    current_node.base().schema == previous_node.base().schema
+                };
                 let alias_eq = get(current_uc, "alias") == get(previous_uc, "alias");
                 let is_same_relation = db_eq && schema_eq && alias_eq;
 
@@ -1484,6 +1500,44 @@ mod tests {
             .previous_node_for(&current)
             .expect("exact unique_id match");
         assert_eq!(previous.common().name, "events___");
+    }
+
+    /// gh-17121: a source whose `database` comes from `env_var()` and which sets no
+    /// `schema` must still be compared through the unrendered values. dbt-core compares
+    /// `unrendered_database` and `unrendered_schema` independently, so the missing
+    /// schema does not push the check back onto the rendered `database`, which differs
+    /// between the state and current targets when the env var resolves differently.
+    #[test]
+    fn source_with_env_var_database_and_no_schema_is_not_modified() {
+        let mut previous = make_source("source.pkg.raw.customers", "pkg", "raw", "customers");
+        previous.__source_attr__.unrendered_database =
+            Some("{{ env_var('SOURCE_DATABASE') }}".to_string());
+        previous.__base_attr__.database = "prod_db".to_string();
+
+        // Same unrendered template, but the env var rendered differently in this run.
+        let mut current = previous.clone();
+        current.__base_attr__.database = "ci_db".to_string();
+
+        let state = state_with_previous_sources(vec![previous]);
+        assert!(!state.is_modified(&current, None, None, AdapterType::Snowflake));
+    }
+
+    /// The unrendered comparison must still fire when it is reached: rewriting the
+    /// template is a real change even when both targets render the same value.
+    #[test]
+    fn source_with_changed_unrendered_database_is_modified() {
+        let mut previous = make_source("source.pkg.raw.customers", "pkg", "raw", "customers");
+        previous.__source_attr__.unrendered_database =
+            Some("{{ env_var('SOURCE_DATABASE') }}".to_string());
+        previous.__base_attr__.database = "prod_db".to_string();
+
+        let mut current = previous.clone();
+        current.__source_attr__.unrendered_database =
+            Some("{{ env_var('OTHER_SOURCE_DATABASE') }}".to_string());
+        current.__base_attr__.database = "prod_db".to_string();
+
+        let state = state_with_previous_sources(vec![previous]);
+        assert!(state.is_modified(&current, None, None, AdapterType::Snowflake));
     }
 
     #[test]

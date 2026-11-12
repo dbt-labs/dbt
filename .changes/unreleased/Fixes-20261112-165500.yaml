@@ -1,0 +1,7 @@
+kind: Fixes
+body: Fix state:modified selecting sources whose env_var database renders differently between targets when no schema is set, by comparing the unrendered database and schema independently like dbt-core
+time: 2026-11-12T16:55:00.000000+00:00
+custom:
+    author: sainimal1ba-hue
+    issue: "17121"
+    project: dbt-core
