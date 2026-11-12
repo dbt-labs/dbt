@@ -1,6 +1,5 @@
 //! Select and exclude nodes from the manifest based on the select and exclude expressions
 
-use clean_path::Clean;
 use dbt_adapter_core::AdapterType;
 use dbt_common::{
     ErrorCode, FsResult,
@@ -9,6 +8,7 @@ use dbt_common::{
     node_selector::{MethodName, SelectExpression, SelectionCriteria, SelectionValue},
     tracing::dbt_emit::emit_warn_log_message,
 };
+use dbt_path::normalize;
 use dbt_schemas::schemas::{
     CommonAttributes, DbtSource, DbtTest, InternalDbtNode, InternalDbtNodeAttributes,
     ModificationType, Nodes, StateArtifacts, common::Access, telemetry::NodeType,
@@ -525,7 +525,7 @@ fn match_path(pattern: &str, common_attr: &CommonAttributes) -> FsResult<bool> {
     // ── 0. Normalise the selector: resolve `.` and `..` components so that
     //       "./models/foo.sql", "models/./foo.sql", and
     //       "models/staging/../foo.sql" all reduce to "models/foo.sql".
-    let normalised = Path::new(pattern).clean();
+    let normalised = normalize(Path::new(pattern));
     let pattern = normalised.to_string_lossy();
     let pattern = pattern.as_ref();
 

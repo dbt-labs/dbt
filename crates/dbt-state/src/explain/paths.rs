@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use dbt_common::{ErrorCode, FsResult, constants::DBT_LOG_DIR_NAME, fs_err};
+use dbt_path::normalize;
 
 use crate::service_config::{DEFAULT_LOG_PREFIX, RunCacheServiceConfig};
 
@@ -97,7 +98,7 @@ fn decision_log_dir_for_inputs(
     config: &RunCacheServiceConfig,
 ) -> PathBuf {
     if let Some(override_dir) = config.log_dir_override.as_deref() {
-        return expand_tilde(override_dir);
+        return normalize(Path::new(override_dir)).into_owned();
     }
 
     let project_dir = absolute_path(project_dir);
@@ -180,18 +181,5 @@ fn absolute_from(base: &Path, path: &Path) -> PathBuf {
         path.to_path_buf()
     } else {
         base.join(path)
-    }
-}
-
-fn expand_tilde(path: &str) -> PathBuf {
-    let Some(suffix) = path.strip_prefix("~/") else {
-        return PathBuf::from(path);
-    };
-    match dirs::home_dir() {
-        Some(home) => home.join(suffix),
-        None => {
-            tracing::warn!("Failed to resolve the home directory while expanding '{path}'");
-            PathBuf::from(path)
-        }
     }
 }

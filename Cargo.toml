@@ -8,6 +8,7 @@ members = [
   "crates/dbt-auth",
   "crates/dbt-base",
   "crates/dbt-cancel",
+  "crates/dbt-path",
   "crates/dbt-runtime",
   "crates/dbt-runtime-macros",
   "crates/dbt-clap-core",
@@ -291,6 +292,7 @@ dbt-login = { path = "crates/dbt-login" }
 dbt-main = { path = "crates/dbt-main", default-features = false }
 dbt-metricflow = { path = "crates/dbt-metricflow" }
 dbt-parser = { path = "crates/dbt-parser" }
+dbt-path = { path = "crates/dbt-path" }
 dbt-platform = { path = "crates/dbt-platform" }
 dbt-platform-auth = { path = "crates/dbt-platform-auth" }
 dbt-pretty-table = { path = "crates/dbt-pretty-table" }
@@ -536,7 +538,6 @@ paste = "1.0.15"
 scopeguard = { version = "1.2.0" }
 
 # io stuff
-clean-path = "0.2.1"
 console = "0.16.3"
 crossterm = { version = "0.29", default-features = false, features = [
   "events",
@@ -556,7 +557,6 @@ gix-discover = "0.52.0"
 glob = "0.3.2"
 ignore = "0.4.23"
 pathdiff = "0.2.3"
-run_script = "0.11.0"
 rust-embed = { version = "8.5.0" }
 schemars = { version = "0.8.22", features = ["indexmap2"] }
 shellexpand = "3.1.1"
@@ -631,7 +631,7 @@ libc = "0.2"
 libloading = "0.8"
 linked-hash-map = "0.5.6"
 md5 = "0.7.0"
-normalize-path = "0.2.1"
+normalize-path = "=0.2.1"
 num-integer = "0.1.46"
 percent-encoding = "2.3.1"
 petgraph = "0.8.1"
