@@ -166,7 +166,8 @@
         "private",
         "protected",
         "public"
-      ]
+      ],
+      "properties": {}
     },
     "AggregationType": {
       "type": "string",
@@ -180,7 +181,8 @@
         "percentile",
         "median",
         "count"
-      ]
+      ],
+      "properties": {}
     },
     "AnalysesConfig": {
       "type": "object",
@@ -359,7 +361,8 @@
           "type": "string",
           "pattern": "^\\{.*\\}$"
         }
-      ]
+      ],
+      "properties": {}
     },
     "ColumnConfig": {
       "type": "object",
@@ -576,7 +579,8 @@
           "type": "string",
           "pattern": "^\\{.*\\}$"
         }
-      ]
+      ],
+      "properties": {}
     },
     "ColumnPropertiesDimensionConfig": {
       "type": "object",
@@ -647,7 +651,8 @@
       "enum": [
         "categorical",
         "time"
-      ]
+      ],
+      "properties": {}
     },
     "ColumnPropertiesEntityType": {
       "type": "string",
@@ -656,7 +661,8 @@
         "natural",
         "primary",
         "unique"
-      ]
+      ],
+      "properties": {}
     },
     "ComputeArg": {
       "oneOf": [
@@ -688,7 +694,8 @@
             "service"
           ]
         }
-      ]
+      ],
+      "properties": {}
     },
     "ConstantProperty": {
       "type": "object",
@@ -785,14 +792,16 @@
         "foreign_key",
         "check",
         "custom"
-      ]
+      ],
+      "properties": {}
     },
     "ConversionCalculationType": {
       "type": "string",
       "enum": [
         "conversions",
         "conversion_rate"
-      ]
+      ],
+      "properties": {}
     },
     "CustomTest": {
       "anyOf": [
@@ -809,7 +818,8 @@
           "type": "string",
           "pattern": "^\\{.*\\}$"
         }
-      ]
+      ],
+      "properties": {}
     },
     "CustomTestInner": {
       "type": "object",
@@ -914,7 +924,8 @@
         "Directory_Table",
         "Insights",
         "Other"
-      ]
+      ],
+      "properties": {}
     },
     "DataTestConfig": {
       "description": "This configuration is a superset of all warehouse specific configurations that users can set",
@@ -1205,6 +1216,20 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "enable_change_history": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
           ]
         },
         "enable_list_inference": {
@@ -1510,6 +1535,12 @@
             "null"
           ]
         },
+        "merge_actions_explicit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "merge_with_schema_evolution": {
           "anyOf": [
             {
@@ -1603,6 +1634,20 @@
             }
           ]
         },
+        "persist_constraints": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "primary_key": {
           "default": null,
           "allOf": [
@@ -1691,6 +1736,16 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "row_filter": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RowFilterConfig"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "schedule": {
@@ -1805,6 +1860,16 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "state": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/DataTestState"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "static_analysis": {
@@ -2050,6 +2115,51 @@
       },
       "additionalProperties": false
     },
+    "DataTestState": {
+      "description": "The dbt State configs supported on data tests: only `require_fresh_data_from`, `evaluate_volatile_sql` and `compare_unrendered_code` (snapshots reuse the full `ModelState`). Other keys are not fields here, so they are flagged as unknown keys at parse time.",
+      "type": "object",
+      "properties": {
+        "compare_unrendered_code": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
+        "evaluate_volatile_sql": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
+        "require_fresh_data_from": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/UpdatesOn"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
     "DataTests": {
       "anyOf": [
         {
@@ -2062,7 +2172,8 @@
           "type": "string",
           "pattern": "^\\{.*\\}$"
         }
-      ]
+      ],
+      "properties": {}
     },
     "DbtBatchSize": {
       "type": "string",
@@ -2071,7 +2182,8 @@
         "day",
         "month",
         "year"
-      ]
+      ],
+      "properties": {}
     },
     "DbtContract": {
       "type": "object",
@@ -2151,7 +2263,8 @@
           },
           "additionalProperties": false
         }
-      ]
+      ],
+      "properties": {}
     },
     "DbtMaterialization": {
       "oneOf": [
@@ -2205,7 +2318,8 @@
           },
           "additionalProperties": false
         }
-      ]
+      ],
+      "properties": {}
     },
     "DbtOwner": {
       "type": "object",
@@ -2306,7 +2420,8 @@
           "type": "string",
           "pattern": "^\\{.*\\}$"
         }
-      ]
+      ],
+      "properties": {}
     },
     "DerivedDimension": {
       "type": "object",
@@ -2516,7 +2631,8 @@
           "type": "string",
           "pattern": "^\\{.*\\}$"
         }
-      ]
+      ],
+      "properties": {}
     },
     "EntityConfig": {
       "type": "object",
@@ -2619,6 +2735,12 @@
             "null"
           ]
         },
+        "database": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "export_as": {
           "anyOf": [
             {
@@ -2644,7 +2766,8 @@
         "table",
         "view",
         "cache"
-      ]
+      ],
+      "properties": {}
     },
     "ExposureConfig": {
       "type": "object",
@@ -2758,7 +2881,8 @@
         "analysis",
         "ml",
         "application"
-      ]
+      ],
+      "properties": {}
     },
     "ExternalPartition": {
       "anyOf": [
@@ -2772,7 +2896,8 @@
           "type": "string",
           "pattern": "^\\{.*\\}$"
         }
-      ]
+      ],
+      "properties": {}
     },
     "ExternalPartitionConfig": {
       "description": "Reference: https://github.com/dbt-labs/dbt-mantle/blob/da5abca4f829b167bd1b1d5c6666c12cd8c719c0/core/dbt/artifacts/resources/v1/source_definition.py#L36",
@@ -2853,7 +2978,8 @@
           "type": "string",
           "pattern": "^\\{.*\\}$"
         }
-      ]
+      ],
+      "properties": {}
     },
     "Formats": {
       "type": "string",
@@ -2861,7 +2987,8 @@
         "dict",
         "csv",
         "sql"
-      ]
+      ],
+      "properties": {}
     },
     "FreshnessDefinition": {
       "type": "object",
@@ -2922,7 +3049,8 @@
         "minute",
         "hour",
         "day"
-      ]
+      ],
+      "properties": {}
     },
     "FreshnessRules": {
       "type": "object",
@@ -3288,6 +3416,20 @@
             }
           ]
         },
+        "enable_change_history": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "enable_list_inference": {
           "anyOf": [
             {
@@ -3547,6 +3689,12 @@
             "null"
           ]
         },
+        "merge_actions_explicit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "merge_with_schema_evolution": {
           "anyOf": [
             {
@@ -3656,6 +3804,42 @@
             }
           ]
         },
+        "persist_constraints": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
+        "post-hook": {
+          "default": [],
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Hooks"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pre-hook": {
+          "default": [],
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Hooks"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "primary_key": {
           "default": null,
           "allOf": [
@@ -3744,6 +3928,16 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "row_filter": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RowFilterConfig"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "runtime_version": {
@@ -4054,7 +4248,8 @@
         "scalar",
         "aggregate",
         "table"
-      ]
+      ],
+      "properties": {}
     },
     "FunctionOverload": {
       "description": "An overload of a function with different argument signatures. Each overload references a separate SQL file (via `defined_in`) that contains the function body for this overload.",
@@ -4290,7 +4485,8 @@
       "type": "object",
       "additionalProperties": {
         "$ref": "#/definitions/StringOrArrayOfStrings"
-      }
+      },
+      "properties": {}
     },
     "Granularity": {
       "type": "string",
@@ -4306,7 +4502,8 @@
         "month",
         "quarter",
         "year"
-      ]
+      ],
+      "properties": {}
     },
     "GroupConfig": {
       "type": "object",
@@ -4361,7 +4558,8 @@
         "ignore",
         "invalidate",
         "new_record"
-      ]
+      ],
+      "properties": {}
     },
     "HookConfig": {
       "type": "object",
@@ -4419,7 +4617,8 @@
           "type": "string",
           "pattern": "^\\{.*\\}$"
         }
-      ]
+      ],
+      "properties": {}
     },
     "IndexesConfig": {
       "description": "A wrapper type for the `indexes` config field that handles flexible deserialization.\n\ndbt-core accepts both list and dictionary formats for indexes. This type accepts either format on input but always serializes as a list.\n\n# Example\n\n```ignore // Input (list): [{columns: [\"id\"], unique: true}] // Serializes as: [{columns: [\"id\"], unique: true}]\n\n// Input (dict): {\"my_index\": {columns: [\"id\"], unique: true}} // Serializes as: [{columns: [\"id\"], unique: true}]  (keys are discarded) ```",
@@ -4429,7 +4628,8 @@
       ],
       "items": {
         "$ref": "#/definitions/PostgresIndex"
-      }
+      },
+      "properties": {}
     },
     "LatestVersionPointer": {
       "description": "Represents the latest version view configuration for versioned models. Supports shorthand (bool) and full form ({enabled: bool, alias: string}).",
@@ -4623,7 +4823,8 @@
           "type": "string",
           "pattern": "^\\{.*\\}$"
         }
-      ]
+      ],
+      "properties": {}
     },
     "MetricPropertiesMetricInput": {
       "type": "object",
@@ -4694,7 +4895,8 @@
         "cumulative",
         "derived",
         "conversion"
-      ]
+      ],
+      "properties": {}
     },
     "MetricsProperties": {
       "type": "object",
@@ -5372,6 +5574,20 @@
             }
           ]
         },
+        "enable_change_history": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "enable_list_inference": {
           "anyOf": [
             {
@@ -5413,6 +5629,21 @@
               "type": "string",
               "pattern": "^\\{.*\\}$"
             }
+          ]
+        },
+        "environment_dependencies": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "environment_key": {
+          "type": [
+            "string",
+            "null"
           ]
         },
         "event_time": {
@@ -5758,6 +5989,12 @@
             "null"
           ]
         },
+        "merge_actions_explicit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "merge_exclude_columns": {
           "anyOf": [
             {
@@ -5912,6 +6149,20 @@
             }
           ]
         },
+        "persist_constraints": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "persist_docs": {
           "anyOf": [
             {
@@ -6054,6 +6305,16 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "row_filter": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RowFilterConfig"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "schedule": {
@@ -6768,6 +7029,20 @@
     "ModelState": {
       "type": "object",
       "properties": {
+        "compare_unrendered_code": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "evaluate_volatile_sql": {
           "anyOf": [
             {
@@ -6783,6 +7058,20 @@
           ]
         },
         "execute_hooks_on_any_reuse": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
+        "ignore_external_modifications": {
           "anyOf": [
             {
               "type": [
@@ -6836,14 +7125,16 @@
         "continue",
         "fail",
         "unknown"
-      ]
+      ],
+      "properties": {}
     },
     "OnError": {
       "type": "string",
       "enum": [
         "skip_children",
         "continue"
-      ]
+      ],
+      "properties": {}
     },
     "OnSchemaChange": {
       "type": "string",
@@ -6853,7 +7144,8 @@
         "fail",
         "sync_all_columns",
         "unknown"
-      ]
+      ],
+      "properties": {}
     },
     "PartitionConfig": {
       "description": "Configuration for partition by columns.\n\ndbt-core allows either of the variants for the `partition_by` in the model config but the bigquery-adapter throws RunTime error the behaviors are tested from the latest dbt-core + bigquery-adapter as this is written we're conformant to this behavior via here and via the `into_bigquery()` method",
@@ -6874,7 +7166,8 @@
           "type": "string",
           "pattern": "^\\{.*\\}$"
         }
-      ]
+      ],
+      "properties": {}
     },
     "PartitionsConfig": {
       "description": "External-table style `partitions` config — list-of-strings (e.g. `['ds=2023-01-01']`) or list-of-maps (e.g. `[{name: foo, data_type: varchar}]`, as used by `dbt-external-tables`).",
@@ -6898,14 +7191,16 @@
           "type": "string",
           "pattern": "^\\{.*\\}$"
         }
-      ]
+      ],
+      "properties": {}
     },
     "PercentileType": {
       "type": "string",
       "enum": [
         "discrete",
         "continuous"
-      ]
+      ],
+      "properties": {}
     },
     "PeriodAggregationType": {
       "type": "string",
@@ -6913,7 +7208,8 @@
         "first",
         "last",
         "average"
-      ]
+      ],
+      "properties": {}
     },
     "PersistDocsConfig": {
       "type": "object",
@@ -6997,11 +7293,13 @@
           "type": "string",
           "pattern": "^\\{.*\\}$"
         }
-      ]
+      ],
+      "properties": {}
     },
     "QueryTag": {
       "description": "A wrapper type for the `query_tag` config field that handles flexible deserialization.\n\nAccepts strings, dictionaries, or sequences for query_tag. Maps and sequences are JSON-serialized to strings.\n\n# Example\n\n```ignore // Input: \"my-tag\" // Stores as: \"my-tag\"\n\n// Input: {\"project\": \"foo\", \"env\": \"prod\"} // Stores as: \"{\\\"project\\\":\\\"foo\\\",\\\"env\\\":\\\"prod\\\"}\" ```",
-      "type": "string"
+      "type": "string",
+      "properties": {}
     },
     "Range": {
       "type": "object",
@@ -7062,6 +7360,28 @@
       },
       "additionalProperties": false
     },
+    "RowFilterConfig": {
+      "type": "object",
+      "properties": {
+        "columns": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrArrayOfStrings"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "function": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
     "Rows": {
       "anyOf": [
         {
@@ -7080,7 +7400,8 @@
           "type": "string",
           "pattern": "^\\{.*\\}$"
         }
-      ]
+      ],
+      "properties": {}
     },
     "SavedQueriesProperties": {
       "type": "object",
@@ -7268,7 +7589,8 @@
           "type": "string",
           "pattern": "^\\{.*\\}$"
         }
-      ]
+      ],
+      "properties": {}
     },
     "ScheduleConfig": {
       "type": "object",
@@ -7305,11 +7627,13 @@
             "local"
           ]
         }
-      ]
+      ],
+      "properties": {}
     },
     "SchemaRefreshInterval": {
       "description": "Schema refresh interval: '30m', '2h', '1d', or 'never'",
-      "type": "string"
+      "type": "string",
+      "properties": {}
     },
     "SeedConfig": {
       "description": "This configuration is a superset of all warehouse specific configurations that users can set",
@@ -7617,6 +7941,20 @@
             }
           ]
         },
+        "enable_change_history": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "enable_list_inference": {
           "anyOf": [
             {
@@ -7906,6 +8244,12 @@
             "null"
           ]
         },
+        "merge_actions_explicit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "merge_with_schema_evolution": {
           "anyOf": [
             {
@@ -7996,6 +8340,20 @@
             },
             {
               "type": "null"
+            }
+          ]
+        },
+        "persist_constraints": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
             }
           ]
         },
@@ -8132,6 +8490,16 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "row_filter": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RowFilterConfig"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "schedule": {
@@ -8485,7 +8853,8 @@
       "enum": [
         "error",
         "warn"
-      ]
+      ],
+      "properties": {}
     },
     "SnapshotConfig": {
       "description": "This configuration is a superset of all warehouse specific configurations that users can set",
@@ -8804,6 +9173,20 @@
             }
           ]
         },
+        "enable_change_history": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "enable_list_inference": {
           "anyOf": [
             {
@@ -9119,6 +9502,12 @@
             "null"
           ]
         },
+        "merge_actions_explicit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "merge_with_schema_evolution": {
           "anyOf": [
             {
@@ -9209,6 +9598,20 @@
             },
             {
               "type": "null"
+            }
+          ]
+        },
+        "persist_constraints": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
             }
           ]
         },
@@ -9347,6 +9750,16 @@
             "null"
           ]
         },
+        "row_filter": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RowFilterConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "schedule": {
           "anyOf": [
             {
@@ -9455,6 +9868,16 @@
             "null"
           ]
         },
+        "state": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ModelState"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "static_analysis": {
           "anyOf": [
             {
@@ -9492,6 +9915,12 @@
             {
               "type": "null"
             }
+          ]
+        },
+        "table_format": {
+          "type": [
+            "string",
+            "null"
           ]
         },
         "table_tag": {
@@ -10044,6 +10473,20 @@
             "null"
           ]
         },
+        "enable_change_history": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "enable_list_inference": {
           "anyOf": [
             {
@@ -10330,6 +10773,12 @@
             "null"
           ]
         },
+        "merge_actions_explicit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "merge_with_schema_evolution": {
           "anyOf": [
             {
@@ -10423,6 +10872,20 @@
             }
           ]
         },
+        "persist_constraints": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "primary_key": {
           "default": null,
           "allOf": [
@@ -10501,6 +10964,16 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "row_filter": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RowFilterConfig"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "schedule": {
@@ -10861,7 +11334,8 @@
         "never",
         "if_missing",
         "always"
-      ]
+      ],
+      "properties": {}
     },
     "StaticAnalysisKind": {
       "type": "string",
@@ -10871,7 +11345,8 @@
         "strict",
         "baseline",
         "on"
-      ]
+      ],
+      "properties": {}
     },
     "StaticAnalysisOffReason": {
       "type": "string",
@@ -10879,7 +11354,8 @@
         "configuredoff",
         "unabletofetchschema",
         "nodownstream"
-      ]
+      ],
+      "properties": {}
     },
     "StoreFailuresAs": {
       "type": "string",
@@ -10887,7 +11363,8 @@
         "ephemeral",
         "table",
         "view"
-      ]
+      ],
+      "properties": {}
     },
     "StringOrArrayOfStrings": {
       "anyOf": [
@@ -10904,7 +11381,8 @@
           "type": "string",
           "pattern": "^\\{.*\\}$"
         }
-      ]
+      ],
+      "properties": {}
     },
     "StringOrMetricPropertiesMetricInput": {
       "anyOf": [
@@ -10918,7 +11396,8 @@
           "type": "string",
           "pattern": "^\\{.*\\}$"
         }
-      ]
+      ],
+      "properties": {}
     },
     "SyncConfig": {
       "description": "Configuration for schema synchronization behavior.\n\nThis can be specified at source level (default for all tables) or at individual table level (overrides source-level settings).",
@@ -11444,6 +11923,20 @@
             "null"
           ]
         },
+        "enable_change_history": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "enable_list_inference": {
           "anyOf": [
             {
@@ -11688,6 +12181,12 @@
             "null"
           ]
         },
+        "merge_actions_explicit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "merge_with_schema_evolution": {
           "anyOf": [
             {
@@ -11781,6 +12280,20 @@
             }
           ]
         },
+        "persist_constraints": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "primary_key": {
           "default": null,
           "allOf": [
@@ -11859,6 +12372,16 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "row_filter": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RowFilterConfig"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "schedule": {
@@ -12233,7 +12756,8 @@
       "enum": [
         "any",
         "all"
-      ]
+      ],
+      "properties": {}
     },
     "VersionColumnProperties": {
       "description": "Column entry inside a model version block.\n\nUnlike `ColumnProperties`, `name` is optional here because version column lists can contain include/exclude directives (e.g. `include: all, exclude: [col]`) that have no name.",
@@ -12499,14 +13023,16 @@
             "non-deterministic"
           ]
         }
-      ]
+      ],
+      "properties": {}
     },
     "WindowChoice": {
       "type": "string",
       "enum": [
         "min",
         "max"
-      ]
+      ],
+      "properties": {}
     }
   }
 }
