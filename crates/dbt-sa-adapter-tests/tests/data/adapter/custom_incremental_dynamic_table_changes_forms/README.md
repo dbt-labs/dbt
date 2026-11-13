@@ -5,5 +5,6 @@ Merge custom incremental dynamic tables reading their change source three ways: 
 `{{ changes() }}` joined to an ephemeral model (`orders_with_region`).
 
 See `adapters_snowflake_custom_incremental_dynamic_table_changes_forms`: `dbt run --empty` builds
-all three (column discovery included), `--full-refresh` rebuilds them with the real bodies, then
+the two `{{ changes() }}` forms (column discovery included; hand-written CHANGES is excluded,
+as it can't follow `--empty`'s zero-row subquery), `--full-refresh` builds all three with the real bodies, then
 source DML, a refresh, and row checks.

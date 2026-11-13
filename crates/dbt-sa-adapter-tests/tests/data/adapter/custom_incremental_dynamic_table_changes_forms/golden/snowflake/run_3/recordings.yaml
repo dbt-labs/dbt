@@ -14,9 +14,9 @@ model.test.orders_hand_written:
     create or replace temporary table development.adapters_snowflake_custom_incremental_dynamic_table_changes_forms.orders_hand_written__dbt_tmp
     as (
     select * from (
-    -- CHANGES written by hand after source(). Accepted; under --empty dbt keeps the table name in front of CHANGES.
+    -- CHANGES written by hand after source(): discovery runs it as written (not under --empty).
     select o.order_id, o.amount
-    from development.adapters_snowflake_custom_incremental_dynamic_table_changes_forms.orders changes(information => default) at(offset => 0) as o
+    from development.adapters_snowflake_custom_incremental_dynamic_table_changes_forms.orders changes(information => default) as o
     where o.METADATA$ACTION = 'INSERT'
     ) limit 0
     )
@@ -29,7 +29,7 @@ model.test.orders_hand_written:
 - sequence: 4
   type: execute
   sql: |-
-    create or replace dynamic table development.adapters_snowflake_custom_incremental_dynamic_table_changes_forms.orders_hand_written ("ORDER_ID" NUMBER(38,0), "AMOUNT" NUMBER(10,2))
+    create dynamic table development.adapters_snowflake_custom_incremental_dynamic_table_changes_forms.orders_hand_written ("ORDER_ID" NUMBER(38,0), "AMOUNT" NUMBER(10,2))
     
     warehouse = [MASKED_WH]
     
@@ -49,11 +49,10 @@ model.test.orders_hand_written:
     
     
     
-    
     refresh using (
     merge into SELF as DBT_INTERNAL_DEST
     using (
-    -- CHANGES written by hand after source(). Accepted; under --empty dbt keeps the table name in front of CHANGES.
+    -- CHANGES written by hand after source(): discovery runs it as written (not under --empty).
     select o.order_id, o.amount
     from development.adapters_snowflake_custom_incremental_dynamic_table_changes_forms.orders changes(information => default) as o
     where o.METADATA$ACTION = 'INSERT'

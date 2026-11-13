@@ -544,8 +544,8 @@ async fn adapters_snowflake_custom_incremental_dynamic_table_create_or_alter() -
 }
 
 /// Custom incremental dynamic tables reading their change source through `{{ changes() }}`, through
-/// CHANGES written by hand, and joined to an ephemeral model, under `dbt run --empty` and a normal
-/// run.
+/// CHANGES written by hand, and joined to an ephemeral model, under `dbt run --empty` (hand-written
+/// CHANGES excluded) and a normal run.
 #[dbt_runtime::test]
 async fn adapters_snowflake_custom_incremental_dynamic_table_changes_forms() -> FsResult<()> {
     run_fs_record_replay_task_seq(
@@ -557,11 +557,11 @@ async fn adapters_snowflake_custom_incremental_dynamic_table_changes_forms() -> 
         None,
         &[
             AdapterRecordReplayTurn::new("run-operation set_up", &[]), // run_0: source tables
-            AdapterRecordReplayTurn::new("run --empty", &[]), // run_1: every form builds empty
+            AdapterRecordReplayTurn::new("run --empty --exclude orders_hand_written", &[]), // run_1: changes() forms build empty
             AdapterRecordReplayTurn::new("test --select tag:after_empty", &[]), // run_2: no rows
             AdapterRecordReplayTurn::new("run --full-refresh", &[]), // run_3: real bodies
             AdapterRecordReplayTurn::new("run-operation apply_changes", &[]), // run_4
-            AdapterRecordReplayTurn::new("run", &[]),         // run_5: no-op build, manual refresh
+            AdapterRecordReplayTurn::new("run", &[]), // run_5: no-op build, manual refresh
             AdapterRecordReplayTurn::new("test --exclude tag:after_empty", &[]), // run_6: rows per form
         ],
         None,
