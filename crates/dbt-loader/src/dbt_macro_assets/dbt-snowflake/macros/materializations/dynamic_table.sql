@@ -56,14 +56,9 @@
 
             -- get config options
             {% set on_configuration_change = config.get('on_configuration_change') %}
-            {% set existing_dynamic_table = snowflake__describe_dynamic_table_for_changes(existing_relation, config) %}
-            {% set configuration_changes = snowflake__get_dynamic_table_configuration_changes(existing_relation, config, existing_dynamic_table) %}
+            {% set configuration_changes = snowflake__get_dynamic_table_configuration_changes(existing_relation, config) %}
 
-            {#- A switch between a custom incremental and a regular dynamic table is a change the
-                changeset can miss (a desired AUTO refresh_mode matches anything). -#}
-            {% set kind_changed = snowflake__dynamic_table_kind_changed(existing_dynamic_table) %}
-
-            {% if configuration_changes is none and not kind_changed %}
+            {% if configuration_changes is none %}
                 {% set build_sql = '' %}
                 {% if snowflake__dynamic_table_is_custom_incremental() %}
                     {{ exceptions.warn("No configuration changes were identified on: `" ~ target_relation ~ "`. Continuing. Changes to the model SQL of a custom incremental dynamic table are only deployed with --full-refresh.") }}
@@ -72,12 +67,7 @@
                 {% endif %}
 
             {% elif on_configuration_change == 'apply' %}
-                {% if kind_changed %}
-                    {{ log("Replacing " ~ target_relation ~ " because it switches between a custom incremental and a regular dynamic table.") }}
-                    {% set build_sql = get_replace_sql(existing_relation, target_relation, sql) %}
-                {% else %}
-                    {% set build_sql = snowflake__get_alter_dynamic_table_as_sql(existing_relation, configuration_changes, target_relation, sql) %}
-                {% endif %}
+                {% set build_sql = snowflake__get_alter_dynamic_table_as_sql(existing_relation, configuration_changes, target_relation, sql) %}
             {% elif on_configuration_change == 'continue' %}
                 {% set build_sql = '' %}
                 {{ exceptions.warn("Configuration changes were identified and `on_configuration_change` was set to `continue` for `" ~ target_relation ~ "`") }}
@@ -125,17 +115,10 @@
 {% endmacro %}
 
 
-{% macro snowflake__describe_dynamic_table_for_changes(existing_relation, new_config) -%}
+{% macro snowflake__get_dynamic_table_configuration_changes(existing_relation, new_config) -%}
     {%- set _include_transient = new_config.get("transient") is not none -%}
     {# DIVERGENCE: core wraps adapter.describe_dynamic_table in a snowflake__describe_dynamic_table macro; Fusion dispatches every relation type through adapter.describe_relation in adapter_impl.rs, so there is no wrapper macro. #}
-    {% do return(adapter.describe_relation(existing_relation, include_transient=_include_transient)) %}
-{%- endmacro %}
-
-
-{% macro snowflake__get_dynamic_table_configuration_changes(existing_relation, new_config, existing_dynamic_table) -%}
-    {#- DIVERGENCE: core takes (existing_relation, new_config) and describes the relation itself. Fusion takes the
-        describe result (`snowflake__describe_dynamic_table_for_changes`) so callers that also check for a switch
-        between a regular and a custom incremental dynamic table describe it once. -#}
-    {% set _configuration_changes = existing_relation.dynamic_table_config_changeset(existing_dynamic_table, new_config.model) %}
+    {% set _existing_dynamic_table = adapter.describe_relation(existing_relation, include_transient=_include_transient) %}
+    {% set _configuration_changes = existing_relation.dynamic_table_config_changeset(_existing_dynamic_table, new_config.model) %}
     {% do return(_configuration_changes) %}
 {%- endmacro %}

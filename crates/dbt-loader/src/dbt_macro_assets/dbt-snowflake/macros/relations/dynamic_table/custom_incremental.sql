@@ -187,17 +187,3 @@ when matched and coalesce({{ delete_condition }}, false) then delete
 when matched then update set {% for name in update_columns %}{{ name }} = DBT_INTERNAL_SOURCE.{{ name }}{% if not loop.last %}, {% endif %}{% endfor %}
 when not matched{% if delete_condition %} and not coalesce({{ delete_condition }}, false){% endif %} then insert ({{ column_names | join(', ') }}) values ({% for name in column_names %}DBT_INTERNAL_SOURCE.{{ name }}{% if not loop.last %}, {% endif %}{% endfor %})
 {%- endmacro %}
-
-
--- funcsign: (any) -> bool
-{% macro snowflake__dynamic_table_kind_changed(described) -%}
-{#-
-    Whether the existing dynamic table and the model disagree on being a CI DT. Neither direction
-    can be altered in place, and the refresh_mode diff misses CI DT -> regular because it treats a
-    desired AUTO as matching anything.
--#}
-    {%- set rows = described['dynamic_table'].rows -%}
-    {%- set existing_mode = (rows[0]['refresh_mode'] if rows | length > 0 else '') or '' -%}
-    {%- set existing_is_custom = existing_mode | upper == 'CUSTOM_INCREMENTAL' -%}
-    {{ return(existing_is_custom != snowflake__dynamic_table_is_custom_incremental()) }}
-{%- endmacro %}

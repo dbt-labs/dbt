@@ -42,29 +42,21 @@
     a hint to that effect to any failed CREATE OR ALTER (see `with_create_or_alter_hint` in
     adapter_impl.rs), so the run's error output points at --full-refresh.
 -#}
-    {%- set existing_dynamic_table = snowflake__describe_dynamic_table_for_changes(existing_relation, config) -%}
-    {%- set configuration_changes = snowflake__get_dynamic_table_configuration_changes(existing_relation, config, existing_dynamic_table) -%}
+    {%- set configuration_changes = snowflake__get_dynamic_table_configuration_changes(existing_relation, config) -%}
     {%- set on_configuration_change = config.get('on_configuration_change') -%}
     {%- set dynamic_table = target_relation.from_config(config.model) -%}
     {%- set catalog_relation = adapter.build_catalog_relation(config.model) -%}
     {%- set target_is_iceberg = catalog_relation.catalog_type == 'BUILT_IN' -%}
 
-    {#- A switch between a regular and a custom incremental dynamic table is a change the
-        changeset can miss (a desired AUTO refresh_mode matches anything), and CREATE OR ALTER
-        cannot convert one into the other. -#}
-    {%- set kind_changed = snowflake__dynamic_table_kind_changed(existing_dynamic_table) -%}
     {%- if existing_relation.is_iceberg_format != target_is_iceberg -%}
         {{ return(get_replace_sql(existing_relation, target_relation, sql)) }}
 
-    {%- elif configuration_changes is none and not kind_changed -%}
+    {%- elif configuration_changes is none -%}
         {#- query-only edit (or no change): sync the definition in place. -#}
         {{ return(snowflake__create_or_alter_dynamic_table_sql(dynamic_table, target_relation, sql)) }}
 
     {%- elif on_configuration_change == 'apply' -%}
-        {%- if kind_changed -%}
-            {{ log("Replacing " ~ target_relation ~ " because it switches between a custom incremental and a regular dynamic table.") }}
-            {{ return(get_replace_sql(existing_relation, target_relation, sql)) }}
-        {%- elif configuration_changes.requires_full_refresh -%}
+        {%- if configuration_changes.requires_full_refresh -%}
             {#- transient / refresh_mode: dbt flags these as requires_full_refresh -> rebuild. -#}
             {{ return(get_replace_sql(existing_relation, target_relation, sql)) }}
         {%- else -%}
