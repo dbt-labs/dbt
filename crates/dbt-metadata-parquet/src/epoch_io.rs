@@ -11,7 +11,10 @@
 
 use std::{
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use arrow::datatypes::{Field, Schema};
@@ -57,10 +60,31 @@ pub fn next_epoch(dir: &Path, prefix: &str) -> u32 {
 /// Write rows to a parquet file using serde_arrow + ZSTD compression.
 ///
 /// Writes in chunks of 256 rows to keep memory bounded for large batches.
+/// The file is written under a temporary name and renamed into place, so a
+/// concurrent reader never sees a partially written file.
 pub fn write_rows<T: Serialize>(path: &Path, fields: &[Field], rows: &[T]) -> FsResult<()> {
     if let Some(parent) = path.parent() {
         stdfs::create_dir_all(parent)?;
     }
+    let tmp = tmp_path(path);
+    let res = write_rows_to(&tmp, fields, rows).and_then(|()| stdfs::rename(&tmp, path));
+    if res.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    res
+}
+
+/// Unique sibling path for `path`. The `.tmp` extension keeps it out of
+/// [`existing_epochs`].
+fn tmp_path(path: &Path) -> PathBuf {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(format!(".{}.{n}.tmp", std::process::id()));
+    path.with_file_name(name)
+}
+
+fn write_rows_to<T: Serialize>(path: &Path, fields: &[Field], rows: &[T]) -> FsResult<()> {
     let file = stdfs::File::create(path)?;
     let arrow_schema = Arc::new(Schema::new(fields.to_vec()));
     let field_refs: Vec<_> = arrow_schema.fields().iter().map(Arc::clone).collect();
@@ -97,10 +121,16 @@ pub fn read_rows<T: DeserializeOwned>(path: &Path) -> Vec<T> {
         return Vec::new();
     };
     let mut rows = Vec::new();
-    for batch in reader.flatten() {
-        if let Ok(mut chunk) = serde_arrow::from_record_batch::<Vec<T>>(&batch) {
-            rows.append(&mut chunk);
-        }
+    for batch in reader {
+        // The reader doesn't move past a failed batch, it keeps returning the
+        // same error, so give up on the whole file instead of skipping.
+        let Ok(batch) = batch else {
+            return Vec::new();
+        };
+        let Ok(mut chunk) = serde_arrow::from_record_batch::<Vec<T>>(&batch) else {
+            return Vec::new();
+        };
+        rows.append(&mut chunk);
     }
     rows
 }
@@ -124,4 +154,92 @@ pub fn remove_epochs(dir: &Path, prefix: &str) {
 pub fn should_compact(delta_len: usize, total_alive: usize, file_count: usize) -> bool {
     let row_threshold = (total_alive / 10).max(10);
     delta_len > row_threshold || file_count > 8
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::datatypes::DataType;
+    use serde::Deserialize;
+
+    #[derive(Debug, PartialEq, Serialize, Deserialize)]
+    struct Row {
+        id: i64,
+        name: String,
+    }
+
+    fn fields() -> Vec<Field> {
+        vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("name", DataType::Utf8, false),
+        ]
+    }
+
+    fn rows(n: i64) -> Vec<Row> {
+        (0..n)
+            .map(|id| Row {
+                id,
+                name: format!("name-{id}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn write_then_read_leaves_no_tmp_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("v1_0.parquet");
+        write_rows(&path, &fields(), &rows(1000)).unwrap();
+        write_rows(&path, &fields(), &rows(10)).unwrap();
+
+        assert_eq!(read_rows::<Row>(&path), rows(10));
+        let names: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, vec!["v1_0.parquet"]);
+    }
+
+    #[test]
+    fn read_rows_gives_up_on_corrupt_pages() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("v1_0.parquet");
+        write_rows(&path, &fields(), &rows(5000)).unwrap();
+
+        // Clobber the data pages but keep the footer, so the reader opens fine
+        // and only fails once it starts decoding batches.
+        let mut bytes = std::fs::read(&path).unwrap();
+        let len = bytes.len();
+        bytes[8..len / 2].fill(0xAB);
+        std::fs::write(&path, &bytes).unwrap();
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(read_rows::<Row>(&path));
+        });
+        let got = rx
+            .recv_timeout(std::time::Duration::from_secs(60))
+            .expect("read_rows did not return");
+        assert!(got.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rewrite_does_not_break_open_reader() {
+        use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("v1_0.parquet");
+        write_rows(&path, &fields(), &rows(5000)).unwrap();
+
+        let reader = ParquetRecordBatchReaderBuilder::try_new(std::fs::File::open(&path).unwrap())
+            .unwrap()
+            .with_batch_size(64)
+            .build()
+            .unwrap();
+        write_rows(&path, &fields(), &rows(10)).unwrap();
+
+        let total: usize = reader.map(|b| b.unwrap().num_rows()).sum();
+        assert_eq!(total, 5000);
+        assert_eq!(read_rows::<Row>(&path), rows(10));
+    }
 }
