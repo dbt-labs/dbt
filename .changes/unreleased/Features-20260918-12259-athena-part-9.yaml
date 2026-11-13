@@ -1,0 +1,7 @@
+kind: Features
+body: '[Athena] `dbt init` can create and update an Athena profile: prompts follow dbt-athena''s profile template plus an auth-method selector (default chain, named profile, access keys); Athena is also available through the headless profile API'
+time: 2026-09-18T12:25:05.257896-07:00
+custom:
+    author: aoelvp94
+    issue: "16252"
+    project: dbt-core
