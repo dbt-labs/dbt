@@ -185,6 +185,10 @@ class TestDatabricksConfigKeys:
             {"group_name": "analysts", "permission_level": "CAN_READ"}
         ],
         "merge_actions_explicit": "WHEN MATCHED THEN UPDATE SET * WHEN NOT MATCHED THEN INSERT *",
+        "row_filter": {"function": "my_filter", "columns": ["region"]},
+        "persist_constraints": True,
+        "environment_key": "my_env",
+        "environment_dependencies": ["requests==2.32.3"],
     }
 
     def test_model_config_no_warning(self):
@@ -212,6 +216,89 @@ class TestDatabricksConfigKeys:
             "version": "1.0.0",
             "profile": "my_project",
             "models": {"my_project": {f"+{k}": v for k, v in self.DATABRICKS_CONFIG_KEYS.items()}},
+        }
+        jsonschema_validate(project_schema(), project_dict, "dbt_project.yml")
+        assert active_deprecations == {}
+
+
+class TestAdapterConfigKeys:
+    """Adapter and resource config keys that are real v1 configs and must not warn."""
+
+    @pytest.mark.parametrize(
+        "adapter,resources_dict",
+        [
+            (
+                "bigquery",
+                {"models": [{"name": "m", "config": {"enable_change_history": True}}]},
+            ),
+            (
+                "snowflake",
+                {
+                    "snapshots": [
+                        {"name": "s", "config": {"table_format": "iceberg", "iceberg_version": 3}}
+                    ]
+                },
+            ),
+            (
+                "snowflake",
+                {
+                    "functions": [
+                        {
+                            "name": "f",
+                            "config": {"pre-hook": "select 1", "post-hook": ["select 2"]},
+                        }
+                    ]
+                },
+            ),
+            (
+                "snowflake",
+                {
+                    "saved_queries": [
+                        {
+                            "name": "sq",
+                            "query_params": {"metrics": ["m"], "group_by": []},
+                            "exports": [
+                                {
+                                    "name": "e",
+                                    "config": {"export_as": "table", "database": "my_db"},
+                                }
+                            ],
+                        }
+                    ]
+                },
+            ),
+        ],
+    )
+    def test_resource_config_no_warning(self, adapter, resources_dict):
+        reset_deprecations()
+
+        safe_set_invocation_context()
+        get_invocation_context().uses_adapter(adapter)
+
+        jsonschema_validate(resources_schema(), {"version": 2, **resources_dict}, "schema.yml")
+        assert active_deprecations == {}
+
+    @pytest.mark.parametrize(
+        "adapter,project_configs",
+        [
+            ("bigquery", {"models": {"my_project": {"+enable_change_history": True}}}),
+            (
+                "snowflake",
+                {"snapshots": {"my_project": {"+table_format": "iceberg", "+iceberg_version": 3}}},
+            ),
+        ],
+    )
+    def test_project_config_no_warning(self, adapter, project_configs):
+        reset_deprecations()
+
+        safe_set_invocation_context()
+        get_invocation_context().uses_adapter(adapter)
+
+        project_dict = {
+            "name": "my_project",
+            "version": "1.0.0",
+            "profile": "my_project",
+            **project_configs,
         }
         jsonschema_validate(project_schema(), project_dict, "dbt_project.yml")
         assert active_deprecations == {}

@@ -1207,6 +1207,20 @@
             "null"
           ]
         },
+        "enable_change_history": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "enable_list_inference": {
           "anyOf": [
             {
@@ -1609,6 +1623,20 @@
             }
           ]
         },
+        "persist_constraints": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "primary_key": {
           "default": null,
           "allOf": [
@@ -1697,6 +1725,16 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "row_filter": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RowFilterConfig"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "schedule": {
@@ -2680,6 +2718,12 @@
             "null"
           ]
         },
+        "database": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "export_as": {
           "anyOf": [
             {
@@ -3349,6 +3393,20 @@
             }
           ]
         },
+        "enable_change_history": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "enable_list_inference": {
           "anyOf": [
             {
@@ -3723,6 +3781,42 @@
             }
           ]
         },
+        "persist_constraints": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
+        "post-hook": {
+          "default": [],
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Hooks"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pre-hook": {
+          "default": [],
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Hooks"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "primary_key": {
           "default": null,
           "allOf": [
@@ -3811,6 +3905,16 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "row_filter": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RowFilterConfig"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "runtime_version": {
@@ -5439,6 +5543,20 @@
             }
           ]
         },
+        "enable_change_history": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "enable_list_inference": {
           "anyOf": [
             {
@@ -5480,6 +5598,21 @@
               "type": "string",
               "pattern": "^\\{.*\\}$"
             }
+          ]
+        },
+        "environment_dependencies": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "environment_key": {
+          "type": [
+            "string",
+            "null"
           ]
         },
         "event_time": {
@@ -5985,6 +6118,20 @@
             }
           ]
         },
+        "persist_constraints": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "persist_docs": {
           "anyOf": [
             {
@@ -6127,6 +6274,16 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "row_filter": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RowFilterConfig"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "schedule": {
@@ -7163,6 +7320,28 @@
       },
       "additionalProperties": false
     },
+    "RowFilterConfig": {
+      "type": "object",
+      "properties": {
+        "columns": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrArrayOfStrings"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "function": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
     "Rows": {
       "anyOf": [
         {
@@ -7718,6 +7897,20 @@
             }
           ]
         },
+        "enable_change_history": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "enable_list_inference": {
           "anyOf": [
             {
@@ -8106,6 +8299,20 @@
             }
           ]
         },
+        "persist_constraints": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "persist_docs": {
           "anyOf": [
             {
@@ -8239,6 +8446,16 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "row_filter": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RowFilterConfig"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "schedule": {
@@ -8911,6 +9128,20 @@
             }
           ]
         },
+        "enable_change_history": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "enable_list_inference": {
           "anyOf": [
             {
@@ -9325,6 +9556,20 @@
             }
           ]
         },
+        "persist_constraints": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "persist_docs": {
           "anyOf": [
             {
@@ -9458,6 +9703,16 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "row_filter": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RowFilterConfig"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "schedule": {
@@ -9615,6 +9870,12 @@
             {
               "type": "null"
             }
+          ]
+        },
+        "table_format": {
+          "type": [
+            "string",
+            "null"
           ]
         },
         "table_tag": {
@@ -10167,6 +10428,20 @@
             "null"
           ]
         },
+        "enable_change_history": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "enable_list_inference": {
           "anyOf": [
             {
@@ -10552,6 +10827,20 @@
             }
           ]
         },
+        "persist_constraints": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "primary_key": {
           "default": null,
           "allOf": [
@@ -10630,6 +10919,16 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "row_filter": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RowFilterConfig"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "schedule": {
@@ -11573,6 +11872,20 @@
             "null"
           ]
         },
+        "enable_change_history": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "enable_list_inference": {
           "anyOf": [
             {
@@ -11916,6 +12229,20 @@
             }
           ]
         },
+        "persist_constraints": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "primary_key": {
           "default": null,
           "allOf": [
@@ -11994,6 +12321,16 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "row_filter": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RowFilterConfig"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "schedule": {
