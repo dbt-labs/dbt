@@ -430,10 +430,10 @@ pub async fn load(
                 arg.allow_jinja_file_extensions,
                 ap,
             );
-            root.test_files = find_files_by_kind_and_extension(
+            root.test_files = find_test_files_by_extension(
                 in_dir,
                 pkg_name,
-                &ResourcePathKind::TestPaths,
+                prev_root_package.dbt_project.test_paths.as_deref(),
                 &["sql"],
                 arg.allow_jinja_file_extensions,
                 ap,
@@ -1033,10 +1033,10 @@ pub async fn load_inner(
         &all_files,
     );
 
-    let test_ymls = find_files_by_kind_and_extension(
+    let test_ymls = find_test_files_by_extension(
         package_path,
         &dbt_project.name,
-        &ResourcePathKind::TestPaths,
+        dbt_project.test_paths.as_deref(),
         &["yml", "yaml"],
         false,
         &all_files,
@@ -1139,10 +1139,10 @@ pub async fn load_inner(
         arg.allow_jinja_file_extensions,
         &all_files,
     );
-    let test_files = find_files_by_kind_and_extension(
+    let test_files = find_test_files_by_extension(
         package_path,
         &dbt_project.name,
-        &ResourcePathKind::TestPaths,
+        dbt_project.test_paths.as_deref(),
         &["sql"],
         arg.allow_jinja_file_extensions,
         &all_files,
@@ -1261,15 +1261,40 @@ fn drop_nested_project_config_files(properties: &mut Vec<DbtAsset>) {
     });
 }
 
-fn should_exclude_path(kind: &ResourcePathKind, path: &Path) -> bool {
-    match kind {
-        ResourcePathKind::TestPaths => {
-            // Only exclude paths directly under <test-paths>/generic/
-            let components: Vec<_> = path.components().collect();
-            components.len() >= 2 && components[1].as_os_str() == "generic"
-        }
-        _ => false,
-    }
+/// `<test-path>/generic` and `<test-path>/fixtures` for every test-path. Files there are
+/// generic tests and unit-test fixtures, not singular tests. Checked against all test-paths
+/// so nested ones (e.g. `["tests", "tests/dbt"]`) still skip `tests/dbt/fixtures/`.
+fn non_singular_test_dirs(in_dir: &Path, test_paths: &[String]) -> Vec<PathBuf> {
+    test_paths
+        .iter()
+        // Spell each test-path like the collected files are (`load_inner`): normalized and
+        // relative to `in_dir`, so `./tests`, `tests/../tests` and absolute paths all match.
+        .filter_map(|test_path| diff_paths(DbtPath::from(in_dir.join(test_path)), in_dir).ok())
+        .map(|test_path| DbtPath::from(test_path).to_path_buf())
+        .flat_map(|test_path| [test_path.join("generic"), test_path.join("fixtures")])
+        .collect()
+}
+
+/// Like `find_files_by_kind_and_extension` for `TestPaths`, minus generic tests and fixtures.
+fn find_test_files_by_extension(
+    in_dir: &Path,
+    project_name: &str,
+    test_paths: Option<&[String]>,
+    extensions: &[&str],
+    allow_jinja: bool,
+    all_paths: &HashMap<ResourcePathKind, Vec<(DbtPath, SystemTime)>>,
+) -> Vec<DbtAsset> {
+    let excluded_dirs = non_singular_test_dirs(in_dir, test_paths.unwrap_or_default());
+    let mut files = find_files_by_kind_and_extension(
+        in_dir,
+        project_name,
+        &ResourcePathKind::TestPaths,
+        extensions,
+        allow_jinja,
+        all_paths,
+    );
+    files.retain(|asset| !excluded_dirs.iter().any(|dir| asset.path.starts_with(dir)));
+    files
 }
 
 /// Resource extensions that may carry a trailing Jinja template suffix
@@ -1308,11 +1333,8 @@ fn find_files_by_kind_and_extension(
 
     let mut paths = paths_to_filter
         .iter()
-        // Keep non-excluded paths whose extension is in `extensions`, or a Jinja alias like `.sql.j2` when `allow_jinja`.
-        .filter(|(path, _)| {
-            !should_exclude_path(path_kind, path.as_path())
-                && matches_extension(path.as_path(), extensions, allow_jinja)
-        })
+        // Keep paths whose extension is in `extensions`, or a Jinja alias like `.sql.j2` when `allow_jinja`.
+        .filter(|(path, _)| matches_extension(path.as_path(), extensions, allow_jinja))
         .map(|(path, _)| DbtAsset {
             package_name: project_name.to_string(),
             base_path: in_dir.to_path_buf(),
@@ -1657,6 +1679,122 @@ mod tests {
         assert_eq!(dbt_profile.threads, Some(4));
     }
 
+    /// Walks a temp project with the given test-paths the way `load_inner` does and
+    /// returns the singular test `.sql` files, relative to the project root.
+    fn singular_test_files(test_paths: &[&str], files: &[&str]) -> Vec<PathBuf> {
+        singular_test_files_with(
+            |_| test_paths.iter().map(|p| p.to_string()).collect(),
+            files,
+        )
+    }
+
+    /// Like `singular_test_files`, with test-paths built from the project root.
+    fn singular_test_files_with(
+        test_paths: impl FnOnce(&Path) -> Vec<String>,
+        files: &[&str],
+    ) -> Vec<PathBuf> {
+        let dir = tempfile::tempdir().unwrap();
+        for file in files {
+            let path = dir.path().join(file);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            File::create(path).unwrap();
+        }
+        let test_paths = test_paths(dir.path());
+        let all_dirs = HashMap::from([(ResourcePathKind::TestPaths, test_paths.clone())]);
+        let mut all_paths = collect_all_files(all_dirs, dir.path()).unwrap();
+        for files in all_paths.values_mut() {
+            for (path, _) in files.iter_mut() {
+                *path = DbtPath::from(diff_paths(&path, dir.path()).unwrap());
+            }
+        }
+        find_test_files_by_extension(
+            dir.path(),
+            "test_project",
+            Some(&test_paths),
+            &["sql"],
+            false,
+            &all_paths,
+        )
+        .into_iter()
+        .map(|asset| asset.path)
+        .collect()
+    }
+
+    // https://github.com/dbt-labs/dbt/issues/16507
+    #[test]
+    fn test_singular_tests_skip_fixtures_and_generic_tests_in_nested_test_paths() {
+        let files = [
+            "tests/real_test.sql",
+            "tests/dbt/inner_test.sql",
+            "tests/fixtures/outer_fixture.sql",
+            "tests/generic/outer_generic.sql",
+            "tests/dbt/fixtures/foo/my_model__expected.sql",
+            "tests/dbt/generic/inner_generic.sql",
+        ];
+        for test_paths in [
+            &["tests", "tests/dbt"][..],
+            &["tests/dbt", "tests"][..],
+            &["tests/", "./tests/dbt"][..],
+        ] {
+            assert_eq!(
+                singular_test_files(test_paths, &files),
+                vec![
+                    PathBuf::from("tests/dbt/inner_test.sql"),
+                    PathBuf::from("tests/real_test.sql"),
+                ],
+                "test-paths: {test_paths:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_singular_tests_skip_generic_tests_in_multi_segment_test_path() {
+        assert_eq!(
+            singular_test_files(
+                &["data/tests"],
+                &[
+                    "data/tests/real_test.sql",
+                    "data/tests/generic/my_generic.sql",
+                    "data/tests/fixtures/my_fixture.sql",
+                ],
+            ),
+            vec![PathBuf::from("data/tests/real_test.sql")]
+        );
+    }
+
+    #[test]
+    fn test_singular_tests_skip_generic_tests_in_parent_dir_and_absolute_test_paths() {
+        let files = [
+            "tests/real_test.sql",
+            "tests/generic/my_generic.sql",
+            "tests/dbt/generic/inner_generic.sql",
+        ];
+        let expected = vec![PathBuf::from("tests/real_test.sql")];
+        assert_eq!(
+            singular_test_files(&["tests/../tests", "tests/dbt"], &files),
+            expected
+        );
+        assert_eq!(
+            singular_test_files_with(
+                |root| vec![
+                    root.join("tests").to_string_lossy().to_string(),
+                    "tests/dbt".to_string(),
+                ],
+                &files
+            ),
+            expected
+        );
+    }
+
+    #[test]
+    fn test_singular_tests_keep_dirs_named_generic_that_are_not_generic_test_paths() {
+        // `data/generic` is the test-path itself, not `<test-path>/generic`.
+        assert_eq!(
+            singular_test_files(&["data/generic"], &["data/generic/real_test.sql"]),
+            vec![PathBuf::from("data/generic/real_test.sql")]
+        );
+    }
+
     #[test]
     fn test_find_files_by_kind_and_extension_excludes_generic_test_paths() {
         // Setup test data
@@ -1684,10 +1822,10 @@ mod tests {
         all_paths.insert(ResourcePathKind::TestPaths, test_files);
 
         // Call the function under test
-        let result = find_files_by_kind_and_extension(
+        let result = find_test_files_by_extension(
             &in_dir,
             project_name,
-            &ResourcePathKind::TestPaths,
+            Some(&["tests".to_string(), "data-tests".to_string()]),
             extensions,
             false,
             &all_paths,
@@ -1764,72 +1902,17 @@ mod tests {
     }
 
     #[test]
-    fn test_should_exclude_path_function() {
-        // Test the should_exclude_path function directly
-
-        // Test paths should exclude generic directories (second component)
-        assert!(should_exclude_path(
-            &ResourcePathKind::TestPaths,
-            &PathBuf::from("tests/generic/test.sql")
-        ));
-
-        assert!(should_exclude_path(
-            &ResourcePathKind::TestPaths,
-            &PathBuf::from("data-tests/generic/test.sql")
-        ));
-
-        assert!(should_exclude_path(
-            &ResourcePathKind::TestPaths,
-            &PathBuf::from("tests/generic/nested/test.sql")
-        ));
-
-        // Test paths should NOT exclude non-generic directories
-        assert!(!should_exclude_path(
-            &ResourcePathKind::TestPaths,
-            &PathBuf::from("tests/integration/test.sql")
-        ));
-
-        assert!(!should_exclude_path(
-            &ResourcePathKind::TestPaths,
-            &PathBuf::from("tests/unit/test.sql")
-        ));
-
-        assert!(!should_exclude_path(
-            &ResourcePathKind::TestPaths,
-            &PathBuf::from("data-tests/singular/test.sql")
-        ));
-
-        assert!(!should_exclude_path(
-            &ResourcePathKind::TestPaths,
-            &PathBuf::from("tests/unit/generic/test.sql") // generic is not second component
-        ));
-
-        // Edge cases
-        assert!(!should_exclude_path(
-            &ResourcePathKind::TestPaths,
-            &PathBuf::from("generic/test.sql") // only one component
-        ));
-
-        assert!(!should_exclude_path(
-            &ResourcePathKind::TestPaths,
-            &PathBuf::from("tests") // only one component
-        ));
-
-        // Non-test paths should never exclude generic directories
-        assert!(!should_exclude_path(
-            &ResourcePathKind::ModelPaths,
-            &PathBuf::from("models/generic/model.sql")
-        ));
-
-        assert!(!should_exclude_path(
-            &ResourcePathKind::MacroPaths,
-            &PathBuf::from("macros/generic/macro.sql")
-        ));
-
-        assert!(!should_exclude_path(
-            &ResourcePathKind::SeedPaths,
-            &PathBuf::from("seeds/generic/seed.csv")
-        ));
+    fn test_non_singular_test_dirs() {
+        let test_paths = ["tests/".to_string(), "./data/tests".to_string()];
+        assert_eq!(
+            non_singular_test_dirs(Path::new("/project"), &test_paths),
+            vec![
+                PathBuf::from("tests/generic"),
+                PathBuf::from("tests/fixtures"),
+                PathBuf::from("data/tests/generic"),
+                PathBuf::from("data/tests/fixtures"),
+            ]
+        );
     }
 
     fn dbt_properties(paths: &[&str]) -> Vec<DbtAsset> {
