@@ -1,0 +1,6 @@
+kind: Fixes
+body: Write cache events to the log file when `--log-cache-events` is set
+time: 2026-11-13T11:29:19.110463+05:30
+custom:
+    Author: AbhishekPathania
+    Issue: "17170"
