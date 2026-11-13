@@ -1,6 +1,6 @@
 import json
 import os
-from typing import Dict
+from typing import Dict, List
 from unittest import mock
 
 import pytest
@@ -26,6 +26,7 @@ from dbt.tests.util import (
     run_dbt_and_capture,
     write_file,
 )
+from dbt_common.events.base_types import EventMsg
 from dbt_common.events.event_catcher import EventCatcher
 
 input_model_sql = """
@@ -348,6 +349,172 @@ class TestMicrobatchCLI(BaseMicrobatchTest):
 
 class TestMicrobatchCLIBuild(TestMicrobatchCLI):
     CLI_COMMAND_NAME = "build"
+
+
+class NodeEventRecorder:
+    """Records node-level and batch-level events for a single node, in firing order"""
+
+    EVENT_NAMES = {
+        "NodeStart",
+        "NodeFinished",
+        "LogStartBatch",
+        "LogBatchResult",
+        "LogModelResult",
+    }
+
+    def __init__(self, unique_id: str) -> None:
+        self.unique_id = unique_id
+        self.events: List[EventMsg] = []
+
+    def catch(self, event: EventMsg) -> None:
+        if (
+            event.info.name in self.EVENT_NAMES
+            and event.data.node_info.unique_id == self.unique_id
+        ):
+            self.events.append(event)
+
+    @property
+    def names(self) -> List[str]:
+        return [event.info.name for event in self.events]
+
+    def reset(self) -> None:
+        self.events = []
+
+
+class BaseMicrobatchNodeEventsTest(BaseMicrobatchTest):
+    MICROBATCH_MODEL_ID = "model.test.microbatch_model"
+
+    @pytest.fixture
+    def recorder(self) -> NodeEventRecorder:
+        return NodeEventRecorder(self.MICROBATCH_MODEL_ID)
+
+    def assert_node_events_fired_once(
+        self, recorder: NodeEventRecorder, num_batches: int, expected_status: str
+    ) -> None:
+        names = recorder.names
+        # NodeStart / NodeFinished fire once for the model, not once per batch
+        assert names.count("NodeStart") == 1, names
+        assert names.count("NodeFinished") == 1, names
+        # batch-level reporting is unchanged
+        assert names.count("LogBatchResult") == num_batches, names
+        assert names.count("LogModelResult") == 1, names
+        # NodeStart is the first event for the model and NodeFinished is the last,
+        # after every batch has reported and after the model result line
+        assert names[0] == "NodeStart", names
+        assert names[-1] == "NodeFinished", names
+        assert names[-2] == "LogModelResult", names
+        assert recorder.events[-1].data.run_result.status == expected_status
+
+
+class TestMicrobatchNodeEventsSequentialBatches(BaseMicrobatchNodeEventsTest):
+    def test_node_events(self, mocker: MockerFixture, project, recorder: NodeEventRecorder):
+        mocker.patch(
+            "dbt.task.run.MicrobatchBatchRunner.should_run_in_parallel", return_value=False
+        )
+        # non-microbatch nodes must keep firing NodeStart / NodeFinished
+        input_recorder = NodeEventRecorder("model.test.input_model")
+
+        with patch_microbatch_end_time("2020-01-03 13:57:00"):
+            run_dbt(["run"], callbacks=[recorder.catch, input_recorder.catch])
+
+        self.assert_node_events_fired_once(recorder, num_batches=3, expected_status="success")
+        assert input_recorder.names == ["NodeStart", "LogModelResult", "NodeFinished"]
+
+
+class TestMicrobatchNodeEventsConcurrentBatches(BaseMicrobatchNodeEventsTest):
+    def test_node_events(self, mocker: MockerFixture, project, recorder: NodeEventRecorder):
+        mocker.patch(
+            "dbt.task.run.MicrobatchBatchRunner.should_run_in_parallel", return_value=True
+        )
+        concurrency_catcher = EventCatcher(
+            MicrobatchExecutionDebug,
+            predicate=lambda event: "is being run concurrently" in event.data.msg,
+        )
+
+        # 5 batches: first and last run sequentially, the middle 3 run concurrently
+        with patch_microbatch_end_time("2020-01-05 13:57:00"):
+            run_dbt(
+                ["run", "--threads", "4"],
+                callbacks=[recorder.catch, concurrency_catcher.catch],
+            )
+
+        assert len(concurrency_catcher.caught_events) > 0, "No batches ran concurrently"
+        self.assert_node_events_fired_once(recorder, num_batches=5, expected_status="success")
+
+
+class TestMicrobatchNodeEventsSingleBatch(BaseMicrobatchNodeEventsTest):
+    def test_node_events(self, project, recorder: NodeEventRecorder):
+        run_dbt(
+            ["run", "--event-time-start", "2020-01-02", "--event-time-end", "2020-01-03"],
+            callbacks=[recorder.catch],
+        )
+
+        self.assert_node_events_fired_once(recorder, num_batches=1, expected_status="success")
+
+
+class TestMicrobatchNodeEventsBuild(BaseMicrobatchNodeEventsTest):
+    def test_node_events(self, project, recorder: NodeEventRecorder):
+        with patch_microbatch_end_time("2020-01-03 13:57:00"):
+            run_dbt(["build"], callbacks=[recorder.catch])
+
+        self.assert_node_events_fired_once(recorder, num_batches=3, expected_status="success")
+
+
+class TestMicrobatchNodeEventsPartialSuccess(BaseMicrobatchNodeEventsTest):
+    @pytest.fixture(scope="class")
+    def models(self):
+        return {
+            "input_model.sql": input_model_sql,
+            "microbatch_model.sql": microbatch_model_second_batch_failing_sql,
+        }
+
+    def test_node_events(self, project, recorder: NodeEventRecorder):
+        with patch_microbatch_end_time("2020-01-03 13:57:00"):
+            run_dbt(["run"], expect_pass=False, callbacks=[recorder.catch])
+
+        self.assert_node_events_fired_once(
+            recorder, num_batches=3, expected_status="partial success"
+        )
+
+
+class TestMicrobatchNodeEventsFirstBatchFailure(BaseMicrobatchNodeEventsTest):
+    @pytest.fixture(scope="class")
+    def models(self):
+        return {
+            "input_model.sql": input_model_sql,
+            "microbatch_model.sql": microbatch_model_first_partition_failing_sql,
+        }
+
+    def test_node_events(self, project, recorder: NodeEventRecorder):
+        # first batch fails, remaining 2 batches are skipped
+        with patch_microbatch_end_time("2020-01-03 13:57:00"):
+            run_dbt(["run"], expect_pass=False, callbacks=[recorder.catch])
+
+        self.assert_node_events_fired_once(recorder, num_batches=3, expected_status="error")
+
+
+class TestMicrobatchNodeEventsRetry(BaseMicrobatchNodeEventsTest):
+    @pytest.fixture(scope="class")
+    def models(self):
+        return {
+            "input_model.sql": input_model_sql,
+            "microbatch_model.sql": microbatch_model_second_batch_failing_sql,
+        }
+
+    def test_node_events(self, project, recorder: NodeEventRecorder):
+        with patch_microbatch_end_time("2020-01-03 13:57:00"):
+            run_dbt(["run"], expect_pass=False, callbacks=[recorder.catch])
+        self.assert_node_events_fired_once(
+            recorder, num_batches=3, expected_status="partial success"
+        )
+
+        # fix the model and retry: only the failed batch is re-run
+        recorder.reset()
+        write_file(microbatch_model_sql, project.project_root, "models", "microbatch_model.sql")
+        with patch_microbatch_end_time("2020-01-03 13:57:00"):
+            run_dbt(["retry"], callbacks=[recorder.catch])
+
+        self.assert_node_events_fired_once(recorder, num_batches=1, expected_status="success")
 
 
 class TestMicrobatchCLIRunOutputJSON(BaseMicrobatchTest):

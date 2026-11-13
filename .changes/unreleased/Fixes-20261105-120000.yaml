@@ -1,0 +1,7 @@
+kind: Fixes
+body: Stop firing NodeStart / NodeFinished ("Began/Finished running node") once per microbatch
+  batch, so they fire only once for the whole microbatch model
+time: 2026-11-05T12:00:00.000000+05:30
+custom:
+    Author: tauhid621
+    Issue: "17053"
