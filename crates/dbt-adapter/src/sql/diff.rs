@@ -2590,16 +2590,38 @@ fn canonicalize_quoted_timestamp_space_separator(sql: &str) -> String {
     RE.replace_all(sql, "'${1}T${2}${3}'").to_string()
 }
 
-/// Replace dynamic tmp suffixes produced by some packages (e.g., elementary) that append
-/// utc.now()-like timestamps to temporary table names, such as:
-///   dbt_sources__tmp_20251203160139043240  ->  dbt_sources__tmp_TIMESTAMP
-fn canonicalize_elementary_tmp_suffix(sql: &str) -> String {
-    // Case-insensitive; match "__tmp_" followed by a long digit run (timestamps/unique suffixes)
-    // Scope it to a plausible leading year 2000-2100 to avoid over-matching.
-    // Example matched: "__tmp_20251203160139043240"
-    static RE: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"(?i)(__tmp_)(?:20[0-9]{2}|2100)\d{8,}").unwrap());
-    RE.replace_all(sql, "${1}TIMESTAMP").to_string()
+/// Match `__tmp_` and the full digit run after it. `is_elementary_tmp_timestamp` checks the run.
+static ELEMENTARY_TMP_DIGITS_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)(__tmp_)([0-9]+)").unwrap());
+
+/// True if `digits` has the shape of an Elementary temporary-relation timestamp.
+///
+/// Elementary's `get_timestamped_table_suffix` writes `%Y%m%d%H%M%S%f` (20 digits). On BigQuery
+/// and Postgres, the dbt temp-relation macro adds `%H%M%S%f` (32 digits in total). Fusion before
+/// v2.0.0-preview.216 wrote a 9-digit `%f`, which gives 23 and 38 digits. The year must be from
+/// 2000 to 2100.
+fn is_elementary_tmp_timestamp(digits: &str) -> bool {
+    matches!(digits.len(), 20 | 23 | 32 | 38)
+        && matches!(digits[..4].parse::<u16>(), Ok(2000..=2100))
+}
+
+pub(crate) fn has_elementary_tmp_suffix(value: &str) -> bool {
+    ELEMENTARY_TMP_DIGITS_RE
+        .captures_iter(value)
+        .any(|caps| is_elementary_tmp_timestamp(&caps[2]))
+}
+
+/// Replace an exact Elementary temporary-relation timestamp with a stable marker.
+pub(crate) fn canonicalize_elementary_tmp_suffix(sql: &str) -> String {
+    ELEMENTARY_TMP_DIGITS_RE
+        .replace_all(sql, |caps: &regex::Captures<'_>| {
+            if is_elementary_tmp_timestamp(&caps[2]) {
+                format!("{}TIMESTAMP", &caps[1])
+            } else {
+                caps[0].to_string()
+            }
+        })
+        .into_owned()
 }
 
 /// Canonicalize dbt test temp relation identifiers that may differ between recorders/runners.
@@ -4841,6 +4863,32 @@ as (
         assert!(
             result.is_ok(),
             "Dynamic tmp suffixes starting with a plausible year should be ignored"
+        );
+    }
+
+    /// BigQuery and Postgres temp relations add `%H%M%S%f` after the Elementary timestamp: 32
+    /// digits, or 38 in legacy Fusion recordings.
+    #[test]
+    fn test_compare_sql_elementary_tmp_suffix_with_adapter_time_suffix() {
+        let sql = |digits: &str| {
+            format!(
+                "insert into proj.elementary.dbt_sources select * from proj.elementary.dbt_sources__tmp_{digits}"
+            )
+        };
+        let replayed = sql("20240102030405123456010203123456");
+        for recorded in [
+            "20240101000000000000000000000000",
+            "20240101000000000000000000000000000000",
+        ] {
+            assert!(compare_sql(&sql(recorded), &replayed, AdapterType::Bigquery).is_ok());
+        }
+        assert!(
+            compare_sql(
+                &sql("202401010000000000000000000000000"),
+                &replayed,
+                AdapterType::Bigquery
+            )
+            .is_err()
         );
     }
 

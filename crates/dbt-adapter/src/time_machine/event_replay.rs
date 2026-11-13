@@ -31,6 +31,7 @@ use crate::AdapterType;
 use crate::sql::complex_types::canonicalize_complex_types_for;
 use crate::sql::diff::{
     canonicalize_ephemeral_wrapper_alias, canonicalize_python_model_pair, compare_sql,
+    has_elementary_tmp_suffix,
 };
 
 /// Marker for temp-relation identifiers, which carry a non-deterministic suffix.
@@ -388,31 +389,26 @@ fn strip_relation_type_flags(value: &serde_json::Value) -> serde_json::Value {
     }
 }
 
-/// Normalize `__dbt_tmp<suffix>` in every string, borrowing when no marker is present.
-///
-/// The sanitizer is the identity without a marker, so the gate only avoids the clone.
+/// Normalize temporary relation suffixes, borrowing when no marker needs normalization.
 fn normalized_tmp_suffixes(value: &serde_json::Value) -> Cow<'_, serde_json::Value> {
-    if has_tmp_marker(value) {
+    if has_tmp_suffix_marker(value) {
         Cow::Owned(normalize_tmp_suffixes(value))
     } else {
         Cow::Borrowed(value)
     }
 }
 
-/// True if any string in the JSON tree mentions `__dbt_tmp` (case-insensitive).
-fn has_tmp_marker(value: &serde_json::Value) -> bool {
+/// True if any string in the JSON tree contains a temporary-relation suffix marker.
+fn has_tmp_suffix_marker(value: &serde_json::Value) -> bool {
     match value {
-        serde_json::Value::String(s) => TMP_MARKER_RE.is_match(s),
-        serde_json::Value::Array(arr) => arr.iter().any(has_tmp_marker),
-        serde_json::Value::Object(obj) => obj.values().any(has_tmp_marker),
+        serde_json::Value::String(s) => TMP_MARKER_RE.is_match(s) || has_elementary_tmp_suffix(s),
+        serde_json::Value::Array(arr) => arr.iter().any(has_tmp_suffix_marker),
+        serde_json::Value::Object(obj) => obj.values().any(has_tmp_suffix_marker),
         _ => false,
     }
 }
 
-/// Recursively normalize `__dbt_tmp<suffix>` substrings in every string value.
-///
-/// Temp-relation identifiers carry a non-deterministic suffix; normalize both sides like
-/// `TmpSuffixSanitizer` does for SQL text, or replay false-fails.
+/// Recursively normalize temporary relation suffixes in adapter arguments.
 fn normalize_tmp_suffixes(value: &serde_json::Value) -> serde_json::Value {
     match value {
         serde_json::Value::String(s) => serde_json::Value::String(TmpSuffixSanitizer.sanitize(s)),
@@ -1248,6 +1244,9 @@ impl Recording {
     ///   read may be found, never *what* counts as an answer to it
     /// - real writes are skipped, so a read is never answered by a mutating event
     /// - this node's own stream only; a read recorded under a different node is still a miss
+    /// - the nearest earlier match wins. Normalized temp-relation names can collide:
+    ///   Elementary's `delete_and_insert` records a one-column delete table and then the insert
+    ///   table, so the earliest match can be the wrong table
     ///
     /// Logs on success: recorded and replayed call order diverged, which is worth seeing even
     /// though it is not fatal.
@@ -1261,7 +1260,7 @@ impl Recording {
     ) -> Option<&'a AdapterCallEvent> {
         let adapter_type = self.adapter_type();
         let already_passed = events.get(..state.segment_start)?;
-        let event = already_passed.iter().find(|event| {
+        let event = already_passed.iter().rfind(|event| {
             let is_real_write =
                 event.semantic_category.is_mutating() && !self.is_read_only_execute_event(event);
             !is_real_write
@@ -3275,6 +3274,251 @@ mod tests {
             adapter_args_match_for_type(method, actual, recorded, adapter_type),
             "{adapter_type} args should match actual -> recorded"
         );
+    }
+
+    #[test]
+    fn test_get_relation_matches_elementary_timestamped_temp_name() {
+        let recorded = serde_json::json!([
+            "ANALYTICS",
+            "ELEMENTARY",
+            "test_abc__schema_baseline__tmp_20240101000000000000"
+        ]);
+        let replayed = serde_json::json!([
+            "ANALYTICS",
+            "ELEMENTARY",
+            "test_abc__schema_baseline__tmp_20240102030405123456"
+        ]);
+        assert_args_match_both_ways_for(
+            AdapterType::Snowflake,
+            "get_relation",
+            &recorded,
+            &replayed,
+        );
+        let legacy_recorded = serde_json::json!([
+            "ANALYTICS",
+            "ELEMENTARY",
+            "test_abc__schema_baseline__tmp_20251230050355346279000"
+        ]);
+        let legacy_replayed = serde_json::json!([
+            "ANALYTICS",
+            "ELEMENTARY",
+            "test_abc__schema_baseline__tmp_20251223070509606295"
+        ]);
+        assert_args_match_both_ways_for(
+            AdapterType::Snowflake,
+            "get_relation",
+            &legacy_recorded,
+            &legacy_replayed,
+        );
+
+        let different_relation = serde_json::json!([
+            "ANALYTICS",
+            "ELEMENTARY",
+            "another_test__schema_baseline__tmp_20240102030405123456"
+        ]);
+        assert!(!adapter_args_match_for_type(
+            "get_relation",
+            &recorded,
+            &different_relation,
+            AdapterType::Snowflake
+        ));
+
+        let recorded_columns = serde_json::json!([{
+            "database": "ANALYTICS",
+            "schema": "ELEMENTARY",
+            "identifier": "test_abc__schema_baseline__tmp_20240101000000000000",
+            "is_table": true
+        }]);
+        let replayed_columns = serde_json::json!([{
+            "database": "ANALYTICS",
+            "schema": "ELEMENTARY",
+            "identifier": "test_abc__schema_baseline__tmp_20240102030405123456",
+            "is_table": true
+        }]);
+        assert_args_match_both_ways_for(
+            AdapterType::Snowflake,
+            "get_columns_in_relation",
+            &recorded_columns,
+            &replayed_columns,
+        );
+        let different_columns = serde_json::json!([{
+            "database": "ANALYTICS",
+            "schema": "ELEMENTARY",
+            "identifier": "another_test__schema_baseline__tmp_20240102030405123456",
+            "is_table": true
+        }]);
+        assert!(!adapter_args_match_for_type(
+            "get_columns_in_relation",
+            &recorded_columns,
+            &different_columns,
+            AdapterType::Snowflake
+        ));
+    }
+
+    #[test]
+    fn test_get_relation_elementary_suffix_requires_valid_timestamp_shape() {
+        let relation =
+            |identifier: &str| serde_json::json!(["ANALYTICS", "ELEMENTARY", identifier]);
+        let recorded = relation("\"TEST_ABC__SCHEMA_BASELINE__TMP_20240101000000000000\"");
+        let replayed = relation("\"TEST_ABC__SCHEMA_BASELINE__TMP_20240102030405123456\"");
+        assert_args_match_both_ways_for(
+            AdapterType::Snowflake,
+            "get_relation",
+            &recorded,
+            &replayed,
+        );
+
+        for invalid in [
+            "\"TEST_ABC__SCHEMA_BASELINE__TMP_2024010100000000000\"",
+            "\"TEST_ABC__SCHEMA_BASELINE__TMP_202401020304051234567\"",
+            "\"TEST_ABC__SCHEMA_BASELINE__TMP_99999999999999999999\"",
+        ] {
+            assert!(!adapter_args_match_for_type(
+                "get_relation",
+                &recorded,
+                &relation(invalid),
+                AdapterType::Snowflake
+            ));
+        }
+    }
+
+    /// Elementary writes 20 digits. BigQuery and Postgres add `%H%M%S%f` (32 digits). Legacy
+    /// Fusion wrote a 9-digit `%f` (23 and 38 digits). All of them match the current forms.
+    #[test]
+    fn test_get_relation_elementary_suffix_matches_each_digit_count() {
+        let timestamp =
+            |first_digit: &str, len: usize| format!("2024{}", first_digit.repeat(len - 4));
+        let relation = |digits: &str, tail: &str| {
+            serde_json::json!(["proj", "elementary", format!("abc__tmp_{digits}{tail}")])
+        };
+
+        for (recorded_len, replayed_len) in [(20, 20), (23, 20), (32, 32), (38, 32)] {
+            for tail in ["", "_extra"] {
+                assert_args_match_both_ways_for(
+                    AdapterType::Bigquery,
+                    "get_relation",
+                    &relation(&timestamp("1", recorded_len), tail),
+                    &relation(&timestamp("2", replayed_len), tail),
+                );
+            }
+        }
+
+        let recorded = relation(&timestamp("1", 32), "");
+        for invalid_len in [19, 21, 22, 24, 31, 33, 37, 39] {
+            assert!(
+                !adapter_args_match_for_type(
+                    "get_relation",
+                    &recorded,
+                    &relation(&timestamp("2", invalid_len), ""),
+                    AdapterType::Bigquery
+                ),
+                "{invalid_len} digits must not match"
+            );
+        }
+        assert!(!adapter_args_match_for_type(
+            "get_relation",
+            &relation(&timestamp("1", 20), "_extra"),
+            &relation(&timestamp("2", 20), "_other"),
+            AdapterType::Bigquery
+        ));
+    }
+
+    /// Elementary's `delete_and_insert` records a one-column delete table and then the insert
+    /// table. Replay pins the clock, so it asks for both under one name that matches each after
+    /// normalization. The backward fallback must return the nearest read.
+    #[test]
+    fn test_semantic_mode_read_fallback_prefers_nearest_temp_relation() {
+        let args = |timestamp: &str| {
+            serde_json::json!([{
+                "database": "proj",
+                "schema": "elementary",
+                "identifier": format!("abc__tmp_{timestamp}")
+            }])
+        };
+        let columns_read = |seq: u32, timestamp: &str, columns: serde_json::Value| {
+            let mut event = make_event(
+                "node1",
+                seq,
+                "get_columns_in_relation",
+                SemanticCategory::MetadataRead,
+            );
+            event.args = args(timestamp);
+            event.result = columns;
+            event
+        };
+        let delete_timestamp = "20240101000000000001";
+        let insert_timestamp = "20240101000000000002";
+        let recording = make_recording(vec![
+            columns_read(0, delete_timestamp, serde_json::json!(["key"])),
+            make_event("node1", 1, "execute", SemanticCategory::Write),
+            columns_read(2, insert_timestamp, serde_json::json!(["key", "value"])),
+            make_event("node1", 3, "execute", SemanticCategory::Write),
+            make_event("node1", 4, "list_schemas", SemanticCategory::MetadataRead),
+        ]);
+        for _ in 0..2 {
+            recording
+                .take_semantic_match("node1", "execute", &empty_args(), SemanticCategory::Write)
+                .unwrap();
+        }
+
+        let read = |timestamp: &str| {
+            recording
+                .take_semantic_match(
+                    "node1",
+                    "get_columns_in_relation",
+                    &args(timestamp),
+                    SemanticCategory::MetadataRead,
+                )
+                .unwrap()
+                .seq
+        };
+        assert_eq!(read("20240203040506123456"), 2);
+        assert_eq!(read(insert_timestamp), 2);
+    }
+
+    #[test]
+    fn test_semantic_mode_matches_timestamped_relations_in_each_segment() {
+        let args = |timestamp: &str| {
+            serde_json::json!([
+                "ANALYTICS",
+                "ELEMENTARY",
+                format!("test_abc__schema_baseline__tmp_{timestamp}")
+            ])
+        };
+        let mut first_read = make_event("node1", 0, "get_relation", SemanticCategory::MetadataRead);
+        first_read.args = args("20240101000000000000");
+        first_read.result = serde_json::json!({"relation": "first"});
+        let first_write = make_event("node1", 1, "execute", SemanticCategory::Write);
+        let mut second_read =
+            make_event("node1", 2, "get_relation", SemanticCategory::MetadataRead);
+        second_read.args = args("20240102030405123456");
+        second_read.result = serde_json::json!({"relation": "second"});
+        let second_write = make_event("node1", 3, "execute", SemanticCategory::Write);
+        let recording = make_recording(vec![first_read, first_write, second_read, second_write]);
+
+        let first = recording
+            .take_semantic_match(
+                "node1",
+                "get_relation",
+                &args("20240203040506123456"),
+                SemanticCategory::MetadataRead,
+            )
+            .unwrap();
+        assert_eq!(first.result, serde_json::json!({"relation": "first"}));
+
+        recording
+            .take_semantic_match("node1", "execute", &empty_args(), SemanticCategory::Write)
+            .unwrap();
+
+        let second = recording
+            .take_semantic_match(
+                "node1",
+                "get_relation",
+                &args("20240203040506123457"),
+                SemanticCategory::MetadataRead,
+            )
+            .unwrap();
+        assert_eq!(second.result, serde_json::json!({"relation": "second"}));
     }
 
     #[test]

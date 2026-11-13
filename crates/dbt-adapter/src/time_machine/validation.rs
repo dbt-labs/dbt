@@ -15,7 +15,9 @@ use similar::{ChangeTag, TextDiff};
 
 use crate::AdapterType;
 use crate::sql::complex_types::canonicalize_complex_types_for;
-use crate::sql::diff::{PrivilegeStatement, canonicalize_ephemeral_wrapper_alias};
+use crate::sql::diff::{
+    PrivilegeStatement, canonicalize_elementary_tmp_suffix, canonicalize_ephemeral_wrapper_alias,
+};
 use crate::sql::normalize::strip_sql_comments;
 use crate::time_machine::event::AdapterCallEvent;
 
@@ -661,10 +663,9 @@ impl SqlSanitizer for UuidSanitizer {
     }
 }
 
-/// Sanitizer for `__dbt_tmp` relation-name suffixes.
+/// Sanitizer for dbt and Elementary temporary-relation suffixes.
 ///
-/// Replaces `__dbt_tmp<digits>` (and bare `__dbt_tmp`) with `__dbt_tmpSUFFIX`.
-/// Mirrors `canonicalize_dbt_model_tmp_suffix` in `sql::diff`.
+/// It replaces dynamic digits only after an explicit temporary-relation marker.
 pub struct TmpSuffixSanitizer;
 
 impl SqlSanitizer for TmpSuffixSanitizer {
@@ -673,12 +674,13 @@ impl SqlSanitizer for TmpSuffixSanitizer {
     }
 
     fn sanitize(&self, sql: &str) -> String {
-        if !sql.to_ascii_lowercase().contains("__dbt_tmp") {
-            return sql.to_string();
-        }
         static RE: LazyLock<Regex> =
             LazyLock::new(|| Regex::new(r"(?i)(__dbt_tmp)_?\d*\b").expect("valid regex"));
-        RE.replace_all(sql, "${1}SUFFIX").to_string()
+        if sql.to_ascii_lowercase().contains("__dbt_tmp") {
+            canonicalize_elementary_tmp_suffix(&RE.replace_all(sql, "${1}SUFFIX"))
+        } else {
+            canonicalize_elementary_tmp_suffix(sql)
+        }
     }
 }
 
@@ -1252,6 +1254,57 @@ mod tests {
             "Expected match after sanitization, got {:?}",
             result
         );
+    }
+
+    #[test]
+    fn test_elementary_tmp_suffix_sanitizer_matches_only_timestamped_relations() {
+        let engine = TimeMachineEventValidationEngine::new();
+        let validate_sql = |recorded_sql: &str, incoming_sql: &str| {
+            let incoming_args = serde_json::json!([incoming_sql]);
+            let recorded_args = serde_json::json!([recorded_sql]);
+            let incoming = IncomingEvent::new("model.analytics.example", "execute", &incoming_args);
+            let recorded = make_recorded_event(incoming.node_id, "execute", recorded_args);
+            engine.validate(&incoming, &recorded)
+        };
+
+        let recorded = "create table ANALYTICS.ELEMENTARY.test_abc__schema_baseline__tmp_20240101000000000000 as select 1";
+        let incoming = "create table ANALYTICS.ELEMENTARY.test_abc__schema_baseline__tmp_20240102030405123456 as select 1";
+        assert!(matches!(
+            validate_sql(recorded, incoming),
+            ValidationResult::Match
+        ));
+
+        let different_prefix = "create table ANALYTICS.ELEMENTARY.test_xyz__schema_baseline__tmp_20240102030405123456 as select 1";
+        assert!(matches!(
+            validate_sql(recorded, different_prefix),
+            ValidationResult::Mismatch(_)
+        ));
+
+        assert!(matches!(
+            validate_sql("select 20240101000000000000", "select 20240102030405123456"),
+            ValidationResult::Mismatch(_)
+        ));
+
+        // BigQuery and Postgres add 12 digits (15 in legacy Fusion), and text can follow.
+        let create = |digits: &str| {
+            format!(
+                "create table proj.elementary.abc__tmp_{digits}_extra as select 1; drop table abc__dbt_tmp123"
+            )
+        };
+        let replayed = create("20240102030405123456010203123456");
+        for recorded in [
+            "20240101000000000000000000000000",
+            "20240101000000000000000000000000000000",
+        ] {
+            assert!(matches!(
+                validate_sql(&create(recorded), &replayed),
+                ValidationResult::Match
+            ));
+        }
+        assert!(matches!(
+            validate_sql(&create("202401010000000000000000000000000"), &replayed),
+            ValidationResult::Mismatch(_)
+        ));
     }
 
     #[test]
