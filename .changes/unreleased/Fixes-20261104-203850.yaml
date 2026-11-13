@@ -1,0 +1,7 @@
+kind: Fixes
+body: 'Run Databricks hooks configured with transaction: false without a literal COMMIT'
+time: 2026-11-04T20:38:50.88519+05:30
+custom:
+    author: sd-db
+    issue: "16927"
+    project: dbt-core
