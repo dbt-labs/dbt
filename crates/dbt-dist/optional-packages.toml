@@ -1,0 +1,16 @@
+# Checksums cover the compressed CDN bytes.
+[[package]]
+name = "bridge-adbc"
+upstream_repo = "dbt-labs/bridge-adbc"
+upstream_version = "0.1.2"
+install_as = "adbc_driver_bridge"
+channels = ["standalone", "native-update", "homebrew", "winget", "pypi"]
+source = "cdn"
+cdn_path_template = "fs/adbc/bridge/adbc_driver_bridge-{version}-{target}.{extension}.zst"
+
+[package.checksums]
+aarch64-apple-darwin = "a7a289a8b3f209b607c6cf398f3410b89cc7cf3b4fd6bf6132828dbc535ce407"
+aarch64-unknown-linux-gnu = "e08c14ce2211b93738209ad460479507a05e7cee92bad51b4c040fcbf08a31ee"
+x86_64-unknown-linux-gnu = "d5caf7b8783f2e567dc7ece4b0594f3057e0087a7a27f813cfe1a83aa8cf7a22"
+x86_64-pc-windows-msvc = "39362fa0c6fa6f6ef1a7a8f76c02726a78621d82146516299411d8ba31b339d6"
+# No upstream Intel macOS build.

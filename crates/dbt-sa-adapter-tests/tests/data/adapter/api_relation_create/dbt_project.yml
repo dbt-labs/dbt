@@ -1,0 +1,10 @@
+flags:
+  send_anonymous_usage_stats: false
+name: test
+profile: fusion_tests
+
+
+quoting:
+  database: false
+  schema: true
+  identifier: false

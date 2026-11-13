@@ -1,0 +1,13 @@
+[error] [JinjaError (dbt1501)]: Error executing materialization macro 'dbt.materialization_function_default' for function function.test.double_it: Failed to eval the compiled Jinja expression invalid operation: Compilation Error for function.test.double_it from functions/double_it.sql: BigQuery GRANT and REVOKE statements do not support functions. Remove `grants` from function `double_it` and manage access to the routine with IAM instead.
+(in run/test/functions/double_it.sql)
+(in dbt_internal_packages/dbt-adapters/macros/materializations/functions/function.sql:16:9)
+(in dbt_internal_packages/dbt-adapters/macros/materializations/hooks.sql:9:23)
+(in dbt_internal_packages/dbt-adapters/macros/materializations/hooks.sql:2:1)
+(in macros/function_grants.sql:18:15)
+(in dbt_internal_packages/dbt-adapters/macros/adapters/apply_grants.sql:196:31)
+(in dbt_internal_packages/dbt-adapters/macros/adapters/apply_grants.sql:221:43)
+(in dbt_internal_packages/dbt-adapters/macros/adapters/apply_grants.sql:145:31)
+(in dbt_internal_packages/dbt-adapters/macros/adapters/apply_grants.sql:159:25)
+(in dbt_internal_packages/dbt-adapters/macros/adapters/apply_grants.sql:117:31)
+(in dbt_internal_packages/dbt-bigquery/macros/adapters/apply_grants.sql:16:9)
+  --> run/test/functions/double_it.sql

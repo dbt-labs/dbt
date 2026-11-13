@@ -1,0 +1,1 @@
+[warning] [DeprecatedOption (dbt1702)]: catalogs.yml is being validated against the deprecated v1 schema. To migrate, remove the `use_catalogs_v2: false` override (or set it to `true`) under `flags:` in dbt_project.yml. See https://github.com/dbt-labs/dbt-core/discussions/12723

@@ -15,6 +15,7 @@ use super::common::WhereFilterIntersection;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
+#[derive(dbt_proc_macros::JinjaNodeFields)]
 pub struct DbtSavedQuery {
     pub __common_attr__: CommonAttributes,
     pub __base_attr__: NodeBaseAttributes,
@@ -26,7 +27,7 @@ pub struct DbtSavedQuery {
     pub __other__: BTreeMap<String, YmlValue>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, dbt_proc_macros::JinjaNodeFields)]
 pub struct DbtSavedQueryAttr {
     pub query_params: SavedQueryParams,
     pub exports: Vec<SavedQueryExport>,

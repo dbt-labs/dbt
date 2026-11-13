@@ -1,0 +1,21 @@
+name: test
+version: 1.0.0
+config-version: 2
+profile: fusion_tests
+flags:
+  send_anonymous_usage_stats: false
+on-run-end:
+- '{{ assert_refresh_schedules(results) }}'
+vars:
+  mv_schedule:
+    on_update: true
+    at_most_every: 15 MINUTES
+  st_schedule:
+    every: 1 DAY
+  expected_mv:
+  - TRIGGER ON UPDATE AT MOST EVERY INTERVAL 900 SECOND
+  expected_st:
+  - EVERY 1 DAY
+  - EVERY 1 DAYS
+  change_policy: apply
+  st_marker: changed

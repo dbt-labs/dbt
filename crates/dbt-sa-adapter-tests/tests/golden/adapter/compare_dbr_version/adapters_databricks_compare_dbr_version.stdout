@@ -1,0 +1,12 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/a.sql
+version 0.1 is less than current version. Result: 0
+version 10000.1 is greater than current version. Result: 0
+ Rendering models/a.sql
+version 0.1 is less than current version. Result: 1
+version 10000.1 is greater than current version. Result: 1
+==================== Execution Summary =====================
+Finished 'compile' successfully for target 'databricks' [duration]
+Processed: 1 model
+Summary: 1 total | 1 success

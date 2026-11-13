@@ -4,7 +4,7 @@
     {% set suffix = adapter.generate_unique_temporary_table_suffix(suffix) %}
   {% endif %}
   {% set stg_identifier = base_relation.identifier ~ suffix %}
-  {% set stg_relation = api.Relation.create(database=base_relation.database, schema=base_relation.schema, identifier=stg_identifier, type=type) %}
+  {% set stg_relation = api.Relation.create(database=base_relation.database, schema=base_relation.schema, identifier=stg_identifier, type=type, is_staging=True) %}
   {% do return(stg_relation) %}
 {% endmacro %}
 

@@ -1,0 +1,12 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/unit_tests.yml
+   Parsing models/event_projection.sql
+   Parsing models/events.sql
+ Rendering models/events.sql
+   Running models/events.sql
+ Succeeded model bigquery_unit_test_existing_parent_timestamp_fixtures.events (table) [1 of 1 in duration]
+==================== Execution Summary =====================
+Finished 'run' successfully for target 'bigquery' [duration]
+Processed: 1 model
+Summary: 1 total | 1 success

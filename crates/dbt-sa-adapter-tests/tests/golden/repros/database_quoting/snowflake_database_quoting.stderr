@@ -1,0 +1,2 @@
+[error] [DbDriverFailed (dbt1308)]: Failed to create schema 'snowflake_database_quoting' in database '123_I_NEED_QUOTES' in remote for model.database_quoting.my_first_model: [Snowflake] 002003 (02000): SQL compilation error:
+Database '"123_I_NEED_QUOTES"' does not exist or not authorized. Your primary role TESTER or one of your secondary roles must have USAGE or any other privilege granted on DATABASE "123_I_NEED_QUOTES". (sqlstate: 02000, vendor_code: 2003)

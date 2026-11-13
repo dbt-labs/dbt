@@ -17,8 +17,17 @@
   {% endif %}
   {% if query %}
     {{ alter_query(target_relation, query.query) }}
-  {% endif %}
-  {% if column_comments %}
+    {% if config.persist_column_docs() and model.columns %}
+      {#-- ALTER VIEW AS <query> wipes all column comments, so reapply them here. --#}
+      {%- set existing_columns = adapter.get_columns_in_relation(target_relation) -%}
+      {%- set columns_to_persist = adapter.get_persist_doc_columns(existing_columns, model.columns) -%}
+      {%- set comments = {} -%}
+      {%- for column_name, column in columns_to_persist.items() -%}
+        {%- do comments.update({column_name: column['description']}) -%}
+      {%- endfor -%}
+      {{ alter_column_comments(target_relation, comments) }}
+    {% endif %}
+  {% elif column_comments %}
     {{ alter_column_comments(target_relation, column_comments.comments) }}
   {% endif %}
   {% if column_tags %}

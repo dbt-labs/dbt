@@ -3,7 +3,7 @@
 use datafusion::{
     datasource::listing::{ListingTable, ListingTableConfig, ListingTableUrl},
     execution::options::ReadOptions,
-    prelude::{NdJsonReadOptions, ParquetReadOptions},
+    prelude::{JsonReadOptions, ParquetReadOptions},
 };
 use datafusion_catalog::{Session, TableProvider};
 use datafusion_common::error::DataFusionError;
@@ -13,8 +13,6 @@ use std::any::Any;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::OnceLock;
-
-use crate::seed_io::TableFormat;
 
 // Ref to cache_state in delayed data table provider?
 
@@ -148,14 +146,12 @@ impl TableProvider for DelayedDataTableProvider {
     }
 }
 
-/// Checks if the source schema can be safely overlaid with the target schema.
-pub fn is_schema_compat(source: &arrow_schema::Schema, target: &arrow_schema::Schema) -> bool {
-    source
-        .fields()
-        .iter()
-        .zip(target.fields())
-        .all(|(a, b)| a.name() == b.name())
-        && source.fields().len() == target.fields().len()
+/// Supported on-disk table formats.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TableFormat {
+    Parquet,
+    Csv,
+    Json,
 }
 
 /// Build a [`ListingTable`] over a single on-disk parquet/JSON file, inferring
@@ -167,18 +163,18 @@ async fn make_listing_table_provider(
     table_path: &Path,
     table_format: TableFormat,
 ) -> Result<Arc<ListingTable>, DataFusionError> {
-    let listing_options = match table_format {
-        TableFormat::Parquet => {
-            ParquetReadOptions::new().to_listing_options(ctx.config(), ctx.table_options().clone())
-        }
-        TableFormat::Csv => {
-            return Err(DataFusionError::Internal(
-                "TableFormat::Csv is not supported in make_listing_table_provider".to_string(),
-            ));
-        }
-        TableFormat::Json => NdJsonReadOptions::default()
-            .to_listing_options(ctx.config(), ctx.table_options().clone()),
-    };
+    let listing_options =
+        match table_format {
+            TableFormat::Parquet => ParquetReadOptions::new()
+                .to_listing_options(ctx.config(), ctx.table_options().clone()),
+            TableFormat::Csv => {
+                return Err(DataFusionError::Internal(
+                    "TableFormat::Csv is not supported in make_listing_table_provider".to_string(),
+                ));
+            }
+            TableFormat::Json => JsonReadOptions::default()
+                .to_listing_options(ctx.config(), ctx.table_options().clone()),
+        };
     let (table_path, schema) =
         infer_schema_for_listing_options(ctx, table_path, &listing_options).await?;
 

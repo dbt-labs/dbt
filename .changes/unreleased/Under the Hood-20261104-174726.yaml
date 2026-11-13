@@ -1,0 +1,7 @@
+kind: Under the Hood
+body: An extension command can pass its own options to the experimental that owns it
+time: 2026-11-04T17:47:26.135681-08:00
+custom:
+    author: eliasdefaria
+    issue: ""
+    project: dbt-core

@@ -1,0 +1,22 @@
+model.test.mat_view:
+- sequence: 0
+  type: execute
+  sql: |-
+    alter materialized view `dbt-test-env`.`adapters_bigquery_materialized_views`.`mat_view`
+    set OPTIONS(
+    enable_refresh=True,
+    
+    refresh_interval_minutes=60.0
+    )
+- sequence: 1
+  type: execute
+  sql: |-
+    drop materialized view if exists `dbt-test-env`.`adapters_bigquery_materialized_views`.`mat_view__dbt_backup`
+- sequence: 2
+  type: execute
+  sql: |-
+    drop materialized view if exists `dbt-test-env`.`adapters_bigquery_materialized_views`.`mat_view__dbt_tmp`
+model.test.mat_view.get_table_schema.c016a944:
+- sequence: 0
+  type: get_table_schema
+  table_name: c016a944

@@ -63,10 +63,15 @@
     ukcu.table_name AS to_table,
     ukcu.column_name AS to_column
   FROM `{{ relation.database|lower }}`.information_schema.key_column_usage kcu
+  {#- Constraint names are unique only within a schema. #}
   JOIN `{{ relation.database|lower }}`.information_schema.referential_constraints rc
-    ON kcu.constraint_name = rc.constraint_name
+    ON kcu.constraint_catalog = rc.constraint_catalog
+    AND kcu.constraint_schema = rc.constraint_schema
+    AND kcu.constraint_name = rc.constraint_name
   JOIN `{{ relation.database|lower }}`.information_schema.key_column_usage ukcu
-    ON rc.unique_constraint_name = ukcu.constraint_name
+    ON rc.unique_constraint_catalog = ukcu.constraint_catalog
+    AND rc.unique_constraint_schema = ukcu.constraint_schema
+    AND rc.unique_constraint_name = ukcu.constraint_name
     AND kcu.ordinal_position = ukcu.ordinal_position
   WHERE kcu.table_catalog = '{{ relation.database|lower }}'
     AND kcu.table_schema = '{{ relation.schema|lower }}'
@@ -87,32 +92,38 @@
   {%- if constraints and relation.is_hive_metastore() -%}
     {{ exceptions.raise_compiler_error("Constraints are only supported for Unity Catalog") }}
   {%- endif -%}
-  {# Order matters here because key constraints depend on non-null constraints #} 
+  {# Order matters here because key constraints depend on non-null constraints #}
+  {#- The diff holds unordered sets; sort so the emitted statement order is stable across runs. -#}
   {%- if constraints.unset_constraints %}
-    {%- for constraint in constraints.unset_constraints -%}
+    {%- for constraint in constraints.unset_constraints | sort(attribute='name') -%}
       {%- call statement('main') -%}
         {{ alter_unset_constraint(relation, constraint) }}
       {%- endcall -%}
     {%- endfor -%}
   {%- endif %}
   {%- if constraints.unset_non_nulls %}
-    {%- for column in constraints.unset_non_nulls -%}
+    {%- for column in constraints.unset_non_nulls | sort -%}
       {%- call statement('main') -%}
         {{ alter_unset_non_null_constraint(relation, column) }}
       {%- endcall -%}
     {%- endfor -%}
   {%- endif %}
   {%- if constraints.set_non_nulls %}
-    {%- for column in constraints.set_non_nulls -%}
+    {%- for column in constraints.set_non_nulls | sort -%}
       {%- call statement('main') -%}
         {{ alter_set_non_null_constraint(relation, column) }}
       {%- endcall -%}
     {%- endfor -%}
   {%- endif %}
   {%- if constraints.set_constraints %}
+    {#- Model constraints may be unnamed, so sort by the rendered statement instead of by name. -#}
+    {%- set set_constraint_statements = [] -%}
     {%- for constraint in constraints.set_constraints -%}
+      {%- do set_constraint_statements.append(alter_set_constraint(relation, constraint)) -%}
+    {%- endfor -%}
+    {%- for set_constraint_statement in set_constraint_statements | sort -%}
       {%- call statement('main') -%}
-        {{ alter_set_constraint(relation, constraint) }}
+        {{ set_constraint_statement }}
       {%- endcall -%}
     {%- endfor -%}
   {%- endif %}

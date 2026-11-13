@@ -1,0 +1,30 @@
+model.test.c:
+- sequence: 0
+  type: execute
+  sql: CREATE DATABASE IF NOT EXISTS `adapters_clickhouse_get_missing_columns`
+- sequence: 1
+  type: execute
+  sql: CREATE TABLE `adapters_clickhouse_get_missing_columns`.`a` (one Int32, three Int32) ENGINE = MergeTree() ORDER BY tuple()
+- sequence: 2
+  type: execute
+  sql: CREATE TABLE `adapters_clickhouse_get_missing_columns`.`b` (one Int32, two Int32) ENGINE = MergeTree() ORDER BY tuple()
+- sequence: 3
+  type: execute
+  sql: |-
+    select name, type from system.columns where table = 'a'
+    
+    
+    and database = 'adapters_clickhouse_get_missing_columns'
+    
+    
+    order by position
+- sequence: 4
+  type: execute
+  sql: |-
+    select name, type from system.columns where table = 'b'
+    
+    
+    and database = 'adapters_clickhouse_get_missing_columns'
+    
+    
+    order by position

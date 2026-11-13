@@ -7,8 +7,8 @@
 use std::{collections::HashMap, hint::black_box, sync::Arc, time::Instant};
 
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
-use dbt_ident::Ident;
 use dbt_schema_store::{CanonicalFqn, SchemaStoreTrait, store::SchemaStore};
+use dbt_sql_base::Ident;
 use tempfile::TempDir;
 
 fn make_schema(n_cols: usize) -> SchemaRef {

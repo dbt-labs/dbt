@@ -4,23 +4,20 @@ use std::sync::Arc;
 use adbc_core::options::OptionStatement;
 use arrow::array::RecordBatch;
 use arrow_schema::{Schema, SchemaRef};
-use datafusion_expr::LogicalPlan;
-use dbt_adapter_core::AdapterType;
+use dbt_adapter::Adapter;
 use dbt_adbc::Connection;
 use dbt_common::hashing::code_hash;
 use dbt_common::tracing::span_info::record_current_span_status_from_attrs;
 use dbt_common::{ErrorCode, FsError, FsResult, create_debug_span, err, fs_err};
-use dbt_df_providers::delayed_table::is_schema_compat;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_scheduler::instructions::Instruction;
 use dbt_schemas::schemas::telemetry::{QueryExecuted, QueryOutcome};
 use dbt_tasks_core::AdhocRunner;
-use dbt_tasks_core::task::TaskOp;
+use dbt_tasks_core::task::run_blocking_task_operation;
 
 /// Runs queries remotely against the warehouse via an adapter connection.
 pub struct RemoteAdhocRunner {
     pub env: Arc<JinjaEnv>,
-    pub adapter_type: AdapterType,
     /// `show --query-id <id>`: when set, `run_adhoc` ignores `instruction`/
     /// `rendered_sql` entirely and fetches this already-completed LakeCompute
     /// query's result directly instead. See `EvalArgs::query_id`.
@@ -33,6 +30,7 @@ impl AdhocRunner for RemoteAdhocRunner {
         instruction: &'a Instruction,
         rendered_sql: &'a str,
         _unique_id: Option<&'a str>,
+        adapter: Option<Arc<Adapter>>,
         connection: &'a mut Option<Box<dyn Connection>>,
     ) -> Pin<Box<dyn Future<Output = FsResult<(Vec<RecordBatch>, SchemaRef)>> + Send + 'a>> {
         Box::pin(async move {
@@ -42,8 +40,7 @@ impl AdhocRunner for RemoteAdhocRunner {
             run_remote_adhoc_with_connection(
                 instruction,
                 rendered_sql,
-                &self.env,
-                self.adapter_type,
+                adapter.or_else(|| self.env.get_base_adapter()),
                 connection,
             )
             .await
@@ -52,26 +49,25 @@ impl AdhocRunner for RemoteAdhocRunner {
 }
 
 /// Reuse `conn_box`'s connection if present, otherwise open and cache one
-/// from the workspace's base adapter engine. Shared by the ordinary
-/// `--inline` path and the `--query-id` result-fetch path below.
+/// from `adapter`'s engine. Shared by the ordinary `--inline` path and the
+/// `--query-id` result-fetch path below.
 ///
 /// Must run on a `dbt_runtime` worker: opening a connection blocks, and
 /// `AdbcEngine::new_connection` asserts the caller is a pool worker.
 fn get_or_open_connection<'a>(
-    env: &JinjaEnv,
+    adapter: Option<&Adapter>,
     conn_box: &'a mut Option<Box<dyn Connection>>,
 ) -> FsResult<&'a mut dyn Connection> {
     if conn_box.is_some() {
         return Ok(conn_box.as_mut().unwrap().as_mut());
     }
-    let adapter_engine = env.get_base_adapter().map(|a| Arc::clone(a.engine()));
-    let Some(engine) = adapter_engine else {
+    let Some(adapter) = adapter else {
         return err!(
             ErrorCode::RemoteError,
             "No adapter engine configured in workspace"
         );
     };
-    let conn = engine.new_connection(None, None)?;
+    let conn = adapter.engine().new_connection(None, None)?;
     conn_box.replace(conn);
     Ok(conn_box.as_mut().unwrap().as_mut())
 }
@@ -90,11 +86,10 @@ async fn fetch_query_result_with_connection(
     let env = Arc::clone(env);
     let query_id = query_id.to_owned();
     let mut conn = conn_box.take();
-    let (conn, result) = TaskOp::Blocking(Box::new(move || {
+    let (conn, result) = run_blocking_task_operation(move || {
         let result = fetch_query_result_blocking(&query_id, &env, &mut conn);
         (conn, result)
-    }))
-    .run()
+    })
     .await?;
     *conn_box = conn;
     result
@@ -106,7 +101,8 @@ fn fetch_query_result_blocking(
     env: &JinjaEnv,
     conn_box: &mut Option<Box<dyn Connection>>,
 ) -> FsResult<(Vec<RecordBatch>, SchemaRef)> {
-    let conn = get_or_open_connection(env, conn_box)?;
+    // The fetch reads an existing result, not the node's: keep the env's adapter.
+    let conn = get_or_open_connection(env.get_base_adapter().as_deref(), conn_box)?;
     let mut stmt = conn.new_statement().map_err(from_adbc_error)?;
     stmt.set_option(
         OptionStatement::Other(dbt_adbc::lake_compute::RESULT_QUERY_ID.to_string()),
@@ -127,19 +123,23 @@ fn fetch_query_result_blocking(
 async fn run_remote_adhoc_with_connection(
     instruction: &Instruction,
     rendered_sql: &str,
-    env: &Arc<JinjaEnv>,
-    adapter_type: AdapterType,
+    adapter: Option<Arc<Adapter>>,
     conn_box: &mut Option<Box<dyn Connection>>,
 ) -> FsResult<(Vec<RecordBatch>, SchemaRef)> {
     if let Some(result) = replay_run_remote_adhoc_result() {
         return result;
     }
+    let Some(adapter) = adapter else {
+        return err!(
+            ErrorCode::RemoteError,
+            "No adapter engine configured in workspace"
+        );
+    };
 
     // Reading the expected schema off the instruction needs no connection, so
     // it stays here and only what the query itself needs moves to the worker.
     let expected_schema = expected_schema_of(instruction);
     let fqn = instruction.fqn().join(".");
-    let env = Arc::clone(env);
     let rendered_sql = rendered_sql.to_owned();
     let mut conn = conn_box.take();
 
@@ -147,18 +147,16 @@ async fn run_remote_adhoc_with_connection(
     // on a `dbt_runtime` worker instead of on this async thread. The connection
     // travels with the closure and comes back with the result, so a subsequent
     // adhoc query on the same `conn_box` still reuses it.
-    let (conn, result) = TaskOp::Blocking(Box::new(move || {
+    let (conn, result) = run_blocking_task_operation(move || {
         let result = run_remote_adhoc_blocking(
             &rendered_sql,
-            &env,
-            adapter_type,
+            &adapter,
             expected_schema.as_ref(),
             &fqn,
             &mut conn,
         );
         (conn, result)
-    }))
-    .run()
+    })
     .await?;
     *conn_box = conn;
     result
@@ -169,30 +167,19 @@ async fn run_remote_adhoc_with_connection(
 fn expected_schema_of(instruction: &Instruction) -> Option<SchemaRef> {
     match instruction {
         Instruction::Sql(_) => None,
-        Instruction::Lp(lp_instruction) => match &lp_instruction.plan {
-            LogicalPlan::Ddl(..)
-            | LogicalPlan::Dml(..)
-            | LogicalPlan::Copy(..)
-            | LogicalPlan::Repartition(..)
-            | LogicalPlan::Statement(..)
-            | LogicalPlan::Explain(..)
-            | LogicalPlan::Analyze(..)
-            | LogicalPlan::DescribeTable(..) => None,
-            _ => Some(Arc::new(lp_instruction.plan.schema().as_arrow().clone())),
-        },
+        Instruction::Lp(lp_instruction) => lp_instruction.plan.output_schema(),
     }
 }
 
 /// The blocking half of [`run_remote_adhoc_with_connection`], run on a worker.
 fn run_remote_adhoc_blocking(
     rendered_sql: &str,
-    env: &JinjaEnv,
-    adapter_type: AdapterType,
+    adapter: &Adapter,
     expected_schema: Option<&SchemaRef>,
     fqn: &str,
     conn_box: &mut Option<Box<dyn Connection>>,
 ) -> FsResult<(Vec<RecordBatch>, SchemaRef)> {
-    let conn = get_or_open_connection(env, conn_box)?;
+    let conn = get_or_open_connection(Some(adapter), conn_box)?;
     let mut stmt = conn.new_statement().map_err(from_adbc_error)?;
     stmt.set_sql_query(rendered_sql).map_err(from_adbc_error)?;
 
@@ -201,7 +188,7 @@ fn run_remote_adhoc_blocking(
         let _query_span_guard = create_debug_span(QueryExecuted::start(
             rendered_sql.to_string(),
             sql_hash,
-            adapter_type.as_ref().to_owned(),
+            adapter.adapter_type().as_ref().to_owned(),
             None,
             Some("dbt run query".to_string()),
         ))
@@ -349,6 +336,16 @@ fn attach_last_query_id(stmt: &dyn dbt_adbc::statement::Statement, schema: Schem
         query_id,
     );
     Arc::new(Schema::new_with_metadata(schema.fields().clone(), metadata))
+}
+
+/// Checks if the source schema can be safely overlaid with the target schema.
+fn is_schema_compat(source: &Schema, target: &Schema) -> bool {
+    source
+        .fields()
+        .iter()
+        .zip(target.fields())
+        .all(|(a, b)| a.name() == b.name())
+        && source.fields().len() == target.fields().len()
 }
 
 #[cfg(test)]

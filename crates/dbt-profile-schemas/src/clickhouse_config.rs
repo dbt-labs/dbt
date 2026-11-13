@@ -151,7 +151,7 @@ impl InteractiveSetup for ClickHouseDbConfig {
     }
 }
 
-pub fn setup_clickhouse_profile(
+pub(crate) fn setup_clickhouse_profile(
     existing_config: Option<&ClickHouseDbConfig>,
 ) -> FsResult<Box<ClickHouseDbConfig>> {
     let default_config = ClickHouseDbConfig::default();

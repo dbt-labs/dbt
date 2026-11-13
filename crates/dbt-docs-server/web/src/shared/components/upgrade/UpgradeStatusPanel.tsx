@@ -54,7 +54,7 @@ function isSnoozeActive(dismissedAt: number | null): boolean {
 
 export type UpgradeStatusPanelDensity = 'default' | 'compact';
 
-interface Props {
+interface UpgradeStatusPanelProps {
   /** Ordered list of upgrade hook kinds to consider for rows. Each is
    *  filtered through the copy registry against `userState`; cells that
    *  resolve to `{hidden: true}` are skipped. Clamped to two visible rows. */
@@ -89,7 +89,7 @@ export function UpgradeStatusPanel({
   decorateOutboundHref = identityHref,
   className,
   testId,
-}: Props) {
+}: UpgradeStatusPanelProps) {
   const [dismissedAt, setDismissedAt] = useLocalStorage<number | null>(
     DISMISSED_STORAGE_KEY,
     validateDismissedAt,

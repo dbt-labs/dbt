@@ -1,4 +1,5 @@
-import { useMetadataDataSource } from '../context/MetadataDataProvider';
+import { useMetadataDataSource } from 'dbt-docs-lib';
+
 import { distributionKey } from '../util/queryKeys';
 import { useSourceQuery } from './useSourceQuery';
 

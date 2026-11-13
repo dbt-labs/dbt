@@ -6,17 +6,17 @@ use dbt_common::{
 use dbt_schemas::schemas::packages::DbtPackages;
 use std::path::Path;
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum DbtPackageType {
     PackageYml,
     DependenciesYml,
 }
 
-impl std::fmt::Display for DbtPackageType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl AsRef<str> for DbtPackageType {
+    fn as_ref(&self) -> &str {
         match self {
-            Self::PackageYml => write!(f, "packages.yml"),
-            Self::DependenciesYml => write!(f, "dependencies.yml"),
+            Self::PackageYml => DBT_PACKAGES_YML,
+            Self::DependenciesYml => DBT_DEPENDENCIES_YML,
         }
     }
 }

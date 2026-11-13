@@ -207,6 +207,7 @@ jobs:
       version_number: ${{ inputs.version_number }}
       test_run: ${{ inputs.test_run }}
       use_hatch: ${{ needs.job-setup.outputs.use_hatch == 'true' }} # workflow outputs are strings...
+      package_name: dbt-core
 
     secrets:
       PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}

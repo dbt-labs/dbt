@@ -1,0 +1,110 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/attributes/attr_aggregation_policy.sql
+   Parsing models/attributes/attr_comment.sql
+   Parsing models/attributes/attr_data_retention.sql
+   Parsing models/attributes/attr_masking_policy.sql
+   Parsing models/attributes/attr_max_data_extension.sql
+   Parsing models/attributes/attr_multi.sql
+   Parsing models/attributes/attr_projection_policy.sql
+   Parsing models/attributes/attr_row_access_policy.sql
+   Parsing models/attributes/attr_tag.sql
+   Parsing models/config_changes/cfg_cluster_by.sql
+   Parsing models/config_changes/cfg_init_warehouse.sql
+   Parsing models/config_changes/cfg_warehouse.sql
+   Parsing models/deploy_matrix/dm_auto_disable.sql
+   Parsing models/deploy_matrix/dm_auto_enable.sql
+   Parsing models/deploy_matrix/dm_full_disable.sql
+   Parsing models/deploy_matrix/dm_full_enable.sql
+   Parsing models/deploy_matrix/dm_incremental_disable.sql
+   Parsing models/deploy_matrix/dm_incremental_enable.sql
+   Parsing models/incremental_properties/inc_noop.sql
+   Parsing models/incremental_properties/inc_props.sql
+   Parsing models/on_configuration_change/continue_skips_both.sql
+   Parsing models/routing/idempotent_noop.sql
+   Parsing models/routing/refresh_mode_replace.sql
+   Parsing models/routing/refresh_mode_to_auto.sql
+   Parsing models/routing/transient_flip.sql
+   Parsing models/routing/transient_preserved.sql
+ Rendering models/routing/transient_preserved.sql
+   Running models/routing/transient_preserved.sql
+ Succeeded model adapters_snowflake_dynamic_table_create_or_alter.transient_preserved (dynamic_table) [1 of 26 in duration]
+ Rendering models/routing/transient_flip.sql
+   Running models/routing/transient_flip.sql
+ Succeeded model adapters_snowflake_dynamic_table_create_or_alter.transient_flip (dynamic_table) [2 of 26 in duration]
+ Rendering models/routing/refresh_mode_to_auto.sql
+   Running models/routing/refresh_mode_to_auto.sql
+ Succeeded model adapters_snowflake_dynamic_table_create_or_alter.refresh_mode_to_auto (dynamic_table) [3 of 26 in duration]
+ Rendering models/routing/refresh_mode_replace.sql
+   Running models/routing/refresh_mode_replace.sql
+ Succeeded model adapters_snowflake_dynamic_table_create_or_alter.refresh_mode_replace (dynamic_table) [4 of 26 in duration]
+ Rendering models/incremental_properties/inc_props.sql
+   Running models/incremental_properties/inc_props.sql
+ Succeeded model adapters_snowflake_dynamic_table_create_or_alter.inc_props (dynamic_table) [5 of 26 in duration]
+ Rendering models/incremental_properties/inc_noop.sql
+   Running models/incremental_properties/inc_noop.sql
+ Succeeded model adapters_snowflake_dynamic_table_create_or_alter.inc_noop (dynamic_table) [6 of 26 in duration]
+ Rendering models/routing/idempotent_noop.sql
+   Running models/routing/idempotent_noop.sql
+ Succeeded model adapters_snowflake_dynamic_table_create_or_alter.idempotent_noop (dynamic_table) [7 of 26 in duration]
+ Rendering models/deploy_matrix/dm_incremental_enable.sql
+   Running models/deploy_matrix/dm_incremental_enable.sql
+ Succeeded model adapters_snowflake_dynamic_table_create_or_alter.dm_incremental_enable (dynamic_table) [8 of 26 in duration]
+ Rendering models/deploy_matrix/dm_incremental_disable.sql
+   Running models/deploy_matrix/dm_incremental_disable.sql
+ Succeeded model adapters_snowflake_dynamic_table_create_or_alter.dm_incremental_disable (dynamic_table) [9 of 26 in duration]
+ Rendering models/deploy_matrix/dm_full_enable.sql
+   Running models/deploy_matrix/dm_full_enable.sql
+ Succeeded model adapters_snowflake_dynamic_table_create_or_alter.dm_full_enable (dynamic_table) [10 of 26 in duration]
+ Rendering models/deploy_matrix/dm_full_disable.sql
+   Running models/deploy_matrix/dm_full_disable.sql
+ Succeeded model adapters_snowflake_dynamic_table_create_or_alter.dm_full_disable (dynamic_table) [11 of 26 in duration]
+ Rendering models/deploy_matrix/dm_auto_enable.sql
+   Running models/deploy_matrix/dm_auto_enable.sql
+ Succeeded model adapters_snowflake_dynamic_table_create_or_alter.dm_auto_enable (dynamic_table) [12 of 26 in duration]
+ Rendering models/deploy_matrix/dm_auto_disable.sql
+   Running models/deploy_matrix/dm_auto_disable.sql
+ Succeeded model adapters_snowflake_dynamic_table_create_or_alter.dm_auto_disable (dynamic_table) [13 of 26 in duration]
+ Rendering models/on_configuration_change/continue_skips_both.sql
+   Running models/on_configuration_change/continue_skips_both.sql
+    Warned model adapters_snowflake_dynamic_table_create_or_alter.continue_skips_both (dynamic_table) [14 of 26 in duration]
+ Rendering models/config_changes/cfg_warehouse.sql
+   Running models/config_changes/cfg_warehouse.sql
+ Succeeded model adapters_snowflake_dynamic_table_create_or_alter.cfg_warehouse (dynamic_table) [15 of 26 in duration]
+ Rendering models/config_changes/cfg_init_warehouse.sql
+   Running models/config_changes/cfg_init_warehouse.sql
+ Succeeded model adapters_snowflake_dynamic_table_create_or_alter.cfg_init_warehouse (dynamic_table) [16 of 26 in duration]
+ Rendering models/config_changes/cfg_cluster_by.sql
+   Running models/config_changes/cfg_cluster_by.sql
+ Succeeded model adapters_snowflake_dynamic_table_create_or_alter.cfg_cluster_by (dynamic_table) [17 of 26 in duration]
+ Rendering models/attributes/attr_tag.sql
+   Running models/attributes/attr_tag.sql
+ Succeeded model adapters_snowflake_dynamic_table_create_or_alter.attr_tag (dynamic_table) [18 of 26 in duration]
+ Rendering models/attributes/attr_row_access_policy.sql
+   Running models/attributes/attr_row_access_policy.sql
+ Succeeded model adapters_snowflake_dynamic_table_create_or_alter.attr_row_access_policy (dynamic_table) [19 of 26 in duration]
+ Rendering models/attributes/attr_projection_policy.sql
+   Running models/attributes/attr_projection_policy.sql
+ Succeeded model adapters_snowflake_dynamic_table_create_or_alter.attr_projection_policy (dynamic_table) [20 of 26 in duration]
+ Rendering models/attributes/attr_multi.sql
+   Running models/attributes/attr_multi.sql
+ Succeeded model adapters_snowflake_dynamic_table_create_or_alter.attr_multi (dynamic_table) [21 of 26 in duration]
+ Rendering models/attributes/attr_max_data_extension.sql
+   Running models/attributes/attr_max_data_extension.sql
+ Succeeded model adapters_snowflake_dynamic_table_create_or_alter.attr_max_data_extension (dynamic_table) [22 of 26 in duration]
+ Rendering models/attributes/attr_masking_policy.sql
+   Running models/attributes/attr_masking_policy.sql
+ Succeeded model adapters_snowflake_dynamic_table_create_or_alter.attr_masking_policy (dynamic_table) [23 of 26 in duration]
+ Rendering models/attributes/attr_data_retention.sql
+   Running models/attributes/attr_data_retention.sql
+ Succeeded model adapters_snowflake_dynamic_table_create_or_alter.attr_data_retention (dynamic_table) [24 of 26 in duration]
+ Rendering models/attributes/attr_comment.sql
+   Running models/attributes/attr_comment.sql
+ Succeeded model adapters_snowflake_dynamic_table_create_or_alter.attr_comment (dynamic_table) [25 of 26 in duration]
+ Rendering models/attributes/attr_aggregation_policy.sql
+   Running models/attributes/attr_aggregation_policy.sql
+ Succeeded model adapters_snowflake_dynamic_table_create_or_alter.attr_aggregation_policy (dynamic_table) [26 of 26 in duration]
+==================== Execution Summary =====================
+Finished 'run' with 1 warning for target 'snowflake' [duration]
+Processed: 26 models
+Summary: 26 total | 25 success | 1 warn

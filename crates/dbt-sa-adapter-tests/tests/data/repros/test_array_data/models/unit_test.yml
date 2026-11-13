@@ -1,0 +1,14 @@
+# unit_test.yml
+version: 2
+unit_tests:
+  - name: test_with_unused_array
+    description: |
+      Test that the extended quantity is calculated correctly
+    model: add_array
+    given:
+      - input: ref('my_model')
+        rows:
+          - {id: 1}
+    expect:
+      rows:
+          - {id: 1}

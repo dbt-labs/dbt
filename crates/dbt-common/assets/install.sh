@@ -156,10 +156,12 @@ help() {
     echo "Usage: install.sh [options]"
     echo ""
     echo "Options:"
-    echo "  --update, -u       Update to latest or specified version"
+    echo "  --update, -u       Update to stable or specified version"
     echo "  --version VER      Install version VER"
     echo "  --target TARGET    Install for target platform TARGET"
-    echo "  --to DEST          Install to DEST"
+    echo "  --prefix PREFIX    Install under PREFIX: dbt in PREFIX/bin, drivers in PREFIX/lib/dbt"
+    echo "                     (default: \$HOME/.local)"
+    echo "  --to DEST          Deprecated: install dbt into DEST, without its drivers"
     echo "  --help, -h         Show this help text"
     echo "  --package PACKAGE  Select package set [dbt|all] (all adds dbt-db-runner)"
 }
@@ -184,6 +186,10 @@ while [ $# -gt 0 ]; do
         ;;
     --target)
         target=$2
+        shift
+        ;;
+    --prefix)
+        prefix=$2
         shift
         ;;
     --to)
@@ -211,6 +217,7 @@ check_dependencies() {
 
     # Dependencies
     need basename
+    need dirname
     need curl
     need install
     need mkdir
@@ -230,14 +237,26 @@ check_dependencies() {
         need grep
     fi
 
-    if [ -z "${dest:-}" ]; then
-        dest="$HOME/.local/bin"
-    else
+    if [ -n "${prefix:-}" ] && [ -n "${dest:-}" ]; then
+        err_and_exit "--prefix and --to cannot be combined"
+    fi
+    if [ -n "${dest:-}" ]; then
+        log "WARNING: --to is deprecated and does not install dbt's drivers. Use --prefix PREFIX instead: dbt goes in PREFIX/bin and its drivers in PREFIX/lib/dbt."
         # Convert relative path to absolute
         case "$dest" in
             /*) ;; # Already absolute path
             *) dest="$PWD/$dest" ;; # Convert relative to absolute
         esac
+        lib_dir=""
+    else
+        prefix="${prefix:-$HOME/.local}"
+        case "$prefix" in
+            /*) ;;
+            *) prefix="$PWD/$prefix" ;;
+        esac
+        prefix="${prefix%/}"
+        dest="$prefix/bin"
+        lib_dir="$prefix/lib/dbt"
     fi
 }
 
@@ -462,9 +481,9 @@ determine_version() {
     fi
 
     if [ -z "$specific_version" ];then
-        log_grey "Checking for latest version"
-        TARGET_VERSION=$(echo "$versions" | jq -r ".latest.tag" | sed 's/^v//') || err_and_exit "Failed to parse latest version from versions data."
-        log_grey "Latest available version: $TARGET_VERSION"
+        log_grey "Checking for stable version"
+        TARGET_VERSION=$(echo "$versions" | jq -r ".stable.tag" | sed 's/^v//') || err_and_exit "Failed to parse stable version from versions data."
+        log_grey "Stable available version: $TARGET_VERSION"
     # check the version that tag maps to, if the tag exists
     elif echo "$versions" | jq -e "has(\"$specific_version\")" > /dev/null;then
         log_grey "Checking for $specific_version version"
@@ -503,6 +522,22 @@ EOF
     else
         log "Successfully installed $package_name $version to: $dest"
     fi
+}
+
+# Replace only the archive's libraries; other packages own the rest.
+install_sidecar_packages() {
+    source_dir="$1"
+    destination_dir="$2"
+    mkdir -p "$destination_dir" || err_and_exit "Cannot create $destination_dir. Make $(dirname "$(dirname "$destination_dir")") writable, or install with another --prefix."
+    for library in "$source_dir"/*; do
+        [ -e "$library" ] || [ -L "$library" ] || continue
+        [ -f "$library" ] && [ ! -L "$library" ] || err_and_exit "Invalid sidecar file"
+        library_leaf=$(basename "$library")
+        tmp_bin="$destination_dir/.$library_leaf.tmp.$$"
+        install -m 644 "$library" "$tmp_bin" || err_and_exit "Cannot stage sidecar"
+        mv -f "$tmp_bin" "$destination_dir/$library_leaf" || err_and_exit "Cannot publish sidecar"
+        tmp_bin=""
+    done
 }
 
 # Install a package
@@ -577,27 +612,15 @@ install_package() {
         err_and_exit "No files were extracted from the archive"
     fi
 
-    for f in "$(cd "$td" && find . -type f)"; do
-        [ -x "$td/$f" ] || {
-            log_debug "File $f is not executable, skipping"
-            continue
-        }
-
-        log_debug "Moving $f to $dest/$package_name"
-
-        # Ensure the destination directory exists
-        mkdir -p "$dest" || err_and_exit "Error: Failed to create installation directory: $dest"
-
-        # Stage into a temp file in the same directory (same filesystem = atomic mv).
-        # install sets permissions before the file goes live; mv -f atomically
-        # replaces any existing binary without a removal gap.
-        tmp_bin="$dest/.${package_name}.tmp.$$"
-        install -v -m 755 "$td/$f" "$tmp_bin" 2>&1 | while IFS= read -r line; do
-            log_debug "$line"
-        done || err_and_exit "Error: Failed to stage $package_name binary."
-        mv -f "$tmp_bin" "$dest/$package_name" || err_and_exit "Error: Failed to replace $package_name binary."
-        log_debug "Installed $package_name to $dest/$package_name"
-    done
+    # Libraries may be executable too.
+    [ -f "$td/$package_name" ] || err_and_exit "Binary $package_name missing from archive"
+    if [ "$package_name" = "dbt" ] && [ -n "${lib_dir:-}" ] && [ -d "$td/lib/dbt" ]; then
+        install_sidecar_packages "$td/lib/dbt" "$lib_dir"
+    fi
+    tmp_bin="$dest/.${package_name}.tmp.$$"
+    install -m 755 "$td/$package_name" "$tmp_bin" || err_and_exit "Failed to stage $package_name"
+    mv -f "$tmp_bin" "$dest/$package_name" || err_and_exit "Failed to replace $package_name"
+    tmp_bin=""
 
     rm -rf "$td"
     td=""
@@ -685,7 +708,7 @@ main() {
     package="${package:-dbt}"
     version="${version:-}"
     target="${target:-}"
-    dest="${dest:-$HOME/.local/bin}"
+    dest="${dest:-}"
     update="${update:-false}"
 
     if [ "$package" = "dbt-lsp" ]; then

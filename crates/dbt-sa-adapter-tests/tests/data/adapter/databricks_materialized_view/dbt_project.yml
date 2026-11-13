@@ -1,0 +1,30 @@
+flags:
+  send_anonymous_usage_stats: false
+name: test
+profile: fusion_tests
+
+macro-paths: ["macros"]
+
+models:
+  test:
+    +static_analysis: off
+
+    test_create:
+      +materialized: materialized_view
+
+    test_alter:
+      +materialized: materialized_view
+      +on_configuration_change: apply
+      +schedule: 
+        cron: "0 1 * * * ? *" 
+    
+    test_fail:
+      +materialized: materialized_view
+      +on_configuration_change: fail
+      +schedule: 
+        cron: "0 2 * * * ? *" 
+
+    test_full_refresh:
+      +materialized: materialized_view
+      +schedule: 
+        cron: "0 3 * * * ? *" 

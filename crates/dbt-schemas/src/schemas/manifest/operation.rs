@@ -15,6 +15,7 @@ use dbt_telemetry::NodeType;
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
+#[derive(dbt_proc_macros::JinjaNodeFields)]
 pub struct DbtOperation {
     pub __common_attr__: CommonAttributes,
     #[serde(default)]
@@ -23,6 +24,14 @@ pub struct DbtOperation {
 }
 
 impl InternalDbtNode for DbtOperation {
+    fn into_jinja_fields(
+        self: std::sync::Arc<Self>,
+    ) -> std::sync::Arc<dyn crate::jinja_node::JinjaNodeFields> {
+        self
+    }
+    fn clone_node(&self) -> Box<dyn InternalDbtNode> {
+        Box::new(Clone::clone(self))
+    }
     fn common(&self) -> &CommonAttributes {
         &self.__common_attr__
     }

@@ -21,13 +21,13 @@
  * adapter, without taking the contract's coverage with them.
  */
 
+import type { MetadataDataSource } from 'dbt-docs-lib';
+import type { DuckDbEngine, TableName } from 'dbt-docs-lib/duckdb';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { SUPPORTED_BOOTSTRAP_SCHEMA_VERSION } from '../../lib/siteBootstrap';
 import { createFakeDataSource } from '../testing/createFakeDataSource';
 import { createDuckDbDataSource } from './duckdb';
-import type { DuckDbEngine, TableName } from './duckdb/engine';
-import type { MetadataDataSource } from './MetadataDataSource';
 
 /**
  * The logical data a case needs, described once and expressed per implementation.
@@ -177,6 +177,7 @@ const duckdbHarness: Harness = {
       },
       hasTable: (t) => present.has(t),
       ready: async () => {},
+      dispose: async () => {},
     };
 
     return createDuckDbDataSource({

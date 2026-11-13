@@ -1,0 +1,65 @@
+1235a4eb:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists `e2e`.`databricks_query_tags`
+85f3743c:
+- sequence: 0
+  type: execute
+  sql: SHOW SCHEMAS IN `e2e`
+model.databricks_query_tags.tagged_model:
+- sequence: 0
+  type: execute
+  sql: |-
+    SELECT
+    table_name,
+    if(table_type IN ('EXTERNAL', 'MANAGED', 'MANAGED_SHALLOW_CLONE', 'EXTERNAL_SHALLOW_CLONE'), 'table', lower(table_type)) AS table_type,
+    lower(data_source_format) AS file_format,
+    table_schema,
+    table_owner,
+    table_catalog,
+    if(
+    table_type IN (
+    'EXTERNAL',
+    'MANAGED',
+    'MANAGED_SHALLOW_CLONE',
+    'EXTERNAL_SHALLOW_CLONE'
+    ),
+    lower(table_type),
+    NULL
+    ) AS databricks_table_type
+    FROM `system`.`information_schema`.`tables`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'databricks_query_tags'
+- sequence: 1
+  type: execute
+  sql: |-
+    SELECT
+    table_catalog,
+    table_schema,
+    table_name,
+    filter_name,
+    target_columns
+    FROM `e2e`.`information_schema`.`row_filters`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'databricks_query_tags'
+    AND table_name = 'tagged_model'
+- sequence: 2
+  type: execute
+  sql: |-
+    create or replace table `e2e`.`databricks_query_tags`.`tagged_model`
+    
+    
+    
+    using delta
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    as
+    select 1 as id

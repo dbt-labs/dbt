@@ -47,7 +47,7 @@ const ASSET_ALL_PATH = 'all-assets';
 const PKG_VISIBLE_DEFAULT = 8;
 const TAG_VISIBLE_DEFAULT = 8;
 
-interface Props {
+interface LocatePaneProps {
   project: Project;
   nodes: NodeSummary[];
   /** File rows for the on-disk Tree tab. One per file-bearing resource
@@ -121,7 +121,7 @@ export function LocatePane({
   searchFacets,
   assetCounts,
   userState,
-}: Props) {
+}: LocatePaneProps) {
   // Tree- and Asset-tab expand/collapse live here (not in their child
   // components) so switching tabs doesn't unmount the state. Default-open the
   // synthetic project root (Tree tab) and the "All assets" parent (Asset tab).

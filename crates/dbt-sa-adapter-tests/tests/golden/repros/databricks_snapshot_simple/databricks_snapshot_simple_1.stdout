@@ -1,0 +1,11 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing snapshots/orders_snapshot.sql
+   Parsing models/orders.sql
+ Rendering snapshots/orders_snapshot.sql
+   Running ../scratch/target/run/hello_world/snapshots/orders_snapshot.sql/orders_snapshot.sql
+ Succeeded snapshot snapshots.orders_snapshot (snapshot) [1 of 1 in duration]
+==================== Execution Summary =====================
+Finished 'snapshot' with 1 warning for target 'databricks' [duration]
+Processed: 1 snapshot
+Summary: 1 total | 1 success

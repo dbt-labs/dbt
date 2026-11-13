@@ -1,0 +1,11 @@
+name: bigquery_cross_project_incremental
+version: "1.0"
+config-version: 2
+
+profile: fusion_tests
+
+model-paths: ["models"]
+test-paths: ["tests"]
+
+flags:
+  send_anonymous_usage_stats: false

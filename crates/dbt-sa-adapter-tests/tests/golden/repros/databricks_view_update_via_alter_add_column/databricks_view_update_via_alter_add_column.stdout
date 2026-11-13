@@ -1,0 +1,11 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/schema.yml
+   Parsing models/foobar.sql
+ Rendering models/foobar.sql
+   Running models/foobar.sql
+ Succeeded model databricks_view_update_via_alter_add_column.foobar (view) [1 of 1 in duration]
+==================== Execution Summary =====================
+Finished 'run' successfully for target 'databricks' [duration]
+Processed: 1 model
+Summary: 1 total | 1 success

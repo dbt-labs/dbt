@@ -1,0 +1,10 @@
+[graph]
+exclude = ["dbt-fusion-workspace-hack"]
+
+[bans]
+multiple-versions = "allow"
+deny = [
+  { crate = "dbt-common", reason = "dbt-sql-base holds dependency-free SQL basics: the identifier type and the dialect enum with its lexical rules" },
+  { crate = "dbt-adapter-core", reason = "dbt-sql-base holds dependency-free SQL basics; adapter crates may depend on it, never the reverse" },
+  { crate = "dbt-frontend-common", reason = "dbt-sql-base holds dependency-free SQL basics; dbt-frontend-common builds on it, never the reverse" },
+]

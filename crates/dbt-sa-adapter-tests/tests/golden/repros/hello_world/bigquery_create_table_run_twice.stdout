@@ -1,0 +1,10 @@
+       dbt 
+   Loading profiles.yml
+   Loading dbt_project.yml
+   Loading dbt_internal_packages/dbt-adapters/dbt_project.yml
+   Loading dbt_internal_packages/dbt-bigquery/dbt_project.yml
+   Parsing models/hello.sql
+ Rendering models/hello.sql
+   Running models/hello.sql
+   Success models/hello.sql
+  Finished 'run' target 'bigquery'

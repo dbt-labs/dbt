@@ -1,0 +1,19 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/a.sql
+   Parsing models/b.sql
+   Parsing models/c.sql
+bigquery
+dbt-test-env
+adapters_bigquery_get_missing_columns
+ Rendering models/c.sql
+bigquery
+dbt-test-env
+adapters_bigquery_get_missing_columns
+Column: three
+ Rendering models/b.sql
+ Rendering models/a.sql
+==================== Execution Summary =====================
+Finished 'compile' successfully for target 'bigquery' [duration]
+Processed: 3 models
+Summary: 3 total | 3 success

@@ -1,53 +1,24 @@
-//! A file-based [lease](https://en.wikipedia.org/wiki/Lease_(computer_science))
-//! for gating concurrent access to a shared local file across independent OS
-//! processes.
+//! Port of [`lease.go`] from dbt Labs' gosnowflake fork.
 //!
-//! Unlike a plain lock file, a lease has a TTL: if the holder dies without
-//! releasing it, the lease simply expires and another process can take over.
-//! That liveness property is the whole point of this primitive over a
-//! hold-forever advisory lock -- a crashed process can never wedge every
-//! other process out of the shared resource forever.
-//!
-//! Ported from `lease.go` in dbt Labs' Snowflake Go driver fork (merged via
-//! "Double-checked lease so the happy path doesn't require a lease", in
-//! production use gating a shared local credentials-cache file).
+//! [`lease.go`]: https://github.com/dbt-labs/gosnowflake/blob/v2.1.0%2Bdbt/lease.go
 
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI32, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
 use rand::Rng;
 
-/// A lease can never be requested for less than this: a shorter TTL just
-/// turns the polling loop into a busy spin with no benefit.
-pub const MIN_REQUESTED_TTL: Duration = Duration::from_millis(400);
-
-/// A [`LeaseHandler`] can never be configured with a shorter operation
-/// timeout than this, for the same reason.
-pub const MIN_LEASE_OPERATION_TIMEOUT: Duration = Duration::from_secs(3);
-
-/// Default lease TTL, carried over from gosnowflake's
-/// `secure_storage_manager.go` (`_defaultLeaseTTL`), which has used this
-/// value in production to gate its shared credentials-cache file.
-pub const DEFAULT_LEASE_TTL: Duration = Duration::from_secs(30);
-
-/// Default operation timeout (how long [`LeaseHandler::acquire`] /
-/// [`Lease::renew`] retry before giving up), carried over from gosnowflake's
-/// `secure_storage_manager.go` (`_defaultLeaseOperationTimeout`).
-pub const DEFAULT_LEASE_OPERATION_TIMEOUT: Duration = Duration::from_secs(90);
-
-/// Extra buffer added to every expiry we write and every liveness check we
-/// perform, to absorb clock skew and the time it takes other processes to
-/// observe our write. Also used as the delay after writing a lease before we
-/// read it back, to catch racy concurrent writers.
 const GRACE_PERIOD: Duration = Duration::from_millis(12);
-
 const MIN_POLL_INTERVAL: Duration = Duration::from_millis(200);
 const MAX_POLL_INTERVAL: Duration = Duration::from_secs(5);
+
+pub const MIN_REQUESTED_TTL: Duration = Duration::from_millis(400);
+pub const MIN_LEASE_OPERATION_TIMEOUT: Duration = Duration::from_secs(3);
+pub const DEFAULT_LEASE_OPERATION_TIMEOUT: Duration = Duration::from_secs(90);
 
 /// Errors returned by lease operations.
 #[derive(Debug, thiserror::Error)]
@@ -90,41 +61,40 @@ pub enum LeaseError {
     RacyWrite { id: String, actual: String },
 }
 
-/// A lease acquired from a shared [`LeaseHandler`].
+/// [Leases] are acquired from a shared [LeaseHandler] instance.
 ///
-/// Leases are not `Clone`: a given lease is held by exactly one owner, who is
-/// responsible for renewing it (via [`Lease::renew`]) before it expires and
-/// releasing it (via [`Lease::release`]) when done.
+/// Leases are not [Clone]: a given lease is held by exactly one owner.
+///
+/// [Leases]: https://en.wikipedia.org/wiki/Lease_(computer_science)
 #[derive(Debug)]
 pub struct Lease {
     id: String,
-    // `None` means "not currently held" (never acquired, expired, or
-    // released) -- treated as a lease that expired at the Unix epoch for
-    // comparison purposes, i.e. always "not held".
-    expiry: Option<SystemTime>,
-    handler: Arc<LeaseHandler>,
-    /// Whether relaxed reads are allowed for this lease.
+    /// Cached lease expiry, on the monotonic clock.
     ///
-    /// This is a hint for consumers of the lease, not enforced by the lease
-    /// itself. Callers can inspect this field to decide whether to perform
-    /// relaxed (non-renewing) reads while holding this lease. Destructive
-    /// operations (e.g. writes) should never be performed under a relaxed
-    /// read, even when this field is `true`.
-    pub relaxed_read_allowed: bool,
+    /// [Instant] so it's immune to system clock jumps. The lease
+    /// file holds the wall-clock expiry that other processes see.
+    expiry: Option<Instant>,
+    handler: Arc<LeaseHandler>,
+}
+
+impl Drop for Lease {
+    fn drop(&mut self) {
+        let _ = self.release();
+    }
 }
 
 impl Lease {
-    /// The random id identifying this lease in the lease file.
+    /// The random lease identifier.
     pub fn id(&self) -> &str {
         &self.id
     }
 
     /// Ensures the lease will remain valid for at least `ttl` longer.
-    /// Callers should call this periodically to keep the lease alive (e.g.
-    /// every `ttl / 2`).
+    ///
+    /// Callers should call this periodically to keep the lease alive
+    /// (e.g. every `ttl / 2`).
     pub fn renew(&mut self, ttl: Duration) -> Result<(), LeaseError> {
-        let current_expiry = self.expiry.unwrap_or(UNIX_EPOCH);
-        match self.handler.renew(&self.id, ttl, current_expiry) {
+        match self.handler.renew(&self.id, ttl, self.expiry) {
             Ok(new_expiry) => {
                 self.expiry = Some(new_expiry);
                 Ok(())
@@ -141,38 +111,43 @@ impl Lease {
     ///
     /// Returns an error if the lease was not held at the time of the call,
     /// which can happen if the caller isn't renewing it often enough, or is
-    /// using a TTL that's too short for its workload.
+    /// using a TTL that's too short.
     pub fn release(&mut self) -> Result<(), LeaseError> {
-        let current_expiry = self.expiry.take().unwrap_or(UNIX_EPOCH);
-        self.handler.release(&self.id, current_expiry)
+        let expiry = self.expiry.take();
+        self.handler.release(&self.id, expiry)
     }
 }
 
-/// Handler for a single file-based lease, shared by every party that wants
-/// to acquire it. Cheap to clone (it's just a path and an atomic timeout),
-/// and safe to share across threads.
+/// File-based [lease]. Leases are acquired through a shared [LeaseHandler]
+/// instance.
+///
+/// [lease]: https://en.wikipedia.org/wiki/Lease_(computer_science)
 #[derive(Debug)]
 pub struct LeaseHandler {
     /// Absolute path to the lease file.
     path: PathBuf,
-    /// Directory containing the lease file, where temp files are staged
-    /// before being atomically renamed into place.
+    /// Directory where the lease file is stored.
+    ///
+    /// Temp files are staged in this directory before being atomically
+    /// renamed into place.
     dir: PathBuf,
-    /// How long `acquire`/`renew` retry before giving up. Stored as
-    /// milliseconds in an `AtomicI32` so it can be adjusted at runtime (e.g.
-    /// via [`LeaseHandler::set_timeout`]) without requiring `&mut self`.
+    /// How long to keep trying to acquire or renew a lease.
+    ///
+    /// Stored as milliseconds in an `AtomicI32` so it can be adjusted at
+    /// runtime (e.g. via [`LeaseHandler::set_timeout`]) without requiring
+    /// `&mut self`.
     timeout_millis: AtomicI32,
 }
 
 impl LeaseHandler {
-    /// Creates a new handler for the lease file at `path`. `path` need not
-    /// exist yet.
-    pub fn new(path: impl AsRef<Path>, timeout: Duration) -> io::Result<Arc<Self>> {
-        let abspath = std::path::absolute(path.as_ref())?;
-        let dir = abspath
-            .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| PathBuf::from("."));
+    pub fn try_new(path: &Path, timeout: Duration) -> io::Result<Arc<Self>> {
+        let abspath = clean_abspath(path)?;
+        let dir = abspath.parent().map(Path::to_path_buf).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("lease path has no parent directory: {}", abspath.display()),
+            )
+        })?;
         let handler = Self {
             path: abspath,
             dir,
@@ -204,12 +179,11 @@ impl LeaseHandler {
     /// that need a `Lease` value before deciding whether they actually need
     /// to acquire one.
     pub fn broken_lease(self: &Arc<Self>) -> Lease {
-        let id = format!("broken-lease-{}", rand::rng().random::<i64>());
+        let id = format!("broken-lease-{}", rand::rng().random_range(0..=u64::MAX));
         Lease {
             id,
             expiry: None,
             handler: Arc::clone(self),
-            relaxed_read_allowed: false,
         }
     }
 
@@ -219,17 +193,18 @@ impl LeaseHandler {
     pub fn acquire(self: &Arc<Self>, ttl: Duration) -> Result<Lease, LeaseError> {
         let ttl = ttl.max(MIN_REQUESTED_TTL);
         let new_lease_id = random_lease_id();
-        let new_expiry = || SystemTime::now() + ttl + GRACE_PERIOD;
+        // Monotonic expiry to cache, wall-clock expiry to write to the file.
+        let new_expiry = || {
+            let ttl = ttl + GRACE_PERIOD;
+            (Instant::now() + ttl, SystemTime::now() + ttl)
+        };
 
         let mut base = Duration::ZERO;
         let mut m = GRACE_PERIOD;
-        let deadline = SystemTime::now() + self.timeout();
+        let deadline = Instant::now() + self.timeout();
 
-        while SystemTime::now() < deadline {
-            let remaining_half = deadline
-                .duration_since(SystemTime::now())
-                .unwrap_or(Duration::ZERO)
-                / 2;
+        while Instant::now() < deadline {
+            let remaining_half = deadline.saturating_duration_since(Instant::now()) / 2;
             let cap = remaining_half.min(MAX_POLL_INTERVAL);
             let read_result = self.read(base, m, cap);
             (base, m) = next_wait(base, m);
@@ -241,18 +216,18 @@ impl LeaseHandler {
 
             // 1. no one holds the lease
             if data.is_empty() {
-                let expiry = new_expiry();
-                if self.write(&new_lease_id, expiry).is_ok() {
+                let (expiry, wall_expiry) = new_expiry();
+                if self.write(&new_lease_id, wall_expiry).is_ok() {
                     return Ok(Lease {
                         id: new_lease_id,
                         expiry: Some(expiry),
                         handler: Arc::clone(self),
-                        relaxed_read_allowed: false,
                     });
                 }
                 continue;
             }
 
+            // The file's expiry is wall-clock, as other processes wrote it.
             let now = SystemTime::now();
             // 2. someone else's lease is still valid
             if now < data.expiry {
@@ -262,13 +237,12 @@ impl LeaseHandler {
             }
 
             // 3. the existing lease has expired -- take it over
-            let expiry = new_expiry();
-            if self.write(&new_lease_id, expiry).is_ok() {
+            let (expiry, wall_expiry) = new_expiry();
+            if self.write(&new_lease_id, wall_expiry).is_ok() {
                 return Ok(Lease {
                     id: new_lease_id,
                     expiry: Some(expiry),
                     handler: Arc::clone(self),
-                    relaxed_read_allowed: false,
                 });
             }
         }
@@ -283,30 +257,26 @@ impl LeaseHandler {
         &self,
         lease_id: &str,
         ttl: Duration,
-        current_expiry: SystemTime,
-    ) -> Result<SystemTime, LeaseError> {
+        current_expiry: Option<Instant>,
+    ) -> Result<Instant, LeaseError> {
         let mut base = Duration::ZERO;
         let mut m = Duration::ZERO;
-        let deadline = SystemTime::now() + self.timeout();
+        let deadline = Instant::now() + self.timeout();
 
-        while SystemTime::now() < deadline {
-            let remaining_half = deadline
-                .duration_since(SystemTime::now())
-                .unwrap_or(Duration::ZERO)
-                / 2;
+        while Instant::now() < deadline {
+            let remaining_half = deadline.saturating_duration_since(Instant::now()) / 2;
             let cap = remaining_half.min(MAX_POLL_INTERVAL);
             wait(base, m, cap);
             (base, m) = next_wait(base, m);
 
-            let now = SystemTime::now();
+            let now = Instant::now();
             // 1. is the lease still held at all?
-            let held = now + GRACE_PERIOD < current_expiry;
-            if !held {
+            let Some(current_expiry) = current_expiry.filter(|&e| now + GRACE_PERIOD < e) else {
                 return Err(LeaseError::Expired {
                     id: lease_id.to_string(),
                     path: self.path.clone(),
                 });
-            }
+            };
             // 2. does the held lease actually need renewing yet?
             let needs_renewal = now + ttl + GRACE_PERIOD >= current_expiry;
             if !needs_renewal {
@@ -315,7 +285,8 @@ impl LeaseHandler {
             // Extend by 2x the requested TTL so the next renewal has slack
             // to arrive late without the lease expiring underneath it.
             let new_expiry = now + ttl * 2;
-            if self.write(lease_id, new_expiry).is_ok() {
+            let wall_expiry = SystemTime::now() + ttl * 2;
+            if self.write(lease_id, wall_expiry).is_ok() {
                 return Ok(new_expiry);
             }
         }
@@ -326,14 +297,14 @@ impl LeaseHandler {
         })
     }
 
-    fn release(&self, lease_id: &str, current_expiry: SystemTime) -> Result<(), LeaseError> {
-        let now = SystemTime::now();
-        if now >= current_expiry {
+    fn release(&self, lease_id: &str, current_expiry: Option<Instant>) -> Result<(), LeaseError> {
+        let now = Instant::now();
+        let Some(current_expiry) = current_expiry.filter(|&e| now < e) else {
             return Err(LeaseError::NotHeldOnRelease {
                 id: lease_id.to_string(),
                 path: self.path.clone(),
             });
-        }
+        };
         // Only delete the file if we're confident no one else raced us and
         // re-acquired it in the meantime.
         if now + GRACE_PERIOD < current_expiry {
@@ -348,6 +319,14 @@ impl LeaseHandler {
     /// place, which is atomic on both POSIX (`rename(2)`) and Windows
     /// (`ReplaceFile`/`MoveFileEx` under the hood in `tempfile::persist`).
     fn write(&self, lease_id: &str, expiry: SystemTime) -> Result<(), LeaseError> {
+        fn to_unix_millis(t: SystemTime) -> i64 {
+            match t.duration_since(UNIX_EPOCH) {
+                Ok(d) => d.as_millis() as i64,
+                Err(e) => -(e.duration().as_millis() as i64),
+            }
+        }
+
+        let start = Instant::now();
         let ctime = SystemTime::now();
         let mut tmp = tempfile::Builder::new()
             .suffix(".lease")
@@ -367,10 +346,7 @@ impl LeaseHandler {
         tmp.flush().map_err(|e| self.io_err(e))?;
         tmp.persist(&self.path).map_err(|e| self.io_err(e.error))?;
 
-        let elapsed = SystemTime::now()
-            .duration_since(ctime)
-            .unwrap_or(Duration::ZERO);
-        let remaining_grace = GRACE_PERIOD.saturating_sub(elapsed);
+        let remaining_grace = GRACE_PERIOD.saturating_sub(start.elapsed());
         let data = self.read(remaining_grace, Duration::ZERO, GRACE_PERIOD)?;
         if data.lease_id != lease_id {
             return Err(LeaseError::RacyWrite {
@@ -431,6 +407,14 @@ impl LeaseData {
 /// as plain text so a corrupt/truncated file is trivially detectable.
 /// `ctime` is written for diagnostic purposes but not currently read back.
 fn parse_lease_file(f: &mut File) -> Option<LeaseData> {
+    fn from_unix_millis(ms: i64) -> SystemTime {
+        if ms >= 0 {
+            UNIX_EPOCH + Duration::from_millis(ms as u64)
+        } else {
+            UNIX_EPOCH - Duration::from_millis((-ms) as u64)
+        }
+    }
+
     // A well-formed lease file is well under 128 bytes; treat anything
     // larger as corrupt/unexpected rather than reading an unbounded amount
     // of untrusted local file content.
@@ -463,9 +447,28 @@ fn parse_lease_file(f: &mut File) -> Option<LeaseData> {
     })
 }
 
+/// Lexically normalizes a path like Go's `filepath.Abs` and `Clean`:
+/// - drops `.` components
+/// - resolves each `..` against the preceding component (`..` at the root stays
+///   at the root).
+/// - Symlinks aren't resolved.
+fn clean_abspath(path: &Path) -> io::Result<PathBuf> {
+    let mut cleaned = PathBuf::new();
+    for component in std::path::absolute(path)?.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                cleaned.pop();
+            }
+            other => cleaned.push(other),
+        }
+    }
+    Ok(cleaned)
+}
+
 fn random_lease_id() -> String {
     let mut bytes = [0u8; 16];
-    rand::rng().fill(&mut bytes);
+    getrandom::fill(&mut bytes).expect("os entropy");
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
 }
 
@@ -473,9 +476,10 @@ fn random_lease_id() -> String {
 /// `cap`, and returns how long it slept (`Duration::ZERO` if it didn't sleep
 /// at all).
 ///
-/// The jitter avoids the [thundering herd
-/// problem](https://en.wikipedia.org/wiki/Thundering_herd_problem) when
-/// many processes are polling the same lease file.
+/// The jitter avoids the [thundering herd problem] when many processes are
+/// polling the same lease file.
+///
+/// [thundering herd problem]: https://en.wikipedia.org/wiki/Thundering_herd_problem
 fn wait(base: Duration, m: Duration, cap: Duration) -> Duration {
     let mut d = base;
     if m > base {
@@ -502,119 +506,145 @@ fn next_wait(base: Duration, m: Duration) -> (Duration, Duration) {
     (m / 2, m)
 }
 
-fn to_unix_millis(t: SystemTime) -> i64 {
-    match t.duration_since(UNIX_EPOCH) {
-        Ok(d) => d.as_millis() as i64,
-        Err(e) => -(e.duration().as_millis() as i64),
-    }
-}
-
-fn from_unix_millis(ms: i64) -> SystemTime {
-    if ms >= 0 {
-        UNIX_EPOCH + Duration::from_millis(ms as u64)
-    } else {
-        UNIX_EPOCH - Duration::from_millis((-ms) as u64)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::AtomicI32 as StdAtomicI32;
-    use std::sync::atomic::Ordering as StdOrdering;
+    use std::sync::atomic::AtomicBool;
+    use tempfile::TempDir;
 
-    fn temp_lease_path(name: &str) -> PathBuf {
-        static COUNTER: StdAtomicI32 = StdAtomicI32::new(0);
-        let n = COUNTER.fetch_add(1, StdOrdering::SeqCst);
-        std::env::temp_dir().join(format!(
-            "dbt-lease-test-{name}-{}-{n}.lease",
-            std::process::id()
-        ))
+    /// A holder renewing every `ttl / 2` can be stalled for about a second before
+    /// it loses the lease.
+    const TINY_TTL: Duration = Duration::from_secs(2);
+    /// A TTL no scheduling stall can outlast.
+    const LONG_TTL: Duration = Duration::from_secs(60);
+
+    /// Each test gets its own directory, so lease files never collide and are
+    /// cleaned up even when the test fails.
+    fn new_handler(timeout: Duration) -> (TempDir, Arc<LeaseHandler>) {
+        let dir = tempfile::tempdir().unwrap();
+        let handler = LeaseHandler::try_new(&dir.path().join("test.lease"), timeout).unwrap();
+        (dir, handler)
+    }
+
+    fn file_lease_id(handler: &LeaseHandler) -> Option<String> {
+        let data = handler
+            .read(Duration::ZERO, Duration::ZERO, Duration::ZERO)
+            .unwrap();
+        (!data.is_empty()).then_some(data.lease_id)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn clean_path_normalizes_like_go() {
+        for (input, expected) in [
+            ("/a/b/c.lease", "/a/b/c.lease"),
+            ("/a/./b/../c.lease", "/a/c.lease"),
+            ("/a//b/./c.lease", "/a/b/c.lease"),
+            ("/a/b/../../c.lease", "/c.lease"),
+            ("/../../c.lease", "/c.lease"),
+        ] {
+            assert_eq!(
+                clean_abspath(Path::new(input)).unwrap(),
+                Path::new(expected),
+                "{input}"
+            );
+        }
     }
 
     #[test]
-    fn acquire_renew_and_expire() {
-        let path = temp_lease_path("acquire_renew_expire");
-        let ttl = MIN_REQUESTED_TTL;
+    fn try_new_cleans_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("does-not-exist").join("..").join("x.lease");
+        let handler = LeaseHandler::try_new(&path, DEFAULT_LEASE_OPERATION_TIMEOUT).unwrap();
+        assert_eq!(
+            handler.path(),
+            clean_abspath(dir.path()).unwrap().join("x.lease")
+        );
+    }
 
-        let handler = LeaseHandler::new(&path, DEFAULT_LEASE_OPERATION_TIMEOUT).unwrap();
+    #[test]
+    fn clean_abspath_resolves_relative_paths_against_cwd() {
+        let cwd = std::env::current_dir().unwrap();
+        let cleaned = clean_abspath(Path::new("a/./b/../c.lease")).unwrap();
+        assert_eq!(
+            cleaned,
+            clean_abspath(&cwd).unwrap().join("a").join("c.lease")
+        );
+    }
+
+    #[test]
+    fn lease_acquire_renew_and_expire() {
+        let (_dir, handler) = new_handler(DEFAULT_LEASE_OPERATION_TIMEOUT);
+        let ttl = TINY_TTL;
         let mut lease = handler.acquire(ttl).unwrap();
+        // successful renew()
         lease.renew(ttl).unwrap();
         std::thread::sleep(2 * ttl);
-        assert!(lease.renew(ttl).is_err());
-
-        let _ = fs::remove_file(&path);
+        // can't renew() after expiration
+        let err = lease.renew(ttl).unwrap_err();
+        assert!(matches!(err, LeaseError::Expired { .. }), "{err}");
     }
 
     #[test]
-    fn acquire_and_release() {
-        let path = temp_lease_path("acquire_release");
-        let ttl = MIN_REQUESTED_TTL;
-
-        let handler = LeaseHandler::new(&path, DEFAULT_LEASE_OPERATION_TIMEOUT).unwrap();
+    fn lease_acquire_and_release() {
+        let (_dir, handler) = new_handler(DEFAULT_LEASE_OPERATION_TIMEOUT);
+        let ttl = TINY_TTL;
         let mut lease = handler.acquire(ttl).unwrap();
-        assert!(!lease.relaxed_read_allowed);
         lease.release().unwrap();
-        assert!(lease.renew(ttl).is_err());
-
-        let _ = fs::remove_file(&path);
+        assert_eq!(file_lease_id(&handler), None);
+        // can't renew() after release()
+        let err = lease.renew(ttl).unwrap_err();
+        assert!(matches!(err, LeaseError::Expired { .. }), "{err}");
     }
 
     #[test]
     fn renew_broken_lease() {
-        let path = temp_lease_path("renew_broken");
-        let handler = LeaseHandler::new(&path, DEFAULT_LEASE_OPERATION_TIMEOUT).unwrap();
+        let (_dir, handler) = new_handler(DEFAULT_LEASE_OPERATION_TIMEOUT);
         let mut lease = handler.broken_lease();
-
-        assert!(
-            !lease.relaxed_read_allowed,
-            "relaxed reads must be explicitly opted into, not implied by a broken lease"
-        );
-
+        // can't renew() broken lease
         let err = lease.renew(MIN_REQUESTED_TTL).unwrap_err();
-        assert!(matches!(err, LeaseError::Expired { .. }));
+        assert!(matches!(err, LeaseError::Expired { .. }), "{err}");
     }
 
-    #[test]
-    fn corrupt_lease_file_self_heals() {
-        let path = temp_lease_path("corrupt");
-        fs::write(&path, b"not a valid lease file").unwrap();
-
-        let handler = LeaseHandler::new(&path, DEFAULT_LEASE_OPERATION_TIMEOUT).unwrap();
-        // Acquire should succeed by treating the corrupt file as unheld and
-        // overwriting it, rather than erroring out forever.
-        let lease = handler.acquire(MIN_REQUESTED_TTL).unwrap();
-        assert!(!lease.id().is_empty());
-
-        let _ = fs::remove_file(&path);
-    }
-
-    /// Simulates `n` concurrent threads (standing in for separate OS
-    /// processes) each acquiring the lease, doing bounded "work" while
-    /// periodically renewing, and releasing it -- asserting that at most one
-    /// thread ever holds the lease at a time.
-    fn simulate_n_threads(handler: &Arc<LeaseHandler>, ttl: Duration, n: usize, work: Duration) {
-        use std::sync::atomic::AtomicBool;
-
-        let holding = Arc::new(AtomicBool::new(false));
+    /// Simulates `n` threads (standing in for processes) each acquiring the
+    /// lease, working for a duration in `[d, m]` while renewing it every
+    /// `ttl / 2`, and releasing it. Asserts that at most one thread ever
+    /// holds the lease at a time.
+    ///
+    /// Durations accumulate: each thread's duration is drawn from
+    /// `[previous duration, m]`.
+    fn simulate_n_threads(
+        handler: &Arc<LeaseHandler>,
+        ttl: Duration,
+        n: usize,
+        mut d: Duration,
+        m: Duration,
+        explicit_release: bool,
+    ) {
+        let holding = AtomicBool::new(false);
+        let mut useful_work = Duration::ZERO;
+        let start = Instant::now();
         std::thread::scope(|scope| {
             for _ in 0..n {
-                let handler = Arc::clone(handler);
-                let holding = Arc::clone(&holding);
+                if m > d {
+                    d = rand::rng().random_range(d..=m);
+                }
+                useful_work += d;
+                let work = d;
+                let holding = &holding;
                 scope.spawn(move || {
                     let mut lease = handler.acquire(ttl).unwrap();
-
                     let was_free = holding
                         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
                         .is_ok();
-                    assert!(was_free, "acquired lease should be held exclusively");
+                    assert!(was_free, "acquired lease should be exclusive");
 
                     let mut remaining = work;
-                    while remaining > Duration::ZERO {
+                    while !remaining.is_zero() {
                         let step = (ttl / 2).min(remaining);
                         std::thread::sleep(step);
-                        remaining = remaining.saturating_sub(step);
-                        if remaining > Duration::ZERO {
+                        remaining -= step;
+                        if !remaining.is_zero() {
                             lease.renew(ttl).expect("failed to renew lease");
                         }
                     }
@@ -624,35 +654,99 @@ mod tests {
                         .is_ok();
                     assert!(was_held, "more than one lease holder detected");
 
-                    lease.release().unwrap();
+                    if explicit_release {
+                        lease.release().unwrap();
+                    }
                 });
             }
         });
+        let wall_clock = start.elapsed();
+        println!(
+            "Concurrent threads simulation: wall_clock_time={wall_clock:?}, \
+             useful_work={useful_work:?} ({:.2}%)",
+            useful_work.as_secs_f64() / wall_clock.as_secs_f64() * 100.0
+        );
     }
 
     #[test]
     fn single_thread_lease_acquire() {
-        let path = temp_lease_path("single");
-        let handler = LeaseHandler::new(&path, DEFAULT_LEASE_OPERATION_TIMEOUT).unwrap();
-        simulate_n_threads(&handler, MIN_REQUESTED_TTL, 1, Duration::ZERO);
-        let _ = fs::remove_file(&path);
+        let (_dir, handler) = new_handler(DEFAULT_LEASE_OPERATION_TIMEOUT);
+        simulate_n_threads(&handler, TINY_TTL, 1, Duration::ZERO, Duration::ZERO, true);
     }
 
     #[test]
     fn concurrent_lease_acquire() {
-        let path = temp_lease_path("concurrent");
-        let handler = LeaseHandler::new(&path, DEFAULT_LEASE_OPERATION_TIMEOUT).unwrap();
-        simulate_n_threads(&handler, MIN_REQUESTED_TTL, 8, Duration::ZERO);
-        let _ = fs::remove_file(&path);
+        let (_dir, handler) = new_handler(DEFAULT_LEASE_OPERATION_TIMEOUT);
+        let ttl = TINY_TTL;
+        simulate_n_threads(&handler, ttl, 16, Duration::ZERO, Duration::ZERO, true);
+    }
+
+    #[test]
+    fn concurrent_lease_acquire_with_random_duration_threads() {
+        let (_dir, handler) = new_handler(DEFAULT_LEASE_OPERATION_TIMEOUT);
+        let ttl = TINY_TTL;
+        let d = Duration::ZERO;
+        let m = 2 * TINY_TTL; // max duration of the threads
+        simulate_n_threads(&handler, ttl, 4, d, m, true);
     }
 
     #[test]
     fn concurrent_lease_acquire_with_fitting_ttl() {
-        let path = temp_lease_path("concurrent_fitting");
-        // Timeout must comfortably exceed n * work.
-        let handler = LeaseHandler::new(&path, Duration::from_secs(30)).unwrap();
-        let ttl = Duration::from_millis(500);
-        simulate_n_threads(&handler, ttl, 4, ttl);
-        let _ = fs::remove_file(&path);
+        // must be larger than n * d (#threads * duration)
+        let (_dir, handler) = new_handler(Duration::from_secs(10 * 60));
+        let ttl = Duration::from_secs(4); // well-sized TTL
+        let d = Duration::from_secs(4); // TTL equals the duration of the threads
+        simulate_n_threads(&handler, ttl, 4, d, d, true);
+    }
+
+    // The tests below have no counterpart in lease_test.go.
+
+    /// Without the release on drop, each waiter would sit out the previous
+    /// holder's whole [`LONG_TTL`] and the acquires would time out.
+    #[test]
+    fn concurrent_lease_acquire_released_on_drop() {
+        let (_dir, handler) = new_handler(DEFAULT_LEASE_OPERATION_TIMEOUT);
+        let ttl = LONG_TTL;
+        simulate_n_threads(&handler, ttl, 16, Duration::ZERO, Duration::ZERO, false);
+    }
+
+    #[test]
+    fn acquire_times_out_while_held() {
+        let (_dir, holder) = new_handler(DEFAULT_LEASE_OPERATION_TIMEOUT);
+        let mut lease = holder.acquire(LONG_TTL).unwrap();
+
+        let contender = LeaseHandler::try_new(holder.path(), MIN_LEASE_OPERATION_TIMEOUT).unwrap();
+        let err = contender.acquire(LONG_TTL).unwrap_err();
+        assert!(matches!(err, LeaseError::AcquireTimedOut { .. }), "{err}");
+
+        lease.release().unwrap();
+    }
+
+    #[test]
+    fn expired_lease_is_taken_over() {
+        let (_dir, handler) = new_handler(DEFAULT_LEASE_OPERATION_TIMEOUT);
+        let mut stale = handler.acquire(MIN_REQUESTED_TTL).unwrap();
+        std::thread::sleep(2 * MIN_REQUESTED_TTL);
+
+        let mut fresh = handler.acquire(LONG_TTL).unwrap();
+        assert_ne!(stale.id(), fresh.id());
+
+        // The stale holder can neither renew nor release, and must not
+        // delete the new holder's lease file trying to.
+        assert!(stale.renew(MIN_REQUESTED_TTL).is_err());
+        assert!(stale.release().is_err());
+        assert_eq!(file_lease_id(&handler).as_deref(), Some(fresh.id()));
+
+        fresh.release().unwrap();
+    }
+
+    #[test]
+    fn corrupt_lease_file_self_heals() {
+        let (_dir, handler) = new_handler(DEFAULT_LEASE_OPERATION_TIMEOUT);
+        fs::write(handler.path(), b"not a valid lease file").unwrap();
+
+        // treated as unheld and overwritten, rather than erroring forever
+        let lease = handler.acquire(LONG_TTL).unwrap();
+        assert_eq!(file_lease_id(&handler).as_deref(), Some(lease.id()));
     }
 }

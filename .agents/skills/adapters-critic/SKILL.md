@@ -1,7 +1,7 @@
 ---
 name: adapters-critic
 description: Use in a reviewer agent in agent loops or when reviewing your own code.
-when_to_use: Use before editing any code in Adapters or related crates.
+when_to_use: Use before editing any code in Adapters or related crates, and before editing code in any other crate that quotes identifiers, escapes literals, maps types or builds materialization SQL for an adapter.
 argument: [tentative-edit]
 context: fork
 allowed-tools: Bash(git log *) Bash(git diff *) Bash(grep) Bash(ls) Bash(cat)
@@ -243,7 +243,24 @@ let db = match adapter_type {
 }
 ```
 
-### Code review - step 6: Final questions
+### Code review - step 6: Adapter logic outside the adapter crates
+
+Run this step when the patch changes a crate that is not an adapter crate. The adapter crates are the crates in `fs/sa/.agents/adapters.md` § "Crate overview", plus `dbt-loader/src/dbt_macro_assets`. Other crates often need adapter behavior (quoting, literals, types, materialization SQL). They must call the adapter crates for it, not copy it.
+
+Flag these patterns in a non-adapter crate:
+
+- **Identifier quoting or escaping by hand.** For example `format!("\"{}\"", name)`, `name.replace('"', "\"\"")`, or `parts.join(".")` over raw names. Suggest `dbt_adapter_sql::ident::{Ident, quote_identifier}` with the target `adapter_type`.
+- **String-literal escaping by hand.** For example `value.replace('\'', "''")`, or `'{}'` with a raw value in `format!`. Suggest `dbt_adapter_sql::ident::escape_string_literal`.
+- **Lookups that parse rendered SQL.** For example splitting a qualified name on `.`, or matching names with `ILIKE` / `LIKE` (`_` and `%` are wildcards). Suggest reading the name parts from the typed relation, and comparing escaped literals with `=`.
+- **Type names mapped with string matching.** For example `upper.starts_with("NUMBER")`, `contains("ARRAY")`, or a `match` from Arrow types to type-name strings. Suggest `dbt_adapter_sql::types::SqlType` (`from_arrow_type`, `from_field`, `parse`, `display`).
+- **Materialization or relation SQL copied from macros.** For example Rust that builds `MERGE`, delete+insert or snapshot SQL, often with a comment that names the macro it copies. Suggest calling the adapter's materialization or macro. If that is not possible, the copy must follow the macro exactly, and a test must compare the two.
+- **One warehouse assumed in generic code.** For example `unwrap_or(AdapterType::Snowflake)`, or helpers named `*_snowflake_*` in a generic module. Apply step 2: put the platform rules in a platform module, and `match adapter_type` at the call site.
+
+If the adapter helper cannot do what the patch needs, suggest fixing the helper in the adapter crate. A local workaround copies the gap into a second place. If the helper fix changes other callers, suggest a separate change for it.
+
+Before you flag a raw identifier, check the matching dbt-adapters macro in `dbt-loader/src/dbt_macro_assets`. Some values stay raw on purpose. For example, `get_merge_sql` and `get_delete_insert_merge_sql` emit `unique_key` as written, because users pass pre-quoted names and expressions. The same macros quote the introspected columns with `get_quoted_csv`. Code that follows the macro is correct. Do not flag it.
+
+### Code review - step 7: Final questions
 
 Ask yourself: 
 - Does this function/struct/enum belong here? Is there any other code in the codebase that does the same/similar thing? Where does that code live? Consider whether that might be a more appropriate module for that code.

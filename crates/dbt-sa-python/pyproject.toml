@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "dbt-core"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 dynamic = ["version"]
 dependencies = ["mashumaro[msgpack]>=3.14"]
 
@@ -33,15 +33,15 @@ pythonpath = ["tests"]
 addopts = "-p dbt_test_fixtures"
 
 [tool.ruff]
-target-version = "py311"
+target-version = "py310"
 line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "C4"]
 
 [tool.mypy]
-# 3.11 is our minimum supported version and mypy's floor.
-python_version = "3.11"
+# 3.10 is our minimum supported version and mypy's floor.
+python_version = "3.10"
 warn_unused_configs = true
 # The dbt package lives under the crate's python/ dir (maturin python-source).
 mypy_path = "python"

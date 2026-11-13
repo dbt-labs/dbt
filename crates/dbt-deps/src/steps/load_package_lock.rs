@@ -1,4 +1,5 @@
 use dbt_common::io_args::IoArgs;
+use dbt_common::tokiofs;
 use dbt_common::tracing::dbt_emit::emit_warn_log_message;
 use dbt_common::{ErrorCode, FsResult, constants::DBT_PACKAGES_LOCK_FILE, err, fs_err, stdfs};
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
@@ -12,13 +13,17 @@ use std::{
     collections::BTreeMap, collections::HashMap, collections::HashSet, path::Path, str::FromStr,
 };
 
+use crate::package_checksum::{core_sha1_hash_package_file, fusion_sha1_hash_packages};
 use crate::semver::{Version, VersionSpecifier, versions_compatible};
+use crate::steps::DbtPackageType;
 use crate::types::HubUnpinnedPackage;
-use crate::utils::{fusion_sha1_hash_packages, read_and_validate_dbt_project};
+use crate::utils::read_and_validate_dbt_project;
 
 pub async fn try_load_valid_dbt_packages_lock(
     io: &IoArgs,
     dbt_packages_dir: &Path,
+    package_definition_path: &Path,
+    package_type: DbtPackageType,
     dbt_packages: &DbtPackages,
     jinja_env: &JinjaEnv,
     vars: &BTreeMap<String, dbt_yaml::Value>,
@@ -28,7 +33,7 @@ pub async fn try_load_valid_dbt_packages_lock(
     let sha1_hash =
         fusion_sha1_hash_packages(&dbt_packages.packages, use_v2_compatible_package_downloads);
     if packages_lock_path.exists() {
-        let yml_str = stdfs::read_to_string(&packages_lock_path)?;
+        let yml_str = tokiofs::read_to_string(&packages_lock_path).await?;
         let rendered_yml: DbtPackagesLock =
             match from_yaml_raw(&yml_str, Some(&packages_lock_path), true, None) {
                 Ok(rendered_yml) => rendered_yml,
@@ -56,6 +61,18 @@ pub async fn try_load_valid_dbt_packages_lock(
         if rendered_yml.sha1_hash == sha1_hash {
             return Ok(Some(rendered_yml));
         }
+        // Core's checksum has no download-mode marker, so it cannot safely validate a package
+        // installation created with v2-compatible Package Hub downloads. A compatibility-hash
+        // error remains a conservative cache miss and falls through to normal resolution.
+        if !use_v2_compatible_package_downloads
+            && core_sha1_hash_package_file(package_definition_path, package_type, jinja_env, vars)
+                .await
+                .ok()
+                .flatten()
+                .is_some_and(|core_sha1_hash| rendered_yml.sha1_hash == core_sha1_hash)
+        {
+            return Ok(Some(rendered_yml));
+        }
     }
     Ok(None)
 }
@@ -78,15 +95,10 @@ async fn try_load_from_deprecated_dbt_packages_lock(
         }) => {
             emit_warn_log_message(
                 ErrorCode::FmtError,
-                "Old format package-lock.yml file found. Please provide package definitions.",
+                "package-lock.yml was written by an older dbt version and has no package names. Run `dbt deps` to regenerate it.",
             );
 
             if !dbt_packages_dir.exists() {
-                emit_warn_log_message(
-                    ErrorCode::FmtError,
-                    "Attempted to infer package name from package-lock.yml, but no packages directory found, skipping...",
-                );
-
                 return Ok(None);
             }
 
@@ -135,15 +147,6 @@ async fn try_load_from_deprecated_dbt_packages_lock(
                                 version,
                             }));
                         } else {
-                            emit_warn_log_message(
-                                ErrorCode::FmtError,
-                                format!(
-                                    "Attempted to infer package name from package-lock.yml, but package {} not found in '{}', skipping...",
-                                    package,
-                                    dbt_packages_dir.display()
-                                ),
-                            );
-
                             return Ok(None);
                         }
                     }
@@ -166,15 +169,6 @@ async fn try_load_from_deprecated_dbt_packages_lock(
                                 __unrendered__: unrendered,
                             }));
                         } else {
-                            emit_warn_log_message(
-                                ErrorCode::FmtError,
-                                format!(
-                                    "Attempted to infer package name from package-lock.yml, but package {} not found in '{}', skipping...",
-                                    git,
-                                    dbt_packages_dir.display()
-                                ),
-                            );
-
                             return Ok(None);
                         }
                     }
@@ -233,15 +227,6 @@ async fn try_load_from_deprecated_dbt_packages_lock(
                                 __unrendered__: unrendered,
                             }));
                         } else {
-                            emit_warn_log_message(
-                                ErrorCode::FmtError,
-                                format!(
-                                    "Attempted to infer package name from package-lock.yml, but package {} not found in '{}', skipping...",
-                                    private,
-                                    dbt_packages_dir.display()
-                                ),
-                            );
-
                             return Ok(None);
                         }
                     }
@@ -270,15 +255,6 @@ async fn try_load_from_deprecated_dbt_packages_lock(
                                 __unrendered__: unrendered,
                             }));
                         } else {
-                            emit_warn_log_message(
-                                ErrorCode::FmtError,
-                                format!(
-                                    "Attempted to infer package name from package-lock.yml, but package {} not found in '{}', skipping...",
-                                    tarball,
-                                    dbt_packages_dir.display()
-                                ),
-                            );
-
                             return Ok(None);
                         }
                     }

@@ -1,10 +1,10 @@
-use arrow::compute::cast_with_options;
+use arrow::compute::{CastOptions, cast_with_options};
 use arrow::{
     self,
-    datatypes::{DataType, TimeUnit},
+    array::AsArray,
+    datatypes::{DataType, TimeUnit, TimestampNanosecondType},
 };
 use chrono::{DateTime, Utc};
-use datafusion_common::{cast::as_timestamp_nanosecond_array, format::DEFAULT_CAST_OPTIONS};
 use dbt_adapter::{
     Adapter,
     errors::into_fs_error,
@@ -43,12 +43,13 @@ use dbt_schemas::schemas::{
 };
 use dbt_schemas::state::ResolverState;
 use dbt_tasks_core::PreTaskRunData;
-use dbt_tasks_core::task::TaskOp;
+use dbt_tasks_core::task::run_blocking_task_operation;
 use dbt_telemetry::{
     ArtifactType, ArtifactWritten, NodeOutcome, NodeProcessed, NodeType, ProgressMessage,
     ShowResult, SourceFreshnessDetail, SourceFreshnessOutcome, node_processed,
     update_dbt_core_event_code_for_node_processed_end,
 };
+use futures::future::join_all;
 use itertools::Itertools;
 use std::collections::HashMap;
 use std::path::Path;
@@ -56,6 +57,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
 };
+use tracing::Instrument;
 
 #[derive(Debug, Clone)]
 pub struct FreshnessResult {
@@ -63,6 +65,16 @@ pub struct FreshnessResult {
     pub snapshotted_at: DateTime<Utc>,
     pub age: i64,
     pub status: FreshnessStatus,
+    /// Seconds the check took; `None` when it was not timed, as for a metadata-only pass.
+    pub execution_time: Option<f64>,
+}
+
+/// What a freshness pass produced: a result per node it could measure, and the message for
+/// each node it could not.
+#[derive(Debug, Default)]
+pub struct FreshnessRun {
+    pub results: BTreeMap<String, FreshnessResult>,
+    pub errors: BTreeMap<String, String>,
 }
 
 impl FreshnessResult {
@@ -76,6 +88,7 @@ impl FreshnessResult {
             snapshotted_at,
             age,
             status: FreshnessStatus::Pass,
+            execution_time: None,
         }
     }
 }
@@ -126,6 +139,12 @@ pub fn calculate_seconds(freshness: &FreshnessRules) -> FsResult<i64> {
 const MAX_LOADED_AT_COLUMN: usize = 0;
 const SNAPSHOTTED_AT_COLUMN: usize = 1;
 
+/// Fail on a value that does not cast rather than turning it into null.
+const STRICT_CAST: CastOptions<'static> = CastOptions {
+    safe: false,
+    format_options: arrow::util::display::FormatOptions::new(),
+};
+
 /// `dbt source freshness` keeps its own wording verbatim: the message is
 /// user-visible and predates the unified command, so only the new spelling
 /// mentions models.
@@ -149,21 +168,24 @@ fn validate_freshness_rules_early(node: &dyn FreshnessNodeRef) -> FsResult<()> {
     Ok(())
 }
 
+/// A rule with neither `count` nor `period` is an unset threshold, which is what a source
+/// inheriting only some of its thresholds from its parent carries; a half-set one is still
+/// the `dbt1007` error.
+fn threshold_seconds(rule: Option<&FreshnessRules>) -> FsResult<Option<i64>> {
+    match rule {
+        Some(r) if r.count.is_none() && r.period.is_none() => Ok(None),
+        Some(r) => calculate_seconds(r).map(Some),
+        None => Ok(None),
+    }
+}
+
 /// Revalidates on the way through: parse time only warns on a partial rule.
 fn evaluate_freshness_thresholds(
     criteria: &FreshnessDefinition,
     age: i64,
 ) -> FsResult<(FreshnessStatus, SourceFreshnessOutcome)> {
-    let error_after = criteria
-        .error_after
-        .as_ref()
-        .map(calculate_seconds)
-        .transpose()?;
-    let warn_after = criteria
-        .warn_after
-        .as_ref()
-        .map(calculate_seconds)
-        .transpose()?;
+    let error_after = threshold_seconds(criteria.error_after.as_ref())?;
+    let warn_after = threshold_seconds(criteria.warn_after.as_ref())?;
 
     if error_after.is_some_and(|threshold| age > threshold) {
         Ok((
@@ -187,45 +209,91 @@ async fn measure_query_based_freshness(
     compile_base: &CompileBaseCtx,
     io_args: &IoArgs,
     dependencies: BTreeSet<String>,
-) -> FsResult<Option<FreshnessResult>> {
+) -> (FsResult<Option<FreshnessResult>>, Vec<FsError>) {
     let mut result = None;
+    let mut warnings = Vec::new();
 
     let loaded_at_field = node.get_loaded_at_field();
     if !loaded_at_field.is_empty() {
         let filter = node.get_freshness_filter().unwrap_or("");
-        result = Some(
-            calculate_freshness(
-                &loaded_at_field.escape_default().to_string(),
-                &filter.escape_default().to_string(),
-                node,
-                adapter_type,
-                jinja_env,
-                compile_base,
-                io_args,
-                dependencies.clone(),
-            )
-            .await?,
-        );
+        match calculate_freshness(
+            &loaded_at_field.escape_default().to_string(),
+            &filter.escape_default().to_string(),
+            node,
+            adapter_type,
+            jinja_env,
+            compile_base,
+            io_args,
+            dependencies.clone(),
+            &mut warnings,
+        )
+        .await
+        {
+            Ok(r) => result = Some(r),
+            Err(e) => return (Err(e), warnings),
+        }
     }
 
     // `loaded_at_query` wins when both are set, as before.
     let loaded_at_query = node.get_loaded_at_query();
     if !loaded_at_query.is_empty() {
-        result = Some(
-            calculate_freshness_custom_sql(
-                loaded_at_query,
-                node,
-                adapter_type,
-                jinja_env,
-                compile_base,
-                io_args,
-                dependencies,
-            )
-            .await?,
-        );
+        match calculate_freshness_custom_sql(
+            loaded_at_query,
+            node,
+            adapter_type,
+            jinja_env,
+            compile_base,
+            io_args,
+            dependencies,
+            &mut warnings,
+        )
+        .await
+        {
+            Ok(r) => result = Some(r),
+            Err(e) => return (Err(e), warnings),
+        }
     }
 
-    Ok(result)
+    (Ok(result), warnings)
+}
+
+/// Runs one node's freshness check for `join_all`.
+///
+/// Don't wrap this in another `TaskOp::Blocking` -- it already dispatches to
+/// the pool internally, and nesting can deadlock the pool.
+#[allow(clippy::too_many_arguments)]
+async fn measure_one_node<N>(
+    node: N,
+    unique_id: String,
+    kind_label_lower: String,
+    adapter_type: AdapterType,
+    jinja_env: Arc<JinjaEnv>,
+    compile_base: CompileBaseCtx,
+    io_args: IoArgs,
+    dependencies: BTreeSet<String>,
+) -> (
+    String,
+    String,
+    FsResult<Option<FreshnessResult>>,
+    Vec<FsError>,
+)
+where
+    N: FreshnessNodeRef + Send + 'static,
+{
+    let started = std::time::Instant::now();
+    let (mut result, warnings) = measure_query_based_freshness(
+        &node,
+        adapter_type,
+        &jinja_env,
+        &compile_base,
+        &io_args,
+        dependencies,
+    )
+    .await;
+    if let Ok(Some(measured)) = result.as_mut() {
+        measured.execution_time = Some(started.elapsed().as_secs_f64());
+    }
+    (unique_id, kind_label_lower, result, warnings)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -239,6 +307,7 @@ pub async fn calculate_freshness(
     compile_base: &CompileBaseCtx,
     io_args: &IoArgs,
     dependencies: BTreeSet<String>,
+    warnings: &mut Vec<FsError>,
 ) -> FsResult<FreshnessResult> {
     let relation = node
         .base()
@@ -261,6 +330,7 @@ pub async fn calculate_freshness(
         io_args,
         dependencies,
         "loaded_at_field",
+        warnings,
     )
     .await
 }
@@ -275,6 +345,7 @@ pub async fn calculate_freshness_custom_sql(
     compile_base: &CompileBaseCtx,
     io_args: &IoArgs,
     dependencies: BTreeSet<String>,
+    warnings: &mut Vec<FsError>,
 ) -> FsResult<FreshnessResult> {
     let relation = node
         .base()
@@ -336,7 +407,7 @@ pub async fn calculate_freshness_custom_sql(
     let rendered_query = {
         let jinja_env = Arc::clone(jinja_env);
         let loaded_at_query = loaded_at_query.to_owned();
-        TaskOp::Blocking(Box::new(move || -> FsResult<String> {
+        run_blocking_task_operation(move || -> FsResult<String> {
             jinja_env
                 .render_named_str(
                     &source_path.to_string_lossy(),
@@ -360,8 +431,7 @@ pub async fn calculate_freshness_custom_sql(
                     }
                     .into()
                 })
-        }))
-        .run()
+        })
         .await??
     };
     // Insert loaded_at_query as an escaped string
@@ -379,6 +449,7 @@ pub async fn calculate_freshness_custom_sql(
         io_args,
         dependencies,
         "loaded_at_query",
+        warnings,
     )
     .await
 }
@@ -394,6 +465,7 @@ async fn calculate_freshness_common(
     io_args: &IoArgs,
     dependencies: BTreeSet<String>,
     error_message: &str,
+    warnings: &mut Vec<FsError>,
 ) -> FsResult<FreshnessResult> {
     let context = build_run_node_ctx(
         node,
@@ -413,13 +485,12 @@ async fn calculate_freshness_common(
     let table = {
         let jinja_env = Arc::clone(jinja_env);
         let macro_expr = macro_expr.to_owned();
-        TaskOp::Blocking(Box::new(move || {
+        run_blocking_task_operation(move || {
             let expr = jinja_env.compile_expression(&macro_expr)?;
             expr.eval(&context, &[])?
                 .downcast_object::<AgateTable>()
                 .ok_or_else(|| unexpected_fs_err!("Agate table expected"))
-        }))
-        .run()
+        })
         .await??
     };
 
@@ -446,6 +517,7 @@ async fn calculate_freshness_common(
         node,
         error_message,
         io_args,
+        warnings,
     )?;
 
     let snapshotted_at = validate_and_extract_timestamp_column(
@@ -454,20 +526,23 @@ async fn calculate_freshness_common(
         node,
         error_message,
         io_args,
+        warnings,
     )?;
 
-    let max_loaded_at = as_timestamp_nanosecond_array(&cast_with_options(
+    let max_loaded_at = cast_with_options(
         max_loaded_at_column.as_ref(),
         &DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
-        &DEFAULT_CAST_OPTIONS,
-    )?)?
+        &STRICT_CAST,
+    )?
+    .as_primitive::<TimestampNanosecondType>()
     .value(0);
 
-    let snapshotted_at = as_timestamp_nanosecond_array(&cast_with_options(
+    let snapshotted_at = cast_with_options(
         snapshotted_at.as_ref(),
         &DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
-        &DEFAULT_CAST_OPTIONS,
-    )?)?
+        &STRICT_CAST,
+    )?
+    .as_primitive::<TimestampNanosecondType>()
     .value(0);
 
     let age = (snapshotted_at - max_loaded_at) / 1_000_000_000;
@@ -520,14 +595,7 @@ fn resource_type_allowed(
         && !exclude_resource_types.contains(&ty)
 }
 
-#[allow(clippy::cognitive_complexity)]
 #[allow(clippy::too_many_arguments)]
-#[tracing::instrument(
-    skip_all,
-    fields(
-        _e = ?store_event_attributes(PhaseExecuted::start_general(ExecutionPhase::FreshnessAnalysis)),
-    )
-)]
 pub async fn run_freshness(
     io_args: &IoArgs,
     schedule: &Schedule<String>,
@@ -540,6 +608,44 @@ pub async fn run_freshness(
     resource_types: &[ClapResourceType],
     exclude_resource_types: &[ClapResourceType],
 ) -> FsResult<BTreeMap<String, FreshnessResult>> {
+    run_freshness_with_errors(
+        io_args,
+        schedule,
+        resolver_state,
+        adapter,
+        env,
+        is_freshness_command,
+        check_all,
+        sources_only,
+        resource_types,
+        exclude_resource_types,
+    )
+    .await
+    .map(|run| run.results)
+}
+
+/// [`run_freshness`], also returning the message for every node whose check failed, so a
+/// caller recording the run can say why a node has no result.
+#[tracing::instrument(
+    skip_all,
+    fields(
+        _e = ?store_event_attributes(PhaseExecuted::start_general(ExecutionPhase::FreshnessAnalysis)),
+    )
+)]
+#[allow(clippy::cognitive_complexity)]
+#[allow(clippy::too_many_arguments)]
+pub async fn run_freshness_with_errors(
+    io_args: &IoArgs,
+    schedule: &Schedule<String>,
+    resolver_state: &ResolverState,
+    adapter: Arc<Adapter>,
+    env: &Arc<JinjaEnv>,
+    is_freshness_command: bool,
+    check_all: bool,
+    sources_only: bool,
+    resource_types: &[ClapResourceType],
+    exclude_resource_types: &[ClapResourceType],
+) -> FsResult<FreshnessRun> {
     // Frontier nodes (upstream dependencies of a selected node that are not
     // themselves selected) are chained in below regardless of selection, so a
     // source read by an included model would otherwise always be measured —
@@ -659,7 +765,7 @@ pub async fn run_freshness(
                 nothing_to_do_message(sources_only),
             );
         }
-        return Ok(BTreeMap::new());
+        return Ok(FreshnessRun::default());
     }
 
     // Create spans for all sources BEFORE issuing any queries
@@ -750,7 +856,7 @@ async fn run_freshness_with_spans(
     io_args: &IoArgs,
     is_freshness_command: bool,
     node_spans: &HashMap<&str, tracing::Span>,
-) -> FsResult<BTreeMap<String, FreshnessResult>> {
+) -> FsResult<FreshnessRun> {
     let mut results: BTreeMap<String, FreshnessResult> = BTreeMap::new();
     // Collect all relations that do not specify a 'loaded_at' field or a custom sql query.
     let (relations, name_map) = collect_relations(
@@ -820,45 +926,80 @@ async fn run_freshness_with_spans(
         }
     }
 
-    // Run 'loaded_at' and custom queries.
+    // Run 'loaded_at' and custom queries concurrently — see
+    // `measure_one_node` for why a plain sequential `.await` loop here
+    // would not actually overlap the warehouse queries.
     let dependencies: BTreeSet<String> = resolver_state
         .runtime_config
         .dependencies
         .keys()
         .cloned()
         .collect();
+    let mut errors: BTreeMap<String, String> = BTreeMap::new();
     let mut node_errors: HashMap<String, Box<FsError>> =
         HashMap::with_capacity(sources.len() + sla_models.len());
-    let sources_as_query_nodes = sources.iter().map(|node| *node as &dyn FreshnessNodeRef);
-    let sla_models_as_query_nodes = sla_models.iter().map(|node| *node as &dyn FreshnessNodeRef);
-    let query_based_nodes = sources_as_query_nodes.chain(sla_models_as_query_nodes);
-    for node in query_based_nodes {
-        match measure_query_based_freshness(
-            node,
-            resolver_state.adapter_type,
-            env,
-            compile_base,
-            io_args,
+    let adapter_type = resolver_state.adapter_type;
+
+    let source_tasks = sources.iter().map(|node| {
+        let node_span = node_spans
+            .get(node.__common_attr__.unique_id.as_str())
+            .cloned()
+            .unwrap_or_else(tracing::Span::current);
+        measure_one_node(
+            (*node).clone(),
+            node.__common_attr__.unique_id.clone(),
+            node.kind_label().to_lowercase(),
+            adapter_type,
+            env.clone(),
+            compile_base.clone(),
+            io_args.clone(),
             dependencies.clone(),
         )
-        .await
-        {
-            Ok(Some(result)) => {
-                results.insert(node.common().unique_id.clone(), result);
+        .instrument(node_span)
+    });
+    let sla_tasks = sla_models.iter().map(|node| {
+        let node_span = node_spans
+            .get(node.__common_attr__.unique_id.as_str())
+            .cloned()
+            .unwrap_or_else(tracing::Span::current);
+        measure_one_node(
+            (*node).clone(),
+            node.__common_attr__.unique_id.clone(),
+            node.kind_label().to_lowercase(),
+            adapter_type,
+            env.clone(),
+            compile_base.clone(),
+            io_args.clone(),
+            dependencies.clone(),
+        )
+        .instrument(node_span)
+    });
+    // Both batches still run concurrently with each other, not sequentially.
+    let (source_results, sla_results) = futures::join!(join_all(source_tasks), join_all(sla_tasks));
+
+    for (unique_id, kind_label_lower, outcome, warnings) in
+        source_results.into_iter().chain(sla_results)
+    {
+        // Emitted regardless of `outcome`, so a later step's error doesn't drop warnings.
+        for warning in warnings {
+            emit_warn_log_from_fs_error(warning);
+        }
+        match outcome {
+            Ok(node_result) => {
+                if let Some(result) = node_result {
+                    results.insert(unique_id, result);
+                }
             }
-            Ok(None) => {}
             Err(e) if !is_freshness_command => {
                 emit_warn_log_message(
                     ErrorCode::FreshnessMetadataWarning,
                     format!(
-                        "Failed to calculate freshness for {} '{}': {e}. It will be treated as updated, and dependent models will rebuild.",
-                        node.kind_label().to_lowercase(),
-                        node.common().unique_id
+                        "Failed to calculate freshness for {kind_label_lower} '{unique_id}': {e}. It will be treated as updated, and dependent models will rebuild.",
                     ),
                 );
             }
             Err(e) => {
-                node_errors.insert(node.common().unique_id.clone(), e);
+                node_errors.insert(unique_id, e);
             }
         }
     }
@@ -944,6 +1085,7 @@ async fn run_freshness_with_spans(
                         node.common().unique_id
                     )
                 });
+            errors.insert(node.common().unique_id.clone(), err.to_string());
             emit_error_log_from_fs_error(*err);
         } else {
             // When freshness is collected as part of a build, missing freshness info is
@@ -959,7 +1101,7 @@ async fn run_freshness_with_spans(
         }
     }
 
-    Ok(results)
+    Ok(FreshnessRun { results, errors })
 }
 
 // Helper function to create relation and update name map
@@ -972,8 +1114,27 @@ fn create_relation_and_map(
     name_map
         .entry(relation.semantic_fqn())
         .or_default()
-        .push(node.unique_id());
+        .push(node.unique_id().to_string());
     Ok(relation.into())
+}
+
+/// `filter` only ever reaches SQL built from `loaded_at_field`/`loaded_at_query`;
+/// the metadata-only ("last altered") check has no query to filter. Mirrors
+/// dbt-core's warning instead of silently dropping the config.
+fn uses_metadata_check_warn_if_filter_ignored(node: &dyn FreshnessNodeRef) -> bool {
+    let uses_metadata_check =
+        node.get_loaded_at_field().is_empty() && node.get_loaded_at_query().is_empty();
+    if uses_metadata_check && node.get_freshness_filter().is_some() {
+        emit_warn_log_message(
+            ErrorCode::FreshnessConfigInvalid,
+            format!(
+                "A filter cannot be applied to a metadata freshness check on {} '{}'",
+                node.kind_label().to_lowercase(),
+                node.common().unique_id
+            ),
+        );
+    }
+    uses_metadata_check
 }
 
 /// Return collection of relations and a map from relation FQN to node unique_ids.
@@ -995,9 +1156,7 @@ fn collect_relations(
     // Collect relations from sources
     let source_relations = sources
         .iter()
-        .filter(|node| {
-            node.get_loaded_at_field().is_empty() && node.get_loaded_at_query().is_empty()
-        })
+        .filter(|node| uses_metadata_check_warn_if_filter_ignored(**node))
         .map(|node| create_relation_and_map(*node, adapter_type, &mut name_map))
         .collect::<FsResult<Vec<_>>>()?;
 
@@ -1007,9 +1166,7 @@ fn collect_relations(
     // excluded, same as sources.
     let sla_model_relations = sla_models
         .iter()
-        .filter(|node| {
-            node.get_loaded_at_field().is_empty() && node.get_loaded_at_query().is_empty()
-        })
+        .filter(|node| uses_metadata_check_warn_if_filter_ignored(**node))
         .map(|node| create_relation_and_map(*node, adapter_type, &mut name_map))
         .collect::<FsResult<Vec<_>>>()?;
 
@@ -1039,6 +1196,7 @@ fn validate_and_extract_timestamp_column(
     node: &dyn FreshnessNodeRef,
     error_message: &str,
     io_args: &IoArgs,
+    warnings: &mut Vec<FsError>,
 ) -> FsResult<arrow::array::ArrayRef> {
     match batch.column(column_index).data_type() {
         DataType::Timestamp(_, None) => {
@@ -1051,7 +1209,8 @@ fn validate_and_extract_timestamp_column(
                 node.common().unique_id,
                 error_message
             );
-            emit_warn_log_from_fs_error(*err);
+            // Collected, not emitted here, so concurrent checks don't log out of node order.
+            warnings.push(*err);
 
             Ok(batch.column(column_index).clone())
         }
@@ -1152,6 +1311,17 @@ pub fn freshness_results_to_freshness_nodes(
     build_result_nodes(resolver_state, results, false)
 }
 
+/// The thread name `sources.json` reports. Freshness checks run as tasks, not on named worker
+/// threads, so this is the id of the thread that built the record.
+fn synthetic_thread_id() -> String {
+    format!(
+        "Thread-{}",
+        format!("{:?}", std::thread::current().id())
+            .trim_start_matches("ThreadId(")
+            .trim_end_matches(")")
+    )
+}
+
 fn build_result_nodes(
     resolver_state: &ResolverState,
     results: &BTreeMap<String, FreshnessResult>,
@@ -1178,12 +1348,7 @@ fn build_result_nodes(
                 criteria: node.freshness_criteria(),
                 adapter_response: BTreeMap::new(),
                 timing: vec![],
-                thread_id: format!(
-                    "Thread-{}",
-                    format!("{:?}", std::thread::current().id())
-                        .trim_start_matches("ThreadId(")
-                        .trim_end_matches(")")
-                ),
+                thread_id: synthetic_thread_id(),
                 execution_time: 0.0,
                 node: None,
             })
@@ -1219,12 +1384,7 @@ pub fn freshness_results_to_context(
                 criteria,
                 adapter_response: BTreeMap::new(),
                 timing: vec![],
-                thread_id: format!(
-                    "Thread-{}",
-                    format!("{:?}", std::thread::current().id())
-                        .trim_start_matches("ThreadId(")
-                        .trim_end_matches(")")
-                ),
+                thread_id: synthetic_thread_id(),
                 execution_time: 0.0,
                 node: Some(node),
             }
@@ -1343,6 +1503,7 @@ pub fn write_freshness_results_parquet(
     io: &IoArgs,
     resolver_state: &ResolverState,
     results: &BTreeMap<String, FreshnessResult>,
+    errors: &BTreeMap<String, String>,
 ) {
     use dbt_metadata_parquet::runtime_freshness::{FreshnessResultRow, write_freshness_results};
 
@@ -1353,39 +1514,55 @@ pub fn write_freshness_results_parquet(
     // Microseconds, matching the column's Arrow type and every sibling producer.
     let ingested_at: i64 = Utc::now().timestamp_micros();
 
+    let row = |unique_id: &String, result: Option<&FreshnessResult>, error: Option<&String>| {
+        let node = resolver_state.nodes.get_node(unique_id)?;
+        let criteria = node.freshness_criteria();
+        Some(FreshnessResultRow {
+            invocation_id: io.invocation_id.to_string(),
+            unique_id: unique_id.clone(),
+            resource_type: Some(node.resource_type().as_static_ref().to_string()),
+            // A node that could not be measured has no result, only the reason.
+            status: result
+                .map(|r| r.status.to_string())
+                .unwrap_or_else(|| "error".to_string()),
+            max_loaded_at: result.map(|r| r.max_loaded_at.to_rfc3339()),
+            snapshotted_at: result.map(|r| r.snapshotted_at.to_rfc3339()),
+            max_loaded_at_time_ago: result.map(|r| r.age as f64),
+            execution_time: result.and_then(|r| r.execution_time),
+            warn_after_count: criteria
+                .warn_after
+                .as_ref()
+                .and_then(|w| w.count.map(|c| c as i32)),
+            warn_after_period: criteria
+                .warn_after
+                .as_ref()
+                .and_then(|w| w.period.as_ref().map(|p| p.to_string())),
+            error_after_count: criteria
+                .error_after
+                .as_ref()
+                .and_then(|e| e.count.map(|c| c as i32)),
+            error_after_period: criteria
+                .error_after
+                .as_ref()
+                .and_then(|e| e.period.as_ref().map(|p| p.to_string())),
+            freshness_filter: criteria.filter.filter(|f| !f.is_empty()),
+            // The same values `sources.json` carries for these.
+            thread_id: Some(synthetic_thread_id()),
+            adapter_response: result.map(|_| "{}".to_string()),
+            timing: result.map(|_| "[]".to_string()),
+            error: error.cloned(),
+            ingested_at,
+        })
+    };
     let rows: Vec<FreshnessResultRow> = results
         .iter()
-        .filter_map(|(unique_id, result)| {
-            let node = resolver_state.nodes.get_node(unique_id)?;
-            let criteria = node.freshness_criteria();
-            Some(FreshnessResultRow {
-                invocation_id: io.invocation_id.to_string(),
-                unique_id: unique_id.clone(),
-                resource_type: Some(node.resource_type().as_static_ref().to_string()),
-                status: result.status.to_string(),
-                max_loaded_at: Some(result.max_loaded_at.to_rfc3339()),
-                snapshotted_at: Some(result.snapshotted_at.to_rfc3339()),
-                max_loaded_at_time_ago: Some(result.age as f64),
-                execution_time: None,
-                warn_after_count: criteria
-                    .warn_after
-                    .as_ref()
-                    .and_then(|w| w.count.map(|c| c as i32)),
-                warn_after_period: criteria
-                    .warn_after
-                    .as_ref()
-                    .and_then(|w| w.period.as_ref().map(|p| p.to_string())),
-                error_after_count: criteria
-                    .error_after
-                    .as_ref()
-                    .and_then(|e| e.count.map(|c| c as i32)),
-                error_after_period: criteria
-                    .error_after
-                    .as_ref()
-                    .and_then(|e| e.period.as_ref().map(|p| p.to_string())),
-                ingested_at,
-            })
-        })
+        .filter_map(|(unique_id, result)| row(unique_id, Some(result), None))
+        .chain(
+            errors
+                .iter()
+                .filter(|(unique_id, _)| !results.contains_key(*unique_id))
+                .filter_map(|(unique_id, message)| row(unique_id, None, Some(message))),
+        )
         .collect();
 
     if let Err(e) = write_freshness_results(&freshness_dir, &rows) {
@@ -1421,7 +1598,6 @@ mod tests {
     use dbt_schemas::schemas::properties::ModelFreshness;
     use dbt_schemas::state::{
         DbtProfile, DbtRuntimeConfig, DummyNodeResolverTracker, Macros, Operations, ProfileAdapter,
-        RenderResults,
     };
 
     fn rules(count: i64, period: FreshnessPeriod) -> FreshnessRules {
@@ -1429,6 +1605,28 @@ mod tests {
             count: Some(count),
             period: Some(period),
         }
+    }
+
+    #[test]
+    fn threshold_seconds_reads_an_empty_rule_as_unset_but_not_a_half_set_one() {
+        assert_eq!(threshold_seconds(None).unwrap(), None);
+        assert_eq!(
+            threshold_seconds(Some(&FreshnessRules::default())).unwrap(),
+            None,
+            "`error_after: {{}}`, or an inherited unset threshold, is not a threshold"
+        );
+        assert_eq!(
+            threshold_seconds(Some(&rules(2, FreshnessPeriod::hour))).unwrap(),
+            Some(7200)
+        );
+        let half_set = FreshnessRules {
+            count: Some(2),
+            period: None,
+        };
+        assert!(
+            threshold_seconds(Some(&half_set)).is_err(),
+            "a half-set rule is still dbt1007"
+        );
     }
 
     /// Minimal `ResolverState` for tests that only need `nodes` populated.
@@ -1463,7 +1661,7 @@ mod tests {
                 }
             },
             cloud_config: None,
-            render_results: RenderResults::default(),
+            function_bodies: Default::default(),
             node_resolver: Arc::new(DummyNodeResolverTracker),
             get_relation_calls: Default::default(),
             get_columns_in_relation_calls: Default::default(),
@@ -1674,6 +1872,54 @@ mod tests {
         assert_eq!(node.get_loaded_at_field(), "updated_at");
         assert_eq!(node.get_loaded_at_query(), "");
         assert_eq!(node.get_freshness_filter(), Some("id > 0"));
+    }
+
+    #[test]
+    fn warnings_survive_a_later_error_in_the_same_check() {
+        let source = source_with_freshness(None);
+        let node: &dyn FreshnessNodeRef = &source;
+        let io_args = IoArgs::default();
+        let mut warnings = Vec::new();
+
+        let tz_naive = arrow::record_batch::RecordBatch::try_from_iter([(
+            "ts",
+            Arc::new(arrow::array::TimestampNanosecondArray::from(vec![1_i64]))
+                as arrow::array::ArrayRef,
+        )])
+        .unwrap();
+        assert!(
+            validate_and_extract_timestamp_column(
+                &tz_naive,
+                0,
+                node,
+                "test",
+                &io_args,
+                &mut warnings
+            )
+            .is_ok()
+        );
+        assert_eq!(warnings.len(), 1);
+
+        let wrong_type = arrow::record_batch::RecordBatch::try_from_iter([(
+            "n",
+            Arc::new(arrow::array::Int64Array::from(vec![1_i64])) as arrow::array::ArrayRef,
+        )])
+        .unwrap();
+        assert!(
+            validate_and_extract_timestamp_column(
+                &wrong_type,
+                0,
+                node,
+                "test",
+                &io_args,
+                &mut warnings
+            )
+            .is_err()
+        );
+
+        // The first call's warning must still be here: it's threaded through `&mut
+        // Vec`, independent of this call's `Err`, not bundled into a single Result.
+        assert_eq!(warnings.len(), 1);
     }
 
     #[test]

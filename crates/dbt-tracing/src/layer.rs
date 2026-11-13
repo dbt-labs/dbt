@@ -37,6 +37,9 @@ use crate::{
 ///
 /// Note that consumers are not expected to modify metrics even though
 /// API allows it. Metrics should be modified by middleware or in app code.
+///
+/// Callbacks must not emit tracing events or create spans. Recursive dispatch
+/// through the data layer is unsupported and can deadlock tracing teardown.
 pub trait TelemetryConsumer {
     /// Should return true if the consumer is interested in the span.
     #[allow(unused_variables)]
@@ -102,6 +105,9 @@ pub type LogPreprocessorHook = for<'a> fn(&'a LogRecordInfo) -> Cow<'a, LogRecor
 /// All middleware's operate before any consumers see the data and have a global
 /// effect on all consumers. So be mindful that changes you make will be
 /// visible to all consumers.
+///
+/// Callbacks must not emit tracing events or create spans. Recursive dispatch
+/// through the data layer is unsupported and can deadlock tracing teardown.
 pub trait TelemetryMiddleware: Send + Sync {
     /// Callback invoked when a span starts. Return None to drop the span for all consumers.
     ///

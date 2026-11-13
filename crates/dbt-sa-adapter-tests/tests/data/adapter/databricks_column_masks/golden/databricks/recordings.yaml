@@ -1,0 +1,535 @@
+85f3743c:
+- sequence: 0
+  type: execute
+  sql: SHOW SCHEMAS IN `e2e`
+ccef8af3:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists `e2e`.`adapters_databricks_column_masks`
+model.test.test_email_mask_inc:
+- sequence: 0
+  type: execute
+  sql: |-
+    CREATE FUNCTION IF NOT EXISTS e2e.adapters_databricks_column_masks.email_mask(value STRING)
+    RETURNS STRING
+    RETURN CONCAT(
+    REPEAT('*', POSITION('@' IN value) - 1),
+    SUBSTR(value, POSITION('@' IN value))
+    )
+- sequence: 1
+  type: execute
+  sql: |-
+    CREATE FUNCTION IF NOT EXISTS e2e.adapters_databricks_column_masks.password_mask(
+    password STRING,
+    name STRING,
+    literal_string STRING
+    )
+    RETURNS STRING
+    RETURN CONCAT(
+    '[', literal_string, '] ',
+    name, ': ',
+    LEFT(password, 1),
+    REPEAT('*', LENGTH(password) - 2),
+    RIGHT(password, 1)
+    )
+- sequence: 2
+  type: execute
+  sql: |-
+    create or replace temporary view `test_email_mask_inc__dbt_tmp` as
+    select cast(1 as bigint) as id, 'hello' as name, 'john.doe@example.com' as email,
+    'password123' as password
+- sequence: 3
+  type: execute
+  sql: DESCRIBE TABLE EXTENDED `test_email_mask_inc__dbt_tmp` AS JSON
+- sequence: 4
+  type: execute
+  sql: |-
+    SELECT
+    table_catalog,
+    table_schema,
+    table_name,
+    filter_name,
+    target_columns
+    FROM `e2e`.`information_schema`.`row_filters`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'adapters_databricks_column_masks'
+    AND table_name = 'test_email_mask_inc'
+- sequence: 5
+  type: execute
+  sql: |-
+    create or replace table `e2e`.`adapters_databricks_column_masks`.`test_email_mask_inc`
+    
+    (
+    
+    
+    
+    
+    
+    
+    
+    `id` bigint,
+    
+    
+    
+    
+    
+    
+    
+    `name` STRING,
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    `email` STRING MASK email_mask,
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    `password` STRING MASK password_mask USING COLUMNS (name, 'literal_string')
+    
+    
+    
+    )
+    
+    
+    
+    using delta
+- sequence: 6
+  type: execute
+  sql: insert into `e2e`.`adapters_databricks_column_masks`.`test_email_mask_inc` by name select * from `test_email_mask_inc__dbt_tmp`
+model.test.test_full_mask_inc:
+- sequence: 0
+  type: execute
+  sql: |-
+    CREATE FUNCTION IF NOT EXISTS e2e.adapters_databricks_column_masks.full_mask(password STRING)
+    RETURNS STRING
+    RETURN '*****'
+- sequence: 1
+  type: execute
+  sql: |-
+    create or replace temporary view `test_full_mask_inc__dbt_tmp` as
+    select cast(1 as bigint) as id, 'hello' as name, 'john.doe@example.com' as email,
+    'password123' as password
+- sequence: 2
+  type: execute
+  sql: DESCRIBE TABLE EXTENDED `test_full_mask_inc__dbt_tmp` AS JSON
+- sequence: 3
+  type: execute
+  sql: |-
+    SELECT
+    table_catalog,
+    table_schema,
+    table_name,
+    filter_name,
+    target_columns
+    FROM `e2e`.`information_schema`.`row_filters`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'adapters_databricks_column_masks'
+    AND table_name = 'test_full_mask_inc'
+- sequence: 4
+  type: execute
+  sql: |-
+    create or replace table `e2e`.`adapters_databricks_column_masks`.`test_full_mask_inc`
+    
+    (
+    
+    
+    
+    
+    
+    
+    
+    `id` bigint,
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    `name` STRING MASK full_mask,
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    `email` STRING MASK full_mask,
+    
+    
+    
+    
+    
+    
+    
+    `password` STRING
+    
+    
+    
+    )
+    
+    
+    
+    using delta
+- sequence: 5
+  type: execute
+  sql: insert into `e2e`.`adapters_databricks_column_masks`.`test_full_mask_inc` by name select * from `test_full_mask_inc__dbt_tmp`
+model.test.test_password_mask:
+- sequence: 0
+  type: execute
+  sql: |-
+    CREATE FUNCTION IF NOT EXISTS e2e.adapters_databricks_column_masks.full_mask(password STRING)
+    RETURNS STRING
+    RETURN '*****'
+- sequence: 1
+  type: execute
+  sql: |-
+    create or replace temporary view `test_password_mask__dbt_tmp` as
+    select
+    'abc123' as id,
+    'password123' as password
+- sequence: 2
+  type: execute
+  sql: DESCRIBE TABLE EXTENDED `test_password_mask__dbt_tmp` AS JSON
+- sequence: 3
+  type: execute
+  sql: |-
+    SELECT
+    table_catalog,
+    table_schema,
+    table_name,
+    filter_name,
+    target_columns
+    FROM `e2e`.`information_schema`.`row_filters`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'adapters_databricks_column_masks'
+    AND table_name = 'test_password_mask'
+- sequence: 4
+  type: execute
+  sql: |-
+    create or replace table `e2e`.`adapters_databricks_column_masks`.`test_password_mask`
+    
+    (
+    
+    
+    
+    
+    
+    
+    
+    `id` string,
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    `password` string MASK full_mask
+    
+    
+    
+    )
+    
+    
+    
+    using delta
+- sequence: 5
+  type: execute
+  sql: insert into `e2e`.`adapters_databricks_column_masks`.`test_password_mask` by name select * from `test_password_mask__dbt_tmp`
+model.test.test_password_mask_strm:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace temporary view `test_password_mask_strm__dbt_tmp` as
+    SELECT * FROM `e2e`.`adapters_databricks_column_masks`.`base_model_seed`
+- sequence: 1
+  type: execute
+  sql: DESCRIBE TABLE EXTENDED `test_password_mask_strm__dbt_tmp` AS JSON
+- sequence: 2
+  type: execute
+  sql: |-
+    SELECT
+    table_catalog,
+    table_schema,
+    table_name,
+    filter_name,
+    target_columns
+    FROM `e2e`.`information_schema`.`row_filters`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'adapters_databricks_column_masks'
+    AND table_name = 'test_password_mask_strm'
+- sequence: 3
+  type: execute
+  sql: |-
+    CREATE FUNCTION IF NOT EXISTS e2e.adapters_databricks_column_masks.full_mask(password STRING)
+    RETURNS STRING
+    RETURN '*****'
+- sequence: 4
+  type: execute
+  sql: |-
+    CREATE STREAMING TABLE `e2e`.`adapters_databricks_column_masks`.`test_password_mask_strm`
+    
+    (
+    
+    
+    
+    
+    
+    
+    
+    `id` string,
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    `password` string MASK full_mask
+    
+    
+    
+    )
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    AS SELECT * FROM stream `e2e`.`adapters_databricks_column_masks`.`base_model_seed`
+model.test.test_weird_mask:
+- sequence: 0
+  type: execute
+  sql: |-
+    SELECT
+    table_name,
+    if(table_type IN ('EXTERNAL', 'MANAGED', 'MANAGED_SHALLOW_CLONE', 'EXTERNAL_SHALLOW_CLONE'), 'table', lower(table_type)) AS table_type,
+    lower(data_source_format) AS file_format,
+    table_schema,
+    table_owner,
+    table_catalog,
+    if(
+    table_type IN (
+    'EXTERNAL',
+    'MANAGED',
+    'MANAGED_SHALLOW_CLONE',
+    'EXTERNAL_SHALLOW_CLONE'
+    ),
+    lower(table_type),
+    NULL
+    ) AS databricks_table_type
+    FROM `system`.`information_schema`.`tables`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'adapters_databricks_column_masks'
+- sequence: 1
+  type: execute
+  sql: |-
+    CREATE FUNCTION IF NOT EXISTS e2e.adapters_databricks_column_masks.weird_mask(
+    password STRING,
+    id STRING,
+    literal STRING,
+    num INT,
+    bool_val BOOLEAN,
+    null_val STRING,
+    interval INTERVAL DAY
+    )
+    RETURNS STRING
+    RETURN CONCAT(
+    password, '-',
+    id, '-',
+    literal, '-',
+    CAST(num AS STRING), '-',
+    CAST(bool_val AS STRING), '-',
+    COALESCE(null_val, 'NULL'), '-',
+    CAST(interval AS STRING)
+    )
+- sequence: 2
+  type: execute
+  sql: |-
+    create or replace temporary view `test_weird_mask__dbt_tmp` as
+    select
+    'abc123' as id,
+    'password123' as password
+- sequence: 3
+  type: execute
+  sql: DESCRIBE TABLE EXTENDED `test_weird_mask__dbt_tmp` AS JSON
+- sequence: 4
+  type: execute
+  sql: |-
+    SELECT
+    table_catalog,
+    table_schema,
+    table_name,
+    filter_name,
+    target_columns
+    FROM `e2e`.`information_schema`.`row_filters`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'adapters_databricks_column_masks'
+    AND table_name = 'test_weird_mask'
+- sequence: 5
+  type: execute
+  sql: |-
+    create or replace table `e2e`.`adapters_databricks_column_masks`.`test_weird_mask`
+    
+    (
+    
+    
+    
+    
+    
+    
+    
+    `id` string,
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    `password` string MASK weird_mask USING COLUMNS (id, 'literal_string', 333, true, null, INTERVAL 2 DAYS)
+    
+    
+    
+    )
+    
+    
+    
+    using delta
+- sequence: 6
+  type: execute
+  sql: insert into `e2e`.`adapters_databricks_column_masks`.`test_weird_mask` by name select * from `test_weird_mask__dbt_tmp`
+model.test.test_weird_mask_strm:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace temporary view `test_weird_mask_strm__dbt_tmp` as
+    SELECT * FROM `e2e`.`adapters_databricks_column_masks`.`base_model_seed`
+- sequence: 1
+  type: execute
+  sql: DESCRIBE TABLE EXTENDED `test_weird_mask_strm__dbt_tmp` AS JSON
+- sequence: 2
+  type: execute
+  sql: |-
+    SELECT
+    table_catalog,
+    table_schema,
+    table_name,
+    filter_name,
+    target_columns
+    FROM `e2e`.`information_schema`.`row_filters`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'adapters_databricks_column_masks'
+    AND table_name = 'test_weird_mask_strm'
+- sequence: 3
+  type: execute
+  sql: |-
+    CREATE FUNCTION IF NOT EXISTS e2e.adapters_databricks_column_masks.weird_mask(
+    password STRING,
+    id STRING,
+    literal STRING,
+    num INT,
+    bool_val BOOLEAN,
+    null_val STRING,
+    interval INTERVAL DAY
+    )
+    RETURNS STRING
+    RETURN CONCAT(
+    password, '-',
+    id, '-',
+    literal, '-',
+    CAST(num AS STRING), '-',
+    CAST(bool_val AS STRING), '-',
+    COALESCE(null_val, 'NULL'), '-',
+    CAST(interval AS STRING)
+    )
+- sequence: 4
+  type: execute
+  sql: |-
+    CREATE STREAMING TABLE `e2e`.`adapters_databricks_column_masks`.`test_weird_mask_strm`
+    
+    (
+    
+    
+    
+    
+    
+    
+    
+    `id` string,
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    `password` string MASK weird_mask USING COLUMNS (id, 'literal_string', 333, true, null, INTERVAL 2 DAYS)
+    
+    
+    
+    )
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    AS SELECT * FROM stream `e2e`.`adapters_databricks_column_masks`.`base_model_seed`
+seed.test.base_model_seed:
+- sequence: 0
+  type: execute
+  sql: |-
+    create  table `e2e`.`adapters_databricks_column_masks`.`base_model_seed` (`id` string ,`password` string )
+    
+    
+    using delta
+- sequence: 1
+  type: execute
+  sql: |-
+    insert overwrite `e2e`.`adapters_databricks_column_masks`.`base_model_seed` values
+    ('abc123','password123')
