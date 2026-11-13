@@ -191,6 +191,10 @@ pub enum ErrorCode {
     LakeComputeUnitTestOnDefaultAdapter = 1163,
     /// An inline `config(adapter=...)` changed a node's adapter after its parse render.
     InlineAdapterParseTargetMismatch = 1164,
+    /// A project function declares no return type (BigQuery infers it from
+    /// the body), and analysis could not bind its body to infer one, so calls
+    /// to it cannot be typed.
+    FunctionReturnTypeNotInferred = 1167,
 
     // Network/HTTP [1200–1249]
     NetworkError = 1200,
@@ -258,6 +262,10 @@ pub enum ErrorCode {
     /// no longer matched the owner that ran it; a reclaim already overwrote
     /// it, so the write would have clobbered the new owner's own result.
     StateStopRejected = 1414,
+    /// A unit test running under local compute calls a project function that
+    /// local compute cannot execute (a non-SQL language, a non-scalar kind,
+    /// overloads, or dependencies on other functions or relations).
+    LocalFunctionUnsupported = 1418,
 
     // Serialization [1450–1460]
     JsonInvalid = 1450,
@@ -674,6 +682,22 @@ mod tests {
         assert_eq!(
             ErrorCode::StateStopRejected.name_and_code(),
             "StateStopRejected (dbt1414)"
+        );
+    }
+
+    #[test]
+    fn function_return_type_not_inferred_renders_name_and_code() {
+        assert_eq!(
+            ErrorCode::FunctionReturnTypeNotInferred.name_and_code(),
+            "FunctionReturnTypeNotInferred (dbt1167)"
+        );
+    }
+
+    #[test]
+    fn local_function_unsupported_renders_name_and_code() {
+        assert_eq!(
+            ErrorCode::LocalFunctionUnsupported.name_and_code(),
+            "LocalFunctionUnsupported (dbt1418)"
         );
     }
 }

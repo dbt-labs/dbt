@@ -32,7 +32,7 @@ use dbt_schemas::schemas::common::{Access, DbtIncrementalStrategy, DbtMaterializ
 use dbt_schemas::schemas::macros::{DbtDocsMacro, build_macro_units};
 use dbt_schemas::schemas::properties::{
     FUNCTION_LANGUAGE_JAVASCRIPT, FUNCTION_LANGUAGE_PYTHON, FUNCTION_LANGUAGE_SQL, FunctionKind,
-    ModelProperties,
+    ModelProperties, is_any_type,
 };
 use dbt_schemas::schemas::{DbtModel, DbtSeed, DbtSource, InternalDbtNode, Nodes, TableFormat};
 use dbt_telemetry::GenericOpExecuted;
@@ -630,7 +630,55 @@ fn validate_function_config(nodes: &Nodes, adapter_type: AdapterType) {
             // SQL / Python / unspecified: no per-adapter restrictions today.
             (_, Some(FUNCTION_LANGUAGE_SQL)) | (_, Some(FUNCTION_LANGUAGE_PYTHON)) | (_, None) => {}
             (_, Some(other)) => {
-                unimplemented!("No per-adapter validation defined for function language '{other}'")
+                let err = fs_err!(
+                    ErrorCode::FunctionDefinitionError,
+                    "Function '{}' has unsupported language '{}'. Supported languages are '{}', '{}' and '{}'.",
+                    name,
+                    other,
+                    FUNCTION_LANGUAGE_SQL,
+                    FUNCTION_LANGUAGE_PYTHON,
+                    FUNCTION_LANGUAGE_JAVASCRIPT,
+                );
+                emit_error_log_from_fs_error(*err);
+                continue;
+            }
+        }
+
+        // Templated `ANY TYPE` arguments and an omitted return type: BigQuery
+        // SQL functions only.
+        let is_bigquery_sql = adapter_type == Bigquery
+            && language.is_none_or(|language| language == FUNCTION_LANGUAGE_SQL);
+        if !is_bigquery_sql {
+            if let Some(argument) = function
+                .__function_attr__
+                .arguments
+                .iter()
+                .flatten()
+                .find(|argument| argument.data_type.as_deref().is_some_and(is_any_type))
+            {
+                let err = fs_err!(
+                    ErrorCode::FunctionDefinitionError,
+                    "Function '{}' declares argument '{}' as 'any type', which only BigQuery SQL functions support.",
+                    name,
+                    argument.name.as_deref().unwrap_or_default(),
+                );
+                emit_error_log_from_fs_error(*err);
+                continue;
+            }
+            if adapter_type == Bigquery
+                && function
+                    .__function_attr__
+                    .returns
+                    .as_ref()
+                    .is_none_or(|returns| returns.data_type.is_none())
+            {
+                let err = fs_err!(
+                    ErrorCode::FunctionDefinitionError,
+                    "Function '{}' has no 'returns' data type, which BigQuery requires for non-SQL functions.",
+                    name,
+                );
+                emit_error_log_from_fs_error(*err);
+                continue;
             }
         }
 

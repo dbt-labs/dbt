@@ -5,6 +5,9 @@ All adapter macros are currently maintained in:
 
 ## Changelog
 
+### [2026-11-07]
+  - dbt-bigquery: `bigquery__scalar_function_create_replace_signature_sql` omits `RETURNS` when a SQL function has no `returns`, so BigQuery infers the type from the body (Fusion-first; not yet upstream)
+
 ### [2026-10-11]
   - dbt-databricks: drop no-op create_indexes and commit from the snapshot materialization from PR #1691 (commit d6fefeb6ef601164ed76e2ce7d4049a756fec548)
 
