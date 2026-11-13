@@ -131,6 +131,10 @@ fn resolve_cloud_config_with_env_reader(
 
     let job_id = env_reader("DBT_CLOUD_JOB_ID");
 
+    let git_credentials = project_dbt_cloud
+        .and_then(|p| p.git_credentials)
+        .unwrap_or(false);
+
     let resolved = ResolvedCloudConfig {
         credentials,
         project_id,
@@ -141,6 +145,7 @@ fn resolve_cloud_config_with_env_reader(
         defer_job_id,
         state_org_id,
         job_id,
+        git_credentials,
     };
 
     // Exhaustive match ensures new fields aren't forgotten.
@@ -154,6 +159,7 @@ fn resolve_cloud_config_with_env_reader(
         defer_job_id: None,
         state_org_id: None,
         job_id: None,
+        git_credentials: false,
     } = &resolved
     {
         None
@@ -211,6 +217,7 @@ mod tests {
             account_host: host.map(|s| s.to_string()),
             defer_env_id: defer.map(|s| StringOrInteger::String(s.to_string())),
             state_org_id: state_org_id.map(|s| StringOrInteger::String(s.to_string())),
+            git_credentials: None,
             account_id: None,
             job_id: None,
             run_id: None,
@@ -518,6 +525,17 @@ mod tests {
 
         let pc = project_cloud(Some("999"), None, None, None);
         assert!(detect_unlinked_project(None, Some(&pc)).is_none());
+    }
+
+    #[test]
+    fn git_credentials_is_opt_in_from_dbt_project_yml() {
+        let mut pc = project_cloud(Some("123"), None, None, None);
+        let r = resolve_cloud_config_with_env_reader(None, Some(&pc), env(&[])).unwrap();
+        assert!(!r.git_credentials);
+
+        pc.git_credentials = Some(true);
+        let r = resolve_cloud_config_with_env_reader(None, Some(&pc), env(&[])).unwrap();
+        assert!(r.git_credentials);
     }
 
     #[test]

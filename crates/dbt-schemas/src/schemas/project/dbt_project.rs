@@ -52,6 +52,10 @@ pub struct ProjectDbtCloudConfig {
     pub defer_env_id: Option<StringOrInteger>,
     #[serde(rename = "state-org-id")]
     pub state_org_id: Option<StringOrInteger>,
+    /// Opt in to resolving `private:` packages with the user's own dbt platform credentials
+    /// when running locally.
+    #[serde(rename = "git-credentials")]
+    pub git_credentials: Option<bool>,
 
     // unsure if any of these other keys are actually used or expected
     pub account_id: Option<StringOrInteger>,

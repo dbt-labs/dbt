@@ -638,6 +638,7 @@ mod tests {
             defer_job_id: None,
             state_org_id: None,
             job_id: None,
+            git_credentials: false,
         })
     }
 

@@ -75,14 +75,27 @@ impl CloudYamlResolver {
             .or_else(|| project_block.as_ref().and_then(|b| b.project_id_str()))
             .unwrap_or_else(|| config.context.active_project.clone());
 
-        let active_host = env("DBT_CLOUD_ACCOUNT_HOST")
-            .or_else(|| project_block.as_ref().and_then(|b| b.account_host.clone()))
+        let requested_host = env("DBT_CLOUD_ACCOUNT_HOST")
+            .or_else(|| project_block.as_ref().and_then(|b| b.account_host.clone()));
+        let active_host = requested_host
+            .clone()
             .unwrap_or_else(|| config.context.active_host.clone());
 
-        let project = config
+        let candidates: Vec<_> = config
             .projects
             .iter()
-            .find(|p| p.project_id == active_project_id && p.account_host == active_host);
+            .filter(|p| p.project_id == active_project_id)
+            .collect();
+        let project = candidates
+            .iter()
+            .copied()
+            .find(|p| p.account_host == active_host)
+            .or_else(|| match candidates.as_slice() {
+                // Nobody asked for a host, and the project belongs to exactly one: that is its host,
+                // even when the file's active-host points at another account.
+                [only] if requested_host.is_none() => Some(*only),
+                _ => None,
+            });
 
         let Some(project) = project else {
             return Err(AuthError::NotAuthenticated);
@@ -250,8 +263,44 @@ projects:
         assert!(matches!(err, AuthError::NotAuthenticated));
     }
 
+    const HOST_MISMATCH_YAML: &str = r#"
+version: "1"
+context:
+  active-project: "proj-1"
+  active-host: "other.dbt.com"
+projects:
+  - project-name: "My Project"
+    project-id: "proj-1"
+    account-name: "acme"
+    account-id: "42"
+    account-host: "ab123.us1.dbt.com"
+    token-name: "my-token"
+    token-value: "dbtc_abc123"
+"#;
+
     #[dbt_runtime::test]
-    async fn host_mismatch_returns_not_authenticated() {
+    async fn unique_project_uses_its_own_host_when_active_host_differs() {
+        let f = write_yaml(HOST_MISMATCH_YAML);
+        let cred = resolver_at(f.path())
+            .resolve_with_env(no_env)
+            .await
+            .unwrap();
+        assert_eq!(cred.account_host(), "ab123.us1.dbt.com");
+        assert_eq!(cred.account_id(), 42);
+    }
+
+    #[dbt_runtime::test]
+    async fn requested_host_that_does_not_match_returns_not_authenticated() {
+        let f = write_yaml(HOST_MISMATCH_YAML);
+        let err = resolver_at(f.path())
+            .resolve_with_env(env_map(&[("DBT_CLOUD_ACCOUNT_HOST", "other.dbt.com")]))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AuthError::NotAuthenticated));
+    }
+
+    #[dbt_runtime::test]
+    async fn project_on_several_hosts_needs_the_host_to_match() {
         let f = write_yaml(
             r#"
 version: "1"
@@ -266,6 +315,13 @@ projects:
     account-host: "ab123.us1.dbt.com"
     token-name: "my-token"
     token-value: "dbtc_abc123"
+  - project-name: "My Project"
+    project-id: "proj-1"
+    account-name: "acme-eu"
+    account-id: "43"
+    account-host: "cd456.eu1.dbt.com"
+    token-name: "my-token"
+    token-value: "dbtc_def456"
 "#,
         );
         let err = resolver_at(f.path())
