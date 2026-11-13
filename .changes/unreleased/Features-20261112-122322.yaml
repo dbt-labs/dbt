@@ -1,0 +1,7 @@
+kind: Features
+body: Add json_parse and percentile cross-database macros for Postgres, Redshift, Snowflake, BigQuery, and Spark
+time: 2026-11-12T12:23:22.508246-08:00
+custom:
+    author: fivetran-jamie
+    issue: ""
+    project: dbt-core
