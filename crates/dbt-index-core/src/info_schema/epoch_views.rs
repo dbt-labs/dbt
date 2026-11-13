@@ -368,6 +368,31 @@ impl PayloadPaths {
     }
 }
 
+/// The `test_metadata` object of a test node, under either name the payload carries it under.
+fn test_metadata_obj(payload: &mut PayloadPaths) -> String {
+    format!(
+        "COALESCE({}, {})",
+        payload.json("__test_attr__.test_metadata"),
+        payload.json("test_metadata")
+    )
+}
+
+/// JSON null, `{}` and `[]` as SQL NULL.
+fn empty_to_null(json: &str) -> String {
+    format!("NULLIF(NULLIF(NULLIF({json}, 'null'::JSON), '{{}}'::JSON), '[]'::JSON)")
+}
+
+/// A hook config as dbt's manifest spells it, from the SQL of its raw JSON: a string or an
+/// object becomes a one-element list, and a bare string becomes `{sql, transaction: true}`.
+fn hooks_sql(raw: &str) -> String {
+    format!(
+        "CASE WHEN {raw} IS NULL THEN NULL ELSE to_json(list_transform(CAST(CASE json_type({raw}) \
+         WHEN 'ARRAY' THEN {raw} ELSE json_array({raw}) END AS JSON[]), \
+         e -> CASE json_type(e) WHEN 'VARCHAR' THEN \
+         json_object('sql', json_extract_string(e, '$'), 'transaction', TRUE) ELSE e END)) END"
+    )
+}
+
 /// The 1-based list index of `path`, added on first use.
 fn slot(paths: &mut Vec<&'static str>, path: &'static str) -> usize {
     match paths.iter().position(|p| *p == path) {
@@ -411,7 +436,9 @@ fn column_sql(
         EpochExpr::Same => format!("{BASE}.{}", quoted(out_name)),
         EpochExpr::Col(c) => format!("{BASE}.{}", quoted(c)),
         EpochExpr::Json(path) => payload.text(path),
-        EpochExpr::JsonRaw(path) => payload.json(path),
+        // A JSON `null` is SQL NULL, as in the Rust ingest: left alone it is cast to the
+        // text `null`.
+        EpochExpr::JsonRaw(path) => format!("NULLIF({}, 'null'::JSON)", payload.json(path)),
         // The cast goes *inside* the COALESCE as well as around it: the extract
         // is always VARCHAR, so `COALESCE(<varchar>, TRUE)` is a binder error
         // rather than a defaulted boolean.
@@ -427,10 +454,74 @@ fn column_sql(
             args.push(default.to_string());
             format!("COALESCE({})", args.join(", "))
         }
+        // Per slot, so a JSON `null` under the first path does not hide the second.
         EpochExpr::JsonRawFirst(paths) => {
-            let args: Vec<String> = paths.iter().map(|p| payload.json(p)).collect();
+            let args: Vec<String> = paths
+                .iter()
+                .map(|p| format!("NULLIF({}, 'null'::JSON)", payload.json(p)))
+                .collect();
             format!("COALESCE({})", args.join(", "))
         }
+        EpochExpr::ConfigJson(path) => empty_to_null(&payload.json(path)),
+        EpochExpr::TestMetadata(field) => {
+            format!(
+                "json_extract_string({}, '$.{field}')",
+                test_metadata_obj(payload)
+            )
+        }
+        EpochExpr::TestMetadataJson(field) => {
+            format!("json_extract({}, '$.{field}')", test_metadata_obj(payload))
+        }
+        EpochExpr::StrIfString(path) => {
+            let v = payload.json(path);
+            format!("CASE WHEN json_type({v}) = 'VARCHAR' THEN json_extract_string({v}, '$') END")
+        }
+        EpochExpr::BoolFirst(paths, default) => {
+            let mut args: Vec<String> = paths
+                .iter()
+                .map(|p| {
+                    let v = payload.json(p);
+                    format!("CASE WHEN json_type({v}) = 'BOOLEAN' THEN CAST({v} AS BOOLEAN) END")
+                })
+                .collect();
+            args.push(
+                default
+                    .map_or("NULL", |d| if d { "TRUE" } else { "FALSE" })
+                    .to_string(),
+            );
+            format!("COALESCE({})", args.join(", "))
+        }
+        EpochExpr::Hooks(snake, dashed) => hooks_sql(&format!(
+            "COALESCE({}, {})",
+            empty_to_null(&payload.json(snake)),
+            empty_to_null(&payload.json(dashed))
+        )),
+        EpochExpr::VersionText(paths) => {
+            let args: Vec<String> = paths
+                .iter()
+                .map(|p| {
+                    let v = payload.json(p);
+                    format!(
+                        "CASE json_type({v}) WHEN 'VARCHAR' THEN json_extract_string({v}, '$') \
+                         WHEN 'BIGINT' THEN CAST(json_extract_string({v}, '$') AS VARCHAR) \
+                         WHEN 'UBIGINT' THEN CAST(json_extract_string({v}, '$') AS VARCHAR) \
+                         WHEN 'DOUBLE' THEN CAST(json_extract_string({v}, '$') AS VARCHAR) END"
+                    )
+                })
+                .collect();
+            format!("COALESCE({})", args.join(", "))
+        }
+        EpochExpr::MetaObject(path) => format!(
+            "json_object('meta', COALESCE(NULLIF({}, 'null'::JSON), '{{}}'::JSON))",
+            payload.json(path)
+        ),
+        EpochExpr::TextOrColForType(resource_type, path, col) => format!(
+            "CASE WHEN {BASE}.resource_type = '{resource_type}' THEN \
+             COALESCE(NULLIF({}, ''), {BASE}.{}) ELSE {BASE}.{} END",
+            payload.text(path),
+            quoted(col),
+            quoted(col)
+        ),
         EpochExpr::ColThenJson(col, paths, default) => {
             let mut args = vec![format!("{BASE}.{}", quoted(col))];
             args.extend(
@@ -448,10 +539,12 @@ fn column_sql(
                 objects.join(", ")
             )
         }
-        // A wildcard path cannot join a multi-path extract, so it keeps its own.
-        EpochExpr::JsonList(path) => {
-            format!("COALESCE(json_extract_string({BASE}.payload, '$.{path}[*]'), [])")
-        }
+        // DuckDB rejects a wildcard in a multi-path extract, so the list's own path is slotted
+        // and the wildcard is applied to that (small) value.
+        EpochExpr::JsonList(path) => format!(
+            "COALESCE(json_extract_string({}, '$[*]'), [])",
+            payload.json(path)
+        ),
         EpochExpr::TrimmedJson(path) => format!(
             "CASE WHEN {BASE}.resource_type = 'model' THEN NULL ELSE {} END",
             payload.text(path)
@@ -462,7 +555,9 @@ fn column_sql(
         ),
         EpochExpr::Elem => ELEM.to_string(),
         EpochExpr::ElemJson(path) => format!("json_extract_string({ELEM}, '$.{path}')"),
-        EpochExpr::ElemJsonRaw(path) => format!("json_extract({ELEM}, '$.{path}')"),
+        EpochExpr::ElemJsonRaw(path) => {
+            format!("NULLIF(json_extract({ELEM}, '$.{path}'), 'null'::JSON)")
+        }
         EpochExpr::ElemJsonFirst(paths, default) => {
             let mut args: Vec<String> = paths
                 .iter()
@@ -610,7 +705,7 @@ fn project_snapshot(present: &[&'static str]) -> String {
         "SELECT CAST(NULL AS VARCHAR) AS vars_json, CAST(NULL AS VARCHAR) AS env_vars_json, \
          CAST(NULL AS VARCHAR) AS git_sha, CAST(NULL AS VARCHAR) AS git_branch, \
          CAST(NULL AS INTEGER) AS git_is_dirty, CAST(NULL AS VARCHAR) AS pkg_kinds_json, \
-         CAST(NULL AS VARCHAR) AS pkg_lock_json"
+         CAST(NULL AS VARCHAR) AS pkg_lock_json, CAST(NULL AS VARCHAR) AS quoting_json"
             .to_string()
     };
     format!(
@@ -628,6 +723,7 @@ fn project_snapshot(present: &[&'static str]) -> String {
          \x20   NULLIF(r.pkg_kinds_json, '') AS pkg_kinds_json,\n\
          \x20   COALESCE(json_keys(NULLIF(r.pkg_kinds_json, '')), []) AS installed_packages,\n\
          \x20   NULLIF(r.pkg_lock_json, '') AS pkg_lock_json,\n\
+         \x20   NULLIF(r.quoting_json, '') AS quoting_json,\n\
          \x20   g.ingested_at AS ingested_at\n\
          \x20 FROM (SELECT * FROM dbt_internal.epoch_parse_generation LIMIT 1) g\n\
          \x20 LEFT JOIN ({resolver}) r ON TRUE\n\
@@ -761,9 +857,8 @@ fn own_sql(
             );
             Some((sql, Some("epoch_run_catalog_stats")))
         }
-        // The single-row project snapshot. `quoting` and `ai_context` are left
-        // null: the staging schema declares them and `write_parse_project` writes
-        // neither.
+        // The single-row project snapshot. `ai_context` is left null: the staging
+        // schema declares it and `write_parse_project` does not write it.
         "project" => {
             let cols = cast_cols(
                 spec,
@@ -774,6 +869,7 @@ fn own_sql(
                     ("git_sha", format!("{BASE}.git_sha")),
                     ("git_branch", format!("{BASE}.git_branch")),
                     ("git_uncommitted_changes", format!("{BASE}.git_is_dirty")),
+                    ("quoting", format!("{BASE}.quoting_json")),
                     ("ingested_at", format!("{BASE}.ingested_at")),
                     // The generation row's own stamp, which is what "last full
                     // parse" means. `fill_last_full_parse_at` does this on the
@@ -939,6 +1035,8 @@ fn own_sql(
                     ("constraints", "constraints", "VARCHAR"),
                     ("meta", "meta", "VARCHAR"),
                     ("COALESCE(tags, [])", "tags", "VARCHAR[]"),
+                    ("granularity", "granularity", "VARCHAR"),
+                    ("quote", "quote", "BOOLEAN"),
                     ("ingested_at", "ingested_at", "TIMESTAMP WITH TIME ZONE"),
                 ],
                 &["unique_id IS NOT NULL".to_string()]
@@ -1003,14 +1101,14 @@ fn own_sql(
                     ("classifiers", format!("{BASE}.classifiers")),
                     ("constraints", format!("{BASE}.constraints")),
                     ("meta", format!("{BASE}.meta")),
+                    ("quote", format!("{BASE}.quote")),
+                    ("granularity", format!("{BASE}.granularity")),
                     ("comment", format!("{BASE}.catalog_comment")),
                     ("ingested_at", format!("{BASE}.ingested_at")),
                 ],
             )?;
             let list: Vec<&str> = cols.iter().map(String::as_str).collect();
-            // `label`, `expression`, `quote`, `granularity` and `tests` are left
-            // to `cast_cols`' typed nulls. `parse/columns` carries `granularity`,
-            // but `write_parse_columns` does not read it.
+            // `label`, `expression` and `tests` are left to `cast_cols`' typed nulls.
             let sql = format!(
                 "{}FROM (\n\
                  \x20 SELECT\n\
@@ -1019,6 +1117,8 @@ fn own_sql(
                  \x20   COALESCE(k.column_index, m.column_index) AS column_index,\n\
                  \x20   m.declared_type AS declared_type,\n\
                  \x20   m.inferred_type AS inferred_type,\n\
+                 \x20   m.quote AS quote,\n\
+                 \x20   m.granularity AS granularity,\n\
                  \x20   k.catalog_type AS catalog_type,\n\
                  \x20   CASE WHEN k.unique_id IS NULL THEN NULL\n\
                  \x20        WHEN k.catalog_type IS NOT NULL THEN k.catalog_type\n\
@@ -1036,6 +1136,8 @@ fn own_sql(
                  \x20     COALESCE(p.column_name, c.column_name) AS column_name,\n\
                  \x20     c.column_index AS column_index,\n\
                  \x20     p.declared_type AS declared_type,\n\
+                 \x20     p.quote AS quote,\n\
+                 \x20     p.granularity AS granularity,\n\
                  \x20     c.inferred_type AS inferred_type,\n\
                  \x20     COALESCE(c.description, p.description) AS description,\n\
                  \x20     p.constraints AS constraints,\n\
@@ -1363,16 +1465,32 @@ mod tests {
         let again = col(EpochExpr::Json("b"));
         let raw = col(EpochExpr::JsonRawFirst(&["c", "a"]));
         let both = col(EpochExpr::ColThenJson("x", &["a"], "NULL"));
+        let list = col(EpochExpr::JsonList("d.items"));
+        let meta = col(EpochExpr::TestMetadata("name"));
 
         assert_eq!(payload.text, ["a", "b"]);
-        assert_eq!(payload.json, ["c", "a"]);
+        assert_eq!(
+            payload.json,
+            [
+                "c",
+                "a",
+                "d.items",
+                "__test_attr__.test_metadata",
+                "test_metadata"
+            ]
+        );
         assert!(again.contains("t._payload_text[2]"), "{again}");
         assert!(
-            raw.contains("t._payload_json[1], t._payload_json[2]"),
+            raw.contains("NULLIF(t._payload_json[1], 'null'::JSON), NULLIF(t._payload_json[2]"),
             "{raw}"
         );
         assert!(both.contains("t._payload_text[1]"), "{both}");
-        for sql in [&first, &again, &raw, &both] {
+        assert!(
+            list.contains("json_extract_string(t._payload_json[3], '$[*]')"),
+            "{list}"
+        );
+        assert!(meta.contains("t._payload_json[4]"), "{meta}");
+        for sql in [&first, &again, &raw, &both, &list, &meta] {
             assert!(
                 !sql.contains("t.payload"),
                 "parses the payload itself: {sql}"
@@ -1396,6 +1514,44 @@ mod tests {
             sql.matches("json_extract_string(payload, [").count(),
             1,
             "{sql}"
+        );
+    }
+
+    /// Payload paths that still parse the payload themselves, each because it cannot join a
+    /// multi-path extract: a path under a `[*]` wildcard is slotted at its parent instead, and
+    /// the rest read an object's keys, take part in a row predicate, or branch on a type.
+    const PARSES_PAYLOAD_ITSELF: &[&str] = &[
+        "$.__model_attr__.time_spine",
+        "$.__common_attr__.path",
+        "$.__common_attr__.name",
+        "$.name",
+        "$.__metric_attr__.metric_type",
+        "$.__metric_attr__.type_params.input_measures",
+        "$.__metric_attr__.type_params.input_metrics",
+    ];
+
+    /// A column read straight off `t.payload` parses the whole payload again for that column,
+    /// on every row. Reads go through [`PayloadPaths`] instead; this keeps a new column from
+    /// quietly adding a parse. It pins no values -- the differential test does that.
+    #[test]
+    fn node_views_do_not_parse_the_payload_per_column() {
+        let all: Vec<&'static str> = EPOCH_RELATIONS.iter().map(|r| r.view).collect();
+        let mut offenders = Vec::new();
+        for spec in crate::info_schema::schema::INFO_SCHEMA {
+            let Ok((sql, _)) = table_view_sql(spec, &all, true).expect("table_view_sql") else {
+                continue;
+            };
+            for read in sql.split("t.payload, '").skip(1) {
+                let path = &read[..read.find('\'').expect("closing quote")];
+                if !path.contains("[*]") && !PARSES_PAYLOAD_ITSELF.contains(&path) {
+                    offenders.push(format!("{}: {path}", spec.qualified_name()));
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "read through PayloadPaths (an `EpochExpr` variant), or list the path in \
+             PARSES_PAYLOAD_ITSELF with the reason: {offenders:#?}"
         );
     }
 

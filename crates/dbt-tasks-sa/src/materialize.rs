@@ -175,6 +175,12 @@ fn reset_node_overrides(
     unique_id: &str,
     targets: &[NodeOverride],
 ) -> FsResult<()> {
+    // dbt-adapters rolls back an open transaction when it releases the node's connection.
+    if let Err(err) = adapter.end_node_transaction(unique_id) {
+        // The rollback failed, so the session's state is unknown: drop the connection.
+        drop_thread_local_connection();
+        return Err(err);
+    }
     for target in targets.iter().copied() {
         let result = match target {
             NodeOverride::Database => adapter.reset_database(unique_id).map_err(|e| {
@@ -199,6 +205,28 @@ fn reset_node_overrides(
         }
     }
     Ok(())
+}
+
+/// Ends the transaction a node left open on this thread's connection, then returns the node's
+/// result. Does nothing unless the adapter manages transactions (`redshift_use_transactions`).
+///
+/// dbt-adapters rolls a transaction back when a node releases its connection. Here only the
+/// materializations that call `reset_node_overrides` did, so a unit test or a function kept its
+/// transaction open until another node reached the thread. Call it on the thread that ran the
+/// node's statements: a unit test's render phase and run phase are separate blocking tasks.
+/// The node's own error wins over a failed rollback, and a failed rollback drops the connection.
+pub(crate) fn end_node_transaction<T>(
+    adapter: &Adapter,
+    unique_id: &str,
+    result: FsResult<T>,
+) -> FsResult<T> {
+    match adapter.end_node_transaction(unique_id) {
+        Ok(()) => result,
+        Err(err) => {
+            drop_thread_local_connection();
+            result.and(Err(err))
+        }
+    }
 }
 
 fn with_jinja_trace<F, T>(compiled_path: &Path, unique_id: &str, f: F) -> FsResult<T>

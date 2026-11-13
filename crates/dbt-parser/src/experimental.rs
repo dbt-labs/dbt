@@ -50,11 +50,17 @@ use serde::de::DeserializeOwned;
 
 /// Adds nodes of its own kind to a project.
 pub trait ResolveExperimental: Send + Sync {
-    /// The kind of node the experimental adds, e.g. `widget`: its key under `experimental:` and
-    /// `experimental-paths:`, the prefix of its nodes' unique ids
+    /// The kind of node the experimental adds, e.g. `widget`: the prefix of its nodes' unique ids
     /// (`<experimental type>.<package>.<name>`), and a value `resource_type:` selects. It must be
     /// among the reserved keys the experimental is registered with.
     fn experimental_type(&self) -> &'static str;
+
+    /// Its nodes' key under `experimental:` and `experimental-paths:`. The experimental type,
+    /// unless the experimental names another, such as a plural (`evals` for nodes of type `eval`)
+    /// to match the keys the feature will have once it graduates. It must be reserved.
+    fn key(&self) -> &'static str {
+        self.experimental_type()
+    }
 
     /// Other keys the experimental reads, under `experimental:` and `experimental-paths:`, for
     /// definitions that aren't nodes of their own but that its nodes name (e.g. `part`). Each must
@@ -106,13 +112,13 @@ impl<'a> ExperimentalPackage<'a> {
     }
 
     /// The entries under `experimental: <key>:`, one per name, ordered by name. `key` is the
-    /// experimental's type or one of its definition keys.
+    /// experimental's nodes' key or one of its definition keys.
     pub fn entries(&self, key: &str) -> &[ExperimentalEntry] {
         self.entries.get(key).map_or(&[], Vec::as_slice)
     }
 
     /// The files under `experimental-paths: {<key>: [...]}`, in path order, hidden ones skipped.
-    /// `key` is the experimental's type or one of its definition keys.
+    /// `key` is the experimental's nodes' key or one of its definition keys.
     pub fn files(&self, key: &str) -> &[ExperimentalFile] {
         self.files.get(key).map_or(&[], Vec::as_slice)
     }
@@ -396,10 +402,9 @@ fn reads(experimental: &dyn ResolveExperimental, key: &str) -> bool {
     keys(experimental).any(|own| own == key)
 }
 
-/// The keys `experimental` reads: its type, then its definition keys.
+/// The keys `experimental` reads: its nodes' key, then its definition keys.
 pub(crate) fn keys(experimental: &dyn ResolveExperimental) -> impl Iterator<Item = &'static str> {
-    std::iter::once(experimental.experimental_type())
-        .chain(experimental.definition_keys().iter().copied())
+    std::iter::once(experimental.key()).chain(experimental.definition_keys().iter().copied())
 }
 
 #[cfg(test)]

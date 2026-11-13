@@ -548,7 +548,19 @@ pub(crate) fn adbc_execute_with_options(
     log_step_duration("create_debug_span(...).entered()", t_span_create.elapsed());
 
     let t_do_execute = std::time::Instant::now();
-    let do_execute_result = engine.query_retry_policy().execute(|| do_execute(conn));
+    // A failed statement aborts the open transaction, so retrying it on this connection could
+    // only fail with "current transaction is aborted" and hide the original error.
+    //
+    // TODO: parity gap with dbt-redshift. It retries a retryable error inside a transaction by
+    // closing and reopening the connection, then re-running the failed statement
+    // (`RedshiftConnectionManager.execute`). That drops the transaction's earlier statements
+    // without telling the user. Fusion fails the node instead. Decide whether to match v1, or
+    // to retry the whole node.
+    let do_execute_result = if crate::connection::open_transaction().is_some() {
+        do_execute(&mut *conn)
+    } else {
+        engine.query_retry_policy().execute(|| do_execute(conn))
+    };
     let (schema, batches, rows_affected) = match do_execute_result {
         Ok(res) => res,
         Err(err @ (Cancellable::Cancelled | Cancellable::Error(_))) => {

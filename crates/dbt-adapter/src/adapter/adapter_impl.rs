@@ -1,7 +1,10 @@
 use crate::catalog_relation::CatalogRelation;
 use crate::column::{BigqueryColumnMode, Column, ColumnBuilder};
 use crate::config::AdapterConfig;
-use crate::connection::{ConnectionGuard, borrow_tlocal_connection};
+use crate::connection::{
+    ConnectionGuard, borrow_tlocal_connection, clear_open_transaction, open_transaction,
+    set_open_transaction,
+};
 use crate::engine::{
     AdapterEngine, AdbcEngine, Options as ExecuteOptions, execute_query_with_retry,
 };
@@ -548,6 +551,25 @@ impl AdapterImpl {
         Ok(())
     }
 
+    /// Whether a node left a transaction open on this thread's connection.
+    pub(crate) fn has_open_transaction(&self) -> bool {
+        self.manages_transactions() && open_transaction().is_some()
+    }
+
+    /// Rolls back the transaction a node left open. dbt-adapters does this when it releases the
+    /// node's connection. Data tests need it: `statement('main')` begins a transaction and the
+    /// test materialization commits only when it stores failures.
+    pub fn rollback_open_transaction(
+        &self,
+        conn: &mut ConnectionGuard,
+        node_id: &str,
+        token: CancellationToken,
+    ) -> FsResult<()> {
+        let ctx = QueryCtx::default().with_node_id(node_id);
+        self.exec_stmt(&ctx, conn, "rollback", false, token)?;
+        Ok(())
+    }
+
     /// BaseAdapter https://github.com/dbt-labs/dbt-adapters/blob/0efd8d3d1081e1ab43e38797d5104f7b424a6284/dbt-adapters/src/dbt/adapters/base/impl.py#L655
     pub fn cache_added(
         &self,
@@ -804,7 +826,7 @@ impl AdapterImpl {
         conn: &mut ConnectionGuard<'_>,
         ctx: &QueryCtx,
         sql: &str,
-        _auto_begin: bool,
+        auto_begin: bool,
         fetch: bool,
         _limit: Option<i64>,
         options: Option<ExecuteOptions>,
@@ -860,7 +882,54 @@ impl AdapterImpl {
 
         let mut last_batch = None;
         let mut transaction_open = false;
+        let manages_transactions = self.manages_transactions();
+        let node_id = state.and_then(node_id_from_state);
+        if manages_transactions && let Some(owner) = open_transaction() {
+            if owner.is_some() && node_id.is_some() && owner != node_id {
+                // shortcut: a node that never called `adapter.commit()` is rolled back when the
+                // next node reaches this connection, not when it finishes; revisit if that
+                // holds locks too long.
+                if let Err(err) = execute_query_with_retry(
+                    engine.clone(),
+                    state,
+                    conn.as_mut(),
+                    ctx,
+                    "rollback",
+                    /* retry_limit = */ 1,
+                    &options,
+                    false,
+                    token.clone(),
+                ) {
+                    conn.discard_conn_on_drop();
+                    return Err(err);
+                }
+                clear_open_transaction();
+            } else {
+                transaction_open = true;
+            }
+        }
         for sql in statements {
+            // dbt-redshift opens a transaction before the first statement that asks for one
+            // (`auto_begin`) and `adapter.commit()` ends it.
+            if manages_transactions
+                && auto_begin
+                && !transaction_open
+                && transaction_boundary(sql).is_none()
+            {
+                execute_query_with_retry(
+                    engine.clone(),
+                    state,
+                    conn.as_mut(),
+                    ctx,
+                    "begin",
+                    /* retry_limit = */ 1,
+                    &options,
+                    false,
+                    token.clone(),
+                )?;
+                transaction_open = true;
+                set_open_transaction(node_id.clone());
+            }
             match execute_query_with_retry(
                 engine.clone(),
                 state,
@@ -874,17 +943,51 @@ impl AdapterImpl {
             ) {
                 Ok(batch) => {
                     match transaction_boundary(sql) {
-                        Some(TransactionBoundary::Begin) => transaction_open = true,
-                        Some(TransactionBoundary::End) => transaction_open = false,
+                        Some(TransactionBoundary::Begin) => {
+                            transaction_open = true;
+                            if manages_transactions {
+                                set_open_transaction(node_id.clone());
+                            }
+                        }
+                        Some(TransactionBoundary::End) => {
+                            transaction_open = false;
+                            if manages_transactions {
+                                clear_open_transaction();
+                            }
+                        }
                         None => {}
                     }
                     last_batch = Some(batch);
                 }
                 Err(err) => {
                     if transaction_open {
-                        // The driver may have given up on a request the warehouse is still
-                        // running, so the session's transaction state is unknown. Retire the
-                        // connection (closing its session) instead of recycling it.
+                        // The warehouse answered with an error, so the session is idle and its
+                        // transaction is aborted. Roll it back and keep the connection, as
+                        // dbt-adapters does (`rollback_if_open` in its exception handler):
+                        // closing it would also drop the session's state.
+                        if manages_transactions
+                            && is_server_error(&err)
+                            && execute_query_with_retry(
+                                engine.clone(),
+                                state,
+                                conn.as_mut(),
+                                ctx,
+                                "rollback",
+                                /* retry_limit = */ 1,
+                                &options,
+                                false,
+                                token,
+                            )
+                            .is_ok()
+                        {
+                            clear_open_transaction();
+                            return Err(with_create_or_alter_hint(adapter_type, sql, err));
+                        }
+                        // Any other failure (a cancelled or abandoned request, a lost
+                        // connection, or a failed rollback): the driver may have given up on a
+                        // request the warehouse is still running, so the session's transaction
+                        // state is unknown. Retire the connection (closing its session) instead
+                        // of recycling it.
                         conn.discard_conn_on_drop();
                         return Err(AdapterError::new_with_sqlstate_and_vendor_code(
                             err.kind(),
@@ -1381,6 +1484,7 @@ impl AdapterImpl {
         let relation = relation.without_identifier()?;
         let args = [RelationObject::new(relation).into_value()];
         execute_macro(state, &args, "create_schema")?;
+        self.commit_open_transaction(state, CancellationToken::never_cancels())?;
         Ok(none_value())
     }
 
@@ -1397,6 +1501,7 @@ impl AdapterImpl {
         let dropped_schema = relation.schema().map(str::to_string);
         let args = [RelationObject::new(relation).into_value()];
         execute_macro(state, &args, "drop_schema")?;
+        self.commit_open_transaction(state, CancellationToken::never_cancels())?;
         // httpclient.py `database_dropped` parity: after dropping the
         // connection's own default database, clear it so follow-up statements
         // don't fail with UNKNOWN_DATABASE (falls back to the user's default
@@ -5583,6 +5688,14 @@ enum TransactionBoundary {
     End,
 }
 
+/// Whether the warehouse itself rejected the statement, so the session is idle and usable.
+/// The driver reports that as a `Driver` error with a SQLSTATE. A cancelled request (SQLSTATE
+/// 57014) or an error without a SQLSTATE, such as a dropped connection, leaves the session in an
+/// unknown state.
+fn is_server_error(err: &AdapterError) -> bool {
+    err.kind() == AdapterErrorKind::Driver && err.sqlstate() != "00000"
+}
+
 fn transaction_boundary(sql: &str) -> Option<TransactionBoundary> {
     let sql = sql.trim().trim_end_matches(';').trim().to_ascii_lowercase();
     let mut words = sql.split_whitespace();
@@ -5642,6 +5755,46 @@ fn with_create_or_alter_hint(
 }
 
 impl AdapterImpl {
+    /// Whether this adapter wraps a node's statements in a server transaction, like dbt-redshift.
+    /// Opt-in through `redshift_use_transactions`; `redshift_skip_autocommit_transaction_statements`
+    /// still turns it off, as it does in dbt-redshift.
+    pub(crate) fn manages_transactions(&self) -> bool {
+        let flag = |name: &str| {
+            self.behavior_object()
+                .get_value(&Value::from(name))
+                .is_some_and(|flag| flag.is_true())
+        };
+        self.adapter_type() == Redshift
+            && flag("redshift_use_transactions")
+            && !flag("redshift_skip_autocommit_transaction_statements")
+    }
+
+    /// Commits the transaction a macro opened on this thread, if transactions are managed and one
+    /// is open. dbt-adapters does this after schema DDL (`SQLAdapter.create_schema`); without it
+    /// the schema stays invisible to other workers until the next node on this thread commits.
+    pub(crate) fn commit_open_transaction(
+        &self,
+        state: &State,
+        token: CancellationToken,
+    ) -> AdapterResult<()> {
+        if !self.manages_transactions() || open_transaction().is_none() {
+            return Ok(());
+        }
+        let mut conn = self.borrow_tlocal_connection(Some(state), node_id_from_state(state))?;
+        self.execute(
+            Some(state),
+            &mut conn,
+            None,
+            "commit",
+            false,
+            false,
+            None,
+            None,
+            token,
+        )?;
+        Ok(())
+    }
+
     pub fn new(
         engine: Arc<dyn AdapterEngine>,
         schema_store: Option<Arc<dyn SchemaStoreTrait>>,
@@ -6522,6 +6675,27 @@ mod tests {
         // Not a driver (database) error.
         let config = AdapterError::new(AdapterErrorKind::Configuration, "CREATE OR ALTER");
         assert!(!gets_hint(Snowflake, CREATE_OR_ALTER_SQL, config));
+    }
+
+    #[test]
+    fn is_server_error_needs_a_sqlstate_that_is_not_a_connection_failure() {
+        let err = |kind, sqlstate: &[u8; 5]| {
+            AdapterError::new_with_sqlstate_and_vendor_code(
+                kind,
+                "boom".to_string(),
+                *sqlstate,
+                None,
+            )
+        };
+        // The warehouse rejected the statement: the session is idle and can be rolled back.
+        assert!(is_server_error(&err(AdapterErrorKind::Driver, b"22012")));
+        // A cancelled request, or an error without a SQLSTATE, leaves the session in an unknown
+        // state.
+        assert!(!is_server_error(&err(
+            AdapterErrorKind::Cancelled,
+            b"57014"
+        )));
+        assert!(!is_server_error(&err(AdapterErrorKind::Driver, b"00000")));
     }
 
     #[test]

@@ -165,6 +165,15 @@ pub fn try_load_prev_compilation(
         return (PrevCompilationResult::None, use_lazy_filter);
     };
 
+    // `threads` is not serialized into the cache (it is a flag, not profile content), so a
+    // restored profile has none. Resolve it again the way a fresh load does, or the invocation
+    // record loses `target_threads` on every partial-parse run.
+    let mut state = state;
+    state.dbt_profile.threads =
+        dbt_loader::loader::resolve_threads(&state.dbt_profile, eval.num_threads)
+            .ok()
+            .flatten();
+
     let dbt_state = Arc::new(DbtState {
         dbt_profile: state.dbt_profile.clone(),
         run_started_at: chrono::Utc::now().with_timezone(&chrono_tz::UTC),

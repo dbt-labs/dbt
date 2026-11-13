@@ -297,6 +297,49 @@ fn update_resolved_states_manifest_with_schemas_and_compiled_sql_core(
         }
     }
 
+    // Functions and hooks compile too, and their SQL is written under `target/compiled/`
+    // like an analysis's; without this their `compiled_code` stays unset.
+    if (arg.write_json || arg.write_metadata)
+        && let Some(dbt_manifest) = dbt_manifest.as_mut()
+    {
+        for (unique_id, function) in resolved_state.nodes.functions.iter() {
+            // The manifest keeps functions in their own map, not in `nodes`.
+            if let Some(manifest_function) = dbt_manifest.functions.get_mut(unique_id) {
+                let absolute_path =
+                    function.get_node_path_abs(NodePathKind::Compiled, &io.in_dir, &io.out_dir);
+                if let Ok(compiled_sql) = stdfs::read_to_string(&absolute_path) {
+                    let relative_path = stdfs::diff_paths(&absolute_path, &io.in_dir)?;
+                    let base = &mut manifest_function.__base_attr__;
+                    base.compiled_path = Some(relative_path.to_string_lossy().to_string());
+                    base.compiled_code = Some(compiled_sql);
+                    base.compiled = Some(true);
+                }
+            }
+        }
+        // A hook is rendered only when the run executes it, so a command that does not
+        // leaves no file and the hook keeps no compiled code.
+        let hooks = resolved_state
+            .operations
+            .on_run_start
+            .iter()
+            .chain(resolved_state.operations.on_run_end.iter());
+        for hook in hooks {
+            let unique_id = hook.common().unique_id.clone();
+            if let Some(DbtNode::Operation(manifest_hook)) = dbt_manifest.nodes.get_mut(&unique_id)
+            {
+                let absolute_path =
+                    hook.get_node_path_abs(NodePathKind::Compiled, &io.in_dir, &io.out_dir);
+                if let Ok(compiled_sql) = stdfs::read_to_string(&absolute_path) {
+                    let relative_path = stdfs::diff_paths(&absolute_path, &io.in_dir)?;
+                    let base = &mut manifest_hook.__base_attr__;
+                    base.compiled_path = Some(relative_path.to_string_lossy().to_string());
+                    base.compiled_code = Some(compiled_sql);
+                    base.compiled = Some(true);
+                }
+            }
+        }
+    }
+
     if let Some(dbt_manifest) = dbt_manifest
         && arg.write_json
     {

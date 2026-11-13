@@ -479,6 +479,33 @@ fn write_metadata_parquet_impl(
         }
     }
 
+    // Functions live in their own manifest map, so the loop above never sees them. They compile
+    // SQL of their own; write it with the strict-analysis rows when there is any.
+    if arg.write_metadata
+        && (arg.static_analysis.is_some_and(is_strict_static_analysis)
+            || arg.infer_schemas_and_typeless)
+    {
+        for (uid, function) in &manifest.functions {
+            let compiled_code = function.__base_attr__.compiled_code.clone();
+            compiled_node_rows.push(dbt_metadata_parquet::compiled_node::CompiledNodeRow {
+                unique_id: uid.to_string(),
+                compiled_code_hash: compiled_code.as_deref().map(hash_str),
+                compiled_code,
+                compiled_path: function.__base_attr__.compiled_path.clone(),
+                grain: "[]".to_string(),
+                grain_declared: "[]".to_string(),
+                grain_tested: "[]".to_string(),
+                grain_inferred: "[]".to_string(),
+                classifiers: merge_classifiers_json(
+                    &function.__common_attr__.classifiers,
+                    node_classifiers.get(uid.as_str()),
+                ),
+                table_role: None,
+                ingested_at,
+            });
+        }
+    }
+
     // sources: compile/columns (parse/columns now written by parse_state::save)
     for (uid, src) in &manifest.sources {
         // compile/columns — src.columns is already merged with schema types by update_manifest
@@ -511,7 +538,29 @@ fn write_metadata_parquet_impl(
     } else {
         Some(recomputed_column_lineage_targets)
     };
-    let compiled_nodes_targets = targets_opt;
+    // Column lineage is recomputed for models, so the recomputed set holds nothing else, yet
+    // functions, hooks, analyses and snapshots compile and carry compiled SQL of their own.
+    // Left out of the set their rows were never written, so `compiled_code` stayed unset
+    // whenever the set was not empty. Only those types are added: tests keep their own rows and
+    // seeds have no SQL, so a partial compile does not rewrite them.
+    let compiled_nodes_scope: Option<HashSet<String>> = targets_opt.map(|targets| {
+        let mut scope = targets.clone();
+        scope.extend(
+            manifest
+                .nodes
+                .iter()
+                .filter(|(_, node)| {
+                    matches!(
+                        node,
+                        DbtNode::Operation(_) | DbtNode::Analysis(_) | DbtNode::Snapshot(_)
+                    )
+                })
+                .map(|(uid, _)| uid.to_string()),
+        );
+        scope.extend(manifest.functions.keys().map(|uid| uid.to_string()));
+        scope
+    });
+    let compiled_nodes_targets = compiled_nodes_scope.as_ref();
     let compile_columns_targets = targets_opt;
 
     let cll_dir = arg.metadata_dir().join("compile").join("column_lineage");

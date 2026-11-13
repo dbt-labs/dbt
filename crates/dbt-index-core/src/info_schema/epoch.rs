@@ -51,19 +51,6 @@ pub const ELEM: &str = "u.e";
 /// Beside it so the alias and the reference to it cannot drift apart.
 pub const ELEM_REL: &str = "u(e)";
 
-/// The `test_metadata` object inside a test node's payload, under either of the
-/// two names the payload carries it under.
-///
-/// A macro rather than a `const` so `concat!` can splice it: three columns read
-/// through it and its presence is `test_metadata`'s row predicate, and writing the
-/// COALESCE out four times is four chances for the copies to drift apart.
-macro_rules! test_metadata_obj {
-    () => {
-        "COALESCE(json_extract(t.payload, '$.__test_attr__.test_metadata'), \
-         json_extract(t.payload, '$.test_metadata'))"
-    };
-}
-
 /// How one staging column is computed from its epoch source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EpochExpr {
@@ -92,8 +79,38 @@ pub enum EpochExpr {
     /// payload shapes. Order matters and matches the Rust order; the fallback is
     /// `"NULL"` where the Rust path has none.
     JsonFirst(&'static [&'static str], &'static str),
-    /// [`EpochExpr::JsonFirst`] kept as JSON text, with no fallback.
+    /// [`EpochExpr::JsonFirst`] kept as JSON text, with no fallback. A JSON `null` in a slot
+    /// is SQL NULL, so it does not hide a later path.
     JsonRawFirst(&'static [&'static str]),
+    /// A `config` entry kept as JSON text, null when absent, `null`, `{}` or `[]`: the
+    /// `cfg_json` closure in `extract_parse_nodes_batch`. Takes the full path, so a dashed
+    /// key is written `config."pre-hook"`.
+    ConfigJson(&'static str),
+    /// A field of the `test_metadata` object, as text. The object sits under either of the two
+    /// names the payload carries it under, `__test_attr__.test_metadata` first.
+    TestMetadata(&'static str),
+    /// [`EpochExpr::TestMetadata`] kept as JSON text.
+    TestMetadataJson(&'static str),
+    /// A path holding a JSON string, as text; any other JSON type is null, as in `cfg_str`.
+    StrIfString(&'static str),
+    /// The first path holding a JSON boolean, else the default (`None` is null).
+    BoolFirst(&'static [&'static str], Option<bool>),
+    /// A hook config under either spelling -- Fusion writes `pre_hook`, manifest configs spell
+    /// it `pre-hook` -- as dbt's manifest does: a list of `{sql, transaction}`. The config holds
+    /// whatever shape the author used (one string, a list of strings, or a list of objects), so
+    /// a consumer would otherwise have to handle all three. Mirrors `normalize_hooks` in the
+    /// Rust ingest.
+    Hooks(&'static str, &'static str),
+    /// A model version as text, the way `version_str` in the Rust ingest does it: a string as
+    /// is, a number printed, anything else (including JSON `null`) as the next path. Each path
+    /// is tried in turn, so a JSON `null` under the first does not hide the second.
+    VersionText(&'static [&'static str]),
+    /// `{"meta": <meta>}` around the JSON at the path, `{}` when it is absent or `null`: how the
+    /// manifest builds a group's `config`.
+    MetaObject(&'static str),
+    /// For nodes of the given resource type, the non-empty text at the path, else the named
+    /// column; for every other type, the column.
+    TextOrColForType(&'static str, &'static str, &'static str),
     /// A column of the base relation, then [`EpochExpr::JsonFirst`] over the
     /// payload: the Rust path prefers the parsed column and reads the payload
     /// only when it is unset.
@@ -230,7 +247,8 @@ pub const EPOCH_RELATIONS: &[EpochRelation] = &[
         // A node's column set is republished whole, so the newest epoch that
         // mentions a node replaces every column row it had.
         supersede: Supersede::LatestGroup("unique_id"),
-        backfill: &[],
+        // Epochs written before `quote` was recorded lack it.
+        backfill: &[("quote", "BOOLEAN")],
     },
     EpochRelation {
         view: "epoch_parse_alive",
@@ -251,7 +269,7 @@ pub const EPOCH_RELATIONS: &[EpochRelation] = &[
         dir: PARSE_RESOLVER_STATE,
         single_file: true,
         supersede: Supersede::KeepAll,
-        backfill: &[("pkg_lock_json", "VARCHAR")],
+        backfill: &[("pkg_lock_json", "VARCHAR"), ("quoting_json", "VARCHAR")],
     },
     EpochRelation {
         view: "epoch_parse_generation",
@@ -296,14 +314,21 @@ pub const EPOCH_RELATIONS: &[EpochRelation] = &[
         dir: RUN_INVOCATIONS_SUBDIR,
         single_file: false,
         supersede: Supersede::KeepAll,
-        backfill: &[],
+        // Epochs written before these were recorded lack them.
+        backfill: &[
+            ("target_database", "VARCHAR"),
+            ("target_schema", "VARCHAR"),
+            ("target_threads", "INTEGER"),
+            ("vars_override", "VARCHAR"),
+        ],
     },
     EpochRelation {
         view: "epoch_run_results",
         dir: RUN_RESULTS_SUBDIR,
         single_file: false,
         supersede: Supersede::KeepAll,
-        backfill: &[],
+        // Epochs written before microbatch results were recorded lack it.
+        backfill: &[("batch_results", "VARCHAR")],
     },
     EpochRelation {
         view: "epoch_run_freshness",
@@ -625,14 +650,9 @@ pub fn origin(staging_table: &str) -> Option<Origin> {
         "unit_tests" => node_derived("t.resource_type = 'unit_test'"),
         "saved_queries" => node_derived("t.resource_type = 'saved_query'"),
         "semantic_models" => node_derived("t.resource_type = 'semantic_model'"),
-        // A test node with no `test_metadata` in its payload gets no row here
-        // (`if let Some(tm) = tm`) — which, this being the right side of a LEFT
-        // join, nulls the columns rather than dropping the node.
-        "test_metadata" => node_derived(concat!(
-            "t.resource_type = 'test' AND ",
-            test_metadata_obj!(),
-            " IS NOT NULL"
-        )),
+        // Every test node gets a row. A singular test has no `test_metadata`, so its name,
+        // namespace and arguments are NULL, but its severity and thresholds are in `config`.
+        "test_metadata" => node_derived("t.resource_type = 'test'"),
         // Time spines hang off a model rather than being their own resource type.
         // `json_type` rather than `IS NOT NULL`: the field serialises as JSON
         // `null` on a model that has no time spine, and `json_extract` returns
@@ -722,10 +742,9 @@ const RUN_RESULTS: &[(&str, EpochExpr)] = &[
     ("thread_id", EpochExpr::Same),
     ("message", EpochExpr::Same),
     ("failures", EpochExpr::Same),
-    // `compiled`, `batch_results` and `rows_affected` are not in the epoch
-    // payload; `write_run_results` sets all three to `None`.
+    // `compiled` and `rows_affected` are not in the epoch payload.
     ("compiled", EpochExpr::Null),
-    ("batch_results", EpochExpr::Null),
+    ("batch_results", EpochExpr::Same),
     ("rows_affected", EpochExpr::Null),
     ("compiled_code_hash", EpochExpr::Same),
     ("relation_name", EpochExpr::Same),
@@ -751,12 +770,15 @@ const INVOCATIONS: &[(&str, EpochExpr)] = &[
     ("git_branch", EpochExpr::Same),
     // Stored as an int in the epoch, boolean in the index.
     ("git_is_dirty", EpochExpr::Sql("git_is_dirty = 1")),
-    // Not carried in the epoch: `write_run_invocations` sets each to `None`.
-    ("args", EpochExpr::Null),
-    ("target_database", EpochExpr::Null),
-    ("target_schema", EpochExpr::Null),
-    ("target_threads", EpochExpr::Null),
-    ("vars_override", EpochExpr::Null),
+    // The command line, as a JSON array; null when none was recorded.
+    (
+        "args",
+        EpochExpr::Sql("CASE WHEN len(cli_args) > 0 THEN CAST(to_json(cli_args) AS VARCHAR) END"),
+    ),
+    ("target_database", EpochExpr::Same),
+    ("target_schema", EpochExpr::Same),
+    ("target_threads", EpochExpr::Same),
+    ("vars_override", EpochExpr::Same),
 ];
 
 /// `dbt.source_freshness` ← `run/freshness`, published as `dbt_rt.freshness`.
@@ -811,7 +833,13 @@ const NODES: &[(&str, EpochExpr)] = &[
     ("name", EpochExpr::Same),
     ("resource_type", EpochExpr::Same),
     ("package_name", EpochExpr::Same),
-    ("original_file_path", EpochExpr::Col("original_path")),
+    // A generic test's own path is the generated SQL file; the YAML that declares it is
+    // `manifest_original_file_path`, as in `manifest.json`. The `original_path` column
+    // stays the file the node was parsed from, which selectors use.
+    (
+        "original_file_path",
+        EpochExpr::TextOrColForType("test", "manifest_original_file_path", "original_path"),
+    ),
     ("alias", EpochExpr::Same),
     ("description", EpochExpr::Same),
     ("relation_name", EpochExpr::Same),
@@ -826,7 +854,11 @@ const NODES: &[(&str, EpochExpr)] = &[
     ),
     (
         "group_name",
-        EpochExpr::ColThenJson("group_name", &["__model_attr__.group"], "NULL"),
+        EpochExpr::ColThenJson(
+            "group_name",
+            &["__model_attr__.group", "config.group"],
+            "NULL",
+        ),
     ),
     // `unwrap_or_default()` on a `&str`: absent is the empty string, not null.
     (
@@ -903,11 +935,11 @@ const NODES: &[(&str, EpochExpr)] = &[
     ),
     (
         "version",
-        EpochExpr::JsonRawFirst(&["__model_attr__.version", "version"]),
+        EpochExpr::VersionText(&["__model_attr__.version", "version"]),
     ),
     (
         "latest_version",
-        EpochExpr::JsonRawFirst(&["__model_attr__.latest_version", "latest_version"]),
+        EpochExpr::VersionText(&["__model_attr__.latest_version", "latest_version"]),
     ),
     // The payload holds `config` as an object for every node type, and the ingest writer
     // stores it as that object's JSON text, so this is the same form for all of them.
@@ -932,10 +964,7 @@ const NODES: &[(&str, EpochExpr)] = &[
     // other resource type the path is absent and the column is an empty list.
     (
         "primary_key",
-        EpochExpr::Sql(
-            "COALESCE(json_extract_string(t.payload, \
-             '$.__model_attr__.primary_key[*]'), [])",
-        ),
+        EpochExpr::JsonList("__model_attr__.primary_key"),
     ),
     // Not read by any output table, but the staging schema declares it and the
     // builder fills it, so leaving it unmapped would be a hole in the totality
@@ -960,28 +989,66 @@ const NODES: &[(&str, EpochExpr)] = &[
     ("grain_declared", EpochExpr::JoinJsonList("grain_declared")),
     ("grain_tested", EpochExpr::JoinJsonList("grain_tested")),
     ("classifiers", EpochExpr::JoinJsonList("classifiers")),
-    // ── hardcoded by the conversion ──────────────────────────────────────
-    // Non-nullable and always `true` / `vec![]` in `NodeRow`.
-    ("docs_show", EpochExpr::True),
+    // ── read from `config`, as `extract_parse_nodes_batch` does ───────────
+    // Non-nullable and `true` unless `docs.show` says otherwise, from the config
+    // first and the payload second.
+    (
+        "docs_show",
+        EpochExpr::BoolFirst(&["config.docs.show", "docs.show"], Some(true)),
+    ),
     ("grain_inferred", EpochExpr::JoinJsonList("grain_inferred")),
-    // Declared in the staging schema, never populated: the payload has the data
-    // for most of these, but nothing reads it into `OwnedNodeRow`.
     ("node_language", EpochExpr::Json("__common_attr__.language")),
-    ("incremental_strategy", EpochExpr::Null),
-    ("on_schema_change", EpochExpr::Null),
-    ("unique_key", EpochExpr::Null),
-    ("full_refresh", EpochExpr::Null),
-    ("persist_docs", EpochExpr::Null),
-    ("pre_hook", EpochExpr::Null),
-    ("post_hook", EpochExpr::Null),
-    ("grants", EpochExpr::Null),
-    ("time_spine", EpochExpr::Null),
+    (
+        "incremental_strategy",
+        EpochExpr::StrIfString("config.incremental_strategy"),
+    ),
+    (
+        "on_schema_change",
+        EpochExpr::StrIfString("config.on_schema_change"),
+    ),
+    ("unique_key", EpochExpr::StrIfString("config.unique_key")),
+    (
+        "full_refresh",
+        EpochExpr::BoolFirst(&["config.full_refresh"], None),
+    ),
+    ("persist_docs", EpochExpr::ConfigJson("config.persist_docs")),
+    (
+        "pre_hook",
+        EpochExpr::Hooks("config.pre_hook", "config.\"pre-hook\""),
+    ),
+    (
+        "post_hook",
+        EpochExpr::Hooks("config.post_hook", "config.\"post-hook\""),
+    ),
+    ("grants", EpochExpr::ConfigJson("config.grants")),
+    (
+        "time_spine",
+        EpochExpr::JsonRawFirst(&["__model_attr__.time_spine", "time_spine"]),
+    ),
+    // Declared in the staging schema, never populated.
     ("ai_context", EpochExpr::Null),
-    ("loaded_at_query", EpochExpr::Null),
-    ("freshness", EpochExpr::Null),
-    ("external_config", EpochExpr::Null),
+    // Source-only: read from `__source_attr__`, the top level being the earlier shape.
+    (
+        "loaded_at_query",
+        EpochExpr::JsonFirst(
+            &["__source_attr__.loaded_at_query", "loaded_at_query"],
+            "NULL",
+        ),
+    ),
+    (
+        "freshness",
+        EpochExpr::JsonRawFirst(&["__source_attr__.freshness", "freshness"]),
+    ),
+    (
+        "external_config",
+        EpochExpr::JsonRawFirst(&["__source_attr__.external", "external"]),
+    ),
     ("source_meta", EpochExpr::Null),
-    ("quoting", EpochExpr::Null),
+    // The user-declared block; `__base_attr__.quoting` is the resolved form.
+    (
+        "quoting",
+        EpochExpr::JsonRawFirst(&["__source_attr__.user_quoting", "quoting"]),
+    ),
     ("extra_ctes", EpochExpr::Null),
     ("compiled_at", EpochExpr::Null),
     ("raw_code_hash", EpochExpr::Null),
@@ -1080,7 +1147,11 @@ const SEMANTIC_DIMENSIONS: &[(&str, EpochExpr)] = &[
         "time_granularity",
         EpochExpr::ElemJson("type_params.time_granularity"),
     ),
-    ("validity_params", EpochExpr::ElemJsonRaw("validity_params")),
+    // Under `type_params`, where the resolver puts it.
+    (
+        "validity_params",
+        EpochExpr::ElemJsonRaw("type_params.validity_params"),
+    ),
     (
         "config",
         EpochExpr::SqlJson("NULLIF(json_extract(u.e, '$.config'), 'null'::JSON)"),
@@ -1116,11 +1187,16 @@ const GROUPS: &[(&str, EpochExpr)] = &[
         "description",
         EpochExpr::Json("__common_attr__.description"),
     ),
-    // `build_group_from_payload` does not set it, so the staging column — which
-    // exists — is null on every row.
-    ("package_name", EpochExpr::Null),
-    ("original_file_path", EpochExpr::Null),
-    ("config", EpochExpr::Null),
+    (
+        "package_name",
+        EpochExpr::Json("__common_attr__.package_name"),
+    ),
+    (
+        "original_file_path",
+        EpochExpr::Json("__common_attr__.original_file_path"),
+    ),
+    // The manifest builds a group's `config` as `{"meta": <meta>}`.
+    ("config", EpochExpr::MetaObject("__common_attr__.meta")),
     ("owner_name", EpochExpr::Json("__group_attr__.owner.name")),
     ("owner_email", EpochExpr::Json("__group_attr__.owner.email")),
     ("ingested_at", EpochExpr::Same),
@@ -1154,37 +1230,15 @@ const MACROS: &[(&str, EpochExpr)] = &[
     ("ingested_at", EpochExpr::Same),
 ];
 
-/// `dbt.data_tests`'s generic-test half ← `parse/nodes` where
-/// `resource_type = 'test'` and the payload carries `test_metadata`.
+/// `dbt.data_tests`'s detail half ← `parse/nodes` where `resource_type = 'test'`.
 ///
-/// The severity and threshold columns come from `deprecated_config`, not from the
-/// `test_metadata` object — but they are still guarded by its presence, because
-/// the Rust path only ever emits this table's row inside `if let Some(tm)`.
+/// The severity and threshold columns come from `deprecated_config` or `config`, not from the
+/// `test_metadata` object, so a singular test, which has none, still has them. The columns that
+/// do read it are NULL for a singular test.
 const TEST_METADATA: &[(&str, EpochExpr)] = &[
-    (
-        "test_name",
-        EpochExpr::Sql(concat!(
-            "json_extract_string(",
-            test_metadata_obj!(),
-            ", '$.name')"
-        )),
-    ),
-    (
-        "test_namespace",
-        EpochExpr::Sql(concat!(
-            "json_extract_string(",
-            test_metadata_obj!(),
-            ", '$.namespace')"
-        )),
-    ),
-    (
-        "kwargs",
-        EpochExpr::SqlJson(concat!(
-            "json_extract(",
-            test_metadata_obj!(),
-            ", '$.kwargs')"
-        )),
-    ),
+    ("test_name", EpochExpr::TestMetadata("name")),
+    ("test_namespace", EpochExpr::TestMetadata("namespace")),
+    ("kwargs", EpochExpr::TestMetadataJson("kwargs")),
     ("column_name", EpochExpr::Json("__test_attr__.column_name")),
     (
         "attached_node",
@@ -1201,20 +1255,48 @@ const TEST_METADATA: &[(&str, EpochExpr)] = &[
         "severity",
         EpochExpr::JsonFirst(&["deprecated_config.severity", "config.severity"], "NULL"),
     ),
-    ("warn_if", EpochExpr::Json("deprecated_config.warn_if")),
-    ("error_if", EpochExpr::Json("deprecated_config.error_if")),
-    ("fail_calc", EpochExpr::Json("deprecated_config.fail_calc")),
+    // The payload spells the test's config `config`, the earlier shape `deprecated_config`. An
+    // unset threshold takes dbt's default, as the Rust ingest does.
+    (
+        "warn_if",
+        EpochExpr::JsonFirst(&["deprecated_config.warn_if", "config.warn_if"], "'!= 0'"),
+    ),
+    (
+        "error_if",
+        EpochExpr::JsonFirst(&["deprecated_config.error_if", "config.error_if"], "'!= 0'"),
+    ),
+    (
+        "fail_calc",
+        EpochExpr::JsonFirst(
+            &["deprecated_config.fail_calc", "config.fail_calc"],
+            "'count(*)'",
+        ),
+    ),
     (
         "store_failures",
-        EpochExpr::Json("deprecated_config.store_failures"),
+        EpochExpr::JsonFirst(
+            &["deprecated_config.store_failures", "config.store_failures"],
+            "NULL",
+        ),
     ),
     (
         "store_failures_as",
-        EpochExpr::Json("deprecated_config.store_failures_as"),
+        EpochExpr::JsonFirst(
+            &[
+                "deprecated_config.store_failures_as",
+                "config.store_failures_as",
+            ],
+            "NULL",
+        ),
     ),
-    // The staging schema has both, and `test_meta_rows` sets neither.
-    ("test_limit", EpochExpr::Null),
-    ("test_where", EpochExpr::Null),
+    (
+        "test_limit",
+        EpochExpr::JsonFirst(&["deprecated_config.limit", "config.limit"], "NULL"),
+    ),
+    (
+        "test_where",
+        EpochExpr::JsonFirst(&["deprecated_config.where", "config.where"], "NULL"),
+    ),
 ];
 
 /// `dbt.unit_tests` ← `parse/nodes` where `resource_type = 'unit_test'`.
@@ -1237,7 +1319,7 @@ const UNIT_TESTS: &[(&str, EpochExpr)] = &[
         "original_file_path",
         EpochExpr::JsonOr("__common_attr__.original_file_path", "''"),
     ),
-    ("fqn", EpochExpr::JsonList("__base_attr__.fqn")),
+    ("fqn", EpochExpr::Sql("COALESCE(t.fqn, [])")),
     ("given", EpochExpr::JsonRaw("__unit_test_attr__.given")),
     ("expect", EpochExpr::JsonRaw("__unit_test_attr__.expect")),
     (
@@ -1331,8 +1413,14 @@ const EXPOSURES: &[(&str, EpochExpr)] = &[
         "original_file_path",
         EpochExpr::JsonOr("__common_attr__.original_file_path", "''"),
     ),
-    ("fqn", EpochExpr::JsonList("__base_attr__.fqn")),
-    ("depends_on_nodes", EpochExpr::JsonList("depends_on.nodes")),
+    ("fqn", EpochExpr::Sql("COALESCE(t.fqn, [])")),
+    (
+        "depends_on_nodes",
+        EpochExpr::Sql(
+            "COALESCE(json_extract_string(t.payload, '$.__base_attr__.depends_on.nodes[*]'), \
+             json_extract_string(t.payload, '$.depends_on.nodes[*]'), [])",
+        ),
+    ),
     ("tags", EpochExpr::Sql("COALESCE(t.tags, [])")),
     (
         "created_at",
@@ -1366,7 +1454,7 @@ const SAVED_QUERIES: &[(&str, EpochExpr)] = &[
         "original_file_path",
         EpochExpr::JsonOr("__common_attr__.original_file_path", "''"),
     ),
-    ("fqn", EpochExpr::JsonList("__base_attr__.fqn")),
+    ("fqn", EpochExpr::Sql("COALESCE(t.fqn, [])")),
     (
         "query_params",
         EpochExpr::JsonRaw("__saved_query_attr__.query_params"),
@@ -1375,13 +1463,21 @@ const SAVED_QUERIES: &[(&str, EpochExpr)] = &[
         "exports",
         EpochExpr::JsonRaw("__saved_query_attr__.exports"),
     ),
-    ("depends_on_nodes", EpochExpr::JsonList("depends_on.nodes")),
+    (
+        "depends_on_nodes",
+        EpochExpr::Sql(
+            "COALESCE(json_extract_string(t.payload, '$.__base_attr__.depends_on.nodes[*]'), \
+             json_extract_string(t.payload, '$.depends_on.nodes[*]'), [])",
+        ),
+    ),
     // Unlike every other node type here, a saved query's tags come from its
     // payload rather than from the node's `tags` column.
     (
         "tags",
         EpochExpr::Sql(
-            "COALESCE(json_extract_string(t.payload, '$.config.tags[*]'), \
+            "COALESCE(NULLIF(json_extract_string(t.payload, '$.config.tags[*]'), []), \
+             NULLIF(json_extract_string(t.payload, '$.deprecated_config.tags[*]'), []), \
+             NULLIF(json_extract_string(t.payload, '$.__common_attr__.tags[*]'), []), \
              json_extract_string(t.payload, '$.tags[*]'), [])",
         ),
     ),
@@ -1392,10 +1488,7 @@ const SAVED_QUERIES: &[(&str, EpochExpr)] = &[
     ),
     (
         "config",
-        EpochExpr::SqlJson(
-            "NULLIF(COALESCE(NULLIF(json_extract(t.payload, '$.config'), 'null'::JSON), \
-             json_extract(t.payload, '$.deprecated_config')), 'null'::JSON)",
-        ),
+        EpochExpr::JsonRawFirst(&["config", "deprecated_config"]),
     ),
     ("ingested_at", EpochExpr::Same),
 ];
@@ -1419,7 +1512,7 @@ const SEMANTIC_MODELS: &[(&str, EpochExpr)] = &[
         "description",
         EpochExpr::Json("__common_attr__.description"),
     ),
-    ("fqn", EpochExpr::JsonList("__base_attr__.fqn")),
+    ("fqn", EpochExpr::Sql("COALESCE(t.fqn, [])")),
     (
         "node_relation",
         EpochExpr::JsonRaw("__semantic_model_attr__.node_relation"),
@@ -1440,15 +1533,17 @@ const SEMANTIC_MODELS: &[(&str, EpochExpr)] = &[
         "created_at",
         EpochExpr::Json("__semantic_model_attr__.created_at"),
     ),
-    // `sm_rows` sets neither of these, though the staging schema has them.
-    ("package_name", EpochExpr::Null),
-    ("original_file_path", EpochExpr::Null),
+    (
+        "package_name",
+        EpochExpr::Json("__common_attr__.package_name"),
+    ),
+    (
+        "original_file_path",
+        EpochExpr::Json("__common_attr__.original_file_path"),
+    ),
     (
         "config",
-        EpochExpr::SqlJson(
-            "NULLIF(COALESCE(NULLIF(json_extract(t.payload, '$.config'), 'null'::JSON), \
-             json_extract(t.payload, '$.deprecated_config')), 'null'::JSON)",
-        ),
+        EpochExpr::JsonRawFirst(&["config", "deprecated_config"]),
     ),
     ("ingested_at", EpochExpr::Same),
 ];
@@ -1493,7 +1588,7 @@ const METRICS: &[(&str, EpochExpr)] = &[
         "original_file_path",
         EpochExpr::JsonOr("__common_attr__.original_file_path", "''"),
     ),
-    ("fqn", EpochExpr::JsonList("__base_attr__.fqn")),
+    ("fqn", EpochExpr::Sql("COALESCE(t.fqn, [])")),
     (
         "type_params",
         EpochExpr::JsonRaw("__metric_attr__.type_params"),
@@ -1524,8 +1619,15 @@ const METRICS: &[(&str, EpochExpr)] = &[
     ),
     ("group_name", EpochExpr::Json("__metric_attr__.group")),
     ("tags", EpochExpr::Sql("COALESCE(t.tags, [])")),
-    ("meta", EpochExpr::JsonRaw("__metric_attr__.meta")),
-    ("config", EpochExpr::JsonRaw("__metric_attr__.config")),
+    (
+        "meta",
+        EpochExpr::JsonRawFirst(&["__common_attr__.meta", "meta"]),
+    ),
+    // The metric's config is serialised as `deprecated_config`.
+    (
+        "config",
+        EpochExpr::JsonRawFirst(&["config", "deprecated_config"]),
+    ),
     ("created_at", EpochExpr::Json("__metric_attr__.created_at")),
     // `metric_rows` sets neither, though the staging schema has both.
     ("ai_context", EpochExpr::Null),
@@ -1584,6 +1686,10 @@ pub fn is_json_text(staging_table: &str, staging_column: &str) -> bool {
                 | EpochExpr::TrimmedJsonRaw(_)
                 | EpochExpr::ElemJsonRaw(_)
                 | EpochExpr::SqlJson(_)
+                | EpochExpr::ConfigJson(_)
+                | EpochExpr::Hooks(..)
+                | EpochExpr::MetaObject(_)
+                | EpochExpr::TestMetadataJson(_)
         )
     )
 }

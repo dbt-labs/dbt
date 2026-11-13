@@ -758,7 +758,7 @@ pub fn create_schemas_if_not_exists(
         )?;
         let res =
         match execute_macro(state, &[RelationObject::new(Arc::from(mock_relation)).into_value()], "create_schema") {
-            Ok(_) => Ok(()),
+            Ok(_) => adapter.commit_open_transaction(state, CancellationToken::never_cancels()),
             Err(e) => {
                 if metadata_adapter.is_permission_error(&e) {
                     Ok(())

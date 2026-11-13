@@ -695,6 +695,14 @@ pub(crate) async fn run_unit_test_render(
     run_blocking_task_operation(move || {
         let mut ctx = ctx;
         let res = render_unit_test(&node, &mut ctx, given_relations, task_hooks);
+        // The schema probe runs statements on this thread, and the run phase may be scheduled on
+        // another one. End its transaction here, not when the run phase finishes.
+        let res = match ctx.adapter_for(node.as_ref()) {
+            Ok(adapter) => {
+                crate::materialize::end_node_transaction(&adapter, node.unique_id(), res)
+            }
+            Err(_) => res,
+        };
         handle_render_result(
             res,
             node.unique_id(),

@@ -45,8 +45,8 @@ pub mod schemas {
         ModificationType, OnManifestLoadFailure, StateArtifacts, config_excluded_keys,
     };
     pub use run_results::{
-        BatchResults, ContextRunResult, DbtCommandExecutionArtifacts, Preview, RunResultOutput,
-        RunResultsArgs, RunResultsArtifact, RunResultsMetadata, TimingInfo,
+        BatchResults, ContextRunResult, DbtCommandExecutionArtifacts, InvocationFacts, Preview,
+        RunResultOutput, RunResultsArgs, RunResultsArtifact, RunResultsMetadata, TimingInfo,
     };
     pub use user_settings::UserSettings;
 

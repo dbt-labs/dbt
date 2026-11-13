@@ -2436,7 +2436,8 @@ impl DbtProjectCompilation {
             &resolved_state.nodes,
             &schedule,
             runs_nodes,
-        )?;
+        )
+        .await?;
         let graph_builder = GraphBuilder::new(
             Arc::clone(&run_task_args),
             Arc::clone(&static_analysis_buckets),

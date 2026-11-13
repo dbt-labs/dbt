@@ -1521,8 +1521,12 @@ pub fn extract_parse_nodes_batch(
         let persist_docs = cfg_json("persist_docs");
         // Fusion serializes hooks as pre_hook/post_hook; manifest configs use
         // the dashed spelling
-        let pre_hook = cfg_json("pre_hook").or_else(|| cfg_json("pre-hook"));
-        let post_hook = cfg_json("post_hook").or_else(|| cfg_json("post-hook"));
+        let pre_hook = cfg_json("pre_hook")
+            .or_else(|| cfg_json("pre-hook"))
+            .map(|h| normalize_hooks(&h));
+        let post_hook = cfg_json("post_hook")
+            .or_else(|| cfg_json("post-hook"))
+            .map(|h| normalize_hooks(&h));
         let grants = cfg_json("grants");
         let docs_show = cfg("docs")
             .and_then(|d| d.get("show"))
@@ -1643,7 +1647,15 @@ pub fn extract_parse_nodes_batch(
                 resource_type: rt.clone(),
                 package_name: get_str(pkg_col, i),
                 file_path,
-                original_file_path: get_str(orig_col, i),
+                // A generic test's own path is the generated SQL file; the YAML that
+                // declares it is `manifest_original_file_path`, as in `manifest.json`.
+                original_file_path: if rt == "test" {
+                    str_at(payload, "manifest_original_file_path")
+                        .filter(|p| !p.is_empty())
+                        .or_else(|| get_str(orig_col, i))
+                } else {
+                    get_str(orig_col, i)
+                },
                 fqn,
                 alias: get_str(alias_col, i),
                 checksum,
@@ -1668,7 +1680,10 @@ pub fn extract_parse_nodes_batch(
                 post_hook,
                 grants,
                 access_level: get_str(access_col, i).or_else(|| str_at(&model_attr, "access")),
-                group_name: get_str(grp_col, i),
+                // Seeds, snapshots and analyses carry `group` only in their config
+                group_name: get_str(grp_col, i)
+                    .or_else(|| str_at(&model_attr, "group"))
+                    .or_else(|| cfg_str("group")),
                 contract_enforced,
                 node_constraints,
                 primary_key,
@@ -1724,7 +1739,9 @@ pub fn extract_parse_nodes_batch(
             }));
         }
 
-        // test_metadata for test nodes (from __test_attr__ in payload)
+        // test_metadata for test nodes (from __test_attr__ in payload). Generic tests only: the
+        // index's `test_metadata` table is generic-test configuration, and a singular test's
+        // severity and thresholds reach the information schema from its `config` instead.
         if rt == "test" {
             let test_attr = payload.get("__test_attr__");
             let tm = test_attr
@@ -1767,9 +1784,11 @@ pub fn extract_parse_nodes_batch(
                     .unwrap_or("count(*)");
                 let store_failures = dep_config
                     .and_then(|c| c.get("store_failures"))
+                    .or_else(|| config.and_then(|c| c.get("store_failures")))
                     .and_then(|v| v.as_bool());
                 let store_failures_as = dep_config
                     .and_then(|c| c.get("store_failures_as"))
+                    .or_else(|| config.and_then(|c| c.get("store_failures_as")))
                     .and_then(|v| v.as_str());
                 let test_where = dep_config
                     .and_then(|c| c.get("where"))
@@ -1861,6 +1880,27 @@ pub fn extract_parse_nodes_batch(
 // Special table builders — translate payload to output row format
 // ---------------------------------------------------------------------------
 
+/// A hook config as dbt's manifest spells it: a JSON list of `{sql, transaction}`. The config
+/// holds whatever shape the author used -- one string, a list of strings, or a list of objects.
+/// Mirrors `hooks_json!` in the COPY mapping.
+fn normalize_hooks(raw: &str) -> String {
+    let Ok(value) = serde_json::from_str::<Value>(raw) else {
+        return raw.to_string();
+    };
+    let items = match value {
+        Value::Array(items) => items,
+        other => vec![other],
+    };
+    let hooks: Vec<Value> = items
+        .into_iter()
+        .map(|item| match item {
+            Value::String(sql) => json!({"sql": sql, "transaction": true}),
+            other => other,
+        })
+        .collect();
+    Value::Array(hooks).to_string()
+}
+
 fn build_metric_from_payload(
     uid: &str,
     node_name: &str,
@@ -1917,6 +1957,8 @@ fn build_semantic_model_from_payload(
     sm_rows.push(json!({
         "unique_id": uid,
         "name": m.name,
+        "package_name": m.package_name,
+        "original_file_path": m.original_file_path,
         "model": m.model_ref,
         "label": m.label,
         "description": m.description,
@@ -2039,6 +2081,9 @@ fn build_group_from_payload(uid: &str, payload: &Value, now: &str, rows: &mut Ve
     rows.push(json!({
         "unique_id": uid,
         "name": m.name,
+        "package_name": m.package_name,
+        "original_file_path": m.original_file_path,
+        "config": m.config.to_string(),
         "description": m.description,
         "owner_name": m.owner_name,
         "owner_email": m.owner_email,
@@ -2176,6 +2221,8 @@ fn write_parse_columns(
             let constraints_col = str_col(batch, "constraints");
             let meta_col = str_col(batch, "meta");
             let tags_col = list_col_batch(batch, "tags");
+            let gran_col = str_col(batch, "granularity");
+            let quote_col = bool_col(batch, "quote");
             let ts_col = i64_col(batch, "ingested_at");
             for i in 0..batch.num_rows() {
                 let Some(uid) = get_str(uid_col, i) else {
@@ -2197,6 +2244,10 @@ fn write_parse_columns(
                     "column_constraints": get_str(constraints_col, i).or_else(|| Some("[]".to_string())),
                     "meta": get_str(meta_col, i).or_else(|| Some("{}".to_string())),
                     "tags": tags,
+                    "granularity": get_str(gran_col, i),
+                    "quote": quote_col
+                        .filter(|c| arrow_array::Array::is_valid(*c, i))
+                        .map(|c| c.value(i)),
                     // Placeholder; the real (declared ∪ propagated) classifiers
                     // arrive via the compile/columns merge.
                     "classifiers": Vec::<String>::new(),
@@ -2446,6 +2497,7 @@ fn write_parse_project(
     let mut git_is_dirty: Option<bool> = None;
     let mut pkg_kinds_json: Option<String> = None;
     let mut pkg_lock_json: Option<String> = None;
+    let mut quoting_json: Option<String> = None;
 
     let rs_path = metadata_dir.join(PARSE_RESOLVER_STATE);
     if rs_path.exists() {
@@ -2457,6 +2509,7 @@ fn write_parse_project(
             read_str_opt!(batch, "env_vars_json", env_vars_json);
             read_str_opt!(batch, "pkg_kinds_json", pkg_kinds_json);
             read_str_opt!(batch, "pkg_lock_json", pkg_lock_json);
+            read_str_opt!(batch, "quoting_json", quoting_json);
             read_str_opt!(batch, "git_sha", git_sha);
             read_str_opt!(batch, "git_branch", git_branch);
             if git_is_dirty.is_none() {
@@ -2478,6 +2531,7 @@ fn write_parse_project(
             "git_sha": git_sha,
             "git_branch": git_branch,
             "git_is_dirty": git_is_dirty,
+            "quoting": quoting_json,
             "ingested_at": now,
         })],
     )?;
@@ -3138,7 +3192,12 @@ fn read_run_invocations(
             let cmd_col = str_col(batch, "command");
             let sel_col = str_col(batch, "selector");
             let ver_col = str_col(batch, "dbt_version");
-            let nc_col = i64_col(batch, "node_count");
+            let args_col = list_col_batch(batch, "cli_args");
+            let tdb_col = str_col(batch, "target_database");
+            let tschema_col = str_col(batch, "target_schema");
+            let tthreads_col = i32_col(batch, "target_threads");
+            let vars_col = str_col(batch, "vars_override");
+            let nc_col = i32_col(batch, "node_count");
             let tname_col = str_col(batch, "target_name");
             let atype_col = str_col(batch, "adapter_type");
             let sha_col = str_col(batch, "git_sha");
@@ -3159,14 +3218,17 @@ fn read_run_invocations(
                     dbt_version: get_str(ver_col, i).unwrap_or_default(),
                     generated_at,
                     elapsed_time: get_f64(elapsed_col, i),
-                    args: None,
-                    node_count: get_i64(nc_col, i),
+                    // The command line as a JSON array, null when none was recorded.
+                    args: Some(get_list(args_col, i))
+                        .filter(|a| !a.is_empty())
+                        .map(|a| serde_json::to_string(&a).unwrap_or_default()),
+                    node_count: get_i32(nc_col, i).map(i64::from),
                     target_name: get_str(tname_col, i),
                     target_type: get_str(atype_col, i),
-                    target_database: None,
-                    target_schema: None,
-                    target_threads: None,
-                    vars_override: None,
+                    target_database: get_str(tdb_col, i),
+                    target_schema: get_str(tschema_col, i),
+                    target_threads: get_i32(tthreads_col, i).map(i64::from),
+                    vars_override: get_str(vars_col, i),
                     git_sha: get_str(sha_col, i),
                     git_branch: get_str(branch_col, i),
                     git_is_dirty: git_dirty,
@@ -3288,6 +3350,7 @@ fn write_run_results(
             let rel_col = str_col(batch, "relation_name");
             let resp_col = str_col(batch, "adapter_response");
             let tim_col = str_col(batch, "timing");
+            let batch_col = str_col(batch, "batch_results");
             let ts_col = timestamp_micros_col(batch, "ingested_at");
             for i in 0..batch.num_rows() {
                 let Some(uid) = get_str(uid_col, i) else {
@@ -3310,7 +3373,7 @@ fn write_run_results(
                     relation_name: get_str(rel_col, i),
                     adapter_response: get_str(resp_col, i),
                     timing: get_str(tim_col, i),
-                    batch_results: None,
+                    batch_results: get_str(batch_col, i),
                     rows_affected: None,
                     created_at,
                 });

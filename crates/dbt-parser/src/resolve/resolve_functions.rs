@@ -493,6 +493,8 @@ pub async fn resolve_functions(
                 snowflake: model_config.snowflake.clone(),
                 pre_hook: model_config.pre_hook.clone(),
                 post_hook: model_config.post_hook.clone(),
+                docs: model_config.docs.clone(),
+                grants: model_config.grants.clone(),
                 ..Default::default()
             },
             __other__: BTreeMap::new(),

@@ -547,6 +547,8 @@ dialoguer = "0.12.0"
 dirs = "6.0.0"
 dotenvy = "0.15"
 flate2 = "1.0.28"
+# Pinned: dbt-eval model-name translation targets this adapter set (see crates/dbt-eval/src/model.rs).
+genai = "=0.6.5"
 getrandom = { version = "0.3", features = ["std"] }
 gix = { version = "0.84.0", default-features = false, features = [
   "revision",
