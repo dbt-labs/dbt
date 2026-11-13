@@ -599,7 +599,7 @@ pub trait BaseRelation: BaseRelationProperties + Any + Send + Sync + fmt::Debug 
                 )
             }
             AdapterType::Starburst => todo!("Starburst"),
-            AdapterType::Athena => todo!("Athena"),
+            AdapterType::Athena => athena_run_filter_bounds(event_time, start, end),
             AdapterType::Trino => todo!("Trino"),
             AdapterType::Datafusion => todo!("Datafusion"),
             AdapterType::Dremio => todo!("Dremio"),
@@ -932,4 +932,24 @@ pub trait BaseRelation: BaseRelationProperties + Any + Send + Sync + fmt::Debug 
     ) -> Result<Value, MinijinjaError> {
         unimplemented!("Available only for BigQuery and Redshift")
     }
+}
+
+// Trino rejects timestamp compared with varchar; its TIMESTAMP literal has no 'T' or zone.
+fn athena_run_filter_bounds(
+    event_time: &str,
+    start: Option<String>,
+    end: Option<String>,
+) -> (Option<String>, Option<String>) {
+    (
+        start.map(|start| format!("{event_time} >= {}", athena_timestamp_literal(&start))),
+        end.map(|end| format!("{event_time} < {}", athena_timestamp_literal(&end))),
+    )
+}
+
+fn athena_timestamp_literal(value: &str) -> String {
+    let value = value
+        .trim_end_matches("+00:00")
+        .trim_end_matches('Z')
+        .replace('T', " ");
+    format!("TIMESTAMP '{value}'")
 }

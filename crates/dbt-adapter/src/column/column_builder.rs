@@ -33,7 +33,8 @@ impl ColumnBuilder {
             ClickHouse => Self::build_clickhouse(field, type_ops),
             Exasol => Ok(Self::build_exasol(field, type_ops)),
             Starburst => todo!("Starburst"),
-            Athena => todo!("Athena"),
+            // build_postgres_like renders Timestamp as datetime; Athena uses timestamp.
+            Athena => Ok(Self::build_athena(field, type_ops)),
             Trino => todo!("Trino"),
             Dremio => todo!("Dremio"),
             Oracle => todo!("Oracle"),
@@ -120,7 +121,14 @@ impl ColumnBuilder {
                 numeric_scale,
             ),
             Starburst => todo!("Starburst"),
-            Athena => todo!("Athena"),
+            Athena => Column::new_boxed(
+                Athena,
+                name,
+                dtype,
+                char_size,
+                numeric_precision,
+                numeric_scale,
+            ),
             Trino => todo!("Trino"),
             Dremio => todo!("Dremio"),
             Oracle => todo!("Oracle"),
@@ -555,6 +563,39 @@ impl ColumnBuilder {
             numeric_precision,
             numeric_scale,
         ))
+    }
+
+    fn build_athena(field: &FieldRef, type_ops: &dyn TypeOps) -> Box<Column> {
+        use AdapterType::Athena;
+        let data_type = field.data_type();
+        let char_size = sql_types::var_size(Athena, data_type);
+        let (numeric_precision, numeric_scale) = {
+            let precision_scale = sql_types::numeric_precision_scale(Athena, data_type)
+                .ok()
+                .flatten();
+            match precision_scale {
+                Some((p, Some(s))) => (Some(p), Some(s)),
+                Some((p, None)) => (Some(p), None),
+                None => (None, None),
+            }
+        };
+
+        let mut rendered_type = String::new();
+        if type_ops
+            .format_arrow_type_as_sql(data_type, field.is_nullable(), &mut rendered_type)
+            .is_err()
+        {
+            rendered_type = data_type.to_string();
+        }
+
+        Column::new_boxed(
+            Athena,
+            field.name().to_string(),
+            rendered_type,
+            char_size.map(|p| p as u32),
+            numeric_precision.map(|p| p as u64),
+            numeric_scale.map(|s| s as u64),
+        )
     }
 
     fn build_exasol(field: &FieldRef, type_ops: &dyn TypeOps) -> Box<Column> {
