@@ -197,7 +197,7 @@ fn ci_switch_respects_on_configuration_change() {
     assert!(result.is_err(), "`fail` must raise, got: {result:?}");
     assert!(fixture_fail.executed().is_empty());
 
-    // CI DT -> regular: the changeset sees no change (desired AUTO), the kind check does.
+    // CI DT -> regular: the refresh_mode diff flags AUTO vs. CUSTOM_INCREMENTAL.
     let fixture_back = fixture(Some(RelationType::DynamicTable), ci_matching_remote_state());
     let result = render(&fixture_back, &base_local_config(), false, "fail");
     assert!(
@@ -208,8 +208,8 @@ fn ci_switch_respects_on_configuration_change() {
 
 #[test]
 fn ci_custom_incremental_to_regular_switch_replaces() {
-    // The local side leaves refresh_mode unset (AUTO), which the refresh_mode diff treats as
-    // matching anything, so only the kind check catches this.
+    // The local side leaves refresh_mode unset (AUTO). The refresh_mode diff treats AUTO as
+    // matching any live mode except CUSTOM_INCREMENTAL, so this is a change that needs a rebuild.
     let fixture = fixture(Some(RelationType::DynamicTable), ci_matching_remote_state());
     render_ok(&fixture, &base_local_config(), false, "apply");
 
@@ -344,9 +344,9 @@ fn ci_delete_condition_cannot_reference_the_target_row() {
 }
 
 #[test]
-fn ci_hand_written_changes_is_discovered_and_stored_as_written() {
-    // CHANGES written without `{{ changes() }}` is accepted: discovery starts it now, and the
-    // stored body keeps it as written.
+fn ci_hand_written_changes_is_discovered_unbounded_and_stored_as_written() {
+    // Only the `changes()` macro's own text gets discovery's `at(offset => 0)`; CHANGES written
+    // another way runs as written (a bare CHANGES in a plain SELECT returns zero rows).
     let fixture = fixture(None, RemoteState::default());
     let sql =
         "select o.id, o.amount from RAW.PUBLIC.ORDERS CHANGES ( INFORMATION => default ) as o";
@@ -356,10 +356,24 @@ fn ci_hand_written_changes_is_discovered_and_stored_as_written() {
     assert_eq!(
         executed[0],
         format!(
-            "create or replace temporary table {CI_TEMP_RELATION} as ( select * from ( select o.id, o.amount from RAW.PUBLIC.ORDERS CHANGES ( INFORMATION => default ) at(offset => 0) as o ) limit 0 ) ;"
+            "create or replace temporary table {CI_TEMP_RELATION} as ( select * from ( {sql} ) limit 0 ) ;"
         )
     );
     assert_eq!(executed[1], ci_ddl("create", &ci_merge_body(sql)));
+}
+
+#[test]
+fn ci_discovery_bounds_both_changes_modes() {
+    let fixture = fixture(None, RemoteState::default());
+    let sql = "select o.id, o.amount from RAW.PUBLIC.ORDERS changes(information => DEFAULT) as o join RAW.PUBLIC.ITEMS changes(information => APPEND_ONLY) as i on o.id = i.id";
+    render_sql(&fixture, &ci_local_config(), sql, false, "apply").expect("CI DT should render");
+
+    assert_eq!(
+        fixture.executed()[0],
+        format!(
+            "create or replace temporary table {CI_TEMP_RELATION} as ( select * from ( select o.id, o.amount from RAW.PUBLIC.ORDERS changes(information => DEFAULT) at(offset => 0) as o join RAW.PUBLIC.ITEMS changes(information => APPEND_ONLY) at(offset => 0) as i on o.id = i.id ) limit 0 ) ;"
+        )
+    );
 }
 
 #[test]
@@ -448,37 +462,18 @@ fn ci_ephemeral_upstream_is_carried_into_discovery() {
 }
 
 #[test]
-fn ci_empty_run_keeps_the_table_name_before_hand_written_changes() {
-    // `dbt run --empty` renders the source as a zero-row subquery, which CHANGES can't follow. The
-    // table name moves back in front of CHANGES and the zero-row filter after it, so the CI DT is
-    // still built empty, in the form `{{ changes() }}` renders.
+fn ci_empty_run_with_hand_written_changes_is_not_rewritten() {
+    // No --empty rewrite: hand-written CHANGES after the zero-row subquery is passed through, and
+    // Snowflake rejects it, as for hand-written CHANGES in any other model type.
     let fixture = fixture(None, RemoteState::default());
-    let sql = r#"select o.id from (select * from "RAW DB"."PUBLIC"."ORDERS" where false limit 0) changes(information => default) as o"#;
+    let sql = "select o.id from (select * from RAW.PUBLIC.ORDERS where false limit 0) changes(information => default) as o";
     render_run(&fixture, &ci_local_config(), sql, false, "apply", true)
         .expect("CI DT should render");
-
-    let stored = r#"select o.id from (select * from "RAW DB"."PUBLIC"."ORDERS" changes(information => default) limit 0) as o"#;
-    let executed = fixture.executed();
-    assert_eq!(
-        executed[0],
-        format!(
-            r#"create or replace temporary table {CI_TEMP_RELATION} as ( select * from ( select o.id from (select * from "RAW DB"."PUBLIC"."ORDERS" changes(information => default) at(offset => 0) limit 0) as o ) limit 0 ) ;"#
-        )
-    );
-    assert_eq!(executed[1], ci_ddl("create", &ci_merge_body(stored)));
-}
-
-#[test]
-fn ci_discovery_only_bounds_the_changes_clause() {
-    // `xchanges(...)` is not a CHANGES clause, so discovery leaves it alone.
-    let fixture = fixture(None, RemoteState::default());
-    let sql = "select o.id, xchanges(information => default) as c from RAW.PUBLIC.ORDERS changes(information => default) as o";
-    render_sql(&fixture, &ci_local_config(), sql, false, "apply").expect("CI DT should render");
 
     assert_eq!(
         fixture.executed()[0],
         format!(
-            "create or replace temporary table {CI_TEMP_RELATION} as ( select * from ( select o.id, xchanges(information => default) as c from RAW.PUBLIC.ORDERS changes(information => default) at(offset => 0) as o ) limit 0 ) ;"
+            "create or replace temporary table {CI_TEMP_RELATION} as ( select * from ( {sql} ) limit 0 ) ;"
         )
     );
 }
@@ -678,7 +673,7 @@ fn ci_create_or_alter_replaces_a_regular_dynamic_table() {
 
 #[test]
 fn ci_create_or_alter_replaces_when_switching_to_a_regular_dynamic_table() {
-    // The changeset sees no change (a desired AUTO matches anything); the kind check does.
+    // A desired AUTO doesn't match a live CUSTOM_INCREMENTAL, so the changeset requires a rebuild.
     let fixture = ci_create_or_alter_fixture(ci_matching_remote_state());
     render_ok(&fixture, &base_local_config(), false, "apply");
 

@@ -86,42 +86,20 @@
 {%- endmacro %}
 
 
--- funcsign: (string) -> string
-{% macro snowflake__custom_incremental_sql(sql) -%}
-{#-
-    The model SQL a CI DT is built from. Under `dbt run --empty` every ref() / source() renders as
-    `(select * from <table> where false limit 0)`, which a hand-written CHANGES clause can't follow.
-    There the table name moves back in front of CHANGES and the zero-row limit after it, the form
-    `{{ changes() }}` renders itself: `(select * from <table> changes(...) limit 0)`.
-    Not handled: --empty together with a --sample or event_time filter, which nests the subquery.
--#}
-    {%- if flags is defined and flags.EMPTY -%}
-        {{ return(modules.re.sub(
-            '\\(select \\* from ([^()]+?) where false limit 0\\)\\s+(changes\\s*\\(\\s*information\\s*=>\\s*(?:default|append_only)\\s*\\))',
-            '(select * from \\1 \\2 limit 0)',
-            sql,
-            flags=modules.re.IGNORECASE
-        )) }}
-    {%- endif -%}
-    {{ return(sql) }}
-{%- endmacro %}
-
-
 -- funcsign: (relation, string) -> list[base_column]
 {% macro snowflake__custom_incremental_discover_columns(relation, sql) -%}
 {#-
     Learn the model's output columns, which a CI DT must declare because Snowflake cannot infer
     them from DML. The compiled model SQL runs zero-row into a temporary table, which is described.
-    An unbounded CHANGES only runs inside a refresh, so each `changes(information => ...)` starts
-    now here: `at(offset => 0)` returns no rows but the same columns. (A refresh body can't carry
-    AT / BEFORE / END, so none is there to collide with.)
+    An unbounded CHANGES only runs inside a refresh, so the clauses `changes()` emitted start now
+    here: `at(offset => 0)` returns no rows but the same columns. CHANGES written by hand in
+    another form runs as written.
 -#}
-    {%- set discovery_sql = modules.re.sub(
-        '\\b(changes\\s*\\(\\s*information\\s*=>\\s*(?:default|append_only)\\s*\\))',
-        '\\1 at(offset => 0)',
-        sql,
-        flags=modules.re.IGNORECASE
-    ) -%}
+    {%- set default_clause = snowflake__changes_clause('DEFAULT') -%}
+    {%- set append_only_clause = snowflake__changes_clause('APPEND_ONLY') -%}
+    {%- set discovery_sql = sql
+        | replace(default_clause, default_clause ~ ' at(offset => 0)')
+        | replace(append_only_clause, append_only_clause ~ ' at(offset => 0)') -%}
 
     {%- set tmp_relation = make_temp_relation(relation).incorporate(type='table') -%}
     {% call statement('custom_incremental_discovery') -%}

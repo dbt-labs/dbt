@@ -29,12 +29,21 @@
             "changes(): unsupported mode '" ~ mode ~ "'. Supported modes: 'default', 'append_only'."
         ) %}
     {%- endif -%}
-    {#- `relation.render()` is the plain name even under --empty, where `{{ relation }}` is a subquery. -#}
+    {#- CHANGES must directly follow a table name. `{{ relation }}` renders as a filtered subquery
+        under --empty / --sample, so use the plain name from `relation.render()`. -#}
     {%- set table = relation if relation is string else relation.render() -%}
-    {%- set clause = table ~ ' changes(information => ' ~ information ~ ')' -%}
+    {%- set clause = table ~ ' ' ~ snowflake__changes_clause(information) -%}
     {%- if flags is defined and flags.EMPTY -%}
         (select * from {{ clause }} limit 0)
     {%- else -%}
         {{ clause }}
     {%- endif -%}
+{%- endmacro %}
+
+
+-- funcsign: (string) -> string
+{% macro snowflake__changes_clause(information) -%}
+{#- The exact CHANGES clause `changes()` emits. Column discovery finds the macro's output by this
+    text, so both sides must build it here. `information` is DEFAULT or APPEND_ONLY. -#}
+    {{ return('changes(information => ' ~ information ~ ')') }}
 {%- endmacro %}

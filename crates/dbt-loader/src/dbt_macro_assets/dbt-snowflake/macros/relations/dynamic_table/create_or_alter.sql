@@ -145,7 +145,6 @@
     {%- set transient_keyword = 'transient ' if is_transient else '' -%}
     {%- set custom_incremental = snowflake__dynamic_table_is_custom_incremental() -%}
     {%- if custom_incremental -%}
-        {%- set sql = snowflake__custom_incremental_sql(sql) -%}
         {%- set columns = snowflake__custom_incremental_discover_columns(relation, sql) -%}
     {%- endif -%}
 
