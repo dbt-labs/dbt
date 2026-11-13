@@ -4292,9 +4292,7 @@ impl Adapter {
                             )
                         })?;
 
-                let full_path = seed
-                    .file_path_from_root()
-                    .unwrap_or_else(|| seed.__common_attr__.original_file_path.to_path_buf());
+                let full_path = seed.resolve_file_path(std::path::Path::new(""));
                 Ok(Value::from(full_path.display().to_string()))
             }
             "external_root" => {

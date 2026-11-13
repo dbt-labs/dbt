@@ -303,7 +303,7 @@ fn current_dbt_version() -> String {
 
 // ── git state ─────────────────────────────────────────────────────────────────
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct GitInfo {
     pub sha: String,
     pub branch: String,
@@ -312,7 +312,36 @@ pub struct GitInfo {
 
 pub fn read_git_info(project_root: &Path) -> Option<GitInfo> {
     let (repo_path, _) = gix_discover::upwards(project_root).ok()?;
-    let repo = gix::open(repo_path.as_ref()).ok()?;
+    read_repo_git_info(repo_path.as_ref())
+}
+
+/// [`read_git_info`], computed once per repository for the life of the process.
+///
+/// One invocation asks twice (the invocation record and the parse state), and each ask spawns
+/// `git status`, which costs more the bigger the repository. A process is one invocation, so
+/// the answer cannot go stale; code that changes the tree and asks again uses
+/// [`read_git_info`].
+pub fn read_git_info_cached(project_root: &Path) -> Option<GitInfo> {
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+    use std::sync::{Mutex, OnceLock};
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, Option<GitInfo>>>> = OnceLock::new();
+
+    let (repo_path, _) = gix_discover::upwards(project_root).ok()?;
+    let repo_path: &Path = repo_path.as_ref();
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some(hit) = cache.lock().ok()?.get(repo_path) {
+        return hit.clone();
+    }
+    let info = read_repo_git_info(repo_path);
+    if let Ok(mut cache) = cache.lock() {
+        cache.insert(repo_path.to_path_buf(), info.clone());
+    }
+    info
+}
+
+fn read_repo_git_info(repo_path: &Path) -> Option<GitInfo> {
+    let repo = gix::open(repo_path).ok()?;
     let sha = repo
         .rev_parse_single("HEAD")
         .ok()
@@ -327,11 +356,66 @@ pub fn read_git_info(project_root: &Path) -> Option<GitInfo> {
                 .map(|b| b.to_string())
         })
         .unwrap_or_default();
+    let is_dirty = repo.workdir().is_some_and(has_uncommitted_changes);
     Some(GitInfo {
         sha,
         branch,
-        is_dirty: false,
+        is_dirty,
     })
+}
+
+/// How long `git status` may take before the tree is reported clean rather than holding up
+/// the command that asked.
+const GIT_STATUS_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Whether tracked files in `workdir` differ from `HEAD` or the index.
+///
+/// Asks `git` rather than reading the tree itself, which `gix` in this build cannot do. Untracked
+/// files do not count, so `target/` and editor files do not make every run dirty. Takes no
+/// index lock, so it cannot race the user's own git commands. A missing `git`, a failure or a
+/// timeout reads as clean: this is a label on the record, not a decision anything makes.
+fn has_uncommitted_changes(workdir: &Path) -> bool {
+    use std::process::{Command, Stdio};
+    let Ok(mut child) = Command::new("git")
+        .args(["status", "--porcelain", "--untracked-files=no"])
+        .current_dir(workdir)
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return false;
+    };
+    // Drain stdout on its own thread: a tree with many changes fills the pipe, and git blocks
+    // on the write until it is read, which would otherwise look like a timeout. The thread
+    // ends when git closes its end, so waiting for its answer is waiting for git, with no
+    // polling.
+    let Some(mut stdout) = child.stdout.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return false;
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        use std::io::Read;
+        let mut out = Vec::new();
+        let _ = stdout.read_to_end(&mut out);
+        let _ = tx.send(!out.iter().all(u8::is_ascii_whitespace));
+    });
+    match rx.recv_timeout(GIT_STATUS_TIMEOUT) {
+        Ok(dirty) => {
+            let _ = reader.join();
+            child.wait().is_ok_and(|status| status.success()) && dirty
+        }
+        Err(_) => {
+            // Killing git closes the pipe, which ends the reader; join it so none outlives us.
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = reader.join();
+            false
+        }
+    }
 }
 
 fn blake3_hex(data: &[u8]) -> String {
@@ -515,14 +599,16 @@ pub fn save_parse_state(
         .map_err(|e| fs_err!(ErrorCode::Generic, "Failed to serialise operations: {e}"))?;
 
     let packages = snapshot_packages(dbt_state);
-    let git_info =
-        read_git_info(project_file_path.parent().unwrap_or(&project_file_path)).unwrap_or_default();
+    let git_info = read_git_info_cached(project_file_path.parent().unwrap_or(&project_file_path))
+        .unwrap_or_default();
     let lock_file_path = project_file_path
         .parent()
         .map(|p| p.join("package-lock.yml"))
         .unwrap_or_default();
     let packages_lock_hash = hash_file_at_path(&lock_file_path);
     let pkg_lock_json = crate::parse_state::pkg_lock_json(&lock_file_path);
+    let quoting_json =
+        serde_json::to_string(&resolved_state.root_project_quoting).unwrap_or_default();
 
     crate::parse_state::save(&crate::parse_state::SaveArgs {
         out_dir: &io.out_dir,
@@ -549,6 +635,7 @@ pub fn save_parse_state(
         nodes_with_access_errors_json: &nodes_with_access_errors_json,
         operations_json: &operations_json,
         pkg_lock_json: &pkg_lock_json,
+        quoting_json: &quoting_json,
         packages: &packages,
         nodes: &resolved_state.nodes,
         disabled_nodes: &resolved_state.disabled_nodes,
@@ -1236,6 +1323,70 @@ mod tests {
     //!   I8  --static-analysis strict does not force a full load by itself.
 
     use super::*;
+
+    /// `git`, run in `dir` with a fixed identity; `None` when it cannot be run at all.
+    fn git(dir: &Path, args: &[&str]) -> Option<bool> {
+        std::process::Command::new("git")
+            .args(["-c", "user.name=t", "-c", "user.email=t@example.com"])
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .ok()
+            .map(|o| o.status.success())
+    }
+
+    #[test]
+    fn read_git_info_reports_tracked_changes_as_dirty_and_ignores_untracked_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        if git(root, &["init", "-q"]) != Some(true) {
+            eprintln!("skipping: git unavailable");
+            return;
+        }
+        std::fs::write(root.join("a.txt"), "one").unwrap();
+        assert_eq!(git(root, &["add", "a.txt"]), Some(true));
+        assert_eq!(git(root, &["commit", "-q", "-m", "init"]), Some(true));
+
+        assert!(!read_git_info(root).unwrap().is_dirty, "clean tree");
+
+        std::fs::write(root.join("untracked.txt"), "x").unwrap();
+        assert!(
+            !read_git_info(root).unwrap().is_dirty,
+            "an untracked file is not an uncommitted change"
+        );
+
+        std::fs::write(root.join("a.txt"), "two").unwrap();
+        assert!(
+            read_git_info(root).unwrap().is_dirty,
+            "a modified tracked file"
+        );
+    }
+
+    #[test]
+    fn read_git_info_cached_asks_git_once_per_repository() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        if git(root, &["init", "-q"]) != Some(true) {
+            eprintln!("skipping: git unavailable");
+            return;
+        }
+        std::fs::write(root.join("a.txt"), "one").unwrap();
+        assert_eq!(git(root, &["add", "a.txt"]), Some(true));
+        assert_eq!(git(root, &["commit", "-q", "-m", "init"]), Some(true));
+        std::fs::create_dir(root.join("sub")).unwrap();
+
+        assert!(!read_git_info_cached(root).unwrap().is_dirty);
+
+        // The tree changes, but the answer for this process is already known, from the
+        // repository root or from a directory inside it.
+        std::fs::write(root.join("a.txt"), "two").unwrap();
+        assert!(!read_git_info_cached(root).unwrap().is_dirty, "cached");
+        assert!(
+            !read_git_info_cached(&root.join("sub")).unwrap().is_dirty,
+            "same repository, same answer"
+        );
+        assert!(read_git_info(root).unwrap().is_dirty, "uncached still asks");
+    }
     use dbt_schemas::schemas::profiles::{DatafusionDbConfig, DbConfig};
     use dbt_schemas::state::ProfileAdapter;
 
@@ -4184,7 +4335,7 @@ mod tests {
             operations: Operations::default(),
             dbt_profile: dbt_state.dbt_profile.clone(),
             cloud_config: dbt_state.cloud_config.clone(),
-            render_results: Default::default(),
+            function_bodies: Default::default(),
             node_resolver: Arc::new(DummyNodeResolverTracker),
             get_relation_calls: Default::default(),
             get_columns_in_relation_calls: Default::default(),

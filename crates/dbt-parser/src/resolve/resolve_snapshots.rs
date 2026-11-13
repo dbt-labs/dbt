@@ -370,7 +370,6 @@ pub async fn resolve_snapshots(
         alias_adapter,
         raw_code,
         macro_dependencies,
-        macro_spans: _macro_spans,
         properties: maybe_properties,
         status,
         render_error_deferred,

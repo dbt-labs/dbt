@@ -1968,10 +1968,9 @@ impl InternalDbtNode for DbtSeed {
             // current seed with the legacy hash and compare to the previous checksum,
             // mirroring dbt-core's `same_seeds` fallback.
             if !same_body_result {
-                if let (DbtChecksum::Object(self_cs), Some(seed_path)) =
-                    (&self.__common_attr__.checksum, self.file_path_from_root())
-                {
+                if let DbtChecksum::Object(self_cs) = &self.__common_attr__.checksum {
                     if self_cs.name == "sha256" {
+                        let seed_path = self.resolve_file_path(Path::new(""));
                         if let Ok(bytes) = std::fs::read(&seed_path) {
                             let legacy = DbtChecksum::seed_content_checksum_legacy(&bytes);
                             same_body_result = legacy == other_seed.__common_attr__.checksum;
@@ -5567,11 +5566,34 @@ impl DbtSeed {
     /// `root_path` is the seed's package root, so it is joined with the
     /// package-relative `path`, not `original_file_path` (which is relative
     /// to the root project).
-    pub fn file_path_from_root(&self) -> Option<PathBuf> {
+    fn file_path_from_root(&self) -> Option<PathBuf> {
         self.__seed_attr__
             .root_path
             .as_ref()
             .map(|root| root.join(&self.__common_attr__.path))
+    }
+
+    /// The single place that decides which file a seed's bytes come from.
+    ///
+    /// Hashing, ingestion, materialization and the `state:modified` checksum
+    /// fallback must all call this so they always read the same file.
+    ///
+    /// Order:
+    /// 1. `project_root.join(original_file_path)`, if it exists. `original_file_path`
+    ///    is project-relative, so it stays valid when the project is moved, whereas
+    ///    the absolute `root_path` is set at parse time and can be stale after a
+    ///    parse-cache restore.
+    /// 2. `root_path.join(path)`, when `root_path` is known.
+    /// 3. `project_root.join(original_file_path)` (may not exist; callers report the error).
+    ///
+    /// Callers without a project root in scope pass `Path::new("")`, which makes
+    /// step 1 resolve `original_file_path` against the current directory.
+    pub fn resolve_file_path(&self, project_root: &Path) -> PathBuf {
+        let project_relative = project_root.join(&self.__common_attr__.original_file_path);
+        if project_relative.exists() {
+            return project_relative;
+        }
+        self.file_path_from_root().unwrap_or(project_relative)
     }
 }
 
@@ -9245,6 +9267,39 @@ mod seed_has_same_content_tests {
             },
             ..Default::default()
         }
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // DbtSeed::resolve_file_path
+    // ─────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn resolve_file_path_prefers_project_root_over_existing_stale_root_path() {
+        let base = std::env::temp_dir().join(format!(
+            "dbt_seed_resolve_both_{}_{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let (new_root, old_root) = (base.join("new"), base.join("old"));
+        std::fs::create_dir_all(new_root.join("seeds")).unwrap();
+        std::fs::create_dir_all(old_root.join("seeds")).unwrap();
+        std::fs::write(new_root.join("seeds/demo_seed.csv"), b"a\n1\n2\n").unwrap();
+        std::fs::write(old_root.join("seeds/demo_seed.csv"), b"a\n1\n").unwrap();
+
+        let seed = seed_with_checksum_and_root(sha256("x"), old_root.clone());
+        assert_eq!(
+            seed.resolve_file_path(&new_root),
+            new_root.join("seeds/demo_seed.csv")
+        );
+
+        // Project copy gone: fall back to root_path.
+        std::fs::remove_file(new_root.join("seeds/demo_seed.csv")).unwrap();
+        assert_eq!(
+            seed.resolve_file_path(&new_root),
+            old_root.join("seeds/demo_seed.csv")
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     // ─────────────────────────────────────────────────────────────────

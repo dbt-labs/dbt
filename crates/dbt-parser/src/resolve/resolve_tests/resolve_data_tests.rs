@@ -529,7 +529,6 @@ pub async fn resolve_data_tests(
         adapter,
         alias_adapter,
         rendered_sql: _,
-        macro_spans: _macro_spans,
         properties: maybe_properties,
         status,
         render_error_deferred,

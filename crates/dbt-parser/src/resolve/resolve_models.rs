@@ -531,7 +531,6 @@ async fn build_model_nodes(
         alias_adapter,
         raw_code,
         rendered_sql: _,
-        macro_spans: _,
         properties: maybe_properties,
         status,
         render_error_deferred,
@@ -1682,7 +1681,6 @@ fn process_python_models(
             // Match dbt-core's `load_file_contents(strip=True)` behavior.
             raw_code: source.trim().to_owned(),
             rendered_sql: source.clone(),
-            macro_spans: Default::default(),
             properties: maybe_properties,
             status,
             render_error_deferred: false,
