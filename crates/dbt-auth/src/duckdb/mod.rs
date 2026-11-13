@@ -1,4 +1,7 @@
+mod config_options;
 pub mod init;
+
+use config_options::ConfigOptions;
 
 use crate::{AdapterConfig, Auth, AuthError, AuthWarningPrinter};
 
@@ -28,6 +31,7 @@ impl Auth for DuckDbAuth {
     fn configure(&self, config: &AdapterConfig) -> Result<database::Builder, AuthError> {
         let mut builder = database::Builder::new(self.backend());
 
+        let options = ConfigOptions::from_config(config)?;
         let target = init::DuckDbTarget::from_config(config)?;
 
         // DuckDB requires the database path to be specified
@@ -70,6 +74,7 @@ impl Auth for DuckDbAuth {
             }
         }
 
+        options.apply(&mut builder)?;
         Ok(builder)
     }
 }
