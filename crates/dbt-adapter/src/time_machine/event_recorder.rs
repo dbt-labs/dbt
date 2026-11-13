@@ -9,6 +9,8 @@ use std::time::Instant;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
+use dbt_common::collections::SccHashMap;
+
 use super::event::{
     AdapterCallEvent, CacheInvalidationEvent, CatalogSchema, CatalogSchemas, MetadataCallArgs,
     MetadataCallEvent, RecordedCachedTestResult, RecordedEvent, RecordedRunCacheCloneDecision,
@@ -26,7 +28,7 @@ pub struct EventRecorder {
     /// Channel sender for emitting events
     sender: mpsc::Sender<RecordedEvent>,
     /// Per-node sequence counters
-    seq_counters: Arc<dashmap::DashMap<String, AtomicU32>>,
+    seq_counters: Arc<SccHashMap<String, AtomicU32>>,
     /// Recording start time for relative timestamps
     start_time: Instant,
     /// Global event counter
@@ -42,7 +44,7 @@ impl EventRecorder {
 
         let recorder = Self {
             sender,
-            seq_counters: Arc::new(dashmap::DashMap::new()),
+            seq_counters: Arc::new(SccHashMap::default()),
             start_time: Instant::now(),
             event_count: Arc::new(AtomicU64::new(0)),
             closed: Arc::new(AtomicBool::new(false)),
@@ -69,12 +71,14 @@ impl EventRecorder {
     #[inline]
     pub fn next_seq(&self, node_id: &str) -> u32 {
         // Fast path: check existing entry without allocation
-        if let Some(counter) = self.seq_counters.get(node_id) {
-            return counter.fetch_add(1, Ordering::Relaxed);
+        if let Some(seq) = self.seq_counters.read_sync(node_id, |_, counter| {
+            counter.fetch_add(1, Ordering::Relaxed)
+        }) {
+            return seq;
         }
         // Slow path: insert new counter
         self.seq_counters
-            .entry(node_id.to_string())
+            .entry_sync(node_id.to_string())
             .or_insert_with(|| AtomicU32::new(0))
             .fetch_add(1, Ordering::Relaxed)
     }

@@ -1,7 +1,7 @@
 import { useMemo } from 'react';
 import { useParams } from 'react-router-dom';
-import { useQueries } from '@tanstack/react-query';
 import { type ColumnDef } from '@tanstack/react-table';
+import { useMetadataDataSource, useQueries } from 'dbt-docs-lib';
 import { Clock, Copy, Table } from 'lucide-react';
 
 import type { ResourceTypeExplorer } from '../lib/resourceType';
@@ -16,19 +16,18 @@ import {
   DetailsSection,
   NodeStatusIconBadge,
   TimestampCell,
-  useMetadataDataSource,
 } from '../shared';
 import { type NodeSummary } from '../types';
 import { ResourceFilterTable } from './ResourceFilterTable';
 import { Button } from './ui/Button';
 import { Tooltip } from './ui/Tooltip';
 
-interface Props {
+interface SourceCollectionPageProps {
   nodes: NodeSummary[];
   onSelect: (uniqueId: string) => void;
 }
 
-export function SourceCollectionPage({ nodes, onSelect }: Props) {
+export function SourceCollectionPage({ nodes, onSelect }: SourceCollectionPageProps) {
   const { sourceName } = useParams<{ sourceName: string }>();
 
   const sources = useMemo(
@@ -67,7 +66,9 @@ export function SourceCollectionPage({ nodes, onSelect }: Props) {
   // The source block's own description, not any one table's — every table under
   // the same source shares it, so the first detail to land is as good as any.
   const sourceDescription = useMemo(
-    () => Array.from(detailMap.values()).find((d) => d.sourceDescription)?.sourceDescription ?? null,
+    () =>
+      Array.from(detailMap.values()).find((d) => d.sourceDescription)
+        ?.sourceDescription ?? null,
     [detailMap],
   );
 

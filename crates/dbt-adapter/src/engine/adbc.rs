@@ -2,10 +2,19 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::OnceLock;
 
 use arrow_array::RecordBatch;
 use arrow_schema::Schema;
+use minijinja::State;
+use parking_lot::RwLock;
+
 use dbt_adapter_core::AdapterType;
+use dbt_adapter_engine::Options;
+use dbt_adapter_engine::behavior::make_behavior;
+use dbt_adapter_engine::clickhouse::ClickHouseCapabilities;
+use dbt_adapter_engine::databricks;
+use dbt_adapter_engine::noop_connection::NoopConnection;
 use dbt_adbc::*;
 use dbt_agate::hashers::IdentityBuildHasher;
 use dbt_auth::{AdapterConfig, Auth, AuthError};
@@ -15,20 +24,14 @@ use dbt_common::cancellation::CancellationToken;
 use dbt_common::tracing::emit::emit_trace_event;
 use dbt_schemas::schemas::common::ResolvedQuoting;
 use dbt_telemetry::AdapterConnectionOpen;
-use minijinja::State;
-use parking_lot::RwLock;
 
 use crate::cache::RelationCache;
+use crate::engine::adapter_engine::*;
 use crate::engine::query_comment::QueryCommentConfig;
+use crate::engine::retry::{ConnectionRetryPolicy, QueryRetryPolicy};
 use crate::errors::{AdapterError, adbc_error_to_adapter_error};
 use crate::sql_types::TypeOps;
 use crate::stmt_splitter::StmtSplitter;
-
-use super::adapter_engine::*;
-use super::databricks;
-use super::make_behavior;
-use super::noop_connection::NoopConnection;
-use super::retry::ConnectionRetryPolicy;
 
 #[derive(Default)]
 pub struct DatabaseMap {
@@ -64,6 +67,8 @@ pub struct AdbcEngine {
     quoting: ResolvedQuoting,
     /// Query comment config
     query_comment: QueryCommentConfig,
+    /// Retry policy for transient query-execution errors (Redshift-only).
+    query_retry_policy: QueryRetryPolicy,
     /// Type operations (e.g. parsing, formatting) for the dialect this engine is for
     pub type_ops: Arc<dyn TypeOps>,
     /// Statement splitter
@@ -85,8 +90,10 @@ pub struct AdbcEngine {
     /// fingerprint of that connection.
     connection_fingerprint: std::sync::atomic::AtomicU64,
     /// `ResolvedCloudConfig::project_id`, forwarded as the `dbt_cloud.project_id`
-    /// flock-adbc driver option alongside whichever credential is resolved.
+    /// bridge-adbc driver option alongside whichever credential is resolved.
     dbt_cloud_project_id: Option<String>,
+    /// See [`AdapterEngine::clickhouse_capabilities`].
+    clickhouse_capabilities: OnceLock<ClickHouseCapabilities>,
 }
 
 impl AdbcEngine {
@@ -106,6 +113,7 @@ impl AdbcEngine {
         dbt_cloud_project_id: Option<String>,
     ) -> Self {
         let behavior = make_behavior(adapter_type, &behavior_flag_overrides);
+        let query_retry_policy = QueryRetryPolicy::new(adapter_type, &config);
         Self {
             adapter_type,
             auth,
@@ -115,6 +123,7 @@ impl AdbcEngine {
             type_ops,
             splitter,
             query_comment,
+            query_retry_policy,
             relation_cache,
             behavior_flag_overrides,
             behavior,
@@ -122,6 +131,7 @@ impl AdbcEngine {
             threads,
             connection_fingerprint: std::sync::atomic::AtomicU64::new(0),
             dbt_cloud_project_id,
+            clickhouse_capabilities: OnceLock::new(),
         }
     }
 
@@ -209,12 +219,12 @@ impl AdbcEngine {
             })
             .map_err(crate::errors::auth_error_to_adapter_error)?;
         let load_strategy = match (use_cloud_credentials, self.adapter_type) {
-            (true, _) => LoadStrategy::Remote,
+            (true, _) => LoadStrategy::Bridge,
             (false, AdapterType::DuckDB) => LoadStrategy::SystemThenCdnCache,
             (false, _) => LoadStrategy::CdnCache,
         };
 
-        // This will load the "flock" driver if load_strategy is Remote.
+        // This will load the "bridge" driver if load_strategy is Remote.
         let mut driver = driver::Builder::new(backend, load_strategy)
             .try_load()
             .map_err(adbc_error_to_adapter_error)?;
@@ -245,7 +255,10 @@ impl AdbcEngine {
                         let mut conn = database
                             .new_connection()
                             .map_err(adbc_error_to_adapter_error)?;
-                        super::clickhouse::ensure_database(conn.as_mut(), config)?
+                        dbt_adapter_engine::clickhouse::bootstrap::ensure_database(
+                            conn.as_mut(),
+                            config,
+                        )?
                     }
                     _ => {}
                 }
@@ -298,21 +311,18 @@ impl AdbcEngine {
             AuthError::config(format!("{e}{hint}"))
         })?;
 
-        // See NOTE [flock-service-token-support] in flock-service/src/flight/handshake.rs:
-        // flock-service doesn't support service-credential fetching yet, so reject this
+        // See NOTE [bridge-service-token-support] in flock-service/src/flight/handshake.rs:
+        // bridge-service doesn't support service-credential fetching yet, so reject this
         // client-side instead of sending a token the server will reject anyway.
         if matches!(credential, Credential::ServiceToken { .. }) {
             return Err(AuthError::config(
-                "service token credentials are not yet supported for dbt Cloud/flock \
+                "service token credentials are not yet supported for dbt Cloud/bridge \
                  connections; use a personal access token or run `dbt login` instead",
             ));
         }
 
         builder.with_named_option("dbt_cloud.token", credential.token())?;
-        builder.with_named_option(
-            "dbt_cloud.host",
-            flock_driver_host(credential.account_host())?,
-        )?;
+        builder.with_named_option("dbt_cloud.host", credential.account_host())?;
         builder.with_named_option("dbt_cloud.account_id", credential.account_id().to_string())?;
         if let Some(project_id) = project_id {
             builder.with_named_option("dbt_cloud.project_id", project_id)?;
@@ -330,8 +340,11 @@ impl AdbcEngine {
         let mut all_stmts = dbt_auth::generate_duckdb_init_sql(config)
             .map_err(crate::errors::auth_error_to_adapter_error)?;
 
-        // Append v2 catalog-driven ATTACH statements for DuckDB REST catalogs
-        all_stmts.extend(self.generate_v2_catalog_attach_stmts()?);
+        // Append catalog-driven ATTACH statements for DuckDB REST catalogs, unless the
+        // config opts out: a database that runs untrusted SQL must not see them.
+        if config.get_bool("attach_catalogs") != Some(false) {
+            all_stmts.extend(self.generate_catalog_attach_stmts()?);
+        }
 
         if all_stmts.is_empty() {
             return Ok(());
@@ -353,13 +366,13 @@ impl AdbcEngine {
         Ok(())
     }
 
-    /// Build v2 catalog-driven `ATTACH IF NOT EXISTS` statements for DuckDB
+    /// Build catalog-driven `ATTACH IF NOT EXISTS` statements for DuckDB
     /// Horizon, Glue, Iceberg REST, Unity Catalog, and DuckLake catalogs.
     ///
-    /// Reads the global catalogs v2 state, extracts every catalog that has a
+    /// Reads the global catalogs state, extracts every catalog that has a
     /// `config.duckdb` block, and emits one ATTACH per catalog. Duplicate
     /// aliases (after sanitization) are rejected with an error.
-    fn generate_v2_catalog_attach_stmts(&self) -> AdapterResult<Vec<String>> {
+    fn generate_catalog_attach_stmts(&self) -> AdapterResult<Vec<String>> {
         use crate::load_catalogs;
 
         if !load_catalogs::fetch_use_catalogs_v2() {
@@ -368,7 +381,7 @@ impl AdbcEngine {
         let Some(catalogs) = load_catalogs::fetch_catalogs() else {
             return Ok(Vec::new());
         };
-        let Ok(view) = catalogs.view_v2() else {
+        let Ok(view) = catalogs.view() else {
             return Ok(Vec::new());
         };
         // The compute engine attaches via each catalog's `lake_compute`
@@ -379,17 +392,8 @@ impl AdbcEngine {
         } else {
             AdapterType::DuckDB.as_ref()
         };
-        super::duckdb_attach::compose_v2_catalog_attach_stmts(&view, platform)
+        dbt_adapter_engine::duckdb::attach::compose_catalog_attach_stmts(&view, platform)
     }
-}
-
-/// The flock-adbc driver connects through a dedicated `dwg.` (data warehouse
-/// gateway) subdomain that only exists for flock traffic — every other
-/// consumer of `credential.account_host()` (Cloud Config gRPC, the identify
-/// service, `dbt_cloud.yml` matching, OAuth) must keep using the bare host.
-fn flock_driver_host(account_host: &str) -> Result<String, AuthError> {
-    dbt_common::url::insert_gateway_label(account_host, "dwg")
-        .map_err(|e| AuthError::config(format!("invalid dbt Cloud host {account_host:?}: {e}")))
 }
 
 /// Ignored under dbt-platform brokered credentials — per-model routing
@@ -454,7 +458,7 @@ fn off_pool_connection_bug() -> ! {
          that is:\n\
          \n\
          - production code in an `async fn`: move the call into \
-         `dbt_runtime::spawn_blocking(..)` (or `TaskOp::Blocking`) and await it\n\
+         `dbt_runtime::spawn_blocking(..)` and await it\n\
          - a synchronous `#[test]`: use `#[dbt_runtime::worker_test]`\n\
          - an `async` test: keep `#[dbt_runtime::test]` and dispatch the adapter \
          call with `dbt_runtime::spawn_blocking(..).await`\n\
@@ -516,8 +520,16 @@ impl AdapterEngine for AdbcEngine {
         &self.config
     }
 
+    fn query_retry_policy(&self) -> &QueryRetryPolicy {
+        &self.query_retry_policy
+    }
+
     fn relation_cache(&self) -> &Arc<RelationCache> {
         &self.relation_cache
+    }
+
+    fn clickhouse_capabilities(&self) -> Option<&OnceLock<ClickHouseCapabilities>> {
+        Some(&self.clickhouse_capabilities)
     }
 
     fn new_connection(
@@ -589,7 +601,8 @@ impl AdapterEngine for AdbcEngine {
             // dbclient.py `_set_client_database` parity; ensure_database
             // guarantees it exists.
             if self.adapter_type == AdapterType::ClickHouse
-                && let Some(schema) = super::clickhouse::target_schema(config)
+                && let Some(schema) =
+                    dbt_adapter_engine::clickhouse::bootstrap::target_schema(config)
             {
                 builder.with_option(
                     adbc_core::options::OptionConnection::CurrentSchema,
@@ -602,6 +615,19 @@ impl AdapterEngine for AdbcEngine {
         let mut conn = retry_policy
             .execute(config, connect)
             .map_err(|e| enrich_connection_error(self.adapter_type(), e, config))?;
+        // Relation listing only needs table names and types. We're also not using
+        // wildcards.
+        if self.adapter_type == AdapterType::Bigquery && !config.use_dbt_cloud_credentials() {
+            for key in [
+                bigquery::GET_OBJECTS_SKIP_TABLE_METADATA,
+                bigquery::GET_OBJECTS_DISABLE_WILDCARDS,
+            ] {
+                let _ = conn.set_option(
+                    adbc_core::options::OptionConnection::Other(key.to_string()),
+                    adbc_core::options::OptionValue::String("true".to_string()),
+                );
+            }
+        }
         // Tag the connection with its config fingerprint and cache it on the
         // engine, so the pool reuses a connection only among engines with an
         // identical connection configuration.
@@ -822,7 +848,7 @@ mod cloud_credential_tests {
         );
         assert_eq!(
             opt_string(&opts, "dbt_cloud.host"),
-            Some("ab123.dwg.us1.dbt.com".to_string())
+            Some("ab123.us1.dbt.com".to_string())
         );
         assert_eq!(
             opt_string(&opts, "dbt_cloud.account_id"),
@@ -852,47 +878,18 @@ mod cloud_credential_tests {
     }
 
     #[test]
-    fn pat_credential_dbt_cloud_host_gets_dwg_label_without_mutating_account_host() {
+    fn pat_credential_dbt_cloud_host_uses_account_host_as_is() {
         let credential = Credential::Pat {
             token: "dbtu_pat_token".to_string(),
             account_host: "ab123.us1.dbt.com".to_string(),
             account_id: 99,
         };
-        // Confirm the credential's own account_host is left bare — only the
-        // driver option gets the flock-specific "dwg" gateway label inserted.
-        assert_eq!(credential.account_host(), "ab123.us1.dbt.com");
         let builder = AdbcEngine::apply_cloud_credential(Backend::Snowflake, Ok(credential), None)
             .expect("should succeed");
         let opts: Vec<_> = builder.into_iter().collect();
         assert_eq!(
             opt_string(&opts, "dbt_cloud.host"),
-            Some("ab123.dwg.us1.dbt.com".to_string())
-        );
-    }
-
-    #[test]
-    fn pat_credential_dbt_cloud_host_is_not_double_prefixed() {
-        let credential = Credential::Pat {
-            token: "dbtu_pat_token".to_string(),
-            account_host: "ab123.dwg.us1.dbt.com".to_string(),
-            account_id: 99,
-        };
-        let builder = AdbcEngine::apply_cloud_credential(Backend::Snowflake, Ok(credential), None)
-            .expect("should succeed");
-        let opts: Vec<_> = builder.into_iter().collect();
-        assert_eq!(
-            opt_string(&opts, "dbt_cloud.host"),
-            Some("ab123.dwg.us1.dbt.com".to_string())
-        );
-    }
-
-    #[test]
-    fn flock_driver_host_mc() {
-        // Representative account-prefixed case; exhaustive host-shape coverage
-        // for `insert_gateway_label` lives in `dbt_common::url`.
-        assert_eq!(
-            super::flock_driver_host("acme.dbt.com").unwrap(),
-            "acme.dwg.dbt.com"
+            Some("ab123.us1.dbt.com".to_string())
         );
     }
 
@@ -974,7 +971,7 @@ mod cloud_credential_tests {
         );
         assert_eq!(
             opt_string(&opts, "dbt_cloud.host"),
-            Some("seeded.dwg.us1.dbt.com".to_string())
+            Some("seeded.us1.dbt.com".to_string())
         );
         assert_eq!(
             opt_string(&opts, "dbt_cloud.account_id"),

@@ -1,0 +1,1 @@
+CREATE OR REPLACE TABLE adapters_snowflake_rename_relation.a (val int)

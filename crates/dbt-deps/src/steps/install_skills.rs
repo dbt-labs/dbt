@@ -44,7 +44,9 @@ pub fn install_skills(inputs: SkillInstallInputs<'_>) -> FsResult<()> {
 /// better error paths for that, so this stays quiet.
 fn read_root_project(in_dir: &Path) -> Option<DbtProject> {
     let contents = stdfs::read_to_string(in_dir.join("dbt_project.yml")).ok()?;
-    dbt_skills::yaml::from_str::<DbtProject>(&contents).ok()
+    dbt_skills::yaml::from_str(&contents)
+        .and_then(DbtProject::from_yml_value)
+        .ok()
 }
 
 /// The installed packages, each paired with its on-disk root.

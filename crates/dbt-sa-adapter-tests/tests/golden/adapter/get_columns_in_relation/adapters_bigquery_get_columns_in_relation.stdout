@@ -1,0 +1,35 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/a.sql
+   Parsing models/b.sql
+bigquery
+dbt-test-env
+adapters_bigquery_get_columns_in_relation
+text_col.can_expand_to(num_col):
+text_col.can_expand_to(text_col2):
+ Rendering models/b.sql
+bigquery
+dbt-test-env
+adapters_bigquery_get_columns_in_relation
+text_col.can_expand_to(num_col): False
+text_col.can_expand_to(text_col2): False
+Column: number_col
+Column data_type: INT64
+Column dtype: INT64
+Column numeric_precision: None
+Column numeric_scale: None
+Column char_size: None
+Column quoted: `number_col`
+Column: text_col
+Column data_type: STRING
+Column dtype: STRING
+Column numeric_precision: None
+Column numeric_scale: None
+Column char_size: None
+Column quoted: `text_col`
+Column string_size: 256
+ Rendering models/a.sql
+==================== Execution Summary =====================
+Finished 'compile' successfully for target 'bigquery' [duration]
+Processed: 2 models
+Summary: 2 total | 2 success

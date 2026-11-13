@@ -1,0 +1,1 @@
+insert into development.adapters_snowflake_repros_hello_world_table_view.package_table (message) values ('foo')

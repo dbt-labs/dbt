@@ -3,7 +3,7 @@ use std::sync::mpsc;
 use std::time::SystemTime;
 
 use dbt_common::FsResult;
-use dbt_common::collections::DashMap;
+use dbt_common::collections::SccHashMap;
 use dbt_common::stats::{NodeStatus, Stat};
 use dbt_scheduler::instructions::SqlInstruction;
 use dbt_schemas::schemas::common::DbtMaterialization;
@@ -13,7 +13,7 @@ use dbt_tasks_core::task::TaskResult;
 use minijinja::Value as MinijinjaValue;
 
 pub fn handle_render_result(
-    res: FsResult<(SqlInstruction, Arc<DashMap<String, MinijinjaValue>>)>,
+    res: FsResult<(SqlInstruction, Arc<SccHashMap<String, MinijinjaValue>>)>,
     unique_id: &str,
     materialization: &DbtMaterialization,
     ctx: &mut TaskRunnerCtx,
@@ -23,7 +23,7 @@ pub fn handle_render_result(
     let (sql_instruction, config_map) = match res {
         Err(err) => {
             let thread_id = ctx.thread_id;
-            ctx.inner.run_stats.insert(
+            ctx.inner.run_stats.upsert_sync(
                 unique_id.to_string(),
                 Stat::new(
                     unique_id.to_string(),
@@ -48,15 +48,15 @@ pub fn handle_render_result(
         || unique_id.starts_with("test.")
     {
         let node_info = dbt_tasks_core::context::RenderedNodeInfo {
-            sql: sql_instruction.sql.clone(),
+            sql: sql_instruction.sql.as_str().into(),
             materialization: materialization.clone(),
         };
         ctx.inner
             .rendered_sql
-            .insert(unique_id.to_string(), node_info);
+            .upsert_sync(unique_id.to_string(), node_info);
     }
 
-    // Send result via channel instead of storing in DashMap
+    // Send result via channel instead of storing in SccHashMap
     if let Some(sender) = result_sender {
         let task_result = TaskResult {
             sql_instruction,

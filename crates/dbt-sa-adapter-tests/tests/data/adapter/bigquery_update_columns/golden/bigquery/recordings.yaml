@@ -1,0 +1,20 @@
+model.test.a:
+- sequence: 0
+  type: execute
+  sql: CREATE SCHEMA IF NOT EXISTS adapters_bigquery_update_columns
+- sequence: 1
+  type: execute
+  sql: |-
+    CREATE OR REPLACE TABLE adapters_bigquery_update_columns.a (
+    a STRUCT<b STRING>,
+    b STRING
+    )
+- sequence: 2
+  type: execute
+  sql: -- adapter.update_columns via BigQuery REST API on `dbt-test-env.adapters_bigquery_update_columns.a`
+- sequence: 3
+  type: execute
+  sql: |-
+    SELECT *
+    FROM dbt-test-env.adapters_bigquery_update_columns.INFORMATION_SCHEMA.COLUMN_FIELD_PATHS
+    WHERE table_name = "a"

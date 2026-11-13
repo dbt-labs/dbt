@@ -10,12 +10,12 @@ mod config;
 // Database-specific auth implementations
 mod athena;
 mod bigquery;
+#[cfg(test)]
+mod bridge;
 mod clickhouse;
 mod databricks;
 mod duckdb;
 mod exasol;
-#[cfg(test)]
-mod flock;
 mod lake_compute;
 mod postgres;
 mod redshift;
@@ -27,7 +27,7 @@ mod sqlserver;
 mod test_options;
 
 pub use config::AdapterConfig;
-pub use duckdb::init::{DuckDbTarget, generate_duckdb_init_sql};
+pub use duckdb::init::{DuckDbTarget, generate_duckdb_init_sql, motherduck_saas_mode_query};
 
 pub trait AuthWarningPrinter: Send + Sync {
     fn warn(&self, message: &str);
@@ -87,6 +87,7 @@ pub fn auth_for_backend_with_warnings(
         Backend::ClickHouse => Box::new(clickhouse::ClickHouseAuth::new(warning_printer)),
         Backend::Athena => Box::new(athena::AthenaAuth::new(warning_printer)),
         Backend::Exasol => Box::new(exasol::ExasolAuth::new(warning_printer)),
+        Backend::Trino => unimplemented!("trino backend authentication"),
         Backend::Generic { .. } => unimplemented!("generic backend authentication"),
     }
 }

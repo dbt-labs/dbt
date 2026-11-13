@@ -1,0 +1,11 @@
+models:
+  - name: orders
+    columns:
+      - name: id
+        data_type: integer
+      - name: ordered_at
+        data_type: timestamp
+      - name: customer
+        data_type: integer
+      - name: subtotal
+        data_type: number(38, 0)

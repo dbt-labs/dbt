@@ -3,6 +3,7 @@ use crate::response::ResultObject;
 
 use arrow::array::RecordBatch;
 use dbt_agate::AgateTable;
+use minijinja::dispatch_object::macro_namespace_template_resolver;
 use minijinja::{State, Value};
 
 use std::error::Error;
@@ -61,7 +62,8 @@ pub fn execute_macro_with_package(
     macro_name: &str,
     package: &str,
 ) -> Result<Value, AdapterError> {
-    let template_name = format!("{package}.{macro_name}");
+    let template_name = macro_namespace_template_resolver(state, macro_name, &mut Vec::new())
+        .unwrap_or_else(|| format!("{package}.{macro_name}"));
     let template = state.env().get_template(&template_name)?;
     let base_ctx = state.get_base_context();
     let state = template.eval_to_state(base_ctx, &[])?;
@@ -76,4 +78,24 @@ pub fn execute_macro_with_package(
         }
         AdapterError::new(AdapterErrorKind::UnexpectedResult, err.to_string())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use minijinja::Environment;
+
+    #[test]
+    fn execute_macro_preserves_adapter_error_kind() {
+        let mut env = Environment::new();
+        env.add_function("boom", || -> Result<Value, minijinja::Error> {
+            Err(AdapterError::new(AdapterErrorKind::NotFound, "gone").into())
+        });
+        env.add_template("pkg.m", "{% macro m() %}{{ boom() }}{% endmacro %}")
+            .unwrap();
+        let tmpl = env.get_template("pkg.m").unwrap();
+        let state = tmpl.eval_to_state((), &[]).unwrap();
+        let err = execute_macro_with_package(&state, &[], "m", "pkg").unwrap_err();
+        assert_eq!(err.kind(), AdapterErrorKind::NotFound);
+    }
 }

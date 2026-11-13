@@ -12,10 +12,12 @@
 //!   snowflake_client_cancel_does_not_panic_adbc -- --ignored
 //! ```
 
+use std::borrow::Cow;
 use std::time::{Duration, Instant};
 
 use adbc_core::error::{Error, Result};
 use adbc_core::options::AdbcVersion;
+use dbt_adapter_engine::cow::lowercase;
 use dbt_adbc::{
     Backend, Database, Statement, connection,
     database::{self, LogLevel},
@@ -101,7 +103,7 @@ fn snowflake_client_cancel_does_not_panic_adbc() {
         Err(e) => e,
     };
 
-    let msg = err.message.to_lowercase();
+    let msg = lowercase(Cow::Borrowed(&err.message));
 
     for panic_marker in [
         "go panic in snowflake driver",

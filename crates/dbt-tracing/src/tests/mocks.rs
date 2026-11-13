@@ -37,7 +37,10 @@ where
     )
 }
 
-fn test_data_layer_config(trace_id: u128, parent_span_id: Option<u64>) -> TelemetryDataLayerConfig {
+pub(crate) fn test_data_layer_config(
+    trace_id: u128,
+    parent_span_id: Option<u64>,
+) -> TelemetryDataLayerConfig {
     TelemetryDataLayerConfig::new(
         trace_id,
         parent_span_id,
@@ -538,14 +541,7 @@ impl TestWriter {
 }
 
 impl SharedWriter for TestWriter {
-    fn write(&self, data: &str) {
-        self.lines
-            .lock()
-            .expect("writer mutex poisoned")
-            .push(data.to_string());
-    }
-
-    fn writeln(&self, data: &str) {
+    fn writeln(&self, data: &dyn std::fmt::Display) {
         self.lines
             .lock()
             .expect("writer mutex poisoned")

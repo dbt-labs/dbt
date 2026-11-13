@@ -6,12 +6,14 @@ use dbt_jinja_utils::serde::{into_typed_with_jinja, value_from_file};
 use dbt_jinja_utils::{Var, jinja_environment::JinjaEnv, phases::parse::build_resolve_context};
 use dbt_schemas::schemas::project::DbtProject;
 use dbt_schemas::schemas::project::{
-    ConfigKeys, DataTestConfig, FunctionConfig, ModelConfig, ProjectAnalysisConfig,
+    ConfigKeys, DataTestConfig, FunctionConfig, KeyStatus, ModelConfig, ProjectAnalysisConfig,
     ProjectDataTestConfig, ProjectExposureConfig, ProjectFunctionConfig, ProjectModelConfig,
     ProjectSeedConfig, ProjectSemanticModelConfig, ProjectSkillConfig, ProjectSnapshotConfig,
     ProjectSourceConfig, ProjectUnitTestConfig, SeedConfig, SnapshotConfig, SourceConfig,
-    UnitTestConfig,
+    UnitTestConfig, WarningEmission, project_surface_key_status,
+    warn_and_strip_deprecated_warehouse_keys,
 };
+use dbt_telemetry::NodeType;
 use dbt_yaml::{ShouldBe, Value as YmlValue};
 use indexmap::IndexMap;
 use minijinja::Value;
@@ -20,6 +22,85 @@ use std::{
     collections::{BTreeMap, HashSet},
     path::Path,
 };
+
+/// `dbt_project.yml` sections that accept warehouse keys.
+const WAREHOUSE_BEARING_SECTIONS: &[(&str, NodeType)] = &[
+    ("models", NodeType::Model),
+    ("seeds", NodeType::Seed),
+    ("snapshots", NodeType::Snapshot),
+    ("sources", NodeType::Source),
+    ("tests", NodeType::Test),
+    ("data_tests", NodeType::Test),
+    ("unit_tests", NodeType::UnitTest),
+    ("functions", NodeType::Function),
+];
+
+/// Applies warehouse-key validation to the root project.
+fn strip_deprecated_warehouse_keys(raw_yml: &mut YmlValue, dependency_package_name: Option<&str>) {
+    if dependency_package_name.is_some() {
+        return;
+    }
+    let Some(root) = raw_yml.as_mapping_mut() else {
+        return;
+    };
+    for (section_name, resource) in WAREHOUSE_BEARING_SECTIONS {
+        if let Some(section) = root.get_mut(*section_name) {
+            strip_deprecated_warehouse_keys_in_scope(section, section_name, *resource);
+        }
+    }
+}
+
+/// Drops a package's `flags:` block before it is typed or rendered.
+///
+/// Project flags, including behavior change flags and adapter behavior flags, are global and
+/// come from the root project only, as in dbt-core. A package cannot opt in to or out of a
+/// behavior change, so its `flags:` must never reach `DbtProject::flags`. The raw YAML returned
+/// alongside the typed project is left untouched.
+fn strip_package_flags(yml: &mut YmlValue, dependency_package_name: Option<&str>) {
+    let Some(package_name) = dependency_package_name else {
+        return;
+    };
+    if let Some(mapping) = yml.as_mapping_mut()
+        && mapping.shift_remove("flags").is_some()
+    {
+        tracing::debug!(
+            "Ignoring `flags:` in package '{package_name}': project flags only apply from the root project"
+        );
+    }
+}
+
+/// Validates one section's package/folder tree.
+fn strip_deprecated_warehouse_keys_in_scope(scope: &mut YmlValue, path: &str, resource: NodeType) {
+    let Some(mapping) = scope.as_mapping_mut() else {
+        return;
+    };
+
+    warn_and_strip_deprecated_warehouse_keys(
+        mapping,
+        Some(path),
+        resource,
+        WarningEmission::Emit,
+        |key| match key.strip_prefix('+') {
+            Some(bare) => project_surface_key_status(resource, bare),
+            None => KeyStatus::Unknown,
+        },
+    );
+
+    // Bare keys are nested scopes; `+` keys are configs.
+    let nested_scope_keys: Vec<String> = mapping
+        .keys()
+        .filter_map(|key| match key {
+            YmlValue::String(key, _) if !key.starts_with('+') => Some(key.clone()),
+            _ => None,
+        })
+        .collect();
+    for key in nested_scope_keys {
+        if let Some(child) = mapping.get_mut(key.as_str()) {
+            let child_path = format!("{path}.{key}");
+            strip_deprecated_warehouse_keys_in_scope(child, &child_path, resource);
+        }
+    }
+}
 
 macro_rules! prune_section {
     ($proj:expr, $field:ident, $name:expr, $ty:ty, $valid_field_names:expr) => {
@@ -305,9 +386,14 @@ pub fn load_project_yml(
 
     let raw_yml = value_from_file(dbt_project_path, true, dependency_package_name)?;
 
+    // Keep the returned raw YAML unchanged for unrendered config and state comparison.
+    let mut yml_to_type = raw_yml.clone();
+    strip_deprecated_warehouse_keys(&mut yml_to_type, dependency_package_name);
+    strip_package_flags(&mut yml_to_type, dependency_package_name);
+
     // Parse the template without vars using Jinja
     let mut dbt_project: DbtProject = into_typed_with_jinja(
-        raw_yml.clone(),
+        yml_to_type,
         false,
         env,
         &context,
@@ -474,5 +560,152 @@ mod tests {
             dbt_yaml::Value::Number(n, _) => assert_eq!(n.as_i64(), Some(3)),
             other => panic!("expected number in +meta.demo, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn package_flags_are_stripped_but_root_flags_are_kept() {
+        let yaml = r#"
+        name: some_package
+        flags:
+          require_ref_searches_node_package_before_root: false
+          use_materialization_v2: true
+        "#;
+        let original: dbt_yaml::Value = dbt_yaml::from_str(yaml).unwrap();
+
+        let mut package = original.clone();
+        strip_package_flags(&mut package, Some("some_package"));
+        assert!(
+            package.get("flags").is_none(),
+            "a package's flags must be dropped"
+        );
+        assert!(package.get("name").is_some(), "other keys must survive");
+
+        let mut root = original.clone();
+        strip_package_flags(&mut root, None);
+        assert_eq!(root, original, "the root project's flags must be kept");
+    }
+
+    #[test]
+    fn strips_invalid_warehouse_key_from_source_section() {
+        let yaml = r#"
+        sources:
+          my_project:
+            +description: "not meaningful on a source"
+            +partition_by:
+              field: created_at
+              data_type: timestamp
+        "#;
+        let mut val: dbt_yaml::Value = dbt_yaml::from_str(yaml).unwrap();
+
+        strip_deprecated_warehouse_keys(&mut val, None);
+
+        let source_scope = val
+            .get("sources")
+            .and_then(|s| s.get("my_project"))
+            .expect("sources.my_project should still exist");
+        assert!(
+            source_scope.get("+description").is_none(),
+            "an Invalid warehouse key must be removed"
+        );
+        assert!(
+            source_scope.get("+partition_by").is_some(),
+            "a Valid warehouse key must survive untouched"
+        );
+    }
+
+    #[test]
+    fn data_tests_section_is_covered_like_tests() {
+        let yaml = r#"
+        data_tests:
+          my_project:
+            +jar_file_uri: "gs://bucket/jar"
+            +partition_by:
+              field: created_at
+              data_type: timestamp
+        "#;
+        let mut val: dbt_yaml::Value = dbt_yaml::from_str(yaml).unwrap();
+
+        strip_deprecated_warehouse_keys(&mut val, None);
+
+        let scope = val
+            .get("data_tests")
+            .and_then(|s| s.get("my_project"))
+            .expect("data_tests.my_project should still exist");
+        assert!(
+            scope.get("+jar_file_uri").is_none(),
+            "an Invalid warehouse key must be removed from `data_tests:` too"
+        );
+        assert!(
+            scope.get("+partition_by").is_some(),
+            "a Valid warehouse key must survive untouched"
+        );
+    }
+
+    #[test]
+    fn bare_nested_scope_name_colliding_with_a_field_ident_is_not_stripped() {
+        let yaml = r#"
+        sources:
+          my_project:
+            description:
+              +partition_by:
+                field: created_at
+                data_type: timestamp
+        "#;
+        let mut val: dbt_yaml::Value = dbt_yaml::from_str(yaml).unwrap();
+
+        strip_deprecated_warehouse_keys(&mut val, None);
+
+        let nested_scope = val
+            .get("sources")
+            .and_then(|s| s.get("my_project"))
+            .and_then(|s| s.get("description"))
+            .expect("the nested scope named `description` must survive");
+        assert!(
+            nested_scope.get("+partition_by").is_some(),
+            "recursion into the nested scope must still have happened"
+        );
+    }
+
+    #[test]
+    fn dependency_package_keys_are_left_untouched() {
+        let yaml = r#"
+        sources:
+          my_project:
+            +description: "not meaningful on a source, but not ours to warn about"
+        "#;
+        let mut val: dbt_yaml::Value = dbt_yaml::from_str(yaml).unwrap();
+
+        strip_deprecated_warehouse_keys(&mut val, Some("some_dependency"));
+
+        let source_scope = val
+            .get("sources")
+            .and_then(|s| s.get("my_project"))
+            .expect("sources.my_project should still exist");
+        assert!(
+            source_scope.get("+description").is_some(),
+            "a dependency package's keys must not be touched"
+        );
+    }
+
+    #[test]
+    fn absent_section_is_a_no_op() {
+        let yaml = r#"
+        sources:
+          my_project:
+            +partition_by:
+              field: created_at
+              data_type: timestamp
+        "#;
+        let mut val: dbt_yaml::Value = dbt_yaml::from_str(yaml).unwrap();
+
+        strip_deprecated_warehouse_keys(&mut val, None);
+
+        assert!(val.get("functions").is_none());
+        assert!(
+            val.get("sources")
+                .and_then(|s| s.get("my_project"))
+                .and_then(|s| s.get("+partition_by"))
+                .is_some()
+        );
     }
 }

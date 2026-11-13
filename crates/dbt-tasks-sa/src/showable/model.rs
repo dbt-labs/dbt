@@ -42,6 +42,7 @@ impl Showable for DbtModel {
 
             run_show(
                 ctx,
+                self,
                 show_unique_id,
                 "model",
                 is_inline,
@@ -56,16 +57,15 @@ impl Showable for DbtModel {
                     match ctx.inner.execute {
                         Execute::Remote => rendered_sql_for(ctx, unique_id.as_str(), "model"),
                         Execute::Sidecar | Execute::Service => {
-                            let lp_plan = task_result
-                                .as_ref()
-                                .and_then(|r| r.lp_instruction.as_ref())
-                                .map(|lp| &lp.plan);
+                            let lp_instruction =
+                                task_result.as_ref().and_then(|r| r.lp_instruction.as_ref());
                             let relation =
                                 create_relation_from_node(self.node_adapter(), self, None)?;
                             let canonical_fqn = relation.get_canonical_fqn()?.to_string();
                             if let Some(result) = show_task_hooks.get_model_sidecar_sql(
                                 ctx,
-                                lp_plan,
+                                self.node_adapter(),
+                                lp_instruction,
                                 &self.__common_attr__.path,
                                 &ctx.inner.arg.io.out_dir,
                                 &canonical_fqn,

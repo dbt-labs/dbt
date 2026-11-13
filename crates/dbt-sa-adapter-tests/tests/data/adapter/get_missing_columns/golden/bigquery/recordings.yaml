@@ -1,0 +1,18 @@
+model.test.c:
+- sequence: 0
+  type: execute
+  sql: CREATE SCHEMA IF NOT EXISTS adapters_bigquery_get_missing_columns
+- sequence: 1
+  type: execute
+  sql: CREATE OR REPLACE TABLE adapters_bigquery_get_missing_columns.a (one int, three int)
+- sequence: 2
+  type: execute
+  sql: CREATE OR REPLACE TABLE adapters_bigquery_get_missing_columns.b (one int, two int)
+model.test.c.get_table_schema.1801cae6:
+- sequence: 0
+  type: get_table_schema
+  table_name: 1801cae6
+model.test.c.get_table_schema.2a3726db:
+- sequence: 0
+  type: get_table_schema
+  table_name: 2a3726db

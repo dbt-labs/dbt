@@ -1,0 +1,21 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/_unit_tests.yml
+   Parsing models/json_downstream.sql
+   Parsing models/json_source.sql
+ Rendering models/json_source.sql
+   Running models/json_source.sql
+ Succeeded model adapters_bigquery_unit_test.json_source (view) [1 of 4 in duration]
+ Rendering models/json_downstream.sql
+ Rendering models/_unit_tests.yml:14:11 (json_string_mock)
+   Running ../scratch/target/run/test/models/json_string_mock.sql
+    Passed unit_test adapters_bigquery_unit_test_dbt_test__audit.json_string_mock [3 of 4 in duration]
+ Rendering models/_unit_tests.yml:4:11 (json_object_mock)
+   Running ../scratch/target/run/test/models/json_object_mock.sql
+    Passed unit_test adapters_bigquery_unit_test_dbt_test__audit.json_object_mock [4 of 4 in duration]
+   Running models/json_downstream.sql
+ Succeeded model adapters_bigquery_unit_test.json_downstream (view) [2 of 4 in duration]
+==================== Execution Summary =====================
+Finished 'build' successfully for target 'bigquery' [duration]
+Processed: 2 models | 2 unit tests
+Summary: 4 total | 4 success

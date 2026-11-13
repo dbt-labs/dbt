@@ -1,4 +1,4 @@
-import { useQuery, type UseQueryResult } from '@tanstack/react-query';
+import { useQuery, type UseQueryResult } from 'dbt-docs-lib';
 
 import { readSiteBootstrap } from '../lib/siteBootstrap';
 import type { Identity } from '../types';

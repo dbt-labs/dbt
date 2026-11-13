@@ -1,0 +1,7 @@
+kind: Fixes
+body: Databricks snapshots now accept `zorder` and `skip_optimize` from every config source, including `dbt_project.yml`, so the post-snapshot `OPTIMIZE` honors them as in dbt-databricks
+time: 2026-10-12T12:15:20.054561+05:30
+custom:
+    author: sd-db
+    issue: "16699"
+    project: dbt-core

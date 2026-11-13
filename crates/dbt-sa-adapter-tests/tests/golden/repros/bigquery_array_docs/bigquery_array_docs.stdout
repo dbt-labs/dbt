@@ -1,0 +1,15 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/schemas.yml
+   Parsing models/model.sql
+   Parsing models/view.sql
+ Rendering models/model.sql
+   Running models/model.sql
+ Succeeded model bigquery_array_docs.model (table) [1 of 2 in duration]
+ Rendering models/view.sql
+   Running models/view.sql
+ Succeeded model bigquery_array_docs.view (view) [2 of 2 in duration]
+==================== Execution Summary =====================
+Finished 'run' successfully for target 'bigquery' [duration]
+Processed: 2 models
+Summary: 2 total | 2 success

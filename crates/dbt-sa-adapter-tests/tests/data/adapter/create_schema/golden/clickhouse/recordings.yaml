@@ -1,0 +1,4 @@
+model.test.b:
+- sequence: 0
+  type: execute
+  sql: create database if not exists `adapters_clickhouse_create_schema`

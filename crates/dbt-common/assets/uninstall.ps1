@@ -1,6 +1,7 @@
 # Uninstall script for dbt
 [CmdletBinding()]
 param(
+    # Remove <Prefix>\bin\dbt.exe and its drivers in <Prefix>\lib\dbt. Defaults to ~\.local.
     [Parameter()]
     [ValidateNotNullOrEmpty()]
     [ValidateScript({
@@ -9,7 +10,18 @@ param(
         }
         return $true
     })]
-    [string]$installLocation = "$env:USERPROFILE\.local\bin",
+    [string]$Prefix,
+
+    # Deprecated: the directory holding dbt.exe. Use -Prefix.
+    [Parameter()]
+    [ValidateNotNullOrEmpty()]
+    [ValidateScript({
+        if(-not (Test-Path -Path $_ -IsValid)) {
+            throw "Path '$_' contains invalid characters"
+        }
+        return $true
+    })]
+    [string]$installLocation,
 
     # Overrides installLocation\dbt.exe with the exact binary to remove --
     # older callers that only pass installLocation assume the binary is
@@ -171,6 +183,21 @@ function Uninstall-dbt {
         Write-ErrorAndExit ("Failed to uninstall dbt: " + $_.Exception.Message)
     }
 
+    # Other packages' libraries and ~/.dbt stay.
+    $binDir = Split-Path -Parent $binaryPath
+    $libDir = Join-Path (Split-Path -Parent $binDir) 'lib\dbt'
+    if ((Split-Path -Leaf $binDir) -eq 'bin' -and (Test-Path $libDir)) {
+        try {
+            Get-ChildItem -Path $libDir -File -Filter '*adbc_driver_bridge.*' | Remove-Item -Force -ErrorAction Stop
+            if (-not (Get-ChildItem -Path $libDir -Force)) {
+                Remove-Item -Path $libDir -Force -ErrorAction Stop
+            }
+        }
+        catch {
+            Write-ErrorAndExit ("Failed to remove dbt libraries: " + $_.Exception.Message)
+        }
+    }
+
     # Show a clear completion message
     Write-Host
     Write-Host
@@ -185,6 +212,16 @@ function main {
 
     # Check required commands
     Test-RequiredCommands
+
+    if ($Prefix -and $installLocation) {
+        Write-ErrorAndExit '-Prefix and -installLocation cannot be combined'
+    }
+    if ($installLocation) {
+        Write-Log 'WARNING: -installLocation is deprecated. Use -Prefix <prefix> instead to remove <prefix>\bin\dbt.exe and its drivers in <prefix>\lib\dbt.'
+    } else {
+        $installPrefix = if ($Prefix) { $Prefix.TrimEnd('\', '/') } else { Join-Path -Path $env:USERPROFILE -ChildPath '.local' }
+        $installLocation = Join-Path -Path $installPrefix -ChildPath 'bin'
+    }
 
     # Convert relative path to absolute if needed
     $installLocation = Set-InstallLocation -Path $installLocation

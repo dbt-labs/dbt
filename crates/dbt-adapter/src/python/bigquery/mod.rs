@@ -1,8 +1,10 @@
 use crate::AdapterResponse;
 use crate::adapter::adapter_impl::AdapterImpl;
+use crate::connection::ConnectionGuard;
 use crate::engine::Options;
 use adbc_core::options::OptionValue;
 
+use dbt_adbc::QueryCtx;
 use dbt_adbc::bigquery::{
     CREATE_BATCH_REQ_BATCH_ID, CREATE_BATCH_REQ_BATCH_YML, CREATE_BATCH_REQ_PARENT,
     CREATE_NOTEBOOK_EXECUTE_JOB_REQ_GSC_BUCKET, CREATE_NOTEBOOK_EXECUTE_JOB_REQ_GSC_PATH,
@@ -13,7 +15,6 @@ use dbt_adbc::bigquery::{
     DATAPROC_SUBMIT_JOB_REQ_CLUSTER_NAME, DATAPROC_SUBMIT_JOB_REQ_GCS_PATH, WRITE_GCS_BUCKET,
     WRITE_GCS_CONTENT, WRITE_GCS_OBJECT_NAME,
 };
-use dbt_adbc::{Connection, QueryCtx};
 use dbt_common::cancellation::CancellationToken;
 use dbt_common::{AdapterError, AdapterErrorKind, AdapterResult};
 use dbt_yaml::Value::Mapping;
@@ -31,10 +32,10 @@ enum SubmissionMethod {
     BigFrames,
 }
 
-pub struct JobContext<'a> {
+pub struct JobContext<'a, 'c> {
     pub adapter: &'a AdapterImpl,
     pub ctx: &'a QueryCtx,
-    pub conn: &'a mut dyn Connection,
+    pub conn: &'a mut ConnectionGuard<'c>,
     pub config: &'a Value,
     pub token: CancellationToken,
 }
@@ -79,7 +80,7 @@ impl SubmissionMethod {
 pub fn submit_python_job(
     adapter: &AdapterImpl,
     ctx: &QueryCtx,
-    conn: &'_ mut dyn Connection,
+    conn: &mut ConnectionGuard<'_>,
     _state: &State,
     model: &Value,
     compiled_code: &str,

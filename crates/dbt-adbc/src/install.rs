@@ -1,10 +1,11 @@
+use std::env;
 use std::ffi::OsString;
-use std::io::{Read as _, Write as _};
+use std::fmt;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::result::Result;
 use std::sync::OnceLock;
 use std::time::Duration;
-use std::{env, fmt, io};
 
 use crate::driver::DriverFilenameDisplay;
 use crate::driver_channel::foundry_driver;
@@ -12,6 +13,7 @@ use crate::*;
 
 use adbc_core::error::{Error, Status};
 use percent_encoding::AsciiSet;
+use sha2::digest::Output;
 use sha2::{Digest, Sha256};
 use ureq::tls::{RootCerts, TlsConfig, TlsProvider};
 
@@ -223,10 +225,12 @@ impl InstallError {
 
 /// The CDN drivers are downloaded from, resolved once per process.
 ///
-/// `DBT_ADBC_USE_STAGING_CDN=1` switches debug builds to the staging mirror
-/// (written by `release.adbc.yml` on a `dry_run`) to exercise a driver before
-/// it is promoted from `main`. Release builds ignore it, so a shipped binary
-/// can't be pointed at pre-release artifacts.
+/// Drivers may be written to a staging mirror by running `release.adbc.yml`
+/// with `dry_run=true`. These uploads may be exercised when running a
+/// debug binary: Configure the env var `DBT_ADBC_USE_STAGING_CDN=1`.
+/// Drivers tested in staging may then be promoted to the production cdn.
+/// Release builds ignore this flag, so a shipped binary can't use
+/// pre-release artifacts.
 ///
 /// This also moves `adbc-sync`, which hashes whatever it downloads.
 pub fn cdn_host() -> &'static str {
@@ -275,61 +279,100 @@ pub fn format_driver_url(backend_name: &str, triplet: DriverTriplet) -> String {
 ///
 /// Linux
 ///
-/// ${XDG_CACHE_HOME}/com.getdbt/adbc/x86_64-unknown-linux-musl/libadbc_driver_snowflake-0.17.0+dbt0.0.1.so
-/// or ${HOME}/.cache/com.getdbt/adbc/x86_64-unknown-linux-musl/libadbc_driver_snowflake-0.17.0+dbt0.0.1.so
+/// ${XDG_CACHE_HOME}/com.getdbt/adbc/x86_64-manylinux_2_17-linux-gnu/libadbc_driver_snowflake-0.17.0+dbt0.0.1.so
+/// or ${HOME}/.cache/com.getdbt/adbc/x86_64-manylinux_2_17-linux-gnu/libadbc_driver_snowflake-0.17.0+dbt0.0.1.so
 ///
 /// macOS
 ///
-/// ${HOME}/Library/Caches/com.getdbt/adbc/aarch64-macos/libadbc_driver_snowflake-0.17.0+dbt0.0.1.dylib
+/// ${HOME}/Library/Caches/com.getdbt/adbc/aarch64-apple-darwin/libadbc_driver_snowflake-0.17.0+dbt0.0.1.dylib
 ///
 /// Windows
 ///
 /// ${FOLDERID_LocalAppData}/com.getdbt/adbc/x86_64-pc-windows-msvc/adbc_driver_snowflake-0.17.0+dbt0.0.1.dll
 pub fn format_driver_path(name: &str, triplet: DriverTriplet) -> Result<PathBuf, InstallError> {
+    format_driver_path_in(None, name, triplet)
+}
+
+/// Format the full path to the driver file (`${cache_dir}/com.getdbt/adbc/...`).
+///
+/// Like [format_driver_path], but `cache_dir` (when given) is used instead of
+/// the default OS cache directory.
+pub fn format_driver_path_in(
+    cache_dir: Option<&Path>,
+    name: &str,
+    triplet: DriverTriplet,
+) -> Result<PathBuf, InstallError> {
     const APP_ID: &str = "com.getdbt";
-    dirs::cache_dir()
-        .map(|cache_dir| {
-            let driver_relpath = format!(
-                "{}-{}/{}",
-                triplet.arch,
-                triplet.os,
-                DriverFilenameDisplay { name, triplet }
-            );
-            cache_dir.join(APP_ID).join("adbc").join(driver_relpath)
-        })
-        .ok_or(InstallError::DetermineCacheDir)
+
+    // Allocate a single PathBuf to act as the out value; reserve additional
+    let cache_dir = cache_dir
+        .map(PathBuf::from)
+        .or_else(dirs::cache_dir)
+        .ok_or(InstallError::DetermineCacheDir)?;
+
+    let mut driver_path = cache_dir;
+    driver_path.push(APP_ID);
+    driver_path.push("adbc");
+    driver_path.push(format!("{}-{}", triplet.arch, triplet.os));
+    driver_path.push(DriverFilenameDisplay { name, triplet }.to_string());
+
+    Ok(driver_path)
 }
 
 /// ADBC users can call this function to pre-install the driver for the given backend.
 ///
 /// Instead of relying on the automatic installation at connection creation time.
-pub fn pre_install_driver(http_agent: &ureq::Agent, backend: Backend) -> Result<(), InstallError> {
-    if !is_installable_driver(backend) {
+pub fn pre_install_driver(
+    http_agent: &ureq::Agent,
+    backend: Backend,
+    cache_dir: Option<&Path>,
+) -> Result<(), InstallError> {
+    if !is_installable_driver(backend, cdn_driver_cache_disabled()) {
         return Ok(());
     }
     let (backend_name, triplet) = driver_parameters(backend);
-    install_driver_internal(http_agent, backend_name, triplet)
+    install_driver_internal(http_agent, backend_name, triplet, cache_dir)
 }
 
 /// Pre-install all supported drivers for the current platform.
-pub fn pre_install_all_drivers() -> Result<(), InstallError> {
+///
+/// Drivers are installed under `${cache_dir}/com.getdbt/...`.
+/// When `cache_dir` is `None`, the OS cache directory is used (see
+/// [format_driver_path]).
+pub fn pre_install_all_drivers(cache_dir: Option<&Path>) -> Result<(), InstallError> {
+    let cache_dir = cache_dir
+        .map(std::path::absolute)
+        .transpose()
+        .map_err(InstallError::Io)?;
     let http_agent = build_http_agent();
     for backend in INSTALLABLE_DRIVERS.iter() {
-        pre_install_driver(&http_agent, *backend)?;
+        pre_install_driver(&http_agent, *backend, cache_dir.as_deref())?;
     }
     Ok(())
 }
 
-pub fn is_installable_driver(backend: Backend) -> bool {
-    // NOTE(serramatutu): Allow us to debug drivers locally without needing them to be installable via CDN.
+/// Determines installation of drivers for debug builds.
+///
+/// Lets us work with drivers locally that may not live in the CDN yet.
+///
+/// Note(versusfacit): Env vars accessors are worth being a separate semantic
+/// unit so tests never have to touch the process environment.
+fn cdn_driver_cache_disabled() -> bool {
     #[cfg(debug_assertions)]
     {
-        if env_var::env_var_bool("DISABLE_CDN_DRIVER_CACHE")
+        env_var::env_var_bool("DISABLE_CDN_DRIVER_CACHE")
             .unwrap()
             .unwrap_or(false)
-        {
-            return true;
-        }
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        false
+    }
+}
+
+fn is_installable_driver(backend: Backend, cdn_driver_cache_disabled: bool) -> bool {
+    if cdn_driver_cache_disabled {
+        return true; // All drivers are installable locally
     }
 
     INSTALLABLE_DRIVERS.contains(&backend)
@@ -339,7 +382,7 @@ pub fn is_installable_driver(backend: Backend) -> bool {
 ///
 /// Pre-condition: is_installable_driver(backend)
 pub fn backend_name_and_version(backend: Backend) -> (&'static str, &'static str) {
-    debug_assert!(is_installable_driver(backend));
+    debug_assert!(is_installable_driver(backend, cdn_driver_cache_disabled()));
     // Logged because the channel is otherwise invisible: both drivers report
     // the same `Backend`, so this is the only place that says which one a run
     // actually resolved.
@@ -352,7 +395,10 @@ pub fn backend_name_and_version(backend: Backend) -> (&'static str, &'static str
     (name, version)
 }
 
-/// The canonical driver for `backend`, ignoring any opted-in channel.
+/// The canonical driver and current version for a given `backend`.
+///
+/// Foundry drivers have their own canonical version. See FOUNDRY_DRIVERS
+/// for canonical name and version for them.
 fn canonical_name_and_version(backend: Backend) -> (&'static str, &'static str) {
     match backend {
         Backend::Snowflake => ("snowflake", SNOWFLAKE_DRIVER_VERSION),
@@ -367,7 +413,7 @@ fn canonical_name_and_version(backend: Backend) -> (&'static str, &'static str) 
         Backend::LakeCompute => ("dbt", LAKE_COMPUTE_DRIVER_VERSION),
         Backend::SQLServer => ("mssql", MSSQLSERVER_DRIVER_VERSION),
         Backend::ClickHouse => ("clickhouse", CLICKHOUSE_DRIVER_VERSION),
-        Backend::Athena | Backend::Exasol | Backend::Generic { .. } => {
+        Backend::Athena | Backend::Exasol | Backend::Trino | Backend::Generic { .. } => {
             unreachable!("driver_parameters() called with backend={:?}", backend)
         }
     }
@@ -391,7 +437,7 @@ pub fn driver_parameters(backend: Backend) -> (&'static str, DriverTriplet<'stat
             arch: env::consts::ARCH,
             version,
         };
-        if find_expected_checksum(backend_name, triplet).is_some() {
+        if find_expected_checksums(backend_name, triplet).is_some() {
             return (backend_name, triplet);
         }
     }
@@ -411,9 +457,12 @@ pub fn driver_parameters(backend: Backend) -> (&'static str, DriverTriplet<'stat
     )
 }
 
-/// Find the expected SHA-256 checksum for the compressed driver file.
-pub fn find_expected_checksum(backend_name: &str, triplet: DriverTriplet) -> Option<&'static str> {
-    let checksums = checksums::SORTED_CDN_DRIVER_CHECKSUMS.as_ref();
+/// Find the expected SHA-256 checksum for the compressed and decompressed driver file.
+pub fn find_expected_checksums(
+    backend_name: &str,
+    triplet: DriverTriplet,
+) -> Option<(&'static str, &'static str)> {
+    let checksums = checksums::SORTED_CDN_DRIVER_CHECKSUMS;
     #[cfg(debug_assertions)]
     for i in 0..checksums.len() - 1 {
         debug_assert!(
@@ -423,19 +472,20 @@ pub fn find_expected_checksum(backend_name: &str, triplet: DriverTriplet) -> Opt
     }
     let query = (backend_name, triplet.os, triplet.arch, triplet.version);
     checksums
-        .binary_search_by(|(elem, _)| elem.cmp(&query))
+        .binary_search_by(|(elem, _, _)| elem.cmp(&query))
         .ok()
-        .map(|index| checksums[index].1)
+        .map(|index| (checksums[index].1, checksums[index].2))
 }
 
 pub fn install_driver_internal(
     http_agent: &ureq::Agent,
     backend_name: &str,
     triplet: DriverTriplet,
+    cache_dir: Option<&Path>,
 ) -> Result<(), InstallError> {
-    let full_driver_path = format_driver_path(backend_name, triplet)?;
+    let full_driver_path = format_driver_path_in(cache_dir, backend_name, triplet)?;
     let url = format_driver_url(backend_name, triplet);
-    let checksum = find_expected_checksum(backend_name, triplet);
+    let checksum = find_expected_checksums(backend_name, triplet).map(|(compressed, _)| compressed);
     download_zst_driver_file(http_agent, &url, &full_driver_path, checksum)
 }
 
@@ -515,43 +565,22 @@ pub fn build_http_agent() -> ureq::Agent {
     ureq::Agent::new_with_config(http_config)
 }
 
-/// Download a Zstandard-compressed file from the given URL and save (atomically and durably)
-/// it to the fully-qualified destination path.
-pub fn download_zst_driver_file(
-    http_agent: &ureq::Agent,
-    url: &str,
-    destination: &Path,
-    expected_sha256sum: Option<&str>,
-) -> Result<(), InstallError> {
-    debug_assert!(
-        destination.is_absolute(),
-        "destination path must be absolute"
-    );
-    let mut response = http_agent.get(url).call().map_err(InstallError::Http)?;
-
-    // Generate a random file name and create an empty temporary file
-    let tmp_path = {
-        let tmp_name = tmpname(".", 15, ".download").map_err(InstallError::GetRandom)?;
-        // ensure the destination exists and create it if necessary
-        let parent = destination.parent().ok_or_else(|| {
-            let message = format!(
-                "destination path must be an absolute path: {}",
-                destination.display()
-            );
-            let error = io::Error::new(io::ErrorKind::InvalidInput, message);
-            InstallError::Io(error)
-        })?;
-        std::fs::create_dir_all(parent).map_err(|e| InstallError::CreateDir(e, parent.into()))?;
-        // write the file in the same directory as the destination to ensure
-        // the rename operation is atomic (happens on the same filesystem)
-        parent.join(tmp_name)
-    };
-    let mut tmp = std::fs::File::create(&tmp_path)
-        .map_err(|e| InstallError::CreateFIle(e, tmp_path.clone()))?;
-
+/// Stream Zstd-compressed data from `download_stream`, decompress it, and write the
+/// decompressed data to `out`. Return the SHA-256 checksum of the *downloaded* data
+/// (i.e., the compressed data).
+///
+/// This function doesn't buffer the entire download in memory, as it downloads the
+/// data, it processes it for the checksum computation, decompresses it, and writes
+/// the decompressed data to `out`.
+///
+/// The use of [io::Read] and [io::Write] allows this function to be used generically.
+pub fn stream_zst_artifact(
+    download_stream: &mut dyn io::Read,
+    out: &mut dyn io::Write,
+) -> Result<Output<Sha256>, InstallError> {
     // Download and Zstandard decompression buffers
     const DECOMPRESSION_FACTOR: usize = 4;
-    let mut zstd_insize_hint = zstd_safe::DCtx::in_size(); // ~200KB
+    let mut zstd_insize_hint = zstd_safe::DCtx::in_size(); // ~128 Kib + 3 for header
     let mut download_buffer = Vec::with_capacity(zstd_insize_hint);
     let write_buffer_capacity = (DECOMPRESSION_FACTOR * download_buffer.capacity()).max(64 * 1024);
     let mut inner_write_buffer = ZstdWriteBuffer::with_fixed_capacity(write_buffer_capacity);
@@ -597,7 +626,6 @@ pub fn download_zst_driver_file(
         Ok(next_insize_hint)
     };
 
-    let mut download_stream = response.body_mut().as_reader();
     loop {
         if download_buffer.len() < zstd_insize_hint {
             // Ensure there is `zstd_insize_hint` bytes of capacity in `download_buffer`.
@@ -637,7 +665,7 @@ pub fn download_zst_driver_file(
         }
         // If the write buffer is full, drain it to the temporary file.
         if write_buffer.pos() == write_buffer.capacity() {
-            tmp.write_all(write_buffer.as_slice())
+            out.write_all(write_buffer.as_slice())
                 .map_err(InstallError::WriteFile)?;
             unsafe {
                 write_buffer.set_pos(0);
@@ -647,7 +675,7 @@ pub fn download_zst_driver_file(
     // Final download_buffer drain
     while !download_buffer.is_empty() {
         let _ = decompress_step(&mut download_buffer, &mut write_buffer)?;
-        tmp.write_all(write_buffer.as_slice())
+        out.write_all(write_buffer.as_slice())
             .map_err(InstallError::WriteFile)?;
         unsafe {
             write_buffer.set_pos(0);
@@ -655,12 +683,53 @@ pub fn download_zst_driver_file(
     }
     // Final write_buffer drain.
     if write_buffer.pos() > 0 {
-        tmp.write_all(write_buffer.as_slice())
+        out.write_all(write_buffer.as_slice())
             .map_err(InstallError::WriteFile)?;
     }
 
-    // Finalize the hash computation and compare it with the expected value.
     let sha256sum = hasher.finalize();
+    Ok(sha256sum)
+}
+
+/// Download a Zstandard-compressed file from the given URL and save (atomically and durably)
+/// it to the fully-qualified destination path.
+pub fn download_zst_driver_file(
+    http_agent: &ureq::Agent,
+    url: &str,
+    destination: &Path,
+    expected_sha256sum: Option<&str>,
+) -> Result<(), InstallError> {
+    debug_assert!(
+        destination.is_absolute(),
+        "destination path must be absolute"
+    );
+
+    let mut response = http_agent.get(url).call().map_err(InstallError::Http)?;
+
+    // Generate a random file name and create an empty temporary file
+    let tmp_path = {
+        let tmp_name = tmpname(".", 15, ".download").map_err(InstallError::GetRandom)?;
+        // ensure the destination exists and create it if necessary
+        let parent = destination.parent().ok_or_else(|| {
+            let message = format!(
+                "destination path must be an absolute path: {}",
+                destination.display()
+            );
+            let error = io::Error::new(io::ErrorKind::InvalidInput, message);
+            InstallError::Io(error)
+        })?;
+        std::fs::create_dir_all(parent).map_err(|e| InstallError::CreateDir(e, parent.into()))?;
+        // write the file in the same directory as the destination to ensure
+        // the rename operation is atomic (happens on the same filesystem)
+        parent.join(tmp_name)
+    };
+    let mut tmp = std::fs::File::create(&tmp_path)
+        .map_err(|e| InstallError::CreateFIle(e, tmp_path.clone()))?;
+
+    let mut download_stream = response.body_mut().as_reader();
+    let sha256sum = stream_zst_artifact(&mut download_stream, &mut tmp)?;
+
+    // Compare the checksum with the expected value.
     if let Some(expected) = expected_sha256sum {
         debug_assert!(
             expected.len() == 64,
@@ -708,7 +777,6 @@ fn finalize_install(tmp_path: &Path, destination: &Path) -> Result<(), InstallEr
 mod tests {
     use super::*;
     use std::path::PathBuf;
-    use std::sync::Mutex;
 
     #[test]
     fn finalize_install_tolerates_concurrent_install() {
@@ -733,18 +801,6 @@ mod tests {
         assert!(!tmp.exists());
 
         std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-    fn remove_test_var(name: &str) {
-        #[allow(
-            clippy::disallowed_methods,
-            reason = "installability tests serialize env-var mutations with ENV_LOCK"
-        )]
-        unsafe {
-            env::remove_var(name);
-        }
     }
 
     #[test]
@@ -776,6 +832,53 @@ mod tests {
             dbt_cache_dir.display(),
         ));
         assert_eq!(path, expected);
+
+        let custom =
+            format_driver_path_in(Some(Path::new("/opt/cache/")), "snowflake", triplet).unwrap();
+        assert_eq!(
+            custom,
+            Path::new("/opt/cache/com.getdbt/adbc/x86_64-manylinux_2_17-linux-gnu")
+                .join("libadbc_driver_snowflake-0.17.0+dbt0.2.0.so")
+        );
+
+        let macos = DriverTriplet {
+            os: MACOS_TARGET_OS,
+            arch: "aarch64",
+            version: "1",
+        };
+        let custom =
+            format_driver_path_in(Some(Path::new("/opt/cache")), "snowflake", macos).unwrap();
+        assert_eq!(
+            custom,
+            Path::new("/opt/cache/com.getdbt/adbc/aarch64-apple-darwin")
+                .join("libadbc_driver_snowflake-1.dylib")
+        );
+
+        let windows = DriverTriplet {
+            os: WINDOWS_TARGET_OS,
+            arch: "x86_64",
+            version: "1",
+        };
+        let custom =
+            format_driver_path_in(Some(Path::new("/opt/cache")), "snowflake", windows).unwrap();
+        assert_eq!(
+            custom,
+            Path::new("/opt/cache/com.getdbt/adbc/x86_64-pc-windows-msvc")
+                .join("adbc_driver_snowflake-1.dll")
+        );
+
+        let unversioned = DriverTriplet {
+            os: "manylinux_2_28-linux-gnu",
+            arch: "aarch64",
+            version: "",
+        };
+        let custom =
+            format_driver_path_in(Some(Path::new("/opt/cache")), "dbt", unversioned).unwrap();
+        assert_eq!(
+            custom,
+            Path::new("/opt/cache/com.getdbt/adbc/aarch64-manylinux_2_28-linux-gnu")
+                .join("libadbc_driver_dbt.so")
+        );
     }
 
     #[test]
@@ -836,8 +939,8 @@ mod tests {
 
     #[test]
     fn installable_driver_set_matches_cdn_backends_by_default() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        remove_test_var("DISABLE_CDN_DRIVER_CACHE");
+        // Scenario: `DISABLE_CDN_DRIVER_CACHE` unset -> use the default CDN configuration
+        const DRIVER_CACHE_DISABLED: bool = false;
 
         for backend in [
             Backend::Snowflake,
@@ -853,7 +956,7 @@ mod tests {
             Backend::ClickHouse,
         ] {
             assert!(
-                is_installable_driver(backend),
+                is_installable_driver(backend, DRIVER_CACHE_DISABLED),
                 "{backend:?} should be CDN-installable"
             );
         }
@@ -861,13 +964,14 @@ mod tests {
         for backend in [
             Backend::Athena,
             Backend::Exasol,
+            Backend::Trino,
             Backend::Generic {
                 library_name: "adbc_driver_sqlite",
                 entrypoint: Some(b"SqliteDriverInit"),
             },
         ] {
             assert!(
-                !is_installable_driver(backend),
+                !is_installable_driver(backend, DRIVER_CACHE_DISABLED),
                 "{backend:?} should use system/manual loading"
             );
         }
@@ -914,15 +1018,15 @@ mod tests {
             version,
         };
 
-        assert!(find_expected_checksum(backend_name, triplet).is_some());
+        assert!(find_expected_checksums(backend_name, triplet).is_some());
 
         let unknown_version = DriverTriplet {
             os: MACOS_TARGET_OS,
             arch: "aarch64",
             version: "0.0.0",
         };
-        assert!(find_expected_checksum(backend_name, unknown_version).is_none());
-        assert!(find_expected_checksum("unknown", triplet).is_none());
+        assert!(find_expected_checksums(backend_name, unknown_version).is_none());
+        assert!(find_expected_checksums("unknown", triplet).is_none());
     }
 
     #[test]
@@ -982,15 +1086,29 @@ mod tests {
         assert!(checksum.message.contains("got actual"));
     }
 
-    /// Check that the expected SHA-256 checksum is found for each backend, version, target_os and
-    /// arch combinations.
+    #[test]
+    fn all_recorded_checksums_are_sha256_hex() {
+        let is_sha256_hex =
+            |s: &str| s.len() == 64 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
+
+        for (_, compressed, decompressed) in checksums::SORTED_CDN_DRIVER_CHECKSUMS {
+            assert!(is_sha256_hex(compressed));
+            assert!(is_sha256_hex(decompressed));
+        }
+    }
+
+    /// Check that the expected SHA-256 checksum is found for each pinned canonical
+    /// and Foundry version of each backend, target_os and arch combination.
     ///
     /// IMPORTANT: If this is failing, it probably means you need to run
-    /// `./scripts/gen_cdn_driver_checksums.sh` and try again.
+    /// `./scripts/gen_cdn_driver_checksums.sh` to incorporate newest uploads.
     ///
-    /// This test also guarantees that the driver exists on the CDN because the
-    /// `gen_cdn_driver_checksums.sh` script can only generate checksums for the drivers it can
-    /// download.
+    /// This test verifies that at the time of running `gen_cdn_driver_checksums.sh` for
+    /// the current checksums.rs, the driver version existed on the CDN. The script only
+    /// writes a checksum for a driver it could download, so a checksum here means that
+    /// driver existed on the CDN when the script last ran.
+    ///
+    /// Note: It may have been removed since the last update.
     #[test]
     fn test_all_checksums_are_listed() {
         let target_os_and_archs = [
@@ -1028,8 +1146,8 @@ mod tests {
                             }
                             _ => {
                                 let triplet = DriverTriplet { os, arch, version };
-                                let checksum = find_expected_checksum(backend_name, triplet);
-                                if checksum.is_some() {
+                                let checksums = find_expected_checksums(backend_name, triplet);
+                                if checksums.is_some() {
                                     count_hits += 1;
                                 }
                             }

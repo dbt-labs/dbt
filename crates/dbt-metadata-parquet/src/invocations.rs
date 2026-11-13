@@ -58,6 +58,16 @@ pub struct InvocationRow {
     pub git_is_dirty: Option<i32>,
     pub elapsed_secs: Option<f64>,
     pub node_count: Option<i32>,
+    /// The resolved target's database, schema and thread count, and the `--vars` the run was
+    /// given as JSON. Absent from epochs written before they were recorded.
+    #[serde(default)]
+    pub target_database: Option<String>,
+    #[serde(default)]
+    pub target_schema: Option<String>,
+    #[serde(default)]
+    pub target_threads: Option<i32>,
+    #[serde(default)]
+    pub vars_override: Option<String>,
     pub ingested_at: i64,
 }
 
@@ -88,6 +98,10 @@ fn invocation_fields() -> Vec<Field> {
         Field::new("git_is_dirty", DataType::Int32, true),
         Field::new("elapsed_secs", DataType::Float64, true),
         Field::new("node_count", DataType::Int32, true),
+        Field::new("target_database", DataType::Utf8, true),
+        Field::new("target_schema", DataType::Utf8, true),
+        Field::new("target_threads", DataType::Int32, true),
+        Field::new("vars_override", DataType::Utf8, true),
         Field::new(
             "ingested_at",
             DataType::Timestamp(TimeUnit::Microsecond, Some(Arc::from("UTC"))),
@@ -187,6 +201,10 @@ mod tests {
             git_is_dirty: Some(0),
             elapsed_secs: Some(12.5),
             node_count: Some(42),
+            target_database: None,
+            target_schema: None,
+            target_threads: None,
+            vars_override: None,
             ingested_at: 1_700_000_000_000_000,
         };
 
@@ -229,6 +247,10 @@ mod tests {
                 git_is_dirty: None,
                 elapsed_secs: Some(i as f64),
                 node_count: None,
+                target_database: None,
+                target_schema: None,
+                target_threads: None,
+                vars_override: None,
                 ingested_at: 1_700_000_000_000_000 + i as i64,
             };
             write_invocation(dir_path, row).unwrap();
@@ -271,6 +293,10 @@ mod tests {
                 git_is_dirty: None,
                 elapsed_secs: None,
                 node_count: None,
+                target_database: None,
+                target_schema: None,
+                target_threads: None,
+                vars_override: None,
                 ingested_at: i as i64,
             };
             write_invocation(dir_path, row).unwrap();

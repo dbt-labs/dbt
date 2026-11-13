@@ -30,7 +30,8 @@ use crate::schemas::manifest::GrantAccessToTarget;
 use crate::schemas::project::ResolvableConfig;
 use crate::schemas::project::TypedRecursiveConfig;
 use crate::schemas::project::configs::common::{
-    WarehouseSpecificNodeConfig, take_databricks_catalog_alias,
+    LazyWarehouseSpecificNodeConfig, TYPED_ALIAS_KEYS, WarehouseSpecificNodeConfig,
+    take_databricks_catalog_alias,
 };
 use crate::schemas::project::configs::config_merge::{Tags, TblProperties};
 use crate::schemas::serde::PartitionsConfig;
@@ -111,6 +112,14 @@ pub struct ProjectSeedConfig {
     pub quoting: Option<DbtQuoting>,
     #[serde(rename = "+delimiter")]
     pub delimiter: Option<Spanned<String>>,
+    #[serde(
+        default,
+        rename = "+all_varchar",
+        deserialize_with = "bool_or_string_bool"
+    )]
+    pub all_varchar: Option<bool>,
+    #[serde(default, rename = "+fast", deserialize_with = "bool_or_string_bool")]
+    pub fast: Option<bool>,
     #[serde(rename = "+external_volume")]
     pub external_volume: Option<String>,
     #[serde(rename = "+adapter_properties")]
@@ -185,6 +194,12 @@ pub struct ProjectSeedConfig {
         deserialize_with = "u64_or_string_u64"
     )]
     pub partition_expiration_days: Option<u64>,
+    #[serde(
+        default,
+        rename = "+enable_change_history",
+        deserialize_with = "bool_or_string_bool"
+    )]
+    pub enable_change_history: Option<bool>,
     #[serde(rename = "+grant_access_to")]
     pub grant_access_to: Option<Vec<GrantAccessToTarget>>,
     #[serde(rename = "+partitions")]
@@ -255,6 +270,8 @@ pub struct ProjectSeedConfig {
     pub not_matched_condition: Option<String>,
     #[serde(rename = "+not_matched_by_source_condition")]
     pub not_matched_by_source_condition: Option<String>,
+    #[serde(rename = "+merge_actions_explicit")]
+    pub merge_actions_explicit: Option<String>,
     #[serde(rename = "+not_matched_by_source_action")]
     pub not_matched_by_source_action: Option<String>,
     #[serde(
@@ -316,6 +333,18 @@ pub struct ProjectSeedConfig {
     #[serde(rename = "+schedule")]
     pub schedule: Option<Schedule>,
 
+    // ClickHouse
+    #[serde(rename = "+engine")]
+    pub engine: Option<String>,
+    #[serde(rename = "+order_by")]
+    pub order_by: Option<StringOrArrayOfStrings>,
+    #[serde(
+        default,
+        rename = "+disable_on_cluster",
+        deserialize_with = "bool_or_string_bool"
+    )]
+    pub disable_on_cluster: Option<bool>,
+
     pub __additional_properties__: BTreeMap<String, ShouldBe<ProjectSeedConfig>>,
 }
 
@@ -355,6 +384,8 @@ impl TypedRecursiveConfig for ProjectSeedConfig {
             || self.transient.is_some()
             || self.quoting.is_some()
             || self.delimiter.is_some()
+            || self.all_varchar.is_some()
+            || self.fast.is_some()
             || self.external_volume.is_some()
             || self.adapter_properties.is_some()
             || self.base_location_root.is_some()
@@ -379,6 +410,7 @@ impl TypedRecursiveConfig for ProjectSeedConfig {
             || self.kms_key_name.is_some()
             || self.require_partition_filter.is_some()
             || self.partition_expiration_days.is_some()
+            || self.enable_change_history.is_some()
             || self.grant_access_to.is_some()
             || self.partitions.is_some()
             || self.enable_refresh.is_some()
@@ -405,6 +437,7 @@ impl TypedRecursiveConfig for ProjectSeedConfig {
             || self.matched_condition.is_some()
             || self.not_matched_condition.is_some()
             || self.not_matched_by_source_condition.is_some()
+            || self.merge_actions_explicit.is_some()
             || self.not_matched_by_source_action.is_some()
             || self.merge_with_schema_evolution.is_some()
             || self.skip_matched_step.is_some()
@@ -453,6 +486,9 @@ pub struct SeedConfig {
     #[serde(default, deserialize_with = "bool_or_string_bool")]
     pub quote_columns: Option<bool>,
     pub delimiter: Option<Spanned<String>>,
+    #[serde(default, deserialize_with = "bool_or_string_bool")]
+    pub all_varchar: Option<bool>,
+    pub fast: Option<bool>,
     #[serde(default, deserialize_with = "event_time_or_map_to_string")]
     pub event_time: Option<String>,
     pub full_refresh: Option<bool>,
@@ -471,7 +507,8 @@ pub struct SeedConfig {
     pub quoting: Option<DbtQuoting>,
     pub materialized: Option<DbtMaterialization>,
     // Adapter specific configs
-    pub __warehouse_specific_config__: WarehouseSpecificNodeConfig,
+    #[schemars(with = "WarehouseSpecificNodeConfig")]
+    pub __warehouse_specific_config__: LazyWarehouseSpecificNodeConfig,
 }
 
 impl From<ProjectSeedConfig> for SeedConfig {
@@ -489,6 +526,8 @@ impl From<ProjectSeedConfig> for SeedConfig {
             grants: config.grants,
             quote_columns: config.quote_columns,
             delimiter: config.delimiter,
+            all_varchar: config.all_varchar,
+            fast: config.fast,
             event_time: config.event_time,
             full_refresh: config.full_refresh,
             group: config.group,
@@ -561,6 +600,7 @@ impl From<ProjectSeedConfig> for SeedConfig {
                 enable_list_inference: None,
                 intermediate_format: None,
                 storage_uri: None,
+                enable_change_history: config.enable_change_history,
                 file_format: config.file_format,
                 catalog_name: config.catalog_name,
                 location_root: config.location_root,
@@ -582,6 +622,7 @@ impl From<ProjectSeedConfig> for SeedConfig {
                 matched_condition: config.matched_condition,
                 not_matched_condition: config.not_matched_condition,
                 not_matched_by_source_condition: config.not_matched_by_source_condition,
+                merge_actions_explicit: config.merge_actions_explicit,
                 not_matched_by_source_action: config.not_matched_by_source_action,
                 merge_with_schema_evolution: config.merge_with_schema_evolution,
                 skip_matched_step: config.skip_matched_step,
@@ -591,6 +632,7 @@ impl From<ProjectSeedConfig> for SeedConfig {
                 row_filter: None,
                 incremental_apply_config_changes: None,
                 persist_constraints: None,
+                use_materialization_v2: None,
                 use_safer_relation_operations: None,
                 view_update_via_alter: None,
 
@@ -612,12 +654,14 @@ impl From<ProjectSeedConfig> for SeedConfig {
                 primary_key: PrimaryKeyConfig::default(),
                 category: None,
 
-                engine: None,
-                order_by: None,
+                engine: config.engine,
+                order_by: config.order_by,
                 ttl: None,
                 settings: None,
                 query_settings: None,
                 projections: None,
+                sharding_key: None,
+                disable_on_cluster: config.disable_on_cluster,
                 inserts_only: None,
                 connection_overrides: None,
                 fields: None,
@@ -636,13 +680,15 @@ impl From<ProjectSeedConfig> for SeedConfig {
                 catchup: None,
                 mv_on_schema_change: None,
                 repopulate_from_mvs_on_full_refresh: None,
-            },
+            }
+            .into(),
         }
     }
 }
 
 impl From<SeedConfig> for ProjectSeedConfig {
     fn from(config: SeedConfig) -> Self {
+        let warehouse_specific = config.__warehouse_specific_config__.into_inner();
         Self {
             column_types: config.column_types,
             database: config.database,
@@ -655,6 +701,8 @@ impl From<SeedConfig> for ProjectSeedConfig {
             grants: config.grants,
             quote_columns: config.quote_columns,
             delimiter: config.delimiter,
+            all_varchar: config.all_varchar,
+            fast: config.fast,
             event_time: config.event_time,
             full_refresh: config.full_refresh,
             group: config.group,
@@ -666,99 +714,88 @@ impl From<SeedConfig> for ProjectSeedConfig {
             tags: config.tags.into_inner(),
             quoting: config.quoting,
             // Snowflake fields
-            adapter_properties: config.__warehouse_specific_config__.adapter_properties,
-            snowflake_initialization_warehouse: config
-                .__warehouse_specific_config__
+            adapter_properties: warehouse_specific.adapter_properties,
+            snowflake_initialization_warehouse: warehouse_specific
                 .snowflake_initialization_warehouse,
-            immutable_where: config.__warehouse_specific_config__.immutable_where,
-            snowflake_warehouse: config.__warehouse_specific_config__.snowflake_warehouse,
-            refresh_warehouse: config.__warehouse_specific_config__.refresh_warehouse,
-            transient: config.__warehouse_specific_config__.transient,
-            copy_grants: config.__warehouse_specific_config__.copy_grants,
-            copy_tags: config.__warehouse_specific_config__.copy_tags,
-            external_volume: config.__warehouse_specific_config__.external_volume,
-            base_location_root: config.__warehouse_specific_config__.base_location_root,
-            base_location_subpath: config.__warehouse_specific_config__.base_location_subpath,
-            target_lag: config.__warehouse_specific_config__.target_lag,
-            refresh_mode: config.__warehouse_specific_config__.refresh_mode,
-            initialize: config.__warehouse_specific_config__.initialize,
-            scheduler: config.__warehouse_specific_config__.scheduler,
-            tmp_relation_type: config.__warehouse_specific_config__.tmp_relation_type,
-            query_tag: config.__warehouse_specific_config__.query_tag,
-            query_tags: config.__warehouse_specific_config__.query_tags,
-            table_tag: config.__warehouse_specific_config__.table_tag,
-            row_access_policy: config.__warehouse_specific_config__.row_access_policy,
-            automatic_clustering: config.__warehouse_specific_config__.automatic_clustering,
-            secure: config.__warehouse_specific_config__.secure,
+            immutable_where: warehouse_specific.immutable_where,
+            snowflake_warehouse: warehouse_specific.snowflake_warehouse,
+            refresh_warehouse: warehouse_specific.refresh_warehouse,
+            transient: warehouse_specific.transient,
+            copy_grants: warehouse_specific.copy_grants,
+            copy_tags: warehouse_specific.copy_tags,
+            external_volume: warehouse_specific.external_volume,
+            base_location_root: warehouse_specific.base_location_root,
+            base_location_subpath: warehouse_specific.base_location_subpath,
+            target_lag: warehouse_specific.target_lag,
+            refresh_mode: warehouse_specific.refresh_mode,
+            initialize: warehouse_specific.initialize,
+            scheduler: warehouse_specific.scheduler,
+            tmp_relation_type: warehouse_specific.tmp_relation_type,
+            query_tag: warehouse_specific.query_tag,
+            query_tags: warehouse_specific.query_tags,
+            table_tag: warehouse_specific.table_tag,
+            row_access_policy: warehouse_specific.row_access_policy,
+            automatic_clustering: warehouse_specific.automatic_clustering,
+            secure: warehouse_specific.secure,
             // BigQuery fields
-            partition_by: config.__warehouse_specific_config__.partition_by,
-            cluster_by: config.__warehouse_specific_config__.cluster_by,
-            hours_to_expiration: config.__warehouse_specific_config__.hours_to_expiration,
-            job_execution_timeout_seconds: config
-                .__warehouse_specific_config__
-                .job_execution_timeout_seconds,
-            reservation: config.__warehouse_specific_config__.reservation,
-            labels: config.__warehouse_specific_config__.labels,
-            labels_from_meta: config.__warehouse_specific_config__.labels_from_meta,
-            kms_key_name: config.__warehouse_specific_config__.kms_key_name,
-            require_partition_filter: config
-                .__warehouse_specific_config__
-                .require_partition_filter,
-            partition_expiration_days: config
-                .__warehouse_specific_config__
-                .partition_expiration_days,
-            grant_access_to: config.__warehouse_specific_config__.grant_access_to,
-            partitions: config.__warehouse_specific_config__.partitions,
-            enable_refresh: config.__warehouse_specific_config__.enable_refresh,
-            refresh_interval_minutes: config
-                .__warehouse_specific_config__
-                .refresh_interval_minutes,
-            resource_tags: config.__warehouse_specific_config__.resource_tags,
-            max_staleness: config.__warehouse_specific_config__.max_staleness,
+            partition_by: warehouse_specific.partition_by,
+            cluster_by: warehouse_specific.cluster_by,
+            hours_to_expiration: warehouse_specific.hours_to_expiration,
+            job_execution_timeout_seconds: warehouse_specific.job_execution_timeout_seconds,
+            reservation: warehouse_specific.reservation,
+            labels: warehouse_specific.labels,
+            labels_from_meta: warehouse_specific.labels_from_meta,
+            kms_key_name: warehouse_specific.kms_key_name,
+            require_partition_filter: warehouse_specific.require_partition_filter,
+            partition_expiration_days: warehouse_specific.partition_expiration_days,
+            enable_change_history: warehouse_specific.enable_change_history,
+            grant_access_to: warehouse_specific.grant_access_to,
+            partitions: warehouse_specific.partitions,
+            enable_refresh: warehouse_specific.enable_refresh,
+            refresh_interval_minutes: warehouse_specific.refresh_interval_minutes,
+            resource_tags: warehouse_specific.resource_tags,
+            max_staleness: warehouse_specific.max_staleness,
             // Databricks fields
-            file_format: config.__warehouse_specific_config__.file_format,
-            catalog_name: config.__warehouse_specific_config__.catalog_name,
-            location_root: config.__warehouse_specific_config__.location_root,
-            tblproperties: config.__warehouse_specific_config__.tblproperties,
-            include_full_name_in_path: config
-                .__warehouse_specific_config__
-                .include_full_name_in_path,
-            liquid_clustered_by: config.__warehouse_specific_config__.liquid_clustered_by,
-            auto_liquid_cluster: config.__warehouse_specific_config__.auto_liquid_cluster,
-            clustered_by: config.__warehouse_specific_config__.clustered_by,
-            buckets: config.__warehouse_specific_config__.buckets,
-            catalog: config.__warehouse_specific_config__.catalog,
-            databricks_tags: config.__warehouse_specific_config__.databricks_tags,
-            compression: config.__warehouse_specific_config__.compression,
-            databricks_compute: config.__warehouse_specific_config__.databricks_compute,
-            target_alias: config.__warehouse_specific_config__.target_alias,
-            source_alias: config.__warehouse_specific_config__.source_alias,
-            matched_condition: config.__warehouse_specific_config__.matched_condition,
-            not_matched_condition: config.__warehouse_specific_config__.not_matched_condition,
-            not_matched_by_source_condition: config
-                .__warehouse_specific_config__
-                .not_matched_by_source_condition,
-            not_matched_by_source_action: config
-                .__warehouse_specific_config__
-                .not_matched_by_source_action,
-            merge_with_schema_evolution: config
-                .__warehouse_specific_config__
-                .merge_with_schema_evolution,
-            skip_matched_step: config.__warehouse_specific_config__.skip_matched_step,
-            skip_not_matched_step: config.__warehouse_specific_config__.skip_not_matched_step,
+            file_format: warehouse_specific.file_format,
+            catalog_name: warehouse_specific.catalog_name,
+            location_root: warehouse_specific.location_root,
+            tblproperties: warehouse_specific.tblproperties,
+            include_full_name_in_path: warehouse_specific.include_full_name_in_path,
+            liquid_clustered_by: warehouse_specific.liquid_clustered_by,
+            auto_liquid_cluster: warehouse_specific.auto_liquid_cluster,
+            clustered_by: warehouse_specific.clustered_by,
+            buckets: warehouse_specific.buckets,
+            catalog: warehouse_specific.catalog,
+            databricks_tags: warehouse_specific.databricks_tags,
+            compression: warehouse_specific.compression,
+            databricks_compute: warehouse_specific.databricks_compute,
+            target_alias: warehouse_specific.target_alias,
+            source_alias: warehouse_specific.source_alias,
+            matched_condition: warehouse_specific.matched_condition,
+            not_matched_condition: warehouse_specific.not_matched_condition,
+            not_matched_by_source_condition: warehouse_specific.not_matched_by_source_condition,
+            merge_actions_explicit: warehouse_specific.merge_actions_explicit,
+            not_matched_by_source_action: warehouse_specific.not_matched_by_source_action,
+            merge_with_schema_evolution: warehouse_specific.merge_with_schema_evolution,
+            skip_matched_step: warehouse_specific.skip_matched_step,
+            skip_not_matched_step: warehouse_specific.skip_not_matched_step,
             // Redshift fields
-            auto_refresh: config.__warehouse_specific_config__.auto_refresh,
-            backup: config.__warehouse_specific_config__.backup,
-            bind: config.__warehouse_specific_config__.bind,
-            dist: config.__warehouse_specific_config__.dist,
-            sort: config.__warehouse_specific_config__.sort,
-            sort_type: config.__warehouse_specific_config__.sort_type,
-            as_columnstore: config.__warehouse_specific_config__.as_columnstore,
+            auto_refresh: warehouse_specific.auto_refresh,
+            backup: warehouse_specific.backup,
+            bind: warehouse_specific.bind,
+            dist: warehouse_specific.dist,
+            sort: warehouse_specific.sort,
+            sort_type: warehouse_specific.sort_type,
+            as_columnstore: warehouse_specific.as_columnstore,
 
-            table_type: config.__warehouse_specific_config__.table_type,
-            indexes: config.__warehouse_specific_config__.indexes,
-            unlogged: config.__warehouse_specific_config__.unlogged,
-            schedule: config.__warehouse_specific_config__.schedule,
+            table_type: warehouse_specific.table_type,
+            indexes: warehouse_specific.indexes,
+            unlogged: warehouse_specific.unlogged,
+            schedule: warehouse_specific.schedule,
+            // ClickHouse fields
+            engine: warehouse_specific.engine,
+            order_by: warehouse_specific.order_by,
+            disable_on_cluster: warehouse_specific.disable_on_cluster,
             __additional_properties__: BTreeMap::new(),
         }
     }
@@ -771,6 +808,10 @@ impl ResolvableConfig<SeedConfig> for SeedConfig {
 
     fn get_enabled_with_default(&self) -> bool {
         self.enabled.unwrap_or(true)
+    }
+
+    fn get_adapter(&self) -> Option<AdapterType> {
+        self.adapter
     }
 
     fn disable(&mut self) {
@@ -797,13 +838,20 @@ impl ResolvableConfig<SeedConfig> for SeedConfig {
         self.default_to_fields(parent);
     }
 
-    fn canonicalize_adapter_aliases(&mut self, default_adapter: AdapterType) {
-        if let Some(catalog) = take_databricks_catalog_alias(
-            default_adapter,
-            &mut self.__warehouse_specific_config__,
-            self.database.is_some(),
-        ) {
+    fn typed_alias_keys() -> &'static [&'static str] {
+        TYPED_ALIAS_KEYS
+    }
+
+    fn canonicalize_adapter_aliases(&mut self, alias_adapter: AdapterType) {
+        if let Some(warehouse_specific) = self.__warehouse_specific_config__.get_mut()
+            && let Some(catalog) = take_databricks_catalog_alias(
+                alias_adapter,
+                warehouse_specific,
+                self.database.is_some(),
+            )
+        {
             self.database = Some(catalog);
+            self.__warehouse_specific_config__.free_if_default();
         }
         // BigQuery's `project`/`dataset` aliases are already routed to `database`/`schema` by
         // the pre-existing, ungated serde `alias`es on those fields (D1); nothing to do here.
@@ -837,9 +885,17 @@ impl ConfigKeys for SeedConfig {
     }
 }
 
+impl crate::schemas::project::configs::warehouse_scope::WarehouseConfigResource for SeedConfig {
+    const NODE_TYPE: dbt_telemetry::NodeType = dbt_telemetry::NodeType::Seed;
+}
+
 #[cfg(test)]
 mod tests {
     use super::{ProjectSeedConfig, SeedConfig};
+    use crate::schemas::project::configs::warehouse_config_test_support::{
+        assert_catalog_alias_frees_default_warehouse_config,
+        assert_warehouse_config_allocates_only_when_set,
+    };
     use dbt_adapter_core::AdapterType;
 
     #[test]
@@ -857,6 +913,29 @@ __additional_properties__: {}
             resolved.__warehouse_specific_config__.query_tags.as_deref(),
             Some(r#"{"team":"seed"}"#)
         );
+    }
+
+    #[test]
+    fn test_seed_clickhouse_table_options_propagate_through_resolved_config() {
+        let project: ProjectSeedConfig = dbt_yaml::from_str(
+            r#"
++engine: ReplacingMergeTree()
++order_by: id
++disable_on_cluster: "true"
+__additional_properties__: {}
+"#,
+        )
+        .unwrap();
+
+        let resolved: SeedConfig = project.into();
+        let wh = &resolved.__warehouse_specific_config__;
+        assert_eq!(wh.engine.as_deref(), Some("ReplacingMergeTree()"));
+        assert!(wh.order_by.is_some());
+        assert_eq!(wh.disable_on_cluster, Some(true));
+
+        let round_trip: ProjectSeedConfig = resolved.into();
+        assert_eq!(round_trip.engine.as_deref(), Some("ReplacingMergeTree()"));
+        assert_eq!(round_trip.disable_on_cluster, Some(true));
     }
 
     #[test]
@@ -894,6 +973,7 @@ __additional_properties__: {}
         let resource_tags = seed_config
             .__warehouse_specific_config__
             .resource_tags
+            .as_ref()
             .expect("resource_tags should propagate from ProjectSeedConfig to SeedConfig");
         assert_eq!(resource_tags["123456789012/dbt-access"], "managed");
     }
@@ -950,6 +1030,22 @@ __additional_properties__: {}
         assert!(
             format!("{err}").contains("compute"),
             "error should name the offending value: {err}"
+        );
+    }
+
+    #[test]
+    fn test_seed_warehouse_config_allocates_only_when_set() {
+        assert_warehouse_config_allocates_only_when_set::<SeedConfig>(
+            "delimiter: ','\n",
+            |config| &config.__warehouse_specific_config__,
+        );
+    }
+
+    #[test]
+    fn test_seed_catalog_alias_frees_default_warehouse_config() {
+        assert_catalog_alias_frees_default_warehouse_config::<SeedConfig>(
+            |config| &config.__warehouse_specific_config__,
+            |config| config.database.as_deref(),
         );
     }
 }

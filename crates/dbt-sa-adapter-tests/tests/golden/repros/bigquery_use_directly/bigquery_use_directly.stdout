@@ -1,0 +1,11 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/use_directly_quoted.sql
+   Parsing models/use_directly_unquoted.sql
+  Finished [duration] hook  bigquery_use_directly-on-run-start-0
+ Rendering models/use_directly_unquoted.sql
+ Rendering models/use_directly_quoted.sql
+==================== Execution Summary =====================
+Finished 'compile' successfully for target 'bigquery' [duration]
+Processed: 1 hook | 2 models
+Summary: 3 total | 3 success

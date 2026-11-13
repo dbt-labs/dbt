@@ -36,7 +36,6 @@ dbt-telemetry = { workspace = true }
 arrow = { workspace = true }
 chrono = { workspace = true }
 chrono-tz = { workspace = true }
-dashmap = { workspace = true }
 dbt-yaml = { workspace = true }
 indexmap = { workspace = true, features = ["serde"] }
 itertools = { workspace = true }

@@ -22,6 +22,7 @@ use dbt_common::cancellation::{CancellationToken, CancellationTokenSource};
 use dbt_common::fail_fast::FailFast;
 use dbt_common::io_args::{EvalArgs, FsCommand, IoArgs, Phases, SystemArgs};
 use dbt_common::pretty_string::CYAN;
+use dbt_common::telemetry_command::TelemetryCommand;
 use dbt_common::tracing::dbt_emit::{
     emit_error_log_from_fs_error, emit_error_log_message, emit_warn_log_message,
 };
@@ -168,6 +169,13 @@ impl AbstractExtensionCommand for OSSExtensionCommand {
         match self {
             OSSExtensionCommand::System(_) => "system",
             OSSExtensionCommand::Lint(_) => "lint",
+        }
+    }
+
+    fn telemetry_command(&self) -> TelemetryCommand {
+        match self {
+            Self::System(args) => TelemetryCommand::from_args(self.name(), args),
+            Self::Lint(args) => TelemetryCommand::from_args(self.name(), args),
         }
     }
 
@@ -516,15 +524,14 @@ impl CliExtensionHooks for DefaultCliExtensionHooks {
                         emit_error_log_from_fs_error(*e);
                         Err(FsError::exit_with_status(1))
                     }
-                    SystemCommand::InstallDrivers => {
-                        dbt_adbc::pre_install_all_drivers().map_err(|install_err| {
+                    SystemCommand::InstallDrivers => dbt_adbc::pre_install_all_drivers(None)
+                        .map_err(|install_err| {
                             emit_error_log_message(
                                 ErrorCode::Generic,
                                 format!("Failed to install drivers: {}", install_err).as_str(),
                             );
                             FsError::exit_with_status(1)
-                        })
-                    }
+                        }),
                     SystemCommand::UpgradeDistribution(args) => exec_upgrade_distribution(
                         args.yes,
                         args.package_manager.clone(),

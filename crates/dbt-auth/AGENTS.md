@@ -114,6 +114,31 @@ Do not flatten multiple auth families into generalized structs with many optiona
 
 ---
 
+### 6. Avoid `Option` fields in `AuthIR`
+
+Before adding an `Option` to an `AuthIR` variant, check whether it is hiding one of these:
+
+1. **Two auth situations.** If `Some` and `None` mean different things, use a named enum.
+   For example, `Option<client_id>` on a managed identity is really
+   `System` vs `User { client_id }`.
+2. **A default the driver already applies.** If the driver fills in a default when the
+   option is unset, resolve that default at parse time and make the IR field required.
+   Find the real default by reading the driver's source; do not guess it from vendor docs.
+   PR authors should clone the driver repo and cite where the default comes from,
+   as a `//` permalink pinned to a commit SHA.
+
+An IR with only required fields is the goal: it can be audited without reading parse.
+
+---
+
+### 7. Parse decides, apply writes
+
+- Parse validates, resolves defaults, and builds an IR that can only hold valid states.
+- Apply matches on the IR and writes fields. No validation or defaulting.
+- `configure` should usually be just the `auth_configure_pipeline!` macro. Extra logic there is a sign parse or apply is missing something.
+
+---
+
 ## Risks
 
 Incorrect changes in this crate can:

@@ -1,0 +1,33 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/base.sql
+   Parsing models/scaler_udf.sql
+   Parsing models/table_udf.sql
+   Parsing models/table_udf_complex.sql
+   Parsing models/table_udf_complex_derived.sql
+   Parsing models/table_udf_derived.sql
+  Finished [duration] hook  hello_world-on-run-start-0
+  Finished [duration] hook  hello_world-on-run-start-1
+  Finished [duration] hook  hello_world-on-run-start-2
+ Rendering models/table_udf_complex.sql
+   Running models/table_udf_complex.sql
+ Succeeded model adapters_snowflake_udfs.table_udf_complex (view) [1 of 6 in duration]
+ Rendering models/table_udf_complex_derived.sql
+   Running models/table_udf_complex_derived.sql
+ Succeeded model adapters_snowflake_udfs.table_udf_complex_derived (view) [2 of 6 in duration]
+ Rendering models/table_udf.sql
+   Running models/table_udf.sql
+ Succeeded model adapters_snowflake_udfs.table_udf (view) [3 of 6 in duration]
+ Rendering models/table_udf_derived.sql
+   Running models/table_udf_derived.sql
+ Succeeded model adapters_snowflake_udfs.table_udf_derived (view) [4 of 6 in duration]
+ Rendering models/base.sql
+   Running models/base.sql
+ Succeeded model adapters_snowflake_udfs.base (table) [5 of 6 in duration]
+ Rendering models/scaler_udf.sql
+   Running models/scaler_udf.sql
+ Succeeded model adapters_snowflake_udfs.scaler_udf (view) [6 of 6 in duration]
+==================== Execution Summary =====================
+Finished 'run' successfully for target 'snowflake' [duration]
+Processed: 3 hooks | 6 models
+Summary: 9 total | 9 success

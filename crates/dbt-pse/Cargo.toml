@@ -1,0 +1,36 @@
+[package]
+name = "dbt-pse"
+version.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Concolic test generation over DataFusion."
+license.workspace = true
+keywords.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/lib.rs"
+doctest = false
+
+[dependencies]
+arrow = { workspace = true }
+arrow-schema = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+datafusion = { workspace = true }
+datafusion-catalog = { workspace = true }
+datafusion-common = { workspace = true }
+datafusion-expr = { workspace = true }
+dbt-fusion-workspace-hack = { version = "0.1" }
+futures = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# NOTE: do NOT add any feature flags here, do it in the workspace Cargo.toml
+# instead
+z3 = { workspace = true }

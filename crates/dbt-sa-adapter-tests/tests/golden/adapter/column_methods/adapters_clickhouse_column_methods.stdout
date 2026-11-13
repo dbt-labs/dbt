@@ -1,0 +1,57 @@
+   dbt-oss 
+   Loading profiles.yml
+debug:warning=static analysis for adapter: ClickHouse is disabled
+   Parsing models/instance.sql
+{'name': 'str_col', 'dtype': 'String', 'char_size': 10, 'column': 'str_col', 'quoted': '"str_col"', 'numeric_precision': None, 'numeric_scale': None}
+string_size   10
+is_string     True
+is_numeric    False
+is_float      False
+is_number     False
+is_integer    False
+can_expand_to True
+{'name': 'int_col', 'dtype': 'NUMBER', 'char_size': None, 'column': 'int_col', 'quoted': '"int_col"', 'numeric_precision': 10, 'numeric_scale': 10}
+is_string     False
+is_numeric    False
+is_float      False
+is_number     False
+is_integer    False
+   Parsing models/static.sql
+DateTime
+String
+text
+Float32
+long
+Int32
+numeric(28,6)
+String
+{'name': 'col', 'dtype': 'varchar', 'char_size': 256, 'column': 'col', 'quoted': '"col"', 'numeric_precision': None, 'numeric_scale': None}
+ Rendering models/static.sql
+DateTime
+String
+text
+Float32
+long
+Int32
+numeric(28,6)
+String
+{'name': 'col', 'dtype': 'varchar', 'char_size': 256, 'column': 'col', 'quoted': '"col"', 'numeric_precision': None, 'numeric_scale': None}
+ Rendering models/instance.sql
+{'name': 'str_col', 'dtype': 'String', 'char_size': 10, 'column': 'str_col', 'quoted': '"str_col"', 'numeric_precision': None, 'numeric_scale': None}
+string_size   10
+is_string     True
+is_numeric    False
+is_float      False
+is_number     False
+is_integer    False
+can_expand_to True
+{'name': 'int_col', 'dtype': 'NUMBER', 'char_size': None, 'column': 'int_col', 'quoted': '"int_col"', 'numeric_precision': 10, 'numeric_scale': 10}
+is_string     False
+is_numeric    False
+is_float      False
+is_number     False
+is_integer    False
+==================== Execution Summary =====================
+Finished 'compile' successfully for target 'clickhouse' [duration]
+Processed: 2 models
+Summary: 2 total | 2 success
