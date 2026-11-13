@@ -13,6 +13,7 @@ use std::str::FromStr;
 use std::sync::LazyLock;
 
 use dbt_adapter_engine::cow::uppercase;
+use dbt_adapter_sql::tokenizer::{Token, Tokenizer};
 use flate2::read::GzDecoder;
 use parking_lot::RwLock;
 use regex::Regex;
@@ -50,22 +51,102 @@ fn is_sql_method(method: &str) -> bool {
     method == "execute" || method == "run_query"
 }
 
+/// Return true when a CTE's main statement is a SELECT with no data-modifying CTE.
+fn is_read_only_cte_sql(sql: &str) -> bool {
+    let mut tokenizer = Tokenizer::new_skipping_comments(sql);
+    let Some(Token::Word(first)) = tokenizer.next() else {
+        return false;
+    };
+    if !first.eq_ignore_ascii_case("WITH") {
+        return false;
+    }
+    let mut token = tokenizer.next();
+    if matches!(&token, Some(Token::Word(word)) if word.eq_ignore_ascii_case("RECURSIVE")) {
+        token = tokenizer.next();
+    }
+    loop {
+        // Each CTE is `name [(column, ...)] AS (body)`.
+        if !matches!(token, Some(Token::Word(_))) {
+            return false;
+        }
+        token = tokenizer.next();
+        if matches!(token, Some(Token::LParen)) {
+            loop {
+                match tokenizer.next() {
+                    Some(Token::RParen) => break,
+                    Some(Token::Word(_) | Token::Comma) => {}
+                    _ => return false,
+                }
+            }
+            token = tokenizer.next();
+        }
+        if !matches!(&token, Some(Token::Word(word)) if word.eq_ignore_ascii_case("AS"))
+            || !matches!(tokenizer.next(), Some(Token::LParen))
+        {
+            return false;
+        }
+        token = tokenizer.next();
+        // A body that starts with a nested WITH can end in DML (Postgres), so
+        // it stays a write too.
+        if matches!(&token, Some(Token::Word(word)) if ["INSERT", "UPDATE", "DELETE", "MERGE", "WITH"].iter().any(|keyword| word.eq_ignore_ascii_case(keyword)))
+        {
+            return false;
+        }
+
+        // The first body token is already read. Count it too, for example the
+        // `(` in `as ((select 1) union all (select 2))`.
+        let mut depth = 1usize;
+        loop {
+            let Some(current) = token else {
+                return false;
+            };
+            token = tokenizer.next();
+            match current {
+                Token::LParen => depth += 1,
+                Token::RParen => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        match token {
+            Some(Token::Comma) => token = tokenizer.next(),
+            Some(Token::Word(word)) => return word.eq_ignore_ascii_case("SELECT"),
+            _ => return false,
+        }
+    }
+}
+
 /// Returns true if the SQL string is read-only and cannot mutate DB state.
 ///
 /// These are calls that use execute/run_query but are semantically reads —
 /// for example compile-time probe queries from dbt macros like dbt_utils.date_spine
 /// (`SELECT datediff(...)`) or Snowflake parameter reads (`SHOW PARAMETERS ...`).
+/// A WITH query is read-only only when its main statement and every CTE body are read-only.
+/// SQL that starts with a comment is not read-only.
 ///
 /// Public so the Mantle replay engine (`sdf-adapter`) classifies read-only statements
 /// identically; both engines must agree on what counts as an ordering barrier.
 pub fn is_read_only_sql(sql: &str) -> bool {
-    // Only check the first 8 chars to keep this O(1).
+    // Only check the first 8 chars to keep this O(1) for non-CTE SQL.
     let prefix: String = sql
         .trim()
         .chars()
         .take(8)
         .map(|c| c.to_ascii_uppercase())
         .collect();
+    if prefix.starts_with("WITH") {
+        // The tokenizer does not know backslash escapes, dollar-quoted strings,
+        // `//` comments or triple-quoted strings, so a `)` or keyword inside one
+        // can change the result. Keep such SQL a write.
+        return !["\\", "$", "//", "'''", "\"\"\""]
+            .iter()
+            .any(|syntax| sql.contains(syntax))
+            && is_read_only_cte_sql(sql);
+    }
     prefix.starts_with("SELECT")
         || prefix.starts_with("SHOW")
         || prefix.starts_with("EXPLAIN")
@@ -677,8 +758,26 @@ pub struct Recording {
     /// Semantic mode state for metadata calls
     semantic_metadata_state: RwLock<HashMap<String, SemanticReplayState>>,
     /// Strict mode: seq numbers of read-only execute events already matched globally.
-    /// These events are skipped by take_next so they don't consume the wrong write slot.
+    /// These events are skipped by take_next so they do not consume the wrong write slot.
     ro_exec_matched: RwLock<HashMap<String, HashSet<u32>>>,
+    /// Precomputed read-only execute event sequence numbers, indexed by node.
+    read_only_execute_seqs_by_node: BTreeMap<String, HashSet<u32>>,
+}
+
+fn read_only_execute_seqs_by_node(
+    events_by_node: &BTreeMap<String, Vec<AdapterCallEvent>>,
+) -> BTreeMap<String, HashSet<u32>> {
+    events_by_node
+        .iter()
+        .filter_map(|(node_id, events)| {
+            let seqs = events
+                .iter()
+                .filter(|event| is_read_only_execute_event(event))
+                .map(|event| event.seq)
+                .collect::<HashSet<_>>();
+            (!seqs.is_empty()).then(|| (node_id.clone(), seqs))
+        })
+        .collect()
 }
 
 /// State for semantic replay mode per node/caller.
@@ -699,6 +798,11 @@ struct SemanticReplayState {
 impl Recording {
     fn adapter_type(&self) -> AdapterType {
         AdapterType::from_str(&self.header.adapter_type).unwrap_or(AdapterType::Snowflake)
+    }
+    fn is_read_only_execute_event(&self, event: &AdapterCallEvent) -> bool {
+        self.read_only_execute_seqs_by_node
+            .get(&event.node_id)
+            .is_some_and(|seqs| seqs.contains(&event.seq))
     }
 
     /// Load a recording from disk.
@@ -779,6 +883,8 @@ impl Recording {
 
         // Sort run_remote_adhoc events by seq
         run_remote_adhoc_events.sort_by_key(|e| e.seq);
+        let read_only_execute_seqs_by_node =
+            read_only_execute_seqs_by_node(&adapter_events_by_node);
 
         Ok(Self {
             header,
@@ -795,6 +901,7 @@ impl Recording {
             semantic_adapter_state: RwLock::new(HashMap::new()),
             semantic_metadata_state: RwLock::new(HashMap::new()),
             ro_exec_matched: RwLock::new(HashMap::new()),
+            read_only_execute_seqs_by_node,
         })
     }
 
@@ -925,7 +1032,7 @@ impl Recording {
 
         let event = events.iter().find(|e| {
             !already_matched.contains(&e.seq)
-                && is_read_only_execute_event(e)
+                && self.is_read_only_execute_event(e)
                 && e.method == method
                 && adapter_args_match_for_type(method, &e.args, args, adapter_type)
         })?;
@@ -1018,7 +1125,7 @@ impl Recording {
         for (idx, event) in events[search_start..].iter().enumerate() {
             // Skip non-write operations and read-only execute events (SELECT/SHOW SQL).
             // Read-only executes are not barriers; they belong to the read search space.
-            if !event.semantic_category.is_mutating() || is_read_only_execute_event(event) {
+            if !event.semantic_category.is_mutating() || self.is_read_only_execute_event(event) {
                 continue;
             }
 
@@ -1060,13 +1167,13 @@ impl Recording {
         let search_end = events[search_start..]
             .iter()
             .position(|event| {
-                event.semantic_category.is_mutating() && !is_read_only_execute_event(event)
+                event.semantic_category.is_mutating() && !self.is_read_only_execute_event(event)
             })
             .map_or(events.len(), |pos| search_start + pos);
 
         events[search_start..search_end]
             .iter()
-            .find(|event| event.method == method && is_read_only_execute_event(event))
+            .find(|event| event.method == method && self.is_read_only_execute_event(event))
     }
 
     /// Find a matching read operation within the current segment (untracked).
@@ -1092,7 +1199,7 @@ impl Recording {
         // their recorded semantic_category is Write; they live in the read search space.
         let segment_end = events[search_start..]
             .iter()
-            .position(|e| e.semantic_category.is_mutating() && !is_read_only_execute_event(e))
+            .position(|e| e.semantic_category.is_mutating() && !self.is_read_only_execute_event(e))
             .map(|pos| search_start + pos)
             .unwrap_or(events.len());
 
@@ -1150,7 +1257,7 @@ impl Recording {
         let already_passed = events.get(..state.segment_start)?;
         let event = already_passed.iter().find(|event| {
             let is_real_write =
-                event.semantic_category.is_mutating() && !is_read_only_execute_event(event);
+                event.semantic_category.is_mutating() && !self.is_read_only_execute_event(event);
             !is_real_write
                 && event.method == method
                 && adapter_args_match_for_type(method, &event.args, args, adapter_type)
@@ -1667,6 +1774,104 @@ mod tests {
     use super::*;
     use crate::sql::diff::compare_sql;
 
+    #[test]
+    fn test_read_only_sql_classifies_ctes_and_plain_select() {
+        for sql in [
+            "select * from tables",
+            "select 'C:\\' as p",
+            "with tables as (select * from information_schema.tables) select * from tables",
+            " WITH tables as (select 1) select * from tables",
+            "with a as ((select 1) union all (select 2)) select * from a",
+            "with a as (/* ) */ select 1 -- )\n), b as (select 2) select * from a, b",
+            "with tables as (select * from information_schema.tables where (table_schema = 'x) as')), columns as (select column_name from information_schema.columns where table_schema = 'x' and column_name = 'as)') select * from tables join columns using (table_schema)",
+            "with recursive numbers (n) as (select 1 union all select n + 1 from numbers where n < 2) select * from numbers",
+            "with cte(\"as\") as (select 'as)' as \"as\") select \"as\" from cte",
+        ] {
+            assert!(is_read_only_sql(sql), "{sql}");
+        }
+
+        for sql in [
+            "with rows_to_delete as (select id from t) delete from t where id in (select id from rows_to_delete)",
+            "with rows_to_insert as (select 1 as id) insert into t select id from rows_to_insert",
+            "with rows_to_update as (select id from t) update t set x = 1",
+            "with rows_to_merge as (select id from s) merge into t using rows_to_merge on t.id = rows_to_merge.id when matched then update set x = 1",
+            "with deleted as (delete from t returning *) select count(*) from deleted",
+            "create table t as with rows as (select 1) select * from rows",
+            "with a as ((select 1) union all (select 2)) delete from t",
+            // A nested WITH body can end in DML, so any nested WITH body is a write.
+            "with d as (with x as (select 1) delete from t where id in (select * from x) returning *) select * from d",
+            "with d as (with x as (select 1) insert into t select * from x returning *) select * from d",
+            "with d as (with x as (select 1) select * from x) select * from d",
+            // A CTE needs AS after its name and optional column list.
+            "with t (select 1) insert into x with u as (select 2) select * from u",
+            "with t as materialized (select 1) select * from t",
+            // The tokenizer does not know these strings or comments, so it would see a SELECT.
+            "with a as (select 'x\\' ) select 1 --') delete from t",
+            "with a as (select $$ ) select 1 $$) delete from t",
+            "with a as (select $q$ ) select 1 $q$) delete from t",
+            "with a as (select 1 // ) select 1\n) delete from t",
+            "with a as (select '''it's ) select 1 --''') delete from t",
+            // Leading comments are not trimmed.
+            "/* c */ select 1",
+            "-- c\nshow parameters",
+            "/* catalog probe */ with tables as (select 1) select * from tables",
+        ] {
+            assert!(!is_read_only_sql(sql), "{sql}");
+        }
+    }
+
+    #[test]
+    fn test_semantic_mode_reorders_cte_reads_but_not_writes() {
+        let node_id = "node1";
+        let sql_a = "with a as (select 1) select * from a";
+        let sql_b = "with b as (select 2) select * from b";
+        let make_exec = |seq, sql| {
+            let mut event = make_event(node_id, seq, "execute", SemanticCategory::Write);
+            event.args = serde_json::json!([sql]);
+            event
+        };
+        let recording = make_recording(vec![make_exec(0, sql_a), make_exec(1, sql_b)]);
+        assert_eq!(
+            recording
+                .take_semantic_match(
+                    node_id,
+                    "execute",
+                    &serde_json::json!([sql_b]),
+                    SemanticCategory::Write
+                )
+                .unwrap()
+                .seq,
+            1
+        );
+        assert_eq!(
+            recording
+                .take_semantic_match(
+                    node_id,
+                    "execute",
+                    &serde_json::json!([sql_a]),
+                    SemanticCategory::Write
+                )
+                .unwrap()
+                .seq,
+            0
+        );
+
+        let dml_cte = "with deleted as (delete from t returning *) select count(*) from deleted";
+        let cte_read = "with a as (select 1) select * from a";
+        let recording = make_recording(vec![make_exec(0, dml_cte), make_exec(1, cte_read)]);
+        assert!(
+            recording
+                .take_semantic_match(
+                    node_id,
+                    "execute",
+                    &serde_json::json!([cte_read]),
+                    SemanticCategory::Write
+                )
+                .is_none(),
+            "a data-modifying CTE must remain a write barrier"
+        );
+    }
+
     /// Compare SQL args for execute/run_query methods.
     fn sql_args_match(
         recorded: &serde_json::Value,
@@ -1720,6 +1925,8 @@ mod tests {
         for events in adapter_events_by_node.values_mut() {
             events.sort_by_key(|e| e.seq);
         }
+        let read_only_execute_seqs_by_node =
+            read_only_execute_seqs_by_node(&adapter_events_by_node);
 
         Recording {
             header: RecordingHeader {
@@ -1744,6 +1951,7 @@ mod tests {
             semantic_adapter_state: RwLock::new(HashMap::new()),
             semantic_metadata_state: RwLock::new(HashMap::new()),
             ro_exec_matched: RwLock::new(HashMap::new()),
+            read_only_execute_seqs_by_node,
         }
     }
 
@@ -2453,6 +2661,8 @@ mod tests {
                 .or_default()
                 .push(event);
         }
+        let read_only_execute_seqs_by_node =
+            read_only_execute_seqs_by_node(&adapter_events_by_node);
 
         let recording = Recording {
             header: RecordingHeader {
@@ -2477,6 +2687,7 @@ mod tests {
             semantic_adapter_state: RwLock::new(HashMap::new()),
             semantic_metadata_state: RwLock::new(HashMap::new()),
             ro_exec_matched: RwLock::new(HashMap::new()),
+            read_only_execute_seqs_by_node,
         };
 
         // Request TABLE_B first (out of order by seq, but should match by args)
@@ -3486,6 +3697,8 @@ mod tests {
         for event in sao_events {
             sao_events_map.insert(event.node_id.clone(), event);
         }
+        let read_only_execute_seqs_by_node =
+            read_only_execute_seqs_by_node(&adapter_events_by_node);
 
         Recording {
             header: RecordingHeader {
@@ -3510,6 +3723,7 @@ mod tests {
             semantic_adapter_state: RwLock::new(HashMap::new()),
             semantic_metadata_state: RwLock::new(HashMap::new()),
             ro_exec_matched: RwLock::new(HashMap::new()),
+            read_only_execute_seqs_by_node,
         }
     }
 

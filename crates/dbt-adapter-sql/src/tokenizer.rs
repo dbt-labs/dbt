@@ -115,11 +115,27 @@ fn is_whitespace(c: u8) -> bool {
 pub struct Tokenizer<'source> {
     input: &'source str,
     position: usize,
+    skip_comments: bool,
 }
 
 impl<'source> Tokenizer<'source> {
     pub fn new(input: &'source str) -> Self {
-        Tokenizer { input, position: 0 }
+        Tokenizer {
+            input,
+            position: 0,
+            skip_comments: false,
+        }
+    }
+
+    /// Like [Tokenizer::new], but skips `--` and `/* */` comments between tokens.
+    /// Block comments nest, as in PostgreSQL. An unclosed comment runs to the
+    /// end of the input.
+    pub fn new_skipping_comments(input: &'source str) -> Self {
+        Tokenizer {
+            input,
+            position: 0,
+            skip_comments: true,
+        }
     }
 
     /// Looks at the current byte without consuming it.
@@ -133,6 +149,39 @@ impl<'source> Tokenizer<'source> {
         self._peek_byte().inspect(|_| {
             self.position += 1;
         })
+    }
+
+    /// Comment rules: see [Tokenizer::new_skipping_comments].
+    fn skip_whitespace_and_comments(&mut self) {
+        loop {
+            self.skip_whitespace();
+            let bytes = self.input.as_bytes();
+            if bytes[self.position..].starts_with(b"--") {
+                self.position += 2;
+                while let Some(byte) = self._peek_byte() {
+                    self.position += 1;
+                    if byte == b'\n' || byte == b'\r' {
+                        break;
+                    }
+                }
+            } else if bytes[self.position..].starts_with(b"/*") {
+                self.position += 2;
+                let mut depth = 1usize;
+                while self.position < bytes.len() && depth > 0 {
+                    if bytes[self.position..].starts_with(b"/*") {
+                        depth += 1;
+                        self.position += 2;
+                    } else if bytes[self.position..].starts_with(b"*/") {
+                        depth -= 1;
+                        self.position += 2;
+                    } else {
+                        self.position += 1;
+                    }
+                }
+            } else {
+                return;
+            }
+        }
     }
 
     fn skip_whitespace(&mut self) {
@@ -185,6 +234,16 @@ impl<'source> Tokenizer<'source> {
                 b'(' | b')' | b'[' | b']' | b'<' | b'>' => break,
                 b',' | b':' => break,
                 b'\'' | b'"' | b'`' => break,
+                b'/' if self.skip_comments
+                    && self.input.as_bytes()[self.position..].starts_with(b"/*") =>
+                {
+                    break;
+                }
+                b'-' if self.skip_comments
+                    && self.input.as_bytes()[self.position..].starts_with(b"--") =>
+                {
+                    break;
+                }
                 _ if is_whitespace(b) => break,
                 _ => {
                     self.position += 1;
@@ -204,7 +263,11 @@ impl<'source> Tokenizer<'source> {
 
     /// Consumes the next token from the input.
     pub fn next(&mut self) -> Option<Token<'source>> {
-        self.skip_whitespace();
+        if self.skip_comments {
+            self.skip_whitespace_and_comments();
+        } else {
+            self.skip_whitespace();
+        }
         let start = self.position;
         let token = if let Some(b) = self._next_byte() {
             match b {
@@ -317,6 +380,55 @@ mod tests {
 
         let mut tokenizer = Tokenizer::new("S☃NOWMA☃N");
         assert_eq!(tokenizer.next(), Some(Token::Word("S☃NOWMA☃N")));
+    }
+
+    #[test]
+    fn test_tokenizer_keeps_comment_text_by_default() {
+        assert_eq!(
+            all_tokens("a-- c\n/* d */ b"),
+            vec![
+                Token::Word("a--"),
+                Token::Word("c"),
+                Token::Word("/*"),
+                Token::Word("d"),
+                Token::Word("*/"),
+                Token::Word("b"),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_tokenizer_skips_comments_between_words() {
+        let mut tokenizer = Tokenizer::new_skipping_comments(
+            "with a as(/* inner /* nested */ ) */ select 1), -- next\n b as (select 2) select * from a",
+        );
+        let mut tokens = Vec::new();
+        while let Some(token) = tokenizer.next() {
+            tokens.push(token);
+        }
+        assert_eq!(
+            tokens,
+            vec![
+                Token::Word("with"),
+                Token::Word("a"),
+                Token::Word("as"),
+                Token::LParen,
+                Token::Word("select"),
+                Token::Word("1"),
+                Token::RParen,
+                Token::Comma,
+                Token::Word("b"),
+                Token::Word("as"),
+                Token::LParen,
+                Token::Word("select"),
+                Token::Word("2"),
+                Token::RParen,
+                Token::Word("select"),
+                Token::Word("*"),
+                Token::Word("from"),
+                Token::Word("a"),
+            ]
+        );
     }
 
     fn all_tokens<'source>(input: &'source str) -> Vec<Token<'source>> {

@@ -131,6 +131,18 @@ mod tests {
     }
 
     #[test]
+    fn update_detection_with_comments() {
+        let sql = "-- c\nUPDATE t SET a = 1";
+        assert!(is_update_statement(sql, AdapterType::Bigquery));
+        assert!(!is_update_statement(sql, AdapterType::Snowflake));
+        // The default tokenizer does not split a word at `--`.
+        assert!(!is_update_statement(
+            "UPDATE-- c\nt SET a = 1",
+            AdapterType::Bigquery
+        ));
+    }
+
+    #[test]
     fn bigquery_procedural_statements_are_not_updates() {
         for sql in [
             "DECLARE cutoff DATE DEFAULT CURRENT_DATE()",
