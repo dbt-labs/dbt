@@ -2575,6 +2575,26 @@
             }
           ]
         },
+        "+post-hook": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Hooks"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "+pre-hook": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Hooks"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "+quoting": {
           "anyOf": [
             {
@@ -3102,6 +3122,21 @@
             }
           ]
         },
+        "+enable_change_history": {
+          "anyOf": [
+            {
+              "default": null,
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "+enable_list_inference": {
           "anyOf": [
             {
@@ -3145,6 +3180,21 @@
               "type": "string",
               "pattern": "^\\{.*\\}$"
             }
+          ]
+        },
+        "+environment_dependencies": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "+environment_key": {
+          "type": [
+            "string",
+            "null"
           ]
         },
         "+event_time": {
@@ -3660,6 +3710,21 @@
             }
           ]
         },
+        "+persist_constraints": {
+          "anyOf": [
+            {
+              "default": null,
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "+persist_docs": {
           "anyOf": [
             {
@@ -3804,6 +3869,16 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "+row_filter": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RowFilterConfig"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "+schedule": {
@@ -4481,6 +4556,20 @@
             },
             {
               "type": "null"
+            }
+          ]
+        },
+        "+enable_change_history": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
             }
           ]
         },
@@ -5384,6 +5473,21 @@
             }
           ]
         },
+        "+enable_change_history": {
+          "anyOf": [
+            {
+              "default": null,
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "+enable_refresh": {
           "anyOf": [
             {
@@ -5476,6 +5580,23 @@
           ]
         },
         "+hours_to_expiration": {
+          "anyOf": [
+            {
+              "default": null,
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0.0
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
+        "+iceberg_version": {
           "anyOf": [
             {
               "default": null,
@@ -5709,6 +5830,21 @@
             },
             {
               "type": "null"
+            }
+          ]
+        },
+        "+persist_constraints": {
+          "anyOf": [
+            {
+              "default": null,
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
             }
           ]
         },
@@ -5977,6 +6113,12 @@
             {
               "type": "null"
             }
+          ]
+        },
+        "+table_format": {
+          "type": [
+            "string",
+            "null"
           ]
         },
         "+table_tag": {
@@ -7507,6 +7649,28 @@
       "properties": {
         "range": {
           "$ref": "#/definitions/Range"
+        }
+      },
+      "additionalProperties": false
+    },
+    "RowFilterConfig": {
+      "type": "object",
+      "properties": {
+        "columns": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrArrayOfStrings"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "function": {
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "additionalProperties": false
