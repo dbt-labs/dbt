@@ -861,7 +861,9 @@ mod execute_inner_txn {
     use crate::adapter::adapter_impl::AdapterImpl;
     use crate::cache::RelationCache;
     use crate::config::AdapterConfig;
-    use crate::connection::{ConnectionGuard, drop_thread_local_connection, tlocal_slot_occupied};
+    use crate::connection::{
+        ConnectionGuard, drop_thread_local_connection, open_transaction, tlocal_slot_occupied,
+    };
     use crate::engine::query_comment::QueryCommentConfig;
     use crate::engine::{AdapterEngine, AdbcEngine};
     use crate::sql_types::DefaultTypeOps;
@@ -873,6 +875,20 @@ mod execute_inner_txn {
 
     /// SQL that makes [`ScriptedConnection`] fail with [`TIMEOUT_MESSAGE`].
     const FAILING_SQL: &str = "select 'times out'";
+
+    /// What Redshift reports for a missing schema. The query retry treats it as transient.
+    const MISSING_SCHEMA_MESSAGE: &str = "ERROR: schema \"s\" does not exist (SQLSTATE 3F000)";
+
+    /// SQL that makes [`ScriptedConnection`] fail with [`MISSING_SCHEMA_MESSAGE`].
+    const RETRYABLE_SQL: &str = "select 'missing schema'";
+
+    fn failure_message(sql: &str) -> Option<&'static str> {
+        match sql {
+            FAILING_SQL => Some(TIMEOUT_MESSAGE),
+            RETRYABLE_SQL => Some(MISSING_SCHEMA_MESSAGE),
+            _ => None,
+        }
+    }
 
     #[derive(Default)]
     struct Session {
@@ -892,8 +908,8 @@ mod execute_inner_txn {
         fn execute<'a>(&'a mut self) -> Result<Box<dyn RecordBatchReader + Send + 'a>> {
             let mut session = self.session.lock().unwrap();
             session.executed.push(self.sql.clone());
-            if self.sql == FAILING_SQL {
-                return Err(Error::with_message_and_status(TIMEOUT_MESSAGE, Status::IO));
+            if let Some(message) = failure_message(&self.sql) {
+                return Err(Error::with_message_and_status(message, Status::IO));
             }
             let schema = Arc::new(Schema::empty());
             Ok(Box::new(RecordBatchIterator::new(
@@ -922,7 +938,12 @@ mod execute_inner_txn {
             unimplemented!()
         }
         fn execute_update(&mut self) -> Result<Option<i64>> {
-            unimplemented!()
+            let mut session = self.session.lock().unwrap();
+            session.executed.push(self.sql.clone());
+            if let Some(message) = failure_message(&self.sql) {
+                return Err(Error::with_message_and_status(message, Status::IO));
+            }
+            Ok(Some(0))
         }
         fn execute_schema(&mut self) -> Result<Schema> {
             unimplemented!()
@@ -1085,5 +1106,185 @@ mod execute_inner_txn {
         assert!(result.is_err());
         assert!(!session.discarded);
         assert_eq!(session.executed, [FAILING_SQL]);
+    }
+
+    const USE_TRANSACTIONS: &str = "redshift_use_transactions";
+    const SKIP_TRANSACTIONS: &str = "redshift_skip_autocommit_transaction_statements";
+
+    fn redshift_engine(flags: &[(&str, bool)]) -> Arc<dyn AdapterEngine> {
+        let config = Mapping::from_iter([
+            ("host".into(), "H".into()),
+            ("user".into(), "U".into()),
+            ("password".into(), "P".into()),
+            ("database".into(), "D".into()),
+            ("schema".into(), "S".into()),
+        ]);
+        let adapter_type = AdapterType::Redshift;
+        let overrides = flags
+            .iter()
+            .map(|(name, value)| (name.to_string(), *value))
+            .collect();
+        Arc::new(AdbcEngine::new(
+            adapter_type,
+            auth_for_backend(backend_of(adapter_type)).into(),
+            AdapterConfig::new(config),
+            dbt_schemas::schemas::relations::DEFAULT_RESOLVED_QUOTING,
+            QueryCommentConfig::from_query_comment(None, adapter_type, false, None),
+            Arc::new(DefaultTypeOps::new(adapter_type)),
+            Arc::new(DefaultStmtSplitter),
+            Arc::new(RelationCache::default()),
+            overrides,
+            None,
+            None,
+        ))
+    }
+
+    /// Runs each `(sql, auto_begin)` in order on one connection, as consecutive `execute` calls of
+    /// the same node would. Returns the last result and the session's final state.
+    fn run_redshift(
+        flags: &[(&str, bool)],
+        calls: &[(&str, bool)],
+    ) -> (AdapterResult<()>, Session) {
+        let engine = redshift_engine(flags);
+        let adapter = AdapterImpl::new(Arc::clone(&engine), None);
+        let session = Arc::new(Mutex::new(Session::default()));
+        drop_thread_local_connection();
+        let mut result = Ok(());
+        let mut conn = ConnectionGuard::new(Box::new(ScriptedConnection(Arc::clone(&session))));
+        for (sql, auto_begin) in calls {
+            result = adapter
+                .execute_inner(
+                    Arc::clone(&engine),
+                    None,
+                    &mut conn,
+                    &QueryCtx::new("test"),
+                    sql,
+                    *auto_begin,
+                    false,
+                    None,
+                    None,
+                    CancellationToken::never_cancels(),
+                )
+                .map(|_| ());
+            if result.is_err() {
+                break;
+            }
+        }
+        drop(conn);
+        let mut session = std::mem::take(&mut *session.lock().unwrap());
+        session.discarded = !tlocal_slot_occupied();
+        (result, session)
+    }
+
+    #[test]
+    fn redshift_statements_stay_unwrapped_by_default() {
+        let (result, session) = run_redshift(&[], &[("select 1", true), ("commit", false)]);
+
+        assert!(result.is_ok());
+        assert_eq!(session.executed, ["select 1", "commit"]);
+    }
+
+    #[test]
+    fn redshift_opens_one_transaction_for_auto_begin_statements() {
+        let (result, session) = run_redshift(
+            &[(USE_TRANSACTIONS, true)],
+            &[
+                ("select 1", true),
+                ("select 2", true),
+                ("select 3", false),
+                ("commit", false),
+                ("select 4", false),
+            ],
+        );
+
+        assert!(result.is_ok());
+        assert_eq!(
+            session.executed,
+            [
+                "begin", "select 1", "select 2", "select 3", "commit", "select 4"
+            ]
+        );
+        assert!(open_transaction().is_none());
+    }
+
+    #[test]
+    fn redshift_statement_without_auto_begin_does_not_open_a_transaction() {
+        let (_, session) = run_redshift(&[(USE_TRANSACTIONS, true)], &[("select 1", false)]);
+
+        assert_eq!(session.executed, ["select 1"]);
+        assert!(open_transaction().is_none());
+    }
+
+    #[test]
+    fn redshift_keeps_the_transaction_open_between_calls() {
+        let (_, session) = run_redshift(&[(USE_TRANSACTIONS, true)], &[("select 1", true)]);
+
+        assert_eq!(session.executed, ["begin", "select 1"]);
+        assert!(open_transaction().is_some());
+        drop_thread_local_connection();
+    }
+
+    #[test]
+    fn redshift_failure_inside_the_transaction_discards_the_connection() {
+        let (result, session) = run_redshift(&[(USE_TRANSACTIONS, true)], &[(FAILING_SQL, true)]);
+
+        let err = result.expect_err("the failing statement's error must still propagate");
+        assert!(session.discarded);
+        assert!(open_transaction().is_none());
+        assert!(
+            err.message().contains("left uncommitted"),
+            "{}",
+            err.message()
+        );
+        assert_eq!(session.executed, ["begin", FAILING_SQL]);
+    }
+
+    #[test]
+    fn redshift_use_transactions_set_to_false_leaves_statements_unwrapped() {
+        let (_, session) = run_redshift(&[(USE_TRANSACTIONS, false)], &[("select 1", true)]);
+
+        assert_eq!(session.executed, ["select 1"]);
+    }
+
+    #[test]
+    fn redshift_skip_flag_overrides_use_transactions() {
+        let (_, session) = run_redshift(
+            &[(USE_TRANSACTIONS, true), (SKIP_TRANSACTIONS, true)],
+            &[("select 1", true)],
+        );
+
+        assert_eq!(session.executed, ["select 1"]);
+    }
+
+    #[test]
+    fn redshift_skip_flag_alone_changes_nothing() {
+        for skip in [false, true] {
+            let (_, session) = run_redshift(&[(SKIP_TRANSACTIONS, skip)], &[("select 1", true)]);
+
+            assert_eq!(session.executed, ["select 1"], "skip flag = {skip}");
+        }
+    }
+
+    #[test]
+    fn redshift_failure_inside_the_transaction_is_not_retried() {
+        let (result, session) = run_redshift(&[(USE_TRANSACTIONS, true)], &[(RETRYABLE_SQL, true)]);
+
+        let err = result.expect_err("the failing statement's error must still propagate");
+        // A retry would run in the aborted transaction and replace this message with
+        // "current transaction is aborted".
+        assert!(
+            err.message().contains("does not exist"),
+            "{}",
+            err.message()
+        );
+        assert_eq!(session.executed, ["begin", RETRYABLE_SQL]);
+    }
+
+    #[test]
+    fn redshift_failure_outside_a_transaction_is_still_retried() {
+        let (result, session) = run_redshift(&[], &[(RETRYABLE_SQL, true)]);
+
+        assert!(result.is_err());
+        assert_eq!(session.executed, [RETRYABLE_SQL, RETRYABLE_SQL]);
     }
 }

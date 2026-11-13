@@ -522,11 +522,19 @@ impl Task for RunTask {
                                 let (status, result) = run_blocking_task_operation(move || {
                                     let unit_test =
                                         node_inner.as_any().downcast_ref::<DbtUnitTest>().unwrap();
-                                    execute_unit_test_remote(
+                                    let result = execute_unit_test_remote(
                                         unit_test,
                                         &ctx_inner,
                                         &task_result_inner,
-                                    )
+                                    );
+                                    match ctx_inner.adapter_for(unit_test) {
+                                        Ok(adapter) => crate::materialize::end_node_transaction(
+                                            &adapter,
+                                            unit_test.unique_id(),
+                                            result,
+                                        ),
+                                        Err(_) => result,
+                                    }
                                 })
                                 .await??;
                                 if let Some(result) = result {
@@ -1335,6 +1343,18 @@ fn lake_compute_execution_path(
 }
 
 fn execute_remote_node(
+    node: &dyn InternalDbtNodeAttributes,
+    ctx: &TaskRunnerCtx,
+    task_result: &TaskResult,
+) -> FsResult<NodeStatus> {
+    let result = execute_remote_node_inner(node, ctx, task_result);
+    match ctx.adapter_for(node) {
+        Ok(adapter) => crate::materialize::end_node_transaction(&adapter, node.unique_id(), result),
+        Err(_) => result,
+    }
+}
+
+fn execute_remote_node_inner(
     node: &dyn InternalDbtNodeAttributes,
     ctx: &TaskRunnerCtx,
     task_result: &TaskResult,

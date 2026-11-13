@@ -190,6 +190,18 @@ fn redshift_behavior_flags() -> Vec<BehaviorFlag> {
             None,
             None,
         ),
+        // Fusion has never wrapped Redshift statements in a transaction, so this is opt-in.
+        // dbt-redshift always does, unless `redshift_skip_autocommit_transaction_statements`
+        // is set.
+        BehaviorFlag::new(
+            "redshift_use_transactions",
+            false,
+            Some(
+                "When enabled, run each node's statements in one transaction (BEGIN before the first statement, COMMIT at adapter.commit(), rollback on failure), as dbt-redshift does. Off by default: each statement commits on its own. Concurrent transactions can fail with a serialization conflict, which Fusion does not retry. Has no effect when redshift_skip_autocommit_transaction_statements is enabled.",
+            ),
+            None,
+            None,
+        ),
     ]
 }
 
