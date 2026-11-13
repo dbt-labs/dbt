@@ -15,7 +15,7 @@ use similar::{ChangeTag, TextDiff};
 
 use crate::AdapterType;
 use crate::sql::complex_types::canonicalize_complex_types_for;
-use crate::sql::diff::PrivilegeStatement;
+use crate::sql::diff::{PrivilegeStatement, canonicalize_ephemeral_wrapper_alias};
 use crate::sql::normalize::strip_sql_comments;
 use crate::time_machine::event::AdapterCallEvent;
 
@@ -250,10 +250,11 @@ impl TimeMachineEventValidationEngine {
     ///
     /// Defaults to `AdapterType::Snowflake`; call `with_adapter_type` to override.
     pub fn new() -> Self {
+        let adapter_type = AdapterType::Snowflake;
         let mut engine = Self {
             deviations: Vec::new(),
-            sanitizers: Vec::new(),
-            adapter_type: AdapterType::Snowflake,
+            sanitizers: default_sanitizers(adapter_type),
+            adapter_type,
         };
 
         // Register deviations
@@ -261,37 +262,20 @@ impl TimeMachineEventValidationEngine {
         engine.register_deviation(Box::new(DbtArtifactsDeviation));
         engine.register_deviation(Box::new(ElementaryDeviation));
 
-        // Register sanitizers
-        engine.register_sanitizer(Box::new(TimestampSanitizer));
-        engine.register_sanitizer(Box::new(DateLiteralSanitizer));
-        engine.register_sanitizer(Box::new(QueryTagSanitizer));
-        engine.register_sanitizer(Box::new(UuidSanitizer));
-        engine.register_sanitizer(Box::new(TmpSuffixSanitizer));
-        engine.register_sanitizer(Box::new(GrantOrderingSanitizer));
-        engine.register_sanitizer(Box::new(EphemeralWrapperAliasSanitizer));
-        // Strip SQL comments before whitespace normalization so dynamic text in comments
-        // (timestamps, state fingerprints, etc.) does not cause false mismatches.
-        engine.register_sanitizer(Box::new(SqlCommentSanitizer));
-        // Whitespace sanitizer should be last to normalize after other sanitizers
-        engine.register_sanitizer(Box::new(WhitespaceSanitizer));
-
         engine
     }
 
-    /// Set the adapter type used for non-SQL argument comparison.
+    /// Set the adapter type used for non-SQL argument comparison and for the dialect lexer of
+    /// SQL sanitizers. This resets the sanitizers to the defaults.
     pub fn with_adapter_type(mut self, adapter_type: AdapterType) -> Self {
         self.adapter_type = adapter_type;
+        self.sanitizers = default_sanitizers(adapter_type);
         self
     }
 
     /// Register a deviation rule.
     pub fn register_deviation(&mut self, deviation: Box<dyn KnownDeviation>) {
         self.deviations.push(deviation);
-    }
-
-    /// Register a SQL sanitizer.
-    pub fn register_sanitizer(&mut self, sanitizer: Box<dyn SqlSanitizer>) {
-        self.sanitizers.push(sanitizer);
     }
 
     /// Check if a node matches any registered deviation.
@@ -425,6 +409,24 @@ fn extract_non_sql_args(args: &serde_json::Value) -> serde_json::Value {
         }
         _ => serde_json::Value::Array(vec![]),
     }
+}
+
+/// The default SQL sanitizers, in the order they are applied.
+fn default_sanitizers(adapter_type: AdapterType) -> Vec<Box<dyn SqlSanitizer>> {
+    vec![
+        Box::new(TimestampSanitizer),
+        Box::new(DateLiteralSanitizer),
+        Box::new(QueryTagSanitizer),
+        Box::new(UuidSanitizer),
+        Box::new(TmpSuffixSanitizer),
+        Box::new(GrantOrderingSanitizer),
+        Box::new(EphemeralWrapperAliasSanitizer { adapter_type }),
+        // Strip SQL comments before whitespace normalization so dynamic text in comments
+        // (timestamps, state fingerprints, etc.) does not cause false mismatches.
+        Box::new(SqlCommentSanitizer),
+        // Whitespace sanitizer should be last to normalize after other sanitizers
+        Box::new(WhitespaceSanitizer),
+    ]
 }
 
 /// Apply all sanitizers to a SQL string.
@@ -684,7 +686,10 @@ impl SqlSanitizer for TmpSuffixSanitizer {
 /// select wrapper, so recordings made before the alias existed still match.
 ///
 /// Register it before [`SqlCommentSanitizer`], which removes the wrapper marker comment.
-pub struct EphemeralWrapperAliasSanitizer;
+pub struct EphemeralWrapperAliasSanitizer {
+    /// Selects the dialect lexer.
+    pub adapter_type: AdapterType,
+}
 
 impl SqlSanitizer for EphemeralWrapperAliasSanitizer {
     fn name(&self) -> &'static str {
@@ -692,15 +697,7 @@ impl SqlSanitizer for EphemeralWrapperAliasSanitizer {
     }
 
     fn sanitize(&self, sql: &str) -> String {
-        const MARKER: &str = "--EPHEMERAL-SELECT-WRAPPER-END";
-        if !sql.contains(MARKER) {
-            return sql.to_string();
-        }
-        static RE: LazyLock<Regex> = LazyLock::new(|| {
-            Regex::new(r#"(--EPHEMERAL-SELECT-WRAPPER-END\s*\))\s*(?i:as)\s+[\w"`\[\]]+"#)
-                .expect("valid regex")
-        });
-        RE.replace_all(sql, "${1}").to_string()
+        canonicalize_ephemeral_wrapper_alias(sql, self.adapter_type).into_owned()
     }
 }
 

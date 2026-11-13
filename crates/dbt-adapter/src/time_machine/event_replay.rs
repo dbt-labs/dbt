@@ -29,7 +29,9 @@ use super::serde::values_match;
 use super::validation::{SqlSanitizer, TmpSuffixSanitizer, UuidSanitizer};
 use crate::AdapterType;
 use crate::sql::complex_types::canonicalize_complex_types_for;
-use crate::sql::diff::{canonicalize_python_model_pair, compare_sql};
+use crate::sql::diff::{
+    canonicalize_ephemeral_wrapper_alias, canonicalize_python_model_pair, compare_sql,
+};
 
 /// Marker for temp-relation identifiers, which carry a non-deterministic suffix.
 static TMP_MARKER_RE: LazyLock<Regex> =
@@ -267,9 +269,13 @@ pub(crate) fn adapter_args_match_for_type(
                 .map_or_else(
                     || values_match(recorded, actual),
                     |(rec_sql, act_sql)| {
+                        // Recordings made before the ephemeral select wrapper got its
+                        // `as <model_name>` alias have no alias. `compare_sql` removes it for
+                        // `execute`; remove it here too.
                         let canonical = |sql: &str| {
+                            let sql = canonicalize_ephemeral_wrapper_alias(sql, adapter_type);
                             canonicalize_complex_types_for(
-                                &UuidSanitizer.sanitize(sql),
+                                &UuidSanitizer.sanitize(&sql),
                                 adapter_type,
                             )
                             .into_owned()
@@ -2800,6 +2806,67 @@ mod tests {
                 !adapter_args_match_for_type(method, &recorded, &actual, AdapterType::Snowflake),
                 "{method}"
             );
+        }
+    }
+
+    /// Schema probe of a snapshot that selects from an ephemeral model. `marker` is the comment
+    /// that ends the ephemeral select wrapper.
+    fn ephemeral_schema_probe(
+        marker: &str,
+        wrapper_end: &str,
+        predicate: &str,
+    ) -> serde_json::Value {
+        serde_json::json!([format!(
+            "select * from (\n    with snapshot_query as (\n        with __dbt__cte__base as (\nselect 1 as id\n)\n--EPHEMERAL-SELECT-WRAPPER-START\nselect * from (\nselect * from __dbt__cte__base\n{marker}\n{wrapper_end}\n    )\n    select * from snapshot_query\n    ) as __dbt_sbq\n    where {predicate}\n    limit 0\n"
+        )])
+    }
+
+    const SCHEMA_PROBE_METHODS: [&str; 2] =
+        ["get_column_schema_from_query", "get_columns_in_select_sql"];
+
+    #[test]
+    fn test_column_schema_query_matches_ephemeral_wrapper_alias() {
+        // The recording was made before the wrapper ended with `as <model_name>`.
+        let probe = |wrapper_end: &str, predicate: &str| {
+            ephemeral_schema_probe("--EPHEMERAL-SELECT-WRAPPER-END", wrapper_end, predicate)
+        };
+        let recorded = probe(")", "false");
+
+        for adapter_type in [AdapterType::Snowflake, AdapterType::Redshift] {
+            for method in SCHEMA_PROBE_METHODS {
+                for alias in ["my_snapshot", "_leading__double", "\"QUOTED_MODEL\""] {
+                    let actual = probe(&format!(") as {alias}"), "false");
+                    assert_args_match_both_ways_for(adapter_type, method, &recorded, &actual);
+                }
+                let other_predicate = probe(") as my_snapshot", "true");
+                assert!(
+                    !adapter_args_match_for_type(method, &recorded, &other_predicate, adapter_type),
+                    "{adapter_type} {method}: predicate differs"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_column_schema_query_keeps_alias_without_wrapper_marker() {
+        // Without the marker comment, `) as my_snapshot` is part of the query, so the alias is
+        // the only difference and the args must not match.
+        let probe =
+            |wrapper_end: &str| ephemeral_schema_probe("-- other comment", wrapper_end, "false");
+        let recorded = probe(")");
+        let actual = probe(") as my_snapshot");
+
+        for adapter_type in [AdapterType::Snowflake, AdapterType::Redshift] {
+            for method in SCHEMA_PROBE_METHODS {
+                assert!(
+                    !adapter_args_match_for_type(method, &recorded, &actual, adapter_type),
+                    "{adapter_type} {method}: recorded -> actual"
+                );
+                assert!(
+                    !adapter_args_match_for_type(method, &actual, &recorded, adapter_type),
+                    "{adapter_type} {method}: actual -> recorded"
+                );
+            }
         }
     }
 
