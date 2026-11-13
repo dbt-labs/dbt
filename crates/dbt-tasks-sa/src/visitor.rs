@@ -228,8 +228,9 @@ impl SkipSet {
         reuse_downstream_tests: bool,
     ) -> (SkippedNodes, SkippedNodes) {
         // `on_error: continue` — skip failure propagation so downstreams
-        // keep running. Handles both `Ok(Errored)` (normal run failure) and
-        // `Err(_)` (e.g. microbatch failures before normalization).
+        // keep running. Handles both `Ok(Errored)` (normal run failure, including
+        // a microbatch partial success) and `Err(_)` (failure before the task
+        // could record a status).
         let is_failure = matches!(&result, Err(_) | Ok(NodeStatus::Errored));
         if is_failure && !fail_fast_flag && model_should_continue_on_error(task_idx, schedule) {
             return (Vec::new(), Vec::new());

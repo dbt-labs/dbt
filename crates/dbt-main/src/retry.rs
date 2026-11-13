@@ -9,8 +9,8 @@ use std::path::Path;
 use std::str::FromStr;
 
 /// Statuses that are always retryable. Matches dbt-core's `RETRYABLE_STATUSES`
-/// (`error`, `fail`, `skipped`).
-pub const RETRYABLE_STATUSES: &[&str] = &["error", "fail", "skipped"];
+/// (`error`, `fail`, `skipped`, and microbatch `partial success`).
+pub const RETRYABLE_STATUSES: &[&str] = &["error", "fail", "skipped", "partial success"];
 
 /// Additional status that is retryable only when the *retry* invocation passes
 /// `--warn-error`, matching dbt-core:
@@ -211,6 +211,7 @@ mod tests {
         assert!(RETRYABLE_STATUSES.contains(&"error"));
         assert!(RETRYABLE_STATUSES.contains(&"fail"));
         assert!(RETRYABLE_STATUSES.contains(&"skipped"));
+        assert!(RETRYABLE_STATUSES.contains(&"partial success"));
         assert!(!RETRYABLE_STATUSES.contains(&"success"));
         assert!(!RETRYABLE_STATUSES.contains(&"pass"));
         // `warn` is retryable only under --warn-error, so it lives in a separate set.
@@ -515,6 +516,23 @@ expected_sa: {expected_sa:?}",
             !state
                 .retryable_node_ids
                 .contains(&"model.my_project.model_a".to_string())
+        );
+    }
+
+    #[test]
+    fn test_from_run_results_partial_success_is_retryable() {
+        let file = create_run_results_json(
+            &[
+                ("model.my_project.input_model", "success"),
+                ("model.my_project.microbatch_model", "partial success"),
+            ],
+            "run",
+        );
+
+        let state = RetryState::from_run_results(file.path(), false).unwrap();
+        assert_eq!(
+            state.retryable_node_ids,
+            vec!["model.my_project.microbatch_model".to_string()]
         );
     }
 

@@ -118,6 +118,10 @@ pub struct Stat {
     /// Whether the node's result is an assertion, reported as `pass`/`fail` by its row count.
     /// Tests, unit tests and checks always are; see [`Stat::is_assertion_node`].
     pub assertion: bool,
+    /// Replaces [`Stat::result_status_string`] when set. Microbatch models stay
+    /// [`NodeStatus::Errored`] so downstreams still skip, but a mix of batch
+    /// outcomes is `partial success` in `run_results.json`.
+    pub result_status_override: Option<String>,
 }
 
 impl Stat {
@@ -143,6 +147,7 @@ impl Stat {
             thread_id: format!("Thread-{} (worker)", thread_id),
             message,
             assertion: false,
+            result_status_override: None,
         }
     }
 
@@ -164,6 +169,9 @@ impl Stat {
         datetime.format("%H:%M:%S").to_string()
     }
     pub fn status_string(&self) -> String {
+        if self.result_status_override.is_some() {
+            return "partial success".to_string();
+        }
         if self.status == NodeStatus::Succeeded
             && (self.unique_id.starts_with("test.") || self.unique_id.starts_with("unit_test."))
         {
@@ -191,6 +199,9 @@ impl Stat {
     }
 
     pub fn result_status_string(&self) -> String {
+        if let Some(status) = &self.result_status_override {
+            return status.clone();
+        }
         match self.status {
             NodeStatus::Succeeded if self.is_assertion_node() => {
                 match self.num_rows {
@@ -358,6 +369,21 @@ mod tests {
     }
 
     #[test]
+    fn result_status_override_replaces_the_node_status() {
+        let mut stat = Stat::new(
+            "model.my_project.microbatch".to_string(),
+            SystemTime::now(),
+            None,
+            NodeStatus::Errored,
+            Some("PARTIAL SUCCESS (2/3)".to_string()),
+            1,
+        );
+        stat.result_status_override = Some("partial success".to_string());
+        assert_eq!(stat.result_status_string(), "partial success");
+        assert_eq!(stat.status_string(), "partial success");
+    }
+
+    #[test]
     fn accumulate_sums_counters_every_response_reported() {
         let mut total = ExecutionMetrics {
             rows_affected: Some(10),
@@ -396,6 +422,7 @@ mod tests {
             thread_id: "Thread-1 (worker)".to_string(),
             message: None,
             assertion: false,
+            result_status_override: None,
         }
     }
 
