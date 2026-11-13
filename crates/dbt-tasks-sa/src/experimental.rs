@@ -55,11 +55,12 @@ pub use dbt_parser::experimental::{
 ///
 /// An experimental node runs only when it is selected directly, and only in its Run phase: it has
 /// nothing to render or analyze.
+#[async_trait]
 pub trait ExperimentalNode: ResolveExperimental {
     /// Prepares to run this experimental's selected nodes. Called once per invocation, after nodes
     /// are selected and before the task graph is built, so an error stops the invocation before any
     /// node runs. `None` runs none of them.
-    fn start(
+    async fn start(
         &self,
         args: &ExperimentalRunArgs<'_>,
     ) -> Result<Option<Arc<dyn ExperimentalRun>>, ExperimentalError>;
@@ -806,7 +807,7 @@ impl ExperimentalRuns {
     ///
     /// Experimental nodes only run, so a command whose graph has no Run phase starts no
     /// experimental. An experimental's own command runs only that experimental's nodes.
-    pub fn start(
+    pub async fn start(
         experimentals: &Experimentals,
         arg: &RunTasksArgs,
         nodes: &Nodes,
@@ -845,7 +846,7 @@ impl ExperimentalRuns {
                 selected: &selected,
                 command_options: &arg.command_options,
             };
-            match experimental.start(&args) {
+            match experimental.start(&args).await {
                 Ok(Some(run)) => {
                     started.runs.insert(experimental_type, run);
                 }
@@ -958,8 +959,9 @@ mod tests {
         }
     }
 
+    #[async_trait]
     impl ExperimentalNode for WithKeys {
-        fn start(
+        async fn start(
             &self,
             _args: &ExperimentalRunArgs<'_>,
         ) -> Result<Option<Arc<dyn ExperimentalRun>>, ExperimentalError> {
@@ -967,8 +969,9 @@ mod tests {
         }
     }
 
+    #[async_trait]
     impl ExperimentalNode for TestExperimental {
-        fn start(
+        async fn start(
             &self,
             _args: &ExperimentalRunArgs<'_>,
         ) -> Result<Option<Arc<dyn ExperimentalRun>>, ExperimentalError> {
@@ -1015,8 +1018,9 @@ mod tests {
         }
     }
 
+    #[async_trait]
     impl ExperimentalNode for CountingExperimental {
-        fn start(
+        async fn start(
             &self,
             _args: &ExperimentalRunArgs<'_>,
         ) -> Result<Option<Arc<dyn ExperimentalRun>>, ExperimentalError> {
@@ -1068,7 +1072,13 @@ mod tests {
             command: FsCommand::Build,
             ..Default::default()
         };
-        let runs = ExperimentalRuns::start(&experimentals, &arg, &nodes, &schedule, true);
+        let runs = futures::executor::block_on(ExperimentalRuns::start(
+            &experimentals,
+            &arg,
+            &nodes,
+            &schedule,
+            true,
+        ));
         (runs, finishes)
     }
 
@@ -1143,8 +1153,14 @@ mod tests {
             command,
             ..Default::default()
         };
-        let runs =
-            ExperimentalRuns::start(&experimentals, &arg, &nodes, &schedule, runs_nodes).unwrap();
+        let runs = futures::executor::block_on(ExperimentalRuns::start(
+            &experimentals,
+            &arg,
+            &nodes,
+            &schedule,
+            runs_nodes,
+        ))
+        .unwrap();
         ["widget", "gadget", "gizmo"]
             .into_iter()
             .filter(|experimental_type| runs.is_running(experimental_type))
@@ -1184,7 +1200,14 @@ mod tests {
             command: FsCommand::Build,
             ..Default::default()
         };
-        let runs = ExperimentalRuns::start(&experimentals, &arg, &nodes, &schedule, true).unwrap();
+        let runs = futures::executor::block_on(ExperimentalRuns::start(
+            &experimentals,
+            &arg,
+            &nodes,
+            &schedule,
+            true,
+        ))
+        .unwrap();
         assert!(
             runs.task(&nodes.experimentals["widget.p.n"], &nodes)
                 .is_some()
