@@ -150,6 +150,7 @@ impl Backend {
             Backend::Snowflake => Some(b"SnowflakeDriverInit"),
             Backend::DuckDB | Backend::DuckDBExtended => Some(b"duckdb_adbc_init"),
             Backend::LakeCompute => Some(b"AdbcDriverDbtInit"),
+            Backend::Athena => Some(b"AdbcDriverAthenaInit"),
             Backend::Trino => Some(b"AdbcDriverTrinoInit"),
             Backend::Generic {
                 library_name: _,
