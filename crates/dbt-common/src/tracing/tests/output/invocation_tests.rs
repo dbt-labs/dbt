@@ -9,9 +9,14 @@ use dbt_telemetry::{
 use indoc::{formatdoc, indoc};
 
 use super::events::{data_test, invocation, node, node_group, processed, test_detail};
-use super::support::{Case, Clock, DBT_LOG, TERMINAL, TERMINAL_NO_COLOR, TERMINAL_QUIET, TEXT};
+use super::support::{
+    Case, Clock, DBT_LOG, TERMINAL, TERMINAL_NO_COLOR, TERMINAL_QUIET,
+    TERMINAL_SHOW_ALL_DEPRECATIONS, TEXT,
+};
+use crate::ErrorCode;
 use crate::tracing::{
-    dbt_metrics::{FusionMetricKey, InvocationMetricKey},
+    dbt_emit::emit_future_change,
+    dbt_metrics::{FusionMetricKey, InvocationMetricKey, NamedProbe},
     emit::{create_info_span, emit_error_event, emit_warn_event},
     metrics::increment_metric,
 };
@@ -20,6 +25,7 @@ pub(super) fn cases(cases: &mut Vec<Case>) {
     eventful_build_summary(cases);
     summary_variants(cases);
     summary_durations(cases);
+    future_change_repeats(cases);
 }
 
 fn warn(code: u32, message: &str) {
@@ -754,4 +760,86 @@ fn summary_durations(cases: &mut Vec<Case>) {
                 ),
         );
     }
+}
+
+/// Repeats of a future change are shown once on the terminal and counted in the summary.
+fn future_change_repeats(cases: &mut Vec<Case>) {
+    cases.push(
+        Case::new("future-change repeats")
+            .root(invocation("parse"))
+            .run(|_| {
+                emit_future_change(ErrorCode::MalformedBlockName, "first");
+                emit_future_change(ErrorCode::MalformedBlockName, "second");
+                emit_future_change(ErrorCode::MalformedBlockName, "third");
+                // Shown every time.
+                emit_future_change(ErrorCode::CleanTargetOutsideProject, "every");
+                emit_future_change(ErrorCode::CleanTargetOutsideProject, "every");
+                // Repeats are per probe; both share FutureIncompatibility.
+                emit_future_change(NamedProbe::TestOnly, "a");
+                emit_future_change(NamedProbe::TestOnlyOther, "b");
+                emit_future_change(NamedProbe::TestOnly, "a again");
+            })
+            .expect(
+                DBT_LOG,
+                indoc! {r#"
+                    ==================== 2026-01-02T03:04:05.678901Z | 0199c2a1-4b5e-7c3d-9a8f-1e2d3c4b5a69 ====================
+                    03:04:05.678901 [warn ]: [MalformedBlockName (dbt1509)]: first This will become an error in a future release. See https://github.com/dbt-labs/dbt/issues/16956
+                    03:04:05.678901 [warn ]: [MalformedBlockName (dbt1509)]: second This will become an error in a future release. See https://github.com/dbt-labs/dbt/issues/16956
+                    03:04:05.678901 [warn ]: [MalformedBlockName (dbt1509)]: third This will become an error in a future release. See https://github.com/dbt-labs/dbt/issues/16956
+                    03:04:05.678901 [warn ]: [CleanTargetOutsideProject (dbt1160)]: every This will become an error in a future release. See https://github.com/dbt-labs/dbt/issues/16929
+                    03:04:05.678901 [warn ]: [CleanTargetOutsideProject (dbt1160)]: every This will become an error in a future release. See https://github.com/dbt-labs/dbt/issues/16929
+                    03:04:05.678901 [warn ]: [FutureIncompatibility (dbt2100)]: a This behavior may change in a future release. See https://github.com/dbt-labs/dbt/issues/1
+                    03:04:05.678901 [warn ]: [FutureIncompatibility (dbt2100)]: b This behavior may change in a future release. See https://github.com/dbt-labs/dbt/issues/2
+                    03:04:05.678901 [warn ]: [FutureIncompatibility (dbt2100)]: a again This behavior may change in a future release. See https://github.com/dbt-labs/dbt/issues/1
+                    03:04:05.678901 [info ]: ⏎
+                    ==================== Execution Summary =====================
+                    Finished 'parse' with 8 warnings for target 'dev' [0ns]
+                "#},
+            )
+            .expect(
+                TERMINAL,
+                indoc! {r#"
+
+                    <dim>==================== Execution Summary =====================</>
+                    Finished '<white+bold>parse</>' with <yellow+bold>8 warnings</> for target '<white+bold>dev</>' <dim>[0ns]</>
+                "#},
+            )
+            .expect_stderr(
+                TERMINAL,
+                indoc! {r#"
+
+                    <dim>=================== Errors and Warnings ====================</>
+                    <yellow+bold>[warning]</> [MalformedBlockName (dbt1509)]: first This will become an error in a future release. See https://github.com/dbt-labs/dbt/issues/16956
+                    <yellow+bold>[warning]</> [CleanTargetOutsideProject (dbt1160)]: every This will become an error in a future release. See https://github.com/dbt-labs/dbt/issues/16929
+                    <yellow+bold>[warning]</> [CleanTargetOutsideProject (dbt1160)]: every This will become an error in a future release. See https://github.com/dbt-labs/dbt/issues/16929
+                    <yellow+bold>[warning]</> [FutureIncompatibility (dbt2100)]: a This behavior may change in a future release. See https://github.com/dbt-labs/dbt/issues/1
+                    <yellow+bold>[warning]</> [FutureIncompatibility (dbt2100)]: b This behavior may change in a future release. See https://github.com/dbt-labs/dbt/issues/2
+                    <blue+bold>note:</> FutureIncompatibility occurred 3 times; 2 shown. The rest are in the log file. Run with '<yellow+bold>--show-all-deprecations</>' to show all of them.
+                    <blue+bold>note:</> MalformedBlockName occurred 3 times; 1 shown. The rest are in the log file. Run with '<yellow+bold>--show-all-deprecations</>' to show all of them.
+                "#},
+            )
+            .expect(
+                TERMINAL_SHOW_ALL_DEPRECATIONS,
+                indoc! {r#"
+
+                    <dim>==================== Execution Summary =====================</>
+                    Finished '<white+bold>parse</>' with <yellow+bold>8 warnings</> for target '<white+bold>dev</>' <dim>[0ns]</>
+                "#},
+            )
+            .expect_stderr(
+                TERMINAL_SHOW_ALL_DEPRECATIONS,
+                indoc! {r#"
+
+                    <dim>=================== Errors and Warnings ====================</>
+                    <yellow+bold>[warning]</> [MalformedBlockName (dbt1509)]: first This will become an error in a future release. See https://github.com/dbt-labs/dbt/issues/16956
+                    <yellow+bold>[warning]</> [MalformedBlockName (dbt1509)]: second This will become an error in a future release. See https://github.com/dbt-labs/dbt/issues/16956
+                    <yellow+bold>[warning]</> [MalformedBlockName (dbt1509)]: third This will become an error in a future release. See https://github.com/dbt-labs/dbt/issues/16956
+                    <yellow+bold>[warning]</> [CleanTargetOutsideProject (dbt1160)]: every This will become an error in a future release. See https://github.com/dbt-labs/dbt/issues/16929
+                    <yellow+bold>[warning]</> [CleanTargetOutsideProject (dbt1160)]: every This will become an error in a future release. See https://github.com/dbt-labs/dbt/issues/16929
+                    <yellow+bold>[warning]</> [FutureIncompatibility (dbt2100)]: a This behavior may change in a future release. See https://github.com/dbt-labs/dbt/issues/1
+                    <yellow+bold>[warning]</> [FutureIncompatibility (dbt2100)]: b This behavior may change in a future release. See https://github.com/dbt-labs/dbt/issues/2
+                    <yellow+bold>[warning]</> [FutureIncompatibility (dbt2100)]: a again This behavior may change in a future release. See https://github.com/dbt-labs/dbt/issues/1
+                "#},
+            ),
+    );
 }

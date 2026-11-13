@@ -1,3 +1,4 @@
+use dbt_error::{ErrorCode, TrackingIssue};
 use dbt_telemetry::{HookOutcome, NodeOutcome, NodeSkipReason, NodeType, TestOutcome};
 use error::{FsError, FsResult};
 use strum::FromRepr;
@@ -19,6 +20,7 @@ const FUSION_NODE_COUNTS_METRIC_FAMILY: u8 = 2;
 const FUSION_OUTCOME_COUNTS_METRIC_FAMILY: u8 = 3;
 const FUSION_HOOK_COUNTS_METRIC_FAMILY: u8 = 4;
 const FUSION_RUN_CACHE_SERVICE_METRIC_FAMILY: u8 = 5;
+const FUSION_COMPATIBILITY_PROBE_METRIC_FAMILY: u8 = 6;
 
 const OUTCOME_KIND_NODE: u8 = 1;
 const OUTCOME_KIND_HOOK: u8 = 2;
@@ -89,6 +91,8 @@ const fn key_reserved_bits(key: MetricKey) -> u16 {
 /// - outcome counts: `lane0 = outcome kind`, `lane1 = outcome value`,
 ///   `lane2 = NodeSkipReason`, `lane3 = Option<NodeSubOutcome>`
 /// - hook counts: no payload lanes
+/// - compatibility probes: `lane0..=lane1 = ErrorCode` (big-endian `u16`),
+///   `lane2..=lane3 = named probe id` (big-endian `u16`); exactly one pair is non-zero
 #[repr(u8)]
 #[cfg_attr(test, derive(strum::EnumIter))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, FromRepr)]
@@ -203,6 +207,98 @@ impl OutcomeCountsKey {
     }
 }
 
+/// A code path counted for telemetry, keyed in the `CompatibilityProbe` metric family.
+///
+/// [`Self::name`] is a permanent telemetry ID.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CompatibilityProbe {
+    /// A warning whose code is planned to become an error (`ErrorCode::lifecycle`).
+    ErrorCode(ErrorCode),
+    /// A behavior that may change, with no code of its own.
+    Named(NamedProbe),
+}
+
+/// A behavior that may change in a future release, counted without a code of its own.
+///
+/// The snake_case name and the number are permanent telemetry IDs. Add new probes with the
+/// next unused number; never renumber, rename or remove one. Number 0 is reserved.
+///
+/// To warn users about a probe with `emit_future_change`, give it an issue in
+/// [`Self::tracking_issue`].
+#[cfg_attr(test, derive(strum::EnumIter))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::FromRepr, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
+pub enum NamedProbe {
+    /// Test-only probe for exercising emission and aggregation.
+    #[cfg(test)]
+    TestOnly = 65_534,
+    /// Second test-only probe, for exercising per-probe behavior.
+    #[cfg(test)]
+    TestOnlyOther = 65_535,
+}
+
+impl NamedProbe {
+    pub fn name(self) -> &'static str {
+        self.into()
+    }
+
+    /// The dbt-labs/dbt issue tracking this behavior. Required to warn with
+    /// `emit_future_change`; a probe only counted with `emit_compatibility_probe` has none.
+    pub const fn tracking_issue(self) -> Option<TrackingIssue> {
+        match self {
+            #[cfg(test)]
+            Self::TestOnly => Some(const { TrackingIssue::new(1) }),
+            #[cfg(test)]
+            Self::TestOnlyOther => Some(const { TrackingIssue::new(2) }),
+        }
+    }
+}
+
+impl From<ErrorCode> for CompatibilityProbe {
+    fn from(code: ErrorCode) -> Self {
+        Self::ErrorCode(code)
+    }
+}
+
+impl From<NamedProbe> for CompatibilityProbe {
+    fn from(probe: NamedProbe) -> Self {
+        Self::Named(probe)
+    }
+}
+
+impl CompatibilityProbe {
+    /// The telemetry ID: the code name for [`Self::ErrorCode`], snake_case otherwise.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::ErrorCode(code) => code.name(),
+            Self::Named(probe) => probe.name(),
+        }
+    }
+
+    /// Lanes 0–1 hold the error code, lanes 2–3 the named-probe number; exactly one pair is
+    /// non-zero.
+    const fn to_lanes(self) -> [u8; 4] {
+        let (code, named) = match self {
+            Self::ErrorCode(code) => (code as u16, 0),
+            Self::Named(probe) => (0, probe as u16),
+        };
+        let [code_hi, code_lo] = code.to_be_bytes();
+        let [named_hi, named_lo] = named.to_be_bytes();
+        [code_hi, code_lo, named_hi, named_lo]
+    }
+
+    fn from_lanes(lanes: [u8; 4]) -> Option<Self> {
+        let code = u16::from_be_bytes([lanes[0], lanes[1]]);
+        let named = u16::from_be_bytes([lanes[2], lanes[3]]);
+        match (code, named) {
+            (0, 0) => None,
+            (code, 0) => ErrorCode::from_repr(code).map(Self::ErrorCode),
+            (0, named) => NamedProbe::from_repr(named.into()).map(Self::Named),
+            _ => None,
+        }
+    }
+}
+
 #[cfg_attr(test, derive(strum::EnumDiscriminants))]
 #[cfg_attr(
     test,
@@ -215,6 +311,7 @@ pub enum FusionMetricKey {
     NodeCounts(NodeType),
     OutcomeCounts(OutcomeCountsKey),
     HookCounts,
+    CompatibilityProbe(CompatibilityProbe),
 }
 
 impl From<FusionMetricKey> for MetricKey {
@@ -298,6 +395,11 @@ impl From<FusionMetricKey> for MetricKey {
                 FUSION_HOOK_COUNTS_METRIC_FAMILY,
                 [0, 0, 0, 0],
             ),
+            FusionMetricKey::CompatibilityProbe(probe) => pack_metric_key(
+                FUSION_METRIC_NAMESPACE,
+                FUSION_COMPATIBILITY_PROBE_METRIC_FAMILY,
+                probe.to_lanes(),
+            ),
         }
     }
 }
@@ -371,6 +473,15 @@ impl TryFrom<MetricKey> for FusionMetricKey {
 
                 Ok(Self::HookCounts)
             }
+            FUSION_COMPATIBILITY_PROBE_METRIC_FAMILY => Ok(Self::CompatibilityProbe(
+                CompatibilityProbe::from_lanes([
+                    key_lane_0(key),
+                    key_lane_1(key),
+                    key_lane_2(key),
+                    key_lane_3(key),
+                ])
+                .ok_or(())?,
+            )),
             _ => Err(()),
         }
     }
@@ -417,6 +528,16 @@ mod tests {
         keys.extend(RunCacheServiceMetricKey::iter().map(FusionMetricKey::RunCacheService));
         keys.extend(NodeType::iter().map(FusionMetricKey::NodeCounts));
         keys.push(FusionMetricKey::HookCounts);
+        keys.extend(
+            NamedProbe::iter()
+                .map(CompatibilityProbe::Named)
+                .chain(
+                    (0..=u16::MAX)
+                        .filter_map(ErrorCode::from_repr)
+                        .map(CompatibilityProbe::ErrorCode),
+                )
+                .map(FusionMetricKey::CompatibilityProbe),
+        );
 
         for node_outcome in NodeOutcome::iter() {
             for skip_reason in NodeSkipReason::iter() {
@@ -477,5 +598,20 @@ mod tests {
             let raw_key: MetricKey = key.into();
             assert_eq!(FusionMetricKey::try_from(raw_key), Ok(key));
         }
+    }
+
+    /// Named-probe names and numbers are permanent telemetry IDs.
+    ///
+    /// If this fails, you changed an existing probe. Add new probes with the next unused number
+    /// and append them here; never renumber, rename or remove one.
+    #[test]
+    fn named_probes_are_pinned() {
+        let actual = NamedProbe::iter()
+            .map(|probe| (probe.name(), probe as u16))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            actual,
+            [("test_only", u16::MAX - 1), ("test_only_other", u16::MAX)]
+        );
     }
 }

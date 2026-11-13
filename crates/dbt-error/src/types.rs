@@ -552,6 +552,18 @@ impl FsError {
         }
     }
 
+    /// Appends the future-error notice and tracking link to this warning's message, if its code
+    /// is registered in [`ErrorCode::future_error`]. The notice precedes the location, so the CLI
+    /// (`message`) and the LSP (`pretty`) both show it.
+    pub fn with_future_error_notice(mut self) -> FsError {
+        if let Some(future_error) = self.code.future_error() {
+            // Writing into a `String` cannot fail.
+            let _ =
+                fmt::Write::write_fmt(&mut self.context, format_args!("{}", future_error.notice()));
+        }
+        self
+    }
+
     /// Adds a location to this error, replacing an existing location if it's more specific
     pub fn with_location(self, location: impl Into<super::CodeLocationWithFile>) -> FsError {
         let location = location.into();
@@ -1541,6 +1553,40 @@ mod tests {
     use crate::{CodeLocationWithFile, ErrorCode};
 
     use super::*;
+
+    /// The CLI shows `message`; the LSP shows `pretty`. Both carry the notice before the location.
+    #[test]
+    fn future_error_notice_precedes_the_location() {
+        let err = FsError::new_no_backtrace(ErrorCode::MalformedBlockName, "Malformed.")
+            .with_location(CodeLocationWithFile::new(17, 9, 0, "models/docs.md"))
+            .with_future_error_notice();
+        let notice = "Malformed. This will become an error in a future release. \
+                      See https://github.com/dbt-labs/dbt/issues/16956";
+
+        assert_eq!(
+            err.message(),
+            format!("{notice}\n  --> models/docs.md:17:9")
+        );
+        assert_eq!(
+            err.pretty(),
+            format!("[MalformedBlockName (dbt1509)]: {notice}\n  --> models/docs.md:17:9")
+        );
+    }
+
+    #[test]
+    fn stable_code_has_no_future_error_notice() {
+        let err = FsError::new_no_backtrace(ErrorCode::NoNodesSelected, "Nothing to do.")
+            .with_future_error_notice();
+        assert_eq!(err.to_string(), "Nothing to do.");
+    }
+
+    /// A future-error code can also be returned as a real error (e.g. `DepsDuplicatePackage` in
+    /// `dbt-dist`). Only warnings emitted as future changes carry the notice.
+    #[test]
+    fn future_error_code_has_no_notice_unless_added() {
+        let err = FsError::new_no_backtrace(ErrorCode::DepsDuplicatePackage, "Duplicate.");
+        assert_eq!(err.to_string(), "Duplicate.");
+    }
 
     #[test]
     fn with_file_location_discards_existing_position() {

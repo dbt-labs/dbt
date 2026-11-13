@@ -1,5 +1,6 @@
 use std::sync::{Arc, OnceLock};
 
+use super::future_incompatibility_log::FutureIncompatibilityLog;
 use dbt_error::FsError;
 use dbt_telemetry::LogMessage;
 use dbt_tracing::{
@@ -164,11 +165,18 @@ impl AnyTelemetryEvent for FsErrorLog {
 }
 
 pub fn get_log_message(attributes: &TelemetryAttributes) -> Option<&LogMessage> {
-    attributes.downcast_ref::<LogMessage>().or_else(|| {
-        attributes
-            .downcast_ref::<FsErrorLog>()
-            .map(FsErrorLog::get_log_message)
-    })
+    attributes
+        .downcast_ref::<LogMessage>()
+        .or_else(|| {
+            attributes
+                .downcast_ref::<FsErrorLog>()
+                .map(FsErrorLog::get_log_message)
+        })
+        .or_else(|| {
+            attributes
+                .downcast_ref::<FutureIncompatibilityLog>()
+                .map(FutureIncompatibilityLog::get_log_message)
+        })
 }
 
 pub(in crate::tracing) fn get_log_message_mut(
@@ -176,9 +184,13 @@ pub(in crate::tracing) fn get_log_message_mut(
 ) -> Option<&mut LogMessage> {
     if attributes.is::<LogMessage>() {
         attributes.downcast_mut::<LogMessage>()
-    } else {
+    } else if attributes.is::<FsErrorLog>() {
         attributes
             .downcast_mut::<FsErrorLog>()
             .map(FsErrorLog::get_log_message_mut)
+    } else {
+        attributes
+            .downcast_mut::<FutureIncompatibilityLog>()
+            .map(FutureIncompatibilityLog::get_log_message_mut)
     }
 }

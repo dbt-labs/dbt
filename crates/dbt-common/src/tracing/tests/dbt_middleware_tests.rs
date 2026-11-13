@@ -1,11 +1,12 @@
 use std::sync::Arc;
 
+use super::support::capture_log_records;
 use crate::tracing::dbt_init::create_tracing_subcriber_with_layer;
 use crate::tracing::tracing_feature_handles::FsTracingConfigProvider;
 use crate::tracing::{
     TracingConfigProvider,
-    dbt_emit::emit_warn_log_message,
-    dbt_metrics::{FusionMetricKey, InvocationMetricKey},
+    dbt_emit::{emit_future_change, emit_warn_log_message},
+    dbt_metrics::{FusionMetricKey, InvocationMetricKey, NamedProbe},
     layer::{ConsumerLayer, MiddlewareLayer},
     metrics::get_metric,
     middlewares::{
@@ -167,4 +168,88 @@ fn skip_fusion_only_upgrades_withholds_upgrade_only_for_fusion_only_codes() {
         SeverityNumber::Error,
         "warning with a dbt-core counterpart must still be upgraded"
     );
+}
+
+#[test]
+fn future_error_keeps_notice_when_promoted_to_error() {
+    let config_provider = Arc::new(FsTracingConfigProvider::from_warn_error_options(
+        WarnErrorOptions {
+            error: vec![WarnErrorOptionValue::all()],
+            ..Default::default()
+        },
+    )) as Arc<dyn TracingConfigProvider>;
+    let middlewares: Vec<MiddlewareLayer> = vec![Box::new(
+        TelemetryWarnErrorOptionsMiddleware::new(config_provider, false),
+    )];
+
+    let records = capture_log_records(middlewares, || {
+        emit_future_change(ErrorCode::MalformedBlockName, "Malformed.");
+    });
+
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].severity_number, SeverityNumber::Error);
+    assert!(
+        records[0]
+            .body
+            .ends_with("See https://github.com/dbt-labs/dbt/issues/16956"),
+        "{}",
+        records[0].body
+    );
+}
+
+#[test]
+fn future_incompatibility_is_never_upgraded_but_can_be_silenced() {
+    let upgrade_options = [
+        WarnErrorOptionValue::all(),
+        WarnErrorOptionValue::FusionCode(ErrorCode::FutureIncompatibility as u16),
+        WarnErrorOptionValue::LegacyGroup(
+            crate::warn_error_options::LegacyWarnErrorGroupValue::Deprecations,
+        ),
+    ];
+    for option in upgrade_options {
+        let config_provider = Arc::new(FsTracingConfigProvider::from_warn_error_options(
+            WarnErrorOptions {
+                error: vec![option.clone()],
+                ..Default::default()
+            },
+        )) as Arc<dyn TracingConfigProvider>;
+        let records = capture_log_records(
+            vec![Box::new(TelemetryWarnErrorOptionsMiddleware::new(
+                config_provider,
+                false,
+            ))],
+            || emit_future_change(NamedProbe::TestOnly, "Changed."),
+        );
+        assert_eq!(records.len(), 1, "{option:?}");
+        assert_eq!(
+            records[0].severity_number,
+            SeverityNumber::Warn,
+            "{option:?}"
+        );
+    }
+
+    let config_provider = Arc::new(FsTracingConfigProvider::from_warn_error_options(
+        WarnErrorOptions {
+            silence: vec![WarnErrorOptionValue::FusionCode(
+                ErrorCode::FutureIncompatibility as u16,
+            )],
+            ..Default::default()
+        },
+    )) as Arc<dyn TracingConfigProvider>;
+    let mut hits = 0;
+    let records = capture_log_records(
+        vec![Box::new(TelemetryWarnErrorOptionsMiddleware::new(
+            config_provider,
+            false,
+        ))],
+        || {
+            emit_future_change(NamedProbe::TestOnly, "Changed.");
+            hits = get_metric(FusionMetricKey::CompatibilityProbe(
+                NamedProbe::TestOnly.into(),
+            ));
+        },
+    );
+    assert!(records.is_empty());
+    // Silenced warnings are still counted.
+    assert_eq!(hits, 1);
 }

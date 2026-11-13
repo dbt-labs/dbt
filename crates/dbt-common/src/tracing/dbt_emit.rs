@@ -3,11 +3,14 @@
 use dbt_error::{ErrorCode, FsError};
 use dbt_telemetry::{LogMessage, ProgressMessage};
 
+use super::dbt_metrics::{CompatibilityProbe, FusionMetricKey};
 use super::fs_error_log::FsErrorLog;
+use super::future_incompatibility_log::FutureIncompatibilityLog;
 
 use dbt_tracing::emit::{
     emit_debug_event, emit_error_event, emit_info_event, emit_trace_event, emit_warn_event,
 };
+use dbt_tracing::metrics::increment_metric;
 
 // Convenience shorthand's for common telemetry attributes
 
@@ -46,6 +49,7 @@ pub fn emit_trace_log_message(message: impl FnOnce() -> String) {
 /// Emit a log message event at ERROR level with the given code and message.
 #[track_caller]
 pub fn emit_error_log_message(code: ErrorCode, message: impl AsRef<str>) {
+    debug_assert_stable_code(code);
     emit_error_event(
         LogMessage::new_from_level_and_code(code as u32, code.name(), tracing::Level::ERROR),
         Some(message.as_ref()),
@@ -59,6 +63,7 @@ pub fn emit_error_log_message_package_scoped(
     message: impl AsRef<str>,
     package_name: &str,
 ) {
+    debug_assert_stable_code(code);
     let mut log_message =
         LogMessage::new_from_level_and_code(code as u32, code.name(), tracing::Level::ERROR);
     log_message.package_name = Some(package_name.to_string());
@@ -68,6 +73,7 @@ pub fn emit_error_log_message_package_scoped(
 /// Emit a log message event at ERROR level based on the given FsError.
 #[track_caller]
 pub fn emit_error_log_from_fs_error(error: FsError) {
+    debug_assert_stable_code(error.code);
     let message = error.message();
     emit_error_event(
         FsErrorLog::new(error, tracing::Level::ERROR),
@@ -78,6 +84,7 @@ pub fn emit_error_log_from_fs_error(error: FsError) {
 /// Emit a log message event at WARN level with the given code and message.
 #[track_caller]
 pub fn emit_warn_log_message(code: ErrorCode, message: impl AsRef<str>) {
+    debug_assert_stable_code(code);
     emit_warn_event(
         LogMessage::new_from_level_and_code(code as u32, code.name(), tracing::Level::WARN),
         Some(message.as_ref()),
@@ -91,6 +98,7 @@ pub fn emit_warn_log_message_package_scoped(
     message: impl AsRef<str>,
     package_name: &str,
 ) {
+    debug_assert_stable_code(code);
     let mut log_message =
         LogMessage::new_from_level_and_code(code as u32, code.name(), tracing::Level::WARN);
     log_message.package_name = Some(package_name.to_string());
@@ -100,6 +108,7 @@ pub fn emit_warn_log_message_package_scoped(
 /// Emit a log message event at WARN level based on the given FsError.
 #[track_caller]
 pub fn emit_warn_log_from_fs_error(warning: FsError) {
+    debug_assert_stable_code(warning.code);
     let message = warning.message();
     emit_warn_event(
         FsErrorLog::new(warning, tracing::Level::WARN),
@@ -107,10 +116,93 @@ pub fn emit_warn_log_from_fs_error(warning: FsError) {
     );
 }
 
+/// Warn about a behavior planned to change, and count it as `probe`.
+///
+/// For an [`ErrorCode`] registered in [`ErrorCode::future_error`], the warning carries that code
+/// and says it will become an error. For a [`NamedProbe`](super::dbt_metrics::NamedProbe), it
+/// carries [`ErrorCode::FutureIncompatibility`] and says the behavior may change. Either way the
+/// tracking issue link is appended, and the probe is counted even when warn-error options
+/// silence the warning.
+#[track_caller]
+pub fn emit_future_change(probe: impl Into<CompatibilityProbe>, message: impl AsRef<str>) {
+    match probe.into() {
+        CompatibilityProbe::ErrorCode(code) => {
+            emit_future_change_from_fs_error(FsError::new_no_backtrace(code, message.as_ref()))
+        }
+        probe @ CompatibilityProbe::Named(named) => {
+            increment_metric(FusionMetricKey::CompatibilityProbe(probe), 1);
+            let issue = named.tracking_issue();
+            debug_assert!(
+                issue.is_some(),
+                "register an issue for {} in NamedProbe::tracking_issue",
+                named.name()
+            );
+            let message = match issue {
+                Some(issue) => format!(
+                    "{} This behavior may change in a future release. See {issue}",
+                    message.as_ref()
+                ),
+                None => message.as_ref().to_string(),
+            };
+            let code = ErrorCode::FutureIncompatibility;
+            let log_message =
+                LogMessage::new_from_level_and_code(code as u32, code.name(), tracing::Level::WARN);
+            emit_warn_event(
+                FutureIncompatibilityLog::new(probe, log_message),
+                Some(message.as_str()),
+            )
+        }
+    }
+}
+
+/// [`emit_future_change`] for a warning that carries a location. Counted as its code.
+///
+/// Appends the notice to the warning's own message, so the LSP, which reads this error, shows it
+/// too.
+#[track_caller]
+pub fn emit_future_change_from_fs_error(warning: FsError) {
+    increment_metric(
+        FusionMetricKey::CompatibilityProbe(CompatibilityProbe::ErrorCode(warning.code)),
+        1,
+    );
+    debug_assert!(
+        warning.code.future_error().is_some(),
+        "register {} in ErrorCode::future_error",
+        warning.code.name()
+    );
+    let warning = warning.with_future_error_notice();
+    let message = warning.message();
+    emit_warn_event(
+        FsErrorLog::new(warning, tracing::Level::WARN),
+        Some(message.as_str()),
+    );
+}
+
+/// Codes planned to change are emitted with [`emit_future_change`].
+fn debug_assert_stable_code(code: ErrorCode) {
+    debug_assert!(
+        code.future_error().is_none(),
+        "emit {} with emit_future_change",
+        code.name()
+    );
+    debug_assert!(
+        code != ErrorCode::FutureIncompatibility,
+        "emit FutureIncompatibility with emit_future_change and a NamedProbe"
+    );
+}
+
+/// Count that execution reached a probed code path. Telemetry only; never shown to users.
+/// Counted only under an invocation span.
+#[track_caller]
+pub fn emit_compatibility_probe(probe: impl Into<CompatibilityProbe>) {
+    increment_metric(FusionMetricKey::CompatibilityProbe(probe.into()), 1);
+}
+
 /// Emit a log message related to parsing error based on the given FsError.
 ///
 #[track_caller]
 pub fn emit_strict_parse_error(error: FsError, package_name: Option<impl AsRef<str>>) {
+    debug_assert_stable_code(error.code);
     let message = error.message();
     let package_name = package_name.as_ref().map(|name| name.as_ref().to_string());
     let event = FsErrorLog::new(error, tracing::Level::ERROR)

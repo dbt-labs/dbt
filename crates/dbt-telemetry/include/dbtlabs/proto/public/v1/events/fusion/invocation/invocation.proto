@@ -19,6 +19,12 @@ message InvocationMetrics {
   // Keys are: "success", "warn", "error", "reused", "skipped", "canceled", "no_op".
   // Only non-zero counts are included.
   map<string, uint64> status_counts = 5;
+
+  // Counts of compatibility probe hits, including future-change warnings whether shown or not.
+  // Keys are the snake_case name of a named probe (e.g. "legacy_ref_resolution") or the
+  // code name of a warning planned to become an error (e.g. "MalformedBlockName").
+  // Only probes that fired are included.
+  map<string, uint64> probe_counts = 6;
 }
 
 // Structured evaluation arguments for the invocation.

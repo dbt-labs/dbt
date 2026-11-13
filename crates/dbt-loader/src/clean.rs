@@ -19,8 +19,8 @@ use dbt_common::{
     stdfs,
     tracing::{
         dbt_emit::{
-            emit_error_log_from_fs_error, emit_info_progress_message, emit_trace_log_message,
-            emit_warn_log_from_fs_error,
+            emit_error_log_from_fs_error, emit_future_change_from_fs_error,
+            emit_info_progress_message, emit_trace_log_message,
         },
         dbt_metrics::error_count_checkpoint,
         event_info::store_event_attributes,
@@ -125,7 +125,7 @@ pub async fn clean_project(
             Ok(resolved) => resolved,
             Err(e) => {
                 // Cannot tell where the path points: skip it rather than risk deleting outside.
-                emit_warn_log_from_fs_error(*fs_err!(
+                emit_future_change_from_fs_error(*fs_err!(
                     ErrorCode::CleanTargetOutsideProject,
                     "dbt will not clean '{}': cannot resolve its parent directory: {}",
                     path.display(),
@@ -141,10 +141,9 @@ pub async fn clean_project(
             && !resolved.starts_with(&target_path);
         if outside {
             // TODO(dbt-labs/dbt#16929): make this an error and fail `dbt clean`, like dbt Core.
-            emit_warn_log_from_fs_error(*fs_err!(
+            emit_future_change_from_fs_error(*fs_err!(
                 ErrorCode::CleanTargetOutsideProject,
-                "dbt will not clean '{}': {} the project directory {}. \
-                 This will become an error in a future release.",
+                "dbt will not clean '{}': {} the project directory {}.",
                 path.display(),
                 if resolved == path {
                     "it is outside".to_string()
