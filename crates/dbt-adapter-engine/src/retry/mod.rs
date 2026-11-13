@@ -11,6 +11,8 @@ mod databricks;
 mod redshift;
 mod snowflake;
 
+use crate::errors::is_bridge_adbc_error;
+
 #[derive(Debug)]
 pub enum BackoffStrategy {
     /// Quadratic backoff: `attempt * attempt seconds`.
@@ -159,6 +161,12 @@ impl ConnectionRetryPolicy {
 
     fn is_retryable(&self, config: &AdapterConfig, err: &adbc_core::error::Error) -> bool {
         use AdapterType::*;
+        // The Bridge driver already redials once when the service is unreachable,
+        // and its errors say nothing about the warehouse login, so `retry_all`
+        // doesn't apply to them.
+        if is_bridge_adbc_error(err) {
+            return false;
+        }
         match self.adapter_type {
             Snowflake => snowflake::is_retryable_snowflake_login_error(config, err),
             Databricks => databricks::is_retryable_databricks_error(config, err),
@@ -264,7 +272,10 @@ impl QueryRetryPolicy {
     }
 
     fn is_retryable(&self, err: &adbc_core::error::Error) -> bool {
-        redshift::is_retryable_redshift_query_error(self.retry_all, &err.message)
+        // A lost Bridge session can't be retried on the same connection, and
+        // an `08R07` call may already have run.
+        !is_bridge_adbc_error(err)
+            && redshift::is_retryable_redshift_query_error(self.retry_all, &err.message)
     }
 }
 
@@ -287,6 +298,78 @@ mod tests {
             "retry_all".into(),
             true.into(),
         )]))
+    }
+
+    fn bridge_err(status: Status, sqlstate: &[u8; 5]) -> AdbcError {
+        let mut err = adbc_err(status, "[Bridge] i/o timeout");
+        err.sqlstate = sqlstate.map(|b| b as _);
+        err
+    }
+
+    #[test]
+    fn bridge_errors_are_never_retried() {
+        for adapter_type in [
+            AdapterType::Snowflake,
+            AdapterType::Databricks,
+            AdapterType::Redshift,
+        ] {
+            let policy = ConnectionRetryPolicy {
+                adapter_type,
+                max_retries: 3,
+                retry_sleep: Some(Duration::ZERO),
+                backoff: BackoffStrategy::Quadratic,
+            };
+            for cfg in [cfg_default(), cfg_retry_all()] {
+                for sqlstate in [
+                    b"08R01", b"08R06", b"08R07", b"28R00", b"08R16", b"08R17", b"08R12", b"28R07",
+                    b"HYR09", b"XXR05", b"08r06",
+                ] {
+                    let err = bridge_err(Status::IO, sqlstate);
+                    assert!(
+                        !policy.is_retryable(&cfg, &err),
+                        "{adapter_type:?} {}",
+                        String::from_utf8_lossy(sqlstate)
+                    );
+                }
+            }
+        }
+        // The same message without a Bridge SQLSTATE still retries.
+        assert!(test_policy(3, None).is_retryable(&cfg_retry_all(), &adbc_err(Status::IO, "x")));
+    }
+
+    #[test]
+    fn query_retry_policy_skips_bridge_errors_even_with_retry_all() {
+        // Retryable without `retry_all` if it weren't a Bridge error.
+        let bridge_query_err = |sqlstate: &[u8; 5]| {
+            let mut err = adbc_err(Status::IO, "could not open relation with oid 1");
+            err.sqlstate = sqlstate.map(|b| b as _);
+            err
+        };
+        for cfg in [cfg_default(), cfg_retry_all()] {
+            let policy = QueryRetryPolicy::new(AdapterType::Redshift, &cfg);
+            assert!(policy.is_retryable(&bridge_query_err(b"00000")));
+            for sqlstate in [
+                b"08R06", b"08R07", b"08R16", b"08R17", b"08R12", b"28R07", b"HYR09", b"XXR05",
+            ] {
+                assert!(
+                    !policy.is_retryable(&bridge_query_err(sqlstate)),
+                    "{}",
+                    String::from_utf8_lossy(sqlstate)
+                );
+            }
+        }
+
+        let policy = QueryRetryPolicy::new(AdapterType::Redshift, &cfg_retry_all());
+        let mut calls = 0;
+        let result: Result<i32, Cancellable<AdbcError>> = policy.execute(|| {
+            calls += 1;
+            Err(Cancellable::Error(bridge_err(
+                Status::Unauthenticated,
+                b"08R06",
+            )))
+        });
+        assert!(result.is_err());
+        assert_eq!(calls, 1);
     }
 
     #[test]
@@ -799,5 +882,51 @@ mod tests {
         });
         assert!(result.is_err());
         assert_eq!(calls, 1);
+    }
+
+    /// How a Bridge failure in a result stream reaches the retry policy.
+    fn bridge_stream_err() -> AdbcError {
+        AdbcError::from(arrow_schema::ArrowError::CDataInterface(
+            "[Bridge] the result stream ended early; it may have run".to_string(),
+        ))
+    }
+
+    #[test]
+    fn query_retry_policy_skips_bridge_stream_errors_with_retry_all() {
+        let policy = QueryRetryPolicy::new(AdapterType::Redshift, &cfg_retry_all());
+        let mut calls = 0;
+        let result: Result<i32, Cancellable<AdbcError>> = policy.execute(|| {
+            calls += 1;
+            Err(Cancellable::Error(bridge_stream_err()))
+        });
+        assert!(result.is_err());
+        assert_eq!(calls, 1);
+    }
+
+    #[test]
+    fn bridge_errors_without_sqlstate_are_never_retried() {
+        let deadline = || {
+            adbc_err(
+                Status::Timeout,
+                "[Bridge] handshake did not finish before the deadline",
+            )
+        };
+        for adapter_type in [
+            AdapterType::Snowflake,
+            AdapterType::Databricks,
+            AdapterType::Redshift,
+        ] {
+            let policy = ConnectionRetryPolicy {
+                adapter_type,
+                max_retries: 3,
+                retry_sleep: Some(Duration::ZERO),
+                backoff: BackoffStrategy::Quadratic,
+            };
+            for cfg in [cfg_default(), cfg_retry_all()] {
+                assert!(!policy.is_retryable(&cfg, &deadline()), "{adapter_type:?}");
+            }
+        }
+        let policy = QueryRetryPolicy::new(AdapterType::Redshift, &cfg_retry_all());
+        assert!(!policy.is_retryable(&deadline()));
     }
 }

@@ -13,6 +13,7 @@ mod utils;
 // Re-export all public types and utilities
 pub use adapter_errors::{
     AdapterError, AdapterErrorKind, AdapterResult, AsyncAdapterResult, into_fs_error,
+    is_bridge_error, is_bridge_sqlstate,
 };
 pub use code_location::{AbstractLocation, AbstractSpan, CodeLocationWithFile, Span};
 pub use codes::ErrorCode;

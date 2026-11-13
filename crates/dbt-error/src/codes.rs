@@ -232,6 +232,16 @@ pub enum ErrorCode {
     /// Waiting for a Databricks materialized view or streaming table refresh to finish reached
     /// its cap; its config is read anyway.
     DbRefreshWaitTimeoutWarning = 1314,
+    /// The Bridge service can't be reached right now (SQLSTATE `08R01`).
+    BridgeUnavailable = 1315,
+    /// The Bridge session or connection ended before the call ran (SQLSTATE `08R?6`).
+    BridgeSessionLost = 1316,
+    /// The Bridge session or connection ended while the call may have run (SQLSTATE `08R?7`).
+    BridgeOutcomeUnknown = 1317,
+    /// Bridge can't use the project's connection settings (SQLSTATE `HYR00`).
+    BridgeConfig = 1318,
+    /// The Bridge service failed internally (SQLSTATE `XXR*`).
+    BridgeInternal = 1319,
 
     // Execution/runtime [1400–1449]
     PlannerFailed = 1400,
@@ -568,6 +578,11 @@ impl ErrorCode {
                 | ErrorCode::DbNotFound
                 | ErrorCode::DbUnsupportedFeature
                 | ErrorCode::DbDriverFailed
+                | ErrorCode::BridgeUnavailable
+                | ErrorCode::BridgeSessionLost
+                | ErrorCode::BridgeOutcomeUnknown
+                | ErrorCode::BridgeConfig
+                | ErrorCode::BridgeInternal
                 | ErrorCode::ExecutorFailed
         )
     }

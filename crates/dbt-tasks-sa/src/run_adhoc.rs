@@ -275,7 +275,7 @@ fn replay_run_remote_adhoc_result() -> Option<FsResult<(Vec<RecordBatch>, Schema
 }
 
 fn from_adbc_error(err: adbc_core::error::Error) -> Box<FsError> {
-    fs_err!(ErrorCode::Generic, "{}", err)
+    dbt_adapter::errors::adbc_error_to_adapter_error(err).into()
 }
 
 /// Surface any non-fatal backend warning attached to the just-executed
