@@ -529,8 +529,8 @@ lazy_static = "1.4"
 
 # type derived macros
 enum-map = "2.7.3"
-strum = "0.27.2"
-strum_macros = "0.27.2"
+strum = "0.28.0"
+strum_macros = "0.28.0"
 
 # macros
 paste = "1.0.15"
