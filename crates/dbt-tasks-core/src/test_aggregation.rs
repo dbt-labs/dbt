@@ -2,12 +2,14 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use dbt_adapter_core::AdapterType;
 use dbt_common::constants::DBT_GENERIC_TESTS_DIR_NAME;
 use dbt_common::path::DbtPath;
 use dbt_common::string_utils::maybe_truncate_test_name;
 use dbt_common::{CodeLocationWithFile, ErrorCode, FsResult, fs_err, stdfs};
 use dbt_jinja_utils::jinja_arg_format::format_value_for_jinja;
 use dbt_schemas::schemas::InternalDbtNode;
+use dbt_schemas::schemas::InternalDbtNodeAttributes;
 use dbt_schemas::schemas::Nodes;
 use dbt_schemas::schemas::common::{DbtChecksum, Severity};
 use dbt_schemas::schemas::nodes::{DbtTest, TestMetadata};
@@ -218,12 +220,14 @@ fn create_generic_test_relationships(
 
 /// Create test aggregation from resolved nodes and the current schedule.
 ///
-/// Only selected, enabled generic column tests are considered.
+/// Only selected, enabled generic column tests are considered. A lakecompute test is left out
+/// unless the default adapter is lakecompute.
 pub fn create_generic_test_aggregation(
     io: &dbt_common::io_args::IoArgs,
     schedule: &dbt_dag::schedule::Schedule<String>,
     nodes: &Nodes,
     execute: Execute,
+    default_adapter: AdapterType,
 ) -> FsResult<Option<GenericTestAggregation>> {
     if execute != Execute::Remote {
         return Ok(None);
@@ -236,6 +240,13 @@ pub fn create_generic_test_aggregation(
         let Some(test) = nodes.tests.get(unique_id) else {
             continue;
         };
+        // A lakecompute test runs only on the compute platform, which a batch never reaches;
+        // on a lakecompute default the batch keeps running Remote.
+        if test.node_adapter() == AdapterType::LakeCompute
+            && default_adapter != AdapterType::LakeCompute
+        {
+            continue;
+        }
         let Some((resource_name, macro_name)) = get_test_group_key(test) else {
             continue;
         };
@@ -452,6 +463,7 @@ mod tests {
         test.__test_attr__ = DbtTestAttr {
             column_name: Some(column_name.to_string()),
             attached_node: Some("model.pkg.orders".to_string()),
+            test_subject_unique_id: Some("model.pkg.orders".to_string()),
             test_metadata: Some(TestMetadata {
                 name: macro_name.to_string(),
                 kwargs: BTreeMap::from([
@@ -572,9 +584,15 @@ mod tests {
             ..Default::default()
         };
 
-        let aggregation = create_generic_test_aggregation(&io, &schedule, &nodes, Execute::Remote)
-            .expect("aggregation")
-            .expect("aggregated groups");
+        let aggregation = create_generic_test_aggregation(
+            &io,
+            &schedule,
+            &nodes,
+            Execute::Remote,
+            AdapterType::Snowflake,
+        )
+        .expect("aggregation")
+        .expect("aggregated groups");
 
         // 4 models x 2 macros, each with 2 member columns.
         let group_ids: Vec<String> = aggregation.groups.keys().cloned().collect();
@@ -613,10 +631,15 @@ mod tests {
                 ..Default::default()
             };
 
-            let aggregation =
-                create_generic_test_aggregation(&io, &schedule, &nodes, Execute::Remote)
-                    .expect("aggregation")
-                    .expect("aggregated group");
+            let aggregation = create_generic_test_aggregation(
+                &io,
+                &schedule,
+                &nodes,
+                Execute::Remote,
+                AdapterType::Snowflake,
+            )
+            .expect("aggregation")
+            .expect("aggregated group");
             assert_eq!(aggregation.groups.len(), 1);
 
             let group = aggregation.groups.values().next().expect("group");
@@ -629,6 +652,53 @@ mod tests {
                 .join(format!("{}.sql", group.name));
             assert!(aggregated_sql.exists());
         }
+    }
+
+    #[test]
+    fn lake_compute_tests_aggregate_only_on_a_lake_compute_default() {
+        let tests_on = |adapter: AdapterType| {
+            ["id", "email"]
+                .into_iter()
+                .map(|column| {
+                    let mut test = test_node(
+                        &format!("test.pkg.not_null_orders_{column}"),
+                        "not_null",
+                        column,
+                    );
+                    test.__base_attr__.adapter = adapter;
+                    resolved_default_config(&mut test);
+                    test
+                })
+                .collect::<Vec<_>>()
+        };
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let io = dbt_common::io_args::IoArgs {
+            out_dir: temp_dir.path().to_path_buf(),
+            ..Default::default()
+        };
+        let aggregate = |tests: Vec<DbtTest>, default_adapter: AdapterType| {
+            let (schedule, nodes) = schedule_and_nodes(tests);
+            create_generic_test_aggregation(
+                &io,
+                &schedule,
+                &nodes,
+                Execute::Remote,
+                default_adapter,
+            )
+            .expect("aggregation")
+        };
+
+        assert!(aggregate(tests_on(AdapterType::LakeCompute), AdapterType::DuckDB).is_none());
+
+        let aggregation = aggregate(tests_on(AdapterType::LakeCompute), AdapterType::LakeCompute)
+            .expect("aggregated group on a lakecompute default");
+        assert_eq!(aggregation.groups.len(), 1);
+        let group = aggregation.groups.values().next().expect("group");
+        assert_eq!(group.member_tests.len(), 2);
+
+        let aggregation = aggregate(tests_on(AdapterType::DuckDB), AdapterType::Snowflake)
+            .expect("aggregated group of non-lakecompute tests");
+        assert_eq!(aggregation.groups.len(), 1);
     }
 
     #[test]
@@ -790,8 +860,14 @@ mod tests {
             ..Default::default()
         };
 
-        let aggregation = create_generic_test_aggregation(&io, &schedule, &nodes, Execute::Remote)
-            .expect("aggregation");
+        let aggregation = create_generic_test_aggregation(
+            &io,
+            &schedule,
+            &nodes,
+            Execute::Remote,
+            AdapterType::Snowflake,
+        )
+        .expect("aggregation");
         assert!(aggregation.is_none());
     }
 }

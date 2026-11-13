@@ -1,0 +1,10 @@
+model.test.a:
+- sequence: 0
+  type: execute
+  sql: |-
+    select
+    'hello' as text_col,
+    1 as integer_col,
+    1.0 as decimal_col,
+    true as bool_col,
+    datetime(2008, 12, 25, 05, 30, 00) as datetime_col

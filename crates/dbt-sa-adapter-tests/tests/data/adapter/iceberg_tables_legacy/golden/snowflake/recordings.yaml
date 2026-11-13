@@ -1,0 +1,183 @@
+3c306406:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists development.adapters_snowflake_legacy_iceberg_materializations
+5a995365:
+- sequence: 0
+  type: execute
+  sql: SHOW OBJECTS IN SCHEMA "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_LEGACY_ICEBERG_MATERIALIZATIONS" LIMIT 10000
+  error: |-
+    Internal: [Snowflake] 002043 (02000): SQL compilation error:
+    Object does not exist, or operation cannot be performed. (sqlstate: 02000, vendor_code: 2043)
+dbbbff64:
+- sequence: 0
+  type: execute
+  sql: |-
+    show terse schemas in database development
+    limit 10000
+model.test.b:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace transient  table development.adapters_snowflake_legacy_iceberg_materializations.b
+    
+    
+    
+    
+    as (SELECT world_no, stage_no FROM development.adapters_snowflake_legacy_iceberg_materializations.basic_iceberg_table
+    )
+model.test.basic_iceberg_dynamic_table:
+- sequence: 0
+  type: execute
+  sql: use warehouse transforming
+- sequence: 1
+  type: execute
+  sql: |-
+    create dynamic iceberg table development.adapters_snowflake_legacy_iceberg_materializations.basic_iceberg_dynamic_table
+    target_lag = '2 hour'
+    warehouse = transforming
+    
+    
+    external_volume = 's3_iceberg_snow'
+    
+    catalog = 'SNOWFLAKE'  -- required, and always SNOWFLAKE for built-in Iceberg tables
+    base_location = 'fs_test_user/adapters_snowflake_legacy_iceberg_materializations/basic_iceberg_dynamic_table/ci'
+    
+    
+    
+    refresh_mode = AUTO
+    
+    initialize = ON_CREATE
+    
+    
+    scheduler = 'ENABLE'
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    as (
+    
+    
+    select world_no from development.adapters_snowflake_legacy_iceberg_materializations.basic_iceberg_table
+    )
+- sequence: 2
+  type: execute
+  sql: use warehouse [MASKED_WH]
+model.test.basic_iceberg_dynamic_table_v3:
+- sequence: 0
+  type: execute
+  sql: use warehouse transforming
+- sequence: 1
+  type: execute
+  sql: |-
+    create dynamic iceberg table development.adapters_snowflake_legacy_iceberg_materializations.basic_iceberg_dynamic_table_v3
+    target_lag = '2 hour'
+    warehouse = transforming
+    
+    
+    external_volume = 's3_iceberg_snow'
+    
+    catalog = 'SNOWFLAKE'  -- required, and always SNOWFLAKE for built-in Iceberg tables
+    base_location = 'fs_test_user/adapters_snowflake_legacy_iceberg_materializations/basic_iceberg_dynamic_table_v3/ci'
+    
+    iceberg_version = 3
+    
+    refresh_mode = AUTO
+    
+    initialize = ON_CREATE
+    
+    
+    scheduler = 'ENABLE'
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    as (
+    
+    
+    select world_no from development.adapters_snowflake_legacy_iceberg_materializations.basic_iceberg_table
+    )
+- sequence: 2
+  type: execute
+  sql: use warehouse [MASKED_WH]
+model.test.basic_iceberg_table:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace iceberg table development.adapters_snowflake_legacy_iceberg_materializations.basic_iceberg_table
+    external_volume = 's3_iceberg_snow'
+    
+    catalog = 'SNOWFLAKE'  -- required, and always SNOWFLAKE for built-in Iceberg tables
+    base_location = 'fs_test_user/adapters_snowflake_legacy_iceberg_materializations/basic_iceberg_table/ci'
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    as (
+    
+    select 1 as world_no, 5 as stage_no, 'iggy' as boss
+    )
+model.test.simple_incremental:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace iceberg table development.adapters_snowflake_legacy_iceberg_materializations.simple_incremental
+    external_volume = 's3_iceberg_snow'
+    
+    catalog = 'SNOWFLAKE'  -- required, and always SNOWFLAKE for built-in Iceberg tables
+    base_location = 'fs_test_user/adapters_snowflake_legacy_iceberg_materializations/simple_incremental/ci'
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    as (
+    
+    with new_data as (
+    select 1 as id, '2025-09-30'::date as updated_at, 'alpha' as some_value
+    union all
+    select 2 as id, '2025-09-29'::date as updated_at, 'beta' as some_value
+    union all
+    select 3 as id, '2025-09-28'::date as updated_at, 'gamma' as some_value
+    
+    )
+    
+    select *
+    from new_data
+    
+    
+    )
+- sequence: 1
+  type: execute
+  sql: drop view if exists development.adapters_snowflake_legacy_iceberg_materializations.simple_incremental__dbt_tmp cascade

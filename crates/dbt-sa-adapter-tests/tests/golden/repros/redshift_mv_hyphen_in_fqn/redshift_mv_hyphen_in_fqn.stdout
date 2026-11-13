@@ -1,0 +1,14 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/base.sql
+   Parsing models/mv_model.sql
+ Rendering models/base.sql
+   Running models/base.sql
+ Succeeded model redshift_mv_hyphen_in_fqn.base (table) [1 of 2 in duration]
+ Rendering models/mv_model.sql
+   Running models/mv_model.sql
+ Succeeded model redshift_mv_hyphen_in_fqn_redshift-mv-hyphen-in-fqn.mv_model (mat_view) [2 of 2 in duration]
+==================== Execution Summary =====================
+Finished 'run' successfully for target 'redshift' [duration]
+Processed: 2 models
+Summary: 2 total | 2 success

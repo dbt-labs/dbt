@@ -1,0 +1,7 @@
+kind: Under the Hood
+body: An experimental can wait on network calls, such as a login, while it starts, before any of its nodes run
+time: 2026-11-04T16:24:05.990914-08:00
+custom:
+    author: eliasdefaria
+    issue: ""
+    project: dbt-core

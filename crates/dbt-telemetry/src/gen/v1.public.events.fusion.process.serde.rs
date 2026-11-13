@@ -146,3 +146,117 @@ impl<'de> serde::Deserialize<'de> for Process {
         deserializer.deserialize_struct("v1.public.events.fusion.process.Process", FIELDS, GeneratedVisitor)
     }
 }
+impl serde::Serialize for ThreadPoolWait {
+    #[allow(deprecated)]
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+        let mut len = 0;
+        if self.unique_id.is_some() {
+            len += 1;
+        }
+        if self.batch_id.is_some() {
+            len += 1;
+        }
+        let mut struct_ser = serializer.serialize_struct("v1.public.events.fusion.process.ThreadPoolWait", len)?;
+        if let Some(v) = self.unique_id.as_ref() {
+            struct_ser.serialize_field("unique_id", v)?;
+        }
+        if let Some(v) = self.batch_id.as_ref() {
+            struct_ser.serialize_field("batch_id", v)?;
+        }
+        struct_ser.end()
+    }
+}
+impl<'de> serde::Deserialize<'de> for ThreadPoolWait {
+    #[allow(deprecated)]
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        const FIELDS: &[&str] = &[
+            "unique_id",
+            "uniqueId",
+            "batch_id",
+            "batchId",
+        ];
+
+        #[allow(clippy::enum_variant_names)]
+        enum GeneratedField {
+            UniqueId,
+            BatchId,
+            __SkipField__,
+        }
+        impl<'de> serde::Deserialize<'de> for GeneratedField {
+            fn deserialize<D>(deserializer: D) -> std::result::Result<GeneratedField, D::Error>
+            where
+                D: serde::Deserializer<'de>,
+            {
+                struct GeneratedVisitor;
+
+                impl<'de> serde::de::Visitor<'de> for GeneratedVisitor {
+                    type Value = GeneratedField;
+
+                    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                        write!(formatter, "expected one of: {:?}", &FIELDS)
+                    }
+
+                    #[allow(unused_variables)]
+                    fn visit_str<E>(self, value: &str) -> std::result::Result<GeneratedField, E>
+                    where
+                        E: serde::de::Error,
+                    {
+                        match value {
+                            "uniqueId" | "unique_id" => Ok(GeneratedField::UniqueId),
+                            "batchId" | "batch_id" => Ok(GeneratedField::BatchId),
+                            _ => Ok(GeneratedField::__SkipField__),
+                        }
+                    }
+                }
+                deserializer.deserialize_identifier(GeneratedVisitor)
+            }
+        }
+        struct GeneratedVisitor;
+        impl<'de> serde::de::Visitor<'de> for GeneratedVisitor {
+            type Value = ThreadPoolWait;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("struct v1.public.events.fusion.process.ThreadPoolWait")
+            }
+
+            fn visit_map<V>(self, mut map_: V) -> std::result::Result<ThreadPoolWait, V::Error>
+                where
+                    V: serde::de::MapAccess<'de>,
+            {
+                let mut unique_id__ = None;
+                let mut batch_id__ = None;
+                while let Some(k) = map_.next_key()? {
+                    match k {
+                        GeneratedField::UniqueId => {
+                            if unique_id__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("uniqueId"));
+                            }
+                            unique_id__ = map_.next_value()?;
+                        }
+                        GeneratedField::BatchId => {
+                            if batch_id__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("batchId"));
+                            }
+                            batch_id__ = map_.next_value()?;
+                        }
+                        GeneratedField::__SkipField__ => {
+                            let _ = map_.next_value::<serde::de::IgnoredAny>()?;
+                        }
+                    }
+                }
+                Ok(ThreadPoolWait {
+                    unique_id: unique_id__,
+                    batch_id: batch_id__,
+                })
+            }
+        }
+        deserializer.deserialize_struct("v1.public.events.fusion.process.ThreadPoolWait", FIELDS, GeneratedVisitor)
+    }
+}

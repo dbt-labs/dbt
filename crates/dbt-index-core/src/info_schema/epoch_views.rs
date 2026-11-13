@@ -32,7 +32,8 @@ use arrow_schema::{DataType, TimeUnit};
 use crate::IndexError;
 
 use super::epoch::{
-    self, BASE, ELEM, ELEM_REL, EPOCH_RELATIONS, EpochExpr, EpochJoin, JOINED, Origin, Unnest,
+    self, BASE, ELEM, ELEM_REL, EPOCH_RELATIONS, EpochExpr, EpochJoin, JOINED, LatestLookup,
+    Origin, Unnest,
 };
 use super::project::out_schema;
 use super::spec::{Filter, Src, TableSpec};
@@ -63,6 +64,11 @@ pub struct Generated {
 /// the output tables that read it, so a project that has only ever parsed gets a
 /// file covering the parse tables and nothing about runs.
 pub fn generate(metadata_dir: &Path) -> Result<Generated, IndexError> {
+    generate_with(metadata_dir, LatestLookup::Inline)
+}
+
+/// [`generate`], with each latest-row lookup computed where `lookup` says.
+pub fn generate_with(metadata_dir: &Path, lookup: LatestLookup) -> Result<Generated, IndexError> {
     let metadata_dir = &std::path::absolute(metadata_dir)
         .map_err(|e| IndexError::Other(format!("epoch views: {}: {e}", metadata_dir.display())))?;
     let mut sql = String::new();
@@ -88,9 +94,10 @@ pub fn generate(metadata_dir: &Path) -> Result<Generated, IndexError> {
         if !rel.has_files(metadata_dir) {
             continue;
         }
-        let stmt = rel.create_view_sql(metadata_dir);
-        sql.push_str(&format!("{stmt};\n\n"));
-        statements.push(stmt);
+        for stmt in rel.create_sql(metadata_dir, lookup) {
+            sql.push_str(&format!("{stmt};\n\n"));
+            statements.push(stmt);
+        }
         present.push(rel.view);
     }
 
@@ -258,7 +265,15 @@ fn empty_view_sql(spec: &TableSpec) -> Result<String, IndexError> {
         .cols
         .iter()
         .zip(out.fields())
-        .map(|(col, field)| column_sql(EpochExpr::Null, col.out, field.data_type(), None))
+        .map(|(col, field)| {
+            column_sql(
+                EpochExpr::Null,
+                col.out,
+                field.data_type(),
+                None,
+                &mut PayloadPaths::default(),
+            )
+        })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(format!(
         "CREATE OR REPLACE VIEW {} AS SELECT {} WHERE FALSE",
@@ -291,6 +306,109 @@ fn duckdb_type(ty: &DataType) -> Result<String, IndexError> {
     })
 }
 
+/// The node payload paths one view reads.
+///
+/// Each `json_extract` call parses the whole payload again, and a node view reads
+/// tens of paths. The view instead extracts every path in one multi-path call per
+/// function, beside the base relation's columns, and each column indexes into the
+/// resulting list.
+#[derive(Default)]
+struct PayloadPaths {
+    /// Read with `json_extract`, as JSON text.
+    json: Vec<&'static str>,
+    /// Read with `json_extract_string`, as scalars.
+    text: Vec<&'static str>,
+}
+
+impl PayloadPaths {
+    const JSON_COL: &'static str = "_payload_json";
+    const TEXT_COL: &'static str = "_payload_text";
+
+    fn json(&mut self, path: &'static str) -> String {
+        format!("{BASE}.{}[{}]", Self::JSON_COL, slot(&mut self.json, path))
+    }
+
+    fn text(&mut self, path: &'static str) -> String {
+        format!("{BASE}.{}[{}]", Self::TEXT_COL, slot(&mut self.text, path))
+    }
+
+    /// `dbt_internal.<view>` with the extracted lists beside its columns, over the
+    /// rows `filters` keeps, or `None` when the view reads no payload path.
+    ///
+    /// The filters go inside the subquery: outside it, DuckDB extracted every row
+    /// before filtering, including into the liveness semi-join's hash table.
+    fn relation(&self, view: &str, filters: &[String]) -> Option<String> {
+        let mut cols = vec!["*".to_string()];
+        if !self.json.is_empty() {
+            cols.push(format!(
+                "json_extract(payload, {}) AS {}",
+                path_list(&self.json),
+                Self::JSON_COL
+            ));
+        }
+        if !self.text.is_empty() {
+            cols.push(format!(
+                "json_extract_string(payload, {}) AS {}",
+                path_list(&self.text),
+                Self::TEXT_COL
+            ));
+        }
+        if cols.len() == 1 {
+            return None;
+        }
+        let wheres = if filters.is_empty() {
+            String::new()
+        } else {
+            format!(" WHERE {}", filters.join(" AND "))
+        };
+        Some(format!(
+            "(SELECT {} FROM dbt_internal.{view} {BASE}{wheres})",
+            cols.join(", ")
+        ))
+    }
+}
+
+/// The `test_metadata` object of a test node, under either name the payload carries it under.
+fn test_metadata_obj(payload: &mut PayloadPaths) -> String {
+    format!(
+        "COALESCE({}, {})",
+        payload.json("__test_attr__.test_metadata"),
+        payload.json("test_metadata")
+    )
+}
+
+/// JSON null, `{}` and `[]` as SQL NULL.
+fn empty_to_null(json: &str) -> String {
+    format!("NULLIF(NULLIF(NULLIF({json}, 'null'::JSON), '{{}}'::JSON), '[]'::JSON)")
+}
+
+/// A hook config as dbt's manifest spells it, from the SQL of its raw JSON: a string or an
+/// object becomes a one-element list, and a bare string becomes `{sql, transaction: true}`.
+fn hooks_sql(raw: &str) -> String {
+    format!(
+        "CASE WHEN {raw} IS NULL THEN NULL ELSE to_json(list_transform(CAST(CASE json_type({raw}) \
+         WHEN 'ARRAY' THEN {raw} ELSE json_array({raw}) END AS JSON[]), \
+         e -> CASE json_type(e) WHEN 'VARCHAR' THEN \
+         json_object('sql', json_extract_string(e, '$'), 'transaction', TRUE) ELSE e END)) END"
+    )
+}
+
+/// The 1-based list index of `path`, added on first use.
+fn slot(paths: &mut Vec<&'static str>, path: &'static str) -> usize {
+    match paths.iter().position(|p| *p == path) {
+        Some(i) => i + 1,
+        None => {
+            paths.push(path);
+            paths.len()
+        }
+    }
+}
+
+fn path_list(paths: &[&str]) -> String {
+    let quoted: Vec<String> = paths.iter().map(|p| format!("'$.{p}'")).collect();
+    format!("[{}]", quoted.join(", "))
+}
+
 /// SQL for one output column, given the staging column it reads.
 ///
 /// Always cast, never inferred. The declared type is the contract — it comes
@@ -302,47 +420,144 @@ fn duckdb_type(ty: &DataType) -> Result<String, IndexError> {
 /// happened to match.
 /// `guard` is a row predicate the column is null outside of — the join-partner
 /// case described in [`table_view_sql`].
+///
+/// Payload paths are read through `payload`, which the view extracts once per
+/// row; see [`PayloadPaths`].
 fn column_sql(
     expr: EpochExpr,
     out_name: &str,
     ty: &DataType,
     guard: Option<&str>,
+    payload: &mut PayloadPaths,
 ) -> Result<String, IndexError> {
     let quoted = |s: &str| format!("\"{}\"", s.replace('"', "\"\""));
     let ty_sql = duckdb_type(ty)?;
     let body = match expr {
         EpochExpr::Same => format!("{BASE}.{}", quoted(out_name)),
         EpochExpr::Col(c) => format!("{BASE}.{}", quoted(c)),
-        EpochExpr::Json(path) => format!("json_extract_string({BASE}.payload, '$.{path}')"),
-        EpochExpr::JsonRaw(path) => format!("json_extract({BASE}.payload, '$.{path}')"),
+        EpochExpr::Json(path) => payload.text(path),
+        // A JSON `null` is SQL NULL, as in the Rust ingest: left alone it is cast to the
+        // text `null`.
+        EpochExpr::JsonRaw(path) => format!("NULLIF({}, 'null'::JSON)", payload.json(path)),
         // The cast goes *inside* the COALESCE as well as around it: the extract
         // is always VARCHAR, so `COALESCE(<varchar>, TRUE)` is a binder error
         // rather than a defaulted boolean.
         EpochExpr::JsonOr(path, default) => format!(
-            "COALESCE(CAST(json_extract_string({BASE}.payload, '$.{path}') AS {ty_sql}), {default})"
+            "COALESCE(CAST({} AS {ty_sql}), {default})",
+            payload.text(path)
         ),
         EpochExpr::JsonFirst(paths, default) => {
             let mut args: Vec<String> = paths
                 .iter()
-                .map(|p| format!("CAST(json_extract_string({BASE}.payload, '$.{p}') AS {ty_sql})"))
+                .map(|p| format!("CAST({} AS {ty_sql})", payload.text(p)))
                 .collect();
             args.push(default.to_string());
             format!("COALESCE({})", args.join(", "))
         }
-        EpochExpr::JsonList(path) => {
-            format!("COALESCE(json_extract_string({BASE}.payload, '$.{path}[*]'), [])")
+        // Per slot, so a JSON `null` under the first path does not hide the second.
+        EpochExpr::JsonRawFirst(paths) => {
+            let args: Vec<String> = paths
+                .iter()
+                .map(|p| format!("NULLIF({}, 'null'::JSON)", payload.json(p)))
+                .collect();
+            format!("COALESCE({})", args.join(", "))
         }
+        EpochExpr::ConfigJson(path) => empty_to_null(&payload.json(path)),
+        EpochExpr::TestMetadata(field) => {
+            format!(
+                "json_extract_string({}, '$.{field}')",
+                test_metadata_obj(payload)
+            )
+        }
+        EpochExpr::TestMetadataJson(field) => {
+            format!("json_extract({}, '$.{field}')", test_metadata_obj(payload))
+        }
+        EpochExpr::StrIfString(path) => {
+            let v = payload.json(path);
+            format!("CASE WHEN json_type({v}) = 'VARCHAR' THEN json_extract_string({v}, '$') END")
+        }
+        EpochExpr::BoolFirst(paths, default) => {
+            let mut args: Vec<String> = paths
+                .iter()
+                .map(|p| {
+                    let v = payload.json(p);
+                    format!("CASE WHEN json_type({v}) = 'BOOLEAN' THEN CAST({v} AS BOOLEAN) END")
+                })
+                .collect();
+            args.push(
+                default
+                    .map_or("NULL", |d| if d { "TRUE" } else { "FALSE" })
+                    .to_string(),
+            );
+            format!("COALESCE({})", args.join(", "))
+        }
+        EpochExpr::Hooks(snake, dashed) => hooks_sql(&format!(
+            "COALESCE({}, {})",
+            empty_to_null(&payload.json(snake)),
+            empty_to_null(&payload.json(dashed))
+        )),
+        EpochExpr::VersionText(paths) => {
+            let args: Vec<String> = paths
+                .iter()
+                .map(|p| {
+                    let v = payload.json(p);
+                    format!(
+                        "CASE json_type({v}) WHEN 'VARCHAR' THEN json_extract_string({v}, '$') \
+                         WHEN 'BIGINT' THEN CAST(json_extract_string({v}, '$') AS VARCHAR) \
+                         WHEN 'UBIGINT' THEN CAST(json_extract_string({v}, '$') AS VARCHAR) \
+                         WHEN 'DOUBLE' THEN CAST(json_extract_string({v}, '$') AS VARCHAR) END"
+                    )
+                })
+                .collect();
+            format!("COALESCE({})", args.join(", "))
+        }
+        EpochExpr::MetaObject(path) => format!(
+            "json_object('meta', COALESCE(NULLIF({}, 'null'::JSON), '{{}}'::JSON))",
+            payload.json(path)
+        ),
+        EpochExpr::TextOrColForType(resource_type, path, col) => format!(
+            "CASE WHEN {BASE}.resource_type = '{resource_type}' THEN \
+             COALESCE(NULLIF({}, ''), {BASE}.{}) ELSE {BASE}.{} END",
+            payload.text(path),
+            quoted(col),
+            quoted(col)
+        ),
+        EpochExpr::ColThenJson(col, paths, default) => {
+            let mut args = vec![format!("{BASE}.{}", quoted(col))];
+            args.extend(
+                paths
+                    .iter()
+                    .map(|p| format!("CAST({} AS {ty_sql})", payload.text(p))),
+            );
+            args.push(default.to_string());
+            format!("COALESCE({})", args.join(", "))
+        }
+        EpochExpr::JsonFirstObjectField(objects, field, default) => {
+            let objects: Vec<String> = objects.iter().map(|p| payload.json(p)).collect();
+            format!(
+                "COALESCE(CAST(json_extract(COALESCE({}), '$.{field}') AS {ty_sql}), {default})",
+                objects.join(", ")
+            )
+        }
+        // DuckDB rejects a wildcard in a multi-path extract, so the list's own path is slotted
+        // and the wildcard is applied to that (small) value.
+        EpochExpr::JsonList(path) => format!(
+            "COALESCE(json_extract_string({}, '$[*]'), [])",
+            payload.json(path)
+        ),
         EpochExpr::TrimmedJson(path) => format!(
-            "CASE WHEN {BASE}.resource_type = 'model' THEN NULL \
-             ELSE json_extract_string({BASE}.payload, '$.{path}') END"
+            "CASE WHEN {BASE}.resource_type = 'model' THEN NULL ELSE {} END",
+            payload.text(path)
         ),
         EpochExpr::TrimmedJsonRaw(path) => format!(
-            "CASE WHEN {BASE}.resource_type = 'model' THEN NULL \
-             ELSE json_extract({BASE}.payload, '$.{path}') END"
+            "CASE WHEN {BASE}.resource_type = 'model' THEN NULL ELSE {} END",
+            payload.json(path)
         ),
         EpochExpr::Elem => ELEM.to_string(),
         EpochExpr::ElemJson(path) => format!("json_extract_string({ELEM}, '$.{path}')"),
-        EpochExpr::ElemJsonRaw(path) => format!("json_extract({ELEM}, '$.{path}')"),
+        EpochExpr::ElemJsonRaw(path) => {
+            format!("NULLIF(json_extract({ELEM}, '$.{path}'), 'null'::JSON)")
+        }
         EpochExpr::ElemJsonFirst(paths, default) => {
             let mut args: Vec<String> = paths
                 .iter()
@@ -410,7 +625,7 @@ fn cast_cols(spec: &TableSpec, bodies: &[(&str, String)]) -> Result<Vec<String>,
 fn json_entries(obj: &str) -> String {
     format!(
         "list_transform(list_zip(json_keys({obj}), json_extract({obj}, '$.*')), \
-         z -> struct_pack(key := struct_extract(z, 1), val := struct_extract(z, 2)))"
+         lambda z: struct_pack(key := struct_extract(z, 1), val := struct_extract(z, 2)))"
     )
 }
 
@@ -489,7 +704,8 @@ fn project_snapshot(present: &[&'static str]) -> String {
     } else {
         "SELECT CAST(NULL AS VARCHAR) AS vars_json, CAST(NULL AS VARCHAR) AS env_vars_json, \
          CAST(NULL AS VARCHAR) AS git_sha, CAST(NULL AS VARCHAR) AS git_branch, \
-         CAST(NULL AS INTEGER) AS git_is_dirty, CAST(NULL AS VARCHAR) AS pkg_kinds_json"
+         CAST(NULL AS INTEGER) AS git_is_dirty, CAST(NULL AS VARCHAR) AS pkg_kinds_json, \
+         CAST(NULL AS VARCHAR) AS pkg_lock_json, CAST(NULL AS VARCHAR) AS quoting_json"
             .to_string()
     };
     format!(
@@ -506,6 +722,8 @@ fn project_snapshot(present: &[&'static str]) -> String {
          \x20   r.git_is_dirty <> 0 AS git_is_dirty,\n\
          \x20   NULLIF(r.pkg_kinds_json, '') AS pkg_kinds_json,\n\
          \x20   COALESCE(json_keys(NULLIF(r.pkg_kinds_json, '')), []) AS installed_packages,\n\
+         \x20   NULLIF(r.pkg_lock_json, '') AS pkg_lock_json,\n\
+         \x20   NULLIF(r.quoting_json, '') AS quoting_json,\n\
          \x20   g.ingested_at AS ingested_at\n\
          \x20 FROM (SELECT * FROM dbt_internal.epoch_parse_generation LIMIT 1) g\n\
          \x20 LEFT JOIN ({resolver}) r ON TRUE\n\
@@ -548,7 +766,7 @@ fn own_sql(
         // come from the same `resolve_cols` every other table uses, since every
         // column of this spec is spec-declared null.
         "classifiers" => {
-            let cols = match resolve_cols(spec, false, &[])? {
+            let cols = match resolve_cols(spec, false, &[], &mut PayloadPaths::default())? {
                 Ok(cols) => cols,
                 Err(why) => return Err(IndexError::Other(why)),
             };
@@ -639,9 +857,8 @@ fn own_sql(
             );
             Some((sql, Some("epoch_run_catalog_stats")))
         }
-        // The single-row project snapshot. `quoting` and `ai_context` are left
-        // null: the staging schema declares them and `write_parse_project` writes
-        // neither.
+        // The single-row project snapshot. `ai_context` is left null: the staging
+        // schema declares it and `write_parse_project` does not write it.
         "project" => {
             let cols = cast_cols(
                 spec,
@@ -652,6 +869,7 @@ fn own_sql(
                     ("git_sha", format!("{BASE}.git_sha")),
                     ("git_branch", format!("{BASE}.git_branch")),
                     ("git_uncommitted_changes", format!("{BASE}.git_is_dirty")),
+                    ("quoting", format!("{BASE}.quoting_json")),
                     ("ingested_at", format!("{BASE}.ingested_at")),
                     // The generation row's own stamp, which is what "last full
                     // parse" means. `fill_last_full_parse_at` does this on the
@@ -720,14 +938,14 @@ fn own_sql(
             let is_scope =
                 format!("json_type(q.val) = 'OBJECT' AND list_contains({installed}, q.key)");
             let own_vars = format!(
-                "list_filter({vars}, q -> NOT ({is_scope}))",
+                "list_filter({vars}, lambda q: NOT ({is_scope}))",
                 vars = json_entries("p.val"),
             );
             let list = format!(
                 "flatten(list_transform(\
-                 list_filter({packages}, p -> p.key NOT IN ({skip})), \
-                 p -> list_transform({own_vars}, \
-                 q -> struct_pack(package := p.key, name := q.key, value := {value}))))",
+                 list_filter({packages}, lambda p: p.key NOT IN ({skip})), \
+                 lambda p: list_transform({own_vars}, \
+                 lambda q: struct_pack(package := p.key, name := q.key, value := {value}))))",
                 packages = json_entries(&format!("{BASE}.vars_json")),
             );
             let cols = cast_cols(
@@ -747,19 +965,24 @@ fn own_sql(
             );
             Some((sql, Some("epoch_parse_generation")))
         }
-        // One row per key of `pkg_kinds_json`. The other columns have no epoch
-        // source yet — `write_parse_project` writes `package_name` only — so
-        // they stay null, matching the Rust path.
+        // One row per key of `pkg_kinds_json`, with the rest looked up in that
+        // package's `pkg_lock_json` entry -- null where it has none, as in
+        // `package_rows`.
         "packages" => {
+            let lock = |field: &str| {
+                format!(
+                    "json_extract_string({BASE}.pkg_lock_json, '$.\"' || {ELEM} || '\".{field}')"
+                )
+            };
             let cols = cast_cols(
                 spec,
                 &[
                     ("package_name", ELEM.to_string()),
-                    ("package_source", "NULL".to_string()),
-                    ("version", "NULL".to_string()),
-                    ("git_url", "NULL".to_string()),
-                    ("git_revision", "NULL".to_string()),
-                    ("local_path", "NULL".to_string()),
+                    ("package_source", lock("package_source")),
+                    ("version", lock("version")),
+                    ("git_url", lock("git_url")),
+                    ("git_revision", lock("git_revision")),
+                    ("local_path", lock("local_path")),
                     ("ingested_at", format!("{BASE}.ingested_at")),
                 ],
             )?;
@@ -778,10 +1001,10 @@ fn own_sql(
         // the file it wrote), and each pass both updates matching rows and appends
         // its own unmatched ones — which is a FULL join, twice, in that order.
         //
-        // The compile join is case-insensitive on the column name and the catalog
-        // join is not, mirroring the two merges' map keys: Snowflake uppercases
-        // unquoted identifiers in the inferred schema, so a case-sensitive compile
-        // key would append a duplicate row instead of filling in the parse row.
+        // Both joins are case-insensitive on the column name, mirroring the two
+        // merges' map keys: Snowflake uppercases unquoted identifiers in the
+        // inferred schema and the catalog, so a case-sensitive key would append a
+        // duplicate row instead of filling in the parse row.
         //
         // `data_type` is set *only* where a catalog row matched, so it is null for
         // every project that has never fetched a catalog even though
@@ -809,7 +1032,11 @@ fn own_sql(
                     ("COALESCE(column_name, '')", "column_name", "VARCHAR"),
                     ("declared_type", "declared_type", "VARCHAR"),
                     ("description", "description", "VARCHAR"),
+                    ("constraints", "constraints", "VARCHAR"),
+                    ("meta", "meta", "VARCHAR"),
                     ("COALESCE(tags, [])", "tags", "VARCHAR[]"),
+                    ("granularity", "granularity", "VARCHAR"),
+                    ("quote", "quote", "BOOLEAN"),
                     ("ingested_at", "ingested_at", "TIMESTAMP WITH TIME ZONE"),
                 ],
                 &["unique_id IS NOT NULL".to_string()]
@@ -857,7 +1084,7 @@ fn own_sql(
                 .into_iter()
                 .chain(alive("unique_id"))
                 .collect::<Vec<_>>(),
-                Some("unique_id, column_name"),
+                Some("unique_id, lower(column_name)"),
             );
             let cols = cast_cols(
                 spec,
@@ -872,15 +1099,16 @@ fn own_sql(
                     ("description", format!("{BASE}.description")),
                     ("tags", format!("{BASE}.tags")),
                     ("classifiers", format!("{BASE}.classifiers")),
+                    ("constraints", format!("{BASE}.constraints")),
+                    ("meta", format!("{BASE}.meta")),
+                    ("quote", format!("{BASE}.quote")),
+                    ("granularity", format!("{BASE}.granularity")),
                     ("comment", format!("{BASE}.catalog_comment")),
                     ("ingested_at", format!("{BASE}.ingested_at")),
                 ],
             )?;
             let list: Vec<&str> = cols.iter().map(String::as_str).collect();
-            // `label`, `expression`, `quote`, `granularity`, `meta`, `constraints`
-            // and `tests` are left to `cast_cols`' typed nulls. `parse/columns`
-            // carries `meta`, `constraints` and `granularity`, but
-            // `write_parse_columns` does not read them.
+            // `label`, `expression` and `tests` are left to `cast_cols`' typed nulls.
             let sql = format!(
                 "{}FROM (\n\
                  \x20 SELECT\n\
@@ -889,11 +1117,15 @@ fn own_sql(
                  \x20   COALESCE(k.column_index, m.column_index) AS column_index,\n\
                  \x20   m.declared_type AS declared_type,\n\
                  \x20   m.inferred_type AS inferred_type,\n\
+                 \x20   m.quote AS quote,\n\
+                 \x20   m.granularity AS granularity,\n\
                  \x20   k.catalog_type AS catalog_type,\n\
                  \x20   CASE WHEN k.unique_id IS NULL THEN NULL\n\
                  \x20        WHEN k.catalog_type IS NOT NULL THEN k.catalog_type\n\
                  \x20        ELSE m.inferred_type END AS data_type,\n\
                  \x20   m.description AS description,\n\
+                 \x20   COALESCE(m.constraints, '[]') AS constraints,\n\
+                 \x20   COALESCE(m.meta, '{{}}') AS meta,\n\
                  \x20   COALESCE(m.tags, []) AS tags,\n\
                  \x20   COALESCE(m.classifiers, []) AS classifiers,\n\
                  \x20   k.catalog_comment AS catalog_comment,\n\
@@ -904,8 +1136,12 @@ fn own_sql(
                  \x20     COALESCE(p.column_name, c.column_name) AS column_name,\n\
                  \x20     c.column_index AS column_index,\n\
                  \x20     p.declared_type AS declared_type,\n\
+                 \x20     p.quote AS quote,\n\
+                 \x20     p.granularity AS granularity,\n\
                  \x20     c.inferred_type AS inferred_type,\n\
                  \x20     COALESCE(c.description, p.description) AS description,\n\
+                 \x20     p.constraints AS constraints,\n\
+                 \x20     p.meta AS meta,\n\
                  \x20     COALESCE(p.tags, []) AS tags,\n\
                  \x20     COALESCE(c.classifiers, []) AS classifiers,\n\
                  \x20     COALESCE(p.ingested_at, c.ingested_at) AS ingested_at\n\
@@ -915,7 +1151,8 @@ fn own_sql(
                  \x20    AND lower(p.column_name) = lower(c.column_name)\n\
                  \x20 ) m\n\
                  \x20 FULL JOIN ({catalog}) k\n\
-                 \x20   ON m.unique_id = k.unique_id AND m.column_name = k.column_name\n\
+                 \x20   ON m.unique_id = k.unique_id\n\
+                 \x20  AND lower(m.column_name) = lower(k.column_name)\n\
                  ) {BASE}",
                 header(&list)
             );
@@ -1012,7 +1249,8 @@ fn table_view_sql(
     // compiled columns unset. A parse-only project is the common case.
     let join = join.filter(|j| present.contains(&j.view));
 
-    let cols = match resolve_cols(spec, join.is_some(), &guards)? {
+    let mut payload = PayloadPaths::default();
+    let cols = match resolve_cols(spec, join.is_some(), &guards, &mut payload)? {
         Ok(cols) => cols,
         Err(why) => return Ok(Err(why)),
     };
@@ -1032,7 +1270,35 @@ fn table_view_sql(
         return Ok(Ok((format!("{header}WHERE FALSE"), None)));
     };
 
-    let mut sql = format!("{header}FROM dbt_internal.{view} {BASE}\n");
+    // Liveness is a semi-join on `parse/alive`, which only exists once a parse
+    // has written it. The Rust path treats a missing file as "prune nothing"
+    // (`load_alive_ids` returns `None`), so the join is omitted rather than
+    // emitted against a missing file — which would drop every row.
+    let mut row_filters: Vec<String> = Vec::new();
+    if let (Some(on), true) = (alive_on, alive_exists) {
+        row_filters.push(format!(
+            "{BASE}.{on} IN (SELECT unique_id FROM dbt_internal.epoch_parse_alive)"
+        ));
+    }
+    if let Some(k) = keep {
+        row_filters.push(k.to_string());
+    }
+    if let Filter::ResourceTypeIn(types) = spec.filter {
+        let list = types
+            .iter()
+            .map(|t| format!("'{t}'"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        row_filters.push(format!("{BASE}.resource_type IN ({list})"));
+    }
+    // These filters read only the base row, so they can run before the lateral
+    // and the join below.
+    let (from, mut wheres) = match payload.relation(view, &row_filters) {
+        Some(extracted) => (extracted, Vec::new()),
+        None => (format!("dbt_internal.{view}"), row_filters),
+    };
+
+    let mut sql = format!("{header}FROM {from} {BASE}\n");
     // The lateral goes between the base relation and the join, so the join's ON
     // clause is still attached to the join. No spec needs both today, and the
     // combination is refused rather than emitted untested: a comma-join followed
@@ -1056,32 +1322,11 @@ fn table_view_sql(
         ));
     }
 
-    // Liveness is a semi-join on `parse/alive`, which only exists once a parse
-    // has written it. The Rust path treats a missing file as "prune nothing"
-    // (`load_alive_ids` returns `None`), so the join is omitted rather than
-    // emitted against a missing file — which would drop every row.
-    let mut wheres: Vec<String> = Vec::new();
-    if let (Some(on), true) = (alive_on, alive_exists) {
-        wheres.push(format!(
-            "{BASE}.{on} IN (SELECT unique_id FROM dbt_internal.epoch_parse_alive)"
-        ));
-    }
-    if let Some(k) = keep {
-        wheres.push(k.to_string());
-    }
     // The element predicate filters the unnested rows, not the base rows, so it
-    // belongs in the same WHERE: a base row is already multiplied by the time
+    // belongs in the outer WHERE: a base row is already multiplied by the time
     // this is applied, and dropping one element leaves the others.
     if let Some(k) = unnest.and_then(|u| u.keep) {
         wheres.push(k.to_string());
-    }
-    if let Filter::ResourceTypeIn(types) = spec.filter {
-        let list = types
-            .iter()
-            .map(|t| format!("'{t}'"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        wheres.push(format!("{BASE}.resource_type IN ({list})"));
     }
     for (i, w) in wheres.iter().enumerate() {
         let lead = if i == 0 { "WHERE" } else { "  AND" };
@@ -1114,11 +1359,12 @@ struct ResolvedCol {
 /// `joined` is false when the join relation has no files on disk, in which case
 /// its columns degrade to what the Rust path produces from an empty lookup map.
 /// `guards` carries the per-staging-table row predicates described in
-/// [`table_view_sql`].
+/// [`table_view_sql`]. `payload` collects the payload paths the columns read.
 fn resolve_cols(
     spec: &TableSpec,
     joined: bool,
     guards: &[(&'static str, &'static str)],
+    payload: &mut PayloadPaths,
 ) -> Result<Result<Vec<ResolvedCol>, String>, IndexError> {
     let out = out_schema(spec)?;
     let mut resolved = Vec::with_capacity(spec.cols.len());
@@ -1126,7 +1372,7 @@ fn resolve_cols(
         // A spec-declared null column has no staging source on either path.
         if col.ty.is_some() {
             resolved.push(ResolvedCol {
-                sql: column_sql(EpochExpr::Null, col.out, field.data_type(), None)?,
+                sql: column_sql(EpochExpr::Null, col.out, field.data_type(), None, payload)?,
             });
             continue;
         }
@@ -1156,7 +1402,7 @@ fn resolve_cols(
         };
         let guard = guards.iter().find(|(t, _)| *t == table).map(|(_, g)| *g);
         resolved.push(ResolvedCol {
-            sql: column_sql(expr, col.out, field.data_type(), guard)?,
+            sql: column_sql(expr, col.out, field.data_type(), guard, payload)?,
         });
     }
     Ok(Ok(resolved))
@@ -1206,6 +1452,135 @@ mod tests {
             fixed.is_empty(),
             "these tables are now covered — remove them from SKIPPED: {fixed:?}"
         );
+    }
+
+    /// Payload columns index the view's shared lists, each path once. A wrong
+    /// index reads NULL rather than failing.
+    #[test]
+    fn payload_columns_index_one_list_per_extract() {
+        let mut payload = PayloadPaths::default();
+        let ty = DataType::Utf8;
+        let mut col = |expr| column_sql(expr, "c", &ty, None, &mut payload).expect("column_sql");
+        let first = col(EpochExpr::JsonFirst(&["a", "b"], "NULL"));
+        let again = col(EpochExpr::Json("b"));
+        let raw = col(EpochExpr::JsonRawFirst(&["c", "a"]));
+        let both = col(EpochExpr::ColThenJson("x", &["a"], "NULL"));
+        let list = col(EpochExpr::JsonList("d.items"));
+        let meta = col(EpochExpr::TestMetadata("name"));
+
+        assert_eq!(payload.text, ["a", "b"]);
+        assert_eq!(
+            payload.json,
+            [
+                "c",
+                "a",
+                "d.items",
+                "__test_attr__.test_metadata",
+                "test_metadata"
+            ]
+        );
+        assert!(again.contains("t._payload_text[2]"), "{again}");
+        assert!(
+            raw.contains("NULLIF(t._payload_json[1], 'null'::JSON), NULLIF(t._payload_json[2]"),
+            "{raw}"
+        );
+        assert!(both.contains("t._payload_text[1]"), "{both}");
+        assert!(
+            list.contains("json_extract_string(t._payload_json[3], '$[*]')"),
+            "{list}"
+        );
+        assert!(meta.contains("t._payload_json[4]"), "{meta}");
+        for sql in [&first, &again, &raw, &both, &list, &meta] {
+            assert!(
+                !sql.contains("t.payload"),
+                "parses the payload itself: {sql}"
+            );
+        }
+    }
+
+    /// The widest node view extracts the payload once per function.
+    #[test]
+    fn models_view_extracts_the_payload_once_per_function() {
+        let all: Vec<&'static str> = EPOCH_RELATIONS.iter().map(|r| r.view).collect();
+        let spec = crate::info_schema::schema::INFO_SCHEMA
+            .iter()
+            .find(|s| s.qualified_name() == "dbt.models")
+            .expect("dbt.models");
+        let (sql, _) = table_view_sql(spec, &all, true)
+            .expect("table_view_sql")
+            .expect("dbt.models is mappable");
+        assert_eq!(sql.matches("json_extract(payload, [").count(), 1, "{sql}");
+        assert_eq!(
+            sql.matches("json_extract_string(payload, [").count(),
+            1,
+            "{sql}"
+        );
+    }
+
+    /// Payload paths that still parse the payload themselves, each because it cannot join a
+    /// multi-path extract: a path under a `[*]` wildcard is slotted at its parent instead, and
+    /// the rest read an object's keys, take part in a row predicate, or branch on a type.
+    const PARSES_PAYLOAD_ITSELF: &[&str] = &[
+        "$.__model_attr__.time_spine",
+        "$.__common_attr__.path",
+        "$.__common_attr__.name",
+        "$.name",
+        "$.__metric_attr__.metric_type",
+        "$.__metric_attr__.type_params.input_measures",
+        "$.__metric_attr__.type_params.input_metrics",
+    ];
+
+    /// A column read straight off `t.payload` parses the whole payload again for that column,
+    /// on every row. Reads go through [`PayloadPaths`] instead; this keeps a new column from
+    /// quietly adding a parse. It pins no values -- the differential test does that.
+    #[test]
+    fn node_views_do_not_parse_the_payload_per_column() {
+        let all: Vec<&'static str> = EPOCH_RELATIONS.iter().map(|r| r.view).collect();
+        let mut offenders = Vec::new();
+        for spec in crate::info_schema::schema::INFO_SCHEMA {
+            let Ok((sql, _)) = table_view_sql(spec, &all, true).expect("table_view_sql") else {
+                continue;
+            };
+            for read in sql.split("t.payload, '").skip(1) {
+                let path = &read[..read.find('\'').expect("closing quote")];
+                if !path.contains("[*]") && !PARSES_PAYLOAD_ITSELF.contains(&path) {
+                    offenders.push(format!("{}: {path}", spec.qualified_name()));
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "read through PayloadPaths (an `EpochExpr` variant), or list the path in \
+             PARSES_PAYLOAD_ITSELF with the reason: {offenders:#?}"
+        );
+    }
+
+    /// A node view filters its rows before it extracts their payloads, so a table
+    /// that keeps a few nodes parses only those.
+    #[test]
+    fn node_views_filter_before_extracting_the_payload() {
+        let all: Vec<&'static str> = EPOCH_RELATIONS.iter().map(|r| r.view).collect();
+        for name in ["dbt.time_spines", "dbt.models"] {
+            let spec = crate::info_schema::schema::INFO_SCHEMA
+                .iter()
+                .find(|s| s.qualified_name() == name)
+                .expect(name);
+            let (sql, _) = table_view_sql(spec, &all, true)
+                .expect("table_view_sql")
+                .expect("mappable");
+            let from = sql
+                .lines()
+                .find(|l| l.starts_with("FROM ("))
+                .expect("extraction subquery");
+            let after = &sql[sql.find(from).expect("from line") + from.len()..];
+            assert!(
+                from.contains("FROM dbt_internal.epoch_parse_nodes t WHERE"),
+                "{sql}"
+            );
+            assert!(from.contains("t.resource_type"), "{sql}");
+            assert!(from.contains("epoch_parse_alive"), "{sql}");
+            assert!(!after.contains("WHERE"), "{sql}");
+        }
     }
 
     /// Scaffolding while the mapping is being filled in: print the generated

@@ -1,0 +1,10 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/pg_class.sql
+ Rendering models/pg_class.sql
+   Running models/pg_class.sql
+ Succeeded model adapters_redshift_oid_column.pg_class (view) [1 of 1 in duration]
+==================== Execution Summary =====================
+Finished 'build' successfully for target 'redshift' [duration]
+Processed: 1 model
+Summary: 1 total | 1 success

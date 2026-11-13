@@ -1,7 +1,7 @@
 //! Locates installed `dbt` executables and classifies the stdout of a
 //! `dbt --version` invocation into a distribution and generation. Kept as its
 //! own crate, independent of `dbt-dist`'s `dbt-common` dependency, so
-//! lightweight consumers (e.g. `dbt-index`, or `wizard/dbt-codex`) can find a
+//! lightweight consumers (e.g. `dbt-index`) can find a
 //! `dbt` binary and classify its version banner without pulling in
 //! `dbt-dist`'s full self-update/uninstall dependency tree.
 

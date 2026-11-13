@@ -1,0 +1,7 @@
+kind: Under the Hood
+body: An experimental can render a data test's SQL and read what its macro sets with config(), such as fail_calc
+time: 2026-11-11T21:29:05.722378-08:00
+custom:
+    author: eliasdefaria
+    issue: ""
+    project: dbt-core

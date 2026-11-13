@@ -14,7 +14,9 @@ use dbt_agate::AgateTable;
 use dbt_jinja_utils::mock_object::MockJinjaObject;
 use dbt_schemas::dbt_types::RelationType;
 use dbt_schemas::schemas::common::{ClusterConfig, DbtMaterialization};
-use dbt_schemas::schemas::project::{ModelConfig, WarehouseSpecificNodeConfig};
+use dbt_schemas::schemas::project::{
+    LazyWarehouseSpecificNodeConfig, ModelConfig, WarehouseSpecificNodeConfig,
+};
 use dbt_schemas::schemas::{AdapterAttr, CommonAttributes, DbtModel, NodeBaseAttributes};
 use dbt_yaml::Spanned;
 use minijinja::Value;
@@ -81,6 +83,7 @@ fn serialized_model(config: &LocalConfig) -> Value {
     let base_attr = NodeBaseAttributes {
         adapter: AdapterType::Snowflake,
         propagate: Vec::new(),
+        effective_propagation_target: None,
         unrendered_config: Default::default(),
         database: DATABASE.to_string(),
         schema: SCHEMA.to_string(),
@@ -103,14 +106,15 @@ fn serialized_model(config: &LocalConfig) -> Value {
         depends_on: Default::default(),
     };
 
-    let wh_config = WarehouseSpecificNodeConfig {
+    let wh_config: LazyWarehouseSpecificNodeConfig = WarehouseSpecificNodeConfig {
         target_lag: config.target_lag.clone(),
         snowflake_warehouse: config.snowflake_warehouse.clone(),
         snowflake_initialization_warehouse: config.snowflake_initialization_warehouse.clone(),
         cluster_by: config.cluster_by.clone(),
         ..Default::default()
-    };
-    let adapter_attr = AdapterAttr::from_config_and_dialect(&wh_config, ADAPTER);
+    }
+    .into();
+    let adapter_attr = AdapterAttr::from_lazy_config_and_dialect(&wh_config, ADAPTER);
 
     let model = DbtModel {
         deprecated_config: ModelConfig {

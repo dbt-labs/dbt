@@ -1,0 +1,109 @@
+dbbbff64:
+- sequence: 0
+  type: execute
+  sql: |-
+    show terse schemas in database development
+    limit 10000
+deb598a7:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists development.adapters_snowflake_sql_with_trailing_comments
+model.sql_with_trailing_comments.simple_test:
+- sequence: 0
+  type: execute
+  sql: select 1 as test_value
+- sequence: 1
+  type: execute
+  sql: select 2 as test_value
+- sequence: 2
+  type: execute
+  sql: select 3 as test_value
+- sequence: 3
+  type: execute
+  sql: select 1
+- sequence: 4
+  type: execute
+  sql: /* initial comment */ select 5 as test_value
+- sequence: 5
+  type: execute
+  sql: /* before */ select 6 as test_value /* after */
+- sequence: 6
+  type: execute
+  sql: /* start */ select 7 as first
+- sequence: 7
+  type: execute
+  sql: ' select 8 as second /* end */'
+- sequence: 8
+  type: execute
+  sql: select 1
+- sequence: 9
+  type: execute
+  sql: |-
+    create or replace transient  table development.adapters_snowflake_sql_with_trailing_comments.simple_test
+    
+    
+    
+    
+    as (
+    
+    -- First, investigate how this dialect handles comment-only statements
+    
+    
+    -- Then reproduce the exact issue from GitHub #468
+    
+    
+    
+    
+    select 'dialect investigation completed' as status
+    )
+model.sql_with_trailing_comments.test_model:
+- sequence: 0
+  type: execute
+  sql: select 1 as num
+- sequence: 1
+  type: execute
+  sql: select 2 as num
+- sequence: 2
+  type: execute
+  sql: select 3 as num
+- sequence: 3
+  type: execute
+  sql: select 4 as num
+- sequence: 4
+  type: execute
+  sql: |-
+    select 5 as num
+    /* no semicolon, just comment */
+- sequence: 5
+  type: execute
+  sql: /* leading comment */ select 6 as num
+- sequence: 6
+  type: execute
+  sql: /* before */ select 7 as num /* after */
+- sequence: 7
+  type: execute
+  sql: select 8 as first
+- sequence: 8
+  type: execute
+  sql: ' /* middle comment */ select 88 as second'
+- sequence: 9
+  type: execute
+  sql: SHOW OBJECTS IN SCHEMA "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_SQL_WITH_TRAILING_COMMENTS" LIMIT 10000
+- sequence: 10
+  type: execute
+  sql: |-
+    create or replace transient  table development.adapters_snowflake_sql_with_trailing_comments.test_model
+    
+    
+    
+    
+    as (
+    
+    -- This model tests that SQL with trailing comments compiles and runs correctly
+    
+    
+    select 
+    1 as test_id,
+    'sql_with_trailing_comments' as test_name
+    /* End of query with trailing comment */
+    )

@@ -59,7 +59,7 @@ impl VersionsHttpClient for ReqwestClient {
 
 /// Resolve a version from the versions manifest, mirroring install.sh's
 /// `determine_version`:
-///   1. No version requested  -> use `latest.tag`
+///   1. No version requested  -> use `stable.tag`
 ///   2. Version is an alias key (e.g. "canary") -> resolve `versions[alias].tag`
 ///   3. Version is a literal semver -> use as-is
 fn resolve_version_from_manifest(
@@ -68,14 +68,14 @@ fn resolve_version_from_manifest(
 ) -> FsResult<String> {
     match requested {
         None => match versions
-            .get("latest")
+            .get("stable")
             .and_then(|obj| obj.get("tag"))
             .and_then(|t| t.as_str())
         {
             Some(t) => Ok(t.trim_start_matches('v').to_string()),
             None => err!(
                 ErrorCode::IoError,
-                "Could not resolve latest version from versions.json"
+                "Could not resolve stable version from versions.json"
             ),
         },
         Some(v) => {
@@ -168,6 +168,7 @@ mod tests {
 
     fn test_versions_json() -> serde_json::Value {
         serde_json::json!({
+            "stable":  { "tag": "v2.0.0-preview.150", "date": "2026-03-10" },
             "latest":  { "tag": "v2.0.0-preview.154", "date": "2026-03-13" },
             "dev":     { "tag": "v2.0.0-preview.157", "date": "2026-03-18" },
             "canary":  { "tag": "v2.0.0-preview.157", "date": "2026-03-18" }
@@ -185,10 +186,23 @@ mod tests {
     }
 
     #[test]
-    fn resolve_version_no_version_uses_latest() {
+    fn resolve_version_no_version_uses_stable() {
         let versions = test_versions_json();
         let version = resolve_version_from_manifest(&versions, None).unwrap();
+        assert_eq!(version, "2.0.0-preview.150");
+    }
+
+    #[test]
+    fn resolve_version_alias_latest_still_resolves() {
+        let versions = test_versions_json();
+        let version = resolve_version_from_manifest(&versions, Some("latest")).unwrap();
         assert_eq!(version, "2.0.0-preview.154");
+    }
+
+    #[test]
+    fn resolve_version_no_stable_key_errors() {
+        let versions = serde_json::json!({ "latest": { "tag": "v3.0.0" } });
+        assert!(resolve_version_from_manifest(&versions, None).is_err());
     }
 
     #[test]
@@ -214,13 +228,13 @@ mod tests {
 
     #[test]
     fn resolve_version_strips_v_prefix() {
-        let versions = serde_json::json!({ "latest": { "tag": "v3.0.0" } });
+        let versions = serde_json::json!({ "stable": { "tag": "v3.0.0" } });
         let version = resolve_version_from_manifest(&versions, None).unwrap();
         assert_eq!(version, "3.0.0");
     }
 
     #[test]
-    fn resolve_version_no_latest_tag_errors() {
+    fn resolve_version_empty_manifest_errors() {
         let versions = serde_json::json!({});
         let result = resolve_version_from_manifest(&versions, None);
         assert!(result.is_err());
@@ -233,7 +247,7 @@ mod tests {
             MockHttpClient::new().with_text(format!("{}/versions.json", cdn_base_url()), &manifest);
 
         let version = resolve_target_version(None, &client).await.unwrap();
-        assert_eq!(version, "2.0.0-preview.154");
+        assert_eq!(version, "2.0.0-preview.150");
     }
 
     #[dbt_runtime::test]
@@ -258,6 +272,6 @@ mod tests {
             resolve_target_version_with_base_url(None, Some("https://mock.example"), &client)
                 .await
                 .unwrap();
-        assert_eq!(version, "2.0.0-preview.154");
+        assert_eq!(version, "2.0.0-preview.150");
     }
 }

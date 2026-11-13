@@ -1,0 +1,3 @@
+packages:
+  - dbt-docs-lib
+  - web

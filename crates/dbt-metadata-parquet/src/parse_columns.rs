@@ -48,6 +48,9 @@ pub struct ParseColumnRow {
     pub tags: Vec<String>,
     /// Time granularity (non-null implies time dimension).
     pub granularity: Option<String>,
+    /// The column's `quote:` setting. Absent from epochs written before it was recorded.
+    #[serde(default)]
+    pub quote: Option<bool>,
     pub ingested_at: i64,
 }
 
@@ -66,6 +69,7 @@ fn column_fields() -> Vec<Field> {
             false,
         ),
         Field::new("granularity", DataType::Utf8, true),
+        Field::new("quote", DataType::Boolean, true),
         Field::new(
             "ingested_at",
             DataType::Timestamp(TimeUnit::Microsecond, Some(Arc::from("UTC"))),
@@ -210,6 +214,7 @@ mod tests {
             meta: None,
             tags: vec![],
             granularity: None,
+            quote: None,
             ingested_at: ts,
         }
     }
@@ -263,6 +268,7 @@ mod tests {
             meta: None,
             tags: vec![],
             granularity: None,
+            quote: None,
             ingested_at: 1,
         }];
         write_parse_columns(dir.path(), rows, None, None, None).unwrap();

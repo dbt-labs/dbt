@@ -1,0 +1,25 @@
+e9f80d97:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists `dbt-test-env`.`adapters_bigquery_function_grants`
+function.test.double_it:
+- sequence: 0
+  type: execute
+  sql: |-
+    CREATE OR REPLACE FUNCTION `dbt-test-env`.`adapters_bigquery_function_grants`.`double_it` (
+    
+    
+    x integer
+    )
+    RETURNS integer
+    
+    
+    
+    
+    AS
+    
+    
+    (
+    x * 2
+    )
+    ;

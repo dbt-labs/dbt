@@ -20,6 +20,7 @@ use dbt_dag::schedule::Schedule;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_loader::internal_macro_package_names_for;
 use dbt_schema_store::SchemaStoreTrait;
+use dbt_schemas::IndexMap;
 use dbt_schemas::schemas::common::DbtMaterialization;
 use dbt_schemas::schemas::dbt_column::{DbtColumn, DbtColumnRef};
 use dbt_schemas::schemas::relations::base::ComponentName;
@@ -31,6 +32,7 @@ use dbt_schemas::schemas::{
 };
 use dbt_schemas::state::ResolverState;
 use dbt_tasks_core::RunTasksArgs;
+use dbt_tasks_core::context::adapter_type_outside_compute_platform;
 use dbt_telemetry::ArtifactType;
 use dbt_telemetry::NodeType;
 use minijinja::{State, Value};
@@ -295,6 +297,49 @@ fn update_resolved_states_manifest_with_schemas_and_compiled_sql_core(
         }
     }
 
+    // Functions and hooks compile too, and their SQL is written under `target/compiled/`
+    // like an analysis's; without this their `compiled_code` stays unset.
+    if (arg.write_json || arg.write_metadata)
+        && let Some(dbt_manifest) = dbt_manifest.as_mut()
+    {
+        for (unique_id, function) in resolved_state.nodes.functions.iter() {
+            // The manifest keeps functions in their own map, not in `nodes`.
+            if let Some(manifest_function) = dbt_manifest.functions.get_mut(unique_id) {
+                let absolute_path =
+                    function.get_node_path_abs(NodePathKind::Compiled, &io.in_dir, &io.out_dir);
+                if let Ok(compiled_sql) = stdfs::read_to_string(&absolute_path) {
+                    let relative_path = stdfs::diff_paths(&absolute_path, &io.in_dir)?;
+                    let base = &mut manifest_function.__base_attr__;
+                    base.compiled_path = Some(relative_path.to_string_lossy().to_string());
+                    base.compiled_code = Some(compiled_sql);
+                    base.compiled = Some(true);
+                }
+            }
+        }
+        // A hook is rendered only when the run executes it, so a command that does not
+        // leaves no file and the hook keeps no compiled code.
+        let hooks = resolved_state
+            .operations
+            .on_run_start
+            .iter()
+            .chain(resolved_state.operations.on_run_end.iter());
+        for hook in hooks {
+            let unique_id = hook.common().unique_id.clone();
+            if let Some(DbtNode::Operation(manifest_hook)) = dbt_manifest.nodes.get_mut(&unique_id)
+            {
+                let absolute_path =
+                    hook.get_node_path_abs(NodePathKind::Compiled, &io.in_dir, &io.out_dir);
+                if let Ok(compiled_sql) = stdfs::read_to_string(&absolute_path) {
+                    let relative_path = stdfs::diff_paths(&absolute_path, &io.in_dir)?;
+                    let base = &mut manifest_hook.__base_attr__;
+                    base.compiled_path = Some(relative_path.to_string_lossy().to_string());
+                    base.compiled_code = Some(compiled_sql);
+                    base.compiled = Some(true);
+                }
+            }
+        }
+    }
+
     if let Some(dbt_manifest) = dbt_manifest
         && arg.write_json
     {
@@ -372,14 +417,14 @@ pub fn update_node_columns(
     let type_ops = type_ops_factory.create(adapter_type);
 
     // TODO(anna): Let's revisit this and try to extract out the flattening behavior into something like `schema_to_flattened_columns`
-    let mut schema_columns = Vec::<Column>::with_capacity(columns.len());
+    let mut schema_columns = Vec::<Arc<Column>>::with_capacity(columns.len());
     let builder = ColumnBuilder::new(adapter_type);
     for field in schema.fields() {
         let column = builder.build(field, type_ops.as_ref())?;
         if adapter_type == AdapterType::Bigquery {
             schema_columns.extend(column.flatten());
         } else {
-            schema_columns.push(column);
+            schema_columns.push(Arc::from(column));
         }
     }
 
@@ -531,13 +576,14 @@ pub fn register_catalog_schemas_remote(
     Ok(())
 }
 
-/// Computes catalogs and schemas of selected nodes in order to create missing ones.
-/// This is the same as `get_catalog_schemas`, but includes the unique id of an associated node.
-pub fn get_catalog_schemas_and_ids(
+/// Computes catalogs and schemas of selected nodes in order to create missing ones, grouped by
+/// the adapter that creates them; `run_adapter`'s group comes first and always exists.
+pub fn get_catalog_schemas_and_ids_by_adapter(
     nodes: &Nodes,
     schedule: &Schedule<String>,
-) -> BTreeMap<String, BTreeMap<String, String>> {
-    let mut catalog_schemas = BTreeMap::new();
+    run_adapter: AdapterType,
+) -> IndexMap<AdapterType, BTreeMap<String, BTreeMap<String, String>>> {
+    let mut groups = IndexMap::from([(run_adapter, BTreeMap::new())]);
     for unique_id in schedule.selected_nodes.iter() {
         let Some(node) = nodes.get_node(unique_id) else {
             continue;
@@ -547,6 +593,8 @@ pub fn get_catalog_schemas_and_ids(
         if base.relation_name.is_none() {
             continue;
         }
+        let owner = adapter_type_outside_compute_platform(node.node_adapter(), run_adapter);
+        let catalog_schemas = groups.entry(owner).or_default();
         if node.resource_type() == NodeType::SavedQuery {
             let saved_query = &nodes
                 .saved_queries
@@ -577,7 +625,7 @@ pub fn get_catalog_schemas_and_ids(
                 .insert(schema, unique_id.clone());
         }
     }
-    catalog_schemas
+    groups
 }
 
 /// Filters schemas by ones that don't already exist.
@@ -736,6 +784,7 @@ pub fn typecheck_macros(
             &m.unique_id.clone(),
             resolver_state.adapter_type,
             false,
+            None,
         );
     }
     Ok(())
@@ -779,4 +828,99 @@ pub fn write_decompiled_sql(out_dir: &Path, relative_path: &Path, sql: &str) {
         let _ = std::fs::create_dir_all(parent);
     }
     let _ = std::fs::write(&decompiled_path, sql);
+}
+
+#[cfg(test)]
+mod catalog_schema_group_tests {
+    use super::*;
+    use dbt_schemas::schemas::DbtModel;
+
+    /// A schedule selecting one model per `(unique_id, adapter, database, schema, relation_name?)`.
+    fn nodes_and_schedule(
+        models: &[(&str, AdapterType, &str, &str, bool)],
+    ) -> (Nodes, Schedule<String>) {
+        let mut nodes = Nodes::default();
+        let mut schedule = Schedule::<String>::default();
+        for (unique_id, adapter, database, schema, has_relation) in models {
+            let mut model = DbtModel::default();
+            model.__common_attr__.unique_id = (*unique_id).to_string();
+            model.__base_attr__.adapter = *adapter;
+            model.__base_attr__.database = (*database).to_string();
+            model.__base_attr__.schema = (*schema).to_string();
+            model.__base_attr__.relation_name =
+                has_relation.then(|| format!("{database}.{schema}.x"));
+            nodes
+                .models
+                .insert((*unique_id).to_string(), Arc::new(model));
+            schedule.selected_nodes.insert((*unique_id).to_string());
+        }
+        (nodes, schedule)
+    }
+
+    fn map(entries: &[(&str, &str, &str)]) -> BTreeMap<String, BTreeMap<String, String>> {
+        let mut map: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
+        for (catalog, schema, unique_id) in entries {
+            map.entry((*catalog).to_string())
+                .or_default()
+                .insert((*schema).to_string(), (*unique_id).to_string());
+        }
+        map
+    }
+
+    #[test]
+    fn single_adapter_is_one_group() {
+        let (nodes, schedule) = nodes_and_schedule(&[
+            ("model.p.a", AdapterType::Snowflake, "DB", "S1", true),
+            ("model.p.b", AdapterType::Snowflake, "DB", "S2", true),
+            ("model.p.c", AdapterType::Snowflake, "DB", "S3", false),
+        ]);
+        assert_eq!(
+            get_catalog_schemas_and_ids_by_adapter(&nodes, &schedule, AdapterType::Snowflake)
+                .into_iter()
+                .collect::<Vec<_>>(),
+            vec![(
+                AdapterType::Snowflake,
+                map(&[("DB", "S1", "model.p.a"), ("DB", "S2", "model.p.b")])
+            )]
+        );
+    }
+
+    #[test]
+    fn no_relation_nodes_is_one_empty_group() {
+        let (nodes, schedule) =
+            nodes_and_schedule(&[("model.p.a", AdapterType::DuckDB, "db", "main", false)]);
+        assert_eq!(
+            get_catalog_schemas_and_ids_by_adapter(&nodes, &schedule, AdapterType::Snowflake)
+                .into_iter()
+                .collect::<Vec<_>>(),
+            vec![(AdapterType::Snowflake, BTreeMap::new())]
+        );
+    }
+
+    #[test]
+    fn groups_by_adapter_run_adapter_first_lakecompute_with_it() {
+        let (nodes, schedule) = nodes_and_schedule(&[
+            ("model.p.a_duck", AdapterType::DuckDB, "db", "main", true),
+            ("model.p.b_lake", AdapterType::LakeCompute, "DB", "LC", true),
+            ("model.p.c_snow", AdapterType::Snowflake, "db", "main", true),
+        ]);
+        assert_eq!(
+            get_catalog_schemas_and_ids_by_adapter(&nodes, &schedule, AdapterType::Snowflake)
+                .into_iter()
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    AdapterType::Snowflake,
+                    map(&[
+                        ("DB", "LC", "model.p.b_lake"),
+                        ("db", "main", "model.p.c_snow")
+                    ])
+                ),
+                (
+                    AdapterType::DuckDB,
+                    map(&[("db", "main", "model.p.a_duck")])
+                ),
+            ]
+        );
+    }
 }

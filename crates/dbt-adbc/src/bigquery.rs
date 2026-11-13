@@ -2,6 +2,9 @@
 
 pub const AUTH_TYPE: &str = "adbc.bigquery.sql.auth_type";
 pub const API_ENDPOINT: &str = "adbc.bigquery.sql.api_endpoint";
+// Storage Read API (gRPC) endpoint as `host:port`. Only the Foundry driver
+// reads this key; the canonical driver ignores it.
+pub const STORAGE_READ_API_ENDPOINT: &str = "bigquery.storage_endpoint";
 pub const LOCATION: &str = "adbc.bigquery.sql.location";
 pub const PROJECT_ID: &str = "adbc.bigquery.sql.project_id";
 pub const DATASET_ID: &str = "adbc.bigquery.sql.dataset_id";
@@ -71,11 +74,18 @@ pub const QUERY_USE_LEGACY_SQL: &str = "adbc.bigquery.sql.query.use_legacy_sql";
 pub const QUERY_DRY_RUN: &str = "adbc.bigquery.sql.query.dry_run"; // bool
 pub const QUERY_CREATE_SESSION: &str = "adbc.bigquery.sql.query.create_session"; // bool
 pub const QUERY_JOB_TIMEOUT: &str = "adbc.bigquery.sql.query.job_timeout"; // i64
+pub const QUERY_RESERVATION: &str = "bigquery.query.reservation"; // string
 
 pub const QUERY_RESULT_BUFFER_SIZE: &str = "adbc.bigquery.sql.query.result_buffer_size"; // i64
 pub const QUERY_PREFETCH_CONCURRENCY: &str = "adbc.bigquery.sql.query.prefetch_concurrency"; // i64
 
 pub const QUERY_LINK_FAILED_JOB: &str = "adbc.bigquery.sql.query.link_failed_job";
+
+// When true, GetObjects at depth Tables lists tables with tables.list only (table
+// name and type) instead of issuing one tables.get per table. Constraints are not
+// returned. Depths that include columns are unaffected.
+pub const GET_OBJECTS_SKIP_TABLE_METADATA: &str = "bigquery.get_objects.skip_table_metadata"; // bool
+pub const GET_OBJECTS_DISABLE_WILDCARDS: &str = "bigquery.get_objects.disable_wildcards"; // bool
 
 // values
 pub const DEFAULT_QUERY_RESULT_BUFFER_SIZE: i64 = 200;
@@ -91,6 +101,9 @@ pub const UPDATE_TABLE_COLUMNS_POLICY_TAGS: &str = "adbc.bigquery.table.update_c
 pub const UPDATE_TABLE_DESCRIPTION: &str = "adbc.bigquery.table.update_description";
 pub const UPDATE_DATASET_AUTHORIZE_VIEW_TO_DATASETS: &str =
     "adbc.bigquery.dataset.authorize_view_to_datasets";
+// JSON {project, dataset}: the query returns the dataset's `location` (no row if
+// it doesn't exist), read with datasets.get rather than INFORMATION_SCHEMA.
+pub const GET_DATASET_LOCATION: &str = "bigquery.dataset.get_location";
 
 pub const DATAPROC_REGION: &str = "adbc.bigquery.dataproc.compute_region";
 pub const DATAPROC_PROJECT: &str = "adbc.bigquery.dataproc.project";

@@ -30,9 +30,18 @@ impl Default for Box<dyn CompiledSpans> {
 }
 
 /// A `CompiledSpans` implementation that carries macro spans only.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct MacroSpansOnly {
     pub macro_spans: Vec<MacroSpan>,
+}
+
+impl std::fmt::Debug for MacroSpansOnly {
+    #[inline(never)]
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MacroSpansOnly")
+            .field("macro_spans", &self.macro_spans)
+            .finish()
+    }
 }
 
 impl CompiledSpans for MacroSpansOnly {

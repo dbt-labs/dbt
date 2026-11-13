@@ -1,5 +1,6 @@
+use dbt_adapter_engine::cow::uppercase;
+
 pub mod config;
-pub(crate) mod metric_view;
 
 mod defaults;
 pub use defaults::{DEFAULT_DATABRICKS_DATABASE, INFORMATION_SCHEMA_SCHEMA, SYSTEM_DATABASE};
@@ -11,7 +12,7 @@ pub mod typed_constraint;
 /// value or the `DESCRIBE TABLE EXTENDED ... AS JSON` `type` field.
 pub fn is_shallow_clone_type(type_str: &str) -> bool {
     matches!(
-        type_str.to_uppercase().as_str(),
+        uppercase(type_str.into()).as_ref(),
         "MANAGED_SHALLOW_CLONE" | "EXTERNAL_SHALLOW_CLONE"
     )
 }

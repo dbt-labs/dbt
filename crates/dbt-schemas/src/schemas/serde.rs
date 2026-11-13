@@ -210,10 +210,7 @@ where
             map.into_iter()
                 .map(|(k, v)| {
                     let yml_val = dbt_yaml::from_value::<YmlValue>(v).unwrap_or(YmlValue::null());
-                    (
-                        k.as_str().expect("key is not a string").to_string(),
-                        yml_val,
-                    )
+                    (dbt_common::serde_utils::yml_key_to_string(&k), yml_val)
                 })
                 .collect(),
         )),
@@ -261,6 +258,67 @@ where
         .as_bool()
         .or_else(|| value.as_str().map(|s| s.to_lowercase() == "true"))
         .unwrap_or_default())
+}
+
+/// Resolver (private) of the YAML 1.1 boolean token set accepted by dbt-core (via PyYAML).
+///
+/// Only unquoted `true`/`false` arrive here as booleans. The other tokens (`yes`, `on`, ...)
+/// arrive as strings, as does Jinja output, so strings are matched against the token set after
+/// trimming surrounding whitespace.
+///
+/// This resolver reports an explicit `null` as `Ok(None)` and is a workhorse in the following
+/// public deserializers that differ in only what they do with that `None`.
+fn yaml_11_bool_token<'de, D>(deserializer: D) -> Result<Option<bool>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = dbt_yaml::Value::deserialize(deserializer)?;
+    if let Some(b) = value.as_bool() {
+        return Ok(Some(b));
+    }
+    if value.is_null() {
+        return Ok(None);
+    }
+    match value.as_str() {
+        // PyYAML's bool resolver: these three casings only, and no bare `y`/`n`.
+        Some(s) => match s.trim() {
+            "true" | "True" | "TRUE" | "yes" | "Yes" | "YES" | "on" | "On" | "ON" => Ok(Some(true)),
+            "false" | "False" | "FALSE" | "no" | "No" | "NO" | "off" | "Off" | "OFF" => {
+                Ok(Some(false))
+            }
+            _ => Err(de::Error::invalid_value(
+                de::Unexpected::Str(s),
+                &"a boolean",
+            )),
+        },
+        None => Err(de::Error::custom("expected a boolean")),
+    }
+}
+
+/// YAML 1.1 boolean resolver that reads an explicit `null` is a value of its own, not an error and
+/// not `false`.
+pub fn yaml_11_bool_null_as_none<'de, D>(deserializer: D) -> Result<Option<bool>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    yaml_11_bool_token(deserializer)
+}
+
+/// YAML 1.1 boolean resolver that reads an explicit `null` as `false`.
+pub fn yaml_11_bool_null_as_false<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(yaml_11_bool_token(deserializer)?.unwrap_or(false))
+}
+
+/// Schema-only shape for a boolean that may be authored as a Jinja expression string.
+/// Use as `#[schemars(with = "BoolOrJinja")]` on a `bool` or `Option<bool>` field.
+#[derive(Debug, Clone, DbtSchema)]
+#[serde(untagged)]
+pub enum BoolOrJinja {
+    Bool(bool),
+    Jinja(String),
 }
 
 pub fn u64_or_string_u64<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
@@ -603,7 +661,7 @@ pub fn yml_value_to_minijinja_map(value: YmlValue) -> BTreeMap<String, Minijinja
     }
 }
 
-pub fn minijinja_value_to_typed_struct<T: DeserializeOwned>(value: MinijinjaValue) -> FsResult<T> {
+pub fn minijinja_value_to_typed_struct<T: DeserializeOwned>(value: &MinijinjaValue) -> FsResult<T> {
     let yml_val = dbt_yaml::to_value(value).map_err(|e| {
         FsError::new(
             ErrorCode::SerializationError,

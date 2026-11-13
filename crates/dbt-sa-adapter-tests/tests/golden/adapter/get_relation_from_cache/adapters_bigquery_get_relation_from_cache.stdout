@@ -1,0 +1,26 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/a.sql
+   Parsing models/c.sql
+bigquery
+dbt-test-env
+adapters_bigquery_get_relation_from_cache
+relation
+None
+cached relation:
+None
+   Started downloading referenced relations (1 items)
+  Finished [duration] downloading referenced relations (1 items)
+ Rendering models/c.sql
+bigquery
+dbt-test-env
+adapters_bigquery_get_relation_from_cache
+relation
+`dbt-test-env`.`adapters_bigquery_get_relation_from_cache`.`a`
+cached relation:
+`dbt-test-env`.`adapters_bigquery_get_relation_from_cache`.`a`
+ Rendering models/a.sql
+==================== Execution Summary =====================
+Finished 'compile' successfully for target 'bigquery' [duration]
+Processed: 2 models
+Summary: 2 total | 2 success

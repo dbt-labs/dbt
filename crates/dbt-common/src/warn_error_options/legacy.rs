@@ -324,111 +324,111 @@ pub enum NotAWarningInDbtCoreLegacyWarnError {
 )]
 pub enum WillNotSupportLegacyWarnError {
     #[strum(
-        message = "Fusion only supports the newer behavior-change flag, where this case is a hard error."
+        message = "dbt v2 only supports the newer behavior-change flag, where this case is a hard error."
     )]
     MicrobatchMacroOutsideOfBatchesDeprecation,
     #[strum(
-        message = "This warning comes from partial parsing in dbt Core, which Fusion does not support."
+        message = "This warning comes from partial parsing in dbt Core, which dbt v2 does not support."
     )]
     SeedExceedsLimitSamePath,
     #[strum(
-        message = "This warning comes from partial parsing in dbt Core, which Fusion does not support."
+        message = "This warning comes from partial parsing in dbt Core, which dbt v2 does not support."
     )]
     SeedIncreased,
     #[strum(
-        message = "Fusion only supports the newer behavior-change flag, where this case is a hard error."
+        message = "dbt v2 only supports the newer behavior-change flag, where this case is a hard error."
     )]
     GenerateSchemaNameNullValueDeprecation,
     #[strum(
-        message = "Fusion already implements the new semantic layer spec, so this legacy warning no longer applies."
+        message = "dbt v2 already implements the new semantic layer spec, so this legacy warning no longer applies."
     )]
     GenericSemanticLayerDeprecation,
     #[strum(
-        message = "Fusion already implements the new semantic layer spec, so this legacy warning no longer applies."
+        message = "dbt v2 already implements the new semantic layer spec, so this legacy warning no longer applies."
     )]
     MFCumulativeTypeParamsDeprecation,
     #[strum(
-        message = "Fusion already implements the new semantic layer spec, so this legacy warning no longer applies."
+        message = "dbt v2 already implements the new semantic layer spec, so this legacy warning no longer applies."
     )]
     MFTimespineWithoutYamlConfigurationDeprecation,
     #[strum(
-        message = "Fusion already implements the new semantic layer spec, so this legacy warning no longer applies."
+        message = "dbt v2 already implements the new semantic layer spec, so this legacy warning no longer applies."
     )]
     MetricAttributesRenamed,
     #[strum(
-        message = "Fusion already implements the new semantic layer spec, so this legacy warning no longer applies."
+        message = "dbt v2 already implements the new semantic layer spec, so this legacy warning no longer applies."
     )]
     TimeDimensionsRequireGranularityDeprecation,
     #[strum(
-        message = "Fusion already uses the newer source freshness behavior, so this legacy warning does not apply."
+        message = "dbt v2 already uses the newer source freshness behavior, so this legacy warning does not apply."
     )]
     SourceFreshnessProjectHooksNotRun,
-    #[strum(message = "Fusion does not support semantic models, so this warning does not apply.")]
+    #[strum(message = "dbt v2 does not support semantic models, so this warning does not apply.")]
     SemanticValidationFailure,
     #[strum(
-        message = "Fusion already validates allowed YAML keys strictly, so this warning would be redundant."
+        message = "dbt v2 already validates allowed YAML keys strictly, so this warning would be redundant."
     )]
     ValidationWarning,
     #[strum(
-        message = "Fusion already enforces this as a hard YAML parsing or schema validation error, so this warn_error_options entry has no effect."
+        message = "dbt v2 already enforces this as a hard YAML parsing or schema validation error, so this warn_error_options entry has no effect."
     )]
     CustomKeyInConfigDeprecation,
     #[strum(
-        message = "Fusion already enforces this as a hard YAML parsing or schema validation error, so this warn_error_options entry has no effect."
+        message = "dbt v2 already enforces this as a hard YAML parsing or schema validation error, so this warn_error_options entry has no effect."
     )]
     CustomTopLevelKeyDeprecation,
     #[strum(
-        message = "Fusion already enforces this as a hard YAML parsing or schema validation error, so this warn_error_options entry has no effect."
+        message = "dbt v2 already enforces this as a hard YAML parsing or schema validation error, so this warn_error_options entry has no effect."
     )]
     DuplicateNameDistinctNodeTypesDeprecation,
     #[strum(
-        message = "Fusion already enforces this as a hard YAML parsing or schema validation error, so this warn_error_options entry has no effect."
+        message = "dbt v2 already enforces this as a hard YAML parsing or schema validation error, so this warn_error_options entry has no effect."
     )]
     DuplicateYAMLKeysDeprecation,
     #[strum(
-        message = "Fusion already enforces this as a hard YAML parsing or schema validation error, so this warn_error_options entry has no effect."
+        message = "dbt v2 already enforces this as a hard YAML parsing or schema validation error, so this warn_error_options entry has no effect."
     )]
     GenericJSONSchemaValidationDeprecation,
     #[strum(
-        message = "Fusion already enforces this as a hard YAML parsing or schema validation error, so this warn_error_options entry has no effect."
+        message = "dbt v2 already enforces this as a hard YAML parsing or schema validation error, so this warn_error_options entry has no effect."
     )]
     InvalidValueForField,
     #[strum(
-        message = "Fusion already enforces this as a hard YAML parsing or schema validation error, so this warn_error_options entry has no effect."
+        message = "dbt v2 already enforces this as a hard YAML parsing or schema validation error, so this warn_error_options entry has no effect."
     )]
     ResourceNamesWithSpacesDeprecation,
     #[strum(
-        message = "Fusion already enforces the latest behavior, which prevents packages from overriding built-in materializations."
+        message = "dbt v2 already enforces the latest behavior, which prevents packages from overriding built-in materializations."
     )]
     PackageMaterializationOverrideDeprecation,
     #[strum(
-        message = "Fusion does not surface this warning by default, which matches current dbt Core behavior."
+        message = "dbt v2 does not surface this warning by default, which matches current dbt Core behavior."
     )]
     TestsConfigDeprecation,
     #[strum(
-        message = "Fusion already errors on this configuration, which matches newer dbt Core behavior."
+        message = "dbt v2 already errors on this configuration, which matches newer dbt Core behavior."
     )]
     ProjectFlagsMovedDeprecation,
-    #[strum(message = "This is now fully deprecated in Fusion.")]
+    #[strum(message = "This is now fully deprecated in dbt v2.")]
     ConfigSourcePathDeprecation,
-    #[strum(message = "This is now fully deprecated in Fusion.")]
+    #[strum(message = "This is now fully deprecated in dbt v2.")]
     ConfigLogPathDeprecation,
-    #[strum(message = "This is now fully deprecated in Fusion.")]
+    #[strum(message = "This is now fully deprecated in dbt v2.")]
     ConfigTargetPathDeprecation,
-    #[strum(message = "This is now fully deprecated in Fusion.")]
+    #[strum(message = "This is now fully deprecated in dbt v2.")]
     ConfigDataPathDeprecation,
     #[strum(
-        message = "Fusion reserves the DBT_ENGINE_ prefix and rejects unknown environment variables that use it."
+        message = "dbt v2 reserves the DBT_ENGINE_ prefix and rejects unknown environment variables that use it."
     )]
     EnvironmentVariableNamespaceDeprecation,
     #[strum(
-        message = "Fusion does not allow source overrides, so packages must disable a source explicitly instead."
+        message = "dbt v2 does not allow source overrides, so packages must disable a source explicitly instead."
     )]
     UnusedTables,
-    #[strum(message = "Fusion reports this case under NoNodeForYamlKey instead.")]
+    #[strum(message = "dbt v2 reports this case under NoNodeForYamlKey instead.")]
     WrongResourceSchemaFile,
     #[strum(
-        message = "Fusion does not warn on this case; set the `require_ref_searches_node_package_before_root` flag to control the resolution order instead."
+        message = "dbt v2 does not warn on this case; set the `require_ref_searches_node_package_before_root` flag to control the resolution order instead."
     )]
     PackageNodeDependsOnRootProjectNode,
 }

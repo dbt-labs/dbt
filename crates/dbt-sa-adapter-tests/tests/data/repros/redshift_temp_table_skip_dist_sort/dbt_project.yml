@@ -1,0 +1,7 @@
+name: 'redshift_temp_table_skip_dist_sort'
+version: '1.0.0'
+config-version: 2
+
+profile: 'fusion_tests'
+
+model-paths: ['models']

@@ -1,0 +1,8 @@
+name: 'redshift_two_views_dag'
+
+config-version: 2
+version: '0.1'
+profile: 'fusion_tests'
+
+
+test-paths: ["tests"]

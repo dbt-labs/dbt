@@ -1,0 +1,9 @@
+flags:
+  send_anonymous_usage_stats: false
+name: test
+profile: fusion_tests
+
+# `dbt run` fails without this configuration
+models:
+  test:
+    +materialized: table

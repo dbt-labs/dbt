@@ -1,0 +1,123 @@
+256d5e51:
+- sequence: 0
+  type: execute
+  sql: |-
+    SELECT
+    table_name,
+    if(table_type IN ('EXTERNAL', 'MANAGED', 'MANAGED_SHALLOW_CLONE', 'EXTERNAL_SHALLOW_CLONE'), 'table', lower(table_type)) AS table_type,
+    lower(data_source_format) AS file_format,
+    table_schema,
+    table_owner,
+    table_catalog,
+    if(
+    table_type IN (
+    'EXTERNAL',
+    'MANAGED',
+    'MANAGED_SHALLOW_CLONE',
+    'EXTERNAL_SHALLOW_CLONE'
+    ),
+    lower(table_type),
+    NULL
+    ) AS databricks_table_type
+    FROM `system`.`information_schema`.`tables`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'adapters_databricks_incremental_tags'
+2d6825e3:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists `e2e`.`adapters_databricks_incremental_tags`
+85f3743c:
+- sequence: 0
+  type: execute
+  sql: SHOW SCHEMAS IN `e2e`
+model.test.a:
+- sequence: 0
+  type: execute
+  sql: |-
+    SELECT
+    table_catalog,
+    table_schema,
+    table_name,
+    filter_name,
+    target_columns
+    FROM `e2e`.`information_schema`.`row_filters`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'adapters_databricks_incremental_tags'
+    AND table_name = 'a'
+- sequence: 1
+  type: execute
+  sql: |-
+    create or replace table `e2e`.`adapters_databricks_incremental_tags`.`a`
+    
+    
+    
+    using delta
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    as
+    with source_data as (
+    select 1 as id, 'aaa' as field1, 'bbb' as field2, 111 as field3, 'TTT' as field4
+    union all select 2 as id, 'ccc' as field1, 'ddd' as field2, 222 as field3, 'UUU' as field4
+    )
+    
+    select id
+    ,field1
+    ,field2
+    ,field3
+    ,field4
+    
+    from source_data
+model.test.test_incremental_tags:
+- sequence: 0
+  type: execute
+  sql: |-
+    SELECT
+    table_catalog,
+    table_schema,
+    table_name,
+    filter_name,
+    target_columns
+    FROM `e2e`.`information_schema`.`row_filters`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'adapters_databricks_incremental_tags'
+    AND table_name = 'test_incremental_tags'
+- sequence: 1
+  type: execute
+  sql: |-
+    create or replace table `e2e`.`adapters_databricks_incremental_tags`.`test_incremental_tags`
+    
+    
+    
+    using delta
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    as
+    WITH source_data AS (SELECT * FROM `e2e`.`adapters_databricks_incremental_tags`.`a` )
+    
+    
+    
+    SELECT * FROM source_data where id <= 1
+- sequence: 2
+  type: execute
+  sql: |-
+    ALTER 
+    TABLE
+    `e2e`.`adapters_databricks_incremental_tags`.`test_incremental_tags` SET TAGS (
+    'parent_tag' = 'parent_value', 'mode' = 'initial'
+    )

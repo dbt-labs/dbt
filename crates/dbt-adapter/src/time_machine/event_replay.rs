@@ -12,6 +12,7 @@ use std::path::Path;
 use std::str::FromStr;
 use std::sync::LazyLock;
 
+use dbt_adapter_engine::cow::uppercase;
 use flate2::read::GzDecoder;
 use parking_lot::RwLock;
 use regex::Regex;
@@ -26,6 +27,7 @@ use super::semantic::SemanticCategory;
 use super::serde::values_match;
 use super::validation::{SqlSanitizer, TmpSuffixSanitizer, UuidSanitizer};
 use crate::AdapterType;
+use crate::sql::complex_types::canonicalize_complex_types_for;
 use crate::sql::diff::{canonicalize_python_model_pair, compare_sql};
 
 /// Marker for temp-relation identifiers, which carry a non-deterministic suffix.
@@ -92,13 +94,13 @@ pub(crate) fn is_read_only_execute_call(method: &str, args: &serde_json::Value) 
 /// recorded event when replaying.
 fn metadata_args_match(recorded: &MetadataCallArgs, actual: &MetadataCallArgs) -> bool {
     fn relations_match(recorded_relations: &[String], actual_relations: &[String]) -> bool {
-        let recorded_set: HashSet<String> = recorded_relations
+        let recorded_set: HashSet<Cow<'_, str>> = recorded_relations
             .iter()
-            .map(|r| r.to_ascii_uppercase())
+            .map(|r| uppercase(Cow::Borrowed(r.as_str())))
             .collect();
         actual_relations
             .iter()
-            .all(|rel| recorded_set.contains(&rel.to_ascii_uppercase()))
+            .all(|rel| recorded_set.contains(&uppercase(rel.into())))
     }
 
     match (recorded, actual) {
@@ -184,7 +186,14 @@ pub(crate) fn adapter_args_match_for_type(
                 .map_or_else(
                     || values_match(recorded, actual),
                     |(rec_sql, act_sql)| {
-                        UuidSanitizer.sanitize(rec_sql) == UuidSanitizer.sanitize(act_sql)
+                        let canonical = |sql: &str| {
+                            canonicalize_complex_types_for(
+                                &UuidSanitizer.sanitize(sql),
+                                adapter_type,
+                            )
+                            .into_owned()
+                        };
+                        canonical(rec_sql) == canonical(act_sql)
                     },
                 )
         }
@@ -195,7 +204,35 @@ pub(crate) fn adapter_args_match_for_type(
                 |(rec_sql, act_sql)| compare_sql(rec_sql, act_sql, adapter_type).is_ok(),
             ),
         "submit_python_job" => python_job_args_match(recorded, actual),
+        "update_columns" => {
+            let (mut recorded, mut actual) = (recorded.clone(), actual.clone());
+            fill_constraint_warn_flag_defaults(&mut recorded);
+            fill_constraint_warn_flag_defaults(&mut actual);
+            values_match(&recorded, &actual)
+        }
         _ => values_match(recorded, actual),
+    }
+}
+
+/// Set each missing `warn_unenforced` and `warn_unsupported` flag to `true` in the column
+/// constraints of `update_columns(relation, columns)` args.
+///
+/// PR #16910 changed the default of these flags from unset to `true`, as in dbt-core. Older
+/// recordings omit the keys and newer binaries serialize them. An omitted flag and `true` have
+/// the same meaning, so fill the default on both sides. An explicit `false` still mismatches.
+fn fill_constraint_warn_flag_defaults(args: &mut serde_json::Value) {
+    let constraints = args
+        .get_mut(1)
+        .and_then(serde_json::Value::as_object_mut)
+        .into_iter()
+        .flat_map(|columns| columns.values_mut())
+        .filter_map(|column| column.get_mut("constraints")?.as_array_mut())
+        .flatten()
+        .filter_map(serde_json::Value::as_object_mut);
+    for constraint in constraints {
+        for flag in ["warn_unenforced", "warn_unsupported"] {
+            constraint.entry(flag).or_insert(true.into());
+        }
     }
 }
 
@@ -329,7 +366,7 @@ fn python_job_args_match(recorded: &serde_json::Value, actual: &serde_json::Valu
                     let is_model = obj
                         .get("__type__")
                         .and_then(serde_json::Value::as_str)
-                        .is_some_and(|type_name| type_name.ends_with("LazyModelWrapper"));
+                        .is_some_and(super::serde::is_node_context_type);
                     if is_model || inside_model && obj.contains_key("adapter") {
                         obj.remove("raw_code");
                         obj.remove("adapter");
@@ -524,6 +561,14 @@ impl std::fmt::Display for ReplayMode {
     }
 }
 
+/// Read `header.json` from a recording directory.
+pub(crate) fn read_recording_header(recording_dir: &Path) -> Result<RecordingHeader, ReplayError> {
+    let header_path = recording_dir.join("header.json");
+    let header_content = std::fs::read_to_string(&header_path)
+        .map_err(|e| ReplayError::InvalidFormat(format!("Failed to read header.json: {}", e)))?;
+    Ok(serde_json::from_str(&header_content)?)
+}
+
 /// Errors that can occur during replay.
 #[derive(Debug)]
 pub enum ReplayError {
@@ -664,12 +709,7 @@ impl Recording {
             return Err(ReplayError::NotFound(path.display().to_string()));
         }
 
-        // Load header
-        let header_path = path.join("header.json");
-        let header_content = std::fs::read_to_string(&header_path).map_err(|e| {
-            ReplayError::InvalidFormat(format!("Failed to read header.json: {}", e))
-        })?;
-        let header: RecordingHeader = serde_json::from_str(&header_content)?;
+        let header = read_recording_header(path)?;
 
         // Load events
         let events_path = path.join("events.ndjson.gz");
@@ -1004,6 +1044,29 @@ impl Recording {
         }
 
         None
+    }
+
+    /// Find a read-only `execute` event in the current segment for diagnostics.
+    ///
+    /// This does not consume the event or look beyond the next write barrier.
+    pub(crate) fn read_only_execute_candidate(
+        &self,
+        node_id: &str,
+        method: &str,
+    ) -> Option<&AdapterCallEvent> {
+        let events = self.adapter_events_by_node.get(node_id)?;
+        let state = self.semantic_adapter_state.read();
+        let search_start = state.get(node_id).map_or(0, |state| state.segment_start);
+        let search_end = events[search_start..]
+            .iter()
+            .position(|event| {
+                event.semantic_category.is_mutating() && !is_read_only_execute_event(event)
+            })
+            .map_or(events.len(), |pos| search_start + pos);
+
+        events[search_start..search_end]
+            .iter()
+            .find(|event| event.method == method && is_read_only_execute_event(event))
     }
 
     /// Find a matching read operation within the current segment (untracked).
@@ -2453,6 +2516,82 @@ mod tests {
         assert!(result.is_none(), "Should not find TABLE_C");
     }
 
+    /// `update_columns` args with one column that carries the given constraint.
+    fn update_columns_args(constraint: serde_json::Value) -> serde_json::Value {
+        serde_json::json!([
+            { "__type__": "RelationObject", "identifier": "t" },
+            {
+                "__type__": "minijinja::value::object::mutable_map::MutableMap",
+                "id": { "constraints": [constraint], "name": "id" }
+            }
+        ])
+    }
+
+    #[test]
+    fn test_update_columns_treats_missing_constraint_warn_flags_as_true() {
+        // Recordings made before PR #16910 omit the flags. Newer binaries serialize the
+        // `true` default. The fill must not hide an explicit `false`.
+        let recorded = update_columns_args(serde_json::json!({"type": "primary_key"}));
+        let actual = update_columns_args(serde_json::json!({
+            "type": "primary_key",
+            "warn_unenforced": true,
+            "warn_unsupported": true
+        }));
+        let actual_false = update_columns_args(serde_json::json!({
+            "type": "primary_key",
+            "warn_unenforced": false,
+            "warn_unsupported": true
+        }));
+
+        assert!(adapter_args_match_for_type(
+            "update_columns",
+            &recorded,
+            &actual,
+            AdapterType::Bigquery
+        ));
+        assert!(adapter_args_match_for_type(
+            "update_columns",
+            &actual,
+            &recorded,
+            AdapterType::Bigquery
+        ));
+        assert!(!adapter_args_match_for_type(
+            "update_columns",
+            &recorded,
+            &actual_false,
+            AdapterType::Bigquery
+        ));
+    }
+
+    #[test]
+    fn test_column_schema_query_matches_complex_type_spelling() {
+        // Unit test fixtures used to cast to `struct<a:t>` and now cast to ``STRUCT<`a` t>``.
+        let args = |ty: &str| serde_json::json!([format!("select cast(null as {ty}) as payload")]);
+        let recorded = args("struct<id:string,tags:array<string>>");
+        let actual = args("STRUCT<`id` string, `tags` ARRAY<string>>");
+        let other_type = args("STRUCT<`id` string, `tags` ARRAY<int>>");
+
+        for method in ["get_column_schema_from_query", "execute"] {
+            assert!(
+                adapter_args_match_for_type(method, &recorded, &actual, AdapterType::Databricks),
+                "{method}"
+            );
+            assert!(
+                !adapter_args_match_for_type(
+                    method,
+                    &recorded,
+                    &other_type,
+                    AdapterType::Databricks
+                ),
+                "{method}"
+            );
+            assert!(
+                !adapter_args_match_for_type(method, &recorded, &actual, AdapterType::Snowflake),
+                "{method}"
+            );
+        }
+    }
+
     #[test]
     fn test_submit_python_job_ignores_model_raw_code() {
         // Recordings made before raw_code was populated at parse time captured the
@@ -2464,7 +2603,7 @@ mod tests {
             "import pandas as pd\n\ndef model(dbt, session):\n    return None\n"
         ]);
         let actual = serde_json::json!([
-            { "__type__": "LazyModelWrapper", "alias": "m", "raw_code": "import pandas as pd\n\ndef model(dbt, session):\n    return None" },
+            { "__type__": "dbt_schemas::jinja_node::LazyNodeContext", "alias": "m", "raw_code": "import pandas as pd\n\ndef model(dbt, session):\n    return None" },
             "import pandas as pd\n\ndef model(dbt, session):\n    return None\n"
         ]);
 

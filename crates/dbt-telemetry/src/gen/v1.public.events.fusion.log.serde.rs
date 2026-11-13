@@ -865,6 +865,9 @@ impl serde::Serialize for ProgressMessage {
         if self.phase.is_some() {
             len += 1;
         }
+        if self.blocking_run_id.is_some() {
+            len += 1;
+        }
         let mut struct_ser = serializer.serialize_struct("v1.public.events.fusion.log.ProgressMessage", len)?;
         if let Some(v) = self.dbt_core_event_code.as_ref() {
             struct_ser.serialize_field("dbt_core_event_code", v)?;
@@ -892,6 +895,9 @@ impl serde::Serialize for ProgressMessage {
                 .map_err(|_| serde::ser::Error::custom(format!("Invalid variant {}", *v)))?;
             struct_ser.serialize_field("phase", &v)?;
         }
+        if let Some(v) = self.blocking_run_id.as_ref() {
+            struct_ser.serialize_field("blocking_run_id", v)?;
+        }
         struct_ser.end()
     }
 }
@@ -912,6 +918,8 @@ impl<'de> serde::Deserialize<'de> for ProgressMessage {
             "file",
             "line",
             "phase",
+            "blocking_run_id",
+            "blockingRunId",
         ];
 
         #[allow(clippy::enum_variant_names)]
@@ -924,6 +932,7 @@ impl<'de> serde::Deserialize<'de> for ProgressMessage {
             File,
             Line,
             Phase,
+            BlockingRunId,
             __SkipField__,
         }
         impl<'de> serde::Deserialize<'de> for GeneratedField {
@@ -954,6 +963,7 @@ impl<'de> serde::Deserialize<'de> for ProgressMessage {
                             "file" => Ok(GeneratedField::File),
                             "line" => Ok(GeneratedField::Line),
                             "phase" => Ok(GeneratedField::Phase),
+                            "blockingRunId" | "blocking_run_id" => Ok(GeneratedField::BlockingRunId),
                             _ => Ok(GeneratedField::__SkipField__),
                         }
                     }
@@ -981,6 +991,7 @@ impl<'de> serde::Deserialize<'de> for ProgressMessage {
                 let mut file__ = None;
                 let mut line__ = None;
                 let mut phase__ = None;
+                let mut blocking_run_id__ = None;
                 while let Some(k) = map_.next_key()? {
                     match k {
                         GeneratedField::DbtCoreEventCode => {
@@ -1033,6 +1044,12 @@ impl<'de> serde::Deserialize<'de> for ProgressMessage {
                             }
                             phase__ = map_.next_value::<::std::option::Option<super::phase::ExecutionPhase>>()?.map(|x| x as i32);
                         }
+                        GeneratedField::BlockingRunId => {
+                            if blocking_run_id__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("blockingRunId"));
+                            }
+                            blocking_run_id__ = map_.next_value()?;
+                        }
                         GeneratedField::__SkipField__ => {
                             let _ = map_.next_value::<serde::de::IgnoredAny>()?;
                         }
@@ -1047,6 +1064,7 @@ impl<'de> serde::Deserialize<'de> for ProgressMessage {
                     file: file__,
                     line: line__,
                     phase: phase__,
+                    blocking_run_id: blocking_run_id__,
                 })
             }
         }

@@ -16,10 +16,8 @@ pub mod utils;
 #[macro_use]
 pub mod type_erase;
 
-use dashmap::DashMap;
-
 use crate::machinery::Span;
-use crate::types::builtins::{BuiltinDefinition, Reference};
+use crate::types::builtins::{BuiltinDefinition, Reference, TypeRegistry};
 use crate::types::dict::DictType;
 use crate::types::function::{LambdaType, UserDefinedFunctionType};
 use crate::types::iterable::IterableType;
@@ -570,7 +568,7 @@ impl Type {
         &self,
         other: &Type,
         op: &'static str,
-        registry: Arc<DashMap<String, Type>>,
+        registry: Arc<TypeRegistry>,
     ) -> Option<Type> {
         match (self, other, op) {
             // Any type can do binary operations with anything, result is Any
@@ -606,9 +604,9 @@ impl Type {
             // String formatting (% operator)
             (Type::String(_), Type::List(_) | Type::Tuple(_), "%") => Some(Type::String(None)),
 
-            (Type::TimeStamp, Type::TimeStamp, "-") => registry
-                .get("modules.datetime.timedelta")
-                .map(|timedelta| timedelta.value().clone()),
+            (Type::TimeStamp, Type::TimeStamp, "-") => {
+                registry.read_sync("modules.datetime.timedelta", |_, type_| type_.clone())
+            }
 
             (Type::TimeStamp, Type::Object(class), "+")
                 if class.type_debug() == "modules.datetime.timedelta" =>
@@ -976,12 +974,11 @@ mod tests {
     fn union_join_must_not_drop_equivalent_object_types() {
         use crate::types::builtins::{BuiltinDefinition, Definition};
         use crate::types::DynObject;
-        use dashmap::DashMap;
         use std::sync::Arc;
 
         // Two distinct object instances that represent the same conceptual type ("relation")
         // should not cause a join to drop the type and collapse to None.
-        let registry = Arc::new(DashMap::new());
+        let registry = Arc::new(TypeRegistry::default());
         let relation_def: Definition = minijinja_typecheck_builtins::get_definitions()
             .iter()
             .find(|d| d.object.as_ref().is_some_and(|o| o.id == "relation"))

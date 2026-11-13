@@ -323,7 +323,7 @@ fn record_skipped_stats(
             ),
         };
         // Insert stats for skipped nodes so they appear in run_results.json
-        ctx.inner.run_stats.insert(
+        ctx.inner.run_stats.upsert_sync(
             unique_id.clone(),
             Stat::new(
                 unique_id,
@@ -792,7 +792,7 @@ fn report_node_evaluation(
                 get_execution_phase_from_task(node),
                 node_outcome,
                 None,
-                dbt_node.static_analysis().into_inner(),
+                **dbt_node.static_analysis(),
                 (None, Span::default()),
             );
         }

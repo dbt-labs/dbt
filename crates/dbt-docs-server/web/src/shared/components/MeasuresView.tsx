@@ -1,6 +1,6 @@
 import { FC } from 'react';
+import type { Measure } from 'dbt-docs-lib/domain';
 
-import { Measure } from '../typings/domain/asset';
 import { SemanticAspectCard } from './SemanticAspectCard';
 
 type MeasuresViewProps = {

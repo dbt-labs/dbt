@@ -1,0 +1,17 @@
+version: 2
+
+models:
+  - name: txn_incremental
+    description: Incremental model that writes column docs.
+    columns:
+      - name: id
+        description: Row id.
+      - name: name
+        description: Row name.
+  - name: txn_table
+    description: Table model that writes column docs.
+    columns:
+      - name: id
+        description: Row id.
+      - name: name
+        description: Row name.

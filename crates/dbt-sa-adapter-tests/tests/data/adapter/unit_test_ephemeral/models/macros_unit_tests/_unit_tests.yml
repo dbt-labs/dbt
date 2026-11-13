@@ -1,0 +1,18 @@
+version: 2
+
+unit_tests:
+  - name: test_ephemeral_macro_under_test
+    model: ephemeral_macro_under_test
+    given:
+      - input: ref('stg_input')
+        rows:
+          - company_id: 10
+            revenue: 50
+          - company_id: 20
+            revenue: 75
+    expect:
+      rows:
+        - company_id: 10
+          doubled_revenue: 100
+        - company_id: 20
+          doubled_revenue: 150

@@ -1108,6 +1108,12 @@ impl IndexWriter {
                     &mut changed,
                 );
                 set_if_changed(r, "grain_tested", str_array(&c.grain_tested), &mut changed);
+                set_if_changed(
+                    r,
+                    "grain_inferred",
+                    str_array(&c.grain_inferred),
+                    &mut changed,
+                );
                 set_if_changed(r, "classifiers", str_array(&c.classifiers), &mut changed);
                 set_if_changed(r, "table_role", opt_str(&c.table_role), &mut changed);
                 if changed {
@@ -1287,6 +1293,11 @@ impl IndexWriter {
             }
             obj.insert("tags".to_string(), Value::Array(vec![]));
             obj.insert(
+                "column_constraints".to_string(),
+                Value::String("[]".to_string()),
+            );
+            obj.insert("meta".to_string(), Value::String("{}".to_string()));
+            obj.insert(
                 "classifiers".to_string(),
                 Value::Array(
                     ci.classifiers
@@ -1440,6 +1451,11 @@ impl IndexWriter {
                 obj.insert("catalog_comment".to_string(), Value::String(cc.clone()));
             }
             obj.insert("tags".to_string(), Value::Array(vec![]));
+            obj.insert(
+                "column_constraints".to_string(),
+                Value::String("[]".to_string()),
+            );
+            obj.insert("meta".to_string(), Value::String("{}".to_string()));
             // `classifiers` is a non-nullable list column; catalog-only columns
             // carry none, but the field must be present for serde_arrow.
             obj.insert("classifiers".to_string(), Value::Array(vec![]));

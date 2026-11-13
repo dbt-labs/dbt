@@ -22,7 +22,9 @@ use crate::schemas::common::DbtUniqueKey;
 use crate::schemas::common::{DocsConfig, HardDeletes, OnConfigurationChange, OnError};
 use crate::schemas::common::{HookConfig, Hooks, OnSchemaChange};
 use crate::schemas::dbt_column::Granularity;
-use crate::schemas::project::configs::common::WarehouseSpecificNodeConfig;
+use crate::schemas::project::configs::common::{
+    LazyWarehouseSpecificNodeConfig, WarehouseSpecificNodeConfig,
+};
 use crate::schemas::project::configs::model_config::LatestVersionPointer;
 use crate::schemas::properties::{ModelFreshness, ModelState};
 
@@ -140,6 +142,12 @@ pub struct ManifestMaterializableCommonAttributes {
     pub meta: IndexMap<String, YmlValue>,
 }
 
+/// The propagation target that a manifest records as `canonical_relation_adapter`. Only
+/// Databricks and BigQuery change how a node's relation is rendered, so other targets give `None`.
+pub(super) fn canonical_relation_marker(target: Option<AdapterType>) -> Option<AdapterType> {
+    target.filter(|target| matches!(target, AdapterType::Databricks | AdapterType::Bigquery))
+}
+
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -148,6 +156,10 @@ pub struct ManifestNodeBaseAttributes {
     #[serde(default)]
     pub alias: String,
     pub relation_name: Option<String>,
+    /// The propagation target that the node uses for relation rendering, recorded only when it
+    /// is Databricks or BigQuery. Manifests written before this field omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canonical_relation_adapter: Option<AdapterType>,
 
     // Paths
     pub compiled_path: Option<String>,
@@ -234,6 +246,9 @@ impl From<DbtSeed> for ManifestSeed {
             __base_attr__: ManifestNodeBaseAttributes {
                 alias: seed.__base_attr__.alias,
                 relation_name: seed.__base_attr__.relation_name,
+                canonical_relation_adapter: canonical_relation_marker(
+                    seed.__base_attr__.effective_propagation_target,
+                ),
                 columns: seed.__base_attr__.columns,
                 depends_on: seed.__base_attr__.depends_on,
                 refs: seed.__base_attr__.refs,
@@ -307,6 +322,7 @@ impl From<DbtUnitTest> for ManifestUnitTest {
             __base_attr__: ManifestNodeBaseAttributes {
                 alias: unit_test.__base_attr__.alias,
                 relation_name: unit_test.__base_attr__.relation_name,
+                canonical_relation_adapter: None,
                 columns: unit_test.__base_attr__.columns,
                 depends_on: unit_test.__base_attr__.depends_on,
                 refs: unit_test.__base_attr__.refs,
@@ -391,6 +407,7 @@ impl From<DbtTest> for ManifestDataTest {
             __base_attr__: ManifestNodeBaseAttributes {
                 alias: test.__base_attr__.alias,
                 relation_name: test.__base_attr__.relation_name,
+                canonical_relation_adapter: None,
                 columns: test.__base_attr__.columns,
                 depends_on: test.__base_attr__.depends_on,
                 refs: test.__base_attr__.refs,
@@ -501,7 +518,9 @@ pub struct ManifestSnapshotConfig {
     pub sync: Option<SyncConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub state: Option<ModelState>,
-    pub __warehouse_specific_config__: WarehouseSpecificNodeConfig,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub table_format: Option<String>,
+    pub __warehouse_specific_config__: LazyWarehouseSpecificNodeConfig,
 }
 
 impl From<SnapshotConfig> for ManifestSnapshotConfig {
@@ -546,6 +565,7 @@ impl From<SnapshotConfig> for ManifestSnapshotConfig {
             docs: config.docs,
             sync: config.sync,
             state: config.state,
+            table_format: config.table_format,
             __warehouse_specific_config__: config.__warehouse_specific_config__,
         }
     }
@@ -595,6 +615,7 @@ impl From<ManifestSnapshotConfig> for SnapshotConfig {
             docs: config.docs,
             sync: config.sync,
             state: config.state,
+            table_format: config.table_format,
             __warehouse_specific_config__: config.__warehouse_specific_config__,
         }
     }
@@ -635,6 +656,7 @@ impl From<DbtSnapshot> for ManifestSnapshot {
             __base_attr__: ManifestNodeBaseAttributes {
                 alias: snapshot.__base_attr__.alias,
                 relation_name: snapshot.__base_attr__.relation_name,
+                canonical_relation_adapter: None,
                 columns: snapshot.__base_attr__.columns,
                 depends_on: snapshot.__base_attr__.depends_on,
                 refs: snapshot.__base_attr__.refs,
@@ -1005,7 +1027,8 @@ pub struct ManifestModelConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sync: Option<SyncConfig>,
     // Adapter specific configs
-    pub __warehouse_specific_config__: WarehouseSpecificNodeConfig,
+    #[schemars(with = "WarehouseSpecificNodeConfig")]
+    pub __warehouse_specific_config__: LazyWarehouseSpecificNodeConfig,
 }
 
 #[skip_serializing_none]
@@ -1042,6 +1065,9 @@ pub struct ManifestSeedConfig {
     #[serde(default, deserialize_with = "bool_or_string_bool")]
     pub quote_columns: Option<bool>,
     pub delimiter: Option<Spanned<String>>,
+    #[serde(default, deserialize_with = "bool_or_string_bool")]
+    pub all_varchar: Option<bool>,
+    pub fast: Option<bool>,
     pub event_time: Option<String>,
     pub full_refresh: Option<bool>,
     pub group: Option<String>,
@@ -1073,7 +1099,8 @@ pub struct ManifestSeedConfig {
     pub quoting: Option<DbtQuoting>,
     pub materialized: Option<DbtMaterialization>,
     // Adapter specific configs
-    pub __warehouse_specific_config__: WarehouseSpecificNodeConfig,
+    #[schemars(with = "WarehouseSpecificNodeConfig")]
+    pub __warehouse_specific_config__: LazyWarehouseSpecificNodeConfig,
 }
 
 impl From<SeedConfig> for ManifestSeedConfig {
@@ -1091,6 +1118,8 @@ impl From<SeedConfig> for ManifestSeedConfig {
             grants: config.grants,
             quote_columns: config.quote_columns,
             delimiter: config.delimiter,
+            all_varchar: config.all_varchar,
+            fast: config.fast,
             event_time: config.event_time,
             full_refresh: config.full_refresh,
             group: config.group,
@@ -1128,6 +1157,8 @@ impl From<ManifestSeedConfig> for SeedConfig {
             grants: config.grants,
             quote_columns: config.quote_columns,
             delimiter: config.delimiter,
+            all_varchar: config.all_varchar,
+            fast: config.fast,
             event_time: config.event_time,
             full_refresh: config.full_refresh,
             group: config.group,
@@ -1342,6 +1373,9 @@ impl From<DbtModel> for ManifestModel {
             __base_attr__: ManifestNodeBaseAttributes {
                 alias: model.__base_attr__.alias,
                 relation_name: model.__base_attr__.relation_name,
+                canonical_relation_adapter: canonical_relation_marker(
+                    model.__base_attr__.effective_propagation_target,
+                ),
                 columns: model.__base_attr__.columns,
                 depends_on: model.__base_attr__.depends_on,
                 refs: model.__base_attr__.refs,
@@ -1427,6 +1461,7 @@ impl From<DbtAnalysis> for ManifestAnalysis {
             __base_attr__: ManifestNodeBaseAttributes {
                 alias: analysis.__base_attr__.alias,
                 relation_name: analysis.__base_attr__.relation_name,
+                canonical_relation_adapter: None,
                 columns: analysis.__base_attr__.columns,
                 depends_on: analysis.__base_attr__.depends_on,
                 refs: analysis.__base_attr__.refs,
@@ -1506,6 +1541,7 @@ impl From<DbtCheck> for ManifestCheck {
             __base_attr__: ManifestNodeBaseAttributes {
                 alias: check.__base_attr__.alias,
                 relation_name: check.__base_attr__.relation_name,
+                canonical_relation_adapter: None,
                 columns: check.__base_attr__.columns,
                 depends_on: check.__base_attr__.depends_on,
                 refs: check.__base_attr__.refs,
@@ -1565,6 +1601,7 @@ impl From<DbtOperation> for ManifestOperation {
             __base_attr__: ManifestNodeBaseAttributes {
                 alias: operation.__base_attr__.alias,
                 relation_name: operation.__base_attr__.relation_name,
+                canonical_relation_adapter: None,
                 columns: operation.__base_attr__.columns,
                 depends_on: operation.__base_attr__.depends_on,
                 refs: operation.__base_attr__.refs,
@@ -1678,6 +1715,7 @@ impl From<DbtFunction> for ManifestFunction {
             __base_attr__: ManifestNodeBaseAttributes {
                 alias: function.__base_attr__.alias,
                 relation_name: function.__base_attr__.relation_name,
+                canonical_relation_adapter: None,
                 compiled_path: None,
                 build_path: None,
                 columns: Vec::new(),
@@ -2298,8 +2336,55 @@ mod manifest_model_config_null_omission_tests {
 #[cfg(test)]
 mod node_adapter_manifest_round_trip_tests {
     use super::{
-        AdapterType, ManifestSeedConfig, ManifestSnapshotConfig, SeedConfig, SnapshotConfig,
+        AdapterType, DbtModel, DbtSeed, ManifestModel, ManifestModelConfig, ManifestSeedConfig,
+        ManifestSnapshotConfig, ModelConfig, NodeBaseAttributes, SeedConfig, SnapshotConfig,
     };
+    use crate::schemas::project::configs::warehouse_config_test_support::assert_warehouse_config_allocates_only_when_set;
+
+    #[test]
+    fn canonical_relation_marker_round_trips_for_models_and_seeds() {
+        for target in [AdapterType::Databricks, AdapterType::Bigquery] {
+            let model = DbtModel {
+                __base_attr__: NodeBaseAttributes {
+                    effective_propagation_target: Some(target),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let manifest_model: ManifestModel = model.into();
+            assert_eq!(
+                manifest_model.__base_attr__.canonical_relation_adapter,
+                Some(target)
+            );
+
+            let seed = DbtSeed {
+                __base_attr__: NodeBaseAttributes {
+                    effective_propagation_target: Some(target),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let manifest_seed: super::ManifestSeed = seed.into();
+            assert_eq!(
+                manifest_seed.__base_attr__.canonical_relation_adapter,
+                Some(target)
+            );
+        }
+
+        let snowflake = DbtModel {
+            __base_attr__: NodeBaseAttributes {
+                effective_propagation_target: Some(AdapterType::Snowflake),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(
+            ManifestModel::from(snowflake)
+                .__base_attr__
+                .canonical_relation_adapter,
+            None
+        );
+    }
 
     #[test]
     fn seed_config_adapter_round_trips_through_manifest_seed_config() {
@@ -2319,14 +2404,66 @@ mod node_adapter_manifest_round_trip_tests {
     fn snapshot_config_adapter_round_trips_through_manifest_snapshot_config() {
         let snapshot_config = SnapshotConfig {
             adapter: Some(AdapterType::Bigquery),
+            table_format: Some("iceberg".to_string()),
+            __warehouse_specific_config__: super::WarehouseSpecificNodeConfig {
+                iceberg_version: Some(2),
+                ..Default::default()
+            }
+            .into(),
             ..Default::default()
         };
 
         let manifest_config: ManifestSnapshotConfig = snapshot_config.into();
         assert_eq!(manifest_config.adapter, Some(AdapterType::Bigquery));
+        assert_eq!(manifest_config.table_format.as_deref(), Some("iceberg"));
+        assert_eq!(
+            manifest_config
+                .__warehouse_specific_config__
+                .iceberg_version,
+            Some(2)
+        );
 
         let round_tripped: SnapshotConfig = manifest_config.into();
         assert_eq!(round_tripped.adapter, Some(AdapterType::Bigquery));
+        assert_eq!(round_tripped.table_format.as_deref(), Some("iceberg"));
+        assert_eq!(
+            round_tripped.__warehouse_specific_config__.iceberg_version,
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn default_warehouse_config_stays_unallocated_through_manifest_configs() {
+        let model: ManifestModelConfig = ModelConfig::default().into();
+        assert!(model.__warehouse_specific_config__.get().is_none());
+        let model: ModelConfig = model.into();
+        assert!(model.__warehouse_specific_config__.get().is_none());
+
+        let seed: ManifestSeedConfig = SeedConfig::default().into();
+        assert!(seed.__warehouse_specific_config__.get().is_none());
+        let seed: SeedConfig = seed.into();
+        assert!(seed.__warehouse_specific_config__.get().is_none());
+
+        let snapshot: ManifestSnapshotConfig = SnapshotConfig::default().into();
+        assert!(snapshot.__warehouse_specific_config__.get().is_none());
+        let snapshot: SnapshotConfig = snapshot.into();
+        assert!(snapshot.__warehouse_specific_config__.get().is_none());
+    }
+
+    #[test]
+    fn manifest_configs_allocate_warehouse_config_only_when_set() {
+        assert_warehouse_config_allocates_only_when_set::<ManifestModelConfig>(
+            "materialized: table\n",
+            |config| &config.__warehouse_specific_config__,
+        );
+        assert_warehouse_config_allocates_only_when_set::<ManifestSeedConfig>(
+            "delimiter: ','\n",
+            |config| &config.__warehouse_specific_config__,
+        );
+        assert_warehouse_config_allocates_only_when_set::<ManifestSnapshotConfig>(
+            "strategy: timestamp\n",
+            |config| &config.__warehouse_specific_config__,
+        );
     }
 
     #[test]

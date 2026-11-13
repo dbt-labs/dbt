@@ -34,6 +34,24 @@ use crate::errors::AdapterError;
 // connection-admission gate.
 thread_local! {
     static CONNECTION: pri::TlsConnectionContainer = pri::TlsConnectionContainer::new();
+    // The node that left a transaction open on this thread's connection, if any. A transaction
+    // spans several `execute` calls, so it cannot live in the per-call guard. Whoever retires the
+    // connection must clear it, otherwise a new session would be treated as inside a transaction.
+    static OPEN_TRANSACTION: RefCell<Option<Option<String>>> = const { RefCell::new(None) };
+}
+
+/// The node that has a transaction open on this thread's connection (`Some(None)`: a node
+/// without an id), or `None` when no transaction is open.
+pub(crate) fn open_transaction() -> Option<Option<String>> {
+    OPEN_TRANSACTION.with(|t| t.borrow().clone())
+}
+
+pub(crate) fn set_open_transaction(node_id: Option<String>) {
+    OPEN_TRANSACTION.with(|t| *t.borrow_mut() = Some(node_id));
+}
+
+pub(crate) fn clear_open_transaction() {
+    OPEN_TRANSACTION.with(|t| *t.borrow_mut() = None);
 }
 
 /// Drop this thread's cached connection instead of leaving it in the slot, so a
@@ -42,6 +60,7 @@ thread_local! {
 pub fn drop_thread_local_connection() {
     let conn = CONNECTION.with(|c| c.take());
     drop(conn);
+    clear_open_transaction();
 }
 
 /// Take this thread's cached connection, if it can be used with `fingerprint`.
@@ -54,16 +73,20 @@ fn take_tlocal_connection(
 ) -> Option<Box<dyn Connection>> {
     let mut conn = CONNECTION.with(|c| c.take())?;
     if conn.fingerprint() != fingerprint {
+        clear_open_transaction();
         return None;
     }
     conn.update_node_id(node_id);
     Some(conn)
 }
 
-/// Park a connection in this thread's slot so the next task that runs here
-/// finds it instead of opening another one.
-fn put_tlocal_connection(conn: Box<dyn Connection>) {
-    CONNECTION.with(|c| c.replace(Some(conn)));
+/// Whether this thread's slot currently holds a (parked) connection.
+#[cfg(test)]
+pub(crate) fn tlocal_slot_occupied() -> bool {
+    let conn = CONNECTION.with(|c| c.take());
+    let occupied = conn.is_some();
+    CONNECTION.with(|c| c.replace(conn));
+    occupied
 }
 
 /// Borrow the current thread-local connection or create one if it's not set yet.
@@ -126,12 +149,17 @@ pub struct ConnectionGuard<'a> {
 }
 
 impl ConnectionGuard<'_> {
-    fn new(conn: Box<dyn Connection>) -> Self {
+    pub(crate) fn new(conn: Box<dyn Connection>) -> Self {
         Self {
             conn: Some(conn),
             persist: true,
             _phantom: PhantomData,
         }
+    }
+
+    /// Do not return the connection to thread-local on drop.
+    pub(crate) fn discard_conn_on_drop(&mut self) {
+        self.persist = false;
     }
 }
 impl Deref for ConnectionGuard<'_> {
@@ -152,6 +180,8 @@ impl Drop for ConnectionGuard<'_> {
             let conn = self.conn.take();
             CONNECTION.with(|c| c.replace(conn));
         } else if let Some(conn) = self.conn.as_ref() {
+            // The session is closed with the connection, which rolls the transaction back.
+            clear_open_transaction();
             emit_trace_event(|| {
                 (
                     AdapterConnectionClose {
@@ -249,30 +279,29 @@ impl AdapterConnectionFactory {
 
 impl ConnectionFactory for AdapterConnectionFactory {
     type Error = Cancellable<AdapterError>;
+    type Connection = ConnectionGuard<'static>;
 
-    fn new_connection(&self, node_id: Option<&str>) -> Result<Box<dyn Connection>, Self::Error> {
-        let node_id = node_id.map(|s| s.to_string());
-        match take_tlocal_connection(node_id.clone(), self.engine.fingerprint()) {
-            Some(conn) => Ok(conn),
-            None => self
-                .engine
-                .new_connection(None, node_id)
-                .map_err(Cancellable::Error),
-        }
+    fn new_connection(&self, node_id: Option<&str>) -> Result<Self::Connection, Self::Error> {
+        borrow_tlocal_connection_impl(
+            self.engine.adapter_type(),
+            None,
+            node_id.map(|s| s.to_string()),
+            self.engine.fingerprint(),
+            |state, node_id| self.engine.new_connection(state, node_id),
+        )
+        .map_err(Cancellable::Error)
     }
 
-    fn recycle_connection(&self, conn: Box<dyn Connection>) {
-        // DuckDB connections must not outlive this call: a long-lived one keeps
-        // other processes from opening the same database file. Dropping `conn`
-        // here closes it instead of parking it in the thread-local slot, which
-        // is also why `borrow_tlocal_connection_impl` never caches one.
-        if self.engine.adapter_type() == AdapterType::DuckDB {
-            drop(conn);
-        } else {
-            put_tlocal_connection(conn);
-        }
+    fn recycle_connection(&self, conn_guard: Self::Connection) {
+        // Dropping the guard parks the connection in this thread's slot, or closes it
+        // if it was discarded (or must not be cached, e.g. DuckDB).
+        drop(conn_guard);
     }
 }
+
+/// A [`ConnectionFactory`] of [`ConnectionGuard`]s, as used by the metadata adapters.
+pub(crate) type DynConnectionFactory =
+    dyn ConnectionFactory<Error = Cancellable<AdapterError>, Connection = ConnectionGuard<'static>>;
 
 #[cfg(test)]
 mod tests {
@@ -413,6 +442,67 @@ mod tests {
                 1,
                 "connection should be reused from the thread-local slot"
             );
+        });
+    }
+
+    fn borrow_noop() -> ConnectionGuard<'static> {
+        borrow_tlocal_connection_impl(
+            AdapterType::Snowflake,
+            None,
+            None,
+            0,
+            |_, _| Ok(make_conn()),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn discarded_guard_closes_the_connection_instead_of_returning_it_to_the_slot() {
+        run_on_fresh_thread(|| {
+            let mut guard = borrow_noop();
+            guard.discard_conn_on_drop();
+            drop(guard);
+
+            assert!(!tlocal_slot_occupied());
+        });
+    }
+
+    #[test]
+    fn undiscarded_guard_returns_the_connection_to_the_slot() {
+        run_on_fresh_thread(|| {
+            drop(borrow_noop());
+
+            assert!(tlocal_slot_occupied());
+        });
+    }
+
+    #[test]
+    fn duckdb_guard_is_discarded_on_drop() {
+        run_on_fresh_thread(|| {
+            let guard =
+                borrow_tlocal_connection_impl(AdapterType::DuckDB, None, None, 0, |_, _| {
+                    Ok(make_conn())
+                })
+                .unwrap();
+            drop(guard);
+
+            assert!(!tlocal_slot_occupied());
+        });
+    }
+
+    #[test]
+    fn factory_recycle_parks_the_connection_unless_discarded() {
+        run_on_fresh_thread(|| {
+            let factory = AdapterConnectionFactory::new(mock_engine(AdapterType::Snowflake));
+
+            let mut conn = factory.new_connection(None).unwrap();
+            conn.discard_conn_on_drop();
+            factory.recycle_connection(conn);
+            assert!(!tlocal_slot_occupied());
+
+            let conn = factory.new_connection(None).unwrap();
+            factory.recycle_connection(conn);
+            assert!(tlocal_slot_occupied());
         });
     }
 

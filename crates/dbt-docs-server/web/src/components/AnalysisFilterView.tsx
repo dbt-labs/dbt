@@ -15,14 +15,14 @@ import { type NodeSummary } from '../types';
 import { ResourceFilterTable } from './ResourceFilterTable';
 import type { DropdownOption } from './ui/DropdownButton';
 
-interface Props {
+interface AnalysisFilterViewProps {
   project: Project;
   onPeek(uniqueId: string): void;
 }
 
 const ALL_PKG: DropdownOption = { label: 'All', value: '' };
 
-export function AnalysisFilterView({ project, onPeek }: Props) {
+export function AnalysisFilterView({ project, onPeek }: AnalysisFilterViewProps) {
   const links = useResourceLink();
   const [selectedPackage, setSelectedPackage] = useState('');
   // Analyses have no list query of their own — they never did, on either side of the

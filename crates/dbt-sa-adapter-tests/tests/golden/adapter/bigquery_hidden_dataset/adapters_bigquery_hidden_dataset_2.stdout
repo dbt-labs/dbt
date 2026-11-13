@@ -1,0 +1,11 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/incremental_hidden_schema.sql
+   Parsing models/materialized_view_hidden_schema.sql
+   Parsing models/table_hidden_schema.sql
+   Parsing models/view_hidden_schema.sql
+table [_adapters_bigquery_hidden_dataset.table_hidden_schema] => found, type=table, relation=`dbt-test-env`.`_adapters_bigquery_hidden_dataset`.`table_hidden_schema`
+view [_adapters_bigquery_hidden_dataset.view_hidden_schema] => found, type=view, relation=`dbt-test-env`.`_adapters_bigquery_hidden_dataset`.`view_hidden_schema`
+materialized_view [_adapters_bigquery_hidden_dataset.materialized_view_hidden_schema] => found, type=materialized_view, relation=`dbt-test-env`.`_adapters_bigquery_hidden_dataset`.`materialized_view_hidden_schema`
+==================== Execution Summary =====================
+Finished 'run-operation' successfully for target 'bigquery' [duration]

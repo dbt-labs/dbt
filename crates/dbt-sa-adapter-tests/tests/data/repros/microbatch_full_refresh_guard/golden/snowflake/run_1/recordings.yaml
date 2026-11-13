@@ -1,0 +1,113 @@
+dbbbff64:
+- sequence: 0
+  type: execute
+  sql: |-
+    show terse schemas in database development
+    limit 10000
+model.hello_world.microbatch_guard:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace  temporary view development.snowflake_microbatch_full_refresh_guard.microbatch_guard__dbt_tmp_20250103
+    
+    
+    
+    
+    as (
+    
+    
+    select event_ts, id from (select * from development.snowflake_microbatch_full_refresh_guard.source_events where event_ts >= to_timestamp_tz('2025-01-03T00:00:00+00:00') and event_ts < to_timestamp_tz('2025-01-04T00:00:00+00:00'))
+    )
+- sequence: 1
+  type: execute
+  sql: describe table development.snowflake_microbatch_full_refresh_guard.microbatch_guard__dbt_tmp_20250103
+- sequence: 2
+  type: execute
+  sql: describe table development.snowflake_microbatch_full_refresh_guard.microbatch_guard
+- sequence: 3
+  type: execute
+  sql: describe table "DEVELOPMENT"."SNOWFLAKE_MICROBATCH_FULL_REFRESH_GUARD"."MICROBATCH_GUARD"
+- sequence: 4
+  type: execute
+  sql: |-
+    delete from development.snowflake_microbatch_full_refresh_guard.microbatch_guard DBT_INTERNAL_TARGET
+    where (
+    DBT_INTERNAL_TARGET.event_ts >= to_timestamp_tz('2025-01-03 00:00:00+00:00')
+    and DBT_INTERNAL_TARGET.event_ts < to_timestamp_tz('2025-01-04 00:00:00+00:00')
+    
+    )
+- sequence: 5
+  type: execute
+  sql: |-
+    insert into development.snowflake_microbatch_full_refresh_guard.microbatch_guard ("EVENT_TS", "ID")
+    (
+    select "EVENT_TS", "ID"
+    from development.snowflake_microbatch_full_refresh_guard.microbatch_guard__dbt_tmp_20250103
+    )
+- sequence: 6
+  type: execute
+  sql: drop view if exists development.snowflake_microbatch_full_refresh_guard.microbatch_guard__dbt_tmp_20250103 cascade
+- sequence: 7
+  type: execute
+  sql: |-
+    create or replace  temporary view development.snowflake_microbatch_full_refresh_guard.microbatch_guard__dbt_tmp_20250104
+    
+    
+    
+    
+    as (
+    
+    
+    select event_ts, id from (select * from development.snowflake_microbatch_full_refresh_guard.source_events where event_ts >= to_timestamp_tz('2025-01-04T00:00:00+00:00') and event_ts < to_timestamp_tz('2025-01-05T00:00:00+00:00'))
+    )
+- sequence: 8
+  type: execute
+  sql: describe table development.snowflake_microbatch_full_refresh_guard.microbatch_guard__dbt_tmp_20250104
+- sequence: 9
+  type: execute
+  sql: describe table development.snowflake_microbatch_full_refresh_guard.microbatch_guard
+- sequence: 10
+  type: execute
+  sql: describe table development.snowflake_microbatch_full_refresh_guard.microbatch_guard
+- sequence: 11
+  type: execute
+  sql: |-
+    delete from development.snowflake_microbatch_full_refresh_guard.microbatch_guard DBT_INTERNAL_TARGET
+    where (
+    DBT_INTERNAL_TARGET.event_ts >= to_timestamp_tz('2025-01-04 00:00:00+00:00')
+    and DBT_INTERNAL_TARGET.event_ts < to_timestamp_tz('2025-01-05 00:00:00+00:00')
+    
+    )
+- sequence: 12
+  type: execute
+  sql: |-
+    insert into development.snowflake_microbatch_full_refresh_guard.microbatch_guard ("EVENT_TS", "ID")
+    (
+    select "EVENT_TS", "ID"
+    from development.snowflake_microbatch_full_refresh_guard.microbatch_guard__dbt_tmp_20250104
+    )
+- sequence: 13
+  type: execute
+  sql: drop view if exists development.snowflake_microbatch_full_refresh_guard.microbatch_guard__dbt_tmp_20250104 cascade
+model.hello_world.source_events:
+- sequence: 0
+  type: execute
+  sql: SHOW OBJECTS IN SCHEMA "DEVELOPMENT"."SNOWFLAKE_MICROBATCH_FULL_REFRESH_GUARD" LIMIT 10000
+- sequence: 1
+  type: execute
+  sql: |-
+    create or replace transient  table development.snowflake_microbatch_full_refresh_guard.source_events
+    
+    
+    
+    
+    as (
+    
+    select cast('2025-01-01 12:00:00' as timestamp) as event_ts, 1 as id
+    union all
+    select cast('2025-01-02 12:00:00' as timestamp) as event_ts, 2 as id
+    union all
+    select cast('2025-01-03 12:00:00' as timestamp) as event_ts, 3 as id
+    union all
+    select cast('2025-01-04 12:00:00' as timestamp) as event_ts, 4 as id
+    )

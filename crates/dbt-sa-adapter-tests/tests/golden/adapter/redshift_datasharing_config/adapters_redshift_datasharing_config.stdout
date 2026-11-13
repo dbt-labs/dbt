@@ -1,0 +1,14 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/model.sql
+verify_db using target.database: False
+verify_db using a non target.database: False
+has_feature datasharing: None
+ Rendering models/model.sql
+verify_db using target.database: None
+verify_db using a non target.database: None
+has_feature datasharing: True
+==================== Execution Summary =====================
+Finished 'compile' successfully for target 'redshift' [duration]
+Processed: 1 model
+Summary: 1 total | 1 success

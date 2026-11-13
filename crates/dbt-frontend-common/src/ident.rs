@@ -1,13 +1,13 @@
-use crate::dialect::Dialect;
+use crate::Dialect;
 use crate::error::InternalError;
 use crate::utils::{get_version_hash, strip_version_hash};
 use crate::{internal_err, make_internal_err};
-use datafusion_common::{ResolvedTableReference, TableReference};
 use itertools::Itertools;
 use serde::{Deserialize, Deserializer, Serialize, de};
 use std::path::PathBuf;
 
-pub use dbt_ident::{Ident, Identifier};
+use dbt_sql_base::parse_dot;
+pub use dbt_sql_base::{Ident, Identifier};
 /// Owned version of [Qualified].
 pub type QualifiedName = Qualified<'static>;
 
@@ -36,7 +36,7 @@ where
     }
 }
 
-/// A wrapper type around a [TableReference] that implements case-insensitive
+/// A wrapper type around a table reference that implements case-insensitive
 /// semantics.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub enum Qualified<'a> {
@@ -129,9 +129,7 @@ impl<'de> Deserialize<'de> for Qualified<'static> {
     {
         let value = String::deserialize(deserializer)?;
         let dialect = infer_dialect_for_deserialize(&value);
-        dialect
-            .parse_qualified_name(&value)
-            .map_err(|e| de::Error::custom(e.to_string()))
+        QualifiedName::parse(&value, dialect).map_err(|e| de::Error::custom(e.to_string()))
     }
 }
 
@@ -220,27 +218,6 @@ impl<'a> Qualified<'a> {
         }
     }
 
-    pub fn into_table_ref(self) -> TableReference {
-        match self {
-            Qualified::Bare { table } => TableReference::Bare {
-                table: table.into_inner(),
-            },
-            Qualified::Partial { schema, table } => TableReference::Partial {
-                schema: schema.into_inner(),
-                table: table.into_inner(),
-            },
-            Qualified::Full {
-                catalog,
-                schema,
-                table,
-            } => TableReference::Full {
-                catalog: catalog.into_inner(),
-                schema: schema.into_inner(),
-                table: table.into_inner(),
-            },
-        }
-    }
-
     pub fn matches(&self, target: &Qualified) -> bool {
         self.table() == target.table()
             && self
@@ -268,8 +245,38 @@ impl<'a> Qualified<'a> {
                 .is_none_or(|c| target.catalog().is_some_and(|t| c.matches_exact(t)))
     }
 
-    pub fn parse(sql: &str, dialect: impl Into<Dialect>) -> Result<Self, Box<InternalError>> {
-        dialect.into().parse_qualified_name(sql)
+    pub fn parse(sql: &str, dialect: Dialect) -> Result<Self, Box<InternalError>> {
+        let (first, rest) = dialect
+            .parse_catalog_identifier_partial(sql)
+            .map_err(|e| make_internal_err!("Failed to parse {sql} as qualified name: {e}"))?;
+
+        let mut idents = vec![first];
+
+        if !rest.is_empty() {
+            let rest_after_dot = parse_dot(rest)
+                .map_err(|e| make_internal_err!("Failed to parse {sql} as qualified name: {e}"))?;
+            let remaining = dialect
+                .parse_dot_separated_identifiers(rest_after_dot)
+                .map_err(|e| make_internal_err!("Failed to parse {sql} as qualified name: {e}"))?;
+            idents.extend(remaining);
+        }
+
+        // BigQuery INFORMATION_SCHEMA queries can be region-qualified, producing
+        // 4 idents: [catalog, region, "information_schema", table]. Collapse the
+        // region into the catalog so we get 3.
+        if matches!(dialect, Dialect::Bigquery)
+            && idents.len() == 4
+            && idents[2].matches("information_schema")
+        {
+            let database = format!("{}.{}", idents[0].to_value(), idents[1].to_value());
+            idents = vec![
+                Identifier::new(database),
+                idents[2].clone(),
+                idents[3].clone(),
+            ];
+        }
+
+        QualifiedName::try_from(idents)
     }
 
     /// Transform this name by applying a function to each component of the
@@ -292,52 +299,6 @@ impl<'a> Qualified<'a> {
                 catalog: f(catalog),
                 schema: f(schema),
                 table: f(table),
-            },
-        }
-    }
-}
-
-impl From<TableReference> for Qualified<'static> {
-    fn from(value: TableReference) -> Self {
-        match value {
-            TableReference::Full {
-                catalog,
-                schema,
-                table,
-            } => Qualified::Full {
-                catalog: catalog.into(),
-                schema: schema.into(),
-                table: table.into(),
-            },
-            TableReference::Partial { schema, table } => Qualified::Partial {
-                schema: schema.into(),
-                table: table.into(),
-            },
-            TableReference::Bare { table } => Qualified::Bare {
-                table: table.into(),
-            },
-        }
-    }
-}
-
-impl<'a> From<&'a TableReference> for Qualified<'a> {
-    fn from(value: &'a TableReference) -> Self {
-        match value {
-            TableReference::Full {
-                catalog,
-                schema,
-                table,
-            } => Qualified::Full {
-                catalog: catalog.as_ref().into(),
-                schema: schema.as_ref().into(),
-                table: table.as_ref().into(),
-            },
-            TableReference::Partial { schema, table } => Qualified::Partial {
-                schema: schema.as_ref().into(),
-                table: table.as_ref().into(),
-            },
-            TableReference::Bare { table } => Qualified::Bare {
-                table: table.as_ref().into(),
             },
         }
     }
@@ -395,12 +356,6 @@ impl<'a> TryFrom<Vec<Ident<'a>>> for Qualified<'a> {
                 internal_err!("Invalid number of identifiers: {:?}", value)
             }
         }
-    }
-}
-
-impl<'a> From<Qualified<'a>> for TableReference {
-    fn from(value: Qualified<'a>) -> Self {
-        value.into_table_ref()
     }
 }
 
@@ -465,19 +420,14 @@ impl<'de> Deserialize<'de> for FullyQualifiedName {
     {
         let value = String::deserialize(deserializer)?;
         let dialect = infer_dialect_for_deserialize(&value);
-        dialect
-            .parse_fqn(&value)
-            .map_err(|e| de::Error::custom(e.to_string()))
+        FullyQualifiedName::parse(&value, dialect).map_err(|e| de::Error::custom(e.to_string()))
     }
 }
 
-// unfolded constants.rs from sdf.cli
-pub const UPPERCASE_DRAFT_SUFFIX: &str = "___DRAFT";
-pub const LOWERCASE_DRAFT_SUFFIX: &str = "___draft";
-pub const QUOTED_UPPERCASE_DRAFT_SUFFIX: &str = "___DRAFT\"";
-pub const QUOTED_LOWERCASE_DRAFT_SUFFIX: &str = "___draft\"";
-pub const DRAFT_SUFFIX_LEN: usize = LOWERCASE_DRAFT_SUFFIX.len();
-pub const QUOTED_DRAFT_SUFFIX_LEN: usize = QUOTED_LOWERCASE_DRAFT_SUFFIX.len();
+pub use dbt_sql_base::{
+    DRAFT_SUFFIX_LEN, LOWERCASE_DRAFT_SUFFIX, QUOTED_DRAFT_SUFFIX_LEN,
+    QUOTED_LOWERCASE_DRAFT_SUFFIX, QUOTED_UPPERCASE_DRAFT_SUFFIX, UPPERCASE_DRAFT_SUFFIX,
+};
 
 impl FullyQualifiedName {
     pub fn new(catalog: impl AsRef<str>, schema: impl AsRef<str>, id: impl AsRef<str>) -> Self {
@@ -558,8 +508,8 @@ impl FullyQualifiedName {
             && self.table.matches_exact(&other.table)
     }
 
-    pub fn parse(sql: &str, dialect: impl Into<Dialect>) -> Result<Self, Box<InternalError>> {
-        dialect.into().parse_fqn(sql)
+    pub fn parse(sql: &str, dialect: Dialect) -> Result<Self, Box<InternalError>> {
+        QualifiedName::parse(sql, dialect)?.try_into()
     }
 
     /// Transform this name by applying a function to each component of the
@@ -623,11 +573,9 @@ impl FullyQualifiedName {
         value: &str,
         default_catalog: impl AsRef<str>,
         default_schema: impl AsRef<str>,
-        dialect: impl Into<Dialect>,
+        dialect: Dialect,
     ) -> Result<Self, Box<InternalError>> {
-        Ok(dialect
-            .into()
-            .parse_qualified_name(value)?
+        Ok(QualifiedName::parse(value, dialect)?
             .resolve(default_catalog.as_ref(), default_schema.as_ref()))
     }
 
@@ -656,64 +604,12 @@ impl From<&FullyQualifiedName> for FullyQualifiedName {
     }
 }
 
-impl From<ResolvedTableReference> for FullyQualifiedName {
-    fn from(value: ResolvedTableReference) -> Self {
-        FullyQualifiedName::new(value.catalog, value.schema, value.table)
-    }
-}
-
-impl TryFrom<TableReference> for FullyQualifiedName {
-    type Error = Box<InternalError>;
-
-    fn try_from(value: TableReference) -> Result<Self, Self::Error> {
-        match value {
-            TableReference::Full {
-                catalog,
-                schema,
-                table,
-            } => Ok(Self::new(catalog, schema, table)),
-            _ => internal_err!(
-                "Partial table reference cannot be converted to fully qualified name: {}",
-                value
-            ),
-        }
-    }
-}
-
-impl TryFrom<&TableReference> for FullyQualifiedName {
-    type Error = Box<InternalError>;
-
-    fn try_from(value: &TableReference) -> Result<Self, Self::Error> {
-        value.clone().try_into()
-    }
-}
-
-impl From<FullyQualifiedName> for ResolvedTableReference {
-    fn from(value: FullyQualifiedName) -> Self {
-        ResolvedTableReference {
-            catalog: value.catalog.into_inner(),
-            schema: value.schema.into_inner(),
-            table: value.table.into_inner(),
-        }
-    }
-}
-
 impl From<FullyQualifiedName> for Qualified<'static> {
     fn from(value: FullyQualifiedName) -> Self {
         Qualified::Full {
             catalog: value.catalog,
             schema: value.schema,
             table: value.table,
-        }
-    }
-}
-
-impl From<FullyQualifiedName> for TableReference {
-    fn from(value: FullyQualifiedName) -> Self {
-        TableReference::Full {
-            catalog: value.catalog.into_inner(),
-            schema: value.schema.into_inner(),
-            table: value.table.into_inner(),
         }
     }
 }
@@ -764,9 +660,7 @@ impl<'de> Deserialize<'de> for ColumnRef {
         D: Deserializer<'de>,
     {
         let value = String::deserialize(deserializer)?;
-        Dialect::default()
-            .parse_column_ref(&value)
-            .map_err(|e| de::Error::custom(e.to_string()))
+        ColumnRef::parse(&value, Dialect::default()).map_err(|e| de::Error::custom(e.to_string()))
     }
 }
 
@@ -786,8 +680,18 @@ impl ColumnRef {
         &self.column
     }
 
-    pub fn parse(sql: &str, dialect: impl Into<Dialect>) -> Result<Self, Box<InternalError>> {
-        dialect.into().parse_column_ref(sql)
+    pub fn parse(sql: &str, dialect: Dialect) -> Result<Self, Box<InternalError>> {
+        let idvec = dialect
+            .parse_dot_separated_identifiers(sql)
+            .map_err(|e| make_internal_err!("Failed to parse {sql} as column reference: {e}"))?;
+        if idvec.len() != 4 {
+            return internal_err!(
+                "Failed to parse {sql} as column reference:
+                 expecting exactly 4 dot-separated components but got {}",
+                idvec.len()
+            );
+        }
+        ColumnRef::try_from(idvec)
     }
 }
 
@@ -797,9 +701,9 @@ impl ColumnRef {
         default_catalog: impl AsRef<str>,
         default_schema: impl AsRef<str>,
         default_table: impl AsRef<str>,
-        dialect: impl Into<Dialect>,
+        dialect: Dialect,
     ) -> Result<Self, Box<InternalError>> {
-        let idvec = dialect.into().parse_dot_separated_identifiers(name)?;
+        let idvec = dialect.parse_dot_separated_identifiers(name)?;
         match idvec.len() {
             1 => Ok(Self {
                 table_name: FullyQualifiedName::new(default_catalog, default_schema, default_table),
@@ -831,20 +735,6 @@ impl ColumnRef {
             }),
             _ => internal_err!("Invalid column reference: {name}"),
         }
-    }
-}
-
-impl TryFrom<datafusion_common::Column> for ColumnRef {
-    type Error = Box<InternalError>;
-
-    fn try_from(value: datafusion_common::Column) -> Result<Self, Self::Error> {
-        Ok(Self {
-            table_name: value
-                .relation
-                .ok_or_else(|| make_internal_err!("Invalid column ref: missing relation"))?
-                .try_into()?,
-            column: value.name.into(),
-        })
     }
 }
 

@@ -2,11 +2,12 @@ use std::cmp::Ordering;
 use std::fmt;
 use std::sync::Arc;
 
-use chrono::{Local, NaiveDate, NaiveTime, Timelike};
+use chrono::{NaiveDate, NaiveTime, Timelike};
 use minijinja::arg_utils::{ArgParser, ArgsIter};
 use minijinja::{value::Object, Error, ErrorKind, Value};
 
 use crate::modules::py_datetime::find_microsecond_directive;
+use crate::modules::py_datetime::now_local;
 use crate::modules::py_datetime::timedelta::PyTimeDelta;
 use crate::modules::pytz::PytzTimezone;
 
@@ -84,7 +85,7 @@ impl PyTimeClass {
 
     /// Return current local time as a naive `PyTime`.
     fn now(_args: &[Value]) -> Result<PyTime, Error> {
-        let local_now = Local::now().time();
+        let local_now = now_local().time();
         Ok(PyTime { time: local_now })
     }
 

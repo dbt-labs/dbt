@@ -13,7 +13,7 @@ use dbt_common::{
 use dbt_jinja_ctx::{LoadCtx, to_jinja_btreemap};
 use dbt_schemas::{
     dbt_utils::resolve_package_quoting,
-    schemas::dbt_catalogs::DbtCatalogs,
+    schemas::dbt_catalogs_deprecated::DbtCatalogs,
     schemas::profiles::{DbConfig, TargetContext},
 };
 use minijinja::value::Value as MinijinjaValue;

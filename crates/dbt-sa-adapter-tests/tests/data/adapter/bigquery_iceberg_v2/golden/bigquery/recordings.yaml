@@ -1,0 +1,29 @@
+'29077959':
+- sequence: 0
+  type: execute
+  sql: create schema if not exists `dbt-test-env`.`adapters_bigquery_iceberg_v2`
+model.test.cat1:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace table `dbt-test-env`.`adapters_bigquery_iceberg_v2`.`cat1`
+    
+    
+    
+    
+    with connection `dbt-test-env.us.__default_cloudresource_connection__`
+    OPTIONS(
+    table_format='iceberg',
+    
+    file_format='parquet',
+    
+    storage_uri='gs://dbt-ci-iceberg-test/_dbt/adapters_bigquery_iceberg_v2/cat1'
+    )
+    as (
+    
+    
+    
+    select
+    "cool_name" as name,
+    1 as id
+    );

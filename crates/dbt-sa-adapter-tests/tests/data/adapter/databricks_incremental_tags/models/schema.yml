@@ -1,0 +1,5 @@
+models:
+  - name: test_incremental_tags
+    config:
+      databricks_tags:
+        parent_tag: parent_value

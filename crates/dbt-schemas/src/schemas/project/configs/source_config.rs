@@ -16,7 +16,9 @@ use crate::schemas::common::{
     ClusterConfig, FreshnessDefinition, Schedule, SchemaOrigin, SyncConfig,
 };
 use crate::schemas::manifest::GrantAccessToTarget;
-use crate::schemas::project::configs::common::WarehouseSpecificNodeConfig;
+use crate::schemas::project::configs::common::{
+    LazyWarehouseSpecificNodeConfig, WarehouseSpecificNodeConfig,
+};
 use crate::schemas::project::configs::config_merge::{Tags, TblProperties};
 use crate::schemas::project::{ResolvableConfig, TypedRecursiveConfig};
 use crate::schemas::serde::{
@@ -158,6 +160,8 @@ pub struct ProjectSourceConfig {
     pub not_matched_condition: Option<String>,
     #[serde(rename = "+not_matched_by_source_condition")]
     pub not_matched_by_source_condition: Option<String>,
+    #[serde(rename = "+merge_actions_explicit")]
+    pub merge_actions_explicit: Option<String>,
     #[serde(rename = "+not_matched_by_source_action")]
     pub not_matched_by_source_action: Option<String>,
     #[serde(
@@ -287,6 +291,7 @@ impl TypedRecursiveConfig for ProjectSourceConfig {
             || self.matched_condition.is_some()
             || self.not_matched_condition.is_some()
             || self.not_matched_by_source_condition.is_some()
+            || self.merge_actions_explicit.is_some()
             || self.not_matched_by_source_action.is_some()
             || self.merge_with_schema_evolution.is_some()
             || self.skip_matched_step.is_some()
@@ -339,7 +344,8 @@ pub struct SourceConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub formatter: Option<String>,
     // Adapter specific configs
-    pub __warehouse_specific_config__: WarehouseSpecificNodeConfig,
+    #[schemars(with = "WarehouseSpecificNodeConfig")]
+    pub __warehouse_specific_config__: LazyWarehouseSpecificNodeConfig,
 }
 
 impl From<ProjectSourceConfig> for SourceConfig {
@@ -418,8 +424,10 @@ impl From<ProjectSourceConfig> for SourceConfig {
                 enable_list_inference: None,
                 intermediate_format: None,
                 storage_uri: None,
+                enable_change_history: None,
                 incremental_apply_config_changes: None,
                 persist_constraints: None,
+                use_materialization_v2: None,
                 use_safer_relation_operations: None,
                 view_update_via_alter: None,
 
@@ -444,6 +452,7 @@ impl From<ProjectSourceConfig> for SourceConfig {
                 matched_condition: config.matched_condition,
                 not_matched_condition: config.not_matched_condition,
                 not_matched_by_source_condition: config.not_matched_by_source_condition,
+                merge_actions_explicit: config.merge_actions_explicit,
                 not_matched_by_source_action: config.not_matched_by_source_action,
                 merge_with_schema_evolution: config.merge_with_schema_evolution,
                 skip_matched_step: config.skip_matched_step,
@@ -476,6 +485,8 @@ impl From<ProjectSourceConfig> for SourceConfig {
                 settings: None,
                 query_settings: None,
                 projections: None,
+                sharding_key: None,
+                disable_on_cluster: None,
                 inserts_only: None,
                 connection_overrides: None,
                 fields: None,
@@ -494,13 +505,15 @@ impl From<ProjectSourceConfig> for SourceConfig {
                 catchup: None,
                 mv_on_schema_change: None,
                 repopulate_from_mvs_on_full_refresh: None,
-            },
+            }
+            .into(),
         }
     }
 }
 
 impl From<SourceConfig> for ProjectSourceConfig {
     fn from(config: SourceConfig) -> Self {
+        let warehouse_specific = config.__warehouse_specific_config__.into_inner();
         Self {
             enabled: config.enabled,
             event_time: config.event_time,
@@ -515,76 +528,61 @@ impl From<SourceConfig> for ProjectSourceConfig {
             external_location: config.external_location,
             formatter: config.formatter,
             // BigQuery fields
-            partition_by: config.__warehouse_specific_config__.partition_by,
-            cluster_by: config.__warehouse_specific_config__.cluster_by,
-            hours_to_expiration: config.__warehouse_specific_config__.hours_to_expiration,
-            job_execution_timeout_seconds: config
-                .__warehouse_specific_config__
-                .job_execution_timeout_seconds,
-            reservation: config.__warehouse_specific_config__.reservation,
-            labels: config.__warehouse_specific_config__.labels,
-            labels_from_meta: config.__warehouse_specific_config__.labels_from_meta,
-            kms_key_name: config.__warehouse_specific_config__.kms_key_name,
-            require_partition_filter: config
-                .__warehouse_specific_config__
-                .require_partition_filter,
-            partition_expiration_days: config
-                .__warehouse_specific_config__
-                .partition_expiration_days,
-            grant_access_to: config.__warehouse_specific_config__.grant_access_to,
-            partitions: config.__warehouse_specific_config__.partitions,
-            enable_refresh: config.__warehouse_specific_config__.enable_refresh,
-            refresh_interval_minutes: config
-                .__warehouse_specific_config__
-                .refresh_interval_minutes,
-            max_staleness: config.__warehouse_specific_config__.max_staleness,
+            partition_by: warehouse_specific.partition_by,
+            cluster_by: warehouse_specific.cluster_by,
+            hours_to_expiration: warehouse_specific.hours_to_expiration,
+            job_execution_timeout_seconds: warehouse_specific.job_execution_timeout_seconds,
+            reservation: warehouse_specific.reservation,
+            labels: warehouse_specific.labels,
+            labels_from_meta: warehouse_specific.labels_from_meta,
+            kms_key_name: warehouse_specific.kms_key_name,
+            require_partition_filter: warehouse_specific.require_partition_filter,
+            partition_expiration_days: warehouse_specific.partition_expiration_days,
+            grant_access_to: warehouse_specific.grant_access_to,
+            partitions: warehouse_specific.partitions,
+            enable_refresh: warehouse_specific.enable_refresh,
+            refresh_interval_minutes: warehouse_specific.refresh_interval_minutes,
+            max_staleness: warehouse_specific.max_staleness,
             // Databricks fields
-            file_format: config.__warehouse_specific_config__.file_format,
-            catalog_name: config.__warehouse_specific_config__.catalog_name,
-            location_root: config.__warehouse_specific_config__.location_root,
-            tblproperties: config.__warehouse_specific_config__.tblproperties,
-            include_full_name_in_path: config
-                .__warehouse_specific_config__
-                .include_full_name_in_path,
-            liquid_clustered_by: config.__warehouse_specific_config__.liquid_clustered_by,
-            auto_liquid_cluster: config.__warehouse_specific_config__.auto_liquid_cluster,
-            clustered_by: config.__warehouse_specific_config__.clustered_by,
-            buckets: config.__warehouse_specific_config__.buckets,
-            catalog: config.__warehouse_specific_config__.catalog,
-            databricks_tags: config.__warehouse_specific_config__.databricks_tags,
-            compression: config.__warehouse_specific_config__.compression,
-            databricks_compute: config.__warehouse_specific_config__.databricks_compute,
-            target_alias: config.__warehouse_specific_config__.target_alias,
-            source_alias: config.__warehouse_specific_config__.source_alias,
-            matched_condition: config.__warehouse_specific_config__.matched_condition,
-            not_matched_condition: config.__warehouse_specific_config__.not_matched_condition,
-            not_matched_by_source_condition: config
-                .__warehouse_specific_config__
-                .not_matched_by_source_condition,
-            not_matched_by_source_action: config
-                .__warehouse_specific_config__
-                .not_matched_by_source_action,
-            merge_with_schema_evolution: config
-                .__warehouse_specific_config__
-                .merge_with_schema_evolution,
-            skip_matched_step: config.__warehouse_specific_config__.skip_matched_step,
-            skip_not_matched_step: config.__warehouse_specific_config__.skip_not_matched_step,
+            file_format: warehouse_specific.file_format,
+            catalog_name: warehouse_specific.catalog_name,
+            location_root: warehouse_specific.location_root,
+            tblproperties: warehouse_specific.tblproperties,
+            include_full_name_in_path: warehouse_specific.include_full_name_in_path,
+            liquid_clustered_by: warehouse_specific.liquid_clustered_by,
+            auto_liquid_cluster: warehouse_specific.auto_liquid_cluster,
+            clustered_by: warehouse_specific.clustered_by,
+            buckets: warehouse_specific.buckets,
+            catalog: warehouse_specific.catalog,
+            databricks_tags: warehouse_specific.databricks_tags,
+            compression: warehouse_specific.compression,
+            databricks_compute: warehouse_specific.databricks_compute,
+            target_alias: warehouse_specific.target_alias,
+            source_alias: warehouse_specific.source_alias,
+            matched_condition: warehouse_specific.matched_condition,
+            not_matched_condition: warehouse_specific.not_matched_condition,
+            not_matched_by_source_condition: warehouse_specific.not_matched_by_source_condition,
+            merge_actions_explicit: warehouse_specific.merge_actions_explicit,
+            not_matched_by_source_action: warehouse_specific.not_matched_by_source_action,
+            merge_with_schema_evolution: warehouse_specific.merge_with_schema_evolution,
+            skip_matched_step: warehouse_specific.skip_matched_step,
+            skip_not_matched_step: warehouse_specific.skip_not_matched_step,
             // Redshift fields
-            auto_refresh: config.__warehouse_specific_config__.auto_refresh,
-            backup: config.__warehouse_specific_config__.backup,
-            bind: config.__warehouse_specific_config__.bind,
-            dist: config.__warehouse_specific_config__.dist,
-            sort: config.__warehouse_specific_config__.sort,
-            sort_type: config.__warehouse_specific_config__.sort_type,
+            auto_refresh: warehouse_specific.auto_refresh,
+            backup: warehouse_specific.backup,
+            bind: warehouse_specific.bind,
+            dist: warehouse_specific.dist,
+            sort: warehouse_specific.sort,
+            sort_type: warehouse_specific.sort_type,
             // MSSQL fields
-            as_columnstore: config.__warehouse_specific_config__.as_columnstore,
+            as_columnstore: warehouse_specific.as_columnstore,
             // Athena Fields
-            table_type: config.__warehouse_specific_config__.table_type,
+            table_type: warehouse_specific.table_type,
             // Postgres Fields
-            indexes: config.__warehouse_specific_config__.indexes,
-            unlogged: config.__warehouse_specific_config__.unlogged,
+            indexes: warehouse_specific.indexes,
+            unlogged: warehouse_specific.unlogged,
             // Schedule (Databricks streaming tables)
-            schedule: config.__warehouse_specific_config__.schedule,
+            schedule: warehouse_specific.schedule,
             __additional_properties__: BTreeMap::new(),
         }
     }
@@ -629,7 +627,7 @@ impl ResolvableConfig<SourceConfig> for SourceConfig {
     // are per-table, authored as top-level `SourceProperties`/`Tables` keys in schema.yml
     // (`resolve_sources.rs`), not through this project-config pipeline. Canonicalized there
     // instead of here.
-    fn canonicalize_adapter_aliases(&mut self, _default_adapter: AdapterType) {}
+    fn canonicalize_adapter_aliases(&mut self, _alias_adapter: AdapterType) {}
 }
 
 impl ConfigKeys for SourceConfig {
@@ -637,9 +635,16 @@ impl ConfigKeys for SourceConfig {
     // extracting field names via serialization automatically
 }
 
+impl crate::schemas::project::configs::warehouse_scope::WarehouseConfigResource for SourceConfig {
+    const NODE_TYPE: dbt_telemetry::NodeType = dbt_telemetry::NodeType::Source;
+}
+
 #[cfg(test)]
 mod tests {
     use super::SourceConfig;
+    use crate::schemas::project::configs::warehouse_config_test_support::{
+        assert_warehouse_config_allocates_only_when_set, typed_from_yaml,
+    };
     use dbt_common::serde_utils::Omissible;
 
     #[test]
@@ -681,6 +686,70 @@ __warehouse_specific_config__: {}
         assert_eq!(
             freshness.loaded_at_query.as_deref(),
             Some("select max(loaded_at) from {{ source('raw', 'events') }}")
+        );
+    }
+
+    #[test]
+    fn test_source_warehouse_config_allocates_only_when_set() {
+        assert_warehouse_config_allocates_only_when_set::<SourceConfig>(
+            "enabled: true\n",
+            |config| &config.__warehouse_specific_config__,
+        );
+    }
+
+    #[test]
+    fn test_source_allocated_default_warehouse_config_matches_unallocated() {
+        let (config, _) = typed_from_yaml::<SourceConfig>("enabled: true\n", false);
+        let mut allocated = config.clone();
+        allocated.__warehouse_specific_config__.catalog_name = None;
+        assert!(allocated.__warehouse_specific_config__.get().is_some());
+        assert_eq!(allocated, config);
+        assert_eq!(format!("{allocated:?}"), format!("{config:?}"));
+        assert_eq!(
+            dbt_yaml::to_value(&allocated).unwrap(),
+            dbt_yaml::to_value(&config).unwrap()
+        );
+    }
+
+    #[test]
+    fn test_source_warehouse_config_default_to() {
+        use super::ProjectSourceConfig;
+        use crate::schemas::project::dbt_project::ResolvableConfig;
+        use crate::schemas::serde::StringOrInteger;
+
+        let (parent, _) =
+            typed_from_yaml::<SourceConfig>("catalog_name: cat\nhours_to_expiration: 5\n", false);
+
+        let mut child = SourceConfig::default();
+        child.default_to(&parent);
+        assert_eq!(child, parent);
+
+        // An explicit null still clears the inherited value.
+        let (mut child, _) = typed_from_yaml::<SourceConfig>("hours_to_expiration: null\n", false);
+        child.default_to(&parent);
+        let warehouse_specific = &child.__warehouse_specific_config__;
+        assert_eq!(warehouse_specific.catalog_name.as_deref(), Some("cat"));
+        assert_eq!(
+            warehouse_specific.hours_to_expiration,
+            Omissible::Present(None)
+        );
+
+        let mut child = parent.clone();
+        child.default_to(&SourceConfig::default());
+        assert_eq!(child, parent);
+        assert_eq!(
+            child.__warehouse_specific_config__.hours_to_expiration,
+            Omissible::Present(Some(StringOrInteger::Integer(5)))
+        );
+
+        let mut child = SourceConfig::default();
+        child.default_to(&SourceConfig::default());
+        assert!(child.__warehouse_specific_config__.get().is_none());
+
+        let round_tripped: SourceConfig = ProjectSourceConfig::from(parent.clone()).into();
+        assert_eq!(
+            round_tripped.__warehouse_specific_config__,
+            parent.__warehouse_specific_config__
         );
     }
 }

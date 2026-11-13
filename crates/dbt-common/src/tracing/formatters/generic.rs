@@ -1,147 +1,139 @@
+use std::fmt;
+
+use console::Style;
 use dbt_telemetry::{GenericOpExecuted, GenericOpItemProcessed};
 use dbt_tracing::{SpanStatus, StatusCode};
 
-use crate::tracing::formatters::layout::{right_align_action, right_align_static_action};
-
 use super::{
-    color::{GREEN, RED, maybe_apply_color},
-    duration::format_duration_fixed_width,
+    color::{GREEN, MaybeColored, RED},
+    duration::FixedWidthDuration,
+    layout::{CapitalizedFirst, RightAligned},
 };
 
-pub fn capitalize_first_letter(s: &str) -> String {
-    let mut c = s.chars();
-    match c.next() {
-        None => String::new(),
-        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
-    }
-}
-
-/// Format a `GenericOpExecuted` event for the start of an operation
+/// Displays a `GenericOpExecuted` event for the start of an operation
 ///
-/// Returns formatted string in the pattern:
+/// Writes the pattern:
 /// `Started {display_action}` or `Started {display_action} ({total} items)` if total > 0
-pub fn format_generic_op_start(op: &GenericOpExecuted, colorize: bool) -> String {
-    let total = op.item_count_total.unwrap_or_default();
-    let action = maybe_apply_color(
-        &GREEN,
-        right_align_static_action("Started").as_str(),
-        colorize,
-    );
+pub struct GenericOpStart<'a> {
+    pub op: &'a GenericOpExecuted,
+    pub colorize: bool,
+}
 
-    if total > 0 {
-        format!("{} {} ({} items)", action, op.display_action, total)
-    } else {
-        format!("{} {}", action, op.display_action)
+impl fmt::Display for GenericOpStart<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let total = self.op.item_count_total.unwrap_or_default();
+        let action = MaybeColored::new(&GREEN, RightAligned("Started"), self.colorize);
+
+        if total > 0 {
+            write!(f, "{} {} ({} items)", action, self.op.display_action, total)
+        } else {
+            write!(f, "{} {}", action, self.op.display_action)
+        }
     }
 }
 
-/// Format a `GenericOpExecuted` event for the end of an operation
+/// Displays a `GenericOpExecuted` event for the end of an operation
 ///
-/// Returns formatted string in the pattern:
+/// Writes the pattern:
 /// `Finished {display_action} [duration]`
-pub fn format_generic_op_end(
-    op: &GenericOpExecuted,
-    duration: std::time::Duration,
-    status: Option<&SpanStatus>,
-    colorize: bool,
-) -> String {
-    let duration_formatted = format_duration_fixed_width(duration);
+pub struct GenericOpEnd<'a> {
+    pub op: &'a GenericOpExecuted,
+    pub duration: std::time::Duration,
+    pub status: Option<&'a SpanStatus>,
+    pub colorize: bool,
+}
 
-    let total = op.item_count_total.unwrap_or_default();
+impl fmt::Display for GenericOpEnd<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let duration = FixedWidthDuration(self.duration);
+        let total = self.op.item_count_total.unwrap_or_default();
+        let display_action = &self.op.display_action;
+        let (action, error_desc) = action_with_status_code("Finished", self.status, self.colorize);
 
-    let (action, error_desc) = format_action_with_status_code("Finished", status, colorize);
-
-    if let Some(error) = error_desc {
-        format!(
-            "{} [{}] {} (error: {})",
-            action, duration_formatted, op.display_action, error
-        )
-    } else if total > 0 {
-        format!(
-            "{} [{}] {} ({} items)",
-            action, duration_formatted, op.display_action, total
-        )
-    } else {
-        format!("{} [{}] {}", action, duration_formatted, op.display_action)
+        if let Some(error) = error_desc {
+            write!(f, "{action} [{duration}] {display_action} (error: {error})")
+        } else if total > 0 {
+            write!(f, "{action} [{duration}] {display_action} ({total} items)")
+        } else {
+            write!(f, "{action} [{duration}] {display_action}")
+        }
     }
 }
 
-/// Format a `GenericOpItemProcessed` event for the start of an item
+/// Displays a `GenericOpItemProcessed` event for the start of an item
 ///
-/// Returns formatted string in the pattern:
+/// Writes the pattern:
 /// `Started {display_action} {target}`
-pub fn format_generic_op_item_start(item: &GenericOpItemProcessed) -> String {
-    format!(
-        "{} {} {}",
-        right_align_static_action("Started"),
-        item.display_in_progress_action,
-        item.target
-    )
-}
+pub struct GenericOpItemStart<'a>(pub &'a GenericOpItemProcessed);
 
-/// Format a `GenericOpItemProcessed` event for the end of an item
-///
-/// Returns formatted string in the pattern:
-/// `{target} [duration]`
-pub fn format_generic_op_item_end(
-    item: &GenericOpItemProcessed,
-    duration: std::time::Duration,
-    status: Option<&SpanStatus>,
-    colorize: bool,
-) -> String {
-    let duration_formatted = format_duration_fixed_width(duration);
-    let (action, error_desc) =
-        format_action_with_status_code(item.display_on_success_action.as_str(), status, colorize);
-
-    if let Some(error) = error_desc {
-        format!(
-            "{} [{}] {} (error: {})",
-            action, duration_formatted, item.target, error
+impl fmt::Display for GenericOpItemStart<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} {} {}",
+            RightAligned("Started"),
+            self.0.display_in_progress_action,
+            self.0.target
         )
-    } else {
-        format!("{} [{}] {}", action, duration_formatted, item.target)
     }
 }
 
-/// Formats an action from the status code for coloring and text
-/// Returns a colored and right-aligned action string based on the provided status
+/// Displays a `GenericOpItemProcessed` event for the end of an item
 ///
-/// # Arguments
-/// * `on_success_action` - The action text to display on success
-/// * `status` - The optional SpanStatus indicating success or failure
-/// * `colorize` - Whether to apply color to the action text
+/// Writes the pattern:
+/// `{target} [duration]`
+pub struct GenericOpItemEnd<'a> {
+    pub item: &'a GenericOpItemProcessed,
+    pub duration: std::time::Duration,
+    pub status: Option<&'a SpanStatus>,
+    pub colorize: bool,
+}
+
+impl fmt::Display for GenericOpItemEnd<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let duration = FixedWidthDuration(self.duration);
+        let target = &self.item.target;
+        let (action, error_desc) = action_with_status_code(
+            self.item.display_on_success_action.as_str(),
+            self.status,
+            self.colorize,
+        );
+
+        if let Some(error) = error_desc {
+            write!(f, "{action} [{duration}] {target} (error: {error})")
+        } else {
+            write!(f, "{action} [{duration}] {target}")
+        }
+    }
+}
+
+/// Resolves the action shown for the provided span status: `on_success_action`,
+/// capitalized, unless the status is an error, in which case `Failed`.
 ///
-/// # Returns
-/// A tuple containing:
-/// - The formatted action string with appropriate color and alignment
-/// - An optional error description if the status indicates an error
-fn format_action_with_status_code<'a>(
-    on_success_action: &str,
+/// Returns the colored and right-aligned action, and the error description if the
+/// status indicates an error.
+fn action_with_status_code<'a>(
+    on_success_action: &'a str,
     status: Option<&'a SpanStatus>,
     colorize: bool,
-) -> (String, Option<&'a str>) {
-    let (color, action_text, error_desc) = match status {
+) -> (
+    MaybeColored<'static, RightAligned<CapitalizedFirst<'a>>>,
+    Option<&'a str>,
+) {
+    let (color, action_text, error_desc): (&'static Style, _, _) = match status {
         Some(SpanStatus {
             message: _,
             code: StatusCode::Ok | StatusCode::Unset,
         })
-        | None => (
-            &GREEN,
-            right_align_action(capitalize_first_letter(on_success_action).into()).to_string(),
-            None,
-        ),
+        | None => (&GREEN, on_success_action, None),
         Some(SpanStatus {
             message,
             code: StatusCode::Error,
-        }) => (
-            &RED,
-            right_align_static_action("Failed"),
-            message.as_deref(),
-        ),
+        }) => (&RED, "Failed", message.as_deref()),
     };
 
     (
-        maybe_apply_color(color, action_text.as_str(), colorize),
+        MaybeColored::new(color, RightAligned(CapitalizedFirst(action_text)), colorize),
         error_desc,
     )
 }

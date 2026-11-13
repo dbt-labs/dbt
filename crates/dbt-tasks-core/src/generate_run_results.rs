@@ -64,13 +64,15 @@ pub fn generate_run_results(
         .expect("stats should have nodes for results generation");
     let node_arc = nodes.get_node_owned(&stat.unique_id);
 
-    // Determine failures for tests
-    let failures =
-        if stat.unique_id.starts_with("test.") || stat.unique_id.starts_with("unit_test.") {
-            stat.num_rows.map(|n| n as i64)
-        } else {
-            None
-        };
+    // Determine failures for tests, and for any other node reporting an assertion
+    let failures = if stat.assertion
+        || stat.unique_id.starts_with("test.")
+        || stat.unique_id.starts_with("unit_test.")
+    {
+        stat.num_rows.map(|n| n as i64)
+    } else {
+        None
+    };
 
     // Get static_analysis_off_reason from the node if available
     let static_analysis_off_reason = node_arc

@@ -1,0 +1,34 @@
+dbbbff64:
+- sequence: 0
+  type: execute
+  sql: |-
+    show terse schemas in database development
+    limit 10000
+fa6f9f71:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists development.adapters_snowflake_run_filter_flags
+model.run_filter_flags.data:
+- sequence: 0
+  type: execute
+  sql: SHOW OBJECTS IN SCHEMA "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_RUN_FILTER_FLAGS" LIMIT 10000
+- sequence: 1
+  type: execute
+  sql: |-
+    create or replace transient  table development.adapters_snowflake_run_filter_flags.data
+    
+    
+    
+    
+    as (
+    
+    select 1 as id, '2025-01-01' as created_at
+    union all
+    select 2 as id, '2025-01-02' as created_at
+    union all
+    select 3 as id, '2025-01-03' as created_at
+    union all
+    select 4 as id, '2025-01-04' as created_at
+    union all
+    select 5 as id, '2025-01-05' as created_at
+    )

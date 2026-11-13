@@ -8,19 +8,7 @@ use std::time::SystemTime;
 /// Wrapper around [`std::fs::canonicalize`] that returns a useful error in case of failure.
 pub fn canonicalize<P: AsRef<Path>>(path: P) -> FsResult<PathBuf> {
     let path = path.as_ref();
-    {
-        #[cfg(not(target_os = "windows"))]
-        {
-            // Only place in our codebase where std::fs::canonicalize is allowed:
-            #[allow(clippy::disallowed_methods)]
-            std::fs::canonicalize(path)
-        }
-        #[cfg(target_os = "windows")]
-        {
-            dunce::canonicalize(path)
-        }
-    }
-    .lift(ectx!("Failed to canonicalize path: {}", path.display()))
+    dbt_error::canonicalize(path).lift(ectx!("Failed to canonicalize path: {}", path.display()))
 }
 
 /// Wrapper around [`std::fs::create_dir_all`] that returns a useful error in case of failure.
