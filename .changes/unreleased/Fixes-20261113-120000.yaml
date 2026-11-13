@@ -1,0 +1,6 @@
+kind: Fixes
+body: Recognize Databricks merge_actions_explicit config in JSON schema validation
+time: 2026-11-13T12:00:00.000000+05:30
+custom:
+    Author: tauhid621
+    Issue: "16834"

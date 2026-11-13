@@ -183,6 +183,7 @@ class TestDatabricksConfigKeys:
         "notebook_access_control_list": [
             {"group_name": "analysts", "permission_level": "CAN_READ"}
         ],
+        "merge_actions_explicit": "WHEN MATCHED THEN UPDATE SET * WHEN NOT MATCHED THEN INSERT *",
     }
 
     def test_model_config_no_warning(self):
