@@ -3,3 +3,4 @@
    Parsing models/hello_world.sql
 ==================== Execution Summary =====================
 Finished 'parse' successfully for target 'snowflake_local' [duration]
+===================== End of Execution =====================
