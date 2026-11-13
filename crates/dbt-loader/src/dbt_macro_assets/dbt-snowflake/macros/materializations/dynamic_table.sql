@@ -61,7 +61,7 @@
             {% if configuration_changes is none %}
                 {% set build_sql = '' %}
                 {% if snowflake__dynamic_table_is_custom_incremental() %}
-                    {{ exceptions.warn("No configuration changes were identified on: `" ~ target_relation ~ "`. Continuing. Changes to the model SQL of a custom incremental dynamic table are only deployed with --full-refresh.") }}
+                    {{ exceptions.warn("No configuration changes were identified on: `" ~ target_relation ~ "`. Continuing. Changes to the model SQL of a custom incremental dynamic table are only deployed with --full-refresh, or by CREATE OR ALTER when the `snowflake_dynamic_table_create_or_alter` behavior flag is on.") }}
                 {% else %}
                     {{ exceptions.warn("No configuration changes were identified on: `" ~ target_relation ~ "`. Continuing.") }}
                 {% endif %}
