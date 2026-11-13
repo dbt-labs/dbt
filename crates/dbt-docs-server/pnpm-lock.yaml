@@ -144,6 +144,9 @@ importers:
         specifier: ^5.0.15
         version: 5.0.15(@types/react@19.3.0)(react@19.3.0)(use-sync-external-store@1.7.0(react@19.3.0))
     devDependencies:
+      '@duckdb/duckdb-wasm':
+        specifier: ^1.32.0
+        version: 1.32.0
       '@storybook/addon-a11y':
         specifier: 10.5.10
         version: 10.5.10(storybook@10.5.10(@types/react@19.3.0)(prettier@3.9.6)(react@19.3.0))

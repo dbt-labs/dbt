@@ -2208,9 +2208,7 @@ impl TuiLayer {
         // gate.
         let item_visible = if matches!(
             self.command,
-            FsCommand::Extension("lint")
-                | FsCommand::Extension("format")
-                | FsCommand::Extension("format-legacy")
+            FsCommand::Extension("lint") | FsCommand::Extension("format")
         ) {
             self.show_options.contains(&ShowOptions::All)
         } else {

@@ -237,10 +237,17 @@ impl Adapter {
     /// ```python
     /// def commit(self) -> None
     /// ```
-    pub fn commit(&self) -> Result<Value, minijinja::Error> {
-        // No-op: Fusion connections are shared across nodes, so we never mutate
-        // their transaction state from this Jinja hook. DuckDB autocommits each
-        // statement; macros that need statement isolation use `auto_begin=False`.
+    pub fn commit(&self, state: &State) -> Result<Value, minijinja::Error> {
+        // No-op except for Redshift, which ends the transaction opened by `auto_begin`.
+        // Fusion connections are shared across nodes, so everywhere else we never mutate their
+        // transaction state from this Jinja hook. DuckDB autocommits each statement; macros that
+        // need statement isolation use `auto_begin=False`.
+        if let Typed { adapter, .. } = &self.inner
+            && adapter.manages_transactions()
+            && crate::connection::open_transaction().is_some()
+        {
+            self.exec_stmt(state, "commit", false)?;
+        }
         Ok(Value::from(true))
     }
 
@@ -3765,6 +3772,29 @@ impl Adapter {
         }
     }
 
+    /// Ends the transaction a node left open, if transactions are managed. Call it when the
+    /// node finishes, so its locks are not held until the next node on this thread.
+    #[tracing::instrument(skip(self), level = "trace")]
+    pub fn end_node_transaction(&self, node_id: &str) -> FsResult<()> {
+        if let Some(tm) = self.time_machine()
+            && tm.is_replaying()
+        {
+            return Ok(());
+        }
+
+        match &self.inner {
+            Typed { adapter, .. } if adapter.has_open_transaction() => {
+                let mut conn = adapter.borrow_tlocal_connection(None, Some(node_id.to_string()))?;
+                adapter.rollback_open_transaction(
+                    &mut conn,
+                    node_id,
+                    self.cancellation_token.clone(),
+                )
+            }
+            _ => Ok(()),
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     #[tracing::instrument(skip(self, state), level = "trace")]
     pub fn load_dataframe(&self, state: &State, args: &[Value]) -> Result<Value, minijinja::Error> {
@@ -4063,7 +4093,7 @@ impl Adapter {
             "render_raw_columns_constraints" => self.render_raw_columns_constraints(state, args),
             // database: str
             "verify_database" => self.verify_database(state, args),
-            "commit" => self.commit(),
+            "commit" => self.commit(state),
             // context: dict, strategy: str
             "get_incremental_strategy_macro" => self.get_incremental_strategy_macro(state, args),
             // database: str, schema: str
@@ -4294,9 +4324,7 @@ impl Adapter {
                             )
                         })?;
 
-                let full_path = seed
-                    .file_path_from_root()
-                    .unwrap_or_else(|| seed.__common_attr__.original_file_path.to_path_buf());
+                let full_path = seed.resolve_file_path(std::path::Path::new(""));
                 Ok(Value::from(full_path.display().to_string()))
             }
             "external_root" => {
@@ -4721,7 +4749,6 @@ impl Adapter {
             None
         }
     }
-
     /// (state change) Lists the schema's routines and inserts each into
     /// the relation cache. Returns `temp_relation` if it turns out to
     /// be one of them
@@ -4736,7 +4763,8 @@ impl Adapter {
         if adapter.adapter_type() != AdapterType::Bigquery {
             return Ok(None);
         }
-        if !adapter.engine().relation_cache().project_has_functions() {
+        let relation_cache = adapter.engine().relation_cache();
+        if !relation_cache.project_has_functions() {
             return Ok(None);
         }
         if temp_relation
@@ -4752,25 +4780,25 @@ impl Adapter {
         }
 
         let db_schema = CatalogAndSchema::from(temp_relation);
-        let mut conn = adapter.borrow_tlocal_connection(Some(state), node_id_from_state(state))?;
-        let query_ctx = query_ctx_from_state(state)?.with_desc("get_relation > list_routines call");
-        let routines = match bigquery::list_routines(
-            adapter.engine().as_ref(),
-            &query_ctx,
-            &mut conn,
-            &db_schema,
-            self.cancellation_token.clone(),
-        ) {
-            Ok(routines) => routines,
-            Err(e) => {
-                tracing::warn!("relation_cache: list_routines failed: {e}");
-                return Ok(None);
-            }
-        };
-
-        let relation_cache = adapter.engine().relation_cache();
-        for routine in routines {
-            relation_cache.insert_relation(routine, None);
+        if !relation_cache.contains_routines(&db_schema) {
+            let mut conn =
+                adapter.borrow_tlocal_connection(Some(state), node_id_from_state(state))?;
+            let query_ctx =
+                query_ctx_from_state(state)?.with_desc("get_relation > list_routines call");
+            let routines = match bigquery::list_routines(
+                adapter.engine().as_ref(),
+                &query_ctx,
+                &mut conn,
+                &db_schema,
+                self.cancellation_token.clone(),
+            ) {
+                Ok(routines) => routines,
+                Err(e) => {
+                    tracing::warn!("relation_cache: list_routines failed: {e}");
+                    return Ok(None);
+                }
+            };
+            relation_cache.insert_routines(&db_schema, routines);
         }
 
         Ok(relation_cache

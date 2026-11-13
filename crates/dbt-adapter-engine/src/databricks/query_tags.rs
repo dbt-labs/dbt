@@ -270,6 +270,7 @@ mod tests {
     use dbt_yaml::{Mapping, Value as YmlValue};
     use minijinja::{Environment, State, Value as MinijinjaValue};
     use serde::Deserialize;
+    use std::sync::Arc;
 
     fn databricks_statement_options(state: &State) -> AdapterResult<Options> {
         let query_tags = QueryTags::from_state(Some(state))?.unwrap_or_default();
@@ -489,7 +490,7 @@ mod tests {
     }
 
     fn databricks_attr(query_tags: &str) -> AdapterAttr {
-        AdapterAttr::default().with_databricks_attr(Some(Box::new(DatabricksAttr {
+        AdapterAttr::default().with_databricks_attr(Some(Arc::new(DatabricksAttr {
             query_tags: Some(query_tags.to_string()),
             ..Default::default()
         })))

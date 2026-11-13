@@ -116,6 +116,7 @@ pub(crate) fn get_common_table_options_value(
     let resource_tags = config
         .__warehouse_specific_config__
         .resource_tags
+        .clone()
         .unwrap_or_default()
         .into_iter()
         .map(|(key, value)| Value::from_iter(vec![Value::from(key), Value::from(value)]))
@@ -154,7 +155,7 @@ pub(crate) fn get_table_options_value(
     )?;
 
     // KMS key name if present
-    if let Some(kms_key_name) = config.__warehouse_specific_config__.kms_key_name {
+    if let Some(kms_key_name) = &config.__warehouse_specific_config__.kms_key_name {
         opts.insert(
             "kms_key_name".to_string(),
             Value::from(format!("'{kms_key_name}'")),

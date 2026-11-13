@@ -4,7 +4,8 @@ pub mod payload;
 pub mod timings;
 
 pub use metadata_to_parquet::{
-    apply_delta_direct, ingest_from_metadata_direct, invocation_batches, rewrite_invocations,
+    apply_delta_direct, freshness_batches, ingest_from_metadata_direct, invocation_batches,
+    rewrite_invocations,
 };
 
 pub use ingest_state::{

@@ -10,7 +10,7 @@ use dbt_common::static_analysis::{
 use dbt_common::tracing::dbt_emit::emit_error_log_from_fs_error;
 use dbt_common::{ErrorCode, FsResult, error::AbstractLocation, fs_err};
 use dbt_jinja_utils::listener::DefaultJinjaTypeCheckEventListenerFactory;
-use dbt_jinja_utils::phases::parse::ParseAdapterScopes;
+use dbt_jinja_utils::phases::AdapterScopes;
 use dbt_jinja_utils::utils::dependency_package_name_from_ctx;
 use dbt_jinja_utils::{jinja_environment::JinjaEnv, node_resolver::NodeResolver};
 use dbt_schemas::schemas::common::{Access, DbtMaterialization, DbtQuoting};
@@ -31,7 +31,6 @@ use dbt_schemas::{
     state::{DbtPackage, DbtRuntimeConfig, NodeResolverTracker},
 };
 use indexmap::IndexMap;
-use minijinja::MacroSpans;
 
 use crate::dbt_project_config::{ProjectConfigResolver, RootProjectConfigs};
 use crate::renderer::{RenderCtx, RenderCtxInner};
@@ -75,7 +74,7 @@ pub async fn resolve_functions(
     function_properties: &mut BTreeMap<String, MinimalPropertiesEntry>,
     database: &str,
     schema: &str,
-    parse_adapter_scopes: &Arc<ParseAdapterScopes>,
+    parse_adapter_scopes: &Arc<AdapterScopes>,
     default_adapter: AdapterType,
     adapter_quoting: &IndexMap<AdapterType, DbtQuoting>,
     package_name: &str,
@@ -85,12 +84,9 @@ pub async fn resolve_functions(
     root_runtime_config: Arc<DbtRuntimeConfig>,
     node_resolver: &mut NodeResolver,
     token: &CancellationToken,
-) -> FsResult<(
-    HashMap<String, Arc<DbtFunction>>,
-    HashMap<String, (String, MacroSpans)>,
-)> {
+) -> FsResult<(HashMap<String, Arc<DbtFunction>>, HashMap<String, String>)> {
     let mut functions: HashMap<String, Arc<DbtFunction>> = HashMap::new();
-    let mut rendering_results: HashMap<String, (String, MacroSpans)> = HashMap::new();
+    let mut function_bodies: HashMap<String, String> = HashMap::new();
     let dependency_package_name = dependency_package_name_from_ctx(&env, base_ctx);
 
     let config_resolver = ProjectConfigResolver::per_adapter(
@@ -232,7 +228,6 @@ pub async fn resolve_functions(
         alias_adapter,
         raw_code,
         rendered_sql,
-        macro_spans,
         properties: maybe_properties,
         status,
         patch_path,
@@ -365,7 +360,7 @@ pub async fn resolve_functions(
             nodes_with_ref_location: vec![],
         };
 
-        rendering_results.insert(unique_id.clone(), (rendered_sql.clone(), macro_spans));
+        function_bodies.insert(unique_id.clone(), rendered_sql);
 
         let (node_database, node_schema) = node_starting_database_and_schema(
             Some(parse_adapter_scopes),
@@ -498,6 +493,8 @@ pub async fn resolve_functions(
                 snowflake: model_config.snowflake.clone(),
                 pre_hook: model_config.pre_hook.clone(),
                 post_hook: model_config.post_hook.clone(),
+                docs: model_config.docs.clone(),
+                grants: model_config.grants.clone(),
                 ..Default::default()
             },
             __other__: BTreeMap::new(),
@@ -628,5 +625,5 @@ pub async fn resolve_functions(
         }
     }
 
-    Ok((functions, rendering_results))
+    Ok((functions, function_bodies))
 }

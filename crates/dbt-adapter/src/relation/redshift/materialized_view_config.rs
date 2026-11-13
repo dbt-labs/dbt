@@ -592,10 +592,11 @@ mod tests {
     use dbt_schemas::schemas::nodes::RedshiftAttr;
     use dbt_schemas::schemas::serde::StringOrArrayOfStrings;
     use dbt_schemas::schemas::{AdapterAttr, DbtModel};
+    use std::sync::Arc;
 
     fn model_with_dist(dist: Option<StringOrArrayOfStrings>) -> DbtModel {
         DbtModel {
-            __adapter_attr__: AdapterAttr::default().with_redshift_attr(Some(Box::new(
+            __adapter_attr__: AdapterAttr::default().with_redshift_attr(Some(Arc::new(
                 RedshiftAttr {
                     dist,
                     ..Default::default()

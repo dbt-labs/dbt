@@ -33,7 +33,7 @@ use dbt_common::{
     path::DbtPath,
     warn_error_options::WarnErrorOptions,
 };
-use minijinja::{MacroSpans, Value as MinijinjaValue, value::Object};
+use minijinja::{Value as MinijinjaValue, value::Object};
 use serde::Deserialize;
 use serde::Serialize;
 use std::fmt;
@@ -906,7 +906,8 @@ pub struct ResolverState {
     pub operations: Operations,
     pub dbt_profile: DbtProfile,
     pub cloud_config: Option<ResolvedCloudConfig>,
-    pub render_results: Arc<RenderResults>,
+    /// Parse-time rendered SQL body of each function, by unique id.
+    pub function_bodies: Arc<BTreeMap<String, String>>,
     pub node_resolver: Arc<dyn NodeResolverTracker>,
     pub get_relation_calls: GetRelationCalls,
     pub get_columns_in_relation_calls: GetColumnsInRelationCalls,
@@ -1030,8 +1031,8 @@ impl fmt::Display for ResolverState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "ResolverState {{ nodes: {:?}, dbt_profile: {}, macro_collector: {:?} }}",
-            self.nodes, self.dbt_profile, self.render_results
+            "ResolverState {{ nodes: {:?}, dbt_profile: {} }}",
+            self.nodes, self.dbt_profile
         )
     }
 }
@@ -1165,11 +1166,6 @@ impl CacheState {
         self.file_changes.has_changes()
     }
 }
-#[derive(Debug, Clone, Default)]
-pub struct RenderResults {
-    pub rendering_results: BTreeMap<String, (String, MacroSpans)>,
-}
-
 #[derive(Debug, Clone, Default)]
 pub struct DbtRuntimeConfig {
     pub runtime_config: BTreeMap<String, minijinja::Value>,

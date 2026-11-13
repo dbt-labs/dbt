@@ -1,7 +1,10 @@
 use crate::catalog_relation::CatalogRelation;
 use crate::column::{BigqueryColumnMode, Column, ColumnBuilder};
 use crate::config::AdapterConfig;
-use crate::connection::{ConnectionGuard, borrow_tlocal_connection};
+use crate::connection::{
+    ConnectionGuard, borrow_tlocal_connection, clear_open_transaction, open_transaction,
+    set_open_transaction,
+};
 use crate::engine::{
     AdapterEngine, AdbcEngine, Options as ExecuteOptions, execute_query_with_retry,
 };
@@ -23,6 +26,7 @@ use crate::metadata::clickhouse::ClickHouseMetadataAdapter;
 use crate::metadata::databricks::DatabricksMetadataAdapter;
 use crate::metadata::databricks::dbr_capabilities;
 use crate::metadata::databricks::dbr_capabilities::DbrComputeContext;
+use crate::metadata::databricks::is_databricks_relation_not_found;
 use crate::metadata::databricks::version::EngineVersion;
 use crate::metadata::duckdb::DuckDBMetadataAdapter;
 use crate::metadata::duckdb::{classify_attach_entry, duckdb_table_format_for_database};
@@ -57,6 +61,7 @@ use arrow_schema::{DataType, Field, Schema};
 use dbt_adapter_core::AdapterType;
 use dbt_adapter_engine::cow::lowercase;
 use dbt_adapter_engine::databricks::query_tags::QueryTags;
+use dbt_adapter_sql::ident::escaped_identifier;
 use dbt_adapter_sql::is_keyword_ignore_ascii_case;
 use dbt_adbc::bigquery::*;
 use dbt_adbc::salesforce::DATA_TRANSFORM_RUN_TIMEOUT;
@@ -300,8 +305,7 @@ pub(crate) fn get_bool_config(engine: &dyn AdapterEngine, key: &str) -> AdapterR
 
 pub fn quote_ident(adapter_type: AdapterType, identifier: &str) -> String {
     let quote = dbt_adapter_core::quote_char(adapter_type);
-    let escaped =
-        dbt_adapter_sql::ident::escape_identifier_content(identifier, adapter_type, quote);
+    let escaped = escaped_identifier(identifier.into(), adapter_type, quote);
     format!("{quote}{escaped}{quote}")
 }
 
@@ -543,6 +547,25 @@ impl AdapterImpl {
                 unreachable!("only Redshift adapter should call reset_database, got {other:?}")
             }
         }
+        Ok(())
+    }
+
+    /// Whether a node left a transaction open on this thread's connection.
+    pub(crate) fn has_open_transaction(&self) -> bool {
+        self.manages_transactions() && open_transaction().is_some()
+    }
+
+    /// Rolls back the transaction a node left open. dbt-adapters does this when it releases the
+    /// node's connection. Data tests need it: `statement('main')` begins a transaction and the
+    /// test materialization commits only when it stores failures.
+    pub fn rollback_open_transaction(
+        &self,
+        conn: &mut ConnectionGuard,
+        node_id: &str,
+        token: CancellationToken,
+    ) -> FsResult<()> {
+        let ctx = QueryCtx::default().with_node_id(node_id);
+        self.exec_stmt(&ctx, conn, "rollback", false, token)?;
         Ok(())
     }
 
@@ -805,7 +828,7 @@ impl AdapterImpl {
         conn: &mut ConnectionGuard<'_>,
         ctx: &QueryCtx,
         sql: &str,
-        _auto_begin: bool,
+        auto_begin: bool,
         fetch: bool,
         _limit: Option<i64>,
         options: Option<ExecuteOptions>,
@@ -861,7 +884,54 @@ impl AdapterImpl {
 
         let mut last_batch = None;
         let mut transaction_open = false;
+        let manages_transactions = self.manages_transactions();
+        let node_id = state.and_then(node_id_from_state);
+        if manages_transactions && let Some(owner) = open_transaction() {
+            if owner.is_some() && node_id.is_some() && owner != node_id {
+                // shortcut: a node that never called `adapter.commit()` is rolled back when the
+                // next node reaches this connection, not when it finishes; revisit if that
+                // holds locks too long.
+                if let Err(err) = execute_query_with_retry(
+                    engine.clone(),
+                    state,
+                    conn.as_mut(),
+                    ctx,
+                    "rollback",
+                    /* retry_limit = */ 1,
+                    &options,
+                    false,
+                    token.clone(),
+                ) {
+                    conn.discard_conn_on_drop();
+                    return Err(err);
+                }
+                clear_open_transaction();
+            } else {
+                transaction_open = true;
+            }
+        }
         for sql in statements {
+            // dbt-redshift opens a transaction before the first statement that asks for one
+            // (`auto_begin`) and `adapter.commit()` ends it.
+            if manages_transactions
+                && auto_begin
+                && !transaction_open
+                && transaction_boundary(sql).is_none()
+            {
+                execute_query_with_retry(
+                    engine.clone(),
+                    state,
+                    conn.as_mut(),
+                    ctx,
+                    "begin",
+                    /* retry_limit = */ 1,
+                    &options,
+                    false,
+                    token.clone(),
+                )?;
+                transaction_open = true;
+                set_open_transaction(node_id.clone());
+            }
             match execute_query_with_retry(
                 engine.clone(),
                 state,
@@ -875,17 +945,51 @@ impl AdapterImpl {
             ) {
                 Ok(batch) => {
                     match transaction_boundary(sql) {
-                        Some(TransactionBoundary::Begin) => transaction_open = true,
-                        Some(TransactionBoundary::End) => transaction_open = false,
+                        Some(TransactionBoundary::Begin) => {
+                            transaction_open = true;
+                            if manages_transactions {
+                                set_open_transaction(node_id.clone());
+                            }
+                        }
+                        Some(TransactionBoundary::End) => {
+                            transaction_open = false;
+                            if manages_transactions {
+                                clear_open_transaction();
+                            }
+                        }
                         None => {}
                     }
                     last_batch = Some(batch);
                 }
                 Err(err) => {
                     if transaction_open {
-                        // The driver may have given up on a request the warehouse is still
-                        // running, so the session's transaction state is unknown. Retire the
-                        // connection (closing its session) instead of recycling it.
+                        // The warehouse answered with an error, so the session is idle and its
+                        // transaction is aborted. Roll it back and keep the connection, as
+                        // dbt-adapters does (`rollback_if_open` in its exception handler):
+                        // closing it would also drop the session's state.
+                        if manages_transactions
+                            && is_server_error(&err)
+                            && execute_query_with_retry(
+                                engine.clone(),
+                                state,
+                                conn.as_mut(),
+                                ctx,
+                                "rollback",
+                                /* retry_limit = */ 1,
+                                &options,
+                                false,
+                                token,
+                            )
+                            .is_ok()
+                        {
+                            clear_open_transaction();
+                            return Err(with_create_or_alter_hint(adapter_type, sql, err));
+                        }
+                        // Any other failure (a cancelled or abandoned request, a lost
+                        // connection, or a failed rollback): the driver may have given up on a
+                        // request the warehouse is still running, so the session's transaction
+                        // state is unknown. Retire the connection (closing its session) instead
+                        // of recycling it.
                         conn.discard_conn_on_drop();
                         return Err(AdapterError::new_with_sqlstate_and_vendor_code(
                             err.kind(),
@@ -898,7 +1002,7 @@ impl AdapterImpl {
                             err.vendor_code(),
                         ));
                     }
-                    return Err(err);
+                    return Err(with_create_or_alter_hint(adapter_type, sql, err));
                 }
             }
         }
@@ -1383,6 +1487,7 @@ impl AdapterImpl {
         let relation = relation.without_identifier()?;
         let args = [RelationObject::new(relation).into_value()];
         execute_macro(state, &args, "create_schema")?;
+        self.commit_open_transaction(state, CancellationToken::never_cancels())?;
         Ok(none_value())
     }
 
@@ -1399,6 +1504,7 @@ impl AdapterImpl {
         let dropped_schema = relation.schema().map(str::to_string);
         let args = [RelationObject::new(relation).into_value()];
         execute_macro(state, &args, "drop_schema")?;
+        self.commit_open_transaction(state, CancellationToken::never_cancels())?;
         // httpclient.py `database_dropped` parity: after dropping the
         // connection's own default database, clear it so follow-up statements
         // don't fail with UNKNOWN_DATABASE (falls back to the user's default
@@ -2161,7 +2267,7 @@ impl AdapterImpl {
                             }
                         }
                         Err(ref e) => {
-                            if e.message().contains("[TABLE_OR_VIEW_NOT_FOUND]") {
+                            if is_databricks_relation_not_found(e) {
                                 return Ok(Vec::new());
                             }
                             // PARSE_SYNTAX_ERROR / UNSUPPORTED_FEATURE -> DBR < 16.2;
@@ -2177,7 +2283,7 @@ impl AdapterImpl {
                     "dbt_databricks",
                 );
                 match result {
-                    Err(ref e) if e.message().contains("[TABLE_OR_VIEW_NOT_FOUND]") => {
+                    Err(ref e) if is_databricks_relation_not_found(e) => {
                         return Ok(Vec::new());
                     }
                     _ => result,
@@ -2733,12 +2839,11 @@ impl AdapterImpl {
         }
     }
 
-    /// This was update_columns method from bigquery-adapter where googleapi is used to
-    /// update/merge columns in general
+    /// Update BigQuery column descriptions and policy tags, including nested fields,
+    /// through the ADBC driver's REST API support.
+    /// BigQuery's [`ALTER COLUMN SET OPTIONS`] cannot modify nested-field descriptions.
     ///
-    /// But since internally this is is only used to update columns descriptions, by
-    /// bigquery__alter_column_comment macro and due to limitation of bigquery, we cannot update
-    /// nested columns using SQL the implementation here only supports columns descriptions update
+    /// [`ALTER COLUMN SET OPTIONS`]: https://cloud.google.com/bigquery/docs/reference/standard-sql/data-definition-language#alter_column_set_options_statement
     pub fn update_columns_descriptions(
         &self,
         state: &State,
@@ -2756,9 +2861,7 @@ impl AdapterImpl {
                 let table = relation.identifier_as_str()?;
                 let schema = relation.schema_as_str()?;
 
-                let nested_columns = self.do_nest_column_data_types(columns, None)?;
-
-                let column_to_description = nested_columns
+                let column_to_description = columns
                     .iter()
                     .filter_map(|(name, col)| {
                         col.description
@@ -2771,7 +2874,7 @@ impl AdapterImpl {
                 // If a column's tags are all mapping-valued, omit it entirely rather than
                 // sending an empty list, which BigQuery would interpret as clearing any
                 // existing policy tags on that column.
-                let column_to_policy_tags = nested_columns
+                let column_to_policy_tags = columns
                     .iter()
                     .filter_map(|(name, col)| {
                         col.policy_tags.as_ref().and_then(|tags| {
@@ -4601,6 +4704,7 @@ impl AdapterImpl {
                 let location_root = config
                     .__warehouse_specific_config__
                     .location_root
+                    .clone()
                     .ok_or_else(|| {
                         AdapterError::new(
                             AdapterErrorKind::Configuration,
@@ -5588,6 +5692,14 @@ enum TransactionBoundary {
     End,
 }
 
+/// Whether the warehouse itself rejected the statement, so the session is idle and usable.
+/// The driver reports that as a `Driver` error with a SQLSTATE. A cancelled request (SQLSTATE
+/// 57014) or an error without a SQLSTATE, such as a dropped connection, leaves the session in an
+/// unknown state.
+fn is_server_error(err: &AdapterError) -> bool {
+    err.kind() == AdapterErrorKind::Driver && err.sqlstate() != "00000"
+}
+
 fn transaction_boundary(sql: &str) -> Option<TransactionBoundary> {
     let sql = sql.trim().trim_end_matches(';').trim().to_ascii_lowercase();
     let mut words = sql.split_whitespace();
@@ -5599,7 +5711,94 @@ fn transaction_boundary(sql: &str) -> Option<TransactionBoundary> {
     }
 }
 
+/// Appended to a failed Snowflake `CREATE OR ALTER`: it declares the whole desired end state in
+/// place, and Snowflake rejects the ones it cannot apply (column reorders, type narrowing, a
+/// changed `transient` setting, ...). `CREATE OR REPLACE` always can.
+const CREATE_OR_ALTER_FAILURE_HINT: &str = "Hint: this statement was a CREATE OR ALTER, which cannot apply every change in place. \
+     If the error above is a change CREATE OR ALTER does not support, re-run with `--full-refresh` \
+     to rebuild the object with CREATE OR REPLACE.";
+
+/// Whether `sql` is a (Snowflake) `CREATE OR ALTER` statement, ignoring leading comments.
+fn is_create_or_alter(sql: &str) -> bool {
+    static CREATE_OR_ALTER: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r"(?is)^\s*(?:(?:/\*.*?\*/|--[^\n]*)\s*)*create\s+or\s+alter\b")
+            .expect("valid regex")
+    });
+    CREATE_OR_ALTER.is_match(sql)
+}
+
+/// Adds [`CREATE_OR_ALTER_FAILURE_HINT`] to a database error raised by a Snowflake `CREATE OR ALTER`.
+///
+/// Only errors whose own text names `CREATE OR ALTER` get the hint, so a failure that has nothing
+/// to do with the statement form (permissions, a suspended warehouse, a dropped connection)
+/// is passed through unchanged.
+fn with_create_or_alter_hint(
+    adapter_type: AdapterType,
+    sql: &str,
+    err: AdapterError,
+) -> AdapterError {
+    if adapter_type != Snowflake || err.kind() != AdapterErrorKind::Driver {
+        return err;
+    }
+    if !is_create_or_alter(sql) {
+        return err;
+    }
+    if !err
+        .message()
+        .to_ascii_lowercase()
+        .contains("create or alter")
+    {
+        return err;
+    }
+    AdapterError::new_with_sqlstate_and_vendor_code(
+        err.kind(),
+        format!("{}\n{CREATE_OR_ALTER_FAILURE_HINT}", err.message()),
+        err.sqlstate().as_bytes().try_into().unwrap_or([b'0'; 5]),
+        err.vendor_code(),
+    )
+}
+
 impl AdapterImpl {
+    /// Whether this adapter wraps a node's statements in a server transaction, like dbt-redshift.
+    /// Opt-in through `redshift_use_transactions`; `redshift_skip_autocommit_transaction_statements`
+    /// still turns it off, as it does in dbt-redshift.
+    pub(crate) fn manages_transactions(&self) -> bool {
+        let flag = |name: &str| {
+            self.behavior_object()
+                .get_value(&Value::from(name))
+                .is_some_and(|flag| flag.is_true())
+        };
+        self.adapter_type() == Redshift
+            && flag("redshift_use_transactions")
+            && !flag("redshift_skip_autocommit_transaction_statements")
+    }
+
+    /// Commits the transaction a macro opened on this thread, if transactions are managed and one
+    /// is open. dbt-adapters does this after schema DDL (`SQLAdapter.create_schema`); without it
+    /// the schema stays invisible to other workers until the next node on this thread commits.
+    pub(crate) fn commit_open_transaction(
+        &self,
+        state: &State,
+        token: CancellationToken,
+    ) -> AdapterResult<()> {
+        if !self.manages_transactions() || open_transaction().is_none() {
+            return Ok(());
+        }
+        let mut conn = self.borrow_tlocal_connection(Some(state), node_id_from_state(state))?;
+        self.execute(
+            Some(state),
+            &mut conn,
+            None,
+            "commit",
+            false,
+            false,
+            None,
+            None,
+            token,
+        )?;
+        Ok(())
+    }
+
     pub fn new(
         engine: Arc<dyn AdapterEngine>,
         schema_store: Option<Arc<dyn SchemaStoreTrait>>,
@@ -6222,6 +6421,8 @@ pub trait Replayer: fmt::Debug + Send + Sync {
 
 #[cfg(test)]
 mod tests {
+    mod update_columns;
+
     use super::*;
     use crate::adapter::adapter_factory::backend_of;
     use crate::cache::RelationCache;
@@ -6322,6 +6523,36 @@ mod tests {
         );
     }
 
+    const DT_CREATE_OR_ALTER_FLAG: &str = "snowflake_dynamic_table_create_or_alter";
+
+    #[test]
+    fn test_snowflake_dynamic_table_create_or_alter_flag_registered_and_off_by_default() {
+        let flags = adapter_specific_behavior_flags(Snowflake);
+        let flag = flags
+            .iter()
+            .find(|f| f.name == DT_CREATE_OR_ALTER_FLAG)
+            .expect("snowflake_dynamic_table_create_or_alter should be registered for Snowflake");
+
+        // The name is the public API users type under `flags:` in dbt_project.yml. Enabling it
+        // changes query-evolution behavior for every native dynamic table, so it must stay opt-in.
+        assert!(
+            !Arc::new(flag.clone()).is_true(),
+            "snowflake_dynamic_table_create_or_alter should default to off"
+        );
+    }
+
+    #[test]
+    fn test_dynamic_table_create_or_alter_flag_is_snowflake_only() {
+        for adapter_type in [Databricks, Bigquery, Redshift, Postgres, DuckDB] {
+            assert!(
+                adapter_specific_behavior_flags(adapter_type)
+                    .iter()
+                    .all(|f| f.name != DT_CREATE_OR_ALTER_FLAG),
+                "{adapter_type:?} must not register the Snowflake-only flag"
+            );
+        }
+    }
+
     fn engine(adapter_type: AdapterType) -> Arc<dyn AdapterEngine> {
         let config = match adapter_type {
             Snowflake => Mapping::from_iter([
@@ -6385,6 +6616,92 @@ mod tests {
         ))
     }
 
+    fn driver_error(message: &str) -> AdapterError {
+        AdapterError::new_with_sqlstate_and_vendor_code(
+            AdapterErrorKind::Driver,
+            message.to_string(),
+            *b"22000",
+            Some(2108),
+        )
+    }
+
+    #[test]
+    fn is_create_or_alter_matches_the_statement_header_only() {
+        let cases = [
+            ("create or alter dynamic table t as (select 1)", true),
+            ("  CREATE   OR\n ALTER TABLE t (id int)", true),
+            (
+                "/* {\"app\": \"dbt\"} */ -- note\ncreate or alter table t (id int)",
+                true,
+            ),
+            ("create or replace dynamic table t as (select 1)", false),
+            ("create dynamic table t as (select 1)", false),
+            ("select 'create or alter' from t -- create or alter", false),
+        ];
+        for (sql, expected) in cases {
+            assert_eq!(is_create_or_alter(sql), expected, "for {sql:?}");
+        }
+    }
+
+    const CREATE_OR_ALTER_SQL: &str = "create or alter dynamic table t as (select 1)";
+
+    /// Whether the hint was added to `err` for a `sql` statement run on `adapter_type`.
+    fn gets_hint(adapter_type: AdapterType, sql: &str, err: AdapterError) -> bool {
+        with_create_or_alter_hint(adapter_type, sql, err)
+            .message()
+            .contains("--full-refresh")
+    }
+
+    #[test]
+    fn create_or_alter_failure_gets_a_full_refresh_hint() {
+        let msg = "[Snowflake] 002108 (22000): CREATE OR ALTER execution failed.";
+        let hinted = with_create_or_alter_hint(Snowflake, CREATE_OR_ALTER_SQL, driver_error(msg));
+        assert!(hinted.message().starts_with(msg) && hinted.message().contains("--full-refresh"));
+        let code = (hinted.kind(), hinted.sqlstate(), hinted.vendor_code());
+        assert_eq!(code, (AdapterErrorKind::Driver, "22000", Some(2108)));
+    }
+
+    #[test]
+    fn unrelated_failures_are_not_given_the_hint() {
+        let named = "[Snowflake] CREATE OR ALTER execution failed";
+        // The error says nothing about CREATE OR ALTER: permissions, warehouse, network, ...
+        let permission = driver_error("[Snowflake] 003001 (42501): Insufficient privileges");
+        assert!(!gets_hint(Snowflake, CREATE_OR_ALTER_SQL, permission));
+        // Not a CREATE OR ALTER statement, even if the error text mentions it.
+        let replace = "create or replace dynamic table t as (select 1)";
+        assert!(!gets_hint(Snowflake, replace, driver_error(named)));
+        // Not Snowflake.
+        assert!(!gets_hint(
+            Postgres,
+            CREATE_OR_ALTER_SQL,
+            driver_error(named)
+        ));
+        // Not a driver (database) error.
+        let config = AdapterError::new(AdapterErrorKind::Configuration, "CREATE OR ALTER");
+        assert!(!gets_hint(Snowflake, CREATE_OR_ALTER_SQL, config));
+    }
+
+    #[test]
+    fn is_server_error_needs_a_sqlstate_that_is_not_a_connection_failure() {
+        let err = |kind, sqlstate: &[u8; 5]| {
+            AdapterError::new_with_sqlstate_and_vendor_code(
+                kind,
+                "boom".to_string(),
+                *sqlstate,
+                None,
+            )
+        };
+        // The warehouse rejected the statement: the session is idle and can be rolled back.
+        assert!(is_server_error(&err(AdapterErrorKind::Driver, b"22012")));
+        // A cancelled request, or an error without a SQLSTATE, leaves the session in an unknown
+        // state.
+        assert!(!is_server_error(&err(
+            AdapterErrorKind::Cancelled,
+            b"57014"
+        )));
+        assert!(!is_server_error(&err(AdapterErrorKind::Driver, b"00000")));
+    }
+
     #[test]
     fn transaction_boundary_recognises_explicit_transaction_statements() {
         use TransactionBoundary::{Begin, End};
@@ -6431,7 +6748,8 @@ mod tests {
                 location_root: Some("s3://bucket/root".to_string()),
                 include_full_name_in_path: Some(include_full_name_in_path),
                 ..Default::default()
-            },
+            }
+            .into(),
             ..Default::default()
         };
 

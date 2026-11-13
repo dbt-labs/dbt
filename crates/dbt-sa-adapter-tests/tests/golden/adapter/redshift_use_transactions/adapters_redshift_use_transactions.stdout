@@ -1,0 +1,15 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/schema.yml
+   Parsing models/txn_incremental.sql
+   Parsing models/txn_table.sql
+ Rendering models/txn_table.sql
+   Running models/txn_table.sql
+ Succeeded model adapters_redshift_use_transactions.txn_table (table) [1 of 2 in duration]
+ Rendering models/txn_incremental.sql
+   Running models/txn_incremental.sql
+ Succeeded model adapters_redshift_use_transactions.txn_incremental (incremental) [2 of 2 in duration]
+==================== Execution Summary =====================
+Finished 'run' successfully for target 'redshift' [duration]
+Processed: 2 models
+Summary: 2 total | 2 success

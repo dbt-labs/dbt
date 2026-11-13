@@ -559,7 +559,7 @@ fn databricks_get_relation(
     use crate::metadata::MetadataProcessor as _;
 
     let query_catalog = databricks_query_identifier(database, adapter.quoting().database);
-    let batch = super::databricks::describe_relation_batch(
+    let Some((batch, used_plain_describe)) = super::databricks::describe_relation_batch(
         adapter,
         state,
         ctx,
@@ -568,14 +568,10 @@ fn databricks_get_relation(
         schema,
         identifier,
         token.clone(),
-    );
-    if let Err(e) = &batch
-        && (e.to_string().contains("cannot be found")
-            || e.to_string().contains("TABLE_OR_VIEW_NOT_FOUND"))
-    {
+    )?
+    else {
         return Ok(None);
-    }
-    let (batch, used_plain_describe) = batch?;
+    };
     if batch.num_rows() == 0 {
         return Ok(None);
     }

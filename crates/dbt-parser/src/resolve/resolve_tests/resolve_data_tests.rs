@@ -36,7 +36,7 @@ use dbt_jinja_utils::jinja_arg_format::format_value_for_jinja;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::listener::JinjaTypeCheckingEventListenerFactory;
 use dbt_jinja_utils::node_resolver::NodeResolver;
-use dbt_jinja_utils::phases::parse::ParseAdapterScopes;
+use dbt_jinja_utils::phases::AdapterScopes;
 use dbt_jinja_utils::utils::dependency_package_name_from_ctx;
 use dbt_schemas::schemas::DbtTestAttr;
 use dbt_schemas::schemas::InternalDbtNodeAttributes;
@@ -374,7 +374,7 @@ pub async fn resolve_data_tests(
     test_properties: &mut BTreeMap<String, MinimalPropertiesEntry>,
     database: &str,
     schema: &str,
-    parse_adapter_scopes: &Arc<ParseAdapterScopes>,
+    parse_adapter_scopes: &Arc<AdapterScopes>,
     default_adapter: AdapterType,
     env: Arc<JinjaEnv>,
     base_ctx: &Arc<BTreeMap<String, minijinja::Value>>,
@@ -529,7 +529,6 @@ pub async fn resolve_data_tests(
         adapter,
         alias_adapter,
         rendered_sql: _,
-        macro_spans: _macro_spans,
         properties: maybe_properties,
         status,
         render_error_deferred,
@@ -848,7 +847,7 @@ pub async fn resolve_data_tests(
                     state: test_config.state.clone(),
                 }
             },
-            __adapter_attr__: AdapterAttr::from_config_and_dialect(
+            __adapter_attr__: AdapterAttr::from_lazy_config_and_dialect(
                 &test_config.__warehouse_specific_config__,
                 selected_adapter,
             ),

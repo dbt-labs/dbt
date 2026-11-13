@@ -34,7 +34,7 @@ use dbt_common::{ErrorCode, FsResult, fs_err, stdfs, unexpected_fs_err};
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::listener::DefaultJinjaTypeCheckEventListenerFactory;
 use dbt_jinja_utils::node_resolver::NodeResolver;
-use dbt_jinja_utils::phases::parse::ParseAdapterScopes;
+use dbt_jinja_utils::phases::AdapterScopes;
 use dbt_jinja_utils::serde::into_typed_with_jinja;
 use dbt_schemas::schemas::common::{
     DbtChecksum, DbtQuoting, ModelFreshnessRules, NodeDependsOn,
@@ -73,7 +73,7 @@ pub async fn resolve_snapshots(
     macros: &BTreeMap<String, DbtMacro>,
     database: &str,
     schema: &str,
-    parse_adapter_scopes: &Arc<ParseAdapterScopes>,
+    parse_adapter_scopes: &Arc<AdapterScopes>,
     default_adapter: AdapterType,
     adapter_quoting: &IndexMap<AdapterType, DbtQuoting>,
     jinja_env: Arc<JinjaEnv>,
@@ -370,7 +370,6 @@ pub async fn resolve_snapshots(
         alias_adapter,
         raw_code,
         macro_dependencies,
-        macro_spans: _macro_spans,
         properties: maybe_properties,
         status,
         render_error_deferred,
@@ -623,7 +622,7 @@ pub async fn resolve_snapshots(
                         .clone(),
                     table_format: snapshot_config.table_format.clone(),
                 },
-                __adapter_attr__: AdapterAttr::from_config_and_dialect(
+                __adapter_attr__: AdapterAttr::from_lazy_config_and_dialect(
                     &snapshot_config.__warehouse_specific_config__,
                     selected_adapter,
                 ),

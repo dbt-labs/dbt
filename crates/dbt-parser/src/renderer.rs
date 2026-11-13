@@ -25,13 +25,11 @@ use dbt_jinja_utils::listener::{
     JinjaTypeCheckingEventListenerFactory, RenderingEventListenerFactory,
 };
 use dbt_jinja_utils::node_resolver::NodeResolver;
-use dbt_jinja_utils::phases::build_operation_context_btreemap;
 use dbt_jinja_utils::phases::compile::{
     DependencyValidationConfig, build_compile_node_context_inner,
 };
-use dbt_jinja_utils::phases::parse::{
-    ParseAdapterScopes, build_resolve_model_context, update_resolve_model_relation,
-};
+use dbt_jinja_utils::phases::parse::{build_resolve_model_context, update_resolve_model_relation};
+use dbt_jinja_utils::phases::{AdapterScopes, build_operation_context_btreemap};
 use dbt_jinja_utils::serde::into_typed_with_jinja_error_context;
 use dbt_jinja_utils::silence_base_context;
 use dbt_jinja_utils::utils::{
@@ -57,10 +55,10 @@ use tracing::Instrument as _;
 
 use dbt_frontend_common::error::CodeLocation;
 use dbt_jinja_utils::phases::parse::sql_resource::SqlResource;
+use minijinja::Value as MinijinjaValue;
 use minijinja::compiler::meta::{StaticFunctionCall, find_string_arg_calls, find_undeclared};
 use minijinja::constants::{TARGET_PACKAGE_NAME, TARGET_UNIQUE_ID};
 use minijinja::value::OverlayMap;
-use minijinja::{MacroSpans, Value as MinijinjaValue};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -91,8 +89,6 @@ pub struct SqlFileRenderResult<T: ResolvableConfig<T>, S> {
     pub raw_code: String,
     /// The rendered SQL
     pub rendered_sql: String,
-    /// The macro spans for the rendered SQL
-    pub macro_spans: MacroSpans,
     /// The properties for the model
     pub properties: Option<S>,
     /// The path to the properties file that defines this model
@@ -549,7 +545,6 @@ where
             alias_adapter: resolved.alias_adapter,
             raw_code: String::new(),
             rendered_sql: String::new(),
-            macro_spans: MacroSpans::default(),
             properties: maybe_model,
             status: ModelStatus::Disabled,
             render_error_deferred: false,
@@ -711,7 +706,7 @@ where
             ..pre_render_layers
         })
     };
-    let (sql_file_info, resolved, status, rendered_sql, macro_spans, macro_dependencies) =
+    let (sql_file_info, resolved, status, rendered_sql, macro_dependencies) =
         match render_sql_with_listeners(
             &sql,
             jinja_env.as_ref(),
@@ -813,7 +808,6 @@ where
                     resolved,
                     (status, false),
                     rendered_sql,
-                    macro_spans,
                     macro_dependencies,
                 )
             }
@@ -863,7 +857,6 @@ where
                     resolved,
                     (status, render_error_deferred),
                     String::new(),
-                    MacroSpans::default(),
                     Vec::new(),
                 )
             }
@@ -922,7 +915,6 @@ where
         // which trims leading/trailing whitespace before storing as raw_code.
         raw_code: sql.trim().to_owned(),
         rendered_sql,
-        macro_spans,
         properties: maybe_model,
         status,
         render_error_deferred,
@@ -959,7 +951,7 @@ pub struct RenderCtxInner<T: ResolvableConfig<T>> {
     /// `adapter`, which its generated `config()` otherwise sets only during the render.
     pub adapter_layer: Option<HashMap<PathBuf, T>>,
     /// Per-adapter parse identity of the active target. `None` renders every node as the default.
-    pub parse_adapter_scopes: Option<Arc<ParseAdapterScopes>>,
+    pub parse_adapter_scopes: Option<Arc<AdapterScopes>>,
     /// Quoting policies authored for the target's adapters.
     pub adapter_quoting: IndexMap<AdapterType, DbtQuoting>,
     /// The resource paths
@@ -1021,21 +1013,47 @@ where
     if model_sql_files.len() < 50 {
         max_concurrency = 1;
     }
+    // Split the files into chunks, each with its own subset of node_properties. Each chunk gets
+    // its own entry: the last file with a name takes the original, earlier files with that name
+    // take a clone. Names repeat only when files share a file name (a model and its disabled
+    // copies), so nearly every entry moves. Sharing entries behind an `Arc` would not save that
+    // rare clone: rendering takes `schema_value` by value, so a shared entry would be cloned out
+    // of the `Arc` anyway.
     let chunk_size = model_sql_files.len().div_ceil(max_concurrency);
 
-    // Split node_properties into per-chunk subsets
-    let chunks: Vec<(Vec<DbtAsset>, BTreeMap<String, MinimalPropertiesEntry>)> = model_sql_files
+    let (files, mut remaining_files_per_ref_name) = model_sql_files.iter().fold(
+        (Vec::with_capacity(model_sql_files.len()), HashMap::new()),
+        |(mut files, mut remaining_files_per_ref_name), dbt_asset| {
+            let ref_name = node_name_from_path(&dbt_asset.path).unwrap();
+            *remaining_files_per_ref_name
+                .entry(ref_name)
+                .or_insert(0usize) += 1;
+            files.push((dbt_asset, ref_name));
+            (files, remaining_files_per_ref_name)
+        },
+    );
+
+    let chunks: Vec<(Vec<DbtAsset>, BTreeMap<String, MinimalPropertiesEntry>)> = files
         .chunks(chunk_size)
         .map(|chunk| {
-            let chunk_vec = chunk.to_vec();
+            let mut chunk_assets = Vec::with_capacity(chunk.len());
             let mut chunk_props = BTreeMap::new();
-            for dbt_asset in &chunk_vec {
-                let ref_name = node_name_from_path(&dbt_asset.path).unwrap();
-                if let Some(entry) = node_properties.get(ref_name) {
-                    chunk_props.insert(ref_name.to_string(), entry.clone());
+            for &(dbt_asset, ref_name) in chunk {
+                chunk_assets.push(dbt_asset.clone());
+                let remaining_files = remaining_files_per_ref_name
+                    .get_mut(ref_name)
+                    .expect("every ref name in `files` was counted");
+                *remaining_files -= 1;
+                let entry = if *remaining_files == 0 {
+                    node_properties.remove(ref_name)
+                } else {
+                    node_properties.get(ref_name).cloned()
+                };
+                if let Some(entry) = entry {
+                    chunk_props.insert(ref_name.to_string(), entry);
                 }
             }
-            (chunk_vec, chunk_props)
+            (chunk_assets, chunk_props)
         })
         .collect();
 
@@ -1102,7 +1120,7 @@ pub async fn collect_adapter_identifiers_detect_unsafe<
     package_name: &str,
     root_project_name: &str,
     runtime_config: Arc<DbtRuntimeConfig>,
-    parse_adapter_scopes: &Arc<ParseAdapterScopes>,
+    parse_adapter_scopes: &Arc<AdapterScopes>,
     token: &CancellationToken,
 ) -> FsResult<Vec<(T, bool)>> {
     if node_map.is_empty() {
@@ -1179,7 +1197,7 @@ async fn process_model_chunk_for_unsafe_detection<
     root_project_name: String,
     runtime_config: Arc<DbtRuntimeConfig>,
     parse_adapter: Arc<dbt_adapter::Adapter>,
-    parse_adapter_scopes: &ParseAdapterScopes,
+    parse_adapter_scopes: &AdapterScopes,
     token: &CancellationToken,
 ) -> FsResult<Vec<(T, bool)>> {
     let mut nodes = Vec::new();

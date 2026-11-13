@@ -507,6 +507,41 @@ fn test_mutable_map() {
 }
 
 #[test]
+fn test_mutable_map_pop_preserves_order() {
+    // Python's `dict.pop(key)` keeps the remaining keys in insertion order.
+    // Issue dbt-labs/dbt#17147: a swap-remove moved the last key into the
+    // removed key's slot.
+    let rv = minijinja::render!(
+        "{% set d = {'A': 1, 'B': 2, 'C': 3, 'D': 4} %}{% do d.pop('B') %}{{ d | list | join(',') }}"
+    );
+    assert_snapshot!(rv, @"A,C,D");
+
+    // Removing the first key.
+    let rv = minijinja::render!(
+        "{% set d = {'A': 1, 'B': 2, 'C': 3, 'D': 4} %}{% do d.pop('A') %}{{ d | list | join(',') }}"
+    );
+    assert_snapshot!(rv, @"B,C,D");
+
+    // Removing the last key.
+    let rv = minijinja::render!(
+        "{% set d = {'A': 1, 'B': 2, 'C': 3, 'D': 4} %}{% do d.pop('D') %}{{ d | list | join(',') }}"
+    );
+    assert_snapshot!(rv, @"A,B,C");
+
+    // Removing several keys in a row.
+    let rv = minijinja::render!(
+        "{% set d = {'A': 1, 'B': 2, 'C': 3, 'D': 4, 'E': 5, 'F': 6} %}{% do d.pop('B') %}{% do d.pop('E') %}{% do d.pop('A') %}{{ d | list | join(',') }}"
+    );
+    assert_snapshot!(rv, @"C,D,F");
+
+    // Values and items stay aligned with the keys, and a default still works.
+    let rv = minijinja::render!(
+        "{% set d = {'A': 1, 'B': 2, 'C': 3, 'D': 4} %}{% do d.pop('B') %}{% do d.pop('X', 0) %}{% for k in d %}{{ k }}={{ d[k] }};{% endfor %}"
+    );
+    assert_snapshot!(rv, @"A=1;C=3;D=4;");
+}
+
+#[test]
 fn test_mutable_map_update_none_errors() {
     // Python's `dict.update(None)` raises TypeError; it must not silently
     // no-op just because `Value::try_iter` treats None as an empty iterator.

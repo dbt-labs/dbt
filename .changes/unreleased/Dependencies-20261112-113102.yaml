@@ -1,0 +1,7 @@
+kind: Dependencies
+body: '[ClickHouse] Bump the ADBC driver to 0.1.2: ClickHouse 26.9+ servers no longer fail with ''decompression error: incorrect magic number'''
+time: 2026-11-12T11:31:02.396246+01:00
+custom:
+    author: koletzilla
+    issue: ""
+    project: dbt

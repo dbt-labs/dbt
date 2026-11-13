@@ -175,6 +175,12 @@ fn reset_node_overrides(
     unique_id: &str,
     targets: &[NodeOverride],
 ) -> FsResult<()> {
+    // dbt-adapters rolls back an open transaction when it releases the node's connection.
+    if let Err(err) = adapter.end_node_transaction(unique_id) {
+        // The rollback failed, so the session's state is unknown: drop the connection.
+        drop_thread_local_connection();
+        return Err(err);
+    }
     for target in targets.iter().copied() {
         let result = match target {
             NodeOverride::Database => adapter.reset_database(unique_id).map_err(|e| {
@@ -199,6 +205,28 @@ fn reset_node_overrides(
         }
     }
     Ok(())
+}
+
+/// Ends the transaction a node left open on this thread's connection, then returns the node's
+/// result. Does nothing unless the adapter manages transactions (`redshift_use_transactions`).
+///
+/// dbt-adapters rolls a transaction back when a node releases its connection. Here only the
+/// materializations that call `reset_node_overrides` did, so a unit test or a function kept its
+/// transaction open until another node reached the thread. Call it on the thread that ran the
+/// node's statements: a unit test's render phase and run phase are separate blocking tasks.
+/// The node's own error wins over a failed rollback, and a failed rollback drops the connection.
+pub(crate) fn end_node_transaction<T>(
+    adapter: &Adapter,
+    unique_id: &str,
+    result: FsResult<T>,
+) -> FsResult<T> {
+    match adapter.end_node_transaction(unique_id) {
+        Ok(()) => result,
+        Err(err) => {
+            drop_thread_local_connection();
+            result.and(Err(err))
+        }
+    }
 }
 
 fn with_jinja_trace<F, T>(compiled_path: &Path, unique_id: &str, f: F) -> FsResult<T>
@@ -242,6 +270,11 @@ fn dump_jinja_trace(listener: &JinjaTraceListener, compiled_path: &Path, unique_
 pub enum NodeHookPhase {
     Pre,
     Post,
+    /// The post-hooks that run inside the transaction, without the commit
+    /// that follows them.
+    PostInsideTransaction,
+    /// The post-hooks that run after the commit, without the commit itself.
+    PostOutsideTransaction,
 }
 
 /// Describes how a node's materialization macro invokes pre/post hooks.
@@ -281,9 +314,12 @@ fn node_hook_expression(
             NodeHookPhase::Pre => context
                 .contains_key("pre_hooks")
                 .then_some("run_hooks(pre_hooks)"),
-            NodeHookPhase::Post => context
+            // A plain materialization runs its post-hooks in one step, with
+            // no transaction to split them around.
+            NodeHookPhase::Post | NodeHookPhase::PostInsideTransaction => context
                 .contains_key("post_hooks")
                 .then_some("run_hooks(post_hooks)"),
+            NodeHookPhase::PostOutsideTransaction => None,
         },
         NodeHookStyle::SplitTransaction => match phase {
             NodeHookPhase::Pre => context.contains_key("pre_hooks").then_some(
@@ -298,6 +334,12 @@ fn node_hook_expression(
                     Some("adapter.commit()")
                 }
             }
+            NodeHookPhase::PostInsideTransaction => context
+                .contains_key("post_hooks")
+                .then_some("run_hooks(post_hooks, inside_transaction=True)"),
+            NodeHookPhase::PostOutsideTransaction => context
+                .contains_key("post_hooks")
+                .then_some("run_hooks(post_hooks, inside_transaction=False)"),
         },
     }
 }
@@ -335,7 +377,9 @@ pub fn execute_node_hooks<S: serde::Serialize>(
 
     let hook_name = match phase {
         NodeHookPhase::Pre => "pre_hooks",
-        NodeHookPhase::Post => "post_hooks",
+        NodeHookPhase::Post
+        | NodeHookPhase::PostInsideTransaction
+        | NodeHookPhase::PostOutsideTransaction => "post_hooks",
     };
     let Some(hook_expression) = node_hook_expression(&context, style, phase) else {
         return Ok(());
@@ -458,6 +502,66 @@ mod tests {
             Some(
                 "run_hooks(post_hooks, inside_transaction=True) ~ adapter.commit() ~ run_hooks(post_hooks, inside_transaction=False)"
             )
+        );
+    }
+
+    /// A clone applies grants between the two halves, so neither half commits.
+    #[test]
+    fn split_transaction_post_hooks_split_around_the_commit() {
+        let mut context = OverlayMap::default();
+        context.insert("post_hooks", Value::from(Vec::<Value>::new()));
+
+        assert_eq!(
+            node_hook_expression(
+                &context,
+                NodeHookStyle::SplitTransaction,
+                NodeHookPhase::PostInsideTransaction
+            ),
+            Some("run_hooks(post_hooks, inside_transaction=True)")
+        );
+        assert_eq!(
+            node_hook_expression(
+                &context,
+                NodeHookStyle::SplitTransaction,
+                NodeHookPhase::PostOutsideTransaction
+            ),
+            Some("run_hooks(post_hooks, inside_transaction=False)")
+        );
+        for phase in [
+            NodeHookPhase::PostInsideTransaction,
+            NodeHookPhase::PostOutsideTransaction,
+        ] {
+            assert_eq!(
+                node_hook_expression(
+                    &OverlayMap::default(),
+                    NodeHookStyle::SplitTransaction,
+                    phase
+                ),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn plain_post_hooks_run_whole_in_the_inside_transaction_half() {
+        let mut context = OverlayMap::default();
+        context.insert("post_hooks", Value::from(Vec::<Value>::new()));
+
+        assert_eq!(
+            node_hook_expression(
+                &context,
+                NodeHookStyle::Plain,
+                NodeHookPhase::PostInsideTransaction
+            ),
+            Some("run_hooks(post_hooks)")
+        );
+        assert_eq!(
+            node_hook_expression(
+                &context,
+                NodeHookStyle::Plain,
+                NodeHookPhase::PostOutsideTransaction
+            ),
+            None
         );
     }
 

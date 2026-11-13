@@ -1,14 +1,15 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::errors::{AdapterError, AdapterErrorKind, AdapterResult};
-use dbt_adapter_core::AdapterType;
-use dbt_adbc as adbc;
-
 use arrow::array::{Array, ArrayRef, Int64Array, StringArray};
 use arrow::compute::{CastOptions, cast_with_options};
 use arrow::datatypes::{DataType, Field, FieldRef, Schema};
 use arrow::record_batch::RecordBatch;
+
+use dbt_adapter_core::AdapterType;
+use dbt_adbc as adbc;
+
+use crate::errors::{AdapterError, AdapterErrorKind, AdapterResult};
 
 /// Information about a column that was renamed during disambiguation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

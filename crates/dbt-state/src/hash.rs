@@ -668,12 +668,13 @@ fn seed_node_body_hash(
     project_root_path: &DbtPath,
 ) -> Result<String, NodeHashError> {
     // ref: https://github.com/fivetran/query-cache/blob/4ab87c72f2783c230905c5c75ec19eb76314069e/clients/dbt_state/src/dbt_state/node_hash_calculator.py#L203
-    let seed_relative_path = &node.common().original_file_path;
-    // Package seeds live under their package root, not the project root.
-    let seed_full_path = match node.file_path_from_root() {
-        Some(path) => path,
-        None => project_root_path.join(seed_relative_path).to_path_buf(),
-    };
+    // `original_file_path` is relative to the project root (package seeds include their
+    // `dbt_packages/<pkg>/` or local-dep prefix), so it stays valid when the project is moved.
+    // `root_path` is absolute and set at parse time, so a restored parse cache can make it stale.
+    // ref: https://github.com/dbt-labs/dbt/blob/02946b1ff4f2b052c644ee09e74fe26a5a19af2c/core/dbt/context/providers.py#L729
+    // Resolution is shared with ingestion/materialization so the hash always describes the
+    // bytes that are actually loaded.
+    let seed_full_path = node.resolve_file_path(project_root_path.as_ref());
 
     let mut reader = BufReader::new(File::open(seed_full_path)?);
     let mut ctx = md5::Context::new();
@@ -880,7 +881,7 @@ mod tests {
         }
 
         #[test]
-        fn seed_node_body_hash_uses_root_path_for_package_seeds() {
+        fn seed_node_body_hash_falls_back_to_root_path_when_project_file_missing() {
             let tmpdir = TempDir::new().unwrap();
             let project_root: DbtPath = tmpdir.path().join("project").as_path().into();
             let package_root = tmpdir.path().join("pkg");
@@ -900,6 +901,95 @@ mod tests {
                 ..Default::default()
             };
             seed.__seed_attr__.root_path = Some(package_root);
+
+            assert_eq!(
+                seed_node_body_hash(&seed, &project_root).unwrap(),
+                "e146991e1c07585745c5a65f06a517e9"
+            );
+        }
+
+        #[test]
+        fn seed_node_body_hash_resolves_from_project_root_when_root_path_is_stale() {
+            let tmpdir = TempDir::new().unwrap();
+            let project_root: DbtPath = tmpdir.path().join("project").as_path().into();
+            fs::create_dir_all(tmpdir.path().join("project/seeds")).unwrap();
+            fs::write(
+                tmpdir.path().join("project/seeds/x.csv"),
+                b"id,name\n1,Ada\n2,Grace\n",
+            )
+            .unwrap();
+
+            let mut seed = DbtSeed {
+                __common_attr__: CommonAttributes {
+                    path: "x.csv".into(),
+                    original_file_path: "seeds/x.csv".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            seed.__seed_attr__.root_path = Some(tmpdir.path().join("deleted"));
+
+            assert_eq!(
+                seed_node_body_hash(&seed, &project_root).unwrap(),
+                "e146991e1c07585745c5a65f06a517e9"
+            );
+        }
+
+        /// Regression: a stale `root_path` that still exists on disk (an old checkout) must not
+        /// make hashing and ingestion read different files. Both checkouts exist here, with
+        /// different contents, so any resolution-order drift shows up as a hash mismatch.
+        #[test]
+        fn seed_node_body_hash_reads_same_file_as_resolve_file_path_when_both_checkouts_exist() {
+            let tmpdir = TempDir::new().unwrap();
+            let project_root: DbtPath = tmpdir.path().join("new").as_path().into();
+            let old_root = tmpdir.path().join("old");
+            fs::create_dir_all(tmpdir.path().join("new/seeds")).unwrap();
+            fs::create_dir_all(old_root.join("seeds")).unwrap();
+            let new_bytes = b"id,name\n1,Ada\n2,Grace\n";
+            let old_bytes = b"id,name\n1,Ada\n";
+            fs::write(tmpdir.path().join("new/seeds/x.csv"), new_bytes).unwrap();
+            fs::write(old_root.join("seeds/x.csv"), old_bytes).unwrap();
+
+            let mut seed = DbtSeed {
+                __common_attr__: CommonAttributes {
+                    path: "seeds/x.csv".into(),
+                    original_file_path: "seeds/x.csv".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            seed.__seed_attr__.root_path = Some(old_root);
+
+            let resolved = seed.resolve_file_path(project_root.as_ref());
+            let loaded_bytes = fs::read(&resolved).unwrap();
+            assert_eq!(loaded_bytes, new_bytes, "current checkout must win");
+            assert_eq!(
+                seed_node_body_hash(&seed, &project_root).unwrap(),
+                format!("{:x}", md5::compute(&loaded_bytes)),
+                "hash must describe the bytes ingestion loads"
+            );
+        }
+
+        #[test]
+        fn seed_node_body_hash_resolves_package_seed_from_project_root() {
+            let tmpdir = TempDir::new().unwrap();
+            let project_root: DbtPath = tmpdir.path().join("project").as_path().into();
+            fs::create_dir_all(tmpdir.path().join("project/dbt_packages/pkg/seeds")).unwrap();
+            fs::write(
+                tmpdir.path().join("project/dbt_packages/pkg/seeds/x.csv"),
+                b"id,name\n1,Ada\n2,Grace\n",
+            )
+            .unwrap();
+
+            let mut seed = DbtSeed {
+                __common_attr__: CommonAttributes {
+                    path: "seeds/x.csv".into(),
+                    original_file_path: "dbt_packages/pkg/seeds/x.csv".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            seed.__seed_attr__.root_path = Some(tmpdir.path().join("deleted/pkg"));
 
             assert_eq!(
                 seed_node_body_hash(&seed, &project_root).unwrap(),
@@ -1195,7 +1285,7 @@ mod tests {
             node.base_mut()
                 .depends_on
                 .nodes
-                .push(upstream_node.unique_id());
+                .push(upstream_node.unique_id().to_string());
 
             assert!(!node.base().depends_on.nodes.is_empty());
             assert!(node.base().depends_on.macros.is_empty());

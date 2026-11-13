@@ -179,6 +179,7 @@ mod tests {
                     .with_named_option(mysql::VENDOR, mysql::VENDOR_MARIADB)?;
                 Ok(builder)
             }
+            Backend::Trino => unimplemented!("trino backend database builder in tests"),
             Backend::Generic { .. } => unimplemented!("generic backend database builder in tests"),
         }?;
         if backend == Backend::Snowflake {

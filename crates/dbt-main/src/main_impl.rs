@@ -304,7 +304,7 @@ pub fn print_trimmed_error(msg: String) {
 /// Terminates the current process with the given exit code, without waiting for
 /// threads to clean up
 fn hard_exit(exit_code: i32) -> ! {
-    use windows::Win32::System::Threading::{GetCurrentProcess, TerminateProcess};
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, TerminateProcess};
 
     unsafe {
         let _ = TerminateProcess(GetCurrentProcess(), exit_code as u32);

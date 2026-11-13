@@ -46,139 +46,163 @@ pub(crate) static DEFAULT_BASE_BEHAVIOR_FLAGS: LazyLock<[BehaviorFlag; 4]> = Laz
 /// just to get the flags
 pub fn adapter_specific_behavior_flags(adapter_type: AdapterType) -> Vec<BehaviorFlag> {
     match adapter_type {
-        Snowflake => {
-            // https://github.com/dbt-labs/dbt-adapters/blob/c4c04de76d5a6c56c95965041a93156fdeaf4641/dbt-snowflake/src/dbt/adapters/snowflake/impl.py#L46
-            let flag = BehaviorFlag::new(
-                "snowflake_default_transient_dynamic_tables",
-                false,
-                Some(
-                    "When enabled, dynamic tables default to transient (matching regular table behavior). This is a breaking change from previous behavior where dynamic tables were non-transient.",
-                ),
-                None,
-                None,
-            );
-            vec![flag]
-        }
-        Databricks => {
-            let use_user_folder_for_python = BehaviorFlag::new(
-                "use_user_folder_for_python",
-                true,
-                Some(
-                    "Use the user's home folder for uploading python notebooks. Shared folder use is deprecated due to governance concerns.",
-                ),
-                None,
-                None,
-            );
-
-            let use_materialization_v2 = BehaviorFlag::new(
-                "use_materialization_v2",
-                false,
-                Some(
-                    "Use revamped materializations based on separating create and insert. This allows more performant column comments, as well as new column features.",
-                ),
-                None,
-                None,
-            );
-
-            let use_replace_on_for_insert_overwrite = BehaviorFlag::new(
-                "use_replace_on_for_insert_overwrite",
-                true,
-                Some(
-                    "Use INSERT INTO ... REPLACE ON syntax for insert_overwrite on SQL Warehouses. When enabled, only matching partitions are overwritten; historical partitions are preserved.",
-                ),
-                None,
-                None,
-            );
-
-            let use_managed_iceberg = BehaviorFlag::new(
-                "use_managed_iceberg",
-                false,
-                Some(
-                    "Use managed Iceberg tables when table_format is iceberg. When this flag is disabled, UniForm is used instead.",
-                ),
-                None,
-                None,
-            );
-
-            // https://github.com/databricks/dbt-databricks/blob/3caad339bb3e60b7c795684374c3c8a1d9042279/dbt/adapters/databricks/impl.py#L160
-            let use_describe_as_json_for_relation_metadata = BehaviorFlag::new(
-                "use_describe_as_json_for_relation_metadata",
-                false,
-                Some(
-                    "Use DESCRIBE TABLE EXTENDED AS JSON when supported to fetch relation metadata like constraints, column masks, row filters, view definition, etc. When disabled, falls back to information_schema queries.",
-                ),
-                None,
-                None,
-            );
-
-            vec![
-                use_user_folder_for_python,
-                use_materialization_v2,
-                use_replace_on_for_insert_overwrite,
-                use_managed_iceberg,
-                use_describe_as_json_for_relation_metadata,
-            ]
-        }
-        Bigquery => {
-            // https://github.com/dbt-labs/dbt-adapters/blob/b9ebd240e39882a8c43ed659de423c7504d4642a/dbt-bigquery/src/dbt/adapters/bigquery/impl.py#L109-L110
-            let noop_alter_relation_comment = BehaviorFlag::new(
-                "bigquery_noop_alter_relation_comment",
-                false,
-                Some(
-                    "Make bigquery__alter_relation_comment a no-op. This is useful when relation descriptions are already set in DDL (e.g. via OPTIONS(description=...)) to avoid an unnecessary update.",
-                ),
-                None,
-                None,
-            );
-            let enforce_maximum_bytes_billed = BehaviorFlag::new(
-                "bigquery_enforce_maximum_bytes_billed",
-                false,
-                Some(
-                    "Apply the profile's maximum_bytes_billed to each query job, so jobs that would bill more bytes fail, as in v1. v2 ignored this setting before.",
-                ),
-                None,
-                None,
-            );
-            vec![noop_alter_relation_comment, enforce_maximum_bytes_billed]
-        }
-        Fabric => {
-            let flag = BehaviorFlag::new(
-                "empty",
-                false,
-                Some(
-                    "When enabled, table and view materializations will be created as empty structures (no data).",
-                ),
-                None,
-                None,
-            );
-            vec![flag]
-        }
-        Redshift => {
-            // TODO: https://github.com/dbt-labs/fs/issues/11871
-            let skip_autocommit_transaction_statements = BehaviorFlag::new(
-                "redshift_skip_autocommit_transaction_statements",
-                false,
-                Some(
-                    "When enabled, skip BEGIN/COMMIT wrapping so statements that cannot run in a transaction block (e.g. ALTER COLUMN TYPE for VARCHAR/VARBYTE size changes) can be issued.",
-                ),
-                None,
-                None,
-            );
-            // https://github.com/dbt-labs/dbt-adapters/blob/main/dbt-redshift/src/dbt/adapters/redshift/impl.py#L56-L66
-            let grants_extended = BehaviorFlag::new(
-                "redshift_grants_extended",
-                false,
-                Some(
-                    "Enable Redshift grants for groups and roles using 'user:', 'group:', and 'role:' prefixes. Unprefixed grantees remain users for backward compatibility.",
-                ),
-                None,
-                None,
-            );
-            vec![skip_autocommit_transaction_statements, grants_extended]
-        }
+        Snowflake => snowflake_behavior_flags(),
+        Databricks => databricks_behavior_flags(),
+        Bigquery => bigquery_behavior_flags(),
+        Fabric => fabric_behavior_flags(),
+        Redshift => redshift_behavior_flags(),
         Postgres | Salesforce | Spark | DuckDB | LakeCompute | ClickHouse | Exasol | MariaDB
         | Starburst | Athena | Trino | Datafusion | Dremio | Oracle => vec![],
     }
+}
+
+fn snowflake_behavior_flags() -> Vec<BehaviorFlag> {
+    // https://github.com/dbt-labs/dbt-adapters/blob/c4c04de76d5a6c56c95965041a93156fdeaf4641/dbt-snowflake/src/dbt/adapters/snowflake/impl.py#L46
+    vec![
+        BehaviorFlag::new(
+            "snowflake_default_transient_dynamic_tables",
+            false,
+            Some(
+                "When enabled, dynamic tables default to transient (matching regular table behavior). This is a breaking change from previous behavior where dynamic tables were non-transient.",
+            ),
+            None,
+            None,
+        ),
+        // https://github.com/dbt-labs/dbt-adapters/pull/2147
+        BehaviorFlag::new(
+            "snowflake_dynamic_table_create_or_alter",
+            false,
+            Some(
+                "When enabled, native (info schema) dynamic tables are synced with CREATE OR ALTER DYNAMIC TABLE on every run, so edits to the model's SQL are deployed without --full-refresh (matching CTAS experience). WARNING: for INCREMENTAL and AUTO refresh modes, a definition edit reinitializes the dynamic table (full recompute, incremental state discarded) -- this diverges from dbt incremental models, where a logic change requires --full-refresh. CREATE OR ALTER does not support every schema change (e.g. column reorder, mid-list insert, type narrowing, an incompatible column type change); incompatible edits still require --full-refresh, and dbt appends a hint saying so to the error of a failed CREATE OR ALTER. Snowflake compares the stored query text literally, so the first sync of an INCREMENTAL or AUTO table built by a dbt version that rendered the query with different whitespace may reinitialize it once, even when the SQL is unchanged. If `transient` is not set explicitly and the effective transient default diverges from the live table (the default flag changed, or an explicit `transient` was removed), dbt does not detect it and CREATE OR ALTER attempts a transient flip that Snowflake rejects -- recover with --full-refresh. With on_configuration_change='continue', a run carrying both a config change and a SQL edit skips both. Managed (Snowflake-catalog) Iceberg dynamic tables are synced the same way; their Iceberg identity (external volume, base location, Iceberg version) cannot change, and converting between a native and an Iceberg dynamic table is rebuilt with CREATE OR REPLACE. Dynamic tables in externally owned catalogs keep create-or-replace behavior. When disabled (default), behavior is unchanged.",
+            ),
+            None,
+            None,
+        ),
+    ]
+}
+
+fn databricks_behavior_flags() -> Vec<BehaviorFlag> {
+    vec![
+        BehaviorFlag::new(
+            "use_user_folder_for_python",
+            true,
+            Some(
+                "Use the user's home folder for uploading python notebooks. Shared folder use is deprecated due to governance concerns.",
+            ),
+            None,
+            None,
+        ),
+        BehaviorFlag::new(
+            "use_materialization_v2",
+            false,
+            Some(
+                "Use revamped materializations based on separating create and insert. This allows more performant column comments, as well as new column features.",
+            ),
+            None,
+            None,
+        ),
+        BehaviorFlag::new(
+            "use_replace_on_for_insert_overwrite",
+            true,
+            Some(
+                "Use INSERT INTO ... REPLACE ON syntax for insert_overwrite on SQL Warehouses. When enabled, only matching partitions are overwritten; historical partitions are preserved.",
+            ),
+            None,
+            None,
+        ),
+        BehaviorFlag::new(
+            "use_managed_iceberg",
+            false,
+            Some(
+                "Use managed Iceberg tables when table_format is iceberg. When this flag is disabled, UniForm is used instead.",
+            ),
+            None,
+            None,
+        ),
+        // https://github.com/databricks/dbt-databricks/blob/3caad339bb3e60b7c795684374c3c8a1d9042279/dbt/adapters/databricks/impl.py#L160
+        BehaviorFlag::new(
+            "use_describe_as_json_for_relation_metadata",
+            false,
+            Some(
+                "Use DESCRIBE TABLE EXTENDED AS JSON when supported to fetch relation metadata like constraints, column masks, row filters, view definition, etc. When disabled, falls back to information_schema queries.",
+            ),
+            None,
+            None,
+        ),
+    ]
+}
+
+fn bigquery_behavior_flags() -> Vec<BehaviorFlag> {
+    // https://github.com/dbt-labs/dbt-adapters/blob/b9ebd240e39882a8c43ed659de423c7504d4642a/dbt-bigquery/src/dbt/adapters/bigquery/impl.py#L109-L110
+    vec![
+        BehaviorFlag::new(
+            "bigquery_noop_alter_relation_comment",
+            false,
+            Some(
+                "Make bigquery__alter_relation_comment a no-op. This is useful when relation descriptions are already set in DDL (e.g. via OPTIONS(description=...)) to avoid an unnecessary update.",
+            ),
+            None,
+            None,
+        ),
+        BehaviorFlag::new(
+            "bigquery_enforce_maximum_bytes_billed",
+            false,
+            Some(
+                "Apply the profile's maximum_bytes_billed to each query job, so jobs that would bill more bytes fail, as in v1. v2 ignored this setting before.",
+            ),
+            None,
+            None,
+        ),
+    ]
+}
+
+fn fabric_behavior_flags() -> Vec<BehaviorFlag> {
+    vec![BehaviorFlag::new(
+        "empty",
+        false,
+        Some(
+            "When enabled, table and view materializations will be created as empty structures (no data).",
+        ),
+        None,
+        None,
+    )]
+}
+
+fn redshift_behavior_flags() -> Vec<BehaviorFlag> {
+    vec![
+        // TODO: https://github.com/dbt-labs/fs/issues/11871
+        BehaviorFlag::new(
+            "redshift_skip_autocommit_transaction_statements",
+            false,
+            Some(
+                "When enabled, skip BEGIN/COMMIT wrapping so statements that cannot run in a transaction block (e.g. ALTER COLUMN TYPE for VARCHAR/VARBYTE size changes) can be issued.",
+            ),
+            None,
+            None,
+        ),
+        // https://github.com/dbt-labs/dbt-adapters/blob/main/dbt-redshift/src/dbt/adapters/redshift/impl.py#L56-L66
+        BehaviorFlag::new(
+            "redshift_grants_extended",
+            false,
+            Some(
+                "Enable Redshift grants for groups and roles using 'user:', 'group:', and 'role:' prefixes. Unprefixed grantees remain users for backward compatibility.",
+            ),
+            None,
+            None,
+        ),
+        // Fusion has never wrapped Redshift statements in a transaction, so this is opt-in.
+        // dbt-redshift always does, unless `redshift_skip_autocommit_transaction_statements`
+        // is set.
+        BehaviorFlag::new(
+            "redshift_use_transactions",
+            false,
+            Some(
+                "When enabled, run each node's statements in one transaction (BEGIN before the first statement, COMMIT at adapter.commit(), rollback on failure), as dbt-redshift does. Off by default: each statement commits on its own. Concurrent transactions can fail with a serialization conflict, which Fusion does not retry. Has no effect when redshift_skip_autocommit_transaction_statements is enabled.",
+            ),
+            None,
+            None,
+        ),
+    ]
 }
 
 /// Behavior flags from dbt-core that have been removed in Fusion.

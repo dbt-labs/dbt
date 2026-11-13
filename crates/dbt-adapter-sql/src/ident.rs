@@ -1,4 +1,5 @@
-use core::fmt;
+use std::borrow::Cow;
+use std::fmt;
 use std::num::NonZero;
 
 use dbt_adapter_core::{AdapterType, quote_char};
@@ -97,7 +98,7 @@ fn _render_ident_in_quotes(
     write!(f, "{}", quote.opening())?;
     let closing: &str = quote.closing();
     let q = closing.chars().next().unwrap(); // `, ", or '
-    write!(f, "{}", escape_identifier_content(s, backend, q))?;
+    write!(f, "{}", escaped_identifier(s.into(), backend, q))?;
     write!(f, "{closing}")
 }
 
@@ -246,18 +247,36 @@ pub fn sanitize_identifier(name: &str, backend: AdapterType) -> String {
     }
 }
 
-/// Escape the contents of an identifier delimited by `quote`, without adding
-/// the delimiters themselves.
-pub fn escape_identifier_content(id: &str, backend: AdapterType, quote: char) -> String {
-    // Keep these rules in sync with `dbt-schemas`' `BaseRelation::quoted`.
+/// Escape all occurrences of `from` in `s` with `to` avoiding allocations when possible.
+///
+/// Always inline to avoid passing [Cow] over the stack where possible.
+#[inline(always)]
+fn with_replaced_char<'a>(s: Cow<'a, str>, from: char, to: &str) -> Cow<'a, str> {
+    if s.contains(from) {
+        Cow::Owned(s.replace(from, to))
+    } else {
+        s
+    }
+}
+
+/// Escape all occurrences of `quote` in `s` with the backend's escape sequence for that quote.
+///
+/// No wrapping quotes are added. `\` might be duplicated depending on the backend's escaping
+/// rules.
+///
+/// Always inline to avoid passing [Cow] over the stack where possible.
+#[inline(always)]
+pub fn escaped_identifier<'a>(id: Cow<'a, str>, backend: AdapterType, quote: char) -> Cow<'a, str> {
     match backend {
-        AdapterType::Bigquery => id
-            .replace('\\', "\\\\")
-            .replace(quote, &format!("\\{quote}")),
-        AdapterType::ClickHouse => id
-            .replace('\\', "\\\\")
-            .replace(quote, &format!("{quote}{quote}")),
-        _ => id.replace(quote, &format!("{quote}{quote}")),
+        AdapterType::Bigquery => {
+            let id = with_replaced_char(id, '\\', "\\\\");
+            with_replaced_char(id, quote, &format!("\\{quote}"))
+        }
+        AdapterType::ClickHouse => {
+            let id = with_replaced_char(id, '\\', "\\\\");
+            with_replaced_char(id, quote, &format!("{quote}{quote}"))
+        }
+        _ => with_replaced_char(id, quote, &format!("{quote}{quote}")),
     }
 }
 
@@ -482,5 +501,234 @@ mod sanitize_tests {
         assert_eq!(s("under_score123"), "under_score123");
         // Multi-byte Unicode is dropped entirely (no stray continuation bytes).
         assert_eq!(s("café—x"), "cafx");
+    }
+}
+
+#[cfg(test)]
+mod quote_ident_tests {
+    use super::*;
+
+    pub fn quote_ident(adapter_type: AdapterType, identifier: &str) -> String {
+        let quote = quote_char(adapter_type);
+        let escaped = escaped_identifier(identifier.into(), adapter_type, quote);
+        format!("{quote}{escaped}{quote}")
+    }
+
+    const IDENTIFIERS: &[&str] = &[
+        "",
+        "a",
+        "A",
+        "abc",
+        "ABC",
+        "MixedCase",
+        "snake_case",
+        "_leading_underscore",
+        "trailing_underscore_",
+        "with1digits",
+        "1leading_digit",
+        "123",
+        "with space",
+        " leading_space",
+        "trailing_space ",
+        "  ",
+        "tab\there",
+        "new\nline",
+        "carriage\rreturn",
+        "hyphen-ated",
+        "GIFT-CARDS",
+        "dot.ted",
+        "my.catalog.name",
+        "dollar$sign",
+        "at@sign",
+        "hash#tag",
+        "percent%",
+        "star*",
+        "plus+minus-",
+        "slash/and\\back",
+        "colon:semi;",
+        "comma,here",
+        "paren(thesis)",
+        "brackets[x]",
+        "braces{x}",
+        "angle<brackets>",
+        "question?",
+        "bang!",
+        "tilde~",
+        "caret^",
+        "pipe|",
+        "ampersand&",
+        "equals=",
+        "\"",
+        "\"\"",
+        "\"\"\"",
+        "a\"b",
+        "\"leading",
+        "trailing\"",
+        "\"wrapped\"",
+        "a\"\"b",
+        "`",
+        "``",
+        "```",
+        "a`b",
+        "`leading",
+        "trailing`",
+        "`wrapped`",
+        "a``b",
+        "'",
+        "''",
+        "a'b",
+        "'wrapped'",
+        "\\",
+        "\\\\",
+        "\\\\\\",
+        "a\\b",
+        "\\leading",
+        "trailing\\",
+        "a\\\\b",
+        "\\\"",
+        "\\`",
+        "\\'",
+        "\"\\",
+        "`\\",
+        "\\\"\\\"",
+        "\\`\\`",
+        "mix\"of`quotes'and\\backslashes",
+        "foo\";DROP TABLE bar;--",
+        "foo`;DROP TABLE bar;--",
+        "'); DROP",
+        "Robert'); DROP TABLE Students;--",
+        "select",
+        "SELECT",
+        "from",
+        "table",
+        "order",
+        "group",
+        "null",
+        "true",
+        "café",
+        "café—x",
+        "日本語",
+        "naïve",
+        "ñandú",
+        "emoji😀name",
+        "😀",
+        "ünï\"cödé`",
+        "zero\u{200b}width",
+        "nul\0byte",
+        "very_long_identifier_name_that_goes_on_and_on_and_on_and_on_and_on_and_on_and_on_and_on_and_on_and_on_and_on_and_on_and_on_and_on_and_on_and_on_and_on_and_on_and_on_end",
+    ];
+
+    fn assert_equivalent(adapter_type: AdapterType, identifier: &str) {
+        assert_eq!(
+            quote_ident(adapter_type, identifier),
+            quote_identifier(identifier, adapter_type),
+            "adapter_type={adapter_type:?} identifier={identifier:?}",
+        );
+    }
+
+    /// Adapters where both functions are expected to agree.
+    ///
+    /// Left out on purpose:
+    /// - `Dremio` and `Oracle`: `quote_char` is `todo!()` and panics.
+    /// - `ClickHouse` and `Athena`: `quote_char` and `canonical_quote` disagree
+    ///   about the quote character (see the ignored tests below).
+    const COMPARABLE_ADAPTERS: &[AdapterType] = &[
+        AdapterType::Snowflake,
+        AdapterType::Bigquery,
+        AdapterType::Databricks,
+        AdapterType::Redshift,
+        AdapterType::Spark,
+        AdapterType::DuckDB,
+        AdapterType::Postgres,
+        AdapterType::Salesforce,
+        AdapterType::Fabric,
+        AdapterType::Exasol,
+        AdapterType::Starburst,
+        AdapterType::Trino,
+        AdapterType::Datafusion,
+        AdapterType::LakeCompute,
+    ];
+
+    #[test]
+    fn quote_ident_matches_quote_identifier_for_all_adapters_and_identifiers() {
+        for &adapter_type in COMPARABLE_ADAPTERS {
+            for identifier in IDENTIFIERS {
+                assert_equivalent(adapter_type, identifier);
+            }
+        }
+    }
+
+    #[test]
+    fn comparable_adapters_cover_every_adapter_but_the_known_exceptions() {
+        let excluded = [
+            AdapterType::Dremio,
+            AdapterType::Oracle,
+            AdapterType::ClickHouse,
+            AdapterType::Athena,
+        ];
+        for (adapter_type, _) in AdapterType::iter_with_names() {
+            assert!(
+                COMPARABLE_ADAPTERS.contains(&adapter_type) != excluded.contains(&adapter_type),
+                "{adapter_type:?} must be in exactly one of COMPARABLE_ADAPTERS or the exclusions",
+            );
+        }
+    }
+
+    macro_rules! equivalence_tests {
+        ($($name:ident => $adapter_type:expr),* $(,)?) => {
+            $(
+                #[test]
+                fn $name() {
+                    for identifier in IDENTIFIERS {
+                        assert_equivalent($adapter_type, identifier);
+                    }
+                }
+            )*
+        };
+    }
+
+    equivalence_tests! {
+        quote_ident_matches_snowflake => AdapterType::Snowflake,
+        quote_ident_matches_bigquery => AdapterType::Bigquery,
+        quote_ident_matches_databricks => AdapterType::Databricks,
+        quote_ident_matches_redshift => AdapterType::Redshift,
+        quote_ident_matches_spark => AdapterType::Spark,
+        quote_ident_matches_duckdb => AdapterType::DuckDB,
+        quote_ident_matches_postgres => AdapterType::Postgres,
+        quote_ident_matches_salesforce => AdapterType::Salesforce,
+        quote_ident_matches_fabric => AdapterType::Fabric,
+        quote_ident_matches_exasol => AdapterType::Exasol,
+        quote_ident_matches_starburst => AdapterType::Starburst,
+        quote_ident_matches_trino => AdapterType::Trino,
+        quote_ident_matches_datafusion => AdapterType::Datafusion,
+        quote_ident_matches_lakecompute => AdapterType::LakeCompute,
+    }
+
+    #[test]
+    #[ignore = "quote_char(ClickHouse) is a backtick but canonical_quote(ClickHouse) is a double quote"]
+    fn quote_ident_matches_clickhouse() {
+        for identifier in IDENTIFIERS {
+            assert_equivalent(AdapterType::ClickHouse, identifier);
+        }
+    }
+
+    #[test]
+    #[ignore = "quote_char(Athena) is a double quote but canonical_quote(Athena) is a backtick"]
+    fn quote_ident_matches_athena() {
+        for identifier in IDENTIFIERS {
+            assert_equivalent(AdapterType::Athena, identifier);
+        }
+    }
+
+    #[test]
+    fn quote_ident_wraps_in_the_adapter_quote_char() {
+        for &adapter_type in COMPARABLE_ADAPTERS
+            .iter()
+            .chain(&[AdapterType::ClickHouse, AdapterType::Athena])
+        {
+            let quote = quote_char(adapter_type);
+            let quoted = quote_ident(adapter_type, "plain");
+            assert_eq!(quoted, format!("{quote}plain{quote}"));
+        }
     }
 }
