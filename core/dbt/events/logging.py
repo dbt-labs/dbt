@@ -104,5 +104,6 @@ def setup_event_logger(flags, callbacks: List[Callable[[EventMsg], None]] = []) 
                 log_file_format,
                 log_level_file,
                 flags.LOG_FILE_MAX_BYTES,
+                flags.LOG_CACHE_EVENTS,
             )
         )
