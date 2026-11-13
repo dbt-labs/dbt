@@ -2,8 +2,13 @@
 All adapter macros are currently maintained in:
 * [dbt-labs/dbt-adapters](https://github.com/dbt-labs/dbt-adapters)
 * [databricks/dbt-databricks](https://github.com/databricks/dbt-databricks)
+* [starburstdata/dbt-trino](https://github.com/starburstdata/dbt-trino)
 
 ## Changelog
+
+### [2026-11-02]
+  - dbt-trino: vendored `dbt/include/trino` (`dbt_project.yml` and `macros/`) from commit d7b73f611c7a4bc62cee8782862ea7ff00b13a29.
+    `sample_profiles.yml` and `__init__.py` are not vendored. Changes from upstream are marked `DIVERGENCE` at the site.
 
 ### [2026-10-11]
   - dbt-databricks: drop no-op create_indexes and commit from the snapshot materialization from PR #1691 (commit d6fefeb6ef601164ed76e2ce7d4049a756fec548)
