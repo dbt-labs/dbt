@@ -46,6 +46,9 @@ fn do_sql_find_statement_delimiters<'input, 'arena>(
         Dialect::Redshift => dialect_dispatch!(dbt_lexer_redshift, redshiftlexer),
         Dialect::Snowflake => dialect_dispatch!(dbt_lexer_snowflake, snowflakelexer),
         Dialect::Databricks => dialect_dispatch!(dbt_lexer_databricks, databrickslexer),
+        Dialect::Duckdb => dialect_dispatch!(dbt_lexer_duckdb, duckdblexer),
+        // Redshift is a Postgres offshoot, so this lexer is close enough.
+        Dialect::Postgresql => dialect_dispatch!(dbt_lexer_redshift, redshiftlexer),
         _ => dialect_dispatch!(dbt_lexer_trino, trinolexer),
     };
 
