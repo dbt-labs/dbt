@@ -22,6 +22,7 @@ fn view_macro_name(adapter_type: AdapterType) -> &'static str {
         AdapterType::Bigquery => "materialization_view_bigquery",
         AdapterType::Redshift => "materialization_view_redshift",
         AdapterType::Postgres => "materialization_view_default",
+        AdapterType::Trino => "materialization_view_trino",
         other => panic!("unsupported adapter for view materialization test: {other:?}"),
     }
 }
@@ -672,5 +673,69 @@ mod postgres {
         let h = run_existing_table(ADAPTER);
         h.mock().observed_calls().assert_called("rename_relation");
         assert_executed_contains(h.mock(), "create");
+    }
+}
+
+mod trino {
+    use super::*;
+    const ADAPTER: AdapterType = AdapterType::Trino;
+
+    fn view_security_config(view_security: &'static str) -> Arc<MockJinjaObject> {
+        let mock = default_mock_config();
+        mock.on("get", move |args| {
+            let key = args.first().and_then(|v| v.as_str());
+            let default = args.get(1).cloned().unwrap_or(Value::UNDEFINED);
+            match key {
+                Some("contract") => Ok(Value::from_serialize(BTreeMap::from([(
+                    "enforced".to_string(),
+                    Value::from(false),
+                )]))),
+                Some("view_security") => Ok(Value::from(view_security)),
+                _ => Ok(default),
+            }
+        });
+        mock
+    }
+
+    /// The SQL the view materialization runs for a new view with `view_security`.
+    fn render_with_view_security(view_security: &'static str) -> Vec<String> {
+        let harness = build_view_harness(ADAPTER);
+        harness.mock().on("get_relation", |_| Ok(Value::from(())));
+        let ctx = harness
+            .materialization_context("my_view", "select 1 as id")
+            .config(Value::from_dyn_object(view_security_config(view_security)))
+            .build();
+        render_view(&harness, ADAPTER, ctx)
+            .unwrap_or_else(|e| panic!("{ADAPTER:?} view materialization failed: {e:?}"));
+        executed_sql(harness.mock())
+            .iter()
+            .map(|s| s.split_whitespace().collect::<Vec<_>>().join(" "))
+            .collect()
+    }
+
+    #[test]
+    fn view_security_invoker() {
+        let sqls = render_with_view_security("invoker");
+        assert!(
+            sqls.iter().any(|s| s.contains(
+                r#"create or replace view "TEST_DB"."TEST_SCHEMA"."my_view" security invoker as select 1 as id"#
+            )),
+            "expected security invoker, got {sqls:?}"
+        );
+    }
+
+    #[test]
+    fn view_security_invalid_falls_back_to_definer() {
+        let sqls = render_with_view_security("bogus");
+        assert!(
+            sqls.iter().any(|s| s.contains(
+                r#"create or replace view "TEST_DB"."TEST_SCHEMA"."my_view" security definer as select 1 as id"#
+            )),
+            "an invalid view_security must fall back to definer, got {sqls:?}"
+        );
+        assert!(
+            !sqls.iter().any(|s| s.contains("bogus")),
+            "the invalid value must not reach the SQL, got {sqls:?}"
+        );
     }
 }

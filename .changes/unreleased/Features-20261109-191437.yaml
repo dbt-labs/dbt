@@ -1,0 +1,7 @@
+kind: Features
+body: Support Trino relations, columns and metadata, including ROW, ARRAY and MAP types.
+time: 2026-11-09T19:14:37.426253+01:00
+custom:
+    author: lucargir
+    issue: "17101"
+    project: dbt-core

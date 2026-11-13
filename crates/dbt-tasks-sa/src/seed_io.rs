@@ -210,7 +210,8 @@ pub fn infer_seed_column_name_strategy(
         (false, AdapterType::Exasol) => InferColumnNameStrategy::Uppercase,
         (false, AdapterType::Starburst) => todo!("Starburst"),
         (false, AdapterType::Athena) => todo!("Athena"),
-        (false, AdapterType::Trino) => todo!("Trino"),
+        // Trino folds identifiers to lowercase.
+        (false, AdapterType::Trino) => InferColumnNameStrategy::Lowercase,
         (false, AdapterType::Dremio) => todo!("Dremio"),
         (false, AdapterType::Oracle) => todo!("Oracle"),
         (false, AdapterType::Datafusion) => todo!("Datafusion"),

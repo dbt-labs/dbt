@@ -145,6 +145,11 @@ impl TimeZoneSpec {
             // PostgreSQL TIMESTAMP WITHOUT TIME ZONE can be rendered as TIMESTAMP
             (Postgres | Redshift, Without) => Ok(()),
 
+            // Trino names TIMESTAMP(p) and TIME(p) without timezone do not
+            // have any suffix. Only the `WITH TIME ZONE` suffix exists.
+            // https://trino.io/docs/current/language/types.html#date-and-time
+            (Trino, Without) => Ok(()),
+
             (_, Local) => write!(out, " WITH LOCAL TIME ZONE"),
             (_, With) => write!(out, " WITH TIME ZONE"),
             (_, Without) => write!(out, " WITHOUT TIME ZONE"),
@@ -259,7 +264,9 @@ pub fn default_time_unit(backend: AdapterType) -> TimeUnit {
         // https://docs.aws.amazon.com/athena/latest/ug/data-types.html
         // The adbc_driver_athena is being updated to emit Timestamp_ms to match;
         // see https://github.com/dbt-labs/athena/issues/6
-        Athena => Millisecond,
+        // Trino's default TIMESTAMP precision is 3 as well.
+        // https://trino.io/docs/current/language/types.html#timestamp
+        Athena | Trino => Millisecond,
         Exasol => Millisecond,
         _ => Microsecond, // a reasonable default
     }
@@ -575,7 +582,7 @@ impl SqlType {
             return write!(out, "ARRAY");
         };
         let (open, close) = match backend {
-            AdapterType::Snowflake => ("ARRAY(", ")"),
+            AdapterType::Snowflake | AdapterType::Trino => ("ARRAY(", ")"),
             AdapterType::ClickHouse => ("Array(", ")"),
             _ => ("ARRAY<", ">"),
         };
@@ -866,6 +873,23 @@ impl SqlType {
             }
             // }}}
 
+            // Trino {{{
+            // https://trino.io/docs/current/language/types.html
+            // `DECIMAL(p,s)` matches the spelling of `information_schema.columns.data_type`.
+            (Trino, Integer) => write!(out, "INTEGER"),
+            (Trino, Float(_)) => write!(out, "REAL"),
+            (Trino, Double) => write!(out, "DOUBLE"),
+            (Trino, Numeric(None) | BigNumeric(None)) => write!(out, "DECIMAL"),
+            (Trino, Numeric(Some((p, None))) | BigNumeric(Some((p, None)))) => {
+                write!(out, "DECIMAL({p})")
+            }
+            (Trino, Numeric(Some((p, Some(s)))) | BigNumeric(Some((p, Some(s))))) => {
+                write!(out, "DECIMAL({p},{s})")
+            }
+            (Trino, Text | Clob) => write!(out, "VARCHAR"),
+            (Trino, Binary(_) | Blob) => write!(out, "VARBINARY"),
+            // }}}
+
             // Generic SQL / Fallback logic {{{
             (_, Boolean) => write!(out, "BOOLEAN"),
             (_, TinyInt) => write!(out, "TINYINT"),
@@ -1032,6 +1056,8 @@ impl SqlType {
                     // https://duckdb.org/docs/stable/sql/data_types/struct
                     DuckDB => write!(out, "STRUCT(")?,
                     Bigquery | Databricks | Spark | Athena => write!(out, "STRUCT<")?,
+                    // https://trino.io/docs/current/language/types.html#row
+                    Trino => write!(out, "ROW(")?,
                     Postgres | Salesforce | ClickHouse | Exasol => write!(out, "(")?,
                     // Redshift doesn't support object/struct types
                     Redshift => write!(out, "(")?,
@@ -1062,9 +1088,10 @@ impl SqlType {
                     )?;
                     sql_type.write(backend, out)?;
                     match (backend, nullable) {
-                        // DuckDB struct fields take no constraints.
+                        // DuckDB struct and Trino row fields take no constraints.
                         // https://duckdb.org/docs/stable/sql/data_types/struct
-                        (DuckDB, _) | (_, true) => {}
+                        // https://trino.io/docs/current/language/types.html#row
+                        (DuckDB | Trino, _) | (_, true) => {}
                         _ => write!(out, " NOT NULL")?,
                     }
                     if let Some(tok) = comment_tok {
@@ -1076,7 +1103,9 @@ impl SqlType {
                     Bigquery | Databricks | Spark | Athena => {
                         write!(out, ">")
                     }
-                    Postgres | Salesforce | DuckDB | ClickHouse | Exasol => write!(out, ")"),
+                    Postgres | Salesforce | DuckDB | ClickHouse | Exasol | Trino => {
+                        write!(out, ")")
+                    }
                     Redshift => write!(out, ")"),
                     Fabric => unimplemented!("SQL Server does't have a struct type"),
                     _ => write!(out, ">"),
@@ -1084,11 +1113,15 @@ impl SqlType {
             }
             (_, Map(None)) => write!(out, "MAP"),
             (_, Map(Some((key, value)))) => {
-                write!(out, "MAP<")?;
+                let (open, close) = match backend {
+                    Trino => ("MAP(", ")"),
+                    _ => ("MAP<", ">"),
+                };
+                write!(out, "{open}")?;
                 key.write(backend, out)?;
                 write!(out, ", ")?;
                 value.write(backend, out)?;
-                write!(out, ">")
+                write!(out, "{close}")
             }
             (_, Enum(entries, attrs)) => {
                 match (backend, attrs.bit_width) {
@@ -1292,13 +1325,13 @@ impl SqlType {
                 ))),
             },
 
-            // DuckDB keeps the element type: an untyped `ARRAY` is not a DuckDB type.
-            // Other backends keep the untyped array until each one is checked.
+            // DuckDB and Trino keep the element type: an untyped `ARRAY` is not a type on
+            // either. Other backends keep the untyped array until each one is checked.
             DataType::List(item)
             | DataType::LargeList(item)
             | DataType::ListView(item)
             | DataType::LargeListView(item)
-                if backend == AdapterType::DuckDB =>
+                if matches!(backend, AdapterType::DuckDB | AdapterType::Trino) =>
             {
                 SqlType::Array(Some(Box::new(Self::from_arrow_type(
                     backend,
@@ -1333,6 +1366,16 @@ impl SqlType {
                 SqlType::Struct(Some(sql_fields))
             }
             DataType::Union(..) => SqlType::Other("UNION".to_string()),
+            // Trino has no untyped `MAP`.
+            DataType::Map(entries, _) if backend == AdapterType::Trino => {
+                match entries.data_type() {
+                    DataType::Struct(fields) if fields.len() == 2 => SqlType::Map(Some((
+                        Box::new(Self::from_arrow_type(backend, fields[0].data_type())),
+                        Box::new(Self::from_arrow_type(backend, fields[1].data_type())),
+                    ))),
+                    _ => SqlType::Map(None),
+                }
+            }
             DataType::Map(..) => SqlType::Map(None), // TODO: handle key/value types
             DataType::Dictionary(_, value_type) => Self::from_arrow_type(backend, value_type),
             DataType::RunEndEncoded(_, values) => {
@@ -1539,7 +1582,7 @@ impl SqlType {
             // Athena {{{
             // Athena (Presto/Trino-based) DECIMAL without precision/scale defaults to DECIMAL(38, 0)
             // https://docs.aws.amazon.com/athena/latest/ug/data-types.html
-            (Athena, Numeric(None) | BigNumeric(None)) => DataType::Decimal128(38, 0),
+            (Athena | Trino, Numeric(None) | BigNumeric(None)) => DataType::Decimal128(38, 0),
             // }}}
 
             // Redshift {{{
@@ -1702,7 +1745,7 @@ impl SqlType {
                     (ClickHouse, None) => TimeUnit::Second,
                     // Athena (Presto/Trino-based) TIME has millisecond precision
                     // https://docs.aws.amazon.com/athena/latest/ug/data-types.html
-                    (Athena, None) => TimeUnit::Millisecond,
+                    (Athena | Trino, None) => TimeUnit::Millisecond,
                     (Exasol, None) => TimeUnit::Millisecond,
                     (_, None) => {
                         // we pick microseconds as a reasonable default
@@ -1723,6 +1766,11 @@ impl SqlType {
             ) => {
                 match (backend, time_zone_spec) {
                     (_, Local) => arrow_timestamp_with_local_tz(*precision),
+                    // The Trino ADBC driver returns `timestamp(p) with time zone` columns as
+                    // `Timestamp(_, "UTC")` and drops the zone of each value, so declared types
+                    // pick the type queries return rather than the offsets struct.
+                    // https://github.com/adbc-drivers/trino/blob/c0c8335/go/trino.go#L84-L108
+                    (Trino, With) => arrow_timestamp_with_local_tz(*precision),
                     (_, With) => arrow_timestamp_tz(*precision),
 
                     // Databricks TIMESTAMP and TIMESTAMP_LTZ are both local-tz timestamps
@@ -1857,7 +1905,7 @@ impl SqlType {
                     Salesforce => MonthDayNano, // Salesforce seems to follow PostgreSQL
                     Fabric => MonthDayNano, // SQL Server doesn't appear to have an INTERVAL type
                     // Athena (Presto/Trino-based) uses MonthDayNano as a reasonable default
-                    Athena => MonthDayNano,
+                    Athena | Trino => MonthDayNano,
                     _ => MonthDayNano, // Reasonable default
                 };
                 DataType::Interval(interval_unit)
@@ -2028,6 +2076,9 @@ const GENERIC_KEYS: [&str; 2] = ["SQL:type", "type_text"];
 // The "ATHENA:type" key is emitted by adbc_driver_athena in Arrow field metadata
 // (see https://github.com/dbt-labs/athena/issues/6).
 const ATHENA_KEYS: [&str; 1] = ["ATHENA:type"];
+// The Trino ADBC driver (driverbase-go sqlwrapper) puts the SQL type name in the
+// "sql.database_type_name" Arrow field metadata key.
+const TRINO_KEYS: [&str; 1] = ["sql.database_type_name"];
 
 fn metadata_type_candidate_keys(backend: AdapterType) -> &'static [&'static str] {
     match backend {
@@ -2041,6 +2092,7 @@ fn metadata_type_candidate_keys(backend: AdapterType) -> &'static [&'static str]
         AdapterType::Fabric => &SQLSERVER_KEYS,
         AdapterType::ClickHouse => &CLICKHOUSE_KEYS,
         AdapterType::Athena => &ATHENA_KEYS,
+        AdapterType::Trino => &TRINO_KEYS,
         AdapterType::Exasol => &EXASOL_KEYS,
         _ => &GENERIC_KEYS,
     }
@@ -2652,7 +2704,9 @@ impl<'source> Parser<'source> {
 
     fn array_type(&mut self, backend: AdapterType) -> Result<SqlType, ParseError<'source>> {
         let (left, right) = match backend {
-            AdapterType::Snowflake | AdapterType::ClickHouse => (Token::LParen, Token::RParen),
+            AdapterType::Snowflake | AdapterType::ClickHouse | AdapterType::Trino => {
+                (Token::LParen, Token::RParen)
+            }
             _ => (Token::LAngle, Token::RAngle),
         };
         if self.match_(left) {
@@ -3123,9 +3177,9 @@ impl<'source> Parser<'source> {
                     // In some scenarios, we get "RECORD" as a type from Bigquery.
                     // That just means a generic struct.
                     SqlType::Struct(None)
-                } else if eqi(w, "OBJECT") || eqi(w, "STRUCT") {
+                } else if eqi(w, "OBJECT") || eqi(w, "STRUCT") || eqi(w, "ROW") {
                     let (left, right) = match backend {
-                        Snowflake => (Token::LParen, Token::RParen),
+                        Snowflake | Trino => (Token::LParen, Token::RParen),
                         _ => (Token::LAngle, Token::RAngle),
                     };
                     let inner_fields = if self.match_(left) {
@@ -3136,10 +3190,9 @@ impl<'source> Parser<'source> {
                     };
                     SqlType::Struct(inner_fields)
                 } else if eqi(w, "MAP") {
-                    let (left, right) = if backend == ClickHouse {
-                        (Token::LParen, Token::RParen)
-                    } else {
-                        (Token::LAngle, Token::RAngle)
+                    let (left, right) = match backend {
+                        ClickHouse | Trino => (Token::LParen, Token::RParen),
+                        _ => (Token::LAngle, Token::RAngle),
                     };
                     let kv = if self.match_(left) {
                         let key_type = self.parse_unconstrained_type(backend)?;

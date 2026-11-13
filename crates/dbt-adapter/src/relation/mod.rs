@@ -287,4 +287,37 @@ mod tests {
             "(select * from analytics.events where created_at >= parseDateTime64BestEffort('2024-07-01T00:00:00+00:00', 9) and created_at < parseDateTime64BestEffort('2024-07-08T18:00:00+00:00', 9))"
         );
     }
+
+    #[test]
+    fn test_render_with_run_filter_trino_microbatch() {
+        let relation = Relation::new(
+            AdapterType::Trino,
+            None::<String>,
+            "analytics".to_string(),
+            "events".to_owned(),
+        )
+        .with_quoting(ResolvedQuoting::disabled());
+        let start = NaiveDate::from_ymd_opt(2024, 7, 1)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap();
+        let end = NaiveDate::from_ymd_opt(2024, 7, 8)
+            .unwrap()
+            .and_hms_opt(18, 0, 0)
+            .unwrap();
+        let run_filter = RunFilter {
+            empty: false,
+            sample: Some(Sample {
+                start: Some(DateTime::<Utc>::from_naive_utc_and_offset(start, Utc)),
+                end: Some(DateTime::<Utc>::from_naive_utc_and_offset(end, Utc)),
+            }),
+        };
+        let event_time = Some("created_at".to_string());
+
+        let result = relation.render_with_run_filter(&run_filter, &event_time);
+        assert_eq!(
+            result,
+            "(select * from analytics.events where created_at >= cast('2024-07-01 00:00:00+00:00' as timestamp(6) with time zone) and created_at < cast('2024-07-08 18:00:00+00:00' as timestamp(6) with time zone))"
+        );
+    }
 }

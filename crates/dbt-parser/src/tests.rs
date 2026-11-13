@@ -2106,6 +2106,253 @@ mod tests {
             .collect()
     }
 
+    /// `same_warehouse_config` must compare each Trino materialization key, and its diff must
+    /// name the key, or a change to it is invisible to `state:modified`.
+    #[test]
+    fn same_warehouse_config_detects_trino_keys() {
+        use dbt_schemas::schemas::project::{WarehouseSpecificNodeConfig, same_warehouse_config};
+
+        let config = |set: &dyn Fn(&mut WarehouseSpecificNodeConfig)| {
+            let mut config = WarehouseSpecificNodeConfig::default();
+            set(&mut config);
+            config
+        };
+        let props = |value: &str| {
+            Some(
+                [("format".to_string(), value.to_string())]
+                    .into_iter()
+                    .collect(),
+            )
+        };
+        let text = |value: &str| Some(value.to_string());
+        let cases = [
+            (
+                "properties",
+                config(&|c| c.properties = props("'PARQUET'")),
+                config(&|c| c.properties = props("'ORC'")),
+            ),
+            (
+                "on_table_exists",
+                config(&|c| c.on_table_exists = text("rename")),
+                config(&|c| c.on_table_exists = text("replace")),
+            ),
+            (
+                "view_security",
+                config(&|c| c.view_security = text("definer")),
+                config(&|c| c.view_security = text("invoker")),
+            ),
+            (
+                "grace_period",
+                config(&|c| c.grace_period = text("10m")),
+                config(&|c| c.grace_period = text("1h")),
+            ),
+            (
+                "views_enabled",
+                config(&|c| c.views_enabled = Some(true)),
+                config(&|c| c.views_enabled = Some(false)),
+            ),
+        ];
+        for (key, left, right) in cases {
+            assert!(same_warehouse_config(&left, &left.clone()), "`{key}`");
+            let mut equal = true;
+            let diffs = capture_state_mod_diffs(|| equal = same_warehouse_config(&left, &right));
+            assert!(
+                !equal,
+                "configs differing only in `{key}` must not be equal"
+            );
+            let checks: Vec<&str> = diffs.iter().map(|d| d.check.as_str()).collect();
+            assert_eq!(checks, vec![key], "the diff must name `{key}`");
+        }
+    }
+
+    /// Deserializes `val` into `T`, collecting every key the type does not declare (the keys
+    /// that surface as `UnusedConfigKey` (dbt1060) during parsing).
+    fn unused_config_keys<T: serde::de::DeserializeOwned>(
+        val: dbt_yaml::Value,
+    ) -> (T, Vec<String>) {
+        let mut unused = Vec::new();
+        let cfg: T = val
+            .into_typed(
+                |path, key, _| {
+                    let key_repr =
+                        dbt_yaml::to_string(key).unwrap_or_else(|_| "<opaque>".to_string());
+                    unused.push(format!("{path}: {}", key_repr.trim()));
+                },
+                |_| Ok(None),
+            )
+            .unwrap();
+        (cfg, unused)
+    }
+
+    /// The model-only Trino keys of a resolved config, as one tuple so a test checks them at
+    /// once: `(on_table_exists, view_security, grace_period, views_enabled)`.
+    fn trino_model_keys(
+        wh: &dbt_schemas::schemas::project::WarehouseSpecificNodeConfig,
+    ) -> (Option<&str>, Option<&str>, Option<&str>, Option<bool>) {
+        (
+            wh.on_table_exists.as_deref(),
+            wh.view_security.as_deref(),
+            wh.grace_period.as_deref(),
+            wh.views_enabled,
+        )
+    }
+
+    /// `trino_model_keys` of the model configs the Trino key tests set.
+    const TRINO_MODEL_KEYS: (Option<&str>, Option<&str>, Option<&str>, Option<bool>) =
+        (Some("replace"), Some("invoker"), Some("10m"), Some(false));
+
+    const TRINO_LOCATION: Option<&str> = Some("s3://bucket/path");
+
+    /// The dbt-trino materialization keys a real project sets parse with no dbt1060, on every
+    /// resource type each key is valid for, in properties YAML.
+    #[test]
+    fn test_trino_materialization_keys_parse_without_unused_key() {
+        use dbt_schemas::schemas::project::{SeedConfig, SnapshotConfig};
+
+        let (model, unused) = unused_config_keys::<ModelConfig>(
+            dbt_yaml::from_str(
+                r#"
+properties: {format: "'PARQUET'", partitioning: "ARRAY['id']"}
+on_table_exists: replace
+view_security: invoker
+table_format: iceberg
+location: s3://bucket/path
+grace_period: 10m
+views_enabled: false
+"#,
+            )
+            .unwrap(),
+        );
+        assert!(unused.is_empty(), "model keys reported unused: {unused:?}");
+        let wh = &model.__warehouse_specific_config__;
+        assert_eq!(trino_model_keys(wh), TRINO_MODEL_KEYS);
+        assert_eq!(
+            (
+                wh.properties.as_ref().map(|p| p.len()),
+                model.table_format.as_deref(),
+                model.location.as_deref(),
+            ),
+            (Some(2), Some("iceberg"), TRINO_LOCATION)
+        );
+
+        let seed_keys = r#"
+properties: {format: "'PARQUET'"}
+location: s3://bucket/path
+"#;
+        let (seed, unused) =
+            unused_config_keys::<SeedConfig>(dbt_yaml::from_str(seed_keys).unwrap());
+        assert!(unused.is_empty(), "seed keys reported unused: {unused:?}");
+        assert_eq!(
+            (
+                seed.__warehouse_specific_config__.properties.is_some(),
+                seed.location.as_deref(),
+            ),
+            (true, TRINO_LOCATION)
+        );
+        let relation_keys = format!("{seed_keys}table_format: iceberg\n");
+        let (snapshot, unused) =
+            unused_config_keys::<SnapshotConfig>(dbt_yaml::from_str(&relation_keys).unwrap());
+        assert!(
+            unused.is_empty(),
+            "snapshot keys reported unused: {unused:?}"
+        );
+        assert_eq!(
+            (
+                snapshot.__warehouse_specific_config__.properties.is_some(),
+                snapshot.table_format.as_deref(),
+                snapshot.location.as_deref(),
+            ),
+            (true, Some("iceberg"), TRINO_LOCATION)
+        );
+    }
+
+    /// Seeds keep `table_format` undeclared: declaring it would switch on other adapters' seed
+    /// table-format handling (Snowflake catalog relations, Databricks `using iceberg`).
+    #[test]
+    fn test_seed_table_format_stays_undeclared() {
+        use dbt_schemas::schemas::project::SeedConfig;
+
+        let (_, unused) = unused_config_keys::<SeedConfig>(
+            dbt_yaml::from_str("table_format: iceberg\n").unwrap(),
+        );
+        assert!(
+            unused.iter().any(|key| key.contains("table_format")),
+            "seed `table_format` must stay an unused key (dbt1060), got {unused:?}"
+        );
+    }
+
+    /// The same keys as `+key` in `dbt_project.yml` reach the resolved config. An undeclared
+    /// `+key` would be taken as a nested folder instead.
+    #[test]
+    fn test_trino_materialization_project_keys_resolve() {
+        use dbt_schemas::schemas::project::{
+            ProjectSeedConfig, ProjectSnapshotConfig, SeedConfig, SnapshotConfig,
+        };
+
+        let (project, unused) = unused_config_keys::<ProjectModelConfig>(
+            dbt_yaml::from_str(
+                r#"
++properties: {format: "'PARQUET'"}
++on_table_exists: replace
++view_security: invoker
++table_format: iceberg
++location: s3://bucket/path
++grace_period: 10m
++views_enabled: false
+"#,
+            )
+            .unwrap(),
+        );
+        let folders: Vec<_> = project.__additional_properties__.keys().collect();
+        assert!(
+            unused.is_empty() && folders.is_empty(),
+            "model `+keys` reported unused: {unused:?}, taken as folders: {folders:?}"
+        );
+        let project: ModelConfig = project.into();
+        let wh = &project.__warehouse_specific_config__;
+        assert_eq!(
+            (wh.properties.is_some(), trino_model_keys(wh)),
+            (true, TRINO_MODEL_KEYS)
+        );
+        let seed_project_keys = r#"
++properties: {format: "'PARQUET'"}
++location: s3://bucket/path
+"#;
+        let (seed, unused) =
+            unused_config_keys::<ProjectSeedConfig>(dbt_yaml::from_str(seed_project_keys).unwrap());
+        let folders: Vec<_> = seed.__additional_properties__.keys().collect();
+        assert!(
+            unused.is_empty() && folders.is_empty(),
+            "seed `+keys` reported unused: {unused:?}, taken as folders: {folders:?}"
+        );
+        let seed: SeedConfig = seed.into();
+        assert_eq!(
+            (
+                seed.__warehouse_specific_config__.properties.is_some(),
+                seed.location.as_deref(),
+            ),
+            (true, TRINO_LOCATION)
+        );
+        let snapshot_project_keys = format!("{seed_project_keys}+table_format: iceberg\n");
+        let (snapshot, unused) = unused_config_keys::<ProjectSnapshotConfig>(
+            dbt_yaml::from_str(&snapshot_project_keys).unwrap(),
+        );
+        let folders: Vec<_> = snapshot.__additional_properties__.keys().collect();
+        assert!(
+            unused.is_empty() && folders.is_empty(),
+            "snapshot `+keys` reported unused: {unused:?}, taken as folders: {folders:?}"
+        );
+        let snapshot: SnapshotConfig = snapshot.into();
+        assert_eq!(
+            (
+                snapshot.__warehouse_specific_config__.properties.is_some(),
+                snapshot.table_format.as_deref(),
+                snapshot.location.as_deref(),
+            ),
+            (true, Some("iceberg"), TRINO_LOCATION)
+        );
+    }
+
     /// RED: reported bug. A genuine body change must be logged with the actual (current,
     /// previous) checksums so a customer/support engineer can see *why* the node was selected —
     /// today `check_body_modified` always logs `self_value = other_value = None`.

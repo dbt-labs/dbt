@@ -520,6 +520,8 @@ pub struct ManifestSnapshotConfig {
     pub state: Option<ModelState>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub table_format: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub location: Option<String>,
     pub __warehouse_specific_config__: LazyWarehouseSpecificNodeConfig,
 }
 
@@ -566,6 +568,7 @@ impl From<SnapshotConfig> for ManifestSnapshotConfig {
             sync: config.sync,
             state: config.state,
             table_format: config.table_format,
+            location: config.location,
             __warehouse_specific_config__: config.__warehouse_specific_config__,
         }
     }
@@ -616,6 +619,7 @@ impl From<ManifestSnapshotConfig> for SnapshotConfig {
             sync: config.sync,
             state: config.state,
             table_format: config.table_format,
+            location: config.location,
             __warehouse_specific_config__: config.__warehouse_specific_config__,
         }
     }
@@ -1045,6 +1049,8 @@ pub struct ManifestSeedConfig {
     pub schema: Option<String>,
     pub alias: Option<String>,
     pub catalog_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub location: Option<String>,
     // Internal-only placement hint; never written to the manifest.
     #[serde(skip_serializing, default)]
     #[schemars(with = "Option<String>")]
@@ -1112,6 +1118,7 @@ impl From<SeedConfig> for ManifestSeedConfig {
             database: config.database,
             schema: config.schema,
             catalog_name: config.catalog_name,
+            location: config.location,
             adapter: config.adapter,
             propagate: config.propagate,
             docs: config.docs,
@@ -1151,6 +1158,7 @@ impl From<ManifestSeedConfig> for SeedConfig {
             database: config.database,
             schema: config.schema,
             catalog_name: config.catalog_name,
+            location: config.location,
             adapter: config.adapter,
             propagate: config.propagate,
             docs: config.docs,

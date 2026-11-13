@@ -36,6 +36,7 @@ use crate::metadata::postgres::PostgresMetadataAdapter;
 use crate::metadata::redshift::RedshiftMetadataAdapter;
 use crate::metadata::salesforce::SalesforceMetadataAdapter;
 use crate::metadata::snowflake::SnowflakeMetadataAdapter;
+use crate::metadata::trino::TrinoMetadataAdapter;
 use crate::metadata::{self, CatalogAndSchema, MetadataAdapter};
 use crate::query_ctx::{node_id_from_state, query_ctx_from_state};
 use crate::record_batch::{StructArrayExt, jsonify_column};
@@ -416,9 +417,11 @@ impl AdapterImpl {
                         Exasol => {
                             Box::new(ExasolMetadataAdapter::new(engine)) as Box<dyn MetadataAdapter>
                         }
+                        Trino => {
+                            Box::new(TrinoMetadataAdapter::new(engine)) as Box<dyn MetadataAdapter>
+                        }
                         Starburst => todo!("Starburst"),
                         Athena => todo!("Athena"),
-                        Trino => todo!("Trino"),
                         Datafusion => todo!("Datafusion"),
                         Dremio => todo!("Dremio"),
                         Oracle => todo!("Oracle"),
@@ -772,7 +775,9 @@ impl AdapterImpl {
             ClickHouse => &[Append, DeleteInsert, InsertOverwrite, Microbatch, Legacy],
             Spark => &[Append, Merge, InsertOverwrite, Microbatch],
             Exasol => &[Append, DeleteInsert, Merge, Microbatch],
-            Athena | Starburst | Trino | Datafusion | Dremio | Oracle => {
+            // https://github.com/starburstdata/dbt-trino/blob/d7b73f6/dbt/adapters/trino/impl.py#L363
+            Trino => &[Append, DeleteInsert, Merge, Microbatch],
+            Athena | Starburst | Datafusion | Dremio | Oracle => {
                 unimplemented!("valid_incremental_strategies not implemented")
             }
         }
@@ -1454,9 +1459,10 @@ impl AdapterImpl {
                 // https://github.com/ClickHouse/dbt-clickhouse/blob/main/dbt/include/clickhouse/macros/adapters.sql
                 ClickHouse => "name",
                 Exasol => "name",
+                // https://github.com/starburstdata/dbt-trino/blob/d7b73f6/dbt/include/trino/macros/adapters.sql#L344
+                Trino => "schema_name",
                 Starburst => todo!("Starburst"),
                 Athena => todo!("Athena"),
-                Trino => todo!("Trino"),
                 Datafusion => todo!("Datafusion"),
                 Dremio => todo!("Dremio"),
                 Oracle => todo!("Oracle"),

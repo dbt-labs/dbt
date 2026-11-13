@@ -34,7 +34,7 @@ impl ColumnBuilder {
             Exasol => Ok(Self::build_exasol(field, type_ops)),
             Starburst => todo!("Starburst"),
             Athena => todo!("Athena"),
-            Trino => todo!("Trino"),
+            Trino => Ok(Self::build_trino(field, type_ops)),
             Dremio => todo!("Dremio"),
             Oracle => todo!("Oracle"),
             Datafusion => todo!("Datafusion"),
@@ -121,7 +121,14 @@ impl ColumnBuilder {
             ),
             Starburst => todo!("Starburst"),
             Athena => todo!("Athena"),
-            Trino => todo!("Trino"),
+            Trino => Column::new_boxed(
+                Trino,
+                name,
+                dtype,
+                char_size,
+                numeric_precision,
+                numeric_scale,
+            ),
             Dremio => todo!("Dremio"),
             Oracle => todo!("Oracle"),
             Datafusion => todo!("Datafusion"),
@@ -590,6 +597,22 @@ impl ColumnBuilder {
         )
     }
 
+    /// Builds a Trino column in the shape `TrinoColumn.from_description` gives it in
+    /// dbt-trino (see [`Column::from_trino_type`]). Columns the driver returns carry their
+    /// type in the field metadata ([`original_type_string`]); seed schemas, inferred from the
+    /// CSV, only have the Arrow type. Trino type names are case-insensitive and folded to
+    /// lowercase.
+    fn build_trino(field: &FieldRef, type_ops: &dyn TypeOps) -> Box<Column> {
+        let type_text = match type_ops.get_original_sql_type_from_field(field) {
+            Ok(type_text) => type_text.trim().to_lowercase(),
+            Err(err) => {
+                debug_assert!(false, "no Trino type for {field:?}: {err}");
+                "varchar".to_string()
+            }
+        };
+        Box::new(Column::from_trino_type(field.name().to_string(), type_text))
+    }
+
     fn build_redshift(field: &FieldRef, type_ops: &dyn TypeOps) -> Box<Column> {
         use AdapterType::Redshift;
         let data_type = field.data_type();
@@ -643,6 +666,140 @@ mod tests {
     use dbt_adapter_sql::types::metadata_sql_type_key;
     use std::collections::HashMap;
     use std::sync::Arc;
+
+    /// The driver reports the bare name of scalar types and their parameters as other
+    /// metadata keys, and the full text of nested types. Columns take the shape dbt-trino's
+    /// `TrinoColumn.from_description` gives them, and keep the full type as the original SQL
+    /// type, which unit tests parse.
+    #[test]
+    fn trino_types_from_driver_metadata() {
+        let builder = ColumnBuilder::new(AdapterType::Trino);
+        let type_ops = DefaultTypeOps::new(AdapterType::Trino);
+        let type_key = metadata_sql_type_key(AdapterType::Trino);
+        for (metadata, dtype, char_size, precision_scale, data_type) in [
+            (
+                vec![(type_key, "VARCHAR"), ("sql.length", "10")],
+                "varchar",
+                Some(10),
+                None,
+                "varchar(10)",
+            ),
+            (
+                vec![(type_key, "VARCHAR")],
+                "varchar",
+                None,
+                None,
+                "varchar",
+            ),
+            (
+                vec![(type_key, "CHAR"), ("sql.length", "3")],
+                "char",
+                Some(3),
+                None,
+                "char(3)",
+            ),
+            (
+                vec![
+                    (type_key, "DECIMAL"),
+                    ("sql.precision", "10"),
+                    ("sql.scale", "2"),
+                ],
+                "decimal",
+                None,
+                Some((10, 2)),
+                "decimal(10,2)",
+            ),
+            // `timestamp(4)` has no Arrow time unit of its own; the driver keeps the
+            // precision in a metadata key.
+            (
+                vec![
+                    (type_key, "TIMESTAMP WITH TIME ZONE"),
+                    ("sql.fractional_seconds_precision", "4"),
+                ],
+                "timestamp(4) with time zone",
+                None,
+                None,
+                "timestamp(4) with time zone",
+            ),
+            (
+                vec![
+                    (type_key, "TIME"),
+                    ("sql.fractional_seconds_precision", "3"),
+                ],
+                "time(3)",
+                None,
+                None,
+                "time(3)",
+            ),
+            (
+                vec![(type_key, "ROW(a INTEGER, b TIMESTAMP(6))")],
+                "row(a integer, b timestamp(6))",
+                None,
+                None,
+                "row(a integer, b timestamp(6))",
+            ),
+        ] {
+            let metadata = metadata
+                .iter()
+                .map(|(key, value)| (key.to_string(), value.to_string()))
+                .collect::<HashMap<_, _>>();
+            let field = Arc::new(Field::new("c", DataType::Utf8, true).with_metadata(metadata));
+            let column = builder.build(&field, &type_ops).unwrap();
+            assert_eq!(
+                (
+                    column.dtype(),
+                    column.char_size(),
+                    column.numeric_precision().zip(column.numeric_scale()),
+                    column.data_type().as_str(),
+                    column.original_sql_str(),
+                ),
+                (
+                    dtype,
+                    char_size,
+                    precision_scale,
+                    data_type,
+                    Some(data_type)
+                ),
+                "{field:?}"
+            );
+        }
+    }
+
+    /// Seed schemas are inferred from the CSV, so their fields have no type metadata; the
+    /// type comes from the Arrow type.
+    #[test]
+    fn trino_types_from_seed_schemas() {
+        let builder = ColumnBuilder::new(AdapterType::Trino);
+        let type_ops = DefaultTypeOps::new(AdapterType::Trino);
+        for (data_type, dtype, precision_scale, rendered) in [
+            (DataType::Int64, "bigint", None, "bigint"),
+            (DataType::Utf8, "varchar", None, "varchar"),
+            (
+                DataType::Decimal128(10, 2),
+                "decimal",
+                Some((10, 2)),
+                "decimal(10,2)",
+            ),
+            (
+                DataType::Timestamp(arrow_schema::TimeUnit::Microsecond, None),
+                "timestamp(6)",
+                None,
+                "timestamp(6)",
+            ),
+        ] {
+            let field = Arc::new(Field::new("c", data_type, true));
+            let column = builder.build(&field, &type_ops).unwrap();
+            assert_eq!(
+                (
+                    column.dtype(),
+                    column.numeric_precision().zip(column.numeric_scale()),
+                    column.data_type().as_str(),
+                ),
+                (dtype, precision_scale, rendered),
+                "{field:?}"
+            );
+        }
+    }
 
     #[test]
     fn test_build_clickhouse_decimal_with_wrappers() {

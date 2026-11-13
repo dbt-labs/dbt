@@ -21,7 +21,7 @@ use crate::metadata::bigquery;
 use crate::metadata::bigquery::is_bigquery_not_found_error;
 use crate::metadata::databricks::describe_table::DatabricksTableMetadata;
 use crate::metadata::databricks::{databricks_metadata_value, databricks_query_identifier};
-use crate::metadata::{snowflake, try_canonicalize_bool_column_field};
+use crate::metadata::{snowflake, trino, try_canonicalize_bool_column_field};
 use crate::relation::Relation;
 use crate::relation::databricks::is_shallow_clone_type;
 use crate::relation::do_create_relation;
@@ -88,7 +88,9 @@ pub fn get_relation(
         ),
         AdapterType::Starburst => todo!("Starburst"),
         AdapterType::Athena => todo!("Athena"),
-        AdapterType::Trino => todo!("Trino"),
+        AdapterType::Trino => trino::get_relation(
+            adapter, state, ctx, conn, database, schema, identifier, token,
+        ),
         AdapterType::Dremio => todo!("Dremio"),
         AdapterType::Oracle => todo!("Oracle"),
         AdapterType::Datafusion => todo!("Datafusion"),

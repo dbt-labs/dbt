@@ -37,6 +37,7 @@ use crate::schemas::project::configs::config_merge::{Tags, TblProperties};
 use crate::schemas::serde::PartitionsConfig;
 use crate::schemas::serde::StringOrArrayOfStrings;
 use crate::schemas::serde::bool_or_string_bool;
+use crate::schemas::serde::string_map_from_scalars;
 use crate::schemas::serde::{
     IndexesConfig, PrimaryKeyConfig, StringOrInteger, column_types_map,
     event_time_or_map_to_string, f64_or_string_f64, hours_to_expiration_or_string_omissible,
@@ -142,6 +143,12 @@ pub struct ProjectSeedConfig {
     pub query_tag: Option<QueryTag>,
     #[serde(rename = "+query_tags")]
     pub query_tags: Option<String>,
+    #[serde(
+        default,
+        rename = "+properties",
+        deserialize_with = "string_map_from_scalars"
+    )]
+    pub properties: Option<IndexMap<String, String>>,
     #[serde(rename = "+table_tag")]
     pub table_tag: Option<String>,
     #[serde(rename = "+row_access_policy")]
@@ -224,6 +231,8 @@ pub struct ProjectSeedConfig {
     pub file_format: Option<String>,
     #[serde(rename = "+catalog_name")]
     pub catalog_name: Option<String>,
+    #[serde(rename = "+location")]
+    pub location: Option<String>,
     #[serde(rename = "+adapter")]
     #[schemars(with = "Option<String>")]
     pub adapter: Option<AdapterType>,
@@ -396,6 +405,7 @@ impl TypedRecursiveConfig for ProjectSeedConfig {
             || self.scheduler.is_some()
             || self.tmp_relation_type.is_some()
             || self.query_tag.is_some()
+            || self.properties.is_some()
             || self.table_tag.is_some()
             || self.row_access_policy.is_some()
             || self.automatic_clustering.is_some()
@@ -419,6 +429,7 @@ impl TypedRecursiveConfig for ProjectSeedConfig {
             || self.max_staleness.is_some()
             || self.file_format.is_some()
             || self.catalog_name.is_some()
+            || self.location.is_some()
             || self.adapter.is_some()
             || self.propagate.is_some()
             || self.location_root.is_some()
@@ -469,6 +480,7 @@ pub struct SeedConfig {
     pub schema: Option<String>,
     pub alias: Option<String>,
     pub catalog_name: Option<String>,
+    pub location: Option<String>,
     // Internal placement hint; kept out of serialized config/telemetry output.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Option<String>")]
@@ -519,6 +531,7 @@ impl From<ProjectSeedConfig> for SeedConfig {
             schema: config.schema,
             alias: config.alias,
             catalog_name: config.catalog_name.clone(),
+            location: config.location,
             adapter: config.adapter,
             propagate: config.propagate,
             docs: config.docs,
@@ -561,6 +574,11 @@ impl From<ProjectSeedConfig> for SeedConfig {
                 tmp_relation_type: config.tmp_relation_type,
                 query_tag: config.query_tag,
                 query_tags: config.query_tags,
+                properties: config.properties,
+                on_table_exists: None,
+                view_security: None,
+                grace_period: None,
+                views_enabled: None,
                 table_tag: config.table_tag,
                 row_access_policy: config.row_access_policy,
                 automatic_clustering: config.automatic_clustering,
@@ -733,6 +751,7 @@ impl From<SeedConfig> for ProjectSeedConfig {
             tmp_relation_type: warehouse_specific.tmp_relation_type,
             query_tag: warehouse_specific.query_tag,
             query_tags: warehouse_specific.query_tags,
+            properties: warehouse_specific.properties,
             table_tag: warehouse_specific.table_tag,
             row_access_policy: warehouse_specific.row_access_policy,
             automatic_clustering: warehouse_specific.automatic_clustering,
@@ -758,6 +777,7 @@ impl From<SeedConfig> for ProjectSeedConfig {
             // Databricks fields
             file_format: warehouse_specific.file_format,
             catalog_name: warehouse_specific.catalog_name,
+            location: config.location,
             location_root: warehouse_specific.location_root,
             tblproperties: warehouse_specific.tblproperties,
             include_full_name_in_path: warehouse_specific.include_full_name_in_path,
@@ -897,6 +917,77 @@ mod tests {
         assert_warehouse_config_allocates_only_when_set,
     };
     use dbt_adapter_core::AdapterType;
+
+    /// Resolves a node's own `seed` YAML over a project level written with `+` keys.
+    fn trino_resolved_seed(project_yaml: &str, node_yaml: &str) -> SeedConfig {
+        use super::{ProjectSeedConfig, SeedConfig};
+        use crate::schemas::project::ResolvableConfig;
+
+        let project: ProjectSeedConfig = dbt_yaml::from_str(&format!(
+            "{project_yaml}\n__additional_properties__: {{}}\n"
+        ))
+        .unwrap();
+        let project: SeedConfig = project.into();
+        let mut node: SeedConfig = dbt_yaml::from_str::<dbt_yaml::Value>(node_yaml)
+            .unwrap()
+            .into_typed(|_, _, _| {}, |_| Ok(None))
+            .unwrap();
+        node.default_to(&project);
+        node
+    }
+
+    /// A string key set at the project level reaches the node, and the node's own value
+    /// replaces it.
+    fn assert_seed_string_key_propagates(key: &str, get: impl Fn(&SeedConfig) -> Option<String>) {
+        let inherited = trino_resolved_seed(&format!("+{key}: parent"), "{}");
+        assert_eq!(
+            get(&inherited).as_deref(),
+            Some("parent"),
+            "`{key}` is inherited"
+        );
+        let own = trino_resolved_seed(&format!("+{key}: parent"), &format!("{key}: child"));
+        assert_eq!(
+            get(&own).as_deref(),
+            Some("child"),
+            "the node's `{key}` wins"
+        );
+    }
+
+    /// `properties` replaces wholesale: a node map never keeps keys from the parent's map.
+    #[test]
+    fn test_seed_properties_propagate_through_resolved_config() {
+        let inherited = trino_resolved_seed(
+            "+properties: {format: \"'PARQUET'\", partitioning: \"ARRAY['id']\"}",
+            "{}",
+        );
+        let props = inherited
+            .__warehouse_specific_config__
+            .properties
+            .clone()
+            .unwrap();
+        assert_eq!(
+            props
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("format", "'PARQUET'"), ("partitioning", "ARRAY['id']")]
+        );
+        let own = trino_resolved_seed(
+            "+properties: {format: \"'PARQUET'\"}",
+            "properties: {format: \"'ORC'\"}",
+        );
+        let props = own
+            .__warehouse_specific_config__
+            .properties
+            .clone()
+            .unwrap();
+        assert_eq!(props.get("format").map(String::as_str), Some("'ORC'"));
+    }
+
+    #[test]
+    fn test_seed_location_propagate_through_resolved_config() {
+        assert_seed_string_key_propagates("location", |c| c.location.clone());
+    }
 
     #[test]
     fn test_seed_query_tags_propagate_through_resolved_config() {

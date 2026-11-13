@@ -218,6 +218,7 @@ impl TypeOps for DefaultTypeOps {
             Postgres | Salesforce => postgres::try_format_type(data_type, nullable, out),
             Fabric => fabric::try_format_type(data_type, nullable, out),
             ClickHouse => clickhouse::try_format_type(data_type, nullable, out),
+            Trino => self.format_sql_type(SqlType::from_arrow_type(adapter_type, data_type), out),
             // The dbt convert functions have no nested types. DuckDB rejects the
             // `ARRAY<T>` and `STRUCT<..>` forms of the default path.
             // https://duckdb.org/docs/stable/sql/data_types/overview
@@ -610,7 +611,8 @@ pub const fn get_field_sql_type_metadata_key(adapter_type: AdapterType) -> &'sta
         AdapterType::Exasol => "DATA_TYPE",
         AdapterType::Starburst => todo!(),
         AdapterType::Athena => todo!(),
-        AdapterType::Trino => todo!(),
+        // `sql.database_type_name` from the driverbase sqlwrapper, set by the Trino ADBC driver.
+        AdapterType::Trino => "sql.database_type_name",
         AdapterType::Dremio => todo!(),
         AdapterType::Oracle => todo!(),
         AdapterType::Datafusion => todo!(),
@@ -629,6 +631,11 @@ pub fn original_type_string<'a>(
         .map(|s| Cow::Borrowed(s.as_str()));
 
     match (adapter_type, sql_type_string) {
+        // The Trino driver reports the bare name of scalar types; their parameters are other
+        // metadata keys.
+        (AdapterType::Trino, Some(type_name)) => {
+            Some(trino::with_metadata_parameters(field, type_name))
+        }
         (_, s @ Some(_)) => s,
         (AdapterType::Bigquery, None) => {
             // this can build a SQL type from the "Type" metadata key
@@ -869,6 +876,62 @@ pub mod bigquery {
         } else {
             None
         }
+    }
+}
+
+pub mod trino {
+    use std::borrow::Cow;
+    use std::str::FromStr;
+
+    use arrow_schema::Field;
+    use dbt_adapter_core::AdapterType;
+    use dbt_adapter_sql::types::SqlType;
+
+    use crate::metadata::trino::{
+        TRINO_FRACTIONAL_SECONDS_PRECISION_METADATA_KEY, TRINO_LENGTH_METADATA_KEY,
+        TRINO_PRECISION_METADATA_KEY, TRINO_SCALE_METADATA_KEY,
+    };
+
+    /// `type_name`, the driver's `sql.database_type_name`, with the parameters the driver
+    /// reports as other metadata keys: `VARCHAR(10)`, `DECIMAL(10,2)`,
+    /// `TIMESTAMP(6) WITH TIME ZONE`. Nested types (`ARRAY(..)`, `ROW(..)`) already come in
+    /// full, and a type without the keys keeps its bare name.
+    pub(crate) fn with_metadata_parameters<'a>(
+        field: &Field,
+        type_name: Cow<'a, str>,
+    ) -> Cow<'a, str> {
+        fn number<T: FromStr>(field: &Field, key: &str) -> Option<T> {
+            field.metadata().get(key)?.trim().parse().ok()
+        }
+        let Ok((sql_type, _nullable)) = SqlType::parse(AdapterType::Trino, &type_name) else {
+            return type_name;
+        };
+        let sql_type = match sql_type {
+            SqlType::Varchar(None, attrs) => {
+                SqlType::Varchar(number(field, TRINO_LENGTH_METADATA_KEY), attrs)
+            }
+            SqlType::Char(None) => SqlType::Char(number(field, TRINO_LENGTH_METADATA_KEY)),
+            SqlType::Numeric(None) => SqlType::Numeric(
+                number(field, TRINO_PRECISION_METADATA_KEY)
+                    .map(|precision| (precision, number(field, TRINO_SCALE_METADATA_KEY))),
+            ),
+            SqlType::Timestamp {
+                precision: None,
+                time_zone_spec,
+            } => SqlType::Timestamp {
+                precision: number(field, TRINO_FRACTIONAL_SECONDS_PRECISION_METADATA_KEY),
+                time_zone_spec,
+            },
+            SqlType::Time {
+                precision: None,
+                time_zone_spec,
+            } => SqlType::Time {
+                precision: number(field, TRINO_FRACTIONAL_SECONDS_PRECISION_METADATA_KEY),
+                time_zone_spec,
+            },
+            _ => return type_name,
+        };
+        Cow::Owned(sql_type.to_string(AdapterType::Trino))
     }
 }
 
@@ -2055,6 +2118,118 @@ mod tests {
             format(DataType::List(item(DataType::Struct(fields())))),
             "STRUCT(a BIGINT, b VARCHAR)[]"
         );
+    }
+
+    /// The driver reports the bare name of scalar types and their parameters as other keys;
+    /// the original type joins them, so schema conversion and casts keep the parameters.
+    #[test]
+    fn trino_original_type_string_includes_metadata_parameters() {
+        let field = |type_name: &str, extra: &[(&str, &str)]| {
+            let mut metadata =
+                HashMap::from([("sql.database_type_name".to_string(), type_name.to_string())]);
+            metadata.extend(extra.iter().map(|(k, v)| (k.to_string(), v.to_string())));
+            Field::new("c", DataType::Utf8, true).with_metadata(metadata)
+        };
+        for (field, expected) in [
+            (field("VARCHAR", &[("sql.length", "10")]), "VARCHAR(10)"),
+            (field("VARCHAR", &[]), "VARCHAR"),
+            (field("CHAR", &[("sql.length", "3")]), "CHAR(3)"),
+            (
+                field("DECIMAL", &[("sql.precision", "10"), ("sql.scale", "2")]),
+                "DECIMAL(10,2)",
+            ),
+            (
+                field("TIMESTAMP", &[("sql.fractional_seconds_precision", "3")]),
+                "TIMESTAMP(3)",
+            ),
+            (
+                field(
+                    "TIMESTAMP WITH TIME ZONE",
+                    &[("sql.fractional_seconds_precision", "6")],
+                ),
+                "TIMESTAMP(6) WITH TIME ZONE",
+            ),
+            (
+                field("TIME", &[("sql.fractional_seconds_precision", "0")]),
+                "TIME(0)",
+            ),
+            (field("TIME WITH TIME ZONE", &[]), "TIME WITH TIME ZONE"),
+            (field("ROW(a INTEGER)", &[]), "ROW(a INTEGER)"),
+            (field("BIGINT", &[("sql.length", "8")]), "BIGINT"),
+        ] {
+            assert_eq!(
+                original_type_string(Trino, &field).as_deref(),
+                Some(expected),
+                "{field:?}"
+            );
+        }
+
+        // Schema conversion parses the original type, so it keeps the declared precision.
+        let ops = DefaultTypeOps::new(Trino);
+        let decimal = field("DECIMAL", &[("sql.precision", "10"), ("sql.scale", "2")]);
+        assert_eq!(
+            ops.parse_into_arrow_type(&original_type_string(Trino, &decimal).unwrap())
+                .unwrap(),
+            DataType::Decimal128(10, 2)
+        );
+    }
+
+    /// Trino types come from `SqlType`, so unit-test fixture casts of nested columns use
+    /// Trino's `ARRAY(..)`, `ROW(..)` and `MAP(..)`; Trino rejects `STRUCT<..>`.
+    #[test]
+    fn trino_formats_arrow_types_as_trino_types() {
+        use arrow_schema::{Fields, TimeUnit};
+
+        let ops = DefaultTypeOps::new(Trino);
+        let format = |data_type: DataType| {
+            let mut out = String::new();
+            ops.format_arrow_type_as_sql(&data_type, true, &mut out)
+                .unwrap();
+            out
+        };
+        let item = |data_type| Arc::new(Field::new("item", data_type, true));
+        let fields = || {
+            Fields::from(vec![
+                Field::new("a", DataType::Int64, false),
+                Field::new("b", DataType::Utf8, true),
+            ])
+        };
+        let map = DataType::Map(
+            Arc::new(Field::new(
+                "entries",
+                DataType::Struct(Fields::from(vec![
+                    Field::new("key", DataType::Utf8, false),
+                    Field::new("value", DataType::Int32, true),
+                ])),
+                false,
+            )),
+            false,
+        );
+
+        assert_eq!(
+            format(DataType::List(item(DataType::Int64))),
+            "ARRAY(BIGINT)"
+        );
+        assert_eq!(
+            format(DataType::List(item(DataType::Timestamp(
+                TimeUnit::Millisecond,
+                None
+            )))),
+            "ARRAY(TIMESTAMP(3))"
+        );
+        assert_eq!(
+            format(DataType::Struct(fields())),
+            "ROW(a BIGINT, b VARCHAR)"
+        );
+        assert_eq!(
+            format(DataType::List(item(DataType::Struct(fields())))),
+            "ARRAY(ROW(a BIGINT, b VARCHAR))"
+        );
+        assert_eq!(format(map), "MAP(VARCHAR, INTEGER)");
+
+        assert_eq!(format(DataType::Utf8), "VARCHAR");
+        assert_eq!(format(DataType::Float32), "REAL");
+        assert_eq!(format(DataType::Decimal128(10, 2)), "DECIMAL(10,2)");
     }
 
     /// DuckDB scalar types keep the types of the dbt convert functions.
