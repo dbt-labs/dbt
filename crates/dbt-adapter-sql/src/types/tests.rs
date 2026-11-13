@@ -1579,6 +1579,130 @@ fn test_athena_struct_rendering() {
     assert_roundtrip(line!(), &t, s, Athena);
 }
 
+#[test]
+fn test_trino_type_rendering() {
+    // Trino spells nested types with parentheses and ROW instead of STRUCT.
+    let row = Struct(Some(vec![StructField::new(
+        Ident::unquoted(canonical_quote(Trino), "a"),
+        Integer,
+        true,
+    )]));
+    for (sql_type, expected) in [
+        (row, "ROW(\"a\" INTEGER)"),
+        (
+            Array(Some(Box::new(SqlType::varchar(None)))),
+            "ARRAY(VARCHAR)",
+        ),
+        (Numeric(Some((10, Some(2)))), "DECIMAL(10,2)"),
+        (Double, "DOUBLE"),
+        (Float(None), "REAL"),
+    ] {
+        assert_eq!(sql_type.to_string(Trino), expected);
+    }
+    assert_eq!(default_time_unit(Trino), TimeUnit::Millisecond);
+}
+
+#[test]
+fn test_trino_temporal_rendering() {
+    // Trino names the types without a time zone `TIMESTAMP(p)` and `TIME(p)`, as
+    // `typeof` and `information_schema.columns` report them.
+    let temporal = |time: bool, precision, time_zone_spec| {
+        if time {
+            Time {
+                precision,
+                time_zone_spec,
+            }
+        } else {
+            Timestamp {
+                precision,
+                time_zone_spec,
+            }
+        }
+    };
+    for (sql_type, expected) in [
+        (
+            temporal(false, Some(3), TimeZoneSpec::Without),
+            "TIMESTAMP(3)",
+        ),
+        (temporal(true, Some(3), TimeZoneSpec::Without), "TIME(3)"),
+        (temporal(false, None, TimeZoneSpec::Without), "TIMESTAMP"),
+        (
+            temporal(false, Some(6), TimeZoneSpec::With),
+            "TIMESTAMP(6) WITH TIME ZONE",
+        ),
+        (
+            temporal(true, Some(3), TimeZoneSpec::With),
+            "TIME(3) WITH TIME ZONE",
+        ),
+    ] {
+        assert_eq!(sql_type.to_string(Trino), expected);
+    }
+
+    // The Arrow types the driver returns for `timestamp(3)` and `time(3)`.
+    let from_arrow = |data_type| SqlType::from_arrow_type(Trino, &data_type).to_string(Trino);
+    assert_eq!(
+        from_arrow(DataType::Timestamp(TimeUnit::Millisecond, None)),
+        "TIMESTAMP(3)"
+    );
+    assert_eq!(
+        from_arrow(DataType::Time32(TimeUnit::Millisecond)),
+        "TIME(3)"
+    );
+
+    // Declared types pick the Arrow types the driver returns, and render back unchanged.
+    for (input, data_type) in [
+        (
+            "timestamp(6) with time zone",
+            DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+        ),
+        (
+            "timestamp(3)",
+            DataType::Timestamp(TimeUnit::Millisecond, None),
+        ),
+    ] {
+        let (parsed, _) = SqlType::parse(Trino, input).unwrap();
+        let picked = parsed.pick_best_arrow_type(Trino);
+        assert_eq!(picked, data_type, "{input}");
+        assert_eq!(from_arrow(picked), parsed.to_string(Trino), "{input}");
+    }
+
+    for (input, expected) in [
+        ("timestamp(3)", "TIMESTAMP(3)"),
+        ("timestamp(3) without time zone", "TIMESTAMP(3)"),
+        ("time(6) without time zone", "TIME(6)"),
+    ] {
+        let (parsed, _) = SqlType::parse(Trino, input).unwrap_or_else(|e| panic!("{input}: {e:?}"));
+        assert_eq!(parsed.to_string(Trino), expected, "rendering {input}");
+    }
+}
+
+#[test]
+fn test_trino_type_roundtrip() {
+    // Parse with Trino syntax, render with Trino, and check the output is stable.
+    for (input, expected) in [
+        ("row(a integer)", "ROW(a INTEGER)"),
+        (
+            "row(\"b c\" varchar, d array(integer))",
+            "ROW(\"b c\" VARCHAR, d ARRAY(INTEGER))",
+        ),
+        ("array(varchar)", "ARRAY(VARCHAR)"),
+        ("map(varchar, integer)", "MAP(VARCHAR, INTEGER)"),
+        ("decimal(10,2)", "DECIMAL(10,2)"),
+        ("timestamp(6) with time zone", "TIMESTAMP(6) WITH TIME ZONE"),
+    ] {
+        let (parsed, _) = SqlType::parse(Trino, input).unwrap_or_else(|e| panic!("{input}: {e:?}"));
+        let rendered = parsed.to_string(Trino);
+        assert_eq!(rendered, expected, "rendering {input}");
+        let (reparsed, _) = SqlType::parse(Trino, &rendered).unwrap();
+        assert_eq!(reparsed.to_string(Trino), rendered, "stable {input}");
+        assert_eq!(
+            format!("{reparsed:?}"),
+            format!("{parsed:?}"),
+            "equal {input}"
+        );
+    }
+}
+
 // Exasol-specific type behavior tests
 //
 // Exasol represents large strings as VARCHAR up to the 2,000,000-character
