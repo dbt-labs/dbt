@@ -149,7 +149,8 @@ fn experimental_entries(
             emit_error_log_from_fs_error(*fs_err!(
                 code => ErrorCode::InvalidConfig,
                 loc => mpe.relative_path.clone(),
-                "There is more than one {key} named '{name}' in package '{package_name}': {paths}"
+                "There is more than one entry named '{name}' under `experimental: {key}:` in \
+                 package '{package_name}': {paths}"
             ));
             continue;
         }

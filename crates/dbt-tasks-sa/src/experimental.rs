@@ -325,7 +325,7 @@ impl Experimentals {
         for experimental in &experimentals {
             let experimental_type = experimental.experimental_type();
             check_flag(experimental_type, experimental.flag());
-            for key in std::iter::once(experimental_type)
+            for key in std::iter::once(experimental.key())
                 .chain(experimental.definition_keys().iter().copied())
             {
                 assert!(
@@ -346,6 +346,20 @@ impl Experimentals {
 
     pub fn iter(&self) -> impl Iterator<Item = &Arc<dyn ExperimentalNode>> {
         self.experimentals.iter()
+    }
+
+    /// Every feature flag this binary knows: dbt's own, and the flags that turn on its
+    /// experimentals, which aren't in `dbt_flags::ALL`.
+    pub fn known_flags(&self) -> Vec<&'static FlagDef> {
+        dbt_flags::ALL
+            .iter()
+            .copied()
+            .chain(
+                self.experimentals
+                    .iter()
+                    .map(|experimental| experimental.flag()),
+            )
+            .collect()
     }
 
     /// The experimental that owns `command`, if one does.
@@ -880,6 +894,25 @@ mod tests {
             vec![Arc::new(TestExperimental(WIDGET, &ON_BY_DEFAULT))],
             &[WIDGET],
         );
+    }
+
+    /// An experimental's flag is a known feature flag, so `--feature` turns it on without an
+    /// "Unknown feature flag" warning.
+    #[test]
+    fn experimental_flags_are_known() {
+        let snapshot = dbt_flags::FlagSnapshot::builder()
+            .cli(["test_experimentals"])
+            .build();
+        let without = Experimentals::new(vec![], &[WIDGET]);
+        assert_eq!(
+            snapshot.warnings(&without.known_flags()),
+            ["Unknown feature flag 'test_experimentals' in --feature; it has no effect"]
+        );
+        let with = Experimentals::new(
+            vec![Arc::new(TestExperimental(WIDGET, &TEST_FLAG))],
+            &[WIDGET],
+        );
+        assert!(snapshot.warnings(&with.known_flags()).is_empty());
     }
 
     #[test]
