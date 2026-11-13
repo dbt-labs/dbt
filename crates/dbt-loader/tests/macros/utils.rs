@@ -62,7 +62,10 @@ mod json_parse {
     #[test]
     fn bigquery_uses_json_extract_scalar() {
         let rendered = render(AdapterType::Bigquery, TEMPLATE);
-        assert_eq!(rendered, "json_extract_scalar(json_string, '$.address.city')");
+        assert_eq!(
+            rendered,
+            "json_extract_scalar(json_string, '$.address.city')"
+        );
     }
 
     #[test]
