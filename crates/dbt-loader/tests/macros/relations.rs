@@ -1184,6 +1184,128 @@ __additional_properties__: {}
             );
         }
     }
+
+    // Reference: https://github.com/databricks/dbt-databricks/pull/1707
+    mod unset_tags_on_removed_columns {
+        use std::sync::Arc;
+
+        use dbt_agate::AgateTable;
+        use minijinja::value::Rest;
+
+        use super::*;
+
+        fn build_harness() -> MacroTestHarness {
+            let mut harness = MacroTestHarness::for_adapter(AdapterType::Databricks)
+                .load_all_macros()
+                .with_stub_functions()
+                .with_global("execute", Value::from(true))
+                .build()
+                .expect("harness should build");
+            harness.mock().on("get_columns_in_relation", |_| {
+                Ok(Value::from_serialize(
+                    ["ID", "account_number", "Email"].map(|name| BTreeMap::from([("name", name)])),
+                ))
+            });
+            harness
+                .env_mut()
+                .env
+                .add_function("load_result", |name: Value| {
+                    assert_eq!(name.as_str(), Some("list_column_tags"));
+                    let batch = arrow_array::record_batch!(
+                        (
+                            "column_name",
+                            Utf8,
+                            ["ID", "account_number", "Email", "Email"]
+                        ),
+                        ("tag_name", Utf8, ["pii", "pii", "pii", "owner"]),
+                        ("tag_value", Utf8, ["true", "true", "true", "dbt"])
+                    )
+                    .expect("column tags batch should build");
+                    Ok(Value::from_serialize(BTreeMap::from([(
+                        "table",
+                        Value::from_object(AgateTable::from_record_batch(Arc::new(batch))),
+                    )])))
+                });
+            harness
+                .env_mut()
+                .env
+                .add_function("log", |_args: Rest<Value>| Ok(Value::UNDEFINED));
+            harness
+        }
+
+        fn render(
+            harness: &MacroTestHarness,
+            database: &str,
+            relation_type: RelationType,
+            new_column_names: &[&str],
+        ) -> Vec<String> {
+            let relation = harness.relation(database, "prod", "orders", Some(relation_type));
+            harness
+                .render(
+                    "{{ unset_tags_on_removed_columns(relation, new_column_names) }}",
+                    BTreeMap::from([
+                        (
+                            "relation".to_string(),
+                            RelationObject::new(relation).into_value(),
+                        ),
+                        (
+                            "new_column_names".to_string(),
+                            Value::from_serialize(new_column_names),
+                        ),
+                    ]),
+                )
+                .expect("unset_tags_on_removed_columns should render");
+            executed_sql(harness.mock())
+                .iter()
+                .map(|sql| sql.split_whitespace().collect::<Vec<_>>().join(" "))
+                .collect()
+        }
+
+        #[test]
+        fn unsets_every_tag_on_columns_the_replace_removes() {
+            let harness = build_harness();
+            let sqls = render(
+                &harness,
+                "main",
+                RelationType::Table,
+                &["id", "ACCOUNT_NUMBER"],
+            );
+            assert_eq!(sqls.len(), 2, "{sqls:#?}");
+            assert!(sqls[0].contains("`column_tags`"), "{sqls:#?}");
+            assert_eq!(
+                sqls[1],
+                "ALTER TABLE `main`.`prod`.`orders` ALTER COLUMN `Email` UNSET TAGS ('pii', 'owner')"
+            );
+        }
+
+        #[test]
+        fn skips_the_tag_lookup_when_no_column_is_removed() {
+            let harness = build_harness();
+            let sqls = render(
+                &harness,
+                "main",
+                RelationType::Table,
+                &["id", "account_number", "email", "added"],
+            );
+            assert!(sqls.is_empty(), "{sqls:#?}");
+        }
+
+        #[test]
+        fn ignores_views_and_hive_metastore_tables() {
+            for (database, relation_type) in [
+                ("main", RelationType::View),
+                ("hive_metastore", RelationType::Table),
+            ] {
+                let harness = build_harness();
+                let sqls = render(&harness, database, relation_type, &["id"]);
+                assert!(sqls.is_empty(), "{database} {relation_type:?}: {sqls:#?}");
+                harness
+                    .mock()
+                    .observed_calls()
+                    .assert_not_called("get_columns_in_relation");
+            }
+        }
+    }
 }
 
 /// Isolated tests for `relations/interactive_table/*.sql`.

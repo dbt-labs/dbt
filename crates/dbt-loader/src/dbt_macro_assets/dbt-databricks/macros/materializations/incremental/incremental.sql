@@ -53,6 +53,8 @@
         {% if not is_replaceable or existing_relation.is_shallow_clone %} {#-- Delta uses `create or replace` below, except a shallow clone must be dropped --#}
           {{ log("Dropping existing relation, as it is not replaceable") }}
           {% do adapter.drop_relation(existing_relation) %}
+        {% else %}
+          {{ unset_tags_on_removed_columns(existing_relation, adapter.get_columns_in_relation(intermediate_relation) | map(attribute='name') | list) }}
         {% endif %}
         {{ log("Replacing target relation") }}
         {{ create_table_at(target_relation, intermediate_relation, compiled_code) }}
@@ -128,6 +130,8 @@
       {#-- Relation must be dropped & recreated --#}
       {% if not is_replaceable_format or existing_relation.is_shallow_clone %} {#-- Delta/Iceberg uses `create or replace` below, except a shallow clone must be dropped --#}
         {% do adapter.drop_relation(existing_relation) %}
+      {% elif language == 'sql' %}
+        {{ unset_tags_on_removed_columns(existing_relation, get_columns_in_query(compiled_code)) }}
       {% endif %}
       {%- call statement('main', language=language) -%}
         {{ create_table_as(False, target_relation, compiled_code, language) }}
