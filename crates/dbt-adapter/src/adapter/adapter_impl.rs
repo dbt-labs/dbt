@@ -17,6 +17,7 @@ use crate::macro_exec::{
     convert_macro_result_to_record_batch, execute_macro, execute_macro_with_package,
     execute_macro_wrapper, execute_macro_wrapper_with_package,
 };
+use crate::metadata::athena::AthenaMetadataAdapter;
 use crate::metadata::bigquery::nested_projection::render_struct_projection;
 use crate::metadata::bigquery::{
     BIGQUERY_PSEUDOCOLUMNS, BigqueryMetadataAdapter, is_bigquery_not_found_error,
@@ -417,7 +418,9 @@ impl AdapterImpl {
                             Box::new(ExasolMetadataAdapter::new(engine)) as Box<dyn MetadataAdapter>
                         }
                         Starburst => todo!("Starburst"),
-                        Athena => todo!("Athena"),
+                        Athena => {
+                            Box::new(AthenaMetadataAdapter::new(engine)) as Box<dyn MetadataAdapter>
+                        }
                         Trino => todo!("Trino"),
                         Datafusion => todo!("Datafusion"),
                         Dremio => todo!("Dremio"),
@@ -4471,9 +4474,12 @@ impl AdapterImpl {
             Impl(ClickHouse, engine) => {
                 clickhouse::list_relations(engine.as_ref(), query_ctx, conn, db_schema, token)
             }
+            Impl(Athena, engine) => {
+                athena::list_relations(engine.as_ref(), query_ctx, conn.as_mut(), db_schema, token)
+            }
             Impl(
-                adapter_type @ (Postgres | Salesforce | Exasol | Starburst | Athena | Trino
-                | Datafusion | Dremio | Oracle),
+                adapter_type @ (Postgres | Salesforce | Exasol | Starburst | Trino | Datafusion
+                | Dremio | Oracle),
                 _,
             ) => {
                 let err = AdapterError::new(
