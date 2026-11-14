@@ -196,6 +196,12 @@ pub fn inject_and_persist_ephemeral_models(
     let local_ephemeral_cte_names = extract_local_ephemeral_cte_names(&final_sql);
     let ephemeral_model_names = extract_ephemeral_model_names(&final_sql);
 
+    // The source span the inlined CTE blocks are attributed to: the first
+    // rendered `__dbt__cte__` reference that came out of a Jinja expansion.
+    // Its pre-injection offsets are recorded before any insertion shifts the
+    // expanded spans below.
+    let alias_source_span = first_cte_reference_source_span(&final_sql, macro_spans);
+
     // Read ephemeral SQL from ephemeral dir and build cumulative CTEs
     let sep = "\x00";
     let mut seen_ctes = HashSet::new();
@@ -215,11 +221,20 @@ pub fn inject_and_persist_ephemeral_models(
             Err(err) => return Err(err),
         };
 
-        // Split existing CTEs and add any new ones
+        // Split existing CTEs and add any new ones. A block whose CTE is
+        // already defined in the target SQL (e.g. a compiled CTE chain sliced
+        // out for a CTE preview) must not be inlined a second time, and the
+        // same upstream block can arrive through several ephemeral files, so
+        // blocks are deduplicated by CTE name.
         let existing_ctes: Vec<String> = ephemeral_sql.split(sep).map(|s| s.to_string()).collect();
         for cte in existing_ctes {
-            if !seen_ctes.contains(&cte) {
-                seen_ctes.insert(cte.clone());
+            let Some(cte_name) = ephemeral_cte_block_name(&cte) else {
+                continue;
+            };
+            if local_ephemeral_cte_names.contains(cte_name) {
+                continue;
+            }
+            if seen_ctes.insert(cte_name.to_string()) {
                 all_ctes.push(cte);
             }
         }
@@ -243,6 +258,22 @@ pub fn inject_and_persist_ephemeral_models(
     if let Some((sql, insertion)) = inject_ctes_into_existing_with(&final_sql, &ctes) {
         final_sql = sql;
         shift_macro_spans_after_insertion(macro_spans, insertion);
+        // Attribute the inlined blocks to the source span of the `ref` that
+        // pulled them in, so consumers mapping compiled offsets back into the
+        // source document keep the injected `__dbt__cte__*` CTEs in bounds
+        // instead of projecting them past the end of the file.
+        macro_spans.items.push((
+            alias_source_span,
+            inserted_block_span(
+                insertion.line,
+                insertion.col,
+                insertion.offset,
+                insertion.added_bytes,
+                insertion.added_lines,
+                insertion.added_cols,
+                insertion.trailing_cols,
+            ),
+        ));
     } else {
         // Preserve the wrapper fallback for statements without a leading WITH clause.
         final_sql = format!(
@@ -256,8 +287,93 @@ pub fn inject_and_persist_ephemeral_models(
             span.1.start_offset += added_offset as u32;
             span.1.end_offset += added_offset as u32;
         }
+        // Same aliasing for the wrapper path: the `with {ctes}` region at the
+        // top of the rewritten statement is the inlined ephemeral block.
+        let block_end = location_at_offset(&format!("with {ctes}"), 5 + ctes.len());
+        macro_spans.items.push((
+            alias_source_span,
+            minijinja::machinery::Span {
+                start_line: 1,
+                start_col: 6,
+                start_offset: 5,
+                end_line: block_end.0,
+                end_col: block_end.1,
+                end_offset: 5 + ctes.len() as u32,
+            },
+        ));
     }
     Ok(final_sql)
+}
+
+/// The CTE name of an inlined ephemeral block like
+/// `__dbt__cte__<name> as (\n...\n)`, or `None` when the block does not start
+/// with the dbt CTE prefix.
+fn ephemeral_cte_block_name(block: &str) -> Option<&str> {
+    let rest = block.trim_start().strip_prefix(DBT_CTE_PREFIX)?;
+    let end = rest
+        .find(|c: char| !c.is_alphanumeric() && c != '_')
+        .unwrap_or(rest.len());
+    Some(&rest[..end])
+}
+
+/// The source span of the first rendered `__dbt__cte__` reference produced by
+/// a Jinja expansion. This is what the inlined ephemeral CTE blocks are
+/// attributed to (`Span::default()` when no expansion introduced one).
+fn first_cte_reference_source_span(
+    sql: &str,
+    macro_spans: &MacroSpans,
+) -> minijinja::machinery::Span {
+    sql.match_indices(DBT_CTE_PREFIX)
+        .find_map(|(offset, _)| {
+            let offset = offset as u32;
+            macro_spans
+                .items
+                .iter()
+                .find(|(_, expanded)| {
+                    expanded.start_offset <= offset && offset < expanded.end_offset
+                })
+                .map(|(source, _)| *source)
+        })
+        .unwrap_or_default()
+}
+
+/// The span an inserted block of `added_bytes` occupies in the rewritten SQL.
+fn inserted_block_span(
+    line: u32,
+    col: u32,
+    offset: u32,
+    added_bytes: u32,
+    added_lines: u32,
+    added_cols: u32,
+    trailing_cols: u32,
+) -> minijinja::machinery::Span {
+    minijinja::machinery::Span {
+        start_line: line,
+        start_col: col,
+        start_offset: offset,
+        end_line: line + added_lines,
+        end_col: if added_lines == 0 {
+            col + added_cols
+        } else {
+            trailing_cols
+        },
+        end_offset: offset + added_bytes,
+    }
+}
+
+/// The 1-based (line, col) of the byte at `offset` in `sql`.
+fn location_at_offset(sql: &str, offset: usize) -> (u32, u32) {
+    let mut line = 1;
+    let mut col = 1;
+    for ch in sql[..offset].chars() {
+        if ch == '\n' {
+            line += 1;
+            col = 1;
+        } else {
+            col += 1;
+        }
+    }
+    (line, col)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1065,5 +1181,288 @@ mod tests {
                 span.macro_span.start.line == 2 && span.expanded_span.start.line == 2
             })
         );
+    }
+
+    // ---- Regression tests for dbt-labs/dbt#17119 -------------------------
+    //
+    // "Preview CTE" on `PARENT_ROWS` (a CTE selecting from an ephemeral ref)
+    // must produce valid SQL that returns the CTE's rows. These tests rebuild
+    // the issue's exact repro models through `inject_and_persist_ephemeral_models`
+    // and derive the preview query the way an editor consumer of the engine's
+    // compiled spans does.
+
+    use std::fs;
+
+    use sqlparser::dialect::GenericDialect;
+    use sqlparser::parser::Parser;
+
+    use super::inject_and_persist_ephemeral_models;
+
+    /// The issue's exact `models/repro_preview_cte/child_model.sql`.
+    const ISSUE_CHILD_SOURCE: &str = "WITH PARENT_ROWS AS (\n    SELECT * FROM {{ ref('eph_parent') }}\n)\n\n, FINAL AS (\n    SELECT\n        ORDER_ID,\n        CUSTOMER_NAME\n    FROM PARENT_ROWS\n)\n\nSELECT * FROM FINAL\n";
+
+    /// The issue's exact `models/repro_preview_cte/eph_parent.sql` body as the
+    /// engine renders it (the `{{ config(...) }}` line renders to nothing).
+    const ISSUE_EPH_PARENT_BODY: &str = "\n\nWITH ORDERS AS (\n    SELECT 1 AS ORDER_ID, 10 AS CUSTOMER_ID\n    UNION ALL\n    SELECT 2, 20\n)\n\n, CUSTOMERS AS (\n    SELECT 10 AS CUSTOMER_ID, 'Alice' AS CUSTOMER_NAME\n    UNION ALL\n    SELECT 20, 'Bob'\n)\n\n, JOINED AS (\n    SELECT  ORDERS.ORDER_ID\n            , CUSTOMERS.CUSTOMER_NAME\n    FROM ORDERS\n    LEFT OUTER JOIN CUSTOMERS\n        ON ORDERS.CUSTOMER_ID = CUSTOMERS.CUSTOMER_ID\n)\n\nSELECT * FROM JOINED\n";
+
+    /// `child_model` as the compile pipeline renders it before ephemeral
+    /// inlining: `ref('eph_parent')` renders to its CTE name.
+    fn issue_child_rendered() -> String {
+        ISSUE_CHILD_SOURCE.replace("{{ ref('eph_parent') }}", "__dbt__cte__eph_parent")
+    }
+
+    /// The `MacroSpans` the render pipeline records for `child_model`: one
+    /// pair mapping the `{{ ref('eph_parent') }}` source range to the range of
+    /// the rendered CTE name.
+    fn issue_child_macro_spans() -> MacroSpans {
+        let rendered = issue_child_rendered();
+        let src_start = ISSUE_CHILD_SOURCE.find("{{ ref('eph_parent') }}").unwrap() as u32;
+        let src_end = src_start + "{{ ref('eph_parent') }}".len() as u32;
+        let exp_start = rendered.find("__dbt__cte__eph_parent").unwrap() as u32;
+        let exp_end = exp_start + "__dbt__cte__eph_parent".len() as u32;
+        MacroSpans {
+            items: vec![(
+                Span {
+                    start_line: 2,
+                    start_col: 19,
+                    start_offset: src_start,
+                    end_line: 2,
+                    end_col: 19 + "{{ ref('eph_parent') }}".len() as u32,
+                    end_offset: src_end,
+                },
+                Span {
+                    start_line: 2,
+                    start_col: 19,
+                    start_offset: exp_start,
+                    end_line: 2,
+                    end_col: 19 + "__dbt__cte__eph_parent".len() as u32,
+                    end_offset: exp_end,
+                },
+            )],
+            ..Default::default()
+        }
+    }
+
+    /// `target/ephemeral/eph_parent.sql` as the engine persists it.
+    fn issue_ephemeral_dir() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("eph_parent.sql"),
+            format!("__dbt__cte__eph_parent as (\n{ISSUE_EPH_PARENT_BODY}\n)"),
+        )
+        .unwrap();
+        dir
+    }
+
+    /// The minimal compiled→source offset map a consumer of the engine's
+    /// `MacroSpans` can build: linear interpolation inside a recorded pair,
+    /// identity everywhere outside the pairs except past the last pair, which
+    /// extrapolates by the pair's delta. In #17119 the injected `__dbt__cte__*`
+    /// CTE block had no pair at all, so it identity-mapped past the end of the
+    /// source document and the CTE chain slice swallowed the file tail.
+    fn map_compiled_to_source(pairs: &[(Span, Span)], offset: u32) -> u32 {
+        let mut sorted: Vec<&(Span, Span)> = pairs.iter().collect();
+        sorted.sort_by_key(|(_, expanded)| expanded.start_offset);
+        if let Some((source, expanded)) = sorted
+            .iter()
+            .find(|(_, expanded)| expanded.start_offset <= offset && offset <= expanded.end_offset)
+        {
+            if expanded.end_offset == expanded.start_offset {
+                return source.end_offset;
+            }
+            return source.start_offset
+                + (offset - expanded.start_offset) * (source.end_offset - source.start_offset)
+                    / (expanded.end_offset - expanded.start_offset);
+        }
+        match sorted.last() {
+            Some((source, expanded)) if offset > expanded.end_offset => {
+                source.end_offset + (offset - expanded.end_offset)
+            }
+            _ => offset,
+        }
+    }
+
+    /// The compiled end offset (exclusive) of the `NAME as (` CTE definition
+    /// that starts at `def_start`.
+    fn cte_def_end(sql: &str, def_start: usize) -> usize {
+        let open = sql[def_start..].find('(').unwrap() + def_start;
+        let mut depth = 0usize;
+        for (i, ch) in sql[open..].char_indices() {
+            match ch {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return open + i + 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+        panic!("unbalanced parentheses in CTE definition");
+    }
+
+    #[test]
+    fn preview_cte_for_cte_selecting_from_ephemeral_ref_is_valid_sql() {
+        let dir = issue_ephemeral_dir();
+        let mut macro_spans = issue_child_macro_spans();
+        let compiled = inject_and_persist_ephemeral_models(
+            issue_child_rendered(),
+            &mut macro_spans,
+            "child_model",
+            false,
+            dir.path(),
+        )
+        .unwrap();
+
+        // The CTE chain through `PARENT_ROWS` is the injected ephemeral CTE
+        // plus `PARENT_ROWS` itself; the slice ends at the chain's last stop.
+        let chain_end = [
+            cte_def_end(
+                &compiled,
+                compiled.find("__dbt__cte__eph_parent as (").unwrap(),
+            ),
+            cte_def_end(&compiled, compiled.find("PARENT_ROWS AS (").unwrap()),
+        ]
+        .into_iter()
+        .map(|stop| map_compiled_to_source(&macro_spans.items, stop as u32))
+        .max()
+        .unwrap();
+        let source_len = ISSUE_CHILD_SOURCE.len() as u32;
+
+        let preview_sql = format!(
+            "{}\nSELECT * FROM PARENT_ROWS",
+            &ISSUE_CHILD_SOURCE[..chain_end.min(source_len) as usize]
+        );
+        let rendered_preview =
+            preview_sql.replace("{{ ref('eph_parent') }}", "__dbt__cte__eph_parent");
+        let mut preview_spans = MacroSpans::default();
+        let compiled_preview = inject_and_persist_ephemeral_models(
+            rendered_preview,
+            &mut preview_spans,
+            "child_model",
+            false,
+            dir.path(),
+        )
+        .unwrap();
+        let parsed = Parser::parse_sql(&GenericDialect {}, &compiled_preview);
+        assert!(
+            parsed.is_ok(),
+            "Preview CTE must generate valid SQL for a CTE selecting from an \
+             ephemeral ref, got: {parsed:?}\n---\n{compiled_preview}"
+        );
+
+        assert!(
+            chain_end <= source_len,
+            "the CTE chain end maps to source offset {chain_end}, past the end \
+             of the {source_len}-byte source document; the slice then swallows \
+             the model's trailing select and the preview query becomes invalid \
+             SQL (dbt-labs/dbt#17119)"
+        );
+        assert_eq!(
+            preview_sql,
+            format!(
+                "{}\nSELECT * FROM PARENT_ROWS",
+                &ISSUE_CHILD_SOURCE[..=ISSUE_CHILD_SOURCE.find("\n)").unwrap() + 1]
+            )
+        );
+    }
+
+    #[test]
+    fn inlined_ephemeral_cte_block_is_aliased_to_the_ref_source_span() {
+        let dir = issue_ephemeral_dir();
+        let mut macro_spans = issue_child_macro_spans();
+        let ref_source_span = macro_spans.items[0].0;
+        let compiled = inject_and_persist_ephemeral_models(
+            issue_child_rendered(),
+            &mut macro_spans,
+            "child_model",
+            false,
+            dir.path(),
+        )
+        .unwrap();
+
+        let block_start = compiled.find("__dbt__cte__eph_parent as (").unwrap() as u32;
+        let covering = macro_spans
+            .items
+            .iter()
+            .find(|(_, expanded)| {
+                expanded.start_offset <= block_start && block_start < expanded.end_offset
+            })
+            .expect(
+                "the inlined ephemeral CTE block must carry a source span so \
+                 consumers can map it into the source document instead of past \
+                 its end (dbt-labs/dbt#17119)",
+            );
+        assert_eq!(covering.0, ref_source_span);
+    }
+
+    #[test]
+    fn inlined_ephemeral_cte_block_is_aliased_in_the_wrapper_fallback() {
+        let dir = issue_ephemeral_dir();
+        // No leading WITH: the injection takes the wrapper fallback.
+        let sql = "SELECT * FROM __dbt__cte__eph_parent";
+        let name_start = sql.find("__dbt__cte__eph_parent").unwrap() as u32;
+        let name_end = name_start + "__dbt__cte__eph_parent".len() as u32;
+        let ref_source_span = Span {
+            start_line: 1,
+            start_col: 15,
+            start_offset: name_start,
+            end_line: 1,
+            end_col: 15 + "__dbt__cte__eph_parent".len() as u32,
+            end_offset: name_end,
+        };
+        let mut macro_spans = MacroSpans {
+            items: vec![(ref_source_span, ref_source_span)],
+            ..Default::default()
+        };
+        let compiled = inject_and_persist_ephemeral_models(
+            sql.to_string(),
+            &mut macro_spans,
+            "child_model",
+            false,
+            dir.path(),
+        )
+        .unwrap();
+
+        let block_start = compiled.find("__dbt__cte__eph_parent as (").unwrap() as u32;
+        let covering = macro_spans
+            .items
+            .iter()
+            .find(|(_, expanded)| {
+                expanded.start_offset <= block_start && block_start < expanded.end_offset
+            })
+            .expect(
+                "the inlined ephemeral CTE block must carry a source span \
+                 (dbt-labs/dbt#17119)",
+            );
+        assert_eq!(covering.0, ref_source_span);
+    }
+
+    #[test]
+    fn does_not_redefine_an_already_inlined_ephemeral_cte() {
+        // A compiled CTE chain sliced out for a CTE preview already inlines the
+        // ephemeral ref as a `__dbt__cte__` CTE — the normal compile output.
+        // Re-inlining it from the ephemeral dir produced a duplicate CTE
+        // definition and invalid SQL (dbt-labs/dbt#17119).
+        let dir = issue_ephemeral_dir();
+        let slice = format!(
+            "WITH  __dbt__cte__eph_parent as (\n{ISSUE_EPH_PARENT_BODY}\n), PARENT_ROWS AS (\n    SELECT * FROM __dbt__cte__eph_parent\n)\n\nSELECT * FROM PARENT_ROWS"
+        );
+        let mut macro_spans = MacroSpans::default();
+        let out = inject_and_persist_ephemeral_models(
+            slice.clone(),
+            &mut macro_spans,
+            "child_model",
+            false,
+            dir.path(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            out, slice,
+            "an already-inlined ephemeral CTE must not be inlined a second time"
+        );
+        assert_eq!(out.matches("__dbt__cte__eph_parent as (").count(), 1);
     }
 }

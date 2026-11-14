@@ -1,0 +1,7 @@
+kind: Fixes
+body: Fix Preview CTE building invalid SQL for CTEs selecting from an ephemeral ref
+time: 2026-11-11T13:17:33.636974+00:00
+custom:
+    author: Shanmukh-l33t
+    issue: "17119"
+    project: dbt-core
