@@ -542,25 +542,6 @@ fn ci_merge_update_and_exclude_columns_together_raise() {
 }
 
 #[test]
-fn ci_model_referencing_itself_is_rejected() {
-    let fixture = fixture(None, RemoteState::default());
-    let sql = format!(
-        "select o.* from RAW.PUBLIC.ORDERS changes(information => DEFAULT) as o where o.id not in (select id from {RENDERED_RELATION})"
-    );
-    let result = render_sql(&fixture, &ci_local_config(), &sql, false, "apply");
-    assert_render_error(result, &fixture, "references itself");
-}
-
-#[test]
-fn ci_model_reading_a_relation_whose_name_extends_its_own_is_allowed() {
-    let fixture = fixture(None, RemoteState::default());
-    let sql =
-        format!("select o.* from {RENDERED_RELATION}_RAW changes(information => DEFAULT) as o");
-    render_sql(&fixture, &ci_local_config(), &sql, false, "apply")
-        .expect("MY_DT_RAW is not a reference to MY_DT");
-}
-
-#[test]
 fn ci_rejects_immutable_where() {
     // Snowflake: "Unsupported feature Immutability constraint on Dynamic Table with REFRESH USING".
     let fixture = fixture(None, RemoteState::default());

@@ -54,15 +54,6 @@
         ) %}
     {%- endif -%}
 
-    {#- `{{ this }}` renders the model's own name. Inside `refresh using` Snowflake only accepts the
-        table as SELF, so reject it here with a clear message. -#}
-    {%- set this_pattern = (this | string) | replace('.', '\\.') | replace('$', '\\$') -%}
-    {%- if modules.re.search('(^|[^A-Za-z0-9_$."])' ~ this_pattern ~ '($|[^A-Za-z0-9_$"])', sql, modules.re.IGNORECASE) -%}
-        {% do exceptions.raise_compiler_error(
-            "Dynamic table `" ~ this ~ "` references itself (`{{ this }}`), which custom incremental dynamic tables do not support yet: Snowflake only lets the refresh body refer to the table as SELF. Remove the reference; rendering `{{ this }}` as SELF is planned."
-        ) %}
-    {%- endif -%}
-
     {%- if strategy == 'merge' -%}
         {% do snowflake__validate_custom_incremental_merge_config() %}
     {%- endif -%}
