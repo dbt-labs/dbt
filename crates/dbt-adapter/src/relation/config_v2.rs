@@ -1047,6 +1047,19 @@ mod tests {
                 TestTableConfig, make_driver_data,
             };
 
+            fn day_partition(field: &str) -> BigqueryPartitionConfig {
+                BigqueryPartitionConfig {
+                    field: field.to_string(),
+                    data_type: "DATETIME".to_string(),
+                    __inner__: BigqueryPartitionConfigInner::Time(TimeConfig {
+                        granularity: "DAY".to_string(),
+                        time_ingestion_partitioning: false,
+                    }),
+                    copy_partitions: false,
+                    copy_partitions_concurrency: None,
+                }
+            }
+
             fn make_mat_view(cfg: TestTableConfig) -> RelationConfig {
                 materialized_view::new_loader()
                     .from_remote_state(&make_driver_data(cfg))
@@ -1056,15 +1069,7 @@ mod tests {
             #[test]
             fn mat_view_config() {
                 let cfg = make_mat_view(TestTableConfig {
-                    partition_by: Some(BigqueryPartitionConfig {
-                        field: "my_field".to_string(),
-                        data_type: "DATETIME".to_string(),
-                        __inner__: BigqueryPartitionConfigInner::Time(TimeConfig {
-                            granularity: "DAY".to_string(),
-                            time_ingestion_partitioning: false,
-                        }),
-                        copy_partitions: false,
-                    }),
+                    partition_by: Some(day_partition("my_field")),
                     kms_key: "kms_key",
                     description: "description\nother_line",
                     cluster_by: &["a", "b"],
@@ -1133,15 +1138,7 @@ mod tests {
             #[test]
             fn mat_view_changeset() {
                 let current_state = make_mat_view(TestTableConfig {
-                    partition_by: Some(BigqueryPartitionConfig {
-                        field: "my_field".to_string(),
-                        data_type: "DATETIME".to_string(),
-                        __inner__: BigqueryPartitionConfigInner::Time(TimeConfig {
-                            granularity: "DAY".to_string(),
-                            time_ingestion_partitioning: false,
-                        }),
-                        copy_partitions: false,
-                    }),
+                    partition_by: Some(day_partition("my_field")),
                     kms_key: "kms_key",
                     description: "description\nother_line",
                     cluster_by: &["a", "b"],
@@ -1154,15 +1151,7 @@ mod tests {
                 });
 
                 let desired_state = make_mat_view(TestTableConfig {
-                    partition_by: Some(BigqueryPartitionConfig {
-                        field: "my_new_field".to_string(),
-                        data_type: "DATETIME".to_string(),
-                        __inner__: BigqueryPartitionConfigInner::Time(TimeConfig {
-                            granularity: "DAY".to_string(),
-                            time_ingestion_partitioning: false,
-                        }),
-                        copy_partitions: false,
-                    }),
+                    partition_by: Some(day_partition("my_new_field")),
                     kms_key: "new_kms_key",
                     description: "new description\nother_line",
                     cluster_by: &["a", "b", "c"],

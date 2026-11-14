@@ -3062,6 +3062,9 @@ impl Adapter {
                 let target_relation_partitioned =
                     downcast_value_to_dyn_base_relation(target_relation_val)?;
                 let materialization = iter.next_arg::<&str>()?;
+                // copies each `$partition_id` of the two relations when given
+                let partition_ids = iter.next_kwarg::<Option<Vec<String>>>("partition_ids")?;
+                let concurrency = iter.next_kwarg::<Option<usize>>("concurrency")?;
                 iter.finish()?;
 
                 adapter
@@ -3071,14 +3074,26 @@ impl Adapter {
 
                 let mut conn =
                     adapter.borrow_tlocal_connection(Some(state), node_id_from_state(state))?;
-                adapter.copy_table(
-                    state,
-                    conn.as_mut(),
-                    &tmp_relation_partitioned,
-                    &target_relation_partitioned,
-                    materialization.to_string(),
-                    self.cancellation_token.clone(),
-                )?;
+                match partition_ids {
+                    None => adapter.copy_table(
+                        state,
+                        conn.as_mut(),
+                        &tmp_relation_partitioned,
+                        &target_relation_partitioned,
+                        materialization.to_string(),
+                        self.cancellation_token.clone(),
+                    )?,
+                    Some(partition_ids) => adapter.copy_table_partitions(
+                        state,
+                        conn.as_mut(),
+                        &tmp_relation_partitioned,
+                        &target_relation_partitioned,
+                        &partition_ids,
+                        materialization,
+                        concurrency.unwrap_or(1),
+                        self.cancellation_token.clone(),
+                    )?,
+                }
                 Ok(none_value())
             }
             Parse(_) => Ok(none_value()),
@@ -4142,7 +4157,8 @@ impl Adapter {
             "is_replaceable" => self.is_replaceable(state, args),
             // schema_relation: BaseRelation
             "list_relations_without_caching" => self.list_relations_without_caching(state, args),
-            // tmp_relation_partitioned: BaseRelation, target_relation_partitioned: BaseRelation, materialization: str
+            // tmp_relation_partitioned: BaseRelation, target_relation_partitioned: BaseRelation, materialization: str,
+            // partition_ids: Optional[List[str]], concurrency: Optional[int]
             "copy_table" => self.copy_table(state, args),
             // relation: BaseRelation, columns: Dict[str, DbtColumn]
             "update_columns" => self.update_columns(state, args),

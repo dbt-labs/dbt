@@ -26,6 +26,10 @@ pub struct BigqueryPartitionConfig {
         deserialize_with = "crate::schemas::serde::yaml_11_bool_default"
     )]
     pub copy_partitions: bool,
+    /// How many partitions `copy_partitions` copies at a time. Unset copies 16 at a time, 1
+    /// copies them one by one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub copy_partitions_concurrency: Option<u32>,
 }
 
 /// reference: https://github.com/dbt-labs/dbt-adapters/blob/c16cc7047e8678f8bb88ae294f43da2c68e9f5cc/dbt-bigquery/src/dbt/adapters/bigquery/impl.py#L503
@@ -76,6 +80,7 @@ enum PartitionConfigField {
     DataType,
     TimeIngestionPartitioning,
     CopyPartitions,
+    CopyPartitionsConcurrency,
     // Flattened field for TimeConfig
     Granularity,
     // Flattened field for RangeConfig
@@ -344,6 +349,9 @@ impl Object for BigqueryPartitionConfig {
             PartitionConfigField::CopyPartitions => {
                 Some(MinijinjaValue::from(self.copy_partitions))
             }
+            PartitionConfigField::CopyPartitionsConcurrency => {
+                self.copy_partitions_concurrency.map(MinijinjaValue::from)
+            }
             PartitionConfigField::Range => self.range().map(MinijinjaValue::from_serialize).ok(),
         }
     }
@@ -371,6 +379,11 @@ impl Object for BigqueryPartitionConfig {
 
     fn enumerate(self: &Arc<Self>) -> Enumerator {
         let fields = PartitionConfigField::iter()
+            // like its serialization, an unset concurrency is not listed
+            .filter(|f| {
+                !matches!(f, PartitionConfigField::CopyPartitionsConcurrency)
+                    || self.copy_partitions_concurrency.is_some()
+            })
             .map(|f| MinijinjaValue::from(f.as_ref()))
             .collect::<Vec<_>>();
         Enumerator::Iter(Box::new(fields.into_iter()))
@@ -512,6 +525,51 @@ mod tests {
     }
 
     #[test]
+    fn test_copy_partitions_concurrency_is_optional() {
+        let key = MinijinjaValue::from("copy_partitions_concurrency");
+
+        let json = dbt_yaml::from_str(
+            "field: created_at\ncopy_partitions: true\ncopy_partitions_concurrency: 8\n",
+        )
+        .unwrap();
+        let config: BigqueryPartitionConfig = dbt_yaml::from_value(json).unwrap();
+        assert_eq!(config.copy_partitions_concurrency, Some(8));
+        // a set value survives serialization and is listed
+        let round_tripped: BigqueryPartitionConfig =
+            dbt_yaml::from_value(dbt_yaml::to_value(&config).unwrap()).unwrap();
+        assert_eq!(round_tripped.copy_partitions_concurrency, Some(8));
+        let config = Arc::new(config);
+        assert_eq!(config.get_value(&key), Some(MinijinjaValue::from(8)));
+        assert!(
+            MinijinjaValue::from_dyn_object(config)
+                .try_iter()
+                .unwrap()
+                .any(|k| k == key)
+        );
+
+        let json = dbt_yaml::from_str("field: created_at\ncopy_partitions: true\n").unwrap();
+        let config: BigqueryPartitionConfig = dbt_yaml::from_value(json).unwrap();
+        assert_eq!(config.copy_partitions_concurrency, None);
+        // unset stays out of serialized artifacts
+        let serialized = dbt_yaml::to_value(&config).unwrap();
+        assert!(
+            !serialized
+                .as_mapping()
+                .unwrap()
+                .keys()
+                .any(|k| k.as_str() == Some("copy_partitions_concurrency"))
+        );
+        let config = Arc::new(config);
+        assert_eq!(config.get_value(&key), None);
+        assert!(
+            !MinijinjaValue::from_dyn_object(config)
+                .try_iter()
+                .unwrap()
+                .any(|k| k == key)
+        );
+    }
+
+    #[test]
     fn test_partition_config_field_enum_covers_all_fields_time_config() {
         // Create a sample config with time partitioning
         let config = BigqueryPartitionConfig {
@@ -522,6 +580,7 @@ mod tests {
                 time_ingestion_partitioning: false,
             }),
             copy_partitions: false,
+            copy_partitions_concurrency: None,
         };
 
         // Serialize to JSON to get all field names
@@ -557,6 +616,7 @@ mod tests {
                 },
             }),
             copy_partitions: true,
+            copy_partitions_concurrency: None,
         };
 
         // Serialize to JSON to get all field names
@@ -578,15 +638,7 @@ mod tests {
     #[test]
     fn test_get_value_returns_correct_values() {
         // Test with time config
-        let time_config = Arc::new(BigqueryPartitionConfig {
-            field: "created_at".to_string(),
-            data_type: "timestamp".to_string(),
-            __inner__: BigqueryPartitionConfigInner::Time(TimeConfig {
-                granularity: "hour".to_string(),
-                time_ingestion_partitioning: true,
-            }),
-            copy_partitions: false,
-        });
+        let time_config = Arc::new(time_config("created_at", "timestamp", "hour", true));
 
         // Test field values
         assert_eq!(
@@ -622,16 +674,8 @@ mod tests {
 
         // Test with range config (granularity should return None)
         let range_config = Arc::new(BigqueryPartitionConfig {
-            field: "user_id".to_string(),
-            data_type: "int64".to_string(),
-            __inner__: BigqueryPartitionConfigInner::Range(RangeConfig {
-                range: Range {
-                    start: 0,
-                    end: 100,
-                    interval: 10,
-                },
-            }),
             copy_partitions: true,
+            ..range_config("user_id", 0, 100, 10)
         });
 
         assert_eq!(
@@ -730,6 +774,7 @@ mod tests {
                 time_ingestion_partitioning,
             }),
             copy_partitions: false,
+            copy_partitions_concurrency: None,
         }
     }
 
@@ -745,6 +790,7 @@ mod tests {
                 },
             }),
             copy_partitions: false,
+            copy_partitions_concurrency: None,
         }
     }
 
@@ -847,6 +893,7 @@ mod tests {
                 time_ingestion_partitioning: false,
             }),
             copy_partitions: false,
+            copy_partitions_concurrency: None,
         };
 
         let json = serde_json::to_string(&original).unwrap();
