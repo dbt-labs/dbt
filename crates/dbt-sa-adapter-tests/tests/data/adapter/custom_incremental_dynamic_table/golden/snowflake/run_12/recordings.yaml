@@ -1,28 +1,52 @@
-test.test.orders_merge_matches_source:
+dbbbff64:
 - sequence: 0
   type: execute
   sql: |-
-    select
-    count(*) as failures,
-    count(*) != 0 as should_warn,
-    count(*) != 0 as should_error
-    from (
+    show terse schemas in database development
+    limit 10000
+model.test.orders_merge:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: SHOW OBJECTS IN SCHEMA "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_CUSTOM_INCREMENTAL_DYNAMIC_TABLE" LIMIT 10000
+- sequence: 2
+  type: execute
+  sql: show dynamic tables like 'ORDERS_MERGE' in schema "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_CUSTOM_INCREMENTAL_DYNAMIC_TABLE"
+- sequence: 3
+  type: execute
+  sql: |-
+    create or replace dynamic table development.adapters_snowflake_custom_incremental_dynamic_table.orders_merge
+    
+    warehouse = [MASKED_WH]
     
     
-    -- After apply_changes and a refresh: order 1 updated, order 2 deleted, order 4 inserted.
-    with expected as (
-    select * from values (1, 10, 15.00, false), (3, 30, 30.00, false), (4, 40, 40.00, false)
-    as t (order_id, customer_id, amount, is_deleted)
-    ),
+    refresh_mode = AUTO
     
-    actual as (
-    select order_id, customer_id, amount, is_deleted from development.adapters_snowflake_custom_incremental_dynamic_table.orders_merge
+    initialize = ON_CREATE
+    
+    
+    scheduler = 'DISABLE'
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    as (
+    
+    
+    select order_id, customer_id, amount, false as is_deleted
+    from development.adapters_snowflake_custom_incremental_dynamic_table.orders
     )
-    
-    (select 'missing' as problem, * from expected minus select 'missing', * from actual)
-    union all
-    (select 'unexpected' as problem, * from actual minus select 'unexpected', * from expected)
-    
-    
-    
-    ) dbt_internal_test
+- sequence: 4
+  type: execute
+  sql: alter dynamic table development.adapters_snowflake_custom_incremental_dynamic_table.orders_merge refresh
+- sequence: 5
+  type: execute
+  sql: use warehouse [MASKED_WH]

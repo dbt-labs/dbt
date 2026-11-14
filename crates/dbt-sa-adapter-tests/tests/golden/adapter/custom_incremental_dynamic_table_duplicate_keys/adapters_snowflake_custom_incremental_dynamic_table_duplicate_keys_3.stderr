@@ -1,0 +1,6 @@
+[warning] [JinjaWarn (dbt1071)]: No configuration changes were identified on: `development.adapters_snowflake_custom_incremental_dynamic_table_duplicate_keys.orders_merge`. Continuing.
+  --> dbt_internal_packages/dbt-snowflake/macros/materializations/dynamic_table.sql:38:1
+[error] [DbDriverFailed (dbt1308)]: Database Error in model orders_merge (../scratch/target/run/test/models/orders_merge.sql)
+  [Snowflake] 002742 (01000): SQL compilation error: Failed to refresh dynamic table with refresh_trigger MANUAL at data_timestamp 1794619261917 because of the error: SQL compilation error: Target table failed to refresh: Duplicate row detected during DML action
+  Row Values: [1, 1000] (sqlstate: 01000, vendor_code: 2742)
+  (in run/test/models/orders_merge.sql)

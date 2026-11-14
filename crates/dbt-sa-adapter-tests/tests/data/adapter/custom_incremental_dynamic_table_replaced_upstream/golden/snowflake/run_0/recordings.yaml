@@ -1,0 +1,20 @@
+7644ca7f:
+- sequence: 0
+  type: execute
+  sql: CREATE OR REPLACE TABLE development.adapters_snowflake_custom_incremental_dynamic_table_replaced_upstream.orders (order_id int, amount number(10,2))
+84bdc9d1:
+- sequence: 0
+  type: execute
+  sql: USE DATABASE development
+98b44b1e:
+- sequence: 0
+  type: execute
+  sql: CREATE OR ALTER SCHEMA development.adapters_snowflake_custom_incremental_dynamic_table_replaced_upstream
+f74929b8:
+- sequence: 0
+  type: execute
+  sql: DROP DYNAMIC TABLE IF EXISTS development.adapters_snowflake_custom_incremental_dynamic_table_replaced_upstream.orders_merge
+ff60a2b3:
+- sequence: 0
+  type: execute
+  sql: INSERT INTO development.adapters_snowflake_custom_incremental_dynamic_table_replaced_upstream.orders VALUES (1, 10.00), (2, 20.00)

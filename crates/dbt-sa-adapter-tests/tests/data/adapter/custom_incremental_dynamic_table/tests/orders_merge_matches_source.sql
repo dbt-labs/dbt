@@ -1,7 +1,8 @@
--- After apply_changes and a refresh: order 1 updated, order 2 deleted, order 4 inserted.
+-- A merge CI DT over DEFAULT changes holds the source's current rows, after each refresh and
+-- rebuild: after apply_changes, order 1 updated, order 2 deleted, order 4 inserted; after
+-- apply_more_changes, order 2 re-inserted and order 4 updated.
 with expected as (
-    select * from values (1, 10, 15.00, false), (3, 30, 30.00, false), (4, 40, 40.00, false)
-        as t (order_id, customer_id, amount, is_deleted)
+    select order_id, customer_id, amount, false as is_deleted from {{ source('raw', 'orders') }}
 ),
 
 actual as (

@@ -1,8 +1,8 @@
 -- After --full-refresh. Creating a CI DT reads the source's current rows as inserts (it does not
 -- replay the change history), so the APPEND_ONLY model now holds the source as it is: order 1
--- updated, order 2 gone.
+-- and order 4 updated, order 2 re-inserted.
 with expected as (
-    select * from values (1, 15.00), (3, 30.00), (4, 40.00)
+    select * from values (1, 15.00), (2, 25.00), (3, 30.00), (4, 45.00)
         as t (order_id, amount)
 ),
 

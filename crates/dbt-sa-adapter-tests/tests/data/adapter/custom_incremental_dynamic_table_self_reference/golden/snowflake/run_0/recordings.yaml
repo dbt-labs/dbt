@@ -1,0 +1,20 @@
+1eeaba29:
+- sequence: 0
+  type: execute
+  sql: DROP DYNAMIC TABLE IF EXISTS development.adapters_snowflake_custom_incremental_dynamic_table_self_reference.orders_merge
+4e3f00ce:
+- sequence: 0
+  type: execute
+  sql: INSERT INTO development.adapters_snowflake_custom_incremental_dynamic_table_self_reference.orders VALUES (1, 10.00)
+6dc16cac:
+- sequence: 0
+  type: execute
+  sql: CREATE OR ALTER SCHEMA development.adapters_snowflake_custom_incremental_dynamic_table_self_reference
+84bdc9d1:
+- sequence: 0
+  type: execute
+  sql: USE DATABASE development
+9a032f46:
+- sequence: 0
+  type: execute
+  sql: CREATE OR REPLACE TABLE development.adapters_snowflake_custom_incremental_dynamic_table_self_reference.orders (order_id int, amount number(10,2)) CHANGE_TRACKING = TRUE

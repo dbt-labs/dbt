@@ -14,12 +14,15 @@ Turns (see `adapters_snowflake_custom_incremental_dynamic_table`):
 3. apply source changes;
 4. refresh (no config change: skip, then the manual refresh that `scheduler = 'DISABLE'` implies);
 5. check the rows;
-6. full refresh (`create or replace`);
-7. check the rows again. Creating a CI DT reads the source's current rows as inserts rather than
+6. apply a second round of source changes (re-insert the deleted order, update the inserted one);
+7. refresh;
+8. check `orders_merge`;
+9. full refresh (`create or replace`);
+10. check the rows again. Creating a CI DT reads the source's current rows as inserts rather than
    replaying its change history, which only shows in the APPEND_ONLY `orders_transient`;
-8. change `stock_merge`'s `target_lag` (altered in place, like a regular dynamic table);
-9. check `stock_merge`;
-10. switch `orders_merge` to a regular dynamic table;
-11. check it;
-12. switch it back to a CI DT;
-13. check it.
+11. change `stock_merge`'s `target_lag` (altered in place, like a regular dynamic table);
+12. check `stock_merge`;
+13. switch `orders_merge` to a regular dynamic table;
+14. check it;
+15. switch it back to a CI DT;
+16. check it.

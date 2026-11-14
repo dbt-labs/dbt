@@ -20,3 +20,11 @@
   {% do adapter.execute("DELETE FROM " ~ stock ~ " WHERE warehouse_id = 1 AND sku = 'B'") %}
   {% do adapter.execute("INSERT INTO " ~ stock ~ " VALUES (2, 'C', 5)") %}
 {% endmacro %}
+
+{# A second round for the next refresh: re-insert the order deleted in the first round, and update
+   the order it inserted. #}
+{% macro apply_more_changes() %}
+  {% set orders = target.database ~ '.' ~ target.schema ~ '.orders' %}
+  {% do adapter.execute('INSERT INTO ' ~ orders ~ ' VALUES (2, 20, 25.00)') %}
+  {% do adapter.execute('UPDATE ' ~ orders ~ ' SET amount = 45.00 WHERE order_id = 4') %}
+{% endmacro %}

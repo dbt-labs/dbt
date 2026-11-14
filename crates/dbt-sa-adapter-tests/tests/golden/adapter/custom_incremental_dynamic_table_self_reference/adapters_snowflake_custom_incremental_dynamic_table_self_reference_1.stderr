@@ -1,0 +1,4 @@
+[error] [DbDriverFailed (dbt1308)]: Database Error in model orders_merge (../scratch/target/run/test/models/orders_merge.sql)
+  NotFound: [Snowflake] 002003 (42S02): SQL compilation error:
+  Object 'DEVELOPMENT.ADAPTERS_SNOWFLAKE_CUSTOM_INCREMENTAL_DYNAMIC_TABLE_SELF_REFERENCE.ORDERS_MERGE' does not exist or not authorized. Your primary role ACCOUNTADMIN must have at least one privilege granted on TABLE DEVELOPMENT.ADAPTERS_SNOWFLAKE_CUSTOM_INCREMENTAL_DYNAMIC_TABLE_SELF_REFERENCE.ORDERS_MERGE. (sqlstate: 42S02, vendor_code: 2003)
+  (in run/test/models/orders_merge.sql)

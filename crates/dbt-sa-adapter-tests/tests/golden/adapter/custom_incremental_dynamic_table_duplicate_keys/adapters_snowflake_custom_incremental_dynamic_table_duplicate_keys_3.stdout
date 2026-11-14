@@ -1,0 +1,11 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/sources.yml
+   Parsing models/orders_merge.sql
+ Rendering models/orders_merge.sql
+   Running models/orders_merge.sql
+    Failed model adapters_snowflake_custom_incremental_dynamic_table_duplicate_keys.orders_merge (dynamic_table) [1 of 1 in duration]
+==================== Execution Summary =====================
+Finished 'run' with 1 warning and 1 error for target 'snowflake' [duration]
+Processed: 1 model
+Summary: 1 total | 1 error

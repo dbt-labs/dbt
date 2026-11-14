@@ -441,32 +441,35 @@ async fn adapters_snowflake_custom_incremental_dynamic_table() -> FsResult<()> {
             AdapterRecordReplayTurn::new("run-operation apply_changes", &[]), // run_2
             AdapterRecordReplayTurn::new("run", &[]), // run_3: no-op build, manual refresh
             AdapterRecordReplayTurn::new("test --exclude orders_transient_after_full_refresh", &[]), // run_4: updates and deletes merged
-            AdapterRecordReplayTurn::new("run --full-refresh", &[]), // run_5: CREATE OR REPLACE
-            AdapterRecordReplayTurn::new("test --exclude orders_transient_after_refresh", &[]), // run_6: rows after the rebuild
+            AdapterRecordReplayTurn::new("run-operation apply_more_changes", &[]), // run_5
+            AdapterRecordReplayTurn::new("run", &[]), // run_6: second refresh
+            AdapterRecordReplayTurn::new("test --select orders_merge_matches_source", &[]), // run_7: re-insert of a deleted key, update of a new one
+            AdapterRecordReplayTurn::new("run --full-refresh", &[]), // run_8: CREATE OR REPLACE
+            AdapterRecordReplayTurn::new("test --exclude orders_transient_after_refresh", &[]), // run_9: rows after the rebuild
             AdapterRecordReplayTurn::new(
                 "run --select stock_merge",
                 &[FileOverride {
                     original: "models/stock_merge.sql",
                     overriding_file: "_project_overrides/stock_merge_target_lag.sql",
                 }],
-            ), // run_7: a CI DT target_lag change is altered in place, like a regular DT
-            AdapterRecordReplayTurn::new("test --select stock_merge_matches_source", &[]), // run_8
+            ), // run_10: a CI DT target_lag change is altered in place, like a regular DT
+            AdapterRecordReplayTurn::new("test --select stock_merge_matches_source", &[]), // run_11
             AdapterRecordReplayTurn::new(
                 "run --select orders_merge",
                 &[FileOverride {
                     original: ORDERS,
                     overriding_file: "_project_overrides/orders_merge_regular.sql",
                 }],
-            ), // run_9: CI DT -> regular DT replaces
-            AdapterRecordReplayTurn::new("test --select orders_merge_matches_source", &[]), // run_10
+            ), // run_12: CI DT -> regular DT replaces
+            AdapterRecordReplayTurn::new("test --select orders_merge_matches_source", &[]), // run_13
             AdapterRecordReplayTurn::new(
                 "run --select orders_merge",
                 &[FileOverride {
                     original: ORDERS,
                     overriding_file: "_project_overrides/orders_merge_custom_incremental.sql",
                 }],
-            ), // run_11: regular DT -> CI DT replaces
-            AdapterRecordReplayTurn::new("test --select orders_merge_matches_source", &[]), // run_12
+            ), // run_14: regular DT -> CI DT replaces
+            AdapterRecordReplayTurn::new("test --select orders_merge_matches_source", &[]), // run_15
         ],
         None,
         &[],
@@ -486,6 +489,89 @@ async fn adapters_snowflake_custom_incremental_dynamic_table_no_change_tracking(
         AdapterType::Snowflake.as_ref(),
         None,
         &["run-operation set_up", "run"],
+        None,
+        &[],
+    )
+    .await
+}
+
+/// `{{ this }}` in a custom incremental dynamic table isn't supported yet (the refresh body must
+/// use SELF). dbt doesn't check for it; pins the errors Snowflake gives on a first build and on a
+/// rebuild.
+#[dbt_runtime::test]
+async fn adapters_snowflake_custom_incremental_dynamic_table_self_reference() -> FsResult<()> {
+    run_fs_record_replay_task_seq(
+        env!("CARGO_MANIFEST_DIR"),
+        &FS_RUNNER,
+        current_function_name!(),
+        "tests/data/adapter/custom_incremental_dynamic_table_self_reference",
+        AdapterType::Snowflake.as_ref(),
+        None,
+        &[
+            AdapterRecordReplayTurn::new("run-operation set_up", &[]), // run_0
+            AdapterRecordReplayTurn::new("run", &[]), // run_1: discovery fails, no table yet (002003)
+            AdapterRecordReplayTurn::new(
+                "run",
+                &[FileOverride {
+                    original: "models/orders_merge.sql",
+                    overriding_file: "_project_overrides/orders_merge_without_this.sql",
+                }],
+            ), // run_2: create without the self-reference
+            AdapterRecordReplayTurn::new(
+                "run --full-refresh",
+                &[FileOverride {
+                    original: "models/orders_merge.sql",
+                    overriding_file: "_project_overrides/orders_merge_with_this.sql",
+                }],
+            ), // run_3: replace fails, must use SELF (001002)
+        ],
+        None,
+        &[],
+    )
+    .await
+}
+
+/// A merge CI DT whose model doesn't deduplicate its changes per key. Pins the refresh error
+/// Snowflake gives when an update brings two source rows for one key.
+#[dbt_runtime::test]
+async fn adapters_snowflake_custom_incremental_dynamic_table_duplicate_keys() -> FsResult<()> {
+    run_fs_record_replay_task_seq(
+        env!("CARGO_MANIFEST_DIR"),
+        &FS_RUNNER,
+        current_function_name!(),
+        "tests/data/adapter/custom_incremental_dynamic_table_duplicate_keys",
+        AdapterType::Snowflake.as_ref(),
+        None,
+        &[
+            "run-operation set_up",
+            "run",                         // run_1: create
+            "run-operation apply_changes", // run_2: an update
+            "run",                         // run_3: the manual refresh fails (002742)
+        ],
+        None,
+        &[],
+    )
+    .await
+}
+
+/// A merge CI DT reading a `table` model that every dbt run replaces: the next refresh reads the
+/// replacement's rows as inserts, so a row deleted upstream stays.
+#[dbt_runtime::test]
+async fn adapters_snowflake_custom_incremental_dynamic_table_replaced_upstream() -> FsResult<()> {
+    run_fs_record_replay_task_seq(
+        env!("CARGO_MANIFEST_DIR"),
+        &FS_RUNNER,
+        current_function_name!(),
+        "tests/data/adapter/custom_incremental_dynamic_table_replaced_upstream",
+        AdapterType::Snowflake.as_ref(),
+        None,
+        &[
+            "run-operation set_up",
+            "run",                         // run_1: stg_orders, then the CI DT
+            "run-operation apply_changes", // run_2: DML on the raw table
+            "run",                         // run_3: stg_orders replaced, the CI DT refreshed
+            "test",                        // run_4: rows after the replace
+        ],
         None,
         &[],
     )
