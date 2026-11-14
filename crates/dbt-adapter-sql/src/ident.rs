@@ -113,6 +113,11 @@ pub fn max_identifier_length(adapter_type: AdapterType) -> Option<NonZero<usize>
             // SAFETY: literal 127 is never 0
             Some(unsafe { NonZero::new_unchecked(127) })
         }
+        // https://mariadb.com/docs/server/reference/sql-structure/sql-language-structure/identifier-names
+        MariaDB => {
+            // SAFETY: literal 64 is never 0
+            Some(unsafe { NonZero::new_unchecked(64) })
+        }
         Snowflake | Bigquery | Databricks | Spark | DuckDB | Salesforce | Fabric | ClickHouse
         | Exasol | Athena | Starburst | Trino | Datafusion | Dremio | Oracle | LakeCompute => None,
     }
@@ -132,7 +137,7 @@ pub fn max_identifier_length(adapter_type: AdapterType) -> Option<NonZero<usize>
 pub const fn canonical_quote(backend: AdapterType) -> QuotingStyle {
     use AdapterType::*;
     match backend {
-        Bigquery | Databricks | Spark | Athena => QuotingStyle::Backtick,
+        Bigquery | Databricks | Spark | Athena | MariaDB => QuotingStyle::Backtick,
         ClickHouse | Exasol | Snowflake | Redshift | Postgres | Salesforce | DuckDB => {
             QuotingStyle::Double
         }
@@ -171,6 +176,7 @@ pub fn is_valid_ident_char(c: char, backend: AdapterType) -> bool {
             | Oracle
             | LakeCompute
             | Exasol => c.is_alphanumeric() || c == '_',
+        MariaDB => c.is_alphanumeric() || c == '_' || c == '$',
     }
 }
 
@@ -292,9 +298,12 @@ pub fn quote_identifier(id: &str, backend: AdapterType) -> String {
 /// (quote), which handle identifiers.
 pub fn escape_string_literal(s: &str, backend: AdapterType) -> String {
     match backend {
-        AdapterType::Snowflake | AdapterType::Redshift | AdapterType::Postgres => {
-            s.replace('\\', "\\\\").replace('\'', "''")
-        }
+        // Backslash is a string escape on MariaDB unless the
+        // NO_BACKSLASH_ESCAPES sql_mode is set.
+        AdapterType::Snowflake
+        | AdapterType::Redshift
+        | AdapterType::Postgres
+        | AdapterType::MariaDB => s.replace('\\', "\\\\").replace('\'', "''"),
         AdapterType::Bigquery
         | AdapterType::Databricks
         | AdapterType::Spark
@@ -401,6 +410,14 @@ mod sanitize_tests {
     }
 
     #[test]
+    fn escape_string_literal_escapes_backslashes_on_mariadb() {
+        let e = |s: &str| escape_string_literal(s, AdapterType::MariaDB);
+        assert_eq!(e("o'brien"), "o''brien");
+        assert_eq!(e("a\\'b"), "a\\\\''b");
+        assert_eq!(e("plain"), "plain");
+    }
+
+    #[test]
     fn escape_string_literal_escapes_snowflake_backslashes() {
         assert_eq!(
             escape_string_literal(r"a\b'c", AdapterType::Snowflake),
@@ -448,6 +465,7 @@ mod sanitize_tests {
             AdapterType::Snowflake,
             AdapterType::Redshift,
             AdapterType::Postgres,
+            AdapterType::MariaDB,
         ] {
             for value in values {
                 let escaped = escape_string_literal(value, backend);

@@ -84,6 +84,8 @@ pub enum Backend {
     ClickHouse,
     /// Exasol driver implementation (ADBC).
     Exasol,
+    /// MySQL driver implementation (ADBC), also used for MariaDB.
+    MySQL,
     /// Trino driver implementation (ADBC).
     Trino,
     /// Generic ADBC driver implementation.
@@ -118,6 +120,7 @@ impl fmt::Display for Backend {
             Backend::Athena => write!(f, "Athena"),
             Backend::ClickHouse => write!(f, "ClickHouse"),
             Backend::Exasol => write!(f, "Exasol"),
+            Backend::MySQL => write!(f, "MySQL"),
             Backend::Trino => write!(f, "Trino"),
             Backend::Generic { library_name, .. } => write!(f, "Generic({library_name})"),
         }
@@ -140,6 +143,7 @@ impl Backend {
             Backend::Athena => Some("adbc_driver_athena"),
             Backend::ClickHouse => Some("adbc_clickhouse"),
             Backend::Exasol => Some("adbc_driver_exasol"),
+            Backend::MySQL => Some("adbc_driver_mysql"),
             Backend::Trino => Some("adbc_driver_trino"),
             Backend::Generic { library_name, .. } => Some(library_name),
         }
@@ -473,7 +477,7 @@ impl AdbcDriver {
                 }
             }
             // CDN strategy for non-CDN drivers: just fall back to the system strategy.
-            (CdnCache | SystemThenCdnCache | Bridge, Athena | Exasol | Trino) => System(None),
+            (CdnCache | SystemThenCdnCache | Bridge, Athena | Exasol | MySQL | Trino) => System(None),
             // Generic drivers can only be loaded from a file, so fallback to the System strategy.
             (CdnCache | SystemThenCdnCache | Bridge, Generic { library_name, .. }) => {
                 System(Some(library_name.to_string()))

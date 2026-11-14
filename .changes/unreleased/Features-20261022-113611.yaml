@@ -1,0 +1,7 @@
+kind: Features
+body: '[MariaDB] Add an experimental MariaDB adapter (MariaDB 11.4+, ADBC MySQL driver)'
+time: 2026-10-22T11:36:11.586425409Z
+custom:
+    author: martin-jeremy
+    issue: "16859"
+    project: dbt-core

@@ -8,6 +8,7 @@ mod databricks_metadata;
 mod delete_insert;
 mod duckdb;
 mod equals;
+mod mariadb;
 mod function_grants;
 mod multi_adapter;
 mod persist_docs;

@@ -3069,7 +3069,7 @@ fn columns_to_formatted_types<'a>(
                         databricks::format_type(type_ops, f.data_type(), f.is_nullable())?,
                     ));
                 }
-                _ => type_ops.format_arrow_type_as_sql(
+                _ => type_ops.format_arrow_type_as_cast_target(
                     f.data_type(),
                     f.is_nullable(),
                     &mut formatted,

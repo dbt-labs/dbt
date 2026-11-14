@@ -51,8 +51,8 @@ pub fn adapter_specific_behavior_flags(adapter_type: AdapterType) -> Vec<Behavio
         Bigquery => bigquery_behavior_flags(),
         Fabric => fabric_behavior_flags(),
         Redshift => redshift_behavior_flags(),
-        Postgres | Salesforce | Spark | DuckDB | LakeCompute | ClickHouse | Exasol | Starburst
-        | Athena | Trino | Datafusion | Dremio | Oracle => vec![],
+        Postgres | Salesforce | Spark | DuckDB | LakeCompute | ClickHouse | Exasol | MariaDB
+        | Starburst | Athena | Trino | Datafusion | Dremio | Oracle => vec![],
     }
 }
 

@@ -1097,6 +1097,17 @@ pub fn constraint_support(
         (Exasol, Check) => NotSupported,
         (Exasol, Custom) => NotSupported,
 
+        // MariaDB (verified on MariaDB 11.4 and 11.8, InnoDB). The v1 adapter
+        // declares foreign keys NotSupported because CREATE TABLE AS SELECT
+        // was thought to reject them; it accepts them when the columns are
+        // declared: https://github.com/dbeatty10/dbt-mysql/blob/09e076f7203ffe1486f3bf8394ec3bb9c5b38ddc/dbt/adapters/mariadb/impl.py#L33-L44
+        (MariaDB, NotNull) => Enforced,
+        (MariaDB, Unique) => Enforced,
+        (MariaDB, PrimaryKey) => Enforced,
+        (MariaDB, ForeignKey) => Enforced,
+        (MariaDB, Check) => Enforced,
+        (MariaDB, Custom) => NotSupported,
+
         // ClickHouse (dbt-clickhouse impl.py CONSTRAINT_SUPPORT)
         (ClickHouse, Check) => Enforced,
         (ClickHouse, NotNull | Unique | PrimaryKey | ForeignKey | Custom) => NotSupported,
