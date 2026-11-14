@@ -1,0 +1,2 @@
+[warning] [JinjaWarn (dbt1071)]: No configuration changes were identified on: `development.adapters_snowflake_custom_incremental_dynamic_table_replaced_upstream.orders_merge`. Continuing.
+  --> dbt_internal_packages/dbt-snowflake/macros/materializations/dynamic_table.sql:38:1

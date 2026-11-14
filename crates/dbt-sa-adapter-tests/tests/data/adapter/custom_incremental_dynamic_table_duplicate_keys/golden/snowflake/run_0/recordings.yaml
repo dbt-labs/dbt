@@ -1,0 +1,20 @@
+3eb18ebf:
+- sequence: 0
+  type: execute
+  sql: INSERT INTO development.adapters_snowflake_custom_incremental_dynamic_table_duplicate_keys.orders VALUES (1, 10.00), (2, 20.00)
+84bdc9d1:
+- sequence: 0
+  type: execute
+  sql: USE DATABASE development
+944b639b:
+- sequence: 0
+  type: execute
+  sql: DROP DYNAMIC TABLE IF EXISTS development.adapters_snowflake_custom_incremental_dynamic_table_duplicate_keys.orders_merge
+d436a1c6:
+- sequence: 0
+  type: execute
+  sql: CREATE OR REPLACE TABLE development.adapters_snowflake_custom_incremental_dynamic_table_duplicate_keys.orders (order_id int, amount number(10,2)) CHANGE_TRACKING = TRUE
+f2cb5f75:
+- sequence: 0
+  type: execute
+  sql: CREATE OR ALTER SCHEMA development.adapters_snowflake_custom_incremental_dynamic_table_duplicate_keys

@@ -1,0 +1,12 @@
+-- After --full-refresh, apply_changes and a refresh: order 1 updated, order 3 inserted.
+with expected as (
+    select * from values (1, 15.00), (2, 20.00), (3, 30.00) as t (order_id, amount)
+),
+
+actual as (
+    select order_id, amount from {{ ref('orders_hand_written') }}
+)
+
+(select 'missing' as problem, * from expected minus select 'missing', * from actual)
+union all
+(select 'unexpected' as problem, * from actual minus select 'unexpected', * from expected)

@@ -1,0 +1,87 @@
+test.test.orders_merge_matches_source:
+- sequence: 0
+  type: execute
+  sql: |-
+    select
+    count(*) as failures,
+    count(*) != 0 as should_warn,
+    count(*) != 0 as should_error
+    from (
+    
+    
+    -- A merge CI DT over DEFAULT changes holds the source's current rows, after each refresh and
+    -- rebuild: after apply_changes, order 1 updated, order 2 deleted, order 4 inserted; after
+    -- apply_more_changes, order 2 re-inserted and order 4 updated.
+    with expected as (
+    select order_id, customer_id, amount, false as is_deleted from development.adapters_snowflake_custom_incremental_dynamic_table.orders
+    ),
+    
+    actual as (
+    select order_id, customer_id, amount, is_deleted from development.adapters_snowflake_custom_incremental_dynamic_table.orders_merge
+    )
+    
+    (select 'missing' as problem, * from expected minus select 'missing', * from actual)
+    union all
+    (select 'unexpected' as problem, * from actual minus select 'unexpected', * from expected)
+    
+    
+    
+    ) dbt_internal_test
+test.test.orders_transient_after_full_refresh:
+- sequence: 0
+  type: execute
+  sql: |-
+    select
+    count(*) as failures,
+    count(*) != 0 as should_warn,
+    count(*) != 0 as should_error
+    from (
+    
+    
+    -- After --full-refresh. Creating a CI DT reads the source's current rows as inserts (it does not
+    -- replay the change history), so the APPEND_ONLY model now holds the source as it is: order 1
+    -- and order 4 updated, order 2 re-inserted.
+    with expected as (
+    select * from values (1, 15.00), (2, 25.00), (3, 30.00), (4, 45.00)
+    as t (order_id, amount)
+    ),
+    
+    actual as (
+    select order_id, amount from development.adapters_snowflake_custom_incremental_dynamic_table.orders_transient
+    )
+    
+    (select 'missing' as problem, * from expected minus select 'missing', * from actual)
+    union all
+    (select 'unexpected' as problem, * from actual minus select 'unexpected', * from expected)
+    
+    
+    
+    ) dbt_internal_test
+test.test.stock_merge_matches_source:
+- sequence: 0
+  type: execute
+  sql: |-
+    select
+    count(*) as failures,
+    count(*) != 0 as should_warn,
+    count(*) != 0 as should_error
+    from (
+    
+    
+    -- After apply_changes and a refresh: (1, A) updated, (1, B) deleted, (2, C) inserted.
+    with expected as (
+    select * from values (1, 'A', 80, false), (2, 'A', 10, false), (2, 'C', 5, false)
+    as t (warehouse_id, sku, quantity, is_deleted)
+    ),
+    
+    actual as (
+    select warehouse_id, sku, quantity, is_deleted from development.adapters_snowflake_custom_incremental_dynamic_table.stock_merge
+    )
+    
+    (select 'missing' as problem, * from expected minus select 'missing', * from actual)
+    union all
+    (select 'unexpected' as problem, * from actual minus select 'unexpected', * from expected)
+    
+    
+    
+    ) dbt_internal_test

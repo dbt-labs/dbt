@@ -1,0 +1,24 @@
+20b93410:
+- sequence: 0
+  type: execute
+  sql: INSERT INTO development.adapters_snowflake_custom_incremental_dynamic_table.stock VALUES (1, 'A', 100), (1, 'B', 50), (2, 'A', 10)
+2dea5688:
+- sequence: 0
+  type: execute
+  sql: CREATE OR REPLACE TABLE development.adapters_snowflake_custom_incremental_dynamic_table.orders (order_id int, customer_id int, amount number(10,2)) CHANGE_TRACKING = TRUE
+78356cb8:
+- sequence: 0
+  type: execute
+  sql: INSERT INTO development.adapters_snowflake_custom_incremental_dynamic_table.orders VALUES (1, 10, 10.00), (2, 20, 20.00), (3, 30, 30.00)
+84bdc9d1:
+- sequence: 0
+  type: execute
+  sql: USE DATABASE development
+b64bac64:
+- sequence: 0
+  type: execute
+  sql: CREATE OR ALTER SCHEMA development.adapters_snowflake_custom_incremental_dynamic_table
+cb362956:
+- sequence: 0
+  type: execute
+  sql: CREATE OR REPLACE TABLE development.adapters_snowflake_custom_incremental_dynamic_table.stock (warehouse_id int, sku varchar(16), quantity int) CHANGE_TRACKING = TRUE

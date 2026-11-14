@@ -1,0 +1,29 @@
+test.test.orders_merge_matches_source:
+- sequence: 0
+  type: execute
+  sql: |-
+    select
+    count(*) as failures,
+    count(*) != 0 as should_warn,
+    count(*) != 0 as should_error
+    from (
+    
+    
+    -- A merge CI DT over DEFAULT changes holds the source's current rows, after each refresh and
+    -- rebuild: after apply_changes, order 1 updated, order 2 deleted, order 4 inserted; after
+    -- apply_more_changes, order 2 re-inserted and order 4 updated.
+    with expected as (
+    select order_id, customer_id, amount, false as is_deleted from development.adapters_snowflake_custom_incremental_dynamic_table.orders
+    ),
+    
+    actual as (
+    select order_id, customer_id, amount, is_deleted from development.adapters_snowflake_custom_incremental_dynamic_table.orders_merge
+    )
+    
+    (select 'missing' as problem, * from expected minus select 'missing', * from actual)
+    union all
+    (select 'unexpected' as problem, * from actual minus select 'unexpected', * from expected)
+    
+    
+    
+    ) dbt_internal_test

@@ -1,0 +1,3 @@
+[error] [DbDriverFailed (dbt1308)]: Database Error in model orders_merge (../scratch/target/run/test/models/orders_merge.sql)
+  [Snowflake] 001002 (42601): syntax error line References to the dynamic table being created in REFRESH USING must use SELF (or SELF AS <alias>), not the table name directly. at position {1} unexpected '{2}'. (sqlstate: 42601, vendor_code: 1002)
+  (in run/test/models/orders_merge.sql)

@@ -1,0 +1,683 @@
+//! Custom incremental dynamic tables (`refresh_mode='CUSTOM_INCREMENTAL'`): a dynamic table whose
+//! refresh is one DML statement, `create dynamic table X (<cols>) ... refresh using (<dml>)`.
+
+use super::*;
+
+const CI_TEMP_RELATION: &str = "TEST_DB.TEST_SCHEMA.MY_DT__dbt_tmp";
+const CI_COLUMNS_DDL: &str = r#"("ID" NUMBER(38,0), "AMOUNT" NUMBER(38,2), "IS_DELETED" BOOLEAN)"#;
+const CI_UPDATE_SET: &str = r#"update set "ID" = DBT_INTERNAL_SOURCE."ID", "AMOUNT" = DBT_INTERNAL_SOURCE."AMOUNT", "IS_DELETED" = DBT_INTERNAL_SOURCE."IS_DELETED""#;
+const CI_INSERT: &str = r#"insert ("ID", "AMOUNT", "IS_DELETED") values (DBT_INTERNAL_SOURCE."ID", DBT_INTERNAL_SOURCE."AMOUNT", DBT_INTERNAL_SOURCE."IS_DELETED")"#;
+
+/// A merge CI DT with a refreshing schedule.
+fn ci_local_config() -> LocalConfig {
+    LocalConfig {
+        refresh_mode: Some("CUSTOM_INCREMENTAL".to_string()),
+        incremental_strategy: Some("merge"),
+        unique_key: Some(Value::from("id")),
+        ..base_local_config()
+    }
+}
+
+/// The readback of a CI DT already matching [`ci_local_config`].
+fn ci_matching_remote_state() -> RemoteState {
+    RemoteState {
+        refresh_mode: Some("CUSTOM_INCREMENTAL".to_string()),
+        ..matching_remote_state()
+    }
+}
+
+fn render_ci(
+    fixture: &Fixture,
+    local: &LocalConfig,
+    full_refresh: bool,
+) -> dbt_common::FsResult<String> {
+    render_sql(fixture, local, CI_SQL, full_refresh, "apply")
+}
+
+/// The discovery statement: the model rendered with `changes()` starting now, run zero-row into
+/// a temporary table.
+fn ci_discovery_sql() -> String {
+    format!(
+        "create or replace temporary table {CI_TEMP_RELATION} as ( select * from ( select o.id, o.amount, o.METADATA$ACTION = 'DELETE' as is_deleted from RAW.PUBLIC.ORDERS changes(information => DEFAULT) at(offset => 0) as o ) limit 0 ) ;"
+    )
+}
+
+/// The stored merge body for [`ci_local_config`].
+fn ci_merge_body(sql: &str) -> String {
+    format!(
+        "merge into SELF as DBT_INTERNAL_DEST using ( {sql} ) as DBT_INTERNAL_SOURCE on DBT_INTERNAL_DEST.id = DBT_INTERNAL_SOURCE.id when matched then {CI_UPDATE_SET} when not matched then {CI_INSERT}"
+    )
+}
+
+fn ci_ddl(verb: &str, body: &str) -> String {
+    format!(
+        "{verb} dynamic table {RENDERED_RELATION} {CI_COLUMNS_DDL} target_lag = '1 minute' warehouse = WH refresh_mode = CUSTOM_INCREMENTAL initialize = ON_CREATE scheduler = 'ENABLE' refresh using ( {body} )"
+    )
+}
+
+/// `refresh using (...)`, through its closing paren, as rendered: no whitespace normalization.
+fn raw_refresh_using_body(ddl: &str) -> String {
+    let start = ddl
+        .find("refresh using (")
+        .expect("a CI DT DDL has a refresh using body");
+    let end = ddl.rfind(')').expect("the refresh using body is closed");
+    ddl[start..=end].to_string()
+}
+
+fn assert_render_error(result: dbt_common::FsResult<String>, fixture: &Fixture, needle: &str) {
+    let err = result.expect_err("the materialization must raise");
+    assert!(
+        format!("{err:?}").contains(needle),
+        "error should mention `{needle}`, got: {err:?}"
+    );
+    assert!(
+        fixture.executed().is_empty(),
+        "nothing must run when validation fails, got: {:?}",
+        fixture.executed()
+    );
+}
+
+#[test]
+fn ci_create_discovers_columns_and_stores_a_merge_body() {
+    let fixture = fixture(None, RemoteState::default());
+    render_ci(&fixture, &ci_local_config(), false).expect("CI DT should render");
+
+    assert_eq!(
+        fixture.executed(),
+        vec![ci_discovery_sql(), ci_ddl("create", &ci_merge_body(CI_SQL))],
+        "a first build discovers the columns, then creates the CI DT with them"
+    );
+    fixture
+        .harness
+        .mock()
+        .observed_calls()
+        .assert_called("drop_relation");
+}
+
+#[test]
+fn ci_full_refresh_replaces_with_the_same_body_as_create() {
+    let created = fixture(None, RemoteState::default());
+    render_ci(&created, &ci_local_config(), false).expect("create should render");
+    let replaced = fixture(Some(RelationType::DynamicTable), ci_matching_remote_state());
+    render_ci(&replaced, &ci_local_config(), true).expect("full refresh should render");
+
+    assert_eq!(
+        replaced.executed(),
+        vec![
+            ci_discovery_sql(),
+            ci_ddl("create or replace", &ci_merge_body(CI_SQL))
+        ],
+        "--full-refresh rediscovers the columns and replaces the CI DT"
+    );
+    assert_eq!(
+        raw_refresh_using_body(&created.executed_raw()[1]),
+        raw_refresh_using_body(&replaced.executed_raw()[1]),
+        "create and replace must store a byte-identical refresh body"
+    );
+}
+
+#[test]
+fn ci_composite_key_and_delete_condition() {
+    let fixture = fixture(None, RemoteState::default());
+    let local = LocalConfig {
+        unique_key: Some(Value::from(vec!["id", "amount"])),
+        delete_condition: Some("DBT_INTERNAL_SOURCE.is_deleted"),
+        ..ci_local_config()
+    };
+    render_ci(&fixture, &local, false).expect("CI DT should render");
+
+    let body = format!(
+        "merge into SELF as DBT_INTERNAL_DEST using ( {CI_SQL} ) as DBT_INTERNAL_SOURCE on DBT_INTERNAL_DEST.id = DBT_INTERNAL_SOURCE.id and DBT_INTERNAL_DEST.amount = DBT_INTERNAL_SOURCE.amount when matched and coalesce(DBT_INTERNAL_SOURCE.is_deleted, false) then delete when matched then {CI_UPDATE_SET} when not matched and not coalesce(DBT_INTERNAL_SOURCE.is_deleted, false) then {CI_INSERT}"
+    );
+    assert_eq!(fixture.executed()[1], ci_ddl("create", &body));
+}
+
+#[test]
+fn ci_model_starting_with_a_cte_is_wrapped_in_a_subquery() {
+    let fixture = fixture(None, RemoteState::default());
+    let sql = "with latest as (select * from RAW.PUBLIC.STOCK changes(information => DEFAULT)) select * from latest";
+    render_sql(&fixture, &ci_local_config(), sql, false, "apply").expect("CI DT should render");
+
+    assert_eq!(fixture.executed()[1], ci_ddl("create", &ci_merge_body(sql)));
+}
+
+#[test]
+fn ci_regular_to_custom_incremental_switch_replaces() {
+    let fixture = fixture(
+        Some(RelationType::DynamicTable),
+        RemoteState {
+            refresh_mode: Some("INCREMENTAL".to_string()),
+            ..matching_remote_state()
+        },
+    );
+    render_ci(&fixture, &ci_local_config(), false).expect("switch should render");
+
+    assert_eq!(
+        fixture.executed(),
+        vec![
+            ci_discovery_sql(),
+            ci_ddl("create or replace", &ci_merge_body(CI_SQL))
+        ]
+    );
+    assert_eq!(
+        fixture.describe_calls(),
+        1,
+        "the switch reuses the changeset's describe"
+    );
+}
+
+#[test]
+fn ci_switch_respects_on_configuration_change() {
+    let regular = || RemoteState {
+        refresh_mode: Some("INCREMENTAL".to_string()),
+        ..matching_remote_state()
+    };
+
+    let fixture_continue = fixture(Some(RelationType::DynamicTable), regular());
+    render_sql(
+        &fixture_continue,
+        &ci_local_config(),
+        CI_SQL,
+        false,
+        "continue",
+    )
+    .expect("`continue` should render");
+    assert!(
+        fixture_continue.executed().is_empty(),
+        "got: {:?}",
+        fixture_continue.executed()
+    );
+    assert_eq!(
+        fixture_continue.raw_results(),
+        vec!["main=skip".to_string()]
+    );
+
+    let fixture_fail = fixture(Some(RelationType::DynamicTable), regular());
+    let result = render_sql(&fixture_fail, &ci_local_config(), CI_SQL, false, "fail");
+    assert!(result.is_err(), "`fail` must raise, got: {result:?}");
+    assert!(fixture_fail.executed().is_empty());
+
+    // CI DT -> regular: the refresh_mode diff flags AUTO vs. CUSTOM_INCREMENTAL.
+    let fixture_back = fixture(Some(RelationType::DynamicTable), ci_matching_remote_state());
+    let result = render(&fixture_back, &base_local_config(), false, "fail");
+    assert!(
+        result.is_err(),
+        "`fail` must raise on CI DT -> regular, got: {result:?}"
+    );
+}
+
+#[test]
+fn ci_custom_incremental_to_regular_switch_replaces() {
+    // The local side leaves refresh_mode unset (AUTO). The refresh_mode diff treats AUTO as
+    // matching any live mode except CUSTOM_INCREMENTAL, so this is a change that needs a rebuild.
+    let fixture = fixture(Some(RelationType::DynamicTable), ci_matching_remote_state());
+    render_ok(&fixture, &base_local_config(), false, "apply");
+
+    assert_eq!(
+        fixture.executed(),
+        vec![format!(
+            "create or replace dynamic table {RENDERED_RELATION} target_lag = '1 minute' warehouse = WH refresh_mode = AUTO initialize = ON_CREATE scheduler = 'ENABLE' as ( {MODEL_SQL} )"
+        )]
+    );
+    assert_eq!(fixture.describe_calls(), 1);
+}
+
+#[test]
+fn ci_unchanged_is_a_no_op_without_discovery() {
+    let fixture = fixture(Some(RelationType::DynamicTable), ci_matching_remote_state());
+    render_ci(&fixture, &ci_local_config(), false).expect("CI DT should render");
+
+    assert!(
+        fixture.executed().is_empty(),
+        "got: {:?}",
+        fixture.executed()
+    );
+    assert_eq!(fixture.raw_results(), vec!["main=skip".to_string()]);
+    fixture
+        .harness
+        .mock()
+        .observed_calls()
+        .assert_not_called("get_columns_in_relation");
+}
+
+#[test]
+fn ci_target_lag_change_is_altered_in_place() {
+    // Same as a regular dynamic table: properties ALTER can change are altered, not replaced.
+    let fixture = fixture(Some(RelationType::DynamicTable), ci_matching_remote_state());
+    let local = LocalConfig {
+        target_lag: Some("5 minutes".to_string()),
+        ..ci_local_config()
+    };
+    render_ci(&fixture, &local, false).expect("CI DT should render");
+
+    assert_eq!(
+        fixture.executed(),
+        vec![format!(
+            "alter dynamic table {RENDERED_RELATION} set target_lag = '5 minutes'"
+        )]
+    );
+    fixture
+        .harness
+        .mock()
+        .observed_calls()
+        .assert_not_called("get_columns_in_relation");
+}
+
+#[test]
+fn ci_without_target_lag_is_refreshed_after_the_build() {
+    let fixture = fixture(None, RemoteState::default());
+    let local = LocalConfig {
+        target_lag: None,
+        ..ci_local_config()
+    };
+    render_ci(&fixture, &local, false).expect("CI DT should render");
+
+    let executed = fixture.executed();
+    assert_eq!(executed.len(), 3, "got: {executed:?}");
+    assert!(
+        executed[1].contains("scheduler = 'DISABLE' refresh using ("),
+        "got: {}",
+        executed[1]
+    );
+    assert_eq!(
+        executed[2],
+        format!("alter dynamic table {RENDERED_RELATION} refresh")
+    );
+}
+
+#[test]
+fn ci_requires_an_incremental_strategy() {
+    let fixture = fixture(None, RemoteState::default());
+    let local = LocalConfig {
+        incremental_strategy: None,
+        ..ci_local_config()
+    };
+    assert_render_error(
+        render_ci(&fixture, &local, false),
+        &fixture,
+        "no `incremental_strategy`",
+    );
+}
+
+#[test]
+fn ci_rejects_strategies_other_than_merge() {
+    for strategy in ["append", "delete+insert", "microbatch"] {
+        let fixture = fixture(None, RemoteState::default());
+        let local = LocalConfig {
+            incremental_strategy: Some(strategy),
+            ..ci_local_config()
+        };
+        assert_render_error(
+            render_ci(&fixture, &local, false),
+            &fixture,
+            "unsupported incremental_strategy",
+        );
+    }
+}
+
+#[test]
+fn ci_merge_requires_a_unique_key() {
+    let fixture = fixture(None, RemoteState::default());
+    let local = LocalConfig {
+        unique_key: None,
+        ..ci_local_config()
+    };
+    assert_render_error(
+        render_ci(&fixture, &local, false),
+        &fixture,
+        "requires `unique_key`",
+    );
+}
+
+#[test]
+fn ci_delete_condition_cannot_reference_the_target_row() {
+    let fixture = fixture(None, RemoteState::default());
+    let local = LocalConfig {
+        delete_condition: Some("dbt_internal_dest.is_deleted"),
+        ..ci_local_config()
+    };
+    assert_render_error(
+        render_ci(&fixture, &local, false),
+        &fixture,
+        "not DBT_INTERNAL_DEST",
+    );
+}
+
+#[test]
+fn ci_hand_written_changes_is_discovered_unbounded_and_stored_as_written() {
+    // Only the `changes()` macro's own text gets discovery's `at(offset => 0)`; CHANGES written
+    // another way runs as written (a bare CHANGES in a plain SELECT returns zero rows).
+    let fixture = fixture(None, RemoteState::default());
+    let sql =
+        "select o.id, o.amount from RAW.PUBLIC.ORDERS CHANGES ( INFORMATION => default ) as o";
+    render_sql(&fixture, &ci_local_config(), sql, false, "apply").expect("CI DT should render");
+
+    let executed = fixture.executed();
+    assert_eq!(
+        executed[0],
+        format!(
+            "create or replace temporary table {CI_TEMP_RELATION} as ( select * from ( {sql} ) limit 0 ) ;"
+        )
+    );
+    assert_eq!(executed[1], ci_ddl("create", &ci_merge_body(sql)));
+}
+
+#[test]
+fn ci_discovery_bounds_both_changes_modes() {
+    let fixture = fixture(None, RemoteState::default());
+    let sql = "select o.id, o.amount from RAW.PUBLIC.ORDERS changes(information => DEFAULT) as o join RAW.PUBLIC.ITEMS changes(information => APPEND_ONLY) as i on o.id = i.id";
+    render_sql(&fixture, &ci_local_config(), sql, false, "apply").expect("CI DT should render");
+
+    assert_eq!(
+        fixture.executed()[0],
+        format!(
+            "create or replace temporary table {CI_TEMP_RELATION} as ( select * from ( select o.id, o.amount from RAW.PUBLIC.ORDERS changes(information => DEFAULT) at(offset => 0) as o join RAW.PUBLIC.ITEMS changes(information => APPEND_ONLY) at(offset => 0) as i on o.id = i.id ) limit 0 ) ;"
+        )
+    );
+}
+
+#[test]
+fn ci_metadata_column_in_the_output_is_rejected() {
+    let fixture = fixture_with(
+        None,
+        RemoteState::default(),
+        FixtureOptions {
+            columns: Some(&[("ID", "NUMBER(38,0)"), ("METADATA$ACTION", "VARCHAR(6)")]),
+            ..Default::default()
+        },
+    );
+    let err = render_ci(&fixture, &ci_local_config(), false).expect_err("must raise");
+    assert!(
+        format!("{err:?}").contains("METADATA$ACTION"),
+        "got: {err:?}"
+    );
+    assert_eq!(
+        fixture.executed(),
+        vec![ci_discovery_sql()],
+        "only discovery runs before the error"
+    );
+}
+
+#[test]
+fn incremental_strategy_without_custom_incremental_builds_a_regular_dynamic_table() {
+    let fixture = fixture(None, RemoteState::default());
+    let local = LocalConfig {
+        incremental_strategy: Some("merge"),
+        ..base_local_config()
+    };
+    render_ok(&fixture, &local, false, "apply");
+
+    assert_eq!(
+        fixture.executed(),
+        vec![format!(
+            "create dynamic table {RENDERED_RELATION} target_lag = '1 minute' warehouse = WH refresh_mode = AUTO initialize = ON_CREATE scheduler = 'ENABLE' as ( {MODEL_SQL} )"
+        )]
+    );
+}
+
+#[test]
+fn ci_cannot_be_an_iceberg_table() {
+    let fixture = fixture(None, RemoteState::default());
+    let built_in = Value::from_serialize(BTreeMap::from([("catalog_type", "BUILT_IN")]));
+    fixture
+        .harness
+        .mock()
+        .on("build_catalog_relation", move |_| Ok(built_in.clone()));
+    assert_render_error(
+        render_ci(&fixture, &ci_local_config(), false),
+        &fixture,
+        "dynamic Iceberg tables",
+    );
+}
+
+#[test]
+fn ci_strategy_is_case_insensitive() {
+    let fixture = fixture(None, RemoteState::default());
+    let local = LocalConfig {
+        incremental_strategy: Some("MERGE"),
+        ..ci_local_config()
+    };
+    render_ci(&fixture, &local, false).expect("'MERGE' should be accepted");
+    assert_eq!(
+        fixture.executed()[1],
+        ci_ddl("create", &ci_merge_body(CI_SQL))
+    );
+}
+
+#[test]
+fn ci_ephemeral_upstream_is_carried_into_discovery() {
+    // Discovery runs the compiled SQL, so an ephemeral model's injected CTE comes along.
+    let fixture = fixture(None, RemoteState::default());
+    let sql = "with __dbt__cte__dim as (select 1 as id) select o.* from RAW.PUBLIC.ORDERS changes(information => DEFAULT) as o join __dbt__cte__dim as d on o.id = d.id";
+    render_sql(&fixture, &ci_local_config(), sql, false, "apply").expect("CI DT should render");
+
+    let executed = fixture.executed();
+    assert_eq!(
+        executed[0],
+        format!(
+            "create or replace temporary table {CI_TEMP_RELATION} as ( select * from ( with __dbt__cte__dim as (select 1 as id) select o.* from RAW.PUBLIC.ORDERS changes(information => DEFAULT) at(offset => 0) as o join __dbt__cte__dim as d on o.id = d.id ) limit 0 ) ;"
+        )
+    );
+    assert_eq!(executed[1], ci_ddl("create", &ci_merge_body(sql)));
+}
+
+#[test]
+fn ci_empty_run_with_hand_written_changes_is_not_rewritten() {
+    // No --empty rewrite: hand-written CHANGES after the zero-row subquery is passed through, and
+    // Snowflake rejects it, as for hand-written CHANGES in any other model type.
+    let fixture = fixture(None, RemoteState::default());
+    let sql = "select o.id from (select * from RAW.PUBLIC.ORDERS where false limit 0) changes(information => default) as o";
+    render_run(&fixture, &ci_local_config(), sql, false, "apply", true)
+        .expect("CI DT should render");
+
+    assert_eq!(
+        fixture.executed()[0],
+        format!(
+            "create or replace temporary table {CI_TEMP_RELATION} as ( select * from ( {sql} ) limit 0 ) ;"
+        )
+    );
+}
+
+#[test]
+fn ci_empty_run_leaves_the_changes_macro_form_alone() {
+    // `{{ changes() }}` renders its own empty form; only discovery's start point is added.
+    let fixture = fixture(None, RemoteState::default());
+    let sql = "select o.id from (select * from RAW.PUBLIC.ORDERS changes(information => DEFAULT) limit 0) as o";
+    render_run(&fixture, &ci_local_config(), sql, false, "apply", true)
+        .expect("CI DT should render");
+
+    let executed = fixture.executed();
+    assert_eq!(
+        executed[0],
+        format!(
+            "create or replace temporary table {CI_TEMP_RELATION} as ( select * from ( select o.id from (select * from RAW.PUBLIC.ORDERS changes(information => DEFAULT) at(offset => 0) limit 0) as o ) limit 0 ) ;"
+        )
+    );
+    assert_eq!(executed[1], ci_ddl("create", &ci_merge_body(sql)));
+}
+
+#[test]
+fn ci_merge_update_columns_narrow_the_update() {
+    let fixture = fixture(None, RemoteState::default());
+    let local = LocalConfig {
+        merge_update_columns: Some(Value::from(vec!["amount"])),
+        ..ci_local_config()
+    };
+    render_ci(&fixture, &local, false).expect("CI DT should render");
+
+    let body = format!(
+        "merge into SELF as DBT_INTERNAL_DEST using ( {CI_SQL} ) as DBT_INTERNAL_SOURCE on DBT_INTERNAL_DEST.id = DBT_INTERNAL_SOURCE.id when matched then update set amount = DBT_INTERNAL_SOURCE.amount when not matched then {CI_INSERT}"
+    );
+    assert_eq!(fixture.executed()[1], ci_ddl("create", &body));
+}
+
+#[test]
+fn ci_merge_exclude_columns_are_not_updated() {
+    let fixture = fixture(None, RemoteState::default());
+    let local = LocalConfig {
+        merge_exclude_columns: Some(Value::from(vec!["is_deleted"])),
+        ..ci_local_config()
+    };
+    render_ci(&fixture, &local, false).expect("CI DT should render");
+
+    let body = format!(
+        r#"merge into SELF as DBT_INTERNAL_DEST using ( {CI_SQL} ) as DBT_INTERNAL_SOURCE on DBT_INTERNAL_DEST.id = DBT_INTERNAL_SOURCE.id when matched then update set "ID" = DBT_INTERNAL_SOURCE."ID", "AMOUNT" = DBT_INTERNAL_SOURCE."AMOUNT" when not matched then {CI_INSERT}"#
+    );
+    assert_eq!(fixture.executed()[1], ci_ddl("create", &body));
+}
+
+#[test]
+fn ci_merge_update_and_exclude_columns_together_raise() {
+    let fixture = fixture(None, RemoteState::default());
+    let local = LocalConfig {
+        merge_update_columns: Some(Value::from(vec!["amount"])),
+        merge_exclude_columns: Some(Value::from(vec!["is_deleted"])),
+        ..ci_local_config()
+    };
+    let err = render_ci(&fixture, &local, false).expect_err("must raise");
+    assert!(
+        format!("{err:?}").contains("merge_update_columns and merge_exclude_columns"),
+        "got: {err:?}"
+    );
+}
+
+#[test]
+fn ci_rejects_immutable_where() {
+    // Snowflake: "Unsupported feature Immutability constraint on Dynamic Table with REFRESH USING".
+    let fixture = fixture(None, RemoteState::default());
+    let local = LocalConfig {
+        immutable_where: Some("id < 100".to_string()),
+        ..ci_local_config()
+    };
+    assert_render_error(
+        render_ci(&fixture, &local, false),
+        &fixture,
+        "does not support on a custom incremental dynamic table",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// With `snowflake_dynamic_table_create_or_alter` on
+// ---------------------------------------------------------------------------
+
+fn ci_create_or_alter_fixture(remote: RemoteState) -> Fixture {
+    fixture_with(
+        Some(RelationType::DynamicTable),
+        remote,
+        FixtureOptions {
+            create_or_alter: true,
+            ..Default::default()
+        },
+    )
+}
+
+/// The `create or alter` DDL for a CI DT with `target_lag`. `initialize` is create-time only, so
+/// CREATE OR ALTER omits it.
+fn ci_create_or_alter_ddl(target_lag: &str, body: &str) -> String {
+    format!(
+        "create or alter dynamic table {RENDERED_RELATION} {CI_COLUMNS_DDL} target_lag = '{target_lag}' warehouse = WH refresh_mode = CUSTOM_INCREMENTAL scheduler = 'ENABLE' refresh using ( {body} )"
+    )
+}
+
+#[test]
+fn ci_create_or_alter_syncs_the_definition_in_place() {
+    // A SQL edit deploys without --full-refresh: the body is re-declared on every run.
+    let fixture = ci_create_or_alter_fixture(ci_matching_remote_state());
+    render_ci(&fixture, &ci_local_config(), false).expect("CI DT should render");
+
+    assert_eq!(
+        fixture.executed(),
+        vec![
+            ci_discovery_sql(),
+            ci_create_or_alter_ddl("1 minute", &ci_merge_body(CI_SQL))
+        ]
+    );
+    assert_eq!(fixture.describe_calls(), 1);
+}
+
+#[test]
+fn ci_create_or_alter_applies_config_changes_with_the_definition() {
+    let fixture = ci_create_or_alter_fixture(ci_matching_remote_state());
+    let local = LocalConfig {
+        target_lag: Some("5 minutes".to_string()),
+        ..ci_local_config()
+    };
+    render_ci(&fixture, &local, false).expect("CI DT should render");
+
+    assert_eq!(
+        fixture.executed(),
+        vec![
+            ci_discovery_sql(),
+            ci_create_or_alter_ddl("5 minutes", &ci_merge_body(CI_SQL))
+        ]
+    );
+}
+
+#[test]
+fn ci_create_or_alter_body_matches_create_and_replace_byte_for_byte() {
+    // Snowflake compares the stored definition literally, so CREATE OR ALTER must send the exact
+    // `refresh using (...)` text CREATE and CREATE OR REPLACE stored.
+    let created = fixture(None, RemoteState::default());
+    render_ci(&created, &ci_local_config(), false).expect("create should render");
+    let replaced = fixture(Some(RelationType::DynamicTable), ci_matching_remote_state());
+    render_ci(&replaced, &ci_local_config(), true).expect("replace should render");
+    let synced = ci_create_or_alter_fixture(ci_matching_remote_state());
+    render_ci(&synced, &ci_local_config(), false).expect("create or alter should render");
+
+    let created_body = raw_refresh_using_body(&created.executed_raw()[1]);
+    assert_eq!(
+        raw_refresh_using_body(&replaced.executed_raw()[1]),
+        created_body
+    );
+    assert_eq!(
+        raw_refresh_using_body(&synced.executed_raw()[1]),
+        created_body
+    );
+}
+
+#[test]
+fn ci_create_or_alter_replaces_a_regular_dynamic_table() {
+    let fixture = ci_create_or_alter_fixture(RemoteState {
+        refresh_mode: Some("INCREMENTAL".to_string()),
+        ..matching_remote_state()
+    });
+    render_ci(&fixture, &ci_local_config(), false).expect("switch should render");
+
+    assert_eq!(
+        fixture.executed(),
+        vec![
+            ci_discovery_sql(),
+            ci_ddl("create or replace", &ci_merge_body(CI_SQL))
+        ]
+    );
+}
+
+#[test]
+fn ci_create_or_alter_replaces_when_switching_to_a_regular_dynamic_table() {
+    // A desired AUTO doesn't match a live CUSTOM_INCREMENTAL, so the changeset requires a rebuild.
+    let fixture = ci_create_or_alter_fixture(ci_matching_remote_state());
+    render_ok(&fixture, &base_local_config(), false, "apply");
+
+    assert_eq!(
+        fixture.executed(),
+        vec![format!(
+            "create or replace dynamic table {RENDERED_RELATION} target_lag = '1 minute' warehouse = WH refresh_mode = AUTO initialize = ON_CREATE scheduler = 'ENABLE' as ( {MODEL_SQL} )"
+        )]
+    );
+}
+
+#[test]
+fn ci_create_or_alter_switch_respects_on_configuration_change() {
+    let fixture_continue = ci_create_or_alter_fixture(ci_matching_remote_state());
+    render_ok(&fixture_continue, &base_local_config(), false, "continue");
+    assert!(
+        fixture_continue.executed().is_empty(),
+        "got: {:?}",
+        fixture_continue.executed()
+    );
+
+    let fixture_fail = ci_create_or_alter_fixture(ci_matching_remote_state());
+    let result = render(&fixture_fail, &base_local_config(), false, "fail");
+    assert!(result.is_err(), "`fail` must raise, got: {result:?}");
+    assert!(fixture_fail.executed().is_empty());
+}

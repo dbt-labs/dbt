@@ -1,0 +1,13 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/sources.yml
+   Parsing models/customers_dim.sql
+   Parsing models/orders_hand_written.sql
+   Parsing models/orders_macro.sql
+   Parsing models/orders_with_region.sql
+   Parsing tests/empty_run_builds_empty_tables.sql
+   Parsing tests/orders_hand_written_rows.sql
+   Parsing tests/orders_macro_rows.sql
+   Parsing tests/orders_with_region_rows.sql
+==================== Execution Summary =====================
+Finished 'run-operation' successfully for target 'snowflake' [duration]

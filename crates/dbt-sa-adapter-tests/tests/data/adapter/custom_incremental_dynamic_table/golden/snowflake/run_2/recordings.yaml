@@ -1,0 +1,24 @@
+2b44ad9f:
+- sequence: 0
+  type: execute
+  sql: INSERT INTO development.adapters_snowflake_custom_incremental_dynamic_table.stock VALUES (2, 'C', 5)
+84ff4cda:
+- sequence: 0
+  type: execute
+  sql: DELETE FROM development.adapters_snowflake_custom_incremental_dynamic_table.stock WHERE warehouse_id = 1 AND sku = 'B'
+8af1bbd1:
+- sequence: 0
+  type: execute
+  sql: UPDATE development.adapters_snowflake_custom_incremental_dynamic_table.stock SET quantity = 80 WHERE warehouse_id = 1 AND sku = 'A'
+97b93e42:
+- sequence: 0
+  type: execute
+  sql: DELETE FROM development.adapters_snowflake_custom_incremental_dynamic_table.orders WHERE order_id = 2
+b31c8cbb:
+- sequence: 0
+  type: execute
+  sql: INSERT INTO development.adapters_snowflake_custom_incremental_dynamic_table.orders VALUES (4, 40, 40.00)
+f7bd2181:
+- sequence: 0
+  type: execute
+  sql: UPDATE development.adapters_snowflake_custom_incremental_dynamic_table.orders SET amount = 15.00 WHERE order_id = 1

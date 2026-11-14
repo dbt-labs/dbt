@@ -61,6 +61,7 @@ pub const SQL_SEMANTIC_EXTRA_KEYS: &[&str] = &[
     "target_lag",
     "refresh_mode",
     "immutable_where",
+    "delete_condition",
     "copy_grants",
     "tmp_relation_type",
     // Postgres attributes

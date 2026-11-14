@@ -1,0 +1,4 @@
+43707d6b:
+- sequence: 0
+  type: execute
+  sql: INSERT INTO development.adapters_snowflake_custom_incremental_dynamic_table_create_or_alter.orders VALUES (5, 50.00)

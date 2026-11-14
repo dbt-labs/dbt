@@ -1,0 +1,4 @@
+5a3e9851:
+- sequence: 0
+  type: execute
+  sql: UPDATE development.adapters_snowflake_custom_incremental_dynamic_table_duplicate_keys.orders SET amount = 15.00 WHERE order_id = 1

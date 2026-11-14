@@ -5,6 +5,10 @@
     {% set existing_relation = load_cached_relation(this) %}
     {% set target_relation = this.incorporate(type=this.DynamicTable) %}
 
+    {% if snowflake__dynamic_table_is_custom_incremental() %}
+        {% do snowflake__validate_custom_incremental_config() %}
+    {% endif %}
+
     {{ run_hooks(pre_hooks) }}
 
     {% set build_sql = dynamic_table_get_build_sql(existing_relation, target_relation) %}

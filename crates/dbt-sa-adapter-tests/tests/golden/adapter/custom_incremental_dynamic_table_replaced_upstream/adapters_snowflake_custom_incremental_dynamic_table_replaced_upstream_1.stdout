@@ -1,0 +1,16 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/sources.yml
+   Parsing models/orders_merge.sql
+   Parsing models/stg_orders.sql
+   Parsing tests/orders_merge_after_upstream_replace.sql
+ Rendering models/stg_orders.sql
+   Running models/stg_orders.sql
+ Succeeded model adapters_snowflake_custom_incremental_dynamic_table_replaced_upstream.stg_orders (table) [1 of 2 in duration]
+ Rendering models/orders_merge.sql
+   Running models/orders_merge.sql
+ Succeeded model adapters_snowflake_custom_incremental_dynamic_table_replaced_upstream.orders_merge (dynamic_table) [2 of 2 in duration]
+==================== Execution Summary =====================
+Finished 'run' successfully for target 'snowflake' [duration]
+Processed: 2 models
+Summary: 2 total | 2 success

@@ -1,0 +1,8 @@
+2fbcaa58:
+- sequence: 0
+  type: execute
+  sql: UPDATE development.adapters_snowflake_custom_incremental_dynamic_table.orders SET amount = 45.00 WHERE order_id = 4
+30e5f5bc:
+- sequence: 0
+  type: execute
+  sql: INSERT INTO development.adapters_snowflake_custom_incremental_dynamic_table.orders VALUES (2, 20, 25.00)

@@ -1,0 +1,13 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/sources.yml
+   Parsing models/orders_merge.sql
+   Parsing models/stg_orders.sql
+   Parsing tests/orders_merge_after_upstream_replace.sql
+ Rendering tests/orders_merge_after_upstream_replace.sql
+   Running ../scratch/target/run/test/tests/orders_merge_after_upstream_replace.sql
+    Passed test  orders_merge_after_upstream_replace [1 of 1 in duration]
+==================== Execution Summary =====================
+Finished 'test' successfully for target 'snowflake' [duration]
+Processed: 1 test
+Summary: 1 total | 1 success

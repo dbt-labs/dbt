@@ -1,0 +1,12 @@
+71c0fc7e:
+- sequence: 0
+  type: execute
+  sql: DELETE FROM development.adapters_snowflake_custom_incremental_dynamic_table_replaced_upstream.orders WHERE order_id = 2
+b8e42d65:
+- sequence: 0
+  type: execute
+  sql: UPDATE development.adapters_snowflake_custom_incremental_dynamic_table_replaced_upstream.orders SET amount = 15.00 WHERE order_id = 1
+bf49f94e:
+- sequence: 0
+  type: execute
+  sql: INSERT INTO development.adapters_snowflake_custom_incremental_dynamic_table_replaced_upstream.orders VALUES (3, 30.00)
