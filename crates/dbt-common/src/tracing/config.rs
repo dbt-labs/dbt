@@ -705,6 +705,7 @@ impl FsTraceConfig {
             && let Some((otlp_layer, mut handles)) = build_otlp_layer(
                 OtlpResourceConfig::new(self.brand_name, env!("CARGO_PKG_VERSION")),
                 Some(dbt_log_preprocessor_hook),
+                self.max_log_verbosity,
             )
         {
             shutdown_items.append(&mut handles);
