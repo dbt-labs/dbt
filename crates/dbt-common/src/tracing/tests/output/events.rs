@@ -96,7 +96,7 @@ pub(super) fn node(node_type: NodeType) -> NodeProcessed {
             "checks/orders_are_recent.sql",
             None,
         ),
-        NodeType::Plugin => (
+        NodeType::Experimental => (
             "orders_widget",
             "analytics",
             None,
@@ -118,10 +118,10 @@ pub(super) fn node(node_type: NodeType) -> NodeProcessed {
         name: name.to_string(),
         database: Some("warehouse".to_string()),
         schema: Some(schema.to_string()),
-        identifier: (!matches!(node_type, NodeType::Check | NodeType::Plugin))
+        identifier: (!matches!(node_type, NodeType::Check | NodeType::Experimental))
             .then(|| name.to_string()),
         source_name: (node_type == NodeType::Source).then(|| "jaffle_raw".to_string()),
-        plugin_type: (node_type == NodeType::Plugin).then(|| "widget".to_string()),
+        experimental_type: (node_type == NodeType::Experimental).then(|| "widget".to_string()),
         materialization: materialization.map(|m| m as i32),
         node_type: node_type as i32,
         node_outcome: NodeOutcome::Success as i32,

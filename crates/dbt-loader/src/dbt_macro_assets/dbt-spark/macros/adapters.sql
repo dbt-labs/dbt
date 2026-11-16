@@ -340,22 +340,30 @@
 
 {% macro spark__list_relations_without_caching(relation) %}
   {% call statement('list_relations_without_caching', fetch_result=True) -%}
-    show table extended in {{ relation.schema }} like '*'
+    {{ spark__list_relations_without_caching_sql(relation) }}
   {% endcall %}
 
   {% do return(load_result('list_relations_without_caching').table) %}
 {% endmacro %}
+
+{% macro spark__list_relations_without_caching_sql(relation) -%}
+  show table extended in {{ relation.without_identifier() }} like '*'
+{%- endmacro %}
 
 {% macro list_relations_show_tables_without_caching(schema_relation) %}
   {#-- Spark with iceberg tables don't work with show table extended for #}
   {#-- V2 iceberg tables #}
   {#-- https://issues.apache.org/jira/browse/SPARK-33393 #}
   {% call statement('list_relations_without_caching_show_tables', fetch_result=True) -%}
-    show tables in {{ schema_relation.schema }} like '*'
+    {{ spark__list_relations_show_tables_without_caching_sql(schema_relation) }}
   {% endcall %}
 
   {% do return(load_result('list_relations_without_caching_show_tables').table) %}
 {% endmacro %}
+
+{% macro spark__list_relations_show_tables_without_caching_sql(schema_relation) -%}
+  show tables in {{ schema_relation.without_identifier() }} like '*'
+{%- endmacro %}
 
 {% macro describe_table_extended_without_caching(table_name) %}
   {#-- Spark with iceberg tables don't work with show table extended for #}
@@ -369,10 +377,20 @@
 
 {% macro spark__list_schemas(database) -%}
   {% call statement('list_schemas', fetch_result=True, auto_begin=False) %}
-    show databases
+    {{ spark__list_schemas_sql(database) }}
   {% endcall %}
   {{ return(load_result('list_schemas').table) }}
 {% endmacro %}
+
+{% macro spark__list_schemas_sql(database) -%}
+  {#-- Callers may pass the database already quoted, so an unset database
+      arrives as an empty quoted identifier (``) rather than an empty string. --#}
+  {%- if database and (database | replace('`', '') | trim) -%}
+    show schemas in {{ database }}
+  {%- else -%}
+    show databases
+  {%- endif -%}
+{%- endmacro %}
 
 {% macro spark__check_schema_exists_like(schema) -%}
   {% call statement('check_schema_exists', fetch_result=True, auto_begin=False) %}
@@ -403,6 +421,11 @@
 
 
 {% macro spark__generate_database_name(custom_database_name=none, node=none) -%}
+  {%- set catalog_name = node.config.get('catalog_name') if (node is not none and node.config is defined) else none -%}
+  {%- if catalog_name -%}
+    {%- set catalog_relation = adapter.build_catalog_relation(node) -%}
+    {% do return(catalog_relation.catalog_database) %}
+  {%- endif -%}
   {#-- Schema-enabled Fabric lakehouses put the lakehouse in the database slot
       (3-part naming); plain Spark and classic lakehouses have no database. --#}
   {%- if target.database -%}

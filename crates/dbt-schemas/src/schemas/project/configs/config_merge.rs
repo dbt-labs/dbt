@@ -346,6 +346,20 @@ impl DefaultTo for crate::schemas::project::configs::common::WarehouseSpecificNo
     }
 }
 
+/// Inheriting from a default parent changes nothing, and a default child inherits a copy of the
+/// parent, so only the case where both are allocated merges field by field.
+impl DefaultTo for crate::schemas::project::configs::common::LazyWarehouseSpecificNodeConfig {
+    fn inherit_from(&mut self, parent: &Self) {
+        let Some(parent_config) = parent.get() else {
+            return;
+        };
+        match self.get_mut() {
+            Some(config) => config.inherit_from(parent_config),
+            None => *self = parent.clone(),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // ReplaceIfNone implementations for all config field types.
 // ---------------------------------------------------------------------------
@@ -363,7 +377,6 @@ impl<T: Clone> ReplaceIfNone for Spanned<T> {}
 // Free-form YmlValue fields (e.g. ClickHouse dictionary `lifetime`/`range`/`update_lag`)
 // replace wholesale — no deep merge.
 impl ReplaceIfNone for YmlValue {}
-impl ReplaceIfNone for dbt_yaml::Timestamp {}
 
 // std collections used as replace-if-none fields.
 // BTreeMap<String, YmlValue> is distinct from BTreeMap<Spanned<String>, String>

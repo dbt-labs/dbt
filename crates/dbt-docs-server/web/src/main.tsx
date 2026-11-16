@@ -1,14 +1,19 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { HashRouter } from 'react-router-dom';
-import { QueryClientProvider } from '@tanstack/react-query';
-import { ReactFlowProvider } from '@xyflow/react';
+import {
+  LinkPrefixProvider,
+  MetadataDataProvider,
+  QueryClientProvider,
+  ReactFlowProvider,
+} from 'dbt-docs-lib';
 
 import App from './App';
 import { BootstrapProvider } from './lib/bootstrapContext';
+import { RouterNavigationProvider } from './lib/routerNavigation';
 import { dataBaseUrl, readSiteBootstrap } from './lib/siteBootstrap';
 import { queryClient } from './queryClient';
-import { LinkPrefixProvider, MetadataDataProvider, wrapDataSource } from './shared';
+import { wrapDataSource } from './shared';
 import { createDuckDbDataSource } from './shared/data-sources/duckdb';
 
 import './index.css';
@@ -59,15 +64,17 @@ createRoot(root).render(
         keeps `document.baseURI` stable for resolving `data/` URLs.
       */}
       <HashRouter>
-        <LinkPrefixProvider prefix="/">
-          <ReactFlowProvider>
-            <BootstrapProvider value={bootstrapData}>
-              <MetadataDataProvider source={wrapDataSource(dataSource, queryClient)}>
-                <App />
-              </MetadataDataProvider>
-            </BootstrapProvider>
-          </ReactFlowProvider>
-        </LinkPrefixProvider>
+        <RouterNavigationProvider>
+          <LinkPrefixProvider prefix="/">
+            <ReactFlowProvider>
+              <BootstrapProvider value={bootstrapData}>
+                <MetadataDataProvider source={wrapDataSource(dataSource, queryClient)}>
+                  <App />
+                </MetadataDataProvider>
+              </BootstrapProvider>
+            </ReactFlowProvider>
+          </LinkPrefixProvider>
+        </RouterNavigationProvider>
       </HashRouter>
     </QueryClientProvider>
   </StrictMode>,

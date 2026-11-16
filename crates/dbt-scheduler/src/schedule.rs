@@ -1343,17 +1343,17 @@ fn incorporate_indirect_nodes(
 
 /// `deps` reversed, mapping each node to its children, for graph operators to walk down.
 ///
-/// Plugin nodes are left out, so graph operators never step into one: a plugin node is only
-/// selected when it is selected directly. Walking up from a selected plugin node uses `deps`,
-/// so `+<plugin node>` still selects its ancestors.
+/// Experimental nodes are left out, so graph operators never step into one: an experimental node is
+/// only selected when it is selected directly. Walking up from a selected experimental node uses
+/// `deps`, so `+<experimental node>` still selects its ancestors.
 fn selection_children(
     deps: &BTreeMap<String, BTreeSet<String>>,
     nodes: &Nodes,
 ) -> BTreeMap<String, BTreeSet<String>> {
     let mut children = reverse(deps);
-    if !nodes.plugins.is_empty() {
+    if !nodes.experimentals.is_empty() {
         for kids in children.values_mut() {
-            kids.retain(|id| !nodes.plugins.contains_key(id));
+            kids.retain(|id| !nodes.experimentals.contains_key(id));
         }
     }
     children
@@ -5468,20 +5468,20 @@ mod sidecar_compute_boundary {
 }
 
 #[cfg(test)]
-mod plugin_selection_tests {
+mod experimental_selection_tests {
     use super::tests::{TestGraphBuilder, create_select_expression};
     use super::*;
     use dbt_adapter_core::AdapterType;
     use dbt_common::io_args::FsCommand;
-    use dbt_schemas::schemas::{CommonAttributes, DbtPluginNode, DbtPluginNodeAttr};
+    use dbt_schemas::schemas::{CommonAttributes, DbtExperimentalNode, DbtExperimentalNodeAttr};
     use std::sync::Arc;
 
     const WIDGET: &str = "widget.package.w";
 
-    /// Models `a` → `b`, and a plugin node `w` that depends on `b`.
+    /// Models `a` → `b`, and an experimental node `w` that depends on `b`.
     fn deps_and_nodes() -> (BTreeMap<String, BTreeSet<String>>, Nodes) {
         let mut nodes = TestGraphBuilder::new().add_edge("a", "b").build_nodes();
-        let mut widget = DbtPluginNode {
+        let mut widget = DbtExperimentalNode {
             __common_attr__: CommonAttributes {
                 unique_id: WIDGET.to_string(),
                 name: "w".to_string(),
@@ -5489,14 +5489,16 @@ mod plugin_selection_tests {
                 fqn: vec!["package".to_string(), "w".to_string()],
                 ..Default::default()
             },
-            __plugin_attr__: DbtPluginNodeAttr {
-                plugin_type: "widget".to_string(),
+            __experimental_attr__: DbtExperimentalNodeAttr {
+                experimental_type: "widget".to_string(),
                 ..Default::default()
             },
             ..Default::default()
         };
         widget.__base_attr__.depends_on.nodes = vec!["b".to_string()];
-        nodes.plugins.insert(WIDGET.to_string(), Arc::new(widget));
+        nodes
+            .experimentals
+            .insert(WIDGET.to_string(), Arc::new(widget));
 
         let deps = BTreeMap::from([
             ("a".to_string(), BTreeSet::new()),
@@ -5540,31 +5542,34 @@ mod plugin_selection_tests {
     }
 
     #[test]
-    fn plugin_nodes_are_not_selected_by_default() {
+    fn experimental_nodes_are_not_selected_by_default() {
         assert_eq!(select(None, None), vec!["a", "b"]);
     }
 
-    /// Graph operators never step into a plugin node, and `@` doesn't treat it as a leaf.
+    /// Graph operators never step into an experimental node, and `@` doesn't treat it as a leaf.
     #[test]
-    fn graph_operators_do_not_reach_plugin_nodes() {
+    fn graph_operators_do_not_reach_experimental_nodes() {
         assert_eq!(select(Some("a+"), None), vec!["a", "b"]);
         assert_eq!(select(Some("b+"), None), vec!["b"]);
         assert_eq!(select(Some("@b"), None), vec!["a", "b"]);
     }
 
     #[test]
-    fn plugin_nodes_are_selected_directly() {
+    fn experimental_nodes_are_selected_directly() {
         assert_eq!(select(Some("w"), None), vec![WIDGET]);
-        assert_eq!(select(Some("resource_type:plugin"), None), vec![WIDGET]);
+        assert_eq!(
+            select(Some("resource_type:experimental"), None),
+            vec![WIDGET]
+        );
         assert_eq!(select(Some("resource_type:widget"), None), vec![WIDGET]);
-        // Upstream of a selected plugin node is still reachable.
+        // Upstream of a selected experimental node is still reachable.
         assert_eq!(select(Some("+w"), None), vec!["a", "b", WIDGET]);
         assert_eq!(select(Some("@w"), None), vec!["a", "b", WIDGET]);
     }
 
-    /// A plugin node is never in the previous manifest, so it would always look new.
+    /// An experimental node is never in the previous manifest, so it would always look new.
     #[test]
-    fn state_methods_do_not_select_plugin_nodes() {
+    fn state_methods_do_not_select_experimental_nodes() {
         let state = StateSelectorResults::from([(
             "modified".to_string(),
             BTreeSet::from(["b".to_string(), WIDGET.to_string()]),

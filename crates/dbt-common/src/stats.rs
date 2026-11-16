@@ -107,6 +107,9 @@ pub struct Stat {
     /// Rows affected by the warehouse DML (e.g. `CREATE TABLE AS SELECT`).
     /// Set from the NodeEvaluated OTel span after execution; `None` for views.
     pub rows_affected: Option<i64>,
+    /// Thread pool wait time accumulated on the NodeEvaluated span.
+    /// Subtracted from wall-clock duration to report net execution time.
+    pub idle_time_ms: Option<u64>,
     pub start_time: SystemTime,
     pub end_time: SystemTime,
     pub status: NodeStatus,
@@ -133,6 +136,7 @@ impl Stat {
             unique_id,
             num_rows,
             rows_affected: None,
+            idle_time_ms: None,
             start_time,
             end_time,
             status,
@@ -152,6 +156,7 @@ impl Stat {
         self.end_time
             .duration_since(self.start_time)
             .unwrap_or_default()
+            .saturating_sub(Duration::from_millis(self.idle_time_ms.unwrap_or_default()))
     }
 
     pub fn format_time(system_time: SystemTime) -> String {
@@ -374,6 +379,43 @@ mod tests {
                 bytes_billed: None,
                 slot_ms: None,
             }
+        );
+    }
+
+    fn stat_with_idle(idle_time_ms: u64) -> Stat {
+        let start = SystemTime::now();
+        let end = start + Duration::from_secs(10);
+        Stat {
+            unique_id: "model.my_project.my_model".to_string(),
+            num_rows: None,
+            rows_affected: None,
+            idle_time_ms: Some(idle_time_ms),
+            start_time: start,
+            end_time: end,
+            status: NodeStatus::Succeeded,
+            thread_id: "Thread-1 (worker)".to_string(),
+            message: None,
+            assertion: false,
+        }
+    }
+
+    #[test]
+    fn test_get_duration_subtracts_idle() {
+        let stat = stat_with_idle(3000);
+        assert_eq!(
+            stat.get_duration(),
+            Duration::from_secs(7),
+            "duration should subtract idle time"
+        );
+    }
+
+    #[test]
+    fn test_get_duration_clamps_to_zero() {
+        let stat = stat_with_idle(20000);
+        assert_eq!(
+            stat.get_duration(),
+            Duration::ZERO,
+            "duration should clamp to zero when idle time exceeds duration"
         );
     }
 }

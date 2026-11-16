@@ -1,6 +1,5 @@
-import { useQuery } from '@tanstack/react-query';
+import { useMetadataDataSource, useQuery } from 'dbt-docs-lib';
 
-import { useMetadataDataSource } from '../context/MetadataDataProvider';
 import type { ColumnLineageArgs } from '../typings/args';
 import { columnLineageKey } from '../util/queryKeys';
 

@@ -1,0 +1,36 @@
+1112b5a9:
+- sequence: 0
+  type: execute
+  sql: CREATE OR REPLACE TABLE development.adapters_snowflake_dynamic_table_create_or_alter.coa_marks (name VARCHAR, created_on VARCHAR)
+12d0b36e:
+- sequence: 0
+  type: execute
+  sql: CREATE TAG development.adapters_snowflake_dynamic_table_create_or_alter.mytag
+2030d89a:
+- sequence: 0
+  type: execute
+  sql: CREATE OR ALTER SCHEMA development.adapters_snowflake_dynamic_table_create_or_alter
+2891bf56:
+- sequence: 0
+  type: execute
+  sql: CREATE PROJECTION POLICY development.adapters_snowflake_dynamic_table_create_or_alter.pp AS () RETURNS PROJECTION_CONSTRAINT -> PROJECTION_CONSTRAINT(ALLOW => TRUE)
+5229528c:
+- sequence: 0
+  type: execute
+  sql: CREATE AGGREGATION POLICY development.adapters_snowflake_dynamic_table_create_or_alter.ap AS () RETURNS AGGREGATION_CONSTRAINT -> AGGREGATION_CONSTRAINT(MIN_GROUP_SIZE => 2)
+62107f4f:
+- sequence: 0
+  type: execute
+  sql: CREATE MASKING POLICY development.adapters_snowflake_dynamic_table_create_or_alter.mp AS (v VARCHAR) RETURNS VARCHAR -> '***'
+84bdc9d1:
+- sequence: 0
+  type: execute
+  sql: USE DATABASE development
+8f61a448:
+- sequence: 0
+  type: execute
+  sql: CREATE ROW ACCESS POLICY development.adapters_snowflake_dynamic_table_create_or_alter.rap AS (i INT) RETURNS BOOLEAN -> TRUE
+a23218cd:
+- sequence: 0
+  type: execute
+  sql: CREATE OR REPLACE TABLE development.adapters_snowflake_dynamic_table_create_or_alter.source_table AS SELECT 1 AS id, 'alice' AS value UNION ALL SELECT 2, 'bob' UNION ALL SELECT 3, 'carol'

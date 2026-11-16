@@ -302,6 +302,11 @@ pub struct ProgressMessage {
         )
     )]
     pub phase: ::core::option::Option<i32>,
+    /// Run ID of the worker currently blocking this action, if this message
+    /// reports contention on a resource (e.g. a dbt State per-node lock) held by
+    /// another run.
+    #[prost(string, optional, tag = "9")]
+    pub blocking_run_id: ::core::option::Option<::prost::alloc::string::String>,
 }
 impl ::dbt_tracing::StaticName for ProgressMessage {
     const FULL_NAME: &'static str = "v1.public.events.fusion.log.ProgressMessage";

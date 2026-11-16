@@ -259,6 +259,8 @@ pub(super) struct Terminal {
     pub(super) quiet: bool,
     /// Whether output is styled with ANSI colors
     pub(super) colorize: bool,
+    /// `--show-all-deprecations`
+    pub(super) show_all_deprecations: bool,
 }
 
 impl Terminal {
@@ -270,6 +272,7 @@ impl Terminal {
         show: &[ShowOptions::Progress, ShowOptions::Completed],
         quiet: false,
         colorize: true,
+        show_all_deprecations: false,
     };
 
     /// What `dbt build --log-format text` prints on a terminal.
@@ -329,6 +332,14 @@ pub(super) const TERMINAL_NO_COLOR: Sink = Sink::Terminal(
         ..Terminal::INTERACTIVE
     },
 );
+/// `--show-all-deprecations` on a terminal.
+pub(super) const TERMINAL_SHOW_ALL_DEPRECATIONS: Sink = Sink::Terminal(
+    "terminal --show-all-deprecations",
+    Terminal {
+        show_all_deprecations: true,
+        ..Terminal::INTERACTIVE
+    },
+);
 /// `--log-format text` on a terminal.
 pub(super) const TEXT: Sink = Sink::Terminal("text", Terminal::TEXT);
 /// `--log-format text --debug --show all` on a terminal.
@@ -379,6 +390,7 @@ impl Sink {
                         show_options: setup.show.iter().copied().collect::<HashSet<_>>(),
                         command: setup.command,
                         quiet: setup.quiet,
+                        show_all_deprecations: setup.show_all_deprecations,
                     },
                 );
                 let dropped = run(Box::new(layer), root, emitted, scenario);

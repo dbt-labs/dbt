@@ -401,19 +401,23 @@ fn detect_winget(path: &Path) -> bool {
     normalized.contains("\\winget\\links\\") || normalized.contains("\\winget\\packages\\")
 }
 
-/// Recognizes a native binary installed via a Windows package manager we
-/// don't publish to. Unlike Homebrew/Winget/PyPI, we have no official
-/// package on Scoop or Chocolatey, so there's no channel-specific
+/// Recognizes a native binary installed via a package manager we don't
+/// publish to. Unlike Homebrew/Winget/PyPI, we have no official package on
+/// Scoop, Chocolatey or Mason, so there's no channel-specific
 /// upgrade/uninstall command to offer — see `Channel::Unsupported`. Matches
 /// both the user-scoped default (`%USERPROFILE%\scoop\...`) and the
 /// all-users default (`C:\ProgramData\chocolatey\...`), since a plain
-/// substring check on the normalized path covers either root.
+/// substring check on the normalized path covers either root. Mason (the
+/// Neovim package manager) is matched on its `mason/packages/dbt/` package
+/// directory, which its `mason/bin/dbt` link resolves into, on any platform.
 fn detect_unsupported_manager(path: &Path) -> Option<&'static str> {
     let normalized = path.to_string_lossy().replace('/', "\\").to_lowercase();
     if normalized.contains("\\scoop\\apps\\") || normalized.contains("\\scoop\\shims\\") {
         Some("Scoop")
     } else if normalized.contains("\\chocolatey\\") {
         Some("Chocolatey")
+    } else if normalized.contains("\\mason\\packages\\dbt\\") {
+        Some("Mason")
     } else {
         None
     }
@@ -1558,6 +1562,53 @@ mod tests {
             result.channel,
             Some(Channel::Unsupported("Chocolatey".to_string()))
         );
+    }
+
+    #[test]
+    fn mason_package_dir_resolves_unsupported_channel() {
+        let map = env_from(&[("HOME", "/home/user")]);
+        let env = |n: &str| map.get(n).cloned();
+        let ctx = DiscoveryContext {
+            env: &env,
+            run: &no_run,
+        };
+        let given = PathBuf::from("/home/user/.local/share/nvim/mason/bin/dbt");
+        let resolved = PathBuf::from("/home/user/.local/share/nvim/mason/packages/dbt/dbt");
+        let result = discover_channel(&ctx, &given, &resolved, FileKind::NativeBinary);
+        assert_eq!(
+            result.channel,
+            Some(Channel::Unsupported("Mason".to_string()))
+        );
+    }
+
+    #[test]
+    fn mason_windows_package_dir_resolves_unsupported_channel() {
+        let map = env_from(&[("USERPROFILE", r"C:\Users\user")]);
+        let env = |n: &str| map.get(n).cloned();
+        let ctx = DiscoveryContext {
+            env: &env,
+            run: &no_run,
+        };
+        let path =
+            PathBuf::from(r"C:\Users\user\AppData\Local\nvim-data\mason\packages\dbt\dbt.exe");
+        let result = discover_channel(&ctx, &path, &path, FileKind::NativeBinary);
+        assert_eq!(
+            result.channel,
+            Some(Channel::Unsupported("Mason".to_string()))
+        );
+    }
+
+    #[test]
+    fn mason_other_package_dir_stays_unclaimed() {
+        let map = env_from(&[("HOME", "/home/user")]);
+        let env = |n: &str| map.get(n).cloned();
+        let ctx = DiscoveryContext {
+            env: &env,
+            run: &no_run,
+        };
+        let path = PathBuf::from("/home/user/.local/share/nvim/mason/packages/other/dbt");
+        let result = discover_channel(&ctx, &path, &path, FileKind::NativeBinary);
+        assert_eq!(result.channel, Some(Channel::Unclaimed));
     }
 
     #[test]

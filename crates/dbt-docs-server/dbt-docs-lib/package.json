@@ -4,7 +4,7 @@
   "version": "0.0.0",
   "type": "module",
   "types": "./dist/index.d.ts",
-  "main": "./dist/index.umd.js",
+  "main": "./dist/index.cjs",
   "module": "./dist/index.es.js",
   "files": [
     "dist"
@@ -13,7 +13,15 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.es.js",
-      "require": "./dist/index.umd.js"
+      "require": "./dist/index.cjs"
+    },
+    "./domain": {
+      "types": "./dist/shared/typings/domain/index.d.ts"
+    },
+    "./duckdb": {
+      "types": "./dist/duckdb.d.ts",
+      "import": "./dist/duckdb.es.js",
+      "require": "./dist/duckdb.cjs"
     },
     "./dist/style.css": "./dist/style.css"
   },
@@ -52,7 +60,6 @@
     "lucide-react": "^1.33.0",
     "react-hot-toast": "^2.4.1",
     "react-markdown": "^9.0.1",
-    "react-router-dom": "^7.0.0",
     "rehype-external-links": "^3.0.0",
     "rehype-raw": "^7.0.0",
     "remark-gfm": "^4.0.1",
@@ -66,6 +73,7 @@
     "react-dom": "^19.2.8"
   },
   "devDependencies": {
+    "@duckdb/duckdb-wasm": "^1.32.0",
     "@storybook/addon-a11y": "10.5.10",
     "@storybook/addon-docs": "10.5.10",
     "@storybook/addon-themes": "10.5.10",
@@ -80,27 +88,14 @@
     "@types/node": "^24.13.3",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.7",
-    "@typescript-eslint/parser": "^8.28.0",
     "@vitejs/plugin-react": "^4.4.0",
     "@vitest/browser": "3.2.7",
     "@vitest/runner": "3.2.7",
-    "eslint": "^9.23.0",
-    "eslint-config-prettier": "^10.1.1",
-    "eslint-plugin-jsx-a11y": "^6.10.2",
-    "eslint-plugin-prettier": "^5.2.5",
-    "eslint-plugin-react": "^7.37.4",
-    "eslint-plugin-react-hooks": "^7.0.0",
-    "eslint-plugin-simple-import-sort": "^12.1.1",
-    "eslint-plugin-storybook": "^0.12.0",
     "happy-dom": "^16.8.1",
-    "globals": "^17.12.0",
     "playwright": "1.56.1",
-    "prettier": "^3.6.2",
-    "prettier-plugin-tailwindcss": "^0.5.9",
     "storybook": "10.5.10",
     "tailwindcss": "^3.4.0",
     "typescript": "5.9.2",
-    "typescript-eslint": "^8.28.0",
     "unplugin-dts": "^1.1.1",
     "vite": "^6.3.3",
     "vitest": "^3.0.9",

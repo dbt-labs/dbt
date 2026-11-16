@@ -13,6 +13,7 @@ use std::process::ExitCode;
 pub struct PackagesArgs {
     #[arg(long)]
     pub target: String,
+    /// Release tag version without the `v` (PEP 440, e.g. `2.1.0a2`); names the output files.
     #[arg(long)]
     pub version: String,
     #[arg(long, default_value = "https://public.cdn.getdbt.com")]
@@ -59,7 +60,7 @@ pub fn execute(args: PackagesArgs) -> ExitCode {
 
 async fn stage(args: PackagesArgs) -> Result<()> {
     require_https(&args.cdn_url)?;
-    crate::release_version::validate_release_version(&args.version)?;
+    validate_filename_version(&args.version)?;
     let manifest =
         PackageManifest::bundled().map_err(|error| anyhow::anyhow!(error.to_string()))?;
     let client = reqwest::Client::new();
@@ -154,5 +155,17 @@ async fn stage(args: PackagesArgs) -> Result<()> {
         )),
         serde_json::to_vec_pretty(&release)?,
     )?;
+    Ok(())
+}
+
+/// The version only names output files, which consumers look up by the release tag.
+fn validate_filename_version(version: &str) -> Result<()> {
+    let well_formed = version.starts_with(|c: char| c.is_ascii_digit())
+        && version
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+'));
+    if !well_formed {
+        bail!("invalid --version {version:?}: expected a release tag version such as 2.1.0a2");
+    }
     Ok(())
 }

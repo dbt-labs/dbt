@@ -8,8 +8,8 @@ use dbt_common::tracing::dbt_emit::{
 };
 use dbt_common::{ErrorCode, FsResult, fs_err};
 use dbt_schemas::schemas::profiles::{
-    BigqueryDbConfig, DatabricksDbConfig, DbConfig, PostgresDbConfig, RedshiftDbConfig,
-    SnowflakeDbConfig,
+    BigqueryDbConfig, BigqueryPriority, DatabricksDbConfig, DbConfig, PostgresDbConfig,
+    RedshiftDbConfig, SnowflakeDbConfig,
 };
 use dbt_schemas::schemas::serde::StringOrInteger;
 
@@ -164,6 +164,7 @@ fn create_merged_db_config(
                 keyfile_json: None,
                 execution_project: None,
                 api_endpoint: None,
+                storage_read_api_endpoint: None,
                 compute_region: None,
                 dataproc_batch: None,
                 dataproc_cluster_name: None,
@@ -263,7 +264,14 @@ fn create_merged_db_config(
                         None
                     },
                     timeout_seconds: Some(bigquery.timeout_seconds as i64),
-                    priority: bigquery.priority.as_ref().map(|p| format!("{p:?}")),
+                    priority: bigquery.priority.map(|priority| match priority {
+                        models::SchemasAdaptersBigqueryV0ConnectionSchemaPriority::Batch => {
+                            BigqueryPriority::Batch
+                        }
+                        models::SchemasAdaptersBigqueryV0ConnectionSchemaPriority::Interactive => {
+                            BigqueryPriority::Interactive
+                        }
+                    }),
                     location: bigquery.location.clone(),
                     maximum_bytes_billed: bigquery.maximum_bytes_billed.map(|mb| mb as i64),
                     execution_project: bigquery.execution_project.clone(),
@@ -271,6 +279,7 @@ fn create_merged_db_config(
                     retries: bigquery.retries.map(|r| r as i64),
                     scopes: bigquery.scopes.clone(),
                     api_endpoint: None,
+                    storage_read_api_endpoint: None,
                     // Authentication details - these could be used to construct keyfile_json
                     client_id: Some(bigquery.client_id.clone()),
                     token_uri: Some(bigquery.token_uri.clone()),
@@ -319,7 +328,14 @@ fn create_merged_db_config(
                         .map(|t| t as i64),
                     // V1 Cloud API has no reservation field
                     reservation: None,
-                    priority: bigquery_v1.priority.as_ref().map(|p| format!("{p:?}")),
+                    priority: bigquery_v1.priority.map(|priority| match priority {
+                        models::SchemasAdaptersBigqueryV1ConnectionSchemaPriority::Batch => {
+                            BigqueryPriority::Batch
+                        }
+                        models::SchemasAdaptersBigqueryV1ConnectionSchemaPriority::Interactive => {
+                            BigqueryPriority::Interactive
+                        }
+                    }),
                     location: bigquery_v1.location.clone(),
                     maximum_bytes_billed: bigquery_v1.maximum_bytes_billed.map(|mb| mb as i64),
                     execution_project: bigquery_v1.execution_project.clone(),
@@ -327,6 +343,7 @@ fn create_merged_db_config(
                     retries: bigquery_v1.retries.map(|r| r as i64),
                     scopes: bigquery_v1.scopes.clone(),
                     api_endpoint: None,
+                    storage_read_api_endpoint: None,
                     gcs_bucket: bigquery_v1.gcs_bucket.clone(),
                     dataproc_cluster_name: bigquery_v1.dataproc_cluster_name.clone(),
                     job_retry_deadline_seconds: bigquery_v1

@@ -15,7 +15,7 @@ unit_test.test.ephemeral_macro_under_test.test_ephemeral_macro_under_test:
 - sequence: 0
   type: execute
   sql: |-
-    WITH `dbt-test-env_adapters_bigquery_unit_test_ephemeral_stg_input` as (SELECT *  FROM UNNEST([STRUCT(CAST(10 AS int64) AS company_id, CAST(50 AS int64) AS revenue), STRUCT(CAST(20 AS int64) AS company_id, CAST(75 AS int64) AS revenue)])) select * from (
+    WITH `dbt-test-env_adapters_bigquery_unit_test_ephemeral_stg_input` as (SELECT *  FROM UNNEST([STRUCT(CAST(10 AS INT64) AS company_id, CAST(50 AS INT64) AS revenue), STRUCT(CAST(20 AS INT64) AS company_id, CAST(75 AS INT64) AS revenue)])) select * from (
     SELECT
     company_id,
     revenue * 2 AS doubled_revenue
@@ -28,8 +28,8 @@ unit_test.test.ephemeral_macro_under_test.test_ephemeral_macro_under_test:
   sql: |-
     -- Build actual result given inputs
     WITH
-    \t`dbt-test-env_adapters_bigquery_unit_test_ephemeral_stg_input` as (SELECT *  FROM UNNEST([STRUCT(CAST(10 AS int64) AS company_id, CAST(50 AS int64) AS revenue), STRUCT(CAST(20 AS int64) AS company_id, CAST(75 AS int64) AS revenue)])),
-    \t`dbt-test-env_adapters_bigquery_unit_test_ephemeral_macros_unit_tests_ephemeral_macro_under_test_expect` as (SELECT *  FROM UNNEST([STRUCT(CAST(10 AS int64) AS company_id, CAST(100 AS int64) AS doubled_revenue), STRUCT(CAST(20 AS int64) AS company_id, CAST(150 AS int64) AS doubled_revenue)])),
+    \t`dbt-test-env_adapters_bigquery_unit_test_ephemeral_stg_input` as (SELECT *  FROM UNNEST([STRUCT(CAST(10 AS INT64) AS company_id, CAST(50 AS INT64) AS revenue), STRUCT(CAST(20 AS INT64) AS company_id, CAST(75 AS INT64) AS revenue)])),
+    \t`dbt-test-env_adapters_bigquery_unit_test_ephemeral_macros_unit_tests_ephemeral_macro_under_test_expect` as (SELECT *  FROM UNNEST([STRUCT(CAST(10 AS INT64) AS company_id, CAST(100 AS INT64) AS doubled_revenue), STRUCT(CAST(20 AS INT64) AS company_id, CAST(150 AS INT64) AS doubled_revenue)])),
     \t`dbt-test-env_adapters_bigquery_unit_test_ephemeral_macros_unit_tests_ephemeral_macro_under_test_actual` as (SELECT
     company_id,
     revenue * 2 AS doubled_revenue

@@ -1,0 +1,228 @@
+unit_test.unit_test_timestamp_fixtures.event_projection.csv_timezone_matches:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace table `dbt-test-env`.`bigquery_unit_test_existing_parent_timestamp_fixtures`.`csv_timezone_matches__dbt_tmp`
+    
+    
+    
+    
+    
+    OPTIONS(
+    expiration_timestamp=TIMESTAMP_ADD(CURRENT_TIMESTAMP(), INTERVAL 12 hour)
+    )
+    as (
+    select * from (
+    SELECT
+    id,
+    event_timestamp,
+    local_datetime,
+    UNIX_MICROS(event_timestamp) AS utc_us,
+    EXTRACT(HOUR FROM local_datetime) AS wall_hour
+    FROM `dbt-test-env`.`bigquery_unit_test_existing_parent_timestamp_fixtures`.`events`
+    ) as __dbt_sbq
+    where false and current_timestamp() = current_timestamp()
+    limit 0
+    
+    );
+- sequence: 1
+  type: execute
+  sql: |-
+    drop table if exists `dbt-test-env`.`bigquery_unit_test_existing_parent_timestamp_fixtures`.`csv_timezone_matches__dbt_tmp`
+- sequence: 2
+  type: execute
+  sql: |-
+    -- Build actual result given inputs
+    WITH
+    \t`dbt-test-env_bigquery_unit_test_existing_parent_timestamp_fixtures_events` as (SELECT *  FROM UNNEST([STRUCT(CAST('7' AS INT64) AS id, CAST('2026-01-01 03:04:05.123456+03:00' AS TIMESTAMP) AS event_timestamp, CAST('2026-01-01 03:04:05.654321' AS DATETIME) AS local_datetime)])),
+    \t`dbt-test-env_bigquery_unit_test_existing_parent_timestamp_fixtures_event_projection_expect` as (SELECT *  FROM UNNEST([STRUCT(CAST(7 AS INT64) AS id, CAST('2026-01-01 00:04:05.123456+00:00' AS TIMESTAMP) AS event_timestamp, CAST('2026-01-01 03:04:05.654321' AS DATETIME) AS local_datetime, CAST(1767225845123456 AS INT64) AS utc_us, CAST(3 AS INT64) AS wall_hour)])),
+    \t`dbt-test-env_bigquery_unit_test_existing_parent_timestamp_fixtures_event_projection_actual` as (SELECT
+    id,
+    event_timestamp,
+    local_datetime,
+    UNIX_MICROS(event_timestamp) AS utc_us,
+    EXTRACT(HOUR FROM local_datetime) AS wall_hour
+    FROM `dbt-test-env_bigquery_unit_test_existing_parent_timestamp_fixtures_events`
+    )
+    SELECT * FROM (
+    (SELECT id, event_timestamp, local_datetime, utc_us, wall_hour, 'actual' AS actual_or_expected FROM `dbt-test-env_bigquery_unit_test_existing_parent_timestamp_fixtures_event_projection_actual`)
+    UNION ALL
+    (SELECT id, event_timestamp, local_datetime, utc_us, wall_hour, 'expected' AS actual_or_expected FROM `dbt-test-env_bigquery_unit_test_existing_parent_timestamp_fixtures_event_projection_expect`)
+    ) unit_test_diff
+    ORDER BY id, event_timestamp, local_datetime, utc_us, wall_hour
+unit_test.unit_test_timestamp_fixtures.event_projection.csv_timezone_matches.get_table_schema.93abf467:
+- sequence: 0
+  type: get_table_schema
+  table_name: 93abf467
+unit_test.unit_test_timestamp_fixtures.event_projection.csv_wrong_id:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace table `dbt-test-env`.`bigquery_unit_test_existing_parent_timestamp_fixtures`.`csv_wrong_id__dbt_tmp`
+    
+    
+    
+    
+    
+    OPTIONS(
+    expiration_timestamp=TIMESTAMP_ADD(CURRENT_TIMESTAMP(), INTERVAL 12 hour)
+    )
+    as (
+    select * from (
+    SELECT
+    id,
+    event_timestamp,
+    local_datetime,
+    UNIX_MICROS(event_timestamp) AS utc_us,
+    EXTRACT(HOUR FROM local_datetime) AS wall_hour
+    FROM `dbt-test-env`.`bigquery_unit_test_existing_parent_timestamp_fixtures`.`events`
+    ) as __dbt_sbq
+    where false and current_timestamp() = current_timestamp()
+    limit 0
+    
+    );
+- sequence: 1
+  type: execute
+  sql: |-
+    drop table if exists `dbt-test-env`.`bigquery_unit_test_existing_parent_timestamp_fixtures`.`csv_wrong_id__dbt_tmp`
+- sequence: 2
+  type: execute
+  sql: |-
+    -- Build actual result given inputs
+    WITH
+    \t`dbt-test-env_bigquery_unit_test_existing_parent_timestamp_fixtures_events` as (SELECT *  FROM UNNEST([STRUCT(CAST('7' AS INT64) AS id, CAST('2026-01-01 03:04:05.123456+03:00' AS TIMESTAMP) AS event_timestamp, CAST('2026-01-01 03:04:05.654321' AS DATETIME) AS local_datetime)])),
+    \t`dbt-test-env_bigquery_unit_test_existing_parent_timestamp_fixtures_event_projection_expect` as (SELECT *  FROM UNNEST([STRUCT(CAST(8 AS INT64) AS id, CAST(NULL AS TIMESTAMP) AS event_timestamp, CAST(NULL AS DATETIME) AS local_datetime, CAST(NULL AS INT64) AS utc_us, CAST(NULL AS INT64) AS wall_hour)])),
+    \t`dbt-test-env_bigquery_unit_test_existing_parent_timestamp_fixtures_event_projection_actual` as (SELECT
+    id,
+    event_timestamp,
+    local_datetime,
+    UNIX_MICROS(event_timestamp) AS utc_us,
+    EXTRACT(HOUR FROM local_datetime) AS wall_hour
+    FROM `dbt-test-env_bigquery_unit_test_existing_parent_timestamp_fixtures_events`
+    )
+    SELECT * FROM (
+    (SELECT id, 'actual' AS actual_or_expected FROM `dbt-test-env_bigquery_unit_test_existing_parent_timestamp_fixtures_event_projection_actual`)
+    UNION ALL
+    (SELECT id, 'expected' AS actual_or_expected FROM `dbt-test-env_bigquery_unit_test_existing_parent_timestamp_fixtures_event_projection_expect`)
+    ) unit_test_diff
+    ORDER BY id
+unit_test.unit_test_timestamp_fixtures.event_projection.csv_wrong_id.get_table_schema.8dec7c40:
+- sequence: 0
+  type: get_table_schema
+  table_name: 8dec7c40
+unit_test.unit_test_timestamp_fixtures.event_projection.dict_timezone_matches:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace table `dbt-test-env`.`bigquery_unit_test_existing_parent_timestamp_fixtures`.`dict_timezone_matches__dbt_tmp`
+    
+    
+    
+    
+    
+    OPTIONS(
+    expiration_timestamp=TIMESTAMP_ADD(CURRENT_TIMESTAMP(), INTERVAL 12 hour)
+    )
+    as (
+    select * from (
+    SELECT
+    id,
+    event_timestamp,
+    local_datetime,
+    UNIX_MICROS(event_timestamp) AS utc_us,
+    EXTRACT(HOUR FROM local_datetime) AS wall_hour
+    FROM `dbt-test-env`.`bigquery_unit_test_existing_parent_timestamp_fixtures`.`events`
+    ) as __dbt_sbq
+    where false and current_timestamp() = current_timestamp()
+    limit 0
+    
+    );
+- sequence: 1
+  type: execute
+  sql: |-
+    drop table if exists `dbt-test-env`.`bigquery_unit_test_existing_parent_timestamp_fixtures`.`dict_timezone_matches__dbt_tmp`
+- sequence: 2
+  type: execute
+  sql: |-
+    -- Build actual result given inputs
+    WITH
+    \t`dbt-test-env_bigquery_unit_test_existing_parent_timestamp_fixtures_events` as (SELECT *  FROM UNNEST([STRUCT(CAST(7 AS INT64) AS id, CAST('2026-01-01 03:04:05.123456+03:00' AS TIMESTAMP) AS event_timestamp, CAST('2026-01-01 03:04:05.654321' AS DATETIME) AS local_datetime)])),
+    \t`dbt-test-env_bigquery_unit_test_existing_parent_timestamp_fixtures_event_projection_expect` as (SELECT *  FROM UNNEST([STRUCT(CAST(7 AS INT64) AS id, CAST('2026-01-01 00:04:05.123456+00:00' AS TIMESTAMP) AS event_timestamp, CAST('2026-01-01 03:04:05.654321' AS DATETIME) AS local_datetime, CAST(1767225845123456 AS INT64) AS utc_us, CAST(3 AS INT64) AS wall_hour)])),
+    \t`dbt-test-env_bigquery_unit_test_existing_parent_timestamp_fixtures_event_projection_actual` as (SELECT
+    id,
+    event_timestamp,
+    local_datetime,
+    UNIX_MICROS(event_timestamp) AS utc_us,
+    EXTRACT(HOUR FROM local_datetime) AS wall_hour
+    FROM `dbt-test-env_bigquery_unit_test_existing_parent_timestamp_fixtures_events`
+    )
+    SELECT * FROM (
+    (SELECT id, event_timestamp, local_datetime, utc_us, wall_hour, 'actual' AS actual_or_expected FROM `dbt-test-env_bigquery_unit_test_existing_parent_timestamp_fixtures_event_projection_actual`)
+    UNION ALL
+    (SELECT id, event_timestamp, local_datetime, utc_us, wall_hour, 'expected' AS actual_or_expected FROM `dbt-test-env_bigquery_unit_test_existing_parent_timestamp_fixtures_event_projection_expect`)
+    ) unit_test_diff
+    ORDER BY id, event_timestamp, local_datetime, utc_us, wall_hour
+unit_test.unit_test_timestamp_fixtures.event_projection.dict_timezone_matches.get_table_schema.c5b7bdad:
+- sequence: 0
+  type: get_table_schema
+  table_name: c5b7bdad
+unit_test.unit_test_timestamp_fixtures.event_projection.dict_wrong_id:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace table `dbt-test-env`.`bigquery_unit_test_existing_parent_timestamp_fixtures`.`dict_wrong_id__dbt_tmp`
+    
+    
+    
+    
+    
+    OPTIONS(
+    expiration_timestamp=TIMESTAMP_ADD(CURRENT_TIMESTAMP(), INTERVAL 12 hour)
+    )
+    as (
+    select * from (
+    SELECT
+    id,
+    event_timestamp,
+    local_datetime,
+    UNIX_MICROS(event_timestamp) AS utc_us,
+    EXTRACT(HOUR FROM local_datetime) AS wall_hour
+    FROM `dbt-test-env`.`bigquery_unit_test_existing_parent_timestamp_fixtures`.`events`
+    ) as __dbt_sbq
+    where false and current_timestamp() = current_timestamp()
+    limit 0
+    
+    );
+- sequence: 1
+  type: execute
+  sql: |-
+    drop table if exists `dbt-test-env`.`bigquery_unit_test_existing_parent_timestamp_fixtures`.`dict_wrong_id__dbt_tmp`
+- sequence: 2
+  type: execute
+  sql: |-
+    -- Build actual result given inputs
+    WITH
+    \t`dbt-test-env_bigquery_unit_test_existing_parent_timestamp_fixtures_events` as (SELECT *  FROM UNNEST([STRUCT(CAST(7 AS INT64) AS id, CAST('2026-01-01 03:04:05.123456+03:00' AS TIMESTAMP) AS event_timestamp, CAST('2026-01-01 03:04:05.654321' AS DATETIME) AS local_datetime)])),
+    \t`dbt-test-env_bigquery_unit_test_existing_parent_timestamp_fixtures_event_projection_expect` as (SELECT *  FROM UNNEST([STRUCT(CAST(8 AS INT64) AS id, CAST(NULL AS TIMESTAMP) AS event_timestamp, CAST(NULL AS DATETIME) AS local_datetime, CAST(NULL AS INT64) AS utc_us, CAST(NULL AS INT64) AS wall_hour)])),
+    \t`dbt-test-env_bigquery_unit_test_existing_parent_timestamp_fixtures_event_projection_actual` as (SELECT
+    id,
+    event_timestamp,
+    local_datetime,
+    UNIX_MICROS(event_timestamp) AS utc_us,
+    EXTRACT(HOUR FROM local_datetime) AS wall_hour
+    FROM `dbt-test-env_bigquery_unit_test_existing_parent_timestamp_fixtures_events`
+    )
+    SELECT * FROM (
+    (SELECT id, 'actual' AS actual_or_expected FROM `dbt-test-env_bigquery_unit_test_existing_parent_timestamp_fixtures_event_projection_actual`)
+    UNION ALL
+    (SELECT id, 'expected' AS actual_or_expected FROM `dbt-test-env_bigquery_unit_test_existing_parent_timestamp_fixtures_event_projection_expect`)
+    ) unit_test_diff
+    ORDER BY id
+unit_test.unit_test_timestamp_fixtures.event_projection.dict_wrong_id.get_table_schema.2a2bee78:
+- sequence: 0
+  type: get_table_schema
+  table_name: 2a2bee78
+unit_test.unit_test_timestamp_fixtures.event_projection.dict_wrong_id.get_table_schema.80f59055:
+- sequence: 0
+  type: get_table_schema
+  table_name: 80f59055

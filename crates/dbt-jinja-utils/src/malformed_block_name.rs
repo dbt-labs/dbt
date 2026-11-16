@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-use dbt_common::tracing::dbt_emit::emit_warn_log_from_fs_error;
+use dbt_common::tracing::dbt_emit::emit_future_change_from_fs_error;
 use dbt_common::{CodeLocationWithFile, ErrorCode, FsError, fs_err};
 use minijinja::listener::{BlockNameKind, TokenizerEventListener};
 use minijinja::machinery::{Span, Token};
@@ -39,8 +39,7 @@ impl MalformedBlockNameListener {
             code => ErrorCode::MalformedBlockName,
             loc => location,
             "{} block name `{}` is followed by extra characters that dbt \
-             silently ignores. Use a name that is a single valid identifier. \
-             This will become an error in a future release.",
+             silently ignores. Use a name that is a single valid identifier.",
             Self::block_label(kind),
             name,
         )
@@ -51,7 +50,7 @@ impl TokenizerEventListener for MalformedBlockNameListener {
     fn on_source_token(&self, _token: &Token<'_>, _span: &Span) {}
 
     fn on_malformed_block_name(&self, kind: BlockNameKind, name: &str, name_span: &Span) {
-        emit_warn_log_from_fs_error(self.warning(kind, name, name_span));
+        emit_future_change_from_fs_error(self.warning(kind, name, name_span));
     }
 }
 

@@ -1,7 +1,7 @@
+import { DecorateOutboundHref, UserState } from '../../components/ui/upgrade/types';
+import { UpgradeRow } from '../../components/ui/upgrade/UpgradeRow';
 import { ColumnTable, Entry } from './ColumnTable';
 import { buildRelationName, RelationName } from './RelationName';
-import { UpgradeRow } from '../../components/ui/upgrade/UpgradeRow';
-import { DecorateOutboundHref, UserState } from '../../components/ui/upgrade/types';
 
 export type KnownMetadataResourceType =
   'model' | 'seed' | 'snapshot' | 'source' | 'exposure' | 'macro' | 'saved_query';

@@ -19,7 +19,8 @@ use dbt_common::{
     stdfs,
     tracing::{
         dbt_emit::{
-            emit_error_log_from_fs_error, emit_info_progress_message, emit_trace_log_message,
+            emit_error_log_from_fs_error, emit_future_change_from_fs_error,
+            emit_info_progress_message, emit_trace_log_message,
         },
         dbt_metrics::error_count_checkpoint,
         event_info::store_event_attributes,
@@ -85,7 +86,7 @@ pub async fn clean_project(
         .collect::<Result<Vec<_>, _>>()?;
 
     let default_relative_target_dir = DbtPath::from(DBT_TARGET_DIR_NAME);
-    let mut paths_to_delete = dbt_project
+    let user_paths = dbt_project
         .clean_targets
         .as_ref()
         .unwrap()
@@ -104,7 +105,57 @@ pub async fn clean_project(
                 DbtPath::absolute(arg.io.in_dir.join(path)).map_err(Into::into)
             }
         })
-        .collect::<Result<HashSet<_>, _>>()?;
+        .collect::<Result<Vec<_>, _>>()?;
+
+    // Skip clean-targets outside the project. The target path is always cleaned (`out_dir` is added
+    // after this), so entries at or under it do not warn. `in_dir` and `out_dir` are canonical.
+    let project_root = DbtPath::absolute(&arg.io.in_dir)?;
+    let target_path = DbtPath::absolute(&arg.io.out_dir)?;
+    let mut paths_to_delete = HashSet::new();
+    for path in user_paths {
+        // Resolve symlinks in the parent only: `remove_dir_all` unlinks a symlinked leaf.
+        let resolved = match (path.as_path().parent(), path.as_path().file_name()) {
+            (Some(parent), Some(name)) if parent.exists() => {
+                stdfs::canonicalize(parent).map(|parent| DbtPath::from(parent.join(name)))
+            }
+            // A missing parent means the path does not exist either.
+            _ => Ok(path.clone()),
+        };
+        let resolved = match resolved {
+            Ok(resolved) => resolved,
+            Err(e) => {
+                // Cannot tell where the path points: skip it rather than risk deleting outside.
+                emit_future_change_from_fs_error(*fs_err!(
+                    ErrorCode::CleanTargetOutsideProject,
+                    "dbt will not clean '{}': cannot resolve its parent directory: {}",
+                    path.display(),
+                    e
+                ));
+                continue;
+            }
+        };
+        // Do not skip the project root or its parents. The `unrelated_paths` check below fails
+        // `dbt clean` on them.
+        let outside = !resolved.starts_with(&project_root)
+            && !project_root.starts_with(&resolved)
+            && !resolved.starts_with(&target_path);
+        if outside {
+            // TODO(dbt-labs/dbt#16929): make this an error and fail `dbt clean`, like dbt Core.
+            emit_future_change_from_fs_error(*fs_err!(
+                ErrorCode::CleanTargetOutsideProject,
+                "dbt will not clean '{}': {} the project directory {}.",
+                path.display(),
+                if resolved == path {
+                    "it is outside".to_string()
+                } else {
+                    format!("it resolves to '{}', which is outside", resolved.display())
+                },
+                project_root.display()
+            ));
+        } else {
+            paths_to_delete.insert(path);
+        }
+    }
 
     let out_dir = DbtPath::from(&arg.io.out_dir);
     paths_to_delete.insert(out_dir.clone());

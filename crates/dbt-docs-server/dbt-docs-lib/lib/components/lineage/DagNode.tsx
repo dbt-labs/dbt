@@ -2,8 +2,8 @@ import { createElement } from 'react';
 import { Handle, type Node, type NodeProps, Position } from '@xyflow/react';
 import { Columns3 } from 'lucide-react';
 
-import { iconForType } from '../../utils/resourceType';
 import { isCardCompact, useLineageStore } from '../../stores/lineageStore';
+import { iconForType } from '../../utils/resourceType';
 import { Tooltip } from '../ui/Tooltip';
 import { lensBadgeFor } from './lensBadges';
 import type { ResourceType } from './ResourceTypes';

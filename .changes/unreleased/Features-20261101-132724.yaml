@@ -1,0 +1,7 @@
+kind: Features
+body: 'Add opt-in `snowflake_dynamic_table_create_or_alter` behavior flag: native Snowflake dynamic tables are synced with `CREATE OR ALTER DYNAMIC TABLE` on every run, so model SQL edits deploy without `--full-refresh`.'
+time: 2026-11-01T13:27:24.36001-08:00
+custom:
+    author: igorbelianski-cyber
+    issue: ""
+    project: dbt-core

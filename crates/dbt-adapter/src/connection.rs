@@ -34,6 +34,24 @@ use crate::errors::AdapterError;
 // connection-admission gate.
 thread_local! {
     static CONNECTION: pri::TlsConnectionContainer = pri::TlsConnectionContainer::new();
+    // The node that left a transaction open on this thread's connection, if any. A transaction
+    // spans several `execute` calls, so it cannot live in the per-call guard. Whoever retires the
+    // connection must clear it, otherwise a new session would be treated as inside a transaction.
+    static OPEN_TRANSACTION: RefCell<Option<Option<String>>> = const { RefCell::new(None) };
+}
+
+/// The node that has a transaction open on this thread's connection (`Some(None)`: a node
+/// without an id), or `None` when no transaction is open.
+pub(crate) fn open_transaction() -> Option<Option<String>> {
+    OPEN_TRANSACTION.with(|t| t.borrow().clone())
+}
+
+pub(crate) fn set_open_transaction(node_id: Option<String>) {
+    OPEN_TRANSACTION.with(|t| *t.borrow_mut() = Some(node_id));
+}
+
+pub(crate) fn clear_open_transaction() {
+    OPEN_TRANSACTION.with(|t| *t.borrow_mut() = None);
 }
 
 /// Drop this thread's cached connection instead of leaving it in the slot, so a
@@ -42,6 +60,7 @@ thread_local! {
 pub fn drop_thread_local_connection() {
     let conn = CONNECTION.with(|c| c.take());
     drop(conn);
+    clear_open_transaction();
 }
 
 /// Take this thread's cached connection, if it can be used with `fingerprint`.
@@ -54,6 +73,7 @@ fn take_tlocal_connection(
 ) -> Option<Box<dyn Connection>> {
     let mut conn = CONNECTION.with(|c| c.take())?;
     if conn.fingerprint() != fingerprint {
+        clear_open_transaction();
         return None;
     }
     conn.update_node_id(node_id);
@@ -141,6 +161,14 @@ impl ConnectionGuard<'_> {
     pub(crate) fn discard_conn_on_drop(&mut self) {
         self.persist = false;
     }
+
+    /// Discard a Bridge connection if `err` means it can't be used again.
+    /// Every class `08` SQLSTATE ends a Bridge session.
+    pub(crate) fn discard_on_bridge_error(&mut self, err: &AdapterError) {
+        if err.sqlstate().starts_with("08") {
+            self.discard_conn_on_drop();
+        }
+    }
 }
 impl Deref for ConnectionGuard<'_> {
     type Target = Box<dyn Connection>;
@@ -160,6 +188,8 @@ impl Drop for ConnectionGuard<'_> {
             let conn = self.conn.take();
             CONNECTION.with(|c| c.replace(conn));
         } else if let Some(conn) = self.conn.as_ref() {
+            // The session is closed with the connection, which rolls the transaction back.
+            clear_open_transaction();
             emit_trace_event(|| {
                 (
                     AdapterConnectionClose {

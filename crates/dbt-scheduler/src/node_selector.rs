@@ -1,6 +1,5 @@
 //! Select and exclude nodes from the manifest based on the select and exclude expressions
 
-use clean_path::Clean;
 use dbt_adapter_core::AdapterType;
 use dbt_common::{
     ErrorCode, FsResult,
@@ -9,6 +8,7 @@ use dbt_common::{
     node_selector::{MethodName, SelectExpression, SelectionCriteria, SelectionValue},
     tracing::dbt_emit::emit_warn_log_message,
 };
+use dbt_path::normalize;
 use dbt_schemas::schemas::{
     CommonAttributes, DbtSource, DbtTest, InternalDbtNode, InternalDbtNodeAttributes,
     ModificationType, Nodes, StateArtifacts, common::Access, telemetry::NodeType,
@@ -83,7 +83,7 @@ pub fn filter_select(
             Some(nodes),
             adapter_type,
         )? {
-            result.insert(node.unique_id());
+            result.insert(node.unique_id().to_string());
         }
     }
     Ok(result)
@@ -118,7 +118,7 @@ pub fn filter_select_criteria(
             )
             .map(|include| {
                 if include {
-                    acc.insert(node.unique_id());
+                    acc.insert(node.unique_id().to_string());
                 }
                 acc
             })
@@ -156,9 +156,9 @@ pub fn filter_select_criteria_with_state_selector_results(
             }
             filter_select_criteria(nodes, criteria, previous_state, adapter_type)?
         };
-        // Plugin nodes are not written to the manifest, so every one of them would compare as
+        // Experimental nodes are not written to the manifest, so every one of them would compare as
         // new. `state:` never selects them.
-        selected.retain(|unique_id| !nodes.plugins.contains_key(unique_id));
+        selected.retain(|unique_id| !nodes.experimentals.contains_key(unique_id));
         return Ok(selected);
     }
 
@@ -269,20 +269,20 @@ fn match_source(pattern: &str, node: &dyn InternalDbtNode) -> FsResult<bool> {
 }
 
 fn match_resource_type(pattern: &str, node: &dyn InternalDbtNode) -> FsResult<bool> {
-    // Checks and plugin nodes produce no database relation, so they are never a `relation`. (This
-    // arm remains an approximation for other non-relational types like exposures and metrics; not
-    // widened here.)
+    // Checks and experimental nodes produce no database relation, so they are never a `relation`.
+    // (This arm remains an approximation for other non-relational types like exposures and metrics;
+    // not widened here.)
     if pattern == "relation"
         && !matches!(
             node.resource_type(),
-            NodeType::Test | NodeType::Check | NodeType::Plugin
+            NodeType::Test | NodeType::Check | NodeType::Experimental
         )
     {
         Ok(true)
     } else {
-        // A plugin node is also its own plugin type: `resource_type:widget`.
+        // An experimental node is also its own experimental type: `resource_type:widget`.
         Ok(pattern == node.resource_type().as_static_ref()
-            || node.plugin_type().is_some_and(|kind| pattern == kind))
+            || node.experimental_type().is_some_and(|kind| pattern == kind))
     }
 }
 
@@ -525,7 +525,7 @@ fn match_path(pattern: &str, common_attr: &CommonAttributes) -> FsResult<bool> {
     // ── 0. Normalise the selector: resolve `.` and `..` components so that
     //       "./models/foo.sql", "models/./foo.sql", and
     //       "models/staging/../foo.sql" all reduce to "models/foo.sql".
-    let normalised = Path::new(pattern).clean();
+    let normalised = normalize(Path::new(pattern));
     let pattern = normalised.to_string_lossy();
     let pattern = pattern.as_ref();
 
@@ -767,13 +767,11 @@ fn match_config_recursive(
         match &val {
             YmlValue::String(s, _) => Ok(fnmatch(pattern, s)),
             YmlValue::Bool(b, _) => Ok(pattern.eq_ignore_ascii_case(&b.to_string())),
-            YmlValue::Timestamp(t, _) => Ok(fnmatch(pattern, &t.to_string())),
             YmlValue::Number(n, _) => Ok(n.to_string() == *pattern),
-            YmlValue::Sequence(arr, _) => Ok(arr.iter().any(|v| match v {
-                YmlValue::String(s, _) => fnmatch(pattern, s),
-                YmlValue::Timestamp(t, _) => fnmatch(pattern, &t.to_string()),
-                _ => false,
-            })),
+            YmlValue::Sequence(arr, _) => Ok(arr
+                .iter()
+                .filter_map(YmlValue::as_str)
+                .any(|s| fnmatch(pattern, s))),
             YmlValue::Mapping(..) => match_config_recursive(pattern, args, val, args_index + 1),
             _ => Ok(false),
         }
@@ -790,7 +788,7 @@ fn match_group(pattern: &str, group: Option<String>) -> FsResult<bool> {
     Ok(group.as_deref() == Some(pattern))
 }
 
-fn match_tag(pattern: &str, tags: Vec<String>) -> FsResult<bool> {
+fn match_tag(pattern: &str, tags: &[String]) -> FsResult<bool> {
     Ok(tags.iter().any(|t| fnmatch(pattern, t)))
 }
 
@@ -1759,7 +1757,8 @@ mod tests {
             __warehouse_specific_config__: WarehouseSpecificNodeConfig {
                 cluster_by: Some(ClusterConfig::List(vec!["geo_country".to_string()])),
                 ..Default::default()
-            },
+            }
+            .into(),
             unique_key: Some(DbtUniqueKey::Multiple(vec![
                 "column_a".to_string(),
                 "column_b".to_string(),

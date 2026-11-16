@@ -2,7 +2,7 @@ use crate::args::ResolveArgs;
 use crate::dbt_project_config::{
     ProjectConfigResolver, RootProjectConfigs, disallow_plus_prefix_from_flags, init_project_config,
 };
-use crate::plugin::ActivePlugins;
+use crate::experimental::ActiveExperimentals;
 use crate::resolve::resolve_tests::resolve_unit_tests::unit_test_jinja_join_error;
 use crate::resolve::resolve_utils::deep_merge_yaml;
 use dbt_adapter_core::AdapterType;
@@ -15,7 +15,7 @@ use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::serde::{from_yaml_raw, into_typed_with_jinja};
 use dbt_jinja_utils::utils::dependency_package_name_from_ctx;
 use dbt_schemas::schemas::properties::{
-    AnalysesProperties, CheckProperties, DbtPropertiesFileValues, MinimalPluginEntryValue,
+    AnalysesProperties, CheckProperties, DbtPropertiesFileValues, MinimalExperimentalEntryValue,
     MinimalSchemaValue, MinimalTableValue, MinimalUnitTestValue,
 };
 use dbt_schemas::schemas::serde::{FloatOrString, strip_one_trailing_newline_at_keys};
@@ -62,24 +62,25 @@ pub struct MinimalProperties {
     pub saved_queries: BTreeMap<String, MinimalPropertiesEntry>,
     pub groups: BTreeMap<String, MinimalPropertiesEntry>,
     pub macros: BTreeMap<String, MinimalPropertiesEntry>,
-    /// Entries under `plugins:`, by key (a plugin type or a definition key) and then name.
-    pub plugins: BTreeMap<String, BTreeMap<String, MinimalPropertiesEntry>>,
+    /// Entries under `experimental:`, by key (an experimental type or a definition key) and then
+    /// name.
+    pub experimental: BTreeMap<String, BTreeMap<String, MinimalPropertiesEntry>>,
     pub semantic_layer_spec_is_legacy: bool,
 }
 
 // impl try extend from MinimalResolvedProperties
 #[allow(clippy::cognitive_complexity)]
 impl MinimalProperties {
-    /// Collects the entries under `plugins:` in one properties file.
-    pub fn extend_from_plugin_values(
+    /// Collects the entries under `experimental:` in one properties file.
+    pub fn extend_from_experimental_values(
         &mut self,
-        plugin_values: Vec<(String, dbt_yaml::Value)>,
+        experimental_values: Vec<(String, dbt_yaml::Value)>,
         jinja_env: &JinjaEnv,
         properties_path: &Path,
         base_ctx: &BTreeMap<String, MinijinjaValue>,
     ) -> FsResult<()> {
-        for (key, value) in plugin_values {
-            let entries = self.plugins.entry(key.clone()).or_default();
+        for (key, value) in experimental_values {
+            let entries = self.experimental.entry(key.clone()).or_default();
             if value.is_null() {
                 continue;
             }
@@ -87,12 +88,12 @@ impl MinimalProperties {
                 return Err(fs_err!(
                     code => ErrorCode::InvalidConfig,
                     loc => properties_path.to_path_buf(),
-                    "`plugins: {}` must be a list",
+                    "`experimental: {}` must be a list",
                     key
                 ));
             };
             for entry_value in values {
-                let entry = into_typed_with_jinja::<MinimalPluginEntryValue, _>(
+                let entry = into_typed_with_jinja::<MinimalExperimentalEntryValue, _>(
                     name_stripped(entry_value),
                     false,
                     jinja_env,
@@ -707,7 +708,7 @@ pub async fn resolve_minimal_properties(
     base_ctx: &BTreeMap<String, MinijinjaValue>,
     token: &CancellationToken,
     adapter_type: AdapterType,
-    plugins: &ActivePlugins,
+    experimentals: &ActiveExperimentals,
 ) -> FsResult<MinimalProperties> {
     let mut minimal_resolved_properties = MinimalProperties {
         semantic_layer_spec_is_legacy: false,
@@ -730,8 +731,9 @@ pub async fn resolve_minimal_properties(
         adapter_type,
     )?;
 
-    // Entries under `plugins:` for a plugin that is on are collected; any others are ignored.
-    let mut ignored_plugin_keys: BTreeSet<String> = BTreeSet::new();
+    // Entries under `experimental:` for an experimental that is on are collected; any others are
+    // ignored.
+    let mut ignored_experimental_keys: BTreeSet<String> = BTreeSet::new();
 
     for dbt_asset in package.dbt_properties.iter().dedup() {
         token.check_cancellation()?;
@@ -775,15 +777,15 @@ pub async fn resolve_minimal_properties(
                             base_ctx,
                         )
                         .await?;
-                    let (plugin_values, ignored): (Vec<_>, Vec<_>) = properties_file_values
-                        .plugins
+                    let (experimental_values, ignored): (Vec<_>, Vec<_>) = properties_file_values
+                        .experimental
                         .clone()
                         .unwrap_or_default()
                         .into_iter()
-                        .partition(|(key, _)| plugins.reading(key).is_some());
-                    ignored_plugin_keys.extend(ignored.into_iter().map(|(key, _)| key));
-                    minimal_resolved_properties.extend_from_plugin_values(
-                        plugin_values,
+                        .partition(|(key, _)| experimentals.reading(key).is_some());
+                    ignored_experimental_keys.extend(ignored.into_iter().map(|(key, _)| key));
+                    minimal_resolved_properties.extend_from_experimental_values(
+                        experimental_values,
                         jinja_env,
                         properties_path,
                         base_ctx,
@@ -830,22 +832,22 @@ pub async fn resolve_minimal_properties(
         .instrument(span.clone())
         .await?;
     }
-    for key in ignored_plugin_keys {
+    for key in ignored_experimental_keys {
         let package_name = &package.dbt_project.name;
-        if plugins.is_reserved(&key) {
+        if experimentals.is_reserved(&key) {
             emit_warn_log_message(
-                ErrorCode::PluginNotEnabled,
+                ErrorCode::ExperimentalNotEnabled,
                 format!(
-                    "Ignoring `plugins: {key}` in package '{package_name}': {}",
-                    plugins.why_ignored(&key)
+                    "Ignoring `experimental: {key}` in package '{package_name}': {}",
+                    experimentals.why_ignored(&key)
                 ),
             );
         } else {
             emit_warn_log_message(
-                ErrorCode::UnknownPlugin,
+                ErrorCode::UnknownExperimental,
                 format!(
-                    "Ignoring `plugins: {key}` in package '{package_name}': there is no \
-                     `{key}` plugin"
+                    "Ignoring `experimental: {key}` in package '{package_name}': there is no \
+                     `{key}` experimental"
                 ),
             );
         }

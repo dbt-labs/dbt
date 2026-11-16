@@ -12,6 +12,7 @@ use dbt_schemas::{
     state::{DbtRuntimeConfig, NodeResolverTracker, ResolverState},
 };
 use minijinja::constants::{CURRENT_EXECUTION_PHASE, CURRENT_PATH, CURRENT_SPAN, DIALECT};
+use minijinja::value::OverlayMap;
 use minijinja::{Value as MinijinjaValue, machinery::Span};
 use minijinja_contrib::modules::{py_datetime::datetime::PyDateTime, pytz::PytzTimezone};
 use std::{
@@ -127,12 +128,9 @@ impl Default for DependencyValidationConfig {
 pub fn build_compile_node_context<T>(
     model: Arc<T>,
     resolver_state: &ResolverState,
-    base_context: &BTreeMap<String, MinijinjaValue>,
+    base_context: &MinijinjaValue,
     ref_validation_config: DependencyValidationConfig,
-) -> FsResult<(
-    BTreeMap<String, MinijinjaValue>,
-    Arc<SccHashMap<String, MinijinjaValue>>,
-)>
+) -> FsResult<(OverlayMap, Arc<SccHashMap<String, MinijinjaValue>>)>
 where
     T: InternalDbtNodeAttributes + ?Sized,
 {
@@ -153,19 +151,17 @@ where
 pub fn build_compile_node_context_inner<T>(
     model: Arc<T>,
     adapter_type: AdapterType,
-    base_context: &BTreeMap<String, MinijinjaValue>,
+    base_context: &MinijinjaValue,
     root_project_name: &str,
     node_resolver: Arc<dyn NodeResolverTracker>,
     runtime_config: Arc<DbtRuntimeConfig>,
     ref_validation_config: DependencyValidationConfig,
-) -> FsResult<(
-    BTreeMap<String, MinijinjaValue>,
-    Arc<SccHashMap<String, MinijinjaValue>>,
-)>
+) -> FsResult<(OverlayMap, Arc<SccHashMap<String, MinijinjaValue>>)>
 where
     T: InternalDbtNodeAttributes + ?Sized,
 {
-    let mut base_builtins = if let Some(builtins) = base_context.get("builtins") {
+    let mut ctx = OverlayMap::extending(base_context);
+    let mut base_builtins = if let Some(builtins) = ctx.get("builtins") {
         builtins
             .as_object()
             .unwrap()
@@ -175,7 +171,6 @@ where
     } else {
         BTreeMap::new()
     };
-    let mut ctx = base_context.clone();
 
     let this_relation = match model.resource_type() {
         NodeType::UnitTest => {
@@ -210,7 +205,10 @@ where
                     .unwrap(),
                 ))
                 .into_value()
-            } else if matches!(model.materialized(), DbtMaterialization::Ephemeral) {
+            } else if matches!(
+                model.materialized(),
+                DbtMaterialization::Ephemeral | DbtMaterialization::Inline
+            ) {
                 // Build `this` directly as the physical relation
                 // (database.schema.identifier) rather than using the relation the
                 // resolver stores for this node. The stored relation is typed so
@@ -347,9 +345,15 @@ where
             MinijinjaValue::from(jinja_path.to_string_lossy().into_owned()),
         );
     }
+    // Unit tests have no batch window. Models still need the placeholder for
+    // their pre-batch render; microbatch execution installs the real window.
     model_map.insert(
         MinijinjaValue::from("batch"),
-        MinijinjaValue::from_object(init_batch_context()),
+        if model.resource_type() == NodeType::UnitTest {
+            MinijinjaValue::from(())
+        } else {
+            MinijinjaValue::from_object(init_batch_context())
+        },
     );
 
     let result_store = ResultStore::default();
@@ -425,7 +429,7 @@ where
         MinijinjaValue::from(model.node_adapter().as_ref()),
     );
 
-    // Today's caller still consumes `BTreeMap<String, MinijinjaValue>`. We
+    // Today's caller still consumes map entries, not the typed struct. We
     // serialize the typed overlay and `.extend(...)` onto the base — same
     // last-write-wins shadowing semantic the original BTreeMap-based code
     // produced. PR 9 (cleanup) flows the typed struct directly through
@@ -518,14 +522,11 @@ mod tests {
         node_resolver
     }
 
-    fn build_ctx(
-        model: &DbtModel,
-        node_resolver: NodeResolver,
-    ) -> FsResult<BTreeMap<String, MinijinjaValue>> {
+    fn build_ctx(model: &DbtModel, node_resolver: NodeResolver) -> FsResult<OverlayMap> {
         build_compile_node_context_inner(
             Arc::new(model.clone()),
             ADAPTER_TYPE,
-            &BTreeMap::new(),
+            &MinijinjaValue::from(BTreeMap::<String, MinijinjaValue>::new()),
             "my_new_project",
             Arc::new(node_resolver),
             Arc::new(DbtRuntimeConfig::default()),
@@ -701,7 +702,7 @@ mod tests {
         let (ctx, _) = build_compile_node_context_inner(
             caller,
             adapter_type,
-            &BTreeMap::new(),
+            &MinijinjaValue::from(BTreeMap::<String, MinijinjaValue>::new()),
             "my_new_project",
             Arc::new(node_resolver),
             Arc::new(DbtRuntimeConfig::default()),

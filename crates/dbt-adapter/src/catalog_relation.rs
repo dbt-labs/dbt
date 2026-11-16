@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use crate::errors::{AdapterError, AdapterErrorKind, AdapterResult};
 use crate::load_catalogs;
-use crate::metadata::duckdb::CatalogSpecDuckDbExt;
+use dbt_adapter_engine::duckdb::CatalogSpecDuckDbExt;
 
 mod catalog_relation_deprecated;
 
@@ -318,6 +318,23 @@ impl CatalogRelation {
         }
     }
 
+    pub fn default_catalog_relation_spark() -> CatalogRelation {
+        CatalogRelation {
+            adapter_type: AdapterType::Spark,
+            catalog_name: None,
+            integration_name: None,
+            catalog_type: CatalogType::SparkNative,
+            table_format: TableFormat::Default,
+            file_format: None,
+            external_volume: None,
+            catalog_database: None,
+            lakehouse_catalog: None,
+            base_location: None,
+            adapter_properties: BTreeMap::new(),
+            is_transient: None,
+        }
+    }
+
     // ==========
     // Databricks
     // ==========
@@ -349,9 +366,14 @@ impl CatalogRelation {
         .or_else(|| Self::get_model_config_value(model, "location_root", AdapterType::Databricks))
         .filter(|location_root| !location_root.trim().is_empty());
 
+        let file_format =
+            Self::get_model_config_value(model, "file_format", AdapterType::Databricks)
+                .unwrap_or_else(|| String::from(DELTA_TABLE_FORMAT));
+
         CatalogRelation {
             external_volume: location_root
                 .and_then(|root| Self::dbx_build_external_volume_for_location(model, &root)),
+            file_format: Some(file_format),
             ..Self::default_catalog_relation_databricks()
         }
     }
@@ -694,6 +716,7 @@ impl CatalogRelation {
         let adapter_attr = match adapter_type {
             AdapterType::Bigquery => BIGQUERY_ATTR,
             AdapterType::Databricks => DATABRICKS_ATTR,
+            AdapterType::Spark => DATABRICKS_ATTR,
             AdapterType::Snowflake => SNOWFLAKE_ATTR,
             // Lake compute model configs surface the same way DuckDB's do.
             AdapterType::DuckDB | AdapterType::LakeCompute => DUCKDB_ATTR,
@@ -1158,6 +1181,10 @@ fn from_model_config_and_catalogs_default(
                 Some(catalog_name) => catalog_name,
             }
         }
+        AdapterType::Spark => match model_catalog_name(model, AdapterType::Spark) {
+            None => return Ok(CatalogRelation::default_catalog_relation_spark()),
+            Some(catalog_name) => catalog_name,
+        },
         _ => Err(AdapterError::new(
             AdapterErrorKind::Internal,
             format!("build_relation_catalog cannot be invoked by an adapter {adapter_type:?}"),
@@ -1229,6 +1256,9 @@ fn from_model_config_and_catalogs_default(
                 &catalog_name,
             )
         }
+        (AdapterType::Spark, CatalogType::Glue | CatalogType::IcebergRest) => {
+            CatalogRelation::build_spark_with_catalogs(catalog, &catalog_name)
+        }
         (AdapterType::DuckDB, other) => Err(AdapterError::new(
             AdapterErrorKind::Configuration,
             format!(
@@ -1278,6 +1308,13 @@ fn from_model_config_and_catalogs_default(
             AdapterErrorKind::Configuration,
             format!(
                 "Catalog '{catalog_name}' has type '{}'; Bigquery v2 mapping supports only 'biglake_metastore'",
+                other.as_str()
+            ),
+        )),
+        (AdapterType::Spark, other) => Err(AdapterError::new(
+            AdapterErrorKind::Configuration,
+            format!(
+                "Catalog '{catalog_name}' has type '{}'; Spark v2 mapping supports only 'glue' and 'iceberg_rest'",
                 other.as_str()
             ),
         )),
@@ -1431,6 +1468,31 @@ fn reject_unsupported_databricks_hive_model_fields(model: &Value) -> AdapterResu
 }
 
 impl CatalogRelation {
+    fn build_spark_with_catalogs(
+        catalog: &CatalogSpecView<'_>,
+        catalog_name: &str,
+    ) -> AdapterResult<CatalogRelation> {
+        let spark = require_platform_block(catalog, catalog_name, "spark")?;
+        let catalog_database = get_yaml_str(spark, FIELD_CATALOG_DATABASE)
+            .unwrap_or(catalog_name)
+            .to_string();
+
+        Ok(CatalogRelation {
+            adapter_type: AdapterType::Spark,
+            catalog_name: Some(catalog_name.to_string()),
+            integration_name: None,
+            catalog_type: catalog.catalog_type,
+            table_format: catalog.table_format,
+            file_format: Some("iceberg".to_string()),
+            external_volume: None,
+            catalog_database: Some(catalog_database),
+            lakehouse_catalog: None,
+            base_location: None,
+            adapter_properties: BTreeMap::new(),
+            is_transient: None,
+        })
+    }
+
     fn build_databricks_unity_with_catalogs(
         model: &Value,
         catalog: &CatalogSpecView<'_>,
@@ -2124,6 +2186,7 @@ mod default_relation_tests {
             AdapterType::Snowflake => "snowflake_attr".to_string(),
             AdapterType::Bigquery => "bigquery_attr".to_string(),
             AdapterType::Databricks => "databricks_attr".to_string(),
+            AdapterType::Spark => "databricks_attr".to_string(),
             AdapterType::DuckDB | AdapterType::LakeCompute => "duckdb_attr".to_string(),
             _ => panic!("Not yet supported"),
         }
@@ -2191,6 +2254,79 @@ mod default_relation_tests {
         let view = catalogs.view().expect("valid v2 view");
         validate_catalogs(&view, Path::new("<test>")).expect("valid v2 catalogs");
         catalogs
+    }
+
+    #[test]
+    fn spark_without_selected_catalog_returns_native_relation() {
+        let catalogs = load_catalogs_yaml("catalogs: []\n");
+        let relation = from_model_config_and_catalogs_default(
+            AdapterType::Spark,
+            &model(AdapterType::Spark, json!({})),
+            Arc::new(catalogs),
+        )
+        .expect("Spark should have a native fallback relation");
+
+        assert_eq!(relation.adapter_type, AdapterType::Spark);
+        assert_eq!(relation.catalog_type, CatalogType::SparkNative);
+        assert_eq!(relation.table_format, TableFormat::Default);
+        assert!(relation.catalog_name.is_none());
+    }
+
+    #[test]
+    fn spark_glue_catalog_routes_to_preconfigured_catalog() {
+        let catalogs = load_catalogs_yaml(
+            r#"
+catalogs:
+  - name: logical_glue
+    type: glue
+    table_format: iceberg
+    config:
+      spark:
+        catalog_database: production_glue
+"#,
+        );
+        let relation = from_model_config_and_catalogs_default(
+            AdapterType::Spark,
+            &model(
+                AdapterType::Spark,
+                json!({ "catalog_name": "logical_glue" }),
+            ),
+            Arc::new(catalogs),
+        )
+        .expect("Spark Glue catalog should build");
+
+        assert_eq!(relation.catalog_type, CatalogType::Glue);
+        assert_eq!(relation.table_format, TableFormat::Iceberg);
+        assert_eq!(relation.file_format.as_deref(), Some("iceberg"));
+        assert_eq!(
+            relation.catalog_database.as_deref(),
+            Some("production_glue")
+        );
+    }
+
+    #[test]
+    fn spark_iceberg_rest_defaults_catalog_database_to_logical_name() {
+        let catalogs = load_catalogs_yaml(
+            r#"
+catalogs:
+  - name: polaris
+    type: iceberg_rest
+    table_format: iceberg
+    config:
+      spark: {}
+"#,
+        );
+        let relation = from_model_config_and_catalogs_default(
+            AdapterType::Spark,
+            &model(AdapterType::Spark, json!({ "catalog_name": "polaris" })),
+            Arc::new(catalogs),
+        )
+        .expect("Spark Iceberg REST catalog should build");
+
+        assert_eq!(relation.catalog_type, CatalogType::IcebergRest);
+        assert_eq!(relation.table_format, TableFormat::Iceberg);
+        assert_eq!(relation.file_format.as_deref(), Some("iceberg"));
+        assert_eq!(relation.catalog_database.as_deref(), Some("polaris"));
     }
 
     #[test]
@@ -3681,6 +3817,7 @@ impl Object for CatalogRelation {
                     AdapterType::Databricks,
                     AdapterType::Bigquery,
                     AdapterType::DuckDB,
+                    AdapterType::Spark,
                 ],
                 || Self::map_opt_str(self.file_format.clone()),
             ),
@@ -4697,6 +4834,25 @@ mod tests {
 
             assert_eq!(r.catalog_type, CatalogType::Unity);
             assert_eq!(r.external_volume.as_deref(), Some("s3://bucket/root/a"));
+        }
+    }
+
+    #[test]
+    fn dbx_default_relation_without_catalogs_honors_file_format() {
+        // Case is preserved to match dbt-databricks, which does not lowercase.
+        let conf = json!({ "file_format": "ICEBERG" });
+        let ms = [
+            model(AdapterType::Databricks, conf.clone()),
+            model_deprecated_config(conf),
+        ];
+        for m in ms {
+            let r =
+                CatalogRelation::from_model_config_and_catalogs(AdapterType::Databricks, &m, None)
+                    .unwrap();
+
+            assert_eq!(r.table_format, TableFormat::Default);
+            assert_eq!(r.catalog_type, CatalogType::Unity);
+            assert_eq!(r.file_format.as_deref(), Some("ICEBERG"));
         }
     }
 

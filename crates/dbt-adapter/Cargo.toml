@@ -51,7 +51,6 @@ indexmap = { workspace = true, features = ["serde"] }
 md5 = { workspace = true }
 minijinja = { workspace = true, features = ["loader", "deserialization"] }
 minijinja-contrib = { workspace = true, features = ["datetime", "timezone"] }
-once_cell = { workspace = true }
 parking_lot = { workspace = true }
 paste = { workspace = true }
 regex = { workspace = true }

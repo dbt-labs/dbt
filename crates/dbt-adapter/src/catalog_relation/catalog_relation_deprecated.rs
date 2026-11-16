@@ -22,6 +22,7 @@ impl CatalogRelation {
             AdapterType::DuckDB | AdapterType::LakeCompute => {
                 Ok(Self::default_catalog_relation_duckdb())
             }
+            AdapterType::Spark => Ok(Self::default_catalog_relation_spark()),
             _ => Err(AdapterError::new(
                 AdapterErrorKind::Internal,
                 format!("build_relation_catalog cannot be invoked by an adapter {adapter_type:?}"),

@@ -23,7 +23,8 @@
  * letting an escaped string reach the wire.
  */
 
-import type { Asset, ResourceType } from '../../typings/domain/asset';
+import type { Asset, ResourceType } from 'dbt-docs-lib/domain';
+
 import {
   fromExposureDetail,
   fromGroupDetail,

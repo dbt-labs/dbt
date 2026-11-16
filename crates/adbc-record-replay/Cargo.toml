@@ -28,7 +28,6 @@ dbt-adbc = { workspace = true }
 dbt-base = { workspace = true }
 dbt-fusion-workspace-hack = { version = "0.1" }
 dbt-test-primitives = { workspace = true }
-once_cell = { workspace = true }
 parquet = { workspace = true }
 regex = { workspace = true }
 rusqlite = { workspace = true }

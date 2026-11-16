@@ -100,28 +100,33 @@ fn warn_on_unlinked_cloud_project(
     emit_warn_log_from_fs_error(*err);
 }
 
+/// The thread count a run uses: the `--threads` flag, else what the profile's default
+/// connection declares.
+pub fn resolve_threads(
+    dbt_profile: &DbtProfile,
+    num_threads: Option<usize>,
+) -> FsResult<Option<usize>> {
+    if num_threads.is_some() {
+        return Ok(num_threads);
+    }
+    match dbt_profile.default_db_config().get_threads() {
+        // Convert StringOrInteger to Option<usize>
+        Some(StringOrInteger::Integer(n)) => Ok(Some(*n as usize)),
+        Some(StringOrInteger::String(s)) => Ok(Some(s.parse::<usize>().map_err(|_| {
+            fs_err!(
+                ErrorCode::ProfileInvalid,
+                "Invalid number of threads in profiles.yml: {s}",
+            )
+        })?)),
+        None => Ok(None),
+    }
+}
+
 fn resolve_and_set_threads(
     dbt_profile: &mut DbtProfile,
     iarg: &InvocationArgs,
 ) -> FsResult<Option<usize>> {
-    let final_threads = if iarg.num_threads.is_none() {
-        if let Some(threads) = dbt_profile.default_db_config().get_threads() {
-            // Convert StringOrInteger to Option<usize>
-            match threads {
-                StringOrInteger::Integer(n) => Some(*n as usize),
-                StringOrInteger::String(s) => Some(s.parse::<usize>().map_err(|_| {
-                    fs_err!(
-                        ErrorCode::ProfileInvalid,
-                        "Invalid number of threads in profiles.yml: {s}",
-                    )
-                })?),
-            }
-        } else {
-            None
-        }
-    } else {
-        iarg.num_threads
-    };
+    let final_threads = resolve_threads(dbt_profile, iarg.num_threads)?;
 
     dbt_profile.threads = final_threads;
     // Thread count is a target-wide concurrency setting, so it applies to every

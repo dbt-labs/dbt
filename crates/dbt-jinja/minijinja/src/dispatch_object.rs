@@ -194,62 +194,19 @@ impl DispatchObject {
     // Update the get_search_packages method to better match Python's logic
     fn get_search_packages(&self, state: &State<'_, '_>) -> Vec<Option<String>> {
         let root_package = state.env().get_root_package_name();
-
-        match &self.package_name {
-            None => {
-                // When no namespace is specified, return [None]
-                vec![None]
-            }
-            Some(namespace) => {
-                // First check macro_dispatch_order (custom search order)
-                // TODO @venkaa28: I (@akbog) moved the lookup here from the environment
-                // since there was only a single call site for it. However, I don't like that
-                // this would default to empty in the previous implementation.
-                let macro_dispatch_order = {
-                    let value = state.lookup(MACRO_DISPATCH_ORDER, &[]).unwrap_or_default();
-                    let mut value_map = ValueMap::new();
-
-                    if let Ok(keys) = value.try_iter() {
-                        for key in keys {
-                            if let Ok(val) = value.get_item(&key) {
-                                // Convert key to string if needed
-                                value_map.insert(key, val);
-                            }
-                        }
-                    }
-
-                    Arc::new(value_map)
-                };
-                if let Some(order) = macro_dispatch_order.get(&Value::from(namespace.as_str())) {
-                    // Use configured order
-                    order
-                        .downcast_object::<Vec<String>>()
-                        .unwrap_or_else(|| Arc::new(vec![]))
-                        .as_ref()
-                        .iter()
-                        .map(|s| Some(s.clone()))
-                        .collect()
-                } else {
-                    // namespaced dispatch looks if the namespace is a dependency of the root project (all packages)
-                    #[allow(clippy::incompatible_msrv)]
-                    let is_dependency = THREAD_LOCAL_DEPENDENCIES
-                        .get()
-                        .unwrap()
-                        .lock()
-                        .unwrap()
-                        .contains(namespace);
-                    if is_dependency {
-                        // For dependencies without explicit order check the root package first, then the namespace
-                        vec![Some(root_package), Some(namespace.clone())]
-                    } else {
-                        // Default case when namespace is specified, no search order, and the namespace
-                        // is not a dependency of the current package
-                        // Match dbt's behavior of returning [None]
-                        vec![None]
-                    }
-                }
-            }
-        }
+        dispatch_search_packages(
+            self.package_name.as_deref(),
+            &root_package,
+            &state.lookup(MACRO_DISPATCH_ORDER, &[]).unwrap_or_default(),
+            |namespace| {
+                THREAD_LOCAL_DEPENDENCIES
+                    .get()
+                    .unwrap()
+                    .lock()
+                    .unwrap()
+                    .contains(namespace)
+            },
+        )
     }
 
     fn execute_template(
@@ -341,7 +298,38 @@ impl DispatchObject {
         // `template_state` rather than the original caller state.
         template_state.pending_call_site = state.pending_call_site.clone();
 
+        for listener in listeners {
+            listener.on_macro_dependency(template_name);
+        }
+
         func.call(&template_state, &args, listeners).map(Some)
+    }
+}
+
+pub(crate) fn dispatch_search_packages(
+    namespace: Option<&str>,
+    root_package: &str,
+    dispatch_order: &Value,
+    is_dependency: impl Fn(&str) -> bool,
+) -> Vec<Option<String>> {
+    let Some(namespace) = namespace else {
+        return vec![None];
+    };
+    if let Ok(order) = dispatch_order.get_item(&Value::from(namespace)) {
+        if !order.is_undefined() {
+            return order
+                .downcast_object::<Vec<String>>()
+                .unwrap_or_default()
+                .iter()
+                .cloned()
+                .map(Some)
+                .collect();
+        }
+    }
+    if is_dependency(namespace) {
+        vec![Some(root_package.to_string()), Some(namespace.to_string())]
+    } else {
+        vec![None]
     }
 }
 

@@ -1,0 +1,16 @@
+81215d0e:
+- sequence: 0
+  type: execute
+  sql: CREATE OR REPLACE TABLE development.adapters_snowflake_dynamic_table_create_or_alter_iceberg.source_table AS SELECT 1 AS id, 'alice' AS value UNION ALL SELECT 2, 'bob' UNION ALL SELECT 3, 'carol'
+84bdc9d1:
+- sequence: 0
+  type: execute
+  sql: USE DATABASE development
+c5dc8bd7:
+- sequence: 0
+  type: execute
+  sql: CREATE OR ALTER SCHEMA development.adapters_snowflake_dynamic_table_create_or_alter_iceberg
+eb20429a:
+- sequence: 0
+  type: execute
+  sql: CREATE OR REPLACE TABLE development.adapters_snowflake_dynamic_table_create_or_alter_iceberg.coa_marks (name VARCHAR, created_on VARCHAR)

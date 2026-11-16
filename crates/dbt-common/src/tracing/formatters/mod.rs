@@ -1,6 +1,7 @@
 pub mod asset;
 pub mod color;
 pub mod constants;
+pub mod counter;
 pub mod deps;
 pub mod duration;
 pub mod generic;

@@ -42,6 +42,7 @@ use dbt_schemas::schemas::common::NodeDependsOn;
 use dbt_schemas::schemas::common::Rows;
 use dbt_schemas::schemas::packages::DeprecatedDbtPackageLock;
 use dbt_schemas::schemas::project::DbtProject;
+use dbt_schemas::schemas::project::InlineConfigAliasing;
 use dbt_schemas::schemas::project::ResolvableConfig;
 use dbt_schemas::schemas::project::ResolvedConfig;
 use dbt_schemas::schemas::project::UnitTestConfig;
@@ -435,7 +436,8 @@ pub async fn resolve_unit_tests(
                 model: unit_test.model.to_string(),
                 given,
                 expect,
-                versions: None,
+                // The `include`/`exclude` the YAML declares, as in `manifest.json`.
+                versions: declared_versions(unit_test.versions.as_ref()),
                 version: None,
                 overrides: unit_test.overrides.clone(),
             },
@@ -635,6 +637,8 @@ async fn resolve_given_seed(
         adapter_type,
         database,
         schema,
+        None,
+        InlineConfigAliasing::fixed(adapter_type),
         model_name,
         fqn.to_vec(),
         package_name,
@@ -810,6 +814,13 @@ fn parse_version_numbers_yml(value: &dbt_yaml::Value) -> Option<Vec<String>> {
     }
 }
 
+/// The `versions:` block as the node carries it: `include` and `exclude` as declared.
+fn declared_versions(
+    versions: Option<&dbt_yaml::Value>,
+) -> Option<dbt_schemas::schemas::common::IncludeExclude> {
+    dbt_yaml::from_value(versions?.clone()).ok()
+}
+
 fn should_include_version_for_unit_test(
     include: &Option<Vec<String>>,
     exclude: &Option<Vec<String>>,
@@ -854,6 +865,17 @@ mod tests {
         (Arc::new(JinjaEnv::new(env)), calls)
     }
 
+    #[test]
+    fn declared_versions_keeps_include_and_exclude() {
+        let block: dbt_yaml::Value = dbt_yaml::from_str("include: [1, 2]\nexclude: 3\n").unwrap();
+        let got = declared_versions(Some(&block)).expect("a versions block is kept");
+        assert_eq!(
+            serde_json::to_value(&got).unwrap(),
+            serde_json::json!({"include": ["1", "2"], "exclude": "3"}),
+        );
+        assert!(declared_versions(None).is_none());
+    }
+
     #[dbt_runtime::test]
     async fn unit_test_properties_jinja_uses_runtime_worker() -> FsResult<()> {
         assert!(!dbt_runtime::is_pool_worker());
@@ -866,6 +888,7 @@ mod tests {
             &package.dbt_project,
             &Default::default(),
             AdapterType::DuckDB,
+            true,
         )?;
         let entry = MinimalPropertiesEntry {
             name: "runtime_test".to_string(),

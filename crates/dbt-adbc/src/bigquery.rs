@@ -2,6 +2,9 @@
 
 pub const AUTH_TYPE: &str = "adbc.bigquery.sql.auth_type";
 pub const API_ENDPOINT: &str = "adbc.bigquery.sql.api_endpoint";
+// Storage Read API (gRPC) endpoint as `host:port`. Only the Foundry driver
+// reads this key; the canonical driver ignores it.
+pub const STORAGE_READ_API_ENDPOINT: &str = "bigquery.storage_endpoint";
 pub const LOCATION: &str = "adbc.bigquery.sql.location";
 pub const PROJECT_ID: &str = "adbc.bigquery.sql.project_id";
 pub const DATASET_ID: &str = "adbc.bigquery.sql.dataset_id";
@@ -98,6 +101,9 @@ pub const UPDATE_TABLE_COLUMNS_POLICY_TAGS: &str = "adbc.bigquery.table.update_c
 pub const UPDATE_TABLE_DESCRIPTION: &str = "adbc.bigquery.table.update_description";
 pub const UPDATE_DATASET_AUTHORIZE_VIEW_TO_DATASETS: &str =
     "adbc.bigquery.dataset.authorize_view_to_datasets";
+// JSON {project, dataset}: the query returns the dataset's `location` (no row if
+// it doesn't exist), read with datasets.get rather than INFORMATION_SCHEMA.
+pub const GET_DATASET_LOCATION: &str = "bigquery.dataset.get_location";
 
 pub const DATAPROC_REGION: &str = "adbc.bigquery.dataproc.compute_region";
 pub const DATAPROC_PROJECT: &str = "adbc.bigquery.dataproc.project";

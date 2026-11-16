@@ -6,7 +6,7 @@
 //! external) and maps them to their respective on-disk namespaces.
 
 use crate::{
-    CanonicalFqn, CanonicalIdentifier, DataStoreTrait, SchemaEntry, SchemaStoreResult,
+    CanonicalFqn, CanonicalIdentifier, DataStoreTrait, SchemaEntry, SchemaOwner, SchemaStoreResult,
     SchemaStoreTrait, parquet_cache::ParquetSchemaCache,
 };
 use arrow::array::RecordBatch;
@@ -378,6 +378,7 @@ pub struct SchemaStore {
     external: SccHashSet<CanonicalFqn>,
     local: BiMap<CanonicalFqn, UniqueId>,
     state: SchemaStoreState,
+    lookup_errors: RwLock<HashMap<CanonicalFqn, String>>,
 }
 
 impl SchemaStore {
@@ -427,6 +428,7 @@ impl SchemaStore {
             external: SccHashSet::new(),
             local: local.into_iter().collect(),
             state,
+            lookup_errors: RwLock::new(HashMap::new()),
         };
 
         // Register local schemas during construction
@@ -439,6 +441,14 @@ impl SchemaStore {
         }
 
         store
+    }
+
+    /// Retains a metadata lookup failure for this invocation only.
+    pub fn register_lookup_error(&self, cfqn: CanonicalFqn, message: String) {
+        self.lookup_errors
+            .write()
+            .expect("lookup errors lock poisoned")
+            .insert(cfqn, message);
     }
 
     /// Finds the [`LookupEntry`] corresponding to a canonical FQN.
@@ -623,6 +633,14 @@ impl SchemaStore {
 
 #[async_trait::async_trait]
 impl SchemaStoreTrait for SchemaStore {
+    fn lookup_error(&self, cfqn: &CanonicalFqn) -> Option<String> {
+        self.lookup_errors
+            .read()
+            .expect("lookup errors lock poisoned")
+            .get(cfqn)
+            .cloned()
+    }
+
     fn exists(&self, cfqn: &CanonicalFqn) -> bool {
         let entry = self.resolve_lookup_entry_by_cfqn(cfqn);
         entry.as_ref().is_some_and(|entry| self.state.exists(entry))
@@ -633,6 +651,30 @@ impl SchemaStoreTrait for SchemaStore {
             self.state.exists_async(&entry).await
         } else {
             false
+        }
+    }
+
+    fn schema_owner(&self, cfqn: &CanonicalFqn) -> Option<SchemaOwner> {
+        match self.resolve_lookup_entry_by_cfqn(cfqn)? {
+            LookupEntry::Selected(unique_id) => Some(SchemaOwner::Current(unique_id)),
+            LookupEntry::Local(cfqn) => self
+                .local
+                .get_by_left(&cfqn)
+                .cloned()
+                .map(SchemaOwner::Current),
+            LookupEntry::Frontier(cfqn) => self
+                .frontier
+                .get_by_left(&cfqn)
+                .cloned()
+                .map(SchemaOwner::Current),
+            LookupEntry::Deferred(cfqn) => self
+                .deferred
+                .read()
+                .expect("deferred lock poisoned")
+                .get_by_left(&cfqn)
+                .cloned()
+                .map(SchemaOwner::Deferred),
+            LookupEntry::External(_) => None,
         }
     }
 
@@ -686,6 +728,10 @@ impl SchemaStoreTrait for SchemaStore {
         let result = self
             .state
             .register_schema(&entry, original_schema, schema, overwrite)?;
+        self.lookup_errors
+            .write()
+            .expect("lookup errors lock poisoned")
+            .remove(cfqn);
         if let LookupEntry::External(cfqn) = entry {
             let _ = self.external.insert_sync(cfqn);
         }

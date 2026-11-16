@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use dbt_adapter::Column;
 use dbt_adapter::relation::RelationObject;
 use dbt_adapter_core::AdapterType;
 use dbt_jinja_utils::mock_object::MockJinjaObject;
@@ -443,7 +444,7 @@ fn table_materialization_ctas_in_place_for_staged_create_opt_in() {
 
 const SEED_FILE_PATH: &str = "/tmp/jobs/run/seeds/raw_orders.csv";
 
-fn render_load_csv_rows(dbt_version: &str) -> (MacroTestHarness, String) {
+fn render_load_csv_rows(dbt_version: &str, fast: bool) -> (MacroTestHarness, String) {
     let harness = build_harness("iceberg_demo", "ducklake_demo");
     harness
         .mock()
@@ -452,6 +453,15 @@ fn render_load_csv_rows(dbt_version: &str) -> (MacroTestHarness, String) {
         .mock()
         .on("load_dataframe", |_| Ok(Value::UNDEFINED));
     harness.mock().on("add_query", |_| Ok(Value::UNDEFINED));
+    harness
+        .mock()
+        .on("convert_datetimes_to_strs", |args| Ok(args[0].clone()));
+    harness
+        .mock()
+        .on("get_binding_char", |_| Ok(Value::from("?")));
+    harness.mock().on("quote_seed_column", |args| {
+        Ok(args.first().cloned().unwrap_or(Value::UNDEFINED))
+    });
 
     let model = Value::from_serialize(BTreeMap::from([
         ("database", "md_db"),
@@ -469,10 +479,11 @@ fn render_load_csv_rows(dbt_version: &str) -> (MacroTestHarness, String) {
         ),
     ]));
     let config = Arc::new(MockJinjaObject::new());
-    config.on("get", |args| {
+    config.on("get", move |args| {
         let key = args.first().and_then(|v| v.as_str());
         let default = args.get(1).cloned().unwrap_or(Value::UNDEFINED);
         match key {
+            Some("fast") => Ok(Value::from(fast)),
             Some("column_types") => Ok(Value::from_serialize(BTreeMap::from([
                 ("id", "varchar"),
                 ("amount", "decimal(10,2)"),
@@ -504,7 +515,7 @@ fn load_csv_rows_fast_path_calls_load_dataframe() {
     // arguments by position, so this test pins the whole positional contract.
     // The rows and the ingest itself are covered by the Rust tests in
     // `dbt-adapter` (`seed::tests`, `duckdb_seed_ingest_*`).
-    let (harness, rendered) = render_load_csv_rows("2.0.0");
+    let (harness, rendered) = render_load_csv_rows("2.0.0", true);
 
     let calls = harness.mock().observed_calls();
     let load = calls
@@ -535,7 +546,7 @@ fn load_csv_rows_fast_path_calls_load_dataframe() {
 
 #[test]
 fn load_csv_rows_fast_path_keeps_copy_outside_fusion() {
-    let (harness, rendered) = render_load_csv_rows("1.10.0");
+    let (harness, rendered) = render_load_csv_rows("1.10.0", true);
 
     let calls = harness.mock().observed_calls();
     calls.assert_not_called("load_dataframe");
@@ -638,4 +649,152 @@ fn create_csv_table_column_types_win_over_all_varchar() {
         !rendered.contains("bigint"),
         "all_varchar should replace the inferred type, got: {rendered}"
     );
+}
+
+#[test]
+fn load_csv_rows_without_fast_inserts_in_batches() {
+    let (harness, rendered) = render_load_csv_rows("2.0.0", false);
+
+    let calls = harness.mock().observed_calls();
+    calls.assert_not_called("load_dataframe");
+    let insert = calls
+        .to("add_query")
+        .next()
+        .expect("fast: false should insert through add_query");
+    assert!(
+        insert.args[0].to_string().contains("insert into"),
+        "expected a batched insert, got: {}",
+        insert.args[0]
+    );
+    assert!(
+        rendered.contains("values") && rendered.contains("(?,?)"),
+        "each row should use the adapter's binding char, got: {rendered}"
+    );
+}
+
+mod on_schema_change {
+    use super::*;
+
+    fn harness() -> MacroTestHarness {
+        MacroTestHarness::for_adapter(AdapterType::DuckDB)
+            .load_all_macros()
+            .build()
+            .expect("harness should build")
+    }
+
+    fn column(name: &str, data_type: &str) -> Value {
+        Value::from_object(Column::new(
+            AdapterType::DuckDB,
+            name.to_string(),
+            data_type.to_string(),
+            None,
+            None,
+            None,
+        ))
+    }
+
+    fn render_diff(source: Vec<Value>, target: Vec<Value>) -> String {
+        let ctx = BTreeMap::from([
+            ("source".to_string(), Value::from(source)),
+            ("target".to_string(), Value::from(target)),
+        ]);
+        harness()
+            .render(
+                "{{ diff_column_data_types(source, target) | map(attribute='column_name') | list }}",
+                ctx,
+            )
+            .expect("diff should render")
+    }
+
+    /// https://github.com/dbt-labs/dbt/issues/16353
+    #[test]
+    fn same_types_in_different_spellings_are_not_changes() {
+        let source = vec![
+            column("id", "integer"),
+            column("big", "bigint"),
+            column("dbl", "double"),
+            column("dec", "decimal(18, 3)"),
+            column("txt", "VARCHAR"),
+            column("dt", "date"),
+            column("ts", "timestamp"),
+            column("flg", "boolean"),
+        ];
+        let target = vec![
+            column("id", "INTEGER"),
+            column("big", "BIGINT"),
+            column("dbl", "DOUBLE"),
+            column("dec", "DECIMAL(18,3)"),
+            column("txt", "VARCHAR"),
+            column("dt", "DATE"),
+            column("ts", "TIMESTAMP"),
+            column("flg", "BOOLEAN"),
+        ];
+        assert_eq!(render_diff(source, target).trim(), "[]");
+    }
+
+    #[test]
+    fn real_type_changes_are_still_reported() {
+        let source = vec![
+            column("id", "bigint"),
+            column("dec", "decimal(18, 4)"),
+            column("ts", "timestamptz"),
+            column("same", "integer"),
+        ];
+        let target = vec![
+            column("id", "INTEGER"),
+            column("dec", "DECIMAL(18,3)"),
+            column("ts", "TIMESTAMP"),
+            column("same", "INTEGER"),
+        ];
+        assert_eq!(render_diff(source, target).trim(), "['id', 'dec', 'ts']");
+    }
+
+    fn render_name_diff(source: Vec<Value>, target: Vec<Value>) -> String {
+        let ctx = BTreeMap::from([
+            ("source".to_string(), Value::from(source)),
+            ("target".to_string(), Value::from(target)),
+        ]);
+        harness()
+            .render(
+                "{{ diff_columns(source, target) | map(attribute='name') | list }}",
+                ctx,
+            )
+            .expect("diff should render")
+    }
+
+    #[test]
+    fn column_names_differing_only_in_ascii_case_are_the_same_column() {
+        let source = vec![column("id", "integer"), column("Amount", "integer")];
+        let target = vec![column("ID", "INTEGER"), column("amount", "INTEGER")];
+        assert_eq!(
+            render_name_diff(source.clone(), target.clone()).trim(),
+            "[]"
+        );
+        assert_eq!(render_diff(source, target).trim(), "[]");
+    }
+
+    #[test]
+    fn column_names_differing_in_non_ascii_case_are_different_columns() {
+        let source = vec![column("É", "integer")];
+        let target = vec![column("é", "INTEGER")];
+        assert_eq!(render_name_diff(source, target).trim(), "['É']");
+    }
+
+    #[test]
+    fn columns_really_missing_are_still_reported() {
+        let source = vec![column("id", "integer"), column("newcol", "integer")];
+        let target = vec![column("ID", "INTEGER"), column("flg", "BOOLEAN")];
+        assert_eq!(
+            render_name_diff(source.clone(), target.clone()).trim(),
+            "['newcol']"
+        );
+        assert_eq!(render_name_diff(target, source).trim(), "['flg']");
+    }
+
+    #[test]
+    fn columns_missing_on_either_side_are_not_type_changes() {
+        let source = vec![column("only_source", "integer")];
+        let target = vec![column("only_target", "VARCHAR")];
+        assert_eq!(render_diff(source, target).trim(), "[]");
+    }
 }

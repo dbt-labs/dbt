@@ -10,7 +10,7 @@ use dbt_common::tracing::dbt_emit::emit_warn_log_from_fs_error;
 use dbt_common::{ErrorCode, FsResult, error::AbstractLocation, fs_err};
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::listener::DefaultJinjaTypeCheckEventListenerFactory;
-use dbt_jinja_utils::phases::parse::ParseAdapterScopes;
+use dbt_jinja_utils::phases::AdapterScopes;
 use dbt_jinja_utils::utils::dependency_package_name_from_ctx;
 use dbt_schemas::schemas::common::{DbtMaterialization, DbtQuoting, ResolvedQuoting};
 use dbt_schemas::schemas::dbt_column::process_columns;
@@ -26,7 +26,6 @@ use dbt_schemas::{
     },
     state::{DbtPackage, DbtRuntimeConfig},
 };
-use minijinja::MacroSpans;
 
 use super::resolve_properties::MinimalPropertiesEntry;
 use crate::dbt_project_config::{
@@ -53,21 +52,17 @@ pub async fn resolve_analyses(
     analysis_properties: &mut BTreeMap<String, MinimalPropertiesEntry>,
     database: &str,
     schema: &str,
-    parse_adapter_scopes: &ParseAdapterScopes,
+    parse_adapter_scopes: &Arc<AdapterScopes>,
     // The target's default adapter.
     default_adapter: AdapterType,
     package_name: &str,
     env: Arc<JinjaEnv>,
-    base_ctx: &BTreeMap<String, minijinja::Value>,
+    base_ctx: &Arc<BTreeMap<String, minijinja::Value>>,
     runtime_config: Arc<DbtRuntimeConfig>,
     root_runtime_config: Arc<DbtRuntimeConfig>,
     token: &CancellationToken,
-) -> FsResult<(
-    HashMap<String, Arc<DbtAnalysis>>,
-    HashMap<String, (String, MacroSpans)>,
-)> {
+) -> FsResult<HashMap<String, Arc<DbtAnalysis>>> {
     let mut analyses: HashMap<String, Arc<DbtAnalysis>> = HashMap::new();
-    let mut rendering_results: HashMap<String, (String, MacroSpans)> = HashMap::new();
     let jinja_type_checking_event_listener_factory =
         Arc::new(DefaultJinjaTypeCheckEventListenerFactory::default());
 
@@ -86,17 +81,22 @@ pub async fn resolve_analyses(
             )
         },
         default_adapter,
-    )?;
+    )?
+    .with_adapter_override(arg.adapter_override);
 
     let render_ctx = RenderCtx {
         inner: Arc::new(RenderCtxInner {
             args: arg.clone(),
             root_project_name: root_package.dbt_project.name.clone(),
             config_resolver,
+            adapter_hint: None,
+            adapter_layer: None,
+            parse_adapter_scopes: Some(parse_adapter_scopes.clone()),
+            adapter_quoting: root_project_configs.adapter_quoting.clone(),
             package_quoting,
             uses_snapshot_fqn: false,
             defer_render_errors_to_compile: true,
-            base_ctx: base_ctx.clone(),
+            base_ctx: Arc::clone(base_ctx),
             package_name: package_name.to_string(),
             adapter_type: default_adapter,
             database: database.to_string(),
@@ -140,9 +140,9 @@ pub async fn resolve_analyses(
         asset: dbt_asset,
         sql_file_info,
         config: analysis_config,
+        adapter,
         raw_code,
-        rendered_sql,
-        macro_spans,
+        macro_dependencies,
         properties: maybe_properties,
         status,
         render_error_deferred,
@@ -166,11 +166,10 @@ pub async fn resolve_analyses(
         let unique_id = get_unique_id(analysis_name, package_name, None, "analysis");
         // An analysis is compiled rather than materialized, but it still renders
         // refs and dispatches macros, so which adapter it renders *as* is a real
-        // choice. Resolved the same way every other node type resolves it.
+        // choice.
         let selected_adapter = select_node_adapter(
-            arg,
             analysis_config.adapter,
-            None,
+            adapter,
             default_adapter,
             &dbt_asset.path,
         )?;
@@ -208,12 +207,14 @@ pub async fn resolve_analyses(
         )?;
 
         let is_enabled = status != ModelStatus::Disabled;
-        let macro_depends_on = all_depends_on
+        let mut macro_depends_on = all_depends_on
             .get(&format!("{package_name}.{analysis_name}"))
             .cloned()
-            .unwrap_or_default()
-            .into_iter()
-            .collect();
+            .unwrap_or_default();
+        if selected_adapter != default_adapter {
+            macro_depends_on.extend(macro_dependencies);
+        }
+        let macro_depends_on = macro_depends_on.into_iter().collect();
 
         let (node_database, node_schema) = node_starting_database_and_schema(
             Some(parse_adapter_scopes),
@@ -331,12 +332,6 @@ pub async fn resolve_analyses(
 
         if status == ModelStatus::Enabled || render_error_deferred {
             analyses.insert(unique_id.to_owned(), Arc::new(dbt_analysis));
-            if status == ModelStatus::Enabled {
-                rendering_results.insert(
-                    unique_id.to_owned(),
-                    (rendered_sql.clone(), macro_spans.clone()),
-                );
-            }
         }
     }
 
@@ -352,5 +347,5 @@ pub async fn resolve_analyses(
         }
     }
 
-    Ok((analyses, rendering_results))
+    Ok(analyses)
 }

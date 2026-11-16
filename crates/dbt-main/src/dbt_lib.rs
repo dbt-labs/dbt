@@ -3,12 +3,13 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
+use dbt_adapter::AdapterType;
 use dbt_common::tracing::formatters::duration::FixedWidthDuration;
 use dbt_common::tracing::formatters::node::{NodeAction, NodeTypeFixedWidth};
 
 use dbt_adapter::load_store::ResultStore;
 use dbt_adapter::{
-    Adapter, AdapterType, convert_macro_result_to_record_batch,
+    Adapter, convert_macro_result_to_record_batch,
     relation::{RelationObject, create_relation},
 };
 use dbt_clap_core::{
@@ -40,7 +41,7 @@ use dbt_common::{
             get_error_count, return_exit_code_from_error_counter,
         },
         emit::emit_info_event,
-        invocation::create_invocation_attributes,
+        invocation::{create_invocation_attributes, record_resolved_full_refresh},
         metrics::get_metric,
         span_info::record_span_status,
     },
@@ -65,10 +66,10 @@ use dbt_loader::{
 };
 use dbt_login::{execute_login, execute_login_status};
 use dbt_schema_store::{DataStoreTrait, SchemaStoreTrait};
-use dbt_schemas::schemas::DbtCommandExecutionArtifacts;
 use dbt_schemas::schemas::selection_override::{
     SAMPLE_CAP, format_sample, reconcile_reported_nodes, resolve_selection_override,
 };
+use dbt_schemas::schemas::{DbtCommandExecutionArtifacts, InvocationFacts};
 use dbt_schemas::{
     man::execute_man_command,
     schemas::legacy_catalog::{DbtCatalog, build_catalog},
@@ -238,12 +239,15 @@ pub async fn setup_and_execute_fs(
     // Written at exit so every path (success / error / warm-parse / Ctrl+C) is covered.
     let invocation_ctx = if eval_arg.write_metadata {
         let common = cli.common_args();
-        Some(InvocationContext::new(
-            eval_arg.metadata_dir(),
-            &eval_arg.io,
-            eval_arg.command,
-            &common,
-        ))
+        Some(
+            InvocationContext::new(
+                eval_arg.metadata_dir(),
+                &eval_arg.io,
+                eval_arg.command,
+                &common,
+            )
+            .with_vars(&eval_arg.vars),
+        )
     } else {
         None
     };
@@ -279,7 +283,7 @@ pub async fn setup_and_execute_fs(
             Err(e) if e.exit_status() == Some(0) => "success",
             Err(_) => "error",
         };
-        ctx.write(status);
+        ctx.write(status, artifacts_sink.invocation_facts.as_ref());
         // The row for this invocation only exists now, so any index or
         // information schema written during the command is missing it. Bring
         // that one table up to date.
@@ -334,6 +338,19 @@ is false. This should not happen."
             error,
             artifacts: artifacts_sink,
         }),
+    }
+}
+
+/// What the loaded project says about the target the run resolved, for the invocation record.
+fn invocation_facts(resolved_state: &ResolverState) -> InvocationFacts {
+    let profile = &resolved_state.dbt_profile;
+    InvocationFacts {
+        target_name: Some(profile.target.clone()).filter(|t| !t.is_empty()),
+        adapter_type: Some(resolved_state.adapter_type.to_string()),
+        target_database: Some(profile.database.clone()).filter(|d| !d.is_empty()),
+        target_schema: Some(profile.schema.clone()).filter(|s| !s.is_empty()),
+        target_threads: profile.threads.and_then(|t| i32::try_from(t).ok()),
+        node_count: i32::try_from(resolved_state.nodes.node_count()).ok(),
     }
 }
 
@@ -396,7 +413,7 @@ async fn do_execute_fs(
 
     warn_unused_engine_env_vars();
     warn_if_legacy_run_cache_mode_flag_used();
-    install_feature_flags(&cli.common_args().features);
+    install_feature_flags(&cli.common_args().features, &feature_stack);
 
     // Current versions of rustls require us to explicitly install a default provider.
     // The default provider can only be installed once per process, so
@@ -526,6 +543,18 @@ async fn do_execute_fs(
             .will_init_project(eval_arg.io.invocation_id, &cli, init_args)
             .await?;
 
+        // An extension that supports a mode handles it in its hooks and exits.
+        if let Some(mode) = &init_args.mode {
+            emit_error_log_message(
+                ErrorCode::UnsupportedFusionFeature,
+                format!(
+                    "`dbt init {}` is not available in this build of dbt.",
+                    mode.name()
+                ),
+            );
+            return Err(FsError::exit_with_status(2));
+        }
+
         emit_info_progress_message(ProgressMessage::new_from_action_and_target(
             INSTALLING.to_string(),
             "dbt project and profile setup".to_string(),
@@ -617,6 +646,28 @@ async fn do_execute_fs(
     .await
 }
 
+/// [`execute_setup_and_all_phases`] as a boxed future made in this crate: a
+/// caller in another crate polls it through the box, rather than compiling its
+/// own copy of the whole pipeline (an async fn's body is compiled where it is
+/// polled).
+pub fn execute_setup_and_all_phases_boxed<'a>(
+    eval_arg: &'a EvalArgs,
+    cli: &'a Cli,
+    artifacts_sink: &'a mut DbtCommandExecutionArtifacts,
+    feature_stack: Arc<FeatureStack>,
+    task_runner_hooks_factory: Arc<dyn TaskRunnerHooksFactory>,
+    token: &'a CancellationToken,
+) -> std::pin::Pin<Box<dyn Future<Output = FsResult<()>> + Send + 'a>> {
+    Box::pin(execute_setup_and_all_phases(
+        eval_arg,
+        cli,
+        artifacts_sink,
+        feature_stack,
+        task_runner_hooks_factory,
+        token,
+    ))
+}
+
 #[allow(clippy::cognitive_complexity)]
 pub async fn execute_setup_and_all_phases(
     eval_arg: &EvalArgs,
@@ -672,10 +723,12 @@ pub async fn execute_setup_and_all_phases(
     result
 }
 
-/// Resolves this invocation's feature flags and makes them current.
-fn install_feature_flags(cli_features: &[String]) {
+/// Resolves this invocation's feature flags and makes them current. The flags that turn on the
+/// binary's experimentals are known flags too, though they aren't in `dbt_flags::ALL`.
+fn install_feature_flags(cli_features: &[String], feature_stack: &FeatureStack) {
     let snapshot = dbt_flags::FlagSnapshot::builder().cli(cli_features).build();
-    for warning in snapshot.warnings(dbt_flags::ALL) {
+    let known = feature_stack.experimentals.experimentals.known_flags();
+    for warning in snapshot.warnings(&known) {
         emit_warn_log_message(ErrorCode::InvalidConfig, warning);
     }
     dbt_flags::install(snapshot);
@@ -824,6 +877,7 @@ impl<'a> AllPhasesExecutor<'a> {
             arg_for_retry.command = command_for_retry.as_command();
             arg_for_retry.static_analysis = effective_sa;
             arg_for_retry.full_refresh = retry_state.original_full_refresh;
+            record_resolved_full_refresh(retry_state.original_full_refresh);
 
             // Create a custom schedule for the retryable nodes from the original run.
             // This keeps retry bounded to nodes recorded in run_results.json instead
@@ -1266,6 +1320,8 @@ impl<'a> AllPhasesExecutor<'a> {
 
         let (mut compilation, jinja_env, compilation_cache_changes) =
             self.load_and_resolve_state(token).await?;
+        self.captured_artifacts.invocation_facts =
+            Some(invocation_facts(&compilation.resolved_state));
 
         // Inform the user that schemas and CLL require --static-analysis strict.
         // CLL is auto-enabled when generate-info-schema (or write-index) meets
@@ -1796,6 +1852,7 @@ impl<'a> AllPhasesExecutor<'a> {
                                         unique_id: uid.clone(),
                                         num_rows: None,
                                         rows_affected: None,
+                                        idle_time_ms: None,
                                         start_time: now,
                                         end_time: now,
                                         status: dbt_common::stats::NodeStatus::Errored,
@@ -1855,6 +1912,9 @@ impl<'a> AllPhasesExecutor<'a> {
                 }
             };
 
+        // Tasks are done. Release their freed memory before the artifacts are built.
+        crate::utils::release_free_heap_memory();
+
         let resolved_state = Arc::clone(&run_task_results.resolved_state);
 
         // Prepare artifact
@@ -1888,6 +1948,9 @@ impl<'a> AllPhasesExecutor<'a> {
 
         // Save artifact for callers
         self.captured_artifacts.run_results = Some(run_results_artifact);
+        if let Some(Ok(preview)) = &run_task_results.preview {
+            self.captured_artifacts.preview = Some(preview.clone());
+        }
 
         if self.arg.write_metadata {
             write_runtime_results_parquet(
@@ -2280,17 +2343,13 @@ async fn run_docs_generate(
         });
     let providers = (feature_stack.index.providers_factory)(backend);
 
-    let project_dir = &eval_arg.io.in_dir;
     let options = dbt_docs_server::ExportOptions {
         info_schema_dir,
         output_dir,
         duckdb_cdn_base: generate_args.duckdb_cdn_base,
         // Consent is resolved here because the project and profile are only
         // readable on this machine; the browser reads the answer, not the inputs.
-        analytics_enabled: std::env::var("DO_NOT_TRACK").as_deref() != Ok("1")
-            && cli
-                .common_args()
-                .get_send_anonymous_usage_stats_for_project(project_dir),
+        analytics_enabled: cli.common_args().get_send_anonymous_usage_stats(),
     };
 
     let summary = match dbt_docs_server::export_site(&providers, &options) {
@@ -2460,7 +2519,9 @@ async fn build_index_for_docs(
         &compile_arg.io,
         FsCommand::Compile,
         &compile_cli.common_args(),
-    );
+    )
+    .with_vars(&compile_arg.vars);
+    let mut compile_artifacts = DbtCommandExecutionArtifacts::default();
 
     let hooks_factory = Arc::clone(&feature_stack.task_runner.hooks_factory);
     // Boxed: this nests the whole phase pipeline's future inside the one `do_execute_fs`
@@ -2469,7 +2530,7 @@ async fn build_index_for_docs(
     let result = Box::pin(execute_setup_and_all_phases(
         &compile_arg,
         &compile_cli,
-        &mut DbtCommandExecutionArtifacts::default(),
+        &mut compile_artifacts,
         feature_stack,
         hooks_factory,
         token,
@@ -2484,11 +2545,14 @@ async fn build_index_for_docs(
         Err(err) if err.exit_status() == Some(0) => None,
         Err(err) => Some(err),
     };
-    invocation_ctx.write(if failure.is_some() {
-        "error"
-    } else {
-        "success"
-    });
+    invocation_ctx.write(
+        if failure.is_some() {
+            "error"
+        } else {
+            "success"
+        },
+        compile_artifacts.invocation_facts.as_ref(),
+    );
     if let Some(err) = failure {
         return Err(err);
     }
@@ -2508,8 +2572,7 @@ async fn run_docs_serve(
     common_args: &dbt_clap_core::CommonArgs,
 ) -> FsResult<()> {
     let has_dbt_state = common_args.get_manage_state(project_dir, false);
-    let send_anonymous_usage_stats =
-        common_args.get_send_anonymous_usage_stats_for_project(project_dir);
+    let send_anonymous_usage_stats = common_args.get_send_anonymous_usage_stats();
     let args = dbt_docs_server::DocsServeArgs {
         target_path: serve_args.target_path,
         host: serve_args.host,
@@ -2570,8 +2633,7 @@ async fn run_docs_serve(
             info_schema_dir: info_schema_dir.clone(),
             output_dir: site_dir.clone(),
             duckdb_cdn_base: None,
-            analytics_enabled: std::env::var("DO_NOT_TRACK").as_deref() != Ok("1")
-                && send_anonymous_usage_stats,
+            analytics_enabled: send_anonymous_usage_stats,
         };
         match dbt_docs_server::export_site(&providers, &options) {
             Ok(summary) => eprintln!(

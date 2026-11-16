@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use crate::microbatch::BatchContext;
 use chrono_tz::Tz;
+use dbt_adapter::Adapter;
 use dbt_adapter::cast_util::downcast_value_to_dyn_base_relation;
 use dbt_adapter::formatter::SqlLiteralFormatter;
 use dbt_adapter::relation::create_relation_from_node;
@@ -24,6 +25,7 @@ use dbt_schemas::schemas::{DbtModel, InternalDbtNode};
 use dbt_schemas::state::{DbtRuntimeConfig, NodeResolverTracker};
 use dbt_tasks_core::task::run_blocking_task_operation;
 use minijinja::Value;
+use minijinja::value::OverlayMap;
 use minijinja_contrib::modules::py_datetime::datetime::PyDateTime;
 use minijinja_contrib::modules::pytz::PytzTimezone;
 use tracing::warn;
@@ -39,7 +41,7 @@ pub fn extend_microbatch_node_context(
     model: &DbtModel,
     node_resolver: Arc<dyn NodeResolverTracker>,
     runtime_config: &DbtRuntimeConfig,
-    jinja_context: &mut BTreeMap<String, Value>,
+    jinja_context: &mut OverlayMap,
     event_time_mapping: Arc<BTreeMap<String, String>>,
 ) {
     // Create microbatch ref context for this batch
@@ -48,9 +50,6 @@ pub fn extend_microbatch_node_context(
         batch_ctx.event_time_end,
         event_time_mapping,
     );
-    // TODO(chasewalden): maybe we make a "proxy" type that impls `Object`
-    //  could be cleaner/more performant than re-building the entire BTreeMap
-
     // TODO(chasewalden): we likely need to create a proxy for `{{ this }}` to detect if it is used.
 
     // Replace the ref function with one that has microbatch context
@@ -151,7 +150,7 @@ pub fn extend_microbatch_node_context(
     ]);
 
     // Update the model in context to include batch info
-    if let Some(model_value) = jinja_context.get("model").cloned() {
+    if let Some(model_value) = jinja_context.get("model") {
         if model_value.as_object().is_some() {
             let node = model_value
                 .downcast_object_ref::<dbt_schemas::jinja_node::LazyNodeContext>()
@@ -201,7 +200,10 @@ pub fn extend_microbatch_node_context(
                 Some(Value::from_object(config))
             };
 
-            if let Some(config) = jinja_context.get("config").and_then(&update_run_config) {
+            if let Some(config) = jinja_context
+                .get("config")
+                .and_then(|config| update_run_config(&config))
+            {
                 jinja_context.insert("config".to_string(), config);
             }
 
@@ -238,7 +240,7 @@ pub fn extend_microbatch_node_context(
 pub fn render_batch_sql(
     raw_sql: &str,
     jinja_env: Arc<JinjaEnv>,
-    jinja_context: &BTreeMap<String, Value>,
+    jinja_context: &OverlayMap,
     out_dir: &Path,
 ) -> FsResult<String> {
     // Render the raw SQL through Jinja
@@ -288,14 +290,14 @@ pub fn build_event_time_mapping(
 pub async fn is_incremental(
     model: &DbtModel,
     full_refresh: bool,
-    adapter_type: AdapterType,
+    adapter: Arc<Adapter>,
     jinja_env: Arc<JinjaEnv>,
 ) -> bool {
     if full_refresh {
         return false;
     }
 
-    let relation = match create_relation_from_node(adapter_type, model, None) {
+    let relation = match create_relation_from_node(adapter.adapter_type(), model, None) {
         Ok(rel) => rel,
         Err(e) => {
             warn!(
@@ -314,9 +316,6 @@ pub async fn is_incremental(
     // it opens a connection and has to run on a `dbt-runtime` worker. The
     // `State` is built there too: it borrows the environment and is not `Send`.
     let existing_table = run_blocking_task_operation(move || {
-        let Some(adapter) = jinja_env.get_base_adapter() else {
-            return false;
-        };
         let state = jinja_env.new_state_with_context(BTreeMap::new());
         adapter
             .get_relation(&state, &database, &schema, &identifier, false)
