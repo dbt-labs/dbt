@@ -1545,6 +1545,7 @@ macro_types: Dict[str, int] = {
     "str": 0,
     "string": 0,
     "bool": 0,
+    "boolean": 0,
     "int": 0,
     "integer": 0,
     "float": 0,

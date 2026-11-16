@@ -6,6 +6,7 @@ def test_valid_names() -> None:
         "str",
         "string",
         "bool",
+        "boolean",
         "int",
         "integer",
         "float",
@@ -17,6 +18,8 @@ def test_valid_names() -> None:
         "column",
         "list[dict[str, any]]",
         "dict[str, list[int]]",
+        "optional[boolean]",
+        "list[boolean]",
     ]
 
     for name in valid_names:
