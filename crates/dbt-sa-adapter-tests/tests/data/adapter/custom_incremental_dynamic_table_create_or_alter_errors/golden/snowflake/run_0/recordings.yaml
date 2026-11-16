@@ -1,0 +1,32 @@
+183c9c86:
+- sequence: 0
+  type: execute
+  sql: CREATE OR ALTER SCHEMA development.adapters_snowflake_custom_incremental_dynamic_table_create_or_alter_errors
+1b09af0f:
+- sequence: 0
+  type: execute
+  sql: INSERT INTO development.adapters_snowflake_custom_incremental_dynamic_table_create_or_alter_errors.orders VALUES (1, 10.00, 'a')
+6c80bb16:
+- sequence: 0
+  type: execute
+  sql: DROP DYNAMIC TABLE IF EXISTS development.adapters_snowflake_custom_incremental_dynamic_table_create_or_alter_errors.err_type_narrow
+84bdc9d1:
+- sequence: 0
+  type: execute
+  sql: USE DATABASE development
+9b50df11:
+- sequence: 0
+  type: execute
+  sql: DROP DYNAMIC TABLE IF EXISTS development.adapters_snowflake_custom_incremental_dynamic_table_create_or_alter_errors.ok_drop_column
+b0ca708f:
+- sequence: 0
+  type: execute
+  sql: DROP DYNAMIC TABLE IF EXISTS development.adapters_snowflake_custom_incremental_dynamic_table_create_or_alter_errors.err_reorder
+b3694133:
+- sequence: 0
+  type: execute
+  sql: CREATE OR REPLACE TABLE development.adapters_snowflake_custom_incremental_dynamic_table_create_or_alter_errors.orders (order_id int, amount number(10,2), note varchar(100)) CHANGE_TRACKING = TRUE
+bfb4f572:
+- sequence: 0
+  type: execute
+  sql: DROP DYNAMIC TABLE IF EXISTS development.adapters_snowflake_custom_incremental_dynamic_table_create_or_alter_errors.err_type_change

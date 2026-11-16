@@ -1,0 +1,3 @@
+models:
+  - name: ci_attrs
+    description: orders merged from their changes

@@ -1,0 +1,14 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/schema.yml
+   Parsing models/sources.yml
+   Parsing models/ci_attrs.sql
+[PASS] replaced: refresh_mode is CUSTOM_INCREMENTAL
+[PASS] replaced: cluster by amount
+[PASS] replaced: initialization warehouse
+[PASS] replaced: tag mytag = v1
+[PASS] replaced: row access policy RAP
+[PASS] replaced: comment from persist_docs
+[PASS] replaced: out-of-band SELECT grant to PUBLIC
+==================== Execution Summary =====================
+Finished 'run-operation' successfully for target 'snowflake' [duration]

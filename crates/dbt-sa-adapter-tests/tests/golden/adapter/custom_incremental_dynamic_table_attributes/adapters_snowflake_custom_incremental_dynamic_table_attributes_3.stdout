@@ -1,0 +1,14 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/schema.yml
+   Parsing models/sources.yml
+   Parsing models/ci_attrs.sql
+[PASS] created: refresh_mode is CUSTOM_INCREMENTAL
+[PASS] created: cluster by order_id
+[PASS] created: initialization warehouse
+[PASS] created: tag mytag = v1
+[PASS] created: row access policy RAP
+[PASS] created: comment from persist_docs
+[PASS] created: out-of-band SELECT grant to PUBLIC
+==================== Execution Summary =====================
+Finished 'run-operation' successfully for target 'snowflake' [duration]

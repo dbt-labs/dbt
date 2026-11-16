@@ -1,0 +1,14 @@
+flags:
+  send_anonymous_usage_stats: false
+  snowflake_dynamic_table_create_or_alter: true
+name: test
+profile: fusion_tests
+
+macro-paths: ["macros"]
+
+vars:
+  cluster_key: order_id
+
+models:
+  test:
+    +static_analysis: off

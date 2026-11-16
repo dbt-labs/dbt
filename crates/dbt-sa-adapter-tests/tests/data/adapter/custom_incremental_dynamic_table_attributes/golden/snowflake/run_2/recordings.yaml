@@ -1,0 +1,4 @@
+578fc7c2:
+- sequence: 0
+  type: execute
+  sql: GRANT SELECT ON DYNAMIC TABLE development.adapters_snowflake_custom_incremental_dynamic_table_attributes.ci_attrs TO ROLE PUBLIC

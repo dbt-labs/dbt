@@ -1,0 +1,12 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/schema.yml
+   Parsing models/sources.yml
+   Parsing models/ci_attrs.sql
+ Rendering models/ci_attrs.sql
+   Running models/ci_attrs.sql
+ Succeeded model adapters_snowflake_custom_incremental_dynamic_table_attributes.ci_attrs (dynamic_table) [1 of 1 in duration]
+==================== Execution Summary =====================
+Finished 'run' successfully for target 'snowflake' [duration]
+Processed: 1 model
+Summary: 1 total | 1 success
