@@ -1,0 +1,6 @@
+kind: Fixes
+body: Recognize Databricks row_filter, persist_constraints, environment_key and environment_dependencies, BigQuery enable_change_history, Snowflake snapshot table_format and iceberg_version, function hooks, and saved query export database configs in JSON schema validation
+time: 2026-11-13T13:00:00.000000+05:30
+custom:
+    Author: tauhid621
+    Issue: "16767"
