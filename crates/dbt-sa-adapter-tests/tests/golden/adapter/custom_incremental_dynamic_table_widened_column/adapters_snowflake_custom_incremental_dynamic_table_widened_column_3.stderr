@@ -1,0 +1,5 @@
+[warning] [JinjaWarn (dbt1071)]: No configuration changes were identified on: `development.adapters_snowflake_custom_incremental_dynamic_table_widened_column.orders_merge`. Continuing.
+  --> dbt_internal_packages/dbt-snowflake/macros/materializations/dynamic_table.sql:38:1
+[error] [DbDriverFailed (dbt1308)]: Database Error in model orders_merge (../scratch/target/run/test/models/orders_merge.sql)
+  [Snowflake] 002742 (01000): SQL compilation error: Failed to refresh dynamic table with refresh_trigger MANUAL at data_timestamp 1794806954785 because of the error: SQL compilation error: Target table failed to refresh: String 'a much longer note value' is too long and would be truncated (sqlstate: 01000, vendor_code: 2742)
+  (in run/test/models/orders_merge.sql)

@@ -1,0 +1,8 @@
+3ab7eaad:
+- sequence: 0
+  type: execute
+  sql: INSERT INTO development.adapters_snowflake_custom_incremental_dynamic_table_widened_column.orders VALUES (2, 'a much longer note value')
+519362d7:
+- sequence: 0
+  type: execute
+  sql: ALTER TABLE development.adapters_snowflake_custom_incremental_dynamic_table_widened_column.orders ALTER COLUMN note SET DATA TYPE varchar(32)

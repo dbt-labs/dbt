@@ -1,0 +1,20 @@
+3dfddee9:
+- sequence: 0
+  type: execute
+  sql: CREATE OR REPLACE TABLE development.adapters_snowflake_custom_incremental_dynamic_table_widened_column.orders (order_id int, note varchar(8)) CHANGE_TRACKING = TRUE
+608eb4f9:
+- sequence: 0
+  type: execute
+  sql: INSERT INTO development.adapters_snowflake_custom_incremental_dynamic_table_widened_column.orders VALUES (1, 'short')
+84bdc9d1:
+- sequence: 0
+  type: execute
+  sql: USE DATABASE development
+95a7c7b1:
+- sequence: 0
+  type: execute
+  sql: CREATE OR ALTER SCHEMA development.adapters_snowflake_custom_incremental_dynamic_table_widened_column
+f9145ce2:
+- sequence: 0
+  type: execute
+  sql: DROP DYNAMIC TABLE IF EXISTS development.adapters_snowflake_custom_incremental_dynamic_table_widened_column.orders_merge

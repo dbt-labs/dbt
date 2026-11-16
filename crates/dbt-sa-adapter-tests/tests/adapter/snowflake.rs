@@ -578,6 +578,38 @@ async fn adapters_snowflake_custom_incremental_dynamic_table_replaced_upstream()
     .await
 }
 
+/// A merge CI DT whose source column is widened after it exists. With the CREATE OR ALTER flag off
+/// the refresh fails (the declared type is too narrow); with it on, the next build widens the
+/// column in place.
+#[dbt_runtime::test]
+async fn adapters_snowflake_custom_incremental_dynamic_table_widened_column() -> FsResult<()> {
+    run_fs_record_replay_task_seq(
+        env!("CARGO_MANIFEST_DIR"),
+        &FS_RUNNER,
+        current_function_name!(),
+        "tests/data/adapter/custom_incremental_dynamic_table_widened_column",
+        AdapterType::Snowflake.as_ref(),
+        None,
+        &[
+            AdapterRecordReplayTurn::new("run-operation set_up", &[]), // run_0
+            AdapterRecordReplayTurn::new("run", &[]), // run_1: create, note declared VARCHAR(8)
+            AdapterRecordReplayTurn::new("run-operation widen_note", &[]), // run_2: varchar(32) at the source
+            AdapterRecordReplayTurn::new("run", &[]), // run_3: flag off, the refresh fails (002742, too long)
+            AdapterRecordReplayTurn::new(
+                "run",
+                &[FileOverride {
+                    original: "dbt_project.yml",
+                    overriding_file: "_project_overrides/dbt_project_create_or_alter.yml",
+                }],
+            ), // run_4: flag on, CREATE OR ALTER widens the column, the refresh succeeds
+            AdapterRecordReplayTurn::new("test", &[]), // run_5
+        ],
+        None,
+        &[],
+    )
+    .await
+}
+
 /// A custom incremental dynamic table with `snowflake_dynamic_table_create_or_alter` on: model SQL
 /// edits deploy through CREATE OR ALTER (for changes made after them), a switch to a regular
 /// dynamic table and back replaces.
