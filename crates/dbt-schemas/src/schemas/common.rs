@@ -365,8 +365,12 @@ where
 #[derive(Deserialize, Serialize, Debug, Clone, DbtSchema, PartialEq, Eq)]
 #[allow(non_camel_case_types)]
 pub enum FreshnessStatus {
+    // dbt v1 and the `sources/v3.json` schema spell the statuses in lowercase.
+    #[serde(alias = "pass")]
     Pass,
+    #[serde(alias = "warn")]
     Warn,
+    #[serde(alias = "error")]
     Error,
 }
 
