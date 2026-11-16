@@ -2,6 +2,7 @@ mod timezones;
 
 use chrono::{DateTime, LocalResult, NaiveDateTime, TimeZone};
 use chrono_tz::{Tz, TZ_VARIANTS};
+use minijinja::arg_utils::ArgParser;
 use minijinja::arg_utils::ArgsIter;
 use minijinja::value::mutable_set::MutableSet;
 use minijinja::value::mutable_vec::MutableVec;
@@ -289,8 +290,10 @@ impl Object for CountryMap {
 
 /// The top-level function for `pytz.timezone("America/New_York")`.
 fn timezone(args: &[Value]) -> Result<Value, Error> {
-    // Must provide a string zone name.
-    let tz_name = args.first().and_then(|v| v.as_str()).ok_or_else(|| {
+    // Must provide a string zone name, either positionally or as `zone=...` like pytz.
+    let mut parser = ArgParser::new(args, None);
+    let zone: Option<Value> = parser.get_optional("zone");
+    let tz_name = zone.as_ref().and_then(|v| v.as_str()).ok_or_else(|| {
         Error::new(
             ErrorKind::MissingArgument,
             "timezone() requires a string name argument",
