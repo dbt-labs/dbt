@@ -1875,3 +1875,136 @@ fn duckdb_renders_arrow_timestamp_units_as_its_own_types() {
         "TIMESTAMP WITH TIME ZONE"
     );
 }
+
+#[test]
+fn duckdb_from_arrow_type_keeps_the_list_element_type() {
+    use arrow_schema::{DataType, Field};
+    use std::sync::Arc;
+
+    let item = Arc::new(Field::new("item", DataType::Int64, true));
+    for list in [
+        DataType::List(item.clone()),
+        DataType::LargeList(item.clone()),
+        DataType::ListView(item.clone()),
+        DataType::LargeListView(item),
+    ] {
+        let sql_type = SqlType::from_arrow_type(DuckDB, &list);
+        assert!(
+            matches!(&sql_type, Array(Some(element)) if matches!(**element, BigInt)),
+            "{list} -> {sql_type:?}"
+        );
+    }
+}
+
+#[test]
+fn from_arrow_type_keeps_untyped_lists_for_other_backends() {
+    use arrow_schema::{DataType, Field};
+    use std::sync::Arc;
+
+    let item = Arc::new(Field::new("item", DataType::Int64, true));
+    for backend in [Postgres, Bigquery, Snowflake, Databricks, Redshift] {
+        for list in [
+            DataType::List(item.clone()),
+            DataType::LargeList(item.clone()),
+            DataType::ListView(item.clone()),
+            DataType::LargeListView(item.clone()),
+        ] {
+            let sql_type = SqlType::from_arrow_type(backend, &list);
+            assert!(
+                matches!(sql_type, Array(None)),
+                "{backend}: {list} -> {sql_type:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn duckdb_from_arrow_type_keeps_tinyint_and_unsigned_integers() {
+    use arrow_schema::DataType;
+
+    let render =
+        |data_type: DataType| SqlType::from_arrow_type(DuckDB, &data_type).to_string(DuckDB);
+    assert_eq!(render(DataType::Int8), "TINYINT");
+    assert_eq!(render(DataType::UInt8), "UTINYINT");
+    assert_eq!(render(DataType::UInt16), "USMALLINT");
+    assert_eq!(render(DataType::UInt32), "UINTEGER");
+    assert_eq!(render(DataType::UInt64), "UBIGINT");
+}
+
+#[test]
+fn from_arrow_type_keeps_signed_integer_mapping() {
+    use arrow_schema::DataType;
+
+    let render =
+        |data_type: DataType| SqlType::from_arrow_type(DuckDB, &data_type).to_string(DuckDB);
+    assert_eq!(render(DataType::Int16), "SMALLINT");
+    assert_eq!(render(DataType::Int32), "INT");
+    assert_eq!(render(DataType::Int64), "BIGINT");
+
+    // Backends without unsigned or 8-bit integer types widen them.
+    for backend in [Postgres, Snowflake, Redshift] {
+        let from_arrow = |data_type: DataType| SqlType::from_arrow_type(backend, &data_type);
+        assert!(matches!(from_arrow(DataType::Int8), SmallInt), "{backend}");
+        assert!(matches!(from_arrow(DataType::UInt8), SmallInt), "{backend}");
+        assert!(matches!(from_arrow(DataType::UInt16), Integer), "{backend}");
+        assert!(matches!(from_arrow(DataType::UInt32), BigInt), "{backend}");
+        assert!(matches!(from_arrow(DataType::UInt64), BigInt), "{backend}");
+    }
+}
+
+#[test]
+fn duckdb_renders_lists_with_postfix_brackets() {
+    let list = |element: SqlType| Array(Some(Box::new(element)));
+    assert_eq!(list(Integer).to_string(DuckDB), "INT[]");
+    assert_eq!(
+        list(list(SqlType::varchar(None))).to_string(DuckDB),
+        "VARCHAR[][]"
+    );
+}
+
+#[test]
+fn other_backends_keep_their_list_rendering() {
+    let list = Array(Some(Box::new(Integer)));
+    assert_eq!(list.to_string(Bigquery), "ARRAY<INT64>");
+    assert_eq!(list.to_string(Snowflake), "ARRAY(INT)");
+    assert_eq!(list.to_string(Postgres), "INT[]");
+    assert_eq!(list.to_string(ClickHouse), "Array(Int32)");
+    assert_eq!(list.to_string(Databricks), "ARRAY<INT>");
+}
+
+#[test]
+fn duckdb_renders_structs_with_struct_keyword_and_no_field_constraints() {
+    let fields = vec![
+        StructField::new(Ident::plain("name"), SqlType::varchar(None), true),
+        StructField::new(Ident::plain("age"), Integer, false),
+    ];
+    assert_eq!(
+        Struct(Some(fields.clone())).to_string(DuckDB),
+        "STRUCT(name VARCHAR, age INT)"
+    );
+    assert_eq!(
+        Array(Some(Box::new(Struct(Some(fields))))).to_string(DuckDB),
+        "STRUCT(name VARCHAR, age INT)[]"
+    );
+}
+
+#[test]
+fn other_backends_keep_their_struct_rendering() {
+    let fields = vec![
+        StructField::new(Ident::plain("name"), SqlType::varchar(None), true),
+        StructField::new(Ident::plain("age"), Integer, false),
+    ];
+    let sql_type = Struct(Some(fields));
+    assert_eq!(
+        sql_type.to_string(Postgres),
+        "(name VARCHAR, age INT NOT NULL)"
+    );
+    assert_eq!(
+        sql_type.to_string(Snowflake),
+        "OBJECT(name VARCHAR, age INT NOT NULL)"
+    );
+    assert_eq!(
+        sql_type.to_string(Bigquery),
+        "STRUCT<name STRING, age INT64 NOT NULL>"
+    );
+}

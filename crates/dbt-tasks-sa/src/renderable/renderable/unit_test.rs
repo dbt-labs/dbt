@@ -373,7 +373,7 @@ fn requires_adapter_scoped_relation_schema(
     schema_target: UnitTestSchemaTarget,
 ) -> bool {
     is_adapter_scoped_schema_target(schema_target)
-        && ctx.inner.adapter_store.declared().len() > 1
+        && ctx.adapter_store().declared().len() > 1
         && adapter.as_replay().is_none()
         && !is_replay_active(ctx)
 }
@@ -656,7 +656,7 @@ pub(crate) async fn run_unit_test_render(
         Err(e) => {
             return handle_render_result(
                 Err(e),
-                &node.unique_id(),
+                node.unique_id(),
                 &node.materialized(),
                 &mut ctx,
                 &result_sender,
@@ -682,7 +682,7 @@ pub(crate) async fn run_unit_test_render(
             Err(e) => {
                 return handle_render_result(
                     Err(e),
-                    &node.unique_id(),
+                    node.unique_id(),
                     &node.materialized(),
                     &mut ctx,
                     &result_sender,
@@ -695,9 +695,17 @@ pub(crate) async fn run_unit_test_render(
     run_blocking_task_operation(move || {
         let mut ctx = ctx;
         let res = render_unit_test(&node, &mut ctx, given_relations, task_hooks);
+        // The schema probe runs statements on this thread, and the run phase may be scheduled on
+        // another one. End its transaction here, not when the run phase finishes.
+        let res = match ctx.adapter_for(node.as_ref()) {
+            Ok(adapter) => {
+                crate::materialize::end_node_transaction(&adapter, node.unique_id(), res)
+            }
+            Err(_) => res,
+        };
         handle_render_result(
             res,
-            &node.unique_id(),
+            node.unique_id(),
             &node.materialized(),
             &mut ctx,
             &result_sender,
@@ -763,7 +771,7 @@ fn try_get_schema_from_cache(
             // If we have a hit
             if node_canonical_fqn.as_ref() == Some(&canonical_fqn) {
                 node_static_analysis_off =
-                    is_static_analysis_off_or_baseline(node.static_analysis().into_inner());
+                    is_static_analysis_off_or_baseline(**node.static_analysis());
                 break;
             }
         }
@@ -1077,7 +1085,8 @@ fn infer_unit_test_expected_schema(
         ctx.runtime_config().dependencies.keys().cloned().collect(),
     );
     // Not `run_base_context`: it would also add `thread_id` to this render.
-    ctx.insert_adapter_overlay(&mut run_context, ctx.adapter_type_for(unit_test))?;
+    ctx.adapter_globals()
+        .insert_for_node(&mut run_context, ctx.adapter_type_for(unit_test))?;
 
     // Ensure schema inference macro evaluation is node-scoped for replay and any other
     // context-dependent adapter behavior.
@@ -1166,20 +1175,30 @@ fn infer_unit_test_expected_schema(
         options.preserve_recorded_probe_sql,
     );
     let local_probe_sql = if options.try_structural_inference {
-        if options.use_query_schema_fallback {
-            Some(fallback_probe.query_sql.clone())
-        } else {
-            Some(
-                build_unit_test_schema_probe(
-                    unit_test.node_adapter(),
-                    type_ops.as_ref(),
-                    compiled_model_sql,
-                    subqueries,
-                    options.preserve_recorded_probe_sql,
-                )
-                .query_sql,
+        // Generated dict/CSV fixtures contain Jinja raw blocks. Render those
+        // before SQL analysis, keeping SQL fixtures and compiled model SQL intact.
+        let rendered_subqueries = subqueries
+            .iter()
+            .zip(&unit_test.__unit_test_attr__.given)
+            .map(|((id, sql), given)| {
+                let sql = if given.format == schemas::common::Formats::Sql {
+                    sql.clone()
+                } else {
+                    ctx.env.render_str(sql, &run_context, &[])?
+                };
+                Ok((id.clone(), sql))
+            })
+            .collect::<FsResult<Vec<_>>>()?;
+        Some(
+            build_unit_test_schema_probe(
+                unit_test.node_adapter(),
+                type_ops.as_ref(),
+                compiled_model_sql,
+                &rendered_subqueries,
+                options.preserve_recorded_probe_sql,
             )
-        }
+            .query_sql,
+        )
     } else {
         None
     };
@@ -1886,9 +1905,8 @@ fn discover_given_relations(
         node.materialized() == DbtMaterialization::Incremental
             && !use_compiled_schema_for_incremental
     });
-    let model_static_analysis_off = tested_model.is_some_and(|node| {
-        is_static_analysis_off_or_baseline(node.static_analysis().into_inner())
-    });
+    let model_static_analysis_off = tested_model
+        .is_some_and(|node| is_static_analysis_off_or_baseline(**node.static_analysis()));
 
     if should_fetch_expected_schema
         && let Some(expect_relation) = ctx.try_get_relation_from_node(&model_unique_id)
@@ -2334,9 +2352,8 @@ fn render_unit_test(
     })?;
 
     let tested_model = resolver_state.nodes.get_node(&model_unique_id);
-    let model_static_analysis_off = tested_model.is_some_and(|node| {
-        is_static_analysis_off_or_baseline(node.static_analysis().into_inner())
-    });
+    let model_static_analysis_off = tested_model
+        .is_some_and(|node| is_static_analysis_off_or_baseline(**node.static_analysis()));
     let model_materialization = tested_model.map(|node| node.materialized());
     let is_incremental = model_materialization == Some(DbtMaterialization::Incremental);
     let schema_policy = unit_test_schema_policy(ctx, node)?;
@@ -2354,7 +2371,8 @@ fn render_unit_test(
     );
     let schema_inference_options = ExpectedSchemaInferenceOptions {
         use_query_schema_fallback,
-        try_structural_inference: use_query_schema_fallback,
+        try_structural_inference: use_query_schema_fallback
+            || effective_execute == schemas::profiles::Execute::Sidecar,
         cache_result: cache_expected_schema,
         preserve_recorded_probe_sql: schema_policy.preserve_recorded_probe_sql,
         // Use the same identity as fixture discovery and model rendering.

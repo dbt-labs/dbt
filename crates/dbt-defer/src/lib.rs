@@ -211,17 +211,17 @@ fn is_deferrable(
     defer_nodes: &Nodes,
 ) -> Option<String> {
     let unique_id = node.unique_id();
-    if (resolver_nodes.models.contains_key(&unique_id)
-        || resolver_nodes.seeds.contains_key(&unique_id)
-        || resolver_nodes.snapshots.contains_key(&unique_id)
-        || resolver_nodes.functions.contains_key(&unique_id))
-        && (defer_nodes.models.contains_key(&unique_id)
-            || defer_nodes.seeds.contains_key(&unique_id)
-            || defer_nodes.snapshots.contains_key(&unique_id)
-            || defer_nodes.functions.contains_key(&unique_id))
+    if (resolver_nodes.models.contains_key(unique_id)
+        || resolver_nodes.seeds.contains_key(unique_id)
+        || resolver_nodes.snapshots.contains_key(unique_id)
+        || resolver_nodes.functions.contains_key(unique_id))
+        && (defer_nodes.models.contains_key(unique_id)
+            || defer_nodes.seeds.contains_key(unique_id)
+            || defer_nodes.snapshots.contains_key(unique_id)
+            || defer_nodes.functions.contains_key(unique_id))
         && !matches!(node.materialized(), DbtMaterialization::Ephemeral)
     {
-        Some(unique_id)
+        Some(unique_id.to_string())
     } else {
         None
     }

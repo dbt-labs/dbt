@@ -436,7 +436,8 @@ pub async fn resolve_unit_tests(
                 model: unit_test.model.to_string(),
                 given,
                 expect,
-                versions: None,
+                // The `include`/`exclude` the YAML declares, as in `manifest.json`.
+                versions: declared_versions(unit_test.versions.as_ref()),
                 version: None,
                 overrides: unit_test.overrides.clone(),
             },
@@ -813,6 +814,13 @@ fn parse_version_numbers_yml(value: &dbt_yaml::Value) -> Option<Vec<String>> {
     }
 }
 
+/// The `versions:` block as the node carries it: `include` and `exclude` as declared.
+fn declared_versions(
+    versions: Option<&dbt_yaml::Value>,
+) -> Option<dbt_schemas::schemas::common::IncludeExclude> {
+    dbt_yaml::from_value(versions?.clone()).ok()
+}
+
 fn should_include_version_for_unit_test(
     include: &Option<Vec<String>>,
     exclude: &Option<Vec<String>>,
@@ -855,6 +863,17 @@ mod tests {
             true
         });
         (Arc::new(JinjaEnv::new(env)), calls)
+    }
+
+    #[test]
+    fn declared_versions_keeps_include_and_exclude() {
+        let block: dbt_yaml::Value = dbt_yaml::from_str("include: [1, 2]\nexclude: 3\n").unwrap();
+        let got = declared_versions(Some(&block)).expect("a versions block is kept");
+        assert_eq!(
+            serde_json::to_value(&got).unwrap(),
+            serde_json::json!({"include": ["1", "2"], "exclude": "3"}),
+        );
+        assert!(declared_versions(None).is_none());
     }
 
     #[dbt_runtime::test]

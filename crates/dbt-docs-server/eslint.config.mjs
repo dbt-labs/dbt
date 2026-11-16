@@ -63,7 +63,7 @@ const baseConfig = defineConfig([
   {
     // Adapted version of eslint-plugin-simple-import's custom rules:
     // https://github.com/lydell/eslint-plugin-simple-import-sort/blob/0e3719edbe52f11afe1859bde721e37ffe82dd79/examples/.eslintrc.js#L69-L93
-    files: ['web/src/**/*.[jt]s?(x)', 'dbt-docs-lib/lib/**/*.[jt]s?(x)'],
+    files: ['web/src/**/*.[jt]s?(x)', 'dbt-docs-lib/lib/**/*.[jt]s?(x)', 'web/tests/**/*.ts'],
     plugins: {
       'simple-import-sort': simpleImportSort,
     },

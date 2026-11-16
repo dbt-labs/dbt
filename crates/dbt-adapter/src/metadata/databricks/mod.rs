@@ -62,6 +62,7 @@ use dbt_adapter_engine::record_batch::RecordBatchExt;
 pub mod dbr_capabilities;
 pub mod describe_json;
 pub mod describe_table;
+mod refresh_wait;
 pub mod schemas;
 pub(crate) mod version;
 
@@ -93,8 +94,38 @@ pub(crate) fn describe_fallback_error(
     )
 }
 
+/// `DESCRIBE TABLE EXTENDED` of a relation, as JSON where the runtime supports it. The flag is
+/// `true` when the plain output was used. `None` when the relation does not exist.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn describe_relation_batch(
+    adapter: &AdapterImpl,
+    state: &State,
+    ctx: &QueryCtx,
+    conn: &mut ConnectionGuard<'_>,
+    database: &str,
+    schema: &str,
+    identifier: &str,
+    token: CancellationToken,
+) -> AdapterResult<Option<(RecordBatch, bool)>> {
+    match describe_relation(
+        adapter, state, ctx, conn, database, schema, identifier, token,
+    ) {
+        Ok(described) => Ok(Some(described)),
+        Err(e) if is_relation_missing(&e) => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+/// Whether a describe error means there is nothing to describe: the relation, or its catalog or
+/// schema, is missing.
+fn is_relation_missing(e: &AdapterError) -> bool {
+    e.to_string().contains("cannot be found")
+        || e.to_string().contains("TABLE_OR_VIEW_NOT_FOUND")
+        || is_databricks_relation_not_found(e)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn describe_relation(
     adapter: &AdapterImpl,
     state: &State,
     ctx: &QueryCtx,
@@ -198,6 +229,17 @@ pub(crate) fn databricks_query_identifier(value: &str, quote: bool) -> String {
             .display(AdapterType::Databricks)
             .to_string()
     }
+}
+
+/// Whether a Databricks error means the relation does not exist: a `NotFound`
+/// with SQLSTATE 42P01 (TABLE_OR_VIEW_NOT_FOUND), or that error class in the message.
+///
+/// `NotFound` alone is not enough, since the driver also reports it for other
+/// missing objects (SQLSTATE 42704, 42883), so this fails closed.
+pub(crate) fn is_databricks_relation_not_found(e: &AdapterError) -> bool {
+    // https://docs.databricks.com/aws/en/error-messages/table-or-view-not-found-error-class
+    (e.kind() == AdapterErrorKind::NotFound && e.sqlstate() == "42P01")
+        || e.message().contains("[TABLE_OR_VIEW_NOT_FOUND]")
 }
 
 // Reference: https://github.com/databricks/dbt-databricks/blob/92f1442faabe0fce6f0375b95e46ebcbfcea4c67/dbt/include/databricks/macros/adapters/metadata.sql
@@ -680,10 +722,8 @@ impl DatabricksMetadataAdapter {
             RelationType::MaterializedView => {
                 metadata.insert(
                     DatabricksRelationMetadataKey::DescribeExtended,
-                    self.describe_extended(
-                        &database,
-                        &schema,
-                        &identifier,
+                    self.describe_extended_after_refresh(
+                        &**base_relation,
                         state,
                         &mut *conn,
                         token.clone(),
@@ -800,10 +840,8 @@ impl DatabricksMetadataAdapter {
             RelationType::StreamingTable => {
                 metadata.insert(
                     DatabricksRelationMetadataKey::DescribeExtended,
-                    self.describe_extended(
-                        &database,
-                        &schema,
-                        &identifier,
+                    self.describe_extended_after_refresh(
+                        &**base_relation,
                         state,
                         &mut *conn,
                         token.clone(),
@@ -991,11 +1029,6 @@ impl DatabricksMetadataAdapter {
             }
         };
 
-        // https://github.com/databricks/dbt-databricks/blob/13686739eb59566c7a90ee3c357d12fe52ec02ea/dbt/adapters/databricks/impl.py#L908
-        // TODO: Implement polling for DLT pipeline status
-        // we don't have the dbx client here
-        // we might need to query internal delta system tables or expose something via ADBC
-
         Ok((relation_type, metadata))
     }
 
@@ -1019,6 +1052,47 @@ impl DatabricksMetadataAdapter {
             None,  // limit
             None,  // options
             token,
+        )
+    }
+
+    /// `describe extended` of a materialized view / streaming table, re-run until its refresh is
+    /// no longer running. Same first query as [`Self::describe_extended`].
+    fn describe_extended_after_refresh(
+        &self,
+        relation: &dyn BaseRelation,
+        state: &State,
+        conn: &mut ConnectionGuard<'_>,
+        token: CancellationToken,
+    ) -> AdapterResult<AgateTable> {
+        let (database, schema, identifier) = (
+            relation.database_as_str()?,
+            relation.schema_as_str()?,
+            relation.identifier_as_str()?,
+        );
+        let first =
+            self.describe_extended(&database, &schema, &identifier, state, conn, token.clone())?;
+        let replay = self.adapter.engine().is_replay() || crate::time_machine::is_replaying();
+        let strategy: &dyn refresh_wait::WaitStrategy = if replay {
+            &refresh_wait::Replay
+        } else {
+            &refresh_wait::Live::DEFAULT
+        };
+        refresh_wait::wait_for_refresh_to_finish(
+            first,
+            &relation.render_self_as_str(),
+            &token,
+            &refresh_wait::RefreshWait::DEFAULT,
+            strategy,
+            || {
+                self.describe_extended(
+                    &database,
+                    &schema,
+                    &identifier,
+                    state,
+                    &mut *conn,
+                    token.clone(),
+                )
+            },
         )
     }
 
@@ -2955,5 +3029,58 @@ mod tests {
         // bulk order is preserved
         assert_eq!(bulk[0].semantic_fqn(), r_bulk1.semantic_fqn());
         assert_eq!(bulk[1].semantic_fqn(), r_bulk2.semantic_fqn());
+    }
+
+    #[test]
+    fn relation_not_found_requires_sqlstate_with_typed_kind() {
+        assert!(is_databricks_relation_not_found(
+            &AdapterError::new_with_sqlstate_and_vendor_code(
+                AdapterErrorKind::NotFound,
+                "no text".to_string(),
+                *b"42P01",
+                None
+            )
+        ));
+        // missing catalog or schema: NotFound with another SQLSTATE
+        assert!(!is_databricks_relation_not_found(
+            &AdapterError::new_with_sqlstate_and_vendor_code(
+                AdapterErrorKind::NotFound,
+                "The schema `s` cannot be found.".to_string(),
+                *b"42704",
+                None
+            )
+        ));
+        assert!(!is_databricks_relation_not_found(&AdapterError::new(
+            AdapterErrorKind::NotFound,
+            "no sqlstate"
+        )));
+    }
+
+    #[test]
+    fn describing_a_missing_relation_catalog_or_schema_is_not_an_error() {
+        assert!(is_relation_missing(&AdapterError::new(
+            AdapterErrorKind::NotFound,
+            "The schema `s` cannot be found."
+        )));
+        assert!(is_relation_missing(&AdapterError::new(
+            AdapterErrorKind::Driver,
+            "[TABLE_OR_VIEW_NOT_FOUND] The table or view `t` cannot be found."
+        )));
+        assert!(!is_relation_missing(&AdapterError::new(
+            AdapterErrorKind::Driver,
+            "[PARSE_SYNTAX_ERROR] bad"
+        )));
+    }
+
+    #[test]
+    fn relation_not_found_keeps_legacy_text_match() {
+        assert!(is_databricks_relation_not_found(&AdapterError::new(
+            AdapterErrorKind::Driver,
+            "[TABLE_OR_VIEW_NOT_FOUND] The table or view `t` cannot be found."
+        )));
+        assert!(!is_databricks_relation_not_found(&AdapterError::new(
+            AdapterErrorKind::Driver,
+            "[PARSE_SYNTAX_ERROR] bad"
+        )));
     }
 }

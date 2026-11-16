@@ -1,0 +1,10 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/dt_flag_off.sql
+ Rendering models/dt_flag_off.sql
+   Running models/dt_flag_off.sql
+    Warned model adapters_snowflake_dynamic_table_create_or_alter_flag_off.dt_flag_off (dynamic_table) [1 of 1 in duration]
+==================== Execution Summary =====================
+Finished 'run' with 1 warning for target 'snowflake' [duration]
+Processed: 1 model
+Summary: 1 total | 1 warn

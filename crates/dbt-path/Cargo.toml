@@ -1,0 +1,27 @@
+[package]
+authors.workspace = true
+description = "Path manipulation utilities"
+edition.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+license.workspace = true
+name = "dbt-path"
+repository.workspace = true
+version.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+name = "dbt_path"
+path = "src/lib.rs"
+
+[dependencies]
+dbt-fusion-workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+normalize-path = { workspace = true }
+shellexpand = { workspace = true }
+
+[features]
+compat-tests = []

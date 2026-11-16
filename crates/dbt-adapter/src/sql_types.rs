@@ -218,6 +218,21 @@ impl TypeOps for DefaultTypeOps {
             Postgres | Salesforce => postgres::try_format_type(data_type, nullable, out),
             Fabric => fabric::try_format_type(data_type, nullable, out),
             ClickHouse => clickhouse::try_format_type(data_type, nullable, out),
+            // The dbt convert functions have no nested types. DuckDB rejects the
+            // `ARRAY<T>` and `STRUCT<..>` forms of the default path.
+            // https://duckdb.org/docs/stable/sql/data_types/overview
+            DuckDB
+                if matches!(
+                    data_type,
+                    DataType::List(_)
+                        | DataType::LargeList(_)
+                        | DataType::ListView(_)
+                        | DataType::LargeListView(_)
+                        | DataType::Struct(_)
+                ) =>
+            {
+                self.format_sql_type(SqlType::from_arrow_type(adapter_type, data_type), out)
+            }
             _ => {
                 // Logical types without native Arrow encodings use
                 // FixedSizeList(field, 1). Render the logical field name (for
@@ -1998,5 +2013,63 @@ mod tests {
         );
         assert_eq!(convert_type(&DataType::Boolean, Spark), "boolean");
         assert_eq!(convert_type(&DataType::Date64, Spark), "date");
+    }
+
+    #[test]
+    fn duckdb_formats_nested_arrow_types_as_duckdb_types() {
+        use arrow_schema::Fields;
+
+        let ops = DefaultTypeOps::new(DuckDB);
+        let format = |data_type: DataType| {
+            let mut out = String::new();
+            ops.format_arrow_type_as_sql(&data_type, true, &mut out)
+                .unwrap();
+            out
+        };
+        let item = |data_type| Arc::new(Field::new("item", data_type, true));
+        let fields = || {
+            Fields::from(vec![
+                Field::new("a", DataType::Int64, false),
+                Field::new("b", DataType::Utf8, true),
+            ])
+        };
+
+        assert_eq!(format(DataType::List(item(DataType::Int64))), "BIGINT[]");
+        assert_eq!(
+            format(DataType::LargeList(item(DataType::Utf8))),
+            "VARCHAR[]"
+        );
+        assert_eq!(
+            format(DataType::ListView(item(DataType::Boolean))),
+            "BOOLEAN[]"
+        );
+        assert_eq!(
+            format(DataType::LargeListView(item(DataType::Date32))),
+            "DATE[]"
+        );
+        assert_eq!(
+            format(DataType::Struct(fields())),
+            "STRUCT(a BIGINT, b VARCHAR)"
+        );
+        assert_eq!(
+            format(DataType::List(item(DataType::Struct(fields())))),
+            "STRUCT(a BIGINT, b VARCHAR)[]"
+        );
+    }
+
+    /// DuckDB scalar types keep the types of the dbt convert functions.
+    #[test]
+    fn duckdb_formats_scalar_arrow_types_with_convert_types() {
+        let ops = DefaultTypeOps::new(DuckDB);
+        for (data_type, expected) in [
+            (DataType::Int64, "integer"),
+            (DataType::Utf8, "text"),
+            (DataType::Float64, "float8"),
+        ] {
+            let mut out = String::new();
+            ops.format_arrow_type_as_sql(&data_type, false, &mut out)
+                .unwrap();
+            assert_eq!(out, expected);
+        }
     }
 }

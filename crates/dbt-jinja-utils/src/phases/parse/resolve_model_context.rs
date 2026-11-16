@@ -51,10 +51,12 @@ use serde::Serialize;
 use dbt_jinja_ctx::{JinjaObject, ParseExecute, ResolveModelCtx, to_jinja_btreemap};
 
 use crate::{
-    invocation_graph::invocation_graph, phases::MacroLookupContext, serde::into_typed_with_error,
+    invocation_graph::invocation_graph,
+    phases::{AdapterScope, MacroLookupContext},
+    serde::into_typed_with_error,
 };
 
-use super::{adapter_scope::ParseAdapterScope, sql_resource::SqlResource};
+use super::sql_resource::SqlResource;
 
 /// Builds a context for resolving models
 #[allow(clippy::too_many_arguments)]
@@ -65,7 +67,7 @@ pub fn build_resolve_model_context<T: ResolvableConfig<T> + Serialize + 'static>
     database: &str,
     schema: &str,
     // The node's target, dialect and starting relation, when known before rendering.
-    node_scope: Option<&ParseAdapterScope>,
+    node_scope: Option<&AdapterScope>,
     // Picks the alias table the in-SQL config() applies.
     config_aliasing: InlineConfigAliasing,
     model_name: &str,
@@ -1096,7 +1098,7 @@ mod test {
 
     #[test]
     fn previewed_relation_controls_database_and_schema_ref_branches() {
-        use crate::phases::parse::ParseAdapterScopes;
+        use crate::phases::AdapterScopes;
         use dbt_schemas::state::{DbtProfile, ProfileAdapter};
 
         let mut profile: DbtProfile = dbt_yaml::from_str(
@@ -1116,7 +1118,7 @@ mod test {
         profile
             .adapters
             .insert(AdapterType::Bigquery, ProfileAdapter::single(bigquery));
-        let scopes = ParseAdapterScopes::from_profile(&profile);
+        let scopes = AdapterScopes::from_profile(&profile);
         let resources = Arc::new(Mutex::new(Vec::new()));
         let config: ModelConfig =
             crate::serde::from_yaml_raw("database: analytics\nschema: marts\n", None, false, None)

@@ -9,8 +9,11 @@ use indexmap::IndexMap;
 use minijinja::State;
 use tracy_client::span;
 
-use dbt_adapter_engine::concat_batches::concat_batches_widened;
+use dbt_adapter_engine::Options;
+use dbt_adapter_engine::clickhouse::ClickHouseCapabilities;
+use dbt_adapter_engine::concat_batches::concat_batches_safely;
 use dbt_adapter_engine::databricks::query_tags::QueryTags;
+use dbt_adapter_engine::record_batch::RecordBatchExt;
 use dbt_adapter_engine::sidecar_client::SidecarClient;
 use dbt_adbc::bigquery::QUERY_LABELS;
 use dbt_adbc::{Backend, Connection, QueryCtx, Statement};
@@ -37,10 +40,6 @@ use crate::sql::normalize::strip_sql_comments;
 use crate::sql_types::TypeOps;
 use crate::statement::*;
 use crate::stmt_splitter::StmtSplitter;
-use dbt_adapter_engine::clickhouse::ClickHouseCapabilities;
-use dbt_adapter_engine::record_batch::RecordBatchExt;
-
-pub use dbt_adapter_engine::Options;
 
 /// Normalize result column names for Snowflake commands whose output schema is
 /// defined as lowercase.
@@ -549,7 +548,19 @@ pub(crate) fn adbc_execute_with_options(
     log_step_duration("create_debug_span(...).entered()", t_span_create.elapsed());
 
     let t_do_execute = std::time::Instant::now();
-    let do_execute_result = engine.query_retry_policy().execute(|| do_execute(conn));
+    // A failed statement aborts the open transaction, so retrying it on this connection could
+    // only fail with "current transaction is aborted" and hide the original error.
+    //
+    // TODO: parity gap with dbt-redshift. It retries a retryable error inside a transaction by
+    // closing and reopening the connection, then re-running the failed statement
+    // (`RedshiftConnectionManager.execute`). That drops the transaction's earlier statements
+    // without telling the user. Fusion fails the node instead. Decide whether to match v1, or
+    // to retry the whole node.
+    let do_execute_result = if crate::connection::open_transaction().is_some() {
+        do_execute(&mut *conn)
+    } else {
+        engine.query_retry_policy().execute(|| do_execute(conn))
+    };
     let (schema, batches, rows_affected) = match do_execute_result {
         Ok(res) => res,
         Err(err @ (Cancellable::Cancelled | Cancellable::Error(_))) => {
@@ -605,7 +616,7 @@ pub(crate) fn adbc_execute_with_options(
         }
         None => schema,
     };
-    let total_batch = concat_batches_widened(schema, batches)?;
+    let total_batch = concat_batches_safely(schema, batches)?;
     let total_batch = normalize_result_column_names(adapter_type, sql.as_ref(), total_batch);
     log_step_duration(
         "concat_batches + normalize_result_column_names",

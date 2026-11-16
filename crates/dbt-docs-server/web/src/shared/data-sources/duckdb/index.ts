@@ -39,6 +39,7 @@ import type {
   SearchFilter,
   SearchResult,
 } from 'dbt-docs-lib/domain';
+import { createEngine, type DuckDbEngine } from 'dbt-docs-lib/duckdb';
 
 import type { SiteBootstrap } from '../../../lib/siteBootstrap';
 import type {
@@ -70,7 +71,6 @@ import {
 } from '../mappers/fromWire';
 import type { BootstrapData } from './bootstrap';
 import { detailSpecFor, nodeColumnsSql } from './details';
-import { createEngine, type DuckDbEngine } from './engine';
 import {
   buildListQuery,
   constantFacets,

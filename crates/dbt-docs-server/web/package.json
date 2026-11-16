@@ -16,6 +16,7 @@
     "test:watch": "node scripts/watch.mjs \"vitest watch --project unit\"",
     "test:stories": "node scripts/build-deps.mjs && vitest run --project storybook",
     "test:all": "node scripts/build-deps.mjs && vitest run",
+    "test:duckdb-browser": "node scripts/build-deps.mjs && tsc --noEmit --strict --skipLibCheck --module esnext --moduleResolution bundler --target es2022 --lib es2022,dom tests/duckdb-consumer.ts && node tests/duckdb-browser.mjs",
     "storybook": "node scripts/watch.mjs \"storybook dev -p 6006\"",
     "build-storybook": "node scripts/build-deps.mjs && storybook build"
   },

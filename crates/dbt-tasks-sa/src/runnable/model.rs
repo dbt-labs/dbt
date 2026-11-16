@@ -282,9 +282,9 @@ pub fn create_microbatch_span(mb_unit: &MicrobatchExecUnit) -> tracing::Span {
     };
     let batch = &mb_unit.batch_ctx;
     create_info_span(MicrobatchEvaluated::start(
-        mb_unit.node.unique_id(),
-        mb_unit.node.schema(),
-        mb_unit.node.alias(),
+        mb_unit.node.unique_id().to_string(),
+        mb_unit.node.schema().to_string(),
+        mb_unit.node.alias().to_string(),
         batch.id.clone(),
         batch_size,
         batch.batch_index as u32 + 1,

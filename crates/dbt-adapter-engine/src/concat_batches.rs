@@ -3,29 +3,33 @@ use std::sync::Arc;
 use arrow::compute::{CastOptions, cast_with_options, concat_batches};
 use arrow::util::display::FormatOptions;
 use arrow_array::{ArrayRef, RecordBatch};
-use arrow_schema::{ArrowError, DataType, Field, Schema, SchemaRef};
+use arrow_schema::{ArrowError, DataType, Field, Schema};
 use dbt_common::{AdapterError, AdapterErrorKind, AdapterResult};
 
 use crate::errors::arrow_error_to_adapter_error;
 
-/// Arrow's `Utf8`/`Binary`/`LargeUtf8`/`LargeBinary` arrays each require one
-/// contiguous buffer per column; concatenating enough `run_query` batches to exceed
-/// `i32::MAX` bytes for a `Utf8`/`Binary` column panics inside the Arrow concat
-/// kernel (`GenericBytesBuilder::next_offset`, "byte array offset overflow"), and
-/// even `LargeUtf8`/`LargeBinary` (64-bit offsets) only raises that ceiling rather
-/// than removing it. `Utf8View`/`BinaryView` don't require a single contiguous
-/// buffer (short values inline, longer ones reference pooled, non-contiguous
-/// buffers), so converting to them sidesteps the failure mode structurally.
+/// Cast the string/binary columns to their respective "view" versions.
 ///
-/// Converting is unconditional -- regardless of result size or batch count -- so a
-/// given query's result schema is deterministic instead of depending on how much
-/// data happened to come back. This is reachable from any fetched `run_query`
-/// result -- e.g. Elementary's `on_run_end` hooks over large tables
-/// (dbt-labs/dbt-core#15706).
-fn to_view_types(
-    schema: SchemaRef,
+/// Arrow's `Utf8`/`Binary`/`LargeUtf8`/`LargeBinary` columns each require one
+/// contiguous buffer; concatenating enough `run_query` batches to exceed
+/// `i32::MAX` bytes for a `Utf8`/`Binary` column panics inside the Arrow concat
+/// kernel (`GenericBytesBuilder::next_offset`, "byte array offset overflow").
+///
+/// `LargeUtf8`/`LargeBinary` (64-bit offsets) remove this limitaion but they
+/// still require very large contiguous buffers. `Utf8View`/`BinaryView` don't
+/// require a single contiguous buffer (short values inline, longer ones reference
+/// pooled, non-contiguous buffers), so converting to these view types sidesteps
+/// this failure mode completely.
+///
+/// Concatenating these arrays is also much cheaper since the data buffers don't
+/// have to be consolidated into a single contiguous buffers for the resulting
+/// Array.
+///
+/// See https://github.com/dbt-labs/dbt/issues/15706
+fn make_safe_to_concat(
+    schema: Arc<Schema>,
     batches: Vec<RecordBatch>,
-) -> Result<(SchemaRef, Vec<RecordBatch>), ArrowError> {
+) -> Result<(Arc<Schema>, Vec<RecordBatch>), ArrowError> {
     let view_type: Vec<Option<DataType>> = schema
         .fields()
         .iter()
@@ -46,7 +50,7 @@ fn to_view_types(
         .zip(&view_type)
         .map(|(field, target)| match target {
             Some(dt) => Arc::new(field.as_ref().clone().with_data_type(dt.clone())),
-            None => field.clone(),
+            None => Arc::clone(field),
         })
         .collect();
     let new_schema = Arc::new(Schema::new_with_metadata(fields, schema.metadata().clone()));
@@ -66,25 +70,31 @@ fn to_view_types(
                 .zip(&view_type)
                 .map(|(col, target)| match target {
                     Some(dt) => cast_with_options(col, dt, &cast_options),
-                    None => Ok(col.clone()),
+                    None => Ok(Arc::clone(col)),
                 })
                 .collect::<Result<Vec<ArrayRef>, ArrowError>>()?;
-            RecordBatch::try_new(new_schema.clone(), columns)
+            RecordBatch::try_new(Arc::clone(&new_schema), columns)
         })
         .collect::<Result<Vec<RecordBatch>, ArrowError>>()?;
 
     Ok((new_schema, new_batches))
 }
 
-/// Convert `Utf8`/`Binary` columns to `Utf8View`/`BinaryView` and concatenate the
-/// batches into a single [`RecordBatch`]. The concat itself is additionally guarded
-/// by `catch_unwind`, so any residual Arrow panic surfaces as a recoverable
-/// [`AdapterError`] instead of aborting the process.
-pub fn concat_batches_widened(
-    schema: SchemaRef,
+/// Concatenate [RecordBatch]es of the same schema into a single [RecordBatch].
+///
+/// Before concatenating, all columns are converted from `Utf8`/`Binary` to
+/// `Utf8View`/`BinaryView`. See [make_safe_to_concat] for the reason why we
+/// do this.
+///
+/// The concat operation itself is additionally guarded by `catch_unwind`,
+/// so any residual Arrow panic surfaces as a recoverable [`AdapterError`]
+/// instead of aborting the process.
+pub fn concat_batches_safely(
+    schema: Arc<Schema>,
     batches: Vec<RecordBatch>,
 ) -> AdapterResult<RecordBatch> {
-    let (schema, batches) = to_view_types(schema, batches).map_err(arrow_error_to_adapter_error)?;
+    let (schema, batches) =
+        make_safe_to_concat(schema, batches).map_err(arrow_error_to_adapter_error)?;
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         concat_batches(&schema, &batches)
     }))
@@ -117,7 +127,7 @@ mod tests {
         // on result size or batch count.
         let batches = vec![utf8_batch(vec!["a"])];
         let schema = batches[0].schema();
-        let (out_schema, out_batches) = to_view_types(schema, batches).unwrap();
+        let (out_schema, out_batches) = make_safe_to_concat(schema, batches).unwrap();
         assert_eq!(out_schema.field(0).data_type(), &DataType::Utf8View);
         assert_eq!(out_batches.len(), 1);
     }
@@ -126,7 +136,7 @@ mod tests {
     fn to_view_types_converts_multi_batch() {
         let batches = vec![utf8_batch(vec!["a", "b"]), utf8_batch(vec!["c"])];
         let schema = batches[0].schema();
-        let (out_schema, out_batches) = to_view_types(schema, batches).unwrap();
+        let (out_schema, out_batches) = make_safe_to_concat(schema, batches).unwrap();
         assert_eq!(out_schema.field(0).data_type(), &DataType::Utf8View);
         let total = concat_batches(&out_schema, &out_batches).unwrap();
         assert_eq!(total.num_rows(), 3);
@@ -145,7 +155,7 @@ mod tests {
             vec![Arc::new(StringArray::from(vec!["a"])) as ArrayRef],
         )
         .unwrap();
-        let (out_schema, _) = to_view_types(schema, vec![batch]).unwrap();
+        let (out_schema, _) = make_safe_to_concat(schema, vec![batch]).unwrap();
         assert_eq!(out_schema.field(0).data_type(), &DataType::Utf8View);
         assert_eq!(out_schema.metadata().get("k"), Some(&"v".to_string()));
     }
@@ -158,7 +168,7 @@ mod tests {
             vec![Arc::new(Int64Array::from(vec![1])) as ArrayRef],
         )
         .unwrap();
-        let (out_schema, out_batches) = to_view_types(schema, vec![batch]).unwrap();
+        let (out_schema, out_batches) = make_safe_to_concat(schema, vec![batch]).unwrap();
         assert_eq!(out_schema.field(0).data_type(), &DataType::Int64);
         assert_eq!(out_batches.len(), 1);
     }
@@ -174,7 +184,7 @@ mod tests {
         let make = || utf8_batch(vec![chunk.as_str(); rows_per_batch]);
         let batches = vec![make(), make(), make()];
         let schema = batches[0].schema();
-        let total = concat_batches_widened(schema, batches).unwrap();
+        let total = concat_batches_safely(schema, batches).unwrap();
         assert_eq!(total.schema().field(0).data_type(), &DataType::Utf8View);
         assert_eq!(total.num_rows(), rows_per_batch * 3);
     }

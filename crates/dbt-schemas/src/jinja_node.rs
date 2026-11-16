@@ -455,9 +455,9 @@ impl LazyNodeContext {
         let keys = self.keys_from_overlay(&overlay);
         let order = overlay.order.get_or_insert(keys);
         if let Some(index) = order.iter().position(|candidate| candidate == key) {
-            order.swap_remove(index);
+            order.remove(index);
         }
-        let value = overlay.values.swap_remove(key).or(value);
+        let value = overlay.values.shift_remove(key).or(value);
         overlay.jinja_compiled.remove(key);
         overlay.deleted.insert(key.clone());
         value

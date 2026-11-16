@@ -272,7 +272,7 @@ impl AggregatedTestRunRemoteTask {
             DBT_AGGREGATED_GENERIC_TEST_CONTEXT.to_string(),
             MinijinjaValue::from(Vec::<String>::new()),
         );
-        ctx.insert_adapter_overlay(
+        ctx.adapter_globals().insert_for_node(
             &mut base_context,
             ctx.adapter_type_for(self.group.aggregated_test.as_ref()),
         )?;

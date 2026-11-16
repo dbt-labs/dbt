@@ -38,7 +38,7 @@ pub async fn run_default_render(
         let res = render_default(&node, &mut ctx, &local_exec_unit_test_overrides);
         handle_render_result(
             res,
-            &node.unique_id(),
+            node.unique_id(),
             &node.materialized(),
             &mut ctx,
             &result_sender,
@@ -158,7 +158,11 @@ fn render_default(
 
     Ok((
         SqlInstruction {
-            fqn: vec![node.database(), node.schema(), node.alias()],
+            fqn: vec![
+                node.database().to_string(),
+                node.schema().to_string(),
+                node.alias().to_string(),
+            ],
             sql: rendered_sql_maybe_with_cte,
             original_path: node.common().original_file_path.to_path_buf(),
             spans,

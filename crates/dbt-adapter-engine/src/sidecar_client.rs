@@ -1,14 +1,16 @@
-//! SidecarClient trait for subprocess-based adapter execution. See [`SidecarClient`] for
-//! the design rationale.
+//! SidecarClient trait for subprocess-based adapter execution.
+//!
+//! See [`SidecarClient`] for the design rationale.
 
 use std::fmt::Debug;
 
 use arrow::record_batch::RecordBatch;
+use minijinja::State;
+
 use dbt_adapter_core::AdapterType;
 use dbt_adapter_sql::ident::Ident;
 use dbt_adbc::{Connection, QueryCtx};
 use dbt_schemas::{dbt_types::RelationType, schemas::common::ResolvedQuoting};
-use minijinja::State;
 
 use crate::errors::AdapterResult;
 

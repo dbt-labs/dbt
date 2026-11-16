@@ -40,8 +40,7 @@ struct SeedRegistrationCtx {
 }
 
 pub fn resolve_seed_path(in_dir: &Path, seed: &DbtSeed) -> PathBuf {
-    seed.file_path_from_root()
-        .unwrap_or_else(|| in_dir.join(&seed.__common_attr__.original_file_path))
+    seed.resolve_file_path(in_dir)
 }
 
 /// Synchronously register a CSV seed.

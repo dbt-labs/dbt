@@ -6,6 +6,7 @@ pub use crate::schemas::dbt_catalogs::TableFormat;
 
 use chrono::format::SecondsFormat;
 use dbt_adapter_core::{AdapterType, quote_char};
+use dbt_adapter_sql::ident::escaped_identifier;
 use dbt_common::FsResult;
 use dbt_common::constants::DBT_CTE_PREFIX;
 use dbt_schema_store::CanonicalFqn;
@@ -409,18 +410,10 @@ pub trait BaseRelation: BaseRelationProperties + Any + Send + Sync + fmt::Debug 
     }
 
     /// Quote a relation component (database, schema, or identifier)
-    fn quoted(&self, s: &str) -> String {
-        let quote = self.quote_character();
-        // Keep these rules in sync with `dbt_adapter_sql::ident::escape_identifier_content`.
-        let escaped = match self.adapter_type() {
-            AdapterType::Bigquery => s
-                .replace('\\', "\\\\")
-                .replace(quote, &format!("\\{quote}")),
-            AdapterType::ClickHouse => s
-                .replace('\\', "\\\\")
-                .replace(quote, &format!("{quote}{quote}")),
-            _ => s.replace(quote, &format!("{quote}{quote}")),
-        };
+    fn quoted(&self, id: &str) -> String {
+        let adapter_type = self.adapter_type();
+        let quote = quote_char(adapter_type);
+        let escaped = escaped_identifier(id.into(), adapter_type, quote);
         format!("{quote}{escaped}{quote}")
     }
 

@@ -148,6 +148,72 @@ fn map_sqlstate_to_code(sqlstate: &str) -> Option<ErrorCode> {
     }
 }
 
+/// The error code for `sqlstate`, or `None` if it isn't a Bridge SQLSTATE.
+///
+/// Bridge owns the `R` subclass of classes `08`, `28`, `HY` and `XX`, so codes
+/// are matched by that pattern and a code this version doesn't know still gets
+/// its class's code. In class `08`, the last char says whether the call ran:
+/// `6` it did not, `7` it may have.
+fn bridge_error_code(sqlstate: &str) -> Option<ErrorCode> {
+    let state = bridge_sqlstate(sqlstate.as_bytes())?;
+    Some(match &state {
+        b"08R01" => ErrorCode::BridgeUnavailable,
+        [b'0', b'8', _, _, b'6'] => ErrorCode::BridgeSessionLost,
+        [b'0', b'8', _, _, b'7'] => ErrorCode::BridgeOutcomeUnknown,
+        [b'0', b'8', ..] => ErrorCode::DbConnectionFailed,
+        b"HYR00" => ErrorCode::BridgeConfig,
+        [b'H', b'Y', ..] => ErrorCode::DbDriverFailed,
+        [b'2', b'8', ..] => ErrorCode::DbAuthFailed,
+        // XXR
+        _ => ErrorCode::BridgeInternal,
+    })
+}
+
+/// `sqlstate` if it has the Bridge pattern. Bridge always sends upper case.
+fn bridge_sqlstate(sqlstate: &[u8]) -> Option<[u8; 5]> {
+    let state: [u8; 5] = sqlstate.try_into().ok()?;
+    matches!(&state[..3], b"08R" | b"28R" | b"HYR" | b"XXR").then_some(state)
+}
+
+/// Whether `sqlstate` is a Bridge SQLSTATE. See [bridge_error_code].
+///
+/// Callers use this to skip warehouse-specific retries and rewrites: a Bridge
+/// error says nothing about the warehouse login itself.
+pub fn is_bridge_sqlstate(sqlstate: &[u8; 5]) -> bool {
+    bridge_sqlstate(sqlstate).is_some()
+}
+
+/// Whether an error with this SQLSTATE and message was raised by Bridge rather
+/// than the warehouse.
+///
+/// The SQLSTATE decides first. Some Bridge errors don't carry one: a local
+/// cancel or deadline in the driver, and a failure read from a result stream,
+/// which reaches Fusion wrapped in an Arrow error with SQLSTATE `00000`. They
+/// all keep the driver's `[Bridge] ` prefix somewhere in the message, and a
+/// warehouse error never has it.
+pub fn is_bridge_error(sqlstate: &[u8; 5], message: &str) -> bool {
+    is_bridge_sqlstate(sqlstate) || message.contains("[Bridge] ")
+}
+
+/// What the user can do about a Bridge error, when the message doesn't say.
+fn bridge_action(sqlstate: &str) -> Option<&'static str> {
+    match &bridge_sqlstate(sqlstate.as_bytes())? {
+        b"08R00" | b"08R01" => None,
+        [b'0', b'8', _, _, b'6'] => {
+            Some("The connection was lost before this statement ran, so it did not run.")
+        }
+        [b'0', b'8', _, _, b'7'] => Some(
+            "The connection was lost while this statement was running, so it may have run. \
+Check the warehouse before rerunning.",
+        ),
+        [b'0', b'8', ..] => Some(
+            "The connection failed, so this statement may have run. \
+Check the warehouse before rerunning.",
+        ),
+        _ => None,
+    }
+}
+
 /// Adapter error.
 #[derive(Clone)]
 pub struct AdapterError {
@@ -252,6 +318,11 @@ impl AdapterError {
     pub fn vendor_code(&self) -> Option<i32> {
         self.vendor_code
     }
+
+    /// Whether Bridge raised this error. See [is_bridge_error].
+    pub fn is_bridge(&self) -> bool {
+        is_bridge_error(&self.sqlstate, &self.message)
+    }
 }
 
 impl fmt::Display for AdapterError {
@@ -269,8 +340,9 @@ impl fmt::Display for AdapterError {
                 _ => write!(f, "{}: {message}", self.kind)?,
             }
         }
-        // Driver errors should already contain SQL State and Vendor codes
-        if !matches!(self.kind, AdapterErrorKind::Driver) {
+        // Driver errors should already contain SQL State and Vendor codes,
+        // except Bridge ones: its driver leaves them out of the message.
+        if !matches!(self.kind, AdapterErrorKind::Driver) || self.is_bridge() {
             let sqlstate: &str = self.sqlstate();
             if sqlstate != "00000" || self.vendor_code.is_some() {
                 write!(f, " (SQLSTATE: {sqlstate}")?;
@@ -279,6 +351,9 @@ impl fmt::Display for AdapterError {
                 }
                 write!(f, ")")?;
             }
+        }
+        if let Some(action) = bridge_action(self.sqlstate()) {
+            write!(f, "\n{action}")?;
         }
         // If we contain a Jinja source, we should try to grab the stack trace
         if let Some(jinja_err) = self
@@ -364,9 +439,16 @@ impl From<AdapterError> for Box<FsError> {
         // than the SQLSTATE class: class 42 is "Syntax Error or Access Rule Violation"
         // (https://docs.databricks.com/aws/en/error-messages/sqlstates), so it also covers
         // missing objects and privilege failures.
-        let err_code = match err.kind() {
-            AdapterErrorKind::NotFound | AdapterErrorKind::Authentication => err.kind().into(),
-            kind => map_sqlstate_to_code(err.sqlstate()).unwrap_or_else(|| kind.into()),
+        //
+        // Bridge SQLSTATEs win over both: the driver derives the status from
+        // the gRPC code, so a lost session arrives as Unauthenticated.
+        let bridge_code = bridge_error_code(err.sqlstate());
+        let err_code = match (bridge_code, err.kind()) {
+            (Some(code), _) => code,
+            (None, AdapterErrorKind::NotFound | AdapterErrorKind::Authentication) => {
+                err.kind().into()
+            }
+            (None, kind) => map_sqlstate_to_code(err.sqlstate()).unwrap_or_else(|| kind.into()),
         };
         Box::new(FsError::new(err_code, format!("{err}")))
     }
@@ -420,6 +502,180 @@ mod tests {
         assert_eq!(
             code_for(AdapterErrorKind::Authentication, "08006"),
             ErrorCode::DbAuthFailed
+        );
+    }
+
+    #[test]
+    fn bridge_sqlstates_win_over_kind_and_class() {
+        let cases = [
+            ("08R00", ErrorCode::DbConnectionFailed),
+            ("08R01", ErrorCode::BridgeUnavailable),
+            ("08R06", ErrorCode::BridgeSessionLost),
+            ("08R07", ErrorCode::BridgeOutcomeUnknown),
+            ("28R00", ErrorCode::DbAuthFailed),
+            ("HYR00", ErrorCode::BridgeConfig),
+            ("HYR01", ErrorCode::DbDriverFailed),
+            ("XXR00", ErrorCode::BridgeInternal),
+            // Codes this version doesn't know take their class's treatment.
+            ("08R16", ErrorCode::BridgeSessionLost),
+            ("08R17", ErrorCode::BridgeOutcomeUnknown),
+            ("08R12", ErrorCode::DbConnectionFailed),
+            ("28R07", ErrorCode::DbAuthFailed),
+            ("HYR09", ErrorCode::DbDriverFailed),
+            ("XXR05", ErrorCode::BridgeInternal),
+        ];
+        for (sqlstate, code) in cases {
+            for kind in [
+                AdapterErrorKind::Driver,
+                AdapterErrorKind::Authentication,
+                AdapterErrorKind::NotFound,
+            ] {
+                assert_eq!(code_for(kind, sqlstate), code, "{kind:?} {sqlstate}");
+            }
+        }
+    }
+
+    #[test]
+    fn unknown_r_subclass_is_bridge() {
+        let err = AdapterError::new_with_sqlstate_and_vendor_code(
+            AdapterErrorKind::NotFound,
+            "boom".to_string(),
+            *b"08R99",
+            None,
+        );
+        assert!(err.is_bridge());
+        assert_eq!(
+            code_for(AdapterErrorKind::NotFound, "08R99"),
+            ErrorCode::DbConnectionFailed
+        );
+        // Other subclasses and classes are not Bridge.
+        for sqlstate in [b"08P01", b"08006", b"42R01", b"HY000"] {
+            assert!(!is_bridge_sqlstate(sqlstate));
+        }
+        assert_eq!(
+            code_for(AdapterErrorKind::NotFound, "42R01"),
+            ErrorCode::DbNotFound
+        );
+    }
+
+    #[test]
+    fn bridge_prefix_marks_errors_without_a_bridge_sqlstate() {
+        let err = |kind, message: &str| {
+            AdapterError::new_with_sqlstate_and_vendor_code(
+                kind,
+                message.to_string(),
+                *b"00000",
+                None,
+            )
+        };
+        let stream = err(
+            AdapterErrorKind::Driver,
+            "C Data interface error: [Bridge] the result stream ended early; it may have run",
+        );
+        assert!(stream.is_bridge());
+        let deadline = err(
+            AdapterErrorKind::Driver,
+            "[Bridge] the query did not finish before the deadline; it may have run",
+        );
+        assert!(deadline.is_bridge());
+        assert_eq!(
+            Box::<FsError>::from(deadline).code,
+            ErrorCode::DbDriverFailed
+        );
+        let cancel = err(
+            AdapterErrorKind::Cancelled,
+            "[Bridge] handshake was cancelled",
+        );
+        assert!(cancel.is_bridge());
+        assert_eq!(Box::<FsError>::from(cancel).code, ErrorCode::TaskCancelled);
+
+        assert!(!err(AdapterErrorKind::Driver, "[Snowflake] 390114 (08001)").is_bridge());
+        let warehouse = AdapterError::new_with_sqlstate_and_vendor_code(
+            AdapterErrorKind::Driver,
+            "server closed the connection unexpectedly".to_string(),
+            *b"08006",
+            None,
+        );
+        assert!(!warehouse.is_bridge());
+    }
+
+    #[test]
+    fn bridge_error_code_follows_the_rule() {
+        let cases = [
+            ("08R01", Some(ErrorCode::BridgeUnavailable)),
+            ("08R06", Some(ErrorCode::BridgeSessionLost)),
+            ("08R16", Some(ErrorCode::BridgeSessionLost)),
+            ("08R07", Some(ErrorCode::BridgeOutcomeUnknown)),
+            ("08R17", Some(ErrorCode::BridgeOutcomeUnknown)),
+            ("08R00", Some(ErrorCode::DbConnectionFailed)),
+            ("08R18", Some(ErrorCode::DbConnectionFailed)),
+            ("HYR00", Some(ErrorCode::BridgeConfig)),
+            ("HYR09", Some(ErrorCode::DbDriverFailed)),
+            ("28R07", Some(ErrorCode::DbAuthFailed)),
+            ("XXR05", Some(ErrorCode::BridgeInternal)),
+            ("08P01", None),
+            ("08R0", None),
+            ("", None),
+        ];
+        for (sqlstate, expected) in cases {
+            assert_eq!(bridge_error_code(sqlstate), expected, "{sqlstate}");
+        }
+    }
+
+    #[test]
+    fn bridge_display_shows_sqlstate_and_action() {
+        let display = |sqlstate: &[u8; 5]| {
+            AdapterError::new_with_sqlstate_and_vendor_code(
+                AdapterErrorKind::Driver,
+                "[Bridge] session not found".to_string(),
+                *sqlstate,
+                None,
+            )
+            .to_string()
+        };
+        assert_eq!(
+            display(b"08R06"),
+            "[Bridge] session not found (SQLSTATE: 08R06)\n\
+The connection was lost before this statement ran, so it did not run."
+        );
+        assert!(display(b"08R07").ends_with("Check the warehouse before rerunning."));
+        assert_eq!(
+            display(b"08R01"),
+            "[Bridge] session not found (SQLSTATE: 08R01)"
+        );
+        assert_eq!(
+            display(b"08R16"),
+            "[Bridge] session not found (SQLSTATE: 08R16)\n\
+The connection was lost before this statement ran, so it did not run."
+        );
+        assert!(display(b"08R17").ends_with(
+            "while this statement was running, so it may have run. \
+Check the warehouse before rerunning."
+        ));
+        assert_eq!(
+            display(b"08R12"),
+            "[Bridge] session not found (SQLSTATE: 08R12)\n\
+The connection failed, so this statement may have run. \
+Check the warehouse before rerunning."
+        );
+        assert_eq!(
+            display(b"08R00"),
+            "[Bridge] session not found (SQLSTATE: 08R00)"
+        );
+        assert_eq!(
+            display(b"HYR09"),
+            "[Bridge] session not found (SQLSTATE: HYR09)"
+        );
+        // Warehouse driver errors already carry the SQLSTATE in their message.
+        let warehouse = AdapterError::new_with_sqlstate_and_vendor_code(
+            AdapterErrorKind::Driver,
+            "server closed the connection (SQLSTATE 08006)".to_string(),
+            *b"08006",
+            None,
+        );
+        assert_eq!(
+            warehouse.to_string(),
+            "server closed the connection (SQLSTATE 08006)"
         );
     }
 

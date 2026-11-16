@@ -8,7 +8,7 @@ use dbt_agate::MappedSequence;
 use dbt_common::cancellation::CancellationToken;
 use dbt_common::io_args::{EvalArgs, LocalExecutionBackendKind, ReplayMode};
 use dbt_common::tracing::dbt_emit::emit_info_progress_message;
-use dbt_common::{ErrorCode, FsResult, fs_err};
+use dbt_common::{ErrorCode, FsError, FsResult, fs_err};
 use dbt_compilation::core::DbtLoadedProject;
 use dbt_schemas::dbt_utils::resolve_package_quoting;
 use dbt_schemas::schemas::common::ResolvedQuoting;
@@ -441,7 +441,16 @@ async fn debug_adapter_connection(
         let connection_test_started = Instant::now();
         base_adapter
             .execute_without_state(Some(&ctx), sql, false, None)
-            .map_err(|e| fs_err!(ErrorCode::AuthenticationFailed, "dbt was unable to connect to the database configured for the `{}` adapter.\nThe following error was returned:\n\n{}\n\nCheck your database credentials and try again. For more information, visit:\nhttps://docs.getdbt.com/docs/core/connect-data-platform/connection-profiles", adapter_type, e))?;
+            .map_err(|e| {
+                // A Bridge error isn't about the warehouse credentials, so it
+                // keeps its own code and leaves out the credentials hint.
+                if e.is_bridge() {
+                    let message = format!("dbt was unable to connect to the database configured for the `{adapter_type}` adapter through Bridge.\nThe following error was returned:\n\n{e}");
+                    let code = Box::<FsError>::from(e).code;
+                    return fs_err!(code, "{message}");
+                }
+                fs_err!(ErrorCode::AuthenticationFailed, "dbt was unable to connect to the database configured for the `{}` adapter.\nThe following error was returned:\n\n{}\n\nCheck your database credentials and try again. For more information, visit:\nhttps://docs.getdbt.com/docs/core/connect-data-platform/connection-profiles", adapter_type, e)
+            })?;
         let connection_test_elapsed = connection_test_started.elapsed();
 
         // Check for allow_id_token parameter when using Snowflake with externalbrowser

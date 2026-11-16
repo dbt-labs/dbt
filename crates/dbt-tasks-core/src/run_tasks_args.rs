@@ -87,6 +87,8 @@ pub struct RunTasksArgs {
     pub phase: Phases,
     /// Optional (resolved) sampling plan to locate local sampled data for sources
     pub sample_renaming: BTreeMap<String, (String, String, String)>,
+    /// An extension command's own options, by name, for the experimental that owns the command.
+    pub command_options: BTreeMap<String, Vec<String>>,
     /// Parsed select expression from the invocation.
     pub select: Option<SelectExpression>,
     /// Parsed exclude expression from the invocation.
@@ -175,6 +177,7 @@ impl RunTasksArgs {
             defer: arg.defer,
             run_cache_mode: arg.run_cache_mode.clone(),
             sample_renaming: arg.sample_renaming.clone(),
+            command_options: arg.command_options.clone(),
             select: arg.select.clone(),
             exclude: arg.exclude.clone(),
             phase: arg.phase.clone(),

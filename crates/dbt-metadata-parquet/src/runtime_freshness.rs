@@ -38,6 +38,19 @@ pub struct FreshnessResultRow {
     pub warn_after_period: Option<String>,
     pub error_after_count: Option<i32>,
     pub error_after_period: Option<String>,
+    /// The SQL `filter` the source declares. Absent from epochs written before it existed, as
+    /// are the four columns below.
+    #[serde(default)]
+    pub freshness_filter: Option<String>,
+    #[serde(default)]
+    pub thread_id: Option<String>,
+    #[serde(default)]
+    pub adapter_response: Option<String>,
+    #[serde(default)]
+    pub timing: Option<String>,
+    /// Why the check failed, for a node whose freshness could not be measured.
+    #[serde(default)]
+    pub error: Option<String>,
     pub ingested_at: i64,
 }
 
@@ -55,6 +68,11 @@ fn freshness_fields() -> Vec<Field> {
         Field::new("warn_after_period", DataType::Utf8, true),
         Field::new("error_after_count", DataType::Int32, true),
         Field::new("error_after_period", DataType::Utf8, true),
+        Field::new("freshness_filter", DataType::Utf8, true),
+        Field::new("thread_id", DataType::Utf8, true),
+        Field::new("adapter_response", DataType::Utf8, true),
+        Field::new("timing", DataType::Utf8, true),
+        Field::new("error", DataType::Utf8, true),
         Field::new(
             "ingested_at",
             DataType::Timestamp(TimeUnit::Microsecond, Some(Arc::from("UTC"))),
@@ -142,6 +160,11 @@ mod tests {
             warn_after_period: Some("hour".to_string()),
             error_after_count: Some(24),
             error_after_period: Some("hour".to_string()),
+            freshness_filter: None,
+            thread_id: None,
+            adapter_response: None,
+            timing: None,
+            error: None,
             ingested_at: 1_700_000_000_000_000,
         }];
 
@@ -175,6 +198,11 @@ mod tests {
             warn_after_period: Some("hour".to_string()),
             error_after_count: None,
             error_after_period: None,
+            freshness_filter: None,
+            thread_id: None,
+            adapter_response: None,
+            timing: None,
+            error: None,
             ingested_at: 1_700_000_000_000_000,
         };
 
@@ -214,7 +242,17 @@ mod tests {
     fn legacy_fields() -> Vec<Field> {
         freshness_fields()
             .into_iter()
-            .filter(|f| f.name() != "resource_type")
+            .filter(|f| {
+                !matches!(
+                    f.name().as_str(),
+                    "resource_type"
+                        | "freshness_filter"
+                        | "thread_id"
+                        | "adapter_response"
+                        | "timing"
+                        | "error"
+                )
+            })
             .collect()
     }
 
@@ -287,6 +325,11 @@ mod tests {
                 warn_after_period: None,
                 error_after_count: None,
                 error_after_period: None,
+                freshness_filter: None,
+                thread_id: None,
+                adapter_response: None,
+                timing: None,
+                error: None,
                 ingested_at: 1_778_000_000_000_000,
             }],
         )

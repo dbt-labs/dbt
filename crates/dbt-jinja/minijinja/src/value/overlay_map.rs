@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use serde::{Serialize, Serializer};
@@ -104,6 +104,13 @@ impl<K: Into<Value>> Extend<(K, Value)> for OverlayMap {
     }
 }
 
+impl From<BTreeMap<String, Value>> for OverlayMap {
+    /// Creates an overlay with no entries over `map`, without copying it.
+    fn from(map: BTreeMap<String, Value>) -> Self {
+        OverlayMap::new(Value::from_object(map))
+    }
+}
+
 impl From<OverlayMap> for Value {
     fn from(value: OverlayMap) -> Self {
         Value::from_object(value)
@@ -204,6 +211,18 @@ mod tests {
 
         let rendered = env.get_template("t").unwrap().render(&root, &[]).unwrap();
         assert_eq!(rendered, "[1|2]");
+    }
+
+    #[test]
+    fn an_overlay_state_root_is_the_base_context() {
+        let env = crate::Environment::new();
+        let mut root = OverlayMap::new(base());
+        root.insert("b", Value::from(2));
+        let state = env.new_state_with_context(root);
+
+        let context = state.get_base_context();
+        assert_eq!(context.get_attr("a").unwrap(), Value::from(1));
+        assert_eq!(context.get_attr("b").unwrap(), Value::from(2));
     }
 
     #[test]

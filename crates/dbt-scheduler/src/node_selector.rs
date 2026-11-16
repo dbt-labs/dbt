@@ -1,6 +1,5 @@
 //! Select and exclude nodes from the manifest based on the select and exclude expressions
 
-use clean_path::Clean;
 use dbt_adapter_core::AdapterType;
 use dbt_common::{
     ErrorCode, FsResult,
@@ -9,6 +8,7 @@ use dbt_common::{
     node_selector::{MethodName, SelectExpression, SelectionCriteria, SelectionValue},
     tracing::dbt_emit::emit_warn_log_message,
 };
+use dbt_path::normalize;
 use dbt_schemas::schemas::{
     CommonAttributes, DbtSource, DbtTest, InternalDbtNode, InternalDbtNodeAttributes,
     ModificationType, Nodes, StateArtifacts, common::Access, telemetry::NodeType,
@@ -83,7 +83,7 @@ pub fn filter_select(
             Some(nodes),
             adapter_type,
         )? {
-            result.insert(node.unique_id());
+            result.insert(node.unique_id().to_string());
         }
     }
     Ok(result)
@@ -118,7 +118,7 @@ pub fn filter_select_criteria(
             )
             .map(|include| {
                 if include {
-                    acc.insert(node.unique_id());
+                    acc.insert(node.unique_id().to_string());
                 }
                 acc
             })
@@ -525,7 +525,7 @@ fn match_path(pattern: &str, common_attr: &CommonAttributes) -> FsResult<bool> {
     // ── 0. Normalise the selector: resolve `.` and `..` components so that
     //       "./models/foo.sql", "models/./foo.sql", and
     //       "models/staging/../foo.sql" all reduce to "models/foo.sql".
-    let normalised = Path::new(pattern).clean();
+    let normalised = normalize(Path::new(pattern));
     let pattern = normalised.to_string_lossy();
     let pattern = pattern.as_ref();
 
@@ -788,7 +788,7 @@ fn match_group(pattern: &str, group: Option<String>) -> FsResult<bool> {
     Ok(group.as_deref() == Some(pattern))
 }
 
-fn match_tag(pattern: &str, tags: Vec<String>) -> FsResult<bool> {
+fn match_tag(pattern: &str, tags: &[String]) -> FsResult<bool> {
     Ok(tags.iter().any(|t| fnmatch(pattern, t)))
 }
 
@@ -1757,7 +1757,8 @@ mod tests {
             __warehouse_specific_config__: WarehouseSpecificNodeConfig {
                 cluster_by: Some(ClusterConfig::List(vec!["geo_country".to_string()])),
                 ..Default::default()
-            },
+            }
+            .into(),
             unique_key: Some(DbtUniqueKey::Multiple(vec![
                 "column_a".to_string(),
                 "column_b".to_string(),

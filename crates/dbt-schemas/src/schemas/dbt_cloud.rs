@@ -95,6 +95,9 @@ pub struct ResolvedCloudConfig {
     pub defer_job_id: Option<String>,
     pub state_org_id: Option<String>,
     pub job_id: Option<String>,
+    /// `dbt-cloud.git-credentials` in dbt_project.yml: the project opted in to resolving
+    /// private packages with the user's own platform credentials.
+    pub git_credentials: bool,
 }
 
 #[cfg(test)]

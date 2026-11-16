@@ -42,6 +42,9 @@ pub struct RuntimeResultRow {
     pub relation_name: Option<String>,
     pub adapter_response: Option<String>,
     pub timing: Option<String>,
+    /// A microbatch model's batches, as JSON. Absent from epochs written before it existed.
+    #[serde(default)]
+    pub batch_results: Option<String>,
     pub ingested_at: i64,
 }
 
@@ -58,6 +61,7 @@ fn result_fields() -> Vec<Field> {
         Field::new("relation_name", DataType::Utf8, true),
         Field::new("adapter_response", DataType::Utf8, true),
         Field::new("timing", DataType::Utf8, true),
+        Field::new("batch_results", DataType::Utf8, true),
         Field::new(
             "ingested_at",
             DataType::Timestamp(TimeUnit::Microsecond, Some(Arc::from("UTC"))),
@@ -147,6 +151,7 @@ mod tests {
                 timing: Some(
                     r#"[{"name":"compile","started_at":"t1","completed_at":"t2"}]"#.to_string(),
                 ),
+                batch_results: Some(r#"{"successful":[["a","b"]],"failed":[]}"#.to_string()),
                 ingested_at: 1_700_000_000_000_000,
             },
             RuntimeResultRow {
@@ -161,6 +166,7 @@ mod tests {
                 relation_name: None,
                 adapter_response: None,
                 timing: None,
+                batch_results: None,
                 ingested_at: 1_700_000_000_000_000,
             },
         ];
@@ -196,6 +202,7 @@ mod tests {
                 relation_name: None,
                 adapter_response: None,
                 timing: None,
+                batch_results: None,
                 ingested_at: 1_700_000_000_000_000 + i as i64,
             }];
             write_runtime_results(dir_path, &rows).unwrap();
@@ -226,6 +233,7 @@ mod tests {
                 relation_name: None,
                 adapter_response: None,
                 timing: None,
+                batch_results: None,
                 ingested_at: i as i64,
             }];
             write_runtime_results(dir_path, &rows).unwrap();

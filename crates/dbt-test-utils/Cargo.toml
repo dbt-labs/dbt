@@ -54,7 +54,7 @@ dbt-runtime = { workspace = true }
 pbjson-types = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
-winapi = { version = "0.3", features = ["fileapi"] }
+windows-sys = { version = "0.61.2", features = ["Win32_System_Console"] }
 
 [lib]
 name = "dbt_test_utils"

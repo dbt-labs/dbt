@@ -22,7 +22,6 @@ use dbt_schemas::{
     },
     state::{DbtPackage, DbtRuntimeConfig},
 };
-use minijinja::MacroSpans;
 
 use super::resolve_properties::MinimalPropertiesEntry;
 use crate::dbt_project_config::{
@@ -56,11 +55,9 @@ pub async fn resolve_checks(
 ) -> FsResult<(
     HashMap<String, Arc<DbtCheck>>,
     HashMap<String, Arc<DbtCheck>>,
-    HashMap<String, (String, MacroSpans)>,
 )> {
     let mut checks: HashMap<String, Arc<DbtCheck>> = HashMap::new();
     let mut disabled_checks: HashMap<String, Arc<DbtCheck>> = HashMap::new();
-    let mut rendering_results: HashMap<String, (String, MacroSpans)> = HashMap::new();
     let jinja_type_checking_event_listener_factory =
         Arc::new(DefaultJinjaTypeCheckEventListenerFactory::default());
 
@@ -159,7 +156,6 @@ pub async fn resolve_checks(
         config: check_config,
         raw_code,
         rendered_sql,
-        macro_spans,
         properties: maybe_properties,
         status,
         patch_path,
@@ -250,17 +246,13 @@ pub async fn resolve_checks(
             __check_attr__: DbtCheckAttr {
                 // Carried to execution: the parse-time runner executes exactly this text.
                 // inferred from; checks have no render task to compile them later.
-                compiled_sql: Some(rendered_sql.clone()),
+                compiled_sql: Some(rendered_sql),
             },
             deprecated_config: check_config.into(),
         };
 
         if is_enabled {
             checks.insert(unique_id.to_owned(), Arc::new(dbt_check));
-            rendering_results.insert(
-                unique_id.to_owned(),
-                (rendered_sql.clone(), macro_spans.clone()),
-            );
         } else {
             // Recorded rather than dropped so callers can tell "this check is turned off" from
             // "no such check" — `dbt check <name>` must stay a no-op success for the former and
@@ -281,7 +273,7 @@ pub async fn resolve_checks(
         }
     }
 
-    Ok((checks, disabled_checks, rendering_results))
+    Ok((checks, disabled_checks))
 }
 
 /// `info_schema.version` has no default (see `InfoSchemaConfig`), so a package with checks but no

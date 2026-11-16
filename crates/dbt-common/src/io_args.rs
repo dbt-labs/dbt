@@ -664,6 +664,8 @@ pub struct EvalArgs {
     pub local_execution_backend: LocalExecutionBackendKind,
     /// Does not apply to interactive checkpoints.
     pub skip_checkpoints: bool,
+    /// An extension command's own options, by name, for the experimental that owns the command.
+    pub command_options: BTreeMap<String, Vec<String>>,
     /// Skip installation of private dependencies (useful for build conformance testing)
     pub skip_private_deps: bool,
     /// Skip dependency resolution entirely (`dbt lint --no-deps`)
