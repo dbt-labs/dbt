@@ -41,6 +41,18 @@ macros:
         type: int[int]
 """
 
+boolean_types_macros_yml = """
+macros:
+  - name: my_macro
+    arguments:
+      - name: my_arg_1
+        type: boolean
+      - name: my_arg_2
+        type: optional[boolean]
+      - name: my_arg_3
+        type: list[boolean]
+"""
+
 
 bad_everything_types_macros_yml = """
 macros:
@@ -117,6 +129,23 @@ class TestMacroTypeWarnings:
         assert any(
             [e for e in event_catcher.caught_events if e.info.msg.startswith(warning_tag(msg))]
         )
+
+
+class TestMacroBooleanType:
+    """Test that `boolean` is accepted as an alias for `bool`, as it is in Fusion."""
+
+    @pytest.fixture(scope="class")
+    def macros(self):
+        return {"macros.sql": macros_sql, "macros.yml": boolean_types_macros_yml}
+
+    @pytest.fixture(scope="class")
+    def project_config_update(self):
+        return {"flags": {"validate_macro_args": True}}
+
+    def test_macro_boolean_type(self, project) -> None:
+        event_catcher = EventCatcher(event_to_catch=InvalidMacroAnnotation)
+        run_dbt(["parse"], callbacks=[event_catcher.catch])
+        assert len(event_catcher.caught_events) == 0
 
 
 class TestMacroNonEnforcement:
