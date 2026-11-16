@@ -4,6 +4,7 @@ import pytest
 
 from dbt.contracts.files import ParseFileType
 from dbt.parser.read_files import (
+    _excluded_dirs_for_parse_type,
     get_source_files,
     normalize_file_contents,
     read_files_for_parser,
@@ -70,6 +71,34 @@ def test_singular_tests_skip_fixtures_and_generic_tests_in_nested_test_paths(tmp
         os.path.join("tests", "real_singular_test.sql"),
         os.path.join("tests", "dbt", "nested_singular_test.sql"),
     }
+
+
+def test_singular_tests_skip_fixtures_and_generic_tests_in_absolute_test_paths(tmp_path):
+    _write(tmp_path / "tests" / "real_singular_test.sql")
+    _write(tmp_path / "tests" / "fixtures" / "outer_fixture.sql")
+    _write(tmp_path / "tests" / "dbt" / "generic" / "my_generic_test.sql")
+    project = _FakeProject(tmp_path, [str(tmp_path / "tests"), str(tmp_path / "tests" / "dbt")])
+
+    source_files = get_source_files(
+        project, project.test_paths, ".sql", ParseFileType.SingularTest, {}, None
+    )
+
+    original_file_paths = {os.path.normpath(sf.path.original_file_path) for sf in source_files}
+    assert original_file_paths == {str(tmp_path / "tests" / "real_singular_test.sql")}
+
+
+@pytest.mark.parametrize(
+    "parse_file_type",
+    [
+        parse_file_type
+        for parse_file_type in ParseFileType
+        if parse_file_type != ParseFileType.SingularTest
+    ],
+)
+def test_excluded_dirs_only_apply_to_singular_tests(tmp_path, parse_file_type):
+    project = _FakeProject(tmp_path, ["tests", "tests/dbt"])
+
+    assert _excluded_dirs_for_parse_type(project, parse_file_type) == []
 
 
 @pytest.mark.parametrize(

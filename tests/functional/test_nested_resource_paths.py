@@ -143,3 +143,43 @@ class TestNestedTestPathsPartialParsing:
         manifest = run_dbt(["--partial-parse", "parse"])
         test_node_ids = [node_id for node_id in manifest.nodes if node_id.startswith("test.")]
         assert test_node_ids == ["test.test.added_test"]
+
+
+sources_yml = """
+sources:
+  - name: src
+    tables:
+      - name: t
+"""
+
+
+class TestNestedTestPathsSchemaFileOuterFirst:
+    @pytest.fixture(scope="class")
+    def project_config_update(self):
+        return {"test-paths": ["tests", "tests/dbt"]}
+
+    @pytest.fixture(scope="class")
+    def tests(self):
+        return {"dbt": {"sources.yml": sources_yml}}
+
+    def test_nested_schema_file_fqn(self, project):
+        run_dbt(["parse"])
+        manifest = get_manifest(project.project_root)
+
+        assert manifest.sources["source.test.src.t"].fqn == ["test", "dbt", "src", "t"]
+
+
+class TestNestedTestPathsSchemaFileInnerFirst:
+    @pytest.fixture(scope="class")
+    def project_config_update(self):
+        return {"test-paths": ["tests/dbt", "tests"]}
+
+    @pytest.fixture(scope="class")
+    def tests(self):
+        return {"dbt": {"sources.yml": sources_yml}}
+
+    def test_nested_schema_file_fqn(self, project):
+        run_dbt(["parse"])
+        manifest = get_manifest(project.project_root)
+
+        assert manifest.sources["source.test.src.t"].fqn == ["test", "src", "t"]
