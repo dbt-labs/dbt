@@ -210,6 +210,13 @@ Check the warehouse before rerunning.",
             "The connection failed, so this statement may have run. \
 Check the warehouse before rerunning.",
         ),
+        [b'2', b'8', ..] => {
+            Some("Check that your dbt platform token is valid and can access this project.")
+        }
+        [b'X', b'X', ..] => Some(
+            "This is a Bridge service error. If it persists, contact dbt Labs support \
+and include the trace ID from the message, if there is one.",
+        ),
         _ => None,
     }
 }
@@ -665,6 +672,14 @@ Check the warehouse before rerunning."
         assert_eq!(
             display(b"HYR09"),
             "[Bridge] session not found (SQLSTATE: HYR09)"
+        );
+        assert_eq!(
+            display(b"28R00"),
+            "[Bridge] session not found (SQLSTATE: 28R00)\n\
+Check that your dbt platform token is valid and can access this project."
+        );
+        assert!(
+            display(b"XXR05").ends_with("include the trace ID from the message, if there is one.")
         );
         // Warehouse driver errors already carry the SQLSTATE in their message.
         let warehouse = AdapterError::new_with_sqlstate_and_vendor_code(

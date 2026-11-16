@@ -161,6 +161,14 @@ impl ConnectionGuard<'_> {
     pub(crate) fn discard_conn_on_drop(&mut self) {
         self.persist = false;
     }
+
+    /// Discard a Bridge connection if `err` means it can't be used again.
+    /// Every class `08` SQLSTATE ends a Bridge session.
+    pub(crate) fn discard_on_bridge_error(&mut self, err: &AdapterError) {
+        if err.sqlstate().starts_with("08") {
+            self.discard_conn_on_drop();
+        }
+    }
 }
 impl Deref for ConnectionGuard<'_> {
     type Target = Box<dyn Connection>;
