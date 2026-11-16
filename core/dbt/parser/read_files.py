@@ -22,6 +22,7 @@ from dbt.flags import get_flags
 from dbt.parser.common import schema_file_keys
 from dbt.parser.schemas import yaml_from_file
 from dbt.parser.search import filesystem_search
+from dbt.parser.sql_whitespace import normalize_sql_whitespace
 from dbt_common.clients.system import load_file_contents
 from dbt_common.dataclass_schema import dbtClassMixin
 from dbt_common.events.functions import fire_event
@@ -43,11 +44,28 @@ class FileDiff(dbtClassMixin):
     added: List[InputFile]
 
 
-def normalize_file_contents(contents: str) -> str:
-    """Normalize file contents by compacting whitespace and newlines to a single whitespace.
-    This ensures consistent checksums regardless of formatting differences.
-    """
-    return " ".join(contents.split())
+_SQL_PARSE_FILE_TYPES = frozenset(
+    {
+        ParseFileType.Model,
+        ParseFileType.Macro,
+        ParseFileType.Snapshot,
+        ParseFileType.Analysis,
+        ParseFileType.SingularTest,
+        ParseFileType.GenericTest,
+        ParseFileType.Fixture,
+        ParseFileType.Function,
+    }
+)
+_SQL_EXTENSIONS = (".sql", ".sql.j2", ".sql.jinja", ".sql.jinja2")
+
+
+def get_source_file_checksum(
+    contents: str, path: str, parse_file_type: Optional[ParseFileType]
+) -> FileHash:
+    if parse_file_type in _SQL_PARSE_FILE_TYPES and path.endswith(_SQL_EXTENSIONS):
+        # Match the filesystem loader's outer trimming for diff inputs too.
+        contents = normalize_sql_whitespace(contents.strip())
+    return FileHash.from_contents(contents)
 
 
 # This loads the files contents and creates the SourceFile object
@@ -88,12 +106,12 @@ def load_source_file(
             skip_loading_schema_file = True
 
     if not skip_loading_schema_file:
-        # We strip the file_contents before generating the checksum because we want
-        # the checksum to match the stored file contents
+        # Preserve the existing outer trimming of stored source and checksum inputs.
         file_contents = load_file_contents(path.absolute_path, strip=True)
         source_file.contents = file_contents
-        normalized_contents = normalize_file_contents(file_contents)
-        source_file.checksum = FileHash.from_contents(normalized_contents)
+        source_file.checksum = get_source_file_checksum(
+            file_contents, path.relative_path, parse_file_type
+        )
 
     if parse_file_type == ParseFileType.Schema and source_file.contents:
         dfy = yaml_from_file(source_file=source_file, validate=True)
@@ -253,7 +271,7 @@ class ReadFilesFromFileSystem:
                     project_root=project.project_root,
                 )
                 contents = load_file_contents(str(osi_path), strip=True)
-                checksum = FileHash.from_contents(normalize_file_contents(contents))
+                checksum = FileHash.from_contents(contents)
                 sf = OsiSourceFile(
                     path=fp,
                     checksum=checksum,
@@ -316,7 +334,9 @@ class ReadFilesFromDiff:
                 # Get the existing source_file object and update the contents and mod time
                 source_file = self.files[file_id]
                 source_file.contents = input_file.content
-                source_file.checksum = FileHash.from_contents(input_file.content)
+                source_file.checksum = get_source_file_checksum(
+                    input_file.content, input_file.path, source_file.parse_file_type
+                )
                 source_file.path.modification_time = input_file.modification_time
                 # Handle creation of dictionary version of schema file content
                 if isinstance(source_file, SchemaSourceFile) and source_file.contents:
@@ -329,6 +349,7 @@ class ReadFilesFromDiff:
         # Now the new files
         for input_file in self.file_diff.added:
             project_name = self.get_project_name(input_file.path)
+            file_id = f"{project_name}://{input_file.path}"
             # FilePath
             #   searched_path  i.e. "models"
             #   relative_path  i.e. the part after searched_path, or "model.sql"
@@ -336,7 +357,6 @@ class ReadFilesFromDiff:
             #   project_root
             # We use PurePath because there's no actual filesystem to look at
             input_file_path = pathlib.PurePath(input_file.path)
-            extension = input_file_path.suffix
             searched_path = input_file_path.parts[0]
             # check what happens with generic tests... searched_path/relative_path
 
@@ -354,8 +374,9 @@ class ReadFilesFromDiff:
             (file_types, file_type_lookup) = self.get_project_file_types(project_name)
             parse_ft_for_extension = set()
             parse_ft_for_path = set()
-            if extension in file_type_lookup["extensions"]:
-                parse_ft_for_extension = file_type_lookup["extensions"][extension]
+            for extension, parse_types in file_type_lookup["extensions"].items():
+                if relative_path.name.endswith(extension):
+                    parse_ft_for_extension.update(parse_types)
             if searched_path in file_type_lookup["paths"]:
                 parse_ft_for_path = file_type_lookup["paths"][searched_path]
             if len(parse_ft_for_extension) == 0 or len(parse_ft_for_path) == 0:
@@ -378,7 +399,7 @@ class ReadFilesFromDiff:
             source_file = source_file_cls(
                 path=input_file_path,
                 contents=input_file.content,
-                checksum=FileHash.from_contents(input_file.content),
+                checksum=get_source_file_checksum(input_file.content, input_file.path, parse_ft),
                 project_name=project_name,
                 parse_file_type=parse_ft,
             )

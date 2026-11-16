@@ -5,6 +5,7 @@ import jsonschema
 import pytest
 
 import dbt
+from dbt.artifacts.resources import FileHash
 from dbt.artifacts.schemas.results import RunStatus
 from dbt.artifacts.schemas.run import RunResultsArtifact
 from dbt.contracts.graph.manifest import WritableManifest
@@ -17,6 +18,7 @@ from dbt.tests.util import (
 )
 from dbt_common.events.event_catcher import EventCatcher
 from tests.functional.artifacts.expected_manifest import (
+    checksum_file,
     expected_references_manifest,
     expected_seeded_manifest,
     expected_versions_manifest,
@@ -26,6 +28,20 @@ from tests.functional.artifacts.expected_run_results import (
     expected_run_results,
     expected_versions_run_results,
 )
+
+
+@pytest.mark.parametrize("extension", ["sql", "csv"])
+@pytest.mark.parametrize("newline", ["\n", "\r\n"], ids=["lf", "crlf"])
+def test_checksum_file_line_endings(tmp_path, extension, newline):
+    contents = f"\nselect  'a  b'{newline}  as value\n"
+    path = tmp_path / f"probe.{extension}"
+    path.write_bytes(contents.encode("utf-8"))
+    if extension == "csv":
+        expected = FileHash.from_path(str(path))
+    else:
+        expected = FileHash.from_contents(f"select 'a  b'{newline} as value")
+    assert checksum_file(str(path)) == expected.to_dict()
+
 
 models__schema_yml = """
 version: 2

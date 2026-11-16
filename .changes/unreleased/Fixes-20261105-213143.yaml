@@ -1,0 +1,6 @@
+kind: Fixes
+body: Fix stale partial parsing after whitespace changes in SQL string literals.
+time: 2026-11-05T21:31:43.357483-08:00
+custom:
+    Author: chandlergregg
+    Issue: "17054"

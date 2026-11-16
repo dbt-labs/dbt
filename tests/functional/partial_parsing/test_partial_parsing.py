@@ -119,12 +119,14 @@ class TestModels:
         results = run_dbt(["--partial-parse", "run"])
         assert len(results) == 2
 
-        # update model file - add additional spaces, should not change prior checksum
+        # Safe horizontal SQL formatting can reuse the cached node.
         manifest = get_manifest(project.project_root)
         model_two_checksum = manifest.nodes["model.test.model_two"].checksum
         write_file(model_two_sql_extra_whitespace, project.project_root, "models", "model_two.sql")
         manifest = run_dbt(["--partial-parse", "parse"])
-        assert manifest.nodes["model.test.model_two"].checksum == model_two_checksum
+        model_two_node = manifest.nodes["model.test.model_two"]
+        assert model_two_node.checksum == model_two_checksum
+        assert model_two_node.raw_code == model_two_sql.strip()
 
         # add a schema file
         write_file(models_schema1_yml, project.project_root, "models", "schema.yml")
@@ -998,6 +1000,34 @@ class TestProfileChanges:
         write_file(yaml.safe_dump(dbt_profile_data), project.profiles_dir, "profiles.yml")
         _, stdout = run_dbt_and_capture(["parse"])
         assert "Unable to do partial parsing" not in stdout
+
+
+class TestLiteralWhitespace:
+    @pytest.fixture(scope="class")
+    def models(self):
+        return {"probe.sql": "select 'a b' as value"}
+
+    @pytest.mark.parametrize("literal", ["a  b", "a\tb", "a\nb"], ids=["spaces", "tab", "newline"])
+    def test_partial_parse_executes_updated_literal(self, project, literal):
+        # Each parameter starts with its own known full-parse baseline.
+        write_file("select 'a b' as value", project.project_root, "models", "probe.sql")
+        run_dbt(["--no-partial-parse", "run"])
+        query = f"select value from {project.test_schema}.probe"
+        assert project.run_sql(query, fetch="one")[0] == "a b"
+
+        # Preserve literal newlines on all platforms.
+        with open(os.path.join(project.project_root, "models", "probe.sql"), "wb") as fp:
+            fp.write(f"select '{literal}' as value".encode("utf-8"))
+        events = []
+        run_dbt(["--partial-parse", "run"], callbacks=[events.append])
+
+        assert [
+            event.data.changed for event in events if event.info.name == "PartialParsingEnabled"
+        ] == [1]
+        assert not any(
+            event.info.name in ("UnableToPartialParse", "ParsedFileLoadFailed") for event in events
+        )
+        assert project.run_sql(query, fetch="one")[0] == literal
 
 
 class TestExplicitDefaultProfileAndTarget:
