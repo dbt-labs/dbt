@@ -1,0 +1,8 @@
+kind: Fixes
+body: Fix slow builds in projects whose macros read the `graph` context variable at
+  run time (e.g. dbt-unit-testing) by converting each node to a dictionary once when
+  the graph is built, as in 1.11, instead of on every read
+time: 2026-11-02T14:00:00.000000+05:30
+custom:
+    Author: itsnamangoyal
+    Issue: "15997"

@@ -939,23 +939,6 @@ NodeClassT = TypeVar("NodeClassT", bound="BaseNode")
 ResourceClassT = TypeVar("ResourceClassT", bound="BaseResource")
 
 
-class FlatGraphMapping(Mapping[str, Dict]):
-    """Provides a no-copy view of one of the node dictionaries that make up the
-    'flat_graph' data structure, with values converted to dictionaries on demand."""
-
-    def __init__(self, inner_dict: Mapping[str, BaseNode]) -> None:
-        self.inner_dict = inner_dict
-
-    def __getitem__(self, key: str) -> Dict:
-        return self.inner_dict.__getitem__(key).to_dict(omit_none=False)
-
-    def __len__(self) -> int:
-        return len(self.inner_dict)
-
-    def __iter__(self) -> Iterator[str]:
-        return self.inner_dict.__iter__()
-
-
 class ResourceMapping(Mapping[str, ResourceClassT]):
     """Provides a no-copy view over a node dictionary, converting each node to
     its resource representation on demand."""
@@ -1064,9 +1047,6 @@ class Manifest(MacroMethods, dbtClassMixin):
     @classmethod
     def __post_deserialize__(cls, obj: "Manifest") -> "Manifest":
         obj._lock = get_mp_context().Lock()
-        # flat_graph is not serialized (see the field metadata above), so rebuild
-        # its no-copy views here after deserialization.
-        obj.build_flat_graph()
         return obj
 
     def build_flat_graph(self) -> None:
@@ -1075,16 +1055,20 @@ class Manifest(MacroMethods, dbtClassMixin):
         Make sure you don't call this until you're done with building your
         manifest!
         """
+        resources: Dict[str, Mapping[str, BaseNode]] = {
+            "exposures": self.exposures,
+            "functions": self.functions,
+            "groups": self.groups,
+            "metrics": self.metrics,
+            "nodes": self.nodes,
+            "sources": self.sources,
+            "semantic_models": self.semantic_models,
+            "saved_queries": self.saved_queries,
+            "unit_tests": self.unit_tests,
+        }
         self.flat_graph = {
-            "exposures": FlatGraphMapping(self.exposures),
-            "functions": FlatGraphMapping(self.functions),
-            "groups": FlatGraphMapping(self.groups),
-            "metrics": FlatGraphMapping(self.metrics),
-            "nodes": FlatGraphMapping(self.nodes),
-            "sources": FlatGraphMapping(self.sources),
-            "semantic_models": FlatGraphMapping(self.semantic_models),
-            "saved_queries": FlatGraphMapping(self.saved_queries),
-            "unit_tests": FlatGraphMapping(self.unit_tests),
+            key: {k: v.to_dict(omit_none=False) for k, v in nodes.items()}
+            for key, nodes in resources.items()
         }
 
     def build_disabled_by_file_id(self) -> Dict[str, GraphMemberNode]:
