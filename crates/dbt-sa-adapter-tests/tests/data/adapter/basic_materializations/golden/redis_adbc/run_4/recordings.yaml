@@ -1,0 +1,133 @@
+test.basic_materializations.assert_totals:
+- sequence: 0
+  type: execute
+  sql: |-
+    select
+    count(*) as failures,
+    count(*) != 0 as should_warn,
+    count(*) != 0 as should_error
+    from (
+
+    select 'table_count' as failure
+    where (select count(*) from "adapters_redis_adbc_basic_materializations"."trips_table") <> 3
+    union all
+    select 'view_count' as failure
+    where (select count(*) from "adapters_redis_adbc_basic_materializations"."zone_totals") <> 2
+    union all
+    select 'view_total' as failure
+    where coalesce((select sum(trips) from "adapters_redis_adbc_basic_materializations"."zone_totals"), 0) <> 6
+    union all
+    select 'incremental_count' as failure
+    where (select count(*) from "adapters_redis_adbc_basic_materializations"."trips_incremental") <> 3
+    union all
+    select 'incremental_total' as failure
+    where coalesce((select sum(trips) from "adapters_redis_adbc_basic_materializations"."trips_incremental"), 0) <> 6
+
+
+    ) dbt_internal_test
+test.basic_materializations.not_null_trips_incremental_id.4071dd38a9:
+- sequence: 0
+  type: execute
+  sql: |-
+    select
+    count(*) as failures,
+    count(*) != 0 as should_warn,
+    count(*) != 0 as should_error
+    from (
+
+
+
+
+
+
+
+    select id
+    from "adapters_redis_adbc_basic_materializations"."trips_incremental"
+    where id is null
+
+
+
+
+
+    ) dbt_internal_test
+test.basic_materializations.not_null_trips_table_id.bb119a4888:
+- sequence: 0
+  type: execute
+  sql: |-
+    select
+    count(*) as failures,
+    count(*) != 0 as should_warn,
+    count(*) != 0 as should_error
+    from (
+
+
+
+
+
+
+
+    select id
+    from "adapters_redis_adbc_basic_materializations"."trips_table"
+    where id is null
+
+
+
+
+
+    ) dbt_internal_test
+test.basic_materializations.unique_trips_incremental_id.3f32c480a9:
+- sequence: 0
+  type: execute
+  sql: |-
+    select
+    count(*) as failures,
+    count(*) != 0 as should_warn,
+    count(*) != 0 as should_error
+    from (
+
+
+
+
+
+    select
+    id as unique_field,
+    count(*) as n_records
+
+    from "adapters_redis_adbc_basic_materializations"."trips_incremental"
+    where id is not null
+    group by id
+    having count(*) > 1
+
+
+
+
+
+    ) dbt_internal_test
+test.basic_materializations.unique_trips_table_id.2d78e7e916:
+- sequence: 0
+  type: execute
+  sql: |-
+    select
+    count(*) as failures,
+    count(*) != 0 as should_warn,
+    count(*) != 0 as should_error
+    from (
+
+
+
+
+
+    select
+    id as unique_field,
+    count(*) as n_records
+
+    from "adapters_redis_adbc_basic_materializations"."trips_table"
+    where id is not null
+    group by id
+    having count(*) > 1
+
+
+
+
+
+    ) dbt_internal_test

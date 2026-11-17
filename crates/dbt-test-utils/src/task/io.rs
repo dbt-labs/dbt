@@ -18,7 +18,7 @@ use arrow::datatypes::{
 };
 use arrow::ipc::reader::StreamReader as ArrowStreamReader;
 use arrow::ipc::writer::StreamWriter as ArrowStreamWriter;
-use arrow::record_batch::RecordBatch;
+use arrow::record_batch::{RecordBatch, RecordBatchOptions};
 use async_trait::async_trait;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
@@ -366,6 +366,23 @@ fn update_sqlite_recordings_sql_only(
     Ok(())
 }
 
+fn replace_record_batch_strings(
+    batch: &RecordBatch,
+    replace_fn: &dyn Fn(&str) -> String,
+) -> Result<RecordBatch, arrow::error::ArrowError> {
+    let columns = batch
+        .columns()
+        .iter()
+        .map(|array| rebuild_string_like_arrays(array, replace_fn))
+        .collect();
+    // DDL may have zero columns, so Arrow cannot infer its row count from arrays.
+    RecordBatch::try_new_with_options(
+        batch.schema(),
+        columns,
+        &RecordBatchOptions::new().with_row_count(Some(batch.num_rows())),
+    )
+}
+
 fn update_sqlite_recordings(db_path: &Path, replace_fn: &dyn Fn(&str) -> String) -> TestResult<()> {
     let conn = Connection::open(db_path)?;
 
@@ -430,16 +447,8 @@ fn update_sqlite_recordings(db_path: &Path, replace_fn: &dyn Fn(&str) -> String)
                             for batch_result in reader {
                                 match batch_result {
                                     Ok(batch) => {
-                                        let mut new_columns =
-                                            Vec::with_capacity(batch.num_columns());
-                                        for i in 0..batch.num_columns() {
-                                            let array = batch.column(i);
-                                            let new_array =
-                                                rebuild_string_like_arrays(array, replace_fn);
-                                            new_columns.push(new_array);
-                                        }
                                         let new_batch =
-                                            RecordBatch::try_new(schema.clone(), new_columns)?;
+                                            replace_record_batch_strings(&batch, replace_fn)?;
                                         writer.write(&new_batch)?;
                                     }
                                     Err(_) => {
@@ -919,6 +928,25 @@ mod tests {
     use arrow::buffer::OffsetBuffer;
     use arrow::datatypes::{Field, Fields};
     use std::sync::Arc;
+
+    #[test]
+    fn recording_rewrite_preserves_zero_column_row_counts() {
+        for rows in [0, 3] {
+            let schema = Arc::new(arrow::datatypes::Schema::new_with_metadata(
+                Vec::<Field>::new(),
+                std::collections::HashMap::from([("k".into(), "v".into())]),
+            ));
+            let batch = RecordBatch::try_new_with_options(
+                schema.clone(),
+                vec![],
+                &RecordBatchOptions::new().with_row_count(Some(rows)),
+            )
+            .unwrap();
+            let rewritten = replace_record_batch_strings(&batch, &str::to_owned).unwrap();
+            assert_eq!(rewritten.num_rows(), rows);
+            assert_eq!(rewritten.schema(), schema);
+        }
+    }
 
     #[test]
     fn yaml_sidecar_is_in_call_order() {

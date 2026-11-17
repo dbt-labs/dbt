@@ -1,0 +1,67 @@
+model.basic_materializations.trips_incremental:
+- sequence: 0
+  type: execute
+  sql: |-
+    create table "adapters_redis_adbc_basic_materializations"."trips_incremental"
+    as
+    (
+    with __dbt__cte__trips_input as (
+
+
+    select id, zone, trips from "adapters_redis_adbc_basic_materializations"."trips"
+    )
+    --EPHEMERAL-SELECT-WRAPPER-START
+    select * from (
+
+
+    -- Reprocess all three IDs on each run; the second build must not duplicate them.
+    select id, zone, trips from __dbt__cte__trips_input
+    --EPHEMERAL-SELECT-WRAPPER-END
+    ) as trips_incremental
+    )
+model.basic_materializations.trips_table:
+- sequence: 0
+  type: execute
+  sql: |-
+    create table "adapters_redis_adbc_basic_materializations"."trips_table__dbt_tmp"
+    as
+    (
+    with __dbt__cte__trips_input as (
+
+
+    select id, zone, trips from "adapters_redis_adbc_basic_materializations"."trips"
+    )
+    --EPHEMERAL-SELECT-WRAPPER-START
+    select * from (
+
+
+    select id, zone, trips from __dbt__cte__trips_input
+    --EPHEMERAL-SELECT-WRAPPER-END
+    ) as trips_table
+    )
+- sequence: 1
+  type: execute
+  sql: alter table "adapters_redis_adbc_basic_materializations"."trips_table__dbt_tmp" rename to "trips_table"
+- sequence: 2
+  type: execute
+  sql: drop table if exists "adapters_redis_adbc_basic_materializations"."trips_table__dbt_backup" cascade
+model.basic_materializations.zone_totals:
+- sequence: 0
+  type: execute
+  sql: |-
+    create view "adapters_redis_adbc_basic_materializations"."zone_totals__dbt_tmp"
+
+
+    as (
+
+
+    select zone, sum(trips) as trips
+    from "adapters_redis_adbc_basic_materializations"."trips_table"
+    group by zone
+    )
+- sequence: 1
+  type: execute
+  sql: alter table "adapters_redis_adbc_basic_materializations"."zone_totals__dbt_tmp" rename to "zone_totals"
+- sequence: 2
+  type: execute
+  sql: drop view if exists "adapters_redis_adbc_basic_materializations"."zone_totals__dbt_backup" cascade

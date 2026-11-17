@@ -1,0 +1,15 @@
+   dbt-oss 
+   Loading profiles.yml
+debug:warning=static analysis for adapter: RedisAdbc is disabled
+   Parsing models/schema.yml
+   Parsing models/trips_incremental.sql
+   Parsing models/trips_input.sql
+   Parsing models/trips_table.sql
+   Parsing models/zone_totals.sql
+   Parsing tests/assert_totals.sql
+   Running ../scratch/target/run/basic_materializations/seeds/trips.sql
+ Succeeded seed  adapters_redis_adbc_basic_materializations.trips (table) [1 of 1 in duration, 3 rows]
+==================== Execution Summary =====================
+Finished 'seed' successfully for target 'redis_adbc' [duration]
+Processed: 1 seed
+Summary: 1 total | 1 success

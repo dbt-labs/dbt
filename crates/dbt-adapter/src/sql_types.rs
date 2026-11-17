@@ -1390,13 +1390,13 @@ mod tests {
     fn redis_decimal256_preserves_precision_and_nullability() {
         for (nullable, suffix) in [(true, ""), (false, " not null")] {
             let mut formatted = String::new();
-            DefaultTypeOps::new(AdapterType::RedisAdbc)
+            DefaultTypeOps::new(RedisAdbc)
                 .format_arrow_type_as_sql(&DataType::Decimal256(76, 16), nullable, &mut formatted)
                 .unwrap();
             assert_eq!(formatted, format!("decimal(76, 16){suffix}"));
         }
         assert!(
-            DefaultTypeOps::new(AdapterType::Postgres)
+            DefaultTypeOps::new(Postgres)
                 .format_arrow_type_as_sql(&DataType::Decimal256(76, 16), true, &mut String::new())
                 .is_err()
         );

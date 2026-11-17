@@ -2266,7 +2266,7 @@ impl AdapterImpl {
         };
         let schema = match self.adapter_type() {
             RedisAdbc if self.engine().get_config().get_str("transport") == Some("flightsql") => {
-                crate::metadata::redis::supplement_schema(
+                metadata::redis::supplement_schema(
                     conn.as_mut(),
                     schema,
                     if relation.include_policy().schema {

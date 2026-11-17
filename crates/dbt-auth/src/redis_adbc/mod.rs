@@ -669,7 +669,7 @@ mod tests {
         let mut database = builder.build(&mut driver)?;
         let mut connection = connection::Builder::default().build(&mut database)?;
         let mut statement = connection.new_statement()?;
-        statement.set_sql_query("select 1 as redis_adbc_probe")?;
+        statement.set_sql_query("select cast(1 as bigint) as redis_adbc_probe")?;
         let batches = statement.execute()?.collect::<Result<Vec<_>, _>>()?;
         assert_eq!(batches.len(), 1);
         assert_eq!(batches[0].num_rows(), 1);
