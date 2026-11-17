@@ -28,7 +28,7 @@ use dbt_schemas::{
         },
         ref_and_source::{DbtRef, DbtSourceWrapper},
     },
-    state::{DbtPackage, DbtRuntimeConfig, NodeResolverTracker},
+    state::{DbtPackage, DbtRuntimeConfig, ModelStatus, NodeResolverTracker},
 };
 use indexmap::IndexMap;
 
@@ -84,8 +84,13 @@ pub async fn resolve_functions(
     root_runtime_config: Arc<DbtRuntimeConfig>,
     node_resolver: &mut NodeResolver,
     token: &CancellationToken,
-) -> FsResult<(HashMap<String, Arc<DbtFunction>>, HashMap<String, String>)> {
+) -> FsResult<(
+    HashMap<String, Arc<DbtFunction>>,
+    HashMap<String, Arc<DbtFunction>>,
+    HashMap<String, String>,
+)> {
     let mut functions: HashMap<String, Arc<DbtFunction>> = HashMap::new();
+    let mut disabled_functions: HashMap<String, Arc<DbtFunction>> = HashMap::new();
     let mut function_bodies: HashMap<String, String> = HashMap::new();
     let dependency_package_name = dependency_package_name_from_ctx(&env, base_ctx);
 
@@ -360,8 +365,6 @@ pub async fn resolve_functions(
             nodes_with_ref_location: vec![],
         };
 
-        function_bodies.insert(unique_id.clone(), rendered_sql);
-
         let (node_database, node_schema) = node_starting_database_and_schema(
             Some(parse_adapter_scopes),
             selected_adapter,
@@ -526,7 +529,17 @@ pub async fn resolve_functions(
             }
         }
 
-        functions.insert(unique_id, Arc::new(function));
+        match status {
+            ModelStatus::Enabled | ModelStatus::ParsingFailed => {
+                function_bodies.insert(unique_id.clone(), rendered_sql);
+                functions.insert(unique_id, Arc::new(function));
+            }
+            // A disabled function must not be part of the node set: it would otherwise still be
+            // rendered, compiled and run, and fail on references to other disabled nodes.
+            ModelStatus::Disabled => {
+                disabled_functions.insert(unique_id, Arc::new(function));
+            }
+        }
     }
 
     // Post-loop: absorb overloads into root functions
@@ -539,6 +552,7 @@ pub async fn resolve_functions(
         let mut merged_sources: Vec<DbtSourceWrapper> = Vec::new();
         let root_name = functions
             .get(&root_uid)
+            .or_else(|| disabled_functions.get(&root_uid))
             .map(|f| f.__common_attr__.name.clone())
             .unwrap_or_default();
 
@@ -608,7 +622,12 @@ pub async fn resolve_functions(
         // Add absorbed overloads to the root function, along with the deps their
         // SQL pulls in. Those edges must live on the root so the DAG is complete;
         // resolve_dependencies dedups against the root's own refs/sources later.
-        let root_func = functions.get_mut(&root_uid).unwrap();
+        // The root may be disabled; its overloads are still absorbed so the disabled node
+        // lands in the manifest complete.
+        let root_func = functions
+            .get_mut(&root_uid)
+            .or_else(|| disabled_functions.get_mut(&root_uid))
+            .expect("overload root must exist");
         let root_mut = Arc::make_mut(root_func);
         root_mut.__function_attr__.overloads = absorbed;
         root_mut.__base_attr__.refs.extend(merged_refs);
@@ -625,5 +644,5 @@ pub async fn resolve_functions(
         }
     }
 
-    Ok((functions, function_bodies))
+    Ok((functions, disabled_functions, function_bodies))
 }

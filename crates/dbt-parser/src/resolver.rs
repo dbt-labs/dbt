@@ -1268,7 +1268,7 @@ pub async fn resolve_inner(
     disabled_nodes.checks.extend(disabled_checks);
 
     // Resolve functions
-    let (functions, function_bodies) = resolve_functions(
+    let (functions, disabled_functions, function_bodies) = resolve_functions(
         arg,
         package,
         package_quoting,
@@ -1290,6 +1290,7 @@ pub async fn resolve_inner(
     )
     .await?;
     nodes.functions.extend(functions);
+    disabled_nodes.functions.extend(disabled_functions);
 
     let (exposures, disabled_exposures) = resolve_exposures(
         arg,
