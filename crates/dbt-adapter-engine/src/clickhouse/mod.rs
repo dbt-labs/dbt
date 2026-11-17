@@ -5,17 +5,13 @@ pub mod capabilities;
 
 pub use capabilities::ClickHouseCapabilities;
 
-use dbt_adapter_core::AdapterType;
-use dbt_adapter_sql::ident::quote_identifier;
+use dbt_adapter_sql::ident::clickhouse::Ident;
 
 /// dbclient.py `_ensure_database` parity (incl. its clause spacing).
 /// Divergence: identifiers are double-quoted via the shared ident helper
 /// instead of query.py's backtick quoting — equivalent for ClickHouse.
 pub fn exists_database_sql(database: &str) -> String {
-    format!(
-        "EXISTS DATABASE {}",
-        quote_identifier(database, AdapterType::ClickHouse)
-    )
+    format!("EXISTS DATABASE {}", Ident::from_unquoted(database))
 }
 
 /// See [`exists_database_sql`].
@@ -34,7 +30,7 @@ pub fn create_database_sql(
     };
     format!(
         "CREATE DATABASE IF NOT EXISTS {}{cluster_clause}{engine_clause}",
-        quote_identifier(database, AdapterType::ClickHouse)
+        Ident::from_unquoted(database)
     )
 }
 

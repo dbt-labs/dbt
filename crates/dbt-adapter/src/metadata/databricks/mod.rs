@@ -11,7 +11,8 @@ use dbt_adapter_core::ExecutionPhase;
 use dbt_adapter_engine::MapReduce;
 use dbt_adapter_engine::cow::uppercase;
 use dbt_adapter_engine::databricks::query_tags::QueryTags;
-use dbt_adapter_sql::ident::{Ident, quote_identifier};
+use dbt_adapter_sql::ident::databricks::Ident;
+use dbt_adapter_sql::join_dotted;
 use dbt_adbc::QueryCtx;
 use dbt_agate::AgateTable;
 use dbt_common::ErrorCode;
@@ -139,9 +140,9 @@ fn describe_relation(
 
     // This function is called when relation lookup needs full metadata.
     // See https://github.com/databricks/dbt-databricks/blob/822b105b15e644676d9e1f47cbfd765cd4c1541f/dbt/adapters/databricks/impl.py#L418
-    let query_catalog = databricks_query_identifier(database, adapter.quoting().database);
-    let query_schema = databricks_query_identifier(schema, adapter.quoting().schema);
-    let query_identifier = databricks_query_identifier(identifier, adapter.quoting().identifier);
+    let query_catalog = Ident::from_string(database, adapter.quoting().database);
+    let query_schema = Ident::from_string(schema, adapter.quoting().schema);
+    let query_identifier = Ident::from_string(identifier, adapter.quoting().identifier);
 
     // Known system tables and older runtimes cannot use JSON describe. Spark
     // has no Databricks runtime version to check.
@@ -215,20 +216,6 @@ fn databricks_string_value(value: &str) -> String {
 
 pub(crate) fn databricks_metadata_value(value: &str) -> String {
     databricks_string_value(&value.to_lowercase())
-}
-
-fn databricks_metadata_identifier(value: &str) -> String {
-    quote_identifier(&value.to_lowercase(), AdapterType::Databricks)
-}
-
-pub(crate) fn databricks_query_identifier(value: &str, quote: bool) -> String {
-    if quote {
-        quote_identifier(value, AdapterType::Databricks)
-    } else {
-        Ident::new(value, AdapterType::Databricks)
-            .display(AdapterType::Databricks)
-            .to_string()
-    }
 }
 
 /// Whether a Databricks error means the relation does not exist: a `NotFound`
@@ -360,21 +347,20 @@ WHERE table_catalog = {catalog}
 
 fn get_relation_with_quote_policy(
     relation: &Arc<dyn BaseRelation>,
-) -> AdapterResult<(String, String, String)> {
+) -> AdapterResult<(Ident, Ident, Ident)> {
     let database = relation.database_as_str()?;
     let schema = relation.schema_as_str()?;
     let identifier = relation.identifier_as_str()?;
 
-    let quoted_database = if database.is_empty() {
-        String::new()
+    let database = if database.is_empty() {
+        Ident::plain("")
     } else {
-        databricks_query_identifier(&database, relation.quote_policy().database)
+        Ident::from_string(database, relation.quote_policy().database)
     };
-    let quoted_schema = databricks_query_identifier(&schema, relation.quote_policy().schema);
-    let quoted_identifier =
-        databricks_query_identifier(&identifier, relation.quote_policy().identifier);
+    let schema = Ident::from_string(&schema, relation.quote_policy().schema);
+    let identifier = Ident::from_string(&identifier, relation.quote_policy().identifier);
 
-    Ok((quoted_database, quoted_schema, quoted_identifier))
+    Ok((database, schema, identifier))
 }
 
 pub(crate) fn databricks_relation_sql_name(
@@ -392,7 +378,7 @@ pub(crate) fn databricks_relation_sql_name(
     if include.identifier {
         parts.push(identifier);
     }
-    Ok(parts.join("."))
+    Ok(join_dotted(parts.iter()))
 }
 
 fn databricks_safely_quoted_relation(
@@ -1140,9 +1126,9 @@ impl DatabricksMetadataAdapter {
         // match Mantle casing
         let sql = format!(
             "describe extended {}.{}.{};",
-            quote_identifier(database, AdapterType::Databricks),
-            quote_identifier(schema, AdapterType::Databricks),
-            quote_identifier(identifier, AdapterType::Databricks)
+            Ident::from_unquoted(database),
+            Ident::from_unquoted(schema),
+            Ident::from_unquoted(identifier)
         );
         let (_, result) =
             self.execute_sql_with_context(&sql, state, "Describe table extended", conn, token)?;
@@ -1199,7 +1185,7 @@ impl DatabricksMetadataAdapter {
         conn: &mut ConnectionGuard<'_>,
         token: CancellationToken,
     ) -> AdapterResult<AgateTable> {
-        let database_identifier = databricks_metadata_identifier(database);
+        let database_identifier = Ident::from_unquoted(database.to_lowercase());
         let database = databricks_metadata_value(database);
         let schema = databricks_metadata_value(schema);
         let identifier = databricks_metadata_value(identifier);
@@ -1231,7 +1217,7 @@ impl DatabricksMetadataAdapter {
         conn: &mut ConnectionGuard<'_>,
         token: CancellationToken,
     ) -> AdapterResult<AgateTable> {
-        let database_identifier = databricks_metadata_identifier(database);
+        let database_identifier = Ident::from_unquoted(database.to_lowercase());
         let database = databricks_metadata_value(database);
         let schema = databricks_metadata_value(schema);
         let identifier = databricks_metadata_value(identifier);
@@ -1294,7 +1280,7 @@ impl DatabricksMetadataAdapter {
         conn: &mut ConnectionGuard<'_>,
         token: CancellationToken,
     ) -> AdapterResult<AgateTable> {
-        let database_identifier = databricks_metadata_identifier(database);
+        let database_identifier = Ident::from_unquoted(database.to_lowercase());
         let database = databricks_metadata_value(database);
         let schema = databricks_metadata_value(schema);
         let identifier = databricks_metadata_value(identifier);
@@ -1325,7 +1311,7 @@ impl DatabricksMetadataAdapter {
         conn: &mut ConnectionGuard<'_>,
         token: CancellationToken,
     ) -> AdapterResult<AgateTable> {
-        let database_identifier = databricks_metadata_identifier(database);
+        let database_identifier = Ident::from_unquoted(database.to_lowercase());
         let database = databricks_metadata_value(database);
         let schema = databricks_metadata_value(schema);
         let identifier = databricks_metadata_value(identifier);
@@ -2105,7 +2091,7 @@ fn databricks_information_schema_freshness_sql(
     schema: &str,
     table: &str,
 ) -> String {
-    let database = quote_identifier(database, AdapterType::Databricks);
+    let database = Ident::from_unquoted(database);
     let schema = databricks_string_value(schema);
     let table = databricks_string_value(table);
     format!(
@@ -2355,7 +2341,7 @@ mod tests {
             "decode(unhex('64625C273B2073656C65637420313B202D2D'), 'UTF-8')"
         );
         assert_eq!(
-            databricks_metadata_identifier(r"DB\`; SELECT 1; --"),
+            Ident::from_unquoted(r"DB\`; SELECT 1; --".to_lowercase()).to_string(),
             r"`db\``; select 1; --`"
         );
     }
@@ -2469,15 +2455,6 @@ mod tests {
         assert_eq!(
             DefaultStmtSplitter.split(&sql, AdapterType::Databricks),
             vec![sql.as_str()]
-        );
-    }
-
-    #[test]
-    fn databricks_query_identifier_quotes_unsafe_unquoted_values() {
-        assert_eq!(databricks_query_identifier("safe_name", false), "safe_name");
-        assert_eq!(
-            databricks_query_identifier("table`; SELECT 1; --", false),
-            "`table``; SELECT 1; --`"
         );
     }
 
@@ -2626,9 +2603,9 @@ mod tests {
 
         let (database, schema, identifier) = get_relation_with_quote_policy(&relation).unwrap();
 
-        assert_eq!(database, "test_db");
-        assert_eq!(schema, "test_schema");
-        assert_eq!(identifier, "test_table");
+        assert_eq!(database.to_string(), "test_db");
+        assert_eq!(schema.to_string(), "test_schema");
+        assert_eq!(identifier.to_string(), "test_table");
     }
 
     #[test]
@@ -2638,9 +2615,9 @@ mod tests {
 
         let (database, schema, identifier) = get_relation_with_quote_policy(&relation).unwrap();
 
-        assert_eq!(database, "test_db");
-        assert_eq!(schema, "test_schema");
-        assert_eq!(identifier, "`test_table`");
+        assert_eq!(database.to_string(), "test_db");
+        assert_eq!(schema.to_string(), "test_schema");
+        assert_eq!(identifier.to_string(), "`test_table`");
     }
 
     #[test]
@@ -2650,9 +2627,9 @@ mod tests {
 
         let (database, schema, identifier) = get_relation_with_quote_policy(&relation).unwrap();
 
-        assert_eq!(database, "`test_db`");
-        assert_eq!(schema, "`test_schema`");
-        assert_eq!(identifier, "`test_table`");
+        assert_eq!(database.to_string(), "`test_db`");
+        assert_eq!(schema.to_string(), "`test_schema`");
+        assert_eq!(identifier.to_string(), "`test_table`");
     }
 
     #[test]
@@ -2661,9 +2638,9 @@ mod tests {
 
         let (database, schema, identifier) = get_relation_with_quote_policy(&relation).unwrap();
 
-        assert_eq!(database, "");
-        assert_eq!(schema, "`test_schema`");
-        assert_eq!(identifier, "`test_table`");
+        assert_eq!(database.to_string(), "");
+        assert_eq!(schema.to_string(), "`test_schema`");
+        assert_eq!(identifier.to_string(), "`test_table`");
     }
 
     #[test]
@@ -2673,9 +2650,9 @@ mod tests {
 
         let (database, schema, identifier) = get_relation_with_quote_policy(&relation).unwrap();
 
-        assert_eq!(database, "`test_db`");
-        assert_eq!(schema, "test_schema");
-        assert_eq!(identifier, "`test_table`");
+        assert_eq!(database.to_string(), "`test_db`");
+        assert_eq!(schema.to_string(), "test_schema");
+        assert_eq!(identifier.to_string(), "`test_table`");
     }
 
     #[test]
@@ -2685,9 +2662,9 @@ mod tests {
 
         let (database, schema, identifier) = get_relation_with_quote_policy(&relation).unwrap();
 
-        assert_eq!(database, "`test-db`");
-        assert_eq!(schema, "`test-schema`");
-        assert_eq!(identifier, "`test-table`");
+        assert_eq!(database.to_string(), "`test-db`");
+        assert_eq!(schema.to_string(), "`test-schema`");
+        assert_eq!(identifier.to_string(), "`test-table`");
     }
 
     #[test]
@@ -2696,9 +2673,9 @@ mod tests {
 
         let (database, schema, identifier) = get_relation_with_quote_policy(&relation).unwrap();
 
-        assert_eq!(database, "`order`");
-        assert_eq!(schema, "`select`");
-        assert_eq!(identifier, "`table`");
+        assert_eq!(database.to_string(), "`order`");
+        assert_eq!(schema.to_string(), "`select`");
+        assert_eq!(identifier.to_string(), "`table`");
     }
 
     #[test]
@@ -2708,9 +2685,9 @@ mod tests {
 
         let (database, schema, identifier) = get_relation_with_quote_policy(&relation).unwrap();
 
-        assert_eq!(database, "`test_db`");
-        assert_eq!(schema, "`test_schema`");
-        assert_eq!(identifier, "test_table");
+        assert_eq!(database.to_string(), "`test_db`");
+        assert_eq!(schema.to_string(), "`test_schema`");
+        assert_eq!(identifier.to_string(), "test_table");
     }
 
     #[test]

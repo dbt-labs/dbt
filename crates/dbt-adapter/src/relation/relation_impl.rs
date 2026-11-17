@@ -1275,9 +1275,7 @@ impl BaseRelation for Relation {
                 .schema
                 .as_deref()
                 .expect("INFORMATION_SCHEMA relation needs dataset");
-            let dataset = dbt_adapter_sql::ident::Ident::new(dataset, AdapterType::Bigquery)
-                .display(AdapterType::Bigquery)
-                .to_string();
+            let dataset = dbt_adapter_sql::ident::bigquery::Ident::new(dataset).to_string();
             let view_name = self.path.identifier.as_deref();
 
             // Detect if user has set `project == location` and normalize

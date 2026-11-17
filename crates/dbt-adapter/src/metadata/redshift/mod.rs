@@ -13,7 +13,7 @@ use dbt_adapter_core::{AdapterType, ExecutionPhase};
 use dbt_adapter_engine::MapReduce;
 use dbt_adapter_engine::cow::uppercase;
 use dbt_adapter_engine::record_batch::RecordBatchExt;
-use dbt_adapter_sql::ident::escape_string_literal;
+use dbt_adapter_sql::literal::escape_string_literal;
 use dbt_adbc::*;
 use dbt_common::cancellation::Cancellable;
 use dbt_common::cancellation::CancellationToken;

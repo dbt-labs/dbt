@@ -21,8 +21,8 @@ use arrow_schema::*;
 use dbt_adapter_core::AdapterType;
 use dbt_adapter_core::ExecutionPhase;
 use dbt_adapter_engine::MapReduce;
-use dbt_adapter_engine::cow::uppercase;
-use dbt_adapter_sql::ident::Ident;
+use dbt_adapter_sql::ident::bigquery::Ident;
+use dbt_adapter_sql::ident::bigquery::is_sys_identifier;
 use dbt_adbc::*;
 use dbt_common::cancellation::Cancellable;
 use dbt_common::cancellation::CancellationToken;
@@ -683,46 +683,38 @@ pub(crate) fn generate_system_table_fqn(
     view_name: &str,
     user_preferred_region: Option<&str>,
 ) -> String {
-    let sys_identifier = uppercase(view_name.into());
-    let rendered_sys_identifier = if sys_identifier
-        .chars()
-        .all(|c| c == '_' || c.is_ascii_uppercase())
-    {
-        sys_identifier.to_string()
+    let uppercase_view_name = view_name.to_uppercase();
+    let qualifier_options = qualifier_options_for_info_schema_view(&uppercase_view_name);
+    let sys_ident = if is_sys_identifier(&uppercase_view_name) {
+        Ident::plain(uppercase_view_name)
     } else {
-        dbt_adapter_sql::ident::quote_identifier(&sys_identifier, AdapterType::Bigquery)
+        Ident::from_unquoted(uppercase_view_name)
     };
+    let region_ident = |region: &str| Ident::new(format!("region-{region}"));
 
-    match qualifier_options_for_info_schema_view(&sys_identifier) {
+    match qualifier_options {
         Some(qualifier_option) => match qualifier_option.requirement {
             QualifierRequirement::RegionOnly => {
-                let region = user_preferred_region.unwrap_or("us");
-                let region = dbt_adapter_sql::ident::quote_identifier(
-                    &format!("region-{region}"),
-                    AdapterType::Bigquery,
-                );
-                format!("{region}.INFORMATION_SCHEMA.{rendered_sys_identifier}")
+                let region = region_ident(user_preferred_region.unwrap_or("us"));
+                format!("{region}.INFORMATION_SCHEMA.{sys_ident}")
             }
             QualifierRequirement::DatasetOnly => {
-                format!("{dataset}.INFORMATION_SCHEMA.{rendered_sys_identifier}")
+                format!("{dataset}.INFORMATION_SCHEMA.{sys_ident}")
             }
             QualifierRequirement::DatasetOrRegion => {
                 // respect user's location preferences by querying the region directly if
                 // possible
                 match user_preferred_region {
-                    None => format!("{dataset}.INFORMATION_SCHEMA.{rendered_sys_identifier}"),
+                    None => format!("{dataset}.INFORMATION_SCHEMA.{sys_ident}"),
                     Some(region) => {
-                        let region = dbt_adapter_sql::ident::quote_identifier(
-                            &format!("region-{region}"),
-                            AdapterType::Bigquery,
-                        );
-                        format!("{region}.INFORMATION_SCHEMA.{rendered_sys_identifier}")
+                        let region = region_ident(region);
+                        format!("{region}.INFORMATION_SCHEMA.{sys_ident}")
                     }
                 }
             }
         },
         // This is technically an error, but we'll just let it fail when querying BQ
-        None => format!("INFORMATION_SCHEMA.{rendered_sys_identifier}"),
+        None => format!("INFORMATION_SCHEMA.{sys_ident}"),
     }
 }
 
@@ -737,11 +729,9 @@ pub fn build_relation_clauses_bigquery(
         let dataset = rel.schema_as_resolved_str()?;
         let table = rel.identifier_as_resolved_str()?;
 
-        let project = dbt_adapter_sql::ident::quote_identifier(&project, AdapterType::Bigquery);
-        let dataset = Ident::new(dataset, AdapterType::Bigquery)
-            .display(AdapterType::Bigquery)
-            .to_string();
-        let table = dbt_adapter_sql::ident::escape_string_literal(&table, AdapterType::Bigquery);
+        let project = Ident::from_unquoted(project.into_owned());
+        let dataset = Ident::new(dataset);
+        let table = dbt_adapter_sql::literal::escape_string_literal(&table, AdapterType::Bigquery);
         let db_key = format!("{project}.{dataset}");
 
         where_by_db
@@ -775,8 +765,8 @@ fn build_tables_freshness_query(database: &str, where_clauses: &[String]) -> Str
 }
 
 fn build_schema_freshness_query(database: &str, schema: &str) -> String {
-    let database = dbt_adapter_sql::ident::quote_identifier(database, AdapterType::Bigquery);
-    let schema = dbt_adapter_sql::ident::quote_identifier(schema, AdapterType::Bigquery);
+    let database = Ident::from_unquoted(database);
+    let schema = Ident::from_unquoted(schema);
     build_external_table_freshness_query(
         &format!("{database}.{schema}.__TABLES__"),
         &format!("{database}.{schema}.INFORMATION_SCHEMA.TABLES"),
@@ -901,14 +891,14 @@ fn run_freshness_task(
 /// `<project>.<dataset>.INFORMATION_SCHEMA.VIEWS` for a list of table identifiers.
 ///
 fn build_views_query(project: &str, dataset: &str, identifiers: &[String]) -> String {
-    let project = dbt_adapter_sql::ident::quote_identifier(project, AdapterType::Bigquery);
-    let dataset = dbt_adapter_sql::ident::quote_identifier(dataset, AdapterType::Bigquery);
+    let project = Ident::from_unquoted(project);
+    let dataset = Ident::from_unquoted(dataset);
     let literals = identifiers
         .iter()
         .map(|id| {
             format!(
                 "'{}'",
-                dbt_adapter_sql::ident::escape_string_literal(id, AdapterType::Bigquery)
+                dbt_adapter_sql::literal::escape_string_literal(id, AdapterType::Bigquery)
             )
         })
         .collect::<Vec<_>>()
@@ -1828,10 +1818,10 @@ fn classify_listing_failure(e: &AdapterError) -> ListingFailure {
 
 /// Fallback when object is not found in `INFORMATION_SCHEMA.TABLES`
 fn bigquery_routine_fallback_sql(database: &str, schema: &str, identifier: &str) -> String {
-    let database = dbt_adapter_sql::ident::quote_identifier(database, AdapterType::Bigquery);
-    let schema = dbt_adapter_sql::ident::quote_identifier(schema, AdapterType::Bigquery);
+    let database = Ident::from_unquoted(database);
+    let schema = Ident::from_unquoted(schema);
     let identifier =
-        dbt_adapter_sql::ident::escape_string_literal(identifier, AdapterType::Bigquery);
+        dbt_adapter_sql::literal::escape_string_literal(identifier, AdapterType::Bigquery);
     format!(
         "SELECT routine_catalog AS table_catalog,
                     routine_schema AS table_schema,
@@ -1908,6 +1898,8 @@ fn is_bigquery_permission_error(e: &AdapterError) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use dbt_adapter_engine::cow::uppercase;
+
     use super::*;
     use crate::stmt_splitter::{DefaultStmtSplitter, StmtSplitter};
 
@@ -2200,6 +2192,18 @@ mod tests {
         assert_eq!(
             generate_system_table_fqn("`my_dataset`", region_only_view, Some("eu")),
             "`region-eu`.INFORMATION_SCHEMA.JOBS"
+        );
+    }
+
+    #[test]
+    fn generate_system_table_fqn_quotes_empty_and_keyword_view_names() {
+        assert_eq!(
+            generate_system_table_fqn("`dataset`", "", None),
+            "INFORMATION_SCHEMA.``"
+        );
+        assert_eq!(
+            generate_system_table_fqn("`dataset`", "select", None),
+            "INFORMATION_SCHEMA.`SELECT`"
         );
     }
 

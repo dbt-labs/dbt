@@ -749,7 +749,7 @@ pub mod bigquery {
     // XXX: make private once all tests are moved to here
     use arrow_schema::{DataType, Field};
     use dbt_adapter_core::AdapterType;
-    use dbt_adapter_sql::ident::Ident;
+    use dbt_adapter_sql::ident::bigquery::Ident;
 
     use crate::AdapterResult;
     use crate::sql_types::{DefaultTypeOps, get_field_sql_type_metadata_key};
@@ -798,11 +798,7 @@ pub mod bigquery {
                     .map(|field| {
                         let mut field_type = String::new();
                         try_format_type(field.data_type(), field.is_nullable(), &mut field_type)?;
-                        Ok(format!(
-                            "{} {field_type}",
-                            Ident::new(field.name(), AdapterType::Bigquery)
-                                .display(AdapterType::Bigquery)
-                        ))
+                        Ok(format!("{} {field_type}", Ident::new(field.name())))
                     })
                     .collect::<AdapterResult<Vec<_>>>()?;
 

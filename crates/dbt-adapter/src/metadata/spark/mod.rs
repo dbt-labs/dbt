@@ -11,8 +11,10 @@
 use std::sync::Arc;
 
 use arrow_array::*;
+
 use dbt_adapter_core::AdapterType;
-use dbt_adapter_sql::ident::quote_identifier;
+use dbt_adapter_engine::record_batch::RecordBatchExt;
+use dbt_adapter_sql::ident::spark::Namespace;
 use dbt_adbc::QueryCtx;
 use dbt_common::cancellation::CancellationToken;
 use dbt_schemas::dbt_types::RelationType;
@@ -25,7 +27,6 @@ use crate::connection::ConnectionGuard;
 use crate::errors::AdapterResult;
 use crate::metadata::CatalogAndSchema;
 use crate::relation::Relation;
-use dbt_adapter_engine::record_batch::RecordBatchExt;
 
 /// Extracts the value of a `Key: value` line from `SHOW TABLE EXTENDED`'s
 /// `information` column.
@@ -101,7 +102,7 @@ pub fn list_relations(
     db_schema: &CatalogAndSchema,
     token: CancellationToken,
 ) -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
-    let namespace = spark_namespace(&db_schema.resolved_catalog, &db_schema.resolved_schema);
+    let namespace = Namespace::new(&db_schema.resolved_catalog, &db_schema.resolved_schema);
 
     let sql = format!("SHOW TABLE EXTENDED IN {namespace} LIKE '*'");
     let batch = match engine.execute(None, conn.as_mut(), ctx, &sql, token) {
@@ -113,28 +114,10 @@ pub fn list_relations(
     relations_from_show_table_extended(engine.adapter_type(), engine.quoting(), db_schema, &batch)
 }
 
-fn spark_namespace(catalog: &str, schema: &str) -> String {
-    let schema = quote_identifier(schema, AdapterType::Spark);
-    if catalog.is_empty() {
-        schema
-    } else {
-        let catalog = quote_identifier(catalog, AdapterType::Spark);
-        format!("{catalog}.{schema}")
-    }
-}
-
 #[cfg(test)]
 mod show_table_extended_tests {
     use super::*;
     use arrow_schema::{DataType, Field, Schema};
-
-    #[test]
-    fn spark_namespace_escapes_catalog_and_schema() {
-        assert_eq!(
-            spark_namespace(r"catalog\`; SELECT 1; --", r"schema\`; SELECT 2; --"),
-            r"`catalog\``; SELECT 1; --`.`schema\``; SELECT 2; --`"
-        );
-    }
 
     #[test]
     fn information_value_parses_show_table_extended_lines() {

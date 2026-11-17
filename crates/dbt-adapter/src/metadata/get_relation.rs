@@ -5,7 +5,8 @@ use std::sync::Arc;
 use arrow::array::{Array as _, StringArray};
 use dbt_adapter_core::AdapterType;
 use dbt_adapter_engine::cow::uppercase;
-use dbt_adapter_sql::ident::{Ident, escape_string_literal};
+use dbt_adapter_sql::join_dotted;
+use dbt_adapter_sql::literal::escape_string_literal;
 use dbt_adbc::QueryCtx;
 use dbt_common::tracing::dbt_emit::emit_warn_log_message;
 use dbt_common::{AdapterError, AdapterErrorKind, AdapterResult, ErrorCode};
@@ -19,8 +20,8 @@ use crate::errors::adbc_error_to_adapter_error;
 use crate::formatter::SqlLiteralFormatter;
 use crate::metadata::bigquery;
 use crate::metadata::bigquery::is_bigquery_not_found_error;
+use crate::metadata::databricks::databricks_metadata_value;
 use crate::metadata::databricks::describe_table::DatabricksTableMetadata;
-use crate::metadata::databricks::{databricks_metadata_value, databricks_query_identifier};
 use crate::metadata::{snowflake, try_canonicalize_bool_column_field};
 use crate::relation::Relation;
 use crate::relation::databricks::is_shallow_clone_type;
@@ -524,22 +525,15 @@ fn spark_get_relation_sql(
     identifier: &str,
     quoting: dbt_schemas::schemas::common::ResolvedQuoting,
 ) -> String {
-    let render = |value: &str, quote: bool| {
-        if quote {
-            dbt_adapter_sql::ident::quote_identifier(value, AdapterType::Spark)
-        } else {
-            Ident::new(value, AdapterType::Spark)
-                .display(AdapterType::Spark)
-                .to_string()
-        }
-    };
+    use dbt_adapter_sql::ident::spark::Ident;
+
     let mut parts = Vec::with_capacity(3);
     if !database.is_empty() {
-        parts.push(render(database, quoting.database));
+        parts.push(Ident::from_string(database, quoting.database));
     }
-    parts.push(render(schema, quoting.schema));
-    parts.push(render(identifier, quoting.identifier));
-    format!("DESCRIBE TABLE EXTENDED {}", parts.join("."))
+    parts.push(Ident::from_string(schema, quoting.schema));
+    parts.push(Ident::from_string(identifier, quoting.identifier));
+    format!("DESCRIBE TABLE EXTENDED {}", join_dotted(&parts))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -554,8 +548,9 @@ fn databricks_get_relation(
     token: CancellationToken,
 ) -> AdapterResult<Option<Box<dyn BaseRelation>>> {
     use crate::metadata::MetadataProcessor as _;
+    use dbt_adapter_sql::ident::databricks;
 
-    let query_catalog = databricks_query_identifier(database, adapter.quoting().database);
+    let query_catalog = databricks::Ident::from_string(database, adapter.quoting().database);
     let Some((batch, used_plain_describe)) = super::databricks::describe_relation_batch(
         adapter,
         state,
@@ -685,7 +680,7 @@ fn databricks_is_shallow_clone(
     database: &str,
     schema: &str,
     identifier: &str,
-    query_catalog: &str,
+    query_catalog: &dbt_adapter_sql::ident::databricks::Ident,
     token: CancellationToken,
 ) -> bool {
     let lookup = match do_create_relation(
@@ -735,7 +730,11 @@ fn databricks_is_shallow_clone(
     }
 }
 
-fn databricks_shallow_clone_sql(query_catalog: &str, schema: &str, identifier: &str) -> String {
+fn databricks_shallow_clone_sql(
+    query_catalog: &dbt_adapter_sql::ident::databricks::Ident,
+    schema: &str,
+    identifier: &str,
+) -> String {
     let schema = databricks_metadata_value(schema);
     let identifier = databricks_metadata_value(identifier);
     format!(
@@ -1027,19 +1026,19 @@ fn duckdb_get_relation(
         // attached-catalog tables. A targeted DESCRIBE is the narrow fallback:
         // it reuses the normal relation construction after proving the table
         // exists, without enabling broad schema listing for these catalogs.
-        let quote = |id: &str| dbt_adapter_sql::ident::quote_identifier(id, AdapterType::DuckDB);
+        use dbt_adapter_sql::ident::duckdb::Ident;
+
         let (probe_schema, probe_identifier) = crate::metadata::duckdb::probe_relation_parts(
             adapter.adapter_type(),
             (schema, identifier),
             (query_schema.as_str(), query_identifier.as_str()),
         );
-        let relation_name = format!(
-            "{}.{}.{}",
-            quote(database),
-            quote(probe_schema),
-            quote(probe_identifier),
+        let sql = format!(
+            "DESCRIBE {}.{}.{}",
+            Ident::from_unquoted(database),
+            Ident::from_unquoted(probe_schema),
+            Ident::from_unquoted(probe_identifier),
         );
-        let sql = format!("DESCRIBE {relation_name}");
         let result = adapter
             .engine()
             .execute(Some(state), conn.as_mut(), ctx, &sql, token);
@@ -1275,7 +1274,11 @@ mod tests {
 
     #[test]
     fn databricks_shallow_clone_sql_escapes_metadata_values() {
-        let sql = databricks_shallow_clone_sql("`catalog`", "SCHEMA'", "TABLE\\");
+        let sql = databricks_shallow_clone_sql(
+            &dbt_adapter_sql::ident::databricks::Ident::from_unquoted("catalog"),
+            "SCHEMA'",
+            "TABLE\\",
+        );
         assert!(sql.contains("table_schema = decode(unhex('736368656D6127'), 'UTF-8')"));
         assert!(sql.contains("table_name = decode(unhex('7461626C655C'), 'UTF-8')"));
         assert_eq!(
