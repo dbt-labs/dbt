@@ -2193,7 +2193,7 @@ pub struct AthenaTargetEnv {
     pub aws_profile_name: Option<String>,
     /// S3 layout settings the dbt-athena macros read from `target.*`.
     pub s3_data_dir: Option<String>,
-    /// Defaults to `table_unique`, as `AthenaCredentials.s3_data_naming` does.
+    /// Defaults to `schema_table_unique`, as `AthenaCredentials.s3_data_naming` does.
     pub s3_data_naming: String,
     pub s3_tmp_table_dir: Option<String>,
     pub seed_s3_upload_args: Option<HashMap<String, YmlValue>>,
@@ -2336,7 +2336,9 @@ fn threads_from_profile(threads: Option<StringOrInteger>) -> Result<Option<u16>,
             .parse::<u16>()
             .map(Some)
             .map_err(|_| "threads must be a positive integer".to_string()),
-        Some(StringOrInteger::Integer(threads)) => Ok(Some(threads as u16)),
+        Some(StringOrInteger::Integer(threads)) => u16::try_from(threads)
+            .map(Some)
+            .map_err(|_| "threads must be a positive integer".to_string()),
         None => Ok(None),
     }
 }
@@ -3886,6 +3888,30 @@ seed_s3_upload_args:
         assert_eq!(target.s3_data_dir.as_deref(), Some("s3://bucket/data/"));
         assert_eq!(target.s3_data_naming, "schema_table");
         assert_eq!(target.s3_tmp_table_dir.as_deref(), Some("s3://bucket/tmp/"));
+    }
+
+    #[test]
+    fn test_athena_target_context_threads_out_of_range() {
+        let target_threads = |threads: &str| {
+            let config: DbConfig = dbt_yaml::from_str(&format!(
+                "type: athena\n\
+                 region_name: eu-west-1\n\
+                 s3_staging_dir: s3://bucket/athena/\n\
+                 schema: analytics\n\
+                 threads: {threads}\n"
+            ))
+            .unwrap();
+            TargetContext::try_from(config).map(|target| match target {
+                TargetContext::Athena(target) => target.__common__.threads,
+                _ => panic!("expected athena target context"),
+            })
+        };
+        assert_eq!(target_threads("8"), Ok(Some(8)));
+        assert_eq!(target_threads("\"8\""), Ok(Some(8)));
+        // An integer out of u16's range fails as the same string does, rather than wrapping.
+        for threads in ["-1", "70000", "\"-1\"", "\"70000\""] {
+            assert!(target_threads(threads).is_err(), "threads: {threads}");
+        }
     }
 
     #[test]
