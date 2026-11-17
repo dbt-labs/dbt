@@ -299,6 +299,7 @@ impl ProfileSetup {
         }
     }
 
+    /// Adapters the wizard offers, same order as `headless::supported_adapters`.
     pub fn get_available_adapters() -> &'static [AdapterType] {
         &[
             AdapterType::Snowflake,
@@ -310,6 +311,7 @@ impl ProfileSetup {
             AdapterType::Postgres,
             AdapterType::Redshift,
             AdapterType::Fabric,
+            AdapterType::Athena,
         ]
     }
 
@@ -935,6 +937,17 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         // Snowflake stays the target's default output.
         assert!(matches!(loaded, Ok(DbConfig::Snowflake(_))), "{loaded:?}");
+    }
+
+    #[test]
+    fn athena_is_offered_by_the_interactive_adapter_list() {
+        let adapters = super::ProfileSetup::get_available_adapters();
+        assert!(adapters.contains(&dbt_adapter_core::AdapterType::Athena));
+        assert_eq!(
+            adapters,
+            dbt_profile_schemas::headless::supported_adapters().as_slice(),
+            "the interactive list and the headless list must stay the same"
+        );
     }
 
     #[test]

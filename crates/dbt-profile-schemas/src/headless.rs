@@ -9,8 +9,9 @@ use std::collections::HashMap;
 use dbt_adapter_core::AdapterType;
 use dbt_common::{ErrorCode, FsResult, fs_err};
 use dbt_schemas::schemas::profiles::{
-    BigqueryDbConfig, ClickHouseDbConfig, DatabricksDbConfig, DbConfig, DuckDbConfig,
-    ExasolDbConfig, FabricDbConfig, PostgresDbConfig, RedshiftDbConfig, SnowflakeDbConfig,
+    AthenaDbConfig, BigqueryDbConfig, ClickHouseDbConfig, DatabricksDbConfig, DbConfig,
+    DuckDbConfig, ExasolDbConfig, FabricDbConfig, PostgresDbConfig, RedshiftDbConfig,
+    SnowflakeDbConfig,
 };
 use dbt_schemas::schemas::serde::StringOrInteger;
 
@@ -33,6 +34,7 @@ pub fn supported_adapters() -> Vec<AdapterType> {
         AdapterType::Postgres,
         AdapterType::Redshift,
         AdapterType::Fabric,
+        AdapterType::Athena,
     ]
 }
 
@@ -48,6 +50,7 @@ pub fn adapter_fields(adapter: AdapterType) -> FsResult<Vec<ConfigField>> {
         AdapterType::Postgres => PostgresDbConfig::get_fields(),
         AdapterType::Redshift => RedshiftDbConfig::get_fields(),
         AdapterType::Fabric => FabricDbConfig::get_fields(),
+        AdapterType::Athena => AthenaDbConfig::get_fields(),
         other => {
             return Err(fs_err!(
                 ErrorCode::InvalidConfig,
@@ -57,6 +60,16 @@ pub fn adapter_fields(adapter: AdapterType) -> FsResult<Vec<ConfigField>> {
         }
     };
     Ok(fields)
+}
+
+fn athena_profile(values: &HashMap<String, FieldValue>) -> FsResult<Box<AthenaDbConfig>> {
+    let mut config = apply_values(&AthenaDbConfig::default(), values)?;
+    if config.threads.is_none() {
+        config.threads = Some(StringOrInteger::Integer(
+            crate::athena_config::default_threads(),
+        ));
+    }
+    Ok(Box::new(config))
 }
 
 /// Apply a map of collected field values to a base config.
@@ -259,6 +272,7 @@ pub fn build_profile_target(
             let config = apply_values(&default_fabric_config(), values)?;
             DbConfig::Fabric(Box::new(config))
         }
+        AdapterType::Athena => DbConfig::Athena(athena_profile(values)?),
         other => {
             return Err(fs_err!(
                 ErrorCode::InvalidConfig,
