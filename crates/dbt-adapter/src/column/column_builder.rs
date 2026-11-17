@@ -530,7 +530,20 @@ impl ColumnBuilder {
         rendered_type: &mut String,
     ) -> AdapterResult<()> {
         let adapter_type = type_ops.adapter_type();
-        match (adapter_type, original_type_string(adapter_type, field)) {
+        let original = original_type_string(adapter_type, field);
+        let original = match (adapter_type, field.data_type()) {
+            // A bare type label omits the physical decimal's precision/scale.
+            // https://github.com/redis/redis-dbt-adapter/issues/83
+            (AdapterType::RedisAdbc, DataType::Decimal128(..) | DataType::Decimal256(..)) => {
+                original.filter(|name| {
+                    !["NUMERIC", "DECIMAL"]
+                        .iter()
+                        .any(|generic| name.trim().eq_ignore_ascii_case(generic))
+                })
+            }
+            _ => original,
+        };
+        match (adapter_type, original) {
             (AdapterType::RedisAdbc, Some(original)) => rendered_type.push_str(&original),
             _ => {
                 type_ops.format_arrow_type_as_sql(
@@ -672,10 +685,34 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
+    fn redis_generic_decimal_metadata_preserves_arrow_precision_and_scale() {
+        for metadata_type in ["NUMERIC", "numeric", " DECIMAL "] {
+            for (arrow_type, expected) in [
+                (DataType::Decimal128(4, 2), "DECIMAL(4,2)"),
+                (DataType::Decimal256(76, 16), "DECIMAL(76,16)"),
+                (DataType::Decimal256(76, 0), "DECIMAL(76,0)"),
+            ] {
+                let field = Arc::new(Field::new("amount", arrow_type, true).with_metadata(
+                    HashMap::from([("ARROW:FLIGHT:SQL:TYPE_NAME".into(), metadata_type.into())]),
+                ));
+                let column = ColumnBuilder::new(AdapterType::RedisAdbc)
+                    .build(&field, &DefaultTypeOps::new(AdapterType::RedisAdbc))
+                    .unwrap();
+                assert_eq!(
+                    column.data_type().replace(' ', "").to_ascii_uppercase(),
+                    expected,
+                    "{metadata_type} must not replace a physical decimal's precision/scale"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn redis_preserves_exact_sql_types_from_flight_schema_metadata() {
         for (arrow_type, sql_type, size) in [
             (DataType::Utf8, "VARCHAR(17)", Some(17)),
             (DataType::Decimal128(12, 2), "NUMERIC(12,2)", None),
+            (DataType::Decimal256(76, 16), "NUMERIC(12,2)", None),
             (
                 DataType::Timestamp(arrow_schema::TimeUnit::Millisecond, None),
                 "TIMESTAMP(3)",
