@@ -1,0 +1,7 @@
+kind: Features
+body: Translate Trino profiles into driver options, with none, ldap, oauth and certificate (mutual TLS) logins.
+time: 2026-11-09T19:14:35.672217+01:00
+custom:
+    author: lucargir
+    issue: "17101"
+    project: dbt-core

@@ -165,7 +165,7 @@ mod tests {
                     .with_password(password);
                 Ok(builder)
             }
-            Backend::Trino => unimplemented!("trino backend database builder in tests"),
+            Backend::Trino => database_builder_for_trino(),
             Backend::Generic { .. } => unimplemented!("generic backend database builder in tests"),
         }?;
         if backend == Backend::Snowflake {
@@ -173,6 +173,16 @@ mod tests {
                 .with_named_option(snowflake::LOG_TRACING, LogLevel::Warn.to_string())?;
         }
         Ok(database_builder)
+    }
+
+    fn database_builder_for_trino() -> Result<database::Builder> {
+        let mut builder = database::Builder::new(Backend::Trino);
+        let uri = env::var("TRINO_URI").unwrap();
+        builder.with_parse_uri(uri)?;
+        if let Ok(password) = env::var("TRINO_PASSWORD") {
+            builder.with_password(password);
+        }
+        Ok(builder)
     }
 
     fn database_builder_for_duckdb_file(path: &str) -> Result<database::Builder> {

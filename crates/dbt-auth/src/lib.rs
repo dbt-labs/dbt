@@ -25,6 +25,7 @@ mod spark;
 mod sqlserver;
 #[cfg(test)]
 mod test_options;
+pub mod trino;
 
 pub use config::AdapterConfig;
 pub use duckdb::init::{DuckDbTarget, generate_duckdb_init_sql, motherduck_saas_mode_query};
@@ -87,7 +88,7 @@ pub fn auth_for_backend_with_warnings(
         Backend::ClickHouse => Box::new(clickhouse::ClickHouseAuth::new(warning_printer)),
         Backend::Athena => Box::new(athena::AthenaAuth::new(warning_printer)),
         Backend::Exasol => Box::new(exasol::ExasolAuth::new(warning_printer)),
-        Backend::Trino => unimplemented!("trino backend authentication"),
+        Backend::Trino => Box::new(trino::TrinoAuth::new(warning_printer)),
         Backend::Generic { .. } => unimplemented!("generic backend authentication"),
     }
 }

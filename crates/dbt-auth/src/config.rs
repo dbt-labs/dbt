@@ -58,6 +58,11 @@ impl AdapterConfig {
         self.repr.get(field)
     }
 
+    /// Like `get`, but a YAML `null` counts as missing.
+    pub fn get_non_null(&self, field: &str) -> Option<&YmlValue> {
+        self.get(field).filter(|v| !v.is_null())
+    }
+
     /// Like `get`, but returns an error if the field is missing.
     pub fn require(&self, field: &str) -> Result<&YmlValue, dbt_yaml::Error> {
         use serde::de::Error as _;
