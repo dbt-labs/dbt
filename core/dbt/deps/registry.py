@@ -1,8 +1,8 @@
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List
 
 from dbt.clients import registry
 from dbt.contracts.project import RegistryPackage, RegistryPackageMetadata
-from dbt.deps.base import PinnedPackage, UnpinnedPackage
+from dbt.deps.base import PackageDownload, PinnedPackage, UnpinnedPackage
 from dbt.exceptions import (
     DependencyError,
     PackageNotFoundError,
@@ -62,17 +62,17 @@ class RegistryPinnedPackage(RegistryPackageMixin, PinnedPackage):
     def install(self, project, renderer):
         self._install(project, renderer)
 
-    def _get_download(self, metadata: RegistryPackageMetadata) -> Tuple[str, Optional[str]]:
+    def _get_download(self, metadata: RegistryPackageMetadata) -> PackageDownload:
         require_verified = bool(getattr(get_flags(), "REQUIRE_HUB_VERIFIED_DOWNLOADS", False))
         return select_hub_download(metadata, require_verified, str(self))
 
 
 def select_hub_download(
     metadata: RegistryPackageMetadata, require_hub_verified_downloads: bool, package: str
-) -> Tuple[str, Optional[str]]:
+) -> PackageDownload:
     # Upstream `downloads.sha1` isn't usable: codeload gzip output is not byte-stable.
     if not require_hub_verified_downloads:
-        return metadata.downloads.tarball, None
+        return PackageDownload(metadata.downloads.tarball)
 
     hub_mirror = metadata.downloads.hub if isinstance(metadata.downloads.hub, dict) else {}
     tarball, sha1 = hub_mirror.get("tarball"), hub_mirror.get("sha1")
@@ -88,7 +88,7 @@ def select_hub_download(
             "require_hub_verified_downloads is enabled. Disable the flag to install without "
             "checksum verification."
         )
-    return tarball, sha1
+    return PackageDownload(tarball, sha1)
 
 
 class RegistryUnpinnedPackage(RegistryPackageMixin, UnpinnedPackage[RegistryPinnedPackage]):

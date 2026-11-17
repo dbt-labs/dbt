@@ -11,7 +11,7 @@ import pytest
 from dbt.cli.flags import Flags
 from dbt.cli.main import cli
 from dbt.contracts.project import ProjectFlags, RegistryPackageMetadata
-from dbt.deps.base import PinnedPackage
+from dbt.deps.base import PackageDownload, PinnedPackage
 from dbt.deps.registry import RegistryPinnedPackage, select_hub_download
 from dbt.exceptions import DependencyError
 from dbt.flags import set_from_args
@@ -128,8 +128,11 @@ class TestDownloadAndUntar:
         with mock.patch(
             "dbt_common.clients.system.download", side_effect=self._fake_download
         ), mock.patch("dbt_common.clients.system.untar_package") as untar_package:
-            pkg.download_and_untar(
-                HUB_MIRROR_URL, tar_path, str(tmp_path / "dbt_packages"), "pkg", expected_sha1
+            pkg._download_verify_and_untar(
+                PackageDownload(HUB_MIRROR_URL, expected_sha1),
+                tar_path,
+                str(tmp_path / "dbt_packages"),
+                "pkg",
             )
         return tar_path, untar_package
 
@@ -144,15 +147,21 @@ class TestDownloadAndUntar:
             "dbt_common.clients.system.download", side_effect=self._fake_download
         ), mock.patch("dbt_common.clients.system.untar_package") as untar_package:
             with pytest.raises(DependencyError, match="sha1 checksum mismatch"):
-                pkg.download_and_untar(
-                    HUB_MIRROR_URL, tar_path, str(tmp_path / "dbt_packages"), "pkg", "0" * 40
+                pkg._download_verify_and_untar(
+                    PackageDownload(HUB_MIRROR_URL, "0" * 40),
+                    tar_path,
+                    str(tmp_path / "dbt_packages"),
+                    "pkg",
                 )
         untar_package.assert_not_called()
         assert not os.path.exists(tar_path)
 
-    def test_no_expected_sha1_skips_verification(self, pkg, tmp_path):
-        _, untar_package = self._run(pkg, tmp_path, None)
-        untar_package.assert_called_once()
+    def test_no_expected_sha1_uses_unchanged_download_and_untar(self, pkg, tmp_path):
+        with mock.patch.object(PinnedPackage, "download_and_untar") as download_and_untar:
+            self._run(pkg, tmp_path, None)
+        download_and_untar.assert_called_once_with(
+            HUB_MIRROR_URL, str(tmp_path / "pkg.tar.gz"), str(tmp_path / "dbt_packages"), "pkg"
+        )
 
 
 class TestRequireHubVerifiedDownloadsFlag:

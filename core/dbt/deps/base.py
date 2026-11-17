@@ -5,7 +5,7 @@ import os
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Dict, Generic, List, Optional, Tuple, TypeVar
+from typing import Dict, Generic, List, NamedTuple, Optional, TypeVar
 
 from dbt.contracts.project import ProjectPackageMetadata
 from dbt.events.types import DepsSetDownloadDirectory
@@ -44,6 +44,11 @@ def downloads_directory():
     if remove_downloads:
         system.rmtree(DOWNLOADS_PATH)
         DOWNLOADS_PATH = None
+
+
+class PackageDownload(NamedTuple):
+    url: str
+    sha1: Optional[str] = None
 
 
 class BasePackage(metaclass=abc.ABCMeta):
@@ -129,26 +134,28 @@ class PinnedPackage(BasePackage):
         tar_path = (Path(get_downloads_path()) / tar_name).resolve(strict=False)
         system.make_directory(str(tar_path.parent))
 
-        download_url, expected_sha1 = self._get_download(metadata)
+        download = self._get_download(metadata)
         deps_path = project.packages_install_path
         package_name = self.get_project_name(project, renderer)
 
         download_untar_fn = functools.partial(
-            self.download_and_untar,
-            download_url,
-            str(tar_path),
-            deps_path,
-            package_name,
-            expected_sha1,
+            self._download_verify_and_untar, download, str(tar_path), deps_path, package_name
         )
         connection_exception_retry(download_untar_fn, 5)
 
-    def _get_download(self, metadata) -> Tuple[str, Optional[str]]:
-        return metadata.downloads.tarball, None
+    def _get_download(self, metadata) -> PackageDownload:
+        return PackageDownload(metadata.downloads.tarball)
 
-    def download_and_untar(
-        self, download_url, tar_path, deps_path, package_name, expected_sha1=None
+    def _download_verify_and_untar(
+        self, download: PackageDownload, tar_path, deps_path, package_name
     ):
+        if download.sha1 is None:
+            return self.download_and_untar(download.url, tar_path, deps_path, package_name)
+        system.download(download.url, tar_path)
+        verify_sha1(tar_path, download.sha1, download.url)
+        system.untar_package(tar_path, deps_path, package_name)
+
+    def download_and_untar(self, download_url, tar_path, deps_path, package_name):
         """
         Sometimes the download of the files fails and we want to retry.  Sometimes the
         download appears successful but the file did not make it through as expected
@@ -158,8 +165,6 @@ class PinnedPackage(BasePackage):
         """
 
         system.download(download_url, tar_path)
-        if expected_sha1 is not None:
-            verify_sha1(tar_path, expected_sha1, download_url)
         system.untar_package(tar_path, deps_path, package_name)
 
 
