@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use dbt_common::FsResult;
-use dbt_common::collections::DashMap;
+use dbt_common::collections::SccHashMap;
 use dbt_common::stats::NodeStatus;
 use dbt_scheduler::instructions::SqlInstruction;
 use dbt_schemas::schemas::InternalDbtNodeAttributes;
@@ -29,7 +29,7 @@ pub fn run_seed_render(
     if let Some(sender) = result_sender {
         let _ = sender.send(TaskResult {
             sql_instruction: SqlInstruction::default(),
-            config_map: Arc::new(DashMap::default()),
+            config_map: Arc::new(SccHashMap::default()),
             lp_instruction: None,
         });
     }

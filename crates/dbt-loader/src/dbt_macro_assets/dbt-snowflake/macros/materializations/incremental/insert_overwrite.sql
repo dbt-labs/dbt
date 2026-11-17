@@ -35,10 +35,19 @@
 
     {{ config.get('sql_header', '') }}
 
-    {% set target_columns_list = '(' ~ ', '.join(overwrite_columns) ~ ')' if overwrite_columns else '' %}
-    {% set source_query_columns_list = ', '.join(overwrite_columns) if overwrite_columns else '*' %}
-    insert overwrite into {{ target.render() }} {{ target_columns_list }}
-        select {{ source_query_columns_list }}
+    {#-- Name both sides: target and tmp relation do not always agree on column order.
+         https://github.com/dbt-labs/dbt-adapters/issues/1511 --#}
+    {%- if overwrite_columns -%}
+        {#-- joined as given, for pre-quoted identifiers --#}
+        {%- set columns_csv = ', '.join(overwrite_columns) -%}
+    {%- elif dest_columns -%}
+        {%- set columns_csv = get_quoted_csv(dest_columns | map(attribute='name')) -%}
+    {%- else -%}
+        {%- set columns_csv = none -%}
+    {%- endif %}
+
+    insert overwrite into {{ target.render() }} {{ '(' ~ columns_csv ~ ')' if columns_csv }}
+        select {{ columns_csv if columns_csv else '*' }}
         from {{ source.render() }}
 
     {%- endset -%}

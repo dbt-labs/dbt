@@ -14,7 +14,6 @@ use dbt_schemas::schemas::StateArtifacts;
 use dbt_schemas::state::ResolverState;
 use petgraph::Graph;
 
-use crate::Preview;
 use crate::RunTasksArgs;
 use crate::ShowableResults;
 use crate::StoreableResults;
@@ -22,6 +21,7 @@ use crate::context::TaskRunnerCtx;
 use crate::context_factory::ExtendedTaskRunnerCtxFactory;
 use crate::metricflow::MetricflowClient;
 use crate::task::Task;
+use dbt_schemas::schemas::Preview;
 
 #[async_trait]
 pub trait TaskRunnerHooks: Send + Sync {

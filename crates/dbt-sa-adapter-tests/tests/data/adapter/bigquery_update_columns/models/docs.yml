@@ -1,0 +1,24 @@
+models:
+  - name: a
+    description: |
+      This model is used to test the `update_columns` adapter method.
+      It verifies that column descriptions are applied via update_columns_descriptions.
+    config:
+      contract:
+        enforced: true
+    constraints:
+      - type: check
+        expression: "full_name.firstname"
+    columns:
+      - name: a
+        description: "a column is a struct"
+        data_type: string
+      - name: a.b
+        description: "a.b is a string"
+        data_type: string
+      - name: b
+        description: "b column is a string"
+        data_type: string
+        policy_tags:
+          - 'projects/dbt-test-env/locations/us/taxonomies/5785568062805976401/policyTags/135489647357012267'
+    

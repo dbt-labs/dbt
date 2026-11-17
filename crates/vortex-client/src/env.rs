@@ -46,10 +46,15 @@ pub trait VortexEnv: Send + Sync {
             .into()
     }
 
-    /// `None` leaves `ureq`'s own configuration in place. Hosts that must use the
-    /// OS certificate store return a `RootCerts::PlatformVerifier` config.
+    /// Defaults to verifying against the OS certificate store. `None` leaves
+    /// `ureq`'s own configuration (bundled webpki roots) in place.
     fn tls_config(&self) -> Option<ureq::tls::TlsConfig> {
-        None
+        Some(
+            ureq::tls::TlsConfig::builder()
+                .provider(ureq::tls::TlsProvider::Rustls)
+                .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+                .build(),
+        )
     }
 }
 

@@ -2,7 +2,6 @@ use crate::{
     Dialect, Qualified, QualifiedName,
     ident::{Ident, Identifier},
 };
-use counter::Counter;
 use itertools::Itertools;
 use regex::Regex;
 use std::sync::LazyLock;
@@ -77,7 +76,7 @@ pub fn format_candidates(
     target: &str,
     limit: Option<usize>,
 ) -> String {
-    let candidates = candidates.into_iter().collect::<Counter<_>>();
+    let candidates = candidates.into_iter().counts();
     let target = target.to_ascii_lowercase();
     let truncated = if let Some(limit) = limit {
         if candidates.len() > limit {
@@ -93,7 +92,7 @@ pub fn format_candidates(
         .iter()
         .sorted_by_cached_key(|(c, _)| {
             (
-                stringmetrics::levenshtein(c.name.to_ascii_lowercase().as_str(), target.as_str()),
+                strsim::levenshtein(c.name.to_ascii_lowercase().as_str(), target.as_str()),
                 *c,
             )
         })

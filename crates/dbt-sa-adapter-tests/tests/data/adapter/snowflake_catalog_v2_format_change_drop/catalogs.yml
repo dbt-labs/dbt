@@ -1,0 +1,8 @@
+catalogs:
+  - name: my_iceberg_builtin_catalog
+    type: horizon
+    table_format: iceberg
+    config:
+      snowflake:
+        external_volume: s3_iceberg_snow
+        base_location_root: _fusion_ci/format_change_drop

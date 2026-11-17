@@ -17,8 +17,8 @@ use crate::macro_exec::{convert_macro_result_to_record_batch, execute_macro_with
 use crate::metadata::databricks::dbr_capabilities::{
     DbrCapability, DbrComputeContext, has_capability,
 };
-use crate::record_batch::RecordBatchExt;
 use crate::relation::RelationObject;
+use dbt_adapter_engine::record_batch::RecordBatchExt;
 
 /// One `(constraint_name, column_name)` pair of a PRIMARY KEY constraint.
 ///

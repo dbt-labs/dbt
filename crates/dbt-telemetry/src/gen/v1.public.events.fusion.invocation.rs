@@ -22,6 +22,12 @@ pub struct InvocationMetrics {
     /// Only non-zero counts are included.
     #[prost(map = "string, uint64", tag = "5")]
     pub status_counts: ::std::collections::HashMap<::prost::alloc::string::String, u64>,
+    /// Counts of compatibility probe hits, including future-change warnings whether shown or not.
+    /// Keys are the snake_case name of a named probe (e.g. "legacy_ref_resolution") or the
+    /// code name of a warning planned to become an error (e.g. "MalformedBlockName").
+    /// Only probes that fired are included.
+    #[prost(map = "string, uint64", tag = "6")]
+    pub probe_counts: ::std::collections::HashMap<::prost::alloc::string::String, u64>,
 }
 impl ::dbt_tracing::StaticName for InvocationMetrics {
     const FULL_NAME: &'static str = "v1.public.events.fusion.invocation.InvocationMetrics";
@@ -129,6 +135,11 @@ pub struct InvocationEvalArgs {
     /// before the project is loaded.
     #[prost(message, optional, tag = "27")]
     pub warn_error_options: ::core::option::Option<InvocationWarnErrorOptions>,
+    /// Whether incremental models are dropped and fully rebuilt, resolved from
+    /// --full-refresh / DBT_FULL_REFRESH (or the original run's setting for
+    /// `dbt retry`).
+    #[prost(bool, optional, tag = "28")]
+    pub full_refresh: ::core::option::Option<bool>,
 }
 impl ::dbt_tracing::StaticName for InvocationEvalArgs {
     const FULL_NAME: &'static str = "v1.public.events.fusion.invocation.InvocationEvalArgs";

@@ -1,0 +1,7 @@
+kind: Fixes
+body: Scope the Databricks foreign-key metadata lookup joins to the constraint's catalog and schema so a same-named constraint elsewhere in the catalog no longer makes incremental runs drop and re-add the foreign key
+time: 2026-10-06T17:33:22.015371+05:30
+custom:
+    author: sd-db
+    issue: "16737"
+    project: dbt-core

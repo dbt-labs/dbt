@@ -89,6 +89,11 @@ behavior lives under `crates/dbt-common/src/tracing/middlewares/`.
 Layer and middleware tests live under
 `crates/dbt-common/src/tracing/tests/`.
 
+Formatters are `Display` types written straight into the sink; do not add
+functions that return a formatted `String`. Exact terminal and `dbt.log` output
+is pinned by inline cases in `crates/dbt-common/src/tracing/tests/output/`;
+update a case's expected text for any intended output change.
+
 ### Add Or Change Generic Output Behavior
 
 Work in `crates/dbt-tracing/src/layers/` for JSONL, Parquet, OTLP, and

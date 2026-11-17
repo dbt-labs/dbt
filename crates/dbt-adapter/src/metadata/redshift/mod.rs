@@ -2,7 +2,6 @@ use crate::adapter::adapter_impl::{AdapterImpl, get_bool_config, quote_ident};
 use crate::connection::{AdapterConnectionFactory, ConnectionGuard};
 use crate::errors::*;
 use crate::metadata::*;
-use crate::record_batch::RecordBatchExt;
 use crate::relation::Relation;
 use crate::sql_types::make_arrow_field_v2;
 use crate::{AdapterEngine, AdapterResult};
@@ -13,6 +12,8 @@ use arrow_schema::{DataType, Field, Schema};
 use dbt_adapter_core::{AdapterType, ExecutionPhase};
 use dbt_adapter_engine::MapReduce;
 use dbt_adapter_engine::cow::uppercase;
+use dbt_adapter_engine::record_batch::RecordBatchExt;
+use dbt_adapter_sql::ident::escape_string_literal;
 use dbt_adbc::*;
 use dbt_common::cancellation::Cancellable;
 use dbt_common::cancellation::CancellationToken;
@@ -29,6 +30,10 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use crate::metadata::list_objects::*;
+
+fn redshift_metadata_literal(value: &str) -> String {
+    escape_string_literal(value, AdapterType::Redshift)
+}
 
 /// Inline reproduction of the `redshift__get_relations` macro
 /// (`dbt-loader/src/dbt_macro_assets/dbt-redshift/macros/relations.sql`).
@@ -163,6 +168,7 @@ fn list_relations_via_information_schema(
     db_schema: &CatalogAndSchema,
     token: CancellationToken,
 ) -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
+    let schema = redshift_metadata_literal(&db_schema.resolved_schema);
     let sql = format!(
         "select
     table_catalog as database,
@@ -184,7 +190,7 @@ select
     end as type
 from information_schema.views
 where table_schema ilike '{}'",
-        &db_schema.resolved_schema, &db_schema.resolved_schema
+        schema, schema
     );
 
     let batch = engine.execute(None, conn.as_mut(), ctx, &sql, token)?;
@@ -501,6 +507,9 @@ impl ListRelationsSchemasStrategy for RedshiftListRelationsSchemasStrategy {
             let catalog = relation.database_as_str()?;
             let schema = relation.schema_as_str()?;
             let identifier = relation.identifier_as_str()?;
+            let catalog_literal = redshift_metadata_literal(&catalog);
+            let schema_literal = redshift_metadata_literal(&schema);
+            let identifier_literal = redshift_metadata_literal(&identifier);
 
             // Use EXISTS with r_SVV_EXTERNAL_TABLES (presumably small, only external tables compared to SVV_TABLES)
             // https://docs.aws.amazon.com/redshift/latest/dg/r_SVV_EXTERNAL_TABLES.html
@@ -512,13 +521,13 @@ impl ListRelationsSchemasStrategy for RedshiftListRelationsSchemasStrategy {
     is_nullable,
     remarks,
     EXISTS(SELECT 1 FROM SVV_EXTERNAL_TABLES
-           WHERE redshift_database_name = '{catalog}'
-           AND schemaname = '{schema}'
-           AND tablename = '{identifier}') AS is_external
+           WHERE redshift_database_name = '{catalog_literal}'
+           AND schemaname = '{schema_literal}'
+           AND tablename = '{identifier_literal}') AS is_external
 FROM SVV_ALL_COLUMNS
-WHERE database_name = '{catalog}'
-AND schema_name = '{schema}'
-AND table_name = '{identifier}'"
+WHERE database_name = '{catalog_literal}'
+AND schema_name = '{schema_literal}'
+AND table_name = '{identifier_literal}'"
             );
 
             let mut ctx = QueryCtx::new_metadata().with_desc("Get table schema");
@@ -692,6 +701,7 @@ impl RedshiftFreshnessStrategy {
                           group: &((String, String), Vec<Arc<dyn BaseRelation>>)|
               -> AdapterResult<MapResult> {
             let ((_, schema), _) = group;
+            let schema_literal = redshift_metadata_literal(schema);
 
             // Primary: stl_insert tracks INSERT/COPY/CTAS, batched by schema.
             // ~1s vs ~10s for sys_query_detail on this cluster.
@@ -702,7 +712,7 @@ impl RedshiftFreshnessStrategy {
                  FROM stl_insert i \
                  JOIN pg_class c ON c.oid = i.tbl \
                  JOIN pg_namespace ns ON ns.oid = c.relnamespace \
-                 WHERE upper(ns.nspname) = upper('{schema}') \
+                 WHERE upper(ns.nspname) = upper('{schema_literal}') \
                  GROUP BY c.relname"
             );
             let ctx = QueryCtx::default().with_desc("Extracting freshness via stl_insert");
@@ -741,7 +751,7 @@ impl RedshiftFreshnessStrategy {
                  FROM pg_class c \
                  JOIN pg_namespace ns ON ns.oid = c.relnamespace \
                  JOIN pg_class_info pci ON pci.reloid = c.oid \
-                 WHERE upper(ns.nspname) = upper('{schema}') \
+                 WHERE upper(ns.nspname) = upper('{schema_literal}') \
                  AND pci.relcreationtime IS NOT NULL"
             );
             let ctx2 =
@@ -1443,6 +1453,8 @@ impl MetadataAdapter for RedshiftMetadataAdapter {
         for relation in relations {
             let schema = relation.schema_as_str().unwrap_or_default();
             let name = relation.identifier_as_str().unwrap_or_default();
+            let schema = redshift_metadata_literal(&schema);
+            let name = redshift_metadata_literal(&name);
             conditions.push(format!(
                 "(upper(table_schema) = upper('{schema}') AND upper(table_name) = upper('{name}'))"
             ));
@@ -1678,6 +1690,14 @@ mod tests {
 
     fn quoting() -> ResolvedQuoting {
         ResolvedQuoting::default()
+    }
+
+    #[test]
+    fn redshift_metadata_literal_escapes_quotes_and_backslashes() {
+        assert_eq!(
+            redshift_metadata_literal(r"schema\'; SELECT 1; --"),
+            r"schema\\''; SELECT 1; --"
+        );
     }
 
     fn show_tables_batch_with_subtype(rows: &[(&str, &str, &str, &str, &str)]) -> Arc<RecordBatch> {

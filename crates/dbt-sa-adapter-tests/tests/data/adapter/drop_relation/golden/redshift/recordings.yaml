@@ -1,0 +1,72 @@
+9d0ad2bb:
+- sequence: 0
+  type: execute
+  sql: |-
+    select
+    table_catalog as database,
+    table_name as name,
+    table_schema as schema,
+    'table' as type
+    from information_schema.tables
+    where table_schema ilike 'adapters_redshift_drop_relation'
+    and table_type = 'BASE TABLE'
+    union all
+    select
+    table_catalog as database,
+    table_name as name,
+    table_schema as schema,
+    case
+    when view_definition ilike '%create materialized view%'
+    then 'materialized_view'
+    else 'view'
+    end as type
+    from information_schema.views
+    where table_schema ilike 'adapters_redshift_drop_relation'
+b65fb988:
+- sequence: 0
+  type: execute
+  sql: |-
+    with relation as (
+    select
+    pg_class.oid as relation_id,
+    pg_class.relname as relation_name,
+    pg_class.relnamespace as schema_id,
+    pg_namespace.nspname as schema_name
+    from pg_class
+    join pg_namespace
+    on pg_class.relnamespace = pg_namespace.oid
+    where pg_namespace.nspname != 'information_schema'
+    and pg_namespace.nspname not like 'pg\_%'
+    ),
+    dependency as (
+    select distinct
+    coalesce(pg_rewrite.ev_class, pg_depend.objid) as dep_relation_id,
+    pg_depend.refobjid as ref_relation_id
+    from pg_depend
+    left join pg_rewrite
+    on pg_depend.objid = pg_rewrite.oid
+    where coalesce(pg_rewrite.ev_class, pg_depend.objid) != pg_depend.refobjid
+    )
+    select distinct
+    dep.schema_name as dependent_schema,
+    dep.relation_name as dependent_name,
+    ref.schema_name as referenced_schema,
+    ref.relation_name as referenced_name
+    from dependency
+    join relation ref
+    on dependency.ref_relation_id = ref.relation_id
+    join relation dep
+    on dependency.dep_relation_id = dep.relation_id
+model.test.c:
+- sequence: 0
+  type: execute
+  sql: DROP SCHEMA IF EXISTS adapters_redshift_drop_relation CASCADE
+- sequence: 1
+  type: execute
+  sql: CREATE SCHEMA adapters_redshift_drop_relation
+- sequence: 2
+  type: execute
+  sql: CREATE TABLE adapters_redshift_drop_relation.a (val int)
+- sequence: 3
+  type: execute
+  sql: drop table if exists "ci"."adapters_redshift_drop_relation"."a" cascade

@@ -9,7 +9,8 @@
 //! relation resolve its declared columns through the binder's normal
 //! catalog-lookup path, rather than falling through to placeholder inference.
 
-use crate::collections::{DashMap, HashSet};
+use crate::collections::{HashSet, SccHashMap};
+use crate::sccmap;
 
 /// The key a relation is recorded under: `catalog.schema.table`, each part
 /// double-quoted (with `"` doubled) unless it is a lowercase identifier,
@@ -45,7 +46,7 @@ fn quote_part(part: &str) -> String {
 
 #[derive(Debug, Default)]
 pub struct UserDefinedSchemaRegistry {
-    declared_columns: DashMap<String, HashSet<String>>,
+    declared_columns: SccHashMap<String, HashSet<String>>,
 }
 
 impl UserDefinedSchemaRegistry {
@@ -56,14 +57,25 @@ impl UserDefinedSchemaRegistry {
     /// Record that `column` is declared for `relation`.
     pub fn record_column(&self, relation: &str, column: &str) {
         self.declared_columns
-            .entry(relation.to_string())
+            .entry_sync(relation.to_string())
             .or_default()
+            // `get_mut` because `OccupiedEntry::insert` replaces the whole value.
+            .get_mut()
             .insert(column.to_string());
     }
 
     /// Declared columns previously recorded for `relation`, if any.
     pub fn columns_for(&self, relation: &str) -> Option<HashSet<String>> {
-        self.declared_columns.get(relation).map(|c| c.clone())
+        self.declared_columns.read_sync(relation, |_, c| c.clone())
+    }
+
+    /// Every recorded relation with its declared columns, in no particular
+    /// order.
+    pub fn entries(&self) -> Vec<(String, Vec<String>)> {
+        sccmap::to_vec_cloned(&self.declared_columns)
+            .into_iter()
+            .map(|(relation, columns)| (relation, columns.into_iter().collect()))
+            .collect()
     }
 }
 
@@ -109,6 +121,26 @@ mod tests {
         let registry = UserDefinedSchemaRegistry::new();
         registry.record_column("a", "c");
         assert!(registry.columns_for("b").is_none());
+    }
+
+    #[test]
+    fn entries_lists_every_relation_and_its_columns() {
+        let registry = UserDefinedSchemaRegistry::new();
+        registry.record_column("a", "c1");
+        registry.record_column("a", "c2");
+        registry.record_column("b", "c");
+        let mut entries = registry.entries();
+        entries.sort();
+        for (_, columns) in &mut entries {
+            columns.sort();
+        }
+        assert_eq!(
+            entries,
+            vec![
+                ("a".to_string(), vec!["c1".to_string(), "c2".to_string()]),
+                ("b".to_string(), vec!["c".to_string()]),
+            ]
+        );
     }
 
     #[test]

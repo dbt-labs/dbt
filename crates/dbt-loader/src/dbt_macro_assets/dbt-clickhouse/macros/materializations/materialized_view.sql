@@ -118,14 +118,22 @@
   {{ run_hooks(pre_hooks, inside_transaction=False) }}
   {{ run_hooks(pre_hooks, inside_transaction=True) }}
 
-  {%- set view_created = True -%}
+  {%- set catchup_data = config.get('catchup', True) == True -%}
+  {%- set is_refreshable = clickhouse__is_refreshable_mv() -%}
 
-  {% if existing_relation is none %}
-    {{ clickhouse__create_mv(mv_relation, materialization_target_table, cluster_clause, refreshable_clause, sql, is_main_statement=True) }};
-  {% elif should_full_refresh() %}
-    {{ log('Dropping existing MV ' ~ mv_relation.name ~ ' for full refresh recreation') }}
-    {{ clickhouse__drop_mv(mv_relation, cluster_clause) }}
-    {{ clickhouse__create_mv(mv_relation, materialization_target_table, cluster_clause, refreshable_clause, sql, is_main_statement=True) }};
+  {% if existing_relation is none or should_full_refresh() %}
+    {% if existing_relation is not none %}
+      {{ log('Dropping existing MV ' ~ mv_relation.name ~ ' for full refresh recreation') }}
+      {{ clickhouse__drop_mv(mv_relation, cluster_clause) }}
+    {% endif %}
+    {#- A refreshable MV is backfilled before it exists, see clickhouse__create_mv. -#}
+    {% if catchup_data and is_refreshable %}
+      {{ clickhouse__catchup_insert(target_table_relation, sql) }}
+    {% endif %}
+    {{ clickhouse__create_mv(mv_relation, materialization_target_table, cluster_clause, refreshable_clause, sql, is_main_statement=True, create_with_empty=catchup_data) }};
+    {% if catchup_data and not is_refreshable %}
+      {{ clickhouse__catchup_insert(target_table_relation, sql) }}
+    {% endif %}
   {% else %}
     {# Check if target table has changed - cannot be updated via MODIFY QUERY #}
     {% set existing_target = clickhouse__get_mv_current_target(mv_relation) %}
@@ -143,14 +151,6 @@
     {{ log('Updating query of existing MV ' ~ mv_relation.name ~ ' for recreation') }}
     {{ clickhouse__modify_mv_refresh(mv_relation, existing_relation, cluster_clause) }}
     {{ clickhouse__modify_mv(mv_relation, cluster_clause, sql, is_main_statement=True) }};
-    {%- set view_created = False -%}
-  {% endif %}
-
-  {% set catchup_data = config.get("catchup", True) %}
-  {% if catchup_data == True and view_created == True %}
-    {{ log('Executing catchup data insertion into target table ' ~ target_table_relation )}}
-    {% set has_contract = config.get('contract').enforced %}
-    {% do run_query(clickhouse__insert_into(target_table_relation, sql, has_contract, use_columns_from_sql=True)) %}
   {% endif %}
 
   {#- Cleanup and grants -#}
@@ -236,7 +236,7 @@
 
       {% do exchange_tables_atomic(backup_relation, existing_relation) %}
 
-      {{ clickhouse__create_mvs(existing_relation, cluster_clause, refreshable_clause, views) }}
+      {{ clickhouse__create_mvs(existing_relation, cluster_clause, refreshable_clause, views, create_with_empty=catchup_data) }}
     {% else %}
       -- we need to have a 'main' statement
       {% call statement('main') -%}
@@ -313,7 +313,7 @@
   {%- set cluster_clause = on_cluster_clause(relation) -%}
   {%- set refreshable_clause = refreshable_mv_clause() -%}
   {%- set mv_relation = relation.derivative('_mv', 'materialized_view') -%}
-  {{ clickhouse__create_mvs(relation, cluster_clause, refreshable_clause, views) }}
+  {{ clickhouse__create_mvs(relation, cluster_clause, refreshable_clause, views, create_with_empty=catchup) }}
 {%- endmacro %}
 
 {% macro clickhouse__drop_mv(mv_relation, cluster_clause)  -%}
@@ -322,15 +322,27 @@
   {% endcall %}
 {%- endmacro %}
 
-{% macro clickhouse__create_mv(mv_relation, target_relation, cluster_clause, refreshable_clause, view_sql, is_main_statement=False)  -%}
+{% macro clickhouse__create_mv(mv_relation, target_relation, cluster_clause, refreshable_clause, view_sql, is_main_statement=False, create_with_empty=False)  -%}
   {% set statement_name = 'main' if is_main_statement else 'create existing mv: ' + mv_relation.name -%}
   {% call statement(statement_name) -%}
     create materialized view if not exists {{ mv_relation }} {{ cluster_clause }}
     {{ refreshable_clause }}
     to {{ target_relation }}
+    {%- if create_with_empty and clickhouse__is_refreshable_mv() %} empty {% endif %}
     as {{ view_sql }}
   {% endcall %}
 {%- endmacro %}
+
+{% macro clickhouse__is_refreshable_mv() %}
+  {%- set refreshable_config = config.get('refreshable') -%}
+  {{ return(refreshable_config is not none and refreshable_config != false) }}
+{% endmacro %}
+
+{% macro clickhouse__catchup_insert(target_table_relation, sql) %}
+  {{ log('Executing catchup data insertion into target table ' ~ target_table_relation) }}
+  {% set has_contract = config.get('contract').enforced %}
+  {% do run_query(clickhouse__insert_into(target_table_relation, sql, has_contract, use_columns_from_sql=True)) %}
+{% endmacro %}
 
 {% macro clickhouse__modify_mv(mv_relation, cluster_clause, view_sql, is_main_statement=False)  -%}
   {% set statement_name = 'main' if is_main_statement else 'modify existing mv: ' + mv_relation.name -%}
@@ -436,10 +448,10 @@
   {% endfor %}
 {%- endmacro %}
 
-{% macro clickhouse__create_mvs(target_relation, cluster_clause, refreshable_clause, views)  -%}
+{% macro clickhouse__create_mvs(target_relation, cluster_clause, refreshable_clause, views, create_with_empty=False)  -%}
   {% for view, view_sql in views.items() %}
     {%- set mv_relation = target_relation.derivative('_' + view, 'materialized_view') -%}
-    {{ clickhouse__create_mv(mv_relation, target_relation, cluster_clause, refreshable_clause, view_sql) }};
+    {{ clickhouse__create_mv(mv_relation, target_relation, cluster_clause, refreshable_clause, view_sql, create_with_empty=create_with_empty) }};
   {% endfor %}
 {%- endmacro %}
 
@@ -513,7 +525,7 @@
   {{ adapter.rename_relation(intermediate_relation, target_relation) }}
 
   {# now that the target table is recreated, we can finally create our new view #}
-  {{ clickhouse__create_mvs(target_relation, cluster_clause, refreshable_clause, views) }}
+  {{ clickhouse__create_mvs(target_relation, cluster_clause, refreshable_clause, views, create_with_empty=catchup) }}
 {% endmacro %}
 
 {#-
@@ -521,7 +533,7 @@
   (REFRESH ... [RANDOMIZE FOR ...] [DEPENDS ON ...] [APPEND]).
 -#}
 {% macro refreshable_mv_clause() %}
-  {%- if config.get('refreshable') is not none and config.get('refreshable') != false -%}
+  {%- if clickhouse__is_refreshable_mv() -%}
 
     {% set refreshable_config = config.get('refreshable') %}
     {% if refreshable_config is not mapping %}

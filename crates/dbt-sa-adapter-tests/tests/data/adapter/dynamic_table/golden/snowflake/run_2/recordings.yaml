@@ -1,0 +1,304 @@
+dbbbff64:
+- sequence: 0
+  type: execute
+  sql: |-
+    show terse schemas in database development
+    limit 10000
+model.test.dt_cluster_alter:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: show dynamic tables like 'DT_CLUSTER_ALTER' in schema "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE"
+- sequence: 2
+  type: execute
+  sql: alter dynamic table "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE"."DT_CLUSTER_ALTER" cluster by (id, id2)
+- sequence: 3
+  type: execute
+  sql: use warehouse [MASKED_WH]
+model.test.dt_cluster_drop:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: show dynamic tables like 'DT_CLUSTER_DROP' in schema "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE"
+- sequence: 2
+  type: execute
+  sql: alter dynamic table "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE"."DT_CLUSTER_DROP" drop clustering key
+- sequence: 3
+  type: execute
+  sql: use warehouse [MASKED_WH]
+model.test.dt_copy_grants1:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: show dynamic tables like 'DT_COPY_GRANTS1' in schema "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE"
+- sequence: 2
+  type: execute
+  sql: use warehouse [MASKED_WH]
+model.test.dt_iceberg_explicit_snowflake_managed:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: show dynamic tables like 'DT_ICEBERG_EXPLICIT_SNOWFLAKE_MANAGED' in schema "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE"
+- sequence: 2
+  type: execute
+  sql: |-
+    alter dynamic table "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE"."DT_ICEBERG_EXPLICIT_SNOWFLAKE_MANAGED" set
+    target_lag = 'downstream'
+- sequence: 3
+  type: execute
+  sql: use warehouse [MASKED_WH]
+model.test.dt_iceberg_external_volume:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: show dynamic tables like 'DT_ICEBERG_EXTERNAL_VOLUME' in schema "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE"
+- sequence: 2
+  type: execute
+  sql: |-
+    alter dynamic table "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE"."DT_ICEBERG_EXTERNAL_VOLUME" set
+    target_lag = 'downstream'
+- sequence: 3
+  type: execute
+  sql: use warehouse [MASKED_WH]
+model.test.dt_iceberg_managed:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: show dynamic tables like 'DT_ICEBERG_MANAGED' in schema "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE"
+- sequence: 2
+  type: execute
+  sql: |-
+    alter dynamic table "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE"."DT_ICEBERG_MANAGED" set
+    target_lag = 'downstream'
+- sequence: 3
+  type: execute
+  sql: use warehouse [MASKED_WH]
+model.test.dt_imw1:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: show dynamic tables like 'DT_IMW1' in schema "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE"
+- sequence: 2
+  type: execute
+  sql: alter dynamic table "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE"."DT_IMW1" set immutable where (id < 200)
+- sequence: 3
+  type: execute
+  sql: use warehouse [MASKED_WH]
+model.test.dt_transient1:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: show dynamic tables like 'DT_TRANSIENT1' in schema "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE"
+- sequence: 2
+  type: execute
+  sql: show tables like 'DT_TRANSIENT1' in schema "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE"
+- sequence: 3
+  type: execute
+  sql: |-
+    create or replace dynamic table development.adapters_snowflake_dynamic_table.dt_transient1
+    target_lag = '1 hour'
+    warehouse = [MASKED_WH]
+    
+    
+    refresh_mode = AUTO
+    
+    initialize = ON_CREATE
+    
+    
+    scheduler = 'ENABLE'
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    as (
+    SELECT * FROM development.adapters_snowflake_dynamic_table.source_table
+    )
+- sequence: 4
+  type: execute
+  sql: use warehouse [MASKED_WH]
+model.test.init_default:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: show dynamic tables like 'INIT_DEFAULT' in schema "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE"
+- sequence: 2
+  type: execute
+  sql: use warehouse [MASKED_WH]
+model.test.init_on_schedule:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: show dynamic tables like 'INIT_ON_SCHEDULE' in schema "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE"
+- sequence: 2
+  type: execute
+  sql: use warehouse [MASKED_WH]
+model.test.init_wh:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: show dynamic tables like 'INIT_WH' in schema "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE"
+- sequence: 2
+  type: execute
+  sql: use warehouse [MASKED_WH]
+model.test.lag:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: show dynamic tables like 'LAG' in schema "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE"
+- sequence: 2
+  type: execute
+  sql: |-
+    alter dynamic table "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE"."LAG" set
+    target_lag = 'downstream'
+- sequence: 3
+  type: execute
+  sql: use warehouse [MASKED_WH]
+model.test.no_init_wh:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: show dynamic tables like 'NO_INIT_WH' in schema "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE"
+- sequence: 2
+  type: execute
+  sql: |-
+    alter dynamic table "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE"."NO_INIT_WH" set
+    
+    
+    initialization_warehouse = [MASKED_WH]
+- sequence: 3
+  type: execute
+  sql: use warehouse [MASKED_WH]
+model.test.refresh_auto:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: show dynamic tables like 'REFRESH_AUTO' in schema "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE"
+- sequence: 2
+  type: execute
+  sql: |-
+    create or replace dynamic table development.adapters_snowflake_dynamic_table.refresh_auto
+    target_lag = '1 hour'
+    warehouse = [MASKED_WH]
+    
+    
+    refresh_mode = FULL
+    
+    initialize = ON_CREATE
+    
+    
+    scheduler = 'ENABLE'
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    as (
+    SELECT * FROM development.adapters_snowflake_dynamic_table.source_table
+    )
+- sequence: 3
+  type: execute
+  sql: use warehouse [MASKED_WH]
+model.test.refresh_full:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: show dynamic tables like 'REFRESH_FULL' in schema "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE"
+- sequence: 2
+  type: execute
+  sql: use warehouse [MASKED_WH]
+model.test.same_wh:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: show dynamic tables like 'SAME_WH' in schema "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE"
+- sequence: 2
+  type: execute
+  sql: alter dynamic table "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE"."SAME_WH" unset initialization_warehouse
+- sequence: 3
+  type: execute
+  sql: use warehouse [MASKED_WH]
+model.test.scheduler_disable:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: show dynamic tables like 'SCHEDULER_DISABLE' in schema "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE"
+- sequence: 2
+  type: execute
+  sql: |-
+    alter dynamic table "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE"."SCHEDULER_DISABLE" set
+    target_lag = '5 minutes'
+    
+    
+    scheduler = 'ENABLE'
+- sequence: 3
+  type: execute
+  sql: use warehouse [MASKED_WH]
+model.test.scheduler_enable:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: SHOW OBJECTS IN SCHEMA "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE" LIMIT 10000
+- sequence: 2
+  type: execute
+  sql: show dynamic tables like 'SCHEDULER_ENABLE' in schema "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE"
+- sequence: 3
+  type: execute
+  sql: |-
+    alter dynamic table "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_DYNAMIC_TABLE"."SCHEDULER_ENABLE" set
+    
+    
+    
+    scheduler = 'DISABLE'
+- sequence: 4
+  type: execute
+  sql: alter dynamic table development.adapters_snowflake_dynamic_table.scheduler_enable refresh
+- sequence: 5
+  type: execute
+  sql: use warehouse [MASKED_WH]

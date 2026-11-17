@@ -1,0 +1,6 @@
+name: test
+profile: fusion_tests
+
+flags:
+  send_anonymous_usage_stats: false
+  use_catalogs_v2: false

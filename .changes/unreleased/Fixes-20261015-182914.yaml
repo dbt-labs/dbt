@@ -1,0 +1,7 @@
+kind: Fixes
+body: '[ClickHouse] persist_docs descriptions containing '';'' reach the server intact: ClickHouse SQL is split by a ClickHouse-aware scanner ($tag$ heredocs, backslash escapes, comments) instead of the Databricks lexer'
+time: 2026-10-15T18:29:14.341405+02:00
+custom:
+    author: koletzilla
+    issue: "14585"
+    project: dbt-core

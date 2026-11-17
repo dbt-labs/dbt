@@ -21,8 +21,6 @@ dbt-sql-base = { workspace = true }
 regex = { workspace = true }
 
 [dev-dependencies]
-arrow-buffer = { workspace = true }
-tempfile = { workspace = true }
 
 [lints]
 workspace = true

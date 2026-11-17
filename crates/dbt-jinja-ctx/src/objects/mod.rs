@@ -24,7 +24,7 @@
 //! * `RefFunction`, `SourceFunction`, `FunctionFunction`,
 //!   `MicrobatchRefContext`, `LazyFlatGraph` — need
 //!   `NodeResolverHandle` / `RuntimeConfigHandle` / `FlatGraphSource`.
-//! * `CompileConfig`, `RunConfig` — depend on `dbt_common::DashMap` /
+//! * `CompileConfig`, `RunConfig` — depend on `dbt_common::collections::SccHashMap` /
 //!   `dbt_schemas::project::ConfigKeys`.
 //! * `WriteConfig` — uses `dbt_common::path::get_target_write_path`.
 

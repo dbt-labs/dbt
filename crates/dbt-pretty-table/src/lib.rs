@@ -368,9 +368,7 @@ fn create_table(column_names: &[String]) -> (Table, usize, Vec<usize>, bool) {
     // for the last border
     let default_width = 1000;
     // Use a large value to fit all content if not running in a terminal
-    // todo:  should term_size  be a property of the console?
-    let max_table_width = term_size::dimensions().map_or(default_width, |(w, _)| w);
-    table.set_width(max_table_width.try_into().unwrap());
+    let max_table_width = table.width().map_or(default_width, usize::from);
 
     // determine which columns to include
     let mut indices_to_include = vec![];

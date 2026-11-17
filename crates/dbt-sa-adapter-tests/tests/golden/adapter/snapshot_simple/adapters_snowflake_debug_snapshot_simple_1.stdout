@@ -1,0 +1,13 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing snapshots/base_snapshot.yml
+   Parsing snapshots/base_snapshot.yml:2:11 (base_snapshot)
+   Parsing models/base.sql
+   Parsing models/snapshot_columns.sql
+ Rendering models/snapshot_columns.sql
+ Rendering snapshots/base_snapshot.yml:2:11 (base_snapshot)
+ Rendering models/base.sql
+==================== Execution Summary =====================
+Finished 'compile' successfully for target 'snowflake' [duration]
+Processed: 2 models | 1 snapshot
+Summary: 3 total | 3 success

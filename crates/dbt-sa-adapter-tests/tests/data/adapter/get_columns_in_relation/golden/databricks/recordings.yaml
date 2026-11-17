@@ -1,0 +1,13 @@
+model.test.b:
+- sequence: 0
+  type: execute
+  sql: DROP SCHEMA IF EXISTS adapters_databricks_get_columns_in_relation CASCADE
+- sequence: 1
+  type: execute
+  sql: CREATE SCHEMA adapters_databricks_get_columns_in_relation
+- sequence: 2
+  type: execute
+  sql: CREATE TABLE adapters_databricks_get_columns_in_relation.c (number_col int, text_col varchar(100), text_col2 varchar(101))
+- sequence: 3
+  type: execute
+  sql: DESCRIBE TABLE EXTENDED `e2e`.`adapters_databricks_get_columns_in_relation`.`c` AS JSON

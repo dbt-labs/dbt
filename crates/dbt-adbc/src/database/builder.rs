@@ -255,13 +255,13 @@ impl Builder {
             .map(|uri| self.with_uri(uri))
     }
 
-    pub fn with_username(&mut self, username: impl AsRef<str>) -> &mut Self {
-        self.username = Some(username.as_ref().to_string());
+    pub fn with_username(&mut self, username: impl Into<String>) -> &mut Self {
+        self.username = Some(username.into());
         self
     }
 
-    pub fn with_password(&mut self, password: impl AsRef<str>) -> &mut Self {
-        self.password = Some(password.as_ref().to_string());
+    pub fn with_password(&mut self, password: impl Into<String>) -> &mut Self {
+        self.password = Some(password.into());
         self
     }
 
@@ -314,10 +314,10 @@ impl Builder {
 
     pub fn with_named_option(
         &mut self,
-        name: impl AsRef<str>,
+        name: impl Into<String>,
         value: impl Into<String>,
     ) -> Result<&mut Self> {
-        let option = OptionDatabase::Other(name.as_ref().to_string());
+        let option = OptionDatabase::Other(name.into());
         self.with_typed_option(option, OptionValue::String(value.into()))
     }
 

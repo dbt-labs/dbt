@@ -1,0 +1,11 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/mat_view.sql
+   Parsing models/orders.sql
+ Rendering models/mat_view.sql
+   Running models/mat_view.sql
+ Succeeded model adapters_bigquery_materialized_views.mat_view (mat_view) [1 of 1 in duration]
+==================== Execution Summary =====================
+Finished 'build' successfully for target 'bigquery' [duration]
+Processed: 1 model
+Summary: 1 total | 1 success

@@ -1,0 +1,12 @@
+name: "my_project"
+version: "1.0.0"
+config-version: 2
+profile: "fusion_tests"
+
+vars:
+  dbt_test_name: "snapshot"
+
+clean-targets:
+  - dbt_packages
+  - target
+  - logs

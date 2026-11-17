@@ -1,0 +1,27 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/schema.yml
+   Parsing models/a.sql
+model_constraints
+[]
+rendered_model_constraints
+()
+columns
+{}
+rendered_columns_constraints
+()
+   Parsing models/b.sql
+ Rendering models/a.sql
+model_constraints
+[{'type': 'check', 'expression': 'name', 'to_columns': [], 'warn_unsupported': False, 'warn_unenforced': False}]
+rendered_model_constraints
+('check (name)',)
+columns
+{'id': {'name': 'id', 'data_type': 'int', 'description': '', 'constraints': [{'type': 'not_null', 'to_columns': [], 'warn_unsupported': False, 'warn_unenforced': False}, {'type': 'primary_key', 'to_columns': [], 'warn_unsupported': False, 'warn_unenforced': False}, {'type': 'check', 'expression': '(id > 0)', 'to_columns': [], 'warn_unsupported': False, 'warn_unenforced': False}, {'type': 'check', 'expression': '(id >= 1)', 'to_columns': [], 'warn_unsupported': False, 'warn_unenforced': False}, {'type': 'foreign_key', 'to': '`e2e`.`adapters_databricks_render_raw_constraint`.`b`', 'to_columns': ['id'], 'warn_unsupported': False, 'warn_unenforced': False}, {'type': 'unique', 'to_columns': [], 'warn_unsupported': False, 'warn_unenforced': False}], 'meta': {}, 'tags': [], 'config': {}}}
+rendered_columns_constraints
+('id int not null primary key check ((id > 0)) check ((id >= 1)) references `e2e`.`adapters_databricks_render_raw_constraint`.`b` (id)',)
+ Rendering models/b.sql
+==================== Execution Summary =====================
+Finished 'compile' successfully for target 'databricks' [duration]
+Processed: 2 models
+Summary: 2 total | 2 success

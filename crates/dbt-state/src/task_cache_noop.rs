@@ -35,6 +35,7 @@ impl TaskCache for TaskCacheNoop {
         _key: &str,
         _value: &TaskValue,
         _info: &TaskInfo,
+        _expected_start: &TaskValue,
     ) -> Result<(), String> {
         Ok(())
     }
@@ -47,6 +48,7 @@ impl TaskCache for TaskCacheNoop {
         self: Arc<Self>,
         _key: &str,
         _value: &TaskValue,
+        _start_value: &TaskValue,
         _stop_signal: Arc<AtomicBool>,
     ) -> Result<(), String> {
         Ok(()) // No-op

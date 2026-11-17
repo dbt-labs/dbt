@@ -8,7 +8,8 @@ use indoc::{formatdoc, indoc};
 
 use super::events::{evaluated, node, node_group, processed};
 use super::support::{
-    Case, Clock, DBT_LOG, DBT_LOG_DEBUG, Sink, TERMINAL, TEXT_DEBUG, Terminal, all_variants,
+    Case, Clock, DBT_LOG, DBT_LOG_DEBUG, Sink, TERMINAL, TERMINAL_QUIET, TEXT_DEBUG, Terminal,
+    all_variants,
 };
 use crate::{
     io_args::{FsCommand, ShowOptions},
@@ -627,7 +628,8 @@ fn microbatches(cases: &mut Vec<Case>) {
                         <red+bold>    Failed</> batch {second} of <cyan+bold>analytics.</><blue+bold>customers</> [2 of 2 in 1.10s]
                         <red+bold>    Failed</> model <cyan+bold>analytics.</><blue+bold>customers</> (incremental) [3 of 12 in 0.25s]
                     "#},
-                ),
+                )
+                .expect_no_output(TERMINAL_QUIET),
         );
     }
 

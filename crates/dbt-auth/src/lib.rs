@@ -92,6 +92,7 @@ pub fn auth_for_backend_with_warnings(
             library_name: "adbc_driver_redis",
             ..
         } => Box::new(redis_adbc::RedisAuth::new(backend)),
+        Backend::Trino => unimplemented!("trino backend authentication"),
         Backend::Generic { .. } => unimplemented!("generic backend authentication"),
     }
 }

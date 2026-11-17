@@ -1,0 +1,7 @@
+kind: Fixes
+body: Reconcile the experimental Redis ADBC adapter with current engine APIs and retry explicitly refused snapshot publications.
+time: 2026-11-16T21:20:47.202275-08:00
+custom:
+    author: alberttwong
+    issue: ""
+    project: dbt-core

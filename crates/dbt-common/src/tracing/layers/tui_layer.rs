@@ -1,4 +1,6 @@
 use std::{
+    collections::BTreeMap,
+    fmt,
     io::{self, Write},
     sync::{
         Arc,
@@ -22,49 +24,45 @@ use dbt_tracing::{
 };
 use dbt_tui_progress::ProgressController;
 
-use dbt_error::ErrorCode;
+use dbt_error::{Delivery, ErrorCode, FutureError};
 use tracing::level_filters::LevelFilter;
 
 use crate::{
     constants::DBT_GENERIC_TESTS_DIR_NAME, tracing::event_classifiers::is_exit_with_status_log,
-    tracing::formatters::node::format_node_evaluated_start_legacy,
 };
 use crate::{
     io_args::{FsCommand, LogFormat, ShowOptions},
     tracing::{
         data_provider::DataProvider,
+        dbt_metrics::CompatibilityProbe,
         formatters::{
-            asset::format_asset_parsed_start,
-            color::BLUE,
+            asset::AssetParsedStart,
+            color::{BLUE, MaybeColored},
             constants::SELECTED_NODES_TITLE,
             deps::{
-                INSTALLING_ACTION, format_package_add_end, format_package_add_start,
-                format_package_install_end, format_package_install_start,
-                format_package_installed_end, format_package_installed_start,
+                INSTALLING_ACTION, PackageAddEnd, PackageAddStart, PackageInstallEnd,
+                PackageInstallStart, PackageInstalledEnd, PackageInstalledStart,
                 get_package_display_name,
             },
-            generic::{
-                capitalize_first_letter, format_generic_op_end, format_generic_op_item_end,
-                format_generic_op_item_start, format_generic_op_start,
-            },
-            hook::{format_hook_processed_end, format_hook_processed_start},
-            invocation::format_invocation_summary,
-            layout::{format_delimiter, right_align_action},
-            log_message::format_log_message,
+            generic::{GenericOpEnd, GenericOpItemEnd, GenericOpItemStart, GenericOpStart},
+            hook::{HookProcessedEnd, HookProcessedStart},
+            invocation::{FutureChangeLine, InvocationSummary},
+            layout::{CapitalizedFirst, Delimiter, RightAligned},
+            log_message::LogMessageLine,
             node::{
-                format_aggregated_test_group_header, format_aggregated_test_group_member,
-                format_compiled_code, format_compiled_inline_code, format_microbatch_evaluated_end,
-                format_microbatch_evaluated_start, format_microbatch_member,
-                format_node_evaluated_end, format_node_evaluated_start, format_node_processed_end,
-                format_skipped_test_group,
+                AggregatedTestGroupHeader, AggregatedTestGroupMember, CompiledCodeLine,
+                CompiledInlineCode, MicrobatchEvaluatedEnd, MicrobatchEvaluatedStart,
+                MicrobatchMember, NodeEvaluatedEnd, NodeEvaluatedStart, NodeEvaluatedStartLegacy,
+                NodeProcessedEnd, SkippedTestGroup,
             },
             phase::get_phase_progress_text,
-            progress::format_progress_message,
-            state_mod_diff::format_state_modified_diff_lines,
-            test_result::format_test_failure,
-            thread_pool_wait::{format_thread_pool_wait_end, format_thread_pool_wait_start},
+            progress::ProgressMessageLine,
+            state_mod_diff::StateModifiedDiffLines,
+            test_result::TestFailure,
+            thread_pool_wait::{THREAD_POOL_WAIT_START, ThreadPoolWaitEnd},
         },
         fs_error_log::get_log_message,
+        future_incompatibility_log::FutureIncompatibilityLog,
         layer::{ConsumerLayer, TelemetryConsumer},
         private_events::print_event::{StderrMessage, StdoutMessage},
     },
@@ -75,6 +73,8 @@ pub struct TuiConfig {
     pub show_options: HashSet<ShowOptions>,
     pub command: FsCommand,
     pub quiet: bool,
+    /// Show every repeat of a future-change warning instead of the first one per invocation.
+    pub show_all_deprecations: bool,
 }
 
 pub fn build_tui_layer(
@@ -244,33 +244,29 @@ struct PendingAggregatedTestGroup {
 
 fn emit_pending_skips(tui: &TuiLayer, data_provider: &mut DataProvider<'_>) {
     // This is a non-skipping node, check if there are pending skipped tests to emit
-    let mut output_to_emit = None;
+    let mut to_emit = None;
     data_provider.with_ancestor_ext_mut::<TuiAllProcessingNodesGroup, SkippedTestNodes>(
         |skipped| {
             if !skipped.pending_names.is_empty() {
-                // Format the summary and capture it for emission after lock is released
-                output_to_emit = Some(format_skipped_test_group(
-                    &skipped.pending_names,
-                    skipped.seen_test,
-                    skipped.seen_unit_test,
-                    skipped.node_count_total,
-                    true,
+                // Take the pending names and reset the flags, to emit after lock is released
+                to_emit = Some((
+                    std::mem::take(&mut skipped.pending_names),
+                    std::mem::take(&mut skipped.seen_test),
+                    std::mem::take(&mut skipped.seen_unit_test),
+                    skipped.node_count_total.take(),
                 ));
-
-                // Clear the pending names and flags
-                skipped.pending_names.clear();
-                skipped.seen_test = false;
-                skipped.seen_unit_test = false;
-                skipped.node_count_total = None;
             }
         },
     );
 
     // Emit the output after the span lock has been released to avoid possible deadlocks
-    if let Some(output) = output_to_emit {
-        tui.write_suspended(|| {
-            tui.with_stdout(|out| out.write_all(format!("{}\n", output).as_bytes()))
-                .expect("failed to write to stdout");
+    if let Some((node_names, seen_test, seen_unit_test, node_count_total)) = to_emit {
+        tui.write_stdout_line(&SkippedTestGroup {
+            node_names: &node_names,
+            seen_test,
+            seen_unit_test,
+            node_count_total,
+            colorize: tui.colorize,
         });
     }
 }
@@ -318,6 +314,28 @@ struct DelayedMessage {
 pub(crate) struct DelayedMessages {
     test_failures: Vec<DelayedMessage>,
     errors_and_warnings: Vec<DelayedMessage>,
+}
+
+/// Future-change warnings seen in this invocation, for showing only the first of each.
+#[derive(Default)]
+struct FutureChangeRepeats {
+    /// Probes whose first warning has been shown.
+    shown: HashSet<CompatibilityProbe>,
+    /// Occurrences and hidden repeats, by code name.
+    counts: BTreeMap<&'static str, (u64, u64)>,
+}
+
+impl FutureChangeRepeats {
+    /// Records an occurrence of `probe`, warned with `code`. Returns true if it is a repeat.
+    fn record(&mut self, probe: CompatibilityProbe, code: ErrorCode) -> bool {
+        let repeat = !self.shown.insert(probe);
+        let (total, hidden) = self.counts.entry(code.name()).or_default();
+        *total += 1;
+        if repeat {
+            *hidden += 1;
+        }
+        repeat
+    }
 }
 
 #[cfg(test)]
@@ -374,9 +392,13 @@ pub struct TuiLayer {
     /// instead of applying a blanket filter on the whole layer
     max_log_verbosity: LevelFilter,
     max_term_line_width: Option<usize>,
+    /// Whether output is styled with ANSI colors
+    colorize: bool,
     show_options: HashSet<ShowOptions>,
     command: FsCommand,
     quiet: bool,
+    /// Show every repeat of a future-change warning instead of the first one per invocation.
+    show_all_deprecations: bool,
     /// Track if we've emitted the list header yet
     list_header_emitted: AtomicBool,
     /// Whether to group skipped tests under TuiAllProcessingNodesGroup spans
@@ -437,6 +459,7 @@ impl TuiLayer {
         Self::with_output(
             max_log_verbosity,
             max_term_line_width,
+            console::colors_enabled(),
             progress,
             config,
             TuiOutput::Std,
@@ -452,6 +475,7 @@ impl TuiLayer {
     pub(crate) fn new_captured(
         max_log_verbosity: LevelFilter,
         is_interactive: bool,
+        colorize: bool,
         config: TuiConfig,
     ) -> (Self, Arc<CapturedTuiOutput>) {
         let captured = Arc::new(CapturedTuiOutput::default());
@@ -459,6 +483,7 @@ impl TuiLayer {
         let layer = Self::with_output(
             max_log_verbosity,
             None,
+            colorize,
             progress,
             config,
             TuiOutput::Captured(captured.clone()),
@@ -471,6 +496,7 @@ impl TuiLayer {
     fn with_output(
         max_log_verbosity: LevelFilter,
         max_term_line_width: Option<usize>,
+        colorize: bool,
         progress: Option<Arc<ProgressController<ProgressId>>>,
         config: TuiConfig,
         output: TuiOutput,
@@ -480,6 +506,7 @@ impl TuiLayer {
             show_options,
             command,
             quiet,
+            show_all_deprecations,
         } = config;
 
         let group_skipped_tests = progress.is_some() && max_log_verbosity < LevelFilter::DEBUG;
@@ -493,9 +520,11 @@ impl TuiLayer {
         Self {
             max_log_verbosity,
             max_term_line_width,
+            colorize,
             show_options,
             command,
             quiet,
+            show_all_deprecations,
             list_header_emitted: AtomicBool::new(false),
             group_skipped_tests,
             group_microbatches,
@@ -516,6 +545,22 @@ impl TuiLayer {
                 f(&mut *captured.stdout.lock().expect("captured stdout poisoned"))
             }
         }
+    }
+
+    /// Writes `line` and a newline to stdout, with progress bars suspended.
+    fn write_stdout_line(&self, line: &dyn fmt::Display) {
+        self.write_suspended(|| {
+            self.with_stdout(|out| writeln!(out, "{line}"))
+                .expect("failed to write to stdout");
+        });
+    }
+
+    /// Writes `line` and a newline to stderr, with progress bars suspended.
+    fn write_stderr_line(&self, line: &dyn fmt::Display) {
+        self.write_suspended(|| {
+            self.with_stderr(|out| writeln!(out, "{line}"))
+                .expect("failed to write to stderr");
+        });
     }
 
     /// Runs `f` with stderr locked for the duration of the call.
@@ -609,6 +654,9 @@ impl TelemetryConsumer for TuiLayer {
                 test_failures: Vec::new(),
                 errors_and_warnings: Vec::new(),
             });
+            if !self.show_all_deprecations {
+                data_provider.init_root(FutureChangeRepeats::default());
+            }
             if self.group_microbatches {
                 data_provider.init_root(PendingMicrobatches {
                     batches: HashMap::default(),
@@ -860,25 +908,41 @@ impl TuiLayer {
         invocation: &Invocation,
         data_provider: &mut DataProvider<'_>,
     ) {
+        // Notes on future-change repeats close the Errors and Warnings section
+        let mut future_change_notes = Vec::new();
+        data_provider.with_root::<FutureChangeRepeats>(|repeats| {
+            future_change_notes = repeats
+                .counts
+                .iter()
+                .filter(|(_, (_, hidden))| *hidden > 0)
+                .map(|(code_name, (total, hidden))| {
+                    FutureChangeLine {
+                        code_name,
+                        total: *total,
+                        hidden: *hidden,
+                        colorize: self.colorize,
+                    }
+                    .to_string()
+                })
+                .collect();
+        });
+
         // Print any delayed messages first
         data_provider.with_root::<DelayedMessages>(|delayed_messages| {
             self.with_stdout(|stdout| {
                 self.with_stderr(|stderr| {
                     // Print test failures with header if any exist (historically on stdout)
                     if !delayed_messages.test_failures.is_empty() {
-                        stdout
-                            .write_all(
-                                format!(
-                                    "\n{}\n",
-                                    format_delimiter(
-                                        " Test Failures ",
-                                        self.max_term_line_width,
-                                        true
-                                    )
-                                )
-                                .as_bytes(),
+                        write!(
+                            stdout,
+                            "\n{}\n",
+                            Delimiter::new(
+                                " Test Failures ",
+                                self.max_term_line_width,
+                                self.colorize
                             )
-                            .expect("failed to write to stdout");
+                        )
+                        .expect("failed to write to stdout");
                         for msg in &delayed_messages.test_failures {
                             stdout
                                 .write_all(msg.message.as_bytes())
@@ -887,31 +951,34 @@ impl TuiLayer {
                     }
 
                     // Print errors and warnings with header if any exist (on stderr)
-                    if !delayed_messages.errors_and_warnings.is_empty() {
-                        stderr
-                            .write_all(
-                                format!(
-                                    "\n{}\n",
-                                    format_delimiter(
-                                        " Errors and Warnings ",
-                                        self.max_term_line_width,
-                                        true
-                                    )
-                                )
-                                .as_bytes(),
+                    if !delayed_messages.errors_and_warnings.is_empty()
+                        || !future_change_notes.is_empty()
+                    {
+                        write!(
+                            stderr,
+                            "\n{}\n",
+                            Delimiter::new(
+                                " Errors and Warnings ",
+                                self.max_term_line_width,
+                                self.colorize
                             )
-                            .expect("failed to write to stderr");
+                        )
+                        .expect("failed to write to stderr");
 
                         for msg in &delayed_messages.errors_and_warnings {
                             stderr
                                 .write_all(msg.message.as_bytes())
                                 .expect("failed to write to stderr");
                         }
+                        for note in &future_change_notes {
+                            writeln!(stderr, "{note}").expect("failed to write to stderr");
+                        }
                     }
 
                     // Flush streams if we had any messages
                     if !delayed_messages.test_failures.is_empty()
                         || !delayed_messages.errors_and_warnings.is_empty()
+                        || !future_change_notes.is_empty()
                     {
                         stderr.flush().expect("failed to write to stderr");
                         stdout.flush().expect("failed to write to stdout");
@@ -930,20 +997,18 @@ impl TuiLayer {
         invocation: &Invocation,
         data_provider: &DataProvider<'_>,
     ) {
-        let formatted = format_invocation_summary(
+        let summary = InvocationSummary::new(
             span,
             invocation,
             data_provider,
-            true,
+            self.colorize,
             self.max_term_line_width,
         );
 
         self.with_stdout(|stdout| {
             // Per pre-migration logic, autofix line were always printed ignoring show options
-            if let Some(line) = formatted.autofix_line() {
-                stdout
-                    .write_fmt(format_args!("{}\n", line))
-                    .expect("failed to write to stdout");
+            if let Some(line) = summary.autofix_line() {
+                writeln!(stdout, "{line}").expect("failed to write to stdout");
             }
 
             if !self.show_options.contains(&ShowOptions::Completed)
@@ -952,12 +1017,8 @@ impl TuiLayer {
                 return;
             }
 
-            if let Some(summary_lines) = formatted.summary_lines() {
-                for line in summary_lines {
-                    stdout
-                        .write_fmt(format_args!("{}\n", line))
-                        .expect("failed to write to stdout");
-                }
+            if let Some(summary_lines) = summary.summary_lines() {
+                writeln!(stdout, "{summary_lines}").expect("failed to write to stdout");
             }
         });
     }
@@ -969,7 +1030,8 @@ impl TuiLayer {
 
         let total = phase.node_count_total.unwrap_or_default();
         let phase_enum = phase.phase();
-        let Some(progress_text) = get_phase_progress_text(phase_enum) else {
+        let Some(progress_text) = get_phase_progress_text(phase_enum).map(|text| text.to_string())
+        else {
             // Do not show progress for phases without defined progress text
             return;
         };
@@ -1123,11 +1185,7 @@ impl TuiLayer {
             return;
         }
 
-        let formatted = format_thread_pool_wait_start();
-        self.write_suspended(|| {
-            self.with_stdout(|out| out.write_all(format!("{}\n", formatted).as_bytes()))
-                .expect("failed to write to stdout");
-        });
+        self.write_stdout_line(&THREAD_POOL_WAIT_START);
     }
 
     fn handle_thread_pool_wait_end(
@@ -1150,11 +1208,8 @@ impl TuiLayer {
             .end_time_unix_nano
             .duration_since(span.start_time_unix_nano)
             .unwrap_or_default();
-        let formatted = format_thread_pool_wait_end(duration);
-        self.write_suspended(|| {
-            self.with_stdout(|out| out.write_all(format!("{}\n", formatted).as_bytes()))
-                .expect("failed to write to stdout");
-        });
+        let formatted = ThreadPoolWaitEnd(duration);
+        self.write_stdout_line(&formatted);
     }
 
     fn handle_node_evaluated_start(&self, span: &SpanStartInfo, ne: &NodeEvaluated) {
@@ -1191,11 +1246,11 @@ impl TuiLayer {
                     || phase == ExecutionPhase::Run
                     || phase == ExecutionPhase::Compare)
             {
-                let formatted = format_node_evaluated_start_legacy(ne, self.command);
-                self.write_suspended(|| {
-                    self.with_stdout(|out| out.write_all(format!("{}\n", formatted).as_bytes()))
-                        .expect("failed to write to stdout");
-                });
+                let formatted = NodeEvaluatedStartLegacy {
+                    node: ne,
+                    command: self.command,
+                };
+                self.write_stdout_line(&formatted);
 
                 // Avoid double-printing in text mode if this is also debug level
                 return;
@@ -1215,11 +1270,11 @@ impl TuiLayer {
 
         // Print line in debug mode using new format (also used by file log & json)
         if span.severity_number <= self.max_log_verbosity {
-            let formatted = format_node_evaluated_start(ne, true);
-            self.write_suspended(|| {
-                self.with_stdout(|out| out.write_all(format!("{}\n", formatted).as_bytes()))
-                    .expect("failed to write to stdout");
-            });
+            let formatted = NodeEvaluatedStart {
+                node: ne,
+                colorize: self.colorize,
+            };
+            self.write_stdout_line(&formatted);
         }
     }
 
@@ -1265,11 +1320,12 @@ impl TuiLayer {
             .end_time_unix_nano
             .duration_since(span.start_time_unix_nano)
             .unwrap_or_default();
-        let formatted = format_node_evaluated_end(ne, duration, true);
-        self.write_suspended(|| {
-            self.with_stdout(|out| out.write_all(format!("{}\n", formatted).as_bytes()))
-                .expect("failed to write to stdout");
-        });
+        let formatted = NodeEvaluatedEnd {
+            node: ne,
+            duration,
+            colorize: self.colorize,
+        };
+        self.write_stdout_line(&formatted);
     }
 
     fn handle_microbatch_evaluated_start(&self, batch: &MicrobatchEvaluated) {
@@ -1283,11 +1339,11 @@ impl TuiLayer {
             return;
         }
 
-        let formatted = format_microbatch_evaluated_start(batch, true);
-        self.write_suspended(|| {
-            self.with_stdout(|out| out.write_all(format!("{}\n", formatted).as_bytes()))
-                .expect("failed to write to stdout");
-        });
+        let formatted = MicrobatchEvaluatedStart {
+            batch,
+            colorize: self.colorize,
+        };
+        self.write_stdout_line(&formatted);
     }
 
     fn handle_microbatch_evaluated_end(
@@ -1318,20 +1374,20 @@ impl TuiLayer {
             return;
         }
 
-        let formatted = format_microbatch_evaluated_end(batch, duration, true);
-        self.write_suspended(|| {
-            self.with_stdout(|out| out.write_all(format!("{}\n", formatted).as_bytes()))
-                .expect("failed to write to stdout");
-        });
+        let formatted = MicrobatchEvaluatedEnd {
+            batch,
+            duration,
+            colorize: self.colorize,
+        };
+        self.write_stdout_line(&formatted);
     }
 
     fn handle_query_executed(&self, _span: &SpanEndInfo, query_data: &QueryExecuted) {
         let node_id = query_data.unique_id.as_deref().unwrap_or("unknown");
-        let formatted_query = format!("Query executed on node {}:\n{}", node_id, query_data.sql);
-        self.write_suspended(|| {
-            self.with_stdout(|out| out.write_all(format!("{}\n", formatted_query).as_bytes()))
-                .expect("failed to write to stdout");
-        });
+        self.write_stdout_line(&format_args!(
+            "Query executed on node {}:\n{}",
+            node_id, query_data.sql
+        ));
     }
 
     fn handle_node_processed(
@@ -1390,7 +1446,7 @@ impl TuiLayer {
             && node.node_outcome() == NodeOutcome::Success
         {
             // This is a failed test, capture its summary diff table to be printed on stdout later
-            if let Some(test_failure_message) = format_test_failure(node, true) {
+            if let Some(test_failure_message) = TestFailure::new(node, self.colorize) {
                 data_provider.with_root_mut::<DelayedMessages>(|delayed_messages| {
                     delayed_messages.test_failures.push(DelayedMessage {
                         message: format!("{}\n", test_failure_message),
@@ -1455,27 +1511,39 @@ impl TuiLayer {
             return;
         }
 
-        // Format the output line using the formatter with color enabled
-        let mut output = format_node_processed_end(node, duration, true);
+        let mut batches = pending_microbatches.unwrap_or_default();
+        batches.sort_by_key(|(batch, _)| batch.batch_index);
 
-        // A microbatch model lists its batches as tree branches under its result line.
-        if let Some(mut batches) = pending_microbatches {
-            batches.sort_by_key(|(batch, _)| batch.batch_index);
-            for (index, (batch, duration)) in batches.iter().enumerate() {
-                output.push('\n');
-                output.push_str(&format_microbatch_member(
-                    batch,
-                    *duration,
-                    index + 1 == batches.len(),
-                    true,
-                ));
-            }
-        }
-
-        // Print to stdout with progress bars suspended
+        // Print to stdout with progress bars suspended, as one locked write so concurrently
+        // completing nodes cannot interleave lines into it
         self.write_suspended(|| {
-            self.with_stdout(|out| out.write_all(format!("{}\n", output).as_bytes()))
-                .expect("failed to write to stdout");
+            self.with_stdout(|out| {
+                writeln!(
+                    out,
+                    "{}",
+                    NodeProcessedEnd {
+                        node,
+                        duration,
+                        colorize: self.colorize,
+                    }
+                )?;
+
+                // A microbatch model lists its batches as tree branches under its result line.
+                for (index, (batch, duration)) in batches.iter().enumerate() {
+                    writeln!(
+                        out,
+                        "{}",
+                        MicrobatchMember {
+                            batch,
+                            duration: *duration,
+                            is_last: index + 1 == batches.len(),
+                            colorize: self.colorize,
+                        }
+                    )?;
+                }
+                io::Result::Ok(())
+            })
+            .expect("failed to write to stdout");
         });
     }
 
@@ -1512,38 +1580,41 @@ impl TuiLayer {
             .max()
             .unwrap_or_default();
 
-        // Written as one atomic stdout write, so concurrently completing nodes cannot
-        // interleave lines into the block.
-        let mut block = format!(
-            "{}\n",
-            format_aggregated_test_group_header(
-                &group.macro_name,
-                &group.attached_node,
-                members.len(),
-                worst_outcome,
-                max_duration,
-                // Every member shares the one invocation-wide denominator.
-                members.first().and_then(|(node, _)| node.node_count_total),
-                // A group attaches to one model, so its members share an adapter.
-                members
-                    .first()
-                    .and_then(|(node, _)| node.adapter.as_deref()),
-                true,
-            )
-        );
-        for (index, (node, _)) in members.iter().enumerate() {
-            block.push_str(&format_aggregated_test_group_member(
-                node,
-                index + 1 == members.len(),
-                true,
-            ));
-            block.push('\n');
-        }
+        let header = AggregatedTestGroupHeader {
+            macro_name: &group.macro_name,
+            attached_node: &group.attached_node,
+            member_count: members.len(),
+            worst_outcome,
+            duration: max_duration,
+            // Every member shares the one invocation-wide denominator.
+            node_count_total: members.first().and_then(|(node, _)| node.node_count_total),
+            // A group attaches to one model, so its members share an adapter.
+            adapter: members
+                .first()
+                .and_then(|(node, _)| node.adapter.as_deref()),
+            colorize: self.colorize,
+        };
 
-        // Emit after the span lock has been released to avoid possible deadlocks
+        // Written under one stdout lock, so concurrently completing nodes cannot interleave
+        // lines into the block. Emitted after the span lock has been released to avoid
+        // possible deadlocks.
         self.write_suspended(|| {
-            self.with_stdout(|out| out.write_all(block.as_bytes()))
-                .expect("failed to write to stdout");
+            self.with_stdout(|out| {
+                writeln!(out, "{header}")?;
+                for (index, (node, _)) in members.iter().enumerate() {
+                    writeln!(
+                        out,
+                        "{}",
+                        AggregatedTestGroupMember {
+                            node,
+                            is_last: index + 1 == members.len(),
+                            colorize: self.colorize,
+                        }
+                    )?;
+                }
+                io::Result::Ok(())
+            })
+            .expect("failed to write to stdout");
         });
     }
 
@@ -1553,50 +1624,79 @@ impl TuiLayer {
         log_record: &LogRecordInfo,
         data_provider: &mut DataProvider<'_>,
     ) {
-        // Format the message
-        let formatted_message = format_log_message(
-            log_msg
-                .code
-                .and_then(|c| u16::try_from(c).ok())
-                .and_then(|c| ErrorCode::try_from(c).ok()),
-            &log_record.body,
-            log_record.severity_number,
-            true,
-            true,
-        );
+        let error_code = log_msg
+            .code
+            .and_then(|c| u16::try_from(c).ok())
+            .and_then(|c| ErrorCode::try_from(c).ok());
+        if let Some(code) = error_code
+            && self.is_future_change_repeat(code, log_record, data_provider)
+        {
+            // Counted in the invocation summary; the file log keeps every occurrence.
+            return;
+        }
+
+        let message = LogMessageLine {
+            error_code,
+            message: &log_record.body,
+            severity: log_record.severity_number,
+            colorize: self.colorize,
+            include_level_prefix: true,
+        };
 
         // Delay errors and warnings to be printed at the end
         if log_record.severity_number > SeverityNumber::Info {
             data_provider.with_root_mut::<DelayedMessages>(|delayed_messages| {
                 delayed_messages.errors_and_warnings.push(DelayedMessage {
-                    message: format!("{}\n", formatted_message),
+                    message: format!("{message}\n"),
                 });
             });
         } else {
             // Print info and below messages immediately
-            self.write_suspended(|| {
-                self.with_stdout(|out| {
-                    out.write_all(format!("{}\n", formatted_message).as_bytes())
-                })
-                .expect("failed to write to stdout");
-            });
+            self.write_stdout_line(&message);
         }
     }
 
-    fn handle_state_modified_diff(&self, state_mod_diff: &StateModifiedDiff) {
-        let formatted = format_state_modified_diff_lines(state_mod_diff).join("\n");
-        self.write_suspended(|| {
-            self.with_stdout(|out| out.write_all(format!("{formatted}\n").as_bytes()))
-                .expect("failed to write to stdout");
+    /// Whether `log_record` repeats a future-change warning already shown in this invocation.
+    ///
+    /// A repeat is the same probe: the same [`NamedProbe`](super::super::dbt_metrics::NamedProbe)
+    /// for [`ErrorCode::FutureIncompatibility`], the same code otherwise. Codes with
+    /// [`Delivery::Every`], and warnings promoted to errors, are never repeats.
+    fn is_future_change_repeat(
+        &self,
+        code: ErrorCode,
+        log_record: &LogRecordInfo,
+        data_provider: &mut DataProvider<'_>,
+    ) -> bool {
+        if self.show_all_deprecations || log_record.severity_number != SeverityNumber::Warn {
+            return false;
+        }
+        let probe = match log_record
+            .attributes
+            .downcast_ref::<FutureIncompatibilityLog>()
+        {
+            Some(future_incompatibility) => future_incompatibility.probe(),
+            None => match code.future_error() {
+                Some(FutureError {
+                    delivery: Delivery::FirstThenSummary,
+                    ..
+                }) => CompatibilityProbe::ErrorCode(code),
+                _ => return false,
+            },
+        };
+        let mut repeat = false;
+        data_provider.with_root_mut::<FutureChangeRepeats>(|repeats| {
+            repeat = repeats.record(probe, code);
         });
+        repeat
+    }
+
+    fn handle_state_modified_diff(&self, state_mod_diff: &StateModifiedDiff) {
+        self.write_stdout_line(&StateModifiedDiffLines(state_mod_diff));
     }
 
     fn handle_user_log_message(&self, log_record: &LogRecordInfo) {
         // Print user log messages immediately to stdout
-        self.write_suspended(|| {
-            self.with_stdout(|out| out.write_all(format!("{}\n", log_record.body).as_bytes()))
-                .expect("failed to write to stdout");
-        });
+        self.write_stdout_line(&log_record.body);
     }
 
     fn handle_stdout_message(&self, log_record: &LogRecordInfo) {
@@ -1618,30 +1718,27 @@ impl TuiLayer {
                     if !self.show_options.is_empty()
                         && !self.list_header_emitted.swap(true, Ordering::Relaxed)
                     {
-                        let header =
-                            format_delimiter(SELECTED_NODES_TITLE, self.max_term_line_width, true);
-                        stdout
-                            .write_all(format!("{}\n", header).as_bytes())
-                            .expect("failed to write header to stdout");
+                        writeln!(
+                            stdout,
+                            "{}",
+                            Delimiter::new(
+                                SELECTED_NODES_TITLE,
+                                self.max_term_line_width,
+                                self.colorize
+                            )
+                        )
+                        .expect("failed to write header to stdout");
                     }
 
                     // Print list item content (always — result payload survives quiet)
-                    stdout
-                        .write_all(format!("{}\n", list_item.content).as_bytes())
-                        .expect("failed to write to stdout");
+                    writeln!(stdout, "{}", list_item.content).expect("failed to write to stdout");
                 });
             });
         }
     }
 
     fn handle_show_data_output(&self, show_data: &ShowDataOutput) {
-        self.write_suspended(|| {
-            self.with_stdout(|stdout| {
-                stdout
-                    .write_all(format!("{}\n", show_data.content).as_bytes())
-                    .expect("failed to write show data to stdout");
-            });
-        });
+        self.write_stdout_line(&show_data.content);
     }
 
     fn handle_show_result(&self, show_result: &ShowResult) {
@@ -1651,15 +1748,11 @@ impl TuiLayer {
                     // Quiet mode: suppress decorative title, emit raw content only.
                     // Mirrors dbt-core's ShowNode quiet=True behaviour where the
                     // "Previewing node 'X':" header is dropped but the data is kept.
-                    stdout
-                        .write_all(format!("{}\n", show_result.content).as_bytes())
+                    writeln!(stdout, "{}", show_result.content)
                         .expect("failed to write show result to stdout");
                 } else {
-                    let colored_title = BLUE.apply_to(&show_result.title);
-                    stdout
-                        .write_all(
-                            format!("\n{}\n{}\n", colored_title, show_result.content).as_bytes(),
-                        )
+                    let colored_title = MaybeColored::new(&BLUE, &show_result.title, self.colorize);
+                    write!(stdout, "\n{}\n{}\n", colored_title, show_result.content)
                         .expect("failed to write show result to stdout");
                 }
             });
@@ -1668,12 +1761,7 @@ impl TuiLayer {
 
     fn handle_compiled_code_inline(&self, compiled_code: &CompiledCodeInline) {
         if self.quiet {
-            self.write_suspended(|| {
-                self.with_stdout(|out| {
-                    out.write_all(format!("{}\n", compiled_code.sql).as_bytes())
-                })
-                .expect("failed to write compiled code to stdout");
-            });
+            self.write_stdout_line(&compiled_code.sql);
             return;
         }
 
@@ -1687,11 +1775,11 @@ impl TuiLayer {
             return;
         }
 
-        let formatted = format_compiled_inline_code(compiled_code, true);
-        self.write_suspended(|| {
-            self.with_stdout(|out| out.write_all(format!("{}\n", formatted).as_bytes()))
-                .expect("failed to write compiled code to stdout");
-        });
+        let formatted = CompiledInlineCode {
+            compiled_code,
+            colorize: self.colorize,
+        };
+        self.write_stdout_line(&formatted);
     }
 
     fn handle_compiled_code(&self, compiled_code: &CompiledCode) {
@@ -1703,28 +1791,25 @@ impl TuiLayer {
             return;
         }
 
-        let formatted = format_compiled_code(compiled_code, true);
-        self.write_suspended(|| {
-            self.with_stdout(|out| out.write_all(format!("{}\n", formatted).as_bytes()))
-                .expect("failed to write compiled code to stdout");
-        });
+        let formatted = CompiledCodeLine {
+            compiled_code,
+            colorize: self.colorize,
+        };
+        self.write_stdout_line(&formatted);
     }
 
     fn handle_stderr_message(&self, stderr_message: &StderrMessage, log_record: &LogRecordInfo) {
         // Format the message
-        let formatted_message = format_log_message(
-            stderr_message.error_code(),
-            &log_record.body,
-            log_record.severity_number,
-            true,
-            true,
-        );
+        let formatted_message = LogMessageLine {
+            error_code: stderr_message.error_code(),
+            message: &log_record.body,
+            severity: log_record.severity_number,
+            colorize: self.colorize,
+            include_level_prefix: true,
+        };
 
         // Print user log messages immediately to stdout
-        self.write_suspended(|| {
-            self.with_stderr(|out| out.write_all(format!("{formatted_message}\n").as_bytes()))
-                .expect("failed to write to stderr");
-        });
+        self.write_stderr_line(&formatted_message);
     }
 
     fn handle_progress_message(
@@ -1736,11 +1821,13 @@ impl TuiLayer {
             return;
         }
 
-        let formatted = format_progress_message(progress_msg, severity_number, true, true);
-        self.write_suspended(|| {
-            self.with_stdout(|out| out.write_all(format!("{}\n", formatted).as_bytes()))
-                .expect("failed to write to stdout");
-        });
+        let formatted = ProgressMessageLine {
+            progress: progress_msg,
+            severity: severity_number,
+            pad_action: true,
+            colorize: self.colorize,
+        };
+        self.write_stdout_line(&formatted);
     }
 
     fn handle_asset_parsed_start(&self, _span: &SpanStartInfo, asset: &AssetParsed) {
@@ -1762,11 +1849,11 @@ impl TuiLayer {
             return;
         }
 
-        let formatted = format_asset_parsed_start(asset, true);
-        self.write_suspended(|| {
-            self.with_stdout(|out| out.write_all(format!("{}\n", formatted).as_bytes()))
-                .expect("failed to write to stdout");
-        });
+        let formatted = AssetParsedStart {
+            asset,
+            colorize: self.colorize,
+        };
+        self.write_stdout_line(&formatted);
     }
 
     fn handle_asset_parsed_end(&self, _span: &SpanEndInfo, asset: &AssetParsed) {
@@ -1799,7 +1886,7 @@ impl TuiLayer {
             progress.start_bar(
                 ProgressId::DepsInstall,
                 ev.package_count,
-                INSTALLING_ACTION.clone(),
+                INSTALLING_ACTION.to_string(),
             );
 
             // In interactive non-debug mode, skip the "Installing packages" message
@@ -1810,13 +1897,13 @@ impl TuiLayer {
         }
 
         // In non-interactive mode (or debug mode) - print static message when starting
-        let formatted_message = format_package_install_start(ev, true);
+        let formatted_message = PackageInstallStart {
+            event: ev,
+            colorize: self.colorize,
+        };
 
         // Print immediately to stdout
-        self.write_suspended(|| {
-            self.with_stdout(|out| out.write_all(format!("{}\n", formatted_message).as_bytes()))
-                .expect("failed to write to stdout");
-        });
+        self.write_stdout_line(&formatted_message);
     }
 
     fn handle_deps_all_packages_installing_end(&self, ev: &DepsAllPackagesInstalled) {
@@ -1833,13 +1920,13 @@ impl TuiLayer {
         }
 
         // Regardless of the mode - print static message when finished
-        let formatted_message = format_package_install_end(ev, true);
+        let formatted_message = PackageInstallEnd {
+            event: ev,
+            colorize: self.colorize,
+        };
 
         // Print immediately to stdout
-        self.write_suspended(|| {
-            self.with_stdout(|out| out.write_all(format!("{}\n", formatted_message).as_bytes()))
-                .expect("failed to write to stdout");
-        });
+        self.write_stdout_line(&formatted_message);
     }
 
     fn handle_dep_installed_start(&self, pkg: &DepsPackageInstalled) {
@@ -1872,13 +1959,13 @@ impl TuiLayer {
         }
 
         // In non-interactive mode (or debug mode) - print static message
-        let formatted_message = format_package_installed_start(pkg, true);
+        let formatted_message = PackageInstalledStart {
+            pkg,
+            colorize: self.colorize,
+        };
 
         // Print immediately to stdout
-        self.write_suspended(|| {
-            self.with_stdout(|out| out.write_all(format!("{}\n", formatted_message).as_bytes()))
-                .expect("failed to write to stdout");
-        });
+        self.write_stdout_line(&formatted_message);
     }
 
     fn handle_dep_installed_end(&self, span: &SpanEndInfo, pkg: &DepsPackageInstalled) {
@@ -1917,18 +2004,15 @@ impl TuiLayer {
             }
         }
 
-        // Format with shared formatter (colorize = true for TUI)
-        let formatted_message = format_package_installed_end(
+        // Format with shared formatter
+        let formatted_message = PackageInstalledEnd {
             pkg,
-            span.status.as_ref().map_or(StatusCode::Unset, |s| s.code),
-            true,
-        );
+            status: span.status.as_ref().map_or(StatusCode::Unset, |s| s.code),
+            colorize: self.colorize,
+        };
 
         // Print immediately to stdout
-        self.write_suspended(|| {
-            self.with_stdout(|out| out.write_all(format!("{}\n", formatted_message).as_bytes()))
-                .expect("failed to write to stdout");
-        });
+        self.write_stdout_line(&formatted_message);
     }
 
     fn handle_hook_processed_start(&self, span: &SpanStartInfo, hook: &HookProcessed) {
@@ -1952,12 +2036,12 @@ impl TuiLayer {
             return;
         }
 
-        let formatted_message = format_hook_processed_start(hook, true);
+        let formatted_message = HookProcessedStart {
+            hook,
+            colorize: self.colorize,
+        };
 
-        self.write_suspended(|| {
-            self.with_stdout(|out| out.write_all(format!("{formatted_message}\n").as_bytes()))
-                .expect("failed to write to stdout");
-        });
+        self.write_stdout_line(&formatted_message);
     }
 
     fn handle_hook_processed_end(&self, span: &SpanEndInfo, hook: &HookProcessed) {
@@ -1997,12 +2081,13 @@ impl TuiLayer {
             .duration_since(span.start_time_unix_nano)
             .unwrap_or_default();
 
-        let formatted_message = format_hook_processed_end(hook, duration, true);
+        let formatted_message = HookProcessedEnd {
+            hook,
+            duration,
+            colorize: self.colorize,
+        };
 
-        self.write_suspended(|| {
-            self.with_stdout(|out| out.write_all(format!("{}\n", formatted_message).as_bytes()))
-                .expect("failed to write to stdout");
-        });
+        self.write_stdout_line(&formatted_message);
     }
 
     fn handle_package_add_start(&self, pkg: &DepsAddPackage) {
@@ -2013,14 +2098,14 @@ impl TuiLayer {
             return;
         }
 
-        // Format with shared formatter (colorize = true for TUI)
-        let formatted_message = format_package_add_start(pkg, true);
+        // Format with shared formatter
+        let formatted_message = PackageAddStart {
+            pkg,
+            colorize: self.colorize,
+        };
 
         // Print immediately to stdout
-        self.write_suspended(|| {
-            self.with_stdout(|out| out.write_all(format!("{}\n", formatted_message).as_bytes()))
-                .expect("failed to write to stdout");
-        });
+        self.write_stdout_line(&formatted_message);
     }
 
     fn handle_package_add_end(&self, span: &SpanEndInfo, pkg: &DepsAddPackage) {
@@ -2031,18 +2116,15 @@ impl TuiLayer {
             return;
         }
 
-        // Format with shared formatter (colorize = true for TUI)
-        let formatted_message = format_package_add_end(
+        // Format with shared formatter
+        let formatted_message = PackageAddEnd {
             pkg,
-            span.status.as_ref().map_or(StatusCode::Unset, |s| s.code),
-            true,
-        );
+            status: span.status.as_ref().map_or(StatusCode::Unset, |s| s.code),
+            colorize: self.colorize,
+        };
 
         // Print immediately to stdout
-        self.write_suspended(|| {
-            self.with_stdout(|out| out.write_all(format!("{}\n", formatted_message).as_bytes()))
-                .expect("failed to write to stdout");
-        });
+        self.write_stdout_line(&formatted_message);
     }
 
     fn handle_generic_op_start(&self, span: &SpanStartInfo, op: &GenericOpExecuted) {
@@ -2055,7 +2137,7 @@ impl TuiLayer {
 
             // Create action text for the progress bar or spinner
             let progress_text =
-                right_align_action(capitalize_first_letter(op.display_action.as_str()).into());
+                RightAligned(CapitalizedFirst(op.display_action.as_str())).to_string();
             let is_bar = op.item_count_total.is_some();
 
             // Track whether this op uses a bar or spinner for later lookups.
@@ -2074,11 +2156,11 @@ impl TuiLayer {
             match op.item_count_total {
                 Some(total) => {
                     // Start a progress bar if we have a total count
-                    progress.start_bar(progress_id, total, progress_text.to_string());
+                    progress.start_bar(progress_id, total, progress_text);
                 }
                 None => {
                     // Start a spinner if we don't have a total count
-                    progress.start_spinner(progress_id, progress_text.to_string());
+                    progress.start_spinner(progress_id, progress_text);
                 }
             };
 
@@ -2098,12 +2180,12 @@ impl TuiLayer {
             return;
         }
 
-        let formatted_message = format_generic_op_start(op, true);
+        let formatted_message = GenericOpStart {
+            op,
+            colorize: self.colorize,
+        };
 
-        self.write_suspended(|| {
-            self.with_stdout(|out| out.write_all(format!("{}\n", formatted_message).as_bytes()))
-                .expect("failed to write to stdout");
-        });
+        self.write_stdout_line(&formatted_message);
     }
 
     fn handle_generic_op_end(&self, span: &SpanEndInfo, op: &GenericOpExecuted) {
@@ -2150,14 +2232,16 @@ impl TuiLayer {
             .duration_since(span.start_time_unix_nano)
             .unwrap_or_default();
 
-        // Format with shared formatter (colorize = true for TUI)
-        let formatted_message = format_generic_op_end(op, duration, span.status.as_ref(), true);
+        // Format with shared formatter
+        let formatted_message = GenericOpEnd {
+            op,
+            duration,
+            status: span.status.as_ref(),
+            colorize: self.colorize,
+        };
 
         // Print conclusion line
-        self.write_suspended(|| {
-            self.with_stdout(|out| out.write_all(format!("{}\n", formatted_message).as_bytes()))
-                .expect("failed to write to stdout");
-        });
+        self.write_stdout_line(&formatted_message);
     }
 
     fn handle_generic_op_item_start(&self, span: &SpanStartInfo, item: &GenericOpItemProcessed) {
@@ -2186,12 +2270,9 @@ impl TuiLayer {
             return;
         }
 
-        let formatted_message = format_generic_op_item_start(item);
+        let formatted_message = GenericOpItemStart(item);
 
-        self.write_suspended(|| {
-            self.with_stdout(|out| out.write_all(format!("{}\n", formatted_message).as_bytes()))
-                .expect("failed to write to stdout");
-        });
+        self.write_stdout_line(&formatted_message);
     }
 
     fn handle_generic_op_item_end(&self, span: &SpanEndInfo, item: &GenericOpItemProcessed) {
@@ -2228,9 +2309,7 @@ impl TuiLayer {
         // gate.
         let item_visible = if matches!(
             self.command,
-            FsCommand::Extension("lint")
-                | FsCommand::Extension("format")
-                | FsCommand::Extension("format-legacy")
+            FsCommand::Extension("lint") | FsCommand::Extension("format")
         ) {
             self.show_options.contains(&ShowOptions::All)
         } else {
@@ -2251,13 +2330,14 @@ impl TuiLayer {
             .duration_since(span.start_time_unix_nano)
             .unwrap_or_default();
 
-        let formatted_message =
-            format_generic_op_item_end(item, duration, span.status.as_ref(), true);
+        let formatted_message = GenericOpItemEnd {
+            item,
+            duration,
+            status: span.status.as_ref(),
+            colorize: self.colorize,
+        };
 
-        self.write_suspended(|| {
-            self.with_stdout(|out| out.write_all(format!("{}\n", formatted_message).as_bytes()))
-                .expect("failed to write to stdout");
-        });
+        self.write_stdout_line(&formatted_message);
     }
 }
 

@@ -257,6 +257,10 @@ pub(super) struct Terminal {
     pub(super) command: FsCommand,
     pub(super) show: &'static [ShowOptions],
     pub(super) quiet: bool,
+    /// Whether output is styled with ANSI colors
+    pub(super) colorize: bool,
+    /// `--show-all-deprecations`
+    pub(super) show_all_deprecations: bool,
 }
 
 impl Terminal {
@@ -267,16 +271,17 @@ impl Terminal {
         command: FsCommand::Build,
         show: &[ShowOptions::Progress, ShowOptions::Completed],
         quiet: false,
+        colorize: true,
+        show_all_deprecations: false,
     };
 
-    /// What `dbt build` prints by default when stdout is not a terminal, or with
-    /// `--log-format text`.
+    /// What `dbt build --log-format text` prints on a terminal.
     pub(super) const TEXT: Self = Self {
         interactive: false,
         ..Self::INTERACTIVE
     };
 
-    /// `dbt build --debug --show all` without a terminal.
+    /// `dbt build --log-format text --debug --show all` on a terminal.
     pub(super) const DEBUG: Self = Self {
         interactive: false,
         level: LevelFilter::DEBUG,
@@ -319,9 +324,25 @@ pub(super) const TERMINAL_QUIET: Sink = Sink::Terminal(
         ..Terminal::INTERACTIVE
     },
 );
-/// Plain text output, as without a terminal or with `--log-format text`.
+/// `NO_COLOR` on a terminal.
+pub(super) const TERMINAL_NO_COLOR: Sink = Sink::Terminal(
+    "terminal NO_COLOR",
+    Terminal {
+        colorize: false,
+        ..Terminal::INTERACTIVE
+    },
+);
+/// `--show-all-deprecations` on a terminal.
+pub(super) const TERMINAL_SHOW_ALL_DEPRECATIONS: Sink = Sink::Terminal(
+    "terminal --show-all-deprecations",
+    Terminal {
+        show_all_deprecations: true,
+        ..Terminal::INTERACTIVE
+    },
+);
+/// `--log-format text` on a terminal.
 pub(super) const TEXT: Sink = Sink::Terminal("text", Terminal::TEXT);
-/// Plain text output with `--debug --show all`.
+/// `--log-format text --debug --show all` on a terminal.
 pub(super) const TEXT_DEBUG: Sink = Sink::Terminal("text --debug --show all", Terminal::DEBUG);
 
 /// What a sink wrote for a case.
@@ -361,18 +382,15 @@ impl Sink {
                 }
             }
             Self::Terminal(_, setup) => {
-                // Colors are forced on, as on a terminal. This flips a process-wide
-                // `console` setting, which only the output tests rely on.
-                console::set_colors_enabled(true);
-                console::set_colors_enabled_stderr(true);
-
                 let (layer, captured) = TuiLayer::new_captured(
                     setup.level,
                     setup.interactive,
+                    setup.colorize,
                     TuiConfig {
                         show_options: setup.show.iter().copied().collect::<HashSet<_>>(),
                         command: setup.command,
                         quiet: setup.quiet,
+                        show_all_deprecations: setup.show_all_deprecations,
                     },
                 );
                 let dropped = run(Box::new(layer), root, emitted, scenario);

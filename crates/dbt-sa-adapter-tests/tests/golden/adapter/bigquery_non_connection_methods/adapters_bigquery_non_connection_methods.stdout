@@ -1,0 +1,55 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/list_partition_by.sql
+   Parsing models/none_partition_by.sql
+   Parsing models/partition_by_insert_overwrite_strat.sql
+   Parsing models/partition_by_range.sql
+   Parsing models/string_partition_by.sql
+   Parsing models/view_options.sql
+None
+None
+None
+ Rendering models/view_options.sql
+{'expiration_timestamp': 'TIMESTAMP_ADD(CURRENT_TIMESTAMP(), INTERVAL 7 hour)', 'labels': [('label1', '1'), ('field_1', 'updated_at'), ('field', 'created_at_from_meta')]}
+{'labels': [('label1', '1'), ('field_1', 'updated_at'), ('field', 'created_at_from_meta')], 'expiration_timestamp': 'TIMESTAMP_ADD(CURRENT_TIMESTAMP(), INTERVAL 12 hour)'}
+{'expiration_timestamp': 'TIMESTAMP_ADD(CURRENT_TIMESTAMP(), INTERVAL 7 hour)', 'labels': [('label1', '1'), ('field_1', 'updated_at'), ('field', 'created_at_from_meta')]}
+ Rendering models/string_partition_by.sql
+raw string partition_by: calendar_date
+    Failed model adapters_bigquery_non_connection_methods.string_partition_by (table) [2 of 6 in duration]
+ Rendering models/partition_by_range.sql
+raw object partition_by: {'field': 'id', 'data_type': 'int64', 'range': {'start': 0, 'end': 100, 'interval': 10}, 'copy_partitions': False}
+parsed object partition_by: {'field': 'id', 'data_type': 'int64', 'time_ingestion_partitioning': False, 'copy_partitions': False, 'granularity': undefined, 'range': {'start': 0, 'end': 100, 'interval': 10}}
+=== BigqueryPartitionConfig Values ===
+field: id
+data_type: int64
+granularity:
+time_ingestion_partitioning: False
+copy_partitions: False
+=== BigqueryPartitionConfig Methods ===
+data_type_for_partition(): int64
+time_partitioning_field(): _PARTITIONTIME
+render_wrapped(): (id - MOD(id - 0, 10))
+render_wrapped(alias='t'): (t.id - MOD(t.id - 0, 10))
+ Rendering models/partition_by_insert_overwrite_strat.sql
+raw object partition_by: {'field': 'created_at', 'data_type': 'timestamp', 'granularity': 'day', 'time_ingestion_partitioning': False, 'copy_partitions': False}
+parsed object partition_by: {'field': 'created_at', 'data_type': 'timestamp', 'time_ingestion_partitioning': False, 'copy_partitions': False, 'granularity': 'day', 'range': undefined}
+partition by render: timestamp_trunc(created_at, day)
+=== BigqueryPartitionConfig Values ===
+field: created_at
+data_type: timestamp
+granularity: day
+time_ingestion_partitioning: False
+copy_partitions: False
+=== BigqueryPartitionConfig Methods ===
+data_type_for_partition(): timestamp
+time_partitioning_field(): _PARTITIONTIME
+render_wrapped(): timestamp_trunc(created_at, day)
+render_wrapped(alias='t'): timestamp_trunc(t.created_at, day)
+ Rendering models/none_partition_by.sql
+ Rendering models/list_partition_by.sql
+raw list partition_by: ['load_ts']
+    Failed model adapters_bigquery_non_connection_methods.list_partition_by (table) [6 of 6 in duration]
+==================== Execution Summary =====================
+Finished 'compile' with 2 errors for target 'bigquery' [duration]
+Processed: 6 models
+Summary: 6 total | 4 success | 2 error

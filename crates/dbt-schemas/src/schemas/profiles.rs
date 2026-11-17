@@ -1,7 +1,9 @@
 #![allow(unused_qualifications)]
 
 use crate::schemas::relations::DEFAULT_DATABRICKS_DATABASE;
-use crate::schemas::serde::{DuckDbExtension, QueryTag, StringOrInteger, StringOrMap};
+use crate::schemas::serde::{
+    DuckDbExtension, QueryTag, StringOrArrayOfStrings, StringOrInteger, StringOrMap,
+};
 
 use dbt_adapter_core::AdapterType;
 use dbt_common::ErrorCode;
@@ -9,10 +11,10 @@ use dbt_common::tracing::dbt_emit::emit_warn_log_message;
 use dbt_yaml::DbtSchema;
 use dbt_yaml::UntaggedEnumDeserialize;
 use merge::Merge;
-use serde_derive::Deserialize;
-use serde_derive::Serialize;
+use serde::Deserialize;
+use serde::Serialize;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::convert::TryFrom;
 use std::fmt::{self, Debug, Display};
 use std::path::PathBuf;
@@ -87,8 +89,10 @@ pub enum DbConfig {
     // Decodable,
     // Upsolver,
     // Starrocks,
-    #[serde(untagged)]
-    RedisAdbc(Box<RedisAdbcDbConfig>),
+    // dbt-yaml 0.9.6 does not support per-variant serde renames. Keep the
+    // profile spelling without changing other adapters' deserialization.
+    #[allow(non_camel_case_types)]
+    Redis_adbc(Box<RedisAdbcDbConfig>),
 }
 
 macro_rules! impl_from_db_config {
@@ -111,7 +115,7 @@ impl_from_db_config!(Databricks, DatabricksDbConfig);
 impl_from_db_config!(DuckDB, DuckDbConfig);
 impl_from_db_config!(Fabric, FabricDbConfig);
 impl_from_db_config!(Exasol, ExasolDbConfig);
-impl_from_db_config!(RedisAdbc, RedisAdbcDbConfig);
+impl_from_db_config!(Redis_adbc, RedisAdbcDbConfig);
 impl_from_db_config!(ClickHouse, ClickHouseDbConfig);
 
 /// Resolves BigQuery's `compute_region` / legacy `dataproc_region` alias in a raw profiles.yml
@@ -150,6 +154,19 @@ pub fn canonicalize_bigquery_region_alias(credentials: &mut dbt_yaml::Mapping) {
     }
 }
 
+/// Trino's `connection_keys`. `password` is left out, as for every adapter.
+const TRINO_CONNECTION_KEYS: &[&str] = &[
+    "method",
+    "host",
+    "port",
+    "user",
+    "database",
+    "schema",
+    "http_scheme",
+    "client_tags",
+    "cert",
+];
+
 impl DbConfig {
     pub fn get_unique_field(&self) -> Option<&str> {
         match self {
@@ -169,7 +186,7 @@ impl DbConfig {
             }
             DbConfig::Spark(config) => config.host.as_deref(),
             DbConfig::Fabric(config) => config.host.as_deref(),
-            DbConfig::RedisAdbc(_) => None,
+            DbConfig::Redis_adbc(_) => None,
             DbConfig::Exasol(config) => config.host.as_deref(),
             DbConfig::ClickHouse(config) => config.host.as_deref(),
         }
@@ -244,6 +261,7 @@ impl DbConfig {
                 "execution_project",
                 "schema",
                 "api_endpoint",
+                "storage_read_api_endpoint",
                 "location",
                 "priority",
                 "maximum_bytes_billed",
@@ -333,8 +351,8 @@ impl DbConfig {
                 "tenant_id",
                 "client_id",
             ],
-            // TODO: Trino and Datafusion connection keys
-            AdapterType::Trino => &[],
+            AdapterType::Trino => TRINO_CONNECTION_KEYS,
+            // TODO: Datafusion connection keys
             AdapterType::Datafusion => &[],
             AdapterType::Fabric => &[
                 "server",
@@ -427,7 +445,7 @@ impl DbConfig {
             DbConfig::Fabric(config) => dbt_yaml::to_value(config),
             DbConfig::DuckDB(config) => dbt_yaml::to_value(config),
             DbConfig::LakeCompute(config) => dbt_yaml::to_value(config),
-            DbConfig::RedisAdbc(config) => dbt_yaml::to_value(config),
+            DbConfig::Redis_adbc(config) => dbt_yaml::to_value(config),
             DbConfig::Exasol(config) => dbt_yaml::to_value(config),
             DbConfig::ClickHouse(config) => dbt_yaml::to_value(config),
         }
@@ -446,7 +464,7 @@ impl DbConfig {
             DbConfig::DuckDB(..) => AdapterType::DuckDB,
             DbConfig::Spark(..) => AdapterType::Spark,
             DbConfig::Fabric(..) => AdapterType::Fabric,
-            DbConfig::RedisAdbc(..) => AdapterType::RedisAdbc,
+            DbConfig::Redis_adbc(..) => AdapterType::RedisAdbc,
             DbConfig::Exasol(..) => AdapterType::Exasol,
             DbConfig::ClickHouse(..) => AdapterType::ClickHouse,
             DbConfig::LakeCompute(..) => AdapterType::LakeCompute,
@@ -466,7 +484,7 @@ impl DbConfig {
             DbConfig::DuckDB(config) => config.database.as_ref(),
             DbConfig::Spark(config) => config.database(),
             DbConfig::Fabric(config) => config.database.as_ref(),
-            DbConfig::RedisAdbc(config) => config.database.as_ref(),
+            DbConfig::Redis_adbc(config) => config.database.as_ref(),
             DbConfig::Exasol(config) => config.database.as_ref(),
             DbConfig::ClickHouse(config) => config.database.as_ref(),
             DbConfig::LakeCompute(config) => config.database.as_ref(),
@@ -490,7 +508,7 @@ impl DbConfig {
                 .database
                 .to_owned(),
             DbConfig::Databricks(_) => DEFAULT_DATABRICKS_DATABASE.to_string(),
-            DbConfig::RedisAdbc(_) => "redis".to_string(),
+            DbConfig::Redis_adbc(_) => "redis".to_string(),
             _ => "".to_string(),
         }
     }
@@ -509,10 +527,22 @@ impl DbConfig {
             DbConfig::LakeCompute(config) => config.schema.as_ref(),
             DbConfig::Salesforce(_) => None,
             DbConfig::Fabric(config) => config.schema.as_ref(),
-            DbConfig::RedisAdbc(config) => config.schema.as_ref(),
+            DbConfig::Redis_adbc(config) => config.schema.as_ref(),
             DbConfig::Exasol(config) => config.schema.as_ref(),
             DbConfig::ClickHouse(config) => config.schema.as_ref(),
         }
+    }
+
+    /// The database and schema a profile reports for this connection
+    /// (`DbtProfile.database` / `DbtProfile.schema`).
+    pub fn profile_database_and_schema(&self) -> (String, String) {
+        let database = self.get_database_or_default();
+        let schema = self
+            .get_schema()
+            .map(String::as_str)
+            .unwrap_or("public")
+            .to_string();
+        (database, schema)
     }
 
     pub fn get_threads(&self) -> Option<&StringOrInteger> {
@@ -528,7 +558,7 @@ impl DbConfig {
             DbConfig::Salesforce(_) => None,
             DbConfig::Spark(config) => config.threads.as_ref(),
             DbConfig::Fabric(_) => None,
-            DbConfig::RedisAdbc(config) => config.threads.as_ref(),
+            DbConfig::Redis_adbc(config) => config.threads.as_ref(),
             DbConfig::Exasol(config) => config.threads.as_ref(),
             DbConfig::ClickHouse(config) => config.threads.as_ref(),
             DbConfig::LakeCompute(config) => config.threads.as_ref(),
@@ -548,7 +578,7 @@ impl DbConfig {
             DbConfig::Salesforce(_) => (),
             DbConfig::Spark(config) => config.threads = threads,
             DbConfig::Fabric(_) => (),
-            DbConfig::RedisAdbc(config) => config.threads = threads,
+            DbConfig::Redis_adbc(config) => config.threads = threads,
             DbConfig::Exasol(config) => config.threads = threads,
             DbConfig::ClickHouse(config) => config.threads = threads,
             DbConfig::LakeCompute(config) => config.threads = threads,
@@ -821,7 +851,7 @@ pub struct SnowflakeDbConfig {
     // Configuration Parameters
     #[serde(skip_serializing_if = "Option::is_none")]
     pub method: Option<String>,
-    /// Route auth through flock-service using dbt Cloud credentials instead of
+    /// Route auth through bridge-service using dbt Cloud credentials instead of
     /// adapter-specific auth (see dbt-auth's `AdapterConfig::use_dbt_cloud_credentials`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub use_dbt_cloud_credentials: Option<bool>,
@@ -941,6 +971,13 @@ pub struct PostgresDbConfig {
     pub password: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, DbtSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum BigqueryPriority {
+    Batch,
+    Interactive,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, DbtSchema, Merge)]
 #[merge(strategy = merge_strategies_extend::overwrite_option)]
 #[serde(rename_all = "snake_case")]
@@ -958,7 +995,7 @@ pub struct BigqueryDbConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timeout_seconds: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub priority: Option<String>,
+    pub priority: Option<BigqueryPriority>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub quota_project: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -992,6 +1029,8 @@ pub struct BigqueryDbConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub api_endpoint: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub storage_read_api_endpoint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub compute_region: Option<String>,
     // TODO: support this https://docs.getdbt.com/docs/core/connect-data-platform/bigquery-setup
     pub dataproc_batch: Option<YmlValue>,
@@ -1021,24 +1060,48 @@ pub struct BigqueryDbConfig {
     pub token_endpoint: Option<YmlValue>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, DbtSchema, Merge)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, DbtSchema, Merge)]
 #[merge(strategy = merge_strategies_extend::overwrite_option)]
 #[serde(rename_all = "snake_case")]
 pub struct TrinoDbConfig {
-    // Configuration Parameters
-    pub port: Option<StringOrInteger>, // Setting as Option but required as of dbt 1.7.1
-    pub user: Option<String>,          // Setting as Option but required as of dbt 1.7.1
+    /// Authentication method (e.g. `none`, `ldap`, `oauth`, `jwt`, `certificate`, `kerberos`).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub database: Option<String>,
+    pub method: Option<String>,
     pub host: Option<String>, // Setting as Option but required as of dbt 1.7.1
+    pub port: Option<StringOrInteger>, // Setting as Option but required as of dbt 1.7.1
+    pub user: Option<String>, // Setting as Option but required as of dbt 1.7.1
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
+    /// The Trino catalog; `catalog` is accepted as the profile key (as in dbt-trino).
+    #[serde(skip_serializing_if = "Option::is_none", alias = "catalog")]
+    pub database: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub schema: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub threads: Option<StringOrInteger>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub password: Option<String>,
+    pub http_scheme: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub role: Option<String>,
+    pub client_tags: Option<StringOrArrayOfStrings>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub http_headers: Option<BTreeMap<String, String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_properties: Option<BTreeMap<String, YmlValue>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub roles: Option<BTreeMap<String, String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timezone: Option<String>,
+    /// CA bundle path, or a boolean toggling TLS verification.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cert: Option<YmlValue>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retries: Option<StringOrInteger>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub impersonation_user: Option<String>,
+    /// Whether connecting checks the credentials as well as reachability (default `true`).
+    /// Set to `false` for servers that cannot answer the credentials check.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub validate_connection: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, DbtSchema, Merge)]
@@ -1094,6 +1157,8 @@ pub struct DatabricksDbConfig {
     pub connection_parameters: Option<HashMap<String, YmlValue>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auth_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oidc_token_filepath: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[merge(strategy = merge_strategies_extend::overwrite_always)]
     pub compute: Option<HashMap<String, YmlValue>>,
@@ -1216,6 +1281,9 @@ pub struct LakeComputeConfig {
     /// (i.e. non-keypair auth on the native Snowflake target). Default: 30.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub snowflake_pat_duration_days: Option<i64>,
+    /// BigQuery connection, in `project.location.connection_id` form.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bigquery_connection: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1524,20 +1592,10 @@ pub struct FabricDbConfig {
     pub api_url: Option<String>, // default = "https://api.fabric.microsoft.com/v1"
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, DbtSchema)]
-pub enum RedisAdbcProfileType {
-    #[default]
-    #[serde(rename = "redis_adbc")]
-    RedisAdbc,
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, DbtSchema, Merge)]
 #[merge(strategy = merge_strategies_extend::overwrite_option)]
 #[serde(rename_all = "snake_case")]
 pub struct RedisAdbcDbConfig {
-    #[serde(rename = "type")]
-    #[merge(skip)]
-    pub type_: RedisAdbcProfileType,
     #[serde(flatten)]
     #[merge(strategy = merge_strategies_extend::overwrite_always)]
     pub extra: HashMap<String, YmlValue>,
@@ -1838,6 +1896,10 @@ pub enum TargetContext {
 #[derive(Serialize, DbtSchema)]
 #[serde(rename_all = "snake_case")]
 pub struct TrinoTargetEnv {
+    pub host: Option<String>,
+    pub user: Option<String>,
+    pub method: Option<String>,
+    pub client_tags: Option<Vec<String>>,
     pub __common__: CommonTargetContext,
 }
 
@@ -1909,7 +1971,7 @@ pub struct BigqueryTargetEnv {
     pub location: Option<String>,
     pub maximum_bytes_billed: Option<i64>,
     pub method: Option<String>,
-    pub priority: Option<String>,
+    pub priority: Option<BigqueryPriority>,
     pub quota_project: Option<String>,
     pub retries: Option<i64>,
     pub target_name: Option<String>,
@@ -2246,6 +2308,10 @@ impl TryFrom<DbConfig> for TargetContext {
             DbConfig::Trino(config) => {
                 let database = config.database.ok_or_else(|| missing("database"))?;
                 Ok(TargetContext::Trino(TrinoTargetEnv {
+                    host: config.host.clone(),
+                    user: config.user.clone(),
+                    method: config.method.clone(),
+                    client_tags: config.client_tags.clone().map(Vec::from),
                     __common__: CommonTargetContext {
                         database,
                         schema: config.schema.ok_or_else(|| missing("schema"))?,
@@ -2326,7 +2392,7 @@ impl TryFrom<DbConfig> for TargetContext {
                     location: config.location.clone(),
                     maximum_bytes_billed: config.maximum_bytes_billed,
                     method: config.method.clone(),
-                    priority: config.priority.clone(),
+                    priority: config.priority,
                     quota_project: config.quota_project.clone(),
                     retries: config.retries,
                     target_name: config.target_name.clone(),
@@ -2469,7 +2535,7 @@ impl TryFrom<DbConfig> for TargetContext {
                     authentication,
                 }))
             }
-            DbConfig::RedisAdbc(config) => {
+            DbConfig::Redis_adbc(config) => {
                 if !config.extra.is_empty() {
                     return Err("Unsupported Redis profile option".to_string());
                 }
@@ -2590,6 +2656,107 @@ mod tests {
             )
             .is_err(),
         );
+    }
+
+    #[test]
+    fn trino_profile_catalog_alias() {
+        let config: DbConfig =
+            dbt_yaml::from_str("type: trino\nhost: h\nuser: u\ncatalog: lk\nschema: s\n").unwrap();
+        let DbConfig::Trino(config) = config else {
+            panic!("Expected Trino config");
+        };
+        assert_eq!(config.database.as_deref(), Some("lk"));
+    }
+
+    #[test]
+    fn trino_profile_full() {
+        let yaml = r#"
+type: trino
+method: oauth
+host: trino.example.com
+port: 443
+user: me
+catalog: lk
+schema: s
+threads: 4
+http_scheme: https
+client_tags: [a, b]
+http_headers: {X-Foo: bar}
+session_properties: {query_max_run_time: 5m}
+roles: {system: x}
+timezone: UTC
+cert: true
+retries: 3
+impersonation_user: other
+validate_connection: false
+"#;
+        let config: DbConfig = dbt_yaml::from_str(yaml).unwrap();
+        let DbConfig::Trino(ref t) = config else {
+            panic!("Expected Trino config");
+        };
+        assert_eq!(t.method.as_deref(), Some("oauth"));
+        assert_eq!(
+            t.roles.as_ref().unwrap().get("system").map(String::as_str),
+            Some("x")
+        );
+        assert_eq!(t.cert.as_ref().and_then(YmlValue::as_bool), Some(true));
+        assert_eq!(t.validate_connection, Some(false));
+        let again: DbConfig = dbt_yaml::from_value(dbt_yaml::to_value(&config).unwrap()).unwrap();
+        assert_eq!(again, config);
+        let mapping = config.to_mapping().unwrap();
+        assert_eq!(
+            mapping.get("method").and_then(YmlValue::as_str),
+            Some("oauth")
+        );
+        assert!(mapping.get("roles").is_some());
+    }
+
+    #[test]
+    fn trino_profile_validate_connection() {
+        let DbConfig::Trino(config) = dbt_yaml::from_str("type: trino\nhost: h\n").unwrap() else {
+            panic!("Expected Trino config");
+        };
+        assert_eq!(config.validate_connection, None);
+        let DbConfig::Trino(config) =
+            dbt_yaml::from_str("type: trino\nhost: h\nvalidate_connection: true\n").unwrap()
+        else {
+            panic!("Expected Trino config");
+        };
+        assert_eq!(config.validate_connection, Some(true));
+    }
+
+    #[test]
+    fn trino_profile_client_tags_accepts_string() {
+        let config: DbConfig = dbt_yaml::from_str("type: trino\nclient_tags: abc\n").unwrap();
+        assert!(matches!(config, DbConfig::Trino(_)));
+    }
+
+    #[test]
+    fn trino_profile_unknown_key_matches_exasol() {
+        // DbConfig itself tolerates unknown keys for every adapter (strictness is
+        // applied by schema validation upstream), so parity with Exasol is the contract.
+        let trino = dbt_yaml::from_str::<DbConfig>("type: trino\nhost: h\nfoo: 1\n");
+        let exasol = dbt_yaml::from_str::<DbConfig>("type: exasol\nhost: h\nfoo: 1\n");
+        assert_eq!(trino.is_err(), exasol.is_err());
+    }
+
+    #[test]
+    fn trino_profile_connection_keys_exclude_password() {
+        let keys = DbConfig::connection_keys_for(AdapterType::Trino);
+        assert!(!keys.contains(&"password"));
+        for k in [
+            "method",
+            "host",
+            "port",
+            "user",
+            "database",
+            "schema",
+            "http_scheme",
+            "client_tags",
+            "cert",
+        ] {
+            assert!(keys.contains(&k), "missing {k}");
+        }
     }
 
     #[test]
@@ -3421,6 +3588,41 @@ threads: 8
 
         assert_eq!(config.get_database(), None);
         assert_eq!(config.get_database_or_default(), "");
+    }
+
+    #[test]
+    fn test_profile_database_and_schema() {
+        let pair = |database: &str, schema: &str| (database.to_string(), schema.to_string());
+        let snowflake: DbConfig = SnowflakeDbConfig {
+            database: Some("ANALYTICS".to_string()),
+            schema: Some("DBT_X".to_string()),
+            ..Default::default()
+        }
+        .into();
+        assert_eq!(
+            snowflake.profile_database_and_schema(),
+            pair("ANALYTICS", "DBT_X")
+        );
+
+        let no_schema: DbConfig = PostgresDbConfig {
+            database: Some("pg".to_string()),
+            ..Default::default()
+        }
+        .into();
+        assert_eq!(
+            no_schema.profile_database_and_schema(),
+            pair("pg", "public")
+        );
+
+        let duckdb_path_only: DbConfig = DuckDbConfig {
+            path: Some("/data/jaffle_shop.duckdb".to_string()),
+            ..Default::default()
+        }
+        .into();
+        assert_eq!(
+            duckdb_path_only.profile_database_and_schema(),
+            pair("jaffle_shop", "public")
+        );
     }
 }
 

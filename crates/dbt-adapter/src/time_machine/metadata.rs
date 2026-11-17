@@ -310,8 +310,16 @@ impl MetadataResultSerialize for BTreeMap<CatalogAndSchema, AdapterResult<Relati
             .map(|(db_schema, result)| {
                 let value = match result {
                     Ok(relations) => {
-                        let rel_names: Vec<String> =
-                            relations.iter().map(|r| r.semantic_fqn()).collect();
+                        let rel_names: Vec<serde_json::Value> = relations
+                            .iter()
+                            .map(|relation| {
+                                serde_json::json!({
+                                    "database": relation.database_as_resolved_str().ok(),
+                                    "schema": relation.schema_as_resolved_str().ok(),
+                                    "identifier": relation.identifier_as_resolved_str().ok(),
+                                })
+                            })
+                            .collect();
                         serde_json::json!({ "ok": rel_names })
                     }
                     Err(e) => serde_json::json!({ "error": e.to_string() }),
@@ -330,7 +338,7 @@ impl MetadataResultSerialize for BTreeMap<CatalogAndSchema, AdapterResult<Relati
 }
 
 /// Rebuilds the relations of a recorded `list_relations_in_parallel` entry from their
-/// `semantic_fqn` strings. The recording carries no relation type, so it stays unset.
+/// raw components or legacy `semantic_fqn` strings. The relation type stays unset.
 fn relations_from_recorded_fqns(
     ok: &serde_json::Value,
     adapter_type: AdapterType,
@@ -339,8 +347,26 @@ fn relations_from_recorded_fqns(
         .ok_or("Expected array of relation FQNs")?
         .iter()
         .map(|fqn| {
-            let fqn = fqn.as_str().ok_or("Expected relation FQN string")?;
-            relation_from_semantic_fqn(fqn, adapter_type)
+            if let Some(fqn) = fqn.as_str() {
+                return relation_from_semantic_fqn(fqn, adapter_type);
+            }
+            let component = |key: &str| -> Result<Option<String>, String> {
+                match fqn.get(key) {
+                    Some(serde_json::Value::String(value)) => Ok(Some(value.clone())),
+                    Some(serde_json::Value::Null) => Ok(None),
+                    _ => Err(format!("Expected relation component {key}")),
+                }
+            };
+            do_create_relation(
+                adapter_type,
+                component("database")?.unwrap_or_default(),
+                component("schema")?.unwrap_or_default(),
+                component("identifier")?,
+                None,
+                ResolvedQuoting::trues(),
+            )
+            .map(Arc::from)
+            .map_err(|e| format!("Failed to rebuild recorded relation: {e}"))
         })
         .collect()
 }
@@ -994,6 +1020,51 @@ mod tests {
                 orig.name()
             );
             assert_eq!(orig.is_nullable(), res.is_nullable(), "Nullable mismatch");
+        }
+    }
+
+    #[test]
+    fn list_relations_recording_round_trips_escaped_components() {
+        for adapter_type in [
+            AdapterType::Snowflake,
+            AdapterType::Databricks,
+            AdapterType::Bigquery,
+            AdapterType::ClickHouse,
+        ] {
+            for database in ["", "db\".`\\"] {
+                let schema = CatalogAndSchema {
+                    resolved_catalog: database.to_string(),
+                    resolved_schema: "sch\".`\\".to_string(),
+                    rendered_catalog: String::new(),
+                    rendered_schema: String::new(),
+                };
+                let relation = Arc::from(
+                    do_create_relation(
+                        adapter_type,
+                        database.to_string(),
+                        schema.resolved_schema.clone(),
+                        Some("a\"b`.`c\\".to_string()),
+                        None,
+                        ResolvedQuoting::trues(),
+                    )
+                    .unwrap(),
+                );
+                let original: BTreeMap<CatalogAndSchema, AdapterResult<RelationVec>> =
+                    BTreeMap::from([(schema.clone(), Ok(vec![relation]))]);
+                let json = original.to_recording_json();
+                let replayed =
+                    BTreeMap::<CatalogAndSchema, AdapterResult<RelationVec>>::from_recording_json(
+                        &json,
+                        adapter_type,
+                    )
+                    .unwrap();
+                let original = &original[&schema].as_ref().unwrap()[0];
+                let replayed = &replayed[&schema].as_ref().unwrap()[0];
+                assert_eq!(replayed.database(), original.database());
+                assert_eq!(replayed.schema(), original.schema());
+                assert_eq!(replayed.identifier(), original.identifier());
+                assert_eq!(replayed.semantic_fqn(), original.semantic_fqn());
+            }
         }
     }
 

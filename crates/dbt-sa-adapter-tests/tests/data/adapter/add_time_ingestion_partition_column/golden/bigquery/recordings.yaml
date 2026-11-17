@@ -1,0 +1,11 @@
+model.test.a:
+- sequence: 0
+  type: execute
+  sql: CREATE SCHEMA IF NOT EXISTS adapters_bigquery_add_time_ingestion_partition_column
+- sequence: 1
+  type: execute
+  sql: CREATE OR REPLACE TABLE adapters_bigquery_add_time_ingestion_partition_column.b (id INT64, msg STRING);
+model.test.a.get_table_schema.369a4666:
+- sequence: 0
+  type: get_table_schema
+  table_name: 369a4666

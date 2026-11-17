@@ -26,19 +26,18 @@ use super::super::{
     dbt_metrics::{FusionMetricKey, InvocationMetricKey},
     event_classifiers::is_exit_with_status_log,
     formatters::{
-        deps::{format_package_installed_end, format_package_installed_start, format_package_spec},
-        duration::format_timestamp_utc_zulu,
-        hook::format_hook_outcome_as_status,
-        invocation::format_invocation_summary,
-        log_message::format_log_message,
+        deps::{PackageInstalledEnd, PackageInstalledStart, PackageSpec},
+        duration::UtcZuluTimestamp,
+        hook::HookOutcomeStatus,
+        invocation::InvocationSummary,
+        log_message::LogMessageLine,
         node::{
-            format_compiled_inline_code, format_microbatch_description,
-            format_microbatch_evaluated_end, format_microbatch_evaluated_start,
-            format_node_evaluated_start, format_node_outcome_as_status, format_node_processed_end,
-            format_node_processed_start, get_num_failures, microbatch_active_duration,
+            CompiledInlineCode, MicrobatchDescription, MicrobatchEvaluatedEnd,
+            MicrobatchEvaluatedStart, NodeEvaluatedStart, NodeOutcomeStatus, NodeProcessedEnd,
+            NodeProcessedStart, get_num_failures, microbatch_active_duration,
         },
-        progress::format_progress_message,
-        query_log::format_query_log,
+        progress::ProgressMessageLine,
+        query_log::QueryLogEntry,
     },
     fs_error_log::get_log_message,
 };
@@ -151,9 +150,9 @@ fn build_node_info_json(
     };
 
     // Format timestamps as ISO 8601
-    let started_at_str = format_timestamp_utc_zulu(start_time_unix_nano);
+    let started_at_str = UtcZuluTimestamp(start_time_unix_nano).to_string();
     let finished_at_str = end_time_unix_nano
-        .map(format_timestamp_utc_zulu)
+        .map(|ts| UtcZuluTimestamp(ts).to_string())
         .unwrap_or_default();
 
     json!({
@@ -255,10 +254,9 @@ impl JsonCompatLayer {
                 "log_version": 3,
                 "version": format!("={}", version),
             }
-        })
-        .to_string();
+        });
 
-        self.writer.writeln(value.as_str());
+        self.writer.writeln(&value);
     }
 
     fn emit_main_report_args(&self, invocation: &Invocation) {
@@ -334,19 +332,19 @@ impl JsonCompatLayer {
             "data": {
                 "args": args,
             }
-        })
-        .to_string();
+        });
 
-        self.writer.writeln(value.as_str());
+        self.writer.writeln(&value);
     }
 
     fn emit_query_executed(&self, query_data: &QueryExecuted, span: &SpanEndInfo) {
         // Format the query log using the shared formatter
-        let formatted_query = format_query_log(
-            query_data,
-            span.start_time_unix_nano,
-            span.end_time_unix_nano,
-        );
+        let formatted_query = QueryLogEntry {
+            query: query_data,
+            start_time: span.start_time_unix_nano,
+            end_time: span.end_time_unix_nano,
+        }
+        .to_string();
 
         let info_json = serde_json::to_value(self.build_core_event_info(
             query_data.dbt_core_event_code.as_str().into(),
@@ -375,7 +373,7 @@ impl JsonCompatLayer {
             })
         };
 
-        self.writer.writeln(value.to_string().as_str());
+        self.writer.writeln(&value);
     }
 
     fn emit_invocation_completed(
@@ -384,9 +382,9 @@ impl JsonCompatLayer {
         span: &SpanEndInfo,
         data_provider: &mut DataProvider<'_>,
     ) {
-        let formatted = format_invocation_summary(span, invocation, data_provider, false, None);
+        let summary = InvocationSummary::new(span, invocation, data_provider, false, None);
 
-        if let Some(line) = formatted.autofix_line() {
+        if let Some(line) = summary.autofix_line() {
             let info_json = serde_json::to_value(self.build_core_event_info(
                 None,
                 None,
@@ -398,15 +396,14 @@ impl JsonCompatLayer {
             let value = json!({
                 "info": info_json,
                 "data": {}
-            })
-            .to_string();
+            });
 
-            self.writer.writeln(value.as_str());
+            self.writer.writeln(&value);
         }
 
-        let message = formatted
+        let message = summary
             .summary_lines()
-            .map(|summary_lines| summary_lines.join("\n"))
+            .map(|summary_lines| summary_lines.to_string())
             .unwrap_or_default();
 
         let elapsed_secs = span
@@ -415,7 +412,7 @@ impl JsonCompatLayer {
             .unwrap_or_default()
             .as_secs_f32();
 
-        let completed_at_str = format_timestamp_utc_zulu(span.end_time_unix_nano);
+        let completed_at_str = UtcZuluTimestamp(span.end_time_unix_nano).to_string();
         let success = data_provider.get_metric(FusionMetricKey::InvocationMetric(
             InvocationMetricKey::TotalErrors,
         )) == 0;
@@ -438,26 +435,26 @@ impl JsonCompatLayer {
                 "elapsed": elapsed_secs,
                 "success": success
             }
-        })
-        .to_string();
+        });
 
-        self.writer.writeln(value.as_str());
+        self.writer.writeln(&value);
     }
 
     fn emit_log_message(&self, log_msg: &LogMessage, log_record: &LogRecordInfo) {
-        // Format the message
-        let formatted_message = format_log_message(
-            log_msg
+        // Unfortunately, we do not currently enforce log body to not contain ANSI codes,
+        // so we need to make sure to strip them
+        let body = console::strip_ansi_codes(log_record.body.as_str());
+        let formatted_message = LogMessageLine {
+            error_code: log_msg
                 .code
                 .and_then(|c| u16::try_from(c).ok())
                 .and_then(|c| ErrorCode::try_from(c).ok()),
-            // Unfortunately, we do not currently enforce log body to not contain ANSI codes,
-            // so we need to make sure to strip them
-            console::strip_ansi_codes(log_record.body.as_str()),
-            log_record.severity_number,
-            false,
-            true,
-        );
+            message: &body,
+            severity: log_record.severity_number,
+            colorize: false,
+            include_level_prefix: true,
+        }
+        .to_string();
 
         let code = log_msg
             .dbt_core_event_code
@@ -486,10 +483,9 @@ impl JsonCompatLayer {
         let value = json!({
             "info": info_json,
             "data": data_obj
-        })
-        .to_string();
+        });
 
-        self.writer.writeln(value.as_str());
+        self.writer.writeln(&value);
     }
     /// Handle UserLogMessage events (from Jinja print() and log() functions)
     /// These map to dbt-core's JinjaLogInfo (I062), JinjaDebugInfo (I063) and PrintEvent ("Z052") events
@@ -537,10 +533,9 @@ impl JsonCompatLayer {
         let value = json!({
             "info": info_json,
             "data": data_obj
-        })
-        .to_string();
+        });
 
-        self.writer.writeln(value.as_str());
+        self.writer.writeln(&value);
     }
 
     /// Handle ListItemOutput events (from dbt list command)
@@ -559,10 +554,9 @@ impl JsonCompatLayer {
             "data": {
                 "msg": &list_item.content, // Use content from event for backward compatibility
             }
-        })
-        .to_string();
+        });
 
-        self.writer.writeln(value.as_str());
+        self.writer.writeln(&value);
     }
 
     /// Handle ShowDataOutput events (from dbt show command)
@@ -588,10 +582,9 @@ impl JsonCompatLayer {
         let value = json!({
             "info": info_json,
             "data": data_obj,
-        })
-        .to_string();
+        });
 
-        self.writer.writeln(value.as_str());
+        self.writer.writeln(&value);
     }
 
     /// Handle ShowResult events (verbose/diagnostic output controlled by --show flag)
@@ -624,10 +617,9 @@ impl JsonCompatLayer {
         let value = json!({
             "info": info_json,
             "data": data_obj,
-        })
-        .to_string();
+        });
 
-        self.writer.writeln(value.as_str());
+        self.writer.writeln(&value);
     }
 
     /// Handle ArtifactWritten events
@@ -655,10 +647,9 @@ impl JsonCompatLayer {
                 "artifact_path": &artifact_data.relative_path,
                 "artifact_type": artifact_type_str,
             }
-        })
-        .to_string();
+        });
 
-        self.writer.writeln(value.as_str());
+        self.writer.writeln(&value);
     }
 
     /// Handle HookProcessed span start events
@@ -692,10 +683,9 @@ impl JsonCompatLayer {
                 "node_info": node_info,
                 "index": hook.hook_index,
             }
-        })
-        .to_string();
+        });
 
-        self.writer.writeln(value.as_str());
+        self.writer.writeln(&value);
     }
 
     /// Handle HookProcessed span end events
@@ -707,7 +697,11 @@ impl JsonCompatLayer {
         }
 
         let hook_outcome = hook.hook_outcome();
-        let status = format_hook_outcome_as_status(hook_outcome, false);
+        let status = HookOutcomeStatus {
+            outcome: hook_outcome,
+            colorize: false,
+        }
+        .to_string();
 
         let duration = span
             .end_time_unix_nano
@@ -744,10 +738,9 @@ impl JsonCompatLayer {
                 "status": status,
                 "execution_time": duration.as_secs_f32(),
             }
-        })
-        .to_string();
+        });
 
-        self.writer.writeln(value.as_str());
+        self.writer.writeln(&value);
     }
 
     /// Handle NodeEvaluated span start events
@@ -760,7 +753,11 @@ impl JsonCompatLayer {
             _ => return, // Skip Analyze and other phases
         };
 
-        let msg = format_node_evaluated_start(node, false);
+        let msg = NodeEvaluatedStart {
+            node,
+            colorize: false,
+        }
+        .to_string();
 
         let node_info =
             build_node_info_json(node.into(), node_status, span.start_time_unix_nano, None);
@@ -778,10 +775,9 @@ impl JsonCompatLayer {
             "data": {
                 "node_info": node_info
             }
-        })
-        .to_string();
+        });
 
-        self.writer.writeln(value.as_str());
+        self.writer.writeln(&value);
     }
 
     fn emit_microbatch_evaluated_start(
@@ -804,19 +800,22 @@ impl JsonCompatLayer {
             batch.dbt_core_event_code.as_deref(),
             Some("LogStartBatch"),
             "info",
-            format_microbatch_evaluated_start(batch, false),
+            MicrobatchEvaluatedStart {
+                batch,
+                colorize: false,
+            }
+            .to_string(),
         );
         let value = json!({
             "info": info,
             "data": {
                 "node_info": node_info,
-                "description": format_microbatch_description(batch, false),
+                "description": MicrobatchDescription { batch, colorize: false }.to_string(),
                 "batch_index": batch.batch_index,
                 "total_batches": batch.total_batches,
             }
-        })
-        .to_string();
-        self.writer.writeln(value.as_str());
+        });
+        self.writer.writeln(&value);
     }
 
     fn emit_microbatch_evaluated_end(
@@ -856,21 +855,25 @@ impl JsonCompatLayer {
             batch.dbt_core_event_code.as_deref(),
             Some("LogBatchResult"),
             level,
-            format_microbatch_evaluated_end(batch, duration, false),
+            MicrobatchEvaluatedEnd {
+                batch,
+                duration,
+                colorize: false,
+            }
+            .to_string(),
         );
         let value = json!({
             "info": info,
             "data": {
                 "node_info": node_info,
-                "description": format_microbatch_description(batch, false),
+                "description": MicrobatchDescription { batch, colorize: false }.to_string(),
                 "batch_index": batch.batch_index,
                 "total_batches": batch.total_batches,
                 "status": status,
                 "execution_time": microbatch_active_duration(batch, duration).as_secs_f64(),
             }
-        })
-        .to_string();
-        self.writer.writeln(value.as_str());
+        });
+        self.writer.writeln(&value);
     }
 
     /// Handle NodeProcessed span start events
@@ -898,13 +901,16 @@ impl JsonCompatLayer {
             "data": {
                 "node_info": node_info
             }
-        })
-        .to_string();
+        });
 
-        self.writer.writeln(value_start.as_str());
+        self.writer.writeln(&value_start);
 
         // Emit LogStartLine (Q011)
-        let msg = format_node_processed_start(node, false);
+        let msg = NodeProcessedStart {
+            node,
+            colorize: false,
+        }
+        .to_string();
 
         let info_json_log = serde_json::to_value(self.build_core_event_info(
             Some("Q011"),
@@ -923,10 +929,9 @@ impl JsonCompatLayer {
                 "index": node.node_index.unwrap_or(0),
                 "total": node.node_count_total.unwrap_or(0)
             }
-        })
-        .to_string();
+        });
 
-        self.writer.writeln(value_log.as_str());
+        self.writer.writeln(&value_log);
     }
 
     /// Handle MarkSkippedChildren event
@@ -952,10 +957,9 @@ impl JsonCompatLayer {
                 "status": status,
                 "run_result": run_result
             }
-        })
-        .to_string();
+        });
 
-        self.writer.writeln(value.as_str());
+        self.writer.writeln(&value);
     }
 
     /// Handle NodeProcessed span end events
@@ -1007,14 +1011,15 @@ impl JsonCompatLayer {
         };
 
         // Build status string using shared formatter (handles both test and freshness outcomes)
-        let status = format_node_outcome_as_status(
+        let status = NodeOutcomeStatus {
             node_outcome,
-            node_skip_reason,
+            skip_reason: node_skip_reason,
             test_outcome,
             freshness_outcome,
-            has_node_warning(node.into()),
-            false,
-        );
+            has_warn: has_node_warning(node.into()),
+            colorize: false,
+        }
+        .to_string();
 
         let duration = span
             .end_time_unix_nano
@@ -1036,7 +1041,12 @@ impl JsonCompatLayer {
                 format!("Freshness of {}.{}: {}", qualifier, table_name, status)
             }
         } else {
-            format_node_processed_end(node, duration, false)
+            NodeProcessedEnd {
+                node,
+                duration,
+                colorize: false,
+            }
+            .to_string()
         };
 
         let node_info = build_node_info_json(
@@ -1081,10 +1091,9 @@ impl JsonCompatLayer {
         let value = json!({
             "info": info_json,
             "data": data
-        })
-        .to_string();
+        });
 
-        self.writer.writeln(value.as_str());
+        self.writer.writeln(&value);
 
         // NodeFinished (Q025) - emit for ALL nodes including freshness
         let info_json = serde_json::to_value(self.build_core_event_info(
@@ -1141,17 +1150,22 @@ impl JsonCompatLayer {
                 "node_info": node_info,
                 "run_result": run_result
             }
-        })
-        .to_string();
+        });
 
         // Now write NodeFinished event
-        self.writer.writeln(value.as_str());
+        self.writer.writeln(&value);
     }
 
     /// Handle ProgressMessage events (debug command progress, etc.)
     /// If dbt_core_event_code is present, map to appropriate event, otherwise emit as generic
     fn emit_progress_message(&self, progress_msg: &ProgressMessage, log_record: &LogRecordInfo) {
-        let msg = format_progress_message(progress_msg, log_record.severity_number, false, false);
+        let msg = ProgressMessageLine {
+            progress: progress_msg,
+            severity: log_record.severity_number,
+            pad_action: false,
+            colorize: false,
+        }
+        .to_string();
 
         // Determine event code and name based on dbt_core_event_code
         let (event_code, event_name) = match progress_msg.dbt_core_event_code.as_deref() {
@@ -1195,16 +1209,19 @@ impl JsonCompatLayer {
         let value = json!({
             "info": info_json,
             "data": data_obj
-        })
-        .to_string();
+        });
 
-        self.writer.writeln(value.as_str());
+        self.writer.writeln(&value);
     }
 
     /// Handle DepsPackageInstalled span start events
     fn emit_dep_installed_start(&self, pkg: &DepsPackageInstalled, span: &SpanStartInfo) {
         // Format with shared formatter
-        let formatted_message = format_package_installed_start(pkg, false);
+        let formatted_message = PackageInstalledStart {
+            pkg,
+            colorize: false,
+        }
+        .to_string();
 
         // Use dbt-core event code M014 and name DepsStartPackageInstall
         let info_json = serde_json::to_value(self.build_core_event_info(
@@ -1227,10 +1244,9 @@ impl JsonCompatLayer {
             "data": {
                 "package_name": package_name,
             }
-        })
-        .to_string();
+        });
 
-        self.writer.writeln(value.as_str());
+        self.writer.writeln(&value);
     }
 
     /// Handle DepsPackageInstalled span end events
@@ -1242,7 +1258,12 @@ impl JsonCompatLayer {
         }
 
         // Format with shared formatter
-        let formatted_message = format_package_installed_end(pkg, status, false);
+        let formatted_message = PackageInstalledEnd {
+            pkg,
+            status,
+            colorize: false,
+        }
+        .to_string();
 
         // Use dbt-core event code M015 and name DepsInstallInfo
         let info_json = serde_json::to_value(self.build_core_event_info(
@@ -1259,10 +1280,9 @@ impl JsonCompatLayer {
             "data": {
                 "version_name": pkg.package_version.as_deref().unwrap_or_default(),
             }
-        })
-        .to_string();
+        });
 
-        self.writer.writeln(value.as_str());
+        self.writer.writeln(&value);
     }
 
     /// Handle DepsAddPackage span end events - only emits on successful completion
@@ -1274,7 +1294,11 @@ impl JsonCompatLayer {
         }
 
         // Format package spec (name@version or just name)
-        let package_spec = format_package_spec(&pkg.package_name, pkg.package_version.as_deref());
+        let package_spec = PackageSpec {
+            name: &pkg.package_name,
+            version: pkg.package_version.as_deref(),
+        }
+        .to_string();
 
         // Message format matching dbt-core: "Added new package <spec>"
         let formatted_message = format!("Added new package {}", package_spec);
@@ -1294,10 +1318,9 @@ impl JsonCompatLayer {
                 "package_name": &pkg.package_name,
                 "version": pkg.package_version.as_deref().unwrap_or_default(),
             }
-        })
-        .to_string();
+        });
 
-        self.writer.writeln(value.as_str());
+        self.writer.writeln(&value);
     }
 
     /// Handle CompiledCode events (from compile command with selected node)
@@ -1326,10 +1349,9 @@ impl JsonCompatLayer {
         let value = json!({
             "info": info_json,
             "data": data_obj,
-        })
-        .to_string();
+        });
 
-        self.writer.writeln(value.as_str());
+        self.writer.writeln(&value);
     }
 
     /// Handle CompiledCodeInline events (from compile command with inline query)
@@ -1339,7 +1361,11 @@ impl JsonCompatLayer {
         compiled_code: &CompiledCodeInline,
         log_record: &LogRecordInfo,
     ) {
-        let msg = format_compiled_inline_code(compiled_code, false);
+        let msg = CompiledInlineCode {
+            compiled_code,
+            colorize: false,
+        }
+        .to_string();
 
         let info_json = serde_json::to_value(self.build_core_event_info(
             Some("Q042"),
@@ -1360,10 +1386,9 @@ impl JsonCompatLayer {
         let value = json!({
             "info": info_json,
             "data": data_obj,
-        })
-        .to_string();
+        });
 
-        self.writer.writeln(value.as_str());
+        self.writer.writeln(&value);
     }
 }
 

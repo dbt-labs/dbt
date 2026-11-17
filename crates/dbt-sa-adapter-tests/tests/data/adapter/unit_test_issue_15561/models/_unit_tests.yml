@@ -1,0 +1,55 @@
+version: 2
+
+unit_tests:
+  - name: test_financials_aggregation
+    model: struct_unit_test
+    given:
+      - input: ref('stg_struct_unit_test')
+        format: sql
+        rows: |
+          SELECT 1337 AS company_id, CAST('2025-01-01' AS DATE) AS closing_date, STRUCT(40 AS revenue, 41 AS debt) AS financials
+          UNION ALL
+          SELECT 1337 AS company_id, CAST('2024-01-01' AS DATE) AS closing_date, STRUCT(75 AS revenue, 76 AS debt) AS financials
+    expect:
+      format: sql
+      fixture: test_financials_aggregation_expect
+
+  - name: test_array_operations
+    model: array_unit_test
+    given:
+      - input: ref('stg_array_unit_test')
+        rows:
+          - user_id: 1
+            name: "Alice"
+            hobbies: ["reading", "swimming", "coding"]
+            test_scores: [85, 92, 78, 95]
+            activity_dates: ["2024-01-15", "2024-02-20", "2024-03-10"]
+          - user_id: 2
+            name: "Bob"
+            hobbies: ["gaming", "cooking"]
+            test_scores: [88, 76, 91]
+            activity_dates: ["2024-01-20", "2024-02-25"]
+    expect:
+      rows:
+        - user_id: 1
+          name: "Alice"
+          hobbies: ["reading", "swimming", "coding"]
+          hobby_count: 3
+          test_scores: [85, 92, 78, 95]
+          test_count: 4
+          avg_test_score: 87.5
+          activity_dates: ["2024-01-15", "2024-02-20", "2024-03-10"]
+          activity_count: 3
+          latest_activity_date: "2024-03-10"
+          summary_info: ["reading", "swimming", "coding", "avg_score:87.5"]
+        - user_id: 2
+          name: "Bob"
+          hobbies: ["gaming", "cooking"]
+          hobby_count: 2
+          test_scores: [88, 76, 91]
+          test_count: 3
+          avg_test_score: 85.0
+          activity_dates: ["2024-01-20", "2024-02-25"]
+          activity_count: 2
+          latest_activity_date: "2024-02-25"
+          summary_info: ["gaming", "cooking", "avg_score:85"]

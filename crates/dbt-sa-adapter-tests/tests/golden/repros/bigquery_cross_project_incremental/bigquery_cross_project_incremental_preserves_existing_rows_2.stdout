@@ -1,0 +1,11 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/incremental_model.sql
+   Parsing tests/assert_incremental_preserves_existing_rows.sql
+ Rendering tests/assert_incremental_preserves_existing_rows.sql
+   Running ../scratch/target/run/bigquery_cross_project_incremental/tests/assert_incremental_preserves_existing_rows.sql
+    Passed test  assert_incremental_preserves_existing_rows [1 of 1 in duration]
+==================== Execution Summary =====================
+Finished 'test' successfully for target 'bigquery' [duration]
+Processed: 1 test
+Summary: 1 total | 1 success

@@ -106,8 +106,8 @@ pub struct ParseSafeView {
 /// [`super::schema`]'s `node_cols!`. Textual expansion for the same reason: const slices
 /// cannot be concatenated.
 ///
-/// Absent, and deliberately: `compiled_code`, `compiled_path`, `grain*`, `layer_inferred`
-/// and `search_text` (written during compile); `classifiers` (partially written at parse,
+/// Absent, and deliberately: `compiled_code`, `compiled_path` and `grain*` (written during
+/// compile); `classifiers` (partially written at parse,
 /// which is worse — a check filtering on it sees a subset and passes); `unique_key`,
 /// `pre_hook`, `post_hook`, `grants`, `persist_docs`, `incremental_strategy`,
 /// `on_schema_change`, `full_refresh`, `docs_show`, `time_spine` and
@@ -115,17 +115,14 @@ pub struct ParseSafeView {
 /// which is here). `file_path` and `checksum` are absent because the information schema
 /// does not have them.
 ///
-/// `raw_code` is not here either, and it is the one column left out by *resource type* rather
-/// than by phase, which is why it cannot live in this macro at all: the views that carry it name
-/// it themselves.
+/// `raw_code` is not here either: it is left out by *resource type* rather than by phase
+/// (seeds and sources have no SQL and arrive as an empty string, which a check reads like
+/// NULL), so the views that carry it name it themselves.
 ///
-/// It was excluded from `models` because the index left it NULL there — `trim_model_payload`
-/// drops it from `__common_attr__` for models only, their payloads being multi-KB mostly
-/// because of SQL — while every other node type with SQL kept it. Reading the epoch payloads
-/// removes that asymmetry: `raw_code` is populated for models there, which is why the
-/// information schema has always published it, and a rule developed in `dbt show --info` no
-/// longer returns rows there and nothing as a check. Offering it on `models` is a widening of
-/// the check surface rather than part of the port, so it is still left out here.
+/// `models` carries it. It was once excluded because the index left it NULL there --
+/// `trim_model_payload` drops it from `__common_attr__` for models only -- but the epoch
+/// payloads are read untrimmed, so it is populated, and the information schema has always
+/// published it. A check about a model's SQL is writable (dbt-labs/dbt#16802).
 macro_rules! node_cols {
     ($($extra:expr),* $(,)?) => {
         &[
@@ -198,15 +195,21 @@ pub const VIEWS: &[ParseSafeView] = &[
             "ingested_at",
         ],
     },
-    // Which packages are installed, and nothing else: the ingest has no source for the
-    // other columns (`package_source`, `version`, `git_url`, `git_revision`,
-    // `local_path`) and writes the name alone.
+    // Which packages are installed, and where each comes from per `package-lock.yml`.
     ParseSafeView {
         name: "packages",
         vocabulary: "packages",
         src: Src::Table("packages"),
         filter: Filter::All,
-        cols: &["package_name", "ingested_at"],
+        cols: &[
+            "package_name",
+            "package_source",
+            "version",
+            "git_url",
+            "git_revision",
+            "local_path",
+            "ingested_at",
+        ],
     },
     ParseSafeView {
         name: "project_vars",
@@ -228,7 +231,7 @@ pub const VIEWS: &[ParseSafeView] = &[
         vocabulary: "models",
         src: Src::Table("nodes"),
         filter: Filter::ResourceTypeIn(&["model"]),
-        cols: node_cols!["constraints"],
+        cols: node_cols!["constraints", "raw_code"],
     },
     ParseSafeView {
         name: "seeds",

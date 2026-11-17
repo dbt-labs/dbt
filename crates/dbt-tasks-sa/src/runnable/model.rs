@@ -16,7 +16,6 @@ use dbt_common::tracing::span_info::{
 };
 use dbt_common::{ErrorCode, create_info_span, fs_err};
 use dbt_jinja_utils::phases::run::{build_run_node_context_from_arc, reset_result_store};
-use dbt_jinja_utils::utils::add_task_context;
 use dbt_schemas::filter::RunFilter;
 use dbt_schemas::schemas::DbtModel;
 use dbt_schemas::schemas::common::{DbtBatchSize, DbtIncrementalStrategy, DbtMaterialization};
@@ -28,6 +27,7 @@ use dbt_telemetry::{
 };
 
 use minijinja::Value;
+use minijinja::value::OverlayMap;
 use tracing::debug;
 
 use dbt_tasks_core::task::TaskResult;
@@ -50,7 +50,7 @@ pub struct MicrobatchExecUnit {
     pub batch_ctx: BatchContext,
     pub raw_sql: Arc<String>,
     pub node: Arc<dyn InternalDbtNodeAttributes>,
-    pub run_node_context: Arc<std::collections::BTreeMap<String, Value>>,
+    pub run_node_context: Arc<OverlayMap>,
     pub event_time_mapping: Arc<std::collections::BTreeMap<String, String>>,
     pub is_incremental: bool,
 }
@@ -85,14 +85,11 @@ pub async fn prepare_microbatch_batches(
     ctx: &TaskRunnerCtx,
     task_result: &TaskResult,
 ) -> FsResult<Vec<Vec<MicrobatchExecUnit>>> {
-    let mut base_context = ctx.inner.base_context.clone();
-
-    add_task_context(&mut base_context, node.common(), &ctx.thread_id);
+    let base_context = ctx.run_base_context(node.as_ref())?;
 
     let sql_header = task_result
         .config_map
-        .get("sql_header")
-        .map(|v| v.value().clone());
+        .read_sync("sql_header", |_, v| v.clone());
 
     let model = node
         .as_any()
@@ -212,7 +209,7 @@ async fn resolve_batch_window(
 ) -> FsResult<(MicrobatchBuilder, DateTime<Utc>, DateTime<Utc>, bool)> {
     let batch_builder = MicrobatchBuilder::from_config(
         model.deprecated_config.batch_size.clone(),
-        model.deprecated_config.begin,
+        model.deprecated_config.begin.as_deref(),
         model.deprecated_config.lookback,
     )?;
 
@@ -223,8 +220,13 @@ async fn resolve_batch_window(
         .deprecated_config
         .full_refresh
         .unwrap_or(ctx.inner.arg.full_refresh);
-    let is_incremental =
-        is_incremental(model, full_refresh, model.node_adapter(), ctx.env.clone()).await;
+    let is_incremental = is_incremental(
+        model,
+        full_refresh,
+        ctx.adapter_for(model)?,
+        ctx.env.clone(),
+    )
+    .await;
 
     let end_time = batch_builder.build_end_time(ctx.inner.arg.event_time_end.clone())?;
     let start_time = batch_builder.build_start_time(
@@ -280,9 +282,9 @@ pub fn create_microbatch_span(mb_unit: &MicrobatchExecUnit) -> tracing::Span {
     };
     let batch = &mb_unit.batch_ctx;
     create_info_span(MicrobatchEvaluated::start(
-        mb_unit.node.unique_id(),
-        mb_unit.node.schema(),
-        mb_unit.node.alias(),
+        mb_unit.node.unique_id().to_string(),
+        mb_unit.node.schema().to_string(),
+        mb_unit.node.alias().to_string(),
         batch.id.clone(),
         batch_size,
         batch.batch_index as u32 + 1,
@@ -363,6 +365,7 @@ fn materialize_microbatch_batch(mb_unit: MicrobatchExecUnit, ctx: &TaskRunnerCtx
         );
     }
 
+    let adapter = ctx.adapter_for(model)?;
     match materialize_microbatch_model(
         &mb_unit.raw_sql,
         model,
@@ -371,7 +374,7 @@ fn materialize_microbatch_batch(mb_unit: MicrobatchExecUnit, ctx: &TaskRunnerCtx
         &ctx.inner.materialization_resolver,
         ctx.env.clone(),
         &mb_unit.batch_ctx,
-        model.node_adapter(),
+        &adapter,
         ctx_for_batch,
         mb_unit.event_time_mapping,
         &ctx.inner.arg.io,
@@ -386,9 +389,9 @@ fn materialize_microbatch_batch(mb_unit: MicrobatchExecUnit, ctx: &TaskRunnerCtx
             if let Some(main_response) = main_response {
                 ctx.inner
                     .main_adapter_responses
-                    .insert(model.__common_attr__.unique_id.clone(), main_response);
+                    .upsert_sync(model.__common_attr__.unique_id.clone(), main_response);
             }
-            let _ = cache_materialization_return_value(ctx.env.clone(), &relations_map);
+            let _ = cache_materialization_return_value(&adapter, ctx.env.clone(), &relations_map);
             Ok(())
         }
         Err(e) => Err(e),
@@ -400,9 +403,7 @@ pub fn execute_model_remote(
     ctx: &TaskRunnerCtx,
     task_result: &TaskResult,
 ) -> FsResult<NodeStatus> {
-    let mut base_context = ctx.inner.base_context.clone();
-
-    add_task_context(&mut base_context, model.common(), &ctx.thread_id);
+    let base_context = ctx.run_base_context(model)?;
 
     // return early if the node is a ephemeral or inline model since we don't need to execute it.
     if model.materialized() == DbtMaterialization::Ephemeral
@@ -413,16 +414,16 @@ pub fn execute_model_remote(
 
     let sql_header = task_result
         .config_map
-        .get("sql_header")
-        .map(|v| v.value().clone());
+        .read_sync("sql_header", |_, v| v.clone());
 
+    let adapter = ctx.adapter_for(model)?;
     // Traditional warehouse execution via Jinja materialization macros
     match materialize_model(
         &task_result.sql_instruction.sql,
         ctx.nodes()
             .get_node_owned(&model.common().unique_id)
             .expect("model must be present in the node graph"),
-        model.node_adapter(),
+        &adapter,
         ctx.runtime_config(),
         &ctx.inner.materialization_resolver,
         ctx.env.clone(),
@@ -434,9 +435,9 @@ pub fn execute_model_remote(
             if let Some(main_response) = main_response {
                 ctx.inner
                     .main_adapter_responses
-                    .insert(model.__common_attr__.unique_id.clone(), main_response);
+                    .upsert_sync(model.__common_attr__.unique_id.clone(), main_response);
             }
-            let _ = cache_materialization_return_value(ctx.env.clone(), &relations_map);
+            let _ = cache_materialization_return_value(&adapter, ctx.env.clone(), &relations_map);
         }
         Err(e) => {
             return Err(e);
@@ -454,7 +455,7 @@ pub fn execute_model_remote(
             &base_context,
             &ctx.inner.arg.io,
         )?;
-        let _ = cache_materialization_return_value(ctx.env.clone(), &relations_map);
+        let _ = cache_materialization_return_value(&adapter, ctx.env.clone(), &relations_map);
     }
 
     let mut had_warning = false;

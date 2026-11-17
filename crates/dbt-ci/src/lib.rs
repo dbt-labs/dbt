@@ -2,6 +2,7 @@ pub mod args;
 pub mod bump_cargo_version;
 pub mod homebrew;
 pub mod pack;
+pub mod packages;
 pub mod publish;
 pub mod pyproject;
 pub(crate) mod release_version;

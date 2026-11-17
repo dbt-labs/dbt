@@ -1,6 +1,10 @@
 """Arrow bridge for the native adapter; no dependency on a Python dbt adapter."""
 import contextlib
 import json
+import random
+import time
+
+import adbc_driver_manager as adbc
 import sys
 
 import adbc_driver_manager.dbapi as dbapi
@@ -34,14 +38,28 @@ class Session:
             return cursor.fetch_arrow_table()
 
 
+def ingest(connection, identifier, data, schema):
+    for attempt in range(20):
+        try:
+            with connection.cursor() as cursor:
+                return cursor.adbc_ingest(identifier, data, mode='create', db_schema_name=schema)
+        except adbc.Error as error:
+            # A table supplies fresh input. One-shot readers and unknown commit
+            # outcomes cannot replay an upload safely.
+            if not (isinstance(data, pa.Table) and error.sqlstate == '40001'
+                    and 'snapshot catalog changed concurrently; retry the statement' in str(error)
+                    and attempt < 19):
+                raise
+            time.sleep(random.uniform(.05, .1) * min(2 ** attempt, 16))
+
+
 def run_model(connection, parameters):
     namespace = {'__name__': '__dbt_model__'}
     exec(compile(parameters['code'], 'dbt_model.py', 'exec'), namespace)
     session = Session(connection)
     result = arrow_result(namespace['model'](namespace['dbtObj'](lambda name: session.sql('select * from ' + name)), session))
     target = namespace['dbt_redis_adbc_target']
-    with connection.cursor() as cursor:
-        return cursor.adbc_ingest(target['identifier'], result, mode='create', db_schema_name=target['schema'])
+    return ingest(connection, target['identifier'], result, target['schema'])
 
 
 def load_csv(connection, parameters):
@@ -77,7 +95,7 @@ def load_csv(connection, parameters):
     with connection.cursor() as cursor:
         cursor.execute(parameters['create_schema_sql'])
         cursor.execute(parameters['drop_table_sql'])
-        return cursor.adbc_ingest(parameters['identifier'], table, mode='create', db_schema_name=parameters['schema'])
+    return ingest(connection, parameters['identifier'], table, parameters['schema'])
 
 
 def main():

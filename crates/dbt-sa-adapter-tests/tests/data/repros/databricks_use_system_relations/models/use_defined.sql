@@ -1,0 +1,1 @@
+select * from {{ source('information_schema', 'catalog_privileges') }}

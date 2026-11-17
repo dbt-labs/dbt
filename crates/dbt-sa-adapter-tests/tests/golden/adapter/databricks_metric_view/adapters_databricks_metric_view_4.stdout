@@ -1,0 +1,14 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/properties.yml
+   Parsing models/basic_metric_view.sql
+   Parsing models/metric_view_with_config.sql
+   Parsing models/metric_view_with_filter.sql
+   Parsing models/source_orders.sql
+ Rendering models/basic_metric_view.sql
+   Running models/basic_metric_view.sql
+ Succeeded model adapters_databricks_metric_view.basic_metric_view (metric_view) [1 of 1 in duration]
+==================== Execution Summary =====================
+Finished 'run' successfully for target 'databricks' [duration]
+Processed: 1 model
+Summary: 1 total | 1 success

@@ -175,7 +175,7 @@ impl ReplState {
                     database_builder.with_password(value);
                 }
                 _ => {
-                    database_builder.with_named_option(&key, value)?;
+                    database_builder.with_named_option(key, value)?;
                 }
             }
         }

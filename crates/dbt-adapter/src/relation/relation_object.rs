@@ -91,6 +91,27 @@ impl RelationObject {
         }
     }
 
+    /// This relation for `adapter_type`: its components (in the case its own adapter renders),
+    /// type, quote policy and run filter, with that adapter's quote character and include policy.
+    pub fn for_adapter(&self, adapter_type: AdapterType) -> Result<Self, minijinja::Error> {
+        let relation = &self.relation;
+        let (database, schema, identifier) = canonical_relation_parts(
+            Some(relation.adapter_type()),
+            relation.database().unwrap_or_default(),
+            relation.schema().unwrap_or_default(),
+            relation.identifier().unwrap_or_default(),
+        );
+        let rebuilt = do_create_relation(
+            adapter_type,
+            database,
+            schema,
+            Some(identifier),
+            relation.relation_type(),
+            relation.quote_policy(),
+        )?;
+        Ok(self.with_relation(rebuilt.into()))
+    }
+
     pub fn has_filter(&self) -> bool {
         self.run_filter.is_some()
     }
@@ -398,6 +419,8 @@ impl Object for RelationObject {
                 Some(Value::from(RelationType::MaterializedView.to_string()))
             }
             Some("Table") => Some(Value::from(RelationType::Table.to_string())),
+            // `this.incorporate(type=this.Function)` in the function materialization reads this.
+            Some("Function") => Some(Value::from(RelationType::Function.to_string())),
             Some("DynamicTable") => Some(Value::from(RelationType::DynamicTable.to_string())),
             Some("InteractiveTable") => {
                 Some(Value::from(RelationType::InteractiveTable.to_string()))
@@ -622,8 +645,8 @@ pub fn create_relation_from_node(
     if let Some(source) = node.as_any().downcast_ref::<DbtSource>() {
         return create_relation_from_source(
             adapter_type,
-            node.database(),
-            node.schema(),
+            node.database().to_string(),
+            node.schema().to_string(),
             node.base().alias.clone(), // all identifiers are consolidated to alias in InternalDbtNode
             node.quoting(),
             source,
@@ -632,8 +655,8 @@ pub fn create_relation_from_node(
 
     let mut relation = create_relation(
         adapter_type,
-        node.database(),
-        node.schema(),
+        node.database().to_string(),
+        node.schema().to_string(),
         Some(node.base().alias.clone()), // all identifiers are consolidated to alias in InternalDbtNode
         Some(RelationType::from(node.materialized())),
         node.quoting(),
@@ -894,7 +917,7 @@ impl Object for StaticBaseRelationObject {
                 iter.finish()?;
 
                 let local_config = minijinja_value_to_typed_struct::<InternalDbtNodeWrapper>(
-                    local_config_value.clone(),
+                    local_config_value,
                 )
                 .map_err(|e| {
                     minijinja::Error::new(
@@ -1120,6 +1143,22 @@ mod tests {
             .unwrap(),
             "Cat.Sch.Tbl"
         );
+    }
+
+    // Takes the target's include policy: DuckDB drops a `main` database.
+    #[test]
+    fn for_adapter_respells_with_the_target_adapter() {
+        let databricks = RelationObject::new(Arc::new(
+            Relation::new(
+                AdapterType::Databricks,
+                "main".to_string(),
+                "sch".to_string(),
+                "up".to_string(),
+            )
+            .with_quoting(ResolvedQuoting::trues()),
+        ));
+        let duckdb = databricks.for_adapter(AdapterType::DuckDB).unwrap();
+        assert_eq!(duckdb.render_self_as_str(), r#""sch"."up""#);
     }
 
     #[test]
@@ -1360,6 +1399,36 @@ mod tests {
         );
     }
 
+    /// The function materialization builds its target with
+    /// `this.incorporate(type=this.Function)`. If `Function` were undefined, the
+    /// target would keep the node's unset type and GRANT statements could not
+    /// tell it is a function.
+    #[test]
+    fn function_type_name_is_exposed_and_incorporates() {
+        let relation = do_create_relation(
+            AdapterType::Snowflake,
+            "d".to_string(),
+            "s".to_string(),
+            Some("f".to_string()),
+            None,
+            DEFAULT_RESOLVED_QUOTING,
+        )
+        .unwrap();
+        let relation = Arc::new(RelationObject::new(relation.into()));
+
+        assert_eq!(
+            relation.get_value(&Value::from("Function")),
+            Some(Value::from("function"))
+        );
+
+        let mut env = minijinja::Environment::new();
+        env.add_global("this", Value::from_dyn_object(relation));
+        let rendered = env
+            .render_str("{{ this.incorporate(type=this.Function).type }}", (), &[])
+            .unwrap();
+        assert_eq!(rendered, "function");
+    }
+
     /// Asserts on `ErrorKind`, not the message: both this arm and the catch-all name the called
     /// method in their message text, so a message-only assertion would pass either way.
     #[test]
@@ -1382,6 +1451,26 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(err.kind(), minijinja::ErrorKind::MissingArgument, "{err}");
+    }
+
+    #[test]
+    fn relation_exposes_quote_policy() {
+        let relation = Relation::new(
+            AdapterType::Snowflake,
+            "db".to_string(),
+            "schema".to_string(),
+            "table".to_string(),
+        )
+        .with_quoting(ResolvedQuoting {
+            database: true,
+            schema: false,
+            identifier: true,
+        });
+        jinja_assert(
+            RelationObject::new(Arc::new(relation)),
+            "{{ obj.quote_policy.database }} {{ obj.quote_policy.schema }} {{ obj.quote_policy.identifier }}",
+            "True False True",
+        );
     }
 
     #[test]
@@ -1409,6 +1498,7 @@ mod tests {
             },
             Some("event_date".to_string()),
         );
+        let lakecompute = relation.for_adapter(AdapterType::LakeCompute).unwrap();
 
         jinja_assert(
             relation,
@@ -1426,6 +1516,11 @@ mod tests {
             (select * from "d"."s"."k" where event_date >= to_timestamp_tz('2026-07-13T00:00:00+00:00') and event_date < to_timestamp_tz('2026-07-14T00:00:00+00:00'))
             (select * from "d"."s" where event_date >= to_timestamp_tz('2026-07-13T00:00:00+00:00') and event_date < to_timestamp_tz('2026-07-14T00:00:00+00:00'))
             "#,
+        );
+        jinja_assert(
+            lakecompute,
+            "{{ obj }}",
+            r#"(select * from "d"."s"."i" where event_date >= '2026-07-13T00:00:00+00:00' and event_date < '2026-07-14T00:00:00+00:00')"#,
         );
     }
 

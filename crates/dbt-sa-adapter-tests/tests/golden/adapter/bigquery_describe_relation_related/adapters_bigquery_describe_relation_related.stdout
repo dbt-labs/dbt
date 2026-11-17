@@ -1,0 +1,26 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/model.sql
+bigquery
+time partitioning
+None
+range partitioning
+None
+is replaceable returns false
+False
+is replaceable returns true
+False
+ Rendering models/model.sql
+bigquery
+time partitioning
+{'cluster': {'fields': ['user_id']}, 'description': None, 'kms_key_name': None, 'labels': None, 'partition': {'field': 'user_id', 'data_type': 'int64', 'time_ingestion_partitioning': False, 'copy_partitions': False, 'granularity': undefined, 'range': {'start': 0, 'end': 100, 'interval': 10}}, 'refresh': {'enable_refresh': True, 'refresh_interval_minutes': 30.0, 'expiration_timestamp': "TIMESTAMP 'YYYY-MM-DDTHH:MM:SS.sssZ'"}, 'tags': None}
+range partitioning
+{'cluster': {'fields': ['user_id']}, 'description': None, 'kms_key_name': None, 'labels': None, 'partition': {'field': 'event_date', 'data_type': 'DATE', 'time_ingestion_partitioning': False, 'copy_partitions': False, 'granularity': 'DAY', 'range': undefined}, 'refresh': {'enable_refresh': True, 'refresh_interval_minutes': 30.0, 'expiration_timestamp': "TIMESTAMP 'YYYY-MM-DDTHH:MM:SS.sssZ'"}, 'tags': None}
+is replaceable returns false
+False
+is replaceable returns true
+False
+==================== Execution Summary =====================
+Finished 'compile' successfully for target 'bigquery' [duration]
+Processed: 1 model
+Summary: 1 total | 1 success

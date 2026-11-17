@@ -6,8 +6,6 @@ use std::sync::{Arc, Mutex};
 use crate::response::{AdapterResponse, ResultObject};
 use crate::value::none_value;
 use dbt_agate::AgateTable;
-use dbt_common::tracing::span_info::find_and_update_span_attrs;
-use dbt_telemetry::NodeEvaluated;
 
 /// A store for DBT query results that provides callable functions to access the store
 #[derive(Clone, Default)]
@@ -73,14 +71,6 @@ impl ResultStore {
             } else {
                 Some(AgateTable::default())
             };
-
-            // Record rows_affected on the NodeEvaluated span if non-negative.
-            // dbt-core uses -1 to indicate unknown rows affected. Telemetry uses `None` for unknown.
-            if let Some(rows_affected) = response.known_rows_affected() {
-                find_and_update_span_attrs::<_, NodeEvaluated>(|attrs| {
-                    attrs.rows_affected = Some(rows_affected as u64);
-                });
-            }
 
             let value = Value::from_object(ResultObject::new(response, table));
             iter.finish()?;
@@ -155,12 +145,6 @@ impl ResultStore {
                 && let Some(rows) = rows_affected.parse::<i64>().ok()
             {
                 response = response.with_rows_affected(rows);
-            }
-            // dbt-core uses -1 to indicate unknown rows affected. Telemetry uses `None` for unknown.
-            if let Some(rows) = response.known_rows_affected() {
-                find_and_update_span_attrs::<_, NodeEvaluated>(|attrs| {
-                    attrs.rows_affected = Some(rows as u64);
-                });
             }
             let mut results = store.results.lock().unwrap();
             let value = Value::from_object(ResultObject::new(

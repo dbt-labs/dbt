@@ -1,6 +1,6 @@
 [package]
 name = "dbt-lease"
-description = "File-based lease/mutex primitive for gating concurrent access to a shared local file, plus OS-appropriate cache-directory resolution"
+description = "File-based, inter-process lease concurrency primitive"
 version.workspace = true
 homepage.workspace = true
 repository.workspace = true
@@ -13,9 +13,10 @@ edition.workspace = true
 workspace = true
 
 [dependencies]
-base64 = { workspace = true }
 dbt-fusion-workspace-hack = { version = "0.1" }
-dirs = { workspace = true }
+
+base64 = { workspace = true }
+getrandom = { workspace = true }
 rand = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }

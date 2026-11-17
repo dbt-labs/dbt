@@ -1,9 +1,7 @@
-import { useQuery } from '@tanstack/react-query';
+import { useMetadataDataSource, useQuery } from 'dbt-docs-lib';
+import type { Asset, ExecutionInfo } from 'dbt-docs-lib/domain';
 
-import { useMetadataDataSource } from '../context/MetadataDataProvider';
 import type { AssetArgs } from '../typings/args';
-import type { Asset } from '../typings/domain/asset';
-import type { ExecutionInfo } from '../typings/domain/executionInfo';
 import { assetKey } from '../util/queryKeys';
 
 /** Poll cadence (ms) while an asset is mid-run. */

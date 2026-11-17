@@ -49,3 +49,30 @@
   {{ return(changes_dict) }}
 
 {% endmacro %}
+
+
+{% macro duckdb__diff_columns(source_columns, target_columns) %}
+  {% set result = [] %}
+  {% for sc in source_columns %}
+    {% if target_columns | selectattr("name", "equalto_ignore_ascii_case", sc.name) | list | length == 0 %}
+      {% do result.append(sc) %}
+    {% endif %}
+  {% endfor %}
+
+  {{ return(result) }}
+{% endmacro %}
+
+
+{% macro duckdb__diff_column_data_types(source_columns, target_columns) %}
+  {% set result = [] %}
+  {% for sc in source_columns %}
+    {% set tc = target_columns | selectattr("name", "equalto_ignore_ascii_case", sc.name) | list | first %}
+    {% if tc %}
+      {% if not sc.can_expand_to(other_column=tc) %}
+        {{ result.append( { 'column_name': tc.name, 'new_type': sc.expanded_data_type } ) }}
+      {% endif %}
+    {% endif %}
+  {% endfor %}
+
+  {{ return(result) }}
+{% endmacro %}

@@ -1,0 +1,74 @@
+3578335f:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists `e2e`.`adapters_databricks_persist_docs`
+85f3743c:
+- sequence: 0
+  type: execute
+  sql: SHOW SCHEMAS IN `e2e`
+model.test.a:
+- sequence: 0
+  type: execute
+  sql: |-
+    SELECT
+    table_name,
+    if(table_type IN ('EXTERNAL', 'MANAGED', 'MANAGED_SHALLOW_CLONE', 'EXTERNAL_SHALLOW_CLONE'), 'table', lower(table_type)) AS table_type,
+    lower(data_source_format) AS file_format,
+    table_schema,
+    table_owner,
+    table_catalog,
+    if(
+    table_type IN (
+    'EXTERNAL',
+    'MANAGED',
+    'MANAGED_SHALLOW_CLONE',
+    'EXTERNAL_SHALLOW_CLONE'
+    ),
+    lower(table_type),
+    NULL
+    ) AS databricks_table_type
+    FROM `system`.`information_schema`.`tables`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'adapters_databricks_persist_docs'
+- sequence: 1
+  type: execute
+  sql: |-
+    SELECT
+    table_catalog,
+    table_schema,
+    table_name,
+    filter_name,
+    target_columns
+    FROM `e2e`.`information_schema`.`row_filters`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'adapters_databricks_persist_docs'
+    AND table_name = 'a'
+- sequence: 2
+  type: execute
+  sql: |-
+    create or replace table `e2e`.`adapters_databricks_persist_docs`.`a`
+    
+    
+    
+    using delta
+    
+    
+    
+    
+    
+    
+    
+    
+    comment 'Test model for persist_docs'
+    
+    as
+    select 1 as id, 'test' as name
+- sequence: 3
+  type: execute
+  sql: DESCRIBE TABLE EXTENDED `e2e`.`adapters_databricks_persist_docs`.`a` AS JSON
+- sequence: 4
+  type: execute
+  sql: COMMENT ON COLUMN `e2e`.`adapters_databricks_persist_docs`.`a`.`id` IS 'The primary key'
+- sequence: 5
+  type: execute
+  sql: COMMENT ON COLUMN `e2e`.`adapters_databricks_persist_docs`.`a`.`name` IS 'The user\'s name'

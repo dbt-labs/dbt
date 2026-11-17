@@ -1,0 +1,10 @@
+version: 2
+
+models:
+  - name: fl
+    config:
+      contract:
+        enforced: true
+    columns:
+      - name: test_float
+        data_type: FLOAT

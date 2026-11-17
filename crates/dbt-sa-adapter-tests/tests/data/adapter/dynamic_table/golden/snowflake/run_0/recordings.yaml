@@ -1,0 +1,16 @@
+3076ba1b:
+- sequence: 0
+  type: execute
+  sql: CREATE OR ALTER SCHEMA development.adapters_snowflake_dynamic_table
+84bdc9d1:
+- sequence: 0
+  type: execute
+  sql: USE DATABASE development
+98dbcd95:
+- sequence: 0
+  type: execute
+  sql: CREATE OR ALTER TABLE development.adapters_snowflake_dynamic_table.source_table (id int, name varchar, id2 int) CHANGE_TRACKING = TRUE
+d0df2dc8:
+- sequence: 0
+  type: execute
+  sql: INSERT INTO development.adapters_snowflake_dynamic_table.source_table VALUES (1, 'a', 2), (5, 'b', 6)

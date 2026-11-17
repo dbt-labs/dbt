@@ -58,6 +58,33 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(table.schema.names, ['file_row', 'id', 'name'])
         self.assertEqual(table.schema.field('id').type, pa.int64())
 
+    @patch.object(runtime.time, 'sleep')
+    def test_table_ingest_retries_only_refused_publications(self, sleep):
+        connection = MagicMock()
+        cursor = connection.cursor.return_value.__enter__.return_value
+        error = runtime.adbc.OperationalError(
+            'snapshot catalog changed concurrently; retry the statement',
+            status_code=runtime.adbc.AdbcStatusCode.IO, sqlstate='40001')
+        cursor.adbc_ingest.side_effect = [error, 2]
+        self.assertEqual(runtime.ingest(connection, 't', pa.table({'id': [1, 2]}), 's'), 2)
+        self.assertEqual(cursor.adbc_ingest.call_count, 2)
+        sleep.assert_called_once()
+
+    @patch.object(runtime.time, 'sleep')
+    def test_reader_and_unknown_outcomes_are_not_replayed(self, sleep):
+        for data, message in [
+            (pa.table({'id': [1]}).to_reader(), 'snapshot catalog changed concurrently; retry the statement'),
+            (pa.table({'id': [1]}), 'publication outcome unknown'),
+        ]:
+            connection = MagicMock()
+            cursor = connection.cursor.return_value.__enter__.return_value
+            cursor.adbc_ingest.side_effect = runtime.adbc.OperationalError(
+                message, status_code=runtime.adbc.AdbcStatusCode.IO, sqlstate='40001')
+            with self.assertRaises(runtime.adbc.Error):
+                runtime.ingest(connection, 't', data, 's')
+            cursor.adbc_ingest.assert_called_once()
+        sleep.assert_not_called()
+
     def test_bad_csv_does_not_replace_existing_table(self):
         connection = MagicMock()
         cursor = connection.cursor.return_value.__enter__.return_value

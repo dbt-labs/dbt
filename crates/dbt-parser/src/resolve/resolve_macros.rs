@@ -616,6 +616,7 @@ pub fn typecheck_macros(
                 unique_id,
                 adapter_type,
                 true,
+                None,
             );
         }));
     }

@@ -123,21 +123,32 @@ impl TelemetryMiddleware for TelemetryMetricAggregator {
                 no_op,
             );
 
-            // Build node_type_counts hashmap from NodeCounts metrics
+            // Build node_type_counts and probe_counts in one pass over the metrics
             #[allow(clippy::disallowed_types)]
-            let node_type_counts: std::collections::HashMap<String, u64> = data_provider
-                .get_all_metrics()
-                .iter()
-                .filter_map(|(key, count)| match FusionMetricKey::try_from(*key).ok() {
-                    Some(FusionMetricKey::NodeCounts(node_type)) if *count > 0 => {
-                        Some((node_type.as_static_ref().to_string(), *count))
+            let (node_type_counts, probe_counts) = data_provider.get_all_metrics().iter().fold(
+                (
+                    std::collections::HashMap::<String, u64>::new(),
+                    std::collections::HashMap::<String, u64>::new(),
+                ),
+                |(mut node_type_counts, mut probe_counts), (key, count)| {
+                    if *count > 0 {
+                        match FusionMetricKey::try_from(*key).ok() {
+                            Some(FusionMetricKey::NodeCounts(node_type)) => {
+                                node_type_counts
+                                    .insert(node_type.as_static_ref().to_string(), *count);
+                            }
+                            Some(FusionMetricKey::HookCounts) => {
+                                node_type_counts.insert("hook".to_string(), *count);
+                            }
+                            Some(FusionMetricKey::CompatibilityProbe(probe)) => {
+                                probe_counts.insert(probe.name().to_string(), *count);
+                            }
+                            _ => {}
+                        }
                     }
-                    Some(FusionMetricKey::HookCounts) if *count > 0 => {
-                        Some(("hook".to_string(), *count))
-                    }
-                    _ => None,
-                })
-                .collect();
+                    (node_type_counts, probe_counts)
+                },
+            );
 
             // Build status_counts hashmap from aggregated node outcome totals
             #[allow(clippy::disallowed_types)]
@@ -172,6 +183,7 @@ impl TelemetryMiddleware for TelemetryMetricAggregator {
                 )),
                 node_type_counts,
                 status_counts,
+                probe_counts,
             });
         }
 

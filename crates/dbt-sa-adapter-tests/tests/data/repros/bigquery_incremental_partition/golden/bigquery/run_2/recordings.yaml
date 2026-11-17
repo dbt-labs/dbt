@@ -1,0 +1,67 @@
+model.BigQueryPartitionConfigRender.model:
+- sequence: 0
+  type: execute
+  sql: |-
+    select * from (
+    
+    
+    SELECT
+    id,
+    name,
+    species,
+    age,
+    created_at
+    FROM `dbt-test-env`.`bigquery_incremental_partition`.`animal`
+    ) as __dbt_sbq
+    where false
+    limit 0
+- sequence: 1
+  type: execute
+  sql: |-
+    create or replace table `dbt-test-env`.`bigquery_incremental_partition`.`model__dbt_tmp`(`id` INT64, `name` STRING, `species` STRING, `age` INT64)
+    
+    partition by _PARTITIONDATE
+    
+    
+    
+    OPTIONS(
+    expiration_timestamp=TIMESTAMP_ADD(CURRENT_TIMESTAMP(), INTERVAL 12 hour)
+    )
+- sequence: 2
+  type: execute
+  sql: |-
+    insert into `dbt-test-env`.`bigquery_incremental_partition`.`model__dbt_tmp` (_PARTITIONTIME, `id`, `name`, `species`, `age`)
+    
+    
+    select TIMESTAMP(created_at) as _PARTITIONTIME, * EXCEPT(created_at) from (
+    
+    
+    SELECT
+    id,
+    name,
+    species,
+    age,
+    created_at
+    FROM `dbt-test-env`.`bigquery_incremental_partition`.`animal`
+    );
+- sequence: 3
+  type: execute
+  sql: |-
+    select distinct _PARTITIONDATE
+    from `dbt-test-env`.`bigquery_incremental_partition`.`model__dbt_tmp`
+- sequence: 4
+  type: execute
+  sql: ''
+- sequence: 5
+  type: execute
+  sql: |-
+    -- Clean up the temp table
+    drop table if exists `dbt-test-env`.`bigquery_incremental_partition`.`model__dbt_tmp`
+model.BigQueryPartitionConfigRender.model.get_table_schema.86abb661:
+- sequence: 0
+  type: get_table_schema
+  table_name: 86abb661
+model.BigQueryPartitionConfigRender.model.get_table_schema.d64fa5f6:
+- sequence: 0
+  type: get_table_schema
+  table_name: d64fa5f6

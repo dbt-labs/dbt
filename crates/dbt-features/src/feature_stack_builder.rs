@@ -5,7 +5,7 @@ use std::sync::Arc;
 use dbt_adapter::adapter::DefaultAdapterFactory;
 use dbt_adapter::sql_types::DefaultTypeOpsFactory;
 use dbt_common::FsError;
-use dbt_common::collections::DashMap;
+use dbt_common::collections::SccHashMap;
 use dbt_common::sources_extractor::SourcesExtractor;
 use dbt_dag::schedule::Schedule;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
@@ -26,12 +26,12 @@ use dbt_tasks_sa::task_runner_hooks::DefaultTaskRunnerHooksFactory;
 use crate::adapter::AdapterFeature;
 use crate::antlr_parser::AntlrParserFeature;
 use crate::cli::CliFeatureBuilder;
+use crate::experimental::ExperimentalFeature;
 use crate::feature_stack::{FeatureStack, InstrumentationFeature};
 use crate::index::{IndexFeature, NoOpIndexHooks};
 use crate::loader::LoaderFeature;
 use crate::login::LoginFeature;
 use crate::metricflow::MetricflowFeature;
-use crate::plugin::PluginFeature;
 use crate::resolver::ResolverFeature;
 use crate::sidecar::SidecarFeature;
 use crate::task_runner::TaskRunnerFeature;
@@ -71,9 +71,9 @@ impl TaskRunnerCtxFactory for DefaultTaskRunnerCtxFactory {
         _env: &'a Arc<JinjaEnv>,
         _freshness_results: Option<&'a dyn PreTaskRunData>,
         _extended_ctx: &'a dyn ExtendedCtx,
-    ) -> Pin<Box<dyn Future<Output = Result<DashMap<String, String>, Box<FsError>>> + Send + 'a>>
+    ) -> Pin<Box<dyn Future<Output = Result<SccHashMap<String, String>, Box<FsError>>> + Send + 'a>>
     {
-        Box::pin(async move { Ok(DashMap::default()) })
+        Box::pin(async move { Ok(SccHashMap::default()) })
     }
 }
 
@@ -174,7 +174,7 @@ impl FeatureStackBuilder {
             metricflow,
             task_runner,
             resolver,
-            plugins: PluginFeature::default(),
+            experimentals: ExperimentalFeature::default(),
             loader,
             jinja,
             lake_compute,

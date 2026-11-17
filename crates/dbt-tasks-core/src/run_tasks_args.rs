@@ -87,6 +87,8 @@ pub struct RunTasksArgs {
     pub phase: Phases,
     /// Optional (resolved) sampling plan to locate local sampled data for sources
     pub sample_renaming: BTreeMap<String, (String, String, String)>,
+    /// An extension command's own options, by name, for the experimental that owns the command.
+    pub command_options: BTreeMap<String, Vec<String>>,
     /// Parsed select expression from the invocation.
     pub select: Option<SelectExpression>,
     /// Parsed exclude expression from the invocation.
@@ -115,6 +117,8 @@ pub struct RunTasksArgs {
     pub fail_fast_flag: bool,
     /// Whether to skip running post hook operations.
     pub skip_post_hooks: bool,
+    /// Whether to skip running on-run-start hook operations.
+    pub skip_on_run_start_hooks: bool,
     /// Hidden test optimization flags.
     pub optimize_tests: dbt_common::collections::HashSet<OptimizeTestsOptions>,
     /// Whether the gRPC run-cache service is explicitly requested via CLI flag.
@@ -173,6 +177,7 @@ impl RunTasksArgs {
             defer: arg.defer,
             run_cache_mode: arg.run_cache_mode.clone(),
             sample_renaming: arg.sample_renaming.clone(),
+            command_options: arg.command_options.clone(),
             select: arg.select.clone(),
             exclude: arg.exclude.clone(),
             phase: arg.phase.clone(),
@@ -186,6 +191,7 @@ impl RunTasksArgs {
             fail_fast,
             fail_fast_flag: arg.fail_fast,
             skip_post_hooks: arg.skip_post_hooks,
+            skip_on_run_start_hooks: arg.skip_on_run_start_hooks,
             optimize_tests: arg.optimize_tests.clone(),
             run_cache_service: arg.run_cache_service,
             warn_error_options: arg.warn_error_options.clone(),

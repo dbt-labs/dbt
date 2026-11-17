@@ -1,0 +1,4 @@
+[warning] [FailedToCreateDatabase (dbt1051)]: Failed to create schema 'bigquery_execute_project_profile_config' in database 'dbt-test-env' in remote for model.hello_world.hello: [BigQuery] googleapi: Error 400: The project foo has not enabled BigQuery., invalid (sqlstate: 00000, vendor_code: -2147483648)
+[error] [DbDriverFailed (dbt1308)]: Database Error in model hello (../scratch/target/run/hello_world/models/hello.sql)
+  [BigQuery] googleapi: Error 400: The project foo has not enabled BigQuery., invalid (sqlstate: 00000, vendor_code: -2147483648)
+  (in run/hello_world/models/hello.sql)

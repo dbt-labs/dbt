@@ -1,0 +1,7 @@
+kind: Fixes
+body: '[ClickHouse] Replacing a view falls back to drop + create on servers without atomic EXCHANGE support (filesystems without renameat2); existing dictionaries are typed as dictionary relations'
+time: 2026-10-15T18:38:58.125442+02:00
+custom:
+    author: koletzilla
+    issue: ""
+    project: dbt-core

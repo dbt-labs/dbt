@@ -24,6 +24,7 @@ use dbt_telemetry::ExecutionPhase;
 use minijinja::State;
 use minijinja::listener::RenderingEventListener;
 use minijinja::machinery::Span;
+use minijinja::value::OverlayMap;
 use minijinja::{Error, ErrorKind, Value as MinijinjaValue, value::Object};
 use serde::Serialize;
 
@@ -260,7 +261,7 @@ fn build_model_context_fields<S: Serialize>(
 
 /// Extend the base context with stateful functions
 pub fn extend_base_context_stateful_fn(
-    base_context: &mut BTreeMap<String, MinijinjaValue>,
+    base_context: &mut OverlayMap,
     root_project_name: &str,
     packages: BTreeSet<String>,
     result_store: Option<ResultStore>,
@@ -313,20 +314,22 @@ pub fn extend_base_context_stateful_fn(
 ///
 /// Calling this on each per-batch context gives every batch its own registry,
 /// mirroring dbt-core where each batch runner builds its own model context.
-pub fn reset_result_store(context: &mut BTreeMap<String, MinijinjaValue>) -> ResultStore {
+pub fn reset_result_store(context: &mut impl Extend<(String, MinijinjaValue)>) -> ResultStore {
     let result_store = ResultStore::default();
-    context.insert(
-        "store_result".to_owned(),
-        MinijinjaValue::from_function(result_store.store_result()),
-    );
-    context.insert(
-        "load_result".to_owned(),
-        MinijinjaValue::from_function(result_store.load_result()),
-    );
-    context.insert(
-        "store_raw_result".to_owned(),
-        MinijinjaValue::from_function(result_store.store_raw_result()),
-    );
+    context.extend([
+        (
+            "store_result".to_owned(),
+            MinijinjaValue::from_function(result_store.store_result()),
+        ),
+        (
+            "load_result".to_owned(),
+            MinijinjaValue::from_function(result_store.load_result()),
+        ),
+        (
+            "store_raw_result".to_owned(),
+            MinijinjaValue::from_function(result_store.store_raw_result()),
+        ),
+    ]);
     result_store
 }
 
@@ -472,12 +475,12 @@ pub fn build_run_node_context<S: Serialize>(
     deprecated_config: &S,
     adapter_type: AdapterType,
     agate_table: Option<AgateTable>,
-    base_context: &BTreeMap<String, MinijinjaValue>,
+    base_context: &MinijinjaValue,
     io_args: &IoArgs,
     phase: ExecutionPhase,
     sql_header: Option<MinijinjaValue>,
     packages: BTreeSet<String>,
-) -> (BTreeMap<String, MinijinjaValue>, ResultStore) {
+) -> (OverlayMap, ResultStore) {
     build_run_node_context_from_arc(
         Arc::from(node.clone_node()),
         deprecated_config,
@@ -498,15 +501,18 @@ pub fn build_run_node_context_from_arc<S: Serialize>(
     deprecated_config: &S,
     adapter_type: AdapterType,
     agate_table: Option<AgateTable>,
-    base_context: &BTreeMap<String, MinijinjaValue>,
+    base_context: &MinijinjaValue,
     io_args: &IoArgs,
     phase: ExecutionPhase,
     sql_header: Option<MinijinjaValue>,
     packages: BTreeSet<String>,
-) -> (BTreeMap<String, MinijinjaValue>, ResultStore) {
+) -> (OverlayMap, ResultStore) {
+    let mut context = OverlayMap::extending(base_context);
     // Downcast the base `builtins` Object to its concrete map here so the
     // shared overlay builder receives a typed map (no downcast on its side).
-    let base_builtins = base_context.get("builtins").map(downcast_builtins_map);
+    let base_builtins = context
+        .get("builtins")
+        .map(|builtins| downcast_builtins_map(&builtins));
     let (overlay, result_store) = build_run_node_overlay(
         &node,
         deprecated_config,
@@ -519,7 +525,6 @@ pub fn build_run_node_context_from_arc<S: Serialize>(
         packages,
     );
 
-    let mut context = base_context.clone();
     context.extend(to_jinja_btreemap(&overlay));
     (context, result_store)
 }

@@ -1,0 +1,5 @@
+name: 'snowflake_seed_escape_backslashes'
+
+config-version: 2
+version: '0.1'
+profile: 'fusion_tests'

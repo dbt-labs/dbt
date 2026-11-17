@@ -1,0 +1,18 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/t_incremental.sql
+   Parsing models/t_table.sql
+   Parsing models/v_view.sql
+ Rendering models/v_view.sql
+   Running models/v_view.sql
+ Succeeded model adapters_databricks_use_materialization_v2_configs.v_view (view) [1 of 3 in duration]
+ Rendering models/t_table.sql
+   Running models/t_table.sql
+ Succeeded model adapters_databricks_use_materialization_v2_configs.t_table (table) [2 of 3 in duration]
+ Rendering models/t_incremental.sql
+   Running models/t_incremental.sql
+ Succeeded model adapters_databricks_use_materialization_v2_configs.t_incremental (incremental) [3 of 3 in duration]
+==================== Execution Summary =====================
+Finished 'run' successfully for target 'databricks' [duration]
+Processed: 3 models
+Summary: 3 total | 3 success

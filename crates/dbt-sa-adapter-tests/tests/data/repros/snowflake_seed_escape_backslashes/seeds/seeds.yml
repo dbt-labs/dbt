@@ -1,0 +1,9 @@
+version: 2
+
+seeds:
+  - name: backslash_seed
+    config:
+      column_types:
+        id: bigint
+        test_case: varchar
+        value: varchar

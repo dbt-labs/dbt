@@ -1,0 +1,28 @@
+test.bigquery_cross_project_incremental.assert_incremental_preserves_existing_rows:
+- sequence: 0
+  type: execute
+  sql: |-
+    select
+    count(*) as failures,
+    count(*) != 0 as should_warn,
+    count(*) != 0 as should_error
+    from (
+    
+    
+    with row_counts as (
+    select
+    count(*) as total_rows,
+    countif(id = 1) as initial_rows,
+    countif(id = 2) as incremental_rows
+    from `dbt-test-env`.`bigquery_cross_project_incremental_preserves_existing_rows`.`incremental_model`
+    )
+    
+    select *
+    from row_counts
+    where total_rows != 2
+    or initial_rows != 1
+    or incremental_rows != 1
+    
+    
+    
+    ) dbt_internal_test

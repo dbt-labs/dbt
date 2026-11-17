@@ -1,4 +1,4 @@
-use dbt_common::collections::DashMap;
+use dbt_common::collections::SccHashMap;
 use dbt_common::io_args::StaticAnalysisKind;
 use dbt_common::telemetry_command::TelemetryCommand;
 use dbt_common::{
@@ -13,7 +13,7 @@ use dbt_schemas::{
 };
 use proto_rust::v1::public::events::fusion::{
     AdapterInfo, AdapterInfoV2, Invocation, InvocationEnv, Login, PackageInstall, ResourceCounts,
-    RunModel, StaticAnalysisInvocation,
+    RunCheck, RunModel, StaticAnalysisInvocation,
 };
 pub use proto_rust::v1::public::events::fusion::{LoginErrorCode, LoginType};
 use proto_rust::v1::public::fields::core_types::ObservabilityMetric;
@@ -229,7 +229,7 @@ pub fn invocation_end_event(
 #[allow(clippy::too_many_arguments)]
 pub fn run_model_event(
     invocation_id: String,
-    run_stats: &DashMap<String, Stat>,
+    run_stats: &SccHashMap<String, Stat>,
     node: &dyn InternalDbtNodeAttributes,
     maybe_incremental_strategy: Option<String>,
     snapshot_strategy: Option<String>,
@@ -242,7 +242,7 @@ pub fn run_model_event(
     execution_metrics: Option<ExecutionMetrics>,
 ) {
     let unique_id = node.unique_id();
-    if !run_stats.contains_key(&unique_id) {
+    let Some(stat) = run_stats.read_sync(unique_id, |_, stat| stat.clone()) else {
         // Seeds are expected to not have stats. Any other node type missing
         // stats indicates a bug (see PR #9146 regression).
         debug_assert!(
@@ -250,8 +250,7 @@ pub fn run_model_event(
             "run_stats missing for non-seed node {unique_id} — telemetry will be skipped"
         );
         return;
-    }
-    let stat = run_stats.get(&unique_id).unwrap();
+    };
     let access = node
         .get_access()
         .as_ref()
@@ -456,19 +455,24 @@ pub fn resource_counts_event(
     let operation_count = (resolved_state.operations.on_run_start.len()
         + resolved_state.operations.on_run_end.len()) as i32;
     let analysis_count = resolved_state.nodes.analyses.len() as i32;
-    // We need to add functions to ResourceCounts proto
-    let _function_count = resolved_state.nodes.functions.len() as i32;
+    // Disabled functions stay in `nodes.functions` (as in dbt-core's
+    // `manifest.functions`), so count only enabled ones, like the other counts.
+    let function_count = resolved_state
+        .nodes
+        .functions
+        .values()
+        .filter(|function| function.deprecated_config.enabled != Some(false))
+        .count() as i32;
 
     let source_count = resolved_state.nodes.sources.len() as i32;
     let macro_count = resolved_state.macros.macros.len() as i32;
     let group_count = resolved_state.nodes.groups.len() as i32;
     let unit_test_count = resolved_state.nodes.unit_tests.len() as i32;
     let exposure_count = resolved_state.nodes.exposures.len() as i32;
-
-    // to-be-implemented
-    let metric_count = 0;
-    let semantic_model_count = 0;
-    let saved_query_count = 0;
+    let check_count = resolved_state.nodes.checks.len() as i32;
+    let metric_count = resolved_state.nodes.metrics.len() as i32;
+    let semantic_model_count = resolved_state.nodes.semantic_models.len() as i32;
+    let saved_query_count = resolved_state.nodes.saved_queries.len() as i32;
 
     let message = ResourceCounts {
         // REQUIRED invocation_id - globally unique identifier
@@ -505,6 +509,10 @@ pub fn resource_counts_event(
         saved_queries: saved_query_count,
         // total count of catalogs in the project.
         catalogs: catalog_count,
+        // total count of checks in the project.
+        checks: check_count,
+        // total count of functions in the project.
+        functions: function_count,
         // This field is a toggle to enable enrichment of the message by the Vortex service.
         enrichment: None,
         common_context: None,
@@ -720,6 +728,44 @@ pub fn static_analysis_propagation_event(
         strict_node_count: strict_count as i32,
         baseline_node_count: baseline_count as i32,
         off_node_count: off_count as i32,
+        common_context: None,
+    };
+
+    let _ = log_proto(message);
+}
+
+/// One project check's result, as reported to telemetry by [`run_check_event`].
+pub struct RunCheckEventArgs<'a> {
+    pub invocation_id: String,
+    pub unique_id: &'a str,
+    /// `pass` | `fail` | `warn` | `error` | `skipped`.
+    pub status: &'a str,
+    /// `error` | `warn`.
+    pub severity: &'a str,
+    /// Why the check was skipped or errored; `None` for `pass` | `fail` | `warn`.
+    pub reason: Option<&'a str>,
+    /// How the node selection bore on the check's rows: `none` | `applied` | `ignored` | `unknown`.
+    pub selection: &'a str,
+    pub violations: Option<u64>,
+    pub execution_time: f64,
+}
+
+/// Emit one `RunCheck` event for a single project check, including one that did not run.
+pub fn run_check_event(args: RunCheckEventArgs<'_>) {
+    let message = RunCheck {
+        enrichment: None,
+        event_id: Uuid::new_v4().to_string(),
+        invocation_id: args.invocation_id,
+        // MD5 hash of the unique_id, matching RunModel's `model_id`.
+        check_id: format!("{:x}", md5::compute(args.unique_id)),
+        status: args.status.to_string(),
+        severity: args.severity.to_string(),
+        violations: args
+            .violations
+            .map(|v| i64::try_from(v).unwrap_or(i64::MAX)),
+        execution_time: args.execution_time,
+        reason: args.reason.unwrap_or_default().to_string(),
+        selection: args.selection.to_string(),
         common_context: None,
     };
 

@@ -1,0 +1,49 @@
+41a26ce2:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists development.adapters_snowflake_repros_sql_header
+dbbbff64:
+- sequence: 0
+  type: execute
+  sql: |-
+    show terse schemas in database development
+    limit 10000
+model.sql_header.hello:
+- sequence: 0
+  type: execute
+  sql: ALTER SESSION SET TIMEZONE = 'Asia/Kolkata'
+- sequence: 1
+  type: execute
+  sql: |-
+    create or replace transient  table development.adapters_snowflake_repros_sql_header.hello
+    
+    
+    
+    
+    as (
+    
+    
+    
+    select 'Hello World' as message
+    )
+model.sql_header.hello_set_sql_header:
+- sequence: 0
+  type: execute
+  sql: SHOW OBJECTS IN SCHEMA "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_REPROS_SQL_HEADER" LIMIT 10000
+- sequence: 1
+  type: execute
+  sql: ALTER SESSION SET TIMEZONE = 'Asia/Kolkata'
+- sequence: 2
+  type: execute
+  sql: |-
+    create or replace transient  table development.adapters_snowflake_repros_sql_header.hello_set_sql_header
+    
+    
+    
+    
+    as (
+    
+    
+    
+    select 'Hello World' as message
+    )

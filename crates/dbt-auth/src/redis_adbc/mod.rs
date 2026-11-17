@@ -40,6 +40,15 @@ fn string_or_default<'a>(
     }
 }
 
+fn scalar_string(value: &dbt_yaml::Value) -> Option<Cow<'_, str>> {
+    match value {
+        dbt_yaml::Value::String(..) | dbt_yaml::Value::Number(..) | dbt_yaml::Value::Bool(..) => {
+            Some(crate::config::yml_value_to_string(value))
+        }
+        _ => None,
+    }
+}
+
 fn parse_config(config: &AdapterConfig) -> Result<ConnectionConfig<'_>, AuthError> {
     const FIELDS: &[&str] = &[
         "type",
@@ -88,8 +97,7 @@ fn parse_config(config: &AdapterConfig) -> Result<ConnectionConfig<'_>, AuthErro
         options.push((OptionDatabase::Username, Cow::Borrowed(username)));
     }
     if let Some(value) = config.get("password").filter(|value| !value.is_null()) {
-        let password = value
-            .as_scalar_string()
+        let password = scalar_string(value)
             .ok_or_else(|| AuthError::config("Redis 'password' must be a scalar"))?;
         if !password.is_empty() {
             options.push((OptionDatabase::Password, password));
@@ -110,8 +118,7 @@ fn parse_config(config: &AdapterConfig) -> Result<ConnectionConfig<'_>, AuthErro
     ];
     for (field, option) in PROFILE_OPTIONS {
         if let Some(value) = config.get(field).filter(|value| !value.is_null()) {
-            let value = value
-                .as_scalar_string()
+            let value = scalar_string(value)
                 .ok_or_else(|| AuthError::config(format!("Redis '{field}' must be a scalar")))?;
             if !value.is_empty() {
                 options.push((OptionDatabase::Other((*option).to_owned()), value));
@@ -142,8 +149,7 @@ fn parse_config(config: &AdapterConfig) -> Result<ConnectionConfig<'_>, AuthErro
                     "driver_options cannot override a named Redis profile option",
                 ));
             }
-            let value = value
-                .as_scalar_string()
+            let value = scalar_string(value)
                 .filter(|_| !value.is_null())
                 .ok_or_else(|| {
                     AuthError::config(

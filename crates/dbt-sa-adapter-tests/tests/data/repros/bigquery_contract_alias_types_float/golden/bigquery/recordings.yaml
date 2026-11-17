@@ -1,0 +1,52 @@
+bb6589ac:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists `dbt-test-env`.`bigquery_contract_alias_types_float`
+model.bigquery_contract_alias_types_float.fl:
+- sequence: 0
+  type: execute
+  sql: |-
+    select * from (
+    
+    
+    select cast(1 as FLOAT64) as test_float
+    ) as __dbt_sbq
+    where false and current_timestamp() = current_timestamp()
+    limit 0
+- sequence: 1
+  type: execute
+  sql: |-
+    select * from (
+    select
+    
+    
+    cast(null as FLOAT64)
+    as test_float
+    ) as __dbt_sbq
+    where false and current_timestamp() = current_timestamp()
+    limit 0
+- sequence: 2
+  type: execute
+  sql: |-
+    create or replace table `dbt-test-env`.`bigquery_contract_alias_types_float`.`fl`
+    
+    (
+    test_float FLOAT64
+    
+    )
+    
+    
+    
+    
+    
+    
+    OPTIONS()
+    as (
+    
+    select test_float
+    from (
+    
+    
+    select cast(1 as FLOAT64) as test_float
+    ) as model_subq
+    );

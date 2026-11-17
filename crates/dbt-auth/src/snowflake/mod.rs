@@ -701,9 +701,9 @@ fn apply_connection_args(
     for key in CONNECTION_PARAMS {
         if let Some(value) = config.get_string(key) {
             match key {
-                "port" => builder.with_named_option(snowflake::PORT, value.as_ref()),
+                "port" => builder.with_named_option(snowflake::PORT, value.into_owned()),
                 "client_session_keep_alive" => {
-                    builder.with_named_option(snowflake::KEEP_SESSION_ALIVE, value.as_ref())
+                    builder.with_named_option(snowflake::KEEP_SESSION_ALIVE, value.into_owned())
                 }
                 _ => panic!("unexpected key: {key}"),
             }?;

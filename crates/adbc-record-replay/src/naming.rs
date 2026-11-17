@@ -77,6 +77,21 @@ fn cleanup_debug_propagation_probe_table(input: &str) -> String {
         .to_string()
 }
 
+/// Masks the volatile suffix in the BigQuery publication probe's table name
+/// (`__dbt_debug_publication_<nanos>`, `debug_propagation.rs`). Same reasoning
+/// as `cleanup_debug_probe_table` above.
+fn cleanup_debug_publication_probe_table(input: &str) -> String {
+    let re = Regex::new(r"__dbt_debug_publication_\d+").unwrap();
+    re.replace_all(input, "__dbt_debug_publication_MASKED_ID")
+        .to_string()
+}
+
+fn cleanup_query_comment_dbt_version(input: &str) -> String {
+    let re = Regex::new(r#""dbt_version"\s*:\s*"[^"]*""#).unwrap();
+    re.replace_all(input, r#""dbt_version": "DBT_VERSION""#)
+        .to_string()
+}
+
 fn checksum8(input: &str) -> String {
     let input = cleanup_schema_name(input);
     let input = cleanup_ephemeral_timestamps(&input);
@@ -85,6 +100,8 @@ fn checksum8(input: &str) -> String {
     let input = cleanup_exchange_probe_tables(&input);
     let input = cleanup_debug_probe_table(&input);
     let input = cleanup_debug_propagation_probe_table(&input);
+    let input = cleanup_debug_publication_probe_table(&input);
+    let input = cleanup_query_comment_dbt_version(&input);
     let mut hasher = DefaultHasher::new();
     input.hash(&mut hasher);
     let hash = hasher.finish();
@@ -120,8 +137,10 @@ pub fn compute_file_name(
         },
     };
 
-    let dir_counters = COUNTERS.entry(recordings_dir.to_path_buf()).or_default();
-    let mut entry = dir_counters.entry(id.clone()).or_insert(0);
+    let dir_counters = COUNTERS
+        .entry_sync(recordings_dir.to_path_buf())
+        .or_default();
+    let mut entry = dir_counters.entry_sync(id.clone()).or_insert(0);
     let file_name = format!("{}-{}", id, *entry);
     *entry += 1;
 
@@ -146,8 +165,10 @@ pub fn compute_file_name_for_table_schema(
         Some(node_id) => format!("{node_id}.get_table_schema.{hash}"),
         None => format!("get_table_schema.{hash}"),
     };
-    let dir_counters = COUNTERS.entry(recordings_dir.to_path_buf()).or_default();
-    let mut entry = dir_counters.entry(counter_key.clone()).or_insert(0);
+    let dir_counters = COUNTERS
+        .entry_sync(recordings_dir.to_path_buf())
+        .or_default();
+    let mut entry = dir_counters.entry_sync(counter_key.clone()).or_insert(0);
     let file_name = format!("{counter_key}-{}", *entry);
     *entry += 1;
     file_name
@@ -177,8 +198,10 @@ pub fn compute_file_name_for_get_objects(
         Some(node_id) => format!("{node_id}.get_objects.{hash}"),
         None => format!("get_objects.{hash}"),
     };
-    let dir_counters = COUNTERS.entry(recordings_dir.to_path_buf()).or_default();
-    let mut entry = dir_counters.entry(counter_key.clone()).or_insert(0);
+    let dir_counters = COUNTERS
+        .entry_sync(recordings_dir.to_path_buf())
+        .or_default();
+    let mut entry = dir_counters.entry_sync(counter_key.clone()).or_insert(0);
     let file_name = format!("{counter_key}-{}", *entry);
     *entry += 1;
     file_name

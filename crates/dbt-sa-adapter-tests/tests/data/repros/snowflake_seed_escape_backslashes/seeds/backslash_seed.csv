@@ -1,0 +1,14 @@
+id,test_case,value
+1,no_backslash,MomBaby
+2,single_backslash,Mom\Baby
+3,double_backslash,Mom\\Baby
+4,trailing_backslash,Baby\
+5,literal_backslash_n,line1\nline2
+6,actual_newline,"line1
+line2"
+7,literal_backslash_t,col1\tcol2
+8,actual_tab,"col1	col2"
+9,literal_backslash_r,line1\rline2
+10,literal_backslash_b,a\bc
+11,literal_backslash_f,a\fc
+12,literal_single_quote,it's

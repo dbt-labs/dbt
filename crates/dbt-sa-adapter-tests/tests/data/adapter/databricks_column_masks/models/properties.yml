@@ -1,0 +1,69 @@
+version: 2
+models:
+  - name: test_password_mask
+    config:
+      pre_hook: ['{{ create_full_mask() }}']
+    columns:
+      - name: id
+        data_type: string
+      - name: password
+        column_mask:
+          function: full_mask
+        data_type: string
+  - name: test_weird_mask
+    config:
+      pre_hook: ['{{ create_weird_mask() }}']
+    columns:
+      - name: id
+        data_type: string
+      - name: password
+        data_type: string
+        column_mask:
+          function: weird_mask
+          using_columns: "id, 'literal_string', 333, true, null, INTERVAL 2 DAYS"
+  - name: test_full_mask_inc
+    config:
+      pre_hook: ['{{ create_full_mask() }}']
+    columns:
+      - name: id
+      - name: name
+        column_mask:
+          function: full_mask
+      - name: email
+        column_mask:
+          function: full_mask
+      - name: password
+  - name: test_email_mask_inc
+    config:
+      pre_hook: ['{{ create_email_mask() }}', '{{ create_password_mask() }}']
+    columns:
+      - name: id
+      - name: name
+      - name: email
+        column_mask:
+          function: email_mask
+      - name: password
+        column_mask:
+          function: password_mask
+          using_columns: "name, 'literal_string'"
+  - name: test_password_mask_strm
+    config:
+      pre_hook: ['{{ create_full_mask() }}']
+    columns:
+      - name: id
+        data_type: string
+      - name: password
+        column_mask:
+          function: full_mask
+        data_type: string
+  - name: test_weird_mask_strm
+    config:
+      pre_hook: ['{{ create_weird_mask() }}']
+    columns:
+      - name: id
+        data_type: string
+      - name: password
+        data_type: string
+        column_mask:
+          function: weird_mask
+          using_columns: "id, 'literal_string', 333, true, null, INTERVAL 2 DAYS"

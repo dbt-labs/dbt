@@ -16,6 +16,8 @@ pub struct CompilationConfig {
     /// When true, the schedule used when initializing
     /// a schema store is for all nodes in the project.
     pub use_full_schema_store: bool,
+    /// Whether to return freed heap memory to the OS after parsing
+    pub release_free_heap_after_parse: bool,
 }
 
 impl Default for CompilationConfig {
@@ -34,6 +36,7 @@ impl Default for CompilationConfig {
             use_resolver_state_deps: false,
             no_version_check: false,
             use_full_schema_store: false,
+            release_free_heap_after_parse: true,
         }
     }
 }

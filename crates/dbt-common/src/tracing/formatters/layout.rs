@@ -1,68 +1,137 @@
-use std::borrow::Cow;
+use std::fmt;
 
 use super::{
-    color::{DIM, maybe_apply_color},
+    color::{DIM, MaybeColored},
     constants::{ACTION_WIDTH, DEFAULT_TERMINAL_WIDTH},
 };
 
-/// Formats a centered delimiter line with '=' padding characters and optional DIM color.
+/// Displays a centered delimiter line with '=' padding characters and optional DIM color.
 ///
 /// This is used to create section headers in terminal output, such as
 /// "Execution Summary", "Test Failures", and "Errors and Warnings".
-///
-/// # Arguments
-/// * `text` - The text to center within the delimiter
-/// * `width` - Optional terminal width. Uses DEFAULT_TERMINAL_WIDTH if None.
-/// * `colorize` - Whether to apply DIM color styling to the delimiter
+/// `width` falls back to DEFAULT_TERMINAL_WIDTH.
 ///
 /// # Example
+/// ```ignore
+/// let header = Delimiter::new(" Execution Summary ", Some(80), true);
+/// // Displays: DIM-colored "========================= Execution Summary ========================="
 /// ```
-/// let header = format_delimiter(" Execution Summary ", Some(80), true);
-/// // Returns: DIM-colored "========================= Execution Summary ========================="
-/// ```
-pub fn format_delimiter(text: &str, width: Option<usize>, colorize: bool) -> String {
-    let width = width.unwrap_or(DEFAULT_TERMINAL_WIDTH);
-    let raw = format!("{:=^width$}", text, width = width);
-    maybe_apply_color(&DIM, &raw, colorize)
+#[derive(Clone, Copy)]
+pub struct Delimiter<'a> {
+    pub text: &'a str,
+    pub width: Option<usize>,
+    pub colorize: bool,
 }
 
-/// Right aligns the given const (i.e. known at compile time) action text
-/// to a fixed width defined by ACTION_WIDTH.
-///
-/// Use it for the first column of progress messages.
-///
-/// # Arguments
-/// * `action` - The action text to right align
-///
-/// # Returns
-/// A right-aligned string padded to ACTION_WIDTH characters
-///
-/// # Panics
-/// Panics in debug builds if the action text exceeds ACTION_WIDTH characters.
-pub fn right_align_static_action(action: &'static str) -> String {
-    // Right align and pad to ACTION_WIDTH characters
-    debug_assert!(
-        action.len() <= ACTION_WIDTH,
-        "Action text too long for padding"
-    );
-
-    format!("{:>width$}", action, width = ACTION_WIDTH)
+impl<'a> Delimiter<'a> {
+    pub fn new(text: &'a str, width: Option<usize>, colorize: bool) -> Self {
+        Self {
+            text,
+            width,
+            colorize,
+        }
+    }
 }
 
-/// Right aligns the given action text to a fixed width defined by ACTION_WIDTH.
+impl fmt::Display for Delimiter<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}",
+            MaybeColored::new(
+                &DIM,
+                Centered {
+                    text: self.text,
+                    width: self.width.unwrap_or(DEFAULT_TERMINAL_WIDTH),
+                },
+                self.colorize,
+            )
+        )
+    }
+}
+
+/// `text` centered between '=' padding to `width` characters.
+struct Centered<'a> {
+    text: &'a str,
+    width: usize,
+}
+
+impl fmt::Display for Centered<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:=^width$}", self.text, width = self.width)
+    }
+}
+
+/// Text that knows its own length, so it can be aligned without being rendered first.
+pub trait MeasuredText: fmt::Display {
+    /// Length of the rendered text in bytes
+    fn byte_len(&self) -> usize;
+    /// Length of the rendered text in characters
+    fn char_count(&self) -> usize;
+}
+
+impl MeasuredText for &str {
+    fn byte_len(&self) -> usize {
+        self.len()
+    }
+
+    fn char_count(&self) -> usize {
+        self.chars().count()
+    }
+}
+
+/// Displays `text` with its first character uppercased.
+#[derive(Clone, Copy)]
+pub struct CapitalizedFirst<'a>(pub &'a str);
+
+impl CapitalizedFirst<'_> {
+    fn split(&self) -> (Option<char>, &str) {
+        let mut chars = self.0.chars();
+        (chars.next(), chars.as_str())
+    }
+}
+
+impl fmt::Display for CapitalizedFirst<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let (first, rest) = self.split();
+        for upper in first.into_iter().flat_map(char::to_uppercase) {
+            fmt::Write::write_char(f, upper)?;
+        }
+        f.write_str(rest)
+    }
+}
+
+impl MeasuredText for CapitalizedFirst<'_> {
+    fn byte_len(&self) -> usize {
+        let (first, rest) = self.split();
+        let first: usize = first
+            .into_iter()
+            .flat_map(char::to_uppercase)
+            .map(char::len_utf8)
+            .sum();
+        first + rest.len()
+    }
+
+    fn char_count(&self) -> usize {
+        let (first, rest) = self.split();
+        first.into_iter().flat_map(char::to_uppercase).count() + rest.chars().count()
+    }
+}
+
+/// Displays action text right aligned to a fixed width defined by ACTION_WIDTH.
 ///
-/// If the action text is known at compile time, prefer using `right_align_static_action`.
-///
-/// # Arguments
-/// * `action` - The action text to right align (as a Cow)
-///
-/// # Returns
-/// A right-aligned string padded to ACTION_WIDTH characters, or the original
-/// string if it exceeds ACTION_WIDTH.
-pub fn right_align_action(action: Cow<'_, str>) -> Cow<'_, str> {
-    if action.len() >= ACTION_WIDTH {
-        action
-    } else {
-        Cow::Owned(format!("{:>width$}", action, width = ACTION_WIDTH))
+/// Use it for the first column of progress messages. Text of ACTION_WIDTH bytes or more
+/// is displayed as is.
+#[derive(Clone, Copy)]
+pub struct RightAligned<T>(pub T);
+
+impl<T: MeasuredText> fmt::Display for RightAligned<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.0.byte_len() < ACTION_WIDTH {
+            for _ in self.0.char_count()..ACTION_WIDTH {
+                fmt::Write::write_char(f, ' ')?;
+            }
+        }
+        write!(f, "{}", self.0)
     }
 }

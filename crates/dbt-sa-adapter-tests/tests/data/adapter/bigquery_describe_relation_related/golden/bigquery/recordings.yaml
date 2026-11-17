@@ -1,0 +1,64 @@
+model.test.model:
+- sequence: 0
+  type: execute
+  sql: CREATE SCHEMA IF NOT EXISTS adapters_bigquery_describe_relation_related
+- sequence: 1
+  type: execute
+  sql: DROP TABLE IF EXISTS adapters_bigquery_describe_relation_related.base_a
+- sequence: 2
+  type: execute
+  sql: |-
+    CREATE OR REPLACE TABLE adapters_bigquery_describe_relation_related.base_a (user_id INT64)
+    PARTITION BY RANGE_BUCKET(user_id, GENERATE_ARRAY(0, 100, 10))
+    CLUSTER BY user_id
+- sequence: 3
+  type: execute
+  sql: INSERT INTO adapters_bigquery_describe_relation_related.base_a SELECT user_id FROM UNNEST(GENERATE_ARRAY(0, 99)) as user_id
+- sequence: 4
+  type: execute
+  sql: |-
+    CREATE OR REPLACE MATERIALIZED VIEW adapters_bigquery_describe_relation_related.a
+    PARTITION BY RANGE_BUCKET(user_id, GENERATE_ARRAY(0, 100, 10))
+    CLUSTER BY user_id
+    OPTIONS(
+    enable_refresh=true,
+    refresh_interval_minutes=30
+    )
+    AS SELECT user_id FROM adapters_bigquery_describe_relation_related.base_a
+- sequence: 5
+  type: execute
+  sql: DROP TABLE IF EXISTS adapters_bigquery_describe_relation_related.base_b
+- sequence: 6
+  type: execute
+  sql: |-
+    CREATE OR REPLACE TABLE adapters_bigquery_describe_relation_related.base_b (event_date Date, user_id INT64)
+    PARTITION BY event_date
+    CLUSTER BY user_id
+- sequence: 7
+  type: execute
+  sql: INSERT INTO adapters_bigquery_describe_relation_related.base_b SELECT CURRENT_DATE() as event_date, user_id FROM UNNEST(GENERATE_ARRAY(0, 99)) as user_id
+- sequence: 8
+  type: execute
+  sql: |-
+    CREATE OR REPLACE MATERIALIZED VIEW adapters_bigquery_describe_relation_related.b
+    PARTITION BY event_date
+    CLUSTER BY user_id
+    OPTIONS(
+    enable_refresh=true,
+    refresh_interval_minutes=30
+    )
+    AS SELECT event_date, user_id FROM adapters_bigquery_describe_relation_related.base_b
+model.test.model.get_table_schema.8fe1af47:
+- sequence: 0
+  type: get_table_schema
+  table_name: 8fe1af47
+- sequence: 1
+  type: get_table_schema
+  table_name: 8fe1af47
+- sequence: 2
+  type: get_table_schema
+  table_name: 8fe1af47
+model.test.model.get_table_schema.d3574281:
+- sequence: 0
+  type: get_table_schema
+  table_name: d3574281
