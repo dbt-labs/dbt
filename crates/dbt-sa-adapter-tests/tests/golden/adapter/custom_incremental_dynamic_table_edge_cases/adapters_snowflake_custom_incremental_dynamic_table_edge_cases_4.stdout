@@ -1,0 +1,15 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/sources.yml
+   Parsing models/duplicate_keys.sql
+   Parsing models/no_change_tracking.sql
+   Parsing models/over_replaced_table.sql
+   Parsing models/self_reference.sql
+   Parsing models/stg_orders.sql
+   Parsing models/widened_column.sql
+   Parsing models/wrong_materialization.sql
+[PASS] duplicate_keys: the failed refresh left its rows
+[PASS] widened_column: the failed refresh left its rows
+[PASS] over_replaced_table: update and insert arrive, the deleted order 2 stays
+==================== Execution Summary =====================
+Finished 'run-operation' with 1 warning for target 'snowflake' [duration]

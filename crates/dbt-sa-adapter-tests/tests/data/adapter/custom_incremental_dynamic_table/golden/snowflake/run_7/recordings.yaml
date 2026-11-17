@@ -1,29 +1,167 @@
-test.test.orders_merge_matches_source:
+dbbbff64:
 - sequence: 0
   type: execute
   sql: |-
+    show terse schemas in database development
+    limit 10000
+model.test.orders_attrs:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: show dynamic tables like 'ORDERS_ATTRS' in schema "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_CUSTOM_INCREMENTAL_DYNAMIC_TABLE"
+- sequence: 2
+  type: execute
+  sql: use warehouse [MASKED_WH]
+model.test.orders_empty:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: show dynamic tables like 'ORDERS_EMPTY' in schema "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_CUSTOM_INCREMENTAL_DYNAMIC_TABLE"
+- sequence: 2
+  type: execute
+  sql: alter dynamic table development.adapters_snowflake_custom_incremental_dynamic_table.orders_empty refresh
+- sequence: 3
+  type: execute
+  sql: use warehouse [MASKED_WH]
+model.test.orders_merge:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: show dynamic tables like 'ORDERS_MERGE' in schema "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_CUSTOM_INCREMENTAL_DYNAMIC_TABLE"
+- sequence: 2
+  type: execute
+  sql: alter dynamic table development.adapters_snowflake_custom_incremental_dynamic_table.orders_merge refresh
+- sequence: 3
+  type: execute
+  sql: use warehouse [MASKED_WH]
+model.test.orders_switch:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: show dynamic tables like 'ORDERS_SWITCH' in schema "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_CUSTOM_INCREMENTAL_DYNAMIC_TABLE"
+- sequence: 2
+  type: execute
+  sql: |-
+    create or replace temporary table development.adapters_snowflake_custom_incremental_dynamic_table.orders_switch__dbt_tmp
+    as (
+    select * from (
+    
     select
-    count(*) as failures,
-    count(*) != 0 as should_warn,
-    count(*) != 0 as should_error
-    from (
-    
-    
-    -- A merge CI DT over DEFAULT changes holds the source's current rows, after each refresh and
-    -- rebuild: after apply_changes, order 1 updated, order 2 deleted, order 4 inserted; after
-    -- apply_more_changes, order 2 re-inserted and order 4 updated.
-    with expected as (
-    select order_id, customer_id, amount, false as is_deleted from development.adapters_snowflake_custom_incremental_dynamic_table.orders
-    ),
-    
-    actual as (
-    select order_id, customer_id, amount, is_deleted from development.adapters_snowflake_custom_incremental_dynamic_table.orders_merge
+    o.order_id,
+    o.amount,
+    o.METADATA$ACTION = 'DELETE' and not o.METADATA$ISUPDATE as is_deleted
+    from development.adapters_snowflake_custom_incremental_dynamic_table.orders changes(information => DEFAULT) at(offset => 0) as o
+    qualify row_number() over (
+    partition by o.order_id
+    order by case when o.METADATA$ACTION = 'INSERT' then 0 else 1 end
+    ) = 1
+    ) limit 0
     )
+- sequence: 3
+  type: execute
+  sql: describe table development.adapters_snowflake_custom_incremental_dynamic_table.orders_switch__dbt_tmp
+- sequence: 4
+  type: execute
+  sql: drop table if exists development.adapters_snowflake_custom_incremental_dynamic_table.orders_switch__dbt_tmp cascade
+- sequence: 5
+  type: execute
+  sql: |-
+    create or replace dynamic table development.adapters_snowflake_custom_incremental_dynamic_table.orders_switch ("ORDER_ID" NUMBER(38,0), "AMOUNT" NUMBER(10,2), "IS_DELETED" BOOLEAN)
     
-    (select 'missing' as problem, * from expected minus select 'missing', * from actual)
-    union all
-    (select 'unexpected' as problem, * from actual minus select 'unexpected', * from expected)
+    warehouse = [MASKED_WH]
+    
+    
+    refresh_mode = CUSTOM_INCREMENTAL
+    
+    initialize = ON_CREATE
+    
+    
+    scheduler = 'DISABLE'
     
     
     
-    ) dbt_internal_test
+    
+    
+    
+    
+    
+    
+    
+    refresh using (
+    merge into SELF as DBT_INTERNAL_DEST
+    using (
+    
+    select
+    o.order_id,
+    o.amount,
+    o.METADATA$ACTION = 'DELETE' and not o.METADATA$ISUPDATE as is_deleted
+    from development.adapters_snowflake_custom_incremental_dynamic_table.orders changes(information => DEFAULT) as o
+    qualify row_number() over (
+    partition by o.order_id
+    order by case when o.METADATA$ACTION = 'INSERT' then 0 else 1 end
+    ) = 1
+    ) as DBT_INTERNAL_SOURCE
+    on DBT_INTERNAL_DEST.order_id = DBT_INTERNAL_SOURCE.order_id
+    when matched and coalesce(DBT_INTERNAL_SOURCE.is_deleted, false) then delete
+    when matched then update set "ORDER_ID" = DBT_INTERNAL_SOURCE."ORDER_ID", "AMOUNT" = DBT_INTERNAL_SOURCE."AMOUNT", "IS_DELETED" = DBT_INTERNAL_SOURCE."IS_DELETED"
+    when not matched and not coalesce(DBT_INTERNAL_SOURCE.is_deleted, false) then insert ("ORDER_ID", "AMOUNT", "IS_DELETED") values (DBT_INTERNAL_SOURCE."ORDER_ID", DBT_INTERNAL_SOURCE."AMOUNT", DBT_INTERNAL_SOURCE."IS_DELETED")
+    )
+- sequence: 6
+  type: execute
+  sql: alter dynamic table development.adapters_snowflake_custom_incremental_dynamic_table.orders_switch refresh
+- sequence: 7
+  type: execute
+  sql: use warehouse [MASKED_WH]
+model.test.orders_transient:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: show dynamic tables like 'ORDERS_TRANSIENT' in schema "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_CUSTOM_INCREMENTAL_DYNAMIC_TABLE"
+- sequence: 2
+  type: execute
+  sql: show tables like 'ORDERS_TRANSIENT' in schema "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_CUSTOM_INCREMENTAL_DYNAMIC_TABLE"
+- sequence: 3
+  type: execute
+  sql: alter dynamic table development.adapters_snowflake_custom_incremental_dynamic_table.orders_transient refresh
+- sequence: 4
+  type: execute
+  sql: use warehouse [MASKED_WH]
+model.test.orders_with_region:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: show dynamic tables like 'ORDERS_WITH_REGION' in schema "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_CUSTOM_INCREMENTAL_DYNAMIC_TABLE"
+- sequence: 2
+  type: execute
+  sql: alter dynamic table development.adapters_snowflake_custom_incremental_dynamic_table.orders_with_region refresh
+- sequence: 3
+  type: execute
+  sql: use warehouse [MASKED_WH]
+model.test.stock_merge:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: SHOW OBJECTS IN SCHEMA "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_CUSTOM_INCREMENTAL_DYNAMIC_TABLE" LIMIT 10000
+- sequence: 2
+  type: execute
+  sql: show dynamic tables like 'STOCK_MERGE' in schema "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_CUSTOM_INCREMENTAL_DYNAMIC_TABLE"
+- sequence: 3
+  type: execute
+  sql: alter dynamic table development.adapters_snowflake_custom_incremental_dynamic_table.stock_merge refresh
+- sequence: 4
+  type: execute
+  sql: use warehouse [MASKED_WH]

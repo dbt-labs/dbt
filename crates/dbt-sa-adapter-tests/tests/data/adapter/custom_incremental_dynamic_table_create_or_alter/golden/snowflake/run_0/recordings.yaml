@@ -1,16 +1,52 @@
-111d3bb8:
-- sequence: 0
-  type: execute
-  sql: INSERT INTO development.adapters_snowflake_custom_incremental_dynamic_table_create_or_alter.orders VALUES (1, 10.00), (2, 20.00), (3, 30.00)
 1c20debb:
 - sequence: 0
   type: execute
   sql: CREATE OR ALTER SCHEMA development.adapters_snowflake_custom_incremental_dynamic_table_create_or_alter
-73141d48:
+2b1bfbd5:
 - sequence: 0
   type: execute
-  sql: CREATE OR REPLACE TABLE development.adapters_snowflake_custom_incremental_dynamic_table_create_or_alter.orders (order_id int, amount number(10,2)) CHANGE_TRACKING = TRUE
+  sql: DROP DYNAMIC TABLE IF EXISTS development.adapters_snowflake_custom_incremental_dynamic_table_create_or_alter.attrs_kept
+2b89ca0d:
+- sequence: 0
+  type: execute
+  sql: INSERT INTO development.adapters_snowflake_custom_incremental_dynamic_table_create_or_alter.orders VALUES (1, 10.00, 'a'), (2, 20.00, 'b')
+'34251e27':
+- sequence: 0
+  type: execute
+  sql: CREATE OR REPLACE TAG development.adapters_snowflake_custom_incremental_dynamic_table_create_or_alter.mytag
+42ba0b1b:
+- sequence: 0
+  type: execute
+  sql: DROP DYNAMIC TABLE IF EXISTS development.adapters_snowflake_custom_incremental_dynamic_table_create_or_alter.ok_widen
+4321ac7e:
+- sequence: 0
+  type: execute
+  sql: DROP DYNAMIC TABLE IF EXISTS development.adapters_snowflake_custom_incremental_dynamic_table_create_or_alter.err_type_narrow
+578f62fd:
+- sequence: 0
+  type: execute
+  sql: DROP DYNAMIC TABLE IF EXISTS development.adapters_snowflake_custom_incremental_dynamic_table_create_or_alter.err_type_change
+635be4bb:
+- sequence: 0
+  type: execute
+  sql: CREATE OR REPLACE TABLE development.adapters_snowflake_custom_incremental_dynamic_table_create_or_alter.orders (order_id int, amount number(10,2), note varchar(10)) CHANGE_TRACKING = TRUE
+8200942a:
+- sequence: 0
+  type: execute
+  sql: DROP DYNAMIC TABLE IF EXISTS development.adapters_snowflake_custom_incremental_dynamic_table_create_or_alter.ok_drop
 84bdc9d1:
 - sequence: 0
   type: execute
   sql: USE DATABASE development
+b4f9a293:
+- sequence: 0
+  type: execute
+  sql: DROP DYNAMIC TABLE IF EXISTS development.adapters_snowflake_custom_incremental_dynamic_table_create_or_alter.body_edit
+c89a1d50:
+- sequence: 0
+  type: execute
+  sql: CREATE OR REPLACE ROW ACCESS POLICY development.adapters_snowflake_custom_incremental_dynamic_table_create_or_alter.rap AS (order_id number) RETURNS BOOLEAN -> true
+ea6ed5a2:
+- sequence: 0
+  type: execute
+  sql: DROP DYNAMIC TABLE IF EXISTS development.adapters_snowflake_custom_incremental_dynamic_table_create_or_alter.err_reorder

@@ -1,0 +1,15 @@
+flags:
+  send_anonymous_usage_stats: false
+name: test
+profile: fusion_tests
+
+macro-paths: ["macros"]
+
+vars:
+  cluster_key: amount
+  attrs_target_lag: 2 hours
+  switch_to_regular: false
+
+models:
+  test:
+    +static_analysis: off

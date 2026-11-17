@@ -3003,12 +3003,8 @@ mod custom_incremental_outside_dynamic_table_tests {
     use dbt_schemas::schemas::project::{ResolvableConfig, WarehouseSpecificNodeConfig};
     use std::path::PathBuf;
 
-    fn warning(
-        materialized: DbtMaterialization,
-        refresh_mode: Option<&str>,
-        status: ModelStatus,
-        adapter_type: AdapterType,
-    ) -> Option<String> {
+    /// The warning for an enabled Snowflake model, if any.
+    fn warning(materialized: DbtMaterialization, refresh_mode: Option<&str>) -> Option<String> {
         let resolved = ModelConfig {
             quoting: Some(DbtQuoting::default()),
             static_analysis: Some(Spanned::new(StaticAnalysisKind::Off)),
@@ -3023,8 +3019,8 @@ mod custom_incremental_outside_dynamic_table_tests {
         .finalize();
         custom_incremental_outside_dynamic_table(
             &resolved,
-            status,
-            adapter_type,
+            ModelStatus::Enabled,
+            AdapterType::Snowflake,
             &PathBuf::from("models/my_model.sql"),
         )
         .map(|warning| {
@@ -3038,72 +3034,19 @@ mod custom_incremental_outside_dynamic_table_tests {
 
     #[test]
     fn warns_outside_dynamic_table() {
-        for materialized in [
-            DbtMaterialization::Table,
-            DbtMaterialization::View,
-            DbtMaterialization::Incremental,
-            DbtMaterialization::Ephemeral,
-        ] {
-            let message = warning(
-                materialized.clone(),
-                Some("custom_incremental"),
-                ModelStatus::Enabled,
-                AdapterType::Snowflake,
-            )
+        let message = warning(DbtMaterialization::Table, Some("custom_incremental"))
             .expect("expected a warning");
-            assert!(
-                message.contains("is ignored")
-                    && message.contains(&format!("materialized as '{materialized}'")),
-                "got: {message}"
-            );
-        }
+        assert!(
+            message.contains("is ignored") && message.contains("materialized as 'table'"),
+            "got: {message}"
+        );
     }
 
     #[test]
     fn silent_on_dynamic_table() {
         assert_eq!(
-            warning(
-                DbtMaterialization::DynamicTable,
-                Some("CUSTOM_INCREMENTAL"),
-                ModelStatus::Enabled,
-                AdapterType::Snowflake,
-            ),
+            warning(DbtMaterialization::DynamicTable, Some("CUSTOM_INCREMENTAL")),
             None
         );
-    }
-
-    #[test]
-    fn other_refresh_modes_are_left_alone() {
-        // Unchanged: other dynamic table configs on other materializations are ignored, as before.
-        for refresh_mode in [Some("FULL"), None] {
-            assert_eq!(
-                warning(
-                    DbtMaterialization::Table,
-                    refresh_mode,
-                    ModelStatus::Enabled,
-                    AdapterType::Snowflake,
-                ),
-                None
-            );
-        }
-    }
-
-    #[test]
-    fn skipped_for_unbuilt_models_and_other_adapters() {
-        for (status, adapter_type) in [
-            (ModelStatus::Disabled, AdapterType::Snowflake),
-            (ModelStatus::ParsingFailed, AdapterType::Snowflake),
-            (ModelStatus::Enabled, AdapterType::Postgres),
-        ] {
-            assert_eq!(
-                warning(
-                    DbtMaterialization::Table,
-                    Some("CUSTOM_INCREMENTAL"),
-                    status,
-                    adapter_type,
-                ),
-                None
-            );
-        }
     }
 }

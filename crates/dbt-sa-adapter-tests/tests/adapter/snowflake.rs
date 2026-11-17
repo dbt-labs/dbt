@@ -425,9 +425,13 @@ async fn adapters_snowflake_dynamic_table() -> FsResult<()> {
     .await
 }
 
+/// Merge custom incremental dynamic tables with `snowflake_dynamic_table_create_or_alter` off, one
+/// model per scenario (see the project's README): merges across two rounds of source changes,
+/// `append_only`, an ephemeral upstream, `--empty`, dynamic table attributes and ALTER, a switch to a
+/// regular dynamic table and back, and `--full-refresh`. `verify` prints [PASS]/[FAIL] lines.
 #[dbt_runtime::test]
 async fn adapters_snowflake_custom_incremental_dynamic_table() -> FsResult<()> {
-    const ORDERS: &str = "models/orders_merge.sql";
+    const PROJECT: &str = "dbt_project.yml";
     run_fs_record_replay_task_seq(
         env!("CARGO_MANIFEST_DIR"),
         &FS_RUNNER,
@@ -436,228 +440,38 @@ async fn adapters_snowflake_custom_incremental_dynamic_table() -> FsResult<()> {
         AdapterType::Snowflake.as_ref(),
         None,
         &[
-            AdapterRecordReplayTurn::new("run-operation set_up", &[]), // run_0: source tables
-            AdapterRecordReplayTurn::new("run", &[]), // run_1: CREATE, columns discovered
-            AdapterRecordReplayTurn::new("run-operation apply_changes", &[]), // run_2
-            AdapterRecordReplayTurn::new("run", &[]), // run_3: no-op build, manual refresh
-            AdapterRecordReplayTurn::new("test --exclude orders_transient_after_full_refresh", &[]), // run_4: updates and deletes merged
-            AdapterRecordReplayTurn::new("run-operation apply_more_changes", &[]), // run_5
-            AdapterRecordReplayTurn::new("run", &[]), // run_6: second refresh
-            AdapterRecordReplayTurn::new("test --select orders_merge_matches_source", &[]), // run_7: re-insert of a deleted key, update of a new one
-            AdapterRecordReplayTurn::new("run --full-refresh", &[]), // run_8: CREATE OR REPLACE
-            AdapterRecordReplayTurn::new("test --exclude orders_transient_after_refresh", &[]), // run_9: rows after the rebuild
-            AdapterRecordReplayTurn::new(
-                "run --select stock_merge",
-                &[FileOverride {
-                    original: "models/stock_merge.sql",
-                    overriding_file: "_project_overrides/stock_merge_target_lag.sql",
-                }],
-            ), // run_10: a CI DT target_lag change is altered in place, like a regular DT
-            AdapterRecordReplayTurn::new("test --select stock_merge_matches_source", &[]), // run_11
-            AdapterRecordReplayTurn::new(
-                "run --select orders_merge",
-                &[FileOverride {
-                    original: ORDERS,
-                    overriding_file: "_project_overrides/orders_merge_regular.sql",
-                }],
-            ), // run_12: CI DT -> regular DT replaces
-            AdapterRecordReplayTurn::new("test --select orders_merge_matches_source", &[]), // run_13
-            AdapterRecordReplayTurn::new(
-                "run --select orders_merge",
-                &[FileOverride {
-                    original: ORDERS,
-                    overriding_file: "_project_overrides/orders_merge_custom_incremental.sql",
-                }],
-            ), // run_14: regular DT -> CI DT replaces
-            AdapterRecordReplayTurn::new("test --select orders_merge_matches_source", &[]), // run_15
-        ],
-        None,
-        &[],
-    )
-    .await
-}
-
-/// Column discovery reads the source's CHANGES before the dynamic table, whose creation would
-/// enable change tracking, exists. Pins the error a source without change tracking gives.
-#[dbt_runtime::test]
-async fn adapters_snowflake_custom_incremental_dynamic_table_no_change_tracking() -> FsResult<()> {
-    run_fs_record_replay_task_seq(
-        env!("CARGO_MANIFEST_DIR"),
-        &FS_RUNNER,
-        current_function_name!(),
-        "tests/data/adapter/custom_incremental_dynamic_table_no_change_tracking",
-        AdapterType::Snowflake.as_ref(),
-        None,
-        &["run-operation set_up", "run"],
-        None,
-        &[],
-    )
-    .await
-}
-
-/// `{{ this }}` in a custom incremental dynamic table isn't supported yet (the refresh body must
-/// use SELF). dbt doesn't check for it; pins the errors Snowflake gives on a first build and on a
-/// rebuild.
-#[dbt_runtime::test]
-async fn adapters_snowflake_custom_incremental_dynamic_table_self_reference() -> FsResult<()> {
-    run_fs_record_replay_task_seq(
-        env!("CARGO_MANIFEST_DIR"),
-        &FS_RUNNER,
-        current_function_name!(),
-        "tests/data/adapter/custom_incremental_dynamic_table_self_reference",
-        AdapterType::Snowflake.as_ref(),
-        None,
-        &[
-            AdapterRecordReplayTurn::new("run-operation set_up", &[]), // run_0
-            AdapterRecordReplayTurn::new("run", &[]), // run_1: discovery fails, no table yet (002003)
-            AdapterRecordReplayTurn::new(
-                "run",
-                &[FileOverride {
-                    original: "models/orders_merge.sql",
-                    overriding_file: "_project_overrides/orders_merge_without_this.sql",
-                }],
-            ), // run_2: create without the self-reference
-            AdapterRecordReplayTurn::new(
-                "run --full-refresh",
-                &[FileOverride {
-                    original: "models/orders_merge.sql",
-                    overriding_file: "_project_overrides/orders_merge_with_this.sql",
-                }],
-            ), // run_3: replace fails, must use SELF (001002)
-        ],
-        None,
-        &[],
-    )
-    .await
-}
-
-/// A merge CI DT whose model doesn't deduplicate its changes per key. Pins the refresh error
-/// Snowflake gives when an update brings two source rows for one key.
-#[dbt_runtime::test]
-async fn adapters_snowflake_custom_incremental_dynamic_table_duplicate_keys() -> FsResult<()> {
-    run_fs_record_replay_task_seq(
-        env!("CARGO_MANIFEST_DIR"),
-        &FS_RUNNER,
-        current_function_name!(),
-        "tests/data/adapter/custom_incremental_dynamic_table_duplicate_keys",
-        AdapterType::Snowflake.as_ref(),
-        None,
-        &[
-            "run-operation set_up",
-            "run",                         // run_1: create
-            "run-operation apply_changes", // run_2: an update
-            "run",                         // run_3: the manual refresh fails (002742)
-        ],
-        None,
-        &[],
-    )
-    .await
-}
-
-/// A merge CI DT reading a `table` model that every dbt run replaces: the next refresh reads the
-/// replacement's rows as inserts, so a row deleted upstream stays.
-#[dbt_runtime::test]
-async fn adapters_snowflake_custom_incremental_dynamic_table_replaced_upstream() -> FsResult<()> {
-    run_fs_record_replay_task_seq(
-        env!("CARGO_MANIFEST_DIR"),
-        &FS_RUNNER,
-        current_function_name!(),
-        "tests/data/adapter/custom_incremental_dynamic_table_replaced_upstream",
-        AdapterType::Snowflake.as_ref(),
-        None,
-        &[
-            "run-operation set_up",
-            "run",                         // run_1: stg_orders, then the CI DT
-            "run-operation apply_changes", // run_2: DML on the raw table
-            "run",                         // run_3: stg_orders replaced, the CI DT refreshed
-            "test",                        // run_4: rows after the replace
-        ],
-        None,
-        &[],
-    )
-    .await
-}
-
-/// A merge CI DT whose source column is widened after it exists. With the CREATE OR ALTER flag off
-/// the refresh fails (the declared type is too narrow); with it on, the next build widens the
-/// column in place.
-#[dbt_runtime::test]
-async fn adapters_snowflake_custom_incremental_dynamic_table_widened_column() -> FsResult<()> {
-    run_fs_record_replay_task_seq(
-        env!("CARGO_MANIFEST_DIR"),
-        &FS_RUNNER,
-        current_function_name!(),
-        "tests/data/adapter/custom_incremental_dynamic_table_widened_column",
-        AdapterType::Snowflake.as_ref(),
-        None,
-        &[
-            AdapterRecordReplayTurn::new("run-operation set_up", &[]), // run_0
-            AdapterRecordReplayTurn::new("run", &[]), // run_1: create, note declared VARCHAR(8)
-            AdapterRecordReplayTurn::new("run-operation widen_note", &[]), // run_2: varchar(32) at the source
-            AdapterRecordReplayTurn::new("run", &[]), // run_3: flag off, the refresh fails (002742, too long)
-            AdapterRecordReplayTurn::new(
-                "run",
-                &[FileOverride {
-                    original: "dbt_project.yml",
-                    overriding_file: "_project_overrides/dbt_project_create_or_alter.yml",
-                }],
-            ), // run_4: flag on, CREATE OR ALTER widens the column, the refresh succeeds
-            AdapterRecordReplayTurn::new("test", &[]), // run_5
-        ],
-        None,
-        &[],
-    )
-    .await
-}
-
-/// Dynamic table attributes on a CI DT (cluster_by, table_tag, row_access_policy,
-/// initialization warehouse, copy_grants, a persist_docs comment) through create, an ALTER, a
-/// `--full-refresh` and a CREATE OR ALTER. `verify` prints a [PASS]/[FAIL] line per attribute.
-#[dbt_runtime::test]
-async fn adapters_snowflake_custom_incremental_dynamic_table_attributes() -> FsResult<()> {
-    const PROJECT: &str = "dbt_project.yml";
-    run_fs_record_replay_task_seq(
-        env!("CARGO_MANIFEST_DIR"),
-        &FS_RUNNER,
-        current_function_name!(),
-        "tests/data/adapter/custom_incremental_dynamic_table_attributes",
-        AdapterType::Snowflake.as_ref(),
-        None,
-        &[
-            AdapterRecordReplayTurn::new("run-operation set_up", &[]), // run_0: source, tag, policy
-            AdapterRecordReplayTurn::new("run", &[]), // run_1: create with every attribute
-            AdapterRecordReplayTurn::new("run-operation grant_out_of_band", &[]), // run_2
-            AdapterRecordReplayTurn::new(
-                "run-operation verify --args {{\"stage\":\"created\",\"cluster_key\":\"order_id\"}}",
-                &[],
-            ), // run_3
+            AdapterRecordReplayTurn::new("run-operation set_up", &[]), // run_0: sources, tag, policy
+            AdapterRecordReplayTurn::new("run --empty --select orders_empty", &[]), // run_1
+            AdapterRecordReplayTurn::new("run", &[]), // run_2: create, columns discovered
+            AdapterRecordReplayTurn::new("run-operation apply_changes", &[]), // run_3: round 1, a grant
             AdapterRecordReplayTurn::new(
                 "run",
                 &[FileOverride {
                     original: PROJECT,
-                    overriding_file: "_project_overrides/dbt_project_alter.yml",
+                    overriding_file: "_project_overrides/round_1.yml",
                 }],
-            ), // run_4: cluster_by change, flag off: ALTER
+            ), // run_4: refreshes; orders_attrs altered; orders_switch to a regular DT
             AdapterRecordReplayTurn::new(
-                "run-operation verify --args {{\"stage\":\"altered\",\"cluster_key\":\"amount\"}}",
+                "run-operation verify --args {{\"stage\":\"after_round_1\"}}",
                 &[],
             ), // run_5
-            AdapterRecordReplayTurn::new("run --full-refresh", &[]), // run_6: CREATE OR REPLACE ... COPY GRANTS
-            AdapterRecordReplayTurn::new(
-                "run-operation verify --args {{\"stage\":\"replaced\",\"cluster_key\":\"amount\"}}",
-                &[],
-            ), // run_7
+            AdapterRecordReplayTurn::new("run-operation apply_more_changes", &[]), // run_6: round 2
             AdapterRecordReplayTurn::new(
                 "run",
                 &[FileOverride {
                     original: PROJECT,
-                    overriding_file: "_project_overrides/dbt_project_create_or_alter.yml",
+                    overriding_file: "_project_overrides/round_2.yml",
                 }],
-            ), // run_8: cluster_by change, flag on: CREATE OR ALTER
+            ), // run_7: refreshes; orders_switch back to a CI DT
             AdapterRecordReplayTurn::new(
-                "run-operation verify --args {{\"stage\":\"synced\",\"cluster_key\":\"order_id\"}}",
+                "run-operation verify --args {{\"stage\":\"after_round_2\"}}",
                 &[],
-            ), // run_9
+            ), // run_8
+            AdapterRecordReplayTurn::new("run --full-refresh", &[]), // run_9: CREATE OR REPLACE
+            AdapterRecordReplayTurn::new(
+                "run-operation verify --args {{\"stage\":\"after_full_refresh\"}}",
+                &[],
+            ), // run_10
         ],
         None,
         &[],
@@ -665,67 +479,12 @@ async fn adapters_snowflake_custom_incremental_dynamic_table_attributes() -> FsR
     .await
 }
 
-/// Column changes CREATE OR ALTER can't make on a CI DT (reorder, narrowing, a type change) fail
-/// with Snowflake's error and dbt's `--full-refresh` hint; a dropped column is dropped in place.
-/// `--full-refresh` recovers. The failing turn's stderr goldie pins the errors.
-#[dbt_runtime::test]
-async fn adapters_snowflake_custom_incremental_dynamic_table_create_or_alter_errors() -> FsResult<()>
-{
-    run_fs_record_replay_task_seq(
-        env!("CARGO_MANIFEST_DIR"),
-        &FS_RUNNER,
-        current_function_name!(),
-        "tests/data/adapter/custom_incremental_dynamic_table_create_or_alter_errors",
-        AdapterType::Snowflake.as_ref(),
-        None,
-        &[
-            AdapterRecordReplayTurn::new("run-operation set_up", &[]), // run_0
-            AdapterRecordReplayTurn::new("run", &[]),                  // run_1: create
-            AdapterRecordReplayTurn::new(
-                "run",
-                &[FileOverride {
-                    original: "dbt_project.yml",
-                    overriding_file: "_project_overrides/dbt_project_evolved.yml",
-                }],
-            ), // run_2: the evolved columns: three errors with the hint, the drop succeeds
-            AdapterRecordReplayTurn::new("run-operation show_columns", &[]), // run_3
-            AdapterRecordReplayTurn::new(
-                "run --full-refresh --select err_reorder err_type_narrow err_type_change",
-                &[],
-            ), // run_4: --full-refresh recovers
-            AdapterRecordReplayTurn::new("run-operation show_columns", &[]), // run_5
-        ],
-        None,
-        &[],
-    )
-    .await
-}
-
-/// `refresh_mode='CUSTOM_INCREMENTAL'` on a model that isn't a `dynamic_table` warns when the model
-/// resolves, and the model builds as configured. Pins the message.
-#[dbt_runtime::test]
-async fn adapters_snowflake_custom_incremental_dynamic_table_wrong_materialization() -> FsResult<()>
-{
-    run_fs_record_replay_task_seq(
-        env!("CARGO_MANIFEST_DIR"),
-        &FS_RUNNER,
-        current_function_name!(),
-        "tests/data/adapter/custom_incremental_dynamic_table_wrong_materialization",
-        AdapterType::Snowflake.as_ref(),
-        None,
-        &["run"],
-        None,
-        &[],
-    )
-    .await
-}
-
-/// A custom incremental dynamic table with `snowflake_dynamic_table_create_or_alter` on: model SQL
-/// edits deploy through CREATE OR ALTER (for changes made after them), a switch to a regular
-/// dynamic table and back replaces.
+/// Custom incremental dynamic tables with `snowflake_dynamic_table_create_or_alter` on, one model per
+/// change (see the project's README): a body edit and a `cluster_by` change sync in place, a widened
+/// or dropped column is applied in place, and a reorder, a narrowed type or a type change fails
+/// with dbt's `--full-refresh` hint, which recovers. `verify` prints [PASS]/[FAIL] lines.
 #[dbt_runtime::test]
 async fn adapters_snowflake_custom_incremental_dynamic_table_create_or_alter() -> FsResult<()> {
-    const ORDERS: &str = "models/orders_merge.sql";
     run_fs_record_replay_task_seq(
         env!("CARGO_MANIFEST_DIR"),
         &FS_RUNNER,
@@ -734,36 +493,26 @@ async fn adapters_snowflake_custom_incremental_dynamic_table_create_or_alter() -
         AdapterType::Snowflake.as_ref(),
         None,
         &[
-            AdapterRecordReplayTurn::new("run-operation set_up", &[]), // run_0: source table
-            AdapterRecordReplayTurn::new("run", &[]), // run_1: CREATE, columns discovered
-            AdapterRecordReplayTurn::new("run-operation apply_changes", &[]), // run_2
-            AdapterRecordReplayTurn::new("run", &[]), // run_3: CREATE OR ALTER, manual refresh
-            AdapterRecordReplayTurn::new("test --select tag:after_refresh", &[]), // run_4
+            AdapterRecordReplayTurn::new("run-operation set_up", &[]), // run_0
+            AdapterRecordReplayTurn::new("run", &[]),                  // run_1: create
+            AdapterRecordReplayTurn::new("run-operation prepare", &[]), // run_2: created_on, attributes out of band
             AdapterRecordReplayTurn::new(
                 "run",
                 &[FileOverride {
-                    original: ORDERS,
-                    overriding_file: "_project_overrides/orders_merge_body_edit.sql",
+                    original: "dbt_project.yml",
+                    overriding_file: "_project_overrides/evolved.yml",
                 }],
-            ), // run_5: body edit (appends a column) via CREATE OR ALTER
-            AdapterRecordReplayTurn::new("run-operation apply_more_changes", &[]), // run_6
-            AdapterRecordReplayTurn::new("run", &[]), // run_7: the edited body merges the change
-            AdapterRecordReplayTurn::new("test --select tag:after_body_edit", &[]), // run_8
+            ), // run_3: the evolved models; the three err_ models fail with the hint
+            AdapterRecordReplayTurn::new("run-operation apply_changes", &[]), // run_4
             AdapterRecordReplayTurn::new(
-                "run",
-                &[FileOverride {
-                    original: ORDERS,
-                    overriding_file: "_project_overrides/orders_merge_regular.sql",
-                }],
-            ), // run_9: CI DT -> regular DT replaces
+                "run --exclude err_reorder err_type_narrow err_type_change",
+                &[],
+            ), // run_5: the edited body merges the changes
             AdapterRecordReplayTurn::new(
-                "run",
-                &[FileOverride {
-                    original: ORDERS,
-                    overriding_file: "_project_overrides/orders_merge_custom_incremental.sql",
-                }],
-            ), // run_10: regular DT -> CI DT replaces
-            AdapterRecordReplayTurn::new("test --select tag:after_switch_back", &[]), // run_11
+                "run --full-refresh --select err_reorder err_type_narrow err_type_change",
+                &[],
+            ), // run_6: --full-refresh recovers
+            AdapterRecordReplayTurn::new("run-operation verify", &[]),  // run_7
         ],
         None,
         &[],
@@ -771,26 +520,24 @@ async fn adapters_snowflake_custom_incremental_dynamic_table_create_or_alter() -
     .await
 }
 
-/// Custom incremental dynamic tables reading their change source through `{{ changes() }}`, through
-/// CHANGES written by hand, and joined to an ephemeral model, under `dbt run --empty` (hand-written
-/// CHANGES excluded) and a normal run.
+/// Snowflake behaviors a CI DT runs into, one model each (see the project's README): no change
+/// tracking, `{{ this }}`, changes not deduplicated per key, a widened source column, an upstream
+/// `table` model dbt replaces, and the dbt1111 warning. The goldies pin the errors.
 #[dbt_runtime::test]
-async fn adapters_snowflake_custom_incremental_dynamic_table_changes_forms() -> FsResult<()> {
+async fn adapters_snowflake_custom_incremental_dynamic_table_edge_cases() -> FsResult<()> {
     run_fs_record_replay_task_seq(
         env!("CARGO_MANIFEST_DIR"),
         &FS_RUNNER,
         current_function_name!(),
-        "tests/data/adapter/custom_incremental_dynamic_table_changes_forms",
+        "tests/data/adapter/custom_incremental_dynamic_table_edge_cases",
         AdapterType::Snowflake.as_ref(),
         None,
         &[
-            AdapterRecordReplayTurn::new("run-operation set_up", &[]), // run_0: source tables
-            AdapterRecordReplayTurn::new("run --empty --exclude orders_hand_written", &[]), // run_1: changes() forms build empty
-            AdapterRecordReplayTurn::new("test --select tag:after_empty", &[]), // run_2: no rows
-            AdapterRecordReplayTurn::new("run --full-refresh", &[]), // run_3: real bodies
-            AdapterRecordReplayTurn::new("run-operation apply_changes", &[]), // run_4
-            AdapterRecordReplayTurn::new("run", &[]), // run_5: no-op build, manual refresh
-            AdapterRecordReplayTurn::new("test --exclude tag:after_empty", &[]), // run_6: rows per form
+            "run-operation set_up",
+            "run", // run_1: no_change_tracking and self_reference fail at discovery
+            "run-operation apply_changes", // run_2
+            "run --exclude no_change_tracking self_reference", // run_3: two refreshes fail; stg_orders replaced
+            "run-operation verify",                            // run_4
         ],
         None,
         &[],

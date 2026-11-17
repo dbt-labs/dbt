@@ -1,7 +1,0 @@
-   dbt-oss 
-   Loading profiles.yml
-   Parsing models/schema.yml
-   Parsing models/sources.yml
-   Parsing models/ci_attrs.sql
-==================== Execution Summary =====================
-Finished 'run-operation' successfully for target 'snowflake' [duration]

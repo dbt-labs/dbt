@@ -5,7 +5,11 @@ profile: fusion_tests
 
 macro-paths: ["macros"]
 
+vars:
+  cluster_key: order_id
+  attrs_target_lag: 1 hour
+  switch_to_regular: false
+
 models:
   test:
-    # Fusion's analyzer is not known to accept CHANGES(...) and METADATA$ columns.
     +static_analysis: off

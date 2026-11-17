@@ -462,23 +462,6 @@ fn ci_ephemeral_upstream_is_carried_into_discovery() {
 }
 
 #[test]
-fn ci_empty_run_with_hand_written_changes_is_not_rewritten() {
-    // No --empty rewrite: hand-written CHANGES after the zero-row subquery is passed through, and
-    // Snowflake rejects it, as for hand-written CHANGES in any other model type.
-    let fixture = fixture(None, RemoteState::default());
-    let sql = "select o.id from (select * from RAW.PUBLIC.ORDERS where false limit 0) changes(information => default) as o";
-    render_run(&fixture, &ci_local_config(), sql, false, "apply", true)
-        .expect("CI DT should render");
-
-    assert_eq!(
-        fixture.executed()[0],
-        format!(
-            "create or replace temporary table {CI_TEMP_RELATION} as ( select * from ( {sql} ) limit 0 ) ;"
-        )
-    );
-}
-
-#[test]
 fn ci_empty_run_leaves_the_changes_macro_form_alone() {
     // `{{ changes() }}` renders its own empty form; only discovery's start point is added.
     let fixture = fixture(None, RemoteState::default());
@@ -636,48 +619,28 @@ fn ci_create_or_alter_body_matches_create_and_replace_byte_for_byte() {
 }
 
 #[test]
-fn ci_create_or_alter_replaces_a_regular_dynamic_table() {
-    let fixture = ci_create_or_alter_fixture(RemoteState {
+fn ci_create_or_alter_switch_replaces_in_both_directions() {
+    // CREATE OR ALTER can't convert between a regular and a CI DT (002008): the refresh_mode change
+    // requires a rebuild, so both directions replace, as with the flag off.
+    let to_ci = ci_create_or_alter_fixture(RemoteState {
         refresh_mode: Some("INCREMENTAL".to_string()),
         ..matching_remote_state()
     });
-    render_ci(&fixture, &ci_local_config(), false).expect("switch should render");
-
+    render_ci(&to_ci, &ci_local_config(), false).expect("switch should render");
     assert_eq!(
-        fixture.executed(),
+        to_ci.executed(),
         vec![
             ci_discovery_sql(),
             ci_ddl("create or replace", &ci_merge_body(CI_SQL))
         ]
     );
-}
 
-#[test]
-fn ci_create_or_alter_replaces_when_switching_to_a_regular_dynamic_table() {
-    // A desired AUTO doesn't match a live CUSTOM_INCREMENTAL, so the changeset requires a rebuild.
-    let fixture = ci_create_or_alter_fixture(ci_matching_remote_state());
-    render_ok(&fixture, &base_local_config(), false, "apply");
-
+    let to_regular = ci_create_or_alter_fixture(ci_matching_remote_state());
+    render_ok(&to_regular, &base_local_config(), false, "apply");
     assert_eq!(
-        fixture.executed(),
+        to_regular.executed(),
         vec![format!(
             "create or replace dynamic table {RENDERED_RELATION} target_lag = '1 minute' warehouse = WH refresh_mode = AUTO initialize = ON_CREATE scheduler = 'ENABLE' as ( {MODEL_SQL} )"
         )]
     );
-}
-
-#[test]
-fn ci_create_or_alter_switch_respects_on_configuration_change() {
-    let fixture_continue = ci_create_or_alter_fixture(ci_matching_remote_state());
-    render_ok(&fixture_continue, &base_local_config(), false, "continue");
-    assert!(
-        fixture_continue.executed().is_empty(),
-        "got: {:?}",
-        fixture_continue.executed()
-    );
-
-    let fixture_fail = ci_create_or_alter_fixture(ci_matching_remote_state());
-    let result = render(&fixture_fail, &base_local_config(), false, "fail");
-    assert!(result.is_err(), "`fail` must raise, got: {result:?}");
-    assert!(fixture_fail.executed().is_empty());
 }

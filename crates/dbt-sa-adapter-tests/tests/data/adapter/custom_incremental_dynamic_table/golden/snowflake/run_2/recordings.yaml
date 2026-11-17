@@ -1,24 +1,524 @@
-2b44ad9f:
+dbbbff64:
 - sequence: 0
   type: execute
-  sql: INSERT INTO development.adapters_snowflake_custom_incremental_dynamic_table.stock VALUES (2, 'C', 5)
-84ff4cda:
+  sql: |-
+    show terse schemas in database development
+    limit 10000
+model.test.orders_attrs:
 - sequence: 0
   type: execute
-  sql: DELETE FROM development.adapters_snowflake_custom_incremental_dynamic_table.stock WHERE warehouse_id = 1 AND sku = 'B'
-8af1bbd1:
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: |-
+    create or replace temporary table development.adapters_snowflake_custom_incremental_dynamic_table.orders_attrs__dbt_tmp
+    as (
+    select * from (
+    
+    
+    -- The dynamic table attributes dbt sets, on a CI DT.
+    select o.order_id, o.amount
+    from development.adapters_snowflake_custom_incremental_dynamic_table.orders changes(information => DEFAULT) at(offset => 0) as o
+    qualify row_number() over (
+    partition by o.order_id
+    order by case when o.METADATA$ACTION = 'INSERT' then 0 else 1 end
+    ) = 1
+    ) limit 0
+    )
+- sequence: 2
+  type: execute
+  sql: describe table development.adapters_snowflake_custom_incremental_dynamic_table.orders_attrs__dbt_tmp
+- sequence: 3
+  type: execute
+  sql: drop table if exists development.adapters_snowflake_custom_incremental_dynamic_table.orders_attrs__dbt_tmp cascade
+- sequence: 4
+  type: execute
+  sql: |-
+    create dynamic table development.adapters_snowflake_custom_incremental_dynamic_table.orders_attrs ("ORDER_ID" NUMBER(38,0), "AMOUNT" NUMBER(10,2))
+    target_lag = '1 hour'
+    warehouse = [MASKED_WH]
+    initialization_warehouse = [MASKED_WH]
+    
+    refresh_mode = CUSTOM_INCREMENTAL
+    
+    initialize = ON_CREATE
+    
+    
+    scheduler = 'ENABLE'
+    
+    with row access policy development.adapters_snowflake_custom_incremental_dynamic_table.rap on (order_id)
+    
+    with tag (development.adapters_snowflake_custom_incremental_dynamic_table.mytag = 'v1')
+    
+    cluster by (order_id)
+    
+    
+    
+    refresh using (
+    merge into SELF as DBT_INTERNAL_DEST
+    using (
+    
+    
+    -- The dynamic table attributes dbt sets, on a CI DT.
+    select o.order_id, o.amount
+    from development.adapters_snowflake_custom_incremental_dynamic_table.orders changes(information => DEFAULT) as o
+    qualify row_number() over (
+    partition by o.order_id
+    order by case when o.METADATA$ACTION = 'INSERT' then 0 else 1 end
+    ) = 1
+    ) as DBT_INTERNAL_SOURCE
+    on DBT_INTERNAL_DEST.order_id = DBT_INTERNAL_SOURCE.order_id
+    when matched then update set "ORDER_ID" = DBT_INTERNAL_SOURCE."ORDER_ID", "AMOUNT" = DBT_INTERNAL_SOURCE."AMOUNT"
+    when not matched then insert ("ORDER_ID", "AMOUNT") values (DBT_INTERNAL_SOURCE."ORDER_ID", DBT_INTERNAL_SOURCE."AMOUNT")
+    )
+- sequence: 5
+  type: execute
+  sql: comment on dynamic table development.adapters_snowflake_custom_incremental_dynamic_table.orders_attrs IS $$orders merged from their changes$$
+- sequence: 6
+  type: execute
+  sql: use warehouse [MASKED_WH]
+model.test.orders_empty:
 - sequence: 0
   type: execute
-  sql: UPDATE development.adapters_snowflake_custom_incremental_dynamic_table.stock SET quantity = 80 WHERE warehouse_id = 1 AND sku = 'A'
-97b93e42:
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: show dynamic tables like 'ORDERS_EMPTY' in schema "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_CUSTOM_INCREMENTAL_DYNAMIC_TABLE"
+- sequence: 2
+  type: execute
+  sql: alter dynamic table development.adapters_snowflake_custom_incremental_dynamic_table.orders_empty refresh
+- sequence: 3
+  type: execute
+  sql: use warehouse [MASKED_WH]
+model.test.orders_merge:
 - sequence: 0
   type: execute
-  sql: DELETE FROM development.adapters_snowflake_custom_incremental_dynamic_table.orders WHERE order_id = 2
-b31c8cbb:
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: |-
+    create or replace temporary table development.adapters_snowflake_custom_incremental_dynamic_table.orders_merge__dbt_tmp
+    as (
+    select * from (
+    
+    
+    -- An update arrives as a DELETE and an INSERT of the same key; keep the INSERT.
+    select
+    o.order_id,
+    o.customer_id,
+    o.amount,
+    o.METADATA$ACTION = 'DELETE' and not o.METADATA$ISUPDATE as is_deleted
+    from development.adapters_snowflake_custom_incremental_dynamic_table.orders changes(information => DEFAULT) at(offset => 0) as o
+    qualify row_number() over (
+    partition by o.order_id
+    order by case when o.METADATA$ACTION = 'INSERT' then 0 else 1 end
+    ) = 1
+    ) limit 0
+    )
+- sequence: 2
+  type: execute
+  sql: describe table development.adapters_snowflake_custom_incremental_dynamic_table.orders_merge__dbt_tmp
+- sequence: 3
+  type: execute
+  sql: drop table if exists development.adapters_snowflake_custom_incremental_dynamic_table.orders_merge__dbt_tmp cascade
+- sequence: 4
+  type: execute
+  sql: |-
+    create dynamic table development.adapters_snowflake_custom_incremental_dynamic_table.orders_merge ("ORDER_ID" NUMBER(38,0), "CUSTOMER_ID" NUMBER(38,0), "AMOUNT" NUMBER(10,2), "IS_DELETED" BOOLEAN)
+    
+    warehouse = [MASKED_WH]
+    
+    
+    refresh_mode = CUSTOM_INCREMENTAL
+    
+    initialize = ON_CREATE
+    
+    
+    scheduler = 'DISABLE'
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    refresh using (
+    merge into SELF as DBT_INTERNAL_DEST
+    using (
+    
+    
+    -- An update arrives as a DELETE and an INSERT of the same key; keep the INSERT.
+    select
+    o.order_id,
+    o.customer_id,
+    o.amount,
+    o.METADATA$ACTION = 'DELETE' and not o.METADATA$ISUPDATE as is_deleted
+    from development.adapters_snowflake_custom_incremental_dynamic_table.orders changes(information => DEFAULT) as o
+    qualify row_number() over (
+    partition by o.order_id
+    order by case when o.METADATA$ACTION = 'INSERT' then 0 else 1 end
+    ) = 1
+    ) as DBT_INTERNAL_SOURCE
+    on DBT_INTERNAL_DEST.order_id = DBT_INTERNAL_SOURCE.order_id
+    when matched and coalesce(DBT_INTERNAL_SOURCE.is_deleted, false) then delete
+    when matched then update set "ORDER_ID" = DBT_INTERNAL_SOURCE."ORDER_ID", "CUSTOMER_ID" = DBT_INTERNAL_SOURCE."CUSTOMER_ID", "AMOUNT" = DBT_INTERNAL_SOURCE."AMOUNT", "IS_DELETED" = DBT_INTERNAL_SOURCE."IS_DELETED"
+    when not matched and not coalesce(DBT_INTERNAL_SOURCE.is_deleted, false) then insert ("ORDER_ID", "CUSTOMER_ID", "AMOUNT", "IS_DELETED") values (DBT_INTERNAL_SOURCE."ORDER_ID", DBT_INTERNAL_SOURCE."CUSTOMER_ID", DBT_INTERNAL_SOURCE."AMOUNT", DBT_INTERNAL_SOURCE."IS_DELETED")
+    )
+- sequence: 5
+  type: execute
+  sql: alter dynamic table development.adapters_snowflake_custom_incremental_dynamic_table.orders_merge refresh
+- sequence: 6
+  type: execute
+  sql: use warehouse [MASKED_WH]
+model.test.orders_switch:
 - sequence: 0
   type: execute
-  sql: INSERT INTO development.adapters_snowflake_custom_incremental_dynamic_table.orders VALUES (4, 40, 40.00)
-f7bd2181:
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: |-
+    create or replace temporary table development.adapters_snowflake_custom_incremental_dynamic_table.orders_switch__dbt_tmp
+    as (
+    select * from (
+    
+    select
+    o.order_id,
+    o.amount,
+    o.METADATA$ACTION = 'DELETE' and not o.METADATA$ISUPDATE as is_deleted
+    from development.adapters_snowflake_custom_incremental_dynamic_table.orders changes(information => DEFAULT) at(offset => 0) as o
+    qualify row_number() over (
+    partition by o.order_id
+    order by case when o.METADATA$ACTION = 'INSERT' then 0 else 1 end
+    ) = 1
+    ) limit 0
+    )
+- sequence: 2
+  type: execute
+  sql: describe table development.adapters_snowflake_custom_incremental_dynamic_table.orders_switch__dbt_tmp
+- sequence: 3
+  type: execute
+  sql: drop table if exists development.adapters_snowflake_custom_incremental_dynamic_table.orders_switch__dbt_tmp cascade
+- sequence: 4
+  type: execute
+  sql: |-
+    create dynamic table development.adapters_snowflake_custom_incremental_dynamic_table.orders_switch ("ORDER_ID" NUMBER(38,0), "AMOUNT" NUMBER(10,2), "IS_DELETED" BOOLEAN)
+    
+    warehouse = [MASKED_WH]
+    
+    
+    refresh_mode = CUSTOM_INCREMENTAL
+    
+    initialize = ON_CREATE
+    
+    
+    scheduler = 'DISABLE'
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    refresh using (
+    merge into SELF as DBT_INTERNAL_DEST
+    using (
+    
+    select
+    o.order_id,
+    o.amount,
+    o.METADATA$ACTION = 'DELETE' and not o.METADATA$ISUPDATE as is_deleted
+    from development.adapters_snowflake_custom_incremental_dynamic_table.orders changes(information => DEFAULT) as o
+    qualify row_number() over (
+    partition by o.order_id
+    order by case when o.METADATA$ACTION = 'INSERT' then 0 else 1 end
+    ) = 1
+    ) as DBT_INTERNAL_SOURCE
+    on DBT_INTERNAL_DEST.order_id = DBT_INTERNAL_SOURCE.order_id
+    when matched and coalesce(DBT_INTERNAL_SOURCE.is_deleted, false) then delete
+    when matched then update set "ORDER_ID" = DBT_INTERNAL_SOURCE."ORDER_ID", "AMOUNT" = DBT_INTERNAL_SOURCE."AMOUNT", "IS_DELETED" = DBT_INTERNAL_SOURCE."IS_DELETED"
+    when not matched and not coalesce(DBT_INTERNAL_SOURCE.is_deleted, false) then insert ("ORDER_ID", "AMOUNT", "IS_DELETED") values (DBT_INTERNAL_SOURCE."ORDER_ID", DBT_INTERNAL_SOURCE."AMOUNT", DBT_INTERNAL_SOURCE."IS_DELETED")
+    )
+- sequence: 5
+  type: execute
+  sql: alter dynamic table development.adapters_snowflake_custom_incremental_dynamic_table.orders_switch refresh
+- sequence: 6
+  type: execute
+  sql: use warehouse [MASKED_WH]
+model.test.orders_transient:
 - sequence: 0
   type: execute
-  sql: UPDATE development.adapters_snowflake_custom_incremental_dynamic_table.orders SET amount = 15.00 WHERE order_id = 1
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: |-
+    create or replace temporary table development.adapters_snowflake_custom_incremental_dynamic_table.orders_transient__dbt_tmp
+    as (
+    select * from (
+    
+    
+    -- APPEND_ONLY changes carry inserts only.
+    select o.order_id, o.amount
+    from development.adapters_snowflake_custom_incremental_dynamic_table.orders changes(information => APPEND_ONLY) at(offset => 0) as o
+    qualify row_number() over (partition by o.order_id order by o.amount desc) = 1
+    ) limit 0
+    )
+- sequence: 2
+  type: execute
+  sql: describe table development.adapters_snowflake_custom_incremental_dynamic_table.orders_transient__dbt_tmp
+- sequence: 3
+  type: execute
+  sql: drop table if exists development.adapters_snowflake_custom_incremental_dynamic_table.orders_transient__dbt_tmp cascade
+- sequence: 4
+  type: execute
+  sql: |-
+    create transient dynamic table development.adapters_snowflake_custom_incremental_dynamic_table.orders_transient ("ORDER_ID" NUMBER(38,0), "AMOUNT" NUMBER(10,2))
+    
+    warehouse = [MASKED_WH]
+    
+    
+    refresh_mode = CUSTOM_INCREMENTAL
+    
+    initialize = ON_CREATE
+    
+    
+    scheduler = 'DISABLE'
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    refresh using (
+    merge into SELF as DBT_INTERNAL_DEST
+    using (
+    
+    
+    -- APPEND_ONLY changes carry inserts only.
+    select o.order_id, o.amount
+    from development.adapters_snowflake_custom_incremental_dynamic_table.orders changes(information => APPEND_ONLY) as o
+    qualify row_number() over (partition by o.order_id order by o.amount desc) = 1
+    ) as DBT_INTERNAL_SOURCE
+    on DBT_INTERNAL_DEST.order_id = DBT_INTERNAL_SOURCE.order_id
+    when matched then update set "ORDER_ID" = DBT_INTERNAL_SOURCE."ORDER_ID", "AMOUNT" = DBT_INTERNAL_SOURCE."AMOUNT"
+    when not matched then insert ("ORDER_ID", "AMOUNT") values (DBT_INTERNAL_SOURCE."ORDER_ID", DBT_INTERNAL_SOURCE."AMOUNT")
+    )
+- sequence: 5
+  type: execute
+  sql: alter dynamic table development.adapters_snowflake_custom_incremental_dynamic_table.orders_transient refresh
+- sequence: 6
+  type: execute
+  sql: use warehouse [MASKED_WH]
+model.test.orders_with_region:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: |-
+    create or replace temporary table development.adapters_snowflake_custom_incremental_dynamic_table.orders_with_region__dbt_tmp
+    as (
+    select * from (
+    with __dbt__cte__customers_dim as (
+    
+    
+    select customer_id, region from development.adapters_snowflake_custom_incremental_dynamic_table.customers
+    )
+    --EPHEMERAL-SELECT-WRAPPER-START
+    select * from (
+    
+    
+    -- Joined to an ephemeral model: its CTE is carried into column discovery and the stored body.
+    select
+    o.order_id,
+    o.amount,
+    c.region,
+    o.METADATA$ACTION = 'DELETE' and not o.METADATA$ISUPDATE as is_deleted
+    from development.adapters_snowflake_custom_incremental_dynamic_table.orders changes(information => DEFAULT) at(offset => 0) as o
+    join __dbt__cte__customers_dim as c on c.customer_id = o.customer_id
+    qualify row_number() over (
+    partition by o.order_id
+    order by case when o.METADATA$ACTION = 'INSERT' then 0 else 1 end
+    ) = 1
+    --EPHEMERAL-SELECT-WRAPPER-END
+    ) as orders_with_region
+    ) limit 0
+    )
+- sequence: 2
+  type: execute
+  sql: describe table development.adapters_snowflake_custom_incremental_dynamic_table.orders_with_region__dbt_tmp
+- sequence: 3
+  type: execute
+  sql: drop table if exists development.adapters_snowflake_custom_incremental_dynamic_table.orders_with_region__dbt_tmp cascade
+- sequence: 4
+  type: execute
+  sql: |-
+    create dynamic table development.adapters_snowflake_custom_incremental_dynamic_table.orders_with_region ("ORDER_ID" NUMBER(38,0), "AMOUNT" NUMBER(10,2), "REGION" character varying(16), "IS_DELETED" BOOLEAN)
+    
+    warehouse = [MASKED_WH]
+    
+    
+    refresh_mode = CUSTOM_INCREMENTAL
+    
+    initialize = ON_CREATE
+    
+    
+    scheduler = 'DISABLE'
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    refresh using (
+    merge into SELF as DBT_INTERNAL_DEST
+    using (
+    with __dbt__cte__customers_dim as (
+    
+    
+    select customer_id, region from development.adapters_snowflake_custom_incremental_dynamic_table.customers
+    )
+    --EPHEMERAL-SELECT-WRAPPER-START
+    select * from (
+    
+    
+    -- Joined to an ephemeral model: its CTE is carried into column discovery and the stored body.
+    select
+    o.order_id,
+    o.amount,
+    c.region,
+    o.METADATA$ACTION = 'DELETE' and not o.METADATA$ISUPDATE as is_deleted
+    from development.adapters_snowflake_custom_incremental_dynamic_table.orders changes(information => DEFAULT) as o
+    join __dbt__cte__customers_dim as c on c.customer_id = o.customer_id
+    qualify row_number() over (
+    partition by o.order_id
+    order by case when o.METADATA$ACTION = 'INSERT' then 0 else 1 end
+    ) = 1
+    --EPHEMERAL-SELECT-WRAPPER-END
+    ) as orders_with_region
+    ) as DBT_INTERNAL_SOURCE
+    on DBT_INTERNAL_DEST.order_id = DBT_INTERNAL_SOURCE.order_id
+    when matched and coalesce(DBT_INTERNAL_SOURCE.is_deleted, false) then delete
+    when matched then update set "ORDER_ID" = DBT_INTERNAL_SOURCE."ORDER_ID", "AMOUNT" = DBT_INTERNAL_SOURCE."AMOUNT", "REGION" = DBT_INTERNAL_SOURCE."REGION", "IS_DELETED" = DBT_INTERNAL_SOURCE."IS_DELETED"
+    when not matched and not coalesce(DBT_INTERNAL_SOURCE.is_deleted, false) then insert ("ORDER_ID", "AMOUNT", "REGION", "IS_DELETED") values (DBT_INTERNAL_SOURCE."ORDER_ID", DBT_INTERNAL_SOURCE."AMOUNT", DBT_INTERNAL_SOURCE."REGION", DBT_INTERNAL_SOURCE."IS_DELETED")
+    )
+- sequence: 5
+  type: execute
+  sql: alter dynamic table development.adapters_snowflake_custom_incremental_dynamic_table.orders_with_region refresh
+- sequence: 6
+  type: execute
+  sql: use warehouse [MASKED_WH]
+model.test.stock_merge:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: SHOW OBJECTS IN SCHEMA "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_CUSTOM_INCREMENTAL_DYNAMIC_TABLE" LIMIT 10000
+- sequence: 2
+  type: execute
+  sql: |-
+    create or replace temporary table development.adapters_snowflake_custom_incremental_dynamic_table.stock_merge__dbt_tmp
+    as (
+    select * from (
+    
+    
+    -- Starts with a CTE, which a refresh body cannot: the merge wraps it in a subquery.
+    with stock_changes as (
+    select
+    s.warehouse_id,
+    s.sku,
+    s.quantity,
+    s.METADATA$ACTION as change_action,
+    s.METADATA$ISUPDATE as change_is_update
+    from development.adapters_snowflake_custom_incremental_dynamic_table.stock changes(information => DEFAULT) at(offset => 0) as s
+    )
+    
+    select
+    warehouse_id,
+    sku,
+    quantity,
+    change_action = 'DELETE' and not change_is_update as is_deleted
+    from stock_changes
+    qualify row_number() over (
+    partition by warehouse_id, sku
+    order by case when change_action = 'INSERT' then 0 else 1 end
+    ) = 1
+    ) limit 0
+    )
+- sequence: 3
+  type: execute
+  sql: describe table development.adapters_snowflake_custom_incremental_dynamic_table.stock_merge__dbt_tmp
+- sequence: 4
+  type: execute
+  sql: drop table if exists development.adapters_snowflake_custom_incremental_dynamic_table.stock_merge__dbt_tmp cascade
+- sequence: 5
+  type: execute
+  sql: |-
+    create dynamic table development.adapters_snowflake_custom_incremental_dynamic_table.stock_merge ("WAREHOUSE_ID" NUMBER(38,0), "SKU" character varying(16), "QUANTITY" NUMBER(38,0), "IS_DELETED" BOOLEAN)
+    
+    warehouse = [MASKED_WH]
+    
+    
+    refresh_mode = CUSTOM_INCREMENTAL
+    
+    initialize = ON_CREATE
+    
+    
+    scheduler = 'DISABLE'
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    refresh using (
+    merge into SELF as DBT_INTERNAL_DEST
+    using (
+    
+    
+    -- Starts with a CTE, which a refresh body cannot: the merge wraps it in a subquery.
+    with stock_changes as (
+    select
+    s.warehouse_id,
+    s.sku,
+    s.quantity,
+    s.METADATA$ACTION as change_action,
+    s.METADATA$ISUPDATE as change_is_update
+    from development.adapters_snowflake_custom_incremental_dynamic_table.stock changes(information => DEFAULT) as s
+    )
+    
+    select
+    warehouse_id,
+    sku,
+    quantity,
+    change_action = 'DELETE' and not change_is_update as is_deleted
+    from stock_changes
+    qualify row_number() over (
+    partition by warehouse_id, sku
+    order by case when change_action = 'INSERT' then 0 else 1 end
+    ) = 1
+    ) as DBT_INTERNAL_SOURCE
+    on DBT_INTERNAL_DEST.warehouse_id = DBT_INTERNAL_SOURCE.warehouse_id and DBT_INTERNAL_DEST.sku = DBT_INTERNAL_SOURCE.sku
+    when matched and coalesce(DBT_INTERNAL_SOURCE.is_deleted, false) then delete
+    when matched then update set "WAREHOUSE_ID" = DBT_INTERNAL_SOURCE."WAREHOUSE_ID", "SKU" = DBT_INTERNAL_SOURCE."SKU", "QUANTITY" = DBT_INTERNAL_SOURCE."QUANTITY", "IS_DELETED" = DBT_INTERNAL_SOURCE."IS_DELETED"
+    when not matched and not coalesce(DBT_INTERNAL_SOURCE.is_deleted, false) then insert ("WAREHOUSE_ID", "SKU", "QUANTITY", "IS_DELETED") values (DBT_INTERNAL_SOURCE."WAREHOUSE_ID", DBT_INTERNAL_SOURCE."SKU", DBT_INTERNAL_SOURCE."QUANTITY", DBT_INTERNAL_SOURCE."IS_DELETED")
+    )
+- sequence: 6
+  type: execute
+  sql: alter dynamic table development.adapters_snowflake_custom_incremental_dynamic_table.stock_merge refresh
+- sequence: 7
+  type: execute
+  sql: use warehouse [MASKED_WH]

@@ -1,0 +1,60 @@
+22e7d0c4:
+- sequence: 0
+  type: execute
+  sql: CREATE OR REPLACE TABLE development.adapters_snowflake_custom_incremental_dynamic_table_edge_cases.notes (order_id int, note varchar(8)) CHANGE_TRACKING = TRUE
+2dde72de:
+- sequence: 0
+  type: execute
+  sql: INSERT INTO development.adapters_snowflake_custom_incremental_dynamic_table_edge_cases.orders VALUES (1, 10.00), (2, 20.00)
+'385420e3':
+- sequence: 0
+  type: execute
+  sql: CREATE OR REPLACE TABLE development.adapters_snowflake_custom_incremental_dynamic_table_edge_cases.orders (order_id int, amount number(10,2)) CHANGE_TRACKING = TRUE
+5b910101:
+- sequence: 0
+  type: execute
+  sql: DROP DYNAMIC TABLE IF EXISTS development.adapters_snowflake_custom_incremental_dynamic_table_edge_cases.duplicate_keys
+634a8847:
+- sequence: 0
+  type: execute
+  sql: DROP DYNAMIC TABLE IF EXISTS development.adapters_snowflake_custom_incremental_dynamic_table_edge_cases.no_change_tracking
+6f15ad1a:
+- sequence: 0
+  type: execute
+  sql: CREATE OR ALTER SCHEMA development.adapters_snowflake_custom_incremental_dynamic_table_edge_cases
+84bdc9d1:
+- sequence: 0
+  type: execute
+  sql: USE DATABASE development
+a706bcf5:
+- sequence: 0
+  type: execute
+  sql: DROP DYNAMIC TABLE IF EXISTS development.adapters_snowflake_custom_incremental_dynamic_table_edge_cases.self_reference
+bd9b9336:
+- sequence: 0
+  type: execute
+  sql: CREATE OR REPLACE TABLE development.adapters_snowflake_custom_incremental_dynamic_table_edge_cases.untracked (order_id int, amount number(10,2))
+bdc61f80:
+- sequence: 0
+  type: execute
+  sql: INSERT INTO development.adapters_snowflake_custom_incremental_dynamic_table_edge_cases.raw_orders VALUES (1, 10.00), (2, 20.00)
+c6d7f42a:
+- sequence: 0
+  type: execute
+  sql: DROP DYNAMIC TABLE IF EXISTS development.adapters_snowflake_custom_incremental_dynamic_table_edge_cases.widened_column
+c78e86ca:
+- sequence: 0
+  type: execute
+  sql: DROP DYNAMIC TABLE IF EXISTS development.adapters_snowflake_custom_incremental_dynamic_table_edge_cases.over_replaced_table
+cdedd98a:
+- sequence: 0
+  type: execute
+  sql: INSERT INTO development.adapters_snowflake_custom_incremental_dynamic_table_edge_cases.untracked VALUES (1, 10.00)
+dc748288:
+- sequence: 0
+  type: execute
+  sql: INSERT INTO development.adapters_snowflake_custom_incremental_dynamic_table_edge_cases.notes VALUES (1, 'short')
+f4d1bb78:
+- sequence: 0
+  type: execute
+  sql: CREATE OR REPLACE TABLE development.adapters_snowflake_custom_incremental_dynamic_table_edge_cases.raw_orders (order_id int, amount number(10,2))

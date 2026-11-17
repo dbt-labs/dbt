@@ -1,23 +1,39 @@
    dbt-oss 
    Loading profiles.yml
+   Parsing models/schema.yml
    Parsing models/sources.yml
+   Parsing models/customers_dim.sql
+   Parsing models/orders_attrs.sql
+   Parsing models/orders_empty.sql
    Parsing models/orders_merge.sql
+   Parsing models/orders_switch.sql
    Parsing models/orders_transient.sql
+   Parsing models/orders_with_region.sql
    Parsing models/stock_merge.sql
-   Parsing tests/orders_merge_matches_source.sql
-   Parsing tests/orders_transient_after_full_refresh.sql
-   Parsing tests/orders_transient_after_refresh.sql
-   Parsing tests/stock_merge_matches_source.sql
- Rendering tests/stock_merge_matches_source.sql
-   Running ../scratch/target/run/test/tests/stock_merge_matches_source.sql
-    Passed test  stock_merge_matches_source [1 of 3 in duration]
- Rendering tests/orders_transient_after_refresh.sql
-   Running ../scratch/target/run/test/tests/orders_transient_after_refresh.sql
-    Passed test  orders_transient_after_refresh [2 of 3 in duration]
- Rendering tests/orders_merge_matches_source.sql
-   Running ../scratch/target/run/test/tests/orders_merge_matches_source.sql
-    Passed test  orders_merge_matches_source [3 of 3 in duration]
+ Rendering models/stock_merge.sql
+   Running models/stock_merge.sql
+    Warned model adapters_snowflake_custom_incremental_dynamic_table.stock_merge (dynamic_table) [1 of 7 in duration]
+ Rendering models/orders_transient.sql
+   Running models/orders_transient.sql
+    Warned model adapters_snowflake_custom_incremental_dynamic_table.orders_transient (dynamic_table) [2 of 7 in duration]
+ Rendering models/orders_switch.sql
+   Running models/orders_switch.sql
+ Succeeded model adapters_snowflake_custom_incremental_dynamic_table.orders_switch (dynamic_table) [3 of 7 in duration]
+ Rendering models/orders_merge.sql
+   Running models/orders_merge.sql
+    Warned model adapters_snowflake_custom_incremental_dynamic_table.orders_merge (dynamic_table) [4 of 7 in duration]
+ Rendering models/orders_empty.sql
+   Running models/orders_empty.sql
+    Warned model adapters_snowflake_custom_incremental_dynamic_table.orders_empty (dynamic_table) [5 of 7 in duration]
+ Rendering models/orders_attrs.sql
+   Running models/orders_attrs.sql
+ Succeeded model adapters_snowflake_custom_incremental_dynamic_table.orders_attrs (dynamic_table) [6 of 7 in duration]
+ Rendering models/customers_dim.sql
+   Running models/customers_dim.sql
+ Rendering models/orders_with_region.sql
+   Running models/orders_with_region.sql
+    Warned model adapters_snowflake_custom_incremental_dynamic_table.orders_with_region (dynamic_table) [7 of 7 in duration]
 ==================== Execution Summary =====================
-Finished 'test' successfully for target 'snowflake' [duration]
-Processed: 3 tests
-Summary: 3 total | 3 success
+Finished 'run' with 5 warnings for target 'snowflake' [duration]
+Processed: 8 models
+Summary: 8 total | 2 success | 5 warn | 1 no-op

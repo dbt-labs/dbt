@@ -1,3 +1,7 @@
+1a775206:
+- sequence: 0
+  type: execute
+  sql: DROP DYNAMIC TABLE IF EXISTS development.adapters_snowflake_custom_incremental_dynamic_table.orders_attrs
 20b93410:
 - sequence: 0
   type: execute
@@ -6,19 +10,59 @@
 - sequence: 0
   type: execute
   sql: CREATE OR REPLACE TABLE development.adapters_snowflake_custom_incremental_dynamic_table.orders (order_id int, customer_id int, amount number(10,2)) CHANGE_TRACKING = TRUE
+6446fa95:
+- sequence: 0
+  type: execute
+  sql: INSERT INTO development.adapters_snowflake_custom_incremental_dynamic_table.customers VALUES (10, 'east'), (20, 'west'), (30, 'east'), (40, 'north')
+64f6389b:
+- sequence: 0
+  type: execute
+  sql: DROP DYNAMIC TABLE IF EXISTS development.adapters_snowflake_custom_incremental_dynamic_table.stock_merge
+6f1e84cc:
+- sequence: 0
+  type: execute
+  sql: DROP DYNAMIC TABLE IF EXISTS development.adapters_snowflake_custom_incremental_dynamic_table.orders_empty
 78356cb8:
 - sequence: 0
   type: execute
   sql: INSERT INTO development.adapters_snowflake_custom_incremental_dynamic_table.orders VALUES (1, 10, 10.00), (2, 20, 20.00), (3, 30, 30.00)
+8132c7f4:
+- sequence: 0
+  type: execute
+  sql: DROP DYNAMIC TABLE IF EXISTS development.adapters_snowflake_custom_incremental_dynamic_table.orders_transient
 84bdc9d1:
 - sequence: 0
   type: execute
   sql: USE DATABASE development
+b3e08940:
+- sequence: 0
+  type: execute
+  sql: DROP DYNAMIC TABLE IF EXISTS development.adapters_snowflake_custom_incremental_dynamic_table.orders_merge
 b64bac64:
 - sequence: 0
   type: execute
   sql: CREATE OR ALTER SCHEMA development.adapters_snowflake_custom_incremental_dynamic_table
+bba5fc57:
+- sequence: 0
+  type: execute
+  sql: DROP DYNAMIC TABLE IF EXISTS development.adapters_snowflake_custom_incremental_dynamic_table.orders_switch
+c484e941:
+- sequence: 0
+  type: execute
+  sql: CREATE OR REPLACE TABLE development.adapters_snowflake_custom_incremental_dynamic_table.customers (customer_id int, region varchar(16))
+c9b99c47:
+- sequence: 0
+  type: execute
+  sql: CREATE OR REPLACE TAG development.adapters_snowflake_custom_incremental_dynamic_table.mytag
 cb362956:
 - sequence: 0
   type: execute
   sql: CREATE OR REPLACE TABLE development.adapters_snowflake_custom_incremental_dynamic_table.stock (warehouse_id int, sku varchar(16), quantity int) CHANGE_TRACKING = TRUE
+fad4a50e:
+- sequence: 0
+  type: execute
+  sql: DROP DYNAMIC TABLE IF EXISTS development.adapters_snowflake_custom_incremental_dynamic_table.orders_with_region
+fe787163:
+- sequence: 0
+  type: execute
+  sql: CREATE OR REPLACE ROW ACCESS POLICY development.adapters_snowflake_custom_incremental_dynamic_table.rap AS (order_id number) RETURNS BOOLEAN -> true

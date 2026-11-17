@@ -4,3 +4,4 @@ sources:
     tables:
       - name: orders
       - name: stock
+      - name: customers

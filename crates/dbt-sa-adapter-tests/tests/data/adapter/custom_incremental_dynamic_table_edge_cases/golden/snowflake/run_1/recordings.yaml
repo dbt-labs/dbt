@@ -1,0 +1,311 @@
+dbbbff64:
+- sequence: 0
+  type: execute
+  sql: |-
+    show terse schemas in database development
+    limit 10000
+model.test.duplicate_keys:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: |-
+    create or replace temporary table development.adapters_snowflake_custom_incremental_dynamic_table_edge_cases.duplicate_keys__dbt_tmp
+    as (
+    select * from (
+    
+    
+    -- No dedup per key: an update arrives as a DELETE and an INSERT of the same key, and the refresh
+    -- fails with 002742 "Duplicate row detected".
+    select o.order_id, o.amount
+    from development.adapters_snowflake_custom_incremental_dynamic_table_edge_cases.orders changes(information => DEFAULT) at(offset => 0) as o
+    ) limit 0
+    )
+- sequence: 2
+  type: execute
+  sql: describe table development.adapters_snowflake_custom_incremental_dynamic_table_edge_cases.duplicate_keys__dbt_tmp
+- sequence: 3
+  type: execute
+  sql: drop table if exists development.adapters_snowflake_custom_incremental_dynamic_table_edge_cases.duplicate_keys__dbt_tmp cascade
+- sequence: 4
+  type: execute
+  sql: |-
+    create dynamic table development.adapters_snowflake_custom_incremental_dynamic_table_edge_cases.duplicate_keys ("ORDER_ID" NUMBER(38,0), "AMOUNT" NUMBER(10,2))
+    
+    warehouse = [MASKED_WH]
+    
+    
+    refresh_mode = CUSTOM_INCREMENTAL
+    
+    initialize = ON_CREATE
+    
+    
+    scheduler = 'DISABLE'
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    refresh using (
+    merge into SELF as DBT_INTERNAL_DEST
+    using (
+    
+    
+    -- No dedup per key: an update arrives as a DELETE and an INSERT of the same key, and the refresh
+    -- fails with 002742 "Duplicate row detected".
+    select o.order_id, o.amount
+    from development.adapters_snowflake_custom_incremental_dynamic_table_edge_cases.orders changes(information => DEFAULT) as o
+    ) as DBT_INTERNAL_SOURCE
+    on DBT_INTERNAL_DEST.order_id = DBT_INTERNAL_SOURCE.order_id
+    when matched then update set "ORDER_ID" = DBT_INTERNAL_SOURCE."ORDER_ID", "AMOUNT" = DBT_INTERNAL_SOURCE."AMOUNT"
+    when not matched then insert ("ORDER_ID", "AMOUNT") values (DBT_INTERNAL_SOURCE."ORDER_ID", DBT_INTERNAL_SOURCE."AMOUNT")
+    )
+- sequence: 5
+  type: execute
+  sql: alter dynamic table development.adapters_snowflake_custom_incremental_dynamic_table_edge_cases.duplicate_keys refresh
+- sequence: 6
+  type: execute
+  sql: use warehouse [MASKED_WH]
+model.test.no_change_tracking:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: |-
+    create or replace temporary table development.adapters_snowflake_custom_incremental_dynamic_table_edge_cases.no_change_tracking__dbt_tmp
+    as (
+    select * from (
+    
+    
+    -- Column discovery reads the source's CHANGES before the CI DT, whose creation would enable change
+    -- tracking, exists: the first build fails with 091930.
+    select o.order_id, o.amount
+    from development.adapters_snowflake_custom_incremental_dynamic_table_edge_cases.untracked changes(information => DEFAULT) at(offset => 0) as o
+    ) limit 0
+    )
+  error: 'Internal: [Snowflake] 091930 (2F003): SQL compilation error: Change tracking is not enabled or has been missing for the time range requested on table ''DEVELOPMENT.ADAPTERS_SNOWFLAKE_CUSTOM_INCREMENTAL_DYNAMIC_TABLE_EDGE_CASES.UNTRACKED''. (sqlstate: 2F003, vendor_code: 91930)'
+- sequence: 2
+  type: execute
+  sql: use warehouse [MASKED_WH]
+model.test.over_replaced_table:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: |-
+    create or replace temporary table development.adapters_snowflake_custom_incremental_dynamic_table_edge_cases.over_replaced_table__dbt_tmp
+    as (
+    select * from (
+    
+    
+    -- Reads stg_orders, a table model every dbt run replaces. The replacement's change history starts
+    -- empty, so a refresh reads all its rows as inserts, and a row deleted upstream is never seen.
+    select
+    o.order_id,
+    o.amount,
+    o.METADATA$ACTION = 'DELETE' and not o.METADATA$ISUPDATE as is_deleted
+    from development.adapters_snowflake_custom_incremental_dynamic_table_edge_cases.stg_orders changes(information => DEFAULT) at(offset => 0) as o
+    qualify row_number() over (
+    partition by o.order_id
+    order by case when o.METADATA$ACTION = 'INSERT' then 0 else 1 end
+    ) = 1
+    ) limit 0
+    )
+- sequence: 2
+  type: execute
+  sql: describe table development.adapters_snowflake_custom_incremental_dynamic_table_edge_cases.over_replaced_table__dbt_tmp
+- sequence: 3
+  type: execute
+  sql: drop table if exists development.adapters_snowflake_custom_incremental_dynamic_table_edge_cases.over_replaced_table__dbt_tmp cascade
+- sequence: 4
+  type: execute
+  sql: |-
+    create dynamic table development.adapters_snowflake_custom_incremental_dynamic_table_edge_cases.over_replaced_table ("ORDER_ID" NUMBER(38,0), "AMOUNT" NUMBER(10,2), "IS_DELETED" BOOLEAN)
+    
+    warehouse = [MASKED_WH]
+    
+    
+    refresh_mode = CUSTOM_INCREMENTAL
+    
+    initialize = ON_CREATE
+    
+    
+    scheduler = 'DISABLE'
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    refresh using (
+    merge into SELF as DBT_INTERNAL_DEST
+    using (
+    
+    
+    -- Reads stg_orders, a table model every dbt run replaces. The replacement's change history starts
+    -- empty, so a refresh reads all its rows as inserts, and a row deleted upstream is never seen.
+    select
+    o.order_id,
+    o.amount,
+    o.METADATA$ACTION = 'DELETE' and not o.METADATA$ISUPDATE as is_deleted
+    from development.adapters_snowflake_custom_incremental_dynamic_table_edge_cases.stg_orders changes(information => DEFAULT) as o
+    qualify row_number() over (
+    partition by o.order_id
+    order by case when o.METADATA$ACTION = 'INSERT' then 0 else 1 end
+    ) = 1
+    ) as DBT_INTERNAL_SOURCE
+    on DBT_INTERNAL_DEST.order_id = DBT_INTERNAL_SOURCE.order_id
+    when matched and coalesce(DBT_INTERNAL_SOURCE.is_deleted, false) then delete
+    when matched then update set "ORDER_ID" = DBT_INTERNAL_SOURCE."ORDER_ID", "AMOUNT" = DBT_INTERNAL_SOURCE."AMOUNT", "IS_DELETED" = DBT_INTERNAL_SOURCE."IS_DELETED"
+    when not matched and not coalesce(DBT_INTERNAL_SOURCE.is_deleted, false) then insert ("ORDER_ID", "AMOUNT", "IS_DELETED") values (DBT_INTERNAL_SOURCE."ORDER_ID", DBT_INTERNAL_SOURCE."AMOUNT", DBT_INTERNAL_SOURCE."IS_DELETED")
+    )
+- sequence: 5
+  type: execute
+  sql: alter dynamic table development.adapters_snowflake_custom_incremental_dynamic_table_edge_cases.over_replaced_table refresh
+- sequence: 6
+  type: execute
+  sql: use warehouse [MASKED_WH]
+model.test.self_reference:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: |-
+    create or replace temporary table development.adapters_snowflake_custom_incremental_dynamic_table_edge_cases.self_reference__dbt_tmp
+    as (
+    select * from (
+    
+    
+    -- Reads the table itself through this, which a refresh body must write as SELF: on a first build,
+    -- column discovery fails because the table doesn't exist yet (002003).
+    select o.order_id, o.amount
+    from development.adapters_snowflake_custom_incremental_dynamic_table_edge_cases.orders changes(information => DEFAULT) at(offset => 0) as o
+    where o.order_id not in (select order_id from development.adapters_snowflake_custom_incremental_dynamic_table_edge_cases.self_reference)
+    ) limit 0
+    )
+  error: |-
+    NotFound: [Snowflake] 002003 (42S02): SQL compilation error:
+    Object 'DEVELOPMENT.ADAPTERS_SNOWFLAKE_CUSTOM_INCREMENTAL_DYNAMIC_TABLE_EDGE_CASES.SELF_REFERENCE' does not exist or not authorized. Your primary role ACCOUNTADMIN must have at least one privilege granted on TABLE DEVELOPMENT.ADAPTERS_SNOWFLAKE_CUSTOM_INCREMENTAL_DYNAMIC_TABLE_EDGE_CASES.SELF_REFERENCE. (sqlstate: 42S02, vendor_code: 2003)
+- sequence: 2
+  type: execute
+  sql: use warehouse [MASKED_WH]
+model.test.stg_orders:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace transient  table development.adapters_snowflake_custom_incremental_dynamic_table_edge_cases.stg_orders
+    change_tracking = True
+    
+    
+    
+    
+    
+    as (
+    
+    select order_id, amount from development.adapters_snowflake_custom_incremental_dynamic_table_edge_cases.raw_orders
+    )
+model.test.widened_column:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_WH]
+- sequence: 1
+  type: execute
+  sql: |-
+    create or replace temporary table development.adapters_snowflake_custom_incremental_dynamic_table_edge_cases.widened_column__dbt_tmp
+    as (
+    select * from (
+    
+    
+    -- Discovery declared note as the source's varchar(8). After the source widens it, a longer value
+    -- fails the refresh (002742, too long) until --full-refresh (or CREATE OR ALTER, flag on).
+    select o.order_id, o.note
+    from development.adapters_snowflake_custom_incremental_dynamic_table_edge_cases.notes changes(information => DEFAULT) at(offset => 0) as o
+    qualify row_number() over (
+    partition by o.order_id
+    order by case when o.METADATA$ACTION = 'INSERT' then 0 else 1 end
+    ) = 1
+    ) limit 0
+    )
+- sequence: 2
+  type: execute
+  sql: describe table development.adapters_snowflake_custom_incremental_dynamic_table_edge_cases.widened_column__dbt_tmp
+- sequence: 3
+  type: execute
+  sql: drop table if exists development.adapters_snowflake_custom_incremental_dynamic_table_edge_cases.widened_column__dbt_tmp cascade
+- sequence: 4
+  type: execute
+  sql: |-
+    create dynamic table development.adapters_snowflake_custom_incremental_dynamic_table_edge_cases.widened_column ("ORDER_ID" NUMBER(38,0), "NOTE" character varying(8))
+    
+    warehouse = [MASKED_WH]
+    
+    
+    refresh_mode = CUSTOM_INCREMENTAL
+    
+    initialize = ON_CREATE
+    
+    
+    scheduler = 'DISABLE'
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    refresh using (
+    merge into SELF as DBT_INTERNAL_DEST
+    using (
+    
+    
+    -- Discovery declared note as the source's varchar(8). After the source widens it, a longer value
+    -- fails the refresh (002742, too long) until --full-refresh (or CREATE OR ALTER, flag on).
+    select o.order_id, o.note
+    from development.adapters_snowflake_custom_incremental_dynamic_table_edge_cases.notes changes(information => DEFAULT) as o
+    qualify row_number() over (
+    partition by o.order_id
+    order by case when o.METADATA$ACTION = 'INSERT' then 0 else 1 end
+    ) = 1
+    ) as DBT_INTERNAL_SOURCE
+    on DBT_INTERNAL_DEST.order_id = DBT_INTERNAL_SOURCE.order_id
+    when matched then update set "ORDER_ID" = DBT_INTERNAL_SOURCE."ORDER_ID", "NOTE" = DBT_INTERNAL_SOURCE."NOTE"
+    when not matched then insert ("ORDER_ID", "NOTE") values (DBT_INTERNAL_SOURCE."ORDER_ID", DBT_INTERNAL_SOURCE."NOTE")
+    )
+- sequence: 5
+  type: execute
+  sql: alter dynamic table development.adapters_snowflake_custom_incremental_dynamic_table_edge_cases.widened_column refresh
+- sequence: 6
+  type: execute
+  sql: use warehouse [MASKED_WH]
+model.test.wrong_materialization:
+- sequence: 0
+  type: execute
+  sql: SHOW OBJECTS IN SCHEMA "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_CUSTOM_INCREMENTAL_DYNAMIC_TABLE_EDGE_CASES" LIMIT 10000
+- sequence: 1
+  type: execute
+  sql: |-
+    create or replace transient  table development.adapters_snowflake_custom_incremental_dynamic_table_edge_cases.wrong_materialization
+    
+    
+    
+    
+    
+    
+    as (
+    
+    -- Only dynamic_table models build CI DTs: dbt warns (dbt1111) and builds a table.
+    select 1 as order_id
+    )

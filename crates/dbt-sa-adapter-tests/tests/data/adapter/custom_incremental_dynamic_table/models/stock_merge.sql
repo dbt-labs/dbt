@@ -7,7 +7,7 @@
     delete_condition='DBT_INTERNAL_SOURCE.is_deleted',
 ) }}
 
--- Starts with a CTE, which a refresh body cannot: the merge must wrap it in a subquery.
+-- Starts with a CTE, which a refresh body cannot: the merge wraps it in a subquery.
 with stock_changes as (
     select
         s.warehouse_id,

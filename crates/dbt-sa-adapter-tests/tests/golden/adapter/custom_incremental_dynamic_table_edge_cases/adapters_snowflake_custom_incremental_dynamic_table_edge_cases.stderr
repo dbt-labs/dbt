@@ -1,0 +1,2 @@
+[warning] [CustomIncrementalOutsideDynamicTable (dbt1111)]: refresh_mode='CUSTOM_INCREMENTAL' is ignored: this model is materialized as 'table', and only dynamic_table models build custom incremental dynamic tables. Set materialized='dynamic_table', or, if refresh_mode is inherited from a folder-level config, scope it to the dynamic tables.
+  --> models/wrong_materialization.sql

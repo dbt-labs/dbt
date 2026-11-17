@@ -7,7 +7,7 @@
     transient=true,
 ) }}
 
--- A transient CI DT: `create transient dynamic table (...) refresh using (...)`.
+-- APPEND_ONLY changes carry inserts only.
 select o.order_id, o.amount
-from {{ changes(source('raw', 'orders'), mode='append_only') }} as o
+from {{ changes(source('raw', 'orders'), 'append_only') }} as o
 qualify row_number() over (partition by o.order_id order by o.amount desc) = 1

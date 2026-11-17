@@ -1,14 +1,24 @@
    dbt-oss 
    Loading profiles.yml
    Parsing models/sources.yml
-   Parsing models/orders_merge.sql
-   Parsing tests/orders_after_body_edit.sql
-   Parsing tests/orders_after_refresh.sql
-   Parsing tests/orders_after_switch_back.sql
- Rendering models/orders_merge.sql
-   Running models/orders_merge.sql
- Succeeded model adapters_snowflake_custom_incremental_dynamic_table_create_or_alter.orders_merge (dynamic_table) [1 of 1 in duration]
+   Parsing models/attrs_kept.sql
+   Parsing models/body_edit.sql
+   Parsing models/err_reorder.sql
+   Parsing models/err_type_change.sql
+   Parsing models/err_type_narrow.sql
+   Parsing models/ok_drop.sql
+   Parsing models/ok_widen.sql
+[PASS] body_edit: synced in place
+[PASS] body_edit: only rows changed after the edit have amount_cents
+[PASS] attrs_kept: cluster by amount
+[PASS] attrs_kept: synced in place
+[PASS] attrs_kept: keeps the tag
+[PASS] attrs_kept: keeps the row access policy
+[PASS] attrs_kept: keeps the grant
+[PASS] ok_widen: note widened in place
+[PASS] ok_drop: note dropped in place
+[PASS] err_reorder: --full-refresh applied the new order
+[PASS] err_type_narrow: --full-refresh applied the narrower type
+[PASS] err_type_change: --full-refresh applied the new type
 ==================== Execution Summary =====================
-Finished 'run' successfully for target 'snowflake' [duration]
-Processed: 1 model
-Summary: 1 total | 1 success
+Finished 'run-operation' successfully for target 'snowflake' [duration]
