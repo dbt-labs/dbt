@@ -136,6 +136,7 @@ pub(crate) mod fabric;
 pub(crate) mod freshness_overrides;
 pub(crate) mod metadata_adapter;
 pub(crate) mod postgres;
+pub(crate) mod redis;
 pub(crate) mod redshift;
 pub(crate) mod salesforce;
 pub mod snowflake; // XXX: temporarily pub before the refactor is complete

@@ -28,7 +28,7 @@ class RuntimeTests(unittest.TestCase):
         cursor = connection.cursor.return_value.__enter__.return_value
         schema = pa.schema([('id', pa.int64()), ('name', pa.string())])
         cursor.fetch_arrow_table.return_value = pa.Table.from_batches([], schema=schema)
-        cursor.adbc_ingest.side_effect = lambda name, table, **kw: table.num_rows
+        cursor.adbc_ingest.side_effect = lambda name, data, **kw: data.num_rows if isinstance(data, pa.Table) else data.read_all().num_rows
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'data.csv'
             path.write_text(text)
@@ -55,6 +55,7 @@ class RuntimeTests(unittest.TestCase):
         rows, cursor = self.load_csv('id,name\n')
         table = cursor.adbc_ingest.call_args.args[1]
         self.assertEqual(rows, 0)
+        self.assertIsInstance(table, pa.RecordBatchReader)
         self.assertEqual(table.schema.names, ['file_row', 'id', 'name'])
         self.assertEqual(table.schema.field('id').type, pa.int64())
 
@@ -71,6 +72,28 @@ class RuntimeTests(unittest.TestCase):
         sleep.assert_called_once()
 
     @patch.object(runtime.time, 'sleep')
+    def test_empty_flight_retry_uses_fresh_reader_after_first_was_consumed(self, sleep):
+        connection = MagicMock()
+        cursor = connection.cursor.return_value.__enter__.return_value
+        readers = []
+        schema = pa.schema([('id', pa.int64())])
+        def upload(name, reader, **kwargs):
+            readers.append(reader)
+            batches = list(reader)
+            self.assertEqual(len(batches), 1)
+            self.assertEqual(batches[0].num_rows, 0)
+            self.assertEqual(reader.schema, schema)
+            if len(readers) == 1:
+                raise runtime.adbc.OperationalError(
+                    '[redis] snapshot catalog changed concurrently; retry the statement (40001) (Unavailable; FlightSQL.BulkIngest.Execute)',
+                    status_code=runtime.adbc.AdbcStatusCode.IO, vendor_code=14)
+            return 0
+        cursor.adbc_ingest.side_effect = upload
+        self.assertEqual(runtime.ingest(connection, 't', pa.Table.from_batches([], schema=schema), 's'), 0)
+        self.assertIsNot(readers[0], readers[1])
+        sleep.assert_called_once()
+
+    @patch.object(runtime.time, 'sleep')
     def test_reader_and_unknown_outcomes_are_not_replayed(self, sleep):
         for data, message in [
             (pa.table({'id': [1]}).to_reader(), 'snapshot catalog changed concurrently; retry the statement'),
@@ -84,6 +107,19 @@ class RuntimeTests(unittest.TestCase):
                 runtime.ingest(connection, 't', data, 's')
             cursor.adbc_ingest.assert_called_once()
         sleep.assert_not_called()
+
+    @patch.object(runtime.time, 'sleep')
+    def test_flight_retry_is_bounded_and_does_not_replay_one_shot_input(self, sleep):
+        message = '[redis] snapshot catalog changed concurrently; retry the statement (40001) (Unavailable; FlightSQL.BulkIngest.Execute)'
+        for data, expected_calls in [(pa.table({'id': [1]}), 20), (pa.table({'id': [1]}).to_reader(), 1)]:
+            connection = MagicMock()
+            cursor = connection.cursor.return_value.__enter__.return_value
+            cursor.adbc_ingest.side_effect = runtime.adbc.OperationalError(
+                message, status_code=runtime.adbc.AdbcStatusCode.IO, vendor_code=14)
+            with self.assertRaises(runtime.adbc.Error):
+                runtime.ingest(connection, 't', data, 's')
+            self.assertEqual(cursor.adbc_ingest.call_count, expected_calls)
+        self.assertEqual(sleep.call_count, 19)
 
     def test_bad_csv_does_not_replace_existing_table(self):
         connection = MagicMock()

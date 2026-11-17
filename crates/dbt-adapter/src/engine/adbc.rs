@@ -213,13 +213,13 @@ impl AdbcEngine {
             self.mode,
         );
         let use_cloud_credentials = config.use_dbt_cloud_credentials();
-        let backend = self.auth.backend();
 
         let database_builder = config
             .build_connection_builder(self.auth.as_ref(), |backend| {
                 self.configure_cloud_database(backend)
             })
             .map_err(crate::errors::auth_error_to_adapter_error)?;
+        let backend = database_builder.backend;
         let load_strategy = match (use_cloud_credentials, self.adapter_type) {
             (true, AdapterType::RedisAdbc) => {
                 return Err(AdapterError::new(
@@ -252,7 +252,7 @@ impl AdbcEngine {
         // The database is configured only once even if this runs multiple times,
         // unless a different configuration is provided.
         let opts = database_builder.into_iter().collect::<Vec<_>>();
-        let fingerprint = database::Builder::fingerprint(opts.iter());
+        let fingerprint = super::redis::connection_fingerprint(self.adapter_type, config, &opts);
         {
             let read_guard = self.configured_databases.read();
             if let Some(database) = read_guard.inner.get(&fingerprint) {
@@ -593,7 +593,7 @@ impl AdapterEngine for AdbcEngine {
                     })
                     .map_err(crate::errors::auth_error_to_adapter_error)?;
                 let opts = builder.into_iter().collect::<Vec<_>>();
-                Ok(database::Builder::fingerprint(opts.iter()).as_u64())
+                Ok(super::redis::connection_fingerprint(self.adapter_type, config, &opts).as_u64())
             }
         }
     }
@@ -635,6 +635,13 @@ impl AdapterEngine for AdbcEngine {
         let mut conn = retry_policy
             .execute(config, connect)
             .map_err(|e| enrich_connection_error(self.adapter_type(), e, config))?;
+        match self.adapter_type {
+            AdapterType::RedisAdbc if config.get_str("transport") == Some("flightsql") => {
+                super::redis::initialize_session(conn.as_mut(), config)
+                    .map_err(adbc_error_to_adapter_error)?;
+            }
+            _ => {}
+        }
         // Relation listing only needs table names and types. We're also not using
         // wildcards.
         if self.adapter_type == AdapterType::Bigquery && !config.use_dbt_cloud_credentials() {

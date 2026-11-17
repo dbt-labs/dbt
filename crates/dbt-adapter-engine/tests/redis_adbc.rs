@@ -25,7 +25,7 @@ fn database() -> Box<dyn Database> {
     if let Ok(ca) = env::var("REDIS_TLS_CA_FILE") {
         options.insert("adbc.redis.tls_ca_file".into(), ca.into());
     }
-    let config = AdapterConfig::new(dbt_yaml::Mapping::from_iter([
+    let mut fields = dbt_yaml::Mapping::from_iter([
         (
             "uri".into(),
             env::var("REDIS_URI").expect("REDIS_URI").into(),
@@ -42,9 +42,37 @@ fn database() -> Box<dyn Database> {
             "driver_options".into(),
             dbt_yaml::Value::Mapping(options, Default::default()),
         ),
-    ]));
+    ]);
+    if env::var("REDIS_ADBC_TRANSPORT").as_deref() == Ok("flightsql") {
+        fields.insert("transport".into(), "flightsql".into());
+        fields.insert(
+            "uri".into(),
+            env::var("FLIGHT_SQL_URI").expect("FLIGHT_SQL_URI").into(),
+        );
+        fields.insert(
+            "username".into(),
+            env::var("FLIGHT_SQL_USERNAME")
+                .expect("FLIGHT_SQL_USERNAME")
+                .into(),
+        );
+        fields.insert(
+            "password".into(),
+            env::var("FLIGHT_SQL_PASSWORD")
+                .expect("FLIGHT_SQL_PASSWORD")
+                .into(),
+        );
+        fields.insert(
+            "tls_ca_file".into(),
+            env::var("FLIGHT_SQL_TLS_CA_FILE")
+                .expect("FLIGHT_SQL_TLS_CA_FILE")
+                .into(),
+        );
+        fields.remove("driver_options");
+    }
+    let config = AdapterConfig::new(fields);
+    let builder = auth_for_backend(backend).configure(&config).unwrap();
     let mut driver = driver::Builder::new(
-        backend,
+        builder.backend,
         driver::LoadStrategy::System(Some(
             env::var("REDIS_ADBC_DRIVER").expect("REDIS_ADBC_DRIVER"),
         )),
@@ -52,11 +80,7 @@ fn database() -> Box<dyn Database> {
     .with_adbc_version(AdbcVersion::V110)
     .try_load()
     .unwrap();
-    auth_for_backend(backend)
-        .configure(&config)
-        .unwrap()
-        .build(&mut driver)
-        .unwrap()
+    builder.build(&mut driver).unwrap()
 }
 
 fn query(conn: &mut dyn Connection, sql: &str) -> Result<Vec<RecordBatch>, Cancellable<Error>> {
@@ -157,6 +181,30 @@ fn live_redis_adbc_protocol_and_concurrency() {
         );
         drop(stmt);
 
+        query(conn.as_mut(), &format!("create table {schema}.exact_metadata (amount numeric(12,2), label varchar(17), occurred timestamp(3))")).unwrap();
+        let metadata = conn
+            .get_table_schema(Some("redis"), Some(&schema), "exact_metadata")
+            .unwrap();
+        // Flight GetTableSchema preserves Arrow types but omits Redis SQL type
+        // declarations. The adapter supplements them from this exact SQL lookup.
+        let declarations = query(conn.as_mut(), &format!("select driver_data_type from information_schema.columns where table_schema = '{schema}' and table_name = 'exact_metadata' order by ordinal_position")).unwrap();
+        let types = declarations[0]
+            .column(0)
+            .as_any()
+            .downcast_ref::<arrow_array::StringArray>()
+            .unwrap();
+        for (index, expected) in ["NUMERIC(12,2)", "VARCHAR(17)", "TIMESTAMP(3)"]
+            .iter()
+            .enumerate()
+        {
+            assert_eq!(
+                types.value(index).replace(' ', "").to_ascii_uppercase(),
+                *expected
+            );
+        }
+        assert_eq!(metadata.field(0).data_type(), &DataType::Decimal128(12, 2));
+        assert_eq!(metadata.field(1).data_type(), &DataType::Utf8);
+
         std::thread::scope(|scope| {
             let handles: Vec<_> = (0..4)
                 .map(|value| {
@@ -164,6 +212,14 @@ fn live_redis_adbc_protocol_and_concurrency() {
                     let schema = &schema;
                     scope.spawn(move || {
                         let mut conn = db.new_connection().unwrap();
+                        query(conn.as_mut(), "select 1").unwrap();
+                        let zone = if value % 2 == 0 {
+                            "UTC"
+                        } else {
+                            "America/New_York"
+                        };
+                        query(conn.as_mut(), &format!("set time zone '{zone}'")).unwrap();
+                        query(conn.as_mut(), &format!("set schema '{schema}'")).unwrap();
                         query(conn.as_mut(), "create temp table dbt_api_local (id bigint)")
                             .unwrap();
                         query(
@@ -174,6 +230,13 @@ fn live_redis_adbc_protocol_and_concurrency() {
                         assert!(
                             query(conn.as_mut(), "select * from dbt_api_missing_table").is_err()
                         );
+                        let setting = query(conn.as_mut(), "show time zone").unwrap();
+                        let setting = setting[0]
+                            .column(0)
+                            .as_any()
+                            .downcast_ref::<arrow_array::StringArray>()
+                            .unwrap();
+                        assert_eq!(setting.value(0), zone);
                         let batches = query(conn.as_mut(), "select id from dbt_api_local").unwrap();
                         let ids = batches[0]
                             .column(0)

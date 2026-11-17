@@ -513,7 +513,11 @@ pub(crate) fn adbc_execute_with_options(
         // Snowflake DML (MERGE/INSERT/UPDATE/DELETE) returns a one-row metadata batch
         // with columns like "number of rows inserted". AdapterResponse needs that batch
         // to compute rows_affected correctly, so we must drain even when fetch=false.
-        if !fetch && !schema.has_dml_columns(engine.adapter_type()) {
+        let preserve_session = matches!(adapter_type, AdapterType::RedisAdbc)
+            && engine.get_config().get_str("transport") == Some("flightsql");
+        // Dropping a Flight reader cancels its RPC and can discard the server's
+        // connection-local state. Finish even SELECT hooks whose rows are unused.
+        if !fetch && !schema.has_dml_columns(engine.adapter_type()) && !preserve_session {
             drop(reader);
             let schema = attach_lake_compute_metadata(&stmt, schema);
             return Ok((schema, batches, None));
@@ -524,7 +528,9 @@ pub(crate) fn adbc_execute_with_options(
         let t_loop = std::time::Instant::now();
         for res in reader {
             let batch = res.map_err(adbc_core::error::Error::from)?;
-            batches.push(batch);
+            if fetch || !preserve_session {
+                batches.push(batch);
+            }
             // Check for cancellation before processing the next batch
             // or concatenating the batches produced so far.
             token.check_cancellation()?;

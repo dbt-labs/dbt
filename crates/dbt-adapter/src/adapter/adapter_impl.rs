@@ -2237,7 +2237,7 @@ impl AdapterImpl {
         state: &State,
         relation: &dyn BaseRelation,
     ) -> AdapterResult<Vec<Arc<Column>>> {
-        let conn = self.borrow_tlocal_connection(Some(state), node_id_from_state(state))?;
+        let mut conn = self.borrow_tlocal_connection(Some(state), node_id_from_state(state))?;
         let schema = match conn.get_table_schema(
             relation.database(),
             match self.adapter_type() {
@@ -2263,6 +2263,21 @@ impl AdapterImpl {
                 }
                 return Err(err);
             }
+        };
+        let schema = match self.adapter_type() {
+            RedisAdbc if self.engine().get_config().get_str("transport") == Some("flightsql") => {
+                crate::metadata::redis::supplement_schema(
+                    conn.as_mut(),
+                    schema,
+                    if relation.include_policy().schema {
+                        relation.schema().unwrap_or("public")
+                    } else {
+                        "pg_temp"
+                    },
+                    relation.identifier().expect("identifier checked above"),
+                )?
+            }
+            _ => schema,
         };
         // NOTE: it's okay to skip conversion to an SDF-frontend since
         // `schema_to_columns()` will first try to parse the type from the

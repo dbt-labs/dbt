@@ -557,6 +557,19 @@ impl Column {
 
                 Self::make_degenerate_types_from_parsed_sqltype(adapter_type, &sql_type)
             }
+            AdapterType::RedisAdbc => {
+                let original = original_sql_str
+                    .strip_suffix(" not null")
+                    .or_else(|| original_sql_str.strip_suffix(" NOT NULL"))
+                    .unwrap_or(original_sql_str);
+                let dtype = match SqlType::parse(adapter_type, original) {
+                    Ok((SqlType::Varchar(..), _)) => "VARCHAR",
+                    Ok((SqlType::Char(..), _)) => "CHARACTER",
+                    Ok((SqlType::Numeric(..), _)) => "NUMERIC",
+                    _ => original,
+                };
+                (dtype.to_owned(), original.to_owned())
+            }
             _ => {
                 let stripped = original_sql_str
                     .strip_suffix(" not null")
@@ -1109,6 +1122,7 @@ impl Column {
             // turn Databricks strings into `character varying(256)`.
             // https://github.com/databricks/dbt-databricks/blob/6cc739d473043d4e1c94be9ca391850edd02e7fb/dbt/adapters/databricks/column.py#L140-L142
             AdapterType::Databricks => self.core_dtype.clone(),
+            AdapterType::RedisAdbc => self.core_data_type.clone(),
             _ => {
                 if self.is_string() {
                     self.as_static().string_type(Some(

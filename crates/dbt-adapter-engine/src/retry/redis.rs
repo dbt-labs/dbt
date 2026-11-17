@@ -5,10 +5,15 @@ pub(super) fn refused_publication(error: &Error) -> bool {
     // error or unknown outcome cannot safely replay a write.
     // https://github.com/redis/redis-adbc-driver/blob/225e00569986e8340acd5978345f3275a889ade6/go/snapshot.go#L1272
     error.status == Status::IO
-        && error.sqlstate == b"40001".map(|b| b as std::ffi::c_char)
-        && error
-            .message
-            .contains("snapshot catalog changed concurrently; retry the statement")
+        && ((error.sqlstate == b"40001".map(|b| b as std::ffi::c_char)
+            && error
+                .message
+                .contains("snapshot catalog changed concurrently; retry the statement"))
+            || (error.vendor_code == 14
+                && error.message.contains(
+                    "[redis] snapshot catalog changed concurrently; retry the statement (40001)",
+                )
+                && error.message.contains("(Unavailable;")))
 }
 
 #[cfg(test)]
@@ -42,6 +47,25 @@ mod tests {
         });
         assert_eq!(result.unwrap(), 42);
         assert_eq!(calls, 2);
+    }
+
+    #[test]
+    fn flight_retries_only_the_exact_redis_refusal_envelope() {
+        let mut error = Error::with_message_and_status(
+            "[FlightSQL] [redis] snapshot catalog changed concurrently; retry the statement (40001) (Unavailable; details)",
+            Status::IO,
+        );
+        error.vendor_code = 14;
+        assert!(refused_publication(&error));
+        error.vendor_code = 0;
+        assert!(!refused_publication(&error));
+        error.vendor_code = 14;
+        error.message =
+            "connection lost; publication outcome unknown (Unavailable; details)".into();
+        assert!(!refused_publication(&error));
+        error.message =
+            "[redis] snapshot catalog changed concurrently; retry the statement (40001)".into();
+        assert!(!refused_publication(&error));
     }
 
     #[test]
