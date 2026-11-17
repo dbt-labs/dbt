@@ -29,6 +29,22 @@ from dbt_common.ui import green, red
 if TYPE_CHECKING:
     import agate
 
+    from dbt.adapters.base import BaseAdapter
+
+
+def _commit_if_open(adapter: "BaseAdapter") -> None:
+    """Commit the transaction a successful run-operation left open.
+
+    Releasing the connection closes it, and closing rolls back any open
+    transaction, so writes made through `statement()` (auto_begin=True) or
+    `--sql` would otherwise be lost. Skip when none is open, as `commit()`
+    raises then. A run-operation that raises never reaches this, so it still
+    rolls back.
+    """
+    connection = adapter.connections.get_if_exists()
+    if connection is not None and connection.transaction_open:
+        adapter.connections.commit()
+
 
 class RunOperationTask(ConfiguredTask):
     def _get_macro_parts(self):
@@ -50,6 +66,7 @@ class RunOperationTask(ConfiguredTask):
             res = adapter.execute_macro(
                 macro_name, project=package_name, kwargs=macro_kwargs, macro_resolver=self.manifest
             )
+            _commit_if_open(adapter)
 
         return res
 
@@ -87,6 +104,7 @@ class RunOperationTask(ConfiguredTask):
         with adapter.connection_named("inline_query"):
             adapter.clear_transaction()
             response, _ = adapter.execute(sql, auto_begin=True, fetch=False)
+            _commit_if_open(adapter)
 
         return response
 
