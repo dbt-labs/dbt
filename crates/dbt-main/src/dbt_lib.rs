@@ -2134,7 +2134,6 @@ impl<'a> AllPhasesExecutor<'a> {
                 self.arg.as_ref(),
                 &resolved_state,
                 &jinja_env,
-                run_task_results.task_runner_ctx.as_ref(),
                 &schema_store,
                 &data_store,
                 &map_compiled_sql,
