@@ -119,6 +119,9 @@ pub fn load_db_config<P: AsRef<Path>>(
         DbConfig::ClickHouse(ch) => {
             ch.schema = Some(schema.to_string());
         }
+        DbConfig::Redis_adbc(redis) => {
+            redis.schema = Some(schema.to_string());
+        }
         _ => {}
     }
 
@@ -193,6 +196,7 @@ mod tests {
             "databricks",
             "redshift",
             "clickhouse",
+            "redis_adbc",
         ] {
             let db_config = load_db_config(target, "s", REPLAY_PROFILES)
                 .unwrap_or_else(|e| panic!("{target}: {e}"));
@@ -201,6 +205,16 @@ mod tests {
                 "{target} has no database"
             );
         }
+    }
+
+    #[test]
+    fn redis_replay_profile_uses_the_isolated_test_schema() {
+        let config = load_db_config("redis_adbc", "isolated_redis_test", REPLAY_PROFILES).unwrap();
+        let DbConfig::Redis_adbc(config) = config else {
+            panic!("Redis profile expected");
+        };
+        assert_eq!(config.schema.as_deref(), Some("isolated_redis_test"));
+        assert_eq!(config.database.as_deref(), Some("redis"));
     }
 
     #[test]

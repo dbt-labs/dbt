@@ -1,0 +1,7 @@
+kind: Fixes
+body: Preserve Redis fractional decimal precision and scale when result metadata supplies only a bare NUMERIC or DECIMAL label (redis/redis-dbt-adapter#83).
+time: 2026-11-17T12:05:19.260135-08:00
+custom:
+    author: alberttwong
+    issue: ""
+    project: dbt-core

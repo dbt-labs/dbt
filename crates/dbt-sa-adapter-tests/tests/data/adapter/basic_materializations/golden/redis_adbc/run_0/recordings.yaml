@@ -1,0 +1,13 @@
+16f77d7d:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists "adapters_redis_adbc_basic_materializations"
+seed.basic_materializations.trips:
+- sequence: 0
+  type: execute
+  sql: create table "adapters_redis_adbc_basic_materializations"."trips" ("id" bigint,"zone" character varying,"trips" bigint)
+- sequence: 1
+  type: execute
+  sql: |-
+    insert into "adapters_redis_adbc_basic_materializations"."trips" ("id", "zone", "trips") values
+    (1,'JFK',2),(2,'JFK',3),(3,'LGA',1)

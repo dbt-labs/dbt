@@ -1,0 +1,11 @@
+model.test.b:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists "adapters_redis_adbc_get_columns_in_relation"
+- sequence: 1
+  type: execute
+  sql: create table "adapters_redis_adbc_get_columns_in_relation"."c" (number_col numeric(10,2), text_col varchar(10), text_col2 varchar(20))
+model.test.b.get_table_schema.dbfb3e7e:
+- sequence: 0
+  type: get_table_schema
+  table_name: dbfb3e7e

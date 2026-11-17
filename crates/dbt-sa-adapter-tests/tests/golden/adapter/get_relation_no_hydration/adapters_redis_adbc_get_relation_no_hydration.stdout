@@ -1,0 +1,7 @@
+   dbt-oss 
+   Loading profiles.yml
+debug:warning=static analysis for adapter: RedisAdbc is disabled
+relation
+"adapters_redis_adbc_get_relation_no_hydration"."a"
+==================== Execution Summary =====================
+Finished 'run-operation' successfully for target 'redis_adbc' [duration]

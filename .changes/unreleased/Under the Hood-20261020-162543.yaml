@@ -1,0 +1,7 @@
+kind: Under the Hood
+body: Add Redis connection configuration through the generic ADBC backend, including URI validation and separate credentials.
+time: 2026-10-20T16:25:43.433911-07:00
+custom:
+    author: alberttwong
+    issue: ""
+    project: dbt-core

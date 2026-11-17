@@ -56,6 +56,17 @@ pub fn get_relation(
         AdapterType::Snowflake => snowflake_get_relation(
             adapter, state, ctx, conn, database, schema, identifier, token,
         ),
+        AdapterType::RedisAdbc => crate::metadata::adbc::get_relation_via_adbc(
+            adapter.engine().as_ref(),
+            conn,
+            Relation::new(
+                adapter.adapter_type(),
+                database.to_owned(),
+                schema.to_owned(),
+                identifier.to_owned(),
+            )
+            .with_quoting(adapter.quoting()),
+        ),
         AdapterType::Bigquery => bigquery_get_relation_via_adbc(
             adapter, state, conn, database, schema, identifier, token,
         ),

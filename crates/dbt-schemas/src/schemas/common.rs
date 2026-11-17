@@ -1021,6 +1021,8 @@ pub fn constraint_support(
     use ConstraintType::*;
 
     let support = match (adapter_type, ct) {
+        (RedisAdbc, NotNull | Check | PrimaryKey | Unique | ForeignKey) => Enforced,
+        (RedisAdbc, Custom) => NotSupported,
         // Postgres
         (Postgres, NotNull) => Enforced,
         (Postgres, ForeignKey) => Enforced,

@@ -7,7 +7,6 @@ use crate::metadata::freshness_overrides::{
 };
 use crate::metadata::*;
 use crate::query_ctx::query_ctx_from_state;
-use crate::record_batch::StructArrayExt;
 use crate::relation::Relation;
 use crate::time_machine::{
     args_freshness, args_freshness_with_overrides, global_replayer,
@@ -62,7 +61,7 @@ pub fn list_relations(
     db_schema: &CatalogAndSchema,
     token: CancellationToken,
 ) -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
-    let listing = list_relations_via_adbc(engine, conn, db_schema);
+    let listing = adbc::list_relations_via_adbc(engine, conn, db_schema);
     let connection_project = engine
         .config("execution_project")
         .or_else(|| engine.config("project"))
@@ -192,107 +191,6 @@ where
             ListingFailure::EmptySchema | ListingFailure::Fatal => Err(e),
         },
     }
-}
-
-fn list_relations_via_adbc(
-    engine: &dyn AdapterEngine,
-    conn: &mut ConnectionGuard<'_>,
-    db_schema: &CatalogAndSchema,
-) -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
-    // The driver expects unquoted values, so regardless of the adapter's config
-    // we need to strip quotes.
-    let (catalog, _) = normalize_quote(false, AdapterType::Bigquery, &db_schema.rendered_catalog);
-    let (schema, _) = normalize_quote(false, AdapterType::Bigquery, &db_schema.rendered_schema);
-
-    let reader = conn
-        .get_objects(
-            adbc_core::options::ObjectDepth::Tables,
-            Some(&catalog),
-            Some(&schema),
-            None,
-            None,
-            None,
-        )
-        .map_err(adbc_error_to_adapter_error)?;
-
-    let arrow_schema = reader.schema();
-    let batches = reader
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| AdapterError::new(AdapterErrorKind::Driver, e.to_string()))?;
-    let batch = arrow::compute::concat_batches(&arrow_schema, &batches)
-        .map_err(|e| AdapterError::new(AdapterErrorKind::Driver, e.to_string()))?;
-
-    // The schema names are nested in the result of the get object call.
-    // The batch has the following shape at the top level:
-    // - catalog_name: utf8
-    // - catalog_db_schemas: list[struct]
-    //
-    // Each row of the column `catalog_db_schemas` is a list of elements
-    // with the shape:
-    //   - db_schema_name: utf8
-    //   - db_schema_tables: list
-    let catalog_db_schemas = batch
-        .column_by_name("catalog_db_schemas")
-        .and_then(|c| c.as_any().downcast_ref::<ListArray>())
-        .ok_or_else(|| {
-            AdapterError::new(
-                AdapterErrorKind::UnexpectedResult,
-                "Missing or invalid 'catalog_db_schemas' column",
-            )
-        })?;
-
-    let schemas_struct = catalog_db_schemas
-        .values()
-        .as_any()
-        .downcast_ref::<StructArray>()
-        .ok_or_else(|| {
-            AdapterError::new(
-                AdapterErrorKind::UnexpectedResult,
-                "Missing or invalid 'catalog_db_schemas' values",
-            )
-        })?;
-
-    // Each row of the column `db_schema_tables` is a list of elements
-    // with the shape:
-    //   - table_name: utf8
-    //   - table_type: utf8
-    //   - table_columns: list
-    //   - table_constraints: list
-    let db_schema_tables = schemas_struct.column_as::<ListArray>("db_schema_tables")?;
-
-    let tables_struct = db_schema_tables
-        .values()
-        .as_any()
-        .downcast_ref::<StructArray>()
-        .ok_or_else(|| {
-            AdapterError::new(
-                AdapterErrorKind::UnexpectedResult,
-                "Missing or invalid 'db_schema_tables' values",
-            )
-        })?;
-
-    let table_names = tables_struct.column_as::<StringArray>("table_name")?;
-    let table_types = tables_struct.column_as::<StringArray>("table_type")?;
-
-    let mut result = Vec::with_capacity(tables_struct.len());
-    for j in 0..tables_struct.len() {
-        let identifier = table_names.value(j);
-        let relation_type =
-            RelationType::from_adapter_type(AdapterType::Bigquery, table_types.value(j));
-
-        result.push(Arc::new(
-            Relation::new(
-                AdapterType::Bigquery,
-                catalog.clone(),
-                schema.clone(),
-                identifier.to_string(),
-            )
-            .with_relation_type(relation_type)
-            .with_quoting(engine.quoting()),
-        ) as Arc<dyn BaseRelation>);
-    }
-
-    Ok(result)
 }
 
 /// Represent nested data types (struct/array) for BigQuery

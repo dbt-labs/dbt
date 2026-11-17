@@ -1,4 +1,24 @@
+use std::borrow::Cow;
+
 use dbt_auth::AdapterConfig;
+
+use crate::cow::lowercase;
+
+/// Substring heuristics for known-transient Redshift errors, not proof that
+/// every match is actually transient. `retry_all` widens to any error.
+pub(super) fn is_retryable_redshift_query_error(retry_all: bool, message: &str) -> bool {
+    if retry_all {
+        return true;
+    }
+
+    let msg = lowercase(Cow::Borrowed(message));
+    // Catalog race after a concurrent DROP/CREATE.
+    msg.contains("could not open relation with oid")
+        // MVCC serialization conflict.
+        || msg.contains("conflict with concurrent transaction")
+        // Schema catalog race (can also be a genuine permanent error).
+        || (msg.contains("schema") && msg.contains("does not exist"))
+}
 
 /// Mirrors the Python dbt-redshift retryable exception list:
 ///

@@ -127,19 +127,21 @@ where
     MapReduce::new(factory, map_f, Box::new(reduce_f), node_id).run(Arc::new(keys), token)
 }
 
+pub(crate) mod adbc;
 pub(crate) mod bigquery;
 pub(crate) mod clickhouse;
 pub mod databricks;
 pub(crate) mod duckdb;
-pub(crate) mod exasol;
 pub(crate) mod fabric;
 pub(crate) mod freshness_overrides;
 pub(crate) mod metadata_adapter;
 pub(crate) mod postgres;
+pub(crate) mod redis;
 pub(crate) mod redshift;
 pub(crate) mod salesforce;
 pub mod snowflake; // XXX: temporarily pub before the refactor is complete
 pub(crate) mod spark;
+pub(crate) mod sql;
 pub(crate) mod view_definition;
 
 // Re-export `metadata_adapter` symbols

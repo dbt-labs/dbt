@@ -1,0 +1,8 @@
+8b56e654:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists "adapters_redis_adbc_get_relation_no_hydration"
+bb939d98:
+- sequence: 0
+  type: execute
+  sql: create table "adapters_redis_adbc_get_relation_no_hydration"."a" (val int)

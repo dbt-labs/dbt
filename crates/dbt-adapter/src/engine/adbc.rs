@@ -29,7 +29,9 @@ use crate::cache::RelationCache;
 use crate::engine::adapter_engine::*;
 use crate::engine::query_comment::QueryCommentConfig;
 use crate::engine::retry::{ConnectionRetryPolicy, QueryRetryPolicy};
-use crate::errors::{AdapterError, adbc_error_to_adapter_error, is_bridge_adbc_error};
+use crate::errors::{
+    AdapterError, AdapterErrorKind, adbc_error_to_adapter_error, is_bridge_adbc_error,
+};
 use crate::sql_types::TypeOps;
 use crate::stmt_splitter::StmtSplitter;
 
@@ -201,6 +203,64 @@ impl AdbcEngine {
         &self.mode
     }
 
+    fn driver_load_strategy(&self, config: &AdapterConfig) -> AdapterResult<LoadStrategy> {
+        Ok(
+            match (config.use_dbt_cloud_credentials(), self.adapter_type) {
+                (true, AdapterType::RedisAdbc) => {
+                    return Err(AdapterError::new(
+                        AdapterErrorKind::NotSupported,
+                        "Redis does not support dbt Cloud credentials",
+                    ));
+                }
+                (true, _) => LoadStrategy::Bridge,
+                (false, AdapterType::RedisAdbc) => {
+                    let path = config.get_str("driver").filter(|path| !path.is_empty())
+                    .ok_or_else(|| AdapterError::new(AdapterErrorKind::Configuration,
+                        "Set the Redis 'driver' profile field to an absolute shared-library path"))?;
+                    if !std::path::Path::new(path).is_absolute() {
+                        return Err(AdapterError::new(
+                            AdapterErrorKind::Configuration,
+                            "The Redis 'driver' profile field must be an absolute shared-library path",
+                        ));
+                    }
+                    LoadStrategy::System(Some(path.to_owned()))
+                }
+                (false, AdapterType::DuckDB) => LoadStrategy::SystemThenCdnCache,
+                (false, _) => LoadStrategy::CdnCache,
+            },
+        )
+    }
+
+    fn configure_session(
+        &self,
+        conn: &mut dyn Connection,
+        config: &AdapterConfig,
+    ) -> AdapterResult<()> {
+        match self.adapter_type {
+            AdapterType::RedisAdbc if config.get_str("transport") == Some("flightsql") => {
+                super::redis::initialize_session(conn, config)
+                    .map_err(adbc_error_to_adapter_error)?;
+            }
+            _ => {}
+        }
+        // Relation listing only needs names and types, with no wildcards.
+        let metadata_options: &[&str] =
+            match (self.adapter_type, config.use_dbt_cloud_credentials()) {
+                (AdapterType::Bigquery, false) => &[
+                    bigquery::GET_OBJECTS_SKIP_TABLE_METADATA,
+                    bigquery::GET_OBJECTS_DISABLE_WILDCARDS,
+                ],
+                _ => &[],
+            };
+        for key in metadata_options {
+            let _ = conn.set_option(
+                adbc_core::options::OptionConnection::Other((*key).to_owned()),
+                adbc_core::options::OptionValue::String("true".to_owned()),
+            );
+        }
+        Ok(())
+    }
+
     fn load_driver_and_configure_database(
         &self,
         config: &AdapterConfig,
@@ -210,19 +270,14 @@ impl AdbcEngine {
             "load_driver_and_configure_database called in {:?} mode",
             self.mode,
         );
-        let use_cloud_credentials = config.use_dbt_cloud_credentials();
-        let backend = self.auth.backend();
 
         let database_builder = config
             .build_connection_builder(self.auth.as_ref(), |backend| {
                 self.configure_cloud_database(backend)
             })
             .map_err(crate::errors::auth_error_to_adapter_error)?;
-        let load_strategy = match (use_cloud_credentials, self.adapter_type) {
-            (true, _) => LoadStrategy::Bridge,
-            (false, AdapterType::DuckDB) => LoadStrategy::SystemThenCdnCache,
-            (false, _) => LoadStrategy::CdnCache,
-        };
+        let backend = database_builder.backend;
+        let load_strategy = self.driver_load_strategy(config)?;
 
         // This will load the "bridge" driver if load_strategy is Remote.
         let mut driver = driver::Builder::new(backend, load_strategy)
@@ -232,7 +287,7 @@ impl AdbcEngine {
         // The database is configured only once even if this runs multiple times,
         // unless a different configuration is provided.
         let opts = database_builder.into_iter().collect::<Vec<_>>();
-        let fingerprint = database::Builder::fingerprint(opts.iter());
+        let fingerprint = super::redis::connection_fingerprint(self.adapter_type, config, &opts);
         {
             let read_guard = self.configured_databases.read();
             if let Some(database) = read_guard.inner.get(&fingerprint) {
@@ -573,7 +628,7 @@ impl AdapterEngine for AdbcEngine {
                     })
                     .map_err(crate::errors::auth_error_to_adapter_error)?;
                 let opts = builder.into_iter().collect::<Vec<_>>();
-                Ok(database::Builder::fingerprint(opts.iter()).as_u64())
+                Ok(super::redis::connection_fingerprint(self.adapter_type, config, &opts).as_u64())
             }
         }
     }
@@ -615,19 +670,7 @@ impl AdapterEngine for AdbcEngine {
         let mut conn = retry_policy
             .execute(config, connect)
             .map_err(|e| enrich_connection_error(self.adapter_type(), e, config))?;
-        // Relation listing only needs table names and types. We're also not using
-        // wildcards.
-        if self.adapter_type == AdapterType::Bigquery && !config.use_dbt_cloud_credentials() {
-            for key in [
-                bigquery::GET_OBJECTS_SKIP_TABLE_METADATA,
-                bigquery::GET_OBJECTS_DISABLE_WILDCARDS,
-            ] {
-                let _ = conn.set_option(
-                    adbc_core::options::OptionConnection::Other(key.to_string()),
-                    adbc_core::options::OptionValue::String("true".to_string()),
-                );
-            }
-        }
+        self.configure_session(conn.as_mut(), config)?;
         // Tag the connection with its config fingerprint and cache it on the
         // engine, so the pool reuses a connection only among engines with an
         // identical connection configuration.

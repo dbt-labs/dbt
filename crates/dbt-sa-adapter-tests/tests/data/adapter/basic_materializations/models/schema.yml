@@ -1,0 +1,10 @@
+version: 2
+models:
+  - name: trips_table
+    columns:
+      - name: id
+        data_tests: [not_null, unique]
+  - name: trips_incremental
+    columns:
+      - name: id
+        data_tests: [not_null, unique]

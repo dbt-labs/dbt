@@ -18,6 +18,7 @@ mod duckdb;
 mod exasol;
 mod lake_compute;
 mod postgres;
+mod redis_adbc;
 mod redshift;
 mod salesforce;
 pub mod snowflake;
@@ -87,6 +88,10 @@ pub fn auth_for_backend_with_warnings(
         Backend::ClickHouse => Box::new(clickhouse::ClickHouseAuth::new(warning_printer)),
         Backend::Athena => Box::new(athena::AthenaAuth::new(warning_printer)),
         Backend::Exasol => Box::new(exasol::ExasolAuth::new(warning_printer)),
+        backend @ Backend::Generic {
+            library_name: "adbc_driver_redis",
+            ..
+        } => Box::new(redis_adbc::RedisAuth::new(backend)),
         Backend::Trino => unimplemented!("trino backend authentication"),
         Backend::Generic { .. } => unimplemented!("generic backend authentication"),
     }

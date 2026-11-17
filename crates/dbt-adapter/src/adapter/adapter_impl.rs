@@ -30,12 +30,12 @@ use crate::metadata::databricks::is_databricks_relation_not_found;
 use crate::metadata::databricks::version::EngineVersion;
 use crate::metadata::duckdb::DuckDBMetadataAdapter;
 use crate::metadata::duckdb::{classify_attach_entry, duckdb_table_format_for_database};
-use crate::metadata::exasol::ExasolMetadataAdapter;
 use crate::metadata::fabric::FabricMetadataAdapter;
 use crate::metadata::postgres::PostgresMetadataAdapter;
 use crate::metadata::redshift::RedshiftMetadataAdapter;
 use crate::metadata::salesforce::SalesforceMetadataAdapter;
 use crate::metadata::snowflake::SnowflakeMetadataAdapter;
+use crate::metadata::sql::SqlMetadataAdapter;
 use crate::metadata::{self, CatalogAndSchema, MetadataAdapter};
 use crate::query_ctx::{node_id_from_state, query_ctx_from_state};
 use crate::record_batch::{StructArrayExt, jsonify_column};
@@ -413,8 +413,8 @@ impl AdapterImpl {
                         }
                         ClickHouse => Box::new(ClickHouseMetadataAdapter::new(engine))
                             as Box<dyn MetadataAdapter>,
-                        Exasol => {
-                            Box::new(ExasolMetadataAdapter::new(engine)) as Box<dyn MetadataAdapter>
+                        Exasol | RedisAdbc => {
+                            Box::new(SqlMetadataAdapter::new(engine)) as Box<dyn MetadataAdapter>
                         }
                         Starburst => todo!("Starburst"),
                         Athena => todo!("Athena"),
@@ -755,7 +755,9 @@ impl AdapterImpl {
         use DbtIncrementalStrategy::*;
 
         match self.adapter_type() {
-            Postgres | DuckDB | LakeCompute => &[Append, DeleteInsert, Merge, Microbatch],
+            Postgres | DuckDB | LakeCompute | RedisAdbc => {
+                &[Append, DeleteInsert, Merge, Microbatch]
+            }
             Snowflake => &[Append, DeleteInsert, InsertOverwrite, Merge, Microbatch],
             Bigquery => &[Append],
             Databricks => &[
@@ -1325,6 +1327,13 @@ impl AdapterImpl {
             Replay(Bigquery | Databricks, replay) => {
                 replay.replay_submit_python_job(ctx, conn.as_mut(), state, model, compiled_code)
             }
+            Impl(RedisAdbc, engine) => {
+                python::redis::submit_python_job(engine.as_ref(), compiled_code)
+            }
+            Replay(RedisAdbc, _) => Err(AdapterError::new(
+                AdapterErrorKind::NotSupported,
+                "Local Python execution cannot be replayed",
+            )),
             Replay(
                 adapter_type @ (Postgres | Redshift | Salesforce | DuckDB | LakeCompute | Spark
                 | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
@@ -1358,15 +1367,14 @@ impl AdapterImpl {
     /// SnowflakeAdapter https://github.com/dbt-labs/dbt-adapters/blob/0efd8d3d1081e1ab43e38797d5104f7b424a6284/dbt-snowflake/src/dbt/adapters/snowflake/impl.py#L205
     pub fn list_schemas(&self, state: &State, database: &str) -> AdapterResult<Vec<String>> {
         match self.adapter_type() {
-            Bigquery if self.mock_state().is_none() => {
-                // BigQuery lists datasets through the ADBC metadata API
-                // rather than a SQL query.
+            Bigquery | RedisAdbc if self.mock_state().is_none() => {
+                // List schemas through the driver metadata API instead of SQL.
                 // See: https://github.com/dbt-labs/dbt-core/issues/14631
                 self.list_schemas_via_adbc(state, database)
             }
             Snowflake | Databricks | Redshift | Spark | DuckDB | Postgres | Salesforce | Fabric
             | ClickHouse | Exasol | Athena | Starburst | Trino | Datafusion | Dremio | Oracle
-            | LakeCompute | Bigquery => {
+            | LakeCompute | Bigquery | RedisAdbc => {
                 use crate::macro_exec::execute_macro_wrapper;
                 use minijinja::value::{Kwargs, Value};
 
@@ -1438,7 +1446,10 @@ impl AdapterImpl {
         // which filters out hidden datasets.
         // Reference: https://github.com/dbt-labs/dbt-adapters/blob/860da89225e2ecf1bf47038f5ac40d4eaa4019a2/dbt-bigquery/src/dbt/adapters/bigquery/connections.py#L619
         let db_schema_names = db_schema_names
-            .filter(|s| !s.starts_with('_'))
+            .filter(|s| match self.adapter_type() {
+                Bigquery => !s.starts_with('_'),
+                _ => true,
+            })
             .map(|s| s.to_string())
             .collect();
 
@@ -1464,7 +1475,7 @@ impl AdapterImpl {
                         "namespace"
                     }
                 }
-                Bigquery => "schema_name",
+                Bigquery | RedisAdbc => "schema_name",
                 Redshift => {
                     if get_bool_config(self.engine().as_ref(), "datasharing")? {
                         "schema_name"
@@ -1789,7 +1800,7 @@ impl AdapterImpl {
             }
             Postgres | Bigquery | Databricks | Redshift | Salesforce | Spark | DuckDB
             | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
-            | Datafusion | Dremio | Oracle => {
+            | Datafusion | Dremio | Oracle | RedisAdbc => {
                 let err = format!(
                     "describe_dynamic_table is not supported by the {} adapter",
                     adapter_type
@@ -1854,7 +1865,7 @@ impl AdapterImpl {
             }
             Postgres | Bigquery | Databricks | Redshift | Salesforce | Spark | DuckDB
             | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
-            | Datafusion | Dremio | Oracle => {
+            | Datafusion | Dremio | Oracle | RedisAdbc => {
                 let err = format!(
                     "describe_interactive_table is not supported by the {} adapter",
                     adapter_type
@@ -2220,16 +2231,19 @@ impl AdapterImpl {
         }
     }
 
-    /// BigQuery get_columns_in_relation using `AdbcConnectionGetTableSchema()`
-    fn bigquery_get_columns_in_relation_via_adbc(
+    /// Column metadata using `AdbcConnectionGetTableSchema()`
+    fn get_columns_in_relation_via_adbc(
         &self,
         state: &State,
         relation: &dyn BaseRelation,
     ) -> AdapterResult<Vec<Arc<Column>>> {
-        let conn = self.borrow_tlocal_connection(Some(state), node_id_from_state(state))?;
+        let mut conn = self.borrow_tlocal_connection(Some(state), node_id_from_state(state))?;
         let schema = match conn.get_table_schema(
             relation.database(),
-            relation.schema(),
+            match self.adapter_type() {
+                RedisAdbc if !relation.include_policy().schema => Some("pg_temp"),
+                _ => relation.schema(),
+            },
             relation.identifier().ok_or_else(|| {
                 AdapterError::new(
                     AdapterErrorKind::UnexpectedResult,
@@ -2240,12 +2254,30 @@ impl AdapterImpl {
             Ok(schema) => schema,
             Err(err) => {
                 let err = adbc_error_to_adapter_error(err);
-                if is_bigquery_not_found_error(&err) {
+                if match self.adapter_type() {
+                    Bigquery => is_bigquery_not_found_error(&err),
+                    _ => err.kind() == AdapterErrorKind::NotFound,
+                } {
                     // A missing relation has no columns.
                     return Ok(Vec::new());
                 }
                 return Err(err);
             }
+        };
+        let schema = match self.adapter_type() {
+            RedisAdbc if self.engine().get_config().get_str("transport") == Some("flightsql") => {
+                metadata::redis::supplement_schema(
+                    conn.as_mut(),
+                    schema,
+                    if relation.include_policy().schema {
+                        relation.schema().unwrap_or("public")
+                    } else {
+                        "pg_temp"
+                    },
+                    relation.identifier().expect("identifier checked above"),
+                )?
+            }
+            _ => schema,
         };
         // NOTE: it's okay to skip conversion to an SDF-frontend since
         // `schema_to_columns()` will first try to parse the type from the
@@ -2315,13 +2347,12 @@ impl AdapterImpl {
             // have a get_columns_in_relation() macro, it will fail with a
             // "macro does not exist" error
             Athena | ClickHouse | Datafusion | Dremio | DuckDB | LakeCompute | Exasol | Fabric
-            | Oracle | Postgres | Redshift | Salesforce | Snowflake | Spark | Starburst | Trino => {
-                execute_macro(
-                    state,
-                    &[RelationObject::new(relation.to_owned()).into_value()],
-                    "get_columns_in_relation",
-                )
-            }
+            | Oracle | Postgres | Redshift | Salesforce | Snowflake | Spark | Starburst | Trino
+            | RedisAdbc => execute_macro(
+                state,
+                &[RelationObject::new(relation.to_owned()).into_value()],
+                "get_columns_in_relation",
+            ),
         };
 
         macro_result
@@ -2447,7 +2478,7 @@ impl AdapterImpl {
         match self.adapter_type() {
             // TODO: Should we add the schema that was fetched here to the schema cache
             // to avoid further remote lookups?
-            Bigquery => self.bigquery_get_columns_in_relation_via_adbc(state, relation),
+            Bigquery | RedisAdbc => self.get_columns_in_relation_via_adbc(state, relation),
             _ => self.get_columns_in_relation_via_macro(state, relation),
         }
     }
@@ -2610,7 +2641,7 @@ impl AdapterImpl {
             Impl(
                 Snowflake | Databricks | Redshift | Salesforce | Postgres | Spark | DuckDB
                 | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
-                | Datafusion | Dremio | Oracle,
+                | Datafusion | Dremio | Oracle | RedisAdbc,
                 _,
             ) => {
                 // downcast relation
@@ -2660,7 +2691,8 @@ impl AdapterImpl {
             }
             Impl(
                 Postgres | Bigquery | Databricks | Redshift | Spark | DuckDB | LakeCompute | Fabric
-                | ClickHouse | Exasol | Starburst | Athena | Trino | Datafusion | Dremio | Oracle,
+                | ClickHouse | Exasol | Starburst | Athena | Trino | Datafusion | Dremio | Oracle
+                | RedisAdbc,
                 _,
             ) => {
                 if quote_config.unwrap_or(true) {
@@ -2964,7 +2996,7 @@ impl AdapterImpl {
             }
             Postgres | Snowflake | Databricks | Redshift | Salesforce | Spark | Fabric | DuckDB
             | LakeCompute | ClickHouse | Exasol | Starburst | Athena | Trino | Datafusion
-            | Dremio | Oracle => {
+            | Dremio | Oracle | RedisAdbc => {
                 unimplemented!("only available with BigQuery adapter")
             }
         }
@@ -3009,7 +3041,7 @@ impl AdapterImpl {
             }
             Postgres | Snowflake | Databricks | Redshift | Salesforce | Spark | DuckDB
             | LakeCompute | Fabric | Exasol | Starburst | Athena | Trino | Datafusion | Dremio
-            | Oracle => {
+            | Oracle | RedisAdbc => {
                 let mut result = vec![];
                 for (_, column) in columns_map {
                     let col_name = if column.quote.unwrap_or(false) {
@@ -3245,7 +3277,7 @@ impl AdapterImpl {
         }
 
         match self.adapter_type() {
-            Postgres | Bigquery | DuckDB | LakeCompute | Exasol | ClickHouse => {
+            Postgres | Bigquery | DuckDB | LakeCompute | Exasol | ClickHouse | RedisAdbc => {
                 let grantee_cols = record_batch.column_values::<StringArray>("grantee")?;
                 let privilege_cols = record_batch.column_values::<StringArray>("privilege_type")?;
 
@@ -3470,7 +3502,7 @@ impl AdapterImpl {
             }
             Snowflake | Bigquery | Databricks | Spark | DuckDB | LakeCompute | Postgres
             | Salesforce | Fabric | ClickHouse | Exasol | Athena | Starburst | Trino
-            | Datafusion | Dremio | Oracle => Err(AdapterError::new(
+            | Datafusion | Dremio | Oracle | RedisAdbc => Err(AdapterError::new(
                 AdapterErrorKind::NotSupported,
                 "build_catalog_from_show_tables_and_svv_columns is only supported for Redshift",
             )),
@@ -3486,7 +3518,7 @@ impl AdapterImpl {
             Bigquery => nest_column_data_types(columns, constraints),
             Postgres | Snowflake | Databricks | Redshift | Salesforce | Spark | DuckDB
             | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
-            | Datafusion | Dremio | Oracle => {
+            | Datafusion | Dremio | Oracle | RedisAdbc => {
                 unimplemented!("only available with BigQuery adapter")
             }
         }
@@ -3521,7 +3553,7 @@ impl AdapterImpl {
             Bigquery => Ok(Value::from(render_struct_projection(col_name, data_type))),
             Postgres | Snowflake | Databricks | Redshift | Salesforce | Spark | DuckDB
             | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
-            | Datafusion | Dremio | Oracle => {
+            | Datafusion | Dremio | Oracle | RedisAdbc => {
                 unimplemented!("only available with BigQuery adapter")
             }
         }
@@ -3625,7 +3657,7 @@ impl AdapterImpl {
             }
             Postgres | Snowflake | Databricks | Redshift | Salesforce | Spark | DuckDB
             | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
-            | Datafusion | Dremio | Oracle => {
+            | Datafusion | Dremio | Oracle | RedisAdbc => {
                 unimplemented!("only available with BigQuery adapter")
             }
         }
@@ -3689,7 +3721,7 @@ impl AdapterImpl {
             }
             Postgres | Snowflake | Databricks | Redshift | Salesforce | Spark | DuckDB
             | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
-            | Datafusion | Dremio | Oracle => {
+            | Datafusion | Dremio | Oracle | RedisAdbc => {
                 unimplemented!("only available with BigQuery adapter")
             }
         }
@@ -3747,9 +3779,21 @@ impl AdapterImpl {
             }
             Postgres | Snowflake | Databricks | Redshift | Salesforce | Spark | DuckDB
             | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
-            | Datafusion | Dremio | Oracle => {
+            | Datafusion | Dremio | Oracle | RedisAdbc => {
                 unimplemented!("only available with BigQuery adapter")
             }
+        }
+    }
+
+    pub(crate) fn load_csv_file(&self, load: python::redis::CsvLoad) -> AdapterResult<i64> {
+        match self.adapter_type() {
+            RedisAdbc if !self.engine().is_replay() => {
+                python::redis::load_csv_file(self.engine().as_ref(), load)
+            }
+            _ => Err(AdapterError::new(
+                AdapterErrorKind::NotSupported,
+                "load_csv_file is not supported for this adapter",
+            )),
         }
     }
 
@@ -3892,7 +3936,8 @@ impl AdapterImpl {
             }
             Salesforce => todo!("load_dataframe() for the Salesforce adapter"),
             Postgres | Snowflake | Databricks | Redshift | Spark | LakeCompute | Fabric
-            | ClickHouse | Exasol | Starburst | Athena | Trino | Datafusion | Dremio | Oracle => {
+            | ClickHouse | Exasol | Starburst | Athena | Trino | Datafusion | Dremio | Oracle
+            | RedisAdbc => {
                 unimplemented!("only available with BigQuery, DuckDB or Salesforce adapter")
             }
         }
@@ -3944,7 +3989,7 @@ impl AdapterImpl {
             }
             Postgres | Snowflake | Databricks | Redshift | Salesforce | Spark | DuckDB
             | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
-            | Datafusion | Dremio | Oracle => {
+            | Datafusion | Dremio | Oracle | RedisAdbc => {
                 unimplemented!("only available with BigQuery adapter")
             }
         }
@@ -4073,24 +4118,35 @@ impl AdapterImpl {
         }
     }
 
+    fn verify_catalog(adapter_type: AdapterType, database: &str) -> AdapterResult<()> {
+        if database.is_empty() {
+            return Ok(());
+        }
+        match adapter_type {
+            RedisAdbc if database == "redis" => Ok(()),
+            RedisAdbc => Err(AdapterError::new(
+                AdapterErrorKind::UnexpectedDbReference,
+                "Redis only supports the redis catalog",
+            )),
+            _ => Err(AdapterError::new(
+                AdapterErrorKind::UnexpectedDbReference,
+                format!(
+                    "Cross-db references not allowed in the {} adapter ({} vs )",
+                    adapter_type, database
+                ),
+            )),
+        }
+    }
+
     /// Used by redshift and postgres to check if the database string is consistent with what's in the project `config`
     ///
     /// PostgresAdapter https://github.com/dbt-labs/dbt-adapters/blob/0efd8d3d1081e1ab43e38797d5104f7b424a6284/dbt-postgres/src/dbt/adapters/postgres/impl.py#L118
     pub fn verify_database(&self, database: String) -> AdapterResult<Value> {
         match self.inner_adapter() {
             Replay(_, replay) => replay.replay_verify_database(&database),
-            Impl(ClickHouse, _) => {
-                if database.is_empty() {
-                    Ok(Value::from(()))
-                } else {
-                    Err(AdapterError::new(
-                        AdapterErrorKind::UnexpectedDbReference,
-                        format!(
-                            "Cross-db references not allowed in the {} adapter ({} vs )",
-                            ClickHouse, database
-                        ),
-                    ))
-                }
+            Impl(adapter_type @ (RedisAdbc | ClickHouse), _) => {
+                Self::verify_catalog(adapter_type, &database)?;
+                Ok(Value::from(()))
             }
             Impl(adapter_type @ (Postgres | DuckDB | LakeCompute), engine) => {
                 if let Some(configured_database) = engine.get_configured_database_name() {
@@ -4165,6 +4221,10 @@ impl AdapterImpl {
     ) -> AdapterResult<bool> {
         use crate::relation::bigquery::config::components::{ClusterByLoader, PartitionByLoader};
         match self.adapter_type() {
+            RedisAdbc => Err(AdapterError::new(
+                AdapterErrorKind::NotSupported,
+                "Redis does not support BigQuery partition replacement configuration",
+            )),
             Bigquery => {
                 if let (Replay(_, replay), Some(state)) = (self.inner_adapter(), state) {
                     return replay.replay_is_replaceable(state);
@@ -4276,7 +4336,7 @@ impl AdapterImpl {
             }
             Postgres | Snowflake | Databricks | Redshift | Salesforce | Spark | DuckDB
             | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
-            | Datafusion | Dremio | Oracle => {
+            | Datafusion | Dremio | Oracle | RedisAdbc => {
                 unimplemented!("only available with BigQuery adapter")
             }
         }
@@ -4300,7 +4360,7 @@ impl AdapterImpl {
             ),
             Postgres | Snowflake | Databricks | Redshift | Salesforce | Spark | DuckDB
             | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
-            | Datafusion | Dremio | Oracle => {
+            | Datafusion | Dremio | Oracle | RedisAdbc => {
                 unimplemented!("only available with BigQuery adapter")
             }
         }
@@ -4336,7 +4396,7 @@ impl AdapterImpl {
             }
             Postgres | Snowflake | Databricks | Redshift | Salesforce | Spark | DuckDB
             | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
-            | Datafusion | Dremio | Oracle => {
+            | Datafusion | Dremio | Oracle | RedisAdbc => {
                 unimplemented!("only available with BigQuery adapter")
             }
         }
@@ -4363,7 +4423,7 @@ impl AdapterImpl {
             }
             Postgres | Snowflake | Databricks | Redshift | Salesforce | Spark | DuckDB
             | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
-            | Datafusion | Dremio | Oracle => Err(minijinja::Error::new(
+            | Datafusion | Dremio | Oracle | RedisAdbc => Err(minijinja::Error::new(
                 minijinja::ErrorKind::InvalidOperation,
                 "get_common_options is only available with BigQuery adapter",
             )),
@@ -4406,7 +4466,7 @@ impl AdapterImpl {
             }
             Postgres | Snowflake | Databricks | Redshift | Salesforce | Spark | DuckDB
             | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
-            | Datafusion | Dremio | Oracle => {
+            | Datafusion | Dremio | Oracle | RedisAdbc => {
                 unimplemented!("only available with BigQuery adapter")
             }
         }
@@ -4463,6 +4523,9 @@ impl AdapterImpl {
             }
             Impl(Snowflake, engine) => {
                 snowflake::list_relations(engine.as_ref(), query_ctx, conn, db_schema, token)
+            }
+            Impl(RedisAdbc, engine) => {
+                adbc::list_relations_via_adbc(engine.as_ref(), conn, db_schema)
             }
             Impl(Bigquery, engine) => {
                 bigquery::list_relations(engine.as_ref(), query_ctx, conn, db_schema, token)
@@ -4608,7 +4671,7 @@ impl AdapterImpl {
             }
             Postgres | Snowflake | Bigquery | Redshift | Salesforce | Spark | DuckDB
             | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
-            | Datafusion | Dremio | Oracle => {
+            | Datafusion | Dremio | Oracle | RedisAdbc => {
                 unimplemented!("only available with Databricksadapter")
             }
         }
@@ -4761,7 +4824,7 @@ impl AdapterImpl {
 
             Postgres | Snowflake | Bigquery | Redshift | Salesforce | Spark | DuckDB
             | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
-            | Datafusion | Dremio | Oracle => {
+            | Datafusion | Dremio | Oracle | RedisAdbc => {
                 unimplemented!("only available with Databricks adapter")
             }
         }
@@ -4839,7 +4902,7 @@ impl AdapterImpl {
             }
             Postgres | Snowflake | Bigquery | Redshift | Salesforce | Spark | DuckDB
             | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
-            | Datafusion | Dremio | Oracle => {
+            | Datafusion | Dremio | Oracle | RedisAdbc => {
                 unimplemented!("only available with Databricks adapter")
             }
         }
@@ -4948,7 +5011,7 @@ impl AdapterImpl {
             }
             Postgres | Snowflake | Bigquery | Redshift | Salesforce | Spark | DuckDB
             | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
-            | Datafusion | Dremio | Oracle => {
+            | Datafusion | Dremio | Oracle | RedisAdbc => {
                 unimplemented!("only available with Databricks adapter")
             }
         }
@@ -5323,7 +5386,7 @@ impl AdapterImpl {
             }
             Postgres | Snowflake | Databricks | Redshift | Salesforce | Spark | DuckDB
             | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
-            | Datafusion | Dremio | Oracle => {
+            | Datafusion | Dremio | Oracle | RedisAdbc => {
                 unimplemented!("only available with BigQuery adapter")
             }
         }

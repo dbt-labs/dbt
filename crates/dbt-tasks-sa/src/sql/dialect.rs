@@ -25,7 +25,7 @@ pub fn sqlparser_dialect_for(adapter_type: AdapterType) -> &'static dyn Dialect 
         Bigquery => &BIGQUERY,
         Databricks => &DATABRICKS,
         Redshift => &REDSHIFT,
-        Postgres => &POSTGRES,
+        Postgres | RedisAdbc => &POSTGRES,
         DuckDB => &DUCKDB,
         LakeCompute => &DUCKDB,
         // Spark SQL is closest to Hive / Databricks; HiveDialect is a safe

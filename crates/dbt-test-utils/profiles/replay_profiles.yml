@@ -49,4 +49,11 @@ fusion_tests:
       database: 'default'
       schema: "fusion_tests_schema"
       threads: 4
+    redis_adbc:
+      type: redis_adbc
+      driver: '/unused/libadbc_driver_redis.so'
+      uri: 'redis://localhost:6379/0'
+      database: 'redis'
+      schema: "fusion_tests_schema"
+      threads: 1
   target: unset

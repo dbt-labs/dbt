@@ -50,7 +50,9 @@ fn include_policy(adapter_type: AdapterType, path: &RelationPath) -> Policy {
             true,
             true,
         ),
-        AdapterType::ClickHouse | AdapterType::Exasol => Policy::new(false, true, true),
+        AdapterType::ClickHouse | AdapterType::Exasol | AdapterType::RedisAdbc => {
+            Policy::new(false, true, true)
+        }
         AdapterType::Salesforce => Policy::new(false, false, true),
         _ => Policy::trues(),
     }

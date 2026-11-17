@@ -22,6 +22,10 @@ use std::sync::LazyLock;
 
 type YmlValue = dbt_yaml::Value;
 
+mod connection_keys;
+mod redis;
+pub use redis::{RedisAdbcDbConfig, RedisTransport};
+
 pub type ProfileName = String;
 pub type TargetName = String;
 pub type DefaultTargetName = String;
@@ -89,6 +93,10 @@ pub enum DbConfig {
     // Decodable,
     // Upsolver,
     // Starrocks,
+    // dbt-yaml 0.9.6 does not support per-variant serde renames. Keep the
+    // profile spelling without changing other adapters' deserialization.
+    #[allow(non_camel_case_types)]
+    Redis_adbc(Box<RedisAdbcDbConfig>),
 }
 
 macro_rules! impl_from_db_config {
@@ -111,6 +119,7 @@ impl_from_db_config!(Databricks, DatabricksDbConfig);
 impl_from_db_config!(DuckDB, DuckDbConfig);
 impl_from_db_config!(Fabric, FabricDbConfig);
 impl_from_db_config!(Exasol, ExasolDbConfig);
+impl_from_db_config!(Redis_adbc, RedisAdbcDbConfig);
 impl_from_db_config!(ClickHouse, ClickHouseDbConfig);
 
 /// Resolves BigQuery's `compute_region` / legacy `dataproc_region` alias in a raw profiles.yml
@@ -181,6 +190,7 @@ impl DbConfig {
             }
             DbConfig::Spark(config) => config.host.as_deref(),
             DbConfig::Fabric(config) => config.host.as_deref(),
+            DbConfig::Redis_adbc(_) => None,
             DbConfig::Exasol(config) => config.host.as_deref(),
             DbConfig::ClickHouse(config) => config.host.as_deref(),
         }
@@ -208,203 +218,33 @@ impl DbConfig {
     /// adapter without having to construct one.
     pub fn connection_keys_for(adapter_type: AdapterType) -> &'static [&'static str] {
         match adapter_type {
-            AdapterType::Snowflake => &[
-                "account",
-                "user",
-                "database",
-                "warehouse",
-                "role",
-                "schema",
-                "authenticator",
-                "oauth_client_id",
-                "query_tag",
-                "client_session_keep_alive",
-                "host",
-                "port",
-                "proxy_host",
-                "proxy_port",
-                "protocol",
-                "connect_retries",
-                "connect_timeout",
-                "retry_on_database_errors",
-                "retry_all",
-                "insecure_mode",
-                "reuse_connections",
-                "application_name",
-            ],
-            AdapterType::Postgres => &[
-                "host",
-                "port",
-                "user",
-                "database",
-                "schema",
-                "connect_timeout",
-                "role",
-                "search_path",
-                "keepalives_idle",
-                "sslmode",
-                "sslcert",
-                "sslkey",
-                "sslrootcert",
-                "application_name",
-                "retries",
-            ],
-            AdapterType::Bigquery => &[
-                "method",
-                "database",
-                "execution_project",
-                "schema",
-                "api_endpoint",
-                "storage_read_api_endpoint",
-                "location",
-                "priority",
-                "maximum_bytes_billed",
-                "impersonate_service_account",
-                "job_retry_deadline_seconds",
-                "job_retries",
-                "job_creation_timeout_seconds",
-                "job_execution_timeout_seconds",
-                "reservation",
-                "timeout_seconds",
-                "client_id",
-                "token_uri",
-                "compute_region",
-                "dataproc_cluster_name",
-                "gcs_bucket",
-                "submission_method",
-                "dataproc_batch",
-            ],
-            AdapterType::Redshift => &[
-                "host",
-                "user",
-                "port",
-                "database",
-                "method",
-                "cluster_id",
-                "iam_profile",
-                "schema",
-                "sslmode",
-                "region",
-                "sslmode",
-                "autocreate",
-                "db_groups",
-                "ra3_node",
-                "datasharing",
-                "drop_without_cascade",
-                "connect_timeout",
-                "role",
-                "retries",
-                "retry_all",
-                "autocommit",
-                "access_key_id",
-                "is_serverless",
-                "serverless_work_group",
-                "serverless_acct_id",
-            ],
+            AdapterType::Snowflake => connection_keys::SNOWFLAKE,
+            AdapterType::Postgres => connection_keys::POSTGRES,
+            AdapterType::Bigquery => connection_keys::BIGQUERY,
+            AdapterType::Redshift => connection_keys::REDSHIFT,
             AdapterType::Databricks => &["host", "http_path", "schema"],
             // TODO: Salesforce connection keys
             AdapterType::Salesforce => &["login_url", "database", "data_transform_run_timeout"],
             // `secrets` and `motherduck_token` are deliberately absent: these keys
             // reach `dbt debug`'s connection display, which must not print
             // credentials. See `connection_keys_never_expose_a_credential`.
-            AdapterType::DuckDB => &[
-                "path",
-                "database",
-                "schema",
-                "extensions",
-                "settings",
-                "attach",
-            ],
+            AdapterType::DuckDB => connection_keys::DUCK_DB,
             // `token` and `fivetran_credential` are deliberately absent, for the
             // same reason.
-            AdapterType::LakeCompute => &[
-                "path",
-                "database",
-                "schema",
-                "base_url",
-                "method",
-                "organization",
-                "fivetran_auth_url",
-            ],
+            AdapterType::LakeCompute => connection_keys::LAKE_COMPUTE,
             // Adapter types with no `DbConfig` variant, so nothing to display.
             AdapterType::Athena
             | AdapterType::Starburst
             | AdapterType::Dremio
             | AdapterType::Oracle => &[],
-            AdapterType::Spark => &[
-                "method",
-                "host",
-                "port",
-                "schema",
-                "endpoint",
-                "workspaceid",
-                "lakehouse",
-                "lakehouseid",
-                "lakehouse_schemas",
-                "authentication",
-                "tenant_id",
-                "client_id",
-            ],
+            AdapterType::Spark => connection_keys::SPARK,
             AdapterType::Trino => TRINO_CONNECTION_KEYS,
             // TODO: Datafusion connection keys
             AdapterType::Datafusion => &[],
-            AdapterType::Fabric => &[
-                "server",
-                "database",
-                "schema",
-                "warehouse_snapshot_name",
-                "snapshot_timestamp",
-                "UID",
-                "workspace_id",
-                "authentication",
-                "retries",
-                "login_timeout",
-                "query_timeout",
-                "trace_flag",
-                "encrypt",
-                "trust_cert",
-                "api_url",
-            ],
-            AdapterType::Exasol => &[
-                "host",
-                "port",
-                "user",
-                "schema",
-                "encryption",
-                "certificate_validation",
-                "certificate_fingerprint",
-                "connection_timeout",
-                "query_timeout",
-                "idle_timeout",
-            ],
-            AdapterType::ClickHouse => &[
-                "database",
-                "schema",
-                "driver",
-                "host",
-                "port",
-                "user",
-                "cluster",
-                "verify",
-                "secure",
-                "client_cert",
-                "client_cert_key",
-                "retries",
-                "compression",
-                "connect_timeout",
-                "send_receive_timeout",
-                "cluster_mode",
-                "use_lw_deletes",
-                "check_exchange",
-                "local_suffix",
-                "local_db_prefix",
-                "allow_automatic_deduplication",
-                "custom_settings",
-                "database_engine",
-                "threads",
-                "sync_request_timeout",
-                "compress_block_size",
-            ],
+            AdapterType::Fabric => connection_keys::FABRIC,
+            AdapterType::RedisAdbc => connection_keys::REDIS_ADBC,
+            AdapterType::Exasol => connection_keys::EXASOL,
+            AdapterType::ClickHouse => connection_keys::CLICK_HOUSE,
         }
     }
 
@@ -438,6 +278,7 @@ impl DbConfig {
             DbConfig::Fabric(config) => dbt_yaml::to_value(config),
             DbConfig::DuckDB(config) => dbt_yaml::to_value(config),
             DbConfig::LakeCompute(config) => dbt_yaml::to_value(config),
+            DbConfig::Redis_adbc(config) => dbt_yaml::to_value(config),
             DbConfig::Exasol(config) => dbt_yaml::to_value(config),
             DbConfig::ClickHouse(config) => dbt_yaml::to_value(config),
         }
@@ -456,6 +297,7 @@ impl DbConfig {
             DbConfig::DuckDB(..) => AdapterType::DuckDB,
             DbConfig::Spark(..) => AdapterType::Spark,
             DbConfig::Fabric(..) => AdapterType::Fabric,
+            DbConfig::Redis_adbc(..) => AdapterType::RedisAdbc,
             DbConfig::Exasol(..) => AdapterType::Exasol,
             DbConfig::ClickHouse(..) => AdapterType::ClickHouse,
             DbConfig::LakeCompute(..) => AdapterType::LakeCompute,
@@ -475,6 +317,7 @@ impl DbConfig {
             DbConfig::DuckDB(config) => config.database.as_ref(),
             DbConfig::Spark(config) => config.database(),
             DbConfig::Fabric(config) => config.database.as_ref(),
+            DbConfig::Redis_adbc(config) => config.database.as_ref(),
             DbConfig::Exasol(config) => config.database.as_ref(),
             DbConfig::ClickHouse(config) => config.database.as_ref(),
             DbConfig::LakeCompute(config) => config.database.as_ref(),
@@ -498,6 +341,7 @@ impl DbConfig {
                 .database
                 .to_owned(),
             DbConfig::Databricks(_) => DEFAULT_DATABRICKS_DATABASE.to_string(),
+            DbConfig::Redis_adbc(_) => "redis".to_string(),
             _ => "".to_string(),
         }
     }
@@ -516,6 +360,7 @@ impl DbConfig {
             DbConfig::LakeCompute(config) => config.schema.as_ref(),
             DbConfig::Salesforce(_) => None,
             DbConfig::Fabric(config) => config.schema.as_ref(),
+            DbConfig::Redis_adbc(config) => config.schema.as_ref(),
             DbConfig::Exasol(config) => config.schema.as_ref(),
             DbConfig::ClickHouse(config) => config.schema.as_ref(),
         }
@@ -546,6 +391,7 @@ impl DbConfig {
             DbConfig::Salesforce(_) => None,
             DbConfig::Spark(config) => config.threads.as_ref(),
             DbConfig::Fabric(_) => None,
+            DbConfig::Redis_adbc(config) => config.threads.as_ref(),
             DbConfig::Exasol(config) => config.threads.as_ref(),
             DbConfig::ClickHouse(config) => config.threads.as_ref(),
             DbConfig::LakeCompute(config) => config.threads.as_ref(),
@@ -565,6 +411,7 @@ impl DbConfig {
             DbConfig::Salesforce(_) => (),
             DbConfig::Spark(config) => config.threads = threads,
             DbConfig::Fabric(_) => (),
+            DbConfig::Redis_adbc(config) => config.threads = threads,
             DbConfig::Exasol(config) => config.threads = threads,
             DbConfig::ClickHouse(config) => config.threads = threads,
             DbConfig::LakeCompute(config) => config.threads = threads,
@@ -1839,6 +1686,7 @@ pub enum TargetContext {
     Spark(SparkTargetEnv),
     Fabric(FabricTargetEnv),
     Exasol(ExasolTargetEnv),
+    RedisAdbc(CommonTargetContext),
     ClickHouse(ClickHouseTargetEnv),
     // Add other variants as needed
 }
@@ -2196,6 +2044,19 @@ fn spark_target_context(
     }))
 }
 
+fn target_threads(threads: Option<StringOrInteger>) -> Result<Option<u16>, String> {
+    match threads {
+        Some(StringOrInteger::String(threads)) => Some(
+            threads
+                .parse::<u16>()
+                .map_err(|_| "threads must be a positive integer".to_string()),
+        )
+        .transpose(),
+        Some(StringOrInteger::Integer(threads)) => Ok(Some(threads as u16)),
+        None => Ok(None),
+    }
+}
+
 fn missing(field: &str) -> String {
     format!("In file `profiles.yml`, field `{field}` is required.")
 }
@@ -2440,15 +2301,7 @@ impl TryFrom<DbConfig> for TargetContext {
                     }),
                     schema: config.schema.unwrap_or_else(|| "main".to_string()),
                     type_: adapter_type,
-                    threads: match config.threads {
-                        Some(StringOrInteger::String(threads)) => Some(
-                            threads
-                                .parse::<u16>()
-                                .map_err(|_| "threads must be a positive integer".to_string())?,
-                        ),
-                        Some(StringOrInteger::Integer(threads)) => Some(threads as u16),
-                        None => None,
-                    },
+                    threads: target_threads(config.threads)?,
                 },
             })),
 
@@ -2464,15 +2317,7 @@ impl TryFrom<DbConfig> for TargetContext {
                         }),
                         schema: config.schema.unwrap_or_else(|| "main".to_string()),
                         type_: adapter_type,
-                        threads: match config.threads {
-                            Some(StringOrInteger::String(threads)) => {
-                                Some(threads.parse::<u16>().map_err(|_| {
-                                    "threads must be a positive integer".to_string()
-                                })?)
-                            }
-                            Some(StringOrInteger::Integer(threads)) => Some(threads as u16),
-                            None => None,
-                        },
+                        threads: target_threads(config.threads)?,
                     },
                 }))
             }
@@ -2493,6 +2338,8 @@ impl TryFrom<DbConfig> for TargetContext {
                     authentication,
                 }))
             }
+            DbConfig::Redis_adbc(config) => config.into_target(adapter_type),
+
             DbConfig::Exasol(config) => Ok(TargetContext::Exasol(ExasolTargetEnv {
                 host: config.host.clone(),
                 user: config.user.clone(),

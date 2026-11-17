@@ -215,6 +215,7 @@ impl TypeOps for DefaultTypeOps {
         let adapter_type = self.0;
         match adapter_type {
             Bigquery => bigquery::try_format_type(data_type, nullable, out),
+            RedisAdbc => redis::try_format_type(data_type, nullable, out),
             Postgres | Salesforce => postgres::try_format_type(data_type, nullable, out),
             Fabric => fabric::try_format_type(data_type, nullable, out),
             ClickHouse => clickhouse::try_format_type(data_type, nullable, out),
@@ -608,6 +609,7 @@ pub const fn get_field_sql_type_metadata_key(adapter_type: AdapterType) -> &'sta
         AdapterType::Fabric => FABRIC_METADATA_SQL_TYPE_KEY,
         AdapterType::ClickHouse => CLICKHOUSE_METADATA_SQL_TYPE_KEY,
         AdapterType::Exasol => "DATA_TYPE",
+        AdapterType::RedisAdbc => "ARROW:FLIGHT:SQL:TYPE_NAME",
         AdapterType::Starburst => todo!(),
         AdapterType::Athena => todo!(),
         AdapterType::Trino => todo!(),
@@ -661,7 +663,7 @@ impl SdfSchemaBuilder {
             }
             // no evidence that these drivers store comments in metadata, but just in case
             Postgres | Snowflake | Salesforce | Fabric | ClickHouse | Exasol | Starburst
-            | Athena | Trino | Dremio | Oracle | Datafusion => {
+            | Athena | Trino | Dremio | Oracle | Datafusion | RedisAdbc => {
                 metadata.get(ARROW_FIELD_COMMENT_METADATA_KEY)
             }
         };
@@ -714,7 +716,7 @@ impl SdfSchemaBuilder {
                     SdfSchema::from_sdf_arrow_schema(Some(self.original), sdf_arrow_schema);
                 Ok(sdf_schema)
             }
-            Postgres | Snowflake | Salesforce => {
+            Postgres | Snowflake | Salesforce | RedisAdbc => {
                 // NOTE(felipecrv): this is not correct, but it's a temporary fallback
                 // that allows us to call [to_sdf_arrow_schema] from anywhere.
                 //
@@ -1114,24 +1116,40 @@ pub mod fabric {
 }
 
 pub const fn max_varchar_size(adapter_type: AdapterType) -> Option<usize> {
-    use AdapterType::*;
-    match adapter_type {
-        // FIXME: Actual MAX is 134_217_728 - 16_777_216 is the default value
-        Snowflake => Some(16_777_216),
-        Redshift => Some(256),
-        Postgres | Bigquery | Databricks | Salesforce | Spark | DuckDB | LakeCompute | Fabric
-        | ClickHouse | Exasol | Starburst | Athena | Trino | Dremio | Oracle | Datafusion => None,
-    }
+    max_variable_size(adapter_type, 256)
 }
 
 pub const fn max_varbinary_size(adapter_type: AdapterType) -> Option<usize> {
-    use AdapterType::*;
+    max_variable_size(adapter_type, 65_535)
+}
+
+const fn max_variable_size(adapter_type: AdapterType, redshift_limit: usize) -> Option<usize> {
     match adapter_type {
-        Snowflake => Some(16_777_216),
-        Redshift => Some(65_535),
-        // TODO: define limits for more systems
-        Postgres | Bigquery | Databricks | Salesforce | Spark | DuckDB | LakeCompute | Fabric
-        | ClickHouse | Exasol | Starburst | Athena | Trino | Dremio | Oracle | Datafusion => None,
+        // Snowflake default; the actual maximum is 134_217_728.
+        AdapterType::Snowflake => Some(16_777_216),
+        AdapterType::Redshift => Some(redshift_limit),
+        _ => None,
+    }
+}
+
+mod redis {
+    use super::*;
+    pub(super) fn try_format_type(
+        data_type: &DataType,
+        nullable: bool,
+        out: &mut String,
+    ) -> AdapterResult<()> {
+        match data_type {
+            DataType::Decimal256(precision, scale) => {
+                use std::fmt::Write as _;
+                write!(out, "decimal({precision}, {scale})").unwrap();
+                if !nullable {
+                    out.push_str(" not null");
+                }
+                Ok(())
+            }
+            _ => postgres::try_format_type(data_type, nullable, out),
+        }
     }
 }
 
@@ -1186,67 +1204,41 @@ pub mod snowflake {
     }
 
     pub fn is_time(data_type: &DataType) -> IsTimestamp {
-        match data_type {
-            DataType::FixedSizeList(field, 1) if field.name().starts_with("time:") => {
-                IsTimestamp::Yes(TimePrecision::new(
-                    field
-                        .name()
-                        .strip_prefix("time:")
-                        .expect("string prefix checked")
-                        .parse::<u8>()
-                        .expect("invalid serialized time precision"),
-                ))
-            }
-            _ => IsTimestamp::No,
-        }
+        encoded_precision(data_type, "time:", "invalid serialized time precision")
     }
 
     pub fn is_timestamp_ntz(data_type: &DataType) -> IsTimestamp {
-        match data_type {
-            DataType::FixedSizeList(field, 1) if field.name().starts_with("timestamp_ntz:") => {
-                IsTimestamp::Yes(TimePrecision::new(
-                    field
-                        .name()
-                        .strip_prefix("timestamp_ntz:")
-                        .expect("string prefix checked")
-                        .parse::<u8>()
-                        .expect("invalid serialized timestamp precision"),
-                ))
-            }
-            _ => IsTimestamp::No,
-        }
+        encoded_precision(
+            data_type,
+            "timestamp_ntz:",
+            "invalid serialized timestamp precision",
+        )
     }
 
     pub fn is_timestamp_ltz(data_type: &DataType) -> IsTimestamp {
-        match data_type {
-            DataType::FixedSizeList(field, 1) if field.name().starts_with("timestamp_ltz:") => {
-                IsTimestamp::Yes(TimePrecision::new(
-                    field
-                        .name()
-                        .strip_prefix("timestamp_ltz:")
-                        .expect("string prefix checked")
-                        .parse::<u8>()
-                        .expect("invalid serialized timestamp precision"),
-                ))
-            }
-            _ => IsTimestamp::No,
-        }
+        encoded_precision(
+            data_type,
+            "timestamp_ltz:",
+            "invalid serialized timestamp precision",
+        )
     }
 
     pub fn is_timestamp_tz(data_type: &DataType) -> IsTimestamp {
-        match data_type {
-            DataType::FixedSizeList(field, 1) if field.name().starts_with("timestamp_tz:") => {
-                IsTimestamp::Yes(TimePrecision::new(
-                    field
-                        .name()
-                        .strip_prefix("timestamp_tz:")
-                        .expect("string prefix checked")
-                        .parse::<u8>()
-                        .expect("invalid serialized timestamp precision"),
-                ))
-            }
-            _ => IsTimestamp::No,
-        }
+        encoded_precision(
+            data_type,
+            "timestamp_tz:",
+            "invalid serialized timestamp precision",
+        )
+    }
+
+    fn encoded_precision(data_type: &DataType, prefix: &str, invalid: &str) -> IsTimestamp {
+        let DataType::FixedSizeList(field, 1) = data_type else {
+            return IsTimestamp::No;
+        };
+        let Some(precision) = field.name().strip_prefix(prefix) else {
+            return IsTimestamp::No;
+        };
+        IsTimestamp::Yes(TimePrecision::new(precision.parse::<u8>().expect(invalid)))
     }
 }
 
@@ -1394,6 +1386,22 @@ pub fn numeric_precision_scale(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn redis_decimal256_preserves_precision_and_nullability() {
+        for (nullable, suffix) in [(true, ""), (false, " not null")] {
+            let mut formatted = String::new();
+            DefaultTypeOps::new(RedisAdbc)
+                .format_arrow_type_as_sql(&DataType::Decimal256(76, 16), nullable, &mut formatted)
+                .unwrap();
+            assert_eq!(formatted, format!("decimal(76, 16){suffix}"));
+        }
+        assert!(
+            DefaultTypeOps::new(Postgres)
+                .format_arrow_type_as_sql(&DataType::Decimal256(76, 16), true, &mut String::new())
+                .is_err()
+        );
+    }
+
     #[test]
     fn test_databricks_is_complex_type() {
         use super::databricks::is_complex_type;

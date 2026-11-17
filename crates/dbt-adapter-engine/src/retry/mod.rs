@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::time::{Duration, Instant};
 
 use dbt_adapter_core::AdapterType;
@@ -10,10 +9,10 @@ use dbt_common::Cancellable;
 use dbt_common::tracing::dbt_emit::emit_info_log_message;
 
 mod databricks;
+mod redis;
 mod redshift;
 mod snowflake;
 
-use crate::cow::lowercase;
 use crate::errors::is_bridge_adbc_error;
 
 #[derive(Debug)]
@@ -257,7 +256,10 @@ impl QueryRetryPolicy {
                 .or_else(|| config.get_string("retries")),
             _ => config.get_string("retries"),
         };
-        let max_retries = retries.and_then(|v| v.parse::<u32>().ok()).unwrap_or(1);
+        let max_retries = match adapter_type {
+            AdapterType::RedisAdbc => 19,
+            _ => retries.and_then(|v| v.parse::<u32>().ok()).unwrap_or(1),
+        };
         let retry_all = config.get_bool("retry_all").unwrap_or(false);
         let retry_deadline = match adapter_type {
             AdapterType::Bigquery => config
@@ -281,7 +283,7 @@ impl QueryRetryPolicy {
         mut query_fn: impl FnMut() -> Result<T, Cancellable<adbc_core::error::Error>>,
     ) -> Result<T, Cancellable<adbc_core::error::Error>> {
         match self.adapter_type {
-            AdapterType::Redshift | AdapterType::Bigquery => {}
+            AdapterType::Redshift | AdapterType::Bigquery | AdapterType::RedisAdbc => {}
             _ => return query_fn(),
         }
         retry_loop(
@@ -292,7 +294,12 @@ impl QueryRetryPolicy {
                 Cancellable::Cancelled => false,
                 Cancellable::Error(e) => self.is_retryable(e),
             },
-            |attempt| BackoffStrategy::Exponential.delay_before_next_attempt(attempt),
+            |attempt| match self.adapter_type {
+                AdapterType::RedisAdbc => {
+                    Duration::from_millis(50 * 2u64.pow(attempt.saturating_sub(1).min(4)))
+                }
+                _ => BackoffStrategy::Exponential.delay_before_next_attempt(attempt),
+            },
             |_, _, _| {},
         )
     }
@@ -304,17 +311,9 @@ impl QueryRetryPolicy {
             return false;
         }
         match self.adapter_type {
+            AdapterType::RedisAdbc => redis::refused_publication(err),
             AdapterType::Redshift => {
-                if self.retry_all {
-                    return true;
-                }
-                let msg = lowercase(Cow::Borrowed(&err.message));
-                // Catalog race after a concurrent DROP/CREATE.
-                msg.contains("could not open relation with oid")
-                    // MVCC serialization conflict.
-                    || msg.contains("conflict with concurrent transaction")
-                    // Schema catalog race (can also be a genuine permanent error).
-                    || (msg.contains("schema") && msg.contains("does not exist"))
+                redshift::is_retryable_redshift_query_error(self.retry_all, &err.message)
             }
             AdapterType::Bigquery => err.details.as_ref().is_some_and(|details| {
                 details.iter().any(|(key, value)| {
@@ -865,6 +864,33 @@ mod tests {
         });
         assert_eq!(result.unwrap(), 42);
         assert_eq!(calls, 2);
+    }
+
+    #[test]
+    fn query_retry_policy_redis_keeps_its_publication_retry_budget() {
+        let config = AdapterConfig::new(dbt_yaml::Mapping::from_iter([
+            ("retries".into(), 0.into()),
+            ("job_retries".into(), 0.into()),
+            ("job_retry_deadline_seconds".into(), 1.into()),
+        ]));
+        let policy = QueryRetryPolicy::new(AdapterType::RedisAdbc, &config);
+        assert_eq!(policy.max_retries, 19);
+        assert_eq!(policy.retry_deadline, None);
+    }
+
+    #[test]
+    fn query_retry_policy_does_not_share_retryable_errors_between_adapters() {
+        let mut refusal = adbc_err(
+            Status::IO,
+            "snapshot catalog changed concurrently; retry the statement",
+        );
+        refusal.sqlstate = b"40001".map(|b| b as std::ffi::c_char);
+        let redis = QueryRetryPolicy::new(AdapterType::RedisAdbc, &cfg_retry_all());
+        let bigquery = QueryRetryPolicy::new(AdapterType::Bigquery, &cfg_retry_all());
+        assert!(redis.is_retryable(&refusal));
+        assert!(!bigquery.is_retryable(&refusal));
+        assert!(!redis.is_retryable(&terminal_job_error("backendError")));
+        assert!(!redis.is_retryable(&adbc_err(Status::IO, "publication outcome unknown")));
     }
 
     #[test]

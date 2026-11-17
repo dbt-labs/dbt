@@ -92,6 +92,10 @@ pub enum AdapterType {
     /// `lake_compute`, its names before its two renames, are not accepted on
     /// input; see `test_retired_names_are_not_accepted_on_input`.
     LakeCompute,
+    /// Redis through the Redis ADBC driver.
+    #[strum(to_string = "redis_adbc", serialize = "redis_adbc")]
+    #[serde(rename = "redis_adbc")]
+    RedisAdbc,
 }
 
 impl AdapterType {
@@ -131,7 +135,7 @@ pub fn quote_char(adapter_type: AdapterType) -> char {
         Redshift => '"',
         Postgres | Salesforce => '"',
         Fabric => '"',
-        DuckDB | LakeCompute => '"',
+        DuckDB | LakeCompute | RedisAdbc => '"',
         Athena | Trino | Starburst => '"',
         Datafusion => '"',
         // https://clickhouse.com/docs/sql-reference/syntax#identifiers
@@ -286,6 +290,7 @@ mod tests {
                 (AdapterType::Dremio, "dremio"),
                 (AdapterType::Oracle, "oracle"),
                 (AdapterType::LakeCompute, "lakecompute"),
+                (AdapterType::RedisAdbc, "redis_adbc"),
             ]
         );
     }
@@ -313,6 +318,7 @@ mod tests {
             AdapterType::Starburst,
             AdapterType::Datafusion,
             AdapterType::Exasol,
+            AdapterType::RedisAdbc,
         ] {
             assert_eq!(quote_char(adapter_type), '"', "{adapter_type:?}");
         }
@@ -351,5 +357,27 @@ mod dialect_string_tests {
                 "as_ref() and Display disagree for {adapter_type:?}; dialect keys would not match"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod redis_adbc_tests {
+    use super::*;
+    use std::str::FromStr;
+
+    #[test]
+    fn redis_identity_is_consistent_and_experimental() {
+        let adapter = AdapterType::RedisAdbc;
+        assert_eq!(adapter.as_ref(), "redis_adbc");
+        assert_eq!(adapter.to_string(), "redis_adbc");
+        assert_eq!(AdapterType::from_str("redis_adbc").unwrap(), adapter);
+        assert_eq!(serde_json::to_string(&adapter).unwrap(), "\"redis_adbc\"");
+        assert_eq!(
+            serde_json::from_str::<AdapterType>("\"redis_adbc\"").unwrap(),
+            adapter
+        );
+        assert_eq!(quote_char(adapter), '"');
+        assert!(!NON_EXPERIMENTAL_ADAPTERS.contains(&adapter));
+        assert!(!STATIC_ANALYSIS_SUPPORTED_ADAPTERS.contains(&adapter));
     }
 }

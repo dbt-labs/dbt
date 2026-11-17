@@ -1,0 +1,13 @@
+   dbt-oss 
+   Loading profiles.yml
+debug:warning=static analysis for adapter: RedisAdbc is disabled
+   Parsing models/a.sql
+   Parsing models/b.sql
+"adapters_redis_adbc_create_schema"."a"
+ Rendering models/b.sql
+"adapters_redis_adbc_create_schema"."a"
+ Rendering models/a.sql
+==================== Execution Summary =====================
+Finished 'compile' successfully for target 'redis_adbc' [duration]
+Processed: 2 models
+Summary: 2 total | 2 success

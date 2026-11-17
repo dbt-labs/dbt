@@ -152,3 +152,35 @@ writes. Its diff is expected.
    declare them in the `mod.rs` beside them.
 3. Record against existing projects under `tests/data/adapter/` where they
    apply.
+
+## Redis
+
+The Redis cases cover schema creation, uncached relation lookup, SQL column
+metadata, and a seed/table/view/incremental project built and tested twice.
+They replay offline using the placeholder `redis_adbc` output; replay does not
+need a Redis server or an installed Redis driver.
+
+```sh
+cargo nextest run -p dbt-sa-adapter-tests -E 'test(adapters_redis_adbc)'
+```
+
+To record, use a dedicated Redis Software test fixture and an absolute path to
+the local Redis ADBC shared library. Add a fully resolved `redis_adbc` output
+to the private `fusion_tests` profile described above. For verified TLS, set
+`driver_options.adbc.redis.tls_ca_file` to the fixture CA file. The harness
+clears most inherited environment variables, so resolve credential environment
+references before recording. Never commit the recording profile.
+
+Record the cases sequentially so separate tests do not contend on the Redis
+snapshot catalog while producing goldies:
+
+```sh
+GOLDIE_UPDATE=1 ADAPTER_RECORD=1 cargo nextest run -p dbt-sa-adapter-tests \
+  -E 'test(adapters_redis_adbc)' --test-threads 1
+```
+
+Review `recordings.yaml` and the command goldies for successful SQL and expected
+values, then rerun without the recording variables and private profile. The
+separate ignored `dbt-adapter-engine` Redis audit exercises live prepared
+binding, Arrow ingestion, metadata, empty reads and four concurrent connections;
+compiling that audit does not count as executing it.

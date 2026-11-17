@@ -1,0 +1,4 @@
+name: dbt_redis_adbc
+version: "1.0"
+config-version: 2
+macro-paths: ["macros"]

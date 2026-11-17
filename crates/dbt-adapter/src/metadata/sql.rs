@@ -1,17 +1,6 @@
-//! Exasol metadata adapter.
-//!
-//! Provides the schema-creation preflight (`create_schemas_if_not_exists` ->
-//! `exasol__create_schema`), per-relation schema fetch for unit tests and
-//! contracts (`list_relations_schemas_inner`, via a zero-row probe — the
-//! Exasol ADBC driver returns the result schema even for empty results), and
-//! catalog parsing for `compile --write-catalog`
-//! (`build_schemas_from_stats_sql` / `build_columns_from_get_columns` over the
-//! RecordBatch produced by `exasol__get_catalog`). Relation-cache hydration is
-//! intentionally empty, so dbt falls back to the per-relation
-//! `list_relations_without_caching` / `get_relation` macros. Metadata-based
-//! source freshness is implemented as `exasol__get_relation_last_modified`;
-//! the `freshness_inner` entry point stays unimplemented until the shared
-//! task graph handles the Source command.
+//! Shared metadata support for SQL adapters with Arrow result schemas.
+//! Schema-cache hydration uses a zero-row query; relation-cache hydration falls
+//! back to the adapter macros. Used by Exasol and Redis.
 
 use crate::AdapterEngine;
 use crate::adapter::adapter_impl::AdapterImpl;
@@ -38,18 +27,26 @@ use std::collections::{BTreeMap, HashMap};
 use std::future;
 use std::sync::Arc;
 
-pub struct ExasolMetadataAdapter {
+pub struct SqlMetadataAdapter {
     adapter: AdapterImpl,
 }
 
-impl ExasolMetadataAdapter {
+impl SqlMetadataAdapter {
     pub fn new(engine: Arc<dyn AdapterEngine>) -> Self {
         let adapter = AdapterImpl::new(engine, None);
         Self { adapter }
     }
+
+    fn unsupported<'a, T: Send + 'a>(&'a self, operation: &str) -> AsyncAdapterResult<'a, T> {
+        let err = AdapterError::new(
+            AdapterErrorKind::NotSupported,
+            format!("{operation} is not implemented for {}", self.adapter_type()),
+        );
+        Box::pin(future::ready(Err(Cancellable::Error(err))))
+    }
 }
 
-impl MetadataAdapter for ExasolMetadataAdapter {
+impl MetadataAdapter for SqlMetadataAdapter {
     fn adapter_type(&self) -> AdapterType {
         self.adapter.adapter_type()
     }
@@ -177,15 +174,9 @@ impl MetadataAdapter for ExasolMetadataAdapter {
     ) -> AsyncAdapterResult<'_, HashMap<String, AdapterResult<Arc<Schema>>>> {
         type Acc = HashMap<String, AdapterResult<Arc<Schema>>>;
 
-        // Exasol is a 2-part name system (dbt `database` is a placeholder). The
-        // Arrow schema comes straight from a zero-row probe: the Exasol ADBC
-        // driver (exarrow-rs >= 0.12.7) returns the result-set schema even for
-        // empty results, so no string-based type parsing is needed. The probe
-        // must render the name exactly as materializations do (quote policy
-        // included): under the default policy objects are created quoted, so an
-        // unquoted probe would uppercase-resolve to a different name. The
-        // HashMap key must match `relation.semantic_fqn()`, so both forms are
-        // carried as a tuple.
+        // Preserve the rendered quote policy in the probe while using the
+        // semantic name as the cache key, so quoted identifiers resolve to the
+        // same object that materializations create.
         let keys: Vec<(String, String)> = relations
             .iter()
             .map(|relation| (relation.semantic_fqn(), relation.render_self_as_str()))
@@ -236,11 +227,7 @@ impl MetadataAdapter for ExasolMetadataAdapter {
         _patterns: &[RelationPattern],
         _token: CancellationToken,
     ) -> AsyncAdapterResult<'_, Vec<(String, AdapterResult<RelationSchemaPair>)>> {
-        let err = AdapterError::new(
-            AdapterErrorKind::NotSupported,
-            "list_relations_schemas_by_patterns is not yet implemented for the Exasol metadata adapter",
-        );
-        Box::pin(future::ready(Err(Cancellable::Error(err))))
+        self.unsupported("Pattern-based schema discovery")
     }
 
     fn freshness_inner(
@@ -248,11 +235,7 @@ impl MetadataAdapter for ExasolMetadataAdapter {
         _relations: &[Arc<dyn BaseRelation>],
         _token: CancellationToken,
     ) -> AsyncAdapterResult<'_, BTreeMap<String, MetadataFreshness>> {
-        let err = AdapterError::new(
-            AdapterErrorKind::NotSupported,
-            "metadata-based source freshness is not yet implemented for the Exasol adapter",
-        );
-        Box::pin(future::ready(Err(Cancellable::Error(err))))
+        self.unsupported("metadata-based source freshness")
     }
 
     fn create_schemas_if_not_exists(

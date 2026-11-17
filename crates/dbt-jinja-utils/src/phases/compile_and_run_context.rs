@@ -539,6 +539,18 @@ To fix this, add the following hint to the top of the model \"{model_name}\":
     }
 }
 
+// Unit-test dependencies are replaced with fixture CTEs. Invocation filters
+// must not empty or sample those fixture rows before assertions run.
+fn relation_for_node_type(relation: MinijinjaValue, node_type: NodeType) -> MinijinjaValue {
+    match node_type {
+        NodeType::UnitTest => relation
+            .downcast_object::<RelationObject>()
+            .map(|object| RelationObject::new(object.inner()).into_value())
+            .unwrap_or(relation),
+        _ => relation,
+    }
+}
+
 /// Respells a resolved relation for `caller_adapter` when it was built for another adapter.
 /// Ephemeral relations pass through: every adapter renders them as `__dbt__cte__<identifier>`.
 fn for_caller(
@@ -612,7 +624,10 @@ impl Object for RefFunction {
                     }
                 }
 
-                Ok(resolved_relation)
+                Ok(relation_for_node_type(
+                    resolved_relation,
+                    self.validation_config.node_type,
+                ))
             }
             Err(_) => Err(MinijinjaError::new(
                 MinijinjaErrorKind::NonKey,
@@ -681,6 +696,44 @@ pub struct SourceFunction {
 }
 
 impl SourceFunction {
+    fn parse_arguments(args: &[MinijinjaValue]) -> Result<(String, String), MinijinjaError> {
+        let mut parser = ArgParser::new(args, None);
+        let num_args = parser.positional_len() + parser.kwargs_len();
+        match num_args {
+            0 | 1 => Err(MinijinjaError::new(
+                MinijinjaErrorKind::MissingArgument,
+                "source macro requires 2 arguments: source name and table name",
+            )),
+            2 => {
+                let source_name_value = parser.get::<MinijinjaValue>("source_name")?;
+                let table_name_value = parser.get::<MinijinjaValue>("table_name")?;
+                let source_name = source_name_value.as_str().ok_or_else(|| {
+                    MinijinjaError::new(
+                        MinijinjaErrorKind::InvalidOperation,
+                        format!(
+                            "The source name (first) argument to source() must be a string, got {}",
+                            source_name_value.kind()
+                        ),
+                    )
+                })?;
+                let table_name = table_name_value.as_str().ok_or_else(|| {
+                    MinijinjaError::new(
+                        MinijinjaErrorKind::InvalidOperation,
+                        format!(
+                            "The table name (second) argument to source() must be a string, got {}",
+                            table_name_value.kind()
+                        ),
+                    )
+                })?;
+                Ok((source_name.to_string(), table_name.to_string()))
+            }
+            _ => Err(MinijinjaError::new(
+                MinijinjaErrorKind::TooManyArguments,
+                "source",
+            )),
+        }
+    }
+
     /// Create a new Source with microbatch context for filtering sources.
     ///
     /// This is used during microbatch execution to filter sources to models
@@ -786,41 +839,7 @@ impl Object for SourceFunction {
         args: &[MinijinjaValue],
         listeners: &[Rc<dyn RenderingEventListener>],
     ) -> Result<MinijinjaValue, MinijinjaError> {
-        let mut parser = ArgParser::new(args, None);
-        let num_args = parser.positional_len() + parser.kwargs_len();
-        let (source_name, table_name) = match num_args {
-            0 | 1 => Err(MinijinjaError::new(
-                MinijinjaErrorKind::MissingArgument,
-                "source macro requires 2 arguments: source name and table name",
-            )),
-            2 => {
-                let source_name_value = parser.get::<MinijinjaValue>("source_name")?;
-                let table_name_value = parser.get::<MinijinjaValue>("table_name")?;
-                let source_name = source_name_value.as_str().ok_or_else(|| {
-                    MinijinjaError::new(
-                        MinijinjaErrorKind::InvalidOperation,
-                        format!(
-                            "The source name (first) argument to source() must be a string, got {}",
-                            source_name_value.kind()
-                        ),
-                    )
-                })?;
-                let table_name = table_name_value.as_str().ok_or_else(|| {
-                    MinijinjaError::new(
-                        MinijinjaErrorKind::InvalidOperation,
-                        format!(
-                            "The table name (second) argument to source() must be a string, got {}",
-                            table_name_value.kind()
-                        ),
-                    )
-                })?;
-                Ok((source_name.to_string(), table_name.to_string()))
-            }
-            _ => Err(MinijinjaError::new(
-                MinijinjaErrorKind::TooManyArguments,
-                "source",
-            )),
-        }?;
+        let (source_name, table_name) = Self::parse_arguments(args)?;
         match self
             .node_resolver
             .lookup_source(&self.package_name, &source_name, &table_name)
@@ -850,7 +869,10 @@ impl Object for SourceFunction {
                     }
                 }
 
-                Ok(relation)
+                Ok(relation_for_node_type(
+                    relation,
+                    self.validation_config.node_type,
+                ))
             }
             Err(_) => Err(MinijinjaError::new(
                 MinijinjaErrorKind::NonKey,
@@ -1143,6 +1165,98 @@ mod tests {
     use dbt_schemas::state::DummyNodeResolverTracker;
     use dbt_test_utils::TestEnvGuard;
     use std::env;
+
+    fn empty_fixture_resolver() -> Arc<crate::node_resolver::NodeResolver> {
+        use crate::node_resolver::NodeResolver;
+        use dbt_adapter::relation::Relation;
+        use dbt_adapter_core::AdapterType;
+        use dbt_schemas::state::ModelStatus;
+        let object = RelationObject::new_with_filter(
+            Arc::new(Relation::new(
+                AdapterType::RedisAdbc,
+                "redis".to_owned(),
+                "analytics".to_owned(),
+                "input".to_owned(),
+            )),
+            RunFilter {
+                empty: true,
+                sample: None,
+            },
+            None,
+        )
+        .into_value();
+        let mut resolver = NodeResolver {
+            root_package_name: "pkg".to_owned(),
+            ..Default::default()
+        };
+        resolver.refs.insert(
+            "pkg.input".to_owned(),
+            vec![(
+                "model.pkg.input".to_owned(),
+                object.clone(),
+                ModelStatus::Enabled,
+                None,
+            )],
+        );
+        resolver.sources.insert(
+            "pkg.raw.input".to_owned(),
+            vec![(
+                "source.pkg.raw.input".to_owned(),
+                object,
+                ModelStatus::Enabled,
+            )],
+        );
+        Arc::new(resolver)
+    }
+
+    #[test]
+    fn unit_test_fixture_relations_ignore_invocation_empty_filter() {
+        use dbt_adapter_core::AdapterType;
+        let resolver = empty_fixture_resolver();
+        for (node_type, expected_empty) in [(NodeType::UnitTest, false), (NodeType::Model, true)] {
+            let validation = DependencyValidationConfig {
+                node_type,
+                ..Default::default()
+            };
+            let runtime = Arc::new(DbtRuntimeConfig::default());
+            let mut env = minijinja::Environment::new();
+            env.add_global(
+                "ref",
+                MinijinjaValue::from_object(RefFunction::new_with_validation(
+                    resolver.clone(),
+                    "pkg".to_owned(),
+                    runtime.clone(),
+                    validation.clone(),
+                    "model.pkg.consumer".to_owned(),
+                    AdapterType::RedisAdbc,
+                )),
+            );
+            env.add_global(
+                "source",
+                MinijinjaValue::from_object(SourceFunction::new_with_validation(
+                    resolver.clone(),
+                    "pkg".to_owned(),
+                    runtime,
+                    validation,
+                )),
+            );
+            let rendered = env
+                .render_str(
+                    "{{ ref('input') }}|{{ source('raw', 'input') }}",
+                    BTreeMap::<String, MinijinjaValue>::new(),
+                    &[],
+                )
+                .unwrap();
+            for relation in rendered.split('|') {
+                assert!(relation.contains("input"));
+                assert_eq!(
+                    relation.to_lowercase().contains("limit 0"),
+                    expected_empty,
+                    "{node_type:?}: {relation}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn test_dbt_metadata_envs_populated_from_env() {

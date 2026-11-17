@@ -32,6 +32,76 @@ pub enum SemanticCategory {
     Pure,
 }
 
+const PURE_ADAPTER_METHODS: &[&str] = &[
+    "quote",
+    "quote_as_configured",
+    "quote_seed_column",
+    "render_equals",
+    "convert_type",
+    "build_catalog_from_show_tables_and_svv_columns",
+    "dispatch",
+    "commit",
+    "type",
+    "render_raw_model_constraints",
+    "render_raw_columns_constraints",
+    "get_incremental_strategy_macro",
+    "standardize_grants_dict",
+    "verify_database",
+    "nest_column_data_types",
+    "get_struct_select_expression",
+    "add_time_ingestion_partition_column",
+    "parse_partition_by",
+    "valid_incremental_strategies",
+    "get_persist_doc_columns",
+    "get_column_tags_from_model",
+    "get_config_from_model",
+    "generate_unique_temporary_table_suffix",
+    "parse_columns_and_constraints",
+    "clean_sql",
+    "get_common_options",
+    "get_table_options",
+    "get_view_options",
+    "parse_index",
+    "redact_credentials",
+    "compute_external_path",
+    "get_hard_deletes_behavior",
+    "is_cluster",
+    "is_ducklake",
+    "has_feature",
+    "is_motherduck",
+    "disable_transactions",
+    "build_catalog_relation",
+    "sync_struct_columns",
+    "resolve_file_format",
+    "get_seed_file_path",
+    "convert_datetimes_to_strs",
+    "get_binding_char",
+    "is_uniform",
+    "external_root",
+    "external_write_options",
+    "external_read_location",
+    "get_temp_relation_path",
+    "get_clickhouse_cluster_name",
+    "get_clickhouse_local_suffix",
+    "get_clickhouse_local_db_prefix",
+    "clickhouse_db_engine_clause",
+    "is_before_version",
+    "is_at_or_after_version",
+    "format_columns",
+    "should_on_cluster",
+    "calculate_incremental_strategy",
+    "validate_incremental_strategy",
+    "get_model_settings",
+    "get_model_query_settings",
+    "filter_settings_by_engine",
+    "get_ch_database",
+    "get_credentials",
+    "get_csv_data",
+    "table_format",
+    "warn_once",
+    "strip_trailing_statement_terminator",
+];
+
 impl SemanticCategory {
     /// Classify a Adapter method by its semantic category.
     ///
@@ -78,6 +148,7 @@ impl SemanticCategory {
             | "drop_schema"
             | "expand_target_column_types"
             | "load_dataframe"
+            | "load_csv_file"
             | "copy_table"
             | "update_columns"
             | "update_table_description"
@@ -91,75 +162,7 @@ impl SemanticCategory {
             // Internal bookkeeping only
             "cache_added" | "cache_dropped" | "cache_renamed" => SemanticCategory::Cache,
 
-            // No I/O at all
-            "quote"
-            | "quote_as_configured"
-            | "quote_seed_column"
-            | "render_equals"
-            | "convert_type"
-            | "build_catalog_from_show_tables_and_svv_columns"
-            | "dispatch"
-            | "commit"
-            | "type"
-            | "render_raw_model_constraints"
-            | "render_raw_columns_constraints"
-            | "get_incremental_strategy_macro"
-            | "standardize_grants_dict"
-            | "verify_database"
-            | "nest_column_data_types"
-            | "get_struct_select_expression"
-            | "add_time_ingestion_partition_column"
-            | "parse_partition_by"
-            | "valid_incremental_strategies"
-            | "get_persist_doc_columns"
-            | "get_column_tags_from_model"
-            | "get_config_from_model"
-            | "generate_unique_temporary_table_suffix"
-            | "parse_columns_and_constraints"
-            | "clean_sql"
-            | "get_common_options"
-            | "get_table_options"
-            | "get_view_options"
-            | "parse_index"
-            | "redact_credentials"
-            | "compute_external_path"
-            | "get_hard_deletes_behavior"
-            | "is_cluster"
-            | "is_ducklake"
-            | "has_feature"
-            | "is_motherduck"
-            | "disable_transactions"
-            | "build_catalog_relation"
-            | "sync_struct_columns"
-            | "resolve_file_format"
-            | "get_seed_file_path"
-            | "convert_datetimes_to_strs"
-            | "get_binding_char"
-            | "is_uniform"
-            | "external_root"
-            | "external_write_options"
-            | "external_read_location"
-            | "get_temp_relation_path"
-            | "get_clickhouse_cluster_name"
-            | "get_clickhouse_local_suffix"
-            | "get_clickhouse_local_db_prefix"
-            | "clickhouse_db_engine_clause"
-            | "is_before_version"
-            | "is_at_or_after_version"
-            | "format_columns"
-            | "should_on_cluster"
-            | "calculate_incremental_strategy"
-            | "validate_incremental_strategy"
-            | "get_model_settings"
-            | "get_model_query_settings"
-            | "filter_settings_by_engine"
-            | "get_ch_database"
-            | "get_credentials"
-            | "s3source_clause"
-            | "get_csv_data"
-            | "table_format"
-            | "warn_once"
-            | "strip_trailing_statement_terminator" => SemanticCategory::Pure,
+            method if PURE_ADAPTER_METHODS.contains(&method) => SemanticCategory::Pure,
 
             _ => {
                 debug_assert!(

@@ -714,7 +714,8 @@ impl Adapter {
                 | AdapterType::Spark
                 | AdapterType::Databricks
                 | AdapterType::DuckDB
-                | AdapterType::LakeCompute => {
+                | AdapterType::LakeCompute
+                | AdapterType::RedisAdbc => {
                     format!("({expr1} IS NOT DISTINCT FROM {expr2})")
                 }
                 _ => format!(
@@ -2577,7 +2578,7 @@ impl Adapter {
                     | AdapterType::Datafusion
                     | AdapterType::Dremio
                     | AdapterType::Oracle
-                    | AdapterType::LakeCompute => Err(AdapterError::new(
+                    | AdapterType::LakeCompute | AdapterType::RedisAdbc => Err(AdapterError::new(
                         AdapterErrorKind::NotSupported,
                         format!("has_dbr_capability is only supported by the Databricks adapter. Use the portable adapter.has_feature(\"{}\") instead.", capability_name),
                     )
@@ -2607,7 +2608,7 @@ impl Adapter {
                 | AdapterType::Datafusion
                 | AdapterType::Dremio
                 | AdapterType::Oracle
-                | AdapterType::LakeCompute => Ok(Value::from(false)),
+                | AdapterType::LakeCompute | AdapterType::RedisAdbc => Ok(Value::from(false)),
             },
         }
     }
@@ -3770,6 +3771,52 @@ impl Adapter {
         }
     }
 
+    pub fn load_csv_file(&self, args: &[Value]) -> Result<Value, minijinja::Error> {
+        let iter = ArgsIter::new("load_csv_file", &["relation", "path", "column_types"], args);
+        let relation = iter.next_arg::<&Value>()?;
+        let relation = relation
+            .downcast_object::<RelationObject>()
+            .ok_or_else(|| {
+                minijinja::Error::new(
+                    minijinja::ErrorKind::InvalidOperation,
+                    "load_csv_file requires a Relation",
+                )
+            })?;
+        let path = iter.next_arg::<String>()?;
+        let column_types =
+            minijinja_value_to_typed_struct(iter.next_arg::<&Value>()?).map_err(|e| {
+                minijinja::Error::new(minijinja::ErrorKind::SerdeDeserializeError, e.to_string())
+            })?;
+        let load = crate::python::redis::CsvLoad {
+            schema: relation.inner().schema().unwrap_or("public").to_owned(),
+            identifier: relation
+                .inner()
+                .identifier()
+                .ok_or_else(|| {
+                    minijinja::Error::new(
+                        minijinja::ErrorKind::InvalidOperation,
+                        "CSV relation requires an identifier",
+                    )
+                })?
+                .to_owned(),
+            path,
+            column_types,
+            limit: iter.next_kwarg::<Option<usize>>("limit")?,
+            sample_every: iter
+                .next_kwarg::<Option<usize>>("sample_every")?
+                .unwrap_or(1),
+            row_number_column: iter.next_kwarg::<Option<String>>("row_number_column")?,
+            timestamp_format: iter
+                .next_kwarg::<Option<String>>("timestamp_format")?
+                .unwrap_or_else(|| "%Y-%m-%d %H:%M:%S".to_owned()),
+        };
+        iter.finish()?;
+        match &self.inner {
+            Typed { adapter, .. } => Ok(Value::from(adapter.load_csv_file(load)?)),
+            Parse(_) => Ok(Value::from(0)),
+        }
+    }
+
     /// Ends the transaction a node left open, if transactions are managed. Call it when the
     /// node finishes, so its locks are not held until the next node on this thread.
     #[tracing::instrument(skip(self), level = "trace")]
@@ -3884,6 +3931,29 @@ impl Adapter {
 }
 
 impl Adapter {
+    fn dispatch_columns_in_relation(
+        &self,
+        state: &State,
+        args: &[Value],
+    ) -> Result<Value, minijinja::Error> {
+        let iter = ArgsIter::new("get_columns_in_relation", &["relation"], args);
+        let relation = iter
+            .next_arg::<&Value>()
+            .and_then(downcast_value_to_dyn_base_relation)
+            .and_then(|relation| {
+                iter.finish()?;
+                Ok(relation)
+            });
+
+        // Core's parse stub accepts arbitrary arguments, while valid relations must
+        // still use the existing recording path.
+        match relation {
+            Ok(relation) => self.get_columns_in_relation(state, relation.as_ref()),
+            Err(_) if self.is_parse() => Ok(empty_mutable_vec_value()),
+            Err(err) => Err(err),
+        }
+    }
+
     pub fn call_method_impl(
         self: &Arc<Self>,
         state: &State,
@@ -3991,24 +4061,7 @@ impl Adapter {
 
                 self.get_relation(state, database, schema, identifier, needs_information)
             }
-            "get_columns_in_relation" => {
-                let iter = ArgsIter::new(name, &["relation"], args);
-                let relation = iter
-                    .next_arg::<&Value>()
-                    .and_then(downcast_value_to_dyn_base_relation)
-                    .and_then(|relation| {
-                        iter.finish()?;
-                        Ok(relation)
-                    });
-
-                // Core's parse stub accepts arbitrary arguments, while valid relations must
-                // still use the existing recording path.
-                match relation {
-                    Ok(relation) => self.get_columns_in_relation(state, relation.as_ref()),
-                    Err(_) if self.is_parse() => Ok(empty_mutable_vec_value()),
-                    Err(err) => Err(err),
-                }
-            }
+            "get_columns_in_relation" => self.dispatch_columns_in_relation(state, args),
             "build_catalog_from_show_tables_and_svv_columns" => {
                 self.build_catalog_from_show_tables_and_svv_columns(state, args)
             }
@@ -4153,6 +4206,7 @@ impl Adapter {
             // database: str, schema: str, table_name: str, file_path: str,
             // agate_table: AgateTable, column_overrides: dict, field_delimiter: str
             "load_dataframe" => self.load_dataframe(state, args),
+            "load_csv_file" => self.load_csv_file(args),
             "upload_file" => self.upload_file(state, args),
             // relation: BaseRelation
             "get_bq_table" => self.get_bq_table(state, args),

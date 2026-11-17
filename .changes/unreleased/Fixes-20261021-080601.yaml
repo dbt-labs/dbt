@@ -1,0 +1,7 @@
+kind: Fixes
+body: Preserve unit-test fixture rows during empty builds instead of applying invocation filters to mocked refs and sources.
+time: 2026-10-21T08:06:01.358628-07:00
+custom:
+    author: alberttwong
+    issue: ""
+    project: dbt-core

@@ -26,6 +26,7 @@ const ADAPTERS: &[AdapterType] = &[
     AdapterType::Bigquery,
     AdapterType::Fabric,
     AdapterType::Exasol,
+    AdapterType::RedisAdbc,
 ];
 
 const EMPTY_SUBQUERY: &str = "{{ get_empty_subquery_sql(select_sql) }}";

@@ -1,0 +1,7 @@
+kind: Fixes
+body: Preserve row counts when normalizing zero-column Arrow batches in adapter test recordings (https://github.com/dbt-labs/dbt/issues/17210).
+time: 2026-11-17T11:31:39.611983-08:00
+custom:
+    author: alberttwong
+    issue: ""
+    project: dbt-core

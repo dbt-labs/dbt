@@ -1,0 +1,24 @@
+   dbt-oss 
+   Loading profiles.yml
+debug:warning=static analysis for adapter: RedisAdbc is disabled
+   Parsing models/schema.yml
+   Parsing models/trips_incremental.sql
+   Parsing models/trips_input.sql
+   Parsing models/trips_table.sql
+   Parsing models/zone_totals.sql
+   Parsing tests/assert_totals.sql
+ Rendering models/trips_input.sql
+   Running models/trips_input.sql
+ Rendering models/trips_table.sql
+ Rendering models/trips_incremental.sql
+   Running models/trips_table.sql
+ Succeeded model adapters_redis_adbc_basic_materializations.trips_table (table) [1 of 3 in duration]
+ Rendering models/zone_totals.sql
+   Running models/zone_totals.sql
+ Succeeded model adapters_redis_adbc_basic_materializations.zone_totals (view) [3 of 3 in duration]
+   Running models/trips_incremental.sql
+ Succeeded model adapters_redis_adbc_basic_materializations.trips_incremental (incremental) [2 of 3 in duration]
+==================== Execution Summary =====================
+Finished 'run' successfully for target 'redis_adbc' [duration]
+Processed: 4 models
+Summary: 4 total | 3 success | 1 no-op

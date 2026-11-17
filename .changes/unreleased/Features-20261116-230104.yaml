@@ -1,0 +1,7 @@
+kind: Features
+body: Add experimental authenticated TLS Flight SQL transport for the Redis ADBC adapter with isolated sessions and exact column declarations.
+time: 2026-11-16T23:01:04.159263-08:00
+custom:
+    author: alberttwong
+    issue: ""
+    project: dbt-core

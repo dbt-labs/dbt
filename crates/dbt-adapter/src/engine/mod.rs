@@ -21,6 +21,7 @@ mod adapter_engine;
 pub use adapter_engine::AdapterEngine;
 
 mod adbc;
+pub(crate) mod redis;
 pub use adbc::AdbcEngine;
 pub(crate) use adbc::resolve_connection_config;
 

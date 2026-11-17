@@ -1,0 +1,7 @@
+kind: Features
+body: Add Redis native Python models, CSV loading, contracts, catalog comments, microbatch materialization, and v1 connection options.
+time: 2026-10-21T08:06:01.347872-07:00
+custom:
+    author: alberttwong
+    issue: ""
+    project: dbt-core

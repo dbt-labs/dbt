@@ -193,6 +193,7 @@ pub fn infer_seed_column_name_strategy(
         (
             false,
             AdapterType::Postgres
+            | AdapterType::RedisAdbc
             | AdapterType::Salesforce
             | AdapterType::Redshift
             | AdapterType::DuckDB

@@ -2033,6 +2033,7 @@ fn metadata_type_candidate_keys(backend: AdapterType) -> &'static [&'static str]
         AdapterType::ClickHouse => &CLICKHOUSE_KEYS,
         AdapterType::Athena => &ATHENA_KEYS,
         AdapterType::Exasol => &EXASOL_KEYS,
+        AdapterType::RedisAdbc => &["ARROW:FLIGHT:SQL:TYPE_NAME"],
         _ => &GENERIC_KEYS,
     }
 }

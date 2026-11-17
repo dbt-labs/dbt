@@ -170,4 +170,8 @@ If any of the above occurs, the agent must explicitly state:
 **”Human verification is required before committing this change.”**
 
 Do not present such changes as harmless refactors. Prompt the user to run the
-live smoke tests in `crates/dbt-auth-tests` — see its README for setup.
+applicable public live probes described in [README.md](README.md), and retain
+the five-part impact report and an actual human review record. The public fork
+does not contain `crates/dbt-auth-tests`; do not direct reviewers to that missing
+crate or count unavailable provider cases as passing. Automated execution must
+be identified as automation, not human verification.
