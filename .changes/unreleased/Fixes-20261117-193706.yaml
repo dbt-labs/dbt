@@ -1,0 +1,7 @@
+kind: Fixes
+body: dbt retry re-runs the retried nodes with the --vars of the original run, unless the retry passes --vars itself
+time: 2026-11-17T19:37:06.855186129+01:00
+custom:
+    author: jimvekemans
+    issue: "15667"
+    project: dbt-core

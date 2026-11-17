@@ -56,6 +56,7 @@ dbt-tasks-sa = { workspace = true }
 dbt-telemetry = { workspace = true }
 dbt-tracked-stmt = { workspace = true }
 dbt-vortex = { workspace = true }
+dbt-yaml = { workspace = true }
 
 arrow = { workspace = true }
 astral-tokio-tar = { workspace = true }

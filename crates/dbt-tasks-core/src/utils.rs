@@ -79,6 +79,17 @@ pub fn build_run_results_artifact(
             format!("Failed to serialize warn_error_options for run_results.json: {e}"),
         ),
     }
+    // Always present, matching dbt-core (`{}` without --vars), so that
+    // `dbt retry` re-renders the retried nodes with the same vars.
+    match dbt_yaml::to_value(&arg.vars) {
+        Ok(value) => {
+            args_map.insert("vars".to_string(), value);
+        }
+        Err(e) => emit_warn_log_message(
+            ErrorCode::SerializationError,
+            format!("Failed to serialize vars for run_results.json: {e}"),
+        ),
+    }
     // Omitted when false, matching dbt-core.
     if warn_error {
         args_map.insert("warn_error".to_string(), dbt_yaml::Value::bool(true));
@@ -274,5 +285,48 @@ mod tests {
             Some(true),
             "warn_error must round-trip as true when set"
         );
+    }
+
+    /// `vars` must round-trip (and be `{}` without --vars, matching dbt-core), so `dbt retry`
+    /// can re-run with the same vars (dbt-labs/dbt#15667).
+    #[test]
+    fn test_run_results_args_record_vars() {
+        for vars in [
+            BTreeMap::new(),
+            BTreeMap::from([(
+                "probe".to_string(),
+                dbt_yaml::Value::string("from_build".to_string()),
+            )]),
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            let mut arg = EvalArgs::default();
+            arg.io.out_dir = tmp.path().to_path_buf();
+            arg.vars = vars.clone();
+
+            write_run_results_json(
+                &build_run_results_artifact(
+                    &empty_stats(),
+                    &HashMap::new(),
+                    &arg,
+                    false,
+                    &WarnErrorOptions::default(),
+                ),
+                &arg,
+            )
+            .unwrap();
+
+            let artifact =
+                RunResultsArtifact::from_file(&tmp.path().join("run_results.json")).unwrap();
+            let recorded = artifact
+                .args
+                .__other__
+                .get("vars")
+                .and_then(|v| v.as_mapping())
+                .expect("vars must always be present");
+            assert_eq!(recorded.len(), vars.len());
+            for (k, v) in &vars {
+                assert_eq!(recorded.get(k.as_str()), Some(v));
+            }
+        }
     }
 }
