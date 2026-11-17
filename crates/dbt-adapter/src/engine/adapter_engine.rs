@@ -477,56 +477,40 @@ pub(crate) fn adbc_execute_with_options(
         // `ComputeStatement::do_execute`) already stashed them internally, so
         // this is a local option read, not a second round trip -- but it must
         // happen after `reader` (which holds `stmt` borrowed) is dropped.
-        let attach_lake_compute_metadata = |stmt: &TrackedStatement, schema: Arc<Schema>| {
-            if adapter_type != AdapterType::LakeCompute {
-                return schema;
-            }
-            let warnings = stmt
-                .get_option_string(OptionStatement::Other(
-                    dbt_adbc::lake_compute::LAST_WARNINGS.to_string(),
-                ))
-                .unwrap_or_default();
-            let query_id = stmt
-                .get_option_string(OptionStatement::Other(
-                    dbt_adbc::lake_compute::LAST_QUERY_ID.to_string(),
-                ))
-                .unwrap_or_default();
-            if warnings.is_empty() && query_id.is_empty() {
-                return schema;
-            }
-            let mut metadata = schema.metadata().clone();
-            if !warnings.is_empty() {
-                metadata.insert(
-                    dbt_adbc::lake_compute::schema_metadata::WARNINGS.to_string(),
-                    warnings,
-                );
-            }
-            if !query_id.is_empty() {
-                metadata.insert(
-                    dbt_adbc::lake_compute::schema_metadata::QUERY_ID.to_string(),
-                    query_id,
-                );
-            }
-            Arc::new(Schema::new_with_metadata(schema.fields().clone(), metadata))
-        };
-        let attach_clickhouse_query_id = |stmt: &TrackedStatement, schema: Arc<Schema>| {
-            if adapter_type != AdapterType::ClickHouse {
-                return schema;
-            }
-            let query_id = stmt
-                .get_option_string(OptionStatement::Other(
-                    dbt_adbc::clickhouse::QUERY_ID.to_string(),
-                ))
-                .unwrap_or_default();
+        let attach_statement_metadata = |stmt: &TrackedStatement, schema: Arc<Schema>| {
+            // (statement option, schema metadata key)
+            let options: &[(&str, &str)] = match adapter_type {
+                AdapterType::LakeCompute => &[
+                    (
+                        dbt_adbc::lake_compute::LAST_WARNINGS,
+                        dbt_adbc::lake_compute::schema_metadata::WARNINGS,
+                    ),
+                    (
+                        dbt_adbc::lake_compute::LAST_QUERY_ID,
+                        dbt_adbc::lake_compute::schema_metadata::QUERY_ID,
+                    ),
+                ],
+                AdapterType::ClickHouse => &[(
+                    dbt_adbc::clickhouse::QUERY_ID,
+                    dbt_adbc::clickhouse::schema_metadata::QUERY_ID,
+                )],
+                _ => return schema,
+            };
             // Replayed statements report an empty value for options that were not recorded.
-            if query_id.is_empty() {
+            let values: Vec<(String, String)> = options
+                .iter()
+                .filter_map(|(option, key)| {
+                    let value = stmt
+                        .get_option_string(OptionStatement::Other(option.to_string()))
+                        .unwrap_or_default();
+                    (!value.is_empty()).then(|| (key.to_string(), value))
+                })
+                .collect();
+            if values.is_empty() {
                 return schema;
             }
             let mut metadata = schema.metadata().clone();
-            metadata.insert(
-                dbt_adbc::clickhouse::schema_metadata::QUERY_ID.to_string(),
-                query_id,
-            );
+            metadata.extend(values);
             Arc::new(Schema::new_with_metadata(schema.fields().clone(), metadata))
         };
 
@@ -535,8 +519,7 @@ pub(crate) fn adbc_execute_with_options(
         // to compute rows_affected correctly, so we must drain even when fetch=false.
         if !fetch && !schema.has_dml_columns(engine.adapter_type()) {
             drop(reader);
-            let schema = attach_lake_compute_metadata(&stmt, schema);
-            let schema = attach_clickhouse_query_id(&stmt, schema);
+            let schema = attach_statement_metadata(&stmt, schema);
             return Ok((schema, batches, None));
         }
 
@@ -551,8 +534,7 @@ pub(crate) fn adbc_execute_with_options(
             token.check_cancellation()?;
         }
         log_step_duration("batch-consume loop (for res in reader)", t_loop.elapsed());
-        let schema = attach_lake_compute_metadata(&stmt, schema);
-        let schema = attach_clickhouse_query_id(&stmt, schema);
+        let schema = attach_statement_metadata(&stmt, schema);
         Ok((schema, batches, None))
     };
     let _span = span!("SqlEngine::execute");
