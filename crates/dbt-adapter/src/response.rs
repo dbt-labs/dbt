@@ -290,29 +290,15 @@ impl AdapterResponse {
         response
     }
 
-    /// `AthenaConnectionManager.process_query_stats`: a statement naming both
-    /// `rowcount` and `data_scanned_in_bytes` reports the JSON object after its last
-    /// `select`. The dbt-athena table materialization ends with
-    /// `SELECT '{"rowcount":99,"data_scanned_in_bytes":1552}'` for the CTAS it ran.
+    /// `AthenaConnectionManager.process_query_stats`: the dbt-athena table and incremental
+    /// materializations end with a statement that reports the CTAS they ran,
+    /// `select '{"rowcount":99,"data_scanned_in_bytes":1552}'`, the JSON coming from
+    /// `run_query_with_partitions_limit_catching`. That statement's response carries the
+    /// reported figures. Any other statement keeps its own response, even when its SQL
+    /// mentions the two keys.
     pub fn with_athena_query_stats(self, sql: &str) -> Self {
-        if !(sql.contains("rowcount") && sql.contains("data_scanned_in_bytes")) {
+        let Some((rows, data_scanned)) = athena_reported_query_stats(sql) else {
             return self;
-        }
-        let lowered = sql.to_lowercase();
-        let tail = lowered.rsplit("select").next().unwrap_or_default();
-        let Some(object) = tail
-            .find('{')
-            .zip(tail.rfind('}'))
-            .and_then(|(start, end)| tail.get(start..=end))
-        else {
-            return self;
-        };
-        let (rows, data_scanned) = match serde_json::from_str::<serde_json::Value>(object) {
-            Ok(stats) => (
-                stats["rowcount"].as_i64().unwrap_or(-1),
-                stats["data_scanned_in_bytes"].as_i64().unwrap_or(0),
-            ),
-            Err(_) => (-1, 0),
         };
         let message = format!("{} {rows}", self.code());
         let mut response = self
@@ -352,6 +338,34 @@ impl AdapterResponse {
         }
         self
     }
+}
+
+/// `(rowcount, data_scanned_in_bytes)` of dbt-athena's reporting statement: a lone
+/// `select '<object>'` whose object has exactly those two integer keys. Lines of the
+/// Athena query comment (`--`, before or after the statement) are skipped.
+fn athena_reported_query_stats(sql: &str) -> Option<(i64, i64)> {
+    let mut lines = sql
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with("--"));
+    let statement = lines.next()?;
+    if lines.next().is_some() {
+        return None;
+    }
+    let statement = statement.strip_suffix(';').unwrap_or(statement);
+    let (keyword, literal) = statement.split_at_checked("select".len())?;
+    if !keyword.eq_ignore_ascii_case("select") {
+        return None;
+    }
+    let object = literal.trim().strip_prefix('\'')?.strip_suffix('\'')?;
+    let stats: serde_json::Map<String, serde_json::Value> = serde_json::from_str(object).ok()?;
+    if stats.len() != 2 {
+        return None;
+    }
+    Some((
+        stats.get("rowcount")?.as_i64()?,
+        stats.get("data_scanned_in_bytes")?.as_i64()?,
+    ))
 }
 
 /// Rows the statement touched. An empty result without DML columns (CTAS, views) reports no
@@ -952,15 +966,40 @@ mod from_record_batch_tests {
         assert_eq!(reporting.known_rows_affected(), Some(99));
         assert_eq!(reporting.data_scanned_in_bytes(), Some(1552));
 
-        let other = AdapterResponse::from_record_batch(&select_batch(2, &[]), AdapterType::Athena)
-            .with_athena_query_stats("select rowcount from t");
-        assert_eq!(other.message(), "OK 2");
+        // The query comment appended after the statement, as `query-comment: append` puts it.
+        let appended = AdapterResponse::from_record_batch(
+            &select_batch(1, &[]),
+            AdapterType::Athena,
+        )
+        .with_athena_query_stats(
+            "select '{\"rowcount\":-1,\"data_scanned_in_bytes\":0}'\n-- /* {\"app\": \"dbt\"} */;",
+        );
+        assert_eq!(appended.message(), "OK -1");
+        assert_eq!(
+            appended.known_rows_affected(),
+            None,
+            "-1 is dbt-athena's unknown count"
+        );
 
-        let malformed =
-            AdapterResponse::from_record_batch(&select_batch(1, &[]), AdapterType::Athena)
-                .with_athena_query_stats("select '{rowcount: data_scanned_in_bytes}'");
-        assert_eq!(malformed.known_rows_affected(), None);
-        assert_eq!(malformed.data_scanned_in_bytes(), Some(0));
+        // Anything but the lone reporting statement keeps the response of what it ran.
+        let response =
+            AdapterResponse::from_record_batch(&select_batch(2, &[]), AdapterType::Athena);
+        for sql in [
+            "select rowcount from t",
+            "select rowcount, data_scanned_in_bytes from t where note = '{\"rowcount\": 5}'",
+            "select '{\"rowcount\":5,\"data_scanned_in_bytes\":7}' as stats, 1 as x",
+            "select '{rowcount: data_scanned_in_bytes}'",
+            "select '{\"rowcount\":5,\"data_scanned_in_bytes\":7,\"other\":1}'",
+            "select '{\"rowcount\":\"5\",\"data_scanned_in_bytes\":7}'",
+            "insert into t select 1;\nselect '{\"rowcount\":5,\"data_scanned_in_bytes\":7}'",
+            "-- select '{\"rowcount\":5,\"data_scanned_in_bytes\":7}'\nselect 1",
+        ] {
+            assert_eq!(
+                response.clone().with_athena_query_stats(sql),
+                response,
+                "{sql}"
+            );
+        }
     }
 
     #[test]
