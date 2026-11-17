@@ -1,7 +1,9 @@
-use std::time::Duration;
+use std::borrow::Cow;
+use std::time::{Duration, Instant};
 
 use dbt_adapter_core::AdapterType;
 use dbt_adbc::Connection;
+use dbt_adbc::bigquery::ERROR_DETAIL_JOB_ERROR_REASON;
 use dbt_adbc::duration::parse_duration;
 use dbt_auth::AdapterConfig;
 use dbt_common::Cancellable;
@@ -11,6 +13,7 @@ mod databricks;
 mod redshift;
 mod snowflake;
 
+use crate::cow::lowercase;
 use crate::errors::is_bridge_adbc_error;
 
 #[derive(Debug)]
@@ -128,6 +131,7 @@ impl ConnectionRetryPolicy {
         let total_attempts = self.max_retries.saturating_add(1);
         retry_loop(
             self.max_retries,
+            None,
             connect_fn,
             |err| self.is_retryable(config, err),
             |attempt| match self.retry_sleep {
@@ -181,11 +185,13 @@ impl ConnectionRetryPolicy {
 #[inline(always)]
 fn retry_loop<T, E>(
     max_retries: u32,
+    retry_deadline: Option<Duration>,
     mut attempt_fn: impl FnMut() -> Result<T, E>,
     is_retryable: impl Fn(&E) -> bool,
     delay_for: impl Fn(u32) -> Duration,
     on_retry: impl Fn(u32, Duration, &E),
 ) -> Result<T, E> {
+    let started = Instant::now();
     let mut attempt: u32 = 0;
     loop {
         match attempt_fn() {
@@ -195,6 +201,11 @@ fn retry_loop<T, E>(
                     return Err(err);
                 }
                 let delay = delay_for(attempt + 1);
+                if retry_deadline
+                    .is_some_and(|budget| started.elapsed().saturating_add(delay) >= budget)
+                {
+                    return Err(err);
+                }
                 on_retry(attempt + 1, delay, &err);
                 if !delay.is_zero() {
                     std::thread::sleep(delay);
@@ -223,7 +234,7 @@ pub(crate) fn matches_go_net_transient(msg_lowercase: &str) -> bool {
 }
 
 /// Retries a transient query-*execution* failure (as opposed to
-/// [`ConnectionRetryPolicy`], which retries connection-open). Redshift-only.
+/// [`ConnectionRetryPolicy`], which retries connection-open).
 ///
 /// Retries on the same connection: Fusion runs Redshift autocommit-only, so
 /// there's no aborted transaction to clear, and the driver re-`Prepare`s
@@ -234,20 +245,33 @@ pub struct QueryRetryPolicy {
     adapter_type: AdapterType,
     max_retries: u32,
     retry_all: bool,
+    retry_deadline: Option<Duration>,
 }
 
 impl QueryRetryPolicy {
     /// Reads Redshift's actual profile field names (`retries`, not `connect_retries`).
     pub fn new(adapter_type: AdapterType, config: &AdapterConfig) -> QueryRetryPolicy {
-        let max_retries = config
-            .get_string("retries")
-            .and_then(|v| v.parse::<u32>().ok())
-            .unwrap_or(1);
+        let retries = match adapter_type {
+            AdapterType::Bigquery => config
+                .get_string("job_retries")
+                .or_else(|| config.get_string("retries")),
+            _ => config.get_string("retries"),
+        };
+        let max_retries = retries.and_then(|v| v.parse::<u32>().ok()).unwrap_or(1);
         let retry_all = config.get_bool("retry_all").unwrap_or(false);
+        let retry_deadline = match adapter_type {
+            AdapterType::Bigquery => config
+                .get_string("job_retry_deadline_seconds")
+                .and_then(|v| v.parse::<u64>().ok())
+                .filter(|&secs| secs > 0)
+                .map(Duration::from_secs),
+            _ => None,
+        };
         QueryRetryPolicy {
             adapter_type,
             max_retries,
             retry_all,
+            retry_deadline,
         }
     }
 
@@ -256,11 +280,13 @@ impl QueryRetryPolicy {
         &self,
         mut query_fn: impl FnMut() -> Result<T, Cancellable<adbc_core::error::Error>>,
     ) -> Result<T, Cancellable<adbc_core::error::Error>> {
-        if self.adapter_type != AdapterType::Redshift {
-            return query_fn();
+        match self.adapter_type {
+            AdapterType::Redshift | AdapterType::Bigquery => {}
+            _ => return query_fn(),
         }
         retry_loop(
             self.max_retries,
+            self.retry_deadline,
             query_fn,
             |err| match err {
                 Cancellable::Cancelled => false,
@@ -274,8 +300,39 @@ impl QueryRetryPolicy {
     fn is_retryable(&self, err: &adbc_core::error::Error) -> bool {
         // A lost Bridge session can't be retried on the same connection, and
         // an `08R07` call may already have run.
-        !is_bridge_adbc_error(err)
-            && redshift::is_retryable_redshift_query_error(self.retry_all, &err.message)
+        if is_bridge_adbc_error(err) {
+            return false;
+        }
+        match self.adapter_type {
+            AdapterType::Redshift => {
+                if self.retry_all {
+                    return true;
+                }
+                let msg = lowercase(Cow::Borrowed(&err.message));
+                // Catalog race after a concurrent DROP/CREATE.
+                msg.contains("could not open relation with oid")
+                    // MVCC serialization conflict.
+                    || msg.contains("conflict with concurrent transaction")
+                    // Schema catalog race (can also be a genuine permanent error).
+                    || (msg.contains("schema") && msg.contains("does not exist"))
+            }
+            AdapterType::Bigquery => err.details.as_ref().is_some_and(|details| {
+                details.iter().any(|(key, value)| {
+                    key == ERROR_DETAIL_JOB_ERROR_REASON
+                        && matches!(
+                            value.as_slice(),
+                            b"backendError"
+                                | b"internalError"
+                                | b"badGateway"
+                                | b"rateLimitExceeded"
+                                | b"jobBackendError"
+                                | b"jobInternalError"
+                                | b"jobRateLimitExceeded"
+                        )
+                })
+            }),
+            _ => false,
+        }
     }
 }
 
@@ -571,6 +628,7 @@ mod tests {
         let retries = Cell::new(0u32);
         let exhausted: Result<(), &str> = retry_loop(
             2,
+            None,
             || {
                 attempts.set(attempts.get() + 1);
                 Err("boom")
@@ -587,6 +645,7 @@ mod tests {
         let retries = Cell::new(0u32);
         let permanent: Result<(), &str> = retry_loop(
             2,
+            None,
             || {
                 attempts.set(attempts.get() + 1);
                 Err("boom")
@@ -603,6 +662,7 @@ mod tests {
         let reported = Cell::new(0u32);
         let recovered: Result<u8, &str> = retry_loop(
             2,
+            None,
             || {
                 attempts.set(attempts.get() + 1);
                 if attempts.get() == 1 {
@@ -723,6 +783,89 @@ mod tests {
     }
 
     // -- QueryRetryPolicy ------------------------------------------------------
+
+    fn terminal_job_error(reason: &str) -> AdbcError {
+        let mut err = adbc_err(Status::Internal, "job failed");
+        err.details = Some(vec![(
+            ERROR_DETAIL_JOB_ERROR_REASON.into(),
+            reason.as_bytes().to_vec(),
+        )]);
+        err
+    }
+
+    #[test]
+    fn query_retry_policy_bigquery_only_retries_confirmed_transient_job_failures() {
+        let cfg = AdapterConfig::new(dbt_yaml::Mapping::from_iter([(
+            "retry_all".into(),
+            true.into(),
+        )]));
+        let policy = QueryRetryPolicy::new(AdapterType::Bigquery, &cfg);
+        for reason in [
+            "backendError",
+            "internalError",
+            "badGateway",
+            "rateLimitExceeded",
+            "jobBackendError",
+            "jobInternalError",
+            "jobRateLimitExceeded",
+        ] {
+            assert!(policy.is_retryable(&terminal_job_error(reason)), "{reason}");
+        }
+        for reason in ["invalidQuery", "quotaExceeded", "backendError: other"] {
+            assert!(
+                !policy.is_retryable(&terminal_job_error(reason)),
+                "{reason}"
+            );
+        }
+        assert!(!policy.is_retryable(&adbc_err(Status::Internal, "backendError")));
+    }
+
+    #[test]
+    fn query_retry_policy_bigquery_reads_job_settings() {
+        let cfg = AdapterConfig::new(dbt_yaml::Mapping::from_iter([
+            ("job_retries".into(), 3.into()),
+            ("job_retry_deadline_seconds".into(), 10.into()),
+        ]));
+        let policy = QueryRetryPolicy::new(AdapterType::Bigquery, &cfg);
+        assert_eq!(policy.max_retries, 3);
+        assert_eq!(policy.retry_deadline, Some(Duration::from_secs(10)));
+        let alias = QueryRetryPolicy::new(
+            AdapterType::Bigquery,
+            &AdapterConfig::new(dbt_yaml::Mapping::from_iter([("retries".into(), 4.into())])),
+        );
+        assert_eq!(alias.max_retries, 4);
+        let defaults = QueryRetryPolicy::new(
+            AdapterType::Bigquery,
+            &AdapterConfig::new(dbt_yaml::Mapping::new()),
+        );
+        assert_eq!(defaults.max_retries, 1);
+        assert_eq!(defaults.retry_deadline, None);
+        let zero_deadline = QueryRetryPolicy::new(
+            AdapterType::Bigquery,
+            &AdapterConfig::new(dbt_yaml::Mapping::from_iter([(
+                "job_retry_deadline_seconds".into(),
+                0.into(),
+            )])),
+        );
+        assert_eq!(zero_deadline.retry_deadline, None);
+    }
+
+    #[test]
+    fn query_retry_policy_bigquery_resubmits_failed_job() {
+        let cfg = AdapterConfig::new(dbt_yaml::Mapping::new());
+        let policy = QueryRetryPolicy::new(AdapterType::Bigquery, &cfg);
+        let mut calls = 0;
+        let result = policy.execute(|| {
+            calls += 1;
+            if calls == 1 {
+                Err(Cancellable::Error(terminal_job_error("backendError")))
+            } else {
+                Ok(42)
+            }
+        });
+        assert_eq!(result.unwrap(), 42);
+        assert_eq!(calls, 2);
+    }
 
     #[test]
     fn query_retry_policy_default_retries_is_one() {
@@ -868,7 +1011,7 @@ mod tests {
     }
 
     #[test]
-    fn query_retry_policy_is_a_no_op_for_non_redshift_adapters() {
+    fn query_retry_policy_is_a_no_op_for_other_adapters() {
         let mapping = dbt_yaml::Mapping::from_iter([("retries".into(), 3.into())]);
         let cfg = AdapterConfig::new(mapping);
         let policy = QueryRetryPolicy::new(AdapterType::Snowflake, &cfg);

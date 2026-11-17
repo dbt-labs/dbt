@@ -2313,6 +2313,14 @@ impl TryFrom<DbConfig> for TargetContext {
 
             // Bigquery case
             DbConfig::Bigquery(config) => {
+                // dbt-bigquery treats `retries` as an alias of `job_retries` and rejects both.
+                if config.retries.is_some() && config.job_retries.is_some() {
+                    return Err(
+                        "In file `profiles.yml`, set either `retries` or `job_retries`, \
+                         not both: `retries` is an alias of `job_retries`."
+                            .to_string(),
+                    );
+                }
                 let database = config
                     .database
                     .ok_or_else(|| missing("database or project"))?;
@@ -2782,6 +2790,22 @@ query_tags:
         } else {
             panic!("Expected DbConfig::Bigquery, got {config:?}",);
         }
+    }
+
+    #[test]
+    fn test_bigquery_target_context_rejects_retries_and_job_retries() {
+        let bigquery = |retries: &str| -> DbConfig {
+            dbt_yaml::from_str(&format!(
+                "type: bigquery\ndatabase: project\nschema: dataset\n{retries}"
+            ))
+            .unwrap()
+        };
+        assert!(TargetContext::try_from(bigquery("retries: 3")).is_ok());
+        assert!(TargetContext::try_from(bigquery("job_retries: 3")).is_ok());
+        let Err(err) = TargetContext::try_from(bigquery("retries: 3\njob_retries: 5")) else {
+            panic!("expected both keys to be rejected");
+        };
+        assert!(err.contains("`retries` or `job_retries`"), "{err}");
     }
 
     // Regression coverage: `compute_region` used to carry `#[serde(alias = "dataproc_region")]`,
