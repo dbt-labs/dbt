@@ -259,6 +259,51 @@ mod clone {
     }
 }
 
+mod get_columns_in_query {
+    use super::*;
+
+    fn render_column_names(columns: Vec<&'static str>) -> (MacroTestHarness, String) {
+        let harness = build_harness(None);
+        harness.mock().on("get_column_schema_from_query", move |_| {
+            Ok(Value::from_serialize(
+                columns
+                    .iter()
+                    .map(|name| BTreeMap::from([("name", *name)]))
+                    .collect::<Vec<_>>(),
+            ))
+        });
+        let rendered = harness
+            .render(
+                "{{ clickhouse__get_columns_in_query('select * from src -- trailing') | join('|') }}",
+                BTreeMap::<String, Value>::new(),
+            )
+            .expect("render should succeed");
+        (harness, rendered)
+    }
+
+    /// Names come back in schema order, one per top-level column: a `Tuple` stays
+    /// whole and a flattened `Nested` keeps its dotted names.
+    #[test]
+    fn returns_schema_column_names_in_order() {
+        let (harness, rendered) = render_column_names(vec!["id", "payload", "n.a", "n.b"]);
+
+        assert_eq!(rendered.trim(), "id|payload|n.a|n.b");
+        let calls = harness.mock().observed_calls();
+        let sqls: Vec<_> = calls
+            .to("get_column_schema_from_query")
+            .map(|call| call.args[0].to_string())
+            .collect();
+        assert_eq!(sqls, ["select * from src -- trailing"]);
+    }
+
+    #[test]
+    fn returns_an_empty_list_when_the_query_has_no_columns() {
+        let (_harness, rendered) = render_column_names(vec![]);
+
+        assert_eq!(rendered.trim(), "");
+    }
+}
+
 mod persist_docs {
     use super::*;
     use crate::macro_test_harness::executed_sql;

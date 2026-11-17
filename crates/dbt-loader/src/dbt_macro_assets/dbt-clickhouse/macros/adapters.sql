@@ -1,5 +1,3 @@
-{# v2 adaptation: v2's check_schema_exists flow dispatches to this macro;
-   the Python adapter implements it natively (no upstream macro equivalent). #}
 {% macro clickhouse__check_schema_exists(information_schema, schema) -%}
   {% set sql %}
     select count(*) from system.databases where name = '{{ schema }}'
@@ -130,15 +128,7 @@
 {%- endmacro %}
 
 {% macro clickhouse__get_columns_in_query(select_sql) %}
-  {% call statement('get_columns_in_query', fetch_result=True, auto_begin=False) -%}
-    select * from (
-        {{ select_sql }}
-    ) as __dbt_sbq
-    limit 0
-  {% endcall %}
-
-  {# DIVERGENCE: Fusion reads the original schema because Agate flattens nested columns. #}
-  {{ return(load_result('get_columns_in_query').table.top_level_column_names) }}
+  {{ return(adapter.get_column_schema_from_query(select_sql) | map(attribute='name') | list) }}
 {% endmacro %}
 
 {% macro clickhouse__alter_column_type(relation, column_name, new_column_type) -%}
