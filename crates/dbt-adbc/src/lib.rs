@@ -73,7 +73,7 @@ pub fn str_from_sqlstate(sqlstate: &[c_char; 5]) -> &str {
 
 pub const SNOWFLAKE_DRIVER_VERSION: &str = "0.21.0.dev+dbt0.21.23";
 /// Legacy driver built from `dbt-labs/arrow-adbc` repository
-pub const BIGQUERY_DRIVER_VERSION: &str = "0.21.0.dev+dbt0.21.28";
+pub const BIGQUERY_DRIVER_VERSION: &str = "0.21.0.dev+dbt0.21.29";
 /// Built from `dbt-labs/bigquery-adbc repository
 pub const BIGQUERY_FOUNDRY_DRIVER_VERSION: &str = "0.21.0.dev+dbt0.1.16";
 pub const POSTGRES_DRIVER_VERSION: &str = "0.21.0+dbt0.21.0";
