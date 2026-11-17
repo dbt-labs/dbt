@@ -229,6 +229,9 @@ pub enum CompatibilityProbe {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::FromRepr, strum::IntoStaticStr)]
 #[strum(serialize_all = "snake_case")]
 pub enum NamedProbe {
+    /// A root-project macro overrides an internal dbt or adapter macro. Counted once per
+    /// overriding macro.
+    InternalMacroOverride = 1,
     /// Test-only probe for exercising emission and aggregation.
     #[cfg(test)]
     TestOnly = 65_534,
@@ -246,6 +249,7 @@ impl NamedProbe {
     /// `emit_future_change`; a probe only counted with `emit_compatibility_probe` has none.
     pub const fn tracking_issue(self) -> Option<TrackingIssue> {
         match self {
+            Self::InternalMacroOverride => None,
             #[cfg(test)]
             Self::TestOnly => Some(const { TrackingIssue::new(1) }),
             #[cfg(test)]
@@ -611,7 +615,11 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             actual,
-            [("test_only", u16::MAX - 1), ("test_only_other", u16::MAX)]
+            [
+                ("internal_macro_override", 1),
+                ("test_only", u16::MAX - 1),
+                ("test_only_other", u16::MAX)
+            ]
         );
     }
 }
