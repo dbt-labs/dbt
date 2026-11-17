@@ -95,6 +95,35 @@ def run_model(connection, parameters):
     return ingest(connection, target['identifier'], result, target['schema'])
 
 
+class CsvSampler:
+    def __init__(self, schema, parameters):
+        self.stride = parameters['sample_every']
+        self.limit = parameters['limit']
+        self.row_name = parameters['row_number_column']
+        self.schema = pa.schema([pa.field(self.row_name, pa.int64()), *schema]) if self.row_name else schema
+
+    def select(self, batch, seen, emitted):
+        positions = pa.array(range((-seen) % self.stride, batch.num_rows, self.stride), pa.int64())
+        selected = batch.take(positions)
+        if self.row_name:
+            selected = pa.RecordBatch.from_arrays(
+                [pc.add(positions, pa.scalar(seen + 1)), *selected.columns], schema=self.schema)
+        if self.limit is not None:
+            selected = selected.slice(0, max(0, self.limit - emitted))
+        return selected
+
+    def batches(self, reader):
+        seen = emitted = 0
+        for batch in reader:
+            selected = self.select(batch, seen, emitted)
+            seen += batch.num_rows
+            emitted += selected.num_rows
+            if selected.num_rows:
+                yield selected
+            if self.limit is not None and emitted >= self.limit:
+                break
+
+
 def load_csv(connection, parameters):
     types = parameters['column_types']
     with connection.cursor() as cursor:
@@ -103,28 +132,10 @@ def load_csv(connection, parameters):
     reader = csv.open_csv(parameters['path'], convert_options=csv.ConvertOptions(
         column_types={field.name: field.type for field in schema}, include_columns=list(types),
         timestamp_parsers=[parameters['timestamp_format']], strings_can_be_null=True))
-    stride, limit = parameters['sample_every'], parameters['limit']
-    row_name = parameters['row_number_column']
-    output_schema = pa.schema([pa.field(row_name, pa.int64()), *schema]) if row_name else schema
-
-    def batches():
-        seen = emitted = 0
-        for batch in reader:
-            positions = pa.array(range((-seen) % stride, batch.num_rows, stride), pa.int64())
-            selected = batch.take(positions)
-            if row_name:
-                selected = pa.RecordBatch.from_arrays([pc.add(positions, pa.scalar(seen + 1)), *selected.columns], schema=output_schema)
-            seen += batch.num_rows
-            if limit is not None:
-                selected = selected.slice(0, max(0, limit - emitted))
-            emitted += selected.num_rows
-            if selected.num_rows:
-                yield selected
-            if limit is not None and emitted >= limit:
-                break
+    sampler = CsvSampler(schema, parameters)
 
     # Validate the sampled input before replacing an existing relation.
-    table = pa.Table.from_batches(batches(), schema=output_schema)
+    table = pa.Table.from_batches(sampler.batches(reader), schema=sampler.schema)
     with connection.cursor() as cursor:
         cursor.execute(parameters['create_schema_sql'])
         cursor.execute(parameters['drop_table_sql'])

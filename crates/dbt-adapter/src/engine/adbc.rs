@@ -243,18 +243,20 @@ impl AdbcEngine {
             }
             _ => {}
         }
-        // Relation listing only needs table names and types. We're also not using
-        // wildcards.
-        if self.adapter_type == AdapterType::Bigquery && !config.use_dbt_cloud_credentials() {
-            for key in [
-                bigquery::GET_OBJECTS_SKIP_TABLE_METADATA,
-                bigquery::GET_OBJECTS_DISABLE_WILDCARDS,
-            ] {
-                let _ = conn.set_option(
-                    adbc_core::options::OptionConnection::Other(key.to_string()),
-                    adbc_core::options::OptionValue::String("true".to_string()),
-                );
-            }
+        // Relation listing only needs names and types, with no wildcards.
+        let metadata_options: &[&str] =
+            match (self.adapter_type, config.use_dbt_cloud_credentials()) {
+                (AdapterType::Bigquery, false) => &[
+                    bigquery::GET_OBJECTS_SKIP_TABLE_METADATA,
+                    bigquery::GET_OBJECTS_DISABLE_WILDCARDS,
+                ],
+                _ => &[],
+            };
+        for key in metadata_options {
+            let _ = conn.set_option(
+                adbc_core::options::OptionConnection::Other((*key).to_owned()),
+                adbc_core::options::OptionValue::String("true".to_owned()),
+            );
         }
         Ok(())
     }

@@ -16,6 +16,14 @@ use std::{
     sync::Arc,
 };
 
+struct AuditSchema(String);
+
+impl std::fmt::Display for AuditSchema {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
 fn database() -> Box<dyn Database> {
     let backend = Backend::Generic {
         library_name: "adbc_driver_redis",
@@ -99,13 +107,13 @@ fn live_redis_adbc_protocol_and_concurrency() {
     assert_eq!(db.adbc_version().unwrap(), AdbcVersion::V110);
     let db: Arc<dyn Database> = Arc::from(db);
     let mut conn = db.new_connection().unwrap();
-    let schema = format!(
+    let schema = AuditSchema(format!(
         "dbt_api_audit_{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos()
-    );
+    ));
     query(conn.as_mut(), &format!("create schema {schema}")).unwrap();
     let outcome = catch_unwind(AssertUnwindSafe(|| {
         check_binding_and_ingestion(conn.as_mut(), &schema);
@@ -119,7 +127,7 @@ fn live_redis_adbc_protocol_and_concurrency() {
     }
 }
 
-fn check_binding_and_ingestion(conn: &mut dyn Connection, schema: &str) {
+fn check_binding_and_ingestion(conn: &mut dyn Connection, schema: &AuditSchema) {
     query(conn, &format!("create table {schema}.probe (id bigint)")).unwrap();
     let mut stmt = conn.new_statement().unwrap();
     stmt.set_sql_query(&format!("insert into {schema}.probe values (?)"))
@@ -136,7 +144,7 @@ fn check_binding_and_ingestion(conn: &mut dyn Connection, schema: &str) {
     let mut ingest = conn.new_statement().unwrap();
     for (key, value) in [
         ("adbc.ingest.target_table", "probe"),
-        ("adbc.ingest.target_db_schema", schema),
+        ("adbc.ingest.target_db_schema", schema.0.as_str()),
         ("adbc.ingest.mode", "adbc.ingest.mode.append"),
     ] {
         ingest
@@ -155,12 +163,12 @@ fn check_binding_and_ingestion(conn: &mut dyn Connection, schema: &str) {
     drop(ingest);
 }
 
-fn check_metadata_and_empty_reads(conn: &mut dyn Connection, schema: &str) {
+fn check_metadata_and_empty_reads(conn: &mut dyn Connection, schema: &AuditSchema) {
     let metadata = conn
         .get_objects(
             ObjectDepth::All,
             Some("redis"),
-            Some(schema),
+            Some(schema.0.as_str()),
             Some("probe"),
             None,
             None,
@@ -170,7 +178,7 @@ fn check_metadata_and_empty_reads(conn: &mut dyn Connection, schema: &str) {
         .unwrap();
     assert!(metadata.iter().any(|batch| batch.num_rows() > 0));
     let table_schema = conn
-        .get_table_schema(Some("redis"), Some(schema), "probe")
+        .get_table_schema(Some("redis"), Some(schema.0.as_str()), "probe")
         .unwrap();
     assert_eq!(table_schema.field(0).data_type(), &DataType::Int64);
     let mut stmt = conn.new_statement().unwrap();
@@ -190,10 +198,10 @@ fn check_metadata_and_empty_reads(conn: &mut dyn Connection, schema: &str) {
     drop(stmt);
 }
 
-fn check_exact_types(conn: &mut dyn Connection, schema: &str) {
+fn check_exact_types(conn: &mut dyn Connection, schema: &AuditSchema) {
     query(conn, &format!("create table {schema}.exact_metadata (amount numeric(12,2), label varchar(17), occurred timestamp(3))")).unwrap();
     let metadata = conn
-        .get_table_schema(Some("redis"), Some(schema), "exact_metadata")
+        .get_table_schema(Some("redis"), Some(schema.0.as_str()), "exact_metadata")
         .unwrap();
     // Flight GetTableSchema preserves Arrow types but omits Redis SQL type
     // declarations. The adapter supplements them from this exact SQL lookup.
@@ -216,7 +224,7 @@ fn check_exact_types(conn: &mut dyn Connection, schema: &str) {
     assert_eq!(metadata.field(1).data_type(), &DataType::Utf8);
 }
 
-fn check_concurrent_sessions(db: &Arc<dyn Database>, schema: &str) {
+fn check_concurrent_sessions(db: &Arc<dyn Database>, schema: &AuditSchema) {
     std::thread::scope(|scope| {
         let handles: Vec<_> = (0..4)
             .map(|value| {
@@ -232,7 +240,7 @@ fn check_concurrent_sessions(db: &Arc<dyn Database>, schema: &str) {
     });
 }
 
-fn check_session(db: &dyn Database, schema: &str, value: i64) {
+fn check_session(db: &dyn Database, schema: &AuditSchema, value: i64) {
     let mut conn = db.new_connection().unwrap();
     query(conn.as_mut(), "select 1").unwrap();
     let zone = if value % 2 == 0 {

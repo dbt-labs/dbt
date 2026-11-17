@@ -470,53 +470,13 @@ pub(crate) fn adbc_execute_with_options(
         log_step_duration("reader.schema()", t_schema.elapsed());
         let mut batches = Vec::with_capacity(1);
 
-        // Surface non-fatal backend warnings (e.g. an export-limit truncation
-        // notice) the same way the `!fetch` lake compute branch above does: via schema
-        // metadata, since this closure's return type has no other slot for
-        // statement-level side channels. `stmt.execute()` (quack's
-        // `ComputeStatement::do_execute`) already stashed them internally, so
-        // this is a local option read, not a second round trip -- but it must
-        // happen after `reader` (which holds `stmt` borrowed) is dropped.
-        let attach_lake_compute_metadata = |stmt: &TrackedStatement, schema: Arc<Schema>| {
-            if adapter_type != AdapterType::LakeCompute {
-                return schema;
-            }
-            let warnings = stmt
-                .get_option_string(OptionStatement::Other(
-                    dbt_adbc::lake_compute::LAST_WARNINGS.to_string(),
-                ))
-                .unwrap_or_default();
-            let query_id = stmt
-                .get_option_string(OptionStatement::Other(
-                    dbt_adbc::lake_compute::LAST_QUERY_ID.to_string(),
-                ))
-                .unwrap_or_default();
-            if warnings.is_empty() && query_id.is_empty() {
-                return schema;
-            }
-            let mut metadata = schema.metadata().clone();
-            if !warnings.is_empty() {
-                metadata.insert(
-                    dbt_adbc::lake_compute::schema_metadata::WARNINGS.to_string(),
-                    warnings,
-                );
-            }
-            if !query_id.is_empty() {
-                metadata.insert(
-                    dbt_adbc::lake_compute::schema_metadata::QUERY_ID.to_string(),
-                    query_id,
-                );
-            }
-            Arc::new(Schema::new_with_metadata(schema.fields().clone(), metadata))
-        };
-
         // Snowflake DML (MERGE/INSERT/UPDATE/DELETE) returns a one-row metadata batch
         // with columns like "number of rows inserted". AdapterResponse needs that batch
         // to compute rows_affected correctly, so we must drain even when fetch=false.
         let policy = ResultCollection::new(engine, fetch);
         if !policy.drain(&schema) {
             drop(reader);
-            let schema = attach_lake_compute_metadata(&stmt, schema);
+            let schema = attach_execution_metadata(adapter_type, &stmt, schema);
             return Ok((schema, batches, None));
         }
 
@@ -533,7 +493,7 @@ pub(crate) fn adbc_execute_with_options(
             token.check_cancellation()?;
         }
         log_step_duration("batch-consume loop (for res in reader)", t_loop.elapsed());
-        let schema = attach_lake_compute_metadata(&stmt, schema);
+        let schema = attach_execution_metadata(adapter_type, &stmt, schema);
         Ok((schema, batches, None))
     };
     let _span = span!("SqlEngine::execute");
@@ -644,6 +604,47 @@ pub(crate) fn adbc_execute_with_options(
     );
 
     Ok(total_batch)
+}
+
+fn attach_execution_metadata(
+    adapter_type: AdapterType,
+    stmt: &TrackedStatement,
+    schema: Arc<Schema>,
+) -> Arc<Schema> {
+    // Execution stashes warnings and query IDs in local statement options.
+    // Attach them only after dropping the reader that borrows the statement;
+    // reading these options does not make another RPC.
+    match adapter_type {
+        AdapterType::LakeCompute => {}
+        _ => return schema,
+    }
+    let warnings = stmt
+        .get_option_string(OptionStatement::Other(
+            dbt_adbc::lake_compute::LAST_WARNINGS.to_string(),
+        ))
+        .unwrap_or_default();
+    let query_id = stmt
+        .get_option_string(OptionStatement::Other(
+            dbt_adbc::lake_compute::LAST_QUERY_ID.to_string(),
+        ))
+        .unwrap_or_default();
+    if warnings.is_empty() && query_id.is_empty() {
+        return schema;
+    }
+    let mut metadata = schema.metadata().clone();
+    if !warnings.is_empty() {
+        metadata.insert(
+            dbt_adbc::lake_compute::schema_metadata::WARNINGS.to_string(),
+            warnings,
+        );
+    }
+    if !query_id.is_empty() {
+        metadata.insert(
+            dbt_adbc::lake_compute::schema_metadata::QUERY_ID.to_string(),
+            query_id,
+        );
+    }
+    Arc::new(Schema::new_with_metadata(schema.fields().clone(), metadata))
 }
 
 struct ResultCollection {
