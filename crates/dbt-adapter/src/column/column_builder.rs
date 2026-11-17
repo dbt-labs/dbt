@@ -524,6 +524,28 @@ impl ColumnBuilder {
     /// through the real formatter instead of a hardcoded "datetime" string,
     /// so a `WITH TIME ZONE` column keeps that information through the
     /// column round-trip instead of being collapsed to a naive timestamp.
+    fn render_arrow_type(
+        field: &FieldRef,
+        type_ops: &dyn TypeOps,
+        rendered_type: &mut String,
+    ) -> AdapterResult<()> {
+        let adapter_type = type_ops.adapter_type();
+        match (adapter_type, original_type_string(adapter_type, field)) {
+            (AdapterType::RedisAdbc, Some(original)) => rendered_type.push_str(&original),
+            _ => {
+                type_ops.format_arrow_type_as_sql(
+                    field.data_type(),
+                    field.is_nullable(),
+                    rendered_type,
+                )?;
+                if !field.is_nullable() {
+                    rendered_type.push_str(" not null");
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn build_from_arrow_type(
         field: &FieldRef,
         type_ops: &dyn TypeOps,
@@ -531,19 +553,7 @@ impl ColumnBuilder {
         let adapter_type = type_ops.adapter_type();
         let data_type_ref = field.data_type();
         let mut rendered_type = String::new();
-        match (adapter_type, original_type_string(adapter_type, field)) {
-            (AdapterType::RedisAdbc, Some(original)) => rendered_type.push_str(&original),
-            _ => {
-                type_ops.format_arrow_type_as_sql(
-                    data_type_ref,
-                    field.is_nullable(),
-                    &mut rendered_type,
-                )?;
-                if !field.is_nullable() {
-                    rendered_type.push_str(" not null");
-                }
-            }
-        }
+        Self::render_arrow_type(field, type_ops, &mut rendered_type)?;
         let char_size = match adapter_type {
             AdapterType::RedisAdbc => match SqlType::parse(adapter_type, &rendered_type) {
                 Ok((SqlType::Varchar(Some(n), _) | SqlType::Char(Some(n)), _)) => {

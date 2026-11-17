@@ -203,6 +203,62 @@ impl AdbcEngine {
         &self.mode
     }
 
+    fn driver_load_strategy(&self, config: &AdapterConfig) -> AdapterResult<LoadStrategy> {
+        Ok(
+            match (config.use_dbt_cloud_credentials(), self.adapter_type) {
+                (true, AdapterType::RedisAdbc) => {
+                    return Err(AdapterError::new(
+                        AdapterErrorKind::NotSupported,
+                        "Redis does not support dbt Cloud credentials",
+                    ));
+                }
+                (true, _) => LoadStrategy::Bridge,
+                (false, AdapterType::RedisAdbc) => {
+                    let path = config.get_str("driver").filter(|path| !path.is_empty())
+                    .ok_or_else(|| AdapterError::new(AdapterErrorKind::Configuration,
+                        "Set the Redis 'driver' profile field to an absolute shared-library path"))?;
+                    if !std::path::Path::new(path).is_absolute() {
+                        return Err(AdapterError::new(
+                            AdapterErrorKind::Configuration,
+                            "The Redis 'driver' profile field must be an absolute shared-library path",
+                        ));
+                    }
+                    LoadStrategy::System(Some(path.to_owned()))
+                }
+                (false, AdapterType::DuckDB) => LoadStrategy::SystemThenCdnCache,
+                (false, _) => LoadStrategy::CdnCache,
+            },
+        )
+    }
+
+    fn configure_session(
+        &self,
+        conn: &mut dyn Connection,
+        config: &AdapterConfig,
+    ) -> AdapterResult<()> {
+        match self.adapter_type {
+            AdapterType::RedisAdbc if config.get_str("transport") == Some("flightsql") => {
+                super::redis::initialize_session(conn, config)
+                    .map_err(adbc_error_to_adapter_error)?;
+            }
+            _ => {}
+        }
+        // Relation listing only needs table names and types. We're also not using
+        // wildcards.
+        if self.adapter_type == AdapterType::Bigquery && !config.use_dbt_cloud_credentials() {
+            for key in [
+                bigquery::GET_OBJECTS_SKIP_TABLE_METADATA,
+                bigquery::GET_OBJECTS_DISABLE_WILDCARDS,
+            ] {
+                let _ = conn.set_option(
+                    adbc_core::options::OptionConnection::Other(key.to_string()),
+                    adbc_core::options::OptionValue::String("true".to_string()),
+                );
+            }
+        }
+        Ok(())
+    }
+
     fn load_driver_and_configure_database(
         &self,
         config: &AdapterConfig,
@@ -212,7 +268,6 @@ impl AdbcEngine {
             "load_driver_and_configure_database called in {:?} mode",
             self.mode,
         );
-        let use_cloud_credentials = config.use_dbt_cloud_credentials();
 
         let database_builder = config
             .build_connection_builder(self.auth.as_ref(), |backend| {
@@ -220,29 +275,7 @@ impl AdbcEngine {
             })
             .map_err(crate::errors::auth_error_to_adapter_error)?;
         let backend = database_builder.backend;
-        let load_strategy = match (use_cloud_credentials, self.adapter_type) {
-            (true, AdapterType::RedisAdbc) => {
-                return Err(AdapterError::new(
-                    AdapterErrorKind::NotSupported,
-                    "Redis does not support dbt Cloud credentials",
-                ));
-            }
-            (true, _) => LoadStrategy::Bridge,
-            (false, AdapterType::RedisAdbc) => {
-                let path = config.get_str("driver").filter(|path| !path.is_empty())
-                    .ok_or_else(|| AdapterError::new(AdapterErrorKind::Configuration,
-                        "Set the Redis 'driver' profile field to an absolute shared-library path"))?;
-                if !std::path::Path::new(path).is_absolute() {
-                    return Err(AdapterError::new(
-                        AdapterErrorKind::Configuration,
-                        "The Redis 'driver' profile field must be an absolute shared-library path",
-                    ));
-                }
-                LoadStrategy::System(Some(path.to_owned()))
-            }
-            (false, AdapterType::DuckDB) => LoadStrategy::SystemThenCdnCache,
-            (false, _) => LoadStrategy::CdnCache,
-        };
+        let load_strategy = self.driver_load_strategy(config)?;
 
         // This will load the "bridge" driver if load_strategy is Remote.
         let mut driver = driver::Builder::new(backend, load_strategy)
@@ -635,26 +668,7 @@ impl AdapterEngine for AdbcEngine {
         let mut conn = retry_policy
             .execute(config, connect)
             .map_err(|e| enrich_connection_error(self.adapter_type(), e, config))?;
-        match self.adapter_type {
-            AdapterType::RedisAdbc if config.get_str("transport") == Some("flightsql") => {
-                super::redis::initialize_session(conn.as_mut(), config)
-                    .map_err(adbc_error_to_adapter_error)?;
-            }
-            _ => {}
-        }
-        // Relation listing only needs table names and types. We're also not using
-        // wildcards.
-        if self.adapter_type == AdapterType::Bigquery && !config.use_dbt_cloud_credentials() {
-            for key in [
-                bigquery::GET_OBJECTS_SKIP_TABLE_METADATA,
-                bigquery::GET_OBJECTS_DISABLE_WILDCARDS,
-            ] {
-                let _ = conn.set_option(
-                    adbc_core::options::OptionConnection::Other(key.to_string()),
-                    adbc_core::options::OptionValue::String("true".to_string()),
-                );
-            }
-        }
+        self.configure_session(conn.as_mut(), config)?;
         // Tag the connection with its config fingerprint and cache it on the
         // engine, so the pool reuses a connection only among engines with an
         // identical connection configuration.

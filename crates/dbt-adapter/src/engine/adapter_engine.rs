@@ -513,11 +513,8 @@ pub(crate) fn adbc_execute_with_options(
         // Snowflake DML (MERGE/INSERT/UPDATE/DELETE) returns a one-row metadata batch
         // with columns like "number of rows inserted". AdapterResponse needs that batch
         // to compute rows_affected correctly, so we must drain even when fetch=false.
-        let preserve_session = matches!(adapter_type, AdapterType::RedisAdbc)
-            && engine.get_config().get_str("transport") == Some("flightsql");
-        // Dropping a Flight reader cancels its RPC and can discard the server's
-        // connection-local state. Finish even SELECT hooks whose rows are unused.
-        if !fetch && !schema.has_dml_columns(engine.adapter_type()) && !preserve_session {
+        let policy = ResultCollection::new(engine, fetch);
+        if !policy.drain(&schema) {
             drop(reader);
             let schema = attach_lake_compute_metadata(&stmt, schema);
             return Ok((schema, batches, None));
@@ -528,7 +525,7 @@ pub(crate) fn adbc_execute_with_options(
         let t_loop = std::time::Instant::now();
         for res in reader {
             let batch = res.map_err(adbc_core::error::Error::from)?;
-            if fetch || !preserve_session {
+            if policy.retain_batches() {
                 batches.push(batch);
             }
             // Check for cancellation before processing the next batch
@@ -649,6 +646,40 @@ pub(crate) fn adbc_execute_with_options(
     Ok(total_batch)
 }
 
+struct ResultCollection {
+    fetch: bool,
+    preserve_session: bool,
+    adapter_type: AdapterType,
+}
+
+impl ResultCollection {
+    fn new(engine: &(impl AdapterEngine + ?Sized), fetch: bool) -> Self {
+        let adapter_type = engine.adapter_type();
+        let preserve_session = match adapter_type {
+            AdapterType::RedisAdbc => engine.get_config().get_str("transport") == Some("flightsql"),
+            _ => false,
+        };
+        Self {
+            fetch,
+            preserve_session,
+            adapter_type,
+        }
+    }
+
+    fn drain(&self, schema: &Schema) -> bool {
+        // Dropping a Flight reader cancels its RPC and can discard the server's
+        // connection-local state. Finish hooks even when their rows are unused.
+        if self.preserve_session {
+            return true;
+        }
+        self.fetch || schema.has_dml_columns(self.adapter_type)
+    }
+
+    fn retain_batches(&self) -> bool {
+        self.fetch || !self.preserve_session
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -682,6 +713,22 @@ mod tests {
             vec![Arc::new(StringArray::from(vec!["value"])) as ArrayRef],
         )
         .unwrap()
+    }
+
+    #[test]
+    fn result_collection_preserves_sessions_without_retaining_hook_rows() {
+        let schema = Schema::empty();
+        for fetch in [false, true] {
+            for preserve_session in [false, true] {
+                let policy = ResultCollection {
+                    fetch,
+                    preserve_session,
+                    adapter_type: AdapterType::RedisAdbc,
+                };
+                assert_eq!(policy.drain(&schema), fetch || preserve_session);
+                assert_eq!(policy.retain_batches(), fetch || !preserve_session);
+            }
+        }
     }
 
     #[test]

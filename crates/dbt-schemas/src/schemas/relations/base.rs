@@ -536,6 +536,26 @@ pub trait BaseRelation: BaseRelationProperties + Any + Send + Sync + fmt::Debug 
             return rendered;
         };
 
+        let (start, end) = self.run_filter_predicates(run_filter, event_time);
+
+        // create the filter expression
+        let filter = match (start, end) {
+            (None, None) => return rendered,
+            (Some(start), Some(end)) => format!("{start} and {end}"),
+            (Some(start), None) => start,
+            (None, Some(end)) => end,
+        };
+
+        // FIXME: for Postgres, we need to support _render_subquery_alias for the returned result
+        // reference: https://github.com/dbt-labs/dbt-adapters/blob/d2f725651c05be0de07f3152d5b4842feae8a18a/dbt-adapters/src/dbt/adapters/base/relation.py#L222
+        format!("(select * from {rendered} where {filter})")
+    }
+
+    fn run_filter_predicates(
+        &self,
+        run_filter: &RunFilter,
+        event_time: &str,
+    ) -> (Option<String>, Option<String>) {
         // get start/end times
         let (start, end) = run_filter.sample_times();
 
@@ -551,7 +571,7 @@ pub trait BaseRelation: BaseRelationProperties + Any + Send + Sync + fmt::Debug 
         };
 
         // render the filter conditions
-        let (start, end) = match self.adapter_type() {
+        match self.adapter_type() {
             // See: https://github.com/dbt-labs/dbt-adapters/blob/221923bf60efc6a099681a82be89e86bef587f55/dbt-snowflake/src/dbt/adapters/snowflake/relation.py#L201
             AdapterType::Snowflake => (
                 start.map(|start| format!("{event_time} >= to_timestamp_tz('{start}')")),
@@ -605,19 +625,7 @@ pub trait BaseRelation: BaseRelationProperties + Any + Send + Sync + fmt::Debug 
             AdapterType::Datafusion => todo!("Datafusion"),
             AdapterType::Dremio => todo!("Dremio"),
             AdapterType::Oracle => todo!("Oracle"),
-        };
-
-        // create the filter expression
-        let filter = match (start, end) {
-            (None, None) => return rendered,
-            (Some(start), Some(end)) => format!("{start} and {end}"),
-            (Some(start), None) => start,
-            (None, Some(end)) => end,
-        };
-
-        // FIXME: for Postgres, we need to support _render_subquery_alias for the returned result
-        // reference: https://github.com/dbt-labs/dbt-adapters/blob/d2f725651c05be0de07f3152d5b4842feae8a18a/dbt-adapters/src/dbt/adapters/base/relation.py#L222
-        format!("(select * from {rendered} where {filter})")
+        }
     }
 
     /// Relation without any identifier

@@ -42,25 +42,48 @@ def ingest(connection, identifier, data, schema):
     for attempt in range(20):
         try:
             with connection.cursor() as cursor:
-                upload = data
-                # A schema-only Flight upload has no messages. Build a fresh
-                # zero-row reader per attempt from the retained immutable table.
-                if isinstance(data, pa.Table) and data.num_rows == 0:
-                    batch = pa.RecordBatch.from_arrays([pa.array([], type=f.type) for f in data.schema], schema=data.schema)
-                    upload = pa.RecordBatchReader.from_batches(data.schema, [batch])
+                upload = upload_input(data)
                 return cursor.adbc_ingest(identifier, upload, mode='create', db_schema_name=schema)
         except adbc.Error as error:
             # A table supplies fresh input. One-shot readers and unknown commit
             # outcomes cannot replay an upload safely.
-            if not (isinstance(data, pa.Table) and error.status_code == adbc.AdbcStatusCode.IO
-                    and ((error.sqlstate == '40001'
-                          and 'snapshot catalog changed concurrently; retry the statement' in str(error))
-                         or (error.vendor_code == 14
-                             and '[redis] snapshot catalog changed concurrently; retry the statement (40001)' in str(error)
-                             and '(Unavailable;' in str(error)))
-                    and attempt < 19):
+            if not isinstance(data, pa.Table):
                 raise
+            if attempt == 19:
+                raise
+            validate_retry(error)
             time.sleep(random.uniform(.05, .1) * min(2 ** attempt, 16))
+
+
+def upload_input(data):
+    # A schema-only Flight upload has no messages. Recreate the zero-row
+    # reader for each attempt from the retained immutable table.
+    if not isinstance(data, pa.Table):
+        return data
+    if data.num_rows:
+        return data
+    batch = pa.RecordBatch.from_arrays(
+        [pa.array([], type=f.type) for f in data.schema], schema=data.schema)
+    return pa.RecordBatchReader.from_batches(data.schema, [batch])
+
+
+def validate_retry(error):
+    if error.status_code != adbc.AdbcStatusCode.IO:
+        raise error
+    if error.sqlstate == '40001':
+        if 'snapshot catalog changed concurrently; retry the statement' in str(error):
+            return
+    if error.vendor_code == 14:
+        validate_flight_retry(error)
+        return
+    raise error
+
+
+def validate_flight_retry(error):
+    if '[redis] snapshot catalog changed concurrently; retry the statement (40001)' not in str(error):
+        raise error
+    if '(Unavailable;' not in str(error):
+        raise error
 
 
 def run_model(connection, parameters):

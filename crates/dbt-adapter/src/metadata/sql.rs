@@ -36,6 +36,14 @@ impl SqlMetadataAdapter {
         let adapter = AdapterImpl::new(engine, None);
         Self { adapter }
     }
+
+    fn unsupported<'a, T: Send + 'a>(&'a self, operation: &str) -> AsyncAdapterResult<'a, T> {
+        let err = AdapterError::new(
+            AdapterErrorKind::NotSupported,
+            format!("{operation} is not implemented for {}", self.adapter_type()),
+        );
+        Box::pin(future::ready(Err(Cancellable::Error(err))))
+    }
 }
 
 impl MetadataAdapter for SqlMetadataAdapter {
@@ -219,14 +227,7 @@ impl MetadataAdapter for SqlMetadataAdapter {
         _patterns: &[RelationPattern],
         _token: CancellationToken,
     ) -> AsyncAdapterResult<'_, Vec<(String, AdapterResult<RelationSchemaPair>)>> {
-        let err = AdapterError::new(
-            AdapterErrorKind::NotSupported,
-            format!(
-                "Pattern-based schema discovery is not implemented for {}",
-                self.adapter_type()
-            ),
-        );
-        Box::pin(future::ready(Err(Cancellable::Error(err))))
+        self.unsupported("Pattern-based schema discovery")
     }
 
     fn freshness_inner(
@@ -234,14 +235,7 @@ impl MetadataAdapter for SqlMetadataAdapter {
         _relations: &[Arc<dyn BaseRelation>],
         _token: CancellationToken,
     ) -> AsyncAdapterResult<'_, BTreeMap<String, MetadataFreshness>> {
-        let err = AdapterError::new(
-            AdapterErrorKind::NotSupported,
-            format!(
-                "metadata-based source freshness is not implemented for {}",
-                self.adapter_type()
-            ),
-        );
-        Box::pin(future::ready(Err(Cancellable::Error(err))))
+        self.unsupported("metadata-based source freshness")
     }
 
     fn create_schemas_if_not_exists(

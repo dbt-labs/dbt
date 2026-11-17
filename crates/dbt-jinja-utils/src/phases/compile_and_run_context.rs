@@ -696,6 +696,44 @@ pub struct SourceFunction {
 }
 
 impl SourceFunction {
+    fn parse_arguments(args: &[MinijinjaValue]) -> Result<(String, String), MinijinjaError> {
+        let mut parser = ArgParser::new(args, None);
+        let num_args = parser.positional_len() + parser.kwargs_len();
+        match num_args {
+            0 | 1 => Err(MinijinjaError::new(
+                MinijinjaErrorKind::MissingArgument,
+                "source macro requires 2 arguments: source name and table name",
+            )),
+            2 => {
+                let source_name_value = parser.get::<MinijinjaValue>("source_name")?;
+                let table_name_value = parser.get::<MinijinjaValue>("table_name")?;
+                let source_name = source_name_value.as_str().ok_or_else(|| {
+                    MinijinjaError::new(
+                        MinijinjaErrorKind::InvalidOperation,
+                        format!(
+                            "The source name (first) argument to source() must be a string, got {}",
+                            source_name_value.kind()
+                        ),
+                    )
+                })?;
+                let table_name = table_name_value.as_str().ok_or_else(|| {
+                    MinijinjaError::new(
+                        MinijinjaErrorKind::InvalidOperation,
+                        format!(
+                            "The table name (second) argument to source() must be a string, got {}",
+                            table_name_value.kind()
+                        ),
+                    )
+                })?;
+                Ok((source_name.to_string(), table_name.to_string()))
+            }
+            _ => Err(MinijinjaError::new(
+                MinijinjaErrorKind::TooManyArguments,
+                "source",
+            )),
+        }
+    }
+
     /// Create a new Source with microbatch context for filtering sources.
     ///
     /// This is used during microbatch execution to filter sources to models
@@ -801,41 +839,7 @@ impl Object for SourceFunction {
         args: &[MinijinjaValue],
         listeners: &[Rc<dyn RenderingEventListener>],
     ) -> Result<MinijinjaValue, MinijinjaError> {
-        let mut parser = ArgParser::new(args, None);
-        let num_args = parser.positional_len() + parser.kwargs_len();
-        let (source_name, table_name) = match num_args {
-            0 | 1 => Err(MinijinjaError::new(
-                MinijinjaErrorKind::MissingArgument,
-                "source macro requires 2 arguments: source name and table name",
-            )),
-            2 => {
-                let source_name_value = parser.get::<MinijinjaValue>("source_name")?;
-                let table_name_value = parser.get::<MinijinjaValue>("table_name")?;
-                let source_name = source_name_value.as_str().ok_or_else(|| {
-                    MinijinjaError::new(
-                        MinijinjaErrorKind::InvalidOperation,
-                        format!(
-                            "The source name (first) argument to source() must be a string, got {}",
-                            source_name_value.kind()
-                        ),
-                    )
-                })?;
-                let table_name = table_name_value.as_str().ok_or_else(|| {
-                    MinijinjaError::new(
-                        MinijinjaErrorKind::InvalidOperation,
-                        format!(
-                            "The table name (second) argument to source() must be a string, got {}",
-                            table_name_value.kind()
-                        ),
-                    )
-                })?;
-                Ok((source_name.to_string(), table_name.to_string()))
-            }
-            _ => Err(MinijinjaError::new(
-                MinijinjaErrorKind::TooManyArguments,
-                "source",
-            )),
-        }?;
+        let (source_name, table_name) = Self::parse_arguments(args)?;
         match self
             .node_resolver
             .lookup_source(&self.package_name, &source_name, &table_name)
@@ -1162,8 +1166,7 @@ mod tests {
     use dbt_test_utils::TestEnvGuard;
     use std::env;
 
-    #[test]
-    fn unit_test_fixture_relations_ignore_invocation_empty_filter() {
+    fn empty_fixture_resolver() -> Arc<crate::node_resolver::NodeResolver> {
         use crate::node_resolver::NodeResolver;
         use dbt_adapter::relation::Relation;
         use dbt_adapter_core::AdapterType;
@@ -1203,7 +1206,13 @@ mod tests {
                 ModelStatus::Enabled,
             )],
         );
-        let resolver = Arc::new(resolver);
+        Arc::new(resolver)
+    }
+
+    #[test]
+    fn unit_test_fixture_relations_ignore_invocation_empty_filter() {
+        use dbt_adapter_core::AdapterType;
+        let resolver = empty_fixture_resolver();
         for (node_type, expected_empty) in [(NodeType::UnitTest, false), (NodeType::Model, true)] {
             let validation = DependencyValidationConfig {
                 node_type,

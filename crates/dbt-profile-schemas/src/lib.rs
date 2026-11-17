@@ -49,64 +49,34 @@ impl ProfileSetup {
             };
         }
 
+        macro_rules! setup_profile {
+            ($variant:ident, $setup:path) => {
+                $setup(unwrap_db_config!($variant).map(Box::as_ref)).map(DbConfig::$variant)
+            };
+        }
+
         match self.adapter_type {
             RedisAdbc => Err(fs_err!(
                 ErrorCode::InvalidConfig,
                 "Create a profiles.yml entry with type: redis_adbc; interactive Redis setup is not yet supported"
             )),
-            Snowflake => {
-                let c0 = unwrap_db_config!(Snowflake);
-                let c1 = snowflake_config::setup_snowflake_profile(c0.map(Box::as_ref))?;
-                Ok(DbConfig::Snowflake(c1))
-            }
-            Bigquery => {
-                let c0 = unwrap_db_config!(Bigquery);
-                let c1 = bigquery_config::setup_bigquery_profile(c0.map(Box::as_ref))?;
-                Ok(DbConfig::Bigquery(c1))
-            }
-            Databricks => {
-                let c0 = unwrap_db_config!(Databricks);
-                let c1 = databricks_config::setup_databricks_profile(c0.map(Box::as_ref))?;
-                Ok(DbConfig::Databricks(c1))
-            }
-            Redshift => {
-                let c0 = unwrap_db_config!(Redshift);
-                let c1 = redshift_config::setup_redshift_profile(c0.map(Box::as_ref))?;
-                Ok(DbConfig::Redshift(c1))
-            }
+            Snowflake => setup_profile!(Snowflake, snowflake_config::setup_snowflake_profile),
+            Bigquery => setup_profile!(Bigquery, bigquery_config::setup_bigquery_profile),
+            Databricks => setup_profile!(Databricks, databricks_config::setup_databricks_profile),
+            Redshift => setup_profile!(Redshift, redshift_config::setup_redshift_profile),
             Spark => {
                 let _c0 = unwrap_db_config!(Spark);
                 todo!("setup_spark_profile")
             }
-            DuckDB => {
-                let c0 = unwrap_db_config!(DuckDB);
-                let c1 = duckdb_config::setup_duckdb_profile(c0.map(Box::as_ref))?;
-                Ok(DbConfig::DuckDB(c1))
-            }
-            Postgres => {
-                let c0 = unwrap_db_config!(Postgres);
-                let c1 = postgres_config::setup_postgres_profile(c0.map(Box::as_ref))?;
-                Ok(DbConfig::Postgres(c1))
-            }
+            DuckDB => setup_profile!(DuckDB, duckdb_config::setup_duckdb_profile),
+            Postgres => setup_profile!(Postgres, postgres_config::setup_postgres_profile),
             Salesforce => {
                 let _c0 = unwrap_db_config!(Salesforce);
                 todo!("setup_salesforce_profile")
             }
-            Fabric => {
-                let c0 = unwrap_db_config!(Fabric);
-                let c1 = fabric_config::setup_fabric_profile(c0.map(Box::as_ref))?;
-                Ok(DbConfig::Fabric(c1))
-            }
-            ClickHouse => {
-                let c0 = unwrap_db_config!(ClickHouse);
-                let c1 = clickhouse_config::setup_clickhouse_profile(c0.map(Box::as_ref))?;
-                Ok(DbConfig::ClickHouse(c1))
-            }
-            Exasol => {
-                let c0 = unwrap_db_config!(Exasol);
-                let c1 = exasol_config::setup_exasol_profile(c0.map(Box::as_ref))?;
-                Ok(DbConfig::Exasol(c1))
-            }
+            Fabric => setup_profile!(Fabric, fabric_config::setup_fabric_profile),
+            ClickHouse => setup_profile!(ClickHouse, clickhouse_config::setup_clickhouse_profile),
+            Exasol => setup_profile!(Exasol, exasol_config::setup_exasol_profile),
             Athena => {
                 todo!("setup_athena_profile")
             }

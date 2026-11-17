@@ -35,19 +35,7 @@ fn execute(
     let builder = dbt_auth::auth_for_backend(engine.backend())
         .configure(engine.get_config())
         .map_err(crate::errors::auth_error_to_adapter_error)?;
-    let mut options = BTreeMap::new();
-    for (key, value) in builder {
-        let name = match key {
-            OptionDatabase::Uri => "uri".to_owned(),
-            OptionDatabase::Username => "username".to_owned(),
-            OptionDatabase::Password => "password".to_owned(),
-            OptionDatabase::Other(key) => key,
-            _ => return Err(runtime_error("Unsupported local Arrow connection option")),
-        };
-        if let OptionValue::String(value) = value {
-            options.insert(name, value);
-        }
-    }
+    let options = connection_options(builder)?;
     let driver = engine
         .get_config()
         .get_str("driver")
@@ -64,6 +52,39 @@ fn execute(
         "AdbcDriverInit"
     };
     let request = serde_json::json!({"operation": operation, "driver": driver, "entrypoint": entrypoint, "init_sql": init_sql, "options": options, "parameters": parameters});
+    let output = run_request(&request)?;
+    if !output.status.success() {
+        let mut message = String::from_utf8_lossy(&output.stderr).into_owned();
+        redact_options(&mut message, &options);
+        return Err(runtime_error(format!(
+            "Local Arrow runtime failed: {message}"
+        )));
+    }
+    let rows: i64 = serde_json::from_slice(&output.stdout)
+        .map_err(|_| runtime_error("Local Arrow runtime returned invalid row count"))?;
+    Ok(rows)
+}
+
+fn connection_options(
+    builder: dbt_adbc::database::Builder,
+) -> AdapterResult<BTreeMap<String, String>> {
+    let mut options = BTreeMap::new();
+    for (key, value) in builder {
+        let name = match key {
+            OptionDatabase::Uri => "uri".to_owned(),
+            OptionDatabase::Username => "username".to_owned(),
+            OptionDatabase::Password => "password".to_owned(),
+            OptionDatabase::Other(key) => key,
+            _ => return Err(runtime_error("Unsupported local Arrow connection option")),
+        };
+        if let OptionValue::String(value) = value {
+            options.insert(name, value);
+        }
+    }
+    Ok(options)
+}
+
+fn run_request(request: &serde_json::Value) -> AdapterResult<std::process::Output> {
     let mut child = Command::new("python3")
         .arg("-c")
         .arg(include_str!("runtime.py"))
@@ -81,7 +102,7 @@ fn execute(
         .take()
         .ok_or_else(|| runtime_error("Missing Python runtime stdin"))?
         .write_all(
-            serde_json::to_string(&request)
+            serde_json::to_string(request)
                 .map_err(|e| runtime_error(e.to_string()))?
                 .as_bytes(),
         )
@@ -89,25 +110,22 @@ fn execute(
     let output = child
         .wait_with_output()
         .map_err(|e| runtime_error(e.to_string()))?;
-    if !output.status.success() {
-        let mut message = String::from_utf8_lossy(&output.stderr).into_owned();
-        for (key, value) in &options {
-            if (key == "uri"
-                || key == "username"
-                || key.contains("password")
-                || key.contains("secret"))
-                && !value.is_empty()
-            {
-                message = message.replace(value, "[redacted]");
-            }
+    Ok(output)
+}
+
+fn redact_options(message: &mut String, options: &BTreeMap<String, String>) {
+    for (key, value) in options {
+        if value.is_empty() {
+            continue;
         }
-        return Err(runtime_error(format!(
-            "Local Arrow runtime failed: {message}"
-        )));
+        let sensitive = match key.as_str() {
+            "uri" | "username" => true,
+            key => key.contains("password") || key.contains("secret"),
+        };
+        if sensitive {
+            *message = message.replace(value, "[redacted]");
+        }
     }
-    let rows: i64 = serde_json::from_slice(&output.stdout)
-        .map_err(|_| runtime_error("Local Arrow runtime returned invalid row count"))?;
-    Ok(rows)
 }
 
 pub(crate) fn submit_python_job(
@@ -121,18 +139,7 @@ pub(crate) fn submit_python_job(
 }
 
 pub(crate) fn load_csv_file(engine: &dyn AdapterEngine, mut load: CsvLoad) -> AdapterResult<i64> {
-    if load.sample_every == 0
-        || load.column_types.is_empty()
-        || load
-            .row_number_column
-            .as_ref()
-            .is_some_and(|name| load.column_types.contains_key(name))
-    {
-        return Err(AdapterError::new(
-            AdapterErrorKind::Configuration,
-            "CSV sample_every must be positive, column_types must not be empty, and row_number_column must be distinct",
-        ));
-    }
+    load.validate()?;
     if load.limit == Some(0) {
         load.limit = None;
     }
@@ -156,4 +163,28 @@ pub(crate) fn load_csv_file(engine: &dyn AdapterEngine, mut load: CsvLoad) -> Ad
     parameters["create_schema_sql"] = create_schema_sql.into();
     parameters["drop_table_sql"] = drop_table_sql.into();
     execute(engine, "csv", parameters)
+}
+
+impl CsvLoad {
+    fn validate(&self) -> AdapterResult<()> {
+        if self.sample_every == 0 {
+            return Err(Self::invalid());
+        }
+        if self.column_types.is_empty() {
+            return Err(Self::invalid());
+        }
+        if let Some(name) = &self.row_number_column {
+            if self.column_types.contains_key(name) {
+                return Err(Self::invalid());
+            }
+        }
+        Ok(())
+    }
+
+    fn invalid() -> AdapterError {
+        AdapterError::new(
+            AdapterErrorKind::Configuration,
+            "CSV sample_every must be positive, column_types must not be empty, and row_number_column must be distinct",
+        )
+    }
 }

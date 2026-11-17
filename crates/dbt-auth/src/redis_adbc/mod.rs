@@ -59,6 +59,90 @@ fn scalar_string(value: &dbt_yaml::Value) -> Option<Cow<'_, str>> {
 }
 
 fn parse_config(config: &AdapterConfig) -> Result<ConnectionConfig<'_>, AuthError> {
+    validate_fields(config)?;
+    if string_or_default(config, "database", "redis")? != "redis" {
+        return Err(AuthError::config("Redis only supports the 'redis' catalog"));
+    }
+    let flight = match string_or_default(config, "transport", "redis")? {
+        "redis" => false,
+        "flightsql" => true,
+        _ => {
+            return Err(AuthError::config(
+                "Redis transport must be redis or flightsql",
+            ));
+        }
+    };
+    if flight {
+        return parse_flight_config(config);
+    }
+    parse_native_config(config)
+}
+
+fn parse_native_config(config: &AdapterConfig) -> Result<ConnectionConfig<'_>, AuthError> {
+    if config.get_str_non_empty("tls_ca_file").is_some() {
+        return Err(AuthError::config(
+            "tls_ca_file is a Flight client option; use adbc.redis.tls_ca_file for native Redis",
+        ));
+    }
+    let uri = Url::parse(string_or_default(config, "uri", DEFAULT_URI)?)
+        .map_err(|_| AuthError::config("Invalid Redis URI"))?;
+    if !matches!(uri.scheme(), "redis" | "rediss") || uri.host_str().is_none() {
+        return Err(AuthError::config(
+            "Redis URI must use redis:// or rediss:// with a host",
+        ));
+    }
+    let schema = string_or_default(config, "schema", DEFAULT_SCHEMA)?;
+    if schema.is_empty() {
+        return Err(AuthError::config("Redis 'schema' must not be empty"));
+    }
+    let mut options = vec![(
+        OptionDatabase::Other("adbc.redis.default_schema".into()),
+        Cow::Borrowed(schema),
+    )];
+
+    append_credentials(config, &mut options)?;
+    append_time_zone(config, &mut options)?;
+    append_profile_options(config, &mut options)?;
+    append_driver_options(config, &mut options, native_option)?;
+    Ok(ConnectionConfig {
+        backend: Backend::Generic {
+            library_name: "adbc_driver_redis",
+            entrypoint: Some(b"AdbcDriverInit"),
+        },
+        uri,
+        options,
+    })
+}
+
+fn parse_flight_config(config: &AdapterConfig) -> Result<ConnectionConfig<'_>, AuthError> {
+    let uri = Url::parse(string_or_default(config, "uri", "")?)
+        .map_err(|_| AuthError::config("Invalid Flight SQL URI"))?;
+    validate_flight_uri(&uri)?;
+    validate_flight_server_options(config)?;
+    let mut options = vec![(
+        OptionDatabase::Other(FLIGHT_COOKIES.into()),
+        Cow::Borrowed("true"),
+    )];
+    append_credentials(config, &mut options)?;
+    append_flight_roots(config, &mut options)?;
+    append_driver_options(config, &mut options, flight_option)?;
+    Ok(ConnectionConfig {
+        backend: FLIGHT_BACKEND,
+        uri,
+        options,
+    })
+}
+
+const PROFILE_OPTIONS: &[(&str, &str)] = &[
+    ("aggregate_pushdown", "adbc.redis.aggregate_pushdown"),
+    ("rename_rekey", "adbc.redis.rename_rekey"),
+    ("read_timeout", "adbc.redis.read_timeout"),
+    ("write_timeout", "adbc.redis.write_timeout"),
+];
+
+type Options<'a> = Vec<(OptionDatabase, Cow<'a, str>)>;
+
+fn validate_fields(config: &AdapterConfig) -> Result<(), AuthError> {
     const FIELDS: &[&str] = &[
         "type",
         "transport",
@@ -82,42 +166,13 @@ fn parse_config(config: &AdapterConfig) -> Result<ConnectionConfig<'_>, AuthErro
             return Err(AuthError::config("Unsupported Redis profile option"));
         }
     }
-    if string_or_default(config, "database", "redis")? != "redis" {
-        return Err(AuthError::config("Redis only supports the 'redis' catalog"));
-    }
-    let flight = match string_or_default(config, "transport", "redis")? {
-        "redis" => false,
-        "flightsql" => true,
-        _ => {
-            return Err(AuthError::config(
-                "Redis transport must be redis or flightsql",
-            ));
-        }
-    };
-    if flight {
-        return parse_flight_config(config);
-    }
-    if config.get_str_non_empty("tls_ca_file").is_some() {
-        return Err(AuthError::config(
-            "tls_ca_file is a Flight client option; use adbc.redis.tls_ca_file for native Redis",
-        ));
-    }
-    let uri = Url::parse(string_or_default(config, "uri", DEFAULT_URI)?)
-        .map_err(|_| AuthError::config("Invalid Redis URI"))?;
-    if !matches!(uri.scheme(), "redis" | "rediss") || uri.host_str().is_none() {
-        return Err(AuthError::config(
-            "Redis URI must use redis:// or rediss:// with a host",
-        ));
-    }
-    let schema = string_or_default(config, "schema", DEFAULT_SCHEMA)?;
-    if schema.is_empty() {
-        return Err(AuthError::config("Redis 'schema' must not be empty"));
-    }
-    let mut options = vec![(
-        OptionDatabase::Other("adbc.redis.default_schema".into()),
-        Cow::Borrowed(schema),
-    )];
+    Ok(())
+}
 
+fn append_credentials<'a>(
+    config: &'a AdapterConfig,
+    options: &mut Options<'a>,
+) -> Result<(), AuthError> {
     // Separate nonempty credentials override URI credentials, as in the v1 adapter.
     // https://github.com/alberttwong/redis-dbt-adapter-with-project/blob/76bfecfd62e3c5c7dce153185fcb6f617262e700/v1/adapter/dbt/adapters/redis_adbc/connections.py
     let username = string_or_default(config, "username", "")?;
@@ -131,6 +186,13 @@ fn parse_config(config: &AdapterConfig) -> Result<ConnectionConfig<'_>, AuthErro
             options.push((OptionDatabase::Password, password));
         }
     }
+    Ok(())
+}
+
+fn append_time_zone<'a>(
+    config: &'a AdapterConfig,
+    options: &mut Options<'a>,
+) -> Result<(), AuthError> {
     let time_zone = string_or_default(config, "time_zone", "")?;
     if !time_zone.is_empty() {
         options.push((
@@ -138,12 +200,13 @@ fn parse_config(config: &AdapterConfig) -> Result<ConnectionConfig<'_>, AuthErro
             Cow::Borrowed(time_zone),
         ));
     }
-    const PROFILE_OPTIONS: &[(&str, &str)] = &[
-        ("aggregate_pushdown", "adbc.redis.aggregate_pushdown"),
-        ("rename_rekey", "adbc.redis.rename_rekey"),
-        ("read_timeout", "adbc.redis.read_timeout"),
-        ("write_timeout", "adbc.redis.write_timeout"),
-    ];
+    Ok(())
+}
+
+fn append_profile_options<'a>(
+    config: &'a AdapterConfig,
+    options: &mut Options<'a>,
+) -> Result<(), AuthError> {
     for (field, option) in PROFILE_OPTIONS {
         if let Some(value) = config.get(field).filter(|value| !value.is_null()) {
             let value = scalar_string(value)
@@ -153,6 +216,17 @@ fn parse_config(config: &AdapterConfig) -> Result<ConnectionConfig<'_>, AuthErro
             }
         }
     }
+    Ok(())
+}
+
+fn append_driver_options<'a>(
+    config: &'a AdapterConfig,
+    options: &mut Options<'a>,
+    parse: impl Fn(
+        &'a dbt_yaml::Value,
+        &'a dbt_yaml::Value,
+    ) -> Result<(&'a str, Cow<'a, str>), AuthError>,
+) -> Result<(), AuthError> {
     if let Some(value) = config
         .get("driver_options")
         .filter(|value| !value.is_null())
@@ -161,57 +235,49 @@ fn parse_config(config: &AdapterConfig) -> Result<ConnectionConfig<'_>, AuthErro
             .as_mapping()
             .ok_or_else(|| AuthError::config("Redis driver_options must be a mapping"))?;
         for (key, value) in mapping {
-            let key = key
-                .as_str()
-                .ok_or_else(|| AuthError::config("Redis driver_options keys must be strings"))?;
-            if matches!(
-                key,
-                "uri"
-                    | "username"
-                    | "password"
-                    | "adbc.redis.default_schema"
-                    | "adbc.redis.time_zone"
-            ) || PROFILE_OPTIONS.iter().any(|(_, option)| *option == key)
-            {
-                return Err(AuthError::config(
-                    "driver_options cannot override a named Redis profile option",
-                ));
-            }
-            let value = scalar_string(value)
-                .filter(|_| !value.is_null())
-                .ok_or_else(|| {
-                    AuthError::config(
-                        "Redis driver_options values must be strings, numbers, or booleans",
-                    )
-                })?;
+            let (key, value) = parse(key, value)?;
             options.push((OptionDatabase::Other(key.to_owned()), value));
         }
     }
-    Ok(ConnectionConfig {
-        backend: Backend::Generic {
-            library_name: "adbc_driver_redis",
-            entrypoint: Some(b"AdbcDriverInit"),
-        },
-        uri,
-        options,
-    })
+    Ok(())
 }
 
-fn parse_flight_config(config: &AdapterConfig) -> Result<ConnectionConfig<'_>, AuthError> {
-    let uri = Url::parse(string_or_default(config, "uri", "")?)
-        .map_err(|_| AuthError::config("Invalid Flight SQL URI"))?;
-    if uri.scheme() != "grpc+tls"
-        || uri.host_str().is_none()
-        || !uri.username().is_empty()
-        || uri.password().is_some()
-        || uri.query().is_some()
-        || uri.fragment().is_some()
-        || !matches!(uri.path(), "" | "/")
+fn append_flight_roots<'a>(
+    config: &'a AdapterConfig,
+    options: &mut Options<'a>,
+) -> Result<(), AuthError> {
+    let ca_file = string_or_default(config, "tls_ca_file", "")?;
+    if !ca_file.is_empty() {
+        let roots = std::fs::read_to_string(ca_file)
+            .map_err(|_| AuthError::config("Cannot read Flight TLS CA file"))?;
+        options.push((
+            OptionDatabase::Other(FLIGHT_ROOT_CERTS.into()),
+            Cow::Owned(roots),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_flight_uri(uri: &Url) -> Result<(), AuthError> {
+    if [
+        uri.scheme() != "grpc+tls",
+        uri.host_str().is_none(),
+        !uri.username().is_empty(),
+        uri.password().is_some(),
+        uri.query().is_some(),
+        uri.fragment().is_some(),
+        !matches!(uri.path(), "" | "/"),
+    ]
+    .contains(&true)
     {
         return Err(AuthError::config(
             "Flight SQL requires grpc+tls://host:port; set credentials separately",
         ));
     }
+    Ok(())
+}
+
+fn validate_flight_server_options(config: &AdapterConfig) -> Result<(), AuthError> {
     if string_or_default(config, "schema", DEFAULT_SCHEMA)?.is_empty() {
         return Err(AuthError::config("Redis 'schema' must not be empty"));
     }
@@ -231,77 +297,69 @@ fn parse_flight_config(config: &AdapterConfig) -> Result<ConnectionConfig<'_>, A
             ));
         }
     }
-    let mut options = vec![(
-        OptionDatabase::Other(FLIGHT_COOKIES.into()),
-        Cow::Borrowed("true"),
-    )];
-    for (field, key) in [
-        ("username", OptionDatabase::Username),
-        ("password", OptionDatabase::Password),
-    ] {
-        if let Some(value) = config.get(field).filter(|value| !value.is_null()) {
-            let value = if field == "password" {
-                scalar_string(value)
-                    .ok_or_else(|| AuthError::config("Redis 'password' must be a scalar"))?
-            } else {
-                Cow::Borrowed(string_or_default(config, field, "")?)
-            };
-            if !value.is_empty() {
-                options.push((key, value));
-            }
-        }
-    }
-    let ca_file = string_or_default(config, "tls_ca_file", "")?;
-    if !ca_file.is_empty() {
-        let roots = std::fs::read_to_string(ca_file)
-            .map_err(|_| AuthError::config("Cannot read Flight TLS CA file"))?;
-        options.push((
-            OptionDatabase::Other(FLIGHT_ROOT_CERTS.into()),
-            Cow::Owned(roots),
+    Ok(())
+}
+
+fn flight_option<'a>(
+    key: &'a dbt_yaml::Value,
+    value: &'a dbt_yaml::Value,
+) -> Result<(&'a str, Cow<'a, str>), AuthError> {
+    // Restrict this initial client contract to non-secret RPC settings.
+    // Arbitrary headers/private keys would escape through generic builder diagnostics.
+    let key = key
+        .as_str()
+        .ok_or_else(|| AuthError::config("Flight option keys must be strings"))?;
+    if !matches!(
+        key,
+        "adbc.flight.sql.rpc.timeout_seconds.connect"
+            | "adbc.flight.sql.rpc.timeout_seconds.fetch"
+            | "adbc.flight.sql.rpc.timeout_seconds.query"
+            | "adbc.flight.sql.rpc.timeout_seconds.update"
+    ) {
+        return Err(AuthError::config(
+            "Unsupported Flight client option; Redis options belong on the server",
         ));
     }
-    if let Some(value) = config
-        .get("driver_options")
-        .filter(|value| !value.is_null())
+    let value = scalar_string(value)
+        .ok_or_else(|| AuthError::config("Flight timeout must be a nonnegative number"))?;
+    if !value
+        .parse::<f64>()
+        .is_ok_and(|n| n.is_finite() && n >= 0.0)
     {
-        let mapping = value
-            .as_mapping()
-            .ok_or_else(|| AuthError::config("Redis driver_options must be a mapping"))?;
-        for (key, value) in mapping {
-            // Restrict this initial client contract to non-secret RPC settings.
-            // Arbitrary headers/private keys would escape through generic builder diagnostics.
-            let key = key
-                .as_str()
-                .ok_or_else(|| AuthError::config("Flight option keys must be strings"))?;
-            if !matches!(
-                key,
-                "adbc.flight.sql.rpc.timeout_seconds.connect"
-                    | "adbc.flight.sql.rpc.timeout_seconds.fetch"
-                    | "adbc.flight.sql.rpc.timeout_seconds.query"
-                    | "adbc.flight.sql.rpc.timeout_seconds.update"
-            ) {
-                return Err(AuthError::config(
-                    "Unsupported Flight client option; Redis options belong on the server",
-                ));
-            }
-            let value = scalar_string(value)
-                .ok_or_else(|| AuthError::config("Flight timeout must be a nonnegative number"))?;
-            if !value
-                .parse::<f64>()
-                .is_ok_and(|n| n.is_finite() && n >= 0.0)
-            {
-                return Err(AuthError::config(
-                    "Flight timeout must be a nonnegative number",
-                ));
-            }
-            options.push((OptionDatabase::Other(key.into()), value));
-        }
+        return Err(AuthError::config(
+            "Flight timeout must be a nonnegative number",
+        ));
     }
-    Ok(ConnectionConfig {
-        backend: FLIGHT_BACKEND,
-        uri,
-        options,
-    })
+    Ok((key, value))
+}
+
+fn native_option<'a>(
+    key: &'a dbt_yaml::Value,
+    value: &'a dbt_yaml::Value,
+) -> Result<(&'a str, Cow<'a, str>), AuthError> {
+    let key = key
+        .as_str()
+        .ok_or_else(|| AuthError::config("Redis driver_options keys must be strings"))?;
+    if [
+        "uri",
+        "username",
+        "password",
+        "adbc.redis.default_schema",
+        "adbc.redis.time_zone",
+    ]
+    .contains(&key)
+        || PROFILE_OPTIONS.iter().any(|(_, option)| *option == key)
+    {
+        return Err(AuthError::config(
+            "driver_options cannot override a named Redis profile option",
+        ));
+    }
+    let value = scalar_string(value)
+        .filter(|_| !value.is_null())
+        .ok_or_else(|| {
+            AuthError::config("Redis driver_options values must be strings, numbers, or booleans")
+        })?;
+    Ok((key, value))
 }
 
 pub struct RedisAuth {
@@ -383,6 +441,39 @@ mod tests {
             assert!(
                 parse_config(&AdapterConfig::new(value.as_mapping().unwrap().clone())).is_err()
             );
+        }
+    }
+
+    #[test]
+    fn credentials_preserve_shapes_and_borrowing_on_both_transports() {
+        for (transport, uri) in [
+            ("redis", DEFAULT_URI),
+            ("flightsql", "grpc+tls://localhost:8815"),
+        ] {
+            for password in ["secret", "1234", "true", "''", "null"] {
+                let fields: Mapping = dbt_yaml::from_str(&format!(
+                    "transport: {transport}\nuri: {uri}\nusername: alice\npassword: {password}\n"
+                ))
+                .unwrap();
+                let config = AdapterConfig::new(fields);
+                let parsed = parse_config(&config).unwrap();
+                let username = parsed
+                    .options
+                    .iter()
+                    .find(|(key, _)| *key == OptionDatabase::Username)
+                    .unwrap();
+                assert!(matches!(username.1, Cow::Borrowed("alice")));
+                let builder = parsed.apply().unwrap();
+                let expected = match password {
+                    "''" | "null" => None,
+                    value => Some(value),
+                };
+                assert_eq!(
+                    builder.password.as_deref(),
+                    expected,
+                    "{transport}: {password}"
+                );
+            }
         }
     }
 

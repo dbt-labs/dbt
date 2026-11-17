@@ -108,161 +108,168 @@ fn live_redis_adbc_protocol_and_concurrency() {
     );
     query(conn.as_mut(), &format!("create schema {schema}")).unwrap();
     let outcome = catch_unwind(AssertUnwindSafe(|| {
-        query(
-            conn.as_mut(),
-            &format!("create table {schema}.probe (id bigint)"),
-        )
-        .unwrap();
-        let mut stmt = conn.new_statement().unwrap();
-        stmt.set_sql_query(&format!("insert into {schema}.probe values (?)"))
-            .unwrap();
-        stmt.prepare().unwrap();
-        let fields = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
-        stmt.bind(
-            RecordBatch::try_new(fields.clone(), vec![Arc::new(Int64Array::from(vec![7]))])
-                .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(stmt.execute_update().unwrap(), Some(1));
-        drop(stmt);
-
-        let mut ingest = conn.new_statement().unwrap();
-        for (key, value) in [
-            ("adbc.ingest.target_table", "probe"),
-            ("adbc.ingest.target_db_schema", schema.as_str()),
-            ("adbc.ingest.mode", "adbc.ingest.mode.append"),
-        ] {
-            ingest
-                .set_option(
-                    OptionStatement::Other(key.into()),
-                    OptionValue::String(value.into()),
-                )
-                .unwrap();
-        }
-        let batch =
-            RecordBatch::try_new(fields.clone(), vec![Arc::new(Int64Array::from(vec![8, 9]))])
-                .unwrap();
-        ingest
-            .bind_stream(Box::new(RecordBatchIterator::new(vec![Ok(batch)], fields)))
-            .unwrap();
-        assert_eq!(ingest.execute_update().unwrap(), Some(2));
-        drop(ingest);
-
-        let metadata = conn
-            .get_objects(
-                ObjectDepth::All,
-                Some("redis"),
-                Some(&schema),
-                Some("probe"),
-                None,
-                None,
-            )
-            .unwrap()
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap();
-        assert!(metadata.iter().any(|batch| batch.num_rows() > 0));
-        let table_schema = conn
-            .get_table_schema(Some("redis"), Some(&schema), "probe")
-            .unwrap();
-        assert_eq!(table_schema.field(0).data_type(), &DataType::Int64);
-        let mut stmt = conn.new_statement().unwrap();
-        stmt.set_sql_query(&format!("select id from {schema}.probe where false"))
-            .unwrap();
-        assert_eq!(
-            stmt.execute_schema().unwrap().field(0).data_type(),
-            &DataType::Int64
-        );
-        assert_eq!(
-            stmt.execute()
-                .unwrap()
-                .map(|batch| batch.unwrap().num_rows())
-                .sum::<usize>(),
-            0
-        );
-        drop(stmt);
-
-        query(conn.as_mut(), &format!("create table {schema}.exact_metadata (amount numeric(12,2), label varchar(17), occurred timestamp(3))")).unwrap();
-        let metadata = conn
-            .get_table_schema(Some("redis"), Some(&schema), "exact_metadata")
-            .unwrap();
-        // Flight GetTableSchema preserves Arrow types but omits Redis SQL type
-        // declarations. The adapter supplements them from this exact SQL lookup.
-        let declarations = query(conn.as_mut(), &format!("select driver_data_type from information_schema.columns where table_schema = '{schema}' and table_name = 'exact_metadata' order by ordinal_position")).unwrap();
-        let types = declarations[0]
-            .column(0)
-            .as_any()
-            .downcast_ref::<arrow_array::StringArray>()
-            .unwrap();
-        for (index, expected) in ["NUMERIC(12,2)", "VARCHAR(17)", "TIMESTAMP(3)"]
-            .iter()
-            .enumerate()
-        {
-            assert_eq!(
-                types.value(index).replace(' ', "").to_ascii_uppercase(),
-                *expected
-            );
-        }
-        assert_eq!(metadata.field(0).data_type(), &DataType::Decimal128(12, 2));
-        assert_eq!(metadata.field(1).data_type(), &DataType::Utf8);
-
-        std::thread::scope(|scope| {
-            let handles: Vec<_> = (0..4)
-                .map(|value| {
-                    let db = db.clone();
-                    let schema = &schema;
-                    scope.spawn(move || {
-                        let mut conn = db.new_connection().unwrap();
-                        query(conn.as_mut(), "select 1").unwrap();
-                        let zone = if value % 2 == 0 {
-                            "UTC"
-                        } else {
-                            "America/New_York"
-                        };
-                        query(conn.as_mut(), &format!("set time zone '{zone}'")).unwrap();
-                        query(conn.as_mut(), &format!("set schema '{schema}'")).unwrap();
-                        query(conn.as_mut(), "create temp table dbt_api_local (id bigint)")
-                            .unwrap();
-                        query(
-                            conn.as_mut(),
-                            &format!("insert into dbt_api_local values ({value})"),
-                        )
-                        .unwrap();
-                        assert!(
-                            query(conn.as_mut(), "select * from dbt_api_missing_table").is_err()
-                        );
-                        let setting = query(conn.as_mut(), "show time zone").unwrap();
-                        let setting = setting[0]
-                            .column(0)
-                            .as_any()
-                            .downcast_ref::<arrow_array::StringArray>()
-                            .unwrap();
-                        assert_eq!(setting.value(0), zone);
-                        let batches = query(conn.as_mut(), "select id from dbt_api_local").unwrap();
-                        let ids = batches[0]
-                            .column(0)
-                            .as_any()
-                            .downcast_ref::<Int64Array>()
-                            .unwrap();
-                        assert_eq!(ids.value(0), value);
-                        let batches = query(
-                            conn.as_mut(),
-                            &format!("select id from {schema}.probe order by id"),
-                        )
-                        .unwrap();
-                        assert_eq!(
-                            batches.iter().map(|batch| batch.num_rows()).sum::<usize>(),
-                            3
-                        );
-                    })
-                })
-                .collect();
-            for handle in handles {
-                handle.join().unwrap();
-            }
-        });
+        check_binding_and_ingestion(conn.as_mut(), &schema);
+        check_metadata_and_empty_reads(conn.as_mut(), &schema);
+        check_exact_types(conn.as_mut(), &schema);
+        check_concurrent_sessions(&db, &schema);
     }));
     query(conn.as_mut(), &format!("drop schema {schema} cascade")).expect("audit schema cleanup");
     if let Err(error) = outcome {
         resume_unwind(error);
     }
+}
+
+fn check_binding_and_ingestion(conn: &mut dyn Connection, schema: &str) {
+    query(conn, &format!("create table {schema}.probe (id bigint)")).unwrap();
+    let mut stmt = conn.new_statement().unwrap();
+    stmt.set_sql_query(&format!("insert into {schema}.probe values (?)"))
+        .unwrap();
+    stmt.prepare().unwrap();
+    let fields = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+    stmt.bind(
+        RecordBatch::try_new(fields.clone(), vec![Arc::new(Int64Array::from(vec![7]))]).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(stmt.execute_update().unwrap(), Some(1));
+    drop(stmt);
+
+    let mut ingest = conn.new_statement().unwrap();
+    for (key, value) in [
+        ("adbc.ingest.target_table", "probe"),
+        ("adbc.ingest.target_db_schema", schema),
+        ("adbc.ingest.mode", "adbc.ingest.mode.append"),
+    ] {
+        ingest
+            .set_option(
+                OptionStatement::Other(key.into()),
+                OptionValue::String(value.into()),
+            )
+            .unwrap();
+    }
+    let batch =
+        RecordBatch::try_new(fields.clone(), vec![Arc::new(Int64Array::from(vec![8, 9]))]).unwrap();
+    ingest
+        .bind_stream(Box::new(RecordBatchIterator::new(vec![Ok(batch)], fields)))
+        .unwrap();
+    assert_eq!(ingest.execute_update().unwrap(), Some(2));
+    drop(ingest);
+}
+
+fn check_metadata_and_empty_reads(conn: &mut dyn Connection, schema: &str) {
+    let metadata = conn
+        .get_objects(
+            ObjectDepth::All,
+            Some("redis"),
+            Some(schema),
+            Some("probe"),
+            None,
+            None,
+        )
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert!(metadata.iter().any(|batch| batch.num_rows() > 0));
+    let table_schema = conn
+        .get_table_schema(Some("redis"), Some(schema), "probe")
+        .unwrap();
+    assert_eq!(table_schema.field(0).data_type(), &DataType::Int64);
+    let mut stmt = conn.new_statement().unwrap();
+    stmt.set_sql_query(&format!("select id from {schema}.probe where false"))
+        .unwrap();
+    assert_eq!(
+        stmt.execute_schema().unwrap().field(0).data_type(),
+        &DataType::Int64
+    );
+    assert_eq!(
+        stmt.execute()
+            .unwrap()
+            .map(|batch| batch.unwrap().num_rows())
+            .sum::<usize>(),
+        0
+    );
+    drop(stmt);
+}
+
+fn check_exact_types(conn: &mut dyn Connection, schema: &str) {
+    query(conn, &format!("create table {schema}.exact_metadata (amount numeric(12,2), label varchar(17), occurred timestamp(3))")).unwrap();
+    let metadata = conn
+        .get_table_schema(Some("redis"), Some(schema), "exact_metadata")
+        .unwrap();
+    // Flight GetTableSchema preserves Arrow types but omits Redis SQL type
+    // declarations. The adapter supplements them from this exact SQL lookup.
+    let declarations = query(conn, &format!("select driver_data_type from information_schema.columns where table_schema = '{schema}' and table_name = 'exact_metadata' order by ordinal_position")).unwrap();
+    let types = declarations[0]
+        .column(0)
+        .as_any()
+        .downcast_ref::<arrow_array::StringArray>()
+        .unwrap();
+    for (index, expected) in ["NUMERIC(12,2)", "VARCHAR(17)", "TIMESTAMP(3)"]
+        .iter()
+        .enumerate()
+    {
+        assert_eq!(
+            types.value(index).replace(' ', "").to_ascii_uppercase(),
+            *expected
+        );
+    }
+    assert_eq!(metadata.field(0).data_type(), &DataType::Decimal128(12, 2));
+    assert_eq!(metadata.field(1).data_type(), &DataType::Utf8);
+}
+
+fn check_concurrent_sessions(db: &Arc<dyn Database>, schema: &str) {
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..4)
+            .map(|value| {
+                let db = db.clone();
+                scope.spawn(move || {
+                    check_session(db.as_ref(), schema, value);
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+    });
+}
+
+fn check_session(db: &dyn Database, schema: &str, value: i64) {
+    let mut conn = db.new_connection().unwrap();
+    query(conn.as_mut(), "select 1").unwrap();
+    let zone = if value % 2 == 0 {
+        "UTC"
+    } else {
+        "America/New_York"
+    };
+    query(conn.as_mut(), &format!("set time zone '{zone}'")).unwrap();
+    query(conn.as_mut(), &format!("set schema '{schema}'")).unwrap();
+    query(conn.as_mut(), "create temp table dbt_api_local (id bigint)").unwrap();
+    query(
+        conn.as_mut(),
+        &format!("insert into dbt_api_local values ({value})"),
+    )
+    .unwrap();
+    assert!(query(conn.as_mut(), "select * from dbt_api_missing_table").is_err());
+    let setting = query(conn.as_mut(), "show time zone").unwrap();
+    let setting = setting[0]
+        .column(0)
+        .as_any()
+        .downcast_ref::<arrow_array::StringArray>()
+        .unwrap();
+    assert_eq!(setting.value(0), zone);
+    let batches = query(conn.as_mut(), "select id from dbt_api_local").unwrap();
+    let ids = batches[0]
+        .column(0)
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .unwrap();
+    assert_eq!(ids.value(0), value);
+    let batches = query(
+        conn.as_mut(),
+        &format!("select id from {schema}.probe order by id"),
+    )
+    .unwrap();
+    assert_eq!(
+        batches.iter().map(|batch| batch.num_rows()).sum::<usize>(),
+        3
+    );
 }

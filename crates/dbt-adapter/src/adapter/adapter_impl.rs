@@ -4118,34 +4118,35 @@ impl AdapterImpl {
         }
     }
 
+    fn verify_catalog(adapter_type: AdapterType, database: &str) -> AdapterResult<()> {
+        if database.is_empty() {
+            return Ok(());
+        }
+        match adapter_type {
+            RedisAdbc if database == "redis" => Ok(()),
+            RedisAdbc => Err(AdapterError::new(
+                AdapterErrorKind::UnexpectedDbReference,
+                "Redis only supports the redis catalog",
+            )),
+            _ => Err(AdapterError::new(
+                AdapterErrorKind::UnexpectedDbReference,
+                format!(
+                    "Cross-db references not allowed in the {} adapter ({} vs )",
+                    adapter_type, database
+                ),
+            )),
+        }
+    }
+
     /// Used by redshift and postgres to check if the database string is consistent with what's in the project `config`
     ///
     /// PostgresAdapter https://github.com/dbt-labs/dbt-adapters/blob/0efd8d3d1081e1ab43e38797d5104f7b424a6284/dbt-postgres/src/dbt/adapters/postgres/impl.py#L118
     pub fn verify_database(&self, database: String) -> AdapterResult<Value> {
         match self.inner_adapter() {
             Replay(_, replay) => replay.replay_verify_database(&database),
-            Impl(RedisAdbc, _) => {
-                if database.is_empty() || database == "redis" {
-                    Ok(Value::from(()))
-                } else {
-                    Err(AdapterError::new(
-                        AdapterErrorKind::UnexpectedDbReference,
-                        "Redis only supports the redis catalog",
-                    ))
-                }
-            }
-            Impl(ClickHouse, _) => {
-                if database.is_empty() {
-                    Ok(Value::from(()))
-                } else {
-                    Err(AdapterError::new(
-                        AdapterErrorKind::UnexpectedDbReference,
-                        format!(
-                            "Cross-db references not allowed in the {} adapter ({} vs )",
-                            ClickHouse, database
-                        ),
-                    ))
-                }
+            Impl(adapter_type @ (RedisAdbc | ClickHouse), _) => {
+                Self::verify_catalog(adapter_type, &database)?;
+                Ok(Value::from(()))
             }
             Impl(adapter_type @ (Postgres | DuckDB | LakeCompute), engine) => {
                 if let Some(configured_database) = engine.get_configured_database_name() {

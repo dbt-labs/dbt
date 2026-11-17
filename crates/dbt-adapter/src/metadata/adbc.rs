@@ -41,20 +41,63 @@ pub(crate) fn list_relations_via_adbc(
 
     relations_from_get_objects(
         &batch,
-        engine.adapter_type(),
-        engine.quoting(),
-        &catalog,
-        &schema,
+        &RelationContext {
+            adapter_type: engine.adapter_type(),
+            quoting: engine.quoting(),
+            catalog: &catalog,
+            schema: &schema,
+        },
     )
+}
+
+struct RelationContext<'a> {
+    adapter_type: AdapterType,
+    quoting: ResolvedQuoting,
+    catalog: &'a str,
+    schema: &'a str,
+}
+
+impl RelationContext<'_> {
+    fn relation_type(&self, value: &str) -> AdapterResult<RelationType> {
+        match self.adapter_type {
+            AdapterType::RedisAdbc => match value.to_ascii_uppercase().as_str() {
+                "TABLE" => Ok(RelationType::Table),
+                "VIEW" => Ok(RelationType::View),
+                other => Err(AdapterError::new(
+                    AdapterErrorKind::UnexpectedResult,
+                    format!("Unsupported Redis relation type: {other}"),
+                )),
+            },
+            _ => Ok(RelationType::from_adapter_type(self.adapter_type, value)),
+        }
+    }
 }
 
 fn relations_from_get_objects(
     batch: &RecordBatch,
-    adapter_type: AdapterType,
-    quoting: ResolvedQuoting,
-    catalog: &str,
-    schema: &str,
+    context: &RelationContext<'_>,
 ) -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
+    let schemas_struct = schemas_from_get_objects(batch)?;
+    let db_schema_tables = schemas_struct.column_as::<ListArray>("db_schema_tables")?;
+    let schema_names = schemas_struct.column_as::<StringArray>("db_schema_name")?;
+    let mut result = Vec::new();
+    for row in 0..schemas_struct.len() {
+        if schema_names.is_null(row) {
+            continue;
+        }
+        if schema_names.value(row) != context.schema {
+            continue;
+        }
+        if db_schema_tables.is_null(row) {
+            continue;
+        }
+        let tables = db_schema_tables.value(row);
+        result.extend(relations_from_tables(tables.as_ref(), context)?);
+    }
+    Ok(result)
+}
+
+fn schemas_from_get_objects(batch: &RecordBatch) -> AdapterResult<&StructArray> {
     // The schema names are nested in the result of the get object call.
     // The batch has the following shape at the top level:
     // - catalog_name: utf8
@@ -85,62 +128,62 @@ fn relations_from_get_objects(
             )
         })?;
 
-    // Each row of the column `db_schema_tables` is a list of elements
-    // with the shape:
-    //   - table_name: utf8
-    //   - table_type: utf8
-    //   - table_columns: list
-    //   - table_constraints: list
-    let db_schema_tables = schemas_struct.column_as::<ListArray>("db_schema_tables")?;
+    Ok(schemas_struct)
+}
 
-    let schema_names = schemas_struct.column_as::<StringArray>("db_schema_name")?;
+fn relations_from_tables(
+    tables: &dyn Array,
+    context: &RelationContext<'_>,
+) -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
     let mut result = Vec::new();
-    for row in 0..schemas_struct.len() {
-        if schema_names.is_null(row)
-            || schema_names.value(row) != schema
-            || db_schema_tables.is_null(row)
-        {
-            continue;
-        }
-        let tables = db_schema_tables.value(row);
-        let tables = tables
-            .as_any()
-            .downcast_ref::<StructArray>()
-            .ok_or_else(|| {
-                AdapterError::new(
-                    AdapterErrorKind::UnexpectedResult,
-                    "Invalid db_schema_tables values",
-                )
-            })?;
-        let names = tables.column_as::<StringArray>("table_name")?;
-        let types = tables.column_as::<StringArray>("table_type")?;
-        for row in 0..tables.len() {
-            let relation_type = match adapter_type {
-                AdapterType::RedisAdbc => match types.value(row).to_ascii_uppercase().as_str() {
-                    "TABLE" => RelationType::Table,
-                    "VIEW" => RelationType::View,
-                    other => {
-                        return Err(AdapterError::new(
-                            AdapterErrorKind::UnexpectedResult,
-                            format!("Unsupported Redis relation type: {other}"),
-                        ));
-                    }
-                },
-                _ => RelationType::from_adapter_type(adapter_type, types.value(row)),
-            };
-            result.push(Arc::new(
-                Relation::new(
-                    adapter_type,
-                    catalog.to_owned(),
-                    schema.to_owned(),
-                    names.value(row).to_owned(),
-                )
-                .with_relation_type(relation_type)
-                .with_quoting(quoting),
-            ) as Arc<dyn BaseRelation>);
-        }
+    let tables = tables
+        .as_any()
+        .downcast_ref::<StructArray>()
+        .ok_or_else(|| {
+            AdapterError::new(
+                AdapterErrorKind::UnexpectedResult,
+                "Invalid db_schema_tables values",
+            )
+        })?;
+    let names = tables.column_as::<StringArray>("table_name")?;
+    let types = tables.column_as::<StringArray>("table_type")?;
+    for row in 0..tables.len() {
+        let adapter_type = context.adapter_type;
+        let relation_type = context.relation_type(types.value(row))?;
+        result.push(Arc::new(
+            Relation::new(
+                adapter_type,
+                context.catalog.to_owned(),
+                context.schema.to_owned(),
+                names.value(row).to_owned(),
+            )
+            .with_relation_type(relation_type)
+            .with_quoting(context.quoting),
+        ) as Arc<dyn BaseRelation>);
     }
     Ok(result)
+}
+
+pub(crate) fn get_relation_via_adbc(
+    engine: &dyn AdapterEngine,
+    conn: &mut ConnectionGuard<'_>,
+    relation: Relation,
+) -> AdapterResult<Option<Box<dyn BaseRelation>>> {
+    let database = relation.database().unwrap_or_default();
+    let schema = relation.schema().unwrap_or_default();
+    let db_schema = CatalogAndSchema {
+        rendered_catalog: database.to_owned(),
+        rendered_schema: schema.to_owned(),
+        resolved_catalog: database.to_owned(),
+        resolved_schema: schema.to_owned(),
+    };
+    let rows = list_relations_via_adbc(engine, conn, &db_schema)?;
+    Ok(rows
+        .into_iter()
+        .find(|row| row.identifier() == relation.identifier())
+        .map(|row| {
+            Box::new(relation.with_relation_type(row.relation_type())) as Box<dyn BaseRelation>
+        }))
 }
 
 #[cfg(test)]
@@ -203,10 +246,12 @@ mod tests {
         for adapter_type in [AdapterType::RedisAdbc, AdapterType::Bigquery] {
             let relations = relations_from_get_objects(
                 &batch,
-                adapter_type,
-                Policy::trues(),
-                "redis",
-                "analytics_one",
+                &RelationContext {
+                    adapter_type,
+                    quoting: Policy::trues(),
+                    catalog: "redis",
+                    schema: "analytics_one",
+                },
             )
             .unwrap();
             assert_eq!(relations.len(), 1);

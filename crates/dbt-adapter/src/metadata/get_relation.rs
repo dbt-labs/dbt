@@ -56,34 +56,17 @@ pub fn get_relation(
         AdapterType::Snowflake => snowflake_get_relation(
             adapter, state, ctx, conn, database, schema, identifier, token,
         ),
-        AdapterType::RedisAdbc => {
-            let db_schema = crate::metadata::CatalogAndSchema {
-                rendered_catalog: database.to_owned(),
-                rendered_schema: schema.to_owned(),
-                resolved_catalog: database.to_owned(),
-                resolved_schema: schema.to_owned(),
-            };
-            let rows = crate::metadata::adbc::list_relations_via_adbc(
-                adapter.engine().as_ref(),
-                conn,
-                &db_schema,
-            )?;
-            Ok(rows
-                .into_iter()
-                .find(|row| row.identifier() == Some(identifier))
-                .map(|row| {
-                    Box::new(
-                        Relation::new(
-                            adapter.adapter_type(),
-                            database.to_owned(),
-                            schema.to_owned(),
-                            identifier.to_owned(),
-                        )
-                        .with_relation_type(row.relation_type())
-                        .with_quoting(adapter.quoting()),
-                    ) as Box<dyn BaseRelation>
-                }))
-        }
+        AdapterType::RedisAdbc => crate::metadata::adbc::get_relation_via_adbc(
+            adapter.engine().as_ref(),
+            conn,
+            Relation::new(
+                adapter.adapter_type(),
+                database.to_owned(),
+                schema.to_owned(),
+                identifier.to_owned(),
+            )
+            .with_quoting(adapter.quoting()),
+        ),
         AdapterType::Bigquery => bigquery_get_relation_via_adbc(
             adapter, state, conn, database, schema, identifier, token,
         ),
