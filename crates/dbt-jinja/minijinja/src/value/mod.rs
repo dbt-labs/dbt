@@ -404,7 +404,7 @@ pub(crate) enum StringType {
 /// This is used for `i128`/`u128` in the value repr to avoid
 /// the excessive 16 byte alignment.
 #[derive(Copy)]
-#[repr(packed)]
+#[repr(C, packed)]
 pub(crate) struct Packed<T: Copy>(pub T);
 
 impl<T: Copy> Clone for Packed<T> {

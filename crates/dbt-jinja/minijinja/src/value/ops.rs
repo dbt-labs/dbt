@@ -77,7 +77,7 @@ fn get_offset_and_len<F: FnOnce() -> usize>(
     stop: Option<i64>,
     end: F,
 ) -> (usize, usize) {
-    if start < 0 || stop.map_or(true, |x| x < 0) {
+    if start < 0 || stop.is_none_or(|x| x < 0) {
         let end = end();
         let start = if start < 0 {
             (end as i64 + start) as usize
@@ -413,13 +413,13 @@ fn repeat_iterable(n: &Value, seq: &DynObject) -> Result<Value, Error> {
             len * n,
             (0..n).flat_map(move |_| {
                 seq.try_iter().unwrap_or_else(|| {
-                    Box::new(
-                        std::iter::repeat(Value::from(Error::new(
+                    Box::new(std::iter::repeat_n(
+                        Value::from(Error::new(
                             ErrorKind::InvalidOperation,
                             "iterable did not iterate against expectations",
-                        )))
-                        .take(len),
-                    )
+                        )),
+                        len,
+                    ))
                 })
             }),
         ))
