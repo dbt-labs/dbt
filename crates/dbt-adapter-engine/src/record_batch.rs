@@ -226,6 +226,7 @@ impl RecordBatchExt for RecordBatch {
             AdapterType::LakeCompute => {
                 self.meta_string(adbc::lake_compute::schema_metadata::QUERY_ID)
             }
+            AdapterType::Athena => self.meta_string(adbc::athena::schema_metadata::QUERY_ID),
             _ => None,
         }
     }
