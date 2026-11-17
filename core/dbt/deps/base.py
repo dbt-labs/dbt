@@ -1,10 +1,11 @@
 import abc
 import functools
+import hashlib
 import os
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Dict, Generic, List, Optional, TypeVar
+from typing import Dict, Generic, List, Optional, Tuple, TypeVar
 
 from dbt.contracts.project import ProjectPackageMetadata
 from dbt.events.types import DepsSetDownloadDirectory
@@ -128,16 +129,26 @@ class PinnedPackage(BasePackage):
         tar_path = (Path(get_downloads_path()) / tar_name).resolve(strict=False)
         system.make_directory(str(tar_path.parent))
 
-        download_url = metadata.downloads.tarball
+        download_url, expected_sha1 = self._get_download(metadata)
         deps_path = project.packages_install_path
         package_name = self.get_project_name(project, renderer)
 
         download_untar_fn = functools.partial(
-            self.download_and_untar, download_url, str(tar_path), deps_path, package_name
+            self.download_and_untar,
+            download_url,
+            str(tar_path),
+            deps_path,
+            package_name,
+            expected_sha1,
         )
         connection_exception_retry(download_untar_fn, 5)
 
-    def download_and_untar(self, download_url, tar_path, deps_path, package_name):
+    def _get_download(self, metadata) -> Tuple[str, Optional[str]]:
+        return metadata.downloads.tarball, None
+
+    def download_and_untar(
+        self, download_url, tar_path, deps_path, package_name, expected_sha1=None
+    ):
         """
         Sometimes the download of the files fails and we want to retry.  Sometimes the
         download appears successful but the file did not make it through as expected
@@ -147,7 +158,23 @@ class PinnedPackage(BasePackage):
         """
 
         system.download(download_url, tar_path)
+        if expected_sha1 is not None:
+            verify_sha1(tar_path, expected_sha1, download_url)
         system.untar_package(tar_path, deps_path, package_name)
+
+
+def verify_sha1(path: str, expected_sha1: str, download_url: str) -> None:
+    sha1 = hashlib.sha1()
+    with open(path, "rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 64), b""):
+            sha1.update(block)
+    actual_sha1 = sha1.hexdigest()
+    if actual_sha1.lower() != expected_sha1.lower():
+        os.remove(path)
+        raise DependencyError(
+            f"sha1 checksum mismatch for tarball downloaded from {download_url}: "
+            f"expected {expected_sha1}, got {actual_sha1}"
+        )
 
 
 SomePinned = TypeVar("SomePinned", bound=PinnedPackage)

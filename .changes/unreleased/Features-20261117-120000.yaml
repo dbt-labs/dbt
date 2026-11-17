@@ -1,0 +1,7 @@
+kind: Features
+body: 'Add require_hub_verified_downloads: install Package Hub tarballs from the Hub-provided
+    mirror and verify their sha1 checksums'
+time: 2026-11-17T12:00:00.000000+05:30
+custom:
+    Author: tauhid621
+    Issue: ""

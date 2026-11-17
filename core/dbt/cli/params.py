@@ -797,6 +797,17 @@ threads = _create_option_and_track_env_var(
     type=click.INT,
 )
 
+require_hub_verified_downloads = _create_option_and_track_env_var(
+    "--require-hub-verified-downloads/--no-require-hub-verified-downloads",
+    envvar="DBT_ENGINE_REQUIRE_HUB_VERIFIED_DOWNLOADS",
+    help=(
+        "When installing packages from Package Hub, install from the Hub-provided mirror and "
+        "verify its sha1 checksum, failing the install if Hub provides neither."
+    ),
+    default=False,
+    hidden=True,
+)
+
 upgrade = _create_option_and_track_env_var(
     "--upgrade",
     envvar=None,
