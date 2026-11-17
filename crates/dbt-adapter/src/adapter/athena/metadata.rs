@@ -19,6 +19,7 @@ use crate::relation::{Relation, do_create_relation};
 use dbt_adapter_core::AdapterType;
 use dbt_adbc::QueryCtx;
 use dbt_common::cancellation::{CancellationToken, never_cancels};
+use dbt_common::tracing::dbt_emit::emit_info_log_message;
 use dbt_schemas::dbt_types::RelationType;
 use dbt_schemas::schemas::relations::base::BaseRelation;
 use minijinja::State;
@@ -184,7 +185,9 @@ impl AdapterImpl {
                 continue;
             };
             let Some(relation_type) = relation_type(table) else {
-                tracing::info!("Table '{name}' has no TableType attribute - Ignoring");
+                emit_info_log_message(format!(
+                    "Table '{name}' has no TableType attribute - Ignoring"
+                ));
                 continue;
             };
             let schema = table

@@ -21,6 +21,8 @@ use crate::errors::{AdapterError, AdapterErrorKind};
 use crate::value::none_value;
 use dbt_agate::AgateTable;
 use dbt_auth::AdapterConfig;
+use dbt_common::ErrorCode;
+use dbt_common::tracing::dbt_emit::{emit_debug_log_message, emit_warn_log_message};
 use minijinja::arg_utils::ArgsIter;
 use minijinja::value::ValueKind;
 use minijinja::{Error as JinjaError, ErrorKind as JinjaErrorKind, State, Value};
@@ -651,13 +653,17 @@ impl Adapter {
             }
             for (key, value) in meta {
                 if !is_valid_table_parameter_key(&key) {
-                    tracing::warn!("Meta key '{key}' is not supported and will be ignored");
+                    emit_warn_log_message(
+                        ErrorCode::InvalidConfig,
+                        format!("Meta key '{key}' is not supported and will be ignored"),
+                    );
                     continue;
                 }
                 match stringify_table_parameter_value(&value) {
                     Some(value) => table_parameters.push((key, value)),
-                    None => tracing::warn!(
-                        "Meta value for key '{key}' is not supported and will be ignored"
+                    None => emit_warn_log_message(
+                        ErrorCode::InvalidConfig,
+                        format!("Meta value for key '{key}' is not supported and will be ignored"),
                     ),
                 }
             }
@@ -680,8 +686,9 @@ impl Adapter {
                     map_entries(&column.get_attr("meta").unwrap_or(Value::UNDEFINED))?
                 {
                     if !is_valid_table_parameter_key(&key) {
-                        tracing::warn!(
-                            "Column meta key '{key}' is not supported and will be ignored"
+                        emit_warn_log_message(
+                            ErrorCode::InvalidConfig,
+                            format!("Column meta key '{key}' is not supported and will be ignored"),
                         );
                         continue;
                     }
@@ -690,8 +697,11 @@ impl Adapter {
                             .entry(name.clone())
                             .or_default()
                             .push((key, value)),
-                        None => tracing::warn!(
-                            "Column meta value for key '{key}' is not supported and will be ignored"
+                        None => emit_warn_log_message(
+                            ErrorCode::InvalidConfig,
+                            format!(
+                                "Column meta value for key '{key}' is not supported and will be ignored"
+                            ),
                         ),
                     }
                 }
@@ -717,7 +727,10 @@ impl Adapter {
         let config: LfTagsConfig = from_jinja(iter.next_arg::<&Value>()?, "lf_tags_config")?;
         iter.finish()?;
         if !config.enabled {
-            tracing::debug!("Lakeformation is disabled for {}", relation.rendered);
+            emit_debug_log_message(format!(
+                "Lakeformation is disabled for {}",
+                relation.rendered
+            ));
             return Ok(none_value());
         }
         if let Some(aws) = self.athena_ops(state) {
@@ -767,7 +780,7 @@ impl Adapter {
             None => BTreeMap::new(),
         };
         if tags.is_empty() {
-            tracing::debug!("Lakeformation is disabled for {schema}");
+            emit_debug_log_message(format!("Lakeformation is disabled for {schema}"));
             return Ok(none_value());
         }
         if let Some(aws) = self.athena_ops(state) {

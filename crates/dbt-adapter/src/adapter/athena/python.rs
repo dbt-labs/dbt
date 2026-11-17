@@ -12,7 +12,9 @@
 use super::driver_ops::AthenaOps;
 use crate::errors::{AdapterError, AdapterErrorKind, AdapterResult};
 use crate::response::AdapterResponse;
+use dbt_common::ErrorCode;
 use dbt_common::cancellation::CancellationToken;
+use dbt_common::tracing::dbt_emit::{emit_debug_log_message, emit_warn_log_message};
 use minijinja::Value;
 use serde_json::{Map, Value as Json, json};
 use std::sync::{LazyLock, Mutex};
@@ -446,13 +448,16 @@ impl SparkJob<'_, '_, '_, '_> {
             .ops
             .call_uncancellable("athena.terminate_session", json!({ "SessionId": session }))
         {
-            tracing::warn!("could not terminate Spark session {session}: {e}");
+            emit_warn_log_message(
+                ErrorCode::RemoteError,
+                format!("could not terminate Spark session {session}: {e}"),
+            );
         }
         if let Err(e) = self.ops.call_uncancellable(
             "athena.stop_calculation_execution",
             json!({ "CalculationExecutionId": calculation }),
         ) {
-            tracing::debug!("could not stop calculation {calculation}: {e}");
+            emit_debug_log_message(format!("could not stop calculation {calculation}: {e}"));
         }
         Self::release_session(session, false);
         error

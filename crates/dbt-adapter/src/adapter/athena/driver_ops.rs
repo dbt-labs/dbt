@@ -16,8 +16,10 @@ use arrow::array::{Array, RecordBatch, StringArray};
 use base64::Engine as _;
 use dbt_adbc::athena::{OPERATION, OPERATION_PAYLOAD};
 use dbt_adbc::{Connection, QueryCtx};
+use dbt_common::ErrorCode;
 use dbt_common::cancellation::{CancellationToken, never_cancels};
 use dbt_common::collections::SccHashMap;
+use dbt_common::tracing::dbt_emit::{emit_debug_log_message, emit_error_log_message};
 use minijinja::State;
 use serde_json::{Map, Value as Json, json};
 use std::cell::RefCell;
@@ -327,7 +329,10 @@ impl<'a, 't, 'e> AthenaOps<'a, 't, 'e> {
         let response = self.call("glue.get_table", Json::Object(payload))?;
         match response.get("Table") {
             Some(Json::Null) | None => {
-                tracing::debug!("Table {} does not exist - Ignoring", relation.rendered);
+                emit_debug_log_message(format!(
+                    "Table {} does not exist - Ignoring",
+                    relation.rendered
+                ));
                 Ok(None)
             }
             Some(table) => Ok(Some(table.clone())),
@@ -385,12 +390,15 @@ impl<'a, 't, 'e> AthenaOps<'a, 't, 'e> {
         payload.insert("Name".into(), Json::String(relation.identifier.clone()));
         let response = self.call("glue.delete_table", Json::Object(payload))?;
         if response.get("Deleted").and_then(Json::as_bool) == Some(true) {
-            tracing::debug!("Deleted table from glue catalog: {}", relation.rendered);
+            emit_debug_log_message(format!(
+                "Deleted table from glue catalog: {}",
+                relation.rendered
+            ));
         } else {
-            tracing::debug!(
+            emit_debug_log_message(format!(
                 "Table {} does not exist and will not be deleted, ignoring",
                 relation.rendered
-            );
+            ));
         }
         Ok(())
     }
@@ -403,7 +411,9 @@ impl<'a, 't, 'e> AthenaOps<'a, 't, 'e> {
         }
         payload.insert("Name".into(), Json::String(database_name.to_string()));
         self.call("glue.delete_database", Json::Object(payload))?;
-        tracing::debug!("Glue database successfully deleted: {catalog_name}.{database_name}");
+        emit_debug_log_message(format!(
+            "Glue database successfully deleted: {catalog_name}.{database_name}"
+        ));
         Ok(())
     }
 
@@ -452,20 +462,22 @@ impl<'a, 't, 'e> AthenaOps<'a, 't, 'e> {
             payload.insert("VersionId".into(), Json::String(version_id.clone()));
             match self.call("glue.delete_table_version", Json::Object(payload)) {
                 Ok(_) => {
-                    tracing::debug!(
+                    emit_debug_log_message(format!(
                         "Deleted version {version_id} of table {}",
                         relation.rendered
-                    );
+                    ));
                     deleted.push(version_id);
                     if delete_s3 && let Some(location) = location {
                         if let Err(e) = self.delete_from_s3(&location) {
-                            tracing::debug!("There was an error when deleting {location}: {e}");
+                            emit_debug_log_message(format!(
+                                "There was an error when deleting {location}: {e}"
+                            ));
                         }
                     }
                 }
-                Err(e) => tracing::debug!(
+                Err(e) => emit_debug_log_message(format!(
                     "There was an error when expiring table version {version_id} with error: {e}"
-                ),
+                )),
             }
         }
         Ok(deleted)
@@ -564,11 +576,10 @@ impl<'a, 't, 'e> AthenaOps<'a, 't, 'e> {
         let mut update = target_scope.clone();
         update.insert("TableInput".into(), Json::Object(table_input));
         self.call("glue.update_table", Json::Object(update))?;
-        tracing::debug!(
+        emit_debug_log_message(format!(
             "Table {} swapped with the content of {}",
-            target.rendered,
-            src.rendered
-        );
+            target.rendered, src.rendered
+        ));
 
         if !target_partitions.is_empty() {
             self.batch_delete_partitions(&target_scope, target, &target_partitions)?;
@@ -650,17 +661,20 @@ impl<'a, 't, 'e> AthenaOps<'a, 't, 'e> {
             let errors = self.batch_delete_partitions(&scope, relation, chunk)?;
             if !errors.is_empty() {
                 for err in &errors {
-                    tracing::error!(
-                        "Failed to delete Glue partition: Values='{}', Code='{}', Message='{}'",
-                        err.get("PartitionValues")
-                            .map(Json::to_string)
-                            .unwrap_or_default(),
-                        err.get("ErrorDetail")
-                            .and_then(|d| str_of(d, "ErrorCode"))
-                            .unwrap_or_default(),
-                        err.get("ErrorDetail")
-                            .and_then(|d| str_of(d, "ErrorMessage"))
-                            .unwrap_or_default(),
+                    emit_error_log_message(
+                        ErrorCode::RemoteError,
+                        format!(
+                            "Failed to delete Glue partition: Values='{}', Code='{}', Message='{}'",
+                            err.get("PartitionValues")
+                                .map(Json::to_string)
+                                .unwrap_or_default(),
+                            err.get("ErrorDetail")
+                                .and_then(|d| str_of(d, "ErrorCode"))
+                                .unwrap_or_default(),
+                            err.get("ErrorDetail")
+                                .and_then(|d| str_of(d, "ErrorMessage"))
+                                .unwrap_or_default()
+                        ),
                     );
                 }
                 return Err(unexpected(format!(
@@ -805,12 +819,15 @@ impl<'a, 't, 'e> AthenaOps<'a, 't, 'e> {
         )?;
         let errors = response["Errors"].as_array().cloned().unwrap_or_default();
         for err in &errors {
-            tracing::error!(
-                "Failed to delete files: Key='{}', Code='{}', Message='{}', s3_bucket='{}'",
-                str_of(err, "Key").unwrap_or_default(),
-                str_of(err, "Code").unwrap_or_default(),
-                str_of(err, "Message").unwrap_or_default(),
-                bucket
+            emit_error_log_message(
+                ErrorCode::RemoteError,
+                format!(
+                    "Failed to delete files: Key='{}', Code='{}', Message='{}', s3_bucket='{}'",
+                    str_of(err, "Key").unwrap_or_default(),
+                    str_of(err, "Code").unwrap_or_default(),
+                    str_of(err, "Message").unwrap_or_default(),
+                    bucket
+                ),
             );
         }
         if errors.is_empty() {
@@ -825,31 +842,34 @@ impl<'a, 't, 'e> AthenaOps<'a, 't, 'e> {
         let (bucket, prefix) = parse_s3_path(s3_path);
         let keys = self.list_object_keys(&bucket, &prefix)?;
         if keys.is_empty() {
-            tracing::debug!("S3 path does not exist");
+            emit_debug_log_message("S3 path does not exist");
             return Ok(());
         }
-        tracing::debug!(
+        emit_debug_log_message(format!(
             "Deleting table data: path='{s3_path}', bucket='{bucket}', prefix='{prefix}'"
-        );
+        ));
         self.delete_object_keys(&bucket, keys)
     }
 
     /// `AthenaAdapter.bulk_delete_from_s3`
     fn bulk_delete_from_s3(&self, s3_paths: Vec<String>) -> AdapterResult<()> {
         if s3_paths.is_empty() {
-            tracing::debug!("No S3 paths provided for deletion");
+            emit_debug_log_message("No S3 paths provided for deletion");
             return Ok(());
         }
         let mut keys_by_bucket: HashMap<String, Vec<String>> = HashMap::new();
         for s3_path in &s3_paths {
             let (bucket, prefix) = parse_s3_path(s3_path);
-            tracing::debug!("Listing files for deletion: {s3_path}");
+            emit_debug_log_message(format!("Listing files for deletion: {s3_path}"));
             let keys = self.list_object_keys(&bucket, &prefix)?;
             keys_by_bucket.entry(bucket).or_default().extend(keys);
         }
         for (bucket, keys) in keys_by_bucket {
             if !keys.is_empty() {
-                tracing::debug!("Calling delete_objects for {} objects", keys.len());
+                emit_debug_log_message(format!(
+                    "Calling delete_objects for {} objects",
+                    keys.len()
+                ));
                 self.delete_object_keys(&bucket, keys)?;
             }
         }
