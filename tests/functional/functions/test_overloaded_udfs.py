@@ -44,6 +44,44 @@ model_using_overloaded_function_sql = """
 SELECT {{ function('double_int') }}(5) as result
 """
 
+# -- Fixtures: an overload body that references another function ----------------
+
+helper_sql = """
+SELECT val + 1
+"""
+
+wrapper_root_sql = """
+SELECT val
+"""
+
+# The overload body — and only the overload body — calls another function.
+wrapper_overload_sql = """
+SELECT {{ function('helper') }}(val)
+"""
+
+wrapper_with_overload_ref_yml = """
+functions:
+  - name: helper
+    arguments:
+      - name: val
+        data_type: integer
+    returns:
+      data_type: integer
+  - name: wrapper
+    arguments:
+      - name: val
+        data_type: integer
+    returns:
+      data_type: integer
+    overloads:
+      - defined_in: wrapper_overload
+        arguments:
+          - name: val
+            data_type: float
+        returns:
+          data_type: float
+"""
+
 
 class TestOverloadedUDFParsing:
     """Parsing a root function with overloads."""
@@ -102,6 +140,35 @@ class TestOverloadedUDFDependency:
         model = manifest.nodes["model.test.my_model"]
         fn_deps = [d for d in model.depends_on.nodes if d.startswith("function.")]
         assert fn_deps == ["function.test.double_int"]
+
+
+class TestOverloadedUDFOverloadBodyDependencies:
+    """An overload body's ref()/source()/function() calls must land on the root.
+
+    The overload SQL file is absorbed into the root and never becomes its own
+    node, so a dependency that appears only inside an overload body would be lost
+    from the DAG unless it is carried onto the root during absorption.
+    """
+
+    @pytest.fixture(scope="class")
+    def functions(self) -> Dict[str, str]:
+        return {
+            "helper.sql": helper_sql,
+            "wrapper.sql": wrapper_root_sql,
+            "wrapper_overload.sql": wrapper_overload_sql,
+            "schema.yml": wrapper_with_overload_ref_yml,
+        }
+
+    def test_root_depends_on_function_referenced_only_in_overload(self, project):
+        manifest = run_dbt(["parse"])
+
+        # The overload file is absorbed, not a standalone node.
+        assert "function.test.wrapper_overload" not in manifest.functions
+
+        wrapper = manifest.functions["function.test.wrapper"]
+        # `helper` is referenced only in the overload body, yet the root must
+        # carry the dependency so build order and lineage stay correct.
+        assert "function.test.helper" in wrapper.depends_on.nodes
 
 
 class TestOverloadedUDFBuild:

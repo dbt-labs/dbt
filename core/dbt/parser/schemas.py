@@ -1399,6 +1399,8 @@ class FunctionPatchParser(NodePatchParser[UnparsedFunctionUpdate]):
                 )
             )
 
+            self._merge_overload_dependencies(root_node, overload_node)
+
             # Track the overload→root relationship for partial parsing
             self.manifest.function_overload_owners[overload_node.file_id] = root_node.unique_id
 
@@ -1412,6 +1414,30 @@ class FunctionPatchParser(NodePatchParser[UnparsedFunctionUpdate]):
             del self.manifest.functions[overload_unique_id]
 
         root_node.overloads = absorbed
+
+    @staticmethod
+    def _merge_overload_dependencies(
+        root_node: "FunctionNode", overload_node: "FunctionNode"
+    ) -> None:
+        """Carry an overload body's ref()/source()/function() dependencies onto
+        the root.
+
+        An overload SQL body can reference other nodes, but the overload node is
+        deleted during absorption, so those edges would be silently lost — the
+        root's own body never mentions them. process_refs/process_sources/
+        process_functions run later over the root and resolve these into
+        depends_on. Dedup against the root's own dependencies so a shared
+        reference doesn't get duplicated.
+        """
+        for ref in overload_node.refs:
+            if ref not in root_node.refs:
+                root_node.refs.append(ref)
+        for source in overload_node.sources:
+            if source not in root_node.sources:
+                root_node.sources.append(source)
+        for function in overload_node.functions:
+            if function not in root_node.functions:
+                root_node.functions.append(function)
 
     def _get_node_patch(self, block: TargetBlock[NodeTarget], refs: ParserRef) -> ParsedNodePatch:
         target = block.target
