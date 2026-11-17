@@ -263,14 +263,16 @@ impl BlockingPool {
         &self.spawner
     }
 
-    pub(crate) fn shutdown(&mut self, timeout: Option<Duration>) {
+    /// Returns `true` if every thread exited within `timeout`.
+    pub(crate) fn shutdown(&mut self, timeout: Option<Duration>) -> bool {
         let mut shared = self.spawner.inner.shared.lock().unwrap();
 
         // The function can be called multiple times. First, by explicitly
         // calling `shutdown` then by the drop handler calling `shutdown`. This
-        // prevents shutting down twice.
+        // prevents shutting down twice. Only the drop handler gets here, and it
+        // ignores the result.
         if shared.shutdown {
-            return;
+            return true;
         }
 
         shared.shutdown = true;
@@ -282,19 +284,21 @@ impl BlockingPool {
 
         drop(shared);
 
-        if self.shutdown_rx.wait(timeout) {
+        let drained = self.shutdown_rx.wait(timeout);
+        if drained {
             let _ = last_exited_thread.map(thread::JoinHandle::join);
 
             for (_id, handle) in workers {
                 let _ = handle.join();
             }
         }
+        drained
     }
 }
 
 impl Drop for BlockingPool {
     fn drop(&mut self) {
-        self.shutdown(None);
+        let _ = self.shutdown(None);
     }
 }
 

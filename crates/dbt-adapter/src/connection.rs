@@ -596,8 +596,9 @@ mod tests {
         }
     }
 
-    /// Parks a connection on the only worker of a pool that closes connections
-    /// on thread stop, shuts the pool down, and returns how many were closed.
+    /// Test helper: parks a connection on the only worker of a pool that closes
+    /// connections on thread stop, shuts the pool down, and returns how many
+    /// were closed. Fails the test if the worker doesn't exit in time.
     fn park_then_shut_down(panic_on_drop: bool) -> usize {
         let closed = Arc::new(AtomicUsize::new(0));
         let rt = dbt_runtime::builder::Builder::new()
@@ -618,7 +619,7 @@ mod tests {
         .unwrap();
         assert_eq!(closed.load(Ordering::SeqCst), 0, "parked, not closed");
 
-        rt.shutdown_timeout(std::time::Duration::from_secs(10));
+        assert!(rt.shutdown_timeout(std::time::Duration::from_secs(10)));
         closed.load(Ordering::SeqCst)
     }
 

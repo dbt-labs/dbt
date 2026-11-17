@@ -457,10 +457,11 @@ where
         Err(join_err) => (2, None, Some(format!("dbt engine panicked: {join_err}"))),
     };
 
-    // Workers close their connections as they stop; shut the runtimes down
-    // first so those close events land before the tracing layers are torn down.
-    drop(tokio_rt);
-    drop(dbt_rt);
+    // No hard exit on timeout: this is the user's interpreter. Threads still
+    // running stay detached, and anything they emit later reaches whichever
+    // invocation's layers are installed at the time.
+    tokio_rt.shutdown_timeout(dbt_main::TOKIO_SHUTDOWN_TIMEOUT);
+    let _ = dbt_rt.shutdown_timeout(dbt_main::DBT_RUNTIME_SHUTDOWN_TIMEOUT);
 
     // Torn down explicitly so failures are reported rather than dropped, and before
     // `_invocation` unlocks so the next invocation cannot install its layers first.

@@ -100,15 +100,17 @@ impl Runtime {
     /// Shuts the pool down, waiting at most `duration` for its threads to
     /// finish.
     ///
-    /// Threads still running a task past the timeout become detached: they run
-    /// to completion but are no longer joined.
-    pub fn shutdown_timeout(mut self, duration: Duration) {
-        self.blocking_pool.shutdown(Some(duration));
+    /// Returns `true` if every thread exited in time. Threads still running past
+    /// the timeout become detached: they run to completion but are no longer
+    /// joined.
+    #[must_use = "threads still running past the timeout keep running after this returns"]
+    pub fn shutdown_timeout(mut self, duration: Duration) -> bool {
+        self.blocking_pool.shutdown(Some(duration))
     }
 
     /// Shuts the pool down without waiting for its threads at all.
     pub fn shutdown_background(self) {
-        self.shutdown_timeout(Duration::from_nanos(0));
+        let _ = self.shutdown_timeout(Duration::from_nanos(0));
     }
 }
 
