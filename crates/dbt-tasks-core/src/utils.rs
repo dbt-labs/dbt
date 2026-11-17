@@ -16,6 +16,24 @@ use dbt_schemas::{
 
 use crate::generate_run_results;
 
+/// Insert `value` into the run_results.json args under `key`, or warn when it
+/// cannot be serialized.
+fn insert_serialized_arg(
+    args_map: &mut BTreeMap<String, dbt_yaml::Value>,
+    key: &str,
+    value: &impl serde::Serialize,
+) {
+    match dbt_yaml::to_value(value) {
+        Ok(value) => {
+            args_map.insert(key.to_string(), value);
+        }
+        Err(e) => emit_warn_log_message(
+            ErrorCode::SerializationError,
+            format!("Failed to serialize {key} for run_results.json: {e}"),
+        ),
+    }
+}
+
 /// Build a `RunResultsArtifact` from run stats.
 ///
 /// Pass the resolved `DbtState::warn_error`/`warn_error_options`; `EvalArgs` holds only the CLI/env value.
@@ -70,26 +88,10 @@ pub fn build_run_results_artifact(
         dbt_yaml::Value::bool(arg.full_refresh),
     );
     // Always present, matching dbt-core (`{"error": [], "warn": [], "silence": []}` when unset).
-    match dbt_yaml::to_value(warn_error_options) {
-        Ok(value) => {
-            args_map.insert("warn_error_options".to_string(), value);
-        }
-        Err(e) => emit_warn_log_message(
-            ErrorCode::SerializationError,
-            format!("Failed to serialize warn_error_options for run_results.json: {e}"),
-        ),
-    }
+    insert_serialized_arg(&mut args_map, "warn_error_options", warn_error_options);
     // Always present, matching dbt-core (`{}` without --vars), so that
     // `dbt retry` re-renders the retried nodes with the same vars.
-    match dbt_yaml::to_value(&arg.vars) {
-        Ok(value) => {
-            args_map.insert("vars".to_string(), value);
-        }
-        Err(e) => emit_warn_log_message(
-            ErrorCode::SerializationError,
-            format!("Failed to serialize vars for run_results.json: {e}"),
-        ),
-    }
+    insert_serialized_arg(&mut args_map, "vars", &arg.vars);
     // Omitted when false, matching dbt-core.
     if warn_error {
         args_map.insert("warn_error".to_string(), dbt_yaml::Value::bool(true));

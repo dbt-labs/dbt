@@ -685,9 +685,9 @@ expected_sa: {expected_sa:?}",
         assert_eq!(state.original_static_analysis, None);
     }
 
-    /// Helper to create a run_results.json file whose `args` carry extra raw JSON members,
-    /// for example `, "vars": {"k": "v"}`.
-    fn create_run_results_json_with_extra_args(which: &str, extra_args: &str) -> NamedTempFile {
+    /// Helper to create a `build` run_results.json file whose `args` carry extra raw JSON
+    /// members, for example `, "vars": {"k": "v"}`.
+    fn create_run_results_json_with_extra_args(extra_args: &str) -> NamedTempFile {
         let json = format!(
             r#"{{
                 "metadata": {{
@@ -700,8 +700,8 @@ expected_sa: {expected_sa:?}",
                 "results": [{{"status": "error", "unique_id": "model.pkg.m", "timing": [], "thread_id": "Thread-1", "execution_time": 0.1, "adapter_response": {{}}}}],
                 "elapsed_time": 1.0,
                 "args": {{
-                    "command": "{which}",
-                    "which": "{which}"{extra_args}
+                    "command": "build",
+                    "which": "build"{extra_args}
                 }}
             }}"#
         );
@@ -729,10 +729,7 @@ expected_sa: {expected_sa:?}",
 
     #[test]
     fn test_from_run_results_parses_vars() {
-        let file = create_run_results_json_with_extra_args(
-            "build",
-            r#", "vars": {"probe": "from_build"}"#,
-        );
+        let file = create_run_results_json_with_extra_args(r#", "vars": {"probe": "from_build"}"#);
         let state = RetryState::from_run_results(file.path(), false).unwrap();
         assert_eq!(state.original_vars, Some(vars(&[("probe", "from_build")])));
     }
@@ -740,7 +737,7 @@ expected_sa: {expected_sa:?}",
     #[test]
     fn test_from_run_results_without_vars_key() {
         // run_results.json written before vars were recorded: nothing to restore.
-        let file = create_run_results_json_with_extra_args("build", "");
+        let file = create_run_results_json_with_extra_args("");
         let state = RetryState::from_run_results(file.path(), false).unwrap();
         assert_eq!(state.original_vars, None);
     }
@@ -749,7 +746,7 @@ expected_sa: {expected_sa:?}",
     /// keeps its own (empty) vars and logs nothing.
     #[test]
     fn test_vars_for_retry_ignores_empty_original_vars() {
-        let file = create_run_results_json_with_extra_args("build", r#", "vars": {}"#);
+        let file = create_run_results_json_with_extra_args(r#", "vars": {}"#);
         let state = RetryState::from_run_results(file.path(), false).unwrap();
         assert_eq!(state.original_vars, Some(BTreeMap::new()));
         assert_eq!(state.vars_for_retry(&retry_args_with_vars(None)), None);
@@ -758,10 +755,7 @@ expected_sa: {expected_sa:?}",
     /// dbt-labs/dbt#15667: retry re-runs the command with the original run's --vars.
     #[test]
     fn test_command_for_retry_restores_original_vars() {
-        let file = create_run_results_json_with_extra_args(
-            "build",
-            r#", "vars": {"probe": "from_build"}"#,
-        );
+        let file = create_run_results_json_with_extra_args(r#", "vars": {"probe": "from_build"}"#);
         let state = RetryState::from_run_results(file.path(), false).unwrap();
         let cmd = state.to_command(&retry_args_with_vars(None)).unwrap();
         assert_eq!(
@@ -773,10 +767,7 @@ expected_sa: {expected_sa:?}",
     /// --vars on the retry command line wins, matching dbt-core's ALLOW_CLI_OVERRIDE_FLAGS.
     #[test]
     fn test_command_for_retry_cli_vars_override_original() {
-        let file = create_run_results_json_with_extra_args(
-            "build",
-            r#", "vars": {"probe": "from_build"}"#,
-        );
+        let file = create_run_results_json_with_extra_args(r#", "vars": {"probe": "from_build"}"#);
         let state = RetryState::from_run_results(file.path(), false).unwrap();
         let retry_args = retry_args_with_vars(Some(vars(&[("probe", "from_retry")])));
         assert_eq!(state.vars_for_retry(&retry_args), None);
