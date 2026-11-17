@@ -264,16 +264,14 @@ mod get_columns_in_query {
 
     fn render_column_names(columns: Vec<&'static str>) -> (MacroTestHarness, String) {
         let harness = build_harness(None);
-        harness
-            .mock()
-            .on("get_column_schema_from_query", move |_| {
-                Ok(Value::from_serialize(
-                    columns
-                        .iter()
-                        .map(|name| BTreeMap::from([("name", *name)]))
-                        .collect::<Vec<_>>(),
-                ))
-            });
+        harness.mock().on("get_column_schema_from_query", move |_| {
+            Ok(Value::from_serialize(
+                columns
+                    .iter()
+                    .map(|name| BTreeMap::from([("name", *name)]))
+                    .collect::<Vec<_>>(),
+            ))
+        });
         let rendered = harness
             .render(
                 "{{ clickhouse__get_columns_in_query('select * from src -- trailing') | join('|') }}",
