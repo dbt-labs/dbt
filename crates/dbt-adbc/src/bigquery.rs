@@ -81,6 +81,8 @@ pub const QUERY_PREFETCH_CONCURRENCY: &str = "adbc.bigquery.sql.query.prefetch_c
 
 pub const QUERY_LINK_FAILED_JOB: &str = "adbc.bigquery.sql.query.link_failed_job";
 
+pub const ERROR_DETAIL_JOB_ERROR_REASON: &str = "adbc.bigquery.job.error_reason";
+
 // When true, GetObjects at depth Tables lists tables with tables.list only (table
 // name and type) instead of issuing one tables.get per table. Constraints are not
 // returned. Depths that include columns are unaffected.

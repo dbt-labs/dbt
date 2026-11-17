@@ -72,6 +72,7 @@ use crate::resolve::resolve_experimentals::{
 use crate::resolve::resolve_exposures::resolve_exposures;
 use crate::resolve::resolve_functions::resolve_functions;
 use crate::resolve::resolve_macros::apply_macro_patches;
+use crate::resolve::resolve_macros::probe_internal_macro_overrides;
 use crate::resolve::resolve_macros::resolve_docs_macros;
 use crate::resolve::resolve_macros::resolve_macros;
 use crate::resolve::resolve_macros::typecheck_macros;
@@ -381,6 +382,12 @@ pub async fn resolve(
         root_project_name,
         minijinja::Value::from_dyn_object(jinja_env.env.get_dbt_and_adapters_namespaces()),
     )?;
+
+    probe_internal_macro_overrides(
+        &macros.macros,
+        root_project_name,
+        &jinja_env.env.get_dbt_and_adapters_namespaces(),
+    );
 
     // Ensure that there are no duplicate relations
     check_relation_uniqueness(&nodes)?;

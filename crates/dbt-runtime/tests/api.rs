@@ -55,7 +55,7 @@ fn use_runtime(rt: Runtime) {
     // Dropping a `JoinHandle` detaches; that is the documented behaviour.
     drop((spawned, mandatory, via_handle, ambient, ambient_mandatory));
 
-    rt.shutdown_timeout(std::time::Duration::from_secs(1));
+    let _: bool = rt.shutdown_timeout(std::time::Duration::from_secs(1));
 }
 
 #[expect(dead_code)]
@@ -100,7 +100,7 @@ fn build_and_shut_down_an_idle_runtime() {
     let rt = Builder::new().max_blocking_threads(2).build();
     assert_eq!(rt.handle().num_blocking_threads(), 0);
     assert_eq!(rt.handle().blocking_queue_depth(), 0);
-    rt.shutdown_timeout(std::time::Duration::from_secs(5));
+    assert!(rt.shutdown_timeout(std::time::Duration::from_secs(5)));
 }
 
 #[test]

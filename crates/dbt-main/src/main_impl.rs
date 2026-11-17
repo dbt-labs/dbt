@@ -11,6 +11,7 @@ use dbt_clap_core::commands::CoreCommand;
 use dbt_common::FsResult;
 use dbt_common::cancellation::CancellationReport;
 use dbt_common::io_args::SystemArgs;
+use dbt_common::tracing::dbt_emit::emit_debug_log_message;
 use dbt_common::{
     constants::{ERROR, PANIC},
     pretty_string::{GREEN, RED},
@@ -150,6 +151,7 @@ pub fn run_cli_with_code(cli: Box<Cli>, arg: SystemArgs, feature_stack: Arc<Feat
             dbt_runtime::builder::DEFAULT_MAX_BLOCKING_THREADS
         })
         .thread_stack_size(FS_DEFAULT_STACK_SIZE)
+        .on_thread_stop(dbt_adapter::connection::close_thread_local_connection)
         .build();
 
     // Setup tokio runtime and set stack-size to 8MB
@@ -218,6 +220,33 @@ pub fn run_cli_with_code(cli: Box<Cli>, arg: SystemArgs, feature_stack: Arc<Feat
         run_future_with_ctrlc_support(cst, future, fail_fast, fail_fast_flag),
     );
 
+    // Remove the panic hook before the runtimes shut down: it exits the process
+    // with code 2, and a panic in leftover pool work would then skip the
+    // telemetry flush below.
+    let _ = std::panic::take_hook();
+
+    let cancelled = matches!(result, Ok(Some(_)));
+    let mut drained = true;
+    if cancelled {
+        // After a Ctrl+C (or process cancellation request in some other way),
+        // the process may behave weirdly (e.g. some threads deadlocked), so we
+        // must not let the runtime destructors wait on them. The hard exit
+        // below terminates the process without cleanup.
+        std::mem::forget(dbt_rt);
+        std::mem::forget(tokio_rt);
+    } else {
+        // Tokio goes first so no async task is left to submit work to the pool.
+        // The pool's workers close their connections as they stop, so shut it
+        // down before telemetry to record those close events.
+        tokio_rt.shutdown_timeout(TOKIO_SHUTDOWN_TIMEOUT);
+        drained = dbt_rt.shutdown_timeout(DBT_RUNTIME_SHUTDOWN_TIMEOUT);
+        if !drained {
+            emit_debug_log_message(format!(
+                "dbt runtime threads still running after {DBT_RUNTIME_SHUTDOWN_TIMEOUT:?}; not waiting for them"
+            ));
+        }
+    }
+
     // Shut down telemetry file writers (fast: ~300µs, must happen before exit).
     if let Err(errors) = feature_stack.tracing.shutdown_once() {
         for err in errors {
@@ -225,9 +254,6 @@ pub fn run_cli_with_code(cli: Box<Cli>, arg: SystemArgs, feature_stack: Arc<Feat
             eprintln!("{}", err.pretty());
         }
     }
-
-    // Remove the panic hook
-    let _ = std::panic::take_hook();
 
     // Handle regular execution
     match result {
@@ -240,20 +266,15 @@ pub fn run_cli_with_code(cli: Box<Cli>, arg: SystemArgs, feature_stack: Arc<Feat
                 // SIGINIT is 2, so we should return 130.
                 let exit_code = 1;
 
-                // When we get a Ctrl+C (or process cancellation request in some other way),
-                // the process may behave weirdly (e.g. some threads deadlocked), so we
-                // must perform a "hard" exit that doesn't wait for threads to clean up.
-                // This entails two thing:
-                //
-                // 1. we must not allow the tokio runtime destructor to run.
-                //    (technically, this is implied by the 2nd step, but
-                //    nonetheless we make it explicit here in case this function
-                //    gets refactored in the future)
-                std::mem::forget(dbt_rt);
-                std::mem::forget(tokio_rt);
-                // 2. Call a platform-specific function to hard terminate the
-                //    current process
+                // The runtimes were forgotten above. Terminate the process with
+                // a platform-specific function.
                 hard_exit(exit_code);
+            }
+
+            // A normal exit would tear the process down under threads that may
+            // be inside a driver call, which can hang on Windows.
+            if !drained {
+                hard_exit(0);
             }
 
             // Otherwise, allow graceful shutdown and normal exit:
@@ -266,6 +287,16 @@ pub fn run_cli_with_code(cli: Box<Cli>, arg: SystemArgs, feature_stack: Arc<Feat
         }
     }
 }
+
+/// How long exit waits for tokio tasks to finish, so a stuck blocking call
+/// can't keep it alive. Tasks stop at their next await, so this is rarely hit.
+pub const TOKIO_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// How long exit waits for dbt runtime workers to finish their cleanup, so a
+/// hung callback can't keep it alive. Longer than the tokio wait because
+/// workers close warehouse connections over the network, which can be slow or
+/// retry.
+pub const DBT_RUNTIME_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 pub fn print_trimmed_error(msg: String) {
     let mut stderr = io::stderr();
@@ -303,7 +334,7 @@ pub fn print_trimmed_error(msg: String) {
 #[cfg(target_os = "windows")]
 /// Terminates the current process with the given exit code, without waiting for
 /// threads to clean up
-fn hard_exit(exit_code: i32) -> ! {
+pub fn hard_exit(exit_code: i32) -> ! {
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, TerminateProcess};
 
     unsafe {
@@ -318,6 +349,6 @@ fn hard_exit(exit_code: i32) -> ! {
 #[cfg(not(target_os = "windows"))]
 /// Terminates the current process with the given exit code, without waiting for
 /// threads to clean up
-fn hard_exit(exit_code: i32) -> ! {
+pub fn hard_exit(exit_code: i32) -> ! {
     std::process::exit(exit_code)
 }

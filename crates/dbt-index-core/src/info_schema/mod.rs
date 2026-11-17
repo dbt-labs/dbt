@@ -365,9 +365,6 @@ fn build_own(
     match spec.name {
         "dag_nodes" => build_dag_nodes(staging_dir, out),
         "relations" => build_relations(staging_dir, out),
-        // No source of taxonomy data yet; the shape is published so it can be
-        // filled without a schema change.
-        "classifiers" => Ok(Vec::new()),
         other => Err(IndexError::Other(format!(
             "info schema: no builder for assembled table '{other}'"
         ))),

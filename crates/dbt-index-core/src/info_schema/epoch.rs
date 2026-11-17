@@ -724,7 +724,7 @@ pub fn origin(staging_table: &str) -> Option<Origin> {
         // Single-row snapshots read field by field, with fallbacks.
         "project" | "project_vars" | "project_env_vars" | "packages" => Custom,
         // ── written by nothing ───────────────────────────────────────────
-        // `semantic_relationships` has a schema and spec but no writer in
+        // `semantic_relationships` has a schema but no writer in
         // `metadata_to_parquet.rs`; `diagnostics`, `adapter_queries` and
         // `node_input_files` have no epoch source at all.
         "semantic_relationships" | "diagnostics" | "adapter_queries" | "node_input_files" => Empty,

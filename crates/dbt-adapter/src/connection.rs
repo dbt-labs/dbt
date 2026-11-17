@@ -9,6 +9,8 @@ use dbt_adapter_engine::ConnectionFactory;
 use dbt_adbc::Connection;
 use dbt_common::AdapterResult;
 use dbt_common::cancellation::Cancellable;
+use dbt_common::panic::catch_unwind_quietly;
+use dbt_common::tracing::dbt_emit::emit_debug_log_message;
 use dbt_telemetry::AdapterConnectionClose;
 use dbt_tracing::emit::emit_trace_event;
 use minijinja::State;
@@ -58,9 +60,25 @@ pub(crate) fn clear_open_transaction() {
 /// connection left in the wrong scope by a failed `RESET USE` / warehouse
 /// restore can't be handed to the next node scheduled on this thread.
 pub fn drop_thread_local_connection() {
-    let conn = CONNECTION.with(|c| c.take());
-    drop(conn);
+    if let Some(conn) = CONNECTION.with(|c| c.take()) {
+        emit_connection_close(&*conn);
+        drop(conn);
+    }
     clear_open_transaction();
+}
+
+/// Close this thread's cached connection. Register it as the `dbt-runtime`
+/// pool's `on_thread_stop` callback so a worker's connection is released when
+/// the worker exits, instead of being leaked by the thread-local destructor.
+///
+/// A panic while releasing the connection is caught quietly, so a panic hook
+/// that exits the process (as the CLI's does) lets the worker exit instead.
+pub fn close_thread_local_connection() {
+    if let Err(message) = catch_unwind_quietly(drop_thread_local_connection) {
+        emit_debug_log_message(format!(
+            "panicked while closing a connection on worker exit: {message}"
+        ));
+    }
 }
 
 /// Take this thread's cached connection, if it can be used with `fingerprint`.
@@ -187,20 +205,24 @@ impl Drop for ConnectionGuard<'_> {
         if self.persist {
             let conn = self.conn.take();
             CONNECTION.with(|c| c.replace(conn));
-        } else if let Some(conn) = self.conn.as_ref() {
+        } else if let Some(conn) = self.conn.as_deref() {
             // The session is closed with the connection, which rolls the transaction back.
             clear_open_transaction();
-            emit_trace_event(|| {
-                (
-                    AdapterConnectionClose {
-                        repr: format!("{conn:?}"),
-                    }
-                    .into(),
-                    None,
-                )
-            });
+            emit_connection_close(conn);
         }
     }
+}
+
+fn emit_connection_close(conn: &(dyn Connection + 'static)) {
+    emit_trace_event(|| {
+        (
+            AdapterConnectionClose {
+                repr: format!("{conn:?}"),
+            }
+            .into(),
+            None,
+        )
+    });
 }
 
 mod pri {
@@ -210,7 +232,9 @@ mod pri {
     ///
     /// The point of this struct is to avoid calling the `Drop` destructor on
     /// the wrapped [Connection] during process exit, which dead locks on
-    /// Windows.
+    /// Windows. Pool workers that run [`close_thread_local_connection`] on
+    /// exit close their connection before that, so this is only a backstop for
+    /// a connection still parked when the thread-local is destroyed.
     pub(super) struct TlsConnectionContainer(RefCell<Option<Box<dyn Connection>>>);
 
     impl TlsConnectionContainer {
@@ -320,7 +344,7 @@ mod tests {
     use crate::stmt_splitter::DefaultStmtSplitter;
     use dbt_schemas::schemas::relations::DEFAULT_RESOLVED_QUOTING;
     use std::collections::BTreeMap;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
     fn make_conn() -> Box<dyn Connection> {
         Box::new(NoopConnection)
@@ -537,6 +561,76 @@ mod tests {
                 assert!(conn.is_none());
             });
         });
+    }
+
+    /// Counts its drops, and panics in `drop` if asked to.
+    struct DropCountingConnection {
+        closed: Arc<AtomicUsize>,
+        panic_on_drop: bool,
+    }
+
+    impl Drop for DropCountingConnection {
+        fn drop(&mut self) {
+            self.closed.fetch_add(1, Ordering::SeqCst);
+            if self.panic_on_drop {
+                panic!("driver release failed");
+            }
+        }
+    }
+
+    impl Connection for DropCountingConnection {
+        fn new_statement(&mut self) -> adbc_core::error::Result<Box<dyn dbt_adbc::Statement>> {
+            NoopConnection.new_statement()
+        }
+
+        fn cancel(&mut self) -> adbc_core::error::Result<()> {
+            Ok(())
+        }
+
+        fn commit(&mut self) -> adbc_core::error::Result<()> {
+            Ok(())
+        }
+
+        fn rollback(&mut self) -> adbc_core::error::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Test helper: parks a connection on the only worker of a pool that closes
+    /// connections on thread stop, shuts the pool down, and returns how many
+    /// were closed. Fails the test if the worker doesn't exit in time.
+    fn park_then_shut_down(panic_on_drop: bool) -> usize {
+        let closed = Arc::new(AtomicUsize::new(0));
+        let rt = dbt_runtime::builder::Builder::new()
+            .max_blocking_threads(1)
+            // Long enough that the worker can't idle out before shutdown.
+            .keep_alive(std::time::Duration::from_secs(600))
+            .on_thread_stop(close_thread_local_connection)
+            .build();
+
+        let conn = DropCountingConnection {
+            closed: Arc::clone(&closed),
+            panic_on_drop,
+        };
+        futures::executor::block_on(rt.spawn_blocking(move || {
+            let conn: Box<dyn Connection> = Box::new(conn);
+            CONNECTION.with(|c| c.replace(Some(conn)));
+        }))
+        .unwrap();
+        assert_eq!(closed.load(Ordering::SeqCst), 0, "parked, not closed");
+
+        assert!(rt.shutdown_timeout(std::time::Duration::from_secs(10)));
+        closed.load(Ordering::SeqCst)
+    }
+
+    #[test]
+    fn worker_exit_closes_the_parked_connection() {
+        assert_eq!(park_then_shut_down(false), 1);
+    }
+
+    #[test]
+    fn a_panicking_connection_close_does_not_break_shutdown() {
+        assert_eq!(park_then_shut_down(true), 1);
     }
 
     // A fingerprint mismatch must discard and recreate the connection — this is
