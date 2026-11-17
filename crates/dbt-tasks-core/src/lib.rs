@@ -48,7 +48,6 @@ use dbt_dag::schedule::Schedule;
 use dbt_frontend_common::span::ReclassifySpan;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_schemas::schemas::Preview;
-use dbt_schemas::schemas::common::DbtMaterialization;
 use dbt_schemas::schemas::{CommonAttributes, ContextRunResult};
 use dbt_schemas::state::ResolverState;
 use dbt_schemas::stats::Stats;
@@ -142,22 +141,9 @@ impl TaskRunnerStats {
         self.run
             .stats
             .iter()
-            .filter(|stat| !self.is_ephemeral_node(&stat.unique_id))
+            .filter(|stat| !utils::is_ephemeral_node(&self.run, &stat.unique_id))
             .map(|stat| generate_run_results(stat, &self.run, adapter_responses))
             .collect()
-    }
-
-    fn is_ephemeral_node(&self, unique_id: &str) -> bool {
-        self.run
-            .nodes
-            .as_ref()
-            .and_then(|nodes| nodes.get_node(unique_id))
-            .is_some_and(|node| {
-                matches!(
-                    node.materialized(),
-                    DbtMaterialization::Ephemeral | DbtMaterialization::Inline
-                )
-            })
     }
 
     /// Build a set of (database, schema) tuples from successfully executed relational nodes only.
