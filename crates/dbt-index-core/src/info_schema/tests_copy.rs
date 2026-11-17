@@ -241,7 +241,8 @@ fn copy_relations_supersede_across_epochs() {
     assert_eq!(rows[0]["row_count"], json!(200));
 }
 
-fn write_constraints_corpus(metadata_dir: &Path) {
+/// One `parse/nodes` epoch holding `rows`.
+fn write_parse_nodes(metadata_dir: &Path, rows: &[Value]) {
     let ts = DataType::Timestamp(TimeUnit::Microsecond, Some(Arc::from("UTC")));
     let utf8 = |name: &str| Field::new(name, DataType::Utf8, true);
     let list = |name: &str| {
@@ -251,7 +252,6 @@ fn write_constraints_corpus(metadata_dir: &Path) {
             false,
         )
     };
-
     let nodes_dir = metadata_dir.join(crate::ingest::PARSE_NODES_SUBDIR);
     std::fs::create_dir_all(&nodes_dir).unwrap();
     let nodes_schema = Arc::new(Schema::new(vec![
@@ -273,15 +273,85 @@ fn write_constraints_corpus(metadata_dir: &Path) {
         list("tags"),
         list("fqn"),
         list("depends_on"),
-        Field::new("ingested_at", ts.clone(), false),
+        Field::new("ingested_at", ts, false),
         Field::new("is_disabled", DataType::Int32, true),
         utf8("payload"),
     ]));
+    crate::parquet::write_table(&nodes_dir.join("v1_0.parquet"), nodes_schema, rows).unwrap();
+}
+
+/// A hook's phase is its only tag. `dbt.hooks` publishes it as `phase`, on both
+/// materializers, and has no `tags`.
+#[test]
+fn hooks_publish_their_phase() {
+    if crate::db::Db::open_memory().is_err() {
+        eprintln!("skipping: DuckDB driver unavailable");
+        return;
+    }
+    let metadata = tempfile::tempdir().unwrap();
+    let hook = |id: &str, tags: Value| {
+        json!({
+            "unique_id": id,
+            "resource_type": "operation",
+            "name": id,
+            "package_name": "pkg",
+            "tags": tags,
+            "fqn": ["pkg", "hooks", id],
+            "depends_on": [],
+            "ingested_at": "2026-09-08T12:00:00Z",
+            "is_disabled": 0,
+            "payload": "{}",
+        })
+    };
+    write_parse_nodes(
+        metadata.path(),
+        &[
+            hook("operation.pkg.pkg-on-run-start-0", json!(["on-run-start"])),
+            hook("operation.pkg.pkg-on-run-end-0", json!(["on-run-end"])),
+            hook("operation.pkg.untagged", json!([])),
+        ],
+    );
+
+    for how in [super::Materializer::Arrow, super::Materializer::Copy] {
+        let root = tempfile::tempdir().unwrap();
+        let staging = tempfile::tempdir().unwrap();
+        super::write_info_schema_with(how, metadata.path(), root.path(), staging.path()).unwrap();
+        let rows = super::tests::out_rows(&super::versioned_dir(root.path()), "dbt.hooks.parquet");
+        let phase_of = |id: &str| {
+            let row = rows
+                .iter()
+                .find(|r| r["unique_id"] == json!(id))
+                .unwrap_or_else(|| panic!("{how:?}: no hook {id}: {rows:?}"));
+            assert!(row.get("tags").is_none(), "{how:?}: hooks still have tags");
+            row["phase"].clone()
+        };
+        assert_eq!(
+            phase_of("operation.pkg.pkg-on-run-start-0"),
+            json!("on-run-start")
+        );
+        assert_eq!(
+            phase_of("operation.pkg.pkg-on-run-end-0"),
+            json!("on-run-end")
+        );
+        assert_eq!(phase_of("operation.pkg.untagged"), Value::Null, "{how:?}");
+    }
+}
+
+fn write_constraints_corpus(metadata_dir: &Path) {
+    let ts = DataType::Timestamp(TimeUnit::Microsecond, Some(Arc::from("UTC")));
+    let utf8 = |name: &str| Field::new(name, DataType::Utf8, true);
+    let list = |name: &str| {
+        Field::new(
+            name,
+            DataType::List(Arc::new(Field::new("item", DataType::Utf8, true))),
+            false,
+        )
+    };
+
     let model_constraints = json!([{"type": "primary_key", "columns": ["order_id"]}]);
     let payload = json!({"__model_attr__": {"constraints": model_constraints}});
-    crate::parquet::write_table(
-        &nodes_dir.join("v1_0.parquet"),
-        nodes_schema,
+    write_parse_nodes(
+        metadata_dir,
         &[json!({
             "unique_id": "model.pkg.orders",
             "resource_type": "model",
@@ -294,8 +364,7 @@ fn write_constraints_corpus(metadata_dir: &Path) {
             "is_disabled": 0,
             "payload": payload.to_string(),
         })],
-    )
-    .unwrap();
+    );
 
     let columns_dir = metadata_dir.join(crate::ingest::PARSE_COLUMNS_SUBDIR);
     std::fs::create_dir_all(&columns_dir).unwrap();

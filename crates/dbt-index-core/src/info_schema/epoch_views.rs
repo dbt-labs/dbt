@@ -271,6 +271,7 @@ fn empty_view_sql(spec: &TableSpec) -> Result<String, IndexError> {
                 col.out,
                 field.data_type(),
                 None,
+                false,
                 &mut PayloadPaths::default(),
             )
         })
@@ -419,7 +420,8 @@ fn path_list(paths: &[&str]) -> String {
 /// reaches consumers as a view whose column types depend on which file the glob
 /// happened to match.
 /// `guard` is a row predicate the column is null outside of — the join-partner
-/// case described in [`table_view_sql`].
+/// case described in [`table_view_sql`]. `first` takes the first element of the
+/// list `expr` yields, as [`ColSpec::first`](super::spec::ColSpec::first) asks.
 ///
 /// Payload paths are read through `payload`, which the view extracts once per
 /// row; see [`PayloadPaths`].
@@ -428,6 +430,7 @@ fn column_sql(
     out_name: &str,
     ty: &DataType,
     guard: Option<&str>,
+    first: bool,
     payload: &mut PayloadPaths,
 ) -> Result<String, IndexError> {
     let quoted = |s: &str| format!("\"{}\"", s.replace('"', "\"\""));
@@ -582,6 +585,12 @@ fn column_sql(
     let body = match guard {
         Some(g) => format!("CASE WHEN {g} THEN {body} END"),
         None => body,
+    };
+    // NULL for an empty list, as in the Arrow path.
+    let body = if first {
+        format!("list_extract({body}, 1)")
+    } else {
+        body
     };
     Ok(format!("CAST({body} AS {ty_sql}) AS {}", quoted(out_name)))
 }
@@ -761,18 +770,6 @@ fn own_sql(
         )
     };
     Ok(match spec.name {
-        // No source of taxonomy data on either path — `build_own` returns no rows
-        // at all — so the shape is published and the rows are not. The typed nulls
-        // come from the same `resolve_cols` every other table uses, since every
-        // column of this spec is spec-declared null.
-        "classifiers" => {
-            let cols = match resolve_cols(spec, false, &[], &mut PayloadPaths::default())? {
-                Ok(cols) => cols,
-                Err(why) => return Err(IndexError::Other(why)),
-            };
-            let list: Vec<&str> = cols.iter().map(|c| c.sql.as_str()).collect();
-            Some((format!("{}WHERE FALSE", header(&list)), None))
-        }
         // Every live, enabled node whose resource type participates in the DAG.
         //
         // The Rust builder gets there in two pieces because its inputs are two
@@ -857,8 +854,7 @@ fn own_sql(
             );
             Some((sql, Some("epoch_run_catalog_stats")))
         }
-        // The single-row project snapshot. `ai_context` is left null: the staging
-        // schema declares it and `write_parse_project` does not write it.
+        // The single-row project snapshot.
         "project" => {
             let cols = cast_cols(
                 spec,
@@ -1372,7 +1368,14 @@ fn resolve_cols(
         // A spec-declared null column has no staging source on either path.
         if col.ty.is_some() {
             resolved.push(ResolvedCol {
-                sql: column_sql(EpochExpr::Null, col.out, field.data_type(), None, payload)?,
+                sql: column_sql(
+                    EpochExpr::Null,
+                    col.out,
+                    field.data_type(),
+                    None,
+                    false,
+                    payload,
+                )?,
             });
             continue;
         }
@@ -1402,7 +1405,7 @@ fn resolve_cols(
         };
         let guard = guards.iter().find(|(t, _)| *t == table).map(|(_, g)| *g);
         resolved.push(ResolvedCol {
-            sql: column_sql(expr, col.out, field.data_type(), guard, payload)?,
+            sql: column_sql(expr, col.out, field.data_type(), guard, col.first, payload)?,
         });
     }
     Ok(Ok(resolved))
@@ -1460,7 +1463,8 @@ mod tests {
     fn payload_columns_index_one_list_per_extract() {
         let mut payload = PayloadPaths::default();
         let ty = DataType::Utf8;
-        let mut col = |expr| column_sql(expr, "c", &ty, None, &mut payload).expect("column_sql");
+        let mut col =
+            |expr| column_sql(expr, "c", &ty, None, false, &mut payload).expect("column_sql");
         let first = col(EpochExpr::JsonFirst(&["a", "b"], "NULL"));
         let again = col(EpochExpr::Json("b"));
         let raw = col(EpochExpr::JsonRawFirst(&["c", "a"]));
