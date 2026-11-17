@@ -95,3 +95,19 @@ ref_private_model_macro_sql = """
   {{ log("Successfully referenced private model", info=true) }}
 {% endmacro %}
 """
+
+transaction_probe_macros_sql = """
+{% macro probe_insert(tag) %}
+  {% call statement('probe') %}
+    insert into {{ target.schema }}.txn_probe values ('{{ tag }}')
+  {% endcall %}
+{% endmacro %}
+
+{% macro probe_insert_run_query(tag) %}
+  {% do run_query("insert into " ~ target.schema ~ ".txn_probe values ('" ~ tag ~ "')") %}
+{% endmacro %}
+
+{% macro log_only() %}
+  {{ log("nothing to commit", info=true) }}
+{% endmacro %}
+"""
