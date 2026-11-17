@@ -92,6 +92,8 @@ pub enum AdapterType {
     /// `lake_compute`, its names before its two renames, are not accepted on
     /// input; see `test_retired_names_are_not_accepted_on_input`.
     LakeCompute,
+    /// SingleStore
+    SingleStore,
 }
 
 impl AdapterType {
@@ -135,7 +137,7 @@ pub fn quote_char(adapter_type: AdapterType) -> char {
         Athena | Trino | Starburst => '"',
         Datafusion => '"',
         // https://clickhouse.com/docs/sql-reference/syntax#identifiers
-        ClickHouse => '`',
+        ClickHouse | SingleStore => '`',
         // Exasol is PostgreSQL-compatible, so it uses double quotes for identifiers.
         Exasol => '"',
         Dremio => todo!("Dremio"),
@@ -193,6 +195,7 @@ mod tests {
             ("tRino", AdapterType::Trino),
             ("dAtafusion", AdapterType::Datafusion),
             ("lAkecompute", AdapterType::LakeCompute),
+            ("sInglestore", AdapterType::SingleStore),
         ];
         for (input, expected) in cases {
             let res = input.parse::<AdapterType>();
@@ -286,6 +289,7 @@ mod tests {
                 (AdapterType::Dremio, "dremio"),
                 (AdapterType::Oracle, "oracle"),
                 (AdapterType::LakeCompute, "lakecompute"),
+                (AdapterType::SingleStore, "singlestore"),
             ]
         );
     }
@@ -320,6 +324,11 @@ mod tests {
             quote_char(AdapterType::ClickHouse),
             '`',
             "ClickHouse uses backtick quoting"
+        );
+        assert_eq!(
+            quote_char(AdapterType::SingleStore),
+            '`',
+            "SingleStore uses backtick quoting"
         );
     }
 

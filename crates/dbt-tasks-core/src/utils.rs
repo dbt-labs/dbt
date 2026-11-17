@@ -10,13 +10,38 @@ use dbt_common::{
     warn_error_options::WarnErrorOptions,
 };
 use dbt_schemas::{
-    schemas::{RunResultOutput, RunResultsArgs, RunResultsArtifact, RunResultsMetadata},
+    schemas::{
+        RunResultOutput, RunResultsArgs, RunResultsArtifact, RunResultsMetadata,
+        common::DbtMaterialization,
+    },
     stats::Stats,
 };
 
 use crate::generate_run_results;
 
+/// Whether `unique_id` is an ephemeral or inline model of this run.
+///
+/// These never materialize into a relation, so dbt-core leaves their results out
+/// of both `run_results.json` and the `results` that `on-run-end` hooks see
+/// (`GraphRunnableTask._handle_result`: `if not is_ephemeral:
+/// self.node_results.append(result)`). Fusion still records a `skipped` stat for
+/// each, which `dbt retry` would treat as retryable.
+pub fn is_ephemeral_node(stats: &Stats, unique_id: &str) -> bool {
+    stats
+        .nodes
+        .as_ref()
+        .and_then(|nodes| nodes.get_node(unique_id))
+        .is_some_and(|node| {
+            matches!(
+                node.materialized(),
+                DbtMaterialization::Ephemeral | DbtMaterialization::Inline
+            )
+        })
+}
+
 /// Build a `RunResultsArtifact` from run stats.
+///
+/// Ephemeral and inline models are left out; see [`is_ephemeral_node`].
 ///
 /// Pass the resolved `DbtState::warn_error`/`warn_error_options`; `EvalArgs` holds only the CLI/env value.
 pub fn build_run_results_artifact(
@@ -29,15 +54,17 @@ pub fn build_run_results_artifact(
     let now = SystemTime::now();
     let generated_at: DateTime<Utc> = DateTime::from(now);
 
-    let results: Vec<RunResultOutput> = stats
-        .stats
-        .iter()
+    let reported = || {
+        stats
+            .stats
+            .iter()
+            .filter(|stat| !is_ephemeral_node(stats, &stat.unique_id))
+    };
+    let results: Vec<RunResultOutput> = reported()
         .map(|stat| generate_run_results(stat, stats, adapter_responses).into())
         .collect();
 
-    let total_elapsed_time: f64 = stats
-        .stats
-        .iter()
+    let total_elapsed_time: f64 = reported()
         .map(|stat| stat.get_duration().as_secs_f64())
         .sum();
 
@@ -77,6 +104,17 @@ pub fn build_run_results_artifact(
         Err(e) => emit_warn_log_message(
             ErrorCode::SerializationError,
             format!("Failed to serialize warn_error_options for run_results.json: {e}"),
+        ),
+    }
+    // Always present, matching dbt-core (`{}` without --vars), so that
+    // `dbt retry` re-renders the retried nodes with the same vars.
+    match dbt_yaml::to_value(&arg.vars) {
+        Ok(value) => {
+            args_map.insert("vars".to_string(), value);
+        }
+        Err(e) => emit_warn_log_message(
+            ErrorCode::SerializationError,
+            format!("Failed to serialize vars for run_results.json: {e}"),
         ),
     }
     // Omitted when false, matching dbt-core.
@@ -143,6 +181,65 @@ mod tests {
             batch_results: Default::default(),
             compiled_code: Default::default(),
         }
+    }
+
+    /// Ephemeral models never materialize, so they must not reach run_results.json, matching
+    /// dbt-core. A `skipped` row for one would make every `dbt retry` re-run it, even after a
+    /// fully successful build.
+    #[test]
+    fn test_run_results_omit_ephemeral_models() {
+        use dbt_common::stats::{NodeStatus, Stat};
+        use dbt_schemas::schemas::nodes::DbtModel;
+        use dbt_schemas::schemas::{CommonAttributes, NodeBaseAttributes, Nodes};
+        use std::sync::Arc;
+
+        let model = |id: &str, materialized: DbtMaterialization| {
+            Arc::new(DbtModel {
+                __common_attr__: CommonAttributes {
+                    unique_id: id.to_string(),
+                    name: id.to_string(),
+                    ..Default::default()
+                },
+                __base_attr__: NodeBaseAttributes {
+                    materialized,
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+        };
+        let mut nodes = Nodes::default();
+        for (id, materialized) in [
+            ("model.pkg.tbl", DbtMaterialization::Table),
+            ("model.pkg.eph", DbtMaterialization::Ephemeral),
+        ] {
+            nodes.models.insert(id.to_string(), model(id, materialized));
+        }
+        let stat = |id: &str, status: NodeStatus| {
+            Stat::new(id.to_string(), SystemTime::now(), None, status, None, 1)
+        };
+        let stats = Stats {
+            stats: vec![
+                stat("model.pkg.eph", NodeStatus::NoOp),
+                stat("model.pkg.tbl", NodeStatus::Succeeded),
+            ],
+            nodes: Some(nodes),
+            ..empty_stats()
+        };
+
+        let artifact = build_run_results_artifact(
+            &stats,
+            &HashMap::new(),
+            &EvalArgs::default(),
+            false,
+            &WarnErrorOptions::default(),
+        );
+
+        let ids: Vec<&str> = artifact
+            .results
+            .iter()
+            .map(|r| r.unique_id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["model.pkg.tbl"]);
     }
 
     /// The args written to run_results.json must be flat at the top level (matching
@@ -274,5 +371,48 @@ mod tests {
             Some(true),
             "warn_error must round-trip as true when set"
         );
+    }
+
+    /// `vars` must round-trip (and be `{}` without --vars, matching dbt-core), so `dbt retry`
+    /// can re-run with the same vars (dbt-labs/dbt#15667).
+    #[test]
+    fn test_run_results_args_record_vars() {
+        for vars in [
+            BTreeMap::new(),
+            BTreeMap::from([(
+                "probe".to_string(),
+                dbt_yaml::Value::string("from_build".to_string()),
+            )]),
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            let mut arg = EvalArgs::default();
+            arg.io.out_dir = tmp.path().to_path_buf();
+            arg.vars = vars.clone();
+
+            write_run_results_json(
+                &build_run_results_artifact(
+                    &empty_stats(),
+                    &HashMap::new(),
+                    &arg,
+                    false,
+                    &WarnErrorOptions::default(),
+                ),
+                &arg,
+            )
+            .unwrap();
+
+            let artifact =
+                RunResultsArtifact::from_file(&tmp.path().join("run_results.json")).unwrap();
+            let recorded = artifact
+                .args
+                .__other__
+                .get("vars")
+                .and_then(|v| v.as_mapping())
+                .expect("vars must always be present");
+            assert_eq!(recorded.len(), vars.len());
+            for (k, v) in &vars {
+                assert_eq!(recorded.get(k.as_str()), Some(v));
+            }
+        }
     }
 }

@@ -11,6 +11,7 @@ use dbt_common::tracing::dbt_emit::emit_info_log_message;
 
 mod databricks;
 mod redshift;
+mod singlestore;
 mod snowflake;
 
 use crate::cow::lowercase;
@@ -80,7 +81,7 @@ impl ConnectionRetryPolicy {
     pub fn new(adapter_type: AdapterType, config: &AdapterConfig) -> ConnectionRetryPolicy {
         let retries_key = match adapter_type {
             // https://github.com/dbt-labs/dbt-adapters/blob/802d40f0f0eb663c17e5be08d1e3fb2e55b9ee34/dbt-redshift/src/dbt/adapters/redshift/connections.py#L149-L150
-            AdapterType::Redshift => "retries",
+            AdapterType::Redshift | AdapterType::SingleStore => "retries",
             _ => "connect_retries",
         };
         let max_retries = config
@@ -175,6 +176,7 @@ impl ConnectionRetryPolicy {
             Snowflake => snowflake::is_retryable_snowflake_login_error(config, err),
             Databricks => databricks::is_retryable_databricks_error(config, err),
             Redshift => redshift::is_retryable_redshift_login_error(config, err),
+            SingleStore => singlestore::is_retryable_singlestore_login_error(config, err),
             // Other adapters don't have a retryable-error criteria implemented here yet.
             _ => false,
         }
@@ -690,6 +692,20 @@ mod tests {
         let cfg = AdapterConfig::new(mapping);
         assert_eq!(
             ConnectionRetryPolicy::new(AdapterType::Redshift, &cfg).max_retries,
+            3
+        );
+    }
+
+    #[test]
+    fn singlestore_uses_retries_and_ignores_connect_retries() {
+        // SingleStore reads `retries` matching dbt-singlestore Python v1 credentials.
+        let mapping = dbt_yaml::Mapping::from_iter([
+            ("connect_retries".into(), 5.into()),
+            ("retries".into(), 3.into()),
+        ]);
+        let cfg = AdapterConfig::new(mapping);
+        assert_eq!(
+            ConnectionRetryPolicy::new(AdapterType::SingleStore, &cfg).max_retries,
             3
         );
     }

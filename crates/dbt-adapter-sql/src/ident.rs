@@ -114,7 +114,8 @@ pub fn max_identifier_length(adapter_type: AdapterType) -> Option<NonZero<usize>
             Some(unsafe { NonZero::new_unchecked(127) })
         }
         Snowflake | Bigquery | Databricks | Spark | DuckDB | Salesforce | Fabric | ClickHouse
-        | Exasol | Athena | Starburst | Trino | Datafusion | Dremio | Oracle | LakeCompute => None,
+        | Exasol | Athena | Starburst | Trino | Datafusion | Dremio | Oracle | LakeCompute
+        | SingleStore => None,
     }
 }
 
@@ -132,7 +133,7 @@ pub fn max_identifier_length(adapter_type: AdapterType) -> Option<NonZero<usize>
 pub const fn canonical_quote(backend: AdapterType) -> QuotingStyle {
     use AdapterType::*;
     match backend {
-        Bigquery | Databricks | Spark | Athena => QuotingStyle::Backtick,
+        Bigquery | Databricks | Spark | Athena | SingleStore => QuotingStyle::Backtick,
         ClickHouse | Exasol | Snowflake | Redshift | Postgres | Salesforce | DuckDB => {
             QuotingStyle::Double
         }
@@ -170,7 +171,8 @@ pub fn is_valid_ident_char(c: char, backend: AdapterType) -> bool {
             | Dremio
             | Oracle
             | LakeCompute
-            | Exasol => c.is_alphanumeric() || c == '_',
+            | Exasol
+            | SingleStore => c.is_alphanumeric() || c == '_',
     }
 }
 
@@ -292,9 +294,12 @@ pub fn quote_identifier(id: &str, backend: AdapterType) -> String {
 /// (quote), which handle identifiers.
 pub fn escape_string_literal(s: &str, backend: AdapterType) -> String {
     match backend {
-        AdapterType::Snowflake | AdapterType::Redshift | AdapterType::Postgres => {
-            s.replace('\\', "\\\\").replace('\'', "''")
-        }
+        // MySQL-family (SingleStore) literals also treat `\` as an escape character in the
+        // default sql_mode, so a trailing `\` would swallow the closing quote.
+        AdapterType::Snowflake
+        | AdapterType::Redshift
+        | AdapterType::Postgres
+        | AdapterType::SingleStore => s.replace('\\', "\\\\").replace('\'', "''"),
         AdapterType::Bigquery
         | AdapterType::Databricks
         | AdapterType::Spark
@@ -448,6 +453,7 @@ mod sanitize_tests {
             AdapterType::Snowflake,
             AdapterType::Redshift,
             AdapterType::Postgres,
+            AdapterType::SingleStore,
         ] {
             for value in values {
                 let escaped = escape_string_literal(value, backend);
@@ -471,6 +477,16 @@ mod sanitize_tests {
                 assert_eq!(unescape_backslash_literal(&escaped), value);
             }
         }
+    }
+
+    #[test]
+    fn singlestore_escape_string_literal_escapes_backslashes() {
+        let e = |s: &str| escape_string_literal(s, AdapterType::SingleStore);
+        assert_eq!(e("o'brien"), "o''brien");
+        assert_eq!(e("trailing\\"), "trailing\\\\");
+        assert_eq!(e("\\' or 1=1 -- "), "\\\\'' or 1=1 -- ");
+        // Other backends keep plain ANSI doubling.
+        assert_eq!(escape_string_literal("a\\b", AdapterType::DuckDB), "a\\b");
     }
 
     #[test]
@@ -629,6 +645,7 @@ mod quote_ident_tests {
         AdapterType::Trino,
         AdapterType::Datafusion,
         AdapterType::LakeCompute,
+        AdapterType::SingleStore,
     ];
 
     #[test]
@@ -684,6 +701,7 @@ mod quote_ident_tests {
         quote_ident_matches_trino => AdapterType::Trino,
         quote_ident_matches_datafusion => AdapterType::Datafusion,
         quote_ident_matches_lakecompute => AdapterType::LakeCompute,
+        quote_ident_matches_singlestore => AdapterType::SingleStore,
     }
 
     #[test]

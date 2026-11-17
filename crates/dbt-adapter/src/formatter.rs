@@ -45,7 +45,7 @@ impl SqlLiteralFormatter {
                 let escaped_str = l.replace("'", "\\'");
                 format!("'{escaped_str}'")
             }
-            AdapterType::Snowflake => {
+            AdapterType::Snowflake | AdapterType::SingleStore => {
                 let escaped_str = l.replace('\\', "\\\\").replace('\'', "''");
                 format!("'{escaped_str}'")
             }
@@ -292,6 +292,18 @@ mod tests {
         assert_eq!(f.format_str("hello"), "'hello'");
         assert_eq!(f.format_str("Mom\\Baby"), "'Mom\\\\Baby'");
         assert_eq!(f.format_str("it's"), "'it''s'");
+    }
+
+    #[test]
+    fn test_singlestore_format_str() {
+        let f = SqlLiteralFormatter::new(AdapterType::SingleStore);
+
+        assert_eq!(f.format_str(""), "''");
+        assert_eq!(f.format_str("hello"), "'hello'");
+        assert_eq!(f.format_str("it's"), "'it''s'");
+        assert_eq!(f.format_str(r"trailing\"), r"'trailing\\'");
+        assert_eq!(f.format_str(r"a\b'c"), r"'a\\b''c'");
+        assert_eq!(f.format_str(r"\'"), r"'\\'''");
     }
 
     #[test]

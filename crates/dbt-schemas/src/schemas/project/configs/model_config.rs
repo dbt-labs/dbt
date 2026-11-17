@@ -595,6 +595,28 @@ pub struct ProjectModelConfig {
     #[serde(rename = "+category")]
     pub category: Option<DataLakeObjectCategory>,
 
+    // SingleStore
+    #[serde(rename = "+storage_type")]
+    pub storage_type: Option<String>,
+    #[serde(
+        default,
+        rename = "+reference",
+        deserialize_with = "bool_or_string_bool"
+    )]
+    pub reference: Option<bool>,
+    #[serde(rename = "+shard_key")]
+    pub shard_key: Option<StringOrArrayOfStrings>,
+    #[serde(rename = "+sort_key")]
+    pub sort_key: Option<StringOrArrayOfStrings>,
+    #[serde(rename = "+unique_table_key")]
+    pub unique_table_key: Option<StringOrArrayOfStrings>,
+    #[serde(rename = "+fulltext_key")]
+    pub fulltext_key: Option<StringOrArrayOfStrings>,
+    #[serde(rename = "+charset")]
+    pub charset: Option<String>,
+    #[serde(rename = "+collation")]
+    pub collation: Option<String>,
+
     /// Schema synchronization configuration
     #[serde(rename = "+sync")]
     pub sync: Option<SyncConfig>,
@@ -855,6 +877,14 @@ impl TypedRecursiveConfig for ProjectModelConfig {
             || self.primary_key.is_some()
             || self.category.is_some()
             || self.sync.is_some()
+            || self.storage_type.is_some()
+            || self.reference.is_some()
+            || self.shard_key.is_some()
+            || self.sort_key.is_some()
+            || self.unique_table_key.is_some()
+            || self.fulltext_key.is_some()
+            || self.charset.is_some()
+            || self.collation.is_some()
     }
 }
 
@@ -1171,6 +1201,16 @@ impl From<ProjectModelConfig> for ModelConfig {
                 primary_key: config.primary_key,
                 category: config.category,
 
+                // SingleStore
+                storage_type: config.storage_type,
+                reference: config.reference,
+                shard_key: config.shard_key,
+                sort_key: config.sort_key,
+                unique_table_key: config.unique_table_key,
+                fulltext_key: config.fulltext_key,
+                charset: config.charset,
+                collation: config.collation,
+
                 engine: config.engine,
                 order_by: config.order_by,
                 ttl: config.ttl,
@@ -1379,6 +1419,15 @@ impl From<ModelConfig> for ProjectModelConfig {
             unique_tmp_table_suffix: warehouse_specific.unique_tmp_table_suffix,
             primary_key: warehouse_specific.primary_key,
             category: warehouse_specific.category,
+            // SingleStore
+            storage_type: warehouse_specific.storage_type,
+            reference: warehouse_specific.reference,
+            shard_key: warehouse_specific.shard_key,
+            sort_key: warehouse_specific.sort_key,
+            unique_table_key: warehouse_specific.unique_table_key,
+            fulltext_key: warehouse_specific.fulltext_key,
+            charset: warehouse_specific.charset,
+            collation: warehouse_specific.collation,
             sync: config.sync,
             engine: warehouse_specific.engine,
             order_by: warehouse_specific.order_by,
@@ -3079,6 +3128,34 @@ __additional_properties__: {}
         let roundtripped: ProjectModelConfig = model_config.into();
         assert_eq!(roundtripped.projections, project_config.projections);
         assert_eq!(roundtripped.inserts_only, project_config.inserts_only);
+    }
+
+    #[test]
+    fn test_singlestore_charset_and_collation_roundtrip_through_model_config() {
+        use crate::schemas::project::dbt_project::TypedRecursiveConfig;
+
+        let project_config: ProjectModelConfig = dbt_yaml::from_str(
+            r#"
++charset: utf8
++collation: utf8_general_ci
+__additional_properties__: {}
+"#,
+        )
+        .unwrap();
+        assert_eq!(project_config.charset.as_deref(), Some("utf8"));
+        assert_eq!(project_config.collation.as_deref(), Some("utf8_general_ci"));
+        assert!(project_config.has_set_fields());
+
+        // ProjectModelConfig -> ModelConfig lands the keys in the warehouse config
+        let model_config: ModelConfig = project_config.into();
+        let wh = &model_config.__warehouse_specific_config__;
+        assert_eq!(wh.charset.as_deref(), Some("utf8"));
+        assert_eq!(wh.collation.as_deref(), Some("utf8_general_ci"));
+
+        // ModelConfig -> ProjectModelConfig restores them
+        let roundtripped: ProjectModelConfig = model_config.into();
+        assert_eq!(roundtripped.charset.as_deref(), Some("utf8"));
+        assert_eq!(roundtripped.collation.as_deref(), Some("utf8_general_ci"));
     }
 
     /// `apply_resolve_defaults` is the only seam that can key a default off the
