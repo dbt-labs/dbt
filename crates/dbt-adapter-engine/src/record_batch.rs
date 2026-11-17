@@ -226,6 +226,9 @@ impl RecordBatchExt for RecordBatch {
             AdapterType::LakeCompute => {
                 self.meta_string(adbc::lake_compute::schema_metadata::QUERY_ID)
             }
+            AdapterType::ClickHouse => {
+                self.meta_string(adbc::clickhouse::schema_metadata::QUERY_ID)
+            }
             _ => None,
         }
     }

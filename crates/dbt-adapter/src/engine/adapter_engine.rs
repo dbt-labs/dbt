@@ -509,6 +509,26 @@ pub(crate) fn adbc_execute_with_options(
             }
             Arc::new(Schema::new_with_metadata(schema.fields().clone(), metadata))
         };
+        let attach_clickhouse_query_id = |stmt: &TrackedStatement, schema: Arc<Schema>| {
+            if adapter_type != AdapterType::ClickHouse {
+                return schema;
+            }
+            let query_id = stmt
+                .get_option_string(OptionStatement::Other(
+                    dbt_adbc::clickhouse::QUERY_ID.to_string(),
+                ))
+                .unwrap_or_default();
+            // Replayed statements report an empty value for options that were not recorded.
+            if query_id.is_empty() {
+                return schema;
+            }
+            let mut metadata = schema.metadata().clone();
+            metadata.insert(
+                dbt_adbc::clickhouse::schema_metadata::QUERY_ID.to_string(),
+                query_id,
+            );
+            Arc::new(Schema::new_with_metadata(schema.fields().clone(), metadata))
+        };
 
         // Snowflake DML (MERGE/INSERT/UPDATE/DELETE) returns a one-row metadata batch
         // with columns like "number of rows inserted". AdapterResponse needs that batch
@@ -516,6 +536,7 @@ pub(crate) fn adbc_execute_with_options(
         if !fetch && !schema.has_dml_columns(engine.adapter_type()) {
             drop(reader);
             let schema = attach_lake_compute_metadata(&stmt, schema);
+            let schema = attach_clickhouse_query_id(&stmt, schema);
             return Ok((schema, batches, None));
         }
 
@@ -531,6 +552,7 @@ pub(crate) fn adbc_execute_with_options(
         }
         log_step_duration("batch-consume loop (for res in reader)", t_loop.elapsed());
         let schema = attach_lake_compute_metadata(&stmt, schema);
+        let schema = attach_clickhouse_query_id(&stmt, schema);
         Ok((schema, batches, None))
     };
     let _span = span!("SqlEngine::execute");
