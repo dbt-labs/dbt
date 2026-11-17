@@ -243,6 +243,21 @@ pub(crate) fn is_databricks_relation_not_found(e: &AdapterError) -> bool {
 }
 
 // Reference: https://github.com/databricks/dbt-databricks/blob/92f1442faabe0fce6f0375b95e46ebcbfcea4c67/dbt/include/databricks/macros/adapters/metadata.sql
+
+/// Whether `list_relations` for `db_schema` must use the hive_metastore path
+/// (`SHOW TABLE EXTENDED`) instead of `system.information_schema.tables`.
+///
+/// `system.information_schema` is Unity Catalog-only; hive_metastore schemas
+/// are invisible to it. An empty catalog (the dbt-databricks default) is
+/// treated as hive_metastore, matching
+/// `Relation::is_hive_metastore` (`database is none || database == "hive_metastore"`).
+fn uses_hive_metastore_listing(db_schema: &CatalogAndSchema) -> bool {
+    db_schema.resolved_catalog.is_empty()
+        || db_schema
+            .resolved_catalog
+            .eq_ignore_ascii_case(crate::relation::databricks::DEFAULT_DATABRICKS_DATABASE)
+}
+
 pub fn list_relations(
     engine: &dyn AdapterEngine,
     state: Option<&State>,
@@ -251,6 +266,22 @@ pub fn list_relations(
     db_schema: &CatalogAndSchema,
     token: CancellationToken,
 ) -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
+    // `system.information_schema.tables` only covers Unity Catalog catalogs; the
+    // hive_metastore catalog is invisible to it. An unbranched query reports a
+    // hive_metastore schema as empty, the relation cache records the schema as
+    // captured-and-empty, and materializations that ask for an existing relation
+    // (e.g. seeds) then take the "no existing table" branch and emit a bare
+    // `create table` into an existing table -> TABLE_OR_VIEW_ALREADY_EXISTS.
+    // https://github.com/dbt-labs/dbt/issues/16874
+    //
+    // Match upstream dbt-databricks `get_relations_without_caching`, which
+    // routes hive_metastore to `_get_hive_relations` (SHOW TABLES / SHOW VIEWS).
+    // `SHOW TABLE EXTENDED` works on hive_metastore.
+    // https://github.com/databricks/dbt-databricks/blob/92f1442faabe0fce6f0375b95e46ebcbfcea4c67/dbt/adapters/databricks/impl.py#L575-L580
+    if uses_hive_metastore_listing(db_schema) {
+        return spark::list_relations(engine, ctx, conn, db_schema, token);
+    }
+
     let catalog = databricks_metadata_value(&db_schema.resolved_catalog);
     let schema = databricks_metadata_value(&db_schema.resolved_schema);
     let sql = format!("
@@ -3031,6 +3062,39 @@ mod tests {
         assert_eq!(bulk[1].semantic_fqn(), r_bulk2.semantic_fqn());
     }
 
+    // ── uses_hive_metastore_listing ────────────────────────────────────────
+
+    fn catalog_and_schema(catalog: &str, schema: &str) -> CatalogAndSchema {
+        CatalogAndSchema {
+            rendered_catalog: catalog.to_string(),
+            rendered_schema: schema.to_string(),
+            resolved_catalog: catalog.to_string(),
+            resolved_schema: schema.to_string(),
+        }
+    }
+
+    /// Regression coverage for https://github.com/dbt-labs/dbt/issues/16874:
+    /// `list_relations` must route hive_metastore (and the default empty
+    /// catalog) to `SHOW TABLE EXTENDED` rather than the Unity Catalog-only
+    /// `system.information_schema.tables` query.
+    #[test]
+    fn uses_hive_metastore_listing_routes_default_and_hive_catalogs() {
+        assert!(uses_hive_metastore_listing(&catalog_and_schema("", "s")));
+        assert!(uses_hive_metastore_listing(&catalog_and_schema(
+            "hive_metastore",
+            "s"
+        )));
+        // Case-insensitive, matching `Relation::is_hive_metastore`.
+        assert!(uses_hive_metastore_listing(&catalog_and_schema(
+            "HIVE_METASTORE",
+            "s"
+        )));
+        assert!(uses_hive_metastore_listing(&catalog_and_schema(
+            "Hive_Metastore",
+            "s"
+        )));
+    }
+
     #[test]
     fn relation_not_found_requires_sqlstate_with_typed_kind() {
         assert!(is_databricks_relation_not_found(
@@ -3069,6 +3133,28 @@ mod tests {
         assert!(!is_relation_missing(&AdapterError::new(
             AdapterErrorKind::Driver,
             "[PARSE_SYNTAX_ERROR] bad"
+        )));
+    }
+
+    #[test]
+    fn uses_hive_metastore_listing_leaves_unity_catalogs_on_information_schema() {
+        assert!(!uses_hive_metastore_listing(&catalog_and_schema(
+            "main", "s"
+        )));
+        assert!(!uses_hive_metastore_listing(&catalog_and_schema(
+            "e2e", "s"
+        )));
+        assert!(!uses_hive_metastore_listing(&catalog_and_schema(
+            "system", "s"
+        )));
+        // Whitespace or near-misses must not be silently treated as hive_metastore.
+        assert!(!uses_hive_metastore_listing(&catalog_and_schema(
+            "hive_metastore ",
+            "s"
+        )));
+        assert!(!uses_hive_metastore_listing(&catalog_and_schema(
+            "hive_metastore2",
+            "s"
         )));
     }
 
