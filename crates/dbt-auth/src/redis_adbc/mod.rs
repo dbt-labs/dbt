@@ -10,14 +10,23 @@ use crate::{AdapterConfig, Auth, AuthError};
 const DEFAULT_URI: &str = "redis://localhost:6379/0";
 const DEFAULT_SCHEMA: &str = "public";
 
+const FLIGHT_COOKIES: &str = "adbc.flight.sql.rpc.with_cookie_middleware";
+const FLIGHT_ROOT_CERTS: &str = "adbc.flight.sql.client_option.tls_root_certs";
+
+const FLIGHT_BACKEND: Backend = Backend::Generic {
+    library_name: "adbc_driver_flightsql",
+    entrypoint: Some(b"AdbcDriverFlightSQLInit"),
+};
+
 struct ConnectionConfig<'a> {
+    backend: Backend,
     uri: Url,
     options: Vec<(OptionDatabase, Cow<'a, str>)>,
 }
 
 impl ConnectionConfig<'_> {
-    fn apply(self, backend: Backend) -> Result<database::Builder, AuthError> {
-        let mut builder = database::Builder::new(backend);
+    fn apply(self) -> Result<database::Builder, AuthError> {
+        let mut builder = database::Builder::new(self.backend);
         builder.with_uri(self.uri);
         for (key, value) in self.options {
             builder.with_typed_option(key, OptionValue::String(value.into_owned()))?;
@@ -52,6 +61,8 @@ fn scalar_string(value: &dbt_yaml::Value) -> Option<Cow<'_, str>> {
 fn parse_config(config: &AdapterConfig) -> Result<ConnectionConfig<'_>, AuthError> {
     const FIELDS: &[&str] = &[
         "type",
+        "transport",
+        "tls_ca_file",
         "driver",
         "uri",
         "username",
@@ -73,6 +84,23 @@ fn parse_config(config: &AdapterConfig) -> Result<ConnectionConfig<'_>, AuthErro
     }
     if string_or_default(config, "database", "redis")? != "redis" {
         return Err(AuthError::config("Redis only supports the 'redis' catalog"));
+    }
+    let flight = match string_or_default(config, "transport", "redis")? {
+        "redis" => false,
+        "flightsql" => true,
+        _ => {
+            return Err(AuthError::config(
+                "Redis transport must be redis or flightsql",
+            ));
+        }
+    };
+    if flight {
+        return parse_flight_config(config);
+    }
+    if config.get_str_non_empty("tls_ca_file").is_some() {
+        return Err(AuthError::config(
+            "tls_ca_file is a Flight client option; use adbc.redis.tls_ca_file for native Redis",
+        ));
     }
     let uri = Url::parse(string_or_default(config, "uri", DEFAULT_URI)?)
         .map_err(|_| AuthError::config("Invalid Redis URI"))?;
@@ -159,7 +187,121 @@ fn parse_config(config: &AdapterConfig) -> Result<ConnectionConfig<'_>, AuthErro
             options.push((OptionDatabase::Other(key.to_owned()), value));
         }
     }
-    Ok(ConnectionConfig { uri, options })
+    Ok(ConnectionConfig {
+        backend: Backend::Generic {
+            library_name: "adbc_driver_redis",
+            entrypoint: Some(b"AdbcDriverInit"),
+        },
+        uri,
+        options,
+    })
+}
+
+fn parse_flight_config(config: &AdapterConfig) -> Result<ConnectionConfig<'_>, AuthError> {
+    let uri = Url::parse(string_or_default(config, "uri", "")?)
+        .map_err(|_| AuthError::config("Invalid Flight SQL URI"))?;
+    if uri.scheme() != "grpc+tls"
+        || uri.host_str().is_none()
+        || !uri.username().is_empty()
+        || uri.password().is_some()
+        || uri.query().is_some()
+        || uri.fragment().is_some()
+        || !matches!(uri.path(), "" | "/")
+    {
+        return Err(AuthError::config(
+            "Flight SQL requires grpc+tls://host:port; set credentials separately",
+        ));
+    }
+    if string_or_default(config, "schema", DEFAULT_SCHEMA)?.is_empty() {
+        return Err(AuthError::config("Redis 'schema' must not be empty"));
+    }
+    string_or_default(config, "time_zone", "")?;
+    for field in [
+        "aggregate_pushdown",
+        "rename_rekey",
+        "read_timeout",
+        "write_timeout",
+    ] {
+        if config
+            .get(field)
+            .is_some_and(|value| !value.is_null() && value.as_str() != Some(""))
+        {
+            return Err(AuthError::config(
+                "Configure Redis execution options on the Flight server",
+            ));
+        }
+    }
+    let mut options = vec![(
+        OptionDatabase::Other(FLIGHT_COOKIES.into()),
+        Cow::Borrowed("true"),
+    )];
+    for (field, key) in [
+        ("username", OptionDatabase::Username),
+        ("password", OptionDatabase::Password),
+    ] {
+        if let Some(value) = config.get(field).filter(|value| !value.is_null()) {
+            let value = if field == "password" {
+                scalar_string(value)
+                    .ok_or_else(|| AuthError::config("Redis 'password' must be a scalar"))?
+            } else {
+                Cow::Borrowed(string_or_default(config, field, "")?)
+            };
+            if !value.is_empty() {
+                options.push((key, value));
+            }
+        }
+    }
+    let ca_file = string_or_default(config, "tls_ca_file", "")?;
+    if !ca_file.is_empty() {
+        let roots = std::fs::read_to_string(ca_file)
+            .map_err(|_| AuthError::config("Cannot read Flight TLS CA file"))?;
+        options.push((
+            OptionDatabase::Other(FLIGHT_ROOT_CERTS.into()),
+            Cow::Owned(roots),
+        ));
+    }
+    if let Some(value) = config
+        .get("driver_options")
+        .filter(|value| !value.is_null())
+    {
+        let mapping = value
+            .as_mapping()
+            .ok_or_else(|| AuthError::config("Redis driver_options must be a mapping"))?;
+        for (key, value) in mapping {
+            // Restrict this initial client contract to non-secret RPC settings.
+            // Arbitrary headers/private keys would escape through generic builder diagnostics.
+            let key = key
+                .as_str()
+                .ok_or_else(|| AuthError::config("Flight option keys must be strings"))?;
+            if !matches!(
+                key,
+                "adbc.flight.sql.rpc.timeout_seconds.connect"
+                    | "adbc.flight.sql.rpc.timeout_seconds.fetch"
+                    | "adbc.flight.sql.rpc.timeout_seconds.query"
+                    | "adbc.flight.sql.rpc.timeout_seconds.update"
+            ) {
+                return Err(AuthError::config(
+                    "Unsupported Flight client option; Redis options belong on the server",
+                ));
+            }
+            let value = scalar_string(value)
+                .ok_or_else(|| AuthError::config("Flight timeout must be a nonnegative number"))?;
+            if !value
+                .parse::<f64>()
+                .is_ok_and(|n| n.is_finite() && n >= 0.0)
+            {
+                return Err(AuthError::config(
+                    "Flight timeout must be a nonnegative number",
+                ));
+            }
+            options.push((OptionDatabase::Other(key.into()), value));
+        }
+    }
+    Ok(ConnectionConfig {
+        backend: FLIGHT_BACKEND,
+        uri,
+        options,
+    })
 }
 
 pub struct RedisAuth {
@@ -178,7 +320,7 @@ impl Auth for RedisAuth {
     }
 
     fn configure(&self, config: &AdapterConfig) -> Result<database::Builder, AuthError> {
-        parse_config(config)?.apply(self.backend)
+        parse_config(config)?.apply()
     }
 }
 
@@ -206,7 +348,7 @@ mod tests {
     fn v1_options_preserve_scalar_shapes_and_block_credential_overrides() {
         let mapping = dbt_yaml::from_str::<Value>("aggregate_pushdown: exact\nrename_rekey: true\nread_timeout: 30\nwrite_timeout: 10m\ndriver_options:\n  adbc.redis.some_option: false\n").unwrap();
         let config = AdapterConfig::new(mapping.as_mapping().unwrap().clone());
-        let builder = parse_config(&config).unwrap().apply(BACKEND).unwrap();
+        let builder = parse_config(&config).unwrap().apply().unwrap();
         for (key, expected) in [
             ("aggregate_pushdown", "exact"),
             ("rename_rekey", "true"),
@@ -346,6 +488,67 @@ mod tests {
             let error = configure(fields).unwrap_err();
             assert!(!error.msg().contains("secret"));
         }
+    }
+
+    #[test]
+    fn flight_maps_only_client_options_and_keeps_secrets_out_of_debug() {
+        let builder = configure([
+            ("transport", "flightsql".into()),
+            ("uri", "grpc+tls://localhost:8815".into()),
+            ("username", "flight-user".into()),
+            ("password", "flight-secret".into()),
+            ("schema", "analytics".into()),
+            ("time_zone", "America/New_York".into()),
+        ])
+        .unwrap();
+        assert_eq!(builder.backend, FLIGHT_BACKEND);
+        assert_eq!(other_option_value(&builder, FLIGHT_COOKIES), Some("true"));
+        assert_eq!(builder.password.as_deref(), Some("flight-secret"));
+        assert!(!format!("{builder:?}").contains("flight-secret"));
+        assert!(
+            builder
+                .other
+                .iter()
+                .all(|(key, _)| !key.as_ref().starts_with("adbc.redis."))
+        );
+    }
+
+    #[test]
+    fn flight_rejects_insecure_uris_and_server_or_secret_options() {
+        for yaml in [
+            "uri: grpc://localhost:8815",
+            "uri: redis://localhost:6379",
+            "uri: grpc+tls://alice:secret@localhost:8815",
+            "uri: grpc+tls://localhost:8815?secret=value",
+            "uri: grpc+tls://localhost:8815/path",
+            "aggregate_pushdown: exact",
+            "rename_rekey: false",
+            "read_timeout: 30",
+            "driver_options: {adbc.redis.stream_results: true}",
+            "driver_options: {adbc.flight.sql.rpc.with_cookie_middleware: false}",
+            "driver_options: {adbc.flight.sql.authorization_header: secret}",
+            "driver_options: {adbc.flight.sql.rpc.timeout_seconds.query: -1}",
+            "driver_options: {adbc.flight.sql.rpc.timeout_seconds.query: .nan}",
+        ] {
+            let mut fields: Mapping =
+                dbt_yaml::from_str("transport: flightsql\nuri: grpc+tls://localhost:8815\n")
+                    .unwrap();
+            let overrides: Mapping = dbt_yaml::from_str(yaml).unwrap();
+            fields.extend(overrides);
+            let err = parse_config(&AdapterConfig::new(fields))
+                .err()
+                .expect("invalid Flight profile");
+            assert!(!err.msg().contains("secret"));
+        }
+        let fields: Mapping = dbt_yaml::from_str("transport: flightsql\nuri: grpc+tls://localhost:8815\ndriver_options: {adbc.flight.sql.rpc.timeout_seconds.query: 12.5}").unwrap();
+        let builder = parse_config(&AdapterConfig::new(fields))
+            .unwrap()
+            .apply()
+            .unwrap();
+        assert_eq!(
+            other_option_value(&builder, "adbc.flight.sql.rpc.timeout_seconds.query"),
+            Some("12.5")
+        );
     }
 
     #[test]

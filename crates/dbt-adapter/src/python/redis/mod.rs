@@ -52,7 +52,18 @@ fn execute(
         .get_config()
         .get_str("driver")
         .ok_or_else(|| runtime_error("Missing Redis driver path"))?;
-    let request = serde_json::json!({"operation": operation, "driver": driver, "options": options, "parameters": parameters});
+    let flight = engine.get_config().get_str("transport") == Some("flightsql");
+    let init_sql = if flight {
+        crate::engine::redis::session_sql(engine.get_config())
+    } else {
+        Vec::new()
+    };
+    let entrypoint = if flight {
+        "AdbcDriverFlightSQLInit"
+    } else {
+        "AdbcDriverInit"
+    };
+    let request = serde_json::json!({"operation": operation, "driver": driver, "entrypoint": entrypoint, "init_sql": init_sql, "options": options, "parameters": parameters});
     let mut child = Command::new("python3")
         .arg("-c")
         .arg(include_str!("runtime.py"))

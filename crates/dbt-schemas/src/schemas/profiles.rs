@@ -1592,6 +1592,14 @@ pub struct FabricDbConfig {
     pub api_url: Option<String>, // default = "https://api.fabric.microsoft.com/v1"
 }
 
+/// Wire protocol; the SQL dialect and adapter identity remain Redis.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, DbtSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum RedisTransport {
+    Redis,
+    Flightsql,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, DbtSchema, Merge)]
 #[merge(strategy = merge_strategies_extend::overwrite_option)]
 #[serde(rename_all = "snake_case")]
@@ -1601,6 +1609,10 @@ pub struct RedisAdbcDbConfig {
     pub extra: HashMap<String, YmlValue>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub driver: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transport: Option<RedisTransport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls_ca_file: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub uri: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -3629,6 +3641,25 @@ threads: 8
 #[cfg(test)]
 mod redis_adbc_tests {
     use super::*;
+
+    #[test]
+    fn flight_profile_is_typed_and_target_has_no_client_credentials() {
+        let config: DbConfig = dbt_yaml::from_str("type: redis_adbc\ntransport: flightsql\nuri: grpc+tls://localhost:8815\npassword: secret-value\ntls_ca_file: /private/ca.pem\ndriver_options: {adbc.flight.sql.rpc.timeout_seconds.query: 30}\n").unwrap();
+        let DbConfig::Redis_adbc(ref redis) = config else {
+            panic!("Redis expected")
+        };
+        assert_eq!(redis.transport, Some(RedisTransport::Flightsql));
+        let target = dbt_yaml::to_string(&TargetContext::try_from(config).unwrap()).unwrap();
+        for secret in [
+            "secret-value",
+            "grpc+tls",
+            "/private/ca.pem",
+            "driver_options",
+        ] {
+            assert!(!target.contains(secret));
+        }
+        assert!(dbt_yaml::from_str::<DbConfig>("type: redis_adbc\ntransport: invalid\n").is_err());
+    }
 
     #[test]
     fn native_profile_round_trips_and_hides_credentials_from_target() {

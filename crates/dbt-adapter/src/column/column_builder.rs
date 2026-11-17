@@ -531,14 +531,28 @@ impl ColumnBuilder {
         let adapter_type = type_ops.adapter_type();
         let data_type_ref = field.data_type();
         let mut rendered_type = String::new();
-        type_ops.format_arrow_type_as_sql(
-            data_type_ref,
-            field.is_nullable(),
-            &mut rendered_type,
-        )?;
-        if !field.is_nullable() {
-            rendered_type.push_str(" not null");
+        match (adapter_type, original_type_string(adapter_type, field)) {
+            (AdapterType::RedisAdbc, Some(original)) => rendered_type.push_str(&original),
+            _ => {
+                type_ops.format_arrow_type_as_sql(
+                    data_type_ref,
+                    field.is_nullable(),
+                    &mut rendered_type,
+                )?;
+                if !field.is_nullable() {
+                    rendered_type.push_str(" not null");
+                }
+            }
         }
+        let char_size = match adapter_type {
+            AdapterType::RedisAdbc => match SqlType::parse(adapter_type, &rendered_type) {
+                Ok((SqlType::Varchar(Some(n), _) | SqlType::Char(Some(n)), _)) => {
+                    u32::try_from(n).ok()
+                }
+                _ => None,
+            },
+            _ => None,
+        };
 
         let (numeric_precision, numeric_scale) = {
             let precision_scale = sql_types::numeric_precision_scale(adapter_type, data_type_ref)
@@ -554,7 +568,7 @@ impl ColumnBuilder {
             adapter_type,
             field.name().to_string(),
             rendered_type,
-            None, // char_size
+            char_size,
             numeric_precision,
             numeric_scale,
         ))
@@ -646,6 +660,49 @@ mod tests {
     use dbt_adapter_sql::types::metadata_sql_type_key;
     use std::collections::HashMap;
     use std::sync::Arc;
+
+    #[test]
+    fn redis_preserves_exact_sql_types_from_flight_schema_metadata() {
+        for (arrow_type, sql_type, size) in [
+            (DataType::Utf8, "VARCHAR(17)", Some(17)),
+            (DataType::Decimal128(12, 2), "NUMERIC(12,2)", None),
+            (
+                DataType::Timestamp(arrow_schema::TimeUnit::Millisecond, None),
+                "TIMESTAMP(3)",
+                None,
+            ),
+        ] {
+            let field = Arc::new(
+                Field::new("col", arrow_type, true).with_metadata(HashMap::from([(
+                    "ARROW:FLIGHT:SQL:TYPE_NAME".into(),
+                    sql_type.into(),
+                )])),
+            );
+            let column = ColumnBuilder::new(AdapterType::RedisAdbc)
+                .build(&field, &DefaultTypeOps::new(AdapterType::RedisAdbc))
+                .unwrap();
+            if size.is_some() {
+                assert_eq!(column.dtype(), "VARCHAR");
+                let wider = ColumnBuilder::new(AdapterType::RedisAdbc)
+                    .build(
+                        &Arc::new(Field::new("col", DataType::Utf8, true).with_metadata(
+                            HashMap::from([(
+                                "ARROW:FLIGHT:SQL:TYPE_NAME".into(),
+                                "VARCHAR(40)".into(),
+                            )]),
+                        )),
+                        &DefaultTypeOps::new(AdapterType::RedisAdbc),
+                    )
+                    .unwrap();
+                assert!(column.can_expand_to(&wider).unwrap());
+            }
+            assert_eq!(column.char_size(), size);
+            assert_eq!(
+                column.data_type().replace(' ', "").to_ascii_uppercase(),
+                sql_type
+            );
+        }
+    }
 
     #[test]
     fn test_build_clickhouse_decimal_with_wrappers() {
