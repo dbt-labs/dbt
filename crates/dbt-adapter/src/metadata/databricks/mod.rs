@@ -44,7 +44,8 @@ use crate::metadata::databricks::describe_json::{
 use crate::metadata::databricks::describe_table::DatabricksTableMetadata;
 use crate::metadata::databricks::version::EngineVersion;
 use crate::metadata::freshness_overrides::{
-    FreshnessTask, FreshnessTaskResult, apply_freshness_task_result, run_override_query,
+    FreshnessTask, FreshnessTaskResult, apply_freshness_task_result, partition_override_relations,
+    run_override_query,
 };
 use crate::metadata::get_relation::table_format_from_provider;
 use crate::metadata::*;
@@ -2063,29 +2064,6 @@ fn epoch_ms_from_history_batch(batch: &Arc<RecordBatch>) -> Option<i64> {
     }
 }
 
-/// Partition `relations` into bulk (no override) and per-override buckets.
-///
-type OverrideTargets = Vec<(Arc<dyn BaseRelation>, FreshnessOverride)>;
-
-/// Relations whose `semantic_fqn` appears in `overrides` are paired with their
-/// override and collected into the second return value; all others go into the
-/// first (bulk) return value.
-fn partition_override_relations(
-    relations: &[Arc<dyn BaseRelation>],
-    overrides: &BTreeMap<String, FreshnessOverride>,
-) -> (Vec<Arc<dyn BaseRelation>>, OverrideTargets) {
-    let mut bulk = Vec::new();
-    let mut targets = Vec::new();
-    for relation in relations {
-        if let Some(ovr) = overrides.get(&relation.semantic_fqn()) {
-            targets.push((Arc::clone(relation), ovr.clone()));
-        } else {
-            bulk.push(Arc::clone(relation));
-        }
-    }
-    (bulk, targets)
-}
-
 fn databricks_information_schema_freshness_sql(
     database: &str,
     schema: &str,
@@ -2964,79 +2942,6 @@ mod tests {
             .unwrap(),
         );
         assert!(epoch_ms_from_history_batch(&batch).is_none());
-    }
-
-    // ── partition_override_relations ─────────────────────────────────────────
-
-    fn make_relation(fqn: &str) -> Arc<dyn BaseRelation> {
-        // Build a relation whose semantic_fqn() matches `fqn` by using the three
-        // parts as database / schema / identifier with no quoting.
-        let parts: Vec<&str> = fqn.splitn(3, '.').collect();
-        let (db, schema, id) = match parts.as_slice() {
-            [db, sc, id] => (*db, *sc, *id),
-            _ => panic!("fqn must be db.schema.identifier, got: {fqn}"),
-        };
-        create_test_relation(db, schema, id, false, false, false)
-    }
-
-    #[test]
-    fn partition_routes_all_to_bulk_when_no_overrides() {
-        let relations: Vec<Arc<dyn BaseRelation>> =
-            vec![make_relation("db.sc.a"), make_relation("db.sc.b")];
-        let overrides = BTreeMap::new();
-        let (bulk, targets) = partition_override_relations(&relations, &overrides);
-        assert_eq!(bulk.len(), 2);
-        assert!(targets.is_empty());
-    }
-
-    #[test]
-    fn partition_routes_override_relation_to_override_bucket() {
-        let r = make_relation("db.sc.src");
-        let fqn = r.semantic_fqn();
-        let relations = vec![r];
-        let mut overrides = BTreeMap::new();
-        overrides.insert(
-            fqn.clone(),
-            FreshnessOverride::Field {
-                field: "updated_at".into(),
-                filter: None,
-            },
-        );
-        let (bulk, targets) = partition_override_relations(&relations, &overrides);
-        assert!(bulk.is_empty());
-        assert_eq!(targets.len(), 1);
-        assert_eq!(targets[0].0.semantic_fqn(), fqn);
-        assert!(
-            matches!(&targets[0].1, FreshnessOverride::Field { field, .. } if field == "updated_at")
-        );
-    }
-
-    #[test]
-    fn partition_mixed_relations_correctly_sorted() {
-        let r_bulk1 = make_relation("db.sc.bulk1");
-        let r_ovr = make_relation("db.sc.ovr");
-        let r_bulk2 = make_relation("db.sc.bulk2");
-        let fqn_ovr = r_ovr.semantic_fqn();
-
-        let relations = vec![
-            Arc::clone(&r_bulk1),
-            Arc::clone(&r_ovr),
-            Arc::clone(&r_bulk2),
-        ];
-        let mut overrides = BTreeMap::new();
-        overrides.insert(
-            fqn_ovr.clone(),
-            FreshnessOverride::Query("SELECT max(ts) FROM {{ this }}".into()),
-        );
-
-        let (bulk, targets) = partition_override_relations(&relations, &overrides);
-
-        assert_eq!(bulk.len(), 2);
-        assert_eq!(targets.len(), 1);
-        assert_eq!(targets[0].0.semantic_fqn(), fqn_ovr);
-        // bulk order is preserved
-        assert_eq!(bulk[0].semantic_fqn(), r_bulk1.semantic_fqn());
-        assert_eq!(bulk[1].semantic_fqn(), r_bulk2.semantic_fqn());
     }
 
     // ── uses_hive_metastore_listing ────────────────────────────────────────
