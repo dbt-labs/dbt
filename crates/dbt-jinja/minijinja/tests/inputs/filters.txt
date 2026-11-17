@@ -125,5 +125,12 @@ split-n-ws-filter-empty: {{ "  foo    bar baz  "|split(none, 1)|list }}
 sum: {{ range(10)|sum }}
 sum-empty: {{ []|sum }}
 sum-float: {{ [0.5, 1.0]|sum }}
+sum-start: {{ [1, 2, 3]|sum(start=10) }}
+sum-start-one: {{ [1, 2, 3]|sum(start=1) }}
+sum-start-float: {{ [1, 2, 3]|sum(start=0.5) }}
+sum-start-negative: {{ [1, 2, 3]|sum(start=-10) }}
+sum-start-range: {{ range(10)|sum(start=2) }}
+sum-start-empty: {{ []|sum(start=10) }}
+sum-start-flatten: {{ [[1, 2], [3]]|sum(start=[])|list }}
 lines: {{ "foo\nbar\r\nbaz"|lines }}
 string: {{ [1|string, 2|string] }}

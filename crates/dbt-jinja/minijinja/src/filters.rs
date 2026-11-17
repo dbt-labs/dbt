@@ -800,16 +800,20 @@ mod builtins {
 
     /// Sums up all the values in a sequence.
     ///
+    /// The `start` value (default `0`) is added to the total.
+    ///
     /// ```jinja
     /// {{ range(10)|sum }} -> 45
+    /// {{ [1, 2, 3]|sum(start=10) }} -> 16
     /// ```
     #[cfg_attr(docsrs, doc(cfg(feature = "builtins")))]
     pub fn sum(state: &State, values: Value, start: Option<Value>) -> Result<Value, Error> {
-        let mut rv = Value::from(0);
         let iter = ok!(state.undefined_behavior().try_iter(values));
-        let start = if let Some(start) = start {
+        // `start` seeds the total, as in Jinja2. `as_f64` only validates it: keep
+        // the original value so that an integer sum stays an integer.
+        let mut rv = if let Some(start) = start {
             if start.is_undefined() {
-                Ok(0 as f64)
+                Ok(Value::from(0))
             } else if start.is_kwargs() {
                 // check if start has key "start"
                 let start = start.as_object().unwrap();
@@ -835,17 +839,17 @@ mod builtins {
                         return Ok(Value::from(result));
                     }
 
-                    as_f64(&value, true).ok_or_else(|| {
+                    as_f64(&value, true).map(|_| value.clone()).ok_or_else(|| {
                         Error::new(
                             ErrorKind::InvalidOperation,
                             format!("cannot convert {} to int", value.kind()),
                         )
                     })
                 } else {
-                    Ok(0 as f64)
+                    Ok(Value::from(0))
                 }
             } else {
-                as_f64(&start, true).ok_or_else(|| {
+                as_f64(&start, true).map(|_| start.clone()).ok_or_else(|| {
                     Error::new(
                         ErrorKind::InvalidOperation,
                         format!("cannot convert {} to int", start.kind()),
@@ -853,9 +857,9 @@ mod builtins {
                 })
             }
         } else {
-            Ok(0 as f64)
-        }? as usize;
-        for value in iter.skip(start) {
+            Ok(Value::from(0))
+        }?;
+        for value in iter {
             if value.is_undefined() {
                 ok!(state.undefined_behavior().handle_undefined(false));
                 continue;
