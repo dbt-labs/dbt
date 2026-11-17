@@ -40,6 +40,7 @@ class RunResult(NodeResult):
     )
     batch_results: Optional[BatchResults] = None
     overload_results: Optional[OverloadResults] = None
+    state_decision_id: Optional[str] = None
 
     @property
     def skipped(self):
@@ -60,6 +61,12 @@ class RunResult(NodeResult):
             batch_results=None,
             overload_results=None,
         )
+
+    def to_msg_dict(self):
+        msg_dict = super().to_msg_dict()
+        if self.state_decision_id is not None:
+            msg_dict["state_decision_id"] = self.state_decision_id
+        return msg_dict
 
 
 @dataclass
