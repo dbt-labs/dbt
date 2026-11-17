@@ -1,0 +1,28 @@
+a9b3cbbf:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists development.adapters_snowflake_custom_incremental_dynamic_table_wrong_materialization
+dbbbff64:
+- sequence: 0
+  type: execute
+  sql: |-
+    show terse schemas in database development
+    limit 10000
+model.test.orders_table:
+- sequence: 0
+  type: execute
+  sql: SHOW OBJECTS IN SCHEMA "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_CUSTOM_INCREMENTAL_DYNAMIC_TABLE_WRONG_MATERIALIZATION" LIMIT 10000
+- sequence: 1
+  type: execute
+  sql: |-
+    create or replace transient  table development.adapters_snowflake_custom_incremental_dynamic_table_wrong_materialization.orders_table
+    
+    
+    
+    
+    
+    
+    as (
+    
+    select 1 as order_id
+    )

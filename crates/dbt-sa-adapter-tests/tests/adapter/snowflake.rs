@@ -701,6 +701,25 @@ async fn adapters_snowflake_custom_incremental_dynamic_table_create_or_alter_err
     .await
 }
 
+/// `refresh_mode='CUSTOM_INCREMENTAL'` on a model that isn't a `dynamic_table` warns when the model
+/// resolves, and the model builds as configured. Pins the message.
+#[dbt_runtime::test]
+async fn adapters_snowflake_custom_incremental_dynamic_table_wrong_materialization() -> FsResult<()>
+{
+    run_fs_record_replay_task_seq(
+        env!("CARGO_MANIFEST_DIR"),
+        &FS_RUNNER,
+        current_function_name!(),
+        "tests/data/adapter/custom_incremental_dynamic_table_wrong_materialization",
+        AdapterType::Snowflake.as_ref(),
+        None,
+        &["run"],
+        None,
+        &[],
+    )
+    .await
+}
+
 /// A custom incremental dynamic table with `snowflake_dynamic_table_create_or_alter` on: model SQL
 /// edits deploy through CREATE OR ALTER (for changes made after them), a switch to a regular
 /// dynamic table and back replaces.

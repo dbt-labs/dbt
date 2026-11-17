@@ -13,6 +13,6 @@
    Running ../scratch/target/run/test/tests/empty_run_builds_empty_tables.sql
     Passed test  empty_run_builds_empty_tables [1 of 1 in duration]
 ==================== Execution Summary =====================
-Finished 'test' successfully for target 'snowflake' [duration]
+Finished 'test' with 1 warning for target 'snowflake' [duration]
 Processed: 1 test
 Summary: 1 total | 1 success

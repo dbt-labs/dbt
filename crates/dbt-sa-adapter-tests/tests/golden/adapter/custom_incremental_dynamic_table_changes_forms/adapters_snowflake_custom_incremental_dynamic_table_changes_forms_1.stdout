@@ -18,6 +18,6 @@
    Running models/orders_with_region.sql
  Succeeded model adapters_snowflake_custom_incremental_dynamic_table_changes_forms.orders_with_region (dynamic_table) [2 of 2 in duration]
 ==================== Execution Summary =====================
-Finished 'run' successfully for target 'snowflake' [duration]
+Finished 'run' with 1 warning for target 'snowflake' [duration]
 Processed: 3 models
 Summary: 3 total | 2 success | 1 no-op

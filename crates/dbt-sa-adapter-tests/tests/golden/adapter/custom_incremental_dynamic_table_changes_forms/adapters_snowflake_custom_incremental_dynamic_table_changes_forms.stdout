@@ -10,4 +10,4 @@
    Parsing tests/orders_macro_rows.sql
    Parsing tests/orders_with_region_rows.sql
 ==================== Execution Summary =====================
-Finished 'run-operation' successfully for target 'snowflake' [duration]
+Finished 'run-operation' with 1 warning for target 'snowflake' [duration]
