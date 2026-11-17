@@ -1,0 +1,7 @@
+kind: Fixes
+body: Leave ephemeral and inline models out of run_results.json, so dbt retry no longer re-runs them and the on-run hooks after a successful run
+time: 2026-11-17T19:36:06.921040582+01:00
+custom:
+    author: jimvekemans
+    issue: "17205"
+    project: dbt-core
