@@ -46,7 +46,8 @@ def ingest(connection, identifier, data, schema):
         except adbc.Error as error:
             # A table supplies fresh input. One-shot readers and unknown commit
             # outcomes cannot replay an upload safely.
-            if not (isinstance(data, pa.Table) and error.sqlstate == '40001'
+            if not (isinstance(data, pa.Table) and error.status_code == adbc.AdbcStatusCode.IO
+                    and error.sqlstate == '40001'
                     and 'snapshot catalog changed concurrently; retry the statement' in str(error)
                     and attempt < 19):
                 raise

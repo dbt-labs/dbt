@@ -1219,6 +1219,7 @@ mod tests {
                     runtime.clone(),
                     validation.clone(),
                     "model.pkg.consumer".to_owned(),
+                    AdapterType::RedisAdbc,
                 )),
             );
             env.add_global(
