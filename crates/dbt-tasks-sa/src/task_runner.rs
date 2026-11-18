@@ -56,11 +56,9 @@ use crate::visitor::visit_sequential;
 pub fn summarize_task_runner_stats(
     ctx: &TaskRunnerCtx,
     schedule: &Schedule<String>,
-    resolved_state: &ResolverState,
 ) -> TaskRunnerStats {
     let compile = Stats {
         stats: summarize_stats(schedule, &ctx.inner.analyze_stats),
-        nodes: None,
         batch_results: Default::default(),
         compiled_code: Default::default(),
     };
@@ -73,7 +71,6 @@ pub fn summarize_task_runner_stats(
         .collect();
     let run = Stats {
         stats: summarize_stats(schedule, &ctx.inner.run_stats),
-        nodes: Some(resolved_state.nodes.clone()),
         batch_results,
         compiled_code,
     };
@@ -455,12 +452,12 @@ impl TaskRunner {
             .did_visit_taskgraph(&run_task_args, &schedule, &graph, &mut ctx, &token)
             .await?;
 
-        let mut stats = summarize_task_runner_stats(&ctx, &schedule, self.resolved_state.as_ref());
+        let mut stats = summarize_task_runner_stats(&ctx, &schedule);
         let adapter_responses: HashMap<String, AdapterResponse> =
             sccmap::to_vec_cloned(&ctx.inner.main_adapter_responses)
                 .into_iter()
                 .collect();
-        let results = stats.collect_as_results(&adapter_responses);
+        let results = stats.collect_as_results(&self.resolved_state.nodes, &adapter_responses);
         let successful_relational_nodes =
             stats.collect_successful_relational_nodes(&self.resolved_state);
 

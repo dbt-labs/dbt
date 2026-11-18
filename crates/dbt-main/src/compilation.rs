@@ -626,7 +626,6 @@ impl<'a> CompilationPhasesExecutor<'a> {
                                     assertion: false,
                                 })
                                 .collect(),
-                            nodes: Some(resolved_state.nodes.clone()),
                             batch_results: Default::default(),
                             compiled_code: Default::default(),
                         };
@@ -636,6 +635,7 @@ impl<'a> CompilationPhasesExecutor<'a> {
                                 // TODO: should also be captured by the caller?
                                 &build_run_results_artifact(
                                     &error_stats,
+                                    &resolved_state.nodes,
                                     // Adapter responses are not available during parse phase.
                                     &HashMap::new(),
                                     self.arg.as_ref(),
@@ -648,6 +648,7 @@ impl<'a> CompilationPhasesExecutor<'a> {
                         if self.arg.write_metadata {
                             crate::utils::write_runtime_results_parquet(
                                 &error_stats,
+                                &resolved_state.nodes,
                                 &HashMap::new(),
                                 self.arg.as_ref(),
                             );
@@ -2387,7 +2388,6 @@ impl DbtProjectCompilation {
 
             let run_stats = Stats {
                 stats: vec![stat],
-                nodes: Some(resolved_state.nodes.clone()),
                 batch_results: Default::default(),
                 compiled_code: Default::default(),
             };
@@ -2397,6 +2397,7 @@ impl DbtProjectCompilation {
                 write_run_results_json(
                     &build_run_results_artifact(
                         &run_stats,
+                        &resolved_state.nodes,
                         // NOTE: dbt Core v1 does not populate AdapterResponse on `dbt run-operation`.
                         // However we technically could pull the adapter responses from the macro
                         // execution and add them here. We just have to wire it up.

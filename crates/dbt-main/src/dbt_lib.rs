@@ -1690,13 +1690,13 @@ impl<'a> AllPhasesExecutor<'a> {
                         if self.arg.write_json {
                             let empty = dbt_schemas::stats::Stats {
                                 stats: Vec::new(),
-                                nodes: None,
                                 batch_results: Default::default(),
                                 compiled_code: Default::default(),
                             };
                             let project_state = compilation.dbt_state();
                             let mut artifact = build_run_results_artifact(
                                 &empty,
+                                compilation.nodes(),
                                 &HashMap::new(),
                                 self.arg.as_ref(),
                                 project_state.warn_error,
@@ -1861,7 +1861,6 @@ impl<'a> AllPhasesExecutor<'a> {
                                         assertion: false,
                                     })
                                     .collect(),
-                                nodes: Some(compilation.nodes().clone()),
                                 batch_results: Default::default(),
                                 compiled_code: Default::default(),
                             };
@@ -1870,6 +1869,7 @@ impl<'a> AllPhasesExecutor<'a> {
                             let project_state = compilation.dbt_state();
                             let run_results_artifact = build_run_results_artifact(
                                 &error_stats,
+                                compilation.nodes(),
                                 // Adapter responses not available since we errored at compilation
                                 &HashMap::new(),
                                 self.arg.as_ref(),
@@ -1888,6 +1888,7 @@ impl<'a> AllPhasesExecutor<'a> {
                             if self.arg.write_metadata {
                                 write_runtime_results_parquet(
                                     &error_stats,
+                                    compilation.nodes(),
                                     &HashMap::new(),
                                     self.arg.as_ref(),
                                 );
@@ -1921,6 +1922,7 @@ impl<'a> AllPhasesExecutor<'a> {
         let project_state = compilation.dbt_state();
         let run_results_artifact = build_run_results_artifact(
             &run_task_results.stats.run,
+            &resolved_state.nodes,
             &run_task_results.adapter_responses,
             self.arg.as_ref(),
             project_state.warn_error,
@@ -1955,6 +1957,7 @@ impl<'a> AllPhasesExecutor<'a> {
         if self.arg.write_metadata {
             write_runtime_results_parquet(
                 &run_task_results.stats.run,
+                &resolved_state.nodes,
                 &run_task_results.adapter_responses,
                 self.arg.as_ref(),
             );

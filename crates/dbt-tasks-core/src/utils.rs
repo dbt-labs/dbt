@@ -11,7 +11,7 @@ use dbt_common::{
     warn_error_options::WarnErrorOptions,
 };
 use dbt_schemas::{
-    schemas::{RunResultOutput, RunResultsArgs, RunResultsArtifact, RunResultsMetadata},
+    schemas::{Nodes, RunResultOutput, RunResultsArgs, RunResultsArtifact, RunResultsMetadata},
     stats::Stats,
 };
 
@@ -22,6 +22,7 @@ use crate::generate_run_results;
 /// Pass the resolved `DbtState::warn_error`/`warn_error_options`; `EvalArgs` holds only the CLI/env value.
 pub fn build_run_results_artifact(
     stats: &Stats,
+    nodes: &Nodes,
     adapter_responses: &HashMap<String, AdapterResponse>,
     arg: &EvalArgs,
     warn_error: bool,
@@ -33,7 +34,7 @@ pub fn build_run_results_artifact(
     let results: Vec<RunResultOutput> = stats
         .stats
         .iter()
-        .map(|stat| generate_run_results(stat, stats, adapter_responses).into())
+        .map(|stat| generate_run_results(stat, stats, nodes, adapter_responses).into())
         .collect();
 
     let total_elapsed_time: f64 = stats
@@ -136,7 +137,6 @@ mod tests {
     fn empty_stats() -> Stats {
         Stats {
             stats: vec![],
-            nodes: None,
             batch_results: Default::default(),
             compiled_code: Default::default(),
         }
@@ -155,6 +155,7 @@ mod tests {
         write_run_results_json(
             &build_run_results_artifact(
                 &empty_stats(),
+                &Nodes::default(),
                 &HashMap::new(),
                 &arg,
                 false,
@@ -187,6 +188,7 @@ mod tests {
         write_run_results_json(
             &build_run_results_artifact(
                 &empty_stats(),
+                &Nodes::default(),
                 &HashMap::new(),
                 &arg,
                 false,
@@ -237,6 +239,7 @@ mod tests {
         write_run_results_json(
             &build_run_results_artifact(
                 &empty_stats(),
+                &Nodes::default(),
                 &HashMap::new(),
                 &arg,
                 true,
