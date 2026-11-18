@@ -906,6 +906,7 @@ mod execute_inner_txn {
     #[derive(Default)]
     struct Session {
         executed: Vec<String>,
+        execute_update_calls: usize,
         discarded: bool,
         script: VecDeque<Step>,
     }
@@ -983,6 +984,7 @@ mod execute_inner_txn {
         fn execute_update(&mut self) -> Result<Option<i64>> {
             let mut session = self.session.lock().unwrap();
             session.executed.push(self.sql.clone());
+            session.execute_update_calls += 1;
             if let Some(message) = failure_message(&self.sql) {
                 return Err(Error::with_message_and_status(message, Status::IO));
             }
@@ -1084,7 +1086,10 @@ mod execute_inner_txn {
     /// Runs `sql` through `execute_inner` on a fresh [`ScriptedConnection`] and returns the result
     /// together with the connection's final state.
     fn run(sql: &str) -> (AdapterResult<()>, Session) {
-        let engine = snowflake_engine();
+        run_on(snowflake_engine(), sql)
+    }
+
+    fn run_on(engine: Arc<dyn AdapterEngine>, sql: &str) -> (AdapterResult<()>, Session) {
         let adapter = AdapterImpl::new(Arc::clone(&engine), None);
         let session = Arc::new(Mutex::new(Session::default()));
         drop_thread_local_connection();
@@ -1159,6 +1164,15 @@ mod execute_inner_txn {
         assert_eq!(session.executed, [FAILING_SQL]);
     }
 
+    #[test]
+    fn clickhouse_runs_unfetched_statements_with_execute_update() {
+        let engine = engine_with(AdapterType::ClickHouse, false, &[]);
+        let (result, session) = run_on(engine, "select 1");
+
+        assert!(result.is_ok());
+        assert_eq!(session.execute_update_calls, 1);
+    }
+
     const USE_TRANSACTIONS: &str = "redshift_use_transactions";
     const SKIP_TRANSACTIONS: &str = "redshift_skip_autocommit_transaction_statements";
 
@@ -1167,6 +1181,14 @@ mod execute_inner_txn {
     }
 
     fn redshift_engine_with(bridge: bool, flags: &[(&str, bool)]) -> Arc<dyn AdapterEngine> {
+        engine_with(AdapterType::Redshift, bridge, flags)
+    }
+
+    fn engine_with(
+        adapter_type: AdapterType,
+        bridge: bool,
+        flags: &[(&str, bool)],
+    ) -> Arc<dyn AdapterEngine> {
         let config = Mapping::from_iter([
             ("use_dbt_cloud_credentials".into(), bridge.into()),
             ("host".into(), "H".into()),
@@ -1175,7 +1197,6 @@ mod execute_inner_txn {
             ("database".into(), "D".into()),
             ("schema".into(), "S".into()),
         ]);
-        let adapter_type = AdapterType::Redshift;
         let overrides = flags
             .iter()
             .map(|(name, value)| (name.to_string(), *value))
