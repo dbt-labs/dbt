@@ -20,7 +20,7 @@ use dbt_common::cancellation::CancellationToken;
 use dbt_common::io_utils::determine_project_dir;
 use dbt_common::{
     ErrorCode, FsResult,
-    artifact_io::write_artifact_to_file,
+    artifact_io::{ArtifactSerialization, write_artifact_to_file},
     constants::{
         DBT_CATALOG_JSON, DBT_COMPILED_DIR_NAME, DBT_MANIFEST_JSON, DBT_PROJECT_YML, ERROR,
         INSTALLING, VALIDATING, default_index_dir, default_metadata_dir,
@@ -1896,7 +1896,7 @@ impl<'a> AllPhasesExecutor<'a> {
 
                         let dbt_manifest = compilation.take_dbt_manifest();
                         if let Err(e) = write_artifact_to_file(
-                            &dbt_manifest,
+                            ArtifactSerialization::Direct(&dbt_manifest),
                             ArtifactType::Manifest,
                             &self.arg.io.out_dir,
                             DBT_MANIFEST_JSON,
@@ -3143,7 +3143,7 @@ pub async fn write_catalog_json(
     )
     .await?;
     write_artifact_to_file(
-        &catalog,
+        ArtifactSerialization::WithYamlFlattening(&catalog),
         ArtifactType::Catalog,
         &arg.io.out_dir,
         DBT_CATALOG_JSON,
