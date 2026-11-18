@@ -1,0 +1,7 @@
+kind: Features
+body: Use unrendered external.location of sources during state:modified, behind state_modified_compare_more_unrendered_values
+    behaviour flag
+time: 2026-10-05T01:48:00.000000-07:00
+custom:
+    Author: officialpm
+    Issue: "12350"
