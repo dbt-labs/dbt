@@ -2488,6 +2488,10 @@ fn source_freshness_override(source: &DbtSource) -> Option<FreshnessOverride> {
 /// less-than are both fine — equal means nothing changed; less-than covers the
 /// case where the confirmed epoch was a heuristic that landed slightly above the
 /// true `LAST_ALTERED` value.
+///
+/// Skipped when `ignore_external_modifications` resolves to true for the node
+/// (the default): out-of-band changes to the clone source are then accepted and
+/// the clone goes ahead.
 async fn verify_clone_source_freshness(
     ctx: &TaskRunnerCtx,
     node: &dyn InternalDbtNodeAttributes,
@@ -2496,6 +2500,15 @@ async fn verify_clone_source_freshness(
     let Some(required_epoch) = clone.required_source_epoch else {
         return Ok(());
     };
+    let service_ignores_external_modifications = ctx
+        .inner
+        .run_cache_ctx
+        .run_cache_service_config
+        .as_ref()
+        .is_none_or(|config| config.ignore_external_modifications);
+    if resolve_ignore_external_modifications(node, service_ignores_external_modifications) {
+        return Ok(());
+    }
     if clone.clone_source.is_empty() {
         return Err(fs_err!(
             ErrorCode::Generic,
@@ -9593,6 +9606,53 @@ mod tests {
             calls.lock().unwrap().push(format!("hooks({phase:?})"));
             Ok(())
         })
+    }
+
+    /// The client re-checks the clone source's last_modified before cloning, to catch a change
+    /// between the decision and the clone. `ignore_external_modifications` bypasses that check.
+    #[dbt_runtime::test]
+    async fn clone_source_freshness_check_respects_ignore_external_modifications() {
+        // (service default, node-level override, expect the check to be bypassed)
+        let cases = [
+            (false, None, false),
+            (true, None, true),
+            (true, Some(false), false),
+            (false, Some(true), true),
+        ];
+        let clone = RunCacheCloneDecision {
+            required_source_epoch: Some(1_000),
+            ..clone_decision_for_target()
+        };
+        for (service_default, node_override, expect_bypass) in cases {
+            let mut ctx = test_task_runner_ctx(None);
+            let mut config = RunCacheServiceConfig::disabled();
+            config.ignore_external_modifications = service_default;
+            Arc::get_mut(&mut ctx.inner)
+                .expect("sole owner of inner right after construction")
+                .run_cache_ctx
+                .run_cache_service_config = Some(config);
+            let mut model = model_with_grants(None);
+            model.__model_attr__.state = node_override.map(|ignore| ModelState {
+                lag_tolerance: None,
+                require_fresh_data_from: None,
+                evaluate_volatile_sql: None,
+                pre_clone: None,
+                execute_hooks_on_any_reuse: None,
+                compare_unrendered_code: None,
+                ignore_external_modifications: Some(ignore),
+            });
+
+            let result = verify_clone_source_freshness(&ctx, &model, &clone).await;
+
+            // The mock adapter can't report the source's last_modified, so a check that runs
+            // fails and the clone falls back to execution.
+            assert_eq!(
+                result.is_ok(),
+                expect_bypass,
+                "service_default={service_default}, node_override={node_override:?}: {:?}",
+                result.err()
+            );
+        }
     }
 
     async fn clone_steps(grants_order: RunCacheCloneGrantsOrder) -> Vec<String> {
