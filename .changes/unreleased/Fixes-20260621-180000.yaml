@@ -1,0 +1,12 @@
+kind: Fixes
+body: >-
+  `ref()` and `source()` in unit-test context now return a *quoted* CTE
+  identifier (e.g. `"__dbt__cte__model"`) instead of an unquoted one.
+  This means Jinja whitespace-stripping modifiers (`{{- ref("model") -}}`)
+  no longer produce `from__dbt__cte__model` (a SQL syntax error); the
+  compiled SQL now reads `from"__dbt__cte__model"`, which is valid SQL in
+  every supported adapter.
+time: 2026-06-21T00:00:00.000000Z
+custom:
+  Author: kalluripradeep
+  Issue: "11999"
