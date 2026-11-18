@@ -1,5 +1,6 @@
 import hashlib
 import os
+import re
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -744,12 +745,19 @@ class ModelNode(ModelResource, CompiledNode):
     def _normalize_data_type_for_comparison(data_type: Optional[str]) -> Optional[str]:
         """
         Normalize a data type string by removing size, precision, and scale parameters.
-        This allows comparison of base types while ignoring non-breaking parameter changes.
+        This allows comparison of types while ignoring non-breaking parameter changes.
+        Type arguments, such as the inner type of Nullable(...) or the fields of
+        STRUCT(...), are kept, so a change to them is still a breaking change.
 
         Examples:
             varchar(10) -> varchar
             VARCHAR(5) -> varchar
             numeric(10,2) -> numeric
+            varchar(max) -> varchar
+            timestamp(6) with time zone -> timestamp with time zone
+            Nullable(Decimal(10, 2)) -> nullable(decimal)
+            Nullable(String) -> nullable(string)
+            STRUCT(a INTEGER) -> struct(a integer)
             text -> text
             decimal(5) -> decimal
             None -> None
@@ -765,10 +773,19 @@ class ModelNode(ModelResource, CompiledNode):
         if not data_type:
             return data_type
 
-        # Split on the first '(' to get the base type without parameters
+        # Remove argument lists that only hold a size, precision or scale, wherever they
+        # appear: (10), (10, 2), (max), (10 char). Other argument lists are type arguments.
+        normalized = re.sub(
+            r"\s*\(\s*(?:\d+|max)(?:\s+(?:byte|char))?(?:\s*,\s*\d+)*\s*\)",
+            "",
+            data_type,
+            flags=re.IGNORECASE,
+        )
+        # Ignore whitespace around parentheses and commas, and collapse the rest
+        normalized = re.sub(r"\s*([(),])\s*", r"\1", normalized)
+        normalized = re.sub(r"\s+", " ", normalized)
         # Convert to lowercase for case-insensitive comparison
-        base_type, _, _ = data_type.partition("(")
-        return base_type.strip().lower()
+        return normalized.strip().lower()
 
     def same_contract(self, old: "ModelNode", adapter_type: Optional[str] = None) -> bool:  # type: ignore[override]
         # If the contract wasn't previously enforced:

@@ -1,0 +1,8 @@
+kind: Fixes
+body: Detect a contract breaking change when a type argument changes, such as `Nullable(String)`
+  to `Nullable(Int64)` or `STRUCT(a INTEGER)` to `STRUCT(a VARCHAR)`, while still ignoring
+  size, precision and scale changes
+time: 2026-11-08T21:00:00.000000+01:00
+custom:
+    Author: Sam-Razavi
+    Issue: "16886"
