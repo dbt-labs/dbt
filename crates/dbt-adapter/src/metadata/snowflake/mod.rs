@@ -1499,21 +1499,16 @@ impl MetadataAdapter for SnowflakeMetadataAdapter {
             if let Some(phase) = phase {
                 ctx = ctx.with_phase(phase.as_str());
             }
-            let table_ctx = ctx.clone().with_desc("Get table schema");
-            let table = match adapter.query(&table_ctx, conn, &sql, None, token_clone.clone()) {
-                Ok((_, table)) => table,
-                // Streams reject `describe table`: describe a `limit 0` select by its own query id.
+            let tbl_ctx = ctx.clone().with_desc("Get table schema");
+            let (_, table) = match adapter.query(&tbl_ctx, conn, &sql, None, token_clone.clone()) {
                 Err(err) if is_describe_table_invalid_object_type(&err) => {
                     let ctx = ctx.with_desc("Get stream schema");
-                    let select = format!("select * from {} limit 0;", rendered);
-                    let (response, _) =
-                        adapter.query(&ctx, conn, &select, None, token_clone.clone())?;
-                    let sql = format!("describe result '{}';", response.query_id().ok_or(err)?);
-                    adapter
-                        .query(&ctx, conn, &sql, None, token_clone.clone())?
-                        .1
+                    let sql = format!("select * from {rendered} limit 0;");
+                    let (resp, _) = adapter.query(&ctx, conn, &sql, None, token_clone.clone())?;
+                    let sql = format!("describe result '{}';", resp.query_id().ok_or(err)?);
+                    adapter.query(&ctx, conn, &sql, None, token_clone.clone())?
                 }
-                Err(err) => return Err(err),
+                result => result?,
             };
             let batch = table.original_record_batch();
             let schema = build_schema_from_desc_table(batch, adapter.engine().type_ops().as_ref())?;
@@ -2104,7 +2099,8 @@ impl MetadataAdapter for SnowflakeMetadataAdapter {
     }
 }
 
-/// `describe table` on a Snowflake stream fails with `Invalid object type: 'TABLE'`.
+/// `describe table` on a Snowflake stream fails with `Invalid object type: 'TABLE'`; the caller
+/// then describes a `limit 0` select by that select's own query id.
 fn is_describe_table_invalid_object_type(err: &AdapterError) -> bool {
     err.message().contains("Invalid object type: 'TABLE'")
 }
