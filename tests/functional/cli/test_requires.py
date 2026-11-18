@@ -78,6 +78,7 @@ class TestKnownEngineEnvVarsExplicit:
             "DBT_ENGINE_EVENT_TIME_END",
             "DBT_ENGINE_PRINTER_WIDTH",
             "DBT_ENGINE_PACKAGE_HUB_URL",
+            "DBT_ENGINE_REQUIRE_HUB_VERIFIED_DOWNLOADS",
             "DBT_ENGINE_TARGET_PATH",
             "DBT_ENGINE_EMPTY",
             "DBT_ENGINE_DOWNLOAD_DIR",

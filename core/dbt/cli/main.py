@@ -454,6 +454,7 @@ def debug(ctx, **kwargs):
 @p.lock
 @p.upgrade
 @p.add_package
+@p.require_hub_verified_downloads
 @requires.postflight
 @requires.preflight
 @requires.unset_profile

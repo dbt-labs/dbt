@@ -170,6 +170,9 @@ class ProjectPackageMetadata:
 @dataclass
 class Downloads(ExtensibleDbtClassMixin):
     tarball: str
+    # Hub-served mirror ({tarball, sha1}). Left loose so a malformed entry can only
+    # fail installs that opt in to require_hub_verified_downloads.
+    hub: Any = None
 
 
 @dataclass
@@ -357,6 +360,7 @@ class ProjectFlags(ExtensibleDbtClassMixin):
     partial_parse: Optional[bool] = None
     populate_cache: Optional[bool] = None
     printer_width: Optional[int] = None
+    require_hub_verified_downloads: Optional[bool] = None
     send_anonymous_usage_stats: bool = DEFAULT_SEND_ANONYMOUS_USAGE_STATS
     snowflake_projects_otel: Optional[bool] = None
     static_parser: Optional[bool] = None
