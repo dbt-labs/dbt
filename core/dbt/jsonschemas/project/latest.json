@@ -2839,6 +2839,21 @@
             }
           ]
         },
+        "git-credentials": {
+          "anyOf": [
+            {
+              "description": "Opt in to resolving `private:` packages with the user's own dbt platform credentials when running locally.",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "job-id": {
           "anyOf": [
             {
