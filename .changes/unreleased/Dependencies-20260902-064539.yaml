@@ -1,0 +1,6 @@
+kind: Dependencies
+body: Allow Mashumaro 3.22 and require dbt-common 1.38 or newer to preserve boolean validation.
+time: 2026-09-02T06:45:39.858767-04:00
+custom:
+    Author: tamird
+    Issue: "12876"
