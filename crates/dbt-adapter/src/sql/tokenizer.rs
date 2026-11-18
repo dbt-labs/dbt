@@ -1,16 +1,16 @@
-use once_cell::sync::Lazy;
 use regex::Regex;
+use std::sync::LazyLock;
 
-static TIMESTAMP_REGEX: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}").unwrap());
+static TIMESTAMP_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}").unwrap());
 // Same as `TIMESTAMP_REGEX`, but for finding timestamps embedded in larger tokens
 // (e.g. when surrounded by quotes/parens).
-static TIMESTAMP_FIND_REGEX: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}").unwrap());
-static TIMESTAMP_REGEX_IGNORE_T: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"^\d{4}-\d{2}-\d{2}\d{2}:\d{2}:\d{2}$").unwrap());
-static DATE_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\d{4}-\d{2}-\d{2}$").unwrap());
-static TIME_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\d{2}:\d{2}:\d{2}$").unwrap());
+static TIMESTAMP_FIND_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}").unwrap());
+static TIMESTAMP_REGEX_IGNORE_T: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\d{4}-\d{2}-\d{2}\d{2}:\d{2}:\d{2}$").unwrap());
+static DATE_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\d{4}-\d{2}-\d{2}$").unwrap());
+static TIME_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\d{2}:\d{2}:\d{2}$").unwrap());
 #[derive(Clone)]
 pub(crate) struct Token {
     pub value: String,

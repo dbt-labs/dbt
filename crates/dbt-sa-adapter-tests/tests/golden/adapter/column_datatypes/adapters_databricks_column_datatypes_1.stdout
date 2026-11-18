@@ -1,0 +1,41 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/schema.yml
+   Parsing models/c.sql
+ Rendering models/c.sql
+{'name': 'tinyint_col', 'dtype': 'tinyint', 'char_size': None, 'column': 'tinyint_col', 'quoted': '`tinyint_col`', 'numeric_precision': None, 'numeric_scale': None}
+{'name': 'smallint_col', 'dtype': 'smallint', 'char_size': None, 'column': 'smallint_col', 'quoted': '`smallint_col`', 'numeric_precision': None, 'numeric_scale': None}
+{'name': 'int_col', 'dtype': 'int', 'char_size': None, 'column': 'int_col', 'quoted': '`int_col`', 'numeric_precision': None, 'numeric_scale': None}
+{'name': 'bigint_col', 'dtype': 'bigint', 'char_size': None, 'column': 'bigint_col', 'quoted': '`bigint_col`', 'numeric_precision': None, 'numeric_scale': None}
+{'name': 'decimal_col', 'dtype': 'DECIMAL(10,2)', 'char_size': None, 'column': 'decimal_col', 'quoted': '`decimal_col`', 'numeric_precision': None, 'numeric_scale': None}
+{'name': 'float_col', 'dtype': 'float', 'char_size': None, 'column': 'float_col', 'quoted': '`float_col`', 'numeric_precision': None, 'numeric_scale': None}
+{'name': 'double_col', 'dtype': 'double', 'char_size': None, 'column': 'double_col', 'quoted': '`double_col`', 'numeric_precision': None, 'numeric_scale': None}
+{'name': 'string_col', 'dtype': 'STRING', 'char_size': None, 'column': 'string_col', 'quoted': '`string_col`', 'numeric_precision': None, 'numeric_scale': None}
+{'name': 'char_col', 'dtype': 'STRING', 'char_size': None, 'column': 'char_col', 'quoted': '`char_col`', 'numeric_precision': None, 'numeric_scale': None}
+{'name': 'varchar_col', 'dtype': 'STRING', 'char_size': None, 'column': 'varchar_col', 'quoted': '`varchar_col`', 'numeric_precision': None, 'numeric_scale': None}
+{'name': 'binary_col', 'dtype': 'binary', 'char_size': None, 'column': 'binary_col', 'quoted': '`binary_col`', 'numeric_precision': None, 'numeric_scale': None}
+{'name': 'boolean_col', 'dtype': 'boolean', 'char_size': None, 'column': 'boolean_col', 'quoted': '`boolean_col`', 'numeric_precision': None, 'numeric_scale': None}
+{'name': 'date_col', 'dtype': 'date', 'char_size': None, 'column': 'date_col', 'quoted': '`date_col`', 'numeric_precision': None, 'numeric_scale': None}
+{'name': 'timestamp_col', 'dtype': 'timestamp_ltz', 'char_size': None, 'column': 'timestamp_col', 'quoted': '`timestamp_col`', 'numeric_precision': None, 'numeric_scale': None}
+{'name': 'timestamp_ntz_col', 'dtype': 'timestamp_ntz', 'char_size': None, 'column': 'timestamp_ntz_col', 'quoted': '`timestamp_ntz_col`', 'numeric_precision': None, 'numeric_scale': None}
+{'name': 'interval_year_col', 'dtype': 'INTERVAL year', 'char_size': None, 'column': 'interval_year_col', 'quoted': '`interval_year_col`', 'numeric_precision': None, 'numeric_scale': None}
+{'name': 'interval_month_col', 'dtype': 'INTERVAL month', 'char_size': None, 'column': 'interval_month_col', 'quoted': '`interval_month_col`', 'numeric_precision': None, 'numeric_scale': None}
+{'name': 'interval_day_col', 'dtype': 'INTERVAL day', 'char_size': None, 'column': 'interval_day_col', 'quoted': '`interval_day_col`', 'numeric_precision': None, 'numeric_scale': None}
+{'name': 'interval_hour_col', 'dtype': 'INTERVAL hour', 'char_size': None, 'column': 'interval_hour_col', 'quoted': '`interval_hour_col`', 'numeric_precision': None, 'numeric_scale': None}
+{'name': 'interval_minute_col', 'dtype': 'INTERVAL minute', 'char_size': None, 'column': 'interval_minute_col', 'quoted': '`interval_minute_col`', 'numeric_precision': None, 'numeric_scale': None}
+{'name': 'interval_second_col', 'dtype': 'INTERVAL second', 'char_size': None, 'column': 'interval_second_col', 'quoted': '`interval_second_col`', 'numeric_precision': None, 'numeric_scale': None}
+{'name': 'array_int_col', 'dtype': 'ARRAY<int>', 'char_size': None, 'column': 'array_int_col', 'quoted': '`array_int_col`', 'numeric_precision': None, 'numeric_scale': None}
+{'name': 'array_string_col', 'dtype': 'ARRAY<STRING>', 'char_size': None, 'column': 'array_string_col', 'quoted': '`array_string_col`', 'numeric_precision': None, 'numeric_scale': None}
+{'name': 'array_date_col', 'dtype': 'ARRAY<date>', 'char_size': None, 'column': 'array_date_col', 'quoted': '`array_date_col`', 'numeric_precision': None, 'numeric_scale': None}
+{'name': 'map_col', 'dtype': 'MAP<STRING,STRING>', 'char_size': None, 'column': 'map_col', 'quoted': '`map_col`', 'numeric_precision': None, 'numeric_scale': None}
+{'name': 'map_int_col', 'dtype': 'MAP<STRING,int>', 'char_size': None, 'column': 'map_int_col', 'quoted': '`map_int_col`', 'numeric_precision': None, 'numeric_scale': None}
+{'name': 'struct_col', 'dtype': 'STRUCT<`name`:STRING,`age`:int,`active`:boolean>', 'char_size': None, 'column': 'struct_col', 'quoted': '`struct_col`', 'numeric_precision': None, 'numeric_scale': None}
+{'name': 'nested_struct_col', 'dtype': 'STRUCT<`type`:STRING,`details`:STRUCT<`street`:STRING,`city`:STRING,`state`:STRING,`zip`:STRING>,`phones`:MAP<STRING,STRING>>', 'char_size': None, 'column': 'nested_struct_col', 'quoted': '`nested_struct_col`', 'numeric_precision': None, 'numeric_scale': None}
+{'name': 'array_struct_col', 'dtype': 'ARRAY<STRUCT<`name`:STRING,`age`:int>>', 'char_size': None, 'column': 'array_struct_col', 'quoted': '`array_struct_col`', 'numeric_precision': None, 'numeric_scale': None}
+{'name': 'struct_with_collections_col', 'dtype': 'STRUCT<`type`:STRING,`scores`:ARRAY<int>,`tags`:ARRAY<STRING>,`metadata`:MAP<STRING,STRING>>', 'char_size': None, 'column': 'struct_with_collections_col', 'quoted': '`struct_with_collections_col`', 'numeric_precision': None, 'numeric_scale': None}
+{'name': 'map_struct_col', 'dtype': 'MAP<STRING,STRUCT<`name`:STRING,`age`:int>>', 'char_size': None, 'column': 'map_struct_col', 'quoted': '`map_struct_col`', 'numeric_precision': None, 'numeric_scale': None}
+{'name': 'array_map_col', 'dtype': 'ARRAY<MAP<STRING,STRING>>', 'char_size': None, 'column': 'array_map_col', 'quoted': '`array_map_col`', 'numeric_precision': None, 'numeric_scale': None}
+==================== Execution Summary =====================
+Finished 'compile' successfully for target 'databricks' [duration]
+Processed: 1 model
+Summary: 1 total | 1 success

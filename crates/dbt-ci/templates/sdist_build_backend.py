@@ -7,12 +7,14 @@ Uses only the stdlib plus ``packaging`` (declared in pyproject build-requires).
 """
 
 import hashlib
+import io
 import json
 import os
 import sys
 import time
 import urllib.error
 import urllib.request
+import zipfile
 from pathlib import Path
 
 from packaging.tags import sys_tags
@@ -104,6 +106,16 @@ def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
         raise RuntimeError(
             f"sha256 mismatch for {filename}: expected {entry['sha256']}, got {digest}"
         )
+
+    sidecars = entry.get("sidecars", [])
+    if sidecars:
+        with zipfile.ZipFile(io.BytesIO(data)) as wheel:
+            for sidecar in sidecars:
+                payload = wheel.read(sidecar["filename"])
+                if hashlib.sha256(payload).hexdigest() != sidecar["sha256"]:
+                    raise RuntimeError(
+                        f"sidecar sha256 mismatch for {sidecar['filename']}"
+                    )
 
     out = Path(wheel_directory) / filename
     out.write_bytes(data)

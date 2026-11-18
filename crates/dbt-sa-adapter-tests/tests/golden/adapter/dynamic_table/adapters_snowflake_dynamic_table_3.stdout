@@ -1,0 +1,78 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/cluster_by/dt_cluster_alter.sql
+   Parsing models/cluster_by/dt_cluster_drop.sql
+   Parsing models/copy_grants/dt_copy_grants1.sql
+   Parsing models/iceberg/dt_iceberg_explicit_snowflake_managed.sql
+   Parsing models/iceberg/dt_iceberg_external_volume.sql
+   Parsing models/iceberg/dt_iceberg_managed.sql
+   Parsing models/immutable_where/dt_imw1.sql
+   Parsing models/initialization_warehouse/init_wh.sql
+   Parsing models/initialization_warehouse/no_init_wh.sql
+   Parsing models/initialization_warehouse/same_wh.sql
+   Parsing models/initialize/init_default.sql
+   Parsing models/initialize/init_on_schedule.sql
+   Parsing models/refresh_mode/refresh_auto.sql
+   Parsing models/refresh_mode/refresh_full.sql
+   Parsing models/scheduler/scheduler_disable.sql
+   Parsing models/scheduler/scheduler_enable.sql
+   Parsing models/target_lag/lag.sql
+   Parsing models/transient/dt_transient1.sql
+ Rendering models/scheduler/scheduler_enable.sql
+   Running models/scheduler/scheduler_enable.sql
+ Succeeded model adapters_snowflake_dynamic_table.scheduler_enable (dynamic_table) [1 of 18 in duration]
+ Rendering models/scheduler/scheduler_disable.sql
+   Running models/scheduler/scheduler_disable.sql
+ Succeeded model adapters_snowflake_dynamic_table.scheduler_disable (dynamic_table) [2 of 18 in duration]
+ Rendering models/initialization_warehouse/same_wh.sql
+   Running models/initialization_warehouse/same_wh.sql
+ Succeeded model adapters_snowflake_dynamic_table.same_wh (dynamic_table) [3 of 18 in duration]
+ Rendering models/refresh_mode/refresh_full.sql
+   Running models/refresh_mode/refresh_full.sql
+ Succeeded model adapters_snowflake_dynamic_table.refresh_full (dynamic_table) [4 of 18 in duration]
+ Rendering models/refresh_mode/refresh_auto.sql
+   Running models/refresh_mode/refresh_auto.sql
+ Succeeded model adapters_snowflake_dynamic_table.refresh_auto (dynamic_table) [5 of 18 in duration]
+ Rendering models/initialization_warehouse/no_init_wh.sql
+   Running models/initialization_warehouse/no_init_wh.sql
+ Succeeded model adapters_snowflake_dynamic_table.no_init_wh (dynamic_table) [6 of 18 in duration]
+ Rendering models/target_lag/lag.sql
+   Running models/target_lag/lag.sql
+ Succeeded model adapters_snowflake_dynamic_table.lag (dynamic_table) [7 of 18 in duration]
+ Rendering models/initialization_warehouse/init_wh.sql
+   Running models/initialization_warehouse/init_wh.sql
+ Succeeded model adapters_snowflake_dynamic_table.init_wh (dynamic_table) [8 of 18 in duration]
+ Rendering models/initialize/init_on_schedule.sql
+   Running models/initialize/init_on_schedule.sql
+ Succeeded model adapters_snowflake_dynamic_table.init_on_schedule (dynamic_table) [9 of 18 in duration]
+ Rendering models/initialize/init_default.sql
+   Running models/initialize/init_default.sql
+ Succeeded model adapters_snowflake_dynamic_table.init_default (dynamic_table) [10 of 18 in duration]
+ Rendering models/transient/dt_transient1.sql
+   Running models/transient/dt_transient1.sql
+ Succeeded model adapters_snowflake_dynamic_table.dt_transient1 (dynamic_table) [11 of 18 in duration]
+ Rendering models/immutable_where/dt_imw1.sql
+   Running models/immutable_where/dt_imw1.sql
+ Succeeded model adapters_snowflake_dynamic_table.dt_imw1 (dynamic_table) [12 of 18 in duration]
+ Rendering models/iceberg/dt_iceberg_managed.sql
+   Running models/iceberg/dt_iceberg_managed.sql
+ Succeeded model adapters_snowflake_dynamic_table.dt_iceberg_managed (dynamic_table) [13 of 18 in duration]
+ Rendering models/iceberg/dt_iceberg_external_volume.sql
+   Running models/iceberg/dt_iceberg_external_volume.sql
+ Succeeded model adapters_snowflake_dynamic_table.dt_iceberg_external_volume (dynamic_table) [14 of 18 in duration]
+ Rendering models/iceberg/dt_iceberg_explicit_snowflake_managed.sql
+   Running models/iceberg/dt_iceberg_explicit_snowflake_managed.sql
+ Succeeded model adapters_snowflake_dynamic_table.dt_iceberg_explicit_snowflake_managed (dynamic_table) [15 of 18 in duration]
+ Rendering models/copy_grants/dt_copy_grants1.sql
+   Running models/copy_grants/dt_copy_grants1.sql
+ Succeeded model adapters_snowflake_dynamic_table.dt_copy_grants1 (dynamic_table) [16 of 18 in duration]
+ Rendering models/cluster_by/dt_cluster_drop.sql
+   Running models/cluster_by/dt_cluster_drop.sql
+ Succeeded model adapters_snowflake_dynamic_table.dt_cluster_drop (dynamic_table) [17 of 18 in duration]
+ Rendering models/cluster_by/dt_cluster_alter.sql
+   Running models/cluster_by/dt_cluster_alter.sql
+ Succeeded model adapters_snowflake_dynamic_table.dt_cluster_alter (dynamic_table) [18 of 18 in duration]
+==================== Execution Summary =====================
+Finished 'run' successfully for target 'snowflake' [duration]
+Processed: 18 models
+Summary: 18 total | 18 success

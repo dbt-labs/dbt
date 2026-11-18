@@ -1,0 +1,35 @@
+dbbbff64:
+- sequence: 0
+  type: execute
+  sql: |-
+    show terse schemas in database development
+    limit 10000
+e821afb6:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists development.snowflake_use_schema
+model.hello_world.example:
+- sequence: 0
+  type: execute
+  sql: select current_schema()
+- sequence: 1
+  type: execute
+  sql: SHOW OBJECTS IN SCHEMA "DEVELOPMENT"."SNOWFLAKE_USE_SCHEMA" LIMIT 10000
+- sequence: 2
+  type: execute
+  sql: |-
+    create or replace   view development.snowflake_use_schema.example
+    
+    
+    
+    
+    as (
+    
+    
+    
+    
+    
+    select
+    'snowflake_use_schema' as target_schema,
+    'SNOWFLAKE_USE_SCHEMA' as current_schema
+    )

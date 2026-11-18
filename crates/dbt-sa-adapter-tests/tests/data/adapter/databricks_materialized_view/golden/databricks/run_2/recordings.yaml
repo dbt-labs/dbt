@@ -1,0 +1,56 @@
+85f3743c:
+- sequence: 0
+  type: execute
+  sql: SHOW SCHEMAS IN `e2e`
+8a9e6fc6:
+- sequence: 0
+  type: execute
+  sql: |-
+    SELECT
+    table_name,
+    if(table_type IN ('EXTERNAL', 'MANAGED', 'MANAGED_SHALLOW_CLONE', 'EXTERNAL_SHALLOW_CLONE'), 'table', lower(table_type)) AS table_type,
+    lower(data_source_format) AS file_format,
+    table_schema,
+    table_owner,
+    table_catalog,
+    if(
+    table_type IN (
+    'EXTERNAL',
+    'MANAGED',
+    'MANAGED_SHALLOW_CLONE',
+    'EXTERNAL_SHALLOW_CLONE'
+    ),
+    lower(table_type),
+    NULL
+    ) AS databricks_table_type
+    FROM `system`.`information_schema`.`tables`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'adapters_databricks_materialized_view'
+model.test.test_fail:
+- sequence: 0
+  type: execute
+  sql: describe extended `e2e`.`adapters_databricks_materialized_view`.`test_fail`
+- sequence: 1
+  type: execute
+  sql: |-
+    SELECT *
+    FROM `SYSTEM`.`INFORMATION_SCHEMA`.`VIEWS`
+    WHERE TABLE_CATALOG = 'e2e'
+    AND TABLE_SCHEMA = 'adapters_databricks_materialized_view'
+    AND TABLE_NAME = 'test_fail'
+- sequence: 2
+  type: execute
+  sql: |-
+    SELECT
+    table_catalog,
+    table_schema,
+    table_name,
+    filter_name,
+    target_columns
+    FROM `e2e`.`information_schema`.`row_filters`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'adapters_databricks_materialized_view'
+    AND table_name = 'test_fail'
+- sequence: 3
+  type: execute
+  sql: SHOW TBLPROPERTIES `e2e`.`adapters_databricks_materialized_view`.`test_fail`

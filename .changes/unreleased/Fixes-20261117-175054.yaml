@@ -1,0 +1,7 @@
+kind: Fixes
+body: '[ClickHouse] Fix intermittent SESSION_IS_LOCKED errors after ON CLUSTER statements with driver 0.1.2.'
+time: 2026-11-17T17:50:54.479875+01:00
+custom:
+    author: koletzilla
+    issue: ""
+    project: dbt-core

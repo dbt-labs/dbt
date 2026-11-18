@@ -276,7 +276,7 @@
 
 {% macro on_cluster_clause(relation, force_sync) %}
   {% set active_cluster = adapter.get_clickhouse_cluster_name() %}
-  {%- if active_cluster is not none and relation.should_on_cluster %}
+  {%- if active_cluster is not none and adapter.should_on_cluster(relation=relation) %}
     {# Add trailing whitespace to avoid problems when this clause is not last #}
     ON CLUSTER {{ active_cluster + ' ' }}
     {%- if force_sync %}

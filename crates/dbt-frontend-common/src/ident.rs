@@ -2,7 +2,6 @@ use crate::Dialect;
 use crate::error::InternalError;
 use crate::utils::{get_version_hash, strip_version_hash};
 use crate::{internal_err, make_internal_err};
-use datafusion_common::{ResolvedTableReference, TableReference};
 use itertools::Itertools;
 use serde::{Deserialize, Deserializer, Serialize, de};
 use std::path::PathBuf;
@@ -37,7 +36,7 @@ where
     }
 }
 
-/// A wrapper type around a [TableReference] that implements case-insensitive
+/// A wrapper type around a table reference that implements case-insensitive
 /// semantics.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub enum Qualified<'a> {
@@ -219,27 +218,6 @@ impl<'a> Qualified<'a> {
         }
     }
 
-    pub fn into_table_ref(self) -> TableReference {
-        match self {
-            Qualified::Bare { table } => TableReference::Bare {
-                table: table.into_inner(),
-            },
-            Qualified::Partial { schema, table } => TableReference::Partial {
-                schema: schema.into_inner(),
-                table: table.into_inner(),
-            },
-            Qualified::Full {
-                catalog,
-                schema,
-                table,
-            } => TableReference::Full {
-                catalog: catalog.into_inner(),
-                schema: schema.into_inner(),
-                table: table.into_inner(),
-            },
-        }
-    }
-
     pub fn matches(&self, target: &Qualified) -> bool {
         self.table() == target.table()
             && self
@@ -326,52 +304,6 @@ impl<'a> Qualified<'a> {
     }
 }
 
-impl From<TableReference> for Qualified<'static> {
-    fn from(value: TableReference) -> Self {
-        match value {
-            TableReference::Full {
-                catalog,
-                schema,
-                table,
-            } => Qualified::Full {
-                catalog: catalog.into(),
-                schema: schema.into(),
-                table: table.into(),
-            },
-            TableReference::Partial { schema, table } => Qualified::Partial {
-                schema: schema.into(),
-                table: table.into(),
-            },
-            TableReference::Bare { table } => Qualified::Bare {
-                table: table.into(),
-            },
-        }
-    }
-}
-
-impl<'a> From<&'a TableReference> for Qualified<'a> {
-    fn from(value: &'a TableReference) -> Self {
-        match value {
-            TableReference::Full {
-                catalog,
-                schema,
-                table,
-            } => Qualified::Full {
-                catalog: catalog.as_ref().into(),
-                schema: schema.as_ref().into(),
-                table: table.as_ref().into(),
-            },
-            TableReference::Partial { schema, table } => Qualified::Partial {
-                schema: schema.as_ref().into(),
-                table: table.as_ref().into(),
-            },
-            TableReference::Bare { table } => Qualified::Bare {
-                table: table.as_ref().into(),
-            },
-        }
-    }
-}
-
 impl<'a> From<Ident<'a>> for Qualified<'a> {
     fn from(value: Ident<'a>) -> Self {
         Qualified::Bare { table: value }
@@ -424,12 +356,6 @@ impl<'a> TryFrom<Vec<Ident<'a>>> for Qualified<'a> {
                 internal_err!("Invalid number of identifiers: {:?}", value)
             }
         }
-    }
-}
-
-impl<'a> From<Qualified<'a>> for TableReference {
-    fn from(value: Qualified<'a>) -> Self {
-        value.into_table_ref()
     }
 }
 
@@ -678,64 +604,12 @@ impl From<&FullyQualifiedName> for FullyQualifiedName {
     }
 }
 
-impl From<ResolvedTableReference> for FullyQualifiedName {
-    fn from(value: ResolvedTableReference) -> Self {
-        FullyQualifiedName::new(value.catalog, value.schema, value.table)
-    }
-}
-
-impl TryFrom<TableReference> for FullyQualifiedName {
-    type Error = Box<InternalError>;
-
-    fn try_from(value: TableReference) -> Result<Self, Self::Error> {
-        match value {
-            TableReference::Full {
-                catalog,
-                schema,
-                table,
-            } => Ok(Self::new(catalog, schema, table)),
-            _ => internal_err!(
-                "Partial table reference cannot be converted to fully qualified name: {}",
-                value
-            ),
-        }
-    }
-}
-
-impl TryFrom<&TableReference> for FullyQualifiedName {
-    type Error = Box<InternalError>;
-
-    fn try_from(value: &TableReference) -> Result<Self, Self::Error> {
-        value.clone().try_into()
-    }
-}
-
-impl From<FullyQualifiedName> for ResolvedTableReference {
-    fn from(value: FullyQualifiedName) -> Self {
-        ResolvedTableReference {
-            catalog: value.catalog.into_inner(),
-            schema: value.schema.into_inner(),
-            table: value.table.into_inner(),
-        }
-    }
-}
-
 impl From<FullyQualifiedName> for Qualified<'static> {
     fn from(value: FullyQualifiedName) -> Self {
         Qualified::Full {
             catalog: value.catalog,
             schema: value.schema,
             table: value.table,
-        }
-    }
-}
-
-impl From<FullyQualifiedName> for TableReference {
-    fn from(value: FullyQualifiedName) -> Self {
-        TableReference::Full {
-            catalog: value.catalog.into_inner(),
-            schema: value.schema.into_inner(),
-            table: value.table.into_inner(),
         }
     }
 }
@@ -861,20 +735,6 @@ impl ColumnRef {
             }),
             _ => internal_err!("Invalid column reference: {name}"),
         }
-    }
-}
-
-impl TryFrom<datafusion_common::Column> for ColumnRef {
-    type Error = Box<InternalError>;
-
-    fn try_from(value: datafusion_common::Column) -> Result<Self, Self::Error> {
-        Ok(Self {
-            table_name: value
-                .relation
-                .ok_or_else(|| make_internal_err!("Invalid column ref: missing relation"))?
-                .try_into()?,
-            column: value.name.into(),
-        })
     }
 }
 

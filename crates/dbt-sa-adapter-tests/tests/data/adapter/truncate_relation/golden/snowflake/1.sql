@@ -1,0 +1,1 @@
+CREATE SCHEMA adapters_snowflake_truncate_relation

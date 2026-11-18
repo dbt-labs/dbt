@@ -34,6 +34,7 @@ impl StaticTelemetryEvent for HookProcessed {
             DbtTelemetryContext {
                 phase: Some(self.phase()),
                 unique_id: Some(self.unique_id.clone()),
+                batch_id: None,
             }
             .into(),
         )

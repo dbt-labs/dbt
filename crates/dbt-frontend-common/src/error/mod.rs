@@ -37,7 +37,9 @@ mod code_location;
 mod codes;
 mod name_candidate;
 
-use std::{backtrace::Backtrace, sync::Arc};
+use std::backtrace::Backtrace;
+
+use dbt_proc_macros::DebugNoInline;
 
 pub use code_location::CodeLocation;
 pub use codes::ErrorCode;
@@ -221,6 +223,8 @@ pub struct FrontendError {
     pub context: String,
     pub cause: Option<Box<WrappedError>>,
     pub backtrace: Backtrace,
+    /// What the error is about, when that's a name (see [ErrorSubject]).
+    subject: Option<ErrorSubject>,
 
     // Chain of errors, to allow returning multiple errors in a single
     // [FrontendResult]:
@@ -253,6 +257,7 @@ impl FrontendError {
             context: context.into(),
             cause: None,
             backtrace: Backtrace::capture(),
+            subject: None,
             next: None,
         }
     }
@@ -268,6 +273,7 @@ impl FrontendError {
             context: context.into(),
             cause: None,
             backtrace: Backtrace::force_capture(),
+            subject: None,
             next: None,
         }
     }
@@ -326,6 +332,25 @@ impl FrontendError {
         FrontendError { code, ..self }
     }
 
+    /// Records what the error is about (a function's or a type's name).
+    pub fn with_subject(self, subject: ErrorSubject) -> Self {
+        FrontendError {
+            subject: Some(subject),
+            ..self
+        }
+    }
+
+    /// What the error is about, when that's a name: its own, else its
+    /// cause's.
+    pub fn subject(&self) -> Option<&ErrorSubject> {
+        self.subject
+            .as_ref()
+            .or_else(|| match self.cause.as_deref() {
+                Some(WrappedError::Frontend(cause)) => cause.subject(),
+                _ => None,
+            })
+    }
+
     pub fn chain(self, next: Box<FrontendError>) -> Self {
         FrontendError {
             next: Some(next),
@@ -366,12 +391,17 @@ impl FrontendError {
         err: InternalError,
     ) -> Self {
         let msg = err.message();
+        // A wrapped error's subject, kept when the wrapped error is flattened.
+        let mut subject = err.subject;
         let cause = if let WrappedError::Frontend(e) = err.error {
             if e.code.is_bug() {
                 // For unexpected errors, we always propagate the original
                 // cause:
                 return e;
             } else {
+                if subject.is_none() {
+                    subject = e.subject().cloned();
+                }
                 Some(Box::new(WrappedError::Generic(e.context)))
             }
         } else {
@@ -399,21 +429,34 @@ impl FrontendError {
             },
             cause,
             backtrace: err.backtrace,
+            subject,
             next: None,
         }
     }
 }
 
-use datafusion_common::DFSchema;
-use datafusion_common::error::DataFusionError;
-use datafusion_expr::expr::Expr;
 use dbt_antlr4::errors::ANTLRError;
+
+/// A column a name might have meant, for the candidates an error lists: the
+/// column's name and the name parts of the relation it belongs to (empty
+/// when it has none).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CandidateColumn {
+    pub qualifier: Vec<String>,
+    pub name: String,
+}
+
+impl From<&CandidateColumn> for NameCandidate {
+    fn from(column: &CandidateColumn) -> Self {
+        NameCandidate::new(column.name.clone(), column.qualifier.clone())
+    }
+}
 
 #[derive(Debug)]
 pub struct SchemaError {
     context: String,
     target: String,
-    schemas: Vec<Arc<DFSchema>>,
+    columns: Vec<CandidateColumn>,
     /// Path to the parquet file this schema was loaded from, if any.
     pub parquet_path: Option<String>,
 }
@@ -422,12 +465,12 @@ impl SchemaError {
     pub fn new(
         context: impl Into<String>,
         target: impl Into<String>,
-        schemas: impl Into<Vec<Arc<DFSchema>>>,
+        columns: impl Into<Vec<CandidateColumn>>,
     ) -> Self {
         SchemaError {
             context: context.into(),
             target: target.into(),
-            schemas: schemas.into(),
+            columns: columns.into(),
             parquet_path: None,
         }
     }
@@ -445,22 +488,9 @@ impl SchemaError {
         &self.target
     }
 
-    pub fn schemas(&self) -> &[Arc<DFSchema>] {
-        &self.schemas
-    }
-
-    pub fn fields(&self) -> Vec<String> {
-        self.schemas.iter().flat_map(|s| s.field_names()).collect()
-    }
-
-    /// If the Arrow schema backing `schema` carries a
-    /// [`DBT_CACHED_PARQUET_PATH_KEY`] metadata entry, records that path on
-    /// this error so the display layer can emit a more actionable message.
-    pub fn with_parquet_path_from_schema(mut self, schema: &Arc<DFSchema>) -> Self {
-        if let Some(path) = schema.as_ref().metadata().get(DBT_CACHED_PARQUET_PATH_KEY) {
-            self.parquet_path = Some(path.clone());
-        }
-        self
+    /// The columns in the schemas the name was looked up in.
+    pub fn columns(&self) -> &[CandidateColumn] {
+        &self.columns
     }
 }
 
@@ -474,15 +504,19 @@ impl std::fmt::Display for SchemaError {
 pub struct AliasedExprsError {
     context: String,
     target: String,
-    items: Vec<Expr>,
+    aliases: Vec<String>,
 }
 
 impl AliasedExprsError {
-    pub fn new(context: impl Into<String>, target: impl Into<String>, items: Vec<Expr>) -> Self {
+    pub fn new(
+        context: impl Into<String>,
+        target: impl Into<String>,
+        aliases: Vec<String>,
+    ) -> Self {
         AliasedExprsError {
             context: context.into(),
             target: target.into(),
-            items,
+            aliases,
         }
     }
 
@@ -494,12 +528,9 @@ impl AliasedExprsError {
         &self.target
     }
 
-    pub fn items(&self) -> &[Expr] {
-        &self.items
-    }
-
-    pub fn fields(&self) -> Vec<String> {
-        self.items.iter().map(|e| e.to_string()).collect()
+    /// The aliases of the expressions the name was looked up in.
+    pub fn aliases(&self) -> &[String] {
+        &self.aliases
     }
 }
 
@@ -509,13 +540,45 @@ impl std::fmt::Display for AliasedExprsError {
     }
 }
 
+/// An error from DataFusion, kept whole so that it can be recovered, with
+/// the message to show for it.
 #[derive(Debug)]
+pub struct DatafusionError {
+    message: String,
+    error: Box<dyn std::error::Error + Send + Sync>,
+}
+
+impl DatafusionError {
+    pub fn new(
+        message: impl Into<String>,
+        error: impl Into<Box<dyn std::error::Error + Send + Sync>>,
+    ) -> Self {
+        DatafusionError {
+            message: message.into(),
+            error: error.into(),
+        }
+    }
+
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    pub fn error(&self) -> &(dyn std::error::Error + Send + Sync + 'static) {
+        self.error.as_ref()
+    }
+
+    pub fn into_error(self) -> Box<dyn std::error::Error + Send + Sync> {
+        self.error
+    }
+}
+
+#[derive(DebugNoInline)]
 #[non_exhaustive]
 pub enum WrappedError {
     Frontend(FrontendError),
     Antlr(ANTLRError),
     Arrow(Box<arrow::error::ArrowError>),
-    Datafusion(DataFusionError),
+    Datafusion(DatafusionError),
     ParseFloat(std::num::ParseFloatError),
     ParseInt(std::num::ParseIntError),
     SerdeJson(serde_json::Error),
@@ -525,15 +588,11 @@ pub enum WrappedError {
 }
 
 impl std::fmt::Display for WrappedError {
+    #[inline(never)]
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             WrappedError::Antlr(e) => write!(f, "{e}"),
-            WrappedError::Datafusion(e) => match e {
-                DataFusionError::Plan(e) => write!(f, "{e}"),
-                DataFusionError::SchemaError(e, _) => write!(f, "{e}"),
-                DataFusionError::ArrowError(e, _) => write!(f, "{e}"),
-                _ => write!(f, "{e}"),
-            },
+            WrappedError::Datafusion(e) => write!(f, "{}", e.message()),
             WrappedError::Generic(e) => write!(f, "{e}"),
             WrappedError::Arrow(e) => write!(f, "{e}"),
             WrappedError::ParseFloat(e) => write!(f, "{e}"),
@@ -550,7 +609,7 @@ impl std::error::Error for WrappedError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             WrappedError::Frontend(e) => Some(e),
-            WrappedError::Datafusion(e) => Some(e),
+            WrappedError::Datafusion(e) => Some(e.error()),
             WrappedError::Arrow(e) => Some(e),
             WrappedError::ParseFloat(e) => Some(e),
             WrappedError::ParseInt(e) => Some(e),
@@ -560,21 +619,34 @@ impl std::error::Error for WrappedError {
     }
 }
 
+/// What an error is about, when that's a name: lets callers act on it without
+/// reading the message.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ErrorSubject {
+    /// A function that couldn't be resolved, as called.
+    Function(String),
+    /// A type that isn't known, as written.
+    Type(String),
+}
+
 #[derive(Debug)]
 pub struct InternalError {
     error: WrappedError,
     pub location: Option<CodeLocation>,
     pub backtrace: Backtrace,
+    /// What the error is about, when that's a name (see [ErrorSubject]).
+    subject: Option<ErrorSubject>,
 }
 
 impl std::fmt::Display for InternalError {
+    #[inline(never)]
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         #[allow(unreachable_patterns)] // Note: this shouldn't be necessary because of
         // the #[non_exhaustive] attribute
         match &self.error {
             WrappedError::Frontend(e) => write!(f, "{e}"),
             WrappedError::Antlr(e) => write!(f, "ANTLR error: {e}"),
-            WrappedError::Datafusion(e) => write!(f, "DataFusion error: {e}"),
+            WrappedError::Datafusion(e) => write!(f, "DataFusion error: {}", e.error()),
             WrappedError::Generic(e) => write!(f, "{e}"),
             WrappedError::Arrow(e) => write!(f, "Arrow error: {e}"),
             WrappedError::ParseFloat(e) => write!(f, "ParseFloat error: {e}"),
@@ -598,6 +670,7 @@ impl From<String> for InternalError {
             error: WrappedError::Generic(e),
             location: None,
             backtrace: Backtrace::capture(),
+            subject: None,
         }
     }
 }
@@ -627,6 +700,7 @@ impl From<Box<FrontendError>> for InternalError {
             error: WrappedError::Frontend(*e),
             location,
             backtrace: Backtrace::capture(),
+            subject: None,
         }
     }
 }
@@ -643,6 +717,7 @@ impl From<SchemaError> for InternalError {
             error: WrappedError::Schema(e),
             location: None,
             backtrace: Backtrace::capture(),
+            subject: None,
         }
     }
 }
@@ -659,6 +734,7 @@ impl From<AliasedExprsError> for InternalError {
             error: WrappedError::AliasedExprs(e),
             location: None,
             backtrace: Backtrace::capture(),
+            subject: None,
         }
     }
 }
@@ -675,6 +751,7 @@ impl From<std::num::ParseFloatError> for InternalError {
             error: WrappedError::ParseFloat(e),
             location: None,
             backtrace: Backtrace::capture(),
+            subject: None,
         }
     }
 }
@@ -691,6 +768,7 @@ impl From<std::num::ParseIntError> for InternalError {
             error: WrappedError::ParseInt(e),
             location: None,
             backtrace: Backtrace::capture(),
+            subject: None,
         }
     }
 }
@@ -707,6 +785,7 @@ impl From<ANTLRError> for InternalError {
             error: WrappedError::Antlr(e),
             location: None,
             backtrace: Backtrace::capture(),
+            subject: None,
         }
     }
 }
@@ -723,6 +802,7 @@ impl From<arrow::error::ArrowError> for InternalError {
             error: WrappedError::Arrow(Box::new(e)),
             location: None,
             backtrace: Backtrace::capture(),
+            subject: None,
         }
     }
 }
@@ -739,6 +819,7 @@ impl From<serde_json::Error> for InternalError {
             error: WrappedError::SerdeJson(e),
             location: None,
             backtrace: Backtrace::capture(),
+            subject: None,
         }
     }
 }
@@ -749,18 +830,19 @@ impl From<serde_json::Error> for Box<InternalError> {
     }
 }
 
-impl From<DataFusionError> for InternalError {
-    fn from(e: DataFusionError) -> Self {
+impl From<DatafusionError> for InternalError {
+    fn from(e: DatafusionError) -> Self {
         InternalError {
             error: WrappedError::Datafusion(e),
             location: None,
             backtrace: Backtrace::capture(),
+            subject: None,
         }
     }
 }
 
-impl From<DataFusionError> for Box<InternalError> {
-    fn from(e: DataFusionError) -> Self {
+impl From<DatafusionError> for Box<InternalError> {
+    fn from(e: DatafusionError) -> Self {
         Box::new(e.into())
     }
 }
@@ -771,6 +853,7 @@ impl From<std::fmt::Error> for InternalError {
             error: WrappedError::Generic(e.to_string()),
             location: None,
             backtrace: Backtrace::capture(),
+            subject: None,
         }
     }
 }
@@ -787,6 +870,7 @@ impl InternalError {
             error: WrappedError::Generic(context.into()),
             location: None,
             backtrace: Backtrace::capture(),
+            subject: None,
         }
     }
 
@@ -799,6 +883,15 @@ impl InternalError {
             error: WrappedError::Generic(context.into()),
             location: Some(location),
             backtrace: Backtrace::capture(),
+            subject: None,
+        }
+    }
+
+    /// Records what the error is about (a function's or a type's name).
+    pub fn with_subject(self, subject: ErrorSubject) -> InternalError {
+        InternalError {
+            subject: Some(subject),
+            ..self
         }
     }
 
@@ -1079,4 +1172,44 @@ mod private {
     impl<T> Sealed for InternalResult<T> {}
 
     impl<T, E> Sealed for Result<T, E> where E: Into<InternalError> {}
+}
+
+#[cfg(test)]
+mod subject_tests {
+    use super::*;
+
+    #[test]
+    fn the_subject_survives_lifting_and_wrapping() {
+        let lifted = InternalError::new("Failed to resolve function iff: no overload")
+            .with_subject(ErrorSubject::Function("iff".to_string()))
+            .lift(
+                ErrorCode::FunctionResolutionFailed,
+                CodeLocation::default(),
+                None::<String>,
+            );
+        assert_eq!(
+            lifted.subject(),
+            Some(&ErrorSubject::Function("iff".to_string()))
+        );
+        // Wrapped as another error's cause, it's still found.
+        let outer = InternalError {
+            error: WrappedError::Frontend(*lifted),
+            location: None,
+            backtrace: Backtrace::capture(),
+            subject: None,
+        }
+        .lift(
+            ErrorCode::InvalidColumnReference,
+            CodeLocation::default(),
+            Some("Column reference failed"),
+        );
+        assert_eq!(
+            outer.subject(),
+            Some(&ErrorSubject::Function("iff".to_string()))
+        );
+        assert_eq!(
+            FrontendError::new(ErrorCode::UnknownType, CodeLocation::default(), "x").subject(),
+            None
+        );
+    }
 }

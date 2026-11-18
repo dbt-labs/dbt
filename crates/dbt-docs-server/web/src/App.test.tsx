@@ -1,18 +1,22 @@
 import { HelmetProvider } from 'react-helmet-async';
 import { MemoryRouter } from 'react-router-dom';
-import { QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor } from '@testing-library/react';
+import type { MetadataDataSource } from 'dbt-docs-lib';
+import {
+  LinkPrefixProvider,
+  MetadataDataProvider,
+  QueryClientProvider,
+} from 'dbt-docs-lib';
 
 import App from './App';
 import { BootstrapProvider } from './lib/bootstrapContext';
-import { LinkPrefixProvider, MetadataDataProvider } from './shared';
+import { RouterNavigationProvider } from './lib/routerNavigation';
 import type { BootstrapData } from './shared/data-sources/duckdb/bootstrap';
 import { DETAIL_REGISTRY } from './shared/data-sources/duckdb/details';
 import {
   fromCapabilities,
   fromDistribution,
 } from './shared/data-sources/mappers/fromWire';
-import type { MetadataDataSource } from './shared/data-sources/MetadataDataSource';
 import { createFakeDataSource } from './shared/testing/createFakeDataSource';
 import { makeTestQueryClient } from './test/renderWithProviders';
 
@@ -72,11 +76,13 @@ function renderApp(
     <QueryClientProvider client={makeTestQueryClient()}>
       <HelmetProvider>
         <MemoryRouter initialEntries={['/']}>
-          <BootstrapProvider value={bootstrap}>
-            <MetadataDataProvider source={source}>
-              <App />
-            </MetadataDataProvider>
-          </BootstrapProvider>
+          <RouterNavigationProvider>
+            <BootstrapProvider value={bootstrap}>
+              <MetadataDataProvider source={source}>
+                <App />
+              </MetadataDataProvider>
+            </BootstrapProvider>
+          </RouterNavigationProvider>
         </MemoryRouter>
       </HelmetProvider>
     </QueryClientProvider>,
@@ -158,22 +164,24 @@ describe('<App />', () => {
         <QueryClientProvider client={makeTestQueryClient()}>
           <HelmetProvider>
             <MemoryRouter initialEntries={['/details/model.demo.dim_customers']}>
-              <LinkPrefixProvider prefix="/">
-                <BootstrapProvider
-                  value={bootstrapRead([
-                    {
-                      unique_id: 'model.demo.dim_customers',
-                      name: 'dim_customers',
-                      resource_type: 'model',
-                      package_name: 'demo',
-                    },
-                  ])}
-                >
-                  <MetadataDataProvider source={detailSource}>
-                    <App />
-                  </MetadataDataProvider>
-                </BootstrapProvider>
-              </LinkPrefixProvider>
+              <RouterNavigationProvider>
+                <LinkPrefixProvider prefix="/">
+                  <BootstrapProvider
+                    value={bootstrapRead([
+                      {
+                        unique_id: 'model.demo.dim_customers',
+                        name: 'dim_customers',
+                        resource_type: 'model',
+                        package_name: 'demo',
+                      },
+                    ])}
+                  >
+                    <MetadataDataProvider source={detailSource}>
+                      <App />
+                    </MetadataDataProvider>
+                  </BootstrapProvider>
+                </LinkPrefixProvider>
+              </RouterNavigationProvider>
             </MemoryRouter>
           </HelmetProvider>
         </QueryClientProvider>,

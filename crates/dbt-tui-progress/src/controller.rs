@@ -76,6 +76,17 @@ where
         }
     }
 
+    /// Creates a progress controller that tracks bars and spinners but never draws them.
+    ///
+    /// Useful for exercising interactive output paths where no terminal is attached.
+    pub fn new_hidden() -> Self {
+        let controller = Self::new();
+        controller
+            .controller
+            .set_draw_target(indicatif::ProgressDrawTarget::hidden());
+        controller
+    }
+
     /// Starts the background ticker thread for progress bar animations.
     ///
     /// The ticker thread periodically updates all active progress bars and

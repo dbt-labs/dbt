@@ -1,0 +1,16 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/sources.yml
+   Parsing models/scheduled_mv.sql
+   Parsing models/scheduled_st.sql
+ Rendering models/scheduled_st.sql
+   Running models/scheduled_st.sql
+ Succeeded model adapters_databricks_refresh_schedule_lifecycle.scheduled_st (streaming) [1 of 2 in duration]
+ Rendering models/scheduled_mv.sql
+   Running models/scheduled_mv.sql
+ Succeeded model adapters_databricks_refresh_schedule_lifecycle.scheduled_mv (mat_view) [2 of 2 in duration]
+  Finished [duration] hook  test-on-run-end-0
+==================== Execution Summary =====================
+Finished 'run' successfully for target 'databricks' [duration]
+Processed: 1 hook | 2 models
+Summary: 3 total | 3 success

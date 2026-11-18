@@ -1,0 +1,17 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/schema.yml
+   Parsing models/a.sql
+   Parsing models/test_incremental_tags.sql
+   Started downloading referenced relations (1 items)
+  Finished [duration] downloading referenced relations (1 items)
+ Rendering models/a.sql
+   Running models/a.sql
+ Succeeded model adapters_databricks_incremental_tags.a (table) [1 of 2 in duration]
+ Rendering models/test_incremental_tags.sql
+   Running models/test_incremental_tags.sql
+ Succeeded model adapters_databricks_incremental_tags.test_incremental_tags (incremental) [2 of 2 in duration]
+==================== Execution Summary =====================
+Finished 'run' successfully for target 'databricks' [duration]
+Processed: 2 models
+Summary: 2 total | 2 success

@@ -7,6 +7,7 @@ use crate::relation::config_v2::{
 use crate::relation::databricks::config::{
     DatabricksRelationMetadata, DatabricksRelationMetadataKey,
 };
+use dbt_adapter_engine::cow::uppercase;
 use dbt_schemas::schemas::DbtModel;
 use dbt_schemas::schemas::InternalDbtNodeAttributes;
 use minijinja::value::Value;
@@ -116,7 +117,7 @@ fn normalize_time_zone(time_zone: Option<&str>) -> Cow<'_, str> {
     if time_zone.eq_ignore_ascii_case("UTC") || time_zone.eq_ignore_ascii_case("ETC/UTC") {
         Cow::Borrowed("UTC")
     } else {
-        Cow::Owned(time_zone.to_uppercase())
+        uppercase(time_zone.into())
     }
 }
 
@@ -322,6 +323,7 @@ mod tests {
     use crate::relation::databricks::config::test_helpers;
     use dbt_agate::AgateTable;
     use indexmap::IndexMap;
+    use std::sync::Arc;
 
     fn create_mock_describe_extended_table(schedule_info: Option<&str>) -> AgateTable {
         let comment_text = schedule_info.unwrap_or("MANUAL");
@@ -442,6 +444,7 @@ mod tests {
             .__adapter_attr__
             .databricks_attr
             .as_mut()
+            .map(Arc::make_mut)
             .unwrap()
             .schedule = Some(dbt_yaml::from_str("{}").unwrap());
         let config = from_local_config(&model).unwrap();

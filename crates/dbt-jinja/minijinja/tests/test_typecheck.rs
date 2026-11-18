@@ -2,7 +2,7 @@
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -19,12 +19,14 @@ use minijinja::{
 /// Uses RefCell since TypecheckingEventListener is used via Rc (single-threaded).
 struct WarningCollector {
     warnings: RefCell<Vec<String>>,
+    calls: RefCell<Vec<String>>,
 }
 
 impl WarningCollector {
     fn new() -> Self {
         Self {
             warnings: RefCell::new(Vec::new()),
+            calls: RefCell::new(Vec::new()),
         }
     }
 
@@ -46,6 +48,107 @@ impl TypecheckingEventListener for WarningCollector {
     fn new_block(&self, _block_id: usize) {}
     fn flush(&self) {}
     fn on_lookup(&self, _span: &Span, _simple_name: &str, _full_name: &str, _def_spans: Vec<Span>) {
+    }
+
+    fn on_function_call(&self, _: &Span, _: &Span, _: &Path, unique_id: &str) {
+        self.calls.borrow_mut().push(unique_id.to_owned());
+    }
+}
+
+#[test]
+fn adapter_dispatch_typecheck_is_scoped_to_template_and_registry() {
+    std::thread::scope(|scope| {
+        for dialect in ["snowflake", "bigquery"] {
+            scope.spawn(move || {
+                let name = format!("{dialect}__probe");
+                let mut registry = BTreeMap::new();
+                register_udf_with_bare_name(&mut registry, &name, "() -> string", &[]);
+                let registry = Arc::new(registry);
+                let builtins = load_builtins_with_namespace(None).unwrap();
+                for _ in 0..32 {
+                    let mut context = minimal_typecheck_context();
+                    context.insert("dialect".to_string(), Value::from(dialect));
+                    let mut env = Environment::new();
+                    env.profile =
+                        CodeGenerationProfile::TypeCheck(registry.clone(), context.clone());
+                    let template = env
+                        .template_from_named_str("dispatch", "{{ adapter.dispatch('probe')() }}")
+                        .unwrap();
+                    let listener = Rc::new(WarningCollector::new());
+                    template
+                        .typecheck(
+                            registry.clone(),
+                            builtins.clone(),
+                            listener.clone(),
+                            context,
+                        )
+                        .unwrap();
+                    assert!(listener.warnings().is_empty(), "{:?}", listener.warnings());
+                    assert_eq!(*listener.calls.borrow(), [format!("test.{name}")]);
+                }
+            });
+        }
+    });
+}
+
+#[test]
+fn adapter_dispatch_typecheck_respects_package_precedence() {
+    let mut registry = BTreeMap::new();
+    let root = build_udf_from_funcsign("root_probe", "() -> string", &[]);
+    let dependency = build_udf_from_funcsign("dependency_probe", "() -> string", &[]);
+    registry.insert("test.bigquery__probe".to_string(), root);
+    registry.insert("z_dep.bigquery__probe".to_string(), dependency.clone());
+    registry.insert("bigquery__probe".to_string(), dependency);
+    let registry = Arc::new(registry);
+    for (source, configured_order, expected) in [
+        (
+            "{{ adapter.dispatch('probe')() }}",
+            false,
+            "test.root_probe",
+        ),
+        (
+            "{{ adapter.dispatch('probe', 'z_dep')() }}",
+            false,
+            "test.root_probe",
+        ),
+        (
+            "{{ adapter.dispatch('probe', 'z_dep')() }}",
+            true,
+            "test.dependency_probe",
+        ),
+    ] {
+        let mut context = minimal_typecheck_context();
+        context.insert("dialect".to_string(), Value::from("bigquery"));
+        context.insert(
+            "MACRO_NAMESPACE_REGISTRY".to_string(),
+            Value::from_object(BTreeMap::from([
+                ("test".to_string(), Value::NONE),
+                ("z_dep".to_string(), Value::NONE),
+            ])),
+        );
+        if configured_order {
+            context.insert(
+                "MACRO_DISPATCH_ORDER".to_string(),
+                Value::from_object(BTreeMap::from([(
+                    "z_dep".to_string(),
+                    Value::from_object(vec!["z_dep".to_string(), "test".to_string()]),
+                )])),
+            );
+        }
+        let mut env = Environment::new();
+        env.profile = CodeGenerationProfile::TypeCheck(registry.clone(), context.clone());
+        let template = env.template_from_named_str("dispatch", source).unwrap();
+        let listener = Rc::new(WarningCollector::new());
+        template
+            .typecheck(
+                registry.clone(),
+                load_builtins_with_namespace(None).unwrap(),
+                listener.clone(),
+                context,
+            )
+            .unwrap();
+        assert!(listener.warnings().is_empty(), "{:?}", listener.warnings());
+        assert_eq!(*listener.calls.borrow(), [expected], "{source}");
     }
 }
 

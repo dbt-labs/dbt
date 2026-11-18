@@ -26,6 +26,7 @@ impl Showable for DbtSnapshot {
 
             run_show(
                 ctx,
+                self,
                 &unique_id,
                 "snapshot",
                 false,

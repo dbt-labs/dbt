@@ -2,7 +2,9 @@ use std::collections::HashSet;
 use std::sync::Mutex;
 
 use dbt_common::ErrorCode;
-use dbt_common::tracing::dbt_emit::{emit_info_log_message, emit_warn_log_message};
+use dbt_common::tracing::dbt_emit::{
+    emit_future_change, emit_info_log_message, emit_warn_log_message,
+};
 use dbt_schemas::schemas::packages::{DbtPackageEntry, DbtPackages, DbtPackagesLock};
 
 use crate::types::HubPinnedPackage;
@@ -141,11 +143,10 @@ impl PackageNotice {
                 );
             }
             PackageNoticeKind::DuplicatePackageName => {
-                emit_warn_log_message(
+                emit_future_change(
                     ErrorCode::DepsDuplicatePackage,
                     format!(
-                        "Duplicate package name '{package}' found in dependencies. Keeping the first occurrence. \
-                     This will be an error in a future version of dbt."
+                        "Duplicate package name '{package}' found in dependencies. Keeping the first occurrence."
                     ),
                 );
             }

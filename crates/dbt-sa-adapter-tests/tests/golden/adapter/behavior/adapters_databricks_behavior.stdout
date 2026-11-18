@@ -1,0 +1,20 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/c.sql
+{}
+use_user_folder_for_python.no_warn:
+use_materialization_v2.no_warn:
+not expected
+expected
+expected
+ Rendering models/c.sql
+{}
+use_user_folder_for_python.no_warn:True
+use_materialization_v2.no_warn:False
+not expected
+expected
+expected
+==================== Execution Summary =====================
+Finished 'compile' successfully for target 'databricks' [duration]
+Processed: 1 model
+Summary: 1 total | 1 success

@@ -1,0 +1,15 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/hello.sql
+   Parsing models/hello_set_sql_header.sql
+ Rendering models/hello_set_sql_header.sql
+   Running models/hello_set_sql_header.sql
+ Succeeded model adapters_snowflake_repros_sql_header.hello_set_sql_header (table) [1 of 2 in duration]
+ Rendering models/hello.sql
+ALTER SESSION SET TIMEZONE = 'Asia/Kolkata';
+   Running models/hello.sql
+ Succeeded model adapters_snowflake_repros_sql_header.hello (table) [2 of 2 in duration]
+==================== Execution Summary =====================
+Finished 'run' successfully for target 'snowflake' [duration]
+Processed: 2 models
+Summary: 2 total | 2 success

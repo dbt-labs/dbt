@@ -1,0 +1,10 @@
+model.test.c:
+- sequence: 0
+  type: execute
+  sql: CREATE SCHEMA IF NOT EXISTS adapters_bigquery_drop_schema
+- sequence: 1
+  type: execute
+  sql: CREATE OR REPLACE TABLE adapters_bigquery_drop_schema.a (val int);
+- sequence: 2
+  type: execute
+  sql: drop schema if exists `dbt-test-env`.`adapters_bigquery_drop_schema` cascade

@@ -1,6 +1,7 @@
 use adbc_core::error::{Error, Result, Status};
 
 use std::env;
+use std::ffi::OsStr;
 
 const TRUE_VALUES: [&str; 4] = ["1", "true", "yes", "on"];
 const FALSE_VALUES: [&str; 5] = ["0", "false", "no", "off", ""];
@@ -19,7 +20,11 @@ pub fn env_var_bool_or_warn(var_name: &str) -> bool {
 }
 
 pub fn env_var_bool(var_name: &str) -> Result<Option<bool>> {
-    match env::var_os(var_name) {
+    env_var_bool_inner(var_name, env::var_os(var_name).as_deref())
+}
+
+fn env_var_bool_inner(var_name: &str, val: Option<&OsStr>) -> Result<Option<bool>> {
+    match val {
         Some(val) => {
             if TRUE_VALUES.iter().any(|s| val.eq_ignore_ascii_case(s)) {
                 Ok(Some(true))
@@ -46,61 +51,37 @@ pub fn env_var_bool(var_name: &str) -> Result<Option<bool>> {
 mod tests {
     use super::*;
     use adbc_core::error::Status;
-    use std::sync::Mutex;
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-    fn set_test_var(name: &str, value: &str) {
-        #[allow(
-            clippy::disallowed_methods,
-            reason = "env-var parser tests serialize mutations with ENV_LOCK"
-        )]
-        unsafe {
-            env::set_var(name, value);
-        }
-    }
-
-    fn remove_test_var(name: &str) {
-        unsafe {
-            env::remove_var(name);
-        }
-    }
 
     #[test]
     fn env_var_bool_accepts_missing_true_and_false_values() {
-        let _guard = ENV_LOCK.lock().unwrap();
         let name = "DBT_ADBC_TEST_BOOL_VALUES";
 
-        remove_test_var(name);
-        assert!(!env_var_bool(name).unwrap().unwrap_or(false));
+        assert!(!env_var_bool_inner(name, None).unwrap().unwrap_or(false));
 
         for value in ["1", "TRUE", "yes", "On"] {
-            set_test_var(name, value);
             assert!(
-                env_var_bool(name).unwrap().unwrap_or(false),
+                env_var_bool_inner(name, Some(OsStr::new(value)))
+                    .unwrap()
+                    .unwrap_or(false),
                 "{value:?} should parse as true"
             );
         }
 
         for value in ["0", "FALSE", "no", "Off", ""] {
-            set_test_var(name, value);
             assert!(
-                !env_var_bool(name).unwrap().unwrap_or(false),
+                !env_var_bool_inner(name, Some(OsStr::new(value)))
+                    .unwrap()
+                    .unwrap_or(false),
                 "{value:?} should parse as false"
             );
         }
-
-        remove_test_var(name);
     }
 
     #[test]
     fn env_var_bool_rejects_unknown_values() {
-        let _guard = ENV_LOCK.lock().unwrap();
         let name = "DBT_ADBC_TEST_BOOL_INVALID";
 
-        set_test_var(name, "maybe");
-        let error = env_var_bool(name).unwrap_err();
-        remove_test_var(name);
+        let error = env_var_bool_inner(name, Some(OsStr::new("maybe"))).unwrap_err();
 
         assert_eq!(error.status, Status::InvalidArguments);
         assert!(error.message.contains(name));

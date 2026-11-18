@@ -1,0 +1,11 @@
+catalogs:
+  - catalog_name: builtin_test
+    active_write_integration: test
+    write_integrations:
+      - name: test
+        external_volume: s3_iceberg_snow
+        table_format: iceberg
+        catalog_type: built_in
+        adapter_properties:
+          change_tracking: True
+          base_location_root: '_fusion_ci/yml'

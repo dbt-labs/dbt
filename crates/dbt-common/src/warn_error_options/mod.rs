@@ -25,7 +25,7 @@ pub enum LegacyWarnErrorGroupValue {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum FusionWarnErrorGroupValue {
     StaticAnalysis,
-    PackageParsingCompatibilityErrors,
+    PackageParsingCompatibility,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize)]
@@ -170,7 +170,7 @@ impl WarnErrorOptions {
                 ) => {}
                 WarnErrorOptionValue::FusionGroup(
                     FusionWarnErrorGroupValue::StaticAnalysis
-                    | FusionWarnErrorGroupValue::PackageParsingCompatibilityErrors,
+                    | FusionWarnErrorGroupValue::PackageParsingCompatibility,
                 ) => {}
                 WarnErrorOptionValue::SupportedLegacy(_) => {}
                 WarnErrorOptionValue::NotYetSupportedLegacy(legacy) => {
@@ -476,7 +476,7 @@ fn parse_warn_error_option_value(value: &Value) -> Option<WarnErrorOptionValue> 
 
     if raw == "PackageParsingCompatibility" {
         return Some(WarnErrorOptionValue::FusionGroup(
-            FusionWarnErrorGroupValue::PackageParsingCompatibilityErrors,
+            FusionWarnErrorGroupValue::PackageParsingCompatibility,
         ));
     }
 
@@ -538,7 +538,7 @@ impl WarnErrorOptions {
                 MatchType::Group
             }
             WarnErrorOptionValue::FusionGroup(
-                FusionWarnErrorGroupValue::PackageParsingCompatibilityErrors,
+                FusionWarnErrorGroupValue::PackageParsingCompatibility,
             ) if Self::matches_package_parsing_compatibility(error_code, error_ctx) => {
                 MatchType::Group
             }
@@ -745,6 +745,21 @@ fn matches_legacy_error_code(legacy: SupportedLegacyWarnError, error_code: Error
 mod tests {
     use super::*;
     use crate::ErrorCode;
+
+    #[test]
+    fn config_spelling_round_trips_through_serde() {
+        let spellings = [
+            "PackageParsingCompatibility",
+            "StaticAnalysis",
+            "Deprecations",
+            "all",
+            "NoNodesForSelectionCriteria",
+        ];
+        let yaml = format!("{{error: [{}]}}", spellings.join(", "));
+        let parsed = WarnErrorOptions::from_yaml_value(&dbt_yaml::from_str(&yaml).unwrap());
+        let json = serde_json::to_value(&parsed).unwrap();
+        assert_eq!(json["error"], serde_json::json!(spellings));
+    }
 
     /// Guards the derivation in [`is_fusion_only_warning`]: every legacy warning
     /// wired to an error code must count as having a dbt-core counterpart.
@@ -1178,7 +1193,7 @@ mod tests {
         assert_eq!(
             parsed.silence,
             vec![WarnErrorOptionValue::FusionGroup(
-                FusionWarnErrorGroupValue::PackageParsingCompatibilityErrors,
+                FusionWarnErrorGroupValue::PackageParsingCompatibility,
             )],
         );
         assert_eq!(

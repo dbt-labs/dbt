@@ -1,0 +1,23 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/properties.yml
+   Parsing models/basic_metric_view.sql
+   Parsing models/metric_view_with_config.sql
+   Parsing models/metric_view_with_filter.sql
+   Parsing models/source_orders.sql
+ Rendering models/source_orders.sql
+   Running models/source_orders.sql
+ Succeeded model adapters_databricks_metric_view.source_orders (table) [1 of 4 in duration]
+ Rendering models/metric_view_with_filter.sql
+ Rendering models/metric_view_with_config.sql
+ Rendering models/basic_metric_view.sql
+   Running models/metric_view_with_filter.sql
+ Succeeded model adapters_databricks_metric_view.metric_view_with_filter (metric_view) [2 of 4 in duration]
+   Running models/metric_view_with_config.sql
+ Succeeded model adapters_databricks_metric_view.metric_view_with_config (metric_view) [3 of 4 in duration]
+   Running models/basic_metric_view.sql
+ Succeeded model adapters_databricks_metric_view.basic_metric_view (metric_view) [4 of 4 in duration]
+==================== Execution Summary =====================
+Finished 'run' successfully for target 'databricks' [duration]
+Processed: 4 models
+Summary: 4 total | 4 success

@@ -1,0 +1,22 @@
+model.test.b:
+- sequence: 0
+  type: execute
+  sql: DROP SCHEMA IF EXISTS adapters_redshift_truncate_relation CASCADE
+- sequence: 1
+  type: execute
+  sql: CREATE SCHEMA adapters_redshift_truncate_relation
+- sequence: 2
+  type: execute
+  sql: CREATE TABLE adapters_redshift_truncate_relation.a (val int)
+- sequence: 3
+  type: execute
+  sql: INSERT INTO adapters_redshift_truncate_relation.a (val) VALUES (1), (2)
+- sequence: 4
+  type: execute
+  sql: select * from "ci"."adapters_redshift_truncate_relation"."a"
+- sequence: 5
+  type: execute
+  sql: truncate table "ci"."adapters_redshift_truncate_relation"."a"
+- sequence: 6
+  type: execute
+  sql: select * from "ci"."adapters_redshift_truncate_relation"."a"

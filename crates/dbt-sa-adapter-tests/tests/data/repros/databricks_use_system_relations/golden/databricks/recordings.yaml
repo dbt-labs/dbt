@@ -1,0 +1,89 @@
+85f3743c:
+- sequence: 0
+  type: execute
+  sql: SHOW SCHEMAS IN `e2e`
+ca3d9086:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists `e2e`.`databricks_use_system_relations`
+model.hello_world.use_defined:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace view `e2e`.`databricks_use_system_relations`.`use_defined`
+    
+    as (
+    select * from `system`.`information_schema`.`catalog_privileges`
+    )
+model.hello_world.use_defined_directly:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace view `e2e`.`databricks_use_system_relations`.`use_defined_directly`
+    
+    as (
+    select * from `system`.`information_schema`.`tables`
+    )
+model.hello_world.use_undefined:
+- sequence: 0
+  type: execute
+  sql: |-
+    SELECT
+    table_name,
+    if(table_type IN ('EXTERNAL', 'MANAGED', 'MANAGED_SHALLOW_CLONE', 'EXTERNAL_SHALLOW_CLONE'), 'table', lower(table_type)) AS table_type,
+    lower(data_source_format) AS file_format,
+    table_schema,
+    table_owner,
+    table_catalog,
+    if(
+    table_type IN (
+    'EXTERNAL',
+    'MANAGED',
+    'MANAGED_SHALLOW_CLONE',
+    'EXTERNAL_SHALLOW_CLONE'
+    ),
+    lower(table_type),
+    NULL
+    ) AS databricks_table_type
+    FROM `system`.`information_schema`.`tables`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'databricks_use_system_relations'
+- sequence: 1
+  type: execute
+  sql: |-
+    create or replace view `e2e`.`databricks_use_system_relations`.`use_undefined`
+    
+    as (
+    with 
+    
+    source as (
+    
+    select * from `system`.`information_schema`.`tables`
+    
+    ),
+    
+    renamed as (
+    
+    select
+    table_catalog,
+    table_schema,
+    table_name,
+    table_type,
+    is_insertable_into,
+    commit_action,
+    table_owner,
+    comment,
+    created,
+    created_by,
+    last_altered,
+    last_altered_by,
+    data_source_format,
+    storage_sub_directory,
+    storage_path
+    
+    from source
+    
+    )
+    
+    select * from renamed
+    )

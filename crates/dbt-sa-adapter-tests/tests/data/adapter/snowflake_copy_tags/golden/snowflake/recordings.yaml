@@ -1,0 +1,26 @@
+2cd6cfc4:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists development.adapters_snowflake_copy_tags
+dbbbff64:
+- sequence: 0
+  type: execute
+  sql: |-
+    show terse schemas in database development
+    limit 10000
+model.snowflake_copy_tags.copy_tags_table:
+- sequence: 0
+  type: execute
+  sql: SHOW OBJECTS IN SCHEMA "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_COPY_TAGS" LIMIT 10000
+- sequence: 1
+  type: execute
+  sql: |-
+    create or replace transient  table development.adapters_snowflake_copy_tags.copy_tags_table
+    copy grants
+    copy tags
+    
+    
+    as (
+    
+    select 1 as id
+    )

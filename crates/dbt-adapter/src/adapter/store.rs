@@ -1,13 +1,17 @@
 //! The adapters a run can execute on: one per adapter type the active target
 //! declares.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 
 use dbt_adapter_core::AdapterType;
+use dbt_common::cancellation::never_cancels;
 use dbt_common::{ErrorCode, FsResult, fs_err};
+use dbt_schemas::schemas::relations::DEFAULT_RESOLVED_QUOTING;
 
-use crate::Adapter;
+use crate::sql_types::DefaultTypeOps;
+use crate::stmt_splitter::DefaultStmtSplitter;
+use crate::{Adapter, AdapterImpl};
 
 /// How the store builds an adapter it has not built yet.
 ///
@@ -33,6 +37,9 @@ pub type AdapterBuilder = Box<dyn Fn(AdapterType) -> FsResult<Arc<Adapter>> + Se
 pub struct AdapterStore {
     /// The type unannotated nodes run on. Always among [`Self::declared`].
     default_adapter: AdapterType,
+    /// The type the run's Jinja env is bound to in place of the default; `None` for the default.
+    /// Set by [`Self::with_run_adapter_override`] from `--adapter` on `show`/`run-operation`.
+    run_adapter_override: Option<AdapterType>,
     /// Declaration order, as the profile wrote them.
     declared: Vec<AdapterType>,
     build: AdapterBuilder,
@@ -86,10 +93,37 @@ impl AdapterStore {
         }
         Ok(Self {
             default_adapter,
+            run_adapter_override: None,
             declared,
             build,
             built: Mutex::new(HashMap::new()),
         })
+    }
+
+    /// A store whose adapters are mocks of each declared type.
+    pub fn new_mock(declared: Vec<AdapterType>, default_adapter: AdapterType) -> FsResult<Self> {
+        let build: AdapterBuilder = Box::new(|adapter_type| {
+            let adapter = AdapterImpl::new_mock(
+                adapter_type,
+                BTreeMap::new(),
+                DEFAULT_RESOLVED_QUOTING,
+                Arc::new(DefaultTypeOps::new(adapter_type)),
+                Arc::new(DefaultStmtSplitter),
+            );
+            Ok(Arc::new(Adapter::new(
+                Arc::new(adapter),
+                None,
+                never_cancels(),
+            )))
+        });
+        Self::new(declared, default_adapter, build)
+    }
+
+    /// Records the type the run's Jinja env is bound to in place of the default. Unchecked here:
+    /// [`Self::run_adapter`] rejects an undeclared type, as [`Self::get`] does.
+    pub fn with_run_adapter_override(mut self, run_adapter_override: Option<AdapterType>) -> Self {
+        self.run_adapter_override = run_adapter_override;
+        self
     }
 
     /// The adapter for `adapter_type`, building it if this is its first use.
@@ -133,6 +167,16 @@ impl AdapterStore {
     /// The type unannotated nodes run on.
     pub fn default_adapter_type(&self) -> AdapterType {
         self.default_adapter
+    }
+
+    /// The adapter the run's Jinja env is bound to: the override, else the default.
+    pub fn run_adapter(&self) -> FsResult<Arc<Adapter>> {
+        self.get(self.run_adapter_type())
+    }
+
+    /// The type the run's Jinja env is bound to: the override, else the default.
+    pub fn run_adapter_type(&self) -> AdapterType {
+        self.run_adapter_override.unwrap_or(self.default_adapter)
     }
 
     /// Every type the target declares, in declaration order.
@@ -303,5 +347,49 @@ mod tests {
             "should retry, not cache"
         );
         assert!(!store.is_built(AdapterType::Snowflake));
+    }
+
+    /// The run adapter is the default until an override is recorded;
+    /// `run_adapter` builds that type.
+    #[test]
+    fn the_run_adapter_is_the_default_unless_overridden() {
+        let (calls, build) = counting_builder();
+        let store = AdapterStore::new(
+            vec![AdapterType::Snowflake, AdapterType::Bigquery],
+            AdapterType::Snowflake,
+            build,
+        )
+        .unwrap();
+        assert_eq!(store.run_adapter_type(), AdapterType::Snowflake);
+        let _ = store.run_adapter();
+
+        let store = store.with_run_adapter_override(Some(AdapterType::Bigquery));
+        assert_eq!(store.run_adapter_type(), AdapterType::Bigquery);
+        assert_eq!(store.default_adapter_type(), AdapterType::Snowflake);
+        let _ = store.run_adapter();
+
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec![AdapterType::Snowflake, AdapterType::Bigquery]
+        );
+    }
+
+    /// An undeclared override fails in `run_adapter` with `get`'s error, without building.
+    #[test]
+    fn an_undeclared_run_adapter_override_is_rejected_without_building() {
+        let (calls, build) = counting_builder();
+        let store = AdapterStore::new(vec![AdapterType::Snowflake], AdapterType::Snowflake, build)
+            .unwrap()
+            .with_run_adapter_override(Some(AdapterType::Bigquery));
+
+        let err = store.run_adapter().expect_err("bigquery is not declared");
+        assert!(
+            err.to_string().contains("no adapter is configured for"),
+            "unexpected message: {err}"
+        );
+        assert!(
+            calls.lock().unwrap().is_empty(),
+            "must not attempt to build an undeclared adapter"
+        );
     }
 }

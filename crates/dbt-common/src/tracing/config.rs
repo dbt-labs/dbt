@@ -552,6 +552,7 @@ impl FsTraceConfig {
             show_options: self.show_options.clone(),
             command: self.command,
             quiet: self.quiet,
+            show_all_deprecations: self.show_all_deprecations,
         }
     }
 

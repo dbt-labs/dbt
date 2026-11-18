@@ -1,0 +1,19 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/docs.yml
+   Parsing models/a.sql
+bigquery
+adapters_bigquery_update_columns.a
+columns
+{}
+   Started downloading referenced relations (1 items)
+  Finished [duration] downloading referenced relations (1 items)
+ Rendering models/a.sql
+bigquery
+adapters_bigquery_update_columns.a
+columns
+{'a': {'name': 'a', 'data_type': 'string', 'description': 'a column is a struct', 'constraints': [], 'meta': {}, 'tags': [], 'config': {}}, 'a.b': {'name': 'a.b', 'data_type': 'string', 'description': 'a.b is a string', 'constraints': [], 'meta': {}, 'tags': [], 'config': {}}, 'b': {'name': 'b', 'data_type': 'string', 'description': 'b column is a string', 'constraints': [], 'meta': {}, 'tags': [], 'policy_tags': ['projects/dbt-test-env/locations/us/taxonomies/5785568062805976401/policyTags/135489647357012267'], 'config': {}}}
+==================== Execution Summary =====================
+Finished 'compile' with 1 warning for target 'bigquery' [duration]
+Processed: 1 model
+Summary: 1 total | 1 success

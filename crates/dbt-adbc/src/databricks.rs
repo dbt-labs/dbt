@@ -12,6 +12,10 @@ pub mod auth_type {
     pub const EXTERNAL_BROWSER: &str = "external-browser";
     /// Azure service principal (Microsoft Entra ID) authentication
     pub const AZURE_CLIENT_SECRET: &str = "azure-client-secret";
+    /// OIDC authentication via environment variable
+    pub const ENV_OIDC: &str = "env-oidc";
+    /// OIDC authentication via file path
+    pub const FILE_OIDC: &str = "file-oidc";
 }
 
 /// HTTP Path to connect
@@ -45,6 +49,11 @@ pub const AZURE_CLIENT_ID: &str = "databricks.azure.client_id";
 pub const AZURE_CLIENT_SECRET: &str = "databricks.azure.client_secret";
 /// The Azure tenant ID (optional; discovered from the workspace when absent)
 pub const AZURE_TENANT_ID: &str = "databricks.azure.tenant_id";
+
+/// The Databricks service principal's client ID, for OIDC authentication
+pub const OIDC_CLIENT_ID: &str = "databricks.oidc.client_id";
+/// The path to the file containing the ID token to exchange
+pub const OIDC_TOKEN_FILEPATH: &str = "databricks.oidc.token_filepath";
 
 /// TLS/SSL options
 pub const SSL_MODE: &str = "databricks.ssl_mode";

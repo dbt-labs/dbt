@@ -1,0 +1,18 @@
+   dbt-oss 
+   Loading profiles.yml
+debug:warning=static analysis for adapter: ClickHouse is disabled
+   Parsing models/a.sql
+   Parsing models/b.sql
+   Parsing models/c.sql
+clickhouse
+adapters_clickhouse_get_missing_columns
+ Rendering models/c.sql
+clickhouse
+adapters_clickhouse_get_missing_columns
+Column: three
+ Rendering models/b.sql
+ Rendering models/a.sql
+==================== Execution Summary =====================
+Finished 'compile' successfully for target 'clickhouse' [duration]
+Processed: 3 models
+Summary: 3 total | 3 success

@@ -1,0 +1,8 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/mat_view.sql
+   Parsing models/orders.sql
+pull_materialized_view_options(mat_view)
+{<agate.Row: (enable_refresh, true)>: undefined, <agate.Row: (refresh_interval_minutes, 60.0)>: undefined}
+==================== Execution Summary =====================
+Finished 'run-operation' successfully for target 'bigquery' [duration]

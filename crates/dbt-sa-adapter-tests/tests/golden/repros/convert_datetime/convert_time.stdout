@@ -1,0 +1,8 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/a.sql
+ Rendering models/a.sql
+==================== Execution Summary =====================
+Finished 'compile' successfully for target 'snowflake' [duration]
+Processed: 1 model
+Summary: 1 total | 1 success

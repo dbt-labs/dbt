@@ -1,0 +1,8 @@
+version: 2
+models:
+  - name: basic_metric_view
+    config:
+      databricks_tags:
+        team: data_engineering
+        environment: production
+        owner: dbt-labs

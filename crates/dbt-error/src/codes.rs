@@ -1,9 +1,9 @@
 // use serde_repr::{Deserialize_repr, Serialize_repr};
-use std::{collections::HashMap, fmt::Display};
+use std::{collections::HashMap, fmt::Display, num::NonZeroU32};
 
+use dbt_proc_macros::DebugNoInline;
 use dbt_proc_macros::include_frontend_error_codes;
-use int_enum::IntEnum;
-use strum_macros::{EnumString, IntoStaticStr};
+use strum_macros::{EnumString, FromRepr, IntoStaticStr};
 
 /// Error codes for the SDF CLI.
 ///
@@ -12,7 +12,9 @@ use strum_macros::{EnumString, IntoStaticStr};
 #[include_frontend_error_codes]
 #[repr(u16)]
 #[non_exhaustive]
-#[derive(Debug, Copy, Clone, Eq, PartialEq, IntEnum, EnumString, IntoStaticStr, Default)]
+#[derive(
+    DebugNoInline, Copy, Clone, Eq, PartialEq, FromRepr, EnumString, IntoStaticStr, Default,
+)]
 pub enum ErrorCode {
     // ----------------- Frontend errors [0, 999] -----------------------------
     //
@@ -179,6 +181,20 @@ pub enum ErrorCode {
     SemanticModelDeprecated = 1157,
     PackageMissingProjectFile = 1158,
     DbtYamlValidationError = 1159,
+    CleanTargetOutsideProject = 1160,
+    /// A project or package defines a `unit` materialization or a
+    /// `get_unit_test_sql` macro. Fusion builds unit-test SQL in Rust and never
+    /// dispatches through either, so the override has no effect.
+    UnitTestMacroOverrideIgnored = 1161,
+    DepsInstalledPackagesFallback = 1162,
+    /// A selected unit test of a LakeCompute model runs on another adapter, as that adapter's SQL.
+    LakeComputeUnitTestOnDefaultAdapter = 1163,
+    /// An inline `config(adapter=...)` changed a node's adapter after its parse render.
+    InlineAdapterParseTargetMismatch = 1164,
+    /// A project function declares no return type (BigQuery infers it from
+    /// the body), and analysis could not bind its body to infer one, so calls
+    /// to it cannot be typed.
+    FunctionReturnTypeNotInferred = 1167,
 
     // Network/HTTP [1200–1249]
     NetworkError = 1200,
@@ -186,6 +202,8 @@ pub enum ErrorCode {
     RateLimited = 1202,
     HttpError = 1203,
     DbtPlatformApiError = 1204,
+    /// `REQUESTS_CA_BUNDLE` or `CURL_CA_BUNDLE` names a CA bundle that can't be used, so its certificates aren't trusted.
+    CaBundleUnusable = 1205,
 
     // Auth/credentials [1250–1279]
     AuthFailed = 1250,
@@ -206,6 +224,24 @@ pub enum ErrorCode {
     DbDriverFailed = 1308,
     ReplayDataInvalid = 1309,
     ReplayDataMissing = 1310,
+    ShallowCloneCheckFailed = 1311,
+    BigqueryMaximumBytesBilledNotEnforced = 1312,
+    /// The latest refresh of a Databricks materialized view or streaming table failed or was
+    /// cancelled; its config is read anyway.
+    DbRefreshFailedWarning = 1313,
+    /// Waiting for a Databricks materialized view or streaming table refresh to finish reached
+    /// its cap; its config is read anyway.
+    DbRefreshWaitTimeoutWarning = 1314,
+    /// The Bridge service can't be reached right now (SQLSTATE `08R01`).
+    BridgeUnavailable = 1315,
+    /// The Bridge session or connection ended before the call ran (SQLSTATE `08R?6`).
+    BridgeSessionLost = 1316,
+    /// The Bridge session or connection ended while the call may have run (SQLSTATE `08R?7`).
+    BridgeOutcomeUnknown = 1317,
+    /// Bridge can't use the project's connection settings (SQLSTATE `HYR00`).
+    BridgeConfig = 1318,
+    /// The Bridge service failed internally (SQLSTATE `XXR*`).
+    BridgeInternal = 1319,
 
     // Execution/runtime [1400–1449]
     PlannerFailed = 1400,
@@ -217,9 +253,29 @@ pub enum ErrorCode {
     SidecarError = 1406,
     NoResultsToShow = 1407,
     SidecarUnsupportedFeature = 1408,
+    /// Local compute read the columns of a relation that does not exist in the
+    /// local database yet; no columns are returned.
+    SidecarRelationNotBuilt = 1409,
     /// dbt State service degraded into fail-open: config/init/decision/cache
     /// errors that don't abort the command but indicate degraded behavior.
     StateServiceWarn = 1410,
+    /// The per-node Redis lock behind `lock_with_state` could not be created,
+    /// taken, or released; the run continues without it.
+    StateLockUnavailable = 1411,
+    /// A heartbeat write for a held `lock_with_state` lock failed; the holder
+    /// retries, but another worker may see the lock as stale in the meantime.
+    StateHeartbeatFailed = 1412,
+    /// A held `lock_with_state` lock was reclaimed by another owner; this
+    /// worker's heartbeat has stopped, but its build may still be running.
+    StateHeartbeatReclaimed = 1413,
+    /// A completed task's stop/info write was skipped because the start key
+    /// no longer matched the owner that ran it; a reclaim already overwrote
+    /// it, so the write would have clobbered the new owner's own result.
+    StateStopRejected = 1414,
+    /// A unit test running under local compute calls a project function that
+    /// local compute cannot execute (a non-SQL language, a non-scalar kind,
+    /// overloads, or dependencies on other functions or relations).
+    LocalFunctionUnsupported = 1418,
 
     // Serialization [1450–1460]
     JsonInvalid = 1450,
@@ -329,6 +385,27 @@ pub enum ErrorCode {
     IndexWriteFailed = 1659,
 
     // --------------------------------------------------------------------------------------------
+    // Schema cache
+    /// A schema cache row read from `target/` holds IPC bytes that do not deserialize. The row
+    /// is skipped, so its schema is fetched or computed again, as with a cold cache.
+    SchemaCacheEntryCorrupt = 1660,
+
+    // --------------------------------------------------------------------------------------------
+    // Warehouse signals read during onboarding
+    /// A read-only query run on the warehouse to size models or price their builds failed. A
+    /// warning: what it would have told is missing (those models stay unsized), and the other
+    /// queries' answers still count.
+    WarehouseSignalQueryFailed = 1661,
+    /// The warehouse couldn't be queried at all (the target has no output for it, or its
+    /// connection couldn't be set up), so nothing was sized from it. Separate from
+    /// `WarehouseSignalQueryFailed`: silencing transient query failures shouldn't hide that
+    /// none ran.
+    WarehouseSignalsUnavailable = 1662,
+    /// The project being checked for onboarding didn't compile, so none of its models were
+    /// checked.
+    OnboardingCompileFailed = 1663,
+
+    // --------------------------------------------------------------------------------------------
     // CLI errors
     NoLongerSupportedOption = 1700,
     NotYetSupportedOption = 1701,
@@ -338,6 +415,18 @@ pub enum ErrorCode {
     /// No longer emitted. Retained so an existing `warn_error_options` entry naming it
     /// keeps resolving instead of failing as an unknown code.
     DocsGenerateWarning = 1705,
+    /// A node's column facts could not be inferred, so tests that they would
+    /// have let dbt skip run instead.
+    TestFactsInferenceFailed = 1706,
+
+    // --------------------------------------------------------------------------------------------
+    // Format
+    /// `dbt format` left a file unchanged because its rendered SQL has a segment the parser
+    /// could not match. A warning, or an error under `--check`.
+    FormatSkippedUnparsable = 1750,
+    /// `dbt format` left a file unchanged because formatting did not converge within
+    /// `runaway_limit` passes. A warning, or an error under `--check`.
+    FormatSkippedLoopLimit = 1751,
 
     // --------------------------------------------------------------------------------------------
     // Agent skills
@@ -362,9 +451,30 @@ pub enum ErrorCode {
     SkillPathEscapesProject = 1806,
 
     // --------------------------------------------------------------------------------------------
+    // Experimentals
+    /// An error an experimental reported. Experimentals never report under any other code.
+    ExperimentalError = 1900,
+    /// A warning an experimental reported. Experimentals never report under any other code.
+    ExperimentalWarning = 1901,
+    /// A project gives entries or paths to a reserved experimental type whose experimental is off,
+    /// or that this dbt doesn't have. dbt ignores them.
+    ExperimentalNotEnabled = 1902,
+    /// A project gives entries or paths to an experimental type no one reserved. dbt ignores them.
+    UnknownExperimental = 1903,
+    /// An `experimental-paths` entry overlaps a directory dbt reads, or another experimental's.
+    ExperimentalPathOverlap = 1904,
+    /// An `experimental-paths` entry resolves outside the project that declared it. dbt skips it.
+    ExperimentalPathEscapesProject = 1905,
+
+    // --------------------------------------------------------------------------------------------
     // Local execution
     SessionError = 2000,
     UnsupportedLocalExecutionDialect = 2001,
+
+    // --------------------------------------------------------------------------------------------
+    // Future changes
+    /// Shared by every behavior that may change in a future release and has no code of its own.
+    FutureIncompatibility = 2100,
 
     // --------------------------------------------------------------------------------------------
     // Error processing an .slt file
@@ -376,6 +486,15 @@ pub enum ErrorCode {
     // --------------------------------------------------------------------------------------------
     // Lineage
     InvalidLineageSchema = 3500,
+    /// A column whose relation `--infer-schemas` inferred matches more than one
+    /// candidate relation, so column lineage through it is incomplete.
+    AmbiguousInferredColumn = 3501,
+
+    // --------------------------------------------------------------------------------------------
+    // SQL frontend library
+    /// The SQL frontend library could not be loaded, or does not speak a
+    /// protocol this dbt does.
+    FrontendLibraryUnavailable = 3600,
 
     InvalidDialect = 8998,
     RuntimeError = 8999,
@@ -413,6 +532,14 @@ pub enum ErrorCode {
 impl std::hash::Hash for ErrorCode {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         (*self as u16).hash(state)
+    }
+}
+
+impl TryFrom<u16> for ErrorCode {
+    type Error = u16;
+
+    fn try_from(value: u16) -> Result<Self, Self::Error> {
+        Self::from_repr(value).ok_or(value)
     }
 }
 
@@ -456,7 +583,94 @@ impl ErrorCode {
                 | ErrorCode::DbNotFound
                 | ErrorCode::DbUnsupportedFeature
                 | ErrorCode::DbDriverFailed
+                | ErrorCode::BridgeUnavailable
+                | ErrorCode::BridgeSessionLost
+                | ErrorCode::BridgeOutcomeUnknown
+                | ErrorCode::BridgeConfig
+                | ErrorCode::BridgeInternal
                 | ErrorCode::ExecutorFailed
+        )
+    }
+
+    /// Set if this code is reported as a warning now and planned to become an error.
+    pub const fn future_error(&self) -> Option<FutureError> {
+        match self {
+            // Each warning names a different path the user must act on, so none is hidden.
+            ErrorCode::CleanTargetOutsideProject => Some(FutureError {
+                issue: const { TrackingIssue::new(16929) },
+                delivery: Delivery::Every,
+            }),
+            ErrorCode::MalformedBlockName => Some(FutureError {
+                issue: const { TrackingIssue::new(16956) },
+                delivery: Delivery::FirstThenSummary,
+            }),
+            ErrorCode::DepsDuplicatePackage => Some(FutureError {
+                issue: const { TrackingIssue::new(16957) },
+                delivery: Delivery::FirstThenSummary,
+            }),
+            _ => None,
+        }
+    }
+}
+
+/// An issue in the public dbt-labs/dbt repository.
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub struct TrackingIssue(NonZeroU32);
+
+impl TrackingIssue {
+    /// Panics on 0. Construct in a `const` block so that fails the build.
+    pub const fn new(number: u32) -> Self {
+        match NonZeroU32::new(number) {
+            Some(number) => Self(number),
+            None => panic!("tracking issue must be a real issue number"),
+        }
+    }
+
+    pub const fn number(self) -> u32 {
+        self.0.get()
+    }
+}
+
+/// Displays as the issue URL.
+impl Display for TrackingIssue {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "https://github.com/dbt-labs/dbt/issues/{}", self.0)
+    }
+}
+
+/// How often a pending change is shown on the terminal in one invocation.
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum Delivery {
+    /// The first occurrence, then a count in the invocation summary.
+    FirstThenSummary,
+    /// Every occurrence.
+    Every,
+}
+
+/// A code reported as a warning by `emit_future_change` and planned to become an error.
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub struct FutureError {
+    pub issue: TrackingIssue,
+    pub delivery: Delivery,
+}
+
+impl FutureError {
+    /// The sentence appended to the warning, with a leading space.
+    pub(crate) fn notice(self) -> FutureErrorNotice {
+        FutureErrorNotice(self.issue)
+    }
+}
+
+/// Says a warning will become an error, and links its tracking issue.
+#[derive(Debug, Copy, Clone)]
+pub(crate) struct FutureErrorNotice(TrackingIssue);
+
+impl Display for FutureErrorNotice {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(
+            f,
+            " This will become an error in a future release. See {}",
+            self.0
         )
     }
 }
@@ -531,13 +745,79 @@ impl Default for Warnings {
 
 #[cfg(test)]
 mod tests {
-    use super::ErrorCode;
+    use super::{ErrorCode, TrackingIssue};
+
+    /// `warn_error_options` lets users name `FutureIncompatibility` by number, so the number is
+    /// permanent. If this fails, you renumbered it; put it back.
+    #[test]
+    fn future_incompatibility_code_is_pinned() {
+        assert_eq!(
+            ErrorCode::FutureIncompatibility.name_and_code(),
+            "FutureIncompatibility (dbt2100)"
+        );
+    }
+
+    #[test]
+    fn tracking_issue_url_points_at_public_repo() {
+        assert_eq!(
+            TrackingIssue::new(16929).to_string(),
+            "https://github.com/dbt-labs/dbt/issues/16929"
+        );
+    }
 
     #[test]
     fn state_service_warn_renders_name_and_code() {
         assert_eq!(
             ErrorCode::StateServiceWarn.name_and_code(),
             "StateServiceWarn (dbt1410)"
+        );
+    }
+
+    #[test]
+    fn state_lock_unavailable_renders_name_and_code() {
+        assert_eq!(
+            ErrorCode::StateLockUnavailable.name_and_code(),
+            "StateLockUnavailable (dbt1411)"
+        );
+    }
+
+    #[test]
+    fn state_heartbeat_failed_renders_name_and_code() {
+        assert_eq!(
+            ErrorCode::StateHeartbeatFailed.name_and_code(),
+            "StateHeartbeatFailed (dbt1412)"
+        );
+    }
+
+    #[test]
+    fn state_heartbeat_reclaimed_renders_name_and_code() {
+        assert_eq!(
+            ErrorCode::StateHeartbeatReclaimed.name_and_code(),
+            "StateHeartbeatReclaimed (dbt1413)"
+        );
+    }
+
+    #[test]
+    fn state_stop_rejected_renders_name_and_code() {
+        assert_eq!(
+            ErrorCode::StateStopRejected.name_and_code(),
+            "StateStopRejected (dbt1414)"
+        );
+    }
+
+    #[test]
+    fn function_return_type_not_inferred_renders_name_and_code() {
+        assert_eq!(
+            ErrorCode::FunctionReturnTypeNotInferred.name_and_code(),
+            "FunctionReturnTypeNotInferred (dbt1167)"
+        );
+    }
+
+    #[test]
+    fn local_function_unsupported_renders_name_and_code() {
+        assert_eq!(
+            ErrorCode::LocalFunctionUnsupported.name_and_code(),
+            "LocalFunctionUnsupported (dbt1418)"
         );
     }
 }

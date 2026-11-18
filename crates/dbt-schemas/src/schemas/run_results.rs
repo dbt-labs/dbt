@@ -1,3 +1,7 @@
+use arrow::array::RecordBatch;
+use arrow::datatypes::SchemaRef;
+use arrow::error::ArrowError;
+use arrow::ipc::writer::StreamWriter;
 use chrono::{DateTime, Utc};
 use dbt_common::FsResult;
 use dbt_common::io_args::StaticAnalysisOffReason;
@@ -95,7 +99,7 @@ pub struct ContextRunResult {
     #[serde(default)]
     pub batch_results: Option<BatchResults>,
     /// Compiled SQL code for the node.
-    pub compiled_code: Option<String>,
+    pub compiled_code: Option<Arc<str>>,
     /// Reason why static analysis was disabled for this node (Fusion-only; omitted when absent).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub static_analysis_off_reason: Option<StaticAnalysisOffReason>,
@@ -124,7 +128,7 @@ impl From<ContextRunResult> for RunResultOutput {
             failures: result.failures,
             unique_id,
             compiled: None, // TODO: Handle compiled i think its a deprecated field
-            compiled_code: result.compiled_code,
+            compiled_code: result.compiled_code.map(|code| code.to_string()),
             relation_name,
             batch_results: result.batch_results,
             static_analysis_off_reason: result.static_analysis_off_reason,
@@ -241,12 +245,49 @@ impl RunResultsArtifact {
     }
 }
 
+/// Rows a `show` previewed, as the query returned them.
+#[derive(Clone)]
+pub struct Preview {
+    pub batches: Vec<RecordBatch>,
+    pub schema: SchemaRef,
+}
+
+impl Preview {
+    /// Encode as one Arrow IPC stream, split at write boundaries: the schema, then each
+    /// batch, then the end-of-stream marker. A consumer concatenates the chunks, or feeds
+    /// them to its Arrow reader one at a time, so nothing holds the whole stream at once.
+    pub fn to_ipc_chunks(&self) -> Result<Vec<Vec<u8>>, ArrowError> {
+        let mut writer = StreamWriter::try_new(Vec::new(), &self.schema)?;
+        let mut chunks = vec![std::mem::take(writer.get_mut())];
+        for batch in &self.batches {
+            writer.write(batch)?;
+            chunks.push(std::mem::take(writer.get_mut()));
+        }
+        chunks.push(writer.into_inner()?);
+        Ok(chunks)
+    }
+}
+
+/// What a run resolved about its target and project, for the invocation record. Known only
+/// after the profile and the project are loaded, which is after the record is started.
+#[derive(Debug, Clone, Default)]
+pub struct InvocationFacts {
+    pub target_name: Option<String>,
+    pub adapter_type: Option<String>,
+    pub target_database: Option<String>,
+    pub target_schema: Option<String>,
+    pub target_threads: Option<i32>,
+    pub node_count: Option<i32>,
+}
+
 /// In-memory result of dbt command invocation.
 ///
 /// Maybe partially populated depending on the command and if execution reached
 /// the point of producing the artifacts.
 #[derive(Default)]
 pub struct DbtCommandExecutionArtifacts {
+    /// What the run resolved about itself, once it got far enough to know.
+    pub invocation_facts: Option<InvocationFacts>,
     pub manifest: Option<DbtManifest>,
     pub run_results: Option<RunResultsArtifact>,
     pub catalog: Option<DbtCatalog>,
@@ -254,6 +295,8 @@ pub struct DbtCommandExecutionArtifacts {
     pub sources: Option<FreshnessResultsArtifact>,
     /// `list`'s selected nodes in selector format.
     pub list_items: Option<Vec<String>>,
+    /// `show`'s previewed rows.
+    pub preview: Option<Preview>,
     /// Rendered message of a real (non-exit-status) error, captured before it is
     /// flattened to a bare exit status for CLI callers. Embedders surface this;
     /// the diagnostics also went to the log either way.
@@ -263,7 +306,87 @@ pub struct DbtCommandExecutionArtifacts {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arrow::array::{Date32Array, Decimal128Array, Int64Array, StringArray};
+    use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::ipc::reader::StreamReader;
     use serde_json::Value;
+
+    /// Every chunk is whole IPC messages, so each opens with the continuation marker.
+    const IPC_CONTINUATION: [u8; 4] = [0xff; 4];
+
+    fn decode(chunks: &[Vec<u8>]) -> (SchemaRef, Vec<RecordBatch>) {
+        for chunk in chunks {
+            assert_eq!(chunk[..4], IPC_CONTINUATION);
+        }
+        let stream = chunks.concat();
+        let reader = StreamReader::try_new(stream.as_slice(), None).unwrap();
+        let schema = reader.schema();
+        let batches = reader.collect::<Result<Vec<_>, _>>().unwrap();
+        (schema, batches)
+    }
+
+    #[test]
+    fn preview_round_trips_through_ipc_chunks() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("amount", DataType::Decimal128(10, 2), true),
+            Field::new("name", DataType::Utf8, true),
+            Field::new("day", DataType::Date32, true),
+        ]));
+        let batch = |ids: Vec<i64>, amounts: Vec<i128>, names: Vec<&str>, days: Vec<i32>| {
+            RecordBatch::try_new(
+                Arc::clone(&schema),
+                vec![
+                    Arc::new(Int64Array::from(ids)),
+                    Arc::new(
+                        Decimal128Array::from(amounts)
+                            .with_precision_and_scale(10, 2)
+                            .unwrap(),
+                    ),
+                    Arc::new(StringArray::from(names)),
+                    Arc::new(Date32Array::from(days)),
+                ],
+            )
+            .unwrap()
+        };
+        let batches = vec![
+            batch(
+                vec![1, 2],
+                vec![150, 225],
+                vec!["ada", "grace"],
+                vec![19723, 19724],
+            ),
+            batch(vec![3], vec![300], vec!["alan"], vec![19725]),
+        ];
+        let preview = Preview {
+            batches: batches.clone(),
+            schema: Arc::clone(&schema),
+        };
+
+        let chunks = preview.to_ipc_chunks().unwrap();
+
+        // Schema, one per batch, end-of-stream marker.
+        assert_eq!(chunks.len(), 4);
+        let (decoded_schema, decoded_batches) = decode(&chunks);
+        assert_eq!(decoded_schema, schema);
+        assert_eq!(decoded_batches, batches);
+    }
+
+    #[test]
+    fn empty_preview_keeps_its_schema() {
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, true)]));
+        let preview = Preview {
+            batches: vec![],
+            schema: Arc::clone(&schema),
+        };
+
+        let chunks = preview.to_ipc_chunks().unwrap();
+
+        assert_eq!(chunks.len(), 2);
+        let (decoded_schema, decoded_batches) = decode(&chunks);
+        assert_eq!(decoded_schema, schema);
+        assert!(decoded_batches.is_empty());
+    }
 
     /// Build a `RunResultOutput` representing a skipped node: every optional per-node field is
     /// `None`, mirroring what Fusion produces for a skipped test/model (e.g. during Selective

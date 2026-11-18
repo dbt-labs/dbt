@@ -1,3 +1,6 @@
+use std::borrow::Cow;
+
+use dbt_adapter_engine::cow::uppercase;
 use dbt_common::{AdapterError, AdapterResult};
 use dbt_schemas::schemas::{DbtModel, InternalDbtNodeAttributes};
 use minijinja::Value;
@@ -35,7 +38,7 @@ fn from_remote_state(results: &SnowflakeDescribeResults) -> AdapterResult<Schedu
             if s.is_empty() {
                 None
             } else {
-                Some(s.to_uppercase())
+                Some(uppercase(s.into()))
             }
         })
         .unwrap_or_else(|| {
@@ -44,12 +47,12 @@ fn from_remote_state(results: &SnowflakeDescribeResults) -> AdapterResult<Schedu
                 .map(|s| !s.is_empty())
                 .unwrap_or(false);
             if has_target_lag {
-                "ENABLE".to_string()
+                Cow::Borrowed("ENABLE")
             } else {
-                "DISABLE".to_string()
+                Cow::Borrowed("DISABLE")
             }
         });
-    Ok(new_component(scheduler))
+    Ok(new_component(scheduler.into()))
 }
 
 fn from_local_config(relation_config: &dyn InternalDbtNodeAttributes) -> AdapterResult<Scheduler> {
@@ -75,11 +78,11 @@ fn from_local_config(relation_config: &dyn InternalDbtNodeAttributes) -> Adapter
     // Reference: https://docs.getdbt.com/reference/resource-configs/snowflake-configs?version=2.0#scheduler
     // This is implemented in Core here: https://github.com/dbt-labs/dbt-adapters/blob/cb1b4a0b0758fd307dc21583bb3acfc78397a077/dbt-snowflake/src/dbt/adapters/snowflake/relation_configs/dynamic_table.py#L161-L184
     let scheduler = match snowflake_config.scheduler.as_deref() {
-        Some(s) => s.to_uppercase(),
-        None if snowflake_config.target_lag.is_some() => "ENABLE".to_string(),
-        None => "DISABLE".to_string(),
+        Some(s) => uppercase(s.into()),
+        None if snowflake_config.target_lag.is_some() => Cow::Borrowed("ENABLE"),
+        None => Cow::Borrowed("DISABLE"),
     };
-    Ok(new_component(scheduler))
+    Ok(new_component(scheduler.into()))
 }
 
 impl_loader!(Scheduler, SnowflakeDescribeResults);

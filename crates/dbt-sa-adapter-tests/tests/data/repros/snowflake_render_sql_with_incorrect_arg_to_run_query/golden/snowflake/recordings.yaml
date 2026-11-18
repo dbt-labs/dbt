@@ -1,0 +1,7 @@
+model.hello_world.hello:
+- sequence: 0
+  type: execute
+  sql: select 1 as
+  error: |-
+    Internal: [Snowflake] 001003 (42000): SQL compilation error:
+    syntax error line 1 at position 11 unexpected '<EOF>'. (sqlstate: 42000, vendor_code: 1003)

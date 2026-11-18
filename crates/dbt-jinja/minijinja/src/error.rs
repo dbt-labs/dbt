@@ -230,10 +230,18 @@ impl fmt::Display for Error {
 impl Error {
     /// Creates a new error with kind and detail.
     pub fn new<D: Into<Cow<'static, str>>>(kind: ErrorKind, detail: D) -> Error {
+        Error::new_cold(kind, Some(detail.into()))
+    }
+
+    // Errors are created on cold paths. Keeping the allocation out of line saves
+    // a copy of it (and its unwind path) at every call site.
+    #[cold]
+    #[inline(never)]
+    fn new_cold(kind: ErrorKind, detail: Option<Cow<'static, str>>) -> Error {
         Error {
             repr: Box::new(ErrorRepr {
                 kind,
-                detail: Some(detail.into()),
+                detail,
                 stack: Vec::new(),
                 source: None,
             }),
@@ -424,14 +432,7 @@ impl From<ErrorKind> for Error {
     /// any context-specific information. If you need to provide a detail
     /// message, use `Error::new` instead.
     fn from(kind: ErrorKind) -> Self {
-        Error {
-            repr: Box::new(ErrorRepr {
-                kind,
-                detail: None,
-                stack: Vec::new(),
-                source: None,
-            }),
-        }
+        Error::new_cold(kind, None)
     }
 }
 

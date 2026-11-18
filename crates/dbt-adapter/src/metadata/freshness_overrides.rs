@@ -4,6 +4,7 @@
 //! standard SQL plus timestamp parsing — only the bulk INFORMATION_SCHEMA-style
 //! query differs across adapters. This module owns the parts that don't.
 
+use crate::connection::{AdapterConnectionFactory, ConnectionGuard};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -11,12 +12,15 @@ use arrow_array::{
     Array, TimestampMicrosecondArray, TimestampMillisecondArray, TimestampNanosecondArray,
     TimestampSecondArray,
 };
-use dbt_adbc::{Connection, QueryCtx};
-use dbt_common::cancellation::CancellationToken;
+use dbt_adapter_engine::MapReduce;
+use dbt_adbc::QueryCtx;
+use dbt_common::ErrorCode;
+use dbt_common::cancellation::{Cancellable, CancellationToken};
+use dbt_common::tracing::dbt_emit::emit_warn_log_message;
 use dbt_schemas::schemas::relations::base::BaseRelation;
 
 use crate::adapter::adapter_impl::AdapterImpl;
-use crate::errors::{AdapterError, AdapterErrorKind, AdapterResult};
+use crate::errors::{AdapterError, AdapterErrorKind, AdapterResult, AsyncAdapterResult};
 use crate::metadata::{FreshnessOverride, MetadataFreshness};
 
 /// Task input for a `freshness_with_overrides` MapReduce pass.
@@ -39,6 +43,30 @@ pub(crate) enum FreshnessTaskResult {
     /// `(semantic_fqn, last_modified_epoch_ms)`. `None` epoch = no rows / null
     /// timestamp — downstream uses absence-from-map as the signal.
     Override(String, Option<i64>),
+}
+
+/// Relations that have a freshness override, paired with that override.
+pub(crate) type OverrideTargets = Vec<(Arc<dyn BaseRelation>, FreshnessOverride)>;
+
+/// Partition `relations` into bulk (no override) and per-override buckets.
+///
+/// Relations whose `semantic_fqn` appears in `overrides` are paired with their
+/// override and collected into the second return value; all others go into the
+/// first (bulk) return value.
+pub(crate) fn partition_override_relations(
+    relations: &[Arc<dyn BaseRelation>],
+    overrides: &BTreeMap<String, FreshnessOverride>,
+) -> (Vec<Arc<dyn BaseRelation>>, OverrideTargets) {
+    let mut bulk = Vec::new();
+    let mut targets = Vec::new();
+    for relation in relations {
+        if let Some(ovr) = overrides.get(&relation.semantic_fqn()) {
+            targets.push((Arc::clone(relation), ovr.clone()));
+        } else {
+            bulk.push(Arc::clone(relation));
+        }
+    }
+    (bulk, targets)
 }
 
 /// Substitute `{{ this }}` (with optional surrounding whitespace) in `template`
@@ -96,7 +124,7 @@ pub(crate) fn freshness_override_sql(
 
 pub(crate) fn run_override_sql(
     adapter: &AdapterImpl,
-    conn: &mut dyn Connection,
+    conn: &mut ConnectionGuard<'_>,
     semantic_fqn: String,
     sql: &str,
     token: CancellationToken,
@@ -133,7 +161,7 @@ pub(crate) fn run_override_sql(
 
 pub(crate) fn run_override_query(
     adapter: &AdapterImpl,
-    conn: &mut dyn Connection,
+    conn: &mut ConnectionGuard<'_>,
     relation: &Arc<dyn BaseRelation>,
     ovr: &FreshnessOverride,
     token: CancellationToken,
@@ -141,6 +169,59 @@ pub(crate) fn run_override_query(
     let semantic_fqn = relation.semantic_fqn();
     let sql = freshness_override_sql(relation, ovr);
     run_override_sql(adapter, conn, semantic_fqn, &sql, token)
+}
+
+/// Run one override query per target, in parallel. A failed override query
+/// leaves its source out of the result and emits a warning. Cancellation and
+/// missing replay data still fail the whole call.
+pub(crate) fn run_override_targets(
+    adapter: &AdapterImpl,
+    targets: OverrideTargets,
+    token: CancellationToken,
+) -> AsyncAdapterResult<'static, BTreeMap<String, MetadataFreshness>> {
+    type Acc = BTreeMap<String, MetadataFreshness>;
+    let factory = Box::new(AdapterConnectionFactory::new(adapter.engine().clone()));
+    let adapter = adapter.clone();
+    let token_clone = token.clone();
+    let map_f = move |conn: &mut ConnectionGuard<'_>,
+                      (relation, ovr): &(Arc<dyn BaseRelation>, FreshnessOverride)|
+          -> AdapterResult<FreshnessTaskResult> {
+        run_override_query(&adapter, conn, relation, ovr, token_clone.clone())
+    };
+    let reduce_f = move |acc: &mut Acc,
+                         (relation, _ovr): (Arc<dyn BaseRelation>, FreshnessOverride),
+                         res: AdapterResult<FreshnessTaskResult>|
+          -> Result<(), Cancellable<AdapterError>> {
+        match res {
+            Ok(task_result) => apply_freshness_task_result(acc, task_result)?,
+            Err(err) => warn_or_propagate_override_error(&relation.semantic_fqn(), err)?,
+        }
+        Ok(())
+    };
+    MapReduce::new(factory, Box::new(map_f), Box::new(reduce_f), None).run(Arc::new(targets), token)
+}
+
+/// Handle a failed override query. Cancellation and missing replay data are
+/// returned so that a cancel stops the run and replay can fall back. Any other
+/// error is a warning: the source is left out of the result, so dbt State
+/// treats it as changed.
+pub(crate) fn warn_or_propagate_override_error(
+    semantic_fqn: &str,
+    err: AdapterError,
+) -> AdapterResult<()> {
+    match err.kind() {
+        AdapterErrorKind::Cancelled | AdapterErrorKind::ReplayDataMissing => Err(err),
+        _ => {
+            emit_warn_log_message(
+                ErrorCode::StateServiceWarn,
+                format!(
+                    "dbt State freshness override query (loaded_at_field/loaded_at_query) \
+                     failed for {semantic_fqn}: {err}; omitting freshness for this source"
+                ),
+            );
+            Ok(())
+        }
+    }
 }
 
 /// Merge one `FreshnessTaskResult` into a freshness accumulator. Use as the
@@ -173,16 +254,70 @@ mod tests {
     use dbt_schemas::schemas::common::ResolvedQuoting;
 
     fn make_relation() -> Arc<dyn BaseRelation> {
+        relation_named("users")
+    }
+
+    fn relation_named(identifier: &str) -> Arc<dyn BaseRelation> {
         create_relation(
             AdapterType::Snowflake,
             "db".to_string(),
             "raw".to_string(),
-            Some("users".to_string()),
+            Some(identifier.to_string()),
             Some(RelationType::View),
             ResolvedQuoting::default(),
         )
         .unwrap()
         .into()
+    }
+
+    #[test]
+    fn partition_routes_all_to_bulk_when_no_overrides() {
+        let relations = vec![relation_named("a"), relation_named("b")];
+        let (bulk, targets) = partition_override_relations(&relations, &BTreeMap::new());
+        assert_eq!(bulk.len(), 2);
+        assert!(targets.is_empty());
+    }
+
+    #[test]
+    fn partition_routes_override_relation_to_override_bucket() {
+        let relation = relation_named("src");
+        let fqn = relation.semantic_fqn();
+        let overrides = BTreeMap::from([(
+            fqn.clone(),
+            FreshnessOverride::Field {
+                field: "updated_at".into(),
+                filter: None,
+            },
+        )]);
+        let (bulk, targets) = partition_override_relations(&[relation], &overrides);
+        assert!(bulk.is_empty());
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].0.semantic_fqn(), fqn);
+        assert!(
+            matches!(&targets[0].1, FreshnessOverride::Field { field, .. } if field == "updated_at")
+        );
+    }
+
+    #[test]
+    fn partition_mixed_relations_correctly_sorted() {
+        let bulk1 = relation_named("bulk1");
+        let ovr = relation_named("ovr");
+        let bulk2 = relation_named("bulk2");
+        let fqn_ovr = ovr.semantic_fqn();
+        let relations = vec![Arc::clone(&bulk1), ovr, Arc::clone(&bulk2)];
+        let overrides = BTreeMap::from([(
+            fqn_ovr.clone(),
+            FreshnessOverride::Query("SELECT max(ts) FROM {{ this }}".into()),
+        )]);
+
+        let (bulk, targets) = partition_override_relations(&relations, &overrides);
+
+        assert_eq!(bulk.len(), 2);
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].0.semantic_fqn(), fqn_ovr);
+        // bulk order is preserved
+        assert_eq!(bulk[0].semantic_fqn(), bulk1.semantic_fqn());
+        assert_eq!(bulk[1].semantic_fqn(), bulk2.semantic_fqn());
     }
 
     #[test]
@@ -221,5 +356,24 @@ mod tests {
                 relation.render_self_as_str()
             )
         );
+    }
+
+    #[test]
+    fn override_error_is_warned_and_skipped() {
+        let err = AdapterError::new(AdapterErrorKind::UnexpectedResult, "bad loaded_at_field");
+        assert!(warn_or_propagate_override_error("db.raw.users", err).is_ok());
+    }
+
+    #[test]
+    fn override_cancellation_and_missing_replay_data_are_propagated() {
+        for kind in [
+            AdapterErrorKind::Cancelled,
+            AdapterErrorKind::ReplayDataMissing,
+        ] {
+            let err = AdapterError::new(kind, "stop");
+            let got =
+                warn_or_propagate_override_error("db.raw.users", err).expect_err("must propagate");
+            assert_eq!(got.kind(), kind);
+        }
     }
 }

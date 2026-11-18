@@ -1,4 +1,6 @@
-use std::io;
+use std::cell::RefCell;
+use std::fmt;
+use std::io::{self, Write as _};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
@@ -8,6 +10,16 @@ use super::{
     shared_writer::SharedWriter,
     shutdown::TelemetryShutdown,
 };
+
+/// Scratch buffers larger than this are released after use instead of being
+/// retained by the formatting thread.
+const MAX_RETAINED_SCRATCH_BYTES: usize = 4 * 1024;
+
+thread_local! {
+    /// Per-thread buffer that lines are formatted into before being copied
+    /// into an exactly sized message for the writer thread.
+    static SCRATCH: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+}
 
 /// Channel-based non-blocking writer that performs writes on a separate thread.
 ///
@@ -118,8 +130,12 @@ impl BackgroundWriter {
         )
     }
 
-    /// Send data to be written
-    pub fn write_bytes(&self, data: &[u8], append_newline: bool) -> TracingResult<()> {
+    /// Format `data` followed by a newline and send it to be written.
+    ///
+    /// The value is formatted once, on the calling thread, into a reusable
+    /// thread-local buffer. The writer thread receives an exactly sized owned
+    /// copy, so nothing borrowed crosses the thread boundary.
+    pub fn write_line(&self, data: &dyn fmt::Display) -> TracingResult<()> {
         if self.shutdown_flag.load(Ordering::Acquire) {
             // Writer thread has shut down
             return Err(TracingError::io(
@@ -127,13 +143,19 @@ impl BackgroundWriter {
             ));
         }
 
-        let mut data = data.to_vec();
-        if append_newline {
-            data.push(b'\n');
+        // The buffer is taken out while `data` formats, so a value that writes a line
+        // of its own while being displayed formats it into a fresh buffer.
+        let mut buf = SCRATCH.take();
+        buf.clear();
+        // Writing into a `Vec` cannot fail, so neither can formatting a well-behaved value
+        writeln!(buf, "{data}").expect("failed to format line");
+        let line = buf.as_slice().to_vec();
+        if buf.capacity() <= MAX_RETAINED_SCRATCH_BYTES {
+            SCRATCH.set(buf);
         }
 
         self.sender
-            .send(TelemetryMessage::Write(data))
+            .send(TelemetryMessage::Write(line))
             .map_err(|_| {
                 // Channel is disconnected, mark as shut down
                 self.shutdown_flag.store(true, Ordering::Release);
@@ -143,18 +165,11 @@ impl BackgroundWriter {
 }
 
 impl SharedWriter for BackgroundWriter {
-    fn write(&self, data: &str) {
+    fn writeln(&self, data: &dyn fmt::Display) {
         // Errors are stored internally and reported during shutdown.
         // If the writer has already failed, this will return an error
         // but we can safely ignore it as the failure will be reported on shutdown.
-        self.write_bytes(data.as_bytes(), false).ok();
-    }
-
-    fn writeln(&self, data: &str) {
-        // Errors are stored internally and reported during shutdown.
-        // If the writer has already failed, this will return an error
-        // but we can safely ignore it as the failure will be reported on shutdown.
-        self.write_bytes(data.as_bytes(), true).ok();
+        self.write_line(data).ok();
     }
 }
 
@@ -291,8 +306,8 @@ mod tests {
         let (writer, mut handle) = BackgroundWriter::new(Box::new(mock));
 
         // Write two messages
-        assert!(writer.write_bytes(b"message1", true).is_ok());
-        assert!(writer.write_bytes(b"message2\n", false).is_ok());
+        assert!(writer.write_line(&"message1").is_ok());
+        assert!(writer.write_line(&"message2").is_ok());
 
         // Shutdown and verify exact buffer contents
         handle.shutdown().unwrap();
@@ -300,6 +315,29 @@ mod tests {
         let buffer_contents = buffer.lock().unwrap();
         let output = String::from_utf8_lossy(&buffer_contents);
         assert_eq!(output, "message1\nmessage2\n");
+    }
+
+    #[test]
+    fn test_lines_keep_order_and_content() {
+        let mock = MockWriter::new();
+        let buffer = mock.buffer.clone();
+        let (writer, mut handle) = BackgroundWriter::new(Box::new(mock));
+
+        let large = "x".repeat(MAX_RETAINED_SCRATCH_BYTES * 3);
+        assert!(
+            writer
+                .write_line(&format_args!("{} {}:\n{}", 1, "multi", "line"))
+                .is_ok()
+        );
+        assert!(writer.write_line(&large).is_ok());
+        assert!(writer.write_line(&"small").is_ok());
+        SharedWriter::writeln(&writer, &42);
+
+        handle.shutdown().unwrap();
+
+        let buffer_contents = buffer.lock().unwrap();
+        let output = String::from_utf8_lossy(&buffer_contents);
+        assert_eq!(output, format!("1 multi:\nline\n{large}\nsmall\n42\n"));
     }
 
     #[test]
@@ -311,9 +349,9 @@ mod tests {
         let (writer, mut handle) = BackgroundWriter::new(Box::new(mock));
 
         // First message should succeed
-        assert!(writer.write_bytes(b"message1\n", false).is_ok());
+        assert!(writer.write_line(&"message1").is_ok());
         // Second a second message. Write will succeed, but writer thread should fail
-        assert!(writer.write_bytes(b"message2\n", false).is_ok());
+        assert!(writer.write_line(&"message2").is_ok());
 
         // Lock until we reach count of 1
         {
@@ -337,7 +375,7 @@ mod tests {
         };
 
         // The next write should fail
-        assert!(writer.write_bytes(b"message3\n", false).is_err());
+        assert!(writer.write_line(&"message3").is_err());
 
         // Shutdown - should return error due to write failure
         let Err(error) = handle.shutdown() else {
@@ -364,7 +402,7 @@ mod tests {
         let (writer, mut handle) = BackgroundWriter::new(Box::new(mock));
 
         // Write will succeed but flush will fail
-        assert!(writer.write_bytes(b"message1\n", false).is_ok());
+        assert!(writer.write_line(&"message1").is_ok());
 
         // Shutdown - should return error due to write failure
         let Err(error) = handle.shutdown() else {
@@ -379,7 +417,7 @@ mod tests {
         );
 
         // After shutdown, writes should fail
-        assert!(writer.write_bytes(b"message2\n", false).is_err());
+        assert!(writer.write_line(&"message2").is_err());
 
         // First message was written to buffer (before flush failed)
         let buffer_contents = buffer.lock().unwrap();
@@ -392,7 +430,7 @@ mod tests {
         let mock = MockWriter::new();
         let (writer, mut handle) = BackgroundWriter::new(Box::new(mock));
 
-        assert!(writer.write_bytes(b"message1\n", false).is_ok());
+        assert!(writer.write_line(&"message1").is_ok());
 
         // Multiple shutdowns should be safe
         assert!(handle.shutdown().is_ok());
@@ -406,12 +444,12 @@ mod tests {
         let buffer = mock.buffer.clone();
         let (writer, mut handle) = BackgroundWriter::new(Box::new(mock));
 
-        assert!(writer.write_bytes(b"message1\n", false).is_ok());
+        assert!(writer.write_line(&"message1").is_ok());
 
         handle.shutdown().unwrap();
 
         // Writes after shutdown should return error
-        assert!(writer.write_bytes(b"after_shutdown\n", false).is_err());
+        assert!(writer.write_line(&"after_shutdown").is_err());
 
         let buffer_contents = buffer.lock().unwrap();
         let output = String::from_utf8_lossy(&buffer_contents);

@@ -49,6 +49,8 @@ struct Rule {
     cloud: String,
     region: String,
     deployment: String,
+    // An empty or missing list includes all accounts in this scope.
+    #[serde(default)]
     accounts: Vec<String>,
     enabled: bool,
     buckets: Vec<Source>,
@@ -102,8 +104,7 @@ impl Rule {
             && self.cloud == scope.cloud
             && self.region == scope.region
             && self.deployment == scope.deployment
-            && (self.accounts.contains(&scope.account)
-                || (self.environment == "dev" && self.accounts.is_empty()))
+            && (self.accounts.is_empty() || self.accounts.contains(&scope.account))
     }
 
     fn source(&self) -> Option<Source> {
@@ -150,7 +151,8 @@ pub fn source_from_file(path: &Path, scope: &Scope, force_cloudfront: bool) -> O
     }
     let mut matching = config.scopes.iter().filter(|rule| rule.matches(scope));
     let rule = matching.next()?;
-    // Overlapping rules are ambiguous, even if one would enable S3.
+    // Overlapping rules are ambiguous, even if one would enable S3. This includes
+    // an account listed in one rule and covered by another rule's empty list.
     if matching.next().is_some() || !rule.enabled {
         return None;
     }
@@ -537,7 +539,7 @@ mod tests {
 
     fn scope() -> Scope {
         Scope {
-            environment: "dev".into(),
+            environment: "prod".into(),
             cloud: "aws".into(),
             region: "us-east-1".into(),
             deployment: "local".into(),
@@ -545,7 +547,108 @@ mod tests {
         }
     }
     fn config() -> serde_json::Value {
-        json!({"version":1,"force_cloudfront":false,"scopes":[{"environment":"dev","cloud":"aws","region":"us-east-1","deployment":"local","accounts":[],"enabled":true,"buckets":[{"bucket":"private-test","region":"us-east-1"}]}]})
+        json!({"version":1,"force_cloudfront":false,"scopes":[{"environment":"prod","cloud":"aws","region":"us-east-1","deployment":"local","accounts":[],"enabled":true,"buckets":[{"bucket":"private-test","region":"us-east-1"}]}]})
+    }
+
+    #[test]
+    fn empty_or_missing_account_list_matches_all_accounts_in_the_same_scope() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+
+        for environment in ["dev", "staging", "prod"] {
+            for omit_accounts in [false, true] {
+                let mut matching_scope = scope();
+                matching_scope.environment = environment.into();
+                let mut value = config();
+                value["scopes"][0]["environment"] = json!(environment);
+                if omit_accounts {
+                    value["scopes"][0]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("accounts");
+                }
+                std::fs::write(&path, value.to_string()).unwrap();
+
+                for account in ["1", "2", "999999"] {
+                    matching_scope.account = account.into();
+                    assert!(source_from_file(&path, &matching_scope, false).is_some());
+                }
+
+                for mismatched_scope in [
+                    Scope {
+                        environment: "other".into(),
+                        ..matching_scope.clone()
+                    },
+                    Scope {
+                        cloud: "azure".into(),
+                        ..matching_scope.clone()
+                    },
+                    Scope {
+                        region: "us-west-2".into(),
+                        ..matching_scope.clone()
+                    },
+                    Scope {
+                        deployment: "other".into(),
+                        ..matching_scope.clone()
+                    },
+                ] {
+                    assert!(source_from_file(&path, &mismatched_scope, false).is_none());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn nonempty_account_list_limits_production_accounts() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let mut value = config();
+        value["scopes"][0]["accounts"] = json!(["1"]);
+        std::fs::write(&path, value.to_string()).unwrap();
+
+        assert!(source_from_file(&path, &scope(), false).is_some());
+        let other_account = Scope {
+            account: "2".into(),
+            ..scope()
+        };
+        assert!(source_from_file(&path, &other_account, false).is_none());
+    }
+
+    #[test]
+    fn account_in_empty_and_listed_rules_uses_cloudfront() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let mut value = config();
+        let mut listed = value["scopes"][0].clone();
+        listed["accounts"] = json!(["1"]);
+        listed["buckets"][0]["bucket"] = json!("private-listed");
+        value["scopes"].as_array_mut().unwrap().push(listed);
+        std::fs::write(&path, value.to_string()).unwrap();
+
+        // The overlap selects CloudFront, so one account cannot get its own bucket.
+        assert!(source_from_file(&path, &scope(), false).is_none());
+        let other_account = Scope {
+            account: "2".into(),
+            ..scope()
+        };
+        assert_eq!(
+            source_from_file(&path, &other_account, false).map(|source| source.bucket),
+            Some("private-test".to_string())
+        );
+    }
+
+    #[test]
+    fn malformed_account_lists_are_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+
+        for accounts in [json!(null), json!("1"), json!([1])] {
+            let mut value = config();
+            value["scopes"][0]["accounts"] = accounts;
+            std::fs::write(&path, value.to_string()).unwrap();
+
+            assert!(source_from_file(&path, &scope(), false).is_none());
+        }
     }
 
     #[test]
@@ -553,44 +656,54 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.json");
         assert!(source_from_file(&path, &scope(), false).is_none());
-        std::fs::write(&path, config().to_string()).unwrap();
-        assert!(source_from_file(&path, &scope(), false).is_some());
-        assert!(source_from_file(&path, &scope(), true).is_none());
-        for mutation in [
-            "global",
-            "disabled",
-            "overlap",
-            "region",
-            "duplicate_region",
-            "bucket",
-            "account",
-            "invalid",
-        ] {
-            let mut value = config();
-            match mutation {
-                "global" => value["force_cloudfront"] = json!(true),
-                "disabled" => value["scopes"][0]["enabled"] = json!(false),
-                "overlap" => {
-                    let duplicate = value["scopes"][0].clone();
-                    value["scopes"].as_array_mut().unwrap().push(duplicate);
-                }
-                "region" => value["scopes"][0]["buckets"][0]["region"] = json!("us-west-2"),
-                "duplicate_region" => {
-                    let duplicate = value["scopes"][0]["buckets"][0].clone();
-                    value["scopes"][0]["buckets"]
-                        .as_array_mut()
-                        .unwrap()
-                        .push(duplicate);
-                }
-                "bucket" => value["scopes"][0]["buckets"][0]["bucket"] = json!("INVALID"),
-                "account" => value["scopes"][0]["accounts"] = json!(["2"]),
-                _ => value["version"] = json!(2),
+
+        for omit_accounts in [false, true] {
+            let mut enabled_config = config();
+            if omit_accounts {
+                enabled_config["scopes"][0]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("accounts");
             }
-            std::fs::write(&path, value.to_string()).unwrap();
-            assert!(
-                source_from_file(&path, &scope(), false).is_none(),
-                "{mutation}"
-            );
+            std::fs::write(&path, enabled_config.to_string()).unwrap();
+            assert!(source_from_file(&path, &scope(), false).is_some());
+            assert!(source_from_file(&path, &scope(), true).is_none());
+            for mutation in [
+                "global",
+                "disabled",
+                "overlap",
+                "region",
+                "duplicate_region",
+                "bucket",
+                "account",
+                "invalid",
+            ] {
+                let mut value = enabled_config.clone();
+                match mutation {
+                    "global" => value["force_cloudfront"] = json!(true),
+                    "disabled" => value["scopes"][0]["enabled"] = json!(false),
+                    "overlap" => {
+                        let duplicate = value["scopes"][0].clone();
+                        value["scopes"].as_array_mut().unwrap().push(duplicate);
+                    }
+                    "region" => value["scopes"][0]["buckets"][0]["region"] = json!("us-west-2"),
+                    "duplicate_region" => {
+                        let duplicate = value["scopes"][0]["buckets"][0].clone();
+                        value["scopes"][0]["buckets"]
+                            .as_array_mut()
+                            .unwrap()
+                            .push(duplicate);
+                    }
+                    "bucket" => value["scopes"][0]["buckets"][0]["bucket"] = json!("INVALID"),
+                    "account" => value["scopes"][0]["accounts"] = json!(["2"]),
+                    _ => value["version"] = json!(2),
+                }
+                std::fs::write(&path, value.to_string()).unwrap();
+                assert!(
+                    source_from_file(&path, &scope(), false).is_none(),
+                    "{mutation}"
+                );
+            }
         }
         std::fs::write(&path, "invalid").unwrap();
         assert!(source_from_file(&path, &scope(), false).is_none());

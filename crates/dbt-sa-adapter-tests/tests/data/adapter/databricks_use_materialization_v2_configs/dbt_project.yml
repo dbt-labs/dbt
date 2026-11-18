@@ -1,0 +1,11 @@
+flags:
+  send_anonymous_usage_stats: false
+  use_materialization_v2: true
+name: test
+profile: fusion_tests
+
+models:
+  test:
+    v_view:
+      +view_update_via_alter: true
+

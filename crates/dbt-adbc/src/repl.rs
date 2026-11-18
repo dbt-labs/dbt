@@ -33,6 +33,7 @@ fn parse_backend(s: &str) -> Result<Backend> {
         "athena" => Ok(Backend::Athena),
         "clickhouse" => Ok(Backend::ClickHouse),
         "exasol" => Ok(Backend::Exasol),
+        "motherduck" => Ok(Backend::MotherDuck),
         _ => Err(Error::with_message_and_status(
             format!("Unsupported backend: {s}"),
             Status::InvalidArguments,
@@ -175,7 +176,7 @@ impl ReplState {
                     database_builder.with_password(value);
                 }
                 _ => {
-                    database_builder.with_named_option(&key, value)?;
+                    database_builder.with_named_option(key, value)?;
                 }
             }
         }

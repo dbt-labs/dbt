@@ -1,0 +1,7 @@
+kind: Features
+body: '[Lake Compute] Lake Compute models can now ref() Databricks table and incremental models stored as managed Delta, without setting catalog_name'
+time: 2026-10-16T03:01:56.410272-07:00
+custom:
+    author: vchan
+    issue: ""
+    project: dbt-core

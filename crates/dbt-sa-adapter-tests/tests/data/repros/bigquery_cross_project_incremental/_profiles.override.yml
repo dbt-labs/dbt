@@ -1,0 +1,7 @@
+# This segment overrides the universal test profile after credential hydration.
+# The target project remains the database supplied by the hydrated profile.
+fusion_tests:
+  outputs:
+    bigquery:
+      type: bigquery
+      execution_project: adapters-team

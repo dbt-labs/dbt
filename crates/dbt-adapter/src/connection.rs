@@ -9,6 +9,8 @@ use dbt_adapter_engine::ConnectionFactory;
 use dbt_adbc::Connection;
 use dbt_common::AdapterResult;
 use dbt_common::cancellation::Cancellable;
+use dbt_common::panic::catch_unwind_quietly;
+use dbt_common::tracing::dbt_emit::emit_debug_log_message;
 use dbt_telemetry::AdapterConnectionClose;
 use dbt_tracing::emit::emit_trace_event;
 use minijinja::State;
@@ -34,14 +36,49 @@ use crate::errors::AdapterError;
 // connection-admission gate.
 thread_local! {
     static CONNECTION: pri::TlsConnectionContainer = pri::TlsConnectionContainer::new();
+    // The node that left a transaction open on this thread's connection, if any. A transaction
+    // spans several `execute` calls, so it cannot live in the per-call guard. Whoever retires the
+    // connection must clear it, otherwise a new session would be treated as inside a transaction.
+    static OPEN_TRANSACTION: RefCell<Option<Option<String>>> = const { RefCell::new(None) };
+}
+
+/// The node that has a transaction open on this thread's connection (`Some(None)`: a node
+/// without an id), or `None` when no transaction is open.
+pub(crate) fn open_transaction() -> Option<Option<String>> {
+    OPEN_TRANSACTION.with(|t| t.borrow().clone())
+}
+
+pub(crate) fn set_open_transaction(node_id: Option<String>) {
+    OPEN_TRANSACTION.with(|t| *t.borrow_mut() = Some(node_id));
+}
+
+pub(crate) fn clear_open_transaction() {
+    OPEN_TRANSACTION.with(|t| *t.borrow_mut() = None);
 }
 
 /// Drop this thread's cached connection instead of leaving it in the slot, so a
 /// connection left in the wrong scope by a failed `RESET USE` / warehouse
 /// restore can't be handed to the next node scheduled on this thread.
 pub fn drop_thread_local_connection() {
-    let conn = CONNECTION.with(|c| c.take());
-    drop(conn);
+    if let Some(conn) = CONNECTION.with(|c| c.take()) {
+        emit_connection_close(&*conn);
+        drop(conn);
+    }
+    clear_open_transaction();
+}
+
+/// Close this thread's cached connection. Register it as the `dbt-runtime`
+/// pool's `on_thread_stop` callback so a worker's connection is released when
+/// the worker exits, instead of being leaked by the thread-local destructor.
+///
+/// A panic while releasing the connection is caught quietly, so a panic hook
+/// that exits the process (as the CLI's does) lets the worker exit instead.
+pub fn close_thread_local_connection() {
+    if let Err(message) = catch_unwind_quietly(drop_thread_local_connection) {
+        emit_debug_log_message(format!(
+            "panicked while closing a connection on worker exit: {message}"
+        ));
+    }
 }
 
 /// Take this thread's cached connection, if it can be used with `fingerprint`.
@@ -54,16 +91,20 @@ fn take_tlocal_connection(
 ) -> Option<Box<dyn Connection>> {
     let mut conn = CONNECTION.with(|c| c.take())?;
     if conn.fingerprint() != fingerprint {
+        clear_open_transaction();
         return None;
     }
     conn.update_node_id(node_id);
     Some(conn)
 }
 
-/// Park a connection in this thread's slot so the next task that runs here
-/// finds it instead of opening another one.
-fn put_tlocal_connection(conn: Box<dyn Connection>) {
-    CONNECTION.with(|c| c.replace(Some(conn)));
+/// Whether this thread's slot currently holds a (parked) connection.
+#[cfg(test)]
+pub(crate) fn tlocal_slot_occupied() -> bool {
+    let conn = CONNECTION.with(|c| c.take());
+    let occupied = conn.is_some();
+    CONNECTION.with(|c| c.replace(conn));
+    occupied
 }
 
 /// Borrow the current thread-local connection or create one if it's not set yet.
@@ -126,11 +167,24 @@ pub struct ConnectionGuard<'a> {
 }
 
 impl ConnectionGuard<'_> {
-    fn new(conn: Box<dyn Connection>) -> Self {
+    pub(crate) fn new(conn: Box<dyn Connection>) -> Self {
         Self {
             conn: Some(conn),
             persist: true,
             _phantom: PhantomData,
+        }
+    }
+
+    /// Do not return the connection to thread-local on drop.
+    pub(crate) fn discard_conn_on_drop(&mut self) {
+        self.persist = false;
+    }
+
+    /// Discard a Bridge connection if `err` means it can't be used again.
+    /// Every class `08` SQLSTATE ends a Bridge session.
+    pub(crate) fn discard_on_bridge_error(&mut self, err: &AdapterError) {
+        if err.sqlstate().starts_with("08") {
+            self.discard_conn_on_drop();
         }
     }
 }
@@ -151,18 +205,24 @@ impl Drop for ConnectionGuard<'_> {
         if self.persist {
             let conn = self.conn.take();
             CONNECTION.with(|c| c.replace(conn));
-        } else if let Some(conn) = self.conn.as_ref() {
-            emit_trace_event(|| {
-                (
-                    AdapterConnectionClose {
-                        repr: format!("{conn:?}"),
-                    }
-                    .into(),
-                    None,
-                )
-            });
+        } else if let Some(conn) = self.conn.as_deref() {
+            // The session is closed with the connection, which rolls the transaction back.
+            clear_open_transaction();
+            emit_connection_close(conn);
         }
     }
+}
+
+fn emit_connection_close(conn: &(dyn Connection + 'static)) {
+    emit_trace_event(|| {
+        (
+            AdapterConnectionClose {
+                repr: format!("{conn:?}"),
+            }
+            .into(),
+            None,
+        )
+    });
 }
 
 mod pri {
@@ -172,7 +232,9 @@ mod pri {
     ///
     /// The point of this struct is to avoid calling the `Drop` destructor on
     /// the wrapped [Connection] during process exit, which dead locks on
-    /// Windows.
+    /// Windows. Pool workers that run [`close_thread_local_connection`] on
+    /// exit close their connection before that, so this is only a backstop for
+    /// a connection still parked when the thread-local is destroyed.
     pub(super) struct TlsConnectionContainer(RefCell<Option<Box<dyn Connection>>>);
 
     impl TlsConnectionContainer {
@@ -249,30 +311,29 @@ impl AdapterConnectionFactory {
 
 impl ConnectionFactory for AdapterConnectionFactory {
     type Error = Cancellable<AdapterError>;
+    type Connection = ConnectionGuard<'static>;
 
-    fn new_connection(&self, node_id: Option<&str>) -> Result<Box<dyn Connection>, Self::Error> {
-        let node_id = node_id.map(|s| s.to_string());
-        match take_tlocal_connection(node_id.clone(), self.engine.fingerprint()) {
-            Some(conn) => Ok(conn),
-            None => self
-                .engine
-                .new_connection(None, node_id)
-                .map_err(Cancellable::Error),
-        }
+    fn new_connection(&self, node_id: Option<&str>) -> Result<Self::Connection, Self::Error> {
+        borrow_tlocal_connection_impl(
+            self.engine.adapter_type(),
+            None,
+            node_id.map(|s| s.to_string()),
+            self.engine.fingerprint(),
+            |state, node_id| self.engine.new_connection(state, node_id),
+        )
+        .map_err(Cancellable::Error)
     }
 
-    fn recycle_connection(&self, conn: Box<dyn Connection>) {
-        // DuckDB connections must not outlive this call: a long-lived one keeps
-        // other processes from opening the same database file. Dropping `conn`
-        // here closes it instead of parking it in the thread-local slot, which
-        // is also why `borrow_tlocal_connection_impl` never caches one.
-        if self.engine.adapter_type() == AdapterType::DuckDB {
-            drop(conn);
-        } else {
-            put_tlocal_connection(conn);
-        }
+    fn recycle_connection(&self, conn_guard: Self::Connection) {
+        // Dropping the guard parks the connection in this thread's slot, or closes it
+        // if it was discarded (or must not be cached, e.g. DuckDB).
+        drop(conn_guard);
     }
 }
+
+/// A [`ConnectionFactory`] of [`ConnectionGuard`]s, as used by the metadata adapters.
+pub(crate) type DynConnectionFactory =
+    dyn ConnectionFactory<Error = Cancellable<AdapterError>, Connection = ConnectionGuard<'static>>;
 
 #[cfg(test)]
 mod tests {
@@ -283,7 +344,7 @@ mod tests {
     use crate::stmt_splitter::DefaultStmtSplitter;
     use dbt_schemas::schemas::relations::DEFAULT_RESOLVED_QUOTING;
     use std::collections::BTreeMap;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
     fn make_conn() -> Box<dyn Connection> {
         Box::new(NoopConnection)
@@ -416,6 +477,67 @@ mod tests {
         });
     }
 
+    fn borrow_noop() -> ConnectionGuard<'static> {
+        borrow_tlocal_connection_impl(
+            AdapterType::Snowflake,
+            None,
+            None,
+            0,
+            |_, _| Ok(make_conn()),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn discarded_guard_closes_the_connection_instead_of_returning_it_to_the_slot() {
+        run_on_fresh_thread(|| {
+            let mut guard = borrow_noop();
+            guard.discard_conn_on_drop();
+            drop(guard);
+
+            assert!(!tlocal_slot_occupied());
+        });
+    }
+
+    #[test]
+    fn undiscarded_guard_returns_the_connection_to_the_slot() {
+        run_on_fresh_thread(|| {
+            drop(borrow_noop());
+
+            assert!(tlocal_slot_occupied());
+        });
+    }
+
+    #[test]
+    fn duckdb_guard_is_discarded_on_drop() {
+        run_on_fresh_thread(|| {
+            let guard =
+                borrow_tlocal_connection_impl(AdapterType::DuckDB, None, None, 0, |_, _| {
+                    Ok(make_conn())
+                })
+                .unwrap();
+            drop(guard);
+
+            assert!(!tlocal_slot_occupied());
+        });
+    }
+
+    #[test]
+    fn factory_recycle_parks_the_connection_unless_discarded() {
+        run_on_fresh_thread(|| {
+            let factory = AdapterConnectionFactory::new(mock_engine(AdapterType::Snowflake));
+
+            let mut conn = factory.new_connection(None).unwrap();
+            conn.discard_conn_on_drop();
+            factory.recycle_connection(conn);
+            assert!(!tlocal_slot_occupied());
+
+            let conn = factory.new_connection(None).unwrap();
+            factory.recycle_connection(conn);
+            assert!(tlocal_slot_occupied());
+        });
+    }
+
     #[test]
     fn drop_thread_local_connection_empties_the_slot() {
         run_on_fresh_thread(|| {
@@ -439,6 +561,76 @@ mod tests {
                 assert!(conn.is_none());
             });
         });
+    }
+
+    /// Counts its drops, and panics in `drop` if asked to.
+    struct DropCountingConnection {
+        closed: Arc<AtomicUsize>,
+        panic_on_drop: bool,
+    }
+
+    impl Drop for DropCountingConnection {
+        fn drop(&mut self) {
+            self.closed.fetch_add(1, Ordering::SeqCst);
+            if self.panic_on_drop {
+                panic!("driver release failed");
+            }
+        }
+    }
+
+    impl Connection for DropCountingConnection {
+        fn new_statement(&mut self) -> adbc_core::error::Result<Box<dyn dbt_adbc::Statement>> {
+            NoopConnection.new_statement()
+        }
+
+        fn cancel(&mut self) -> adbc_core::error::Result<()> {
+            Ok(())
+        }
+
+        fn commit(&mut self) -> adbc_core::error::Result<()> {
+            Ok(())
+        }
+
+        fn rollback(&mut self) -> adbc_core::error::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Test helper: parks a connection on the only worker of a pool that closes
+    /// connections on thread stop, shuts the pool down, and returns how many
+    /// were closed. Fails the test if the worker doesn't exit in time.
+    fn park_then_shut_down(panic_on_drop: bool) -> usize {
+        let closed = Arc::new(AtomicUsize::new(0));
+        let rt = dbt_runtime::builder::Builder::new()
+            .max_blocking_threads(1)
+            // Long enough that the worker can't idle out before shutdown.
+            .keep_alive(std::time::Duration::from_secs(600))
+            .on_thread_stop(close_thread_local_connection)
+            .build();
+
+        let conn = DropCountingConnection {
+            closed: Arc::clone(&closed),
+            panic_on_drop,
+        };
+        futures::executor::block_on(rt.spawn_blocking(move || {
+            let conn: Box<dyn Connection> = Box::new(conn);
+            CONNECTION.with(|c| c.replace(Some(conn)));
+        }))
+        .unwrap();
+        assert_eq!(closed.load(Ordering::SeqCst), 0, "parked, not closed");
+
+        assert!(rt.shutdown_timeout(std::time::Duration::from_secs(10)));
+        closed.load(Ordering::SeqCst)
+    }
+
+    #[test]
+    fn worker_exit_closes_the_parked_connection() {
+        assert_eq!(park_then_shut_down(false), 1);
+    }
+
+    #[test]
+    fn a_panicking_connection_close_does_not_break_shutdown() {
+        assert_eq!(park_then_shut_down(true), 1);
     }
 
     // A fingerprint mismatch must discard and recreate the connection — this is

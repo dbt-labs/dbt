@@ -13,7 +13,6 @@ version.workspace = true
 arrow = { workspace = true }
 arrow-schema = { workspace = true }
 async-trait = { workspace = true }
-base64 = { workspace = true }
 bimap = { workspace = true }
 dbt-common = { workspace = true }
 dbt-fusion-workspace-hack = { version = "0.1" }

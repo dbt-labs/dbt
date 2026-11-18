@@ -1,0 +1,8 @@
+       dbt 
+   Loading profiles.yml
+   Parsing models/a.sql
+'databricks'
+   Parsing models/test_incremental_tags.sql
+Selected nodes
+{"alias":"test_incremental_tags","config":{"access":null,"alias":null,"batch_size":null,"begin":null,"catalog_name":null,"column_types":null,"concurrent_batches":null,"contract":null,"database":null,"databricks_tags":{"mode":"initial","state":"existing"},"description":null,"docs":null,"enabled":true,"event_time":null,"freshness":null,"full_refresh":null,"grants":null,"group":null,"incremental_predicates":null,"incremental_strategy":null,"location":null,"lookback":null,"materialized":"incremental","merge_exclude_columns":null,"merge_update_columns":null,"meta":null,"on_configuration_change":null,"on_schema_change":null,"packages":null,"persist_docs":null,"post_hook":null,"pre_hook":null,"predicates":null,"quoting":{"database":true,"identifier":true,"schema":true,"snowflake_ignore_case":false},"schema":null,"sql_header":null,"static_analysis":"off","table_format":null,"tags":null,"unique_key":null},"depends_on":{"macros":[],"nodes":["model.test.a"]},"name":"test_incremental_tags","original_file_path":"models/test_incremental_tags.sql","package_name":"test","resource_type":"model","tags":[],"unique_id":"model.test.test_incremental_tags"}
+  Finished 'ls' target 'databricks'

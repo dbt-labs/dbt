@@ -1,0 +1,7 @@
+kind: Features
+body: Accept Databricks merge_actions_explicit config to supply the full WHEN … THEN block of a merge incremental model as raw SQL
+time: 2026-10-21T21:30:00.000000+05:30
+custom:
+    author: sd-db
+    issue: "16835"
+    project: dbt-core

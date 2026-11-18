@@ -1,0 +1,7 @@
+       dbt 
+   Loading profiles.yml
+   Parsing models/sources.yml
+   Parsing models/favorite_animals.sql
+ Downloading `dbt-test-env`.`adapters_bigquery_repros_sharded_tables`.`favourite_animals_*` (schema)
+ Rendering models/favorite_animals.sql
+  Finished 'compile' target 'bigquery'

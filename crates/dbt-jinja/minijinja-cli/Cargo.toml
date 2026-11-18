@@ -9,7 +9,6 @@ homepage = "https://github.com/mitsuhiko/minijinja"
 repository = "https://github.com/mitsuhiko/minijinja"
 keywords = ["jinja", "jinja2", "templates", "cli"]
 readme = "README.md"
-rust-version = "1.65"
 
 [features]
 default = [

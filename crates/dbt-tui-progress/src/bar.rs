@@ -3,13 +3,13 @@
 //! This module contains the internal `ContextualProgressBar` struct that wraps
 //! indicatif's `ProgressBar` with additional context tracking and counter support.
 
+use std::collections::HashMap;
 use std::fmt;
 use std::fmt::Display;
 use std::sync::Arc;
 use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
-use counter::Counter;
 use indicatif::ProgressBar;
 use indicatif::ProgressState;
 use unicode_segmentation::UnicodeSegmentation as _;
@@ -147,7 +147,7 @@ impl AsRef<str> for ContextItem {
 pub(crate) struct ContextualProgressBar {
     main_bar: ProgressBar,
     context_bar: Option<ProgressBar>,
-    counters: Arc<RwLock<Counter<String>>>,
+    counters: Arc<RwLock<HashMap<String, usize>>>,
     items: Arc<RwLock<Vec<ContextItem>>>,
 }
 
@@ -161,7 +161,7 @@ impl ContextualProgressBar {
         Self {
             main_bar: progress,
             context_bar: None,
-            counters: Arc::new(RwLock::new(Counter::new())),
+            counters: Arc::new(RwLock::new(HashMap::new())),
             items: Arc::new(RwLock::new(Vec::new())),
         }
     }
@@ -185,7 +185,7 @@ impl ContextualProgressBar {
         let new_self = Self {
             main_bar,
             items: Arc::new(RwLock::new(Vec::new())),
-            counters: Arc::new(RwLock::new(Counter::with_capacity(5))),
+            counters: Arc::new(RwLock::new(HashMap::with_capacity(5))),
             context_bar: if style_type.needs_context_line() {
                 Some(ProgressBar::hidden())
             } else {

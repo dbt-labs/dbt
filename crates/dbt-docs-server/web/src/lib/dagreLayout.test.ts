@@ -1,4 +1,4 @@
-import type { Edge, Node as ReactFlowNode } from '@xyflow/react';
+import type { Edge, Node as ReactFlowNode } from 'dbt-docs-lib';
 import { describe, expect, it } from 'vitest';
 
 import { applyDagreLayout, NODE_HEIGHT } from './dagreLayout';

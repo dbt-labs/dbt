@@ -1,10 +1,14 @@
 use std::{collections::BTreeMap, sync::Arc};
 
-use dashmap::DashMap;
-
 use crate::types::{
-    builtins::Reference, dict::DictType, function::LambdaType, list::ListType, struct_::StructType,
-    tuple::TupleType, union::UnionType, DynObject, Type,
+    builtins::{Reference, TypeRegistry},
+    dict::DictType,
+    function::LambdaType,
+    list::ListType,
+    struct_::StructType,
+    tuple::TupleType,
+    union::UnionType,
+    DynObject, Type,
 };
 
 /// The error type for the funcsign parser.
@@ -246,7 +250,7 @@ fn tokenize(s: &str) -> Vec<Token> {
 fn _parse_type(
     tokens: &[Token],
     index: usize,
-    registry: Arc<DashMap<String, Type>>,
+    registry: Arc<TypeRegistry>,
 ) -> Result<(Type, usize), ParseError> {
     let next_token = tokens.get(index);
     let (type_, consumed) = match next_token {
@@ -347,7 +351,7 @@ fn _parse_type(
 fn parse_lambda(
     tokens: &[Token],
     mut index: usize,
-    registry: Arc<DashMap<String, Type>>,
+    registry: Arc<TypeRegistry>,
 ) -> Result<(Vec<Type>, Type, usize), ParseError> {
     let start_index = index;
     let mut args = Vec::new();
@@ -422,7 +426,7 @@ fn parse_lambda(
 fn parse_list(
     tokens: &[Token],
     mut index: usize,
-    registry: Arc<DashMap<String, Type>>,
+    registry: Arc<TypeRegistry>,
 ) -> Result<(Vec<Type>, usize), ParseError> {
     let start_index = index;
     match tokens.get(index) {
@@ -483,7 +487,7 @@ fn parse_list(
 fn parse_fields(
     tokens: &[Token],
     mut index: usize,
-    registry: Arc<DashMap<String, Type>>,
+    registry: Arc<TypeRegistry>,
 ) -> Result<(BTreeMap<String, Type>, usize), ParseError> {
     let start_index = index;
     let mut fields = BTreeMap::new();
@@ -605,19 +609,13 @@ fn parse_fields(
 /// # Returns
 ///
 /// A tuple containing the arguments and return type of the function.
-pub fn parse(
-    s: &str,
-    registry: Arc<DashMap<String, Type>>,
-) -> Result<(Vec<Type>, Type), ParseError> {
+pub fn parse(s: &str, registry: Arc<TypeRegistry>) -> Result<(Vec<Type>, Type), ParseError> {
     let tokens = tokenize(s);
     let (args, ret_type, _) = parse_lambda(&tokens, 0, registry)?;
     Ok((args, ret_type))
 }
 
-pub(crate) fn parse_type(
-    s: &str,
-    registry: Arc<DashMap<String, Type>>,
-) -> Result<Type, ParseError> {
+pub(crate) fn parse_type(s: &str, registry: Arc<TypeRegistry>) -> Result<Type, ParseError> {
     let tokens = tokenize(s);
     let (type_, _) = _parse_type(&tokens, 0, registry)?;
     Ok(type_)
@@ -629,7 +627,7 @@ mod tests {
 
     #[test]
     fn test_parse_simple_function() {
-        let registry = Arc::new(DashMap::new());
+        let registry = Arc::new(TypeRegistry::default());
         let (args, ret_type) = parse("() -> string", registry).unwrap();
         assert_eq!(args.len(), 0);
         matches!(ret_type, Type::String(None));
@@ -637,7 +635,7 @@ mod tests {
 
     #[test]
     fn test_parse_function_with_single_arg() {
-        let registry = Arc::new(DashMap::new());
+        let registry = Arc::new(TypeRegistry::default());
         let (args, ret_type) = parse("(string) -> integer", registry).unwrap();
         assert_eq!(args.len(), 1);
         matches!(args[0], Type::String(None));
@@ -646,7 +644,7 @@ mod tests {
 
     #[test]
     fn test_parse_function_with_multiple_args() {
-        let registry = Arc::new(DashMap::new());
+        let registry = Arc::new(TypeRegistry::default());
         let (args, ret_type) = parse("(string, integer, bool) -> float", registry).unwrap();
         assert_eq!(args.len(), 3);
         matches!(args[0], Type::String(None));
@@ -657,7 +655,7 @@ mod tests {
 
     #[test]
     fn test_parse_function_returning_list() {
-        let registry = Arc::new(DashMap::new());
+        let registry = Arc::new(TypeRegistry::default());
         let (args, ret_type) = parse("(string) -> seq[integer]", registry).unwrap();
         assert_eq!(args.len(), 1);
         matches!(args[0], Type::String(None));
@@ -666,7 +664,7 @@ mod tests {
 
     #[test]
     fn test_parse_function_returning_dict() {
-        let registry = Arc::new(DashMap::new());
+        let registry = Arc::new(TypeRegistry::default());
         let (args, ret_type) = parse("(string) -> dict[string, integer]", registry).unwrap();
         assert_eq!(args.len(), 1);
         matches!(args[0], Type::String(None));
@@ -675,7 +673,7 @@ mod tests {
 
     #[test]
     fn test_parse_function_with_list_args() {
-        let registry = Arc::new(DashMap::new());
+        let registry = Arc::new(TypeRegistry::default());
         let (args, ret_type) = parse("(seq[string], list[integer]) -> bool", registry).unwrap();
         assert_eq!(args.len(), 2);
         matches!(args[0], Type::List { .. });
@@ -685,7 +683,7 @@ mod tests {
 
     #[test]
     fn test_parse_function_with_dict_args() {
-        let registry = Arc::new(DashMap::new());
+        let registry = Arc::new(TypeRegistry::default());
         let (args, ret_type) = parse(
             "(dict[string, integer], dict[integer, bool]) -> string",
             registry,
@@ -699,7 +697,7 @@ mod tests {
 
     #[test]
     fn test_parse_function_with_struct_args() {
-        let registry = Arc::new(DashMap::new());
+        let registry = Arc::new(TypeRegistry::default());
         let (args, ret_type) =
             parse("(struct{name: string, age: integer}) -> bool", registry).unwrap();
         assert_eq!(args.len(), 1);
@@ -709,7 +707,7 @@ mod tests {
 
     #[test]
     fn test_parse_function_returning_struct() {
-        let registry = Arc::new(DashMap::new());
+        let registry = Arc::new(TypeRegistry::default());
         let (args, ret_type) = parse(
             "(string, integer) -> struct{id: integer, name: string, active: bool}",
             registry,
@@ -723,7 +721,7 @@ mod tests {
 
     #[test]
     fn test_parse_function_with_class_types() {
-        let registry = Arc::new(DashMap::new());
+        let registry = Arc::new(TypeRegistry::default());
         let (args, ret_type) = parse("(relation, adapter) -> api", registry).unwrap();
         assert_eq!(args.len(), 2);
         matches!(args[0], Type::Object(_));
@@ -733,7 +731,7 @@ mod tests {
 
     #[test]
     fn test_parse_function_with_nested_function_type() {
-        let registry = Arc::new(DashMap::new());
+        let registry = Arc::new(TypeRegistry::default());
         let (args, ret_type) = parse("((string) -> integer, string) -> bool", registry).unwrap();
         assert_eq!(args.len(), 2);
         matches!(args[0], Type::Object(_));
@@ -743,7 +741,7 @@ mod tests {
 
     #[test]
     fn test_parse_function_with_complex_nested_types() {
-        let registry = Arc::new(DashMap::new());
+        let registry = Arc::new(TypeRegistry::default());
         let (args, ret_type) = parse(
             "(seq[dict[string, integer]], struct{users: seq[string]}) -> dict[string, bool]",
             registry,
@@ -757,7 +755,7 @@ mod tests {
 
     #[test]
     fn test_parse_function_with_all_primitive_types() {
-        let registry = Arc::new(DashMap::new());
+        let registry = Arc::new(TypeRegistry::default());
         let (args, ret_type) =
             parse("(string, integer, float, bool, bytes) -> string", registry).unwrap();
         assert_eq!(args.len(), 5);
@@ -771,7 +769,7 @@ mod tests {
 
     #[test]
     fn test_parse_function_with_whitespace() {
-        let registry = Arc::new(DashMap::new());
+        let registry = Arc::new(TypeRegistry::default());
         let (args, ret_type) = parse("  ( string , integer )  ->  bool  ", registry).unwrap();
         assert_eq!(args.len(), 2);
         matches!(args[0], Type::String(None));
@@ -781,7 +779,7 @@ mod tests {
 
     #[test]
     fn test_parse_function_returning_apicolumn() {
-        let registry = Arc::new(DashMap::new());
+        let registry = Arc::new(TypeRegistry::default());
         let (args, ret_type) = parse("(string) -> api_column", registry).unwrap();
         assert_eq!(args.len(), 1);
         matches!(args[0], Type::String(None));
@@ -790,7 +788,7 @@ mod tests {
 
     #[test]
     fn test_parse_complex_function_signature() {
-        let registry = Arc::new(DashMap::new());
+        let registry = Arc::new(TypeRegistry::default());
         let (args, ret_type) = parse("(relation, dict[string, list[string]], (relation, string, list[string]) -> string) -> list[string]", registry).unwrap();
 
         // Should have 3 arguments
@@ -841,7 +839,7 @@ mod tests {
     // Tests for error conditions
     #[test]
     fn test_parse_invalid_syntax() {
-        let registry = Arc::new(DashMap::new());
+        let registry = Arc::new(TypeRegistry::default());
         let result = parse("invalid -> -> string", registry);
         assert!(result.is_err());
         let error = result.unwrap_err();
@@ -850,7 +848,7 @@ mod tests {
 
     #[test]
     fn test_parse_missing_return_type() {
-        let registry = Arc::new(DashMap::new());
+        let registry = Arc::new(TypeRegistry::default());
         let result = parse("(string) ->", registry);
         assert!(result.is_err());
         let error = result.unwrap_err();
@@ -861,7 +859,7 @@ mod tests {
 
     #[test]
     fn test_parse_missing_arrow() {
-        let registry = Arc::new(DashMap::new());
+        let registry = Arc::new(TypeRegistry::default());
         let result = parse("(string) string", registry);
         assert!(result.is_err());
         let error = result.unwrap_err();
@@ -870,7 +868,7 @@ mod tests {
 
     #[test]
     fn test_parse_unclosed_parenthesis() {
-        let registry = Arc::new(DashMap::new());
+        let registry = Arc::new(TypeRegistry::default());
         let result = parse("(string -> bool", registry);
         assert!(result.is_err());
         let error = result.unwrap_err();
@@ -881,7 +879,7 @@ mod tests {
 
     #[test]
     fn test_parse_unclosed_bracket() {
-        let registry = Arc::new(DashMap::new());
+        let registry = Arc::new(TypeRegistry::default());
         let result = parse("(seq[string) -> bool", registry);
         assert!(result.is_err());
         let error = result.unwrap_err();
@@ -893,7 +891,7 @@ mod tests {
 
     #[test]
     fn test_parse_unclosed_brace() {
-        let registry = Arc::new(DashMap::new());
+        let registry = Arc::new(TypeRegistry::default());
         let result = parse("(struct{name: string) -> bool", registry);
         assert!(result.is_err());
         let error = result.unwrap_err();
@@ -904,7 +902,7 @@ mod tests {
     // New error handling tests
     #[test]
     fn test_parse_error_with_location() {
-        let registry = Arc::new(DashMap::new());
+        let registry = Arc::new(TypeRegistry::default());
         let result = parse("(unknown_bracket_type[) -> bool", registry);
         assert!(result.is_err());
         let error = result.unwrap_err();
@@ -914,7 +912,7 @@ mod tests {
 
     #[test]
     fn test_parse_error_message_display() {
-        let registry = Arc::new(DashMap::new());
+        let registry = Arc::new(TypeRegistry::default());
         let result = parse("(invalid -> bool", registry);
         assert!(result.is_err());
         let error = result.unwrap_err();
@@ -924,7 +922,7 @@ mod tests {
 
     #[test]
     fn test_parse_empty_input() {
-        let registry = Arc::new(DashMap::new());
+        let registry = Arc::new(TypeRegistry::default());
         let result = parse("", registry);
         assert!(result.is_err());
         let error = result.unwrap_err();
@@ -933,7 +931,7 @@ mod tests {
 
     #[test]
     fn test_parse_malformed_list_type() {
-        let registry = Arc::new(DashMap::new());
+        let registry = Arc::new(TypeRegistry::default());
         let result = parse("(seq[string, integer, bool) -> bool", registry);
         assert!(result.is_err());
         let error = result.unwrap_err();
@@ -945,7 +943,7 @@ mod tests {
 
     #[test]
     fn test_parse_malformed_dict_type() {
-        let registry = Arc::new(DashMap::new());
+        let registry = Arc::new(TypeRegistry::default());
         let result = parse("(dict[string) -> bool", registry);
         assert!(result.is_err());
         let error = result.unwrap_err();
@@ -958,21 +956,21 @@ mod tests {
     // Tests for union type parsing
     #[test]
     fn test_parse_simple_union_type() {
-        let registry = Arc::new(DashMap::new());
+        let registry = Arc::new(TypeRegistry::default());
         let result = parse_type("string | integer", registry).unwrap();
         matches!(result, Type::Union(_));
     }
 
     #[test]
     fn test_parse_multiple_union_types() {
-        let registry = Arc::new(DashMap::new());
+        let registry = Arc::new(TypeRegistry::default());
         let result = parse_type("string | integer | bool", registry).unwrap();
         matches!(result, Type::Union(_));
     }
 
     #[test]
     fn test_parse_function_with_union_parameter() {
-        let registry = Arc::new(DashMap::new());
+        let registry = Arc::new(TypeRegistry::default());
         let (args, ret_type) = parse("(string | integer) -> bool", registry).unwrap();
         assert_eq!(args.len(), 1);
         matches!(args[0], Type::Union(_));
@@ -981,7 +979,7 @@ mod tests {
 
     #[test]
     fn test_parse_function_with_union_return_type() {
-        let registry = Arc::new(DashMap::new());
+        let registry = Arc::new(TypeRegistry::default());
         let (args, ret_type) = parse("(string) -> integer | bool", registry).unwrap();
         assert_eq!(args.len(), 1);
         matches!(args[0], Type::String(None));
@@ -990,35 +988,35 @@ mod tests {
 
     #[test]
     fn test_parse_complex_union_with_lists() {
-        let registry = Arc::new(DashMap::new());
+        let registry = Arc::new(TypeRegistry::default());
         let result = parse_type("seq[string] | seq[integer]", registry).unwrap();
         matches!(result, Type::Union(_));
     }
 
     #[test]
     fn test_parse_complex_union_with_dicts() {
-        let registry = Arc::new(DashMap::new());
+        let registry = Arc::new(TypeRegistry::default());
         let result = parse_type("dict[string, integer] | dict[string, bool]", registry).unwrap();
         matches!(result, Type::Union(_));
     }
 
     #[test]
     fn test_parse_union_with_struct() {
-        let registry = Arc::new(DashMap::new());
+        let registry = Arc::new(TypeRegistry::default());
         let result = parse_type("struct{name: string} | struct{id: integer}", registry).unwrap();
         matches!(result, Type::Union(_));
     }
 
     #[test]
     fn test_parse_union_with_custom_types() {
-        let registry = Arc::new(DashMap::new());
+        let registry = Arc::new(TypeRegistry::default());
         let result = parse_type("relation | adapter", registry).unwrap();
         matches!(result, Type::Union(_));
     }
 
     #[test]
     fn test_parse_function_with_multiple_union_parameters() {
-        let registry = Arc::new(DashMap::new());
+        let registry = Arc::new(TypeRegistry::default());
         let (args, ret_type) = parse("(string | integer, bool | float) -> any", registry).unwrap();
         assert_eq!(args.len(), 2);
         matches!(args[0], Type::Union(_));
@@ -1028,14 +1026,14 @@ mod tests {
 
     #[test]
     fn test_parse_union_with_optional() {
-        let registry = Arc::new(DashMap::new());
+        let registry = Arc::new(TypeRegistry::default());
         let result = parse_type("string | optional[integer]", registry).unwrap();
         matches!(result, Type::Union(_));
     }
 
     #[test]
     fn test_parse_union_with_whitespace() {
-        let registry = Arc::new(DashMap::new());
+        let registry = Arc::new(TypeRegistry::default());
         let result = parse_type("string  |  integer  |  bool", registry).unwrap();
         matches!(result, Type::Union(_));
     }

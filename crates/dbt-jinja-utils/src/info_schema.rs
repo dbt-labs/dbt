@@ -26,10 +26,9 @@ use minijinja::Value;
 /// The two are kept in step by a test in the crate that can see both (`dbt-tasks-sa`); this
 /// crate deliberately does not depend on the index.
 ///
-/// The list is the information schema's `dbt` tables minus the ones that hold nothing at parse
-/// (`column_lineage` needs static analysis; `classifiers` and `semantic_relationships` have no
-/// writer yet). `dbt_rt` is absent entirely: it is written from run artifacts, so at parse it
-/// does not exist.
+/// The list is the information schema's `dbt` tables minus the one that holds nothing at parse
+/// (`column_lineage` needs static analysis). `dbt_rt` is absent entirely: it is written from
+/// run artifacts, so at parse it does not exist.
 pub const PARSE_SAFE_VIEWS: &[&str] = &[
     "project",
     "packages",
@@ -147,8 +146,8 @@ mod tests {
     fn rejects_views_that_are_not_final_at_parse() {
         // `dbt_rt.*` does not exist until run artifacts are written; `generation` is ingest
         // bookkeeping, not project metadata; `column_lineage` waits on static analysis, and
-        // `classifiers` / `semantic_relationships` are information-schema tables with no writer
-        // behind them yet. All must fail loudly rather than read as empty.
+        // `classifiers` / `semantic_relationships` were dropped from the information schema
+        // because nothing wrote them. All must fail loudly rather than read as empty.
         for later in [
             "column_lineage",
             "catalog_tables",

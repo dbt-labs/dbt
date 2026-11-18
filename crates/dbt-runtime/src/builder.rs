@@ -88,7 +88,8 @@ impl Builder {
         self
     }
 
-    /// Runs `f` on each worker thread before it stops.
+    /// Runs `f` on each worker thread before it stops, on idle timeout and on
+    /// pool shutdown. It must not submit work to this pool.
     pub fn on_thread_stop<F>(&mut self, f: F) -> &mut Self
     where
         F: Fn() + Send + Sync + 'static,

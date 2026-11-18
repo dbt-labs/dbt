@@ -1,18 +1,16 @@
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use dbt_common::collections::DashMap;
+use dbt_common::collections::SccHashMap;
 use dbt_common::constants::DBT_EPHEMERAL_DIR_NAME;
 use dbt_common::constants::RENDERING;
-use dbt_common::serde_utils::convert_yml_to_dash_map;
+use dbt_common::serde_utils::convert_yml_to_scc_map;
 use dbt_common::stats::NodeStatus;
 use dbt_common::tracing::emit::emit_debug_event;
 use dbt_common::{FsResult, MacroSpansOnly, stdfs};
 use dbt_jinja_utils::phases::compile::DependencyValidationConfig;
 use dbt_jinja_utils::utils::{
-    add_task_context, inject_and_persist_ephemeral_models, macro_spans_to_macro_span_vec,
-    render_sql,
+    inject_and_persist_ephemeral_models, macro_spans_to_macro_span_vec, render_sql,
 };
 use dbt_scheduler::instructions::SqlInstruction;
 use dbt_schemas::schemas::common::DbtMaterialization;
@@ -40,7 +38,7 @@ pub async fn run_default_render(
         let res = render_default(&node, &mut ctx, &local_exec_unit_test_overrides);
         handle_render_result(
             res,
-            &node.unique_id(),
+            node.unique_id(),
             &node.materialized(),
             &mut ctx,
             &result_sender,
@@ -53,7 +51,7 @@ fn render_default(
     node: &Arc<dyn InternalDbtNodeAttributes>,
     ctx: &mut TaskRunnerCtx,
     local_exec_unit_test_overrides: &Option<UnitTestOverrides>,
-) -> FsResult<(SqlInstruction, Arc<DashMap<String, MinijinjaValue>>)> {
+) -> FsResult<(SqlInstruction, Arc<SccHashMap<String, MinijinjaValue>>)> {
     report_rendering_progress(node, ctx);
 
     if let Some((rendered_sql_maybe_with_cte, macro_spans, reclassify_spans)) = ctx
@@ -61,7 +59,7 @@ fn render_default(
         .compiled_sql_cache
         .try_get_compiled_sql(&ctx.inner.arg.io, node.common())
     {
-        let config_map = Arc::new(convert_yml_to_dash_map(node.serialized_config()));
+        let config_map = Arc::new(convert_yml_to_scc_map(node.serialized_config()));
         emit_compiled_code(node, ctx, &rendered_sql_maybe_with_cte);
         // The cache returns the raw span components; the rendering listener
         // factory rebuilds the `CompiledSpans`.
@@ -83,9 +81,7 @@ fn render_default(
         ));
     }
 
-    let mut base_context = ctx.inner.base_context.clone();
-
-    add_task_context(&mut base_context, node.common(), &ctx.thread_id);
+    let base_context = ctx.run_base_context(node.as_ref())?;
 
     // For snapshots, `path` is the generated SQL artifact used as render input.
     // Display/error locations still use the definition path via `get_node_path`.
@@ -107,7 +103,7 @@ fn render_default(
     }
 
     let (mut compile_context, config_map) = ctx.build_compile_node_context(
-        node.as_ref(),
+        node.clone(),
         &base_context,
         DependencyValidationConfig::new_validated(),
     )?;
@@ -162,7 +158,11 @@ fn render_default(
 
     Ok((
         SqlInstruction {
-            fqn: vec![node.database(), node.schema(), node.alias()],
+            fqn: vec![
+                node.database().to_string(),
+                node.schema().to_string(),
+                node.alias().to_string(),
+            ],
             sql: rendered_sql_maybe_with_cte,
             original_path: node.common().original_file_path.to_path_buf(),
             spans,
@@ -222,10 +222,10 @@ fn render_python_model(
     node: &Arc<dyn InternalDbtNodeAttributes>,
     ctx: &mut TaskRunnerCtx,
     raw_python: &str,
-    base_context: &BTreeMap<String, MinijinjaValue>,
-) -> FsResult<(SqlInstruction, Arc<DashMap<String, MinijinjaValue>>)> {
+    base_context: &MinijinjaValue,
+) -> FsResult<(SqlInstruction, Arc<SccHashMap<String, MinijinjaValue>>)> {
     let (compile_context, config_map) = ctx.build_compile_node_context(
-        node.as_ref(),
+        node.clone(),
         base_context,
         DependencyValidationConfig::new_validated(),
     )?;

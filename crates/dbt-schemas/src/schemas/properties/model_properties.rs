@@ -45,7 +45,9 @@ pub struct ModelConstraint {
     pub to_columns: Option<Vec<String>>,
     #[serde(default, deserialize_with = "string_or_array")]
     pub columns: Option<Vec<String>>,
+    #[serde(default = "crate::schemas::serde::default_true")]
     pub warn_unsupported: Option<bool>,
+    #[serde(default = "crate::schemas::serde::default_true")]
     pub warn_unenforced: Option<bool>,
 }
 // todo: consider revising this design: warn_unsupported, warn_unenforced are adapter specific constraint. You don't want to specify them on all models!
@@ -57,7 +59,7 @@ pub struct ModelProperties {
     pub config: Option<ModelConfig>,
     pub constraints: Option<Vec<ModelConstraint>>,
     pub data_tests: Option<Vec<DataTests>>,
-    pub deprecation_date: Option<dbt_yaml::Timestamp>,
+    pub deprecation_date: Option<String>,
     pub description: Option<String>,
     pub identifier: Option<String>,
     pub latest_version: Option<FloatOrString>,

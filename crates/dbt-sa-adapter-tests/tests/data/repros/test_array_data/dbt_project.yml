@@ -1,0 +1,6 @@
+name: "test_array_data"
+
+profile: "fusion_tests"
+
+vars:
+  dbt_test_name: "test_array_data"

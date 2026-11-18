@@ -61,16 +61,10 @@ impl Object for Macro {
                 "cannot call this macro. template state went away.",
             ));
         }
-        let base_context = state.get_base_context_with_path_and_span(
+        let base_ctx = state.get_base_context_with_path_and_span(
             &Value::from(self.path.to_string_lossy()),
             &Value::from_serialize(self.span),
         );
-        let base_ctx = base_context
-            .as_object()
-            .unwrap()
-            .downcast_ref::<MutableMap>()
-            .unwrap();
-        let base_ctx = base_ctx.clone();
 
         let parsed_args = parse_macro_arguments_with_spec(args, None, &self.arg_spec)?;
         let arg_values = parsed_args.arg_values;
@@ -141,7 +135,7 @@ impl Object for Macro {
             instructions,
             *offset,
             self.closure.clone(),
-            Value::from_object(base_ctx),
+            base_ctx,
             caller,
             extra_args,
             extra_kwargs,

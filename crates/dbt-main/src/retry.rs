@@ -188,6 +188,7 @@ impl RetryState {
                     check_names,
                     common_args,
                     static_analysis,
+                    ..CheckArgs::default()
                 })
             }
             other => {

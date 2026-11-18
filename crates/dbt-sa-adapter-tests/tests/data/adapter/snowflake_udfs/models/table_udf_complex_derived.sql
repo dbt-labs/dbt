@@ -1,0 +1,1 @@
+SELECT COL1 AS ID, COL2 AS TS FROM {{ ref('table_udf_complex') }}

@@ -9,6 +9,7 @@ export type Segment = {
   value: string;
   startIcon?: ReactNode;
   endIcon?: ReactNode;
+  disabled?: boolean;
 };
 
 const rootVariants = cva(
@@ -25,7 +26,7 @@ const rootVariants = cva(
 );
 
 const segmentVariants = cva(
-  'inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded font-medium text-fgDecorative transition-colors hover:text-fgMain data-[state=on]:bg-bgMainActive data-[state=on]:text-fgMain',
+  'inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded font-medium text-fgDecorative transition-colors hover:text-fgMain disabled:pointer-events-none disabled:opacity-50 data-[state=on]:bg-bgMainActive data-[state=on]:text-fgMain',
   {
     variants: {
       size: {
@@ -76,6 +77,7 @@ export function SegmentedButton({
         <ToggleGroupPrimitive.Item
           key={segment.value}
           value={segment.value}
+          disabled={segment.disabled}
           className={cn(segmentVariants({ size, variant }), itemClassName)}
         >
           {segment.startIcon}

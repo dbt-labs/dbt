@@ -1,5 +1,6 @@
 fixed:
   type: fabricspark
+  platform_hint: fabric_lakehouse
 prompts:
   _choose_authentication_method:
     livy:

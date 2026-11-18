@@ -1,0 +1,13 @@
+model.test.c:
+- sequence: 0
+  type: execute
+  sql: DROP SCHEMA IF EXISTS adapters_databricks_add_query CASCADE
+- sequence: 1
+  type: execute
+  sql: CREATE SCHEMA adapters_databricks_add_query
+- sequence: 2
+  type: execute
+  sql: CREATE TABLE adapters_databricks_add_query.a (val int)
+- sequence: 3
+  type: execute
+  sql: select 42 as id

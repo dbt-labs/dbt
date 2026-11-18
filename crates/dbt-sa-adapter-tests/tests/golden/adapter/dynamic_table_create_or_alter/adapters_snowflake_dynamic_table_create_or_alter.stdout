@@ -1,0 +1,30 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/attributes/attr_aggregation_policy.sql
+   Parsing models/attributes/attr_comment.sql
+   Parsing models/attributes/attr_data_retention.sql
+   Parsing models/attributes/attr_masking_policy.sql
+   Parsing models/attributes/attr_max_data_extension.sql
+   Parsing models/attributes/attr_multi.sql
+   Parsing models/attributes/attr_projection_policy.sql
+   Parsing models/attributes/attr_row_access_policy.sql
+   Parsing models/attributes/attr_tag.sql
+   Parsing models/config_changes/cfg_cluster_by.sql
+   Parsing models/config_changes/cfg_init_warehouse.sql
+   Parsing models/config_changes/cfg_warehouse.sql
+   Parsing models/deploy_matrix/dm_auto_disable.sql
+   Parsing models/deploy_matrix/dm_auto_enable.sql
+   Parsing models/deploy_matrix/dm_full_disable.sql
+   Parsing models/deploy_matrix/dm_full_enable.sql
+   Parsing models/deploy_matrix/dm_incremental_disable.sql
+   Parsing models/deploy_matrix/dm_incremental_enable.sql
+   Parsing models/incremental_properties/inc_noop.sql
+   Parsing models/incremental_properties/inc_props.sql
+   Parsing models/on_configuration_change/continue_skips_both.sql
+   Parsing models/routing/idempotent_noop.sql
+   Parsing models/routing/refresh_mode_replace.sql
+   Parsing models/routing/refresh_mode_to_auto.sql
+   Parsing models/routing/transient_flip.sql
+   Parsing models/routing/transient_preserved.sql
+==================== Execution Summary =====================
+Finished 'run-operation' successfully for target 'snowflake' [duration]

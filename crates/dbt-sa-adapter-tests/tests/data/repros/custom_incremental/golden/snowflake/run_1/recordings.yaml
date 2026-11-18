@@ -1,0 +1,105 @@
+48dbd75d:
+- sequence: 0
+  type: execute
+  sql: SHOW OBJECTS IN SCHEMA "DEVELOPMENT"."SNOWFLAKE_CUSTOM_INCREMENTAL" LIMIT 10000
+dbbbff64:
+- sequence: 0
+  type: execute
+  sql: |-
+    show terse schemas in database development
+    limit 10000
+model.hello_world.incremental:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace temporary table development.snowflake_custom_incremental.incremental__dbt_tmp
+    as (
+    
+    
+    
+    WITH source_data AS (SELECT * FROM development.snowflake_custom_incremental.model_a )
+    
+    
+    
+    SELECT id,
+    field1,
+    field2,
+    field3,
+    field4
+    FROM source_data WHERE id NOT IN (SELECT id from development.snowflake_custom_incremental.incremental )
+    
+    
+    )
+- sequence: 1
+  type: execute
+  sql: describe table development.snowflake_custom_incremental.incremental__dbt_tmp
+- sequence: 2
+  type: execute
+  sql: describe table development.snowflake_custom_incremental.incremental
+- sequence: 3
+  type: execute
+  sql: describe table development.snowflake_custom_incremental.incremental__dbt_tmp
+- sequence: 4
+  type: execute
+  sql: describe table "DEVELOPMENT"."SNOWFLAKE_CUSTOM_INCREMENTAL"."INCREMENTAL"
+- sequence: 5
+  type: execute
+  sql: |-
+    alter  table "DEVELOPMENT"."SNOWFLAKE_CUSTOM_INCREMENTAL"."INCREMENTAL" add column
+    
+    "FIELD3" 
+    
+    
+    NUMBER(3,0)
+    
+    ,
+    
+    "FIELD4" 
+    
+    
+    character varying(3)
+- sequence: 6
+  type: execute
+  sql: begin
+- sequence: 7
+  type: execute
+  sql: |-
+    insert into development.snowflake_custom_incremental.incremental ("ID", "FIELD1", "FIELD2", "FIELD3", "FIELD4")
+    (
+    select "ID", "FIELD1", "FIELD2", "FIELD3", "FIELD4"
+    from development.snowflake_custom_incremental.incremental__dbt_tmp
+    )
+- sequence: 8
+  type: execute
+  sql: |-
+    commit
+- sequence: 9
+  type: execute
+  sql: drop table if exists development.snowflake_custom_incremental.incremental__dbt_tmp cascade
+model.hello_world.model_a:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace transient  table development.snowflake_custom_incremental.model_a
+    
+    
+    
+    
+    as (
+    
+    
+    with source_data as (
+    
+    select 1 as id, 'aaa' as field1, 'bbb' as field2, 111 as field3, 'TTT' as field4
+    union all select 2 as id, 'ccc' as field1, 'ddd' as field2, 222 as field3, 'UUU' as field4
+    )
+    
+    select id
+    ,field1
+    ,field2
+    ,field3
+    ,field4
+    
+    from source_data
+    
+    )

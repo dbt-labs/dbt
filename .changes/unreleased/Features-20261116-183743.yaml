@@ -1,0 +1,7 @@
+kind: Features
+body: '[ClickHouse] Report the query id of each statement in dbt.'
+time: 2026-11-16T18:37:43.000000+01:00
+custom:
+    author: koletzilla
+    issue: ""
+    project: dbt-core

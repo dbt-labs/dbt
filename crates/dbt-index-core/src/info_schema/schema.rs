@@ -4,12 +4,20 @@
 //! top to bottom should answer "what columns does `dbt.models` have, and where
 //! does each one come from".
 
-use super::spec::{ColSpec, ColTy, Filter, Ns, Src, TableSpec, c, n, r};
+use super::spec::{ColSpec, ColTy, Filter, Ns, Src, TableSpec, c, first, n, r};
 
-/// Columns shared by every table derived from the node set.
+/// Columns every table derived from the node set has. `$extra` lists the
+/// table's other columns and is spliced in before `ingested_at`, so that column
+/// stays last, as it is in every source table.
 ///
-/// `$extra` is spliced in before `ingested_at` so that column stays last, as
-/// it is in every source table.
+/// Each table lists only the columns that apply to its resource type. They keep
+/// the node set's order: `alias`, `description`, `node_language`, `raw_code`,
+/// `database_name`, `schema_name`, `relation_name`, `identifier`, `enabled`,
+/// `materialized`, the build config, `config`, `access`, `group`, the model
+/// contract columns, `docs_show`, `properties_yml_file_path`, `tags`, `meta`,
+/// `compiled_code`, `compiled_path`, then the grains. `file_path` and
+/// `ai_context` are in no table: only `original_file_path` is populated, and
+/// nothing fills `ai_context`.
 ///
 /// Textual expansion rather than a shared `const` slice because const slice
 /// concatenation is not available here.
@@ -20,52 +28,8 @@ macro_rules! node_cols {
             c("name"),
             c("resource_type"),
             c("package_name"),
-            // `file_path` is dropped: of the two path columns only
-            // `original_file_path` is populated.
             c("original_file_path"),
             c("fqn"),
-            c("alias"),
-            c("description"),
-            c("node_language"),
-            c("raw_code"),
-            c("database_name"),
-            c("schema_name"),
-            c("relation_name"),
-            c("identifier"),
-            c("enabled"),
-            c("materialized"),
-            c("incremental_strategy"),
-            c("on_schema_change"),
-            c("unique_key"),
-            c("full_refresh"),
-            c("persist_docs"),
-            c("pre_hook"),
-            c("post_hook"),
-            c("grants"),
-            c("config"),
-            r("access", "access_level"),
-            r("group", "group_name"),
-            c("contract_enforced"),
-            c("version"),
-            c("latest_version"),
-            c("deprecation_date"),
-            r("constraints", "node_constraints"),
-            c("primary_key"),
-            c("docs_show"),
-            r("properties_yml_file_path", "patch_path"),
-            c("time_spine"),
-            c("tags"),
-            c("classifiers"),
-            c("meta"),
-            c("ai_context"),
-            c("compiled_code"),
-            c("compiled_path"),
-            c("search_text"),
-            c("grain"),
-            c("grain_declared"),
-            c("grain_tested"),
-            c("grain_inferred"),
-            r("layer_inferred", "table_role"),
             $($extra,)*
             c("ingested_at"),
         ]
@@ -80,7 +44,8 @@ pub const INFO_SCHEMA: &[TableSpec] = &[
         name: "project",
         src: Src::Table("project"),
         filter: Filter::All,
-        // `project_id` and `description` are dropped: nothing sets either.
+        // `project_id`, `description` and `ai_context` are dropped: nothing
+        // sets them.
         // `last_full_parse_at` absorbs the former single-row `generation`
         // table; it is filled in by the writer, not projected. So is
         // `schema_version`, which makes a set of files self-describing without
@@ -91,7 +56,6 @@ pub const INFO_SCHEMA: &[TableSpec] = &[
             c("dbt_version"),
             c("adapter_type"),
             c("quoting"),
-            c("ai_context"),
             c("git_sha"),
             c("git_branch"),
             r("git_uncommitted_changes", "git_is_dirty"),
@@ -136,68 +100,238 @@ pub const INFO_SCHEMA: &[TableSpec] = &[
         cols: &[c("env_var_name"), c("ingested_at")],
     },
     // ── one table per resource type ─────────────────────────────────────
+    // Columns that apply only to models live here and nowhere else:
+    // `materialized` (on any other node it repeats `resource_type`), the
+    // incremental config, the model contract (`contract_enforced`, versions,
+    // `constraints`, `primary_key`), `time_spine` and `classifiers`. Seeds,
+    // snapshots and sources carry the grains too: they are tables.
     TableSpec {
         ns: Ns::Dbt,
         name: "models",
         src: Src::Table("nodes"),
         filter: Filter::ResourceTypeIn(&["model"]),
-        cols: node_cols![],
+        cols: node_cols![
+            c("alias"),
+            c("description"),
+            c("node_language"),
+            c("raw_code"),
+            c("database_name"),
+            c("schema_name"),
+            c("relation_name"),
+            c("identifier"),
+            c("enabled"),
+            c("materialized"),
+            c("incremental_strategy"),
+            c("on_schema_change"),
+            c("unique_key"),
+            c("full_refresh"),
+            c("persist_docs"),
+            c("pre_hook"),
+            c("post_hook"),
+            c("grants"),
+            c("config"),
+            r("access", "access_level"),
+            r("group", "group_name"),
+            c("contract_enforced"),
+            c("version"),
+            c("latest_version"),
+            c("deprecation_date"),
+            r("constraints", "node_constraints"),
+            c("primary_key"),
+            c("docs_show"),
+            r("properties_yml_file_path", "patch_path"),
+            c("time_spine"),
+            c("tags"),
+            c("classifiers"),
+            c("meta"),
+            c("compiled_code"),
+            c("compiled_path"),
+            c("grain"),
+            c("grain_declared"),
+            c("grain_tested"),
+            c("grain_inferred"),
+        ],
     },
+    // A seed is CSV, so it has no SQL. `unique_key` and `access` do not apply.
     TableSpec {
         ns: Ns::Dbt,
         name: "seeds",
         src: Src::Table("nodes"),
         filter: Filter::ResourceTypeIn(&["seed"]),
-        cols: node_cols![],
+        cols: node_cols![
+            c("alias"),
+            c("description"),
+            c("database_name"),
+            c("schema_name"),
+            c("relation_name"),
+            c("identifier"),
+            c("enabled"),
+            c("full_refresh"),
+            c("persist_docs"),
+            c("pre_hook"),
+            c("post_hook"),
+            c("grants"),
+            c("config"),
+            r("group", "group_name"),
+            c("docs_show"),
+            r("properties_yml_file_path", "patch_path"),
+            c("tags"),
+            c("meta"),
+            c("grain"),
+            c("grain_declared"),
+            c("grain_tested"),
+            c("grain_inferred"),
+        ],
     },
+    // The snapshot materialization ignores `full_refresh`. `access` applies to
+    // models and functions only.
     TableSpec {
         ns: Ns::Dbt,
         name: "snapshots",
         src: Src::Table("nodes"),
         filter: Filter::ResourceTypeIn(&["snapshot"]),
-        cols: node_cols![],
+        cols: node_cols![
+            c("alias"),
+            c("description"),
+            c("node_language"),
+            c("raw_code"),
+            c("database_name"),
+            c("schema_name"),
+            c("relation_name"),
+            c("identifier"),
+            c("enabled"),
+            c("unique_key"),
+            c("persist_docs"),
+            c("pre_hook"),
+            c("post_hook"),
+            c("grants"),
+            c("config"),
+            r("group", "group_name"),
+            c("docs_show"),
+            r("properties_yml_file_path", "patch_path"),
+            c("tags"),
+            c("meta"),
+            c("compiled_code"),
+            c("compiled_path"),
+            c("grain"),
+            c("grain_declared"),
+            c("grain_tested"),
+            c("grain_inferred"),
+        ],
     },
+    // `unique_key`, `full_refresh` and `persist_docs` do not apply to a function.
     TableSpec {
         ns: Ns::Dbt,
         name: "functions",
         src: Src::Table("nodes"),
         filter: Filter::ResourceTypeIn(&["function"]),
-        cols: node_cols![],
+        cols: node_cols![
+            c("alias"),
+            c("description"),
+            c("node_language"),
+            c("raw_code"),
+            c("database_name"),
+            c("schema_name"),
+            c("relation_name"),
+            c("identifier"),
+            c("enabled"),
+            c("pre_hook"),
+            c("post_hook"),
+            c("grants"),
+            c("config"),
+            r("access", "access_level"),
+            r("group", "group_name"),
+            c("docs_show"),
+            r("properties_yml_file_path", "patch_path"),
+            c("tags"),
+            c("meta"),
+            c("compiled_code"),
+            c("compiled_path"),
+        ],
     },
+    // An analysis builds no relation, so it has no relation or build config.
     TableSpec {
         ns: Ns::Dbt,
         name: "analyses",
         src: Src::Table("nodes"),
         filter: Filter::ResourceTypeIn(&["analysis"]),
-        cols: node_cols![],
+        cols: node_cols![
+            c("description"),
+            c("node_language"),
+            c("raw_code"),
+            c("enabled"),
+            c("config"),
+            r("group", "group_name"),
+            c("docs_show"),
+            r("properties_yml_file_path", "patch_path"),
+            c("tags"),
+            c("meta"),
+            c("compiled_code"),
+            c("compiled_path"),
+        ],
     },
     // Project `on_run_start` / `on_run_end` operations, as node rows with
     // `resource_type = 'operation'`. `sql_operation` is kept so a future
-    // resource type can land here without a schema change.
+    // resource type can land here without a schema change. A hook is SQL and
+    // nothing else: no relation, config or docs. Its only tag is its phase,
+    // `on-run-start` or `on-run-end`, and a hook cannot set tags.
     TableSpec {
         ns: Ns::Dbt,
         name: "hooks",
         src: Src::Table("nodes"),
         filter: Filter::ResourceTypeIn(&["operation", "sql_operation"]),
-        cols: node_cols![],
+        cols: node_cols![
+            c("node_language"),
+            c("raw_code"),
+            first("phase", "tags"),
+            c("compiled_code"),
+            c("compiled_path"),
+        ],
     },
     // Project quality checks. A check is a node row like any other, so it is
     // published like any other resource type -- which is also what lets a check
-    // read `dbt.checks` and assert something about the checks themselves.
+    // read `dbt.checks` and assert something about the checks themselves. A
+    // check builds no relation and writes no compiled SQL, and `CheckConfig`
+    // has no `group` or `docs`.
     TableSpec {
         ns: Ns::Dbt,
         name: "checks",
         src: Src::Table("nodes"),
         filter: Filter::ResourceTypeIn(&["check"]),
-        cols: node_cols![],
+        cols: node_cols![
+            c("description"),
+            c("node_language"),
+            c("raw_code"),
+            c("enabled"),
+            c("config"),
+            r("properties_yml_file_path", "patch_path"),
+            c("tags"),
+            c("meta"),
+        ],
     },
-    // The source-specific columns live here and nowhere else.
+    // The source-specific columns live here and nowhere else. A source has no
+    // SQL and is not built. `alias` only copies `identifier`, the YAML file is
+    // `original_file_path`, and `SourceConfig` has no `group` or `docs`.
+    // `source_meta` is dropped: source YAML has no top-level `meta`.
     TableSpec {
         ns: Ns::Dbt,
         name: "sources",
         src: Src::Table("nodes"),
         filter: Filter::ResourceTypeIn(&["source"]),
         cols: node_cols![
+            c("description"),
+            c("database_name"),
+            c("schema_name"),
+            c("relation_name"),
+            c("identifier"),
+            c("enabled"),
+            c("config"),
+            c("tags"),
+            c("meta"),
+            c("grain"),
+            c("grain_declared"),
+            c("grain_tested"),
+            c("grain_inferred"),
             c("source_name"),
             c("source_description"),
             c("loader"),
@@ -205,7 +339,6 @@ pub const INFO_SCHEMA: &[TableSpec] = &[
             c("loaded_at_query"),
             c("freshness"),
             r("external", "external_config"),
-            c("source_meta"),
             c("quoting"),
         ],
     },
@@ -263,6 +396,7 @@ pub const INFO_SCHEMA: &[TableSpec] = &[
             c("ingested_at"),
         ],
     },
+    // `created_at` is dropped: nothing fills it.
     TableSpec {
         ns: Ns::Dbt,
         name: "unit_tests",
@@ -281,10 +415,10 @@ pub const INFO_SCHEMA: &[TableSpec] = &[
             c("overrides"),
             c("versions"),
             c("config"),
-            c("created_at"),
             c("ingested_at"),
         ],
     },
+    // `created_at` is dropped: nothing fills it.
     TableSpec {
         ns: Ns::Dbt,
         name: "macros",
@@ -302,7 +436,6 @@ pub const INFO_SCHEMA: &[TableSpec] = &[
             c("docs_show"),
             r("properties_yml_file_path", "patch_path"),
             c("meta"),
-            c("created_at"),
             c("ingested_at"),
         ],
     },
@@ -349,6 +482,7 @@ pub const INFO_SCHEMA: &[TableSpec] = &[
             c("ingested_at"),
         ],
     },
+    // `semantic_model_name` and `ai_context` are dropped: nothing fills either.
     TableSpec {
         ns: Ns::Dbt,
         name: "metrics",
@@ -366,12 +500,10 @@ pub const INFO_SCHEMA: &[TableSpec] = &[
             c("type_params"),
             c("metric_filter"),
             c("time_granularity"),
-            c("semantic_model_name"),
             c("input_metric_names"),
             r("group", "group_name"),
             c("tags"),
             c("meta"),
-            c("ai_context"),
             c("config"),
             c("created_at"),
             c("ingested_at"),
@@ -415,6 +547,7 @@ pub const INFO_SCHEMA: &[TableSpec] = &[
         ],
     },
     // ── semantic layer ──────────────────────────────────────────────────
+    // `label` is dropped: a semantic model's YAML has no label.
     TableSpec {
         ns: Ns::Dbt,
         name: "semantic_models",
@@ -424,7 +557,6 @@ pub const INFO_SCHEMA: &[TableSpec] = &[
             c("unique_id"),
             c("name"),
             c("model"),
-            c("label"),
             c("description"),
             c("package_name"),
             c("original_file_path"),
@@ -438,6 +570,7 @@ pub const INFO_SCHEMA: &[TableSpec] = &[
             c("ingested_at"),
         ],
     },
+    // `entity_role` is dropped: an entity's YAML has no role.
     TableSpec {
         ns: Ns::Dbt,
         name: "semantic_entities",
@@ -449,7 +582,6 @@ pub const INFO_SCHEMA: &[TableSpec] = &[
             c("entity_type"),
             c("description"),
             c("label"),
-            c("entity_role"),
             c("expr"),
             c("config"),
             c("ingested_at"),
@@ -496,23 +628,6 @@ pub const INFO_SCHEMA: &[TableSpec] = &[
     },
     TableSpec {
         ns: Ns::Dbt,
-        name: "semantic_relationships",
-        src: Src::Table("semantic_relationships"),
-        filter: Filter::All,
-        cols: &[
-            c("name"),
-            r("from_node_unique_id", "from_unique_id"),
-            r("to_node_unique_id", "to_unique_id"),
-            r("from_column_names", "from_columns"),
-            r("to_column_names", "to_columns"),
-            c("cardinality"),
-            c("relationship_type"),
-            c("ai_context"),
-            c("ingested_at"),
-        ],
-    },
-    TableSpec {
-        ns: Ns::Dbt,
         name: "time_spines",
         src: Src::Table("time_spines"),
         filter: Filter::All,
@@ -551,6 +666,8 @@ pub const INFO_SCHEMA: &[TableSpec] = &[
             c("ingested_at"),
         ],
     },
+    // `label`, `expression` and `tests` are dropped: nothing writes them. A
+    // column's tests are rows in `dbt.data_tests`.
     TableSpec {
         ns: Ns::Dbt,
         name: "node_columns",
@@ -565,15 +682,12 @@ pub const INFO_SCHEMA: &[TableSpec] = &[
             r("data_type_actual", "catalog_type"),
             c("data_type"),
             c("description"),
-            c("label"),
-            c("expression"),
             c("quote"),
             c("granularity"),
             c("tags"),
             c("classifiers"),
             c("meta"),
             r("constraints", "column_constraints"),
-            c("tests"),
             r("comment", "catalog_comment"),
             c("ingested_at"),
         ],
@@ -590,21 +704,6 @@ pub const INFO_SCHEMA: &[TableSpec] = &[
             r("child_column_name", "to_column_name"),
             r("evolution", "lineage_kind"),
             c("ingested_at"),
-        ],
-    },
-    // The label taxonomy. Assembled by the writer; the source table is a
-    // schemaless placeholder today.
-    TableSpec {
-        ns: Ns::Dbt,
-        name: "classifiers",
-        src: Src::Own,
-        filter: Filter::All,
-        cols: &[
-            n("name", ColTy::Utf8),
-            n("propagate", ColTy::Bool),
-            n("labels", ColTy::ListUtf8),
-            n("description", ColTy::Utf8),
-            n("ingested_at", ColTy::TsUtc),
         ],
     },
     // ── runtime ─────────────────────────────────────────────────────────
@@ -633,6 +732,8 @@ pub const INFO_SCHEMA: &[TableSpec] = &[
             r("git_uncommitted_changes", "git_is_dirty"),
         ],
     },
+    // `compiled`, `compiled_code_hash` and `rows_affected` are dropped: nothing
+    // fills them. `adapter_response` carries the rows affected.
     TableSpec {
         ns: Ns::DbtRt,
         name: "run_results",
@@ -646,17 +747,15 @@ pub const INFO_SCHEMA: &[TableSpec] = &[
             c("thread_id"),
             c("message"),
             c("failures"),
-            c("compiled"),
-            c("compiled_code_hash"),
             c("relation_name"),
             c("adapter_response"),
             c("timing"),
             c("batch_results"),
-            c("rows_affected"),
             c("created_at"),
         ],
     },
     // Moved out of the project namespace: this is a runtime result.
+    // `created_at` is dropped: `ingested_at` holds the time.
     TableSpec {
         ns: Ns::DbtRt,
         name: "freshness",
@@ -683,7 +782,6 @@ pub const INFO_SCHEMA: &[TableSpec] = &[
             c("freshness_filter"),
             c("adapter_response"),
             c("timing"),
-            c("created_at"),
             c("ingested_at"),
         ],
     },
@@ -718,22 +816,6 @@ pub const INFO_SCHEMA: &[TableSpec] = &[
             // neither the epoch nor the index parses it.
             n("last_modified", ColTy::Utf8),
             n("ingested_at", ColTy::TsUtc),
-        ],
-    },
-    TableSpec {
-        ns: Ns::DbtRt,
-        name: "diagnostics",
-        src: Src::Table("diagnostics"),
-        filter: Filter::All,
-        cols: &[
-            c("unique_id"),
-            c("invocation_id"),
-            c("severity"),
-            c("code"),
-            c("message"),
-            c("detail"),
-            c("source_phase"),
-            c("created_at"),
         ],
     },
     TableSpec {

@@ -1,0 +1,34 @@
+version: 2
+
+# Exercises the BigQuery freshness override path
+# (`MetadataAdapter::freshness_with_overrides`). Mixes a bulk source (no
+# override, goes through the `__TABLES__` bulk query) with `loaded_at_field`
+# and `loaded_at_query` overrides (each runs its own targeted query).
+#
+# Regression for https://github.com/dbt-labs/dbt-fusion/issues/1450 — the bulk
+# query is now scoped to the per-dataset group it was built for.
+sources:
+  - name: "{{ t_schema_name() }}_sources"
+    schema: "{{ target.schema }}"
+    config:
+      freshness:
+        warn_after:
+          count: 0
+          period: day
+    tables:
+      - name: source_bulk
+        columns:
+          - name: id
+          - name: updated_at
+      - name: source_field
+        config:
+          loaded_at_field: updated_at
+        columns:
+          - name: id
+          - name: updated_at
+      - name: source_query
+        config:
+          loaded_at_query: "select max(updated_at) from {{ this }}"
+        columns:
+          - name: id
+          - name: updated_at
