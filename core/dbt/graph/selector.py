@@ -1,4 +1,5 @@
-from typing import Any, Dict, List, Optional, Set, Tuple
+from dataclasses import dataclass, field
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from dbt import selected_resources
 from dbt.contracts.graph.manifest import Manifest
@@ -11,8 +12,13 @@ from dbt_common.events.functions import fire_event
 
 from .graph import Graph, UniqueId
 from .queue import GraphQueue
-from .selector_methods import MethodManager, MethodName
-from .selector_spec import IndirectSelection, SelectionCriteria, SelectionSpec
+from .selector_methods import MethodManager, MethodName, SelectorSelectorMethod
+from .selector_spec import (
+    IndirectSelection,
+    SelectionCriteria,
+    SelectionDifference,
+    SelectionSpec,
+)
 
 
 def get_package_names(nodes):
@@ -31,6 +37,34 @@ def can_select_indirectly(node):
         return True
     else:
         return False
+
+
+@dataclass
+class Selection:
+    """The result of selecting a spec.
+
+    - direct: the selected nodes
+    - indirect: tests that are selected once all their parents are
+      (cautious/buildable); may overlap `direct`
+    - matched: the selected nodes before tests were attached to them
+    - excluded: tests the spec's exclusions removed
+    """
+
+    direct: Set[UniqueId] = field(default_factory=set)
+    indirect: Set[UniqueId] = field(default_factory=set)
+    matched: Set[UniqueId] = field(default_factory=set)
+    excluded: Set[UniqueId] = field(default_factory=set)
+
+    @classmethod
+    def union(cls, selections: Iterable["Selection"]) -> "Selection":
+        result = cls()
+        for selection in selections:
+            result.direct |= selection.direct
+            result.indirect |= selection.indirect
+            result.matched |= selection.matched
+            result.excluded |= selection.excluded
+        result.excluded -= result.direct | result.indirect
+        return result
 
 
 class NodeSelector(MethodManager):
@@ -61,8 +95,17 @@ class NodeSelector(MethodManager):
             method,
             method_arguments,
             selectors=self._selectors,
-            get_selected_callback=self.get_selected,
+            get_selected_callback=self.select_referenced,
+            get_selection_callback=self.select_nodes_recursively,
         )
+
+    def select_referenced(self, spec: SelectionSpec) -> Set[UniqueId]:
+        """Resolve a `selector:` reference. Unlike get_selected(), this does not
+        filter by resource type: that filter applies once, to the final selection,
+        after graph operators on the reference have been applied.
+        """
+        direct_nodes, _ = self.select_nodes(spec=spec)
+        return direct_nodes
 
     def select_included(
         self,
@@ -76,13 +119,12 @@ class NodeSelector(MethodManager):
             spec.method,
             spec.method_arguments,
             selectors=self._selectors,
-            get_selected_callback=self.get_selected,
+            get_selected_callback=self.select_referenced,
+            get_selection_callback=self.select_nodes_recursively,
         )
         return set(method.search(included_nodes, spec.value))
 
-    def get_nodes_from_criteria(
-        self, spec: SelectionCriteria
-    ) -> Tuple[Set[UniqueId], Set[UniqueId]]:
+    def get_nodes_from_criteria(self, spec: SelectionCriteria) -> Selection:
         """Get all nodes specified by the single selection criteria.
 
         - collect the directly included nodes
@@ -91,6 +133,9 @@ class NodeSelector(MethodManager):
         """
 
         nodes = self.graph.nodes()
+        if spec.method == MethodName.Selector:
+            return self._select_reference(spec)
+
         try:
             collected = self.select_included(nodes, spec)
         except InvalidSelectorError:
@@ -100,26 +145,54 @@ class NodeSelector(MethodManager):
                     valid_selectors=valid_selectors, spec_method=spec.method, raw_spec=spec.raw
                 )
             )
-            return set(), set()
+            return Selection()
 
         neighbors = self.collect_specified_neighbors(spec, collected)
         selected = collected | neighbors
 
         # if --indirect-selection EMPTY, do not expand to adjacent tests
         if spec.indirect_selection == IndirectSelection.Empty:
-            return selected, set()
-        # The `selector` method calls get_selected() internally, which already
-        # runs the full selection pipeline including expand_selection() and any
-        # exclusions (e.g. exclude: test_name:not_null). Re-running
-        # expand_selection here would re-introduce tests that were explicitly
-        # excluded by the referenced selector.
-        elif spec.method == MethodName.Selector:
-            return selected, set()
+            return Selection(direct=selected, matched=selected)
         else:
             direct_nodes, indirect_nodes = self.expand_selection(
                 selected=selected, indirect_selection=spec.indirect_selection
             )
-            return direct_nodes, indirect_nodes
+            return Selection(direct=direct_nodes, indirect=indirect_nodes, matched=selected)
+
+    def _select_reference(self, spec: SelectionCriteria) -> Selection:
+        """Select a `selector:` reference the way an inline criterion is selected,
+        with the referenced selector's matched nodes in place of the method's
+        matches. Its own test decisions stand: tests it attached or holds back are
+        kept, and tests it excluded are never selected.
+        """
+        method = self.get_method(spec.method, spec.method_arguments)
+        assert isinstance(method, SelectorSelectorMethod)
+        ref = Selection.union(method.resolve(spec.value))
+
+        neighbors = self.collect_specified_neighbors(spec, ref.matched) - ref.excluded
+        added = neighbors - ref.matched - ref.direct
+        matched = ref.matched | neighbors
+        if not added or spec.indirect_selection == IndirectSelection.Empty:
+            return Selection(ref.direct | neighbors, ref.indirect, matched, ref.excluded)
+
+        direct_nodes, indirect_nodes = self.expand_selection(
+            selected=matched, indirect_selection=spec.indirect_selection
+        )
+        new_direct = {n for n in direct_nodes - matched if self._depends_on_any(n, added)}
+        new_indirect = {n for n in indirect_nodes if self._depends_on_any(n, added)}
+        direct = ref.direct | neighbors | (new_direct - ref.excluded)
+        indirect = (ref.indirect | new_indirect) - ref.excluded
+        return Selection(direct, indirect, matched, ref.excluded)
+
+    def _depends_on_any(self, unique_id: UniqueId, nodes: Set[UniqueId]) -> bool:
+        node = self.manifest.nodes.get(unique_id) or self.manifest.unit_tests.get(unique_id)
+        if node is None or not can_select_indirectly(node):
+            return False
+        return not nodes.isdisjoint(node.depends_on_nodes)
+
+    def _is_test(self, unique_id: UniqueId) -> bool:
+        node = self.manifest.nodes.get(unique_id) or self.manifest.unit_tests.get(unique_id)
+        return node is not None and can_select_indirectly(node)
 
     def collect_specified_neighbors(
         self, spec: SelectionCriteria, selected: Set[UniqueId]
@@ -144,40 +217,56 @@ class NodeSelector(MethodManager):
 
     def select_nodes_recursively(
         self, spec: SelectionSpec, warn_on_no_nodes: bool = True
-    ) -> Tuple[Set[UniqueId], Set[UniqueId]]:
+    ) -> Selection:
         """If the spec is a composite spec (a union, difference, or intersection),
         recurse into its selections and combine them. If the spec is a concrete
         selection criteria, resolve that using the given graph.
         """
         if isinstance(spec, SelectionCriteria):
-            direct_nodes, indirect_nodes = self.get_nodes_from_criteria(spec)
-        else:
-            bundles = [
-                self.select_nodes_recursively(spec=component, warn_on_no_nodes=warn_on_no_nodes)
-                for component in spec.components
-            ]
+            return self.get_nodes_from_criteria(spec)
 
-            direct_sets = []
-            indirect_sets = []
+        bundles = [
+            self.select_nodes_recursively(spec=component, warn_on_no_nodes=warn_on_no_nodes)
+            for component in spec.components
+        ]
 
-            for direct, indirect in bundles:
-                direct_sets.append(direct)
-                indirect_sets.append(direct | indirect)
+        direct_sets = [bundle.direct for bundle in bundles]
+        indirect_sets = [bundle.direct | bundle.indirect for bundle in bundles]
 
-            initial_direct = spec.combined(direct_sets)
-            indirect_nodes = spec.combined(indirect_sets)
+        initial_direct = spec.combined(direct_sets)
+        indirect_nodes = spec.combined(indirect_sets)
 
-            direct_nodes = self.incorporate_indirect_nodes(
-                initial_direct, indirect_nodes, spec.indirect_selection
+        direct_nodes = self.incorporate_indirect_nodes(
+            initial_direct, indirect_nodes, spec.indirect_selection
+        )
+
+        if spec.expect_exists and len(direct_nodes) == 0 and warn_on_no_nodes:
+            fire_event(
+                NoNodesForSelectionCriteria(spec_raw=str(spec.raw)),
+                force_warn_or_error_handling=True,
             )
 
-            if spec.expect_exists and len(direct_nodes) == 0 and warn_on_no_nodes:
-                fire_event(
-                    NoNodesForSelectionCriteria(spec_raw=str(spec.raw)),
-                    force_warn_or_error_handling=True,
-                )
+        return Selection(
+            direct_nodes,
+            indirect_nodes,
+            # A component's matched nodes are always in its direct set, so this
+            # equals the combined matched sets for unions and differences, and keeps
+            # tests an intersection selects through a component that only attached them.
+            matched=set().union(*(bundle.matched for bundle in bundles)) & direct_nodes,
+            excluded=self._combine_excluded(spec, bundles, indirect_sets)
+            - (direct_nodes | indirect_nodes),
+        )
 
-        return direct_nodes, indirect_nodes
+    def _combine_excluded(
+        self, spec: SelectionSpec, bundles: List[Selection], indirect_sets: List[Set[UniqueId]]
+    ) -> Set[UniqueId]:
+        excluded: Set[UniqueId] = set().union(*(bundle.excluded for bundle in bundles))
+        if isinstance(spec, SelectionDifference):
+            # Only tests an exclusion matched itself count, not tests it removed
+            # because they are attached to a model it excludes.
+            excluding = set().union(*(bundle.matched for bundle in bundles[1:]))
+            excluded |= {n for n in indirect_sets[0] & excluding if self._is_test(n)}
+        return excluded
 
     def select_nodes(
         self, spec: SelectionSpec, warn_on_no_nodes: bool = True
@@ -188,11 +277,9 @@ class NodeSelector(MethodManager):
         - Recurse through spec, select by criteria, combine by set operation
         - Return final (unfiltered) selection set
         """
-        direct_nodes, indirect_nodes = self.select_nodes_recursively(
-            spec=spec, warn_on_no_nodes=warn_on_no_nodes
-        )
-        indirect_only = indirect_nodes.difference(direct_nodes)
-        return direct_nodes, indirect_only
+        selection = self.select_nodes_recursively(spec=spec, warn_on_no_nodes=warn_on_no_nodes)
+        indirect_only = selection.indirect.difference(selection.direct)
+        return selection.direct, indirect_only
 
     def _is_graph_member(self, unique_id: UniqueId) -> bool:
         if unique_id in self.manifest.sources:
