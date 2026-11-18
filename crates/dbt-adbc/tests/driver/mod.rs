@@ -166,6 +166,9 @@ mod tests {
                 Ok(builder)
             }
             Backend::Trino => unimplemented!("trino backend database builder in tests"),
+            Backend::MotherDuck => {
+                unimplemented!("MotherDuck backend database builder in tests")
+            }
             Backend::Generic { .. } => unimplemented!("generic backend database builder in tests"),
         }?;
         if backend == Backend::Snowflake {

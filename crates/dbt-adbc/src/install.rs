@@ -413,6 +413,7 @@ fn canonical_name_and_version(backend: Backend) -> (&'static str, &'static str) 
         Backend::LakeCompute => ("dbt", LAKE_COMPUTE_DRIVER_VERSION),
         Backend::SQLServer => ("mssql", MSSQLSERVER_DRIVER_VERSION),
         Backend::ClickHouse => ("clickhouse", CLICKHOUSE_DRIVER_VERSION),
+        Backend::MotherDuck => todo!("MotherDuck driver is not published to the CDN yet"),
         Backend::Athena | Backend::Exasol | Backend::Trino | Backend::Generic { .. } => {
             unreachable!("driver_parameters() called with backend={:?}", backend)
         }
@@ -975,6 +976,12 @@ mod tests {
                 "{backend:?} should use system/manual loading"
             );
         }
+
+        // Not published to the CDN yet. Move it to the first list once it has checksums.
+        assert!(
+            !is_installable_driver(Backend::MotherDuck, DRIVER_CACHE_DISABLED),
+            "MotherDuck should not be CDN-installable until its driver is published"
+        );
     }
 
     #[test]
