@@ -1078,6 +1078,13 @@ class ModelPatchParser(NodePatchParser[UnparsedModelUpdate]):
                     block.target, unparsed_version.v
                 )
 
+                # Semantic constructs (the inline `semantic_model:` spec and
+                # `metrics:`) are declared at the model level and apply to the
+                # model as resolved by `ref()`, i.e. the latest version. Attach
+                # them to the latest version's patch only; otherwise they are
+                # silently dropped for versioned models (dbt-core#15294).
+                is_latest_version = unparsed_version.v == latest_version
+
                 versioned_model_patch = ParsedNodePatch(
                     name=target.name,
                     original_file_path=target.original_file_path,
@@ -1093,6 +1100,11 @@ class ModelPatchParser(NodePatchParser[UnparsedModelUpdate]):
                     latest_version=latest_version,
                     constraints=unparsed_version.constraints or target.constraints,
                     deprecation_date=unparsed_version.deprecation_date,
+                    semantic_model=target.semantic_model if is_latest_version else None,
+                    metrics=target.metrics if is_latest_version else None,
+                    derived_semantics=target.derived_semantics if is_latest_version else None,
+                    agg_time_dimension=target.agg_time_dimension if is_latest_version else None,
+                    primary_entity=target.primary_entity if is_latest_version else None,
                 )
                 # Node patched before config because config patching depends on model name,
                 # which may have been updated in the version patch
