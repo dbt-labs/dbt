@@ -266,6 +266,19 @@
         "null"
       ]
     },
+    "plugin-paths": {
+      "description": "Directories whose files belong to a plugin, by plugin type. There is no default: a plugin reads only the paths a project names for it.",
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    },
     "profile": {
       "type": [
         "string",
