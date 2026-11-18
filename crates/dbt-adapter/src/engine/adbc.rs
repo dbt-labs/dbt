@@ -29,7 +29,7 @@ use crate::cache::RelationCache;
 use crate::engine::adapter_engine::*;
 use crate::engine::query_comment::QueryCommentConfig;
 use crate::engine::retry::{ConnectionRetryPolicy, QueryRetryPolicy};
-use crate::errors::{AdapterError, adbc_error_to_adapter_error};
+use crate::errors::{AdapterError, adbc_error_to_adapter_error, is_bridge_adbc_error};
 use crate::sql_types::TypeOps;
 use crate::stmt_splitter::StmtSplitter;
 
@@ -695,7 +695,9 @@ fn enrich_connection_error(
         // case (the error arrives as a raw HTTP failure, not a typed
         // SnowflakeError), so substring matching on the status code is the most
         // reliable signal available.
-        Snowflake if err.message.contains(": 403") => {
+        //
+        // A Bridge 403 comes from the gateway, not from the Snowflake account.
+        Snowflake if err.message.contains(": 403") && !is_bridge_adbc_error(&err) => {
             let account_display = config
                 .get_string("account")
                 .map(|a| format!("'{a}'"))

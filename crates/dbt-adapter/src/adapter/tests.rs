@@ -842,27 +842,30 @@ fn test_check_schema_exists_tolerates_none_database() {
 /// A statement that fails after `BEGIN` leaves the session's transaction state unknown, so the
 /// connection must be discarded instead of being parked in the thread-local for the next node.
 mod execute_inner_txn {
-    use std::collections::BTreeMap;
+    use std::cell::RefCell;
+    use std::collections::{BTreeMap, VecDeque};
     use std::sync::{Arc, Mutex};
 
     use adbc_core::PartitionedResult;
     use adbc_core::error::{Error, Result, Status};
     use adbc_core::options::{ObjectDepth, OptionStatement, OptionValue};
-    use arrow_array::{RecordBatchIterator, RecordBatchReader};
-    use arrow_schema::Schema;
+    use arrow_array::{RecordBatch, RecordBatchIterator, RecordBatchReader};
+    use arrow_schema::{ArrowError, Schema, SchemaRef};
     use dbt_adapter_core::AdapterType;
     use dbt_adbc::{Connection, QueryCtx, Statement};
     use dbt_auth::auth_for_backend;
     use dbt_common::AdapterResult;
     use dbt_common::cancellation::CancellationToken;
     use dbt_yaml::Mapping;
+    use minijinja::{State, Value};
 
     use crate::adapter::adapter_factory::backend_of;
     use crate::adapter::adapter_impl::AdapterImpl;
     use crate::cache::RelationCache;
     use crate::config::AdapterConfig;
     use crate::connection::{
-        ConnectionGuard, drop_thread_local_connection, open_transaction, tlocal_slot_occupied,
+        ConnectionGuard, borrow_tlocal_connection_impl, drop_thread_local_connection,
+        open_transaction, tlocal_slot_occupied,
     };
     use crate::engine::query_comment::QueryCommentConfig;
     use crate::engine::{AdapterEngine, AdbcEngine};
@@ -890,10 +893,46 @@ mod execute_inner_txn {
         }
     }
 
+    /// What a [`ScriptedConnection`] does with its next statement, in order.
+    #[derive(Clone, Copy)]
+    enum Step {
+        Ok,
+        /// The statement is rejected with this SQLSTATE.
+        Fail(&'static [u8; 5]),
+        /// The statement is accepted but reading its result fails.
+        StreamFail,
+    }
+
     #[derive(Default)]
     struct Session {
         executed: Vec<String>,
         discarded: bool,
+        script: VecDeque<Step>,
+    }
+
+    fn scripted_error(sqlstate: &[u8; 5]) -> Error {
+        let mut err = Error::with_message_and_status("boom", Status::Internal);
+        err.sqlstate = sqlstate.map(|b| b as _);
+        err
+    }
+
+    struct FailingReader(SchemaRef);
+
+    impl Iterator for FailingReader {
+        type Item = std::result::Result<RecordBatch, ArrowError>;
+
+        fn next(&mut self) -> Option<Self::Item> {
+            Some(Err(ArrowError::IoError(
+                "stream broke".to_string(),
+                std::io::Error::other("stream broke"),
+            )))
+        }
+    }
+
+    impl RecordBatchReader for FailingReader {
+        fn schema(&self) -> SchemaRef {
+            self.0.clone()
+        }
     }
 
     /// A connection that records the SQL it receives.
@@ -912,10 +951,14 @@ mod execute_inner_txn {
                 return Err(Error::with_message_and_status(message, Status::IO));
             }
             let schema = Arc::new(Schema::empty());
-            Ok(Box::new(RecordBatchIterator::new(
-                std::iter::empty(),
-                schema,
-            )))
+            match session.script.pop_front().unwrap_or(Step::Ok) {
+                Step::Ok => Ok(Box::new(RecordBatchIterator::new(
+                    std::iter::empty(),
+                    schema,
+                ))),
+                Step::Fail(sqlstate) => Err(scripted_error(sqlstate)),
+                Step::StreamFail => Ok(Box::new(FailingReader(schema))),
+            }
         }
 
         fn set_sql_query(&mut self, sql: &str) -> Result<()> {
@@ -931,7 +974,7 @@ mod execute_inner_txn {
             Ok(())
         }
 
-        fn bind(&mut self, _batch: arrow_array::RecordBatch) -> Result<()> {
+        fn bind(&mut self, _batch: RecordBatch) -> Result<()> {
             unimplemented!()
         }
         fn bind_stream(&mut self, _reader: Box<dyn RecordBatchReader + Send>) -> Result<()> {
@@ -943,7 +986,10 @@ mod execute_inner_txn {
             if let Some(message) = failure_message(&self.sql) {
                 return Err(Error::with_message_and_status(message, Status::IO));
             }
-            Ok(Some(0))
+            match session.script.pop_front() {
+                Some(Step::Fail(sqlstate)) => Err(scripted_error(sqlstate)),
+                _ => Ok(Some(0)),
+            }
         }
         fn execute_schema(&mut self) -> Result<Schema> {
             unimplemented!()
@@ -1005,7 +1051,12 @@ mod execute_inner_txn {
     }
 
     fn snowflake_engine() -> Arc<dyn AdapterEngine> {
+        snowflake_engine_with(false)
+    }
+
+    fn snowflake_engine_with(bridge: bool) -> Arc<dyn AdapterEngine> {
         let config = Mapping::from_iter([
+            ("use_dbt_cloud_credentials".into(), bridge.into()),
             ("user".into(), "U".into()),
             ("password".into(), "P".into()),
             ("account".into(), "A".into()),
@@ -1112,7 +1163,12 @@ mod execute_inner_txn {
     const SKIP_TRANSACTIONS: &str = "redshift_skip_autocommit_transaction_statements";
 
     fn redshift_engine(flags: &[(&str, bool)]) -> Arc<dyn AdapterEngine> {
+        redshift_engine_with(false, flags)
+    }
+
+    fn redshift_engine_with(bridge: bool, flags: &[(&str, bool)]) -> Arc<dyn AdapterEngine> {
         let config = Mapping::from_iter([
+            ("use_dbt_cloud_credentials".into(), bridge.into()),
             ("host".into(), "H".into()),
             ("user".into(), "U".into()),
             ("password".into(), "P".into()),
@@ -1286,5 +1342,168 @@ mod execute_inner_txn {
 
         assert!(result.is_err());
         assert_eq!(session.executed, [RETRYABLE_SQL, RETRYABLE_SQL]);
+    }
+
+    /// What [`run_bridge`] observed.
+    struct BridgeOutcome {
+        result: AdapterResult<()>,
+        /// The SQL the first connection received.
+        executed: Vec<String>,
+        /// Whether the borrow after the calls got a new connection.
+        reopened: bool,
+    }
+
+    /// Runs each `(node_id, sql)` as a fetching `execute` call with `auto_begin` on one borrowed
+    /// connection, stopping at the first error, then borrows again as the next node would.
+    fn run_bridge(
+        engine: Arc<dyn AdapterEngine>,
+        script: &[Step],
+        calls: &[(Option<&str>, &str)],
+    ) -> BridgeOutcome {
+        let adapter = AdapterImpl::new(Arc::clone(&engine), None);
+        drop_thread_local_connection();
+        let sessions = RefCell::new(Vec::new());
+        let open = |_: Option<&State>, _: Option<String>| {
+            let session = Arc::new(Mutex::new(Session {
+                script: script.iter().copied().collect(),
+                ..Session::default()
+            }));
+            sessions.borrow_mut().push(Arc::clone(&session));
+            Ok(Box::new(ScriptedConnection(session)) as Box<dyn Connection>)
+        };
+        let borrow = || {
+            borrow_tlocal_connection_impl(
+                engine.adapter_type(),
+                None,
+                None,
+                engine.fingerprint(),
+                open,
+            )
+            .unwrap()
+        };
+
+        let mut conn = borrow();
+        let mut result = Ok(());
+        for (node_id, sql) in calls {
+            let mut env = minijinja::Environment::new();
+            if let Some(node_id) = node_id {
+                env.add_global(
+                    "model",
+                    Value::from_serialize(BTreeMap::from([
+                        ("unique_id", *node_id),
+                        ("package_name", "test"),
+                        ("name", "test"),
+                    ])),
+                );
+            }
+            let state = State::new_for_env(&env);
+            result = adapter
+                .execute_inner(
+                    Arc::clone(&engine),
+                    Some(&state),
+                    &mut conn,
+                    &QueryCtx::new("test"),
+                    sql,
+                    true,
+                    true,
+                    None,
+                    None,
+                    CancellationToken::never_cancels(),
+                )
+                .map(|_| ());
+            if result.is_err() {
+                break;
+            }
+        }
+        drop(conn);
+        drop(borrow());
+        drop_thread_local_connection();
+
+        let sessions = sessions.into_inner();
+        let executed = sessions[0].lock().unwrap().executed.clone();
+        BridgeOutcome {
+            result,
+            executed,
+            reopened: sessions.len() == 2,
+        }
+    }
+
+    const LOST: Step = Step::Fail(b"08R06");
+
+    #[dbt_runtime::worker_test]
+    fn bridge_connection_error_discards_the_connection_without_a_rerun() {
+        for sqlstate in [b"08R06", b"08R07", b"08R01", b"08R00", b"08006"] {
+            let outcome = run_bridge(
+                snowflake_engine_with(true),
+                &[Step::Fail(sqlstate)],
+                &[(None, "select 1")],
+            );
+
+            let err = outcome.result.expect_err("the error must propagate");
+            assert_eq!(err.sqlstate().as_bytes(), sqlstate);
+            assert_eq!(outcome.executed, ["select 1"], "{sqlstate:?}");
+            assert!(outcome.reopened, "{sqlstate:?}");
+        }
+    }
+
+    #[dbt_runtime::worker_test]
+    fn bridge_error_without_a_sqlstate_keeps_the_connection() {
+        let outcome = run_bridge(
+            snowflake_engine_with(true),
+            &[Step::StreamFail],
+            &[(None, "select 1")],
+        );
+
+        let err = outcome.result.expect_err("the error must propagate");
+        assert_eq!(err.sqlstate(), "00000");
+        assert!(!outcome.reopened);
+    }
+
+    #[dbt_runtime::worker_test]
+    fn bridge_non_connection_errors_keep_the_connection() {
+        for sqlstate in [b"28R00", b"HYR00", b"XXR00", b"42000"] {
+            let outcome = run_bridge(
+                snowflake_engine_with(true),
+                &[Step::Fail(sqlstate)],
+                &[(None, "select 1")],
+            );
+
+            assert!(outcome.result.is_err(), "{sqlstate:?}");
+            assert!(!outcome.reopened, "{sqlstate:?}");
+        }
+    }
+
+    #[dbt_runtime::worker_test]
+    fn non_bridge_connection_error_keeps_the_connection() {
+        let outcome = run_bridge(snowflake_engine_with(false), &[LOST], &[(None, "select 1")]);
+
+        assert!(outcome.result.is_err());
+        assert!(!outcome.reopened);
+    }
+
+    #[dbt_runtime::worker_test]
+    fn bridge_failed_begin_discards_the_connection() {
+        let engine = redshift_engine_with(true, &[(USE_TRANSACTIONS, true)]);
+        let outcome = run_bridge(engine, &[LOST], &[(None, "select 1")]);
+
+        let err = outcome.result.expect_err("the error must propagate");
+        assert_eq!(err.sqlstate(), "08R06");
+        assert_eq!(outcome.executed, ["begin"]);
+        assert!(outcome.reopened);
+    }
+
+    #[dbt_runtime::worker_test]
+    fn bridge_failed_rollback_of_the_previous_node_discards_the_connection() {
+        let engine = redshift_engine_with(true, &[(USE_TRANSACTIONS, true)]);
+        let outcome = run_bridge(
+            engine,
+            &[Step::Ok, Step::Ok, LOST],
+            &[(Some("model.a"), "select 1"), (Some("model.b"), "select 2")],
+        );
+
+        let err = outcome.result.expect_err("the error must propagate");
+        assert_eq!(err.sqlstate(), "08R06");
+        assert_eq!(outcome.executed, ["begin", "select 1", "rollback"]);
+        assert!(outcome.reopened);
     }
 }

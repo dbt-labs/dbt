@@ -534,6 +534,34 @@ impl fmt::Display for AutofixLine {
     }
 }
 
+/// Reports how many occurrences of a pending-change warning were not shown on the terminal.
+pub struct FutureChangeLine<'s> {
+    pub code_name: &'s str,
+    /// Occurrences, shown or not.
+    pub total: u64,
+    /// Occurrences not shown.
+    pub hidden: u64,
+    pub colorize: bool,
+}
+
+impl fmt::Display for FutureChangeLine<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Self {
+            code_name,
+            total,
+            hidden,
+            ..
+        } = *self;
+        let note_label = MaybeColored::new(&BLUE, "note:", self.colorize);
+        let flag = MaybeColored::new(&YELLOW, "--show-all-deprecations", self.colorize);
+        let shown = total - hidden;
+        write!(
+            f,
+            "{note_label} {code_name} occurred {total} times; {shown} shown. The rest are in the log file. Run with '{flag}' to show all of them."
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -591,6 +619,21 @@ mod tests {
             .position(|line| line.contains(" Test Optimization "))?;
         let end = start + lines[start..].iter().position(String::is_empty)?;
         Some(lines[start..end].to_vec())
+    }
+
+    #[test]
+    fn future_change_line_reports_hidden_occurrences() {
+        let line = FutureChangeLine {
+            code_name: "MalformedBlockName",
+            total: 3,
+            hidden: 2,
+            colorize: false,
+        };
+        assert_eq!(
+            line.to_string(),
+            "note: MalformedBlockName occurred 3 times; 1 shown. The rest are in the log file. \
+             Run with '--show-all-deprecations' to show all of them."
+        );
     }
 
     #[test]

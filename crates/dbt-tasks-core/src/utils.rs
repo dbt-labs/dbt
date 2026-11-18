@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, HashMap},
+    io::Write,
     time::SystemTime,
 };
 
@@ -105,16 +106,12 @@ pub fn write_run_results_json(
 ) -> FsResult<()> {
     let run_results_path = arg.io.out_dir.join("run_results.json");
     let run_results_file = File::create(run_results_path)?;
-    // Serialize via dbt_yaml first so the `__other__` dunder-flatten field is
+    // Serialize through `dbt_yaml::AsValue` so the `__other__` dunder-flatten field is
     // flattened into the parent object (raw `serde_json` would emit it as a
     // literal nested `__other__` key, which the reader cannot interpret).
-    let yml_val = dbt_yaml::to_value(run_results_artifact).map_err(|e| {
-        dbt_common::fs_err!(
-            ErrorCode::SerializationError,
-            "Failed to serialize run_results: {e}"
-        )
-    })?;
-    serde_json::to_writer(run_results_file, &yml_val)?;
+    let mut writer = std::io::BufWriter::new(run_results_file);
+    serde_json::to_writer(&mut writer, &dbt_yaml::AsValue(run_results_artifact))?;
+    writer.flush()?;
     Ok(())
 }
 

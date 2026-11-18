@@ -77,6 +77,15 @@ fn cleanup_debug_propagation_probe_table(input: &str) -> String {
         .to_string()
 }
 
+/// Masks the volatile suffix in the BigQuery publication probe's table name
+/// (`__dbt_debug_publication_<nanos>`, `debug_propagation.rs`). Same reasoning
+/// as `cleanup_debug_probe_table` above.
+fn cleanup_debug_publication_probe_table(input: &str) -> String {
+    let re = Regex::new(r"__dbt_debug_publication_\d+").unwrap();
+    re.replace_all(input, "__dbt_debug_publication_MASKED_ID")
+        .to_string()
+}
+
 fn cleanup_query_comment_dbt_version(input: &str) -> String {
     let re = Regex::new(r#""dbt_version"\s*:\s*"[^"]*""#).unwrap();
     re.replace_all(input, r#""dbt_version": "DBT_VERSION""#)
@@ -91,6 +100,7 @@ fn checksum8(input: &str) -> String {
     let input = cleanup_exchange_probe_tables(&input);
     let input = cleanup_debug_probe_table(&input);
     let input = cleanup_debug_propagation_probe_table(&input);
+    let input = cleanup_debug_publication_probe_table(&input);
     let input = cleanup_query_comment_dbt_version(&input);
     let mut hasher = DefaultHasher::new();
     input.hash(&mut hasher);

@@ -304,7 +304,7 @@ pub(crate) fn abstract_tokenize(tokens: Vec<Token>) -> Vec<AbstractToken> {
                     maybe_hash: false,
                 }));
             }
-            index = skip_wrapper_alias(&tokens, index + 2, &mut abstract_tokens);
+            index += 2;
         } else {
             abstract_tokens.push(AbstractToken::Token(token.clone()));
             index += 1;
@@ -312,55 +312,6 @@ pub(crate) fn abstract_tokenize(tokens: Vec<Token>) -> Vec<AbstractToken> {
     }
 
     abstract_tokens
-}
-
-/// Skip the derived-table alias (`as <model_name>`) that ends the ephemeral select wrapper.
-/// Return the index of the first token after the alias.
-///
-/// `tokenize` splits identifiers at `_` and drops whitespace, so an alias is word tokens
-/// joined by `_` tokens. Characters after the identifier in its last token, such as `;`,
-/// are kept.
-fn skip_wrapper_alias(
-    tokens: &[Token],
-    mut index: usize,
-    abstract_tokens: &mut Vec<AbstractToken>,
-) -> usize {
-    if !tokens
-        .get(index)
-        .is_some_and(|t| t.value.eq_ignore_ascii_case("as"))
-    {
-        return index;
-    }
-    index += 1;
-    let is_ident_char = |c: char| c.is_ascii_alphanumeric() || matches!(c, '"' | '`' | '[' | ']');
-    let mut expect_word = true;
-    while let Some(token) = tokens.get(index) {
-        if token.matches("_") {
-            index += 1;
-            expect_word = true;
-            continue;
-        }
-        if !expect_word {
-            break;
-        }
-        let ident_len = token
-            .value
-            .find(|c| !is_ident_char(c))
-            .unwrap_or(token.value.len());
-        if ident_len == 0 {
-            break;
-        }
-        index += 1;
-        if ident_len < token.value.len() {
-            abstract_tokens.push(AbstractToken::Token(Token {
-                value: token.value[ident_len..].to_string(),
-                maybe_hash: false,
-            }));
-            break;
-        }
-        expect_word = false;
-    }
-    index
 }
 
 #[cfg(test)]

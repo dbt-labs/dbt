@@ -1,7 +1,8 @@
-use std::{collections::HashMap, sync::LazyLock};
+use std::{borrow::Cow, collections::HashMap, sync::LazyLock};
 
 use crate::AdapterType;
 use chrono::{DateTime, NaiveDateTime};
+use dbt_common::adapter::dialect_of;
 use dbt_common::{AdapterError, AdapterErrorKind, AdapterResult};
 use dbt_frontend_common::Dialect;
 use dbt_sql_utils::{SqlToken as DialectToken, sql_lex_tokens, sql_split_statements};
@@ -34,6 +35,8 @@ pub fn compare_sql(actual: &str, expected: &str, adapter_type: AdapterType) -> A
     // Canonicalize ignorable differences first
     let actual = canonicalize_query_tag(actual);
     let expected = canonicalize_query_tag(expected);
+    let actual = canonicalize_ephemeral_wrapper_alias(&actual, adapter_type).into_owned();
+    let expected = canonicalize_ephemeral_wrapper_alias(&expected, adapter_type).into_owned();
     let actual = canonicalize_to_json_string_struct_field_order(&actual);
     let expected = canonicalize_to_json_string_struct_field_order(&expected);
     let actual = canonicalize_last_value_projection_order(&actual);
@@ -2145,6 +2148,58 @@ fn canonicalize_run_started_at_literal(sql: &str) -> String {
         .to_string()
 }
 
+/// Remove the derived-table alias (`as <model_name>`) that ends the ephemeral select wrapper, so
+/// recordings made before the alias existed still match.
+///
+/// The alias is removed only where the dialect lexer finds `)`, `as` and an identifier right
+/// after the `--EPHEMERAL-SELECT-WRAPPER-END` comment. Other SQL is not changed.
+pub(crate) fn canonicalize_ephemeral_wrapper_alias(
+    sql: &str,
+    adapter_type: AdapterType,
+) -> Cow<'_, str> {
+    const MARKER: &str = "--EPHEMERAL-SELECT-WRAPPER-END";
+    if !sql.contains(MARKER) {
+        return Cow::Borrowed(sql);
+    }
+    let dialect = dialect_of(adapter_type).unwrap_or(Dialect::Trino);
+    let Some(tokens) = sql_lex_tokens(sql, dialect) else {
+        return Cow::Borrowed(sql);
+    };
+    // `SqlToken::end` can point inside a multi-byte last character; the text length cannot.
+    let token_end = |token: &DialectToken| token.start + token.text.len();
+    let is_identifier = |token: &DialectToken| {
+        token
+            .text
+            .starts_with(|c: char| c.is_alphanumeric() || matches!(c, '_' | '"' | '`' | '['))
+    };
+
+    let mut alias_spans = Vec::new();
+    for (index, window) in tokens.windows(3).enumerate() {
+        let [paren, as_keyword, alias] = window else {
+            continue;
+        };
+        if paren.text != ")" || !as_keyword.text.eq_ignore_ascii_case("as") || !is_identifier(alias)
+        {
+            continue;
+        }
+        // The lexer drops comments, so the text between two tokens holds only comments and
+        // whitespace.
+        let gap_start = index.checked_sub(1).map_or(0, |i| token_end(&tokens[i]));
+        if sql[gap_start..paren.start].trim_end().ends_with(MARKER) {
+            alias_spans.push(token_end(paren)..token_end(alias));
+        }
+    }
+    if alias_spans.is_empty() {
+        return Cow::Borrowed(sql);
+    }
+
+    let mut canonical = sql.to_string();
+    for span in alias_spans.into_iter().rev() {
+        canonical.replace_range(span, "");
+    }
+    Cow::Owned(canonical)
+}
+
 /// Replace the upper bound of the reported Snowflake temporary-view timestamp predicate when it
 /// equals the compact form of the statement's aliased `dbt_run_started_at` value.
 fn canonicalize_compact_timestamp_predicate(sql: &str, adapter_type: AdapterType) -> String {
@@ -2535,16 +2590,38 @@ fn canonicalize_quoted_timestamp_space_separator(sql: &str) -> String {
     RE.replace_all(sql, "'${1}T${2}${3}'").to_string()
 }
 
-/// Replace dynamic tmp suffixes produced by some packages (e.g., elementary) that append
-/// utc.now()-like timestamps to temporary table names, such as:
-///   dbt_sources__tmp_20251203160139043240  ->  dbt_sources__tmp_TIMESTAMP
-fn canonicalize_elementary_tmp_suffix(sql: &str) -> String {
-    // Case-insensitive; match "__tmp_" followed by a long digit run (timestamps/unique suffixes)
-    // Scope it to a plausible leading year 2000-2100 to avoid over-matching.
-    // Example matched: "__tmp_20251203160139043240"
-    static RE: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"(?i)(__tmp_)(?:20[0-9]{2}|2100)\d{8,}").unwrap());
-    RE.replace_all(sql, "${1}TIMESTAMP").to_string()
+/// Match `__tmp_` and the full digit run after it. `is_elementary_tmp_timestamp` checks the run.
+static ELEMENTARY_TMP_DIGITS_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)(__tmp_)([0-9]+)").unwrap());
+
+/// True if `digits` has the shape of an Elementary temporary-relation timestamp.
+///
+/// Elementary's `get_timestamped_table_suffix` writes `%Y%m%d%H%M%S%f` (20 digits). On BigQuery
+/// and Postgres, the dbt temp-relation macro adds `%H%M%S%f` (32 digits in total). Fusion before
+/// v2.0.0-preview.216 wrote a 9-digit `%f`, which gives 23 and 38 digits. The year must be from
+/// 2000 to 2100.
+fn is_elementary_tmp_timestamp(digits: &str) -> bool {
+    matches!(digits.len(), 20 | 23 | 32 | 38)
+        && matches!(digits[..4].parse::<u16>(), Ok(2000..=2100))
+}
+
+pub(crate) fn has_elementary_tmp_suffix(value: &str) -> bool {
+    ELEMENTARY_TMP_DIGITS_RE
+        .captures_iter(value)
+        .any(|caps| is_elementary_tmp_timestamp(&caps[2]))
+}
+
+/// Replace an exact Elementary temporary-relation timestamp with a stable marker.
+pub(crate) fn canonicalize_elementary_tmp_suffix(sql: &str) -> String {
+    ELEMENTARY_TMP_DIGITS_RE
+        .replace_all(sql, |caps: &regex::Captures<'_>| {
+            if is_elementary_tmp_timestamp(&caps[2]) {
+                format!("{}TIMESTAMP", &caps[1])
+            } else {
+                caps[0].to_string()
+            }
+        })
+        .into_owned()
 }
 
 /// Canonicalize dbt test temp relation identifiers that may differ between recorders/runners.
@@ -4485,9 +4562,66 @@ select id from __dbt__cte__base;
         let actual = recorded.replace("\n);", "\n) as my_model;");
         let result = compare_sql(&actual, recorded, AdapterType::Databricks);
         assert!(result.is_ok(), "Should match: alias before semicolon");
+        // `compare_sql` ignores one trailing semicolon, so remove one between two statements.
+        let recorded = format!("{recorded}\nselect 2");
         let actual = recorded.replace("\n);", "\n) as my_model");
-        let result = compare_sql(&actual, recorded, AdapterType::Databricks);
+        let result = compare_sql(&actual, &recorded, AdapterType::Databricks);
         assert!(result.is_err(), "Should not match: semicolon removed");
+    }
+
+    #[test]
+    fn test_canonicalize_ephemeral_wrapper_alias() {
+        let wrapped = |wrapper_end: &str| {
+            format!(
+                "select * from (\nselect id from base\n--EPHEMERAL-SELECT-WRAPPER-END\n{wrapper_end}\nwhere true"
+            )
+        };
+        for adapter_type in [
+            AdapterType::Snowflake,
+            AdapterType::Redshift,
+            AdapterType::Bigquery,
+            AdapterType::Databricks,
+            AdapterType::Postgres,
+        ] {
+            for alias in ["my_model", "MY_MODEL", "\"Quoted Model\"", "`quoted_model`"] {
+                if alias.starts_with('`')
+                    && matches!(adapter_type, AdapterType::Redshift | AdapterType::Postgres)
+                {
+                    continue;
+                }
+                let actual = wrapped(&format!(") AS {alias}"));
+                assert_eq!(
+                    canonicalize_ephemeral_wrapper_alias(&actual, adapter_type),
+                    wrapped(")"),
+                    "{adapter_type}: alias {alias}"
+                );
+            }
+            assert_eq!(
+                canonicalize_ephemeral_wrapper_alias(&wrapped(") as my_model;"), adapter_type),
+                wrapped(");"),
+                "{adapter_type}: semicolon is kept"
+            );
+        }
+    }
+
+    #[test]
+    fn test_canonicalize_ephemeral_wrapper_alias_needs_marker_comment() {
+        for sql in [
+            // No marker.
+            "select * from (\nselect id from base\n) as my_model",
+            // Another comment before the `)`.
+            "select * from (\nselect id from base\n-- EPHEMERAL-SELECT-WRAPPER-END\n) as my_model",
+            // The marker text is in a string literal, not in a comment.
+            "select * from (\nselect '--EPHEMERAL-SELECT-WRAPPER-END' as id\n) as my_model",
+            // The marker is not directly before the `)`.
+            "select * from (\nselect id from base\n--EPHEMERAL-SELECT-WRAPPER-END\nwhere true\n) as my_model",
+        ] {
+            assert_eq!(
+                canonicalize_ephemeral_wrapper_alias(sql, AdapterType::Snowflake),
+                sql,
+                "{sql}"
+            );
+        }
     }
 
     #[test]
@@ -4729,6 +4863,32 @@ as (
         assert!(
             result.is_ok(),
             "Dynamic tmp suffixes starting with a plausible year should be ignored"
+        );
+    }
+
+    /// BigQuery and Postgres temp relations add `%H%M%S%f` after the Elementary timestamp: 32
+    /// digits, or 38 in legacy Fusion recordings.
+    #[test]
+    fn test_compare_sql_elementary_tmp_suffix_with_adapter_time_suffix() {
+        let sql = |digits: &str| {
+            format!(
+                "insert into proj.elementary.dbt_sources select * from proj.elementary.dbt_sources__tmp_{digits}"
+            )
+        };
+        let replayed = sql("20240102030405123456010203123456");
+        for recorded in [
+            "20240101000000000000000000000000",
+            "20240101000000000000000000000000000000",
+        ] {
+            assert!(compare_sql(&sql(recorded), &replayed, AdapterType::Bigquery).is_ok());
+        }
+        assert!(
+            compare_sql(
+                &sql("202401010000000000000000000000000"),
+                &replayed,
+                AdapterType::Bigquery
+            )
+            .is_err()
         );
     }
 

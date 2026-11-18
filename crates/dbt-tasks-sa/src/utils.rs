@@ -669,6 +669,9 @@ pub fn filter_missing_schemas(
             {
                 return Err(err);
             }
+            // Bridge couldn't run the check, so it says nothing about which
+            // schemas exist; creating them all would fail the same way.
+            Err(err) if err.is_bridge() => return Err(err),
             Err(_) => {
                 missing_catalog_schemas.extend(schemas.iter().map(|(schema, unique_id)| {
                     (catalog.clone(), schema.clone(), unique_id.clone())

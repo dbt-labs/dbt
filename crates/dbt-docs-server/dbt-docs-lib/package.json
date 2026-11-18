@@ -65,7 +65,7 @@
     "remark-gfm": "^4.0.1",
     "shiki": "^4.4.3",
     "tailwind-merge": "^2.2.1",
-    "zod": "^4.6.5",
+    "zod": "^4.6.7",
     "zustand": "^5.0.15"
   },
   "peerDependencies": {
@@ -74,11 +74,11 @@
   },
   "devDependencies": {
     "@duckdb/duckdb-wasm": "^1.32.0",
-    "@storybook/addon-a11y": "10.5.10",
-    "@storybook/addon-docs": "10.5.10",
-    "@storybook/addon-themes": "10.5.10",
-    "@storybook/addon-vitest": "10.5.10",
-    "@storybook/react-vite": "10.5.10",
+    "@storybook/addon-a11y": "10.6.7",
+    "@storybook/addon-docs": "10.6.7",
+    "@storybook/addon-themes": "10.6.7",
+    "@storybook/addon-vitest": "10.6.7",
+    "@storybook/react-vite": "10.6.7",
     "@tailwindcss/forms": "^0.5.7",
     "@tailwindcss/vite": "^4.3.3",
     "@testing-library/jest-dom": "^6.9.1",
@@ -89,16 +89,16 @@
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.7",
     "@vitejs/plugin-react": "^4.4.0",
-    "@vitest/browser": "3.2.7",
-    "@vitest/runner": "3.2.7",
-    "happy-dom": "^16.8.1",
+    "@vitest/browser": "4.1.12",
+    "@vitest/browser-playwright": "4.1.12",
+    "happy-dom": "^21.0.4",
     "playwright": "1.56.1",
-    "storybook": "10.5.10",
+    "storybook": "10.6.7",
     "tailwindcss": "^3.4.0",
     "typescript": "5.9.2",
     "unplugin-dts": "^1.1.1",
-    "vite": "^6.3.3",
-    "vitest": "^3.0.9",
-    "vite-plugin-lib-inject-css": "^2.2.2"
+    "vite": "^6.4.6",
+    "vite-plugin-lib-inject-css": "^2.2.2",
+    "vitest": "^4.1.12"
   }
 }

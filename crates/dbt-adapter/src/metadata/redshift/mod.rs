@@ -1,9 +1,11 @@
 use crate::adapter::adapter_impl::{AdapterImpl, get_bool_config, quote_ident};
 use crate::connection::{AdapterConnectionFactory, ConnectionGuard};
 use crate::errors::*;
+use crate::metadata::freshness_overrides::{partition_override_relations, run_override_targets};
 use crate::metadata::*;
 use crate::relation::Relation;
 use crate::sql_types::make_arrow_field_v2;
+use crate::time_machine::{args_freshness_with_overrides, with_time_machine_metadata_wrapper};
 use crate::{AdapterEngine, AdapterResult};
 use arrow::array::*;
 use arrow::compute::concat_batches;
@@ -13,7 +15,7 @@ use dbt_adapter_core::{AdapterType, ExecutionPhase};
 use dbt_adapter_engine::MapReduce;
 use dbt_adapter_engine::cow::uppercase;
 use dbt_adapter_engine::record_batch::RecordBatchExt;
-use dbt_adapter_sql::ident::escape_string_literal;
+use dbt_adapter_sql::literal::escape_string_literal;
 use dbt_adbc::*;
 use dbt_common::cancellation::Cancellable;
 use dbt_common::cancellation::CancellationToken;
@@ -918,6 +920,36 @@ impl RedshiftMetadataAdapter {
         let adapter = AdapterImpl::new(engine, None);
         Self { adapter }
     }
+
+    /// Relations without an override use `freshness_inner`. Each override runs
+    /// one targeted query, in parallel.
+    fn freshness_with_overrides_impl<'a>(
+        &'a self,
+        relations: &'a [Arc<dyn BaseRelation>],
+        overrides: &'a BTreeMap<String, FreshnessOverride>,
+        token: CancellationToken,
+    ) -> AsyncAdapterResult<'a, BTreeMap<String, MetadataFreshness>> {
+        if overrides.is_empty() {
+            return self.freshness_inner(relations, token);
+        }
+
+        let (bulk_relations, override_targets) = partition_override_relations(relations, overrides);
+        let bulk = (!bulk_relations.is_empty())
+            .then(|| self.freshness_inner(&bulk_relations, token.clone()));
+        let override_freshness = run_override_targets(&self.adapter, override_targets, token);
+
+        // Run the bulk pass and then the override pass, not both with `join!`.
+        // Each MapReduce can open up to `max_parallelism` connections, so two
+        // passes at the same time could open twice as many on the cluster.
+        Box::pin(async move {
+            let mut freshness = match bulk {
+                Some(bulk) => bulk.await?,
+                None => BTreeMap::new(),
+            };
+            freshness.extend(override_freshness.await?);
+            Ok(freshness)
+        })
+    }
 }
 
 impl MetadataAdapter for RedshiftMetadataAdapter {
@@ -1436,6 +1468,24 @@ impl MetadataAdapter for RedshiftMetadataAdapter {
     ) -> AsyncAdapterResult<'_, BTreeMap<String, MetadataFreshness>> {
         let strategy = RedshiftFreshnessStrategy::new(self.adapter.clone());
         strategy.run(relations, token)
+    }
+
+    fn freshness_with_overrides<'a>(
+        &'a self,
+        relations: &'a [Arc<dyn BaseRelation>],
+        overrides: &'a BTreeMap<String, FreshnessOverride>,
+        token: CancellationToken,
+    ) -> AsyncAdapterResult<'a, BTreeMap<String, MetadataFreshness>> {
+        with_time_machine_metadata_wrapper(
+            "global",
+            "freshness_with_overrides",
+            args_freshness_with_overrides(
+                relations.iter().map(|r| r.semantic_fqn()),
+                overrides,
+                None,
+            ),
+            self.freshness_with_overrides_impl(relations, overrides, token),
+        )
     }
 
     fn fetch_view_definitions_inner<'a>(

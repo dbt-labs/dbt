@@ -830,6 +830,31 @@ impl AdapterImpl {
         sql: &str,
         auto_begin: bool,
         fetch: bool,
+        limit: Option<i64>,
+        options: Option<ExecuteOptions>,
+        token: CancellationToken,
+    ) -> AdapterResult<(AdapterResponse, AgateTable)> {
+        let bridge = engine.get_config().use_dbt_cloud_credentials();
+        let result = self.execute_statements(
+            engine, state, conn, ctx, sql, auto_begin, fetch, limit, options, token,
+        );
+        if bridge && let Err(err) = &result {
+            conn.discard_on_bridge_error(err);
+        }
+        result
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[inline(always)]
+    fn execute_statements(
+        &self,
+        engine: Arc<dyn AdapterEngine>,
+        state: Option<&State>,
+        conn: &mut ConnectionGuard<'_>,
+        ctx: &QueryCtx,
+        sql: &str,
+        auto_begin: bool,
+        fetch: bool,
         _limit: Option<i64>,
         options: Option<ExecuteOptions>,
         token: CancellationToken,

@@ -27,6 +27,7 @@ use crate::storage::sqlite::SqliteHandler;
 const RECORDED_STATEMENT_OPTIONS: &[&str] = &[
     dbt_adbc::lake_compute::LAST_WARNINGS,
     dbt_adbc::lake_compute::LAST_QUERY_ID,
+    dbt_adbc::clickhouse::QUERY_ID,
 ];
 
 /// Read [`RECORDED_STATEMENT_OPTIONS`] off `stmt`, keeping only the ones it

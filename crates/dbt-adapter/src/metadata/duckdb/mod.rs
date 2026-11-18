@@ -332,7 +332,7 @@ fn list_relations_sql(quoting: ResolvedQuoting, db_schema: &CatalogAndSchema) ->
         // is needed here (unlike the schema predicate).
         format!(
             " AND lower(table_catalog) = lower('{}')",
-            dbt_adapter_sql::ident::escape_string_literal(
+            dbt_adapter_sql::literal::escape_string_literal(
                 &db_schema.resolved_catalog,
                 AdapterType::DuckDB
             ),
@@ -343,7 +343,7 @@ fn list_relations_sql(quoting: ResolvedQuoting, db_schema: &CatalogAndSchema) ->
         "SELECT table_catalog, table_schema, table_name, table_type \
          FROM information_schema.tables \
          WHERE table_schema = '{}'{}",
-        dbt_adapter_sql::ident::escape_string_literal(&query_schema, AdapterType::DuckDB),
+        dbt_adapter_sql::literal::escape_string_literal(&query_schema, AdapterType::DuckDB),
         catalog_predicate,
     )
 }

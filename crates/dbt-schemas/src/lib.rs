@@ -251,7 +251,7 @@ pub mod schemas {
         pub use function_properties::{
             FUNCTION_LANGUAGE_JAVASCRIPT, FUNCTION_LANGUAGE_PYTHON, FUNCTION_LANGUAGE_SQL,
             FunctionArgument, FunctionKind, FunctionOverload, FunctionProperties,
-            FunctionReturnType, Volatility,
+            FunctionReturnType, Volatility, is_any_type,
         };
         pub use metrics_properties::MetricsProperties;
         pub use model_properties::DataTestState;

@@ -53,8 +53,6 @@ use dbt_schemas::schemas::{CommonAttributes, ContextRunResult};
 use dbt_schemas::state::ResolverState;
 use dbt_schemas::stats::Stats;
 
-use self::context::TaskRunnerCtx;
-
 /// Per-node data returned by pre-run hooks.
 pub trait PreTaskRunData: Send + Sync {
     /// Returns a value for `node_id`, or `None` if not present.
@@ -194,6 +192,5 @@ pub struct RunTaskResults {
     pub showables: Vec<Box<dyn ShowableResults>>,
     pub jinja_env: Arc<JinjaEnv>,
     pub resolved_state: Arc<ResolverState>,
-    pub task_runner_ctx: Option<TaskRunnerCtx>,
     pub preview: Option<Result<Preview, String>>,
 }

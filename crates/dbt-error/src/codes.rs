@@ -1,5 +1,5 @@
 // use serde_repr::{Deserialize_repr, Serialize_repr};
-use std::{collections::HashMap, fmt::Display};
+use std::{collections::HashMap, fmt::Display, num::NonZeroU32};
 
 use dbt_proc_macros::DebugNoInline;
 use dbt_proc_macros::include_frontend_error_codes;
@@ -191,6 +191,10 @@ pub enum ErrorCode {
     LakeComputeUnitTestOnDefaultAdapter = 1163,
     /// An inline `config(adapter=...)` changed a node's adapter after its parse render.
     InlineAdapterParseTargetMismatch = 1164,
+    /// A project function declares no return type (BigQuery infers it from
+    /// the body), and analysis could not bind its body to infer one, so calls
+    /// to it cannot be typed.
+    FunctionReturnTypeNotInferred = 1167,
 
     // Network/HTTP [1200–1249]
     NetworkError = 1200,
@@ -228,6 +232,16 @@ pub enum ErrorCode {
     /// Waiting for a Databricks materialized view or streaming table refresh to finish reached
     /// its cap; its config is read anyway.
     DbRefreshWaitTimeoutWarning = 1314,
+    /// The Bridge service can't be reached right now (SQLSTATE `08R01`).
+    BridgeUnavailable = 1315,
+    /// The Bridge session or connection ended before the call ran (SQLSTATE `08R?6`).
+    BridgeSessionLost = 1316,
+    /// The Bridge session or connection ended while the call may have run (SQLSTATE `08R?7`).
+    BridgeOutcomeUnknown = 1317,
+    /// Bridge can't use the project's connection settings (SQLSTATE `HYR00`).
+    BridgeConfig = 1318,
+    /// The Bridge service failed internally (SQLSTATE `XXR*`).
+    BridgeInternal = 1319,
 
     // Execution/runtime [1400–1449]
     PlannerFailed = 1400,
@@ -258,6 +272,10 @@ pub enum ErrorCode {
     /// no longer matched the owner that ran it; a reclaim already overwrote
     /// it, so the write would have clobbered the new owner's own result.
     StateStopRejected = 1414,
+    /// A unit test running under local compute calls a project function that
+    /// local compute cannot execute (a non-SQL language, a non-scalar kind,
+    /// overloads, or dependencies on other functions or relations).
+    LocalFunctionUnsupported = 1418,
 
     // Serialization [1450–1460]
     JsonInvalid = 1450,
@@ -454,6 +472,11 @@ pub enum ErrorCode {
     UnsupportedLocalExecutionDialect = 2001,
 
     // --------------------------------------------------------------------------------------------
+    // Future changes
+    /// Shared by every behavior that may change in a future release and has no code of its own.
+    FutureIncompatibility = 2100,
+
+    // --------------------------------------------------------------------------------------------
     // Error processing an .slt file
     SltParse = 3000,
     SltLimits = 3001,
@@ -560,7 +583,94 @@ impl ErrorCode {
                 | ErrorCode::DbNotFound
                 | ErrorCode::DbUnsupportedFeature
                 | ErrorCode::DbDriverFailed
+                | ErrorCode::BridgeUnavailable
+                | ErrorCode::BridgeSessionLost
+                | ErrorCode::BridgeOutcomeUnknown
+                | ErrorCode::BridgeConfig
+                | ErrorCode::BridgeInternal
                 | ErrorCode::ExecutorFailed
+        )
+    }
+
+    /// Set if this code is reported as a warning now and planned to become an error.
+    pub const fn future_error(&self) -> Option<FutureError> {
+        match self {
+            // Each warning names a different path the user must act on, so none is hidden.
+            ErrorCode::CleanTargetOutsideProject => Some(FutureError {
+                issue: const { TrackingIssue::new(16929) },
+                delivery: Delivery::Every,
+            }),
+            ErrorCode::MalformedBlockName => Some(FutureError {
+                issue: const { TrackingIssue::new(16956) },
+                delivery: Delivery::FirstThenSummary,
+            }),
+            ErrorCode::DepsDuplicatePackage => Some(FutureError {
+                issue: const { TrackingIssue::new(16957) },
+                delivery: Delivery::FirstThenSummary,
+            }),
+            _ => None,
+        }
+    }
+}
+
+/// An issue in the public dbt-labs/dbt repository.
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub struct TrackingIssue(NonZeroU32);
+
+impl TrackingIssue {
+    /// Panics on 0. Construct in a `const` block so that fails the build.
+    pub const fn new(number: u32) -> Self {
+        match NonZeroU32::new(number) {
+            Some(number) => Self(number),
+            None => panic!("tracking issue must be a real issue number"),
+        }
+    }
+
+    pub const fn number(self) -> u32 {
+        self.0.get()
+    }
+}
+
+/// Displays as the issue URL.
+impl Display for TrackingIssue {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "https://github.com/dbt-labs/dbt/issues/{}", self.0)
+    }
+}
+
+/// How often a pending change is shown on the terminal in one invocation.
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum Delivery {
+    /// The first occurrence, then a count in the invocation summary.
+    FirstThenSummary,
+    /// Every occurrence.
+    Every,
+}
+
+/// A code reported as a warning by `emit_future_change` and planned to become an error.
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub struct FutureError {
+    pub issue: TrackingIssue,
+    pub delivery: Delivery,
+}
+
+impl FutureError {
+    /// The sentence appended to the warning, with a leading space.
+    pub(crate) fn notice(self) -> FutureErrorNotice {
+        FutureErrorNotice(self.issue)
+    }
+}
+
+/// Says a warning will become an error, and links its tracking issue.
+#[derive(Debug, Copy, Clone)]
+pub(crate) struct FutureErrorNotice(TrackingIssue);
+
+impl Display for FutureErrorNotice {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(
+            f,
+            " This will become an error in a future release. See {}",
+            self.0
         )
     }
 }
@@ -635,7 +745,25 @@ impl Default for Warnings {
 
 #[cfg(test)]
 mod tests {
-    use super::ErrorCode;
+    use super::{ErrorCode, TrackingIssue};
+
+    /// `warn_error_options` lets users name `FutureIncompatibility` by number, so the number is
+    /// permanent. If this fails, you renumbered it; put it back.
+    #[test]
+    fn future_incompatibility_code_is_pinned() {
+        assert_eq!(
+            ErrorCode::FutureIncompatibility.name_and_code(),
+            "FutureIncompatibility (dbt2100)"
+        );
+    }
+
+    #[test]
+    fn tracking_issue_url_points_at_public_repo() {
+        assert_eq!(
+            TrackingIssue::new(16929).to_string(),
+            "https://github.com/dbt-labs/dbt/issues/16929"
+        );
+    }
 
     #[test]
     fn state_service_warn_renders_name_and_code() {
@@ -674,6 +802,22 @@ mod tests {
         assert_eq!(
             ErrorCode::StateStopRejected.name_and_code(),
             "StateStopRejected (dbt1414)"
+        );
+    }
+
+    #[test]
+    fn function_return_type_not_inferred_renders_name_and_code() {
+        assert_eq!(
+            ErrorCode::FunctionReturnTypeNotInferred.name_and_code(),
+            "FunctionReturnTypeNotInferred (dbt1167)"
+        );
+    }
+
+    #[test]
+    fn local_function_unsupported_renders_name_and_code() {
+        assert_eq!(
+            ErrorCode::LocalFunctionUnsupported.name_and_code(),
+            "LocalFunctionUnsupported (dbt1418)"
         );
     }
 }

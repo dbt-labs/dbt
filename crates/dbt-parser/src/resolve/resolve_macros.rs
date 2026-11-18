@@ -4,7 +4,10 @@ use dbt_common::FsResult;
 use dbt_common::io_args::IoArgs;
 use dbt_common::path::{DbtPath, resource_extension};
 use dbt_common::stdfs::diff_paths;
-use dbt_common::tracing::dbt_emit::{emit_warn_log_from_fs_error, emit_warn_log_message};
+use dbt_common::tracing::dbt_emit::{
+    emit_compatibility_probe, emit_warn_log_from_fs_error, emit_warn_log_message,
+};
+use dbt_common::tracing::dbt_metrics::NamedProbe;
 use dbt_common::tracing::event_info::store_event_attributes;
 use dbt_common::tracing::span_info::record_span_status;
 use dbt_common::{err, fs_err};
@@ -654,6 +657,86 @@ pub fn typecheck_macros(
     Ok(())
 }
 
+/// Internal macros that dbt's documentation tells users to override.
+const DOCUMENTED_OVERRIDE_HOOKS: [&str; 3] = [
+    "generate_schema_name",
+    "generate_alias_name",
+    "generate_database_name",
+];
+
+/// The macro name without a dispatch prefix: `default__foo` -> `foo`.
+fn undispatched_name(macro_name: &str) -> &str {
+    macro_name
+        .split_once("__")
+        .map_or(macro_name, |(_, rest)| rest)
+}
+
+/// True for macros whose override is expected or already reported elsewhere:
+/// the documented hooks (and their dispatched variants), and the `unit`
+/// materialization / `get_unit_test_sql`, which dbt never calls
+/// (`UnitTestMacroOverrideIgnored` covers those).
+fn is_exempt_override(macro_name: &str) -> bool {
+    let name = undispatched_name(macro_name);
+    DOCUMENTED_OVERRIDE_HOOKS.contains(&name)
+        || name == "get_unit_test_sql"
+        || macro_name.starts_with("materialization_unit_")
+}
+
+/// Emit [`NamedProbe::InternalMacroOverride`] once for each root-project macro
+/// that overrides an internal dbt or adapter macro.
+///
+/// dbt searches the root project before the internal packages, so such a macro
+/// replaces the internal one everywhere, including in calls dbt makes itself.
+/// `dbt_and_adapters_namespaces` is the `dialect -> (macro_name -> package)`
+/// map published as `DBT_AND_ADAPTERS_NAMESPACE`.
+pub fn probe_internal_macro_overrides(
+    macros: &BTreeMap<String, DbtMacro>,
+    root_package_name: &str,
+    dbt_and_adapters_namespaces: &minijinja::value::ValueMap,
+) {
+    let namespaces = dialect_namespaces(dbt_and_adapters_namespaces);
+    for dbt_macro in macros.values() {
+        if is_internal_macro_override(dbt_macro, root_package_name, &namespaces) {
+            emit_compatibility_probe(NamedProbe::InternalMacroOverride);
+        }
+    }
+}
+
+/// The per-dialect `macro_name -> package` maps of `DBT_AND_ADAPTERS_NAMESPACE`.
+fn dialect_namespaces(
+    dbt_and_adapters_namespaces: &minijinja::value::ValueMap,
+) -> Vec<Arc<minijinja::value::ValueMap>> {
+    dbt_and_adapters_namespaces
+        .values()
+        .filter_map(|v| v.clone().downcast_object::<minijinja::value::ValueMap>())
+        .collect()
+}
+
+/// True if `dbt_macro` is in the root project and shadows an internal macro in
+/// any served dialect. Dependency packages are not checked: their macros only
+/// override inside that package, and the user can't edit them.
+fn is_internal_macro_override(
+    dbt_macro: &DbtMacro,
+    root_package_name: &str,
+    namespaces: &[Arc<minijinja::value::ValueMap>],
+) -> bool {
+    if dbt_macro.package_name != root_package_name
+        || !dbt_macro.unique_id.starts_with("macro.")
+        || is_exempt_override(&dbt_macro.name)
+    {
+        return false;
+    }
+    let name = MinijinjaValue::from(dbt_macro.name.as_str());
+    namespaces.iter().any(|namespace| {
+        namespace
+            .get(&name)
+            .and_then(|p| p.as_str())
+            // The root project can itself be an internal package
+            // (e.g. when developing an adapter's macros).
+            .is_some_and(|package| package != root_package_name)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1133,5 +1216,165 @@ select 1 as id, current_timestamp as updated_at
         assert!(!jinja_env.is_introspective_macro("macro.pkg.plain"));
 
         Ok(())
+    }
+
+    mod internal_macro_overrides {
+        use super::super::{dialect_namespaces, is_internal_macro_override};
+        use dbt_common::path::DbtPath;
+        use dbt_schemas::schemas::macros::DbtMacro;
+        use minijinja::Value;
+        use minijinja::value::ValueMap;
+        use std::collections::BTreeMap;
+        use std::path::PathBuf;
+
+        const ROOT: &str = "my_project";
+
+        /// Names of the macros `probe_internal_macro_overrides` emits a probe for.
+        fn overrides<'a>(
+            macros: &'a BTreeMap<String, DbtMacro>,
+            root: &str,
+            ns: &ValueMap,
+        ) -> Vec<&'a str> {
+            let namespaces = dialect_namespaces(ns);
+            macros
+                .values()
+                .filter(|m| is_internal_macro_override(m, root, &namespaces))
+                .map(|m| m.name.as_str())
+                .collect()
+        }
+
+        fn dbt_macro(package: &str, name: &str) -> (String, DbtMacro) {
+            let unique_id = format!("macro.{package}.{name}");
+            let path = DbtPath::from(PathBuf::from(format!("macros/{name}.sql")));
+            let dbt_macro = DbtMacro {
+                name: name.to_string(),
+                package_name: package.to_string(),
+                path: path.clone(),
+                original_file_path: path,
+                unique_id: unique_id.clone(),
+                ..Default::default()
+            };
+            (unique_id, dbt_macro)
+        }
+
+        /// `dialect -> (macro_name -> package)`, as the environment builder publishes it.
+        fn namespaces(entries: &[(&str, &[(&str, &str)])]) -> ValueMap {
+            let mut outer = ValueMap::new();
+            for (dialect, macros) in entries {
+                let mut inner = ValueMap::new();
+                for (macro_name, package) in *macros {
+                    inner.insert(Value::from(*macro_name), Value::from(*package));
+                }
+                outer.insert(Value::from(*dialect), Value::from_object(inner));
+            }
+            outer
+        }
+
+        fn duckdb_namespace() -> ValueMap {
+            namespaces(&[(
+                "duckdb",
+                &[
+                    ("create_schema", "dbt"),
+                    ("duckdb__create_schema", "dbt_duckdb"),
+                    ("generate_schema_name", "dbt"),
+                    ("default__generate_schema_name", "dbt"),
+                    ("generate_alias_name", "dbt"),
+                    ("generate_database_name", "dbt"),
+                    ("get_unit_test_sql", "dbt"),
+                    ("materialization_unit_default", "dbt"),
+                ],
+            )])
+        }
+
+        #[test]
+        fn root_overrides_of_internal_macros_are_probed() {
+            let macros = BTreeMap::from([
+                dbt_macro(ROOT, "create_schema"),
+                dbt_macro(ROOT, "duckdb__create_schema"),
+                dbt_macro(ROOT, "my_helper"),
+            ]);
+            assert_eq!(
+                overrides(&macros, ROOT, &duckdb_namespace()),
+                ["create_schema", "duckdb__create_schema"]
+            );
+        }
+
+        #[test]
+        fn exempt_macros_are_not_probed() {
+            let macros = BTreeMap::from([
+                dbt_macro(ROOT, "generate_schema_name"),
+                dbt_macro(ROOT, "default__generate_schema_name"),
+                dbt_macro(ROOT, "generate_alias_name"),
+                dbt_macro(ROOT, "generate_database_name"),
+                dbt_macro(ROOT, "get_unit_test_sql"),
+                dbt_macro(ROOT, "materialization_unit_default"),
+            ]);
+            assert!(overrides(&macros, ROOT, &duckdb_namespace()).is_empty());
+        }
+
+        #[test]
+        fn dependency_and_internal_macros_are_not_probed() {
+            let macros = BTreeMap::from([
+                dbt_macro("some_package", "create_schema"),
+                dbt_macro("dbt", "create_schema"),
+                dbt_macro("dbt_duckdb", "duckdb__create_schema"),
+            ]);
+            assert!(overrides(&macros, ROOT, &duckdb_namespace()).is_empty());
+            // A root project that is itself an internal package.
+            assert!(overrides(&macros, "dbt", &duckdb_namespace()).is_empty());
+        }
+
+        #[test]
+        fn override_in_any_served_dialect_is_probed() {
+            let ns = namespaces(&[
+                ("duckdb", &[("create_schema", "dbt")]),
+                ("snowflake", &[("snowflake__get_columns", "dbt_snowflake")]),
+            ]);
+            let macros = BTreeMap::from([dbt_macro(ROOT, "snowflake__get_columns")]);
+            assert_eq!(overrides(&macros, ROOT, &ns), ["snowflake__get_columns"]);
+        }
+
+        /// Runs the real emitter under a root span and reads the probe counter.
+        #[test]
+        fn probe_counts_one_per_overriding_macro() {
+            use super::super::probe_internal_macro_overrides;
+            use dbt_common::tracing::dbt_metrics::{FusionMetricKey, NamedProbe};
+            use dbt_tracing::{
+                TelemetryOutputFlags,
+                emit::create_root_info_span,
+                init::create_tracing_subcriber_with_layer,
+                metrics::get_metric,
+                test_support::mocks::{MockDynSpanEvent, test_data_layer},
+            };
+
+            let macros = BTreeMap::from([
+                dbt_macro(ROOT, "create_schema"),
+                dbt_macro(ROOT, "duckdb__create_schema"),
+                dbt_macro(ROOT, "generate_schema_name"), // exempt
+                dbt_macro(ROOT, "my_helper"),            // not internal
+            ]);
+            let subscriber = create_tracing_subcriber_with_layer(
+                tracing::level_filters::LevelFilter::TRACE,
+                test_data_layer(1, None, false, std::iter::empty(), std::iter::empty()),
+                &[],
+            )
+            .expect("test tracing subscriber should be valid");
+
+            // Metrics are stored on the root span, so run inside one.
+            let hits = tracing::subscriber::with_default(subscriber, || {
+                let _root = create_root_info_span(MockDynSpanEvent {
+                    name: "root".to_string(),
+                    flags: TelemetryOutputFlags::ALL,
+                    ..Default::default()
+                })
+                .entered();
+                probe_internal_macro_overrides(&macros, ROOT, &duckdb_namespace());
+                get_metric(FusionMetricKey::CompatibilityProbe(
+                    NamedProbe::InternalMacroOverride.into(),
+                ))
+            });
+
+            assert_eq!(hits, 2);
+        }
     }
 }

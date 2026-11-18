@@ -13,7 +13,7 @@ use dbt_adapter_core::AdapterType;
 use dbt_common::AdapterResult;
 use dbt_schemas::schemas::dbt_catalogs::{CatalogSpecView, CatalogType, DbtCatalogsView};
 
-use dbt_adapter_sql::ident::escape_string_literal;
+use dbt_adapter_sql::literal::escape_string_literal;
 
 use super::{CatalogSpecDuckDbExt, DuckDbAttachKind, duckdb_attaches_via};
 use crate::errors::{AdapterError, AdapterErrorKind};

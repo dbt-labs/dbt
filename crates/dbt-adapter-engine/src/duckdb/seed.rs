@@ -9,7 +9,8 @@ use adbc_core::options::{OptionStatement, OptionValue};
 use arrow_schema::Schema;
 
 use dbt_adapter_core::AdapterType;
-use dbt_adapter_sql::ident::{escape_string_literal, quote_identifier};
+use dbt_adapter_sql::ident::duckdb::Ident;
+use dbt_adapter_sql::literal::escape_string_literal;
 use dbt_adapter_sql::types::SqlType;
 use dbt_adbc::driver::Builder as DriverBuilder;
 use dbt_adbc::{Backend, Connection, Database, LoadStrategy, QueryCtx, database};
@@ -183,9 +184,9 @@ pub fn copy_seed_csv(
     let mut stmt = conn.new_statement().map_err(adbc_error_to_adapter_error)?;
     stmt.set_sql_query(&format!(
         "COPY {}.{}.{} FROM '{}' (FORMAT CSV, HEADER TRUE, DELIMITER '{}')",
-        quote_identifier(database, duckdb),
-        quote_identifier(schema, duckdb),
-        quote_identifier(table_name, duckdb),
+        Ident::from_unquoted(database),
+        Ident::from_unquoted(schema),
+        Ident::from_unquoted(table_name),
         escape_string_literal(path, duckdb),
         escape_string_literal(delimiter, duckdb),
     ))

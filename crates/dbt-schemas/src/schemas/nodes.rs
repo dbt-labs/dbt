@@ -4857,8 +4857,12 @@ impl Nodes {
             + self.experimentals.len()
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (&String, &dyn InternalDbtNodeAttributes)> + '_ {
-        self.models
+    /// Every node with its unique id.
+    pub fn iter(
+        &self,
+    ) -> Box<dyn Iterator<Item = (&String, &dyn InternalDbtNodeAttributes)> + Send + '_> {
+        let iter = self
+            .models
             .iter()
             .map(|(id, node)| (id, Arc::as_ref(node) as &dyn InternalDbtNodeAttributes))
             .chain(
@@ -4925,70 +4929,39 @@ impl Nodes {
                 self.experimentals
                     .iter()
                     .map(|(id, node)| (id, Arc::as_ref(node) as &dyn InternalDbtNodeAttributes)),
-            )
+            );
+        Box::new(iter)
     }
+}
 
-    pub fn into_iter(
-        &self,
-    ) -> impl Iterator<Item = (String, Arc<dyn InternalDbtNodeAttributes>)> + '_ {
-        let models = self
-            .models
-            .iter()
-            .map(|(id, node)| (id.clone(), upcast(node.clone())));
-        let seeds = self
-            .seeds
-            .iter()
-            .map(|(id, node)| (id.clone(), upcast(node.clone())));
-        let tests = self
-            .tests
-            .iter()
-            .map(|(id, node)| (id.clone(), upcast(node.clone())));
-        let unit_tests = self
-            .unit_tests
-            .iter()
-            .map(|(id, node)| (id.clone(), upcast(node.clone())));
-        let sources = self
-            .sources
-            .iter()
-            .map(|(id, node)| (id.clone(), upcast(node.clone())));
-        let snapshots = self
-            .snapshots
-            .iter()
-            .map(|(id, node)| (id.clone(), upcast(node.clone())));
-        let analyses = self
-            .analyses
-            .iter()
-            .map(|(id, node)| (id.clone(), upcast(node.clone())));
-        let exposures = self
-            .exposures
-            .iter()
-            .map(|(id, node)| (id.clone(), upcast(node.clone())));
-        let functions = self
-            .functions
-            .iter()
-            .map(|(id, node)| (id.clone(), upcast(node.clone())));
-        let checks = self
-            .checks
-            .iter()
-            .map(|(id, node)| (id.clone(), upcast(node.clone())));
-        let semantic_models = self
-            .semantic_models
-            .iter()
-            .map(|(id, node)| (id.clone(), upcast(node.clone())));
-        let metrics = self
-            .metrics
-            .iter()
-            .map(|(id, node)| (id.clone(), upcast(node.clone())));
-        let saved_queries = self
-            .saved_queries
-            .iter()
-            .map(|(id, node)| (id.clone(), upcast(node.clone())));
-        let experimentals = self
-            .experimentals
-            .iter()
-            .map(|(id, node)| (id.clone(), upcast(node.clone())));
+impl IntoIterator for Nodes {
+    type Item = (String, Arc<dyn InternalDbtNodeAttributes>);
+    type IntoIter = Box<dyn Iterator<Item = Self::Item> + Send>;
 
-        models
+    /// Every node with its unique id, both owned.
+    fn into_iter(self) -> Self::IntoIter {
+        fn f<T: InternalDbtNodeAttributes + 'static>(
+            pair: (String, Arc<T>),
+        ) -> (String, Arc<dyn InternalDbtNodeAttributes>) {
+            (pair.0, pair.1 as Arc<dyn InternalDbtNodeAttributes>)
+        }
+
+        let models = self.models.into_iter().map(f);
+        let seeds = self.seeds.into_iter().map(f);
+        let tests = self.tests.into_iter().map(f);
+        let unit_tests = self.unit_tests.into_iter().map(f);
+        let sources = self.sources.into_iter().map(f);
+        let snapshots = self.snapshots.into_iter().map(f);
+        let analyses = self.analyses.into_iter().map(f);
+        let exposures = self.exposures.into_iter().map(f);
+        let functions = self.functions.into_iter().map(f);
+        let checks = self.checks.into_iter().map(f);
+        let semantic_models = self.semantic_models.into_iter().map(f);
+        let metrics = self.metrics.into_iter().map(f);
+        let saved_queries = self.saved_queries.into_iter().map(f);
+        let experimentals = self.experimentals.into_iter().map(f);
+
+        let iter = models
             .chain(seeds)
             .chain(tests)
             .chain(unit_tests)
@@ -5001,12 +4974,16 @@ impl Nodes {
             .chain(semantic_models)
             .chain(metrics)
             .chain(saved_queries)
-            .chain(experimentals)
+            .chain(experimentals);
+        Box::new(iter)
     }
+}
 
+impl Nodes {
+    /// Every node, mutable.
     pub fn iter_values_mut(
         &mut self,
-    ) -> impl Iterator<Item = &mut dyn InternalDbtNodeAttributes> + '_ {
+    ) -> Box<dyn Iterator<Item = &mut dyn InternalDbtNodeAttributes> + Send + '_> {
         let map_models = self
             .models
             .values_mut()
@@ -5064,7 +5041,7 @@ impl Nodes {
             .values_mut()
             .map(|arc| Arc::make_mut(arc) as &mut dyn InternalDbtNodeAttributes);
 
-        map_models
+        let iter = map_models
             .chain(map_seeds)
             .chain(map_tests)
             .chain(map_unit_tests)
@@ -5077,7 +5054,8 @@ impl Nodes {
             .chain(map_semantic_models)
             .chain(map_metrics)
             .chain(map_saved_queries)
-            .chain(map_experimentals)
+            .chain(map_experimentals);
+        Box::new(iter)
     }
 
     pub fn get_value_mut(&mut self, unique_id: &str) -> Option<&mut dyn InternalDbtNodeAttributes> {
@@ -5302,12 +5280,6 @@ impl Nodes {
 
         Ok(())
     }
-}
-
-fn upcast<T: InternalDbtNodeAttributes + 'static>(
-    arc: Arc<T>,
-) -> Arc<dyn InternalDbtNodeAttributes> {
-    arc
 }
 
 /// Serialize Option<String> as empty string when None, otherwise as the string value.
@@ -9796,7 +9768,7 @@ mod experimental_node_tests {
         assert!(nodes.contains(id));
         assert_eq!(nodes.node_count(), 1);
         assert_eq!(nodes.iter().count(), 1);
-        assert_eq!(nodes.into_iter().count(), 1);
+        assert_eq!(nodes.iter().count(), 1);
         let node = nodes
             .get_node(id)
             .expect("experimental node is found by unique id");
@@ -9847,5 +9819,59 @@ mod experimental_node_tests {
                 .nodes,
             vec!["model.shop.orders".to_string()]
         );
+    }
+}
+
+#[cfg(test)]
+mod iter_tests {
+    use super::*;
+
+    /// Inserts two default nodes under `kind`, the larger key first, so that
+    /// insertion order and key order differ.
+    fn insert_two<T: Default>(map: &mut BTreeMap<String, Arc<T>>, kind: &str) {
+        for name in ["b", "a"] {
+            map.insert(format!("{kind}.p.{name}"), Arc::new(T::default()));
+        }
+    }
+
+    fn nodes_of_every_kind() -> Nodes {
+        let mut nodes = Nodes::default();
+        insert_two(&mut nodes.models, "model");
+        insert_two(&mut nodes.seeds, "seed");
+        insert_two(&mut nodes.tests, "test");
+        insert_two(&mut nodes.unit_tests, "unit_test");
+        insert_two(&mut nodes.sources, "source");
+        insert_two(&mut nodes.snapshots, "snapshot");
+        insert_two(&mut nodes.analyses, "analysis");
+        insert_two(&mut nodes.exposures, "exposure");
+        insert_two(&mut nodes.functions, "function");
+        insert_two(&mut nodes.checks, "check");
+        insert_two(&mut nodes.semantic_models, "semantic_model");
+        insert_two(&mut nodes.metrics, "metric");
+        insert_two(&mut nodes.saved_queries, "saved_query");
+        insert_two(&mut nodes.experimentals, "widget");
+        nodes
+    }
+
+    /// `iter` and `into_iter` yield the same nodes in the same order: same ids,
+    /// and the same node allocations.
+    #[test]
+    fn iter_and_into_iter_yield_the_same_sequence() {
+        let nodes = nodes_of_every_kind();
+
+        let borrowed: Vec<(String, *const ())> = nodes
+            .iter()
+            .map(|(id, node)| (id.clone(), std::ptr::from_ref(node).cast::<()>()))
+            .collect();
+        // The clone shares each node's `Arc` with `nodes`.
+        let owned: Vec<(String, *const ())> = nodes
+            .clone()
+            .into_iter()
+            .map(|(id, node)| (id, Arc::as_ptr(&node).cast::<()>()))
+            .collect();
+
+        assert_eq!(borrowed.len(), 28);
+        assert_eq!(borrowed.len(), nodes.node_count());
+        assert_eq!(owned, borrowed);
     }
 }

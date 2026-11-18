@@ -312,6 +312,13 @@ static DEBUG_PROBE_TABLE: std::sync::LazyLock<regex::Regex> =
 static DEBUG_PROPAGATION_PROBE_TABLE: std::sync::LazyLock<regex::Regex> =
     std::sync::LazyLock::new(|| regex::Regex::new(r"__dbt_debug_propagation_\d+").unwrap());
 
+/// Matches the BigQuery publication probe's table name
+/// (`__dbt_debug_publication_<nanos>`, `debug_propagation.rs`). Same reasoning
+/// as the two above: the name carries a fresh timestamp on every invocation, so
+/// without masking a recording of the publication check could never replay.
+static DEBUG_PUBLICATION_PROBE_TABLE: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new(r"__dbt_debug_publication_\d+").unwrap());
+
 static QUERY_COMMENT_DBT_VERSION: std::sync::LazyLock<regex::Regex> =
     std::sync::LazyLock::new(|| regex::Regex::new(r#""dbt_version"\s*:\s*"[^"]*""#).unwrap());
 
@@ -337,6 +344,9 @@ impl adbc_record_replay::SqlNormalizer for DbtSqlNormalizer {
             .into_owned();
         let collapsed = DEBUG_PROPAGATION_PROBE_TABLE
             .replace_all(&collapsed, "__dbt_debug_propagation_[MASKED_ID]")
+            .into_owned();
+        let collapsed = DEBUG_PUBLICATION_PROBE_TABLE
+            .replace_all(&collapsed, "__dbt_debug_publication_[MASKED_ID]")
             .into_owned();
         let collapsed = QUERY_COMMENT_DBT_VERSION
             .replace_all(&collapsed, r#""dbt_version": "DBT_VERSION""#)

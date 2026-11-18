@@ -490,7 +490,7 @@ determine_version() {
         TARGET_VERSION=$(echo "$versions" | jq -r ".\"$specific_version\".tag" | sed 's/^v//') || err_and_exit "Failed to parse requested version $specific_version from versions data."
         log_grey "$specific_version available version: $TARGET_VERSION"
     else
-        TARGET_VERSION="$specific_version"
+        TARGET_VERSION="${specific_version#v}"
         log_grey "Requested version: $TARGET_VERSION"
     fi
 }

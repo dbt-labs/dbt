@@ -7,6 +7,14 @@ use dbt_adapter_core::{AdapterType, quote_char};
 use super::is_keyword_ignore_ascii_case;
 use super::tokenizer::QuotingStyle;
 
+pub mod bigquery;
+pub mod clickhouse;
+pub mod databricks;
+pub mod duckdb;
+pub mod redshift;
+pub mod snowflake;
+pub mod spark;
+
 /// An identifier and its provenance (from quoted or an plain identifier in the input source).
 ///
 /// The name [Ident::Unquoted] means that the identifier was *quoted* in the
@@ -52,12 +60,32 @@ impl Ident {
         }
     }
 
+    /// Create an [Ident] from an unescaped string that must always be rendered
+    /// in the backend's canonical quotes. Escaping happens on [Ident::display].
+    ///
+    /// ```ignore
+    /// let id = Ident::from_unquoted(r"a\b`c", AdapterType::Bigquery);
+    /// assert_eq!(id.display(AdapterType::Bigquery).to_string(), r"`a\\b\`c`");
+    /// ```
+    pub fn from_unquoted(s: impl Into<String>, backend: AdapterType) -> Self {
+        Ident::unquoted(canonical_quote(backend), s)
+    }
+
     pub fn plain(s: impl Into<String>) -> Self {
         Ident::Plain(s.into())
     }
 
     pub fn unquoted(quote: QuotingStyle, s: impl Into<String>) -> Self {
         Ident::Unquoted(quote, s.into())
+    }
+
+    pub fn from_string(s: impl Into<String>, must_quote: bool, backend: AdapterType) -> Self {
+        let s = s.into();
+        if must_quote || must_be_quoted(&s, backend) {
+            Ident::Unquoted(canonical_quote(backend), s)
+        } else {
+            Ident::Plain(s)
+        }
     }
 
     pub fn display(&self, backend: AdapterType) -> IdentDisplay<'_> {
@@ -76,11 +104,16 @@ impl Ident {
             Ident::Plain(s) => s,
         }
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.as_ref().is_empty()
+    }
 }
 
 pub struct IdentDisplay<'a>(&'a Ident, AdapterType);
 
 impl fmt::Display for IdentDisplay<'_> {
+    #[inline(never)]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.0 {
             Ident::Unquoted(quote, s) => _render_ident_in_quotes(*quote, s, self.1, f),
@@ -89,6 +122,7 @@ impl fmt::Display for IdentDisplay<'_> {
     }
 }
 
+#[inline(always)]
 fn _render_ident_in_quotes(
     quote: QuotingStyle,
     s: &str,
@@ -134,6 +168,10 @@ pub fn max_identifier_length(adapter_type: AdapterType) -> Option<NonZero<usize>
 // https://www.postgresql.org/docs/current/sql-syntax-lexical.html#SQL-SYNTAX-IDENTIFIERS
 
 /// The canonical quoting style used to quote identifiers in this backend's dialect.
+///
+/// Always inline because the backend is often known at compile and
+/// constant propagation eliminates the match entirely.
+#[inline(always)]
 pub const fn canonical_quote(backend: AdapterType) -> QuotingStyle {
     use AdapterType::*;
     match backend {
@@ -287,85 +325,88 @@ pub fn escaped_identifier<'a>(id: Cow<'a, str>, backend: AdapterType, quote: cha
 /// `DESCRIBE "db"."schema"."table"`), where an unquoted rendering could
 /// re-interpret case or special characters.
 pub fn quote_identifier(id: &str, backend: AdapterType) -> String {
-    Ident::unquoted(canonical_quote(backend), id)
+    Ident::from_unquoted(id, backend)
         .display(backend)
         .to_string()
 }
 
-/// Escape `s` for inclusion inside a single-quoted SQL *string literal*, so a
-/// value can never terminate the literal early. The literal-value member of
-/// the family next to [`sanitize_identifier`] (strip) and [`quote_identifier`]
-/// (quote), which handle identifiers.
-pub fn escape_string_literal(s: &str, backend: AdapterType) -> String {
-    match backend {
-        // Backslash is a string escape on MariaDB unless the
-        // NO_BACKSLASH_ESCAPES sql_mode is set.
-        AdapterType::Snowflake
-        | AdapterType::Redshift
-        | AdapterType::Postgres
-        | AdapterType::MariaDB => s.replace('\\', "\\\\").replace('\'', "''"),
-        AdapterType::Bigquery
-        | AdapterType::Databricks
-        | AdapterType::Spark
-        | AdapterType::ClickHouse => s.replace('\\', "\\\\").replace('\'', "\\'"),
-        AdapterType::Salesforce
-        | AdapterType::DuckDB
-        | AdapterType::Fabric
-        | AdapterType::Exasol
-        | AdapterType::Athena
-        | AdapterType::Starburst
-        | AdapterType::Trino
-        | AdapterType::Datafusion
-        | AdapterType::Dremio
-        | AdapterType::Oracle
-        | AdapterType::LakeCompute => s.replace('\'', "''"),
-    }
+/// Define an `Ident` newtype over [Ident] that is bound to one [AdapterType],
+/// so callers don't pass the backend to every constructor and when formatting.
+///
+/// Expands to items in the invoking module, e.g. `ident::bigquery::Ident`:
+///
+/// ```ignore
+/// define_adapter_ident!(AdapterType::Bigquery);
+/// ```
+macro_rules! define_adapter_ident {
+    ($backend:expr) => {
+        /// [Ident](super::Ident) bound to a single backend.
+        #[derive(Debug, Clone)]
+        pub struct Ident($crate::ident::Ident);
+
+        impl AsRef<str> for Ident {
+            #[inline]
+            fn as_ref(&self) -> &str {
+                self.0.as_ref()
+            }
+        }
+
+        impl Ident {
+            #[inline]
+            pub fn new(s: impl Into<String>) -> Self {
+                Self($crate::ident::Ident::new(s, $backend))
+            }
+
+            #[inline]
+            pub fn from_unquoted(s: impl Into<String>) -> Self {
+                Self($crate::ident::Ident::from_unquoted(s, $backend))
+            }
+
+            #[inline]
+            pub fn plain(s: impl Into<String>) -> Self {
+                Self($crate::ident::Ident::plain(s))
+            }
+
+            #[inline]
+            pub fn from_string(s: impl Into<String>, must_quote: bool) -> Self {
+                Self($crate::ident::Ident::from_string(s, must_quote, $backend))
+            }
+
+            pub fn into_inner(self) -> $crate::ident::Ident {
+                self.0
+            }
+
+            #[inline]
+            pub fn is_empty(&self) -> bool {
+                self.0.is_empty()
+            }
+        }
+
+        impl ::std::fmt::Display for Ident {
+            #[inline]
+            fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+                ::std::fmt::Display::fmt(&self.0.display($backend), f)
+            }
+        }
+    };
 }
 
-/// Render `s` as a single-quoted SQL string literal, escaped with
-/// [`escape_string_literal`].
-pub fn quote_string_literal(s: &str, backend: AdapterType) -> String {
-    format!("'{}'", escape_string_literal(s, backend))
-}
+pub(crate) use define_adapter_ident;
 
 #[cfg(test)]
 mod sanitize_tests {
     use super::*;
 
-    fn unescape_doubled_quote_and_backslash(value: &str) -> String {
-        let mut chars = value.chars().peekable();
-        let mut result = String::new();
-        while let Some(c) = chars.next() {
-            if c == '\\' && chars.peek() == Some(&'\\') {
-                chars.next();
-                result.push('\\');
-            } else if c == '\'' && chars.peek() == Some(&'\'') {
-                chars.next();
-                result.push('\'');
-            } else {
-                result.push(c);
-            }
-        }
-        result
-    }
-
-    fn unescape_backslash_literal(value: &str) -> String {
-        let mut chars = value.chars();
-        let mut result = String::new();
-        while let Some(c) = chars.next() {
-            if c == '\\' {
-                result.push(chars.next().expect("escaped character"));
-            } else {
-                result.push(c);
-            }
-        }
-        result
-    }
-
     #[test]
     fn snowflake_hyphen_must_be_quoted() {
         assert!(must_be_quoted("GIFT-CARDS", AdapterType::Snowflake));
         assert!(!must_be_quoted("GIFT_CARDS", AdapterType::Snowflake));
+    }
+
+    #[test]
+    fn from_unquoted_always_quotes_and_escapes() {
+        let id = Ident::from_unquoted(r"a\b`c", AdapterType::Bigquery);
+        assert_eq!(id.display(AdapterType::Bigquery).to_string(), r"`a\\b\`c`");
     }
 
     #[test]
@@ -391,104 +432,6 @@ mod sanitize_tests {
             quote_identifier("trail\\", AdapterType::ClickHouse),
             r#""trail\\""#
         );
-    }
-
-    #[test]
-    fn quote_string_literal_wraps_and_escapes() {
-        let q = |s: &str| quote_string_literal(s, AdapterType::DuckDB);
-        assert_eq!(q("plain"), "'plain'");
-        assert_eq!(q("o'brien"), "'o''brien'");
-        assert_eq!(q(""), "''");
-    }
-
-    #[test]
-    fn escape_string_literal_doubles_single_quotes() {
-        let e = |s: &str| escape_string_literal(s, AdapterType::DuckDB);
-        assert_eq!(e("o'brien"), "o''brien");
-        assert_eq!(e("'; DROP TABLE x; --"), "''; DROP TABLE x; --");
-        assert_eq!(e("plain"), "plain");
-    }
-
-    #[test]
-    fn escape_string_literal_escapes_backslashes_on_mariadb() {
-        let e = |s: &str| escape_string_literal(s, AdapterType::MariaDB);
-        assert_eq!(e("o'brien"), "o''brien");
-        assert_eq!(e("a\\'b"), "a\\\\''b");
-        assert_eq!(e("plain"), "plain");
-    }
-
-    #[test]
-    fn escape_string_literal_escapes_snowflake_backslashes() {
-        assert_eq!(
-            escape_string_literal(r"a\b'c", AdapterType::Snowflake),
-            r"a\\b''c"
-        );
-    }
-
-    #[test]
-    fn escape_string_literal_uses_backslash_escapes_for_hive_style_literals() {
-        assert_eq!(
-            escape_string_literal(r"a\b'c", AdapterType::Databricks),
-            r"a\\b\'c"
-        );
-    }
-
-    #[test]
-    fn escape_string_literal_uses_backslash_escapes_for_bigquery_and_clickhouse() {
-        for backend in [AdapterType::Bigquery, AdapterType::ClickHouse] {
-            assert_eq!(escape_string_literal(r"a\b'c", backend), r"a\\b\'c");
-        }
-    }
-
-    #[test]
-    fn escape_string_literal_doubles_redshift_backslashes_and_quotes() {
-        assert_eq!(
-            escape_string_literal(r"a\b'c", AdapterType::Redshift),
-            r"a\\b''c"
-        );
-    }
-
-    #[test]
-    fn escape_string_literal_round_trips_adversarial_values() {
-        let values = [
-            "'",
-            "\\",
-            "$$",
-            "; --",
-            "/* comment */",
-            "line\nbreak",
-            r"\' ; SELECT 1; --",
-            r"'\'\\''",
-        ];
-
-        for backend in [
-            AdapterType::Snowflake,
-            AdapterType::Redshift,
-            AdapterType::Postgres,
-            AdapterType::MariaDB,
-        ] {
-            for value in values {
-                let escaped = escape_string_literal(value, backend);
-                assert_eq!(unescape_doubled_quote_and_backslash(&escaped), value);
-                let escaped_twice = escape_string_literal(&escaped, backend);
-                assert_eq!(
-                    unescape_doubled_quote_and_backslash(&escaped_twice),
-                    escaped
-                );
-            }
-        }
-
-        for backend in [
-            AdapterType::Bigquery,
-            AdapterType::Databricks,
-            AdapterType::Spark,
-            AdapterType::ClickHouse,
-        ] {
-            for value in values {
-                let escaped = escape_string_literal(value, backend);
-                assert_eq!(unescape_backslash_literal(&escaped), value);
-            }
-        }
     }
 
     #[test]

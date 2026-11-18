@@ -153,7 +153,6 @@ impl TaskRunner {
             showables: Vec::new(),
             jinja_env: self.jinja_env,
             resolved_state: self.resolved_state,
-            task_runner_ctx: None,
             preview: None,
         })
     }
@@ -640,7 +639,6 @@ impl TaskRunner {
             showables,
             jinja_env: self.jinja_env,
             resolved_state: self.resolved_state,
-            task_runner_ctx: Some(ctx),
             preview,
         })
     }

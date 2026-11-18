@@ -22,6 +22,12 @@ pub struct InvocationMetrics {
     /// Only non-zero counts are included.
     #[prost(map = "string, uint64", tag = "5")]
     pub status_counts: ::std::collections::HashMap<::prost::alloc::string::String, u64>,
+    /// Counts of compatibility probe hits, including future-change warnings whether shown or not.
+    /// Keys are the snake_case name of a named probe (e.g. "legacy_ref_resolution") or the
+    /// code name of a warning planned to become an error (e.g. "MalformedBlockName").
+    /// Only probes that fired are included.
+    #[prost(map = "string, uint64", tag = "6")]
+    pub probe_counts: ::std::collections::HashMap<::prost::alloc::string::String, u64>,
 }
 impl ::dbt_tracing::StaticName for InvocationMetrics {
     const FULL_NAME: &'static str = "v1.public.events.fusion.invocation.InvocationMetrics";
