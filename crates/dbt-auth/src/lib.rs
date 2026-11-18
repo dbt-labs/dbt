@@ -90,6 +90,7 @@ pub fn auth_for_backend_with_warnings(
         Backend::Exasol => Box::new(exasol::ExasolAuth::new(warning_printer)),
         Backend::MySQL => Box::new(mariadb::MariaDbAuth::new(warning_printer)),
         Backend::Trino => unimplemented!("trino backend authentication"),
+        Backend::MotherDuck => unimplemented!("MotherDuck backend authentication"),
         Backend::Generic { .. } => unimplemented!("generic backend authentication"),
     }
 }

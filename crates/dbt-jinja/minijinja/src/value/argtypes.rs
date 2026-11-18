@@ -789,7 +789,7 @@ impl Deref for KwargsValues {
 }
 
 impl KwargsValues {
-    fn as_value_map<'a>(self: &'a Arc<Self>) -> &'a Arc<ValueMap> {
+    fn as_value_map(self: &Arc<Self>) -> &Arc<ValueMap> {
         // SAFETY: this is safe because of repr(transparent)
         unsafe { std::mem::transmute(self) }
     }
