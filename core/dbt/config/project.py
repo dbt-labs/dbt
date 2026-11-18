@@ -211,7 +211,8 @@ def _all_source_paths(*args: List[str]) -> List[str]:
     paths = chain(*args)
     # Strip trailing slashes since the path is the same even though the name is not
     stripped_paths = map(lambda s: s.rstrip("/"), paths)
-    return list(set(stripped_paths))
+    # Dedupe in config order: a file under nested paths takes its fqn from the first one
+    return list(dict.fromkeys(stripped_paths))
 
 
 T = TypeVar("T")
