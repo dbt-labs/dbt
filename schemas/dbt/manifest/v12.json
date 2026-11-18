@@ -29523,6 +29523,60 @@
                         ]
                       }
                     },
+                    "hierarchies": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "title": "DimensionHierarchy",
+                        "properties": {
+                          "name": {
+                            "type": "string"
+                          },
+                          "label": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": null
+                          },
+                          "levels": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "title": "DimensionHierarchyLevel",
+                              "properties": {
+                                "dimension": {
+                                  "type": "string"
+                                },
+                                "parent": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ],
+                                  "default": null
+                                }
+                              },
+                              "additionalProperties": false,
+                              "required": [
+                                "dimension"
+                              ]
+                            }
+                          }
+                        },
+                        "additionalProperties": false,
+                        "required": [
+                          "name"
+                        ]
+                      }
+                    },
                     "metadata": {
                       "anyOf": [
                         {
@@ -31186,6 +31240,60 @@
               "required": [
                 "name",
                 "type"
+              ]
+            }
+          },
+          "hierarchies": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "title": "DimensionHierarchy",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "label": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "levels": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "title": "DimensionHierarchyLevel",
+                    "properties": {
+                      "dimension": {
+                        "type": "string"
+                      },
+                      "parent": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null
+                      }
+                    },
+                    "additionalProperties": false,
+                    "required": [
+                      "dimension"
+                    ]
+                  }
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "name"
               ]
             }
           },

@@ -18,6 +18,8 @@ from metricflow_semantic_interfaces.type_enums import (
 from dbt.artifacts.resources import (
     Defaults,
     Dimension,
+    DimensionHierarchy,
+    DimensionHierarchyLevel,
     Entity,
     FileHash,
     Measure,
@@ -268,6 +270,16 @@ class TestSemanticModel:
         default_semantic_model_copy.node_relation.alias = "test_another_alias"
         # Relation should not be consided in same_contents
         assert default_semantic_model.same_contents(default_semantic_model_copy)
+
+    def test_semantic_model_same_contents_update_hierarchies(
+        self, default_semantic_model: SemanticModel
+    ):
+        default_semantic_model_copy = deepcopy(default_semantic_model)
+        default_semantic_model_copy.hierarchies = [
+            DimensionHierarchy(name="time", levels=[DimensionHierarchyLevel(dimension="ds")])
+        ]
+
+        assert not default_semantic_model.same_contents(default_semantic_model_copy)
 
 
 # Infer primary key
