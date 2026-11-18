@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use crate::error::{Error, ErrorKind};
 use crate::listener::RenderingEventListener;
+use crate::value::SMALL_STR_CAP;
 use crate::value::{
     mutable_map::MutableMap, DynObject, ObjectRepr, Packed, SmallStr, StringType, Value, ValueKind,
     ValueMap, ValueRepr,
@@ -277,12 +278,36 @@ impl<'a> From<&'a [u8]> for Value {
     }
 }
 
+/// # Safety
+///
+/// The caller must ensure that the length of `s` is less than or equal to
+/// [SMALL_STR_CAP](crate::value::SMALL_STR_CAP).
+#[cold]
+unsafe fn value_from_small_str_unchecked(s: &str) -> Value {
+    // SAFETY: s <= SMALL_STR_CAP is the pre-condition of this unsafe function.
+    let small_str = unsafe { SmallStr::new_unchecked(s) };
+    Value(ValueRepr::SmallStr(small_str))
+}
+
+#[cold]
+fn value_from_large_string(s: &str) -> Value {
+    Value(ValueRepr::String(Arc::from(s), StringType::Normal))
+}
+
 impl<'a> From<&'a str> for Value {
     #[inline(always)]
     fn from(val: &'a str) -> Self {
-        SmallStr::try_new(val)
-            .map(|small_str| Value(ValueRepr::SmallStr(small_str)))
-            .unwrap_or_else(|| Value(ValueRepr::String(val.into(), StringType::Normal)))
+        let len = val.len();
+        // The branch is inlined at every callsite, but the two arms are cold function calls,
+        // so their implementations don't get inlined everywhere. Inlined conditional branches
+        // are friendly to branch prediction, so this is a good tradeoff between code size and
+        // performance.
+        if len <= SMALL_STR_CAP {
+            // SAFETY: len <= SMALL_STR_CAP is checked here, so this is safe.
+            unsafe { value_from_small_str_unchecked(val) }
+        } else {
+            value_from_large_string(val)
+        }
     }
 }
 
@@ -367,10 +392,12 @@ impl From<u128> for Value {
 }
 
 impl From<char> for Value {
-    #[inline(always)]
     fn from(val: char) -> Self {
         let mut buf = [0u8; 4];
-        ValueRepr::SmallStr(SmallStr::try_new(val.encode_utf8(&mut buf)).unwrap()).into()
+        let s = val.encode_utf8(&mut buf);
+        // SAFETY: `s.len()` is 4 at most, which is less than or equal to `SMALL_STR_CAP`.
+        let small_str = unsafe { SmallStr::new_unchecked(s) };
+        ValueRepr::SmallStr(small_str).into()
     }
 }
 
@@ -715,6 +742,15 @@ impl<'a, T: ArgType<'a, Output = T>> ArgType<'a> for Rest<T> {
     }
 }
 
+#[cold]
+#[inline(never)]
+fn missing_kwarg_detail(mut err: Error, key: &str) -> Error {
+    if err.kind() == ErrorKind::MissingArgument && err.detail().is_none() {
+        err.set_detail(format!("missing keyword argument '{key}'"));
+    }
+    err
+}
+
 /// Utility to accept keyword arguments.
 ///
 /// Keyword arguments are represented as regular values as the last argument
@@ -917,12 +953,13 @@ impl Kwargs {
     where
         T: ArgType<'a, Output = T>,
     {
-        T::from_value(self.values.get(&Value::from(key))).map_err(|mut err| {
-            if err.kind() == ErrorKind::MissingArgument && err.detail().is_none() {
-                err.set_detail(format!("missing keyword argument '{key}'"));
-            }
-            err
-        })
+        T::from_value(self.lookup(key)).map_err(|err| missing_kwarg_detail(err, key))
+    }
+
+    // Not generic over the argument type, so it is shared by all copies of `peek`.
+    #[inline(never)]
+    fn lookup(&self, key: &str) -> Option<&Value> {
+        self.values.get(&Value::from(key))
     }
 
     /// Gets a single argument from the kwargs and marks it as used.
@@ -951,8 +988,14 @@ impl Kwargs {
         T: ArgType<'a, Output = T>,
     {
         let rv = ok!(self.peek::<T>(key));
-        self.used.borrow_mut().insert(key.to_string());
+        self.mark_used(key);
         Ok(rv)
+    }
+
+    // Not generic over the argument type, so it is shared by all copies of `get`.
+    #[inline(never)]
+    fn mark_used(&self, key: &str) {
+        self.used.borrow_mut().insert(key.to_string());
     }
 
     /// Checks if a keyword argument exists.
