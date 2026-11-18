@@ -182,6 +182,9 @@ class ExecutionContext:
 
 
 class BaseRunner(Generic[NodeT, RunnerResultT], metaclass=ABCMeta):
+    # Whether `call_runner` should fire NodeStart / NodeFinished for this runner.
+    fire_node_events: bool = True
+
     def __init__(
         self,
         config: RuntimeConfig,

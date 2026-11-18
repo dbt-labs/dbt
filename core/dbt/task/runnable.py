@@ -343,11 +343,12 @@ class GraphRunnableTask(ConfiguredTask):
                 started_at=datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
                 node_status=RunningStatus.Started,
             )
-            fire_event(
-                NodeStart(
-                    node_info=runner.node.node_info,
+            if runner.fire_node_events:
+                fire_event(
+                    NodeStart(
+                        node_info=runner.node.node_info,
+                    )
                 )
-            )
 
             result = None
             thread_exception: Optional[Union[KeyboardInterrupt, SystemExit, Exception]] = None
@@ -387,15 +388,16 @@ class GraphRunnableTask(ConfiguredTask):
                         node_span, "rows_affected", _rows_affected(result.adapter_response)
                     )
                     _set_span_attr(node_span, "query_id", result.adapter_response.get("query_id"))
-                    try:
-                        fire_event(
-                            NodeFinished(
-                                node_info=runner.node.node_info,
-                                run_result=result.to_msg_dict(),
+                    if runner.fire_node_events:
+                        try:
+                            fire_event(
+                                NodeFinished(
+                                    node_info=runner.node.node_info,
+                                    run_result=result.to_msg_dict(),
+                                )
                             )
-                        )
-                    except Exception as e:
-                        result = self._handle_thread_exception(runner, e)
+                        except Exception as e:
+                            result = self._handle_thread_exception(runner, e)
                 else:
                     # No result means run_with_hooks raised; record the exception
                     # on the node span and mark it errored before handling it.
